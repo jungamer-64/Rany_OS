@@ -605,7 +605,7 @@ impl fmt::Display for ContextualError {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_error_conversion() {
         let mem_err = MemoryError::OutOfMemory;
         let kernel_err: KernelError = mem_err.into();
@@ -615,9 +615,10 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[test_case]
     fn test_error_display() {
         let err = KernelError::Memory(MemoryError::OutOfMemory);
         assert_eq!(format!("{}", err), "Memory error: out of memory");
     }
 }
+

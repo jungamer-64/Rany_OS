@@ -280,7 +280,7 @@ impl Default for TcpOptionBuilder {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_window_scale_disabled() {
         let ws = WindowScaleOption::new();
         assert!(!ws.enabled);
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(ws.scale_rcv_window(65535), 65535);
     }
 
-    #[test]
+    #[test_case]
     fn test_window_scale_enabled() {
         let mut ws = WindowScaleOption::with_scale(7);
         assert!(ws.enabled);
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(ws.scale_rcv_window(1000), 128000);
     }
 
-    #[test]
+    #[test_case]
     fn test_advertised_window() {
         let ws = WindowScaleOption::with_scale(7);
 
@@ -310,7 +310,7 @@ mod tests {
         assert_eq!(ws.advertised_window(u32::MAX), 65535);
     }
 
-    #[test]
+    #[test_case]
     fn test_option_builder() {
         let mut builder = TcpOptionBuilder::new();
         builder
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(options.len() % 4, 0); // 4バイト境界
     }
 
-    #[test]
+    #[test_case]
     fn test_option_parser() {
         // MSS=1460, WSopt=7 のオプション
         let options = [
@@ -337,3 +337,4 @@ mod tests {
         assert_eq!(parser.find_window_scale(), Some(7));
     }
 }
+

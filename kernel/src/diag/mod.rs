@@ -739,7 +739,7 @@ pub fn increment(name: &'static str) {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_histogram() {
         let hist = Histogram::new();
 
@@ -753,7 +753,7 @@ mod tests {
         assert_eq!(stats.max, 100);
     }
 
-    #[test]
+    #[test_case]
     fn test_histogram_percentile() {
         let hist = Histogram::new();
 
@@ -766,7 +766,7 @@ mod tests {
         assert!(p50 <= p99);
     }
 
-    #[test]
+    #[test_case]
     fn test_trace_event() {
         let buf = TraceBuffer::new(100);
         buf.enable();
@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(events[0].data, 42);
     }
 
-    #[test]
+    #[test_case]
     fn test_benchmark_runner() {
         let mut counter = 0u64;
         let result = BenchmarkRunner::run("test", 1000, || {
@@ -788,3 +788,4 @@ mod tests {
         assert!(result.cycles_per_op > 0);
     }
 }
+

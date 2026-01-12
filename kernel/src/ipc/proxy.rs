@@ -387,17 +387,18 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
 
-    #[test]
+    #[test_case]
     fn test_proxy_error_display() {
         let error = ProxyError::DomainPanicked("test panic".into());
         let error_str = alloc::format!("{}", error);
         assert!(error_str.contains("test panic"));
     }
 
-    #[test]
+    #[test_case]
     fn test_retry_config_default() {
         let config = RetryConfig::default();
         assert_eq!(config.max_retries, 3);
         assert!(config.exponential_backoff);
     }
 }
+

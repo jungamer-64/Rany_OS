@@ -112,14 +112,14 @@ pub fn is_valid_public_key(public_key: &[u8; 32]) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_invalid_public_key() {
         // ゼロの公開鍵は無効
         let zero_key = [0u8; 32];
         assert!(!is_valid_public_key(&zero_key));
     }
 
-    #[test]
+    #[test_case]
     fn test_signature_format() {
         // 無効な署名でのverify呼び出しがpanicしないことを確認
         let dummy_key = [0u8; 32];
@@ -132,7 +132,7 @@ mod tests {
     }
 
     // RFC 8032のテストベクター（test vector 1）
-    #[test]
+    #[test_case]
     fn test_rfc8032_vector1() {
         // 公開鍵
         let public_key: [u8; 32] = [
@@ -156,3 +156,4 @@ mod tests {
         assert!(verify_message(&public_key, message, &signature));
     }
 }
+

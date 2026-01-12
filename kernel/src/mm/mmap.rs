@@ -876,7 +876,7 @@ pub fn msync(addr: MappedAddress, size: MappingSize) -> Result<(), MmapError> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_anonymous_mmap() {
         let addr = mmap(
             None,
@@ -891,7 +891,7 @@ mod tests {
         munmap(addr, MappingSize::new(4096)).unwrap();
     }
 
-    #[test]
+    #[test_case]
     fn test_mapping_read_write() {
         let addr = mmap(
             None,
@@ -915,3 +915,4 @@ mod tests {
         }
     }
 }
+

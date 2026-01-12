@@ -360,7 +360,7 @@ pub fn reset_stealing_stats() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_work_stealing_queue() {
         let mut queue = WorkStealingQueue::new();
 
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(queue.len(), 3);
     }
 
-    #[test]
+    #[test_case]
     fn test_worker_metadata() {
         let metadata = WorkerMetadata::new(2, 1);
         assert_eq!(metadata.core_id, 2);
@@ -393,3 +393,4 @@ mod tests {
         assert_eq!(queue.metadata().numa_node, 1);
     }
 }
+

@@ -179,7 +179,7 @@ impl Eq for StringView {}
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_buffer_view_basic() {
         let data = vec![1, 2, 3, 4, 5];
         let view = KernelBufferView::new(data);
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(view.as_bytes(), &[1, 2, 3, 4, 5]);
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_view_slice() {
         let data = vec![1, 2, 3, 4, 5];
         let view = KernelBufferView::new(data);
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(slice.as_bytes(), &[2, 3, 4]);
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_view_clone_shares_data() {
         let data = vec![1, 2, 3, 4, 5];
         let view1 = KernelBufferView::new(data);
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(view1.as_bytes(), view2.as_bytes());
     }
 
-    #[test]
+    #[test_case]
     fn test_string_view() {
         let data = "Hello, World!".as_bytes().to_vec();
         let buffer = KernelBufferView::new(data);
@@ -216,14 +216,14 @@ mod tests {
         assert_eq!(string_view.as_str(), "Hello, World!");
     }
 
-    #[test]
+    #[test_case]
     fn test_string_view_invalid_utf8() {
         let data = vec![0xff, 0xfe]; // Invalid UTF-8
         let buffer = KernelBufferView::new(data);
         assert!(StringView::new(buffer).is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_view_from_arc() {
         let data = vec![10, 20, 30, 40, 50];
         let arc_data = Arc::new(data);
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(Arc::strong_count(&arc_data), 2);
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_view_from_arc_shares_data() {
         let original = vec![1, 2, 3];
         let arc = Arc::new(original);
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(view1.as_bytes(), view2.as_bytes());
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_view_from_arc_slice() {
         let arc = Arc::new(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let view = KernelBufferView::from_arc(arc);
@@ -261,3 +261,4 @@ mod tests {
         assert_eq!(slice.as_bytes(), &[3, 4, 5, 6]);
     }
 }
+

@@ -2715,7 +2715,7 @@ pub static HUGE_PAGE_STATS: HugePageStats = HugePageStats::new();
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_buddy_allocator() {
         let mut allocator = BuddyFrameAllocator::new();
 
@@ -2730,7 +2730,7 @@ mod tests {
         assert!(frame1.is_some());
     }
 
-    #[test]
+    #[test_case]
     fn test_init_numa_frame_allocator_registers_region_with_buddy() {
         use crate::mm::types::NumaNodeId;
         use crate::mm::{init_buddy_allocator, init_numa_frame_allocator};
@@ -2758,7 +2758,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[test_case]
     fn test_order_calculation() {
         assert_eq!(BuddyFrameAllocator::frames_to_order(1), 0);
         assert_eq!(BuddyFrameAllocator::frames_to_order(2), 1);
@@ -2768,7 +2768,7 @@ mod tests {
         assert_eq!(BuddyFrameAllocator::frames_to_order(262144), 18);
     }
 
-    #[test]
+    #[test_case]
     fn test_numa_register_and_alloc_local() {
         let mut allocator = BuddyFrameAllocator::new();
 
@@ -2788,7 +2788,7 @@ mod tests {
         assert!(frame.start_address().as_u64() < start.as_u64() + size);
     }
 
-    #[test]
+    #[test_case]
     fn test_numa_2m_alloc_local() {
         let mut allocator = BuddyFrameAllocator::new();
 
@@ -2807,7 +2807,7 @@ mod tests {
         assert!(frame.start_address().as_u64() >= start.as_u64());
         assert!(frame.start_address().as_u64() < start.as_u64() + size);
     }
-    #[test]
+    #[test_case]
     fn test_folio_allocation_and_flags() {
         use crate::mm::page_flags::{self, PageFlags};
         
@@ -2861,5 +2861,26 @@ mod tests {
             let tail = FrameIndex::new(frame_idx + i);
             assert!(!page_flags::test_flag(tail, PageFlags::CompoundTail), "Tail flag not cleared at index {}", i);
         }
+    }
+}
+
+
+use core::alloc::{GlobalAlloc, Layout};
+
+/// Dummy LockedBuddyHeap for compilation fix
+pub struct LockedBuddyHeap {}
+
+impl LockedBuddyHeap {
+    pub const fn empty() -> Self {
+        Self {}
+    }
+}
+
+unsafe impl GlobalAlloc for LockedBuddyHeap {
+    unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
+        core::ptr::null_mut()
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
     }
 }

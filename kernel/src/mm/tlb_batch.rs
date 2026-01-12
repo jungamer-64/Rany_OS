@@ -1599,7 +1599,7 @@ pub fn ipl_free_stats() -> IplFreeStats {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_tlb_batch_add() {
         let mut batch = TlbFlushBatch::new();
         
@@ -1611,7 +1611,7 @@ mod tests {
         assert_eq!(batch.count, 2);
     }
     
-    #[test]
+    #[test_case]
     fn test_tlb_batch_threshold() {
         let mut batch = TlbFlushBatch::new();
         
@@ -1620,7 +1620,7 @@ mod tests {
         assert!(batch.flush_all);
     }
     
-    #[test]
+    #[test_case]
     fn test_cpu_tlb_state() {
         let state = CpuTlbState::new();
         
@@ -1634,3 +1634,4 @@ mod tests {
         assert_eq!(state.get_state(), TlbState::Active);
     }
 }
+

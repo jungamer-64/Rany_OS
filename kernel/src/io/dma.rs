@@ -2144,7 +2144,7 @@ pub fn cache_line_size() -> usize {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_typed_dma_buffer() {
         let buffer = TypedDmaBuffer::<u32, CpuOwned>::new(42).expect("Failed to allocate");
 
@@ -2164,7 +2164,7 @@ mod tests {
         assert_eq!(*buffer.as_ref(), 42);
     }
 
-    #[test]
+    #[test_case]
     fn test_typed_dma_slice() {
         let mut slice = TypedDmaSlice::<CpuOwned>::new(4096).expect("Failed to allocate");
 
@@ -2188,3 +2188,4 @@ mod tests {
         assert_eq!(cpu_slice.as_slice()[0], 0xDE);
     }
 }
+

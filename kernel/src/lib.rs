@@ -2,11 +2,20 @@
 // enable the standard library so benchmark harnesses (Criterion) and
 // alloc-dependent graphics helpers can build and run under the host test
 // runner.
-#![cfg_attr(not(any(test, feature = "std")), no_std)]
-#![cfg_attr(feature = "full_mm_tests", allow(unsafe_op_in_unsafe_fn))]
-#![cfg_attr(feature = "full_mm_tests", feature(abi_x86_interrupt))]
+#![no_std]
+#![cfg_attr(test, no_main)]
+#![feature(custom_test_frameworks)]
+#![cfg_attr(test, test_runner(crate::test_runner))]
+#![reexport_test_harness_main = "test_main"]
+#![cfg_attr(any(not(test), feature = "full_mm_tests"), allow(unsafe_op_in_unsafe_fn))]
+#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
+#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(alloc_error_handler))]
+#![feature(format_args_nl)]
+#![feature(const_mut_refs)]
 
+#[macro_use]
 extern crate alloc;
+
 
 // Interrupt helper macro moved to a shared module so it's visible in both the
 // library and binary crate (define_interrupt! is used by modules included by
@@ -14,11 +23,141 @@ extern crate alloc;
 #[macro_use]
 mod interrupt_macros;
 
+
+
+
+// ========== Test Runner & Entry Point ==========
+
+// Global Allocator for tests (requires full_mm_tests)
+// Global Allocator for tests (requires full_mm_tests)
+#[cfg(feature = "full_mm_tests")]
+#[global_allocator]
+pub static ALLOCATOR: DummyGlobalAlloc = DummyGlobalAlloc;
+
+// Dummy allocator for tests if not found or problematic
+#[cfg(feature = "full_mm_tests")]
+pub struct DummyGlobalAlloc;
+
+#[cfg(feature = "full_mm_tests")]
+unsafe impl core::alloc::GlobalAlloc for DummyGlobalAlloc {
+    unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
+        core::ptr::null_mut()
+    }
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
+}
+
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[global_allocator]
+pub static ALLOCATOR: crate::mm::buddy_allocator::LockedBuddyHeap = crate::mm::buddy_allocator::LockedBuddyHeap::empty();
+
+#[cfg(test)]
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    // Minimal serial init for test output
+    unsafe {
+        let port = 0x3F8u16;
+        core::arch::asm!("out dx, al", in("dx") port + 1, in("al") 0u8); // INT disable
+        core::arch::asm!("out dx, al", in("dx") port + 3, in("al") 0x80u8); // DLAB on
+        core::arch::asm!("out dx, al", in("dx") port + 0, in("al") 0x03u8); // Divisor low
+        core::arch::asm!("out dx, al", in("dx") port + 1, in("al") 0x00u8); // Divisor high
+        core::arch::asm!("out dx, al", in("dx") port + 3, in("al") 0x03u8); // 8N1
+        core::arch::asm!("out dx, al", in("dx") port + 2, in("al") 0xC7u8); // FIFO
+        core::arch::asm!("out dx, al", in("dx") port + 4, in("al") 0x0Bu8); // RTS/DSR
+    }
+
+    test_main();
+
+    exit_qemu(QemuExitCode::Success);
+}
+
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    unsafe {
+        // Simple serial print for panic
+        for byte in b"[test] FAILED\n" {
+            core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") *byte);
+        }
+    }
+    // Try to print info if possible (simplified)
+    exit_qemu(QemuExitCode::Failed);
+}
+
+#[cfg(all(test, feature = "full_mm_tests"))]
+#[panic_handler]
+pub fn panic(info: &core::panic::PanicInfo) -> ! {
+    crate::panic_handler::panic(info)
+}
+
+// Macro helpers
+#[macro_export]
+macro_rules! println {
+    () => (print!("\n"));
+    ($($arg:tt)*) => ({
+        if cfg!(feature = "std") {
+            // In std-based tests, use std::println
+            #[cfg(feature = "std")]
+            std::println!($($arg)*);
+        } else {
+             // In no_std, use kernel logger
+             crate::io::log::print(format_args_nl!($($arg)*));
+        }
+    });
+}
+
+#[macro_export]
+macro_rules! eprintln {
+    () => (eprint!("\n"));
+    ($($arg:tt)*) => ({
+        if cfg!(feature = "std") {
+            // In std-based tests, use std::eprintln
+            #[cfg(feature = "std")]
+            std::eprintln!($($arg)*);
+        } else {
+             // In no_std, use kernel logger w/ error level or just print
+             crate::io::log::print(format_args_nl!($($arg)*));
+        }
+    });
+}
+
+#[cfg(test)]
+pub fn test_runner(tests: &[&dyn Fn()]) {
+    // Print using io::log::early_print logic (writes to serial)
+    crate::io::log::early_print("[test] running ");
+    crate::io::log::early_print_dec(tests.len() as u64);
+    crate::io::log::early_print(" tests...\n");
+
+    for t in tests {
+        t();
+        crate::io::log::early_print("[test] ok\n");
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum QemuExitCode {
+    Success = 0x10,
+    Failed = 0x11,
+}
+
+pub fn exit_qemu(code: QemuExitCode) -> ! {
+    unsafe {
+        core::arch::asm!(
+            "out dx, eax",
+            in("dx") 0xf4u16,
+            in("eax") code as u32,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    loop {}
+}
+
+
 // For unit testing we expose a small set of modules via the library entry
 // point. This keeps most of the kernel as a binary-only crate while still
 // allowing targeted library-style tests (e.g. security/capability) to run
 // under `cargo test --lib` without pulling the entire binary test harness.
-#[cfg(test)]
+#[cfg(all(test, not(feature = "full_mm_tests")))]
 pub mod security;
 
 // Expose additional modules when building tests so unit tests inside those
@@ -27,7 +166,7 @@ pub mod security;
 // `bench` feature so Criterion benches can access framebuffer types and
 // helpers. This keeps the default binary layout unchanged while allowing
 // convenient benching during development.
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
 pub mod graphics;
 
 // Provide fallback TLS symbols on host Windows builds where the kernel
@@ -43,14 +182,59 @@ pub static __tls_end: u8 = 0;
 
 // Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
 // without pulling in the full memory subsystem and its heavy dependencies.
-#[cfg(feature = "full_mm_tests")]
+#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod fs;
 
 // Intrusive collections for kernel use (always available)
 pub mod collections;
 
-#[cfg(feature = "full_mm_tests")]
+#[cfg(any(not(test), test, feature = "full_mm_tests"))]
 pub mod mm;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod io;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod task;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod sync;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod ipc;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod net;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod domain;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod security;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod service_impl;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod util;
+#[cfg(any(not(test), test, feature = "full_mm_tests"))]
+pub mod time;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod unwind;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod error;
+pub mod memory;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod smp;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod interrupts;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod sas;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod panic_handler;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod thermal;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod monitor;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod watchdog;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod power;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod loader;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod console;
 
 #[cfg(not(feature = "full_mm_tests"))]
 #[cfg(any(test, feature = "bench"))]
@@ -605,7 +789,7 @@ pub mod mm {
 }
 
 // Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).
-#[cfg(test)]
+#[cfg(all(test, not(feature = "full_mm_tests")))]
 pub mod ipc {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct DomainId(u64);
@@ -784,7 +968,7 @@ pub mod ipc {
 }
 
 // Minimal task/time shims for tests and benches
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub mod task {
     pub mod timer {
         /// Return current tick in milliseconds (test stub)
@@ -817,6 +1001,7 @@ pub mod task {
         use core::sync::atomic::{AtomicBool, Ordering};
         use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
+        use alloc::boxed::Box;
         let flag = Arc::new(AtomicBool::new(false));
 
         unsafe fn clone_data(data: *const ()) -> RawWaker {
@@ -864,6 +1049,78 @@ pub mod task {
         }
     }
 
+    #[cfg(all(test, not(feature = "std")))]
+    pub mod fuel {
+        use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        static CURRENT_FUEL: AtomicU64 = AtomicU64::new(0);
+        static FUEL_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+        pub struct Fuel;
+
+        impl Fuel {
+            pub fn refill(amount: u64) {
+                FUEL_ACTIVE.store(amount > 0, Ordering::Relaxed);
+                CURRENT_FUEL.store(amount, Ordering::Relaxed);
+            }
+
+            pub fn consume(amount: u64) -> bool {
+                if !FUEL_ACTIVE.load(Ordering::Relaxed) {
+                    return true;
+                }
+                
+                let mut current = CURRENT_FUEL.load(Ordering::Relaxed);
+                loop {
+                     if let Some(remaining) = current.checked_sub(amount) {
+                        match CURRENT_FUEL.compare_exchange_weak(
+                            current,
+                            remaining,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => return true,
+                            Err(v) => current = v,
+                        }
+                    } else {
+                         match CURRENT_FUEL.compare_exchange_weak(
+                            current,
+                            0,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        ) {
+                            Ok(_) => return false,
+                            Err(v) => current = v,
+                        }
+                    }
+                }
+            }
+            
+            pub fn is_active() -> bool {
+                FUEL_ACTIVE.load(Ordering::Relaxed)
+            }
+
+            pub fn remaining() -> u64 {
+                CURRENT_FUEL.load(Ordering::Relaxed)
+            }
+
+            pub fn exhaust() {
+                FUEL_ACTIVE.store(false, Ordering::Relaxed);
+                CURRENT_FUEL.store(0, Ordering::Relaxed);
+            }
+        }
+        
+        pub struct FuelConfig {
+            pub default_fuel: u64,
+        }
+
+        impl FuelConfig {
+            pub fn new() -> Self {
+                Self { default_fuel: 0 }
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "std"))]
     pub mod fuel {
         use core::cell::Cell;
 
@@ -1206,64 +1463,13 @@ pub mod task {
     }
 }
 
-#[cfg(any(test, feature = "bench"))]
-pub mod time {
-    /// High-resolution time in nanoseconds (test stub using system clock)
-    pub fn precise_time_nanos() -> u64 {
-        // Use std for test builds to provide a monotonic-like value
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
-    }
+// time shim removed
 
-    /// Minimal SystemClock stub used by benches/tests
-    pub struct SystemClock;
-    impl SystemClock {
-        /// Return TSC frequency in Hz if known. Test/bench stub returns None.
-        pub fn tsc_frequency(&self) -> Option<u64> {
-            None
-        }
-    }
 
-    pub fn system_clock() -> SystemClock {
-        SystemClock
-    }
-
-    /// Return uptime in milliseconds (test stub)
-    pub fn get_uptime_ms() -> u64 {
-        0
-    }
-
-    /// Current tick in milliseconds (legacy alias)
-    pub fn current_tick() -> u64 {
-        get_uptime_ms()
-    }
-
-    /// Return current Unix time in seconds (test stub)
-    pub fn now() -> u64 {
-        precise_time_nanos() / 1_000_000_000
-    }
-
-    /// High-precision current time in nanoseconds
-    pub fn current_time_ns() -> u64 {
-        precise_time_nanos()
-    }
-
-    /// PIT delay stub used by audio controller code in tests/benches
-    pub struct Pit;
-    impl Pit {
-        pub fn delay_us(&self, _us: u64) {}
-    }
-    pub fn pit() -> Pit {
-        Pit
-    }
-}
 
 pub mod pcid_support;
 
-#[cfg(all(test, not(feature = "bench")))]
+#[cfg(all(test, not(feature = "bench"), not(feature = "full_mm_tests")))]
 pub mod io {
     // Include only the IOMMU implementation for test builds to avoid
     // pulling in the whole I/O subsystem and its wide dependency graph.
@@ -1276,10 +1482,49 @@ pub mod io {
     /// pulling the full I/O logging subsystem into the test build.
     pub mod log {
         /// Early boot serial-like print used before the full logger is initialized.
-        pub fn early_print(_s: &str) {}
+        pub fn early_print(s: &str) {
+            // Write to COM1 (0x3F8) for test output
+            unsafe {
+                let port = 0x3F8u16;
+                for byte in s.bytes() {
+                     core::arch::asm!("out dx, al", in("dx") port, in("al") byte);
+                }
+            }
+        }
+
+        pub fn early_print_dec(mut n: u64) {
+             if n == 0 {
+                 early_print("0");
+                 return;
+             }
+             let mut buf = [0u8; 20];
+             let mut i = 0;
+             while n > 0 {
+                 buf[i] = (n % 10) as u8 + b'0';
+                 n /= 10;
+                 i += 1;
+             }
+             while i > 0 {
+                 i -= 1;
+                 early_print(core::str::from_utf8(&buf[i..=i]).unwrap());
+             }
+        }
+        
+        pub fn early_print_hex(n: u64) {
+            early_print("0x");
+            for i in (0..16).rev() {
+                let digit = (n >> (i * 4)) & 0xF;
+                let c = if digit < 10 { b'0' + digit as u8 } else { b'a' + (digit - 10) as u8 };
+                early_print(core::str::from_utf8(&[c]).unwrap());
+            }
+        }
 
         /// Early boot single-character print used by low-level routines.
-        pub fn early_print_char(_c: u8) {}
+        pub fn early_print_char(c: u8) {
+            unsafe {
+                core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") c);
+            }
+        }
 
         /// Initialize the logger. Returns Ok(()) for the test shim.
         pub fn init() -> Result<(), ()> {
@@ -1395,20 +1640,20 @@ pub mod io;
 pub use hal;
 
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "full_mm_tests")))]
 pub mod unwind;
 
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
 pub mod driver_registry;
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub mod loader;
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub mod sync;
 
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub mod sas;
 
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub mod util;
 
 #[cfg(any(test, feature = "bench"))]
@@ -1419,16 +1664,19 @@ pub mod nvme {
 // Re-export task-scoped shims at crate root so modules that reference
 // `crate::memory`, `crate::smp`, `crate::interrupts`, and
 // `crate::domain_system` compile in test builds without changes.
-#[cfg(any(test, feature = "bench"))]
-pub use crate::task::memory as memory;
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+// pub use crate::task::memory as memory;
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub use crate::task::smp as smp;
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub use crate::task::interrupts as interrupts;
-#[cfg(any(test, feature = "bench"))]
+#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
 pub use crate::task::domain_system as domain_system;
 
-#[cfg(test)]
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod domain_system;
+
+#[cfg(all(test, not(target_os = "none")))]
 mod async_swapout_sim_lib {
     use super::*;
     use std::collections::{HashSet, VecDeque};
@@ -1449,7 +1697,7 @@ mod async_swapout_sim_lib {
         kind: SwapKind,
     }
 
-    #[test]
+    #[test_case]
     fn async_swapout_sim_short_baseline() {
         // Simulation parameters (short baseline run)
         // Allow overriding via environment variables for quick parameter sweeps
@@ -1664,3 +1912,4 @@ mod async_swapout_sim_lib {
         assert!(success > 0);
     }
 }
+

@@ -672,7 +672,7 @@ pub fn sigdefault(task_id: TaskId, signal: Signal) -> Result<(), SignalError> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_signal_mask() {
         let mut mask = SignalMask::new();
         assert!(!mask.contains(Signal::SIGTERM));
@@ -684,7 +684,7 @@ mod tests {
         assert!(!mask.contains(Signal::SIGTERM));
     }
 
-    #[test]
+    #[test_case]
     fn test_signal_queue() {
         let queue = SignalQueue::new();
 
@@ -702,3 +702,4 @@ mod tests {
         assert_eq!(dequeued.signal, Signal::SIGTERM);
     }
 }
+

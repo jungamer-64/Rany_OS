@@ -548,8 +548,9 @@ impl<'a, T> Iterator for XArrayIter<'a, T> {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+    use alloc::vec;
 
-    #[test]
+    #[test_case]
     fn test_empty() {
         let xa: XArray<u32> = XArray::new();
         assert!(xa.is_empty());
@@ -558,7 +559,7 @@ mod tests {
         assert_eq!(xa.load(100), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_store_load() {
         let mut xa: XArray<u32> = XArray::new();
         
@@ -572,7 +573,7 @@ mod tests {
         assert_eq!(xa.load(0), Some(&100));
     }
 
-    #[test]
+    #[test_case]
     fn test_sparse() {
         let mut xa: XArray<u32> = XArray::new();
         
@@ -588,7 +589,7 @@ mod tests {
         assert_eq!(xa.load(10000), Some(&3));
     }
 
-    #[test]
+    #[test_case]
     fn test_erase() {
         let mut xa: XArray<u32> = XArray::new();
         
@@ -603,7 +604,7 @@ mod tests {
         assert_eq!(xa.erase(10), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_large_indices() {
         let mut xa: XArray<u32> = XArray::new();
         
@@ -620,7 +621,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_iter() {
         let mut xa: XArray<u32> = XArray::new();
         
@@ -632,7 +633,7 @@ mod tests {
         assert_eq!(collected, vec![(5, 50), (10, 100), (15, 150)]);
     }
 
-    #[test]
+    #[test_case]
     fn test_load_mut() {
         let mut xa: XArray<u32> = XArray::new();
         
@@ -645,7 +646,7 @@ mod tests {
         assert_eq!(xa.load(0), Some(&200));
     }
 
-    #[test]
+    #[test_case]
     fn test_marks() {
         let mut xa: XArray<u32> = XArray::new();
         
@@ -800,7 +801,7 @@ impl Default for XArrayUsize {
 mod tests_usize {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_usize_basic() {
         let mut xa = XArrayUsize::new();
         
@@ -819,7 +820,7 @@ mod tests_usize {
         assert_eq!(xa.len(), 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_usize_marks() {
         let mut xa = XArrayUsize::new();
         
@@ -833,7 +834,7 @@ mod tests_usize {
         assert!(!xa.has_mark(0, XA_MARK_0));
     }
 
-    #[test]
+    #[test_case]
     fn test_usize_zero_value() {
         let mut xa = XArrayUsize::new();
         
@@ -843,3 +844,4 @@ mod tests_usize {
         assert_eq!(xa.len(), 1);
     }
 }
+

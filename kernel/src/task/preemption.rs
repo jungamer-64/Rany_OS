@@ -425,7 +425,7 @@ impl AdaptiveTimeSlice {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_preemption_controller() {
         let controller = PreemptionController::new();
 
@@ -446,7 +446,7 @@ mod tests {
         assert!(!controller.should_preempt());
     }
 
-    #[test]
+    #[test_case]
     fn test_cpu_time_tracker() {
         let mut tracker = CpuTimeTracker::new();
 
@@ -460,3 +460,4 @@ mod tests {
         assert_eq!(tracker.average_run_time(), 15);
     }
 }
+

@@ -385,7 +385,7 @@ static INPUT_BUFFER: IrqMutex<RingBuffer<INPUT_BUFFER_CAPACITY>> = IrqMutex::new
 mod ringbuffer_tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn ringbuffer_push_pop_simple() {
         let mut rb = RingBuffer::<8>::new();
         assert!(rb.is_empty());
@@ -398,7 +398,7 @@ mod ringbuffer_tests {
         assert_eq!(rb.pop_one(), None);
     }
 
-    #[test]
+    #[test_case]
     fn ringbuffer_wrap_and_overflow() {
         let mut rb = RingBuffer::<4>::new();
         assert_eq!(rb.push_bytes(&[1, 2, 3, 4]), 4);
@@ -408,7 +408,7 @@ mod ringbuffer_tests {
         assert_eq!(rb.len(), 3);
         assert_eq!(rb.push_bytes(&[6, 7]), 1);
     }
-    #[test]
+    #[test_case]
     fn push_front_and_restore() {
         let mut rb = RingBuffer::<8>::new();
         rb.push_bytes(&[1, 2, 3]);
@@ -419,14 +419,14 @@ mod ringbuffer_tests {
         assert_eq!(rb.pop_one(), Some(3));
     }
 
-    #[test]
+    #[test_case]
     fn push_front_overflow() {
         let mut rb = RingBuffer::<3>::new();
         assert_eq!(rb.push_bytes(&[1, 2, 3]), 3);
         assert!(!rb.push_front(4));
     }
 
-    #[test]
+    #[test_case]
     fn push_bytes_wrap_and_pop_bulk() {
         // Buffer size 8
         let mut rb = RingBuffer::<8>::new();
@@ -446,7 +446,7 @@ mod ringbuffer_tests {
         assert_eq!(out2, [5, 6, 7, 8, 9, 10, 11]);
     }
 
-    #[test]
+    #[test_case]
     fn per_core_buffer_smoke() {
         // Write to per-core buffer index 0
         let mut guard = PER_CORE_LOG_BUFFERS[0].lock();
@@ -455,7 +455,7 @@ mod ringbuffer_tests {
         assert_eq!(guard.pop_one(), Some(20));
         drop(guard);
     }
-    #[test]
+    #[test_case]
     fn pop_bulk() {
         let mut rb = RingBuffer::<8>::new();
         rb.push_bytes(&[1, 2, 3, 4, 5]);
@@ -466,7 +466,7 @@ mod ringbuffer_tests {
         assert_eq!(rb.len(), 2);
     }
 
-    #[test]
+    #[test_case]
     fn peek_and_advance() {
         let mut rb = RingBuffer::<8>::new();
         assert_eq!(rb.push_bytes(&[1u8, 2, 3, 4, 5]), 5);
@@ -479,7 +479,7 @@ mod ringbuffer_tests {
         assert_eq!(out2, [3, 4, 5]);
     }
 
-    #[test]
+    #[test_case]
     fn aggregate_per_core_to_global_smoke() {
         // Put some data into per-core buffer 0
         let mut g = PER_CORE_LOG_BUFFERS[0].lock();
@@ -494,7 +494,7 @@ mod ringbuffer_tests {
         assert_eq!(n, moved);
     }
 
-    #[test]
+    #[test_case]
     fn kick_serial_tx_aggregates_to_global() {
         // Clear buffers
         LOG_BUFFER.lock().clear();
@@ -1498,3 +1498,17 @@ pub fn set_log_level_from_str(level_str: &str) -> Result<LevelFilter, &'static s
     Err("Invalid log level. Use: off, error, warn, info, debug, trace")
 }
 
+
+
+/// Prints formatted arguments to the serial port.
+/// Used by println!/eprintln! macros in lib.rs
+pub fn print(args: core::fmt::Arguments) {
+    struct SerialWriter;
+    impl core::fmt::Write for SerialWriter {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            KernelLogger::write_raw(s);
+            Ok(())
+        }
+    }
+    let _ = core::fmt::Write::write_fmt(&mut SerialWriter, args);
+}

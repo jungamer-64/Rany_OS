@@ -400,7 +400,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_waker() {
         let atomic_waker = AtomicWaker::new();
         let waker = dummy_waker();
@@ -414,7 +414,7 @@ mod tests {
         assert!(!atomic_waker.has_waker());
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_waker_isr_notify() {
         let atomic_waker = AtomicWaker::new();
         let flag = AtomicBool::new(false);
@@ -443,3 +443,4 @@ mod tests {
         assert!(!atomic_waker.is_wake_pending());
     }
 }
+

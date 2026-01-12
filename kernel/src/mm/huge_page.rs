@@ -632,7 +632,7 @@ pub fn khugepaged_scan_cycle() {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_huge_page_sizes() {
         assert_eq!(HugePageSize::Size2MB.size_bytes(), 2 * 1024 * 1024);
         assert_eq!(HugePageSize::Size1GB.size_bytes(), 1024 * 1024 * 1024);
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(HugePageSize::Size1GB.order(), 18);
     }
     
-    #[test]
+    #[test_case]
     fn test_pool_new() {
         let pool = HugePagePool::new(0);
         assert_eq!(pool.numa_node, 0);
@@ -648,13 +648,13 @@ mod tests {
         assert_eq!(pool.pool_size(HugePageSize::Size1GB), 0);
     }
     
-    #[test]
+    #[test_case]
     fn test_pool_needs_refill() {
         let pool = HugePagePool::new(0);
         assert!(pool.needs_refill(HugePageSize::Size2MB));
     }
     
-    #[test]
+    #[test_case]
     fn test_thp_config_default() {
         let config = ThpConfig::default();
         assert_eq!(config.policy, ThpPolicy::Madvise);
@@ -662,3 +662,4 @@ mod tests {
         assert!(config.khugepaged_enabled);
     }
 }
+

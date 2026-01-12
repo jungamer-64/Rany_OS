@@ -601,7 +601,7 @@ impl PageTablePool {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_pool_basic() {
         let pool = PageTablePool::new(2, 4);
 
@@ -618,3 +618,4 @@ mod tests {
         assert_eq!(stats.misses, 1); // First acquire was a miss
     }
 }
+

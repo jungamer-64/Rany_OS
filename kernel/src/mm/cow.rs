@@ -582,7 +582,7 @@ pub fn cow_debug_info() {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_page_refcount_basic() {
         let phys = 0x100_000; // 1MB
         
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(page_refcount(phys), 1);
     }
     
-    #[test]
+    #[test_case]
     fn test_cow_stats() {
         let stats = cow_stats();
         // 統計が取得できることを確認
@@ -607,3 +607,4 @@ mod tests {
         let _ = stats.breaks;
     }
 }
+

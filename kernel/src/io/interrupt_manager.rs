@@ -1079,10 +1079,11 @@ define_interrupt!(
     }
 );
 
+#[cfg(test)]
 mod tests {
-    
+    use super::*;
 
-    #[test]
+    #[test_case]
     fn test_msi_allocation() {
         let manager = InterruptManager::new();
         manager.init();
@@ -1099,7 +1100,7 @@ mod tests {
         assert!(alloc.vector <= MSI_VECTORS_END);
     }
 
-    #[test]
+    #[test_case]
     fn test_gsi_allocation() {
         let manager = InterruptManager::new();
         manager.init();
@@ -1114,7 +1115,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_vector_free() {
         let manager = InterruptManager::new();
         manager.init();
@@ -1139,7 +1140,7 @@ mod tests {
     // InterruptQueue Tests (設計書 4.2: ロックフリーキュー)
     // ========================================================================
 
-    #[test]
+    #[test_case]
     fn test_interrupt_queue_push_pop() {
         let queue = InterruptQueue::new();
 
@@ -1157,7 +1158,7 @@ mod tests {
         assert_eq!(queue.pop(), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_interrupt_queue_empty() {
         let queue = InterruptQueue::new();
 
@@ -1172,7 +1173,7 @@ mod tests {
         assert!(queue.is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_interrupt_queue_full() {
         let queue = InterruptQueue::new();
 
@@ -1189,7 +1190,7 @@ mod tests {
     // WakerRegistry Tests (設計書 4.2: Waker管理)
     // ========================================================================
 
-    #[test]
+    #[test_case]
     fn test_waker_registry_register_count() {
         let registry = WakerRegistry::new();
 
@@ -1199,3 +1200,4 @@ mod tests {
         // so we just test the count functionality
     }
 }
+

@@ -618,7 +618,7 @@ pub fn create_udp_endpoint(addr: SocketAddr) -> SocketResult<OwnedSocket> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_owned_socket_raii() {
         // OwnedSocketはスコープ終了時に自動クローズ
         {
@@ -628,3 +628,4 @@ mod tests {
         // ソケットは自動的にクローズされている
     }
 }
+

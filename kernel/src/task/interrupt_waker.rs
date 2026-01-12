@@ -445,7 +445,7 @@ mod tests {
         unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_waker() {
         let atomic_waker = AtomicWaker::new();
         let waker = dummy_waker();
@@ -459,7 +459,7 @@ mod tests {
         assert!(!atomic_waker.has_waker());
     }
 
-    #[test]
+    #[test_case]
     fn test_interrupt_source_from_vector() {
         assert_eq!(
             InterruptSource::from_vector(0x20),
@@ -475,3 +475,4 @@ mod tests {
         );
     }
 }
+

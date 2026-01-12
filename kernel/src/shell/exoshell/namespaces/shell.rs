@@ -308,7 +308,7 @@ mod tests {
     use crate::task::process::{process_manager, ProcessId, set_current_process};
     use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
 
-    #[test]
+    #[test_case]
     fn test_spawn_proxy_basic() {
         let caller = process_manager().create(ProcessId::INIT, "p").unwrap();
         set_current_process(caller);
@@ -323,7 +323,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_spawn_with_caps_helper() {
         let caller = process_manager().create(ProcessId::INIT, "caller").unwrap();
         set_current_process(caller);
@@ -344,7 +344,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_proxy_chain_with_cap_and_run() {
         let caller = process_manager().create(ProcessId::INIT, "caller_chain").unwrap();
         set_current_process(caller);
@@ -384,3 +384,4 @@ mod tests {
         }
     }
 }
+

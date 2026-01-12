@@ -1124,7 +1124,7 @@ mod tests {
     use super::*;
 
     /// 空のデータでElfLoader::newがエラーを返すことをテスト
-    #[test]
+    #[test_case]
     fn test_empty_data_returns_error() {
         let result = ElfLoader::new(&[]);
         assert!(result.is_err());
@@ -1136,7 +1136,7 @@ mod tests {
     }
 
     /// 不正なマジックナンバーでエラーを返すことをテスト
-    #[test]
+    #[test_case]
     fn test_invalid_magic_returns_error() {
         // 最小サイズのELFヘッダーサイズ（64バイト）を用意
         let mut data = vec![0u8; 64];
@@ -1154,7 +1154,7 @@ mod tests {
 
     /// MAX_ELF_SIZEを超えるデータでエラーを返すことをテスト
     /// (実際のアロケーションは行わないため、シミュレーションでテスト)
-    #[test]
+    #[test_case]
     fn test_max_size_check() {
         // MAX_ELF_SIZE定数の確認
         assert!(MAX_ELF_SIZE == 512 * 1024 * 1024);
@@ -1164,7 +1164,7 @@ mod tests {
     }
 
     /// 正しいELF64クラスでないデータでエラーを返すことをテスト
-    #[test]
+    #[test_case]
     fn test_wrong_elf_class() {
         let mut data = vec![0u8; 64];
         // 正しいマジックナンバー
@@ -1177,7 +1177,7 @@ mod tests {
     }
 
     /// リトルエンディアンでないデータでエラーを返すことをテスト
-    #[test]
+    #[test_case]
     fn test_wrong_endianness() {
         let mut data = vec![0u8; 64];
         // 正しいマジックナンバー
@@ -1192,7 +1192,7 @@ mod tests {
     }
 
     /// W^Xフラグの定数値をテスト  
-    #[test]
+    #[test_case]
     fn test_wx_flags() {
         assert_eq!(PF_W, 0x2);
         assert_eq!(PF_X, 0x1);
@@ -1204,7 +1204,7 @@ mod tests {
     /// unloading the cell frees it. This test is only compiled when the
     /// `pkey_integration_test` feature is enabled to avoid requiring full
     /// kernel runtime in normal unit tests.
-    #[test]
+    #[test_case]
     #[cfg(feature = "pkey_integration_test")]
     fn test_pkey_alloc_and_free_on_load_unload() {
         use core::mem;
@@ -1255,7 +1255,7 @@ mod tests {
     }
 
     /// Elf64Relaのシンボル/タイプ抽出をテスト
-    #[test]
+    #[test_case]
     fn test_rela_extraction() {
         let rela = Elf64Rela {
             r_offset: 0x1000,
@@ -1267,7 +1267,7 @@ mod tests {
     }
 
     /// Elf64Symbolのバインディング/タイプ抽出をテスト
-    #[test]
+    #[test_case]
     fn test_symbol_extraction() {
         let sym = Elf64Symbol {
             st_name: 0,
@@ -1282,7 +1282,7 @@ mod tests {
     }
 
     /// ASLR オフセット生成のテスト
-    #[test]
+    #[test_case]
     fn test_aslr_offset_generation() {
         // ASLRを有効にして2つのオフセットを生成
         set_aslr_enabled(true);
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     /// ASLR 有効/無効テスト
-    #[test]
+    #[test_case]
     fn test_aslr_enable_disable() {
         set_aslr_enabled(false);
         assert!(!is_aslr_enabled());
@@ -1313,7 +1313,7 @@ mod tests {
     }
 
     /// get_string のゼロコピー戻り値をテスト
-    #[test]
+    #[test_case]
     fn test_get_string_zero_copy() {
         let strtab: &[u8] = b"hello\0world\0";
         // ダミーヘッダー（get_string は header を参照しないためゼロ初期化で OK）
@@ -1330,3 +1330,4 @@ mod tests {
         assert_eq!(s2, "world");
     }
 }
+

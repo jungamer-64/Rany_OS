@@ -81,7 +81,7 @@ impl Default for Sha256 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_sha256_empty() {
         // SHA-256 of empty string
         let hash = compute(b"");
@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(hash, expected);
     }
 
-    #[test]
+    #[test_case]
     fn test_sha256_abc() {
         // SHA-256 of "abc"
         let hash = compute(b"abc");
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(hash, expected);
     }
 
-    #[test]
+    #[test_case]
     fn test_sha256_streaming() {
         let mut hasher = Sha256::new();
         hasher.update(b"hello ");
@@ -116,3 +116,4 @@ mod tests {
         assert_eq!(streaming_hash, direct_hash);
     }
 }
+

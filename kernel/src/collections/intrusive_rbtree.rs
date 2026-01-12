@@ -868,6 +868,7 @@ mod tests {
     use super::*;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+    use alloc::vec;
 
     struct TestEntry {
         link: RBLink,
@@ -909,7 +910,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_empty_tree() {
         let tree: RBTree<TestAdapter> = RBTree::new();
         assert!(tree.is_empty());
@@ -918,7 +919,7 @@ mod tests {
         assert!(tree.last().is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_insert_find() {
         let mut tree: RBTree<TestAdapter> = RBTree::new();
         let mut entry = Box::new(TestEntry::new(42, 100));
@@ -946,7 +947,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_multiple_inserts() {
         let mut tree: RBTree<TestAdapter> = RBTree::new();
         let mut entries: Vec<Box<TestEntry>> = (0..10)
@@ -975,7 +976,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_ordering() {
         let mut tree: RBTree<TestAdapter> = RBTree::new();
         let keys = [50, 30, 70, 20, 40, 60, 80];
@@ -1012,7 +1013,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_duplicate_key() {
         let mut tree: RBTree<TestAdapter> = RBTree::new();
         let mut entry1 = Box::new(TestEntry::new(42, 100));
@@ -1032,7 +1033,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_remove() {
         let mut tree: RBTree<TestAdapter> = RBTree::new();
         let mut entries: Vec<Box<TestEntry>> = (0..5)
@@ -1077,3 +1078,4 @@ mod tests {
         }
     }
 }
+

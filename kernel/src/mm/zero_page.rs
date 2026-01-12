@@ -785,7 +785,7 @@ pub unsafe fn zero_page_with_prefetch(addr: *mut u8, size: usize) {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_choose_zero_strategy() {
         assert_eq!(
             choose_zero_strategy(PAGE_SIZE_4K, false),
@@ -809,7 +809,7 @@ mod tests {
         );
     }
     
-    #[test]
+    #[test_case]
     fn test_zero_policy() {
         set_zero_policy(ZeroPolicy::ZeroOnFree);
         assert_eq!(get_zero_policy(), ZeroPolicy::ZeroOnFree);
@@ -818,3 +818,4 @@ mod tests {
         assert_eq!(get_zero_policy(), ZeroPolicy::ZeroOnIdle);
     }
 }
+

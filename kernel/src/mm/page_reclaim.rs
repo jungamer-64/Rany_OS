@@ -2010,7 +2010,7 @@ mod tests {
     use core::sync::atomic::Ordering;
     use crate::fs::fs_abstraction::FileSystem;
 
-    #[test]
+    #[test_case]
     fn test_get_reclaimable_returns_clean_anonymous() {
         let lru = LruList::new();
         let ts = crate::time::current_time_ns();
@@ -2022,7 +2022,7 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_filebacked_dirty_writeback_and_reclaim() {
         // Initialize page cache
         crate::fs::init_page_cache(64 * 1024);
@@ -2054,7 +2054,7 @@ mod tests {
         assert!(crate::fs::page_cache().stats().writebacks >= writebacks_before + 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_per_frame_writeback_reclaim() {
         // Initialize page cache
         crate::fs::init_page_cache(64 * 1024);
@@ -2092,7 +2092,7 @@ mod tests {
         assert!(crate::mm::frame_backing::get_frame_backing(frame).is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_anonymous_dirty_increments_writeback_skipped() {
         let controller = PageReclaimController::new();
         let ts = crate::time::current_time_ns();
@@ -2803,7 +2803,7 @@ pub fn swap_prefetch_stats() -> SwapPrefetchStats {
 mod tests_late {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_watermarks_calculation() {
         let wm = Watermarks::calculate(100000);
         assert!(wm.high > wm.low);
@@ -2811,7 +2811,7 @@ mod tests_late {
         assert!(wm.min > wm.critical);
     }
     
-    #[test]
+    #[test_case]
     fn test_pressure_level() {
         let wm = Watermarks::calculate(10000);
         
@@ -2821,7 +2821,7 @@ mod tests_late {
         assert_eq!(wm.pressure_level(wm.critical - 1), MemoryPressure::Critical);
     }
     
-    #[test]
+    #[test_case]
     fn test_lru_list_add() {
         let lru = LruList::new();
         let entry = LruPageEntry::new(FrameIndex::new(100), PageType::Anonymous, 0);
@@ -2830,7 +2830,7 @@ mod tests_late {
         assert_eq!(lru.active_count(), 1);
         assert_eq!(lru.inactive_count(), 0);
     }
-    #[test]
+    #[test_case]
     fn test_lru_batch_insertion() {
         use crate::mm::page_flags::{self, PageFlags};
         use alloc::vec::Vec;
@@ -2878,3 +2878,4 @@ mod tests_late {
         assert_eq!(lru.inactive_count(), 1);
     }
 }
+

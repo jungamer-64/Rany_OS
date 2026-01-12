@@ -727,7 +727,7 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_zombie_queue_basic() {
         let queue = ZombieQueue::new();
 
@@ -761,7 +761,7 @@ mod tests {
         assert_eq!(queue.pending_estimate(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_zombie_queue_failed_cleanup() {
         let queue = ZombieQueue::new();
 
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(queue.pending_estimate(), 0); // accurate estimate
     }
 
-    #[test]
+    #[test_case]
     fn test_zombie_queue_probe_limit() {
         let queue = ZombieQueue::new();
 
@@ -797,7 +797,7 @@ mod tests {
         // Some may have been dropped if all probed slots were taken
     }
 
-    #[test]
+    #[test_case]
     fn test_mapping_kind_encoding() {
         use super::super::dma_handle::MappingKind;
         use super::super::types::DeviceId;
@@ -824,7 +824,7 @@ mod tests {
         assert!(matches!(decode_mapping_kind(encoded), MappingKind::Domain));
     }
 
-    #[test]
+    #[test_case]
     fn test_state_transitions() {
         let entry = ZombieEntry::new();
         
@@ -875,3 +875,4 @@ mod tests {
         assert_eq!(state, ZombieState::Empty);
     }
 }
+

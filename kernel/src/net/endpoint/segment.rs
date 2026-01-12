@@ -219,7 +219,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_tcp_segment_builder() {
         // SYNセグメント構築
         let segment = TcpSegmentBuilder::new(12345, 80)
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(flags & tcp_flags::SYN, tcp_flags::SYN);
     }
 
-    #[test]
+    #[test_case]
     fn test_tcp_segment_with_data() {
         let data = alloc::vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
         let segment = TcpSegmentBuilder::new(8080, 80)
@@ -264,8 +264,9 @@ mod tests {
         assert_eq!(&segment[20..], b"Hello");
     }
 
-    #[test]
+    #[test_case]
     fn test_send_tcp_segment_poisoned_stack_drops() {
+        use alloc::vec;
         use crate::sync::set_panicking;
         set_panicking(true);
         let local = SocketAddr::new([127, 0, 0, 1], 12345);
@@ -274,3 +275,4 @@ mod tests {
         set_panicking(false);
     }
 }
+

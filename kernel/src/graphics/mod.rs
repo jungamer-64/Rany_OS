@@ -28,23 +28,23 @@
 #![allow(unused_imports)]
 
 // コア機能モジュール
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod console;
 pub mod font;
 pub mod framebuffer;
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod global;
 pub mod mmio;
 pub mod packer;
 pub mod psf;
 
 // 既存のサブモジュール
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod bsod;
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod compositor;
 pub mod qrcode;
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod window;
 
 // Re-exports from graphic_types
@@ -55,14 +55,14 @@ pub use graphic_types::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 pub use gpu_driver::{DamagedRegion, DisplayMode, GpuError, GpuResult, colors};
 
 // 型の再エクスポート
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub use console::TextConsole;
 pub use font::FontExt;
 pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH, Font};
 pub use framebuffer::Framebuffer;
 
 // グローバル関数の再エクスポート
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub use global::{
     console_print, force_unlock_framebuffer, framebuffer, init, init_console, init_from_boot_info,
     with_framebuffer,

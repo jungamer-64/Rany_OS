@@ -720,13 +720,13 @@ where
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_polling_mode_default() {
         let poller = AdaptivePoller::new();
         assert_eq!(poller.mode(), PollingMode::InterruptDriven);
     }
 
-    #[test]
+    #[test_case]
     fn test_ring_buffer() {
         let mut ring: RingBuffer<u32> = RingBuffer::new(4);
         assert!(ring.is_empty());
@@ -740,7 +740,7 @@ mod tests {
         assert!(ring.is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_network_stats() {
         let stats = NetworkStats::new();
         stats.rx_packets.fetch_add(100, Ordering::Relaxed);
@@ -750,3 +750,4 @@ mod tests {
         assert_eq!(pps, 150);
     }
 }
+

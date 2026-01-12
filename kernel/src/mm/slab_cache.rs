@@ -2456,7 +2456,7 @@ mod tests {
     use super::*;
     use crate::sync::set_panicking;
 
-    #[test]
+    #[test_case]
     fn test_per_core_alloc_poisoned_fallbacks_to_global() {
         // Initialize per-core caches for CPU 0
         init_per_core_caches(1);
@@ -2475,7 +2475,7 @@ mod tests {
         unsafe { per_core_dealloc(0, ptr, layout) };
     }
 
-    #[test]
+    #[test_case]
     fn test_slab_cache() {
         let mut cache = SlabCache::new(64);
 
@@ -2501,3 +2501,4 @@ mod tests {
         assert_eq!(stats.dealloc_count, 2);
     }
 }
+

@@ -1235,7 +1235,7 @@ pub fn current_asid() -> u64 {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_protection_conversion() {
         let prot = Protection::READ_WRITE;
         let flags = prot.to_page_flags();
@@ -1243,7 +1243,7 @@ mod tests {
         assert!(flags.bits() & PageFlags::WRITABLE != 0);
     }
     
-    #[test]
+    #[test_case]
     fn test_region_contains() {
         let region = MemoryRegion::new(
             VirtAddr::new(0x1000),
@@ -1258,3 +1258,4 @@ mod tests {
         assert!(!region.contains(VirtAddr::new(0x0FFF)));
     }
 }
+

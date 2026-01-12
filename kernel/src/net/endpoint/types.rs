@@ -243,7 +243,7 @@ impl AcceptedConnection {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_socket_fd() {
         let fd1 = SocketFd::from_raw(1);
         let fd2 = SocketFd::from_raw(2);
@@ -253,7 +253,7 @@ mod tests {
         assert!(fd1 < fd2);
     }
 
-    #[test]
+    #[test_case]
     fn test_socket_addr() {
         let addr = SocketAddr::new([192, 168, 1, 1], 8080);
         assert_eq!(addr.ip, [192, 168, 1, 1]);
@@ -264,3 +264,4 @@ mod tests {
         assert_eq!(localhost.port, 3000);
     }
 }
+

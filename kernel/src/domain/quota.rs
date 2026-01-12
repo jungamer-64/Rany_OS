@@ -666,7 +666,7 @@ pub fn init() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_cpu_quota() {
         let quota = CpuQuota::new(50, 100); // 50%, 100ms period
 
@@ -679,7 +679,7 @@ mod tests {
         assert!(quota.is_exceeded());
     }
 
-    #[test]
+    #[test_case]
     fn test_memory_quota() {
         let quota = MemoryQuota::new(1); // 1MB
 
@@ -694,7 +694,7 @@ mod tests {
         assert!(quota.try_allocate(512 * 1024).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_oom_victim_selection() {
         let mut quotas = BTreeMap::new();
 
@@ -715,3 +715,4 @@ mod tests {
         assert_eq!(victim.domain_id, DomainId::new(2));
     }
 }
+

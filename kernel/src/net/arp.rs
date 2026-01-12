@@ -667,7 +667,7 @@ impl ArpProcessor {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_arp_cache() {
         let cache = ArpCache::new();
         let ip = Ipv4Address::from_octets(192, 168, 1, 1);
@@ -684,7 +684,7 @@ mod tests {
         assert!(cache.lookup(ip, ARP_CACHE_TIMEOUT + 200).is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_arp_packet() {
         let mut buffer = [0u8; ArpPacket::SIZE];
         let packet = crate::util::get_mut_ref::<ArpPacket>(&mut buffer, 0)
@@ -703,3 +703,4 @@ mod tests {
         assert_eq!(packet.target_ip(), target_ip);
     }
 }
+

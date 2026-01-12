@@ -29,7 +29,7 @@ pub fn virt_to_phys(virt: VirtAddr) -> PhysAddr {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_address_conversion() {
         crate::mm::higher_half::init(0xFFFF_8000_0000_0000);
         let phys = PhysAddr::new(0x1000);
@@ -38,3 +38,4 @@ mod tests {
         assert_eq!(phys, phys2);
     }
 }
+

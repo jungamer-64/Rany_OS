@@ -698,7 +698,7 @@ mod tests {
     use super::*;
     use crate::sync::set_panicking;
 
-    #[test]
+    #[test_case]
     fn test_primary_server_poisoned_returns_none() {
         let client = DnsClient::new(100);
         {
@@ -710,3 +710,4 @@ mod tests {
         set_panicking(false);
     }
 }
+

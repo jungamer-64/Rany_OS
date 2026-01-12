@@ -1,7 +1,7 @@
 use super::*;
 use crate::graphics::image::Image;
 
-#[test]
+#[test_case]
 fn test_draw_image_32bit_bgra_backbuffer() {
     let width = 4u32;
     let height = 4u32;
@@ -32,7 +32,7 @@ fn test_draw_image_32bit_bgra_backbuffer() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_image_24bit_bgr_backbuffer() {
     let width = 3u32;
     let height = 2u32;
@@ -61,8 +61,9 @@ fn test_draw_image_24bit_bgr_backbuffer() {
     }
 }
 
-#[test]
+#[test_case]
 #[ignore]
+#[cfg(feature = "std")]
 fn bench_draw_image_bulk() {
     use std::time::Instant;
     let width = 800u32;
@@ -90,8 +91,9 @@ fn bench_draw_image_bulk() {
     log::info!("bench_draw_image_bulk: {:?}", elapsed);
 }
 
-#[test]
+#[test_case]
 #[ignore]
+#[cfg(feature = "std")]
 fn bench_draw_image_24bit_bulk() {
     use std::time::Instant;
     let width = 800u32;
@@ -119,8 +121,9 @@ fn bench_draw_image_24bit_bulk() {
     log::info!("bench_draw_image_24bit_bulk: {:?}", elapsed);
 }
 
-#[test]
+#[test_case]
 #[ignore]
+#[cfg(feature = "std")]
 fn bench_draw_image_rgba_bulk() {
     use std::time::Instant;
     let width = 800u32;
@@ -148,8 +151,9 @@ fn bench_draw_image_rgba_bulk() {
     log::info!("bench_draw_image_rgba_bulk: {:?}", elapsed);
 }
 
-#[test]
+#[test_case]
 #[ignore]
+#[cfg(feature = "std")]
 fn bench_draw_hline_bulk() {
     use std::time::Instant;
     let width = 1920u32;
@@ -180,7 +184,7 @@ fn bench_draw_hline_bulk() {
     log::info!("bench_draw_hline_bulk: {:?}", elapsed);
 }
 
-#[test]
+#[test_case]
 fn test_write_bgr_run_small_mmio() {
     let width = 10u32;
     let height = 1u32;
@@ -208,7 +212,7 @@ fn test_write_bgr_run_small_mmio() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_write_bgr_run_large_mmio() {
     let width = 80u32;
     let height = 1u32;
@@ -238,7 +242,7 @@ fn test_write_bgr_run_large_mmio() {
     assert_eq!(vram[last_off + 2], 1);
 }
 
-#[test]
+#[test_case]
 fn test_write_bgr_run_large_mmio_full() {
     // Verify full buffer contents for a large BGR run to catch alignment
     // and pattern rotation bugs in the direct-MMIO path.
@@ -267,7 +271,7 @@ fn test_write_bgr_run_large_mmio_full() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_write_bgr_run_large_mmio_full_unaligned() {
     // Starting at an unaligned byte offset should still produce the
     // canonical repeating BGR pattern across the buffer.
@@ -298,7 +302,7 @@ fn test_write_bgr_run_large_mmio_full_unaligned() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_write_bgr_run_small_mmio_pairs_aligned() {
     // Test pair-based fast-path when address is 4-byte aligned
     let mut vram = vec![0u8; 32];
@@ -325,7 +329,7 @@ fn test_write_bgr_run_small_mmio_pairs_aligned() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_write_bgr_run_small_mmio_generic_unaligned() {
     // Non-4-byte aligned address should fall back to per-byte writes
     let mut vram = vec![0u8; 32];
@@ -358,7 +362,7 @@ pub fn _test_get_packer_mode() -> u8 {
     PACKER_MODE.load(Ordering::Relaxed)
 }
 
-#[test]
+#[test_case]
 #[cfg(feature = "std")]
 fn test_packer_env_override() {
     // Ensure RANY_PACKER override sets the PACKER_MODE
@@ -370,7 +374,7 @@ fn test_packer_env_override() {
     unsafe { std::env::remove_var("RANY_PACKER"); }
 }
 
-#[test]
+#[test_case]
 #[cfg(not(feature = "std"))]
 fn test_packer_env_override_no_std() {
     // When std is not available we at least ensure packer runs without
@@ -382,8 +386,9 @@ fn test_packer_env_override_no_std() {
     assert!(dst.len() == 1024);
 }
 
-#[test]
+#[test_case]
 #[ignore]
+#[cfg(feature = "std")]
 fn bench_draw_text_bulk() {
     use std::time::Instant;
     let width = 800u32;
@@ -415,7 +420,7 @@ fn bench_draw_text_bulk() {
     log::info!("bench_draw_text_bulk: {:?}", elapsed);
 }
 
-#[test]
+#[test_case]
 fn test_draw_hline_32bit_backbuffer() {
     let width = 10u32;
     let height = 6u32;
@@ -534,7 +539,7 @@ fn test_draw_hline_32bit_backbuffer() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_text_space_32bit_backbuffer() {
     let width = 16u32;
     let height = 16u32;
@@ -570,7 +575,7 @@ fn test_draw_text_space_32bit_backbuffer() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_line_matches_naive_32bit_backbuffer() {
     let width = 16u32;
     let height = 16u32;
@@ -646,7 +651,7 @@ fn test_draw_line_matches_naive_32bit_backbuffer() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_line_matches_naive_24bit_backbuffer() {
     let width = 16u32;
     let height = 16u32;
@@ -711,7 +716,7 @@ fn test_draw_line_matches_naive_24bit_backbuffer() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_text_space_24bit_backbuffer() {
     let width = 16u32;
     let height = 16u32;
@@ -746,7 +751,7 @@ fn test_draw_text_space_24bit_backbuffer() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_image_32bit_mmio() {
     let width = 4u32;
     let height = 4u32;
@@ -777,7 +782,7 @@ fn test_draw_image_32bit_mmio() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_image_24bit_mmio() {
     let width = 3u32;
     let height = 2u32;
@@ -807,7 +812,7 @@ fn test_draw_image_24bit_mmio() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_image_32bit_mmio_rgba() {
     let width = 4u32;
     let height = 4u32;
@@ -838,7 +843,7 @@ fn test_draw_image_32bit_mmio_rgba() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_write_bytes_mmio_alignment() {
     // Ensure write_bytes_mmio uses u64 writes when destination is 8-byte aligned
     let width = 8u32;
@@ -887,7 +892,7 @@ fn test_write_bytes_mmio_alignment() {
     assert_eq!(mem[start + 8], 1);
 }
 
-#[test]
+#[test_case]
 fn test_write_bgr_run_large() {
     // Ensure large runs of a single color are written correctly
     let width = 1024u32;
@@ -918,7 +923,7 @@ fn test_write_bgr_run_large() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_write_opaque_run_24bit_even_odd_mmio() {
     use crate::graphics::image::Image;
 
@@ -980,7 +985,7 @@ fn test_write_opaque_run_24bit_even_odd_mmio() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_pack_rgba_to_bgra_basic() {
     // Build a simple RGBA pattern and verify BGRA result matches expected
     let mut src = Vec::new();
@@ -1004,13 +1009,14 @@ fn test_pack_rgba_to_bgra_basic() {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
+#[cfg(target_arch = "x86_64")]
+#[test_case]
 fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
     // Only run the detailed SSSE3 check when the feature is available
-    if !std::is_x86_feature_detected!("ssse3") {
-        return;
-    }
+    #[cfg(feature = "std")]
+    if !std::is_x86_feature_detected!("ssse3") { return; }
+    #[cfg(not(feature = "std"))]
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 { return; }
 
     // Test multiple sizes including non-16 multiples to exercise tail path
     for len in [4usize, 12, 16, 20, 48, 64, 100].iter() {
@@ -1030,13 +1036,14 @@ fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
+#[cfg(target_arch = "x86_64")]
+#[test_case]
 fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
     // Only run AVX2 check when available
-    if !std::is_x86_feature_detected!("avx2") {
-        return;
-    }
+    #[cfg(feature = "std")]
+    if !std::is_x86_feature_detected!("avx2") { return; }
+    #[cfg(not(feature = "std"))]
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 { return; }
 
     for len in [4usize, 12, 16, 20, 48, 64, 100].iter() {
         let mut src = vec![0u8; *len * 4];
@@ -1055,13 +1062,14 @@ fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
+#[cfg(target_arch = "x86_64")]
+#[test_case]
 fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
     // Only run AVX2 check when available
-    if !std::is_x86_feature_detected!("avx2") {
-        return;
-    }
+    #[cfg(feature = "std")]
+    if !std::is_x86_feature_detected!("avx2") { return; }
+    #[cfg(not(feature = "std"))]
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 { return; }
 
     // 8 pixels (24 bytes) input
     let len = 8usize;
@@ -1086,12 +1094,13 @@ fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
     assert_eq!(dst_simd, dst_scalar);
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[test]
+#[cfg(target_arch = "x86_64")]
+#[test_case]
 fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
-    if !std::is_x86_feature_detected!("ssse3") {
-        return;
-    }
+    #[cfg(feature = "std")]
+    if !std::is_x86_feature_detected!("ssse3") { return; }
+    #[cfg(not(feature = "std"))]
+    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 { return; }
 
     let len = 8usize;
     let mut src = vec![0u8; len * 4];
@@ -1115,7 +1124,7 @@ fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[test]
+#[test_case]
 fn test_pack_rgba_to_bgra_neon_matches_scalar() {
     // Only run NEON check when available (bench/test builds)
     if !std::is_aarch64_feature_detected!("neon") {
@@ -1140,7 +1149,7 @@ fn test_pack_rgba_to_bgra_neon_matches_scalar() {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[test]
+#[test_case]
 fn test_pack_rgba_to_bgr24_neon_matches_scalar() {
     // Only run NEON check when available
     if !std::is_aarch64_feature_detected!("neon") {
@@ -1169,7 +1178,7 @@ fn test_pack_rgba_to_bgr24_neon_matches_scalar() {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[test]
+#[test_case]
 fn test_pack_rgba_to_bgr24_neon_matches_scalar_rgb() {
     if !std::is_aarch64_feature_detected!("neon") {
         return;
@@ -1197,7 +1206,7 @@ fn test_pack_rgba_to_bgr24_neon_matches_scalar_rgb() {
     assert_eq!(dst_simd, dst_scalar);
 }
 
-#[test]
+#[test_case]
 fn test_pack_rgba_to_bgra_scalar_random() {
     // Randomized verification to guard against bit-twiddling regressions
     let mut src = vec![0u8; 256];
@@ -1222,7 +1231,7 @@ fn test_pack_rgba_to_bgra_scalar_random() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_draw_image_bgra_stream_matches_backbuffer() {
     use crate::graphics::image::Image;
 
@@ -1267,7 +1276,7 @@ fn test_draw_image_bgra_stream_matches_backbuffer() {
     assert_eq!(mem_back, mem_mmio);
 }
 
-#[test]
+#[test_case]
 fn test_fill_rect_32bit_mmio() {
     let width = 8u32;
     let height = 8u32;
@@ -1300,7 +1309,7 @@ fn test_fill_rect_32bit_mmio() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_dirty_rect_tracking() {
     let width = 100u32;
     let height = 100u32;
@@ -1335,7 +1344,7 @@ fn test_dirty_rect_tracking() {
     assert!(fb.dirty_rect().is_none());
 }
 
-#[test]
+#[test_case]
 fn test_dirty_rect_flush_only_marked_area() {
     // Verify that flush_dirty_area only copies the marked region
     let width = 10u32;
@@ -1394,7 +1403,7 @@ fn test_dirty_rect_flush_only_marked_area() {
     assert_eq!(vram[0], 0);
 }
 
-#[test]
+#[test_case]
 fn test_draw_text_partial_left_clip_32bit_backbuffer() {
     // Draw a '!' partially off the left edge and ensure visible pixels
     // come from the glyph foreground where expected.
@@ -1447,7 +1456,7 @@ fn test_draw_text_partial_left_clip_32bit_backbuffer() {
     assert_eq!(c2.red, bg.red);
 }
 
-#[test]
+#[test_case]
 fn test_draw_image_24bit_rgb888_backbuffer() {
     use crate::graphics::image::Image;
 
@@ -1499,7 +1508,7 @@ fn test_draw_image_24bit_rgb888_backbuffer() {
     assert_eq!(p2.blue, 255);
 }
 
-#[test]
+#[test_case]
 fn test_draw_hline_24bit_rgb888_mmio() {
     let width = 10u32;
     let height = 2u32;
@@ -1530,4 +1539,5 @@ fn test_draw_hline_24bit_rgb888_mmio() {
         assert_eq!(vram[off + 2], 255, "Pixel {} B", i);
     }
 }
+
 

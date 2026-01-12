@@ -44,7 +44,7 @@ pub fn pop_woken_task() -> Option<TaskId> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_waker_wake() {
         let task_id = TaskId::new();
         let waker = create_waker(task_id);
@@ -56,3 +56,4 @@ mod tests {
         assert_eq!(pop_woken_task(), Some(task_id));
     }
 }
+

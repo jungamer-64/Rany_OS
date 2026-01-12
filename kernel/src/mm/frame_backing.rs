@@ -81,7 +81,7 @@ mod tests {
     use super::*;
     use crate::mm::types::FrameIndex;
 
-    #[test]
+    #[test_case]
     fn test_track_and_get_untrack() {
         let f = FrameIndex::new(12345);
         assert!(get_frame_backing(f).is_none());
@@ -96,3 +96,4 @@ mod tests {
         assert!(get_frame_backing(f).is_none());
     }
 }
+

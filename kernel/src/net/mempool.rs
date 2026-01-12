@@ -8,6 +8,7 @@ use crate::domain_system::DomainId;
 use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use x86_64::PhysAddr;
@@ -625,7 +626,7 @@ mod tests {
     use crate::sync::set_panicking;
     use core::sync::atomic::Ordering;
 
-    #[test]
+    #[test_case]
     fn test_mempool_poisoned_alloc_fails() {
         let pool = Box::leak(Box::new(Mempool::new(1)));
         pool.init(1).expect("init should succeed");
@@ -643,7 +644,7 @@ mod tests {
     }
 
 
-    #[test]
+    #[test_case]
     fn test_mempool_stats() {
         let pool = Box::leak(Box::new(Mempool::new(1)));
         let stats = pool.stats();
@@ -651,3 +652,4 @@ mod tests {
         assert_eq!(stats.free_buffers, 0);
     }
 }
+

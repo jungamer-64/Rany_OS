@@ -817,14 +817,14 @@ impl AllocFlags {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_migrate_type_fallback() {
         let fallbacks = MigrateType::Movable.fallback_order();
         assert!(fallbacks.contains(&MigrateType::Reclaimable));
         assert!(fallbacks.contains(&MigrateType::Unmovable));
     }
     
-    #[test]
+    #[test_case]
     fn test_frame_to_color() {
         assert_eq!(frame_to_color(0), 0);
         assert_eq!(frame_to_color(64), 0);
@@ -832,7 +832,7 @@ mod tests {
         assert_eq!(frame_to_color(63), 63);
     }
     
-    #[test]
+    #[test_case]
     fn test_page_flags() {
         let mut flags = PageFlags::NONE;
         assert!(!flags.contains(PageFlags::FREE));
@@ -914,3 +914,4 @@ impl LockedFreeListBuddyAllocator {
         self.0.lock().total_count()
     }
 }
+

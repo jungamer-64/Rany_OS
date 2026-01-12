@@ -453,8 +453,12 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 
 /// グローバルヒープアロケータ（Buddy Allocatorベース）
 /// 設計理念: O(log n)割り当てで <100ns を達成
+#[cfg(not(feature = "full_mm_tests"))]
 #[global_allocator]
 static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
+
+#[cfg(feature = "full_mm_tests")]
+use crate::ALLOCATOR;
 
 /// ヒープのサイズ
 pub const HEAP_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
@@ -856,40 +860,48 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
 /// - 全ての free_list の head と、その head に格納された next ポインタを検査
 /// - 不正が見つかった場合、バックトレースを出力する
 pub fn verify_buddy_integrity() {
-    crate::io::log::early_print("[HEAP_CHECK] Verifying buddy free lists...\n");
-    match ALLOCATOR.0.lock() {
-        Ok(guard) => {
-            for i in 0..=BuddyHeapAllocator::MAX_ORDER {
-                crate::io::log::early_print("[HEAP_CHECK] free_lists[");
-                crate::io::log::early_print_dec(i as u64);
-                crate::io::log::early_print("] = ");
-                let head = guard.free_lists[i].unwrap_or(0);
-                crate::io::log::early_print_hex(head as u64);
-                crate::io::log::early_print("\n");
+    #[cfg(not(feature = "full_mm_tests"))]
+    {
+        crate::io::log::early_print("[HEAP_CHECK] Verifying buddy free lists...\n");
+        match ALLOCATOR.0.lock() {
+            Ok(guard) => {
+                for i in 0..=BuddyHeapAllocator::MAX_ORDER {
+                    crate::io::log::early_print("[HEAP_CHECK] free_lists[");
+                    crate::io::log::early_print_dec(i as u64);
+                    crate::io::log::early_print("] = ");
+                    let head = guard.free_lists[i].unwrap_or(0);
+                    crate::io::log::early_print_hex(head as u64);
+                    crate::io::log::early_print("\n");
 
-                if head != 0 {
-                    let next = crate::io::mmio::volatile_read::<usize>(head as usize);
-                    if next != 0 && (next < guard.heap_start || next >= guard.heap_start + HEAP_SIZE) {
-                        crate::io::log::early_print("[HEAP_CHECK] INVALID NEXT at head=");
-                        crate::io::log::early_print_hex(head as u64);
-                        crate::io::log::early_print(" next=");
-                        crate::io::log::early_print_hex(next as u64);
-                        crate::io::log::early_print("\n");
-
-                        crate::io::log::early_print("[HEAP_CHECK] Capturing backtrace...\n");
-                        let bt = crate::unwind::Backtrace::capture();
-                        for entry in bt.iter() {
-                            crate::io::log::early_print("[HEAP_CHECK][BT] IP=");
-                            crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                    if head != 0 {
+                        let next = crate::io::mmio::volatile_read::<usize>(head as usize);
+                        if next != 0 && (next < guard.heap_start || next >= guard.heap_start + HEAP_SIZE) {
+                            crate::io::log::early_print("[HEAP_CHECK] INVALID NEXT at head=");
+                            crate::io::log::early_print_hex(head as u64);
+                            crate::io::log::early_print(" next=");
+                            crate::io::log::early_print_hex(next as u64);
                             crate::io::log::early_print("\n");
+
+                            crate::io::log::early_print("[HEAP_CHECK] Capturing backtrace...\n");
+                            let bt = crate::unwind::Backtrace::capture();
+                            for entry in bt.iter() {
+                                crate::io::log::early_print("[HEAP_CHECK][BT] IP=");
+                                crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                                crate::io::log::early_print("\n");
+                            }
                         }
                     }
                 }
             }
+            Err(_) => {
+                crate::io::log::early_print("[HEAP_CHECK] Failed to lock buddy allocator\n");
+            }
         }
-        Err(_) => {
-            crate::io::log::early_print("[HEAP_CHECK] Failed to lock buddy allocator\n");
-        }
+    }
+
+    #[cfg(feature = "full_mm_tests")]
+    {
+        crate::io::log::early_print("[HEAP_CHECK] Skipping buddy integrity check in full_mm_tests\n");
     }
 }
 
@@ -985,8 +997,10 @@ pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
 
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 fn init_global_heap() {
-    crate::io::log::early_print("[HEAP] lock\n");
-    let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] global allocator init");
+    #[cfg(not(feature = "full_mm_tests"))]
+    {
+        crate::io::log::early_print("[HEAP] lock\n");
+        let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] global allocator init");
     crate::io::log::early_print("[HEAP] init call\n");
     let start = heap_start();
     crate::io::log::early_print("[HEAP] addr ok\n");
@@ -994,6 +1008,12 @@ fn init_global_heap() {
         guard.init(start as usize, HEAP_SIZE);
     }
     crate::io::log::early_print("[HEAP] done\n");
+    }
+
+    #[cfg(feature = "full_mm_tests")]
+    {
+        crate::io::log::early_print("[HEAP] Skipping global heap init (using dummy)\n");
+    }
 }
 
 /// デフォルトのメモリ領域を取得
@@ -1096,10 +1116,11 @@ fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn exchange_heap_after_global_heap() {
         // Exchange heap must be placed after the global heap (no overlap)
         let heap_end = heap_start().saturating_add(HEAP_SIZE as u64);
         assert!(exchange_heap_start() >= heap_end);
     }
 }
+

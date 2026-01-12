@@ -469,7 +469,7 @@ impl VlanTag {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_mac_address() {
         let mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
         assert!(!mac.is_broadcast());
@@ -479,10 +479,11 @@ mod tests {
         assert!(MacAddress::BROADCAST.is_multicast());
     }
 
-    #[test]
+    #[test_case]
     fn test_ether_type() {
         assert_eq!(EtherType::from(0x0800), EtherType::Ipv4);
         assert_eq!(EtherType::from(0x0806), EtherType::Arp);
         assert_eq!(u16::from(EtherType::Ipv4), 0x0800);
     }
 }
+

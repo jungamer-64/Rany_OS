@@ -153,7 +153,7 @@ impl InterruptRemapper for IommuController {
     /// Initialize the Interrupt Remapping Table
     fn init_interrupt_remapping(&mut self, size_log2: u8) -> Result<(), IommuError> {
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] init_interrupt_remapping enter: size_log2={}",
             size_log2
         );
@@ -163,7 +163,7 @@ impl InterruptRemapper for IommuController {
         }
 
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] interrupt_remap_table.is_locked() before lock = {}",
             self.interrupt_remap_table.is_locked()
         );
@@ -171,7 +171,7 @@ impl InterruptRemapper for IommuController {
         let guard = match self.interrupt_remap_table.lock() {
             Ok(g) => {
                 #[cfg(test)]
-                eprintln!("[test][IOMMU] interrupt_remap_table.lock() succeeded (not poisoned)");
+                log::info!("[test][IOMMU] interrupt_remap_table.lock() succeeded (not poisoned)");
                 g
             }
             Err(poisoned) => {
@@ -220,7 +220,7 @@ impl InterruptRemapper for IommuController {
         ) {
             Ok(_) => {
                 #[cfg(test)]
-                eprintln!("[test][IOMMU] GSTS.IRTPS set - continue");
+                log::info!("[test][IOMMU] GSTS.IRTPS set - continue");
             }
             Err(IommuError::Timeout) => {
                 log::warn!(

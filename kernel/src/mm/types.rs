@@ -502,27 +502,27 @@ impl AddressUnit for u64 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_frame_index_basic() {
         let frame = FrameIndex::new(100);
         assert_eq!(frame.as_usize(), 100);
         assert_eq!(frame.to_phys_addr(), 100 * 4096);
     }
 
-    #[test]
+    #[test_case]
     fn test_frame_index_from_phys_addr() {
         let frame = FrameIndex::from_phys_addr(0x10000);
         assert_eq!(frame.as_usize(), 16); // 0x10000 / 4096 = 16
     }
 
-    #[test]
+    #[test_case]
     fn test_frame_index_word_and_bit() {
         let frame = FrameIndex::new(65);
         assert_eq!(frame.word_index(), 1); // 65 / 64 = 1
         assert_eq!(frame.bit_index(), 1);  // 65 % 64 = 1
     }
 
-    #[test]
+    #[test_case]
     fn test_frame_index_buddy() {
         // order=0 (1ページブロック)
         assert_eq!(FrameIndex::new(0).buddy(0).as_usize(), 1);
@@ -537,7 +537,7 @@ mod tests {
         assert_eq!(FrameIndex::new(4).buddy(2).as_usize(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_frame_index_align_down() {
         // order=2 (4ページ境界)
         assert_eq!(FrameIndex::new(0).align_down(2).as_usize(), 0);
@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(FrameIndex::new(7).align_down(2).as_usize(), 4);
     }
 
-    #[test]
+    #[test_case]
     fn test_frame_index_align_up() {
         // order=2 (4ページ境界)
         assert_eq!(FrameIndex::new(0).align_up(2).as_usize(), 0);
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(FrameIndex::new(5).align_up(2).as_usize(), 8);
     }
 
-    #[test]
+    #[test_case]
     fn test_frame_index_arithmetic() {
         let a = FrameIndex::new(10);
         let b = FrameIndex::new(5);
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(a - b, 5); // FrameIndex同士の減算はusize
     }
 
-    #[test]
+    #[test_case]
     fn test_numa_node_id() {
         let node = NumaNodeId::new(3);
         assert_eq!(node.as_u8(), 3);
@@ -576,13 +576,13 @@ mod tests {
         assert!(!invalid.is_valid());
     }
 
-    #[test]
+    #[test_case]
     fn test_address_unit_frame_index() {
         let frame: FrameIndex = AddressUnit::from_word_and_bit(1, 5);
         assert_eq!(frame.as_usize(), 69); // 1 * 64 + 5 = 69
     }
 
-    #[test]
+    #[test_case]
     fn test_address_unit_u64() {
         let addr: u64 = AddressUnit::from_word_and_bit(1, 5);
         assert_eq!(addr, 69 * 4096); // (1 * 64 + 5) * 4096
@@ -842,4 +842,5 @@ impl<T, const N: usize> core::ops::IndexMut<usize> for FixedVec<T, N> {
         self.get_mut(index).expect("FixedVec index out of bounds")
     }
 }
+
 

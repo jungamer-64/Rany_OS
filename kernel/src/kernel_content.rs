@@ -186,6 +186,7 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
 
 #[cfg(not(test))]
 #[repr(align(4096))]
+#[allow(dead_code)]
 struct KernelStack([u8; 4096 * 20]);
 
 #[unsafe(link_section = ".bss")]

@@ -681,14 +681,14 @@ pub static BENCHMARK_STATS: BenchmarkStats = BenchmarkStats::new();
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_tsc_timer() {
         let timer = TscTimer::new();
         let elapsed = timer.elapsed_ns();
         assert!(elapsed >= 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_benchmark_runner() {
         let mut runner = BenchmarkRunner::new();
         let result = runner.bench("test_bench", 100, || {
@@ -697,3 +697,4 @@ mod tests {
         assert_eq!(result.iterations, 100);
     }
 }
+

@@ -745,7 +745,7 @@ pub enum RegistryError {
 // Tests / Micro-benchmarks
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -757,7 +757,7 @@ mod tests {
     /// Measurement sweep for HeapRegistry: varies shard count and thread counts
     /// and prints CSV-style metrics for analysis. This test is intentionally
     /// placed under the `tests` module so it can reuse the `reset/get` imports.
-    #[test]
+    #[test_case]
     fn test_heap_registry_shard_sweep() {
         let configs = [
             (32usize, 8usize, 200usize, 50u64),
@@ -829,7 +829,7 @@ mod tests {
 
     /// 簡易コンテンションテスト：1スレッドがシャードを長時間保持し、別スレッドが同シャードにアクセスする。
     /// PoisonLock の計測 (コンテンション検知) が記録されることを確認する。
-    #[test]
+    #[test_case]
     fn test_shard_lock_contention() {
         // テスト用に計測値をリセット
         reset_lock_metrics();
@@ -871,7 +871,7 @@ mod tests {
 
     /// マルチスレッド負荷テスト：複数スレッドで同一または近傍シャードに対して登録/解除を繰り返す。
     /// 実行時間が長くなりすぎないように控えめなループ回数を採用。
-    #[test]
+    #[test_case]
     fn test_heap_registry_multithreaded_stress() {
         reset_lock_metrics();
 
@@ -925,7 +925,7 @@ mod tests {
         assert!(m.contention_events > 0, "expected some contention events");
     }
 
-    #[test]
+    #[test_case]
     fn test_register_spanning_shards() {
         reset_lock_metrics();
 
@@ -964,7 +964,7 @@ mod tests {
         assert!(!registry.check_access(addr, DomainId::new(2)));
     }
 
-    #[test]
+    #[test_case]
     fn test_overlapping_detection_across_shards() {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
@@ -979,7 +979,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_shard_node_mapping() {
         let shards = 8usize;
         let registry = HeapRegistry::new(shards);
@@ -996,7 +996,7 @@ mod tests {
         assert_eq!(preferred.len(), 0usize);
     }
 
-    #[test]
+    #[test_case]
     fn test_register_poisoned_returns_permission_denied() {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
@@ -1012,7 +1012,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_unregister_poisoned_returns_permission_denied() {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
@@ -1031,7 +1031,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_transfer_poisoned_returns_permission_denied() {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
@@ -1050,7 +1050,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_get_owner_poisoned_returns_none() {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
@@ -1068,7 +1068,7 @@ mod tests {
         assert_eq!(registry.get_owner(addr), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_check_access_poisoned_returns_false() {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
@@ -1086,7 +1086,7 @@ mod tests {
         assert!(!registry.check_access(addr, owner));
     }
 
-    #[test]
+    #[test_case]
     fn test_unregister_any_poisoned_returns_none() {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
@@ -1102,3 +1102,4 @@ mod tests {
         assert_eq!(registry.unregister_any(addr), None);
     }
 }
+

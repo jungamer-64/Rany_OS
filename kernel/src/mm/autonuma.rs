@@ -961,7 +961,7 @@ pub fn apply_config(config: &AutoNumaConfig) {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_page_numa_stats_access() {
         let stats = PageNumaStats::new();
         
@@ -974,7 +974,7 @@ mod tests {
         assert_eq!(count, 2);
     }
     
-    #[test]
+    #[test_case]
     fn test_page_numa_stats_shared() {
         let stats = PageNumaStats::new();
         
@@ -985,7 +985,7 @@ mod tests {
         assert!(stats.is_shared());
     }
     
-    #[test]
+    #[test_case]
     fn test_numa_fault_action_local() {
         let stats = PageNumaStats::new();
         stats.current_node.store(0, Ordering::Relaxed);
@@ -994,7 +994,7 @@ mod tests {
         assert_eq!(action, NumaFaultAction::RecordOnly);
     }
     
-    #[test]
+    #[test_case]
     fn test_raw_pte_numa_hint() {
         let mut pte = RawPte(pte_flags::PRESENT);
         assert!(!pte.has_numa_hint());
@@ -1007,7 +1007,7 @@ mod tests {
         assert!(!pte.has_numa_hint());
         assert_ne!(pte.0 & pte_flags::PRESENT, 0);
     }
-    #[test]
+    #[test_case]
     fn test_numa_fault_action_migrate() {
         let stats = PageNumaStats::new();
         stats.current_node.store(0, Ordering::Relaxed);
@@ -1039,3 +1039,4 @@ mod tests {
         }
     }
 }
+

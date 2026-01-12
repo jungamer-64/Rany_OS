@@ -742,7 +742,7 @@ pub fn generate_error_qr(error_code: &str) -> Option<QrCode> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_rs_ec7_known_vector() {
         // Known vector test for Reed-Solomon RS(26,19) over GF(256) with primitive 0x11D.
         // Data derived from standard example but adapted for 19 data bytes (V1-L).
@@ -755,3 +755,4 @@ mod tests {
         assert_eq!(ec, [0xAE, 0xAD, 0xEF, 0x06, 0x97, 0x8F, 0x25]);
     }
 }
+

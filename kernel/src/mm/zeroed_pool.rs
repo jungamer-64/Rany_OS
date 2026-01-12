@@ -390,7 +390,7 @@ pub fn return_zeroed_frame(frame: PhysFrame<Size4KiB>, node: usize) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_zeroed_pool_basic() {
         let mut pool = ZeroedFramePool::new(0);
         assert!(pool.is_empty());
@@ -398,3 +398,4 @@ mod tests {
         assert_eq!(pool.len(), 0);
     }
 }
+

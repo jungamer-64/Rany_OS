@@ -617,14 +617,14 @@ impl IcmpProcessor {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_icmp_type() {
         assert_eq!(IcmpType::from(8), IcmpType::EchoRequest);
         assert_eq!(IcmpType::from(0), IcmpType::EchoReply);
         assert_eq!(u8::from(IcmpType::EchoRequest), 8);
     }
 
-    #[test]
+    #[test_case]
     fn test_echo_builder() {
         let mut buffer = [0u8; 64];
         let mut builder = IcmpEchoBuilder::new(&mut buffer).unwrap();
@@ -645,3 +645,4 @@ mod tests {
         assert_eq!(echo.data(), b"hello");
     }
 }
+

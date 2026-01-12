@@ -568,7 +568,7 @@ pub fn block_manager() -> &'static BlockDeviceManager {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ram_disk() {
         let disk = RamDisk::new_1mb();
         let info = disk.info();
@@ -578,7 +578,7 @@ mod tests {
         assert!(!info.read_only);
     }
 
-    #[test]
+    #[test_case]
     fn test_block_request() {
         let req = BlockRequest::read(1, 0, 4);
         assert_eq!(req.id, 1);
@@ -588,7 +588,7 @@ mod tests {
         assert!(matches!(req.state(), RequestState::Pending));
     }
 
-    #[test]
+    #[test_case]
     fn test_ram_disk_sync_io() {
         let disk = Arc::new(RamDisk::new_1mb());
 
@@ -603,3 +603,4 @@ mod tests {
         assert!(result.is_ok());
     }
 }
+

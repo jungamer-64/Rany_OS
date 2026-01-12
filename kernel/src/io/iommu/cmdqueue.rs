@@ -454,6 +454,7 @@ impl CommandQueue {
 
         loop {
             // If fuel is active and there is no work, break early
+            #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
                 if self.receiver.is_empty() {
                     break;
@@ -513,6 +514,7 @@ impl CommandQueue {
         while processed < max {
             // If fuel is active and there is no work, break early. If fuel is active and depleted,
             // consume will return false and we'll break before popping an item (avoids losing it).
+            #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
                 if self.receiver.is_empty() {
                     break;
@@ -660,8 +662,12 @@ impl core::future::Future for SubmitFuture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate alloc;
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
 
-    #[test]
+    #[cfg(feature = "std")]
+    #[test_case]
     fn test_cmd_queue_basic() {
         // Leak the queue to get a 'static reference for thread spawn in tests
         let q = Box::leak(Box::new(CommandQueue::new()));
@@ -691,7 +697,8 @@ mod tests {
         worker.join().expect("worker join failed");
     }
 
-    #[test]
+    #[cfg(feature = "std")]
+    #[test_case]
     fn test_cmd_queue_map_unmap() {
         // Leak the queue to get a 'static reference for thread spawn in tests
         let q = Box::leak(Box::new(CommandQueue::new()));
@@ -762,7 +769,8 @@ mod tests {
     }
 
     // Ensure `CommandCompletion` works as a Future (wakes properly)
-    #[test]
+    #[cfg(feature = "std")]
+    #[test_case]
     fn test_cmd_completion_future() {
         let q = Box::leak(Box::new(CommandQueue::new()));
         let worker_q: &'static CommandQueue = &*q;
@@ -798,7 +806,7 @@ mod tests {
 
     // If a completion is never awaited, the slot may be left in state==2; ensure we
     // can reclaim that completed slot for future submissions.
-    #[test]
+    #[test_case]
     fn test_reclaim_completed_slot() {
         let q = Box::leak(Box::new(CommandQueue::new()));
 
@@ -821,7 +829,7 @@ mod tests {
         assert!(q.reclaimed_total() > 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_cancel_queued_command() {
         let q = Box::leak(Box::new(CommandQueue::new()));
 
@@ -841,7 +849,7 @@ mod tests {
         assert_eq!(rc, RESULT_CANCELLED);
     }
 
-    #[test]
+    #[test_case]
     fn test_drop_triggers_cancel() {
         let q = Box::leak(Box::new(CommandQueue::new()));
 
@@ -861,7 +869,8 @@ mod tests {
         assert_eq!(rc, RESULT_CANCELLED);
     }
 
-    #[test]
+    #[cfg(feature = "std")]
+    #[test_case]
     #[ignore]
     fn test_cq_stress_multi_threaded() {
         use alloc::sync::Arc as AllocArc;
@@ -922,7 +931,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_new_with_numa_allocates_slots() {
         // Ensure we can allocate CommandQueue with a NUMA hint and slots are initialized
         let q = Box::leak(Box::new(CommandQueue::new_with_numa(Some(0))));
@@ -936,7 +945,8 @@ mod tests {
         assert_eq!(q.numa_node, Some(0));
     }
 
-    #[test]
+    #[cfg(feature = "std")]
+    #[test_case]
     fn test_submit_async_basic() {
         let q = Box::leak(Box::new(CommandQueue::new()));
         let worker_q: &'static CommandQueue = &*q;
@@ -977,7 +987,7 @@ mod tests {
         worker.join().expect("worker join failed");
     }
 
-    #[test]
+    #[test_case]
     fn test_process_up_to_respects_fuel() {
         let q = Box::leak(Box::new(CommandQueue::new()));
 
@@ -1000,7 +1010,7 @@ mod tests {
         assert_eq!(processed, 2);
     }
 
-    #[test]
+    #[test_case]
     fn test_fuel_shim_basic() {
         crate::task::fuel::Fuel::refill(2);
         assert!(crate::task::fuel::Fuel::is_active());
@@ -1012,7 +1022,7 @@ mod tests {
         assert!(!crate::task::fuel::Fuel::consume(1));
     }
 
-    #[test]
+    #[test_case]
     fn test_metrics_counts() {
         let q = Box::leak(Box::new(CommandQueue::new()));
         assert_eq!(q.processed_total(), 0);
@@ -1032,7 +1042,8 @@ mod tests {
         assert_eq!(q.processed_total(), 1);
     }
 
-    #[test]
+    #[cfg(feature = "std")]
+    #[test_case]
     fn test_submit_async_backpressure() {
         // Fill the channel completely by allocating slots and pushing directly
         let q = Box::leak(Box::new(CommandQueue::new()));
@@ -1101,3 +1112,4 @@ mod tests {
         assert!(q.send_backpressure_total() > 0);
     }
 }
+

@@ -455,14 +455,14 @@ pub fn read_encoded_pointer(
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_read_u32() {
         let data = [0x78, 0x56, 0x34, 0x12];
         let mut reader = MemoryReader::new(&data);
         assert_eq!(reader.read_u32().unwrap(), 0x12345678);
     }
 
-    #[test]
+    #[test_case]
     fn test_read_uleb128() {
         // 0 = 0x00
         let data = [0x00];
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(reader.read_uleb128().unwrap(), 624485);
     }
 
-    #[test]
+    #[test_case]
     fn test_read_sleb128() {
         // 0 = 0x00
         let data = [0x00];
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(reader.read_sleb128().unwrap(), -128);
     }
 
-    #[test]
+    #[test_case]
     fn test_boundary_check() {
         let data = [0x01, 0x02];
         let mut reader = MemoryReader::new(&data);
@@ -516,3 +516,4 @@ mod tests {
         assert_eq!(reader.read_u8().unwrap_err(), UnwindError::MemoryReadError);
     }
 }
+

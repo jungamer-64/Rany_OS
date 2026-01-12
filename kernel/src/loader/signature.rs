@@ -23,6 +23,7 @@ use super::LoadError;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+
 /// 署名セクションの名前（ELFセクション）
 const SIGNATURE_SECTION_NAME: &[u8] = b".exorust_sig";
 
@@ -547,7 +548,7 @@ pub fn get_verifier_stats() -> Option<VerifierStats> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_default_signature() {
         let sig = CellSignature::default();
         assert_eq!(sig.version, SIGNATURE_VERSION);
@@ -555,19 +556,19 @@ mod tests {
         assert!(sig.uses_framework_only);
     }
 
-    #[test]
+    #[test_case]
     fn test_well_formed_signature() {
         let mut sig = CellSignature::default();
         // デフォルトは不完全
         assert!(!sig.is_well_formed());
 
         // 完全な署名
-        sig.signature = vec![0u8; ED25519_SIGNATURE_SIZE];
+        sig.signature = alloc::vec![0u8; ED25519_SIGNATURE_SIZE];
         sig.public_key = [1u8; 32];
         assert!(sig.is_well_formed());
     }
 
-    #[test]
+    #[test_case]
     fn test_verifier_dev_mode() {
         let mut verifier = SignatureVerifier::new();
         verifier.set_dev_mode(true);
@@ -580,7 +581,7 @@ mod tests {
         assert_eq!(verifier.stats().dev_mode_bypasses, 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_verifier_production_mode() {
         let mut verifier = SignatureVerifier::production();
 
@@ -594,3 +595,4 @@ mod tests {
         );
     }
 }
+

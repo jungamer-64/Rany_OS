@@ -319,7 +319,7 @@ pub fn tcb_table() -> &'static TcbTable {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_tcp_connection_state() {
         // 状態遷移の検証
         let state = TcpConnectionState::Closed;
@@ -330,7 +330,7 @@ mod tests {
         assert!(matches!(state, TcpConnectionState::Established));
     }
 
-    #[test]
+    #[test_case]
     fn test_tcp_control_block_entry() {
         let fd = SocketFd::from_raw(1);
         let local = SocketAddr::new([192, 168, 1, 1], 12345);
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(tcb.snd_una, 1000);
     }
 
-    #[test]
+    #[test_case]
     fn test_tcp_flags() {
         assert_eq!(tcp_flags::FIN, 0x01);
         assert_eq!(tcp_flags::SYN, 0x02);
@@ -361,3 +361,4 @@ mod tests {
         assert_eq!(syn_ack, 0x12);
     }
 }
+

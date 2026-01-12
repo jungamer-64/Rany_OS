@@ -360,7 +360,8 @@ impl KernelServices for ExoKernel {
         let fd = SocketFd::from_raw(endpoint.id() as u32);
 
         if let Some(mgr_lock) = socket_manager() {
-            if let Some(mgr) = mgr_lock.read().as_ref() {
+            let guard = mgr_lock.read();
+            if let Some(mgr) = guard.as_ref() {
                 if mgr.unregister(fd).is_some() {
                     return Ok(());
                 }
@@ -1182,7 +1183,7 @@ mod nvme_tests {
     use crate::task::process;
     use crate::security::capability::{self, CapabilitySet};
 
-    #[test]
+    #[test_case]
     fn test_nvme_open_with_token_reclaim() {
         // Setup: create caller and target domains
         let caller = process::process_manager().create(process::ProcessId::INIT, "caller_nvme").unwrap();
@@ -1232,7 +1233,7 @@ mod fs_tests {
     use crate::task::process;
     use crate::security::capability::{self, CapabilitySet};
 
-    #[test]
+    #[test_case]
     fn test_fs_open_with_token_reclaim() {
         // Setup: create caller and target domains
         let caller = process::process_manager().create(process::ProcessId::INIT, "caller_fs").unwrap();
@@ -1250,7 +1251,7 @@ mod fs_tests {
         // Target opens using token
         process::set_current_process(target);
         let handle = EXOKERNEL
-            .fs_open_with_token("test_token_file", crate::OpenMode::Write, Some(token))
+            .fs_open_with_token("test_token_file", kernel_api::OpenMode::Write, Some(token))
             .expect("open should succeed");
         assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
 
@@ -1278,3 +1279,4 @@ mod fs_tests {
 pub fn exokernel() -> &'static ExoKernel {
     &EXOKERNEL
 }
+

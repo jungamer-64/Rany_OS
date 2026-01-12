@@ -485,7 +485,7 @@ impl fmt::Debug for UnwindContext {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_register_from_u8() {
         assert_eq!(DwarfRegister::from_u8(0), Some(DwarfRegister::Rax));
         assert_eq!(DwarfRegister::from_u8(6), Some(DwarfRegister::Rbp));
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(DwarfRegister::from_u8(100), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_register_set() {
         let mut regs = RegisterSet::new();
 
@@ -516,7 +516,7 @@ mod tests {
         assert!(!regs.set_by_number(100, RegisterRule::SameValue));
     }
 
-    #[test]
+    #[test_case]
     fn test_callee_saved() {
         assert!(DwarfRegister::Rbx.is_callee_saved());
         assert!(DwarfRegister::Rbp.is_callee_saved());
@@ -525,3 +525,4 @@ mod tests {
         assert!(!DwarfRegister::Rcx.is_callee_saved());
     }
 }
+

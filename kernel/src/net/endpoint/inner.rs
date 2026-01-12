@@ -187,7 +187,7 @@ impl Default for SocketInner {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_socket_state_transitions() {
         let mut inner = SocketInner::new();
 
@@ -203,7 +203,7 @@ mod tests {
         assert!(inner.transition_to(SocketState::Connected).is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_vecdeque_buffer() {
         let mut inner = SocketInner::new();
 
@@ -219,3 +219,4 @@ mod tests {
         assert_eq!(inner.recv_buffer.len(), 2);
     }
 }
+

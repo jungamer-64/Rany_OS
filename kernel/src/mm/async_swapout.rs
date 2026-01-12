@@ -17,6 +17,7 @@ use crate::mm::buddy_allocator;
 // ファイルシステム型（Inode）
 use crate::fs::fs_abstraction::InodeNum;
 
+
 /// スワップアウト種別
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwapKind {
@@ -33,19 +34,19 @@ pub enum SwapError {
 }
 
 // Completion handle (テスト用に簡易実装)
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 use alloc::sync::Arc;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[derive(Debug)]
 pub struct SwapHandle {
     done: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 }
 
-#[cfg(not(test))]
+#[cfg(not(all(test, feature = "std")))]
 pub struct SwapHandle;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 impl SwapHandle {
     pub fn wait(&self) {
         let (lock, cvar) = &*self.done;
@@ -62,7 +63,8 @@ impl SwapHandle {
 } 
 
 // 内部エントリ（テスト用）
-#[cfg(test)]
+// 内部エントリ（テスト用）
+#[cfg(all(test, feature = "std"))]
 struct SwapEntry {
     frame: FrameIndex,
     kind: SwapKind,
@@ -407,7 +409,7 @@ pub fn stats_huge_2m_skip_count() -> u64 {
     0 // TODO: Implement tracking
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test_impl {
     use super::*;
     use alloc::collections::BTreeSet;
@@ -771,7 +773,7 @@ mod test_impl {
 
 
 // カーネル向け実装: 永続ワーカ（non-test）
-#[cfg(not(test))]
+#[cfg(any(not(test), feature = "full_mm_tests"))]
 mod kernel_impl {
     use super::*;
     use alloc::vec::Vec;
@@ -1134,12 +1136,12 @@ mod kernel_impl {
 
 // 公開API: try_enqueue_swapout
 pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHandle, SwapError> {
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
         test_impl::try_enqueue(frame, kind)
     }
 
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     {
         kernel_impl::try_enqueue(frame, kind)
     }
@@ -1147,12 +1149,12 @@ pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHand
 
 /// Start the async swapout worker (tests call test worker, kernel calls kernel worker)
 pub fn start_worker() {
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
         test_impl::start_worker();
     }
 
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     {
         kernel_impl::start_worker();
     }
@@ -1160,12 +1162,12 @@ pub fn start_worker() {
 
 /// Stop the async swapout worker
 pub fn stop_worker() {
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
         test_impl::stop_worker();
     }
 
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     {
         kernel_impl::stop_worker();
     }
@@ -1173,12 +1175,12 @@ pub fn stop_worker() {
 
 /// Return whether the worker is running
 pub fn is_worker_running() -> bool {
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
         test_impl::is_worker_running()
     }
 
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     {
         kernel_impl::is_worker_running()
     }
@@ -1186,12 +1188,12 @@ pub fn is_worker_running() -> bool {
 
 /// Return (queue_len, file_queue_len)
 pub fn queued_counts() -> (usize, usize) {
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
         (test_impl::_queue_len(), test_impl::_file_queue_len())
     }
 
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     {
         kernel_impl::queued_counts()
     }
@@ -1199,12 +1201,12 @@ pub fn queued_counts() -> (usize, usize) {
 
 /// Return the current token count (anon token bucket)
 pub fn token_count() -> usize {
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
         test_impl::_token_count()
     }
 
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     {
         kernel_impl::token_count()
     }
@@ -1212,62 +1214,62 @@ pub fn token_count() -> usize {
 
 /// Runtime tunables (top-level wrappers)
 pub fn set_token_bucket_capacity(n: usize) {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::set_token_bucket_capacity(n); }
 }
 
 pub fn token_bucket_capacity() -> usize {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::token_bucket_capacity() }
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     { 0 }
 }
 
 pub fn set_token_refill_per_batch(n: usize) {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::set_token_refill_per_batch(n); }
 }
 
 pub fn token_refill_per_batch() -> usize {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::token_refill_per_batch() }
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     { 0 }
 }
 
 pub fn set_reserved_file_slots(n: usize) {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::set_reserved_file_slots(n); }
 }
 
 pub fn reserved_file_slots() -> usize {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::reserved_file_slots() }
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     { 0 }
 }
 
 pub fn set_token_count(n: usize) {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::set_token_count(n); }
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     { test_impl::set_tokens(n); }
 }
 
 pub fn add_tokens(n: usize) {
-    #[cfg(not(test))]
+    #[cfg(any(not(test), feature = "full_mm_tests"))]
     { kernel_impl::add_tokens_public(n); }
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
     { test_impl::add_tokens(n); }
 }
 
 // テスト: キューイング API とワーカの動作を検証するユニットテストを追加
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::mm::{PAGE_SIZE_4K, frame_backing};
 
-    #[test]
+    #[test_case]
     fn test_async_swapout_file_backed() {
         // セットアップ: page cache にページを入れ、対応するフレームを確保して frame_backing を登録
         let cache = crate::fs::PageCache::new(64 * 1024);
@@ -1300,7 +1302,7 @@ mod tests {
         assert!(read.is_some(), "page should exist and be readable");
     }
 
-    #[test]
+    #[test_case]
     fn test_async_swapout_dedup() {
         // setup similar to file-backed test
         let cache = crate::fs::PageCache::new(64 * 1024);
@@ -1330,7 +1332,8 @@ mod tests {
         assert!(frame_backing::get_frame_backing(frame_idx).is_none());
     }
 
-    #[test]
+    #[test_case]
+    #[cfg(feature = "std")]
     fn test_memcg_concurrent_swapout() {
         // Initialize memcg and global page cache
         crate::mm::memcg::init_memcg();
@@ -1389,7 +1392,8 @@ mod tests {
         assert_eq!(stats.anon_pages, 0);
     }
 
-    #[test]
+    #[test_case]
+    #[cfg(feature = "std")]
     fn test_async_swapout_concurrent_dedup() {
         // Initialize global cache
         crate::fs::init_page_cache(64 * 1024);
@@ -1474,7 +1478,8 @@ mod tests {
         assert!(crate::mm::frame_backing::get_frame_backing(frame_idx).is_none());
     }
 
-    #[test]
+    #[test_case]
+    #[cfg(feature = "std")]
     fn test_worker_restart() {
         // ensure worker lifecycle control works via top-level API
         start_worker();
@@ -1496,7 +1501,8 @@ mod tests {
         stop_worker();
     }
 
-    #[test]
+    #[test_case]
+    #[cfg(feature = "std")]
     fn test_async_swapout_qos_reservation() {
         crate::fs::init_page_cache(64 * 1024);
         let cache = crate::fs::page_cache();
@@ -1559,7 +1565,8 @@ mod tests {
         assert!(crate::mm::memcg::memcg_get_page_info(frame_idx).is_none());
     }
 
-    #[test]
+    #[test_case]
+    #[cfg(feature = "std")]
     fn test_token_bucket_exhaustion_and_refill() {
         // Ensure worker controlled
         stop_worker();
@@ -1592,7 +1599,8 @@ mod tests {
         stop_worker();
     }
 
-    #[test]
+    #[test_case]
+    #[cfg(feature = "std")]
     fn test_token_refill_on_processing() {
         // Stop worker to control processing
         stop_worker();
@@ -1629,7 +1637,8 @@ mod tests {
         stop_worker();
     }
 
-    #[test]
+    #[test_case]
+    #[cfg(feature = "std")]
     fn test_async_swapout_stress_concurrency() {
         crate::mm::memcg::init_memcg();
         let cg = crate::mm::memcg::memcg_create(String::from("stress"), crate::mm::memcg::memcg_root()).expect("create memcg");
@@ -1649,6 +1658,7 @@ mod tests {
         for t in 0..threads {
             let cache = cache;
             let cg = cg;
+            #[cfg(feature = "std")]
             let j = std::thread::spawn(move || {
                 for i in 0..iters {
                     let frame = crate::mm::alloc_frame().expect("alloc frame");
@@ -1711,7 +1721,7 @@ mod tests {
         assert_eq!(stats.anon_pages, 0);
     }
 
-    #[test]
+    #[test_case]
     #[ignore]
     fn test_async_swapout_heavy_stress() {
         crate::mm::memcg::init_memcg();
@@ -1783,7 +1793,7 @@ mod tests {
         assert_eq!(stats.anon_pages, 0);
     }
 
-    #[test]
+    #[test_case]
     #[ignore]
     fn bench_enqueue_throughput() {
         crate::fs::init_page_cache(64 * 1024);
@@ -1807,7 +1817,7 @@ mod tests {
         stop_worker();
     }
 
-    #[test]
+    #[test_case]
     fn test_zswap_failure_does_not_dealloc() {
         crate::fs::init_page_cache(64 * 1024);
 
@@ -1843,7 +1853,7 @@ mod tests {
         stop_worker();
     }
 
-    #[test]
+    #[test_case]
     fn test_huge_page_2m_anon_store() {
         // Ensure deterministic worker lifecycle
         test_impl::stop_worker();
@@ -1878,7 +1888,7 @@ mod tests {
         stop_worker();
     }
 
-    #[test]
+    #[test_case]
     fn test_global_async_swapout_metrics_update() {
         // ensure metrics are zeroed in the beginning
         // Note: These are global, so we don't reset them here; just ensure they are accessible and behave monotonically
@@ -1913,7 +1923,7 @@ mod tests {
         stop_worker();
     }
 
-    #[test]
+    #[test_case]
     fn test_token_exhaustion_does_not_leave_pending() {
         test_impl::stop_worker();
         for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
@@ -1930,7 +1940,7 @@ mod tests {
         assert_eq!(test_impl::_pending_len(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_file_queue_counter_saturation() {
         test_impl::stop_worker();
         for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
@@ -1942,7 +1952,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_pool_basic() {
         // Ensure pool is cleared and capacity is small
         crate::mm::async_swapout::buffer_pool_4k_clear();
@@ -1970,7 +1980,7 @@ mod tests {
         crate::mm::async_swapout::buffer_pool_4k_clear();
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_pool_concurrent() {
         crate::mm::async_swapout::buffer_pool_4k_clear();
         crate::mm::async_swapout::buffer_pool_4k_set_capacity(16);
@@ -1979,6 +1989,7 @@ mod tests {
         let iters = 500usize;
         let mut handles = Vec::new();
         for _ in 0..threads {
+            #[cfg(feature = "std")]
             let h = std::thread::spawn(move || {
                 for _ in 0..iters {
                     let mut b = crate::mm::async_swapout::buffer_pool_get_4k();
@@ -1998,7 +2009,7 @@ mod tests {
         crate::mm::async_swapout::buffer_pool_4k_clear();
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_pool_2m_basic() {
         crate::mm::async_swapout::buffer_pool_2m_clear();
         crate::mm::async_swapout::buffer_pool_2m_set_capacity(2);
@@ -2025,7 +2036,7 @@ mod tests {
         crate::mm::async_swapout::buffer_pool_2m_clear();
     }
 
-    #[test]
+    #[test_case]
     fn test_buffer_pool_2m_concurrent() {
         crate::mm::async_swapout::buffer_pool_2m_clear();
         crate::mm::async_swapout::buffer_pool_2m_set_capacity(8);
@@ -2053,7 +2064,7 @@ mod tests {
         crate::mm::async_swapout::buffer_pool_2m_clear();
     }
 
-    #[test]
+    #[test_case]
     #[ignore]
     fn test_buffer_pool_1g_basic() {
         crate::mm::async_swapout::buffer_pool_1g_clear();
@@ -2078,8 +2089,9 @@ mod tests {
         crate::mm::async_swapout::buffer_pool_1g_clear();
     }
 
-    #[test]
+    #[test_case]
     #[ignore]
+    #[cfg(feature = "std")]
     fn bench_enqueue_throughput_pool_vs_nopool() {
         crate::fs::init_page_cache(64 * 1024);
 
@@ -2102,15 +2114,19 @@ mod tests {
             h.wait();
         }
         let dur_no_pool = start.elapsed();
-        test_impl::stop_worker();
+        if cfg!(feature = "std") {
+            test_impl::stop_worker();
+        }
 
         // Phase B: pool enabled
         crate::mm::async_swapout::buffer_pool_4k_clear();
         crate::mm::async_swapout::buffer_pool_4k_set_capacity(128);
 
-        test_impl::set_processing_delay(1);
-        test_impl::set_tokens(test_impl::token_capacity());
-        test_impl::start_worker();
+        if cfg!(feature = "std") {
+            test_impl::set_processing_delay(1);
+            test_impl::set_tokens(test_impl::token_capacity());
+            test_impl::start_worker();
+        }
 
         let start2 = std::time::Instant::now();
         for _ in 0..count {
@@ -2120,7 +2136,9 @@ mod tests {
             h.wait();
         }
         let dur_pool = start2.elapsed();
-        test_impl::stop_worker();
+        if cfg!(feature = "std") {
+            test_impl::stop_worker();
+        }
 
         eprintln!("No-pool: {:?}, With-pool: {:?}", dur_no_pool, dur_pool);
 
@@ -2129,8 +2147,9 @@ mod tests {
         assert!(hits + misses > 0);
     }
 
-    #[test]
+    #[test_case]
     #[ignore]
+    #[cfg(feature = "std")]
     fn bench_buffer_pool_2m_throughput() {
         // micro-bench: small counts to avoid excessive memory use
         let count = 12usize;
@@ -2165,8 +2184,9 @@ mod tests {
         assert!(hits + misses > 0);
     }
 
-    #[test]
+    #[test_case]
     #[ignore]
+    #[cfg(feature = "std")]
     fn bench_buffer_pool_1g_throughput() {
         // very small count due to size
         let count = 2usize;
@@ -2199,5 +2219,6 @@ mod tests {
         assert!(hits + misses > 0);
     }
 }
+
 
 

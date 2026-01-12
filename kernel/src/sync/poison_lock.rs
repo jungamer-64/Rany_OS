@@ -128,9 +128,9 @@ impl<T> PoisonLock<T> {
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
         // 1. スピンロックを取得（指数バックオフ付き）
         // 計測: ロック獲得に要した時間とコンテンション有無を記録
-        #[cfg(test)]
+        #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
-        #[cfg(not(test))]
+        #[cfg(any(not(test), not(feature = "std")))]
         let start = crate::task::timer::current_tick();
 
         let mut spin_count: u64 = 0;
@@ -145,9 +145,9 @@ impl<T> PoisonLock<T> {
         }
 
         // 計測値を更新
-        #[cfg(test)]
+        #[cfg(all(test, feature = "std"))]
         let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
-        #[cfg(not(test))]
+        #[cfg(any(not(test), not(feature = "std")))]
         let acquire_time = crate::task::timer::current_tick().saturating_sub(start);
 
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -172,9 +172,9 @@ impl<T> PoisonLock<T> {
     /// ロックを試行（失敗したら即座に返る）
     pub fn try_lock(&self) -> Option<LockResult<PoisonLockGuard<'_, T>>> {
         // try_lock は即時取得成功時のみ計測する
-        #[cfg(test)]
+        #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
-        #[cfg(not(test))]
+        #[cfg(any(not(test), not(feature = "std")))]
         let start = crate::task::timer::current_tick();
 
         if self
@@ -182,9 +182,9 @@ impl<T> PoisonLock<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
-            #[cfg(test)]
+            #[cfg(all(test, feature = "std"))]
             let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
-            #[cfg(not(test))]
+            #[cfg(any(not(test), not(feature = "std")))]
             let acquire_time = crate::task::timer::current_tick().saturating_sub(start);
 
             LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -568,11 +568,11 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 // テスト
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_basic_lock() {
         let lock = PoisonLock::new(42);
 
@@ -584,7 +584,7 @@ mod tests {
         assert!(!lock.is_poisoned());
     }
 
-    #[test]
+    #[test_case]
     fn test_poisoned_after_simulated_panic() {
         let lock = PoisonLock::new(42);
 
@@ -608,7 +608,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_lock_for_init_recovers_on_poison() {
         use crate::sync::set_panicking;
 
@@ -638,7 +638,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_lock_contention_metrics() {
         use std::sync::Arc;
         use std::thread;
@@ -678,7 +678,7 @@ mod tests {
     /// multiple `PoisonLock` instances and having many threads randomly lock
     /// them repeatedly. This approximates contention patterns seen in
     /// sharded registries without depending on the full `sas` module.
-    #[test]
+    #[test_case]
     fn test_sharded_poisonlock_stress() {
         use std::sync::Arc;
         use std::thread;
@@ -722,7 +722,7 @@ mod tests {
     }
 
     /// Higher contention scenario: fewer shards, more threads and longer holds.
-    #[test]
+    #[test_case]
     fn test_sharded_poisonlock_high_contention() {
         use std::sync::Arc;
         use std::thread;
@@ -767,7 +767,7 @@ mod tests {
     /// CSV-style measurements so we can pick shard counts and judge contention.
     /// This test is intended to run on the host (cfg(test)) only and prints
     /// results to stdout for quick inspection.
-    #[test]
+    #[test_case]
     fn test_lock_metrics_sweep() {
         use std::sync::Arc;
         use std::thread;
@@ -824,3 +824,4 @@ mod tests {
         }
     }
 }
+

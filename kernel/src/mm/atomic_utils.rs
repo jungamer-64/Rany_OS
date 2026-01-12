@@ -335,7 +335,7 @@ impl core::fmt::Debug for AtomicU16 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_atomic_u8_basic() {
         let a = AtomicU8::new(42);
         assert_eq!(a.load(Ordering::SeqCst), 42);
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 100);
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_u8_fetch_and() {
         let a = AtomicU8::new(0b11110000);
         let prev = a.fetch_and(0b10101010, Ordering::SeqCst);
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 0b10100000);
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_u8_fetch_or() {
         let a = AtomicU8::new(0b11110000);
         let prev = a.fetch_or(0b00001111, Ordering::SeqCst);
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 0b11111111);
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_u8_fetch_add() {
         let a = AtomicU8::new(100);
         let prev = a.fetch_add(50, Ordering::SeqCst);
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 150);
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_u8_wrapping() {
         let a = AtomicU8::new(250);
         let prev = a.fetch_add(10, Ordering::SeqCst);
@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 4); // 250 + 10 = 260 → wraps to 4
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_u16_basic() {
         let a = AtomicU16::new(1000);
         assert_eq!(a.load(Ordering::SeqCst), 1000);
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 50000);
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_u16_fetch_add() {
         let a = AtomicU16::new(10000);
         let prev = a.fetch_add(5000, Ordering::SeqCst);
@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 15000);
     }
 
-    #[test]
+    #[test_case]
     fn test_atomic_u16_wrapping() {
         let a = AtomicU16::new(65530);
         let prev = a.fetch_add(10, Ordering::SeqCst);
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 4); // 65530 + 10 = 65540 → wraps to 4
     }
 
-    #[test]
+    #[test_case]
     fn test_compare_exchange() {
         let a = AtomicU8::new(10);
         
@@ -416,3 +416,4 @@ mod tests {
         assert_eq!(a.load(Ordering::SeqCst), 20);
     }
 }
+

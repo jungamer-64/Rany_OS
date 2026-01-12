@@ -1261,7 +1261,7 @@ pub fn exit_interrupt() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_per_cpu_data_layout() {
         // Per-CPUデータがキャッシュラインにアラインされていることを確認
         assert_eq!(core::mem::align_of::<PerCpuData>(), 64);
@@ -1270,3 +1270,4 @@ mod tests {
         assert!(core::mem::size_of::<PerCpuData>() <= 64);
     }
 }
+

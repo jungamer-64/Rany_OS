@@ -729,7 +729,7 @@ mod tests {
     use super::*;
     use crate::sync::set_panicking;
 
-    #[test]
+    #[test_case]
     fn test_check_timeout_poisoned_state_reset_skips() {
         let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
         {
@@ -745,3 +745,4 @@ mod tests {
         set_panicking(false);
     }
 }
+

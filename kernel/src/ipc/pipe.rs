@@ -935,7 +935,7 @@ pub fn zero_copy_channel<T>(
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ring_buffer() {
         let mut buf = RingBuffer::new(16);
 
@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(&read_buf[..5], b"Hello");
     }
 
-    #[test]
+    #[test_case]
     fn test_pipe_sync() {
         let pipe = pipe();
 
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(read, written);
     }
 
-    #[test]
+    #[test_case]
     fn test_zero_copy_channel() {
         let domain1 = DomainId::new(1);
         let domain2 = DomainId::new(2);
@@ -980,3 +980,4 @@ mod tests {
         assert_eq!(rref.owner(), domain2); // 所有権が移動している
     }
 }
+

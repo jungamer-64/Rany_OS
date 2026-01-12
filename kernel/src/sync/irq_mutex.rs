@@ -274,7 +274,7 @@ pub fn disable_interrupts() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_irq_mutex_basic() {
         let mutex = IrqMutex::new(42u64);
 
@@ -290,7 +290,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_try_lock() {
         let mutex = IrqMutex::new(0u64);
 
@@ -301,3 +301,4 @@ mod tests {
         assert!(mutex.try_lock().is_some()); // 解放後は取得可能
     }
 }
+

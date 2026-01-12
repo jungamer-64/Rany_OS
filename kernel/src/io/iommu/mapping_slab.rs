@@ -527,7 +527,7 @@ impl<'a> Iterator for MappingSlabIter<'a> {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_insert_lookup_remove() {
         let mut slab = MappingSlab::new();
         
@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(slab.len(), 0);
     }
     
-    #[test]
+    #[test_case]
     fn test_overlap_detection() {
         let mut slab = MappingSlab::new();
         
@@ -576,3 +576,4 @@ mod tests {
         assert!(!slab.overlaps(0x0000, 0x1000));
     }
 }
+

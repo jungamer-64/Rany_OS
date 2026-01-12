@@ -473,3 +473,17 @@ pub fn test_bsod(message: &str) {
 #[cfg(any(test, feature = "bench"))]
 pub fn test_bsod(_message: &str) {
 }
+// Basic panic handler implementation
+pub fn panic(_info: &PanicInfo) -> ! {
+    // Attempt to acquire lock and print panic info
+    // In a real implementation we would write to the panic record
+    // For now, just loop
+    PANIC_IN_PROGRESS.store(true, Ordering::SeqCst);
+    
+    // Simplistic printing if possible (depends on logger state)
+    // We avoid complex formatting to prevent double panic
+    
+    loop {
+        core::hint::spin_loop();
+    }
+}

@@ -47,16 +47,16 @@ pub use capability::CapabilitySet;
 // their std counterparts when cfg(test) is active and provide a
 // lightweight `log!` macro that forwards to `println!`.
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 use std::string::String as KernelString;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 use std::vec::Vec;
 
-#[cfg(not(test))]
+#[cfg(any(not(test), not(feature = "std")))]
 extern crate alloc;
-#[cfg(not(test))]
+#[cfg(any(not(test), not(feature = "std")))]
 use alloc::string::String as KernelString;
-#[cfg(not(test))]
+#[cfg(any(not(test), not(feature = "std")))]
 use alloc::vec::Vec;
 
 // Provide a simple log macro for tests so `crate::log!` calls resolve
@@ -64,11 +64,21 @@ use alloc::vec::Vec;
 // Provide a test-time log macro that forwards to the host's stdout
 // via the standard `println!` macro. Use the fully-qualified path
 // `::std::println!` to avoid macro hygiene issues in nested modules.
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => ({
         ::std::println!($($arg)*);
+    });
+}
+
+#[cfg(all(test, not(feature = "std")))]
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => ({
+        let s = alloc::format!($($arg)*);
+        crate::io::log::early_print(&s);
+        crate::io::log::early_print("\n");
     });
 }
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -634,7 +644,7 @@ pub fn init() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_security_capabilities() {
         let sandboxed = SecurityCapabilities::SANDBOXED;
         assert!(!sandboxed.can_call_kernel_api);
@@ -646,14 +656,14 @@ mod tests {
         assert!(!user.allows_unsafe);
     }
 
-    #[test]
+    #[test_case]
     fn test_security_level() {
         assert!(SecurityLevel::KernelCore.has_privilege_over(SecurityLevel::Framework));
         assert!(SecurityLevel::Framework.has_privilege_over(SecurityLevel::SafeRust));
         assert!(!SecurityLevel::SafeRust.has_privilege_over(SecurityLevel::AuditedUnsafe));
     }
 
-    #[test]
+    #[test_case]
     fn test_zero_copy_barrier() {
         let barrier = ZeroCopySecurityBarrier::new();
 
@@ -673,3 +683,4 @@ mod tests {
         );
     }
 }
+

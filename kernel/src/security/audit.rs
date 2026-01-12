@@ -3,22 +3,22 @@
 //! This module implements comprehensive security auditing for
 //! tracking security-relevant events in the kernel.
 
-#[cfg(not(test))]
+#[cfg(any(not(test), not(feature = "std")))]
 use alloc::collections::VecDeque;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 use std::collections::VecDeque;
 
-#[cfg(not(test))]
+#[cfg(any(not(test), not(feature = "std")))]
 use alloc::string::String;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 use std::string::String;
 
-#[cfg(not(test))]
+#[cfg(any(not(test), not(feature = "std")))]
 use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 use std::vec::Vec;
 
 extern crate alloc;
@@ -141,9 +141,9 @@ impl AuditRecord {
     pub fn new(event_type: AuditEventType, domain_id: u64, success: bool) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-        #[cfg(not(test))]
+        #[cfg(any(not(test), not(feature = "std")))]
         let timestamp = crate::task::timer::current_tick();
-        #[cfg(test)]
+        #[cfg(all(test, feature = "std"))]
         let timestamp = 0u64;
 
         AuditRecord {
@@ -473,7 +473,7 @@ macro_rules! audit {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_audit_record() {
         let record = AuditRecord::new(AuditEventType::DomainCreate, 42, true)
             .with_message("Test domain created")
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(record.event_type, AuditEventType::DomainCreate);
     }
 
-    #[test]
+    #[test_case]
     fn test_audit_event() {
         let event = AuditEvent::new(AuditEventType::CapabilityCheck, 1)
             .success(false)
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(record.fields.len(), 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_event_type_critical() {
         assert!(AuditEventType::PrivilegeEscalation.is_critical());
         assert!(AuditEventType::AuthFailure.is_critical());
