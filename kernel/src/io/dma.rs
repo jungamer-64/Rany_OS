@@ -158,12 +158,17 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        Some(Self {
+        let res = Some(Self {
             ptr: NonNull::new(ptr as *mut T).expect("alloc returned null pointer"),
             phys_addr,
             layout,
             _state: PhantomData,
-        })
+        });
+
+        #[cfg(debug_assertions)]
+        crate::memory::verify_buddy_integrity();
+
+        res
     }
 
     /// CPUからの読み取り参照を取得
@@ -439,6 +444,10 @@ impl TypedDmaSlice<CpuOwned> {
         crate::io::log::early_print(" size=");
         crate::io::log::early_print_dec(self.size as u64);
         crate::io::log::early_print("\n");
+
+        // Debug: verify buddy integrity after DMA start to catch early corruption
+        #[cfg(debug_assertions)]
+        crate::memory::verify_buddy_integrity();
 
         core::sync::atomic::fence(Ordering::Release);
 
