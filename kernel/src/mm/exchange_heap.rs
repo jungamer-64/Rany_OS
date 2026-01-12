@@ -560,6 +560,12 @@ impl SegregatedFreeListHeap {
     /// - `heap_start` は有効なメモリ領域を指す
     /// - `size` バイトがアクセス可能
     unsafe fn init(&mut self, heap_start: *mut u8, size: usize) {
+        crate::io::log::early_print("[ExHeap] init heap_start=");
+        crate::io::log::early_print_hex(heap_start as u64);
+        crate::io::log::early_print(" size=");
+        crate::io::log::early_print_hex(size as u64);
+        crate::io::log::early_print("\n");
+
         self.heap_start = heap_start as usize;
         self.heap_end = self.heap_start + size;
         self.allocated_bytes = 0;
@@ -596,11 +602,30 @@ impl SegregatedFreeListHeap {
         let class = Self::size_to_class(final_size);
         let block_ptr = final_addr as *mut FreeBlock;
 
+        crate::io::log::early_print("[ExHeap] add_free_block final_addr=");
+        crate::io::log::early_print_hex(final_addr as u64);
+        crate::io::log::early_print(" final_size=");
+        crate::io::log::early_print_hex(final_size as u64);
+        crate::io::log::early_print(" class=");
+        crate::io::log::early_print_dec(class as u64);
+        crate::io::log::early_print("\n");
+
         unsafe {
+            let old_head = self.free_lists[class].map_or(0usize, |nn| nn.as_ptr() as usize);
+            crate::io::log::early_print("[ExHeap] add_free_block old_head=");
+            crate::io::log::early_print_hex(old_head as u64);
+            crate::io::log::early_print("\n");
+
             // Set header
             (*block_ptr).size = final_size;
             (*block_ptr).next = self.free_lists[class];
-            
+
+            // Dump next after set
+            let next_val = match (*block_ptr).next { Some(nn) => nn.as_ptr() as usize, None => 0usize };
+            crate::io::log::early_print("[ExHeap] add_free_block set_next=");
+            crate::io::log::early_print_hex(next_val as u64);
+            crate::io::log::early_print("\n");
+
             // Set footer (boundary tag)
             let footer_addr = final_addr + final_size - core::mem::size_of::<BlockFooter>();
             let footer_ptr = footer_addr as *mut BlockFooter;

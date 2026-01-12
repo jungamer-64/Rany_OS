@@ -155,17 +155,27 @@ impl BuddyHeapAllocator {
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
         // DEBUG: Log the operation
-
-
+        crate::io::log::early_print("[BUD] add addr=");
+        crate::io::log::early_print_hex(addr as u64);
+        crate::io::log::early_print(" order=");
+        crate::io::log::early_print_dec(order as u64);
+        crate::io::log::early_print(" old_head=");
+        let old_head = self.free_lists[order].unwrap_or(0);
+        crate::io::log::early_print_hex(old_head as u64);
+        crate::io::log::early_print("\n");
 
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr_addr = addr as usize;
-        let old_head = self.free_lists[order].unwrap_or(0);
 
         // DEBUG: Validate addresses
         #[cfg(debug_assertions)]
         if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
             crate::io::log::early_print("[HEAP] ERROR: add_to_free_list got invalid addr!\n");
+            crate::io::log::early_print("[HEAP] heap_start=");
+            crate::io::log::early_print_hex(self.heap_start as u64);
+            crate::io::log::early_print(" heap_end=");
+            crate::io::log::early_print_hex((self.heap_start + HEAP_SIZE) as u64);
+            crate::io::log::early_print("\n");
         }
 
         crate::io::mmio::volatile_write::<usize>(ptr_addr, old_head);
@@ -192,12 +202,31 @@ impl BuddyHeapAllocator {
             #[cfg(debug_assertions)]
             if next != 0 && (next < self.heap_start || next >= self.heap_start + HEAP_SIZE) {
                 crate::io::log::early_print("[HEAP] ERROR: next pointer is invalid! Addr=");
-                crate::io::log::print_hex(ptr_addr as u64);
+                crate::io::log::early_print_hex(ptr_addr as u64);
                 crate::io::log::early_print(" Next=");
-                crate::io::log::print_hex(next as u64);
+                crate::io::log::early_print_hex(next as u64);
                 crate::io::log::early_print(" Order=");
                 crate::io::log::early_print_dec(order as u64);
                 crate::io::log::early_print("\n");
+
+                // Capture a lightweight stack backtrace at the point of detection
+                crate::io::log::early_print("[HEAP] Capturing backtrace (invalid next detected)\n");
+                let bt = crate::unwind::Backtrace::capture();
+                for entry in bt.iter() {
+                    crate::io::log::early_print("[HEAP][BT] IP=");
+                    crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                    crate::io::log::early_print("\n");
+                }
+
+                // Dump current free list heads for all orders to find corrupted entry
+                for i in 0..=Self::MAX_ORDER {
+                    crate::io::log::early_print("[HEAP] free_lists[");
+                    crate::io::log::early_print_dec(i as u64);
+                    crate::io::log::early_print("] = ");
+                    let head = self.free_lists[i].unwrap_or(0);
+                    crate::io::log::early_print_hex(head as u64);
+                    crate::io::log::early_print("\n");
+                }
             }
 
             self.free_lists[order] = if next == 0 { None } else { Some(next) };
@@ -432,9 +461,13 @@ fn heap_start() -> u64 {
 }
 
 /// Exchange Heap の開始アドレスを計算（ランタイム）
+///
+/// NOTE: place the Exchange Heap after the global heap to avoid overlap
+/// with the main kernel heap (see bugfix for overlapping regions).
 #[inline]
 fn exchange_heap_start() -> u64 {
-    physical_memory_offset() + 0x200_0000
+    // heap_start() + HEAP_SIZE (no overlap)
+    heap_start().saturating_add(HEAP_SIZE as u64)
 }
 
 /// メモリサブシステム初期化フラグ
@@ -522,8 +555,11 @@ fn reserve_bootstrap_heaps(regions: Vec<(PhysAddr, u64)>) -> Vec<(PhysAddr, u64)
     let heap_phys = heap_start().saturating_sub(hhdm);
     let exchange_phys = exchange_heap_start().saturating_sub(hhdm);
 
+    // Reserve and remove bootstrap heap regions (global heap and exchange heap)
     let regions = subtract_reserved_range(regions, heap_phys, HEAP_SIZE as u64);
-    subtract_reserved_range(regions, exchange_phys, EXCHANGE_HEAP_SIZE as u64)
+    let regions = subtract_reserved_range(regions, exchange_phys, EXCHANGE_HEAP_SIZE as u64);
+
+    regions
 }
 
 fn hhdm_ptr_to_phys(ptr: u64) -> Option<u64> {
@@ -653,6 +689,8 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
     init_global_heap();
     crate::io::log::early_print("[MEM] heap done\n");
+    crate::io::log::early_print("[HEAP_CHECK] after global heap init\n");
+    verify_buddy_integrity();
 
     // 2. Buddy Allocator の初期化（ブートローダーのメモリマップを使用）
     crate::io::log::early_print("[MEM] buddy prep\n");
@@ -669,16 +707,48 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     } else {
         get_default_memory_regions()
     };
+
+    // Reserve bootstrap heaps (global heap & exchange heap)
     usable_regions = reserve_bootstrap_heaps(usable_regions);
+
+    // Debug: dump the usable regions after reserving bootstrap heaps
+    crate::io::log::early_print("[MEM] After reserve_bootstrap_heaps:\n");
+    for (addr, size) in usable_regions.iter() {
+        crate::io::log::early_print("  region phys=");
+        crate::io::log::early_print_hex(addr.as_u64());
+        crate::io::log::early_print(" size=");
+        crate::io::log::early_print_hex(*size);
+        crate::io::log::early_print("\n");
+    }
+
+    // Dump computed heap start values (virtual) and physical offsets
+    crate::io::log::early_print("[MEM] heap_start=");
+    crate::io::log::early_print_hex(heap_start());
+    crate::io::log::early_print(" exchange_heap_start=");
+    crate::io::log::early_print_hex(exchange_heap_start());
+    crate::io::log::early_print("\n");
+
+    let hhdm = physical_memory_offset();
+    crate::io::log::early_print("[MEM] HHDM=");
+    crate::io::log::early_print_hex(hhdm);
+    crate::io::log::early_print(" heap_phys=");
+    crate::io::log::early_print_hex(heap_start().saturating_sub(hhdm));
+    crate::io::log::early_print(" exchange_phys=");
+    crate::io::log::early_print_hex(exchange_heap_start().saturating_sub(hhdm));
+    crate::io::log::early_print("\n");
+
     if let Some(info) = boot_info {
         usable_regions = reserve_boot_info_ranges(usable_regions, info);
     }
     crate::io::log::early_print("[MEM] buddy bootstrap\n");
 
+    // Initialize the buddy allocator with the reserved usable regions
     unsafe {
-        crate::mm::init_buddy_allocator(&[]);
+        crate::mm::init_buddy_allocator(&usable_regions);
     }
     crate::io::log::early_print("[MEM] buddy ready\n");
+    crate::io::log::early_print("[HEAP_CHECK] after init_buddy_allocator\n");
+    verify_buddy_integrity();
 
     // 2.5. NUMA情報（ブートローダー/ACPI）からPMMを初期化
     let mut pmm_initialized = false;
@@ -741,6 +811,8 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
         crate::mm::init_exchange_heap(exchange_heap_start() as usize, EXCHANGE_HEAP_SIZE);
     }
     crate::io::log::early_print("[MEM] exheap done\n");
+    crate::io::log::early_print("[HEAP_CHECK] after exchange_heap_init\n");
+    verify_buddy_integrity();
 
     // 4. Per-CPU データ構造の初期化（BSPのみ）
     // 注: init_per_cpu() 内部でBSPのGsBaseが設定されるため、
@@ -761,6 +833,49 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     // メモリ統計を表示（スキップ）
     // print_memory_stats();
     crate::io::log::early_print("[MEM] all done\n");
+
+
+}
+
+/// ヒープ整合性チェック（デバッグ用）
+/// - 全ての free_list の head と、その head に格納された next ポインタを検査
+/// - 不正が見つかった場合、バックトレースを出力する
+pub fn verify_buddy_integrity() {
+    crate::io::log::early_print("[HEAP_CHECK] Verifying buddy free lists...\n");
+    match ALLOCATOR.0.lock() {
+        Ok(guard) => {
+            for i in 0..=BuddyHeapAllocator::MAX_ORDER {
+                crate::io::log::early_print("[HEAP_CHECK] free_lists[");
+                crate::io::log::early_print_dec(i as u64);
+                crate::io::log::early_print("] = ");
+                let head = guard.free_lists[i].unwrap_or(0);
+                crate::io::log::early_print_hex(head as u64);
+                crate::io::log::early_print("\n");
+
+                if head != 0 {
+                    let next = crate::io::mmio::volatile_read::<usize>(head as usize);
+                    if next != 0 && (next < guard.heap_start || next >= guard.heap_start + HEAP_SIZE) {
+                        crate::io::log::early_print("[HEAP_CHECK] INVALID NEXT at head=");
+                        crate::io::log::early_print_hex(head as u64);
+                        crate::io::log::early_print(" next=");
+                        crate::io::log::early_print_hex(next as u64);
+                        crate::io::log::early_print("\n");
+
+                        crate::io::log::early_print("[HEAP_CHECK] Capturing backtrace...\n");
+                        let bt = crate::unwind::Backtrace::capture();
+                        for entry in bt.iter() {
+                            crate::io::log::early_print("[HEAP_CHECK][BT] IP=");
+                            crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                            crate::io::log::early_print("\n");
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            crate::io::log::early_print("[HEAP_CHECK] Failed to lock buddy allocator\n");
+        }
+    }
 }
 
 /// ACPI Reclaimable メモリをPMMへ返却
@@ -909,4 +1024,16 @@ fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
     crate::io::log::early_print("\n");
     
     panic!("allocation error: size={} align={}", layout.size(), layout.align())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exchange_heap_after_global_heap() {
+        // Exchange heap must be placed after the global heap (no overlap)
+        let heap_end = heap_start().saturating_add(HEAP_SIZE as u64);
+        assert!(exchange_heap_start() >= heap_end);
+    }
 }

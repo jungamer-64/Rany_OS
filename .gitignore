@@ -15,7 +15,7 @@
 *.txt
 *.json
 /tmp
-./kernel.map
+/kernel.map
 
 # Secure boot keys - never commit any key material!
 # Contains: kernel.key (secret), kernel_pub.key (public)

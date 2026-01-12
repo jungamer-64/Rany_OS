@@ -2,153 +2,142 @@
 // src/graphics/bsod.rs - Blue Screen of Death Display
 // ============================================================================
 //!
-//! # BSOD (Blue Screen of Death) 表示モジュール
+//! # BSOD (Blue Screen of Death) Display Module
 //!
-//! カーネルパニック発生時に画面全体を青く塗りつぶし、
-//! エラー詳細、スタックトレース、レジスタダンプ、QRコードを表示する。
+//! Fills the screen with blue and displays error details, stack trace, and registers
+//! when a kernel panic occurs.
 //!
-//! ## 機能
-//! - 画面全体の青色塗りつぶし
-//! - エラーメッセージと場所の表示
-//! - スタックトレースの表示
-//! - CPUレジスタダンプの表示
-//! - エラーコードのQRコード表示
+//! ## Features
+//! - Blue screen background
+//! - Error message and location
+//! - Stack trace
+//! - CPU register dump
+//! - Lock-free and Allocation-free design for panic safety
+//!
 
 #![allow(dead_code)]
 
-use alloc::format;
-use alloc::string::String;
 use core::fmt::Write;
 
-use super::qrcode::QrCode;
 use super::{BitmapFont, Color, Font, Framebuffer, Rect, with_framebuffer};
 use crate::unwind::{Backtrace, StackFrame};
 
 // ============================================================================
-// BSOD カラーパレット
+// BSOD Color Palette
 // ============================================================================
 
-/// BSOD用カラー定義
 pub mod colors {
     use super::Color;
-
-    /// 背景色（Windows風の青）
     pub const BACKGROUND: Color = Color::new(0x00, 0x78, 0xD7);
-
-    /// 悲しい顔のカラー
     pub const SAD_FACE: Color = Color::new(0xFF, 0xFF, 0xFF);
-
-    /// メインテキストカラー
     pub const TEXT_PRIMARY: Color = Color::new(0xFF, 0xFF, 0xFF);
-
-    /// セカンダリテキストカラー
     pub const TEXT_SECONDARY: Color = Color::new(0xCC, 0xCC, 0xCC);
-
-    /// エラーコードカラー
     pub const ERROR_CODE: Color = Color::new(0xFF, 0xFF, 0x00);
-
-    /// 区切り線カラー
     pub const SEPARATOR: Color = Color::new(0x40, 0x90, 0xE0);
-
-    /// QRコード背景
     pub const QR_LIGHT: Color = Color::new(0xFF, 0xFF, 0xFF);
-
-    /// QRコードモジュール
     pub const QR_DARK: Color = Color::new(0x00, 0x00, 0x00);
 }
 
 // ============================================================================
-// BSOD情報構造体
+// Internal Formatting Utilities (Stack Based)
 // ============================================================================
 
-/// BSOD表示用のエラー情報
-pub struct BsodInfo {
-    /// エラーメッセージ
-    pub message: String,
-    /// エラー発生ファイル
-    pub file: Option<String>,
-    /// エラー発生行
-    pub line: Option<u32>,
-    /// エラー発生カラム
-    pub column: Option<u32>,
-    /// スタックトレース
-    pub backtrace: Option<Backtrace>,
-    /// レジスタダンプ
-    pub registers: Option<RegisterDump>,
-    /// エラーコード（QRコード用）
-    pub error_code: String,
+pub struct StackFmtWriter<'a> {
+    buffer: &'a mut [u8],
+    offset: usize,
 }
 
-impl BsodInfo {
-    /// 新しいBSOD情報を作成
-    pub fn new(message: &str) -> Self {
+impl<'a> StackFmtWriter<'a> {
+    pub fn new(buffer: &'a mut [u8]) -> Self {
+        Self { buffer, offset: 0 }
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buffer[..self.offset]).unwrap_or("FMT_ERR")
+    }
+}
+
+impl<'a> Write for StackFmtWriter<'a> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let remaining = self.buffer.len() - self.offset;
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(remaining);
+        
+        if len > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    self.buffer.as_mut_ptr().add(self.offset),
+                    len,
+                );
+            }
+            self.offset += len;
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
+// BSOD Info Structure (No Alloc)
+// ============================================================================
+
+pub struct BsodInfo<'a> {
+    pub message: &'a str,
+    pub file: Option<&'a str>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub backtrace: Option<Backtrace>,
+    pub registers: Option<RegisterDump>,
+    pub error_code: &'a str,
+}
+
+impl<'a> BsodInfo<'a> {
+    pub fn new(message: &'a str) -> Self {
         Self {
-            message: String::from(message),
+            message,
             file: None,
             line: None,
             column: None,
             backtrace: None,
             registers: None,
-            error_code: String::from("KERNEL_PANIC"),
+            error_code: "KERNEL_PANIC",
         }
     }
 
-    /// ファイル情報を設定
-    pub fn with_location(mut self, file: &str, line: u32, column: u32) -> Self {
-        self.file = Some(String::from(file));
+    pub fn with_location(mut self, file: &'a str, line: u32, column: u32) -> Self {
+        self.file = Some(file);
         self.line = Some(line);
         self.column = Some(column);
         self
     }
 
-    /// スタックトレースを設定
     pub fn with_backtrace(mut self, backtrace: Backtrace) -> Self {
         self.backtrace = Some(backtrace);
         self
     }
 
-    /// レジスタダンプを設定
     pub fn with_registers(mut self, registers: RegisterDump) -> Self {
         self.registers = Some(registers);
         self
     }
 
-    /// エラーコードを設定
-    pub fn with_error_code(mut self, code: &str) -> Self {
-        self.error_code = String::from(code);
+    pub fn with_error_code(mut self, code: &'a str) -> Self {
+        self.error_code = code;
         self
     }
 }
 
-/// CPUレジスタダンプ
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub struct RegisterDump {
-    pub rax: u64,
-    pub rbx: u64,
-    pub rcx: u64,
-    pub rdx: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rbp: u64,
-    pub rsp: u64,
-    pub r8: u64,
-    pub r9: u64,
-    pub r10: u64,
-    pub r11: u64,
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
-    pub rip: u64,
-    pub rflags: u64,
-    pub cr0: u64,
-    pub cr2: u64,
-    pub cr3: u64,
-    pub cr4: u64,
+    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
+    pub rsi: u64, pub rdi: u64, pub rbp: u64, pub rsp: u64,
+    pub r8: u64,  pub r9: u64,  pub r10: u64, pub r11: u64,
+    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
+    pub rip: u64, pub rflags: u64,
+    pub cr0: u64, pub cr2: u64, pub cr3: u64, pub cr4: u64,
 }
 
 impl RegisterDump {
-    /// 現在のレジスタ状態をキャプチャ
     pub fn capture() -> Self {
         let (rax, rbx, rcx, rdx): (u64, u64, u64, u64);
         let (rsi, rdi, rbp, rsp): (u64, u64, u64, u64);
@@ -162,288 +151,250 @@ impl RegisterDump {
 
         unsafe {
             core::arch::asm!(
-                "mov {rax}, rax",
-                "mov {rbx}, rbx",
-                "mov {rcx}, rcx",
-                "mov {rdx}, rdx",
-                rax = out(reg) rax,
-                rbx = out(reg) rbx,
-                rcx = out(reg) rcx,
-                rdx = out(reg) rdx,
+                "mov {rax}, rax", "mov {rbx}, rbx", "mov {rcx}, rcx", "mov {rdx}, rdx",
+                rax = out(reg) rax, rbx = out(reg) rbx, rcx = out(reg) rcx, rdx = out(reg) rdx,
                 options(nostack, preserves_flags)
             );
-
             core::arch::asm!(
-                "mov {rsi}, rsi",
-                "mov {rdi}, rdi",
-                "mov {rbp}, rbp",
-                "mov {rsp}, rsp",
-                rsi = out(reg) rsi,
-                rdi = out(reg) rdi,
-                rbp = out(reg) rbp,
-                rsp = out(reg) rsp,
+                "mov {rsi}, rsi", "mov {rdi}, rdi", "mov {rbp}, rbp", "mov {rsp}, rsp",
+                rsi = out(reg) rsi, rdi = out(reg) rdi, rbp = out(reg) rbp, rsp = out(reg) rsp,
                 options(nostack, preserves_flags)
             );
-
             core::arch::asm!(
-                "mov {r8}, r8",
-                "mov {r9}, r9",
-                "mov {r10}, r10",
-                "mov {r11}, r11",
-                r8 = out(reg) r8,
-                r9 = out(reg) r9,
-                r10 = out(reg) r10,
-                r11 = out(reg) r11,
+                "mov {r8}, r8", "mov {r9}, r9", "mov {r10}, r10", "mov {r11}, r11",
+                r8 = out(reg) r8, r9 = out(reg) r9, r10 = out(reg) r10, r11 = out(reg) r11,
                 options(nostack, preserves_flags)
             );
-
             core::arch::asm!(
-                "mov {r12}, r12",
-                "mov {r13}, r13",
-                "mov {r14}, r14",
-                "mov {r15}, r15",
-                r12 = out(reg) r12,
-                r13 = out(reg) r13,
-                r14 = out(reg) r14,
-                r15 = out(reg) r15,
+                "mov {r12}, r12", "mov {r13}, r13", "mov {r14}, r14", "mov {r15}, r15",
+                r12 = out(reg) r12, r13 = out(reg) r13, r14 = out(reg) r14, r15 = out(reg) r15,
                 options(nostack, preserves_flags)
             );
-
             core::arch::asm!(
-                "pushfq",
-                "pop {rflags}",
+                "pushfq", "pop {rflags}",
                 rflags = out(reg) rflags,
                 options(preserves_flags)
             );
-
             core::arch::asm!(
-                "mov {cr0}, cr0",
-                "mov {cr2}, cr2",
-                "mov {cr3}, cr3",
-                "mov {cr4}, cr4",
-                cr0 = out(reg) cr0,
-                cr2 = out(reg) cr2,
-                cr3 = out(reg) cr3,
-                cr4 = out(reg) cr4,
+                "mov {cr0}, cr0", "mov {cr2}, cr2", "mov {cr3}, cr3", "mov {cr4}, cr4",
+                cr0 = out(reg) cr0, cr2 = out(reg) cr2, cr3 = out(reg) cr3, cr4 = out(reg) cr4,
                 options(nostack, preserves_flags)
             );
         }
 
-        // RIPは現在の関数アドレスを取得
         let rip: u64;
         unsafe {
-            core::arch::asm!(
-                "lea {rip}, [rip]",
-                rip = out(reg) rip,
-                options(nostack, preserves_flags)
-            );
+            core::arch::asm!("lea {rip}, [rip]", rip = out(reg) rip, options(nostack, preserves_flags));
         }
 
         Self {
-            rax,
-            rbx,
-            rcx,
-            rdx,
-            rsi,
-            rdi,
-            rbp,
-            rsp,
-            r8,
-            r9,
-            r10,
-            r11,
-            r12,
-            r13,
-            r14,
-            r15,
-            rip,
-            rflags,
-            cr0,
-            cr2,
-            cr3,
-            cr4,
+            rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp,
+            r8, r9, r10, r11, r12, r13, r14, r15,
+            rip, rflags, cr0, cr2, cr3, cr4,
         }
     }
 }
 
 // ============================================================================
-// BSOD描画関数
+// Serial Dump Helper
 // ============================================================================
 
-/// 悲しい顔を描画
+pub fn dump_bsod_info_to_serial(info: &BsodInfo) {
+    use crate::io::log::{early_print, early_print_hex, early_print_dec};
+
+    early_print("\n[PANIC] ");
+    early_print(info.message);
+    early_print("\n");
+
+    if let (Some(file), Some(line), Some(col)) = (info.file, info.line, info.column) {
+        early_print("[PANIC] Location: ");
+        early_print(file);
+        early_print(":");
+        early_print_dec(line as u64);
+        early_print(":");
+        early_print_dec(col as u64);
+        early_print("\n");
+    }
+
+    if let Some(regs) = &info.registers {
+        early_print("[PANIC] Registers:\n");
+        // Row 1
+        early_print("RAX="); early_print_hex(regs.rax); early_print(" RBX="); early_print_hex(regs.rbx); early_print(" RCX="); early_print_hex(regs.rcx); early_print("\n");
+        // Row 2
+        early_print("RDX="); early_print_hex(regs.rdx); early_print(" RSI="); early_print_hex(regs.rsi); early_print(" RDI="); early_print_hex(regs.rdi); early_print("\n");
+        // Row 3
+        early_print("RBP="); early_print_hex(regs.rbp); early_print(" RSP="); early_print_hex(regs.rsp); early_print(" RIP="); early_print_hex(regs.rip); early_print("\n");
+        // Row 4
+        early_print("R8 ="); early_print_hex(regs.r8);  early_print(" R9 ="); early_print_hex(regs.r9);  early_print(" R10="); early_print_hex(regs.r10); early_print("\n");
+        // Row 5
+        early_print("R11="); early_print_hex(regs.r11); early_print(" R12="); early_print_hex(regs.r12); early_print(" R13="); early_print_hex(regs.r13); early_print("\n");
+        // Row 6
+        early_print("R14="); early_print_hex(regs.r14); early_print(" R15="); early_print_hex(regs.r15); early_print(" FLG="); early_print_hex(regs.rflags); early_print("\n");
+        // CRs
+        early_print("CR0="); early_print_hex(regs.cr0); early_print(" CR2="); early_print_hex(regs.cr2); early_print(" CR3="); early_print_hex(regs.cr3); early_print("\n");
+    }
+
+    if let Some(bt) = &info.backtrace {
+        early_print("[PANIC] Stack Trace:\n");
+        for entry in bt.iter().take(10) {
+             early_print("  #");
+             early_print_dec(entry.frame_number as u64);
+             early_print(" IP=");
+             early_print_hex(entry.frame.instruction_pointer as u64);
+             early_print(" SP=");
+             early_print_hex(entry.frame.stack_pointer as u64);
+             early_print("\n");
+        }
+        if bt.len() > 10 {
+            early_print("  ... and more\n");
+        }
+    }
+}
+
+// ============================================================================
+// Drawing Functions
+// ============================================================================
+
 fn draw_sad_face(fb: &mut Framebuffer, x: i32, y: i32, scale: u32) {
     let color = colors::SAD_FACE;
-
-    // 顔の輪郭（円）- 簡易版
     let radius = (scale * 30) as i32;
     fb.draw_circle(x + radius, y + radius, radius, color);
     fb.draw_circle(x + radius, y + radius, radius - 1, color);
-    fb.draw_circle(x + radius, y + radius, radius - 2, color);
 
-    // 左目
     let eye_y = y + (scale * 20) as i32;
     let left_eye_x = x + (scale * 18) as i32;
     let right_eye_x = x + (scale * 42) as i32;
     fb.fill_rect(Rect::new(left_eye_x, eye_y, scale * 4, scale * 4), color);
     fb.fill_rect(Rect::new(right_eye_x, eye_y, scale * 4, scale * 4), color);
 
-    // 悲しい口（下向きの弧）
     let mouth_y = y + (scale * 40) as i32;
     let mouth_x = x + (scale * 15) as i32;
     for i in 0..(scale * 30) as i32 {
         let offset = (((i - (scale * 15) as i32).pow(2)) / (scale * 8) as i32).min(5);
         fb.set_pixel(mouth_x + i, mouth_y + offset, color);
-        fb.set_pixel(mouth_x + i, mouth_y + offset + 1, color);
     }
 }
 
-/// セクションヘッダーを描画
 fn draw_section_header(fb: &mut Framebuffer, x: i32, y: i32, title: &str, width: u32) {
     let font = BitmapFont::default_8x16();
-
-    // 区切り線
     fb.fill_rect(Rect::new(x, y, width, 2), colors::SEPARATOR);
-
-    // タイトル
     font.draw_string(fb, x, y + 6, title, colors::TEXT_PRIMARY, None);
 }
 
-/// レジスタを描画
 fn draw_register(fb: &mut Framebuffer, x: i32, y: i32, name: &str, value: u64) {
     let font = BitmapFont::default_8x16();
-    let mut buf = String::new();
-    let _ = write!(buf, "{:<4} = {:#018x}", name, value);
-    font.draw_string(fb, x, y, &buf, colors::TEXT_SECONDARY, None);
+    let mut buf_arr = [0u8; 32];
+    let mut writer = StackFmtWriter::new(&mut buf_arr);
+    let _ = write!(writer, "{:<4} = {:#018x}", name, value);
+    font.draw_string(fb, x, y, writer.as_str(), colors::TEXT_SECONDARY, None);
 }
 
-/// BSODを表示するメイン関数
 pub fn display_bsod(info: &BsodInfo) {
-    // フレームバッファをロックして直接描画
-    // パニック時なので他のロックは気にしない
     with_framebuffer(|fb| {
         display_bsod_internal(fb, info);
     });
 }
 
-/// フレームバッファを直接受け取るBSOD表示（パニック時用）
 pub fn display_bsod_direct(fb: &mut Framebuffer, info: &BsodInfo) {
     display_bsod_internal(fb, info);
 }
 
-/// BSOD表示の内部実装
 fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
     let width = fb.width();
     let height = fb.height();
     let font = BitmapFont::default_8x16();
 
-    // 1. 背景を青く塗りつぶす
     fb.clear(colors::BACKGROUND);
 
-    // 2. マージンとレイアウト計算
     let margin_x = (width / 20).max(40) as i32;
     let margin_y = (height / 15).max(30) as i32;
     let content_width = width - (margin_x as u32 * 2);
 
     let mut y = margin_y;
 
-    // 3. 悲しい顔を描画
     let face_scale = (width / 400).max(1).min(3);
     draw_sad_face(fb, margin_x, y, face_scale);
 
-    // 4. メインメッセージ
     let text_x = margin_x + (face_scale * 70) as i32;
-    font.draw_string(
-        fb,
-        text_x,
-        y + 10,
-        "Your PC ran into a problem and needs to restart.",
-        colors::TEXT_PRIMARY,
-        None,
-    );
-    font.draw_string(
-        fb,
-        text_x,
-        y + 30,
-        "We're just collecting some error info, and then we'll",
-        colors::TEXT_SECONDARY,
-        None,
-    );
-    font.draw_string(
-        fb,
-        text_x,
-        y + 50,
-        "restart for you.",
-        colors::TEXT_SECONDARY,
-        None,
-    );
+    font.draw_string(fb, text_x, y + 10, "Your PC ran into a problem and needs to restart.", colors::TEXT_PRIMARY, None);
+    font.draw_string(fb, text_x, y + 30, "We're just collecting some error info, and then we'll", colors::TEXT_SECONDARY, None);
+    font.draw_string(fb, text_x, y + 50, "restart for you.", colors::TEXT_SECONDARY, None);
 
     y += (face_scale * 70) as i32 + 20;
 
-    // 5. エラーコードセクション
     draw_section_header(fb, margin_x, y, "[ ERROR ]", content_width);
     y += 30;
 
-    // エラーメッセージ
-    let msg_lines = wrap_text(&info.message, (content_width / 8) as usize);
-    for line in msg_lines.iter().take(3) {
-        font.draw_string(fb, margin_x, y, line, colors::ERROR_CODE, None);
+    let max_len_chars = ((content_width / 8) as usize).max(10);
+    let mut current_pos = 0;
+    let msg_bytes = info.message.as_bytes();
+    let mut line_count = 0;
+    while current_pos < msg_bytes.len() && line_count < 5 {
+        let end = (current_pos + max_len_chars).min(msg_bytes.len());
+        let mut split = end;
+        if split < msg_bytes.len() {
+             let scan_start = if split > 10 { split - 10 } else { current_pos };
+             for i in (scan_start..split).rev() {
+                 if msg_bytes[i] == b' ' {
+                     split = i;
+                     break;
+                 }
+             }
+        }
+        
+        if split == current_pos { split = end; } 
+        
+        if let Ok(sub) = core::str::from_utf8(&msg_bytes[current_pos..split]) {
+            font.draw_string(fb, margin_x, y, sub, colors::ERROR_CODE, None);
+        }
         y += 18;
+        current_pos = split;
+        while current_pos < msg_bytes.len() && msg_bytes[current_pos] == b' ' {
+            current_pos += 1;
+        }
+        line_count += 1;
     }
 
-    // 場所情報
-    if let (Some(file), Some(line), Some(col)) = (&info.file, info.line, info.column) {
-        let mut loc = String::new();
-        let _ = write!(loc, "at {}:{}:{}", file, line, col);
-        font.draw_string(fb, margin_x, y, &loc, colors::TEXT_SECONDARY, None);
+    if let (Some(file), Some(line), Some(col)) = (info.file, info.line, info.column) {
+        let mut buf = [0u8; 128];
+        let mut w = StackFmtWriter::new(&mut buf);
+        let _ = write!(w, "at {}:{}:{}", file, line, col);
+        font.draw_string(fb, margin_x, y, w.as_str(), colors::TEXT_SECONDARY, None);
         y += 18;
     }
 
     y += 10;
-
-    // 6. スタックトレースセクション
     draw_section_header(fb, margin_x, y, "[ STACK TRACE ]", content_width);
     y += 30;
 
     if let Some(ref bt) = info.backtrace {
         let max_frames = ((height as i32 - y - 200) / 18).max(3).min(10) as usize;
         for entry in bt.iter().take(max_frames) {
-            let mut frame_str = String::new();
-            let _ = write!(
-                frame_str,
-                "#{:2} {:#018x} (SP: {:#018x})",
-                entry.frame_number, entry.frame.instruction_pointer, entry.frame.stack_pointer
-            );
-            font.draw_string(fb, margin_x, y, &frame_str, colors::TEXT_SECONDARY, None);
+            let mut buf = [0u8; 64];
+            let mut w = StackFmtWriter::new(&mut buf);
+            let _ = write!(w, "#{:2} {:#018x} (SP: {:#018x})", 
+                entry.frame_number, entry.frame.instruction_pointer, entry.frame.stack_pointer);
+            font.draw_string(fb, margin_x, y, w.as_str(), colors::TEXT_SECONDARY, None);
             y += 18;
         }
         if bt.len() > max_frames {
-            let mut more = String::new();
-            let _ = write!(more, "    ... and {} more frames", bt.len() - max_frames);
-            font.draw_string(fb, margin_x, y, &more, colors::TEXT_SECONDARY, None);
+            let mut buf = [0u8; 32];
+            let mut w = StackFmtWriter::new(&mut buf);
+            let _ = write!(w, "    ... and {} more frames", bt.len() - max_frames);
+            font.draw_string(fb, margin_x, y, w.as_str(), colors::TEXT_SECONDARY, None);
             y += 18;
         }
     } else {
-        font.draw_string(
-            fb,
-            margin_x,
-            y,
-            "  (no backtrace available)",
-            colors::TEXT_SECONDARY,
-            None,
-        );
+        font.draw_string(fb, margin_x, y, "  (no backtrace available)", colors::TEXT_SECONDARY, None);
         y += 18;
     }
 
     y += 10;
-
-    // 7. レジスタダンプセクション
     draw_section_header(fb, margin_x, y, "[ REGISTERS ]", content_width);
     y += 30;
 
     if let Some(ref regs) = info.registers {
         let col_width = (content_width / 3) as i32;
-
-        // 汎用レジスタ（3列）
         let regs_row1 = [("RAX", regs.rax), ("RBX", regs.rbx), ("RCX", regs.rcx)];
         let regs_row2 = [("RDX", regs.rdx), ("RSI", regs.rsi), ("RDI", regs.rdi)];
         let regs_row3 = [("RBP", regs.rbp), ("RSP", regs.rsp), ("RIP", regs.rip)];
@@ -451,182 +402,58 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
         let regs_row5 = [("R11", regs.r11), ("R12", regs.r12), ("R13", regs.r13)];
         let regs_row6 = [("R14", regs.r14), ("R15", regs.r15), ("FLG", regs.rflags)];
 
-        for (i, row) in [
-            regs_row1, regs_row2, regs_row3, regs_row4, regs_row5, regs_row6,
-        ]
-        .iter()
-        .enumerate()
-        {
+        for (i, row) in [regs_row1, regs_row2, regs_row3, regs_row4, regs_row5, regs_row6].iter().enumerate() {
             for (j, (name, value)) in row.iter().enumerate() {
                 draw_register(fb, margin_x + (j as i32 * col_width), y, name, *value);
             }
             y += 18;
-            // 最大4行まで表示（スペース節約）
-            if i >= 3 {
-                break;
-            }
+            if i >= 3 { break; }
         }
-
-        // 制御レジスタ
         y += 5;
         let cr_row = [("CR0", regs.cr0), ("CR2", regs.cr2), ("CR3", regs.cr3)];
         for (j, (name, value)) in cr_row.iter().enumerate() {
             draw_register(fb, margin_x + (j as i32 * col_width), y, name, *value);
         }
-        // y += 18; // Unused assignment removed
     } else {
-        font.draw_string(
-            fb,
-            margin_x,
-            y,
-            "  (registers not captured)",
-            colors::TEXT_SECONDARY,
-            None,
-        );
-        // y += 18; // Unused assignment removed
+        font.draw_string(fb, margin_x, y, "  (registers not captured)", colors::TEXT_SECONDARY, None);
     }
 
-    // 8. QRコードを右下に描画
-    let qr_module_size = (width / 200).max(2).min(4);
-    let qr_total_size = (21 + 4) * qr_module_size; // QRサイズ + クワイエットゾーン
+    let qr_total_size = (21 + 4) * 4; 
     let qr_x = (width - qr_total_size - margin_x as u32) as i32;
     let qr_y = (height - qr_total_size - margin_y as u32) as i32;
 
-    // QRコード生成と描画
-    if let Some(qr) = QrCode::new(&info.error_code.to_ascii_uppercase()) {
-        qr.draw(
-            fb,
-            qr_x,
-            qr_y,
-            qr_module_size,
-            colors::QR_DARK,
-            colors::QR_LIGHT,
-        );
+    font.draw_string(fb, qr_x, qr_y, "QR Code Disabled", colors::TEXT_SECONDARY, None);
 
-        // QRコードの説明
-        font.draw_string(
-            fb,
-            qr_x,
-            qr_y - 20,
-            "Scan for more info:",
-            colors::TEXT_SECONDARY,
-            None,
-        );
-    }
-
-    // 9. 停止コード
     let stop_y = (height - margin_y as u32 - 40) as i32;
-    let mut stop_code = String::new();
-    let _ = write!(stop_code, "Stop code: {}", info.error_code);
-    font.draw_string(fb, margin_x, stop_y, &stop_code, colors::TEXT_PRIMARY, None);
-
-    // 10. 進捗インジケータ（アニメーションは無理だが、静的に表示）
-    font.draw_string(
-        fb,
-        margin_x,
-        stop_y + 20,
-        "100% complete",
-        colors::TEXT_SECONDARY,
-        None,
-    );
-}
-
-/// テキストを指定幅で折り返す
-fn wrap_text(text: &str, max_width: usize) -> alloc::vec::Vec<String> {
-    let mut lines = alloc::vec::Vec::new();
-    let mut current_line = String::new();
-
-    for word in text.split_whitespace() {
-        if current_line.len() + word.len() + 1 > max_width {
-            if !current_line.is_empty() {
-                lines.push(current_line);
-                current_line = String::new();
-            }
-        }
-        if !current_line.is_empty() {
-            current_line.push(' ');
-        }
-        current_line.push_str(word);
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    lines
+    let mut buf = [0u8; 64];
+    let mut w = StackFmtWriter::new(&mut buf);
+    let _ = write!(w, "Stop code: {}", info.error_code);
+    font.draw_string(fb, margin_x, stop_y, w.as_str(), colors::TEXT_PRIMARY, None);
+    font.draw_string(fb, margin_x, stop_y + 20, "100% complete", colors::TEXT_SECONDARY, None);
 }
 
 // ============================================================================
 // パニックハンドラ統合用API
 // ============================================================================
 
-/// パニック情報からBSODを表示
-///
-/// パニックハンドラから呼び出されることを想定
-pub fn show_panic_bsod(message: &str, file: Option<&str>, line: Option<u32>, column: Option<u32>) {
-    // レジスタをキャプチャ
-    let registers = RegisterDump::capture();
-
-    // スタックトレースをキャプチャ
-    let backtrace = Backtrace::capture();
-
-    // エラーコード生成（簡略化）
-    let error_code = generate_error_code(message);
-
-    // BSOD情報を構築
-    let mut info = BsodInfo::new(message);
-
-    if let (Some(f), Some(l), Some(c)) = (file, line, column) {
-        info = info.with_location(f, l, c);
-    }
-
-    info = info
-        .with_backtrace(backtrace)
-        .with_registers(registers)
-        .with_error_code(&error_code);
-
-    // BSODを表示
-    display_bsod(&info);
+pub fn show_panic_bsod(info: &BsodInfo) {
+    display_bsod(info);
 }
 
-/// メッセージからエラーコードを生成
-fn generate_error_code(message: &str) -> String {
-    // メッセージの最初の単語を取得してエラーコードに変換
-    let first_word = message.split_whitespace().next().unwrap_or("UNKNOWN");
-
-    // 簡単なハッシュでコードを生成
-    let hash: u32 = first_word
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-
-    format!("0x{:08X}", hash)
-}
-
-/// Double Fault用のBSOD表示
 pub fn show_double_fault_bsod(
-    stack_frame: &x86_64::structures::idt::InterruptStackFrame,
+    _stack_frame: &x86_64::structures::idt::InterruptStackFrame,
     error_code: u64,
 ) {
-    let message = format!("DOUBLE FAULT: Error code {:#x}", error_code);
-
+    let mut msg_buf = [0u8; 128];
+    let mut w = StackFmtWriter::new(&mut msg_buf);
+    let _ = write!(w, "DOUBLE FAULT: Error code {:#x}", error_code);
+    
     let registers = RegisterDump::capture();
-
-    let mut info = BsodInfo::new(&message);
-    info = info
+    
+    let info = BsodInfo::new(w.as_str())
         .with_registers(registers)
         .with_error_code("DOUBLE_FAULT");
 
-    // スタックフレーム情報を追加
-    let mut extended_msg = String::new();
-    let _ = write!(
-        extended_msg,
-        "{}\nRIP: {:#018x}\nRSP: {:#018x}\nRFLAGS: {:#018x}",
-        message,
-        stack_frame.instruction_pointer.as_u64(),
-        stack_frame.stack_pointer.as_u64(),
-        stack_frame.cpu_flags
-    );
-    info.message = extended_msg;
-
+    dump_bsod_info_to_serial(&info);
     display_bsod(&info);
 }
