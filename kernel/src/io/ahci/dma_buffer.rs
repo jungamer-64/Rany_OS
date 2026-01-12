@@ -27,6 +27,11 @@ impl AhciDmaReadBuffer {
     pub fn new(sector_count: usize) -> Option<Self> {
         let size = sector_count * SECTOR_SIZE;
         let buffer = TypedDmaSlice::new(size)?;
+        crate::io::log::early_print("[DMA] AHCI ReadBuffer alloc size=");
+        crate::io::log::early_print_dec(size as u64);
+        crate::io::log::early_print(" phys=");
+        crate::io::log::early_print_hex(buffer.phys_addr().as_u64());
+        crate::io::log::early_print("\n");
 
         Some(Self {
             buffer: Some(buffer),
@@ -47,6 +52,12 @@ impl AhciDmaReadBuffer {
     pub fn start_transfer(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in transfer")?;
         let phys = buffer.phys_addr().as_u64();
+        // Diagnostic: log AHCI DMA start
+        crate::io::log::early_print("[DMA] AHCI start_transfer phys=");
+        crate::io::log::early_print_hex(phys);
+        crate::io::log::early_print(" size=");
+        crate::io::log::early_print_dec(self.size() as u64);
+        crate::io::log::early_print("\n");
         let (dev, guard) = buffer.start_dma();
         self.inflight = Some((dev, guard));
         Ok(phys)
@@ -85,6 +96,11 @@ impl AhciDmaWriteBuffer {
         let size = sector_count * SECTOR_SIZE;
 
         let mut buffer = TypedDmaSlice::new(size)?;
+        crate::io::log::early_print("[DMA] AHCI WriteBuffer alloc size=");
+        crate::io::log::early_print_dec(size as u64);
+        crate::io::log::early_print(" phys=");
+        crate::io::log::early_print_hex(buffer.phys_addr().as_u64());
+        crate::io::log::early_print("\n");
         buffer.as_mut_slice()[..data.len()].copy_from_slice(data);
 
         Some(Self {
@@ -106,6 +122,12 @@ impl AhciDmaWriteBuffer {
     pub fn start_transfer(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in transfer")?;
         let phys = buffer.phys_addr().as_u64();
+        // Diagnostic: log AHCI DMA start
+        crate::io::log::early_print("[DMA] AHCI start_transfer phys=");
+        crate::io::log::early_print_hex(phys);
+        crate::io::log::early_print(" size=");
+        crate::io::log::early_print_dec((self.sector_count * SECTOR_SIZE) as u64);
+        crate::io::log::early_print("\n");
         let (dev, guard) = buffer.start_dma();
         self.inflight = Some((dev, guard));
         Ok(phys)

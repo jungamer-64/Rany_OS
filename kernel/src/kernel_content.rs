@@ -447,8 +447,8 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
                     // Initialize PCI subsystem
                     // Initialize PCI subsystem
-                    // pci_driver::init(); // DISABLED FOR HEAP DEBUG
-                    // info!(target: "init", "PCI driver initialized");
+                    pci_driver::init();
+                    info!(target: "init", "PCI driver initialized");
 
                     // ACPI tables have been parsed; reclaim ACPI-reclaimable memory.
                     memory::reclaim_acpi_reclaimable(boot_info);
@@ -563,6 +563,8 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     domain_system::init();
     info!(target: "init", "Domain system initialized");
     io::log::early_print("[DEBUG] After domain_system::init\n");
+    // Check buddy heap integrity for early detection of corruption
+    crate::memory::verify_buddy_integrity();
 
     // 2.5. SAS（単一アドレス空間）の初期化
     info!(target: "init", "Initializing SAS");
@@ -647,122 +649,99 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     }
     io::log::early_print("[DEBUG] After Serial Driver\n");
     io::log::early_print("[DEBUG] calling info! for NVMe\n");
-    // 3.5.5. NVMeドライバの初期化（PCIスキャン）- DISABLED FOR DEBUGGING
-    io::log::early_print("[DEBUG] NVMe scan SKIPPED\n");
-    /*
+    // 3.5.5. NVMeドライバの初期化（PCIスキャン）
+    io::log::early_print("[DEBUG] NVMe scan STARTING\n");
     info!(target: "init", "Scanning for NVMe controllers...");
-    io::log::early_print("[DEBUG] Calling find_by_class\n");
     {
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use nvme_driver::driver_impl::NvmeDriverWrapper;
-        use pci_driver::find_by_class;
+        let mut nvme_controller_id: u8 = 0;
+        let nvme_devices = pci_driver::find_by_class(0x01, 0x08);
+        for dev in nvme_devices {
+            info!(target: "init", "NVMe controller found at {}", dev.bdf);
+            dev.enable_bus_master();
+            dev.enable_memory_space();
 
-        // PCIバススキャン（初期化）- すでにカーネルのio::init等で呼ばれている可能性もあるが、
-        // ここで再スキャンしても問題ないか、あるいはfind_by_classが内部でスキャンするか確認が必要。
-        // pci_driver::init(); // 必要なら呼ぶ
+            let iommu_device = crate::io::iommu::types::DeviceId::new(
+                dev.segment,
+                dev.bdf.bus(),
+                dev.bdf.device(),
+                dev.bdf.function(),
+            );
+            crate::io::nvme::set_iommu_device(iommu_device);
 
-        // NVMeコントローラを検索 (Class 01h, Subclass 08h, ProgIF 02h)
-        let devices = find_by_class(0x01, 0x08);
-        io::log::early_print("[DEBUG] Returned from find_by_class\n");
-        let _dev_count = devices.len();
-        io::log::early_print("[DEBUG] devices.len() obtained (no format)\n");
-        io::log::early_print("[DEBUG] About to call devices.iter().find()\n");
-        if let Some(device_info) = devices.iter().find(|d| d.class_code.prog_if == 0x02) {
-            io::log::early_print("[DEBUG] Found NVMe device, calling info!\n");
-            info!(target: "init", "NVMe controller found at {}", device_info.bdf);
+            if crate::io::nvme::with_driver(|_| ()).is_some() {
+                info!(target: "init", "NVMe driver already initialized, skipping");
+                continue;
+            }
 
-            // BAR0を取得 (NVMeは64bit BAR0/1を使うことが多い)
-            // bus.rsのPciDeviceInfo定義を見ると bars: [Option<Bar>; 6]
-            if let Some(bar0) = device_info.bars[0] {
+            if let Some(bar0) = dev.bars[0] {
                 let bar0_phys = bar0.base();
-                // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
-                // new_truncate()で無効な高位ビットをマスク
-                let bar0_virt =
-                    memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
-                info!(target: "init", "NVMe BAR0: phys={:#x} virt={:#x}", bar0_phys, bar0_virt);
+                let bar0_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                let num_cores = crate::smp::cpu_count();
 
-                // バス制御を有効化
-                device_info.enable_bus_master();
-                device_info.enable_memory_space();
-
-                // ドライバを登録
-                let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
-
-                // Register NVMe ISR Handler (Vector 48) - Reactor Pattern
-                io::interrupt_manager::register_handler(
-                    io::interrupt_manager::NVME_VECTOR,
-                    Box::new(io::nvme::per_core::irq_handler),
-                );
-
-                // プローブと開始
-                if let Err(e) = driver_registry::driver_registry()
-                    .probe_and_start(nvme_handle.expect("Failed to register NVMe driver"))
-                {
-                    error!(target: "init", "NVMe driver init failed: {:?}", e);
-                } else {
-                    info!(target: "init", "NVMe driver initialized via DriverRegistry");
+                match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
+                    Ok(()) => {
+                        info!(target: "init", "NVMe driver initialized (polling)");
+                        let apic_id = crate::io::apic::local_apic().id() as u32;
+                        let core_id = crate::smp::current_cpu();
+                        crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
+                        if let Err(e) = crate::io::nvme::register_with_io_scheduler(
+                            nvme_controller_id,
+                            1,
+                            num_cores,
+                        ) {
+                            warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
+                        }
+                        crate::io::log::early_print("[HEAP_CHECK] after NVMe controller init\n");
+                        crate::memory::verify_buddy_integrity();
+                    }
+                    Err(e) => {
+                        warn!(target: "init", "NVMe driver init failed: {}", e);
+                    }
                 }
             } else {
-                warn!(target: "init", "NVMe controller found but BAR0 is invalid");
+                warn!(target: "init", "NVMe controller found but BAR0 is missing");
             }
-        } else {
-            info!(target: "init", "No NVMe controller found");
+
+            nvme_controller_id = nvme_controller_id.wrapping_add(1);
         }
     }
-    */
 
-    // 3.5.6. AHCIドライバの初期化（PCIスキャン）- DISABLED FOR HEAP DEBUG
-    io::log::early_print("[DEBUG] AHCI scan SKIPPED\n");
-    /*
+
+    // 3.5.6. AHCIドライバの初期化（PCIスキャン）
+    io::log::early_print("[DEBUG] AHCI scan STARTING\n");
     info!(target: "init", "Scanning for AHCI controllers...");
     {
-        use ahci_driver::driver_impl::AhciDriverWrapper;
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use pci_driver::find_by_class;
+        let ahci_devices = pci_driver::find_by_class(0x01, 0x06);
+        for dev in ahci_devices {
+            info!(target: "init", "AHCI controller found at {}", dev.bdf);
+            dev.enable_bus_master();
+            dev.enable_memory_space();
 
-        // AHCIコントローラを検索 (Class 01h, Subclass 06h)
-        let devices = find_by_class(0x01, 0x06);
-        if let Some(device_info) = devices.first() {
-            info!(target: "init", "AHCI controller found at {}", device_info.bdf);
-
-            // BAR5 (ABAR) を取得
-            if let Some(bar5) = device_info.bars[5] {
-                let abar_phys = bar5.base();
-                // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
-                // new_truncate()で無効な高位ビットをマスク
-                let abar_virt =
-                    memory::phys_to_virt(x86_64::PhysAddr::new_truncate(abar_phys)).as_u64();
-                info!(target: "init", "AHCI ABAR: phys={:#x} virt={:#x}", abar_phys, abar_virt);
-
-                // バス制御を有効化
-                device_info.enable_bus_master();
-                device_info.enable_memory_space();
-
-                // ドライバを登録
-                let ahci_handle = register_driver(Box::new(AhciDriverWrapper::new(abar_virt, 11))); // IRQ hardcoded for now
-
-                // プローブと開始
-                if let Err(e) = driver_registry::driver_registry()
-                    .probe_and_start(ahci_handle.expect("Failed to register AHCI driver"))
-                {
-                    error!(target: "init", "AHCI driver init failed: {:?}", e);
-                } else {
-                    info!(target: "init", "AHCI driver initialized via DriverRegistry");
+            // Use BAR5 if available (common for AHCI HBA registers)
+            if let Some(bar5) = dev.bars[5] {
+                let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar5.base())).as_u64();
+                match crate::io::ahci::init_from_pci(base_virt) {
+                    Ok(controller) => {
+                        info!(target: "init", "AHCI controller initialized");
+                        // Register with IO scheduler for port handlers
+                        let first_port = controller.lock().get_port_start_index().unwrap_or(0) as u8;
+                        crate::io::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
+                        crate::io::log::early_print("[HEAP_CHECK] after AHCI controller init\n");
+                        crate::memory::verify_buddy_integrity();
+                    }
+                    Err(e) => {
+                        warn!(target: "init", "AHCI init failed: {:?}", e);
+                    }
                 }
             } else {
-                warn!(target: "init", "AHCI controller found but BAR5 is invalid");
+                warn!(target: "init", "AHCI controller found but BAR5 is missing");
             }
-        } else {
-            info!(target: "init", "No AHCI controller found");
         }
     }
-    */
 
-    // 3.5.7. USBドライバの初期化（PCIスキャン）- DISABLED FOR HEAP DEBUG
-    io::log::early_print("[DEBUG] USB scan SKIPPED\n");
-    /*
+
+    // 3.5.7. USBドライバの初期化（PCIスキャン）
+    io::log::early_print("[DEBUG] USB scan STARTING\n");
     info!(target: "init", "Scanning for USB xHCI controllers...");
     {
         use alloc::boxed::Box;
@@ -804,10 +783,8 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             }
         }
     }
-    */
-    // 3.5.8. ドライバ初期化サマリ - DISABLED FOR HEAP DEBUG
-    io::log::early_print("[DEBUG] Driver Summary SKIPPED\n");
-    /*
+    // 3.5.8. ドライバ初期化サマリ
+    io::log::early_print("[DEBUG] Driver Summary STARTING\n");
     {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
@@ -818,7 +795,6 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         }
         info!(target: "init", "==============================");
     }
-    */
 
     // 3.6. ネットワークサブシステムの初期化 - DISABLED FOR HEAP DEBUG
     io::log::early_print("[DEBUG] Network init SKIPPED\n");
