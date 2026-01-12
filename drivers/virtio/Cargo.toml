@@ -18,6 +18,7 @@ path = "src/lib.rs"
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
 spin = "0.10"
+log = "0.4"
 
 [features]
 default = []

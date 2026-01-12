@@ -125,6 +125,20 @@ impl SystemIntegration {
         self.status = IntegrationStatus::Complete;
         self.log("System integration complete!");
 
+        // Diagnostic: print Net Bridge and Network configuration/stats
+        let bridge_stats = crate::net::get_bridge_stats();
+        self.log(&alloc::format!("  Net Bridge stats: init={} rx={} tx={}", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets));
+        if let Some(cfg) = crate::net::get_real_config() {
+            self.log(&alloc::format!("  Net Config: IP={:?} MAC={:02x?}", cfg.ip, cfg.mac));
+        } else {
+            self.log("  Net Config: none");
+        }
+        if let Some(stats) = crate::net::get_network_stats() {
+            self.log(&alloc::format!("  Net Stack stats: rx={} tx={} rx_bytes={} tx_bytes={}", stats.rx_packets, stats.tx_packets, stats.rx_bytes, stats.tx_bytes));
+        } else {
+            self.log("  Net Stack stats: none");
+        }
+
         Ok(())
     }
 
@@ -341,21 +355,148 @@ impl SystemIntegration {
                             crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
                                 .as_u64();
 
-                        // Register Driver via DriverRegistry
+                        // Attempt to initialize VirtIO-Net via PCI transport (vendor-specific capabilities)
+                        let mut initialized_via_pci = false;
+                        {
+
+                            let bus = dev.bdf.bus();
+                            let device = dev.bdf.device();
+                            let function = dev.bdf.function();
+
+                            let mut common_cfg: Option<(u8, u32, u32)> = None; // (bar, offset, length)
+                            let mut notify_cfg: Option<(u8, u32, u32)> = None;
+                            let mut isr_cfg: Option<(u8, u32, u32)> = None;
+                            let mut device_cfg: Option<(u8, u32, u32)> = None;
+                            let mut notify_multiplier: u32 = 1;
+
+                            for (_cap_id, cap_ptr) in &dev.capabilities {
+                                // Some PCI implementations expose vendor-specific capabilities for VirtIO;
+                                // read the raw capability ID from config space and filter for 0x09 (vendor-specific)
+                                let cap_id_raw = crate::io::pci::pci_read8(bus, device, function, *cap_ptr);
+                                if cap_id_raw != 0x09 {
+                                    continue;
+                                }
+                                let ptr = *cap_ptr;
+                                let cfg_type = crate::io::pci::pci_read8(bus, device, function, ptr + 3);
+                                let bar = crate::io::pci::pci_read8(bus, device, function, ptr + 4);
+                                let offset = crate::io::pci::pci_read(bus, device, function, (ptr + 8) as u8);
+                                let length = crate::io::pci::pci_read(bus, device, function, (ptr + 12) as u8);
+
+                                match cfg_type {
+                                    1 => common_cfg = Some((bar, offset, length)),
+                                    2 => {
+                                        notify_cfg = Some((bar, offset, length));
+                                        notify_multiplier = crate::io::pci::pci_read(bus, device, function, (ptr + 16) as u8) as u32;
+                                    }
+                                    3 => isr_cfg = Some((bar, offset, length)),
+                                    4 => device_cfg = Some((bar, offset, length)),
+                                    _ => {}
+                                }
+                            }
+
+                            if let (Some((cbar, coff, _)), Some((dbar, doff, _))) = (common_cfg, device_cfg) {
+                                // Resolve BAR bases
+                                if (cbar as usize) < dev.bars.len() && (dbar as usize) < dev.bars.len() {
+                                    if let (Some(cbar_info), Some(dbar_info)) = (dev.bars[cbar as usize], dev.bars[dbar as usize]) {
+                                        let common_phys = cbar_info.base() + (coff as u64);
+                                        let device_phys = dbar_info.base() + (doff as u64);
+
+                                        let common_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(common_phys)).as_u64() as usize;
+                                        let device_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(device_phys)).as_u64() as usize;
+
+                                        // Notify and ISR addresses (optional)
+                                        let notify_virt = if let Some((nbar, noff, _)) = notify_cfg {
+                                            if (nbar as usize) < dev.bars.len() {
+                                                if let Some(nbar_info) = dev.bars[nbar as usize] {
+                                                    let nphys = nbar_info.base() + (noff as u64);
+                                                    crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(nphys)).as_u64() as usize
+                                                } else { 0 }
+                                            } else { 0 }
+                                        } else { 0 };
+
+                                        let isr_virt = if let Some((ibar, ioff, _)) = isr_cfg {
+                                            if (ibar as usize) < dev.bars.len() {
+                                                if let Some(ibar_info) = dev.bars[ibar as usize] {
+                                                    let iphys = ibar_info.base() + (ioff as u64);
+                                                    crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(iphys)).as_u64() as usize
+                                                } else { 0 }
+                                            } else { 0 }
+                                        } else { 0 };
+
+                                        // Build PCI transport
+                                        use crate::io::virtio::{VirtioPciTransport, VirtioDeviceType};
+
+                                        match unsafe {
+                                            VirtioPciTransport::new(
+                                                dev.bdf.to_u16() as u32,
+                                                common_virt,
+                                                notify_virt,
+                                                notify_multiplier,
+                                                isr_virt,
+                                                device_virt,
+                                                VirtioDeviceType::Network,
+                                            )
+                                        } {
+                                            Ok(transport) => {
+                                                // Initialize global VirtIO-Net with PCI transport
+                                                match crate::io::virtio::init_virtio_net_with_transport(Box::new(transport)) {
+                                                    Ok(()) => {
+                                                        self.log("    VirtIO-net PCI transport initialized");
+                                                        initialized_via_pci = true;
+
+                                                        // Ensure Net Bridge is initialized (idempotent)
+                                                        if !crate::net::driver_bridge::is_initialized() {
+                                                            match crate::net::init_driver_bridge() {
+                                                                Ok(()) => self.log("    Net Bridge initialized by integration"),
+                                                                Err(_) => self.log("    Net Bridge init failed"),
+                                                            }
+                                                        } else {
+                                                            self.log("    Net Bridge already initialized");
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        self.log(&alloc::format!("    VirtIO-net PCI init failed: {:?}", e));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                self.log(&alloc::format!("    Failed to create VirtioPciTransport: {:?}", e));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Register Driver via DriverRegistry (prefer PCI init if available)
                         use alloc::boxed::Box;
                         use crate::driver_registry::{register_driver, driver_registry};
                         use crate::net::driver::VirtioNetDriver;
 
-                        let drv = Box::new(VirtioNetDriver::new_with_device(bar0_virt as u64, iommu_device));
-                        match register_driver(drv) {
-                            Ok(handle) => {
-                                if let Err(e) = driver_registry().probe_and_start(handle) {
-                                    self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
-                                } else {
-                                    self.log("    VirtIO-net driver initialized via DriverRegistry");
+                        if initialized_via_pci {
+                            let drv = Box::new(VirtioNetDriver::new());
+                            match register_driver(drv) {
+                                Ok(handle) => {
+                                    if let Err(e) = driver_registry().probe_and_start(handle) {
+                                        self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
+                                    } else {
+                                        self.log("    VirtIO-net driver initialized via DriverRegistry");
+                                    }
                                 }
+                                Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
                             }
-                            Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
+                        } else {
+                            let drv = Box::new(VirtioNetDriver::new_with_device(bar0_virt as u64, iommu_device));
+                            match register_driver(drv) {
+                                Ok(handle) => {
+                                    if let Err(e) = driver_registry().probe_and_start(handle) {
+                                        self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
+                                    } else {
+                                        self.log("    VirtIO-net driver initialized via DriverRegistry");
+                                    }
+                                }
+                                Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
+                            }
                         }
                     } else {
                         self.log("    VirtIO-net found but BAR0 is missing, skipping init");

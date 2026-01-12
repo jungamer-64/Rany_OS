@@ -2,20 +2,21 @@
 // src/io/virtio/transport.rs - VirtIO Transport Layer Abstraction
 // ============================================================================
 //!
-//! # VirtIO 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝亥ｱ､謚ｽ雎｡蛹・
+//! # VirtIO トランスポート層抽象化
 //!
-//! VirtIO莉墓ｧ假ｿｽE繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝亥ｱ､・ｽE・ｽEMIO縲￣CI・ｽE・ｽ繧呈歓雎｡蛹悶☆繧九ヨ繝ｬ繧､繝亥ｮ夂ｾｩ縲・
-//! 繝・・ｽ・ｽ繧､繧ｹ繝峨Λ繧､繝撰ｿｽE繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝医↓萓晏ｭ倥○縺壹∫ｵｱ荳逧・・ｽ・ｽ繧､繝ｳ繧ｿ繝ｼ繝輔ぉ繝ｼ繧ｹ縺ｧ
-//! VirtIO繝・・ｽ・ｽ繧､繧ｹ縺ｫ繧｢繧ｯ繧ｻ繧ｹ縺ｧ縺阪ｋ縲・
+//! VirtIO仕様に基づくトランスポート層（MMIO、PCI）を抽象化するトレイト定義。
+//! デバイスドライバはトランスポートに依存せず、統一的なインターフェースで
+//! VirtIOデバイスにアクセスできる。
 //!
-//! ## 繧ｵ繝晢ｿｽE繝医☆繧九ヨ繝ｩ繝ｳ繧ｹ繝晢ｿｽE繝・
-//! - MMIO (Memory Mapped I/O) - ARM/RISC-V蜷代￠
-//! - PCI (Legacy/Modern) - x86_64蜷代￠
+//! ## サポートするトランスポート
+//! - MMIO (Memory Mapped I/O) - ARM/RISC-V向け
+//! - PCI (Legacy/Modern) - x86_64向け
 //!
-//! ## 蜿り・
+//! ## 参考
 //! - VirtIO Specification v1.2
 //! - MMIO Transport: Section 4.2
 //! - PCI Transport: Section 4.1
+//!
 
 #![allow(dead_code)]
 
@@ -50,73 +51,73 @@ pub enum TransportError {
     OutOfResources,
 }
 
-/// 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝育ｵ先棡蝙・
+/// トランスポート結果型
 pub type TransportResult<T> = Result<T, TransportError>;
 
 // ============================================================================
 // VirtIO Transport Trait
 // ============================================================================
 
-/// VirtIO繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝亥ｱ､繝医Ξ繧､繝・
+/// VirtIOトランスポート層トレイト
 ///
-/// MMIO縺ｨPCI縺ｮ荳｡譁ｹ縺ｮ繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝医ｒ謚ｽ雎｡蛹悶☆繧九・
-/// 繝・・ｽ・ｽ繧､繧ｹ繝峨Λ繧､繝撰ｿｽE縺難ｿｽE繝医Ξ繧､繝医ｒ騾壹§縺ｦVirtIO繝・・ｽ・ｽ繧､繧ｹ縺ｫ繧｢繧ｯ繧ｻ繧ｹ縺吶ｋ縲・
+/// MMIOとPCIの両方のトランスポートを抽象化する。
+/// デバイスドライバはこのトレイトを通じてVirtIOデバイスにアクセスする。
 pub trait VirtioTransport: Send + Sync {
-    /// 繝・・ｽ・ｽ繧､繧ｹ繧ｿ繧､繝励ｒ蜿門ｾ・
+    /// デバイスタイプを取得
     fn device_type(&self) -> VirtioDeviceType;
 
-    /// 繝・・ｽ・ｽ繧､繧ｹ繧ｹ繝・・ｽE繧ｿ繧ｹ繧貞叙蠕・
+    /// デバイスステータスを取得
     fn get_status(&self) -> u8;
 
-    /// 繝・・ｽ・ｽ繧､繧ｹ繧ｹ繝・・ｽE繧ｿ繧ｹ繧定ｨｭ螳・
+    /// デバイスステータスを設定
     fn set_status(&mut self, status: u8);
 
-    /// 繝・・ｽ・ｽ繧､繧ｹ繧偵Μ繧ｻ繝・・ｽ・ｽ
+    /// デバイスをリセット
     fn reset(&mut self) {
         self.set_status(status::VIRTIO_STATUS_RESET);
     }
 
-    /// 繝・・ｽ・ｽ繧､繧ｹ繝輔ぅ繝ｼ繝√Ε繧貞叙蠕暦ｼ医ン繝・・ｽ・ｽ0-31・ｽE・ｽE
+    /// デバイスフィーチャを取得（ビット0-31）
     fn get_device_features_low(&self) -> u32;
 
-    /// 繝・・ｽ・ｽ繧､繧ｹ繝輔ぅ繝ｼ繝√Ε繧貞叙蠕暦ｼ医ン繝・・ｽ・ｽ32-63・ｽE・ｽE
+    /// デバイスフィーチャを取得（ビット32-63）
     fn get_device_features_high(&self) -> u32;
 
-    /// 繝・・ｽ・ｽ繧､繧ｹ繝輔ぅ繝ｼ繝√Ε繧貞叙蠕暦ｼ・4繝薙ャ繝茨ｼ・
+    /// デバイスフィーチャを取得（64ビット）
     fn get_device_features(&self) -> u64 {
         let low = self.get_device_features_low() as u64;
         let high = self.get_device_features_high() as u64;
         low | (high << 32)
     }
 
-    /// 繝峨Λ繧､繝舌ヵ繧｣繝ｼ繝√Ε繧定ｨｭ螳夲ｼ医ン繝・・ｽ・ｽ0-31・ｽE・ｽE
+    /// ドライバフィーチャを設定（ビット0-31）
     fn set_driver_features_low(&mut self, features: u32);
 
-    /// 繝峨Λ繧､繝舌ヵ繧｣繝ｼ繝√Ε繧定ｨｭ螳夲ｼ医ン繝・・ｽ・ｽ32-63・ｽE・ｽE
+    /// ドライバフィーチャを設定（ビット32-63）
     fn set_driver_features_high(&mut self, features: u32);
 
-    /// 繝峨Λ繧､繝舌ヵ繧｣繝ｼ繝√Ε繧定ｨｭ螳夲ｼ・4繝薙ャ繝茨ｼ・
+    /// ドライバフィーチャを設定（64ビット）
     fn set_driver_features(&mut self, features: u64) {
         self.set_driver_features_low(features as u32);
         self.set_driver_features_high((features >> 32) as u32);
     }
 
-    /// 繧ｭ繝･繝ｼ謨ｰ繧貞叙蠕・
+    /// キュー数を取得
     fn get_num_queues(&self) -> u16;
 
-    /// 繧ｭ繝･繝ｼ繧帝∈謚・
+    /// キューを選択
     fn select_queue(&mut self, queue_index: u16);
 
-    /// 驕ｸ謚槭＆繧後◆繧ｭ繝･繝ｼ縺ｮ譛螟ｧ繧ｵ繧､繧ｺ繧貞叙蠕・
+    /// 選択されたキューの最大サイズを取得
     fn get_queue_max_size(&self) -> u16;
 
-    /// 繧ｭ繝･繝ｼ繧ｵ繧､繧ｺ繧定ｨｭ螳・
+    /// キューサイズを設定
     fn set_queue_size(&mut self, size: u16);
 
-    /// 繧ｭ繝･繝ｼ縺梧怏蜉ｹ縺九←縺・・ｽ・ｽ繧堤｢ｺ隱・
+    /// キューが有効かどうかを確認
     fn is_queue_ready(&self) -> bool;
 
-    /// 繧ｭ繝･繝ｼ繧呈怏蜉ｹ蛹・
+    /// キューを有効化
     fn enable_queue(&mut self);
 
     /// キューを無効化
@@ -142,8 +143,8 @@ pub trait VirtioTransport: Send + Sync {
     /// 割り込みステータスを取得
     fn get_interrupt_status(&self) -> u32;
 
-    /// 割り込みACK
-    fn ack_interrupt(&mut self, status: u32);
+    /// 割り込みACK (updated to &self)
+    fn ack_interrupt(&self, status: u32);
 
     /// コンフィグ空間から8ビット値を読み取り
     fn read_config_u8(&self, offset: usize) -> u8;
@@ -161,37 +162,37 @@ pub trait VirtioTransport: Send + Sync {
         low | (high << 32)
     }
 
-    /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙↓8繝薙ャ繝亥､繧呈嶌縺崎ｾｼ縺ｿ
+    /// コンフィグ空間に8ビット値を書き込み
     fn write_config_u8(&mut self, offset: usize, value: u8);
 
-    /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙↓16繝薙ャ繝亥､繧呈嶌縺崎ｾｼ縺ｿ
+    /// コンフィグ空間に16ビット値を書き込み
     fn write_config_u16(&mut self, offset: usize, value: u16);
 
-    /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙↓32繝薙ャ繝亥､繧呈嶌縺崎ｾｼ縺ｿ
+    /// コンフィグ空間に32ビット値を書き込み
     fn write_config_u32(&mut self, offset: usize, value: u32);
 
-    /// 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝育ｨｮ蛻･繧貞叙蠕・
+    /// トランスポート種別を取得
     fn transport_type(&self) -> TransportType;
 
-    /// MSI-X蟇ｾ蠢懊°縺ｩ縺・・ｽ・ｽ・ｽE・ｽECI transport逕ｨ・ｽE・ｽE
+    /// MSI-X対応かどうか（PCI transport用）
     fn supports_msix(&self) -> bool {
         false
     }
 
-    /// MSI-X繧定ｨｭ螳夲ｼ・CI transport逕ｨ・ｽE・ｽE
+    /// MSI-Xを設定（PCI transport用）
     fn configure_msix(&mut self, _queue_index: u16, _vector: u16) -> TransportResult<()> {
         Err(TransportError::UnsupportedVersion)
     }
 }
 
-/// 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝育ｨｮ蛻･
+/// トランスポート種別
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
-    /// MMIO 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝・
+    /// MMIO トランスポート
     Mmio,
-    /// PCI Legacy 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝・
+    /// PCI Legacy トランスポート
     PciLegacy,
-    /// PCI Modern 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝・(VIRTIO_F_VERSION_1)
+    /// PCI Modern トランスポート (VIRTIO_F_VERSION_1)
     PciModern,
 }
 
@@ -199,7 +200,7 @@ pub enum TransportType {
 // MMIO Transport Implementation
 // ============================================================================
 
-/// MMIO繝ｬ繧ｸ繧ｹ繧ｿ繧ｪ繝輔そ繝・・ｽ・ｽ
+/// MMIOレジスタオフセット
 mod mmio_regs {
     pub const MAGIC_VALUE: usize = 0x000;
     pub const VERSION: usize = 0x004;
@@ -226,21 +227,21 @@ mod mmio_regs {
     pub const CONFIG: usize = 0x100;
 }
 
-/// VirtIO MMIO 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝・
+/// VirtIO MMIO トランスポート
 pub struct VirtioMmioTransport {
-    /// MMIO繝呻ｿｽE繧ｹ繧｢繝峨Ξ繧ｹ
+    /// MMIOベースアドレス
     base: usize,
-    /// 繝・・ｽ・ｽ繧､繧ｹ繧ｿ繧､繝・
+    /// デバイスタイプ
     device_type: VirtioDeviceType,
 }
 
 impl VirtioMmioTransport {
     const MAGIC: u32 = 0x74726976; // "virt"
 
-    /// 譁ｰ縺励＞MMIO繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝医ｒ菴懶ｿｽE
+    /// 新しいMMIOトランスポートを作成
     ///
     /// # Safety
-    /// - `base` 縺ｯ譛牙柑縺ｪMMIO繧｢繝峨Ξ繧ｹ繧呈欠縺吝ｿ・・ｽ・ｽ縺後≠繧・
+    /// - `base` は有効なMMIOアドレスを指す必要がある。
     pub unsafe fn new(base: usize) -> TransportResult<Self> {
         let magic = Self::read32_raw(base, mmio_regs::MAGIC_VALUE);
         if magic != Self::MAGIC {
@@ -258,25 +259,25 @@ impl VirtioMmioTransport {
         Ok(Self { base, device_type })
     }
 
-    /// 逕滂ｿｽEMMIO隱ｭ縺ｿ蜿悶ｊ
+    /// 生MMIO読み取り
     #[inline]
     fn read32_raw(base: usize, offset: usize) -> u32 {
         hal::mmio::mmio_read_u32(base + offset)
     }
 
-    /// 逕滂ｿｽEMMIO譖ｸ縺崎ｾｼ縺ｿ
+    /// 生MMIO書き込み
     #[inline]
     fn write32_raw(base: usize, offset: usize, value: u32) {
         hal::mmio::mmio_write_u32(base + offset, value);
     }
 
-    /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ
+    /// 32ビットレジスタを読み取り
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
         Self::read32_raw(self.base, offset)
     }
 
-    /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ
+    /// 32ビットレジスタに書き込み
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
         Self::write32_raw(self.base, offset, value)
@@ -317,8 +318,8 @@ impl VirtioTransport for VirtioMmioTransport {
     }
 
     fn get_num_queues(&self) -> u16 {
-        // MMIO縺ｧ縺ｯ譏守､ｺ逧・・ｽ・ｽ繧ｭ繝･繝ｼ謨ｰ繝輔ぅ繝ｼ繝ｫ繝峨′縺ｪ縺・・ｽ・ｽ繧√・
-        // 蜷・・ｽ・ｽ繝･繝ｼ繧帝∈謚槭＠縺ｦ繧ｵ繧､繧ｺ繧堤｢ｺ隱阪☆繧・
+        // MMIOでは明示的なキュー数フィールドがないため、
+        // 各キューを選択してサイズを確認する
         for i in 0..16 {
             self.write32(mmio_regs::QUEUE_SEL, i as u32);
             if self.read32(mmio_regs::QUEUE_NUM_MAX) == 0 {
@@ -368,7 +369,11 @@ impl VirtioTransport for VirtioMmioTransport {
     }
 
     fn notify_queue(&mut self, queue_index: u16) {
+        let addr = (self.base + mmio_regs::QUEUE_NOTIFY) as usize;
+        log::info!("[EARLY][VIRTIO-MMIO] notify_queue queue={} addr=0x{:x}", queue_index, addr);
         self.write32(mmio_regs::QUEUE_NOTIFY, queue_index as u32);
+        let read_back = self.read32(mmio_regs::QUEUE_NOTIFY);
+        log::info!("[EARLY][VIRTIO-MMIO] notify wrote {}, read_back=0x{:x}", queue_index, read_back);
     }
 
     fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
@@ -379,7 +384,7 @@ impl VirtioTransport for VirtioMmioTransport {
         self.read32(mmio_regs::INTERRUPT_STATUS)
     }
 
-    fn ack_interrupt(&mut self, status: u32) {
+    fn ack_interrupt(&self, status: u32) {
         self.write32(mmio_regs::INTERRUPT_ACK, status);
     }
 
@@ -436,31 +441,31 @@ mod pci_common_cfg {
     pub const QUEUE_USED: usize = 0x30;
 }
 
-/// VirtIO PCI 繝医Λ繝ｳ繧ｹ繝昴・繝・(Modern)
+/// VirtIO PCI トランスポート (Modern)
 pub struct VirtioPciTransport {
-    /// BDF (Bus/Device/Function) 繧｢繝峨Ξ繧ｹ
+    /// BDF (Bus/Device/Function) アドレス
     bdf: u32,
-    /// Common Configuration BAR 繧｢繝峨Ξ繧ｹ
+    /// Common Configuration BAR アドレス
     common_cfg_addr: usize,
-    /// Notify BAR 繧｢繝峨Ξ繧ｹ
+    /// Notify BAR アドレス
     notify_addr: usize,
-    /// Notify 繧ｪ繝輔そ繝・ヨ荵玲焚
+    /// Notify オフセット乗数
     notify_off_multiplier: u32,
-    /// ISR BAR 繧｢繝峨Ξ繧ｹ
+    /// ISR BAR アドレス
     isr_addr: usize,
-    /// Device Configuration BAR 繧｢繝峨Ξ繧ｹ
+    /// Device Configuration BAR アドレス
     device_cfg_addr: usize,
-    /// 繝・ヰ繧､繧ｹ繧ｿ繧､繝・
+    /// デバイスタイプ
     device_type: VirtioDeviceType,
-    /// MSI-X蟇ｾ蠢・
+    /// MSI-X対応
     msix_enabled: bool,
 }
 
 impl VirtioPciTransport {
-    /// 譁ｰ縺励＞PCI繝医Λ繝ｳ繧ｹ繝昴・繝医ｒ菴懈・
+    /// 新しいPCIトランスポートを作成
     ///
     /// # Safety
-    /// - 蜷ВAR繧｢繝峨Ξ繧ｹ縺ｯ譛牙柑縺ｪMMIO繧｢繝峨Ξ繧ｹ繧呈欠縺吝ｿ・・ｽ・ｽ縺後≠繧・
+    /// - 各BARアドレスは有効なMMIOアドレスを指す必要がある。
     pub unsafe fn new(
         bdf: u32,
         common_cfg_addr: usize,
@@ -482,55 +487,55 @@ impl VirtioPciTransport {
         })
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタ読み取り（8ビット）
     #[inline]
     fn read_common_u8(&self, offset: usize) -> u8 {
         hal::mmio::mmio_read_u8((self.common_cfg_addr + offset) as usize)
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE6繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタ読み取り（16ビット）
     #[inline]
     fn read_common_u16(&self, offset: usize) -> u16 {
         hal::mmio::mmio_read_u16((self.common_cfg_addr + offset) as usize)
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE2繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタ読み取り（32ビット）
     #[inline]
     fn read_common_u32(&self, offset: usize) -> u32 {
         hal::mmio::mmio_read_u32((self.common_cfg_addr + offset) as usize)
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE4繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタ読み取り（64ビット）
     #[inline]
     fn read_common_u64(&self, offset: usize) -> u64 {
         hal::mmio::mmio_read_u64((self.common_cfg_addr + offset) as usize)
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタに書き込み（8ビット）
     #[inline]
     fn write_common_u8(&self, offset: usize, value: u8) {
         hal::mmio::mmio_write_u8((self.common_cfg_addr + offset) as usize, value);
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE6繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタに書き込み（16ビット）
     #[inline]
     fn write_common_u16(&self, offset: usize, value: u16) {
         hal::mmio::mmio_write_u16((self.common_cfg_addr + offset) as usize, value);
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE2繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタに書き込み（32ビット）
     #[inline]
     fn write_common_u32(&self, offset: usize, value: u32) {
         hal::mmio::mmio_write_u32((self.common_cfg_addr + offset) as usize, value);
     }
 
-    /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE4繝薙ャ繝茨ｼ・
+    /// Common Configuration レジスタに書き込み（64ビット）
     #[inline]
     fn write_common_u64(&self, offset: usize, value: u64) {
         hal::mmio::mmio_write_u64((self.common_cfg_addr + offset) as usize, value);
     }
 
-    /// 繧ｭ繝･繝ｼ縺ｮ騾夂衍繧ｪ繝輔そ繝・・ｽ・ｽ繧貞叙蠕・
+    /// キューの通知オフセットを取得
     fn get_queue_notify_offset(&self) -> u16 {
         self.read_common_u16(pci_common_cfg::QUEUE_NOTIFY_OFF)
     }
@@ -610,15 +615,21 @@ impl VirtioTransport for VirtioPciTransport {
     }
 
     fn notify_queue(&mut self, queue_index: u16) {
-        // 繧ｭ繝･繝ｼ繧帝∈謚槭＠縺ｦ騾夂衍繧ｪ繝輔そ繝・・ｽ・ｽ繧貞叙蠕・
+        // Select the queue in the device common config
         self.write_common_u16(pci_common_cfg::QUEUE_SELECT, queue_index);
         let notify_off = self.get_queue_notify_offset() as usize;
 
-        // 騾夂衍繧｢繝峨Ξ繧ｹ繧定ｨ育ｮ・
+        // Compute notify doorbell address using the multiplier
         let notify_addr = self.notify_addr + notify_off * self.notify_off_multiplier as usize;
 
-        // 騾夂衍繧帝∽ｿ｡
+        log::info!("[EARLY][VIRTIO-PCI] notify_queue queue={} notify_off={} notify_mult={} notify_addr=0x{:x}", queue_index, notify_off, self.notify_off_multiplier, notify_addr);
+
+        // Perform the doorbell write (16-bit)
         hal::mmio::mmio_write_u16(notify_addr as usize, queue_index);
+
+        // Read back for diagnostics (may not reflect device state)
+        let read_back = hal::mmio::mmio_read_u16(notify_addr as usize);
+        log::info!("[EARLY][VIRTIO-PCI] notify_queue wrote {} read_back=0x{:x}", queue_index, read_back);
     }
 
     fn get_notify_addr(&mut self, queue_index: u16) -> Option<u64> {
@@ -631,8 +642,8 @@ impl VirtioTransport for VirtioPciTransport {
         hal::mmio::mmio_read_u8(self.isr_addr as usize) as u32
     }
 
-    fn ack_interrupt(&mut self, _status: u32) {
-        // PCI transport縺ｧ縺ｯISR繧定ｪｭ繧縺縺代〒ACK縺ｫ縺ｪ繧・
+    fn ack_interrupt(&self, _status: u32) {
+        // PCI transportではISRを読むだけでACKになる
         let _ = self.get_interrupt_status();
     }
 
@@ -672,7 +683,7 @@ impl VirtioTransport for VirtioPciTransport {
         self.write_common_u16(pci_common_cfg::QUEUE_SELECT, queue_index);
         self.write_common_u16(pci_common_cfg::QUEUE_MSIX_VECTOR, vector);
 
-        // 險ｭ螳壹′謌仙粥縺励◆縺狗｢ｺ隱・
+        // 設定が成功したか確認
         let configured = self.read_common_u16(pci_common_cfg::QUEUE_MSIX_VECTOR);
         if configured == vector {
             self.msix_enabled = true;
@@ -687,41 +698,41 @@ impl VirtioTransport for VirtioPciTransport {
 // Device Initialization Helper
 // ============================================================================
 
-/// 繝・・ｽ・ｽ繧､繧ｹ蛻晄悄蛹厄ｿｽE繝ｫ繝托ｿｽE
+/// デバイス初期化ヘルパー
 pub struct VirtioDeviceInit<'a, T: VirtioTransport> {
     transport: &'a mut T,
 }
 
 impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
-    /// 譁ｰ縺励＞蛻晄悄蛹厄ｿｽE繝ｫ繝托ｿｽE繧剃ｽ懶ｿｽE
+    /// 新しい初期化ヘルパーを作成
     pub fn new(transport: &'a mut T) -> Self {
         Self { transport }
     }
 
-    /// 讓呎ｺ也噪縺ｪ蛻晄悄蛹悶す繝ｼ繧ｱ繝ｳ繧ｹ繧貞ｮ溯｡・
+    /// 標準的な初期化シーケンスを実行
     pub fn initialize(&mut self, required_features: u64) -> TransportResult<u64> {
-        // 1. 繝・・ｽ・ｽ繧､繧ｹ繧偵Μ繧ｻ繝・・ｽ・ｽ
+        // 1. デバイスをリセット
         self.transport.reset();
 
-        // 2. ACKNOWLEDGE 繧定ｨｭ螳・
+        // 2. ACKNOWLEDGE を設定
         self.transport.set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
 
-        // 3. DRIVER 繧定ｨｭ螳・
+        // 3. DRIVER を設定
         let mut current_status = self.transport.get_status();
         current_status |= status::VIRTIO_STATUS_DRIVER;
         self.transport.set_status(current_status);
 
-        // 4. 繝輔ぅ繝ｼ繝√Ε繝阪ざ繧ｷ繧ｨ繝ｼ繧ｷ繝ｧ繝ｳ
+        // 4. フィーチャネゴシエーション
         let device_features = self.transport.get_device_features();
         let negotiated_features = device_features & required_features;
         self.transport.set_driver_features(negotiated_features);
 
-        // 5. FEATURES_OK 繧定ｨｭ螳・
+        // 5. FEATURES_OK を設定
         current_status = self.transport.get_status();
         current_status |= status::VIRTIO_STATUS_FEATURES_OK;
         self.transport.set_status(current_status);
 
-        // 6. FEATURES_OK 縺瑚ｨｭ螳壹＆繧後◆縺薙→繧堤｢ｺ隱・
+        // 6. FEATURES_OK が設定されたことを確認
         let status_check = self.transport.get_status();
         if (status_check & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
             self.transport.set_status(status::VIRTIO_STATUS_FAILED);
@@ -731,13 +742,13 @@ impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
         Ok(negotiated_features)
     }
 
-    /// DRIVER_OK 繧定ｨｭ螳壹＠縺ｦ繝・・ｽ・ｽ繧､繧ｹ繧剃ｽｿ逕ｨ蜿ｯ閭ｽ縺ｫ縺吶ｋ
+    /// DRIVER_OK を設定してデバイスを使用可能にする
     pub fn finish_init(&mut self) -> TransportResult<()> {
         let mut current_status = self.transport.get_status();
         current_status |= status::VIRTIO_STATUS_DRIVER_OK;
         self.transport.set_status(current_status);
 
-        // 繝・・ｽ・ｽ繧､繧ｹ縺後お繝ｩ繝ｼ迥ｶ諷九〒縺ｪ縺・・ｽ・ｽ縺ｨ繧堤｢ｺ隱・
+        // デバイスがエラー状態でないことを確認
         let final_status = self.transport.get_status();
         if (final_status & status::VIRTIO_STATUS_FAILED) != 0 {
             return Err(TransportError::DeviceError);
@@ -755,7 +766,7 @@ impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
 mod tests {
     use super::*;
 
-    // 繝｢繝・・ｽ・ｽ繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝・for testing
+    // モックトランスポート for testing
     struct MockTransport {
         status: u8,
         device_features: u64,
@@ -838,7 +849,7 @@ mod tests {
         fn get_interrupt_status(&self) -> u32 {
             0
         }
-        fn ack_interrupt(&mut self, _status: u32) {}
+        fn ack_interrupt(&self, _status: u32) {} // Updated to &self
         fn read_config_u8(&self, _offset: usize) -> u8 {
             0
         }

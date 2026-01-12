@@ -30,11 +30,13 @@ members = [
     "apps",
     "libs/boot_proto",
     "bootloader",
-    # NOTE: `tools/framebuffer_bench`, `tools/signer`, and `tools/cap_harness` are intentionally not workspace members
+    # dev tool: symbol lookup helper (not part of standard critical tools)
+    # "tools/symlookup",
+    # NOTE: `tools/framebuffer_bench`, `tools/signer`, `tools/cap_harness` and `tools/symlookup` are intentionally not workspace members
     # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues.
     # They are runnable via their manifest paths.
 ]
-exclude = ["tools/framebuffer_bench", "tools/signer", "tools/cap_harness"]
+exclude = ["tools/framebuffer_bench", "tools/signer", "tools/cap_harness", "tools/symlookup"]
 
 [workspace.package]
 edition = "2024"
@@ -105,5 +107,4 @@ debug = false
 strip = "symbols"
 
 [profile.test]
-panic = "abort"
-opt-level = 1
+

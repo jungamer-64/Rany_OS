@@ -388,6 +388,8 @@ impl NetworkStack {
                 self.arp.request_sent(target_ip, current_time);
 
                 self.transmit(frame.as_bytes());
+                log::info!("[NET-ARP] ARP request sent for {}.{}.{}.{}",
+                    target_ip.as_bytes()[0], target_ip.as_bytes()[1], target_ip.as_bytes()[2], target_ip.as_bytes()[3]);
             }
         }
     }
@@ -699,6 +701,8 @@ impl NetworkStack {
                 // For gateway, use broadcast initially
                 // In a real implementation, we'd send ARP request and wait
                 // Trigger ARP request
+                log::info!("[NET-PING] ARP required for {}.{}.{}.{} seq={} - sending ARP request",
+                    target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
                 self.send_arp_request(target);
                 return Err(());
             }
@@ -749,10 +753,14 @@ impl NetworkStack {
 
         // Transmit
         if self.transmit(&buf[..total_len]) {
+            log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
+                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
             // In a real implementation, we'd wait for echo reply
             // For now, return estimated RTT
             Ok(send_time)
         } else {
+            log::warn!("[NET-PING] Failed to transmit ICMP echo to {}.{}.{}.{} seq={}", 
+                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
             Err(())
         }
     }

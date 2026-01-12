@@ -422,7 +422,18 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
     let qr_x = (width - qr_total_size - margin_x as u32) as i32;
     let qr_y = (height - qr_total_size - margin_y as u32) as i32;
 
-    font.draw_string(fb, qr_x, qr_y, "QR Code Disabled", colors::TEXT_SECONDARY, None);
+    if let Some(qr) = super::qrcode::generate_error_qr(info.error_code) {
+        qr.draw(
+            fb,
+            qr_x,
+            qr_y,
+            4, // scale 4x
+            colors::QR_DARK,
+            colors::QR_LIGHT,
+        );
+    } else {
+        font.draw_string(fb, qr_x, qr_y, "QR Gen Failed", colors::TEXT_SECONDARY, None);
+    }
 
     let stop_y = (height - margin_y as u32 - 40) as i32;
     let mut buf = [0u8; 64];

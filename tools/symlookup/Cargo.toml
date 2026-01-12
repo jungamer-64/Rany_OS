@@ -1,0 +1,8 @@
+[package]
+name = "symlookup"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+object = "0.32"
+anyhow = "1.0"

@@ -89,6 +89,101 @@ fn debug_heap_check(tag: &str) {
     io::log::early_print("[HEAP] Check OK\n");
 }
 
+// Ensure a device BAR physical range is mapped into kernel virtual space and return
+// the virtual base address on success, or None on failure.
+fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
+    // Compute the HHDM-based virtual address for the BAR
+    let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
+    let virt_start = crate::mm::higher_half::VirtAddr::new(base_virt);
+    let phys_expected = crate::mm::higher_half::PhysAddr::new(base_phys);
+
+    // Helper to map the BAR region using a local PageTableManager
+    fn try_map_bar(base_phys: u64, base_virt: u64, bar_size: u64) -> bool {
+        if bar_size == 0 {
+            crate::io::log::early_print("[AHCI] BAR size 0 - skipping\n");
+            return false;
+        }
+        let page_size: u64 = 0x1000;
+        let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
+
+        let pm_offset = crate::mm::higher_half::physical_memory_offset();
+        let mut manager = unsafe { crate::mm::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        let flags = crate::mm::higher_half::PageFlags::write_combining();
+
+        match unsafe {
+            manager.map_range(
+                crate::mm::higher_half::VirtAddr::new(base_virt),
+                crate::mm::higher_half::PhysAddr::new(base_phys),
+                map_size,
+                flags,
+            )
+        } {
+            Ok(()) => {
+                crate::io::log::early_print("[AHCI] mapped BAR region ");
+                crate::io::log::early_print_hex(base_phys);
+                crate::io::log::early_print(" -> ");
+                crate::io::log::early_print_hex(base_virt);
+                crate::io::log::early_print(" size=");
+                crate::io::log::early_print_hex(map_size);
+                crate::io::log::early_print("\n");
+                true
+            }
+            Err(e) => {
+                crate::io::log::early_print("[AHCI] Failed to map BAR region ");
+                crate::io::log::early_print_hex(base_phys);
+                crate::io::log::early_print(" err=");
+                let err_str = match e {
+                    crate::mm::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
+                    crate::mm::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
+                    crate::mm::higher_half::MapError::NotMapped => "NotMapped",
+                    crate::mm::higher_half::MapError::InvalidAddress => "InvalidAddress",
+                    crate::mm::higher_half::MapError::AlignmentError => "AlignmentError",
+                    crate::mm::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
+                    crate::mm::higher_half::MapError::HardwareError => "HardwareError",
+                };
+                crate::io::log::early_print(err_str);
+                crate::io::log::early_print("\n");
+                false
+            }
+        }
+    }
+
+    // Check the existing page table entry
+    match crate::mm::higher_half::get_current_pte(virt_start) {
+        Some(pte) => {
+            crate::io::log::early_print("[AHCI] existing PTE present? ");
+            crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
+            crate::io::log::early_print(" phys=");
+            crate::io::log::early_print_hex(pte.phys_addr().as_u64());
+            crate::io::log::early_print(" flags=");
+            crate::io::log::early_print_hex(pte.flags().as_u64());
+            crate::io::log::early_print("\n");
+
+            if pte.is_present() {
+                if pte.phys_addr() != phys_expected {
+                    crate::io::log::early_print("[AHCI] PTE mapped to different phys - skipping init\n");
+                    return None;
+                }
+                // Already mapped as expected
+                return Some(base_virt);
+            } else {
+                crate::io::log::early_print("[AHCI] PTE not present - attempting to map pages\n");
+                if try_map_bar(base_phys, base_virt, bar_size) {
+                    return Some(base_virt);
+                }
+                return None;
+            }
+        }
+        None => {
+            crate::io::log::early_print("[AHCI] no PTE found - mapping pages\n");
+            if try_map_bar(base_phys, base_virt, bar_size) {
+                return Some(base_virt);
+            }
+            return None;
+        }
+    }
+}
+
 #[cfg(not(test))]
 #[repr(align(4096))]
 struct KernelStack([u8; 4096 * 20]);
@@ -675,28 +770,33 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
             if let Some(bar0) = dev.bars[0] {
                 let bar0_phys = bar0.base();
-                let bar0_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
-                let num_cores = crate::smp::cpu_count();
+                let bar0_size = bar0.size();
 
-                match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
-                    Ok(()) => {
-                        info!(target: "init", "NVMe driver initialized (polling)");
-                        let apic_id = crate::io::apic::local_apic().id() as u32;
-                        let core_id = crate::smp::current_cpu();
-                        crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
-                        if let Err(e) = crate::io::nvme::register_with_io_scheduler(
-                            nvme_controller_id,
-                            1,
-                            num_cores,
-                        ) {
-                            warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
+                if let Some(bar0_virt) = ensure_phys_bar_mapped(bar0_phys, bar0_size) {
+                    let num_cores = crate::smp::cpu_count();
+
+                    match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
+                        Ok(()) => {
+                            info!(target: "init", "NVMe driver initialized (polling)");
+                            let apic_id = crate::io::apic::local_apic().id() as u32;
+                            let core_id = crate::smp::current_cpu();
+                            crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
+                            if let Err(e) = crate::io::nvme::register_with_io_scheduler(
+                                nvme_controller_id,
+                                1,
+                                num_cores,
+                            ) {
+                                warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
+                            }
+                            crate::io::log::early_print("[HEAP_CHECK] after NVMe controller init\n");
+                            crate::memory::verify_buddy_integrity();
                         }
-                        crate::io::log::early_print("[HEAP_CHECK] after NVMe controller init\n");
-                        crate::memory::verify_buddy_integrity();
+                        Err(e) => {
+                            warn!(target: "init", "NVMe driver init failed: {}", e);
+                        }
                     }
-                    Err(e) => {
-                        warn!(target: "init", "NVMe driver init failed: {}", e);
-                    }
+                } else {
+                    warn!(target: "init", "NVMe controller BAR0 mapping failed - skipping init");
                 }
             } else {
                 warn!(target: "init", "NVMe controller found but BAR0 is missing");
@@ -720,13 +820,120 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             // Use BAR5 if available (common for AHCI HBA registers)
             if let Some(bar5) = dev.bars[5] {
                 let base_phys = bar5.base();
+                let bar_size = bar5.size();
                 let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
 
                 crate::io::log::early_print("[AHCI] BAR5 phys=");
                 crate::io::log::early_print_hex(base_phys);
+                crate::io::log::early_print(" size=");
+                crate::io::log::early_print_hex(bar_size);
                 crate::io::log::early_print(" base_virt=");
                 crate::io::log::early_print_hex(base_virt);
                 crate::io::log::early_print("\n");
+
+                // Ensure the BAR physical range is actually mapped in the page tables (PTE present).
+                // Using `global_translate` is an arithmetic transform and does not reflect PTE presence.
+                let mut mapping_ok = true;
+                let virt_start = crate::mm::higher_half::VirtAddr::new(base_virt);
+                let phys_expected = crate::mm::higher_half::PhysAddr::new(base_phys);
+
+                // Helper: map the BAR region using a local PageTableManager
+                fn try_map_bar(base_phys: u64, base_virt: u64, bar_size: u64) -> bool {
+                    if bar_size == 0 {
+                        crate::io::log::early_print("[AHCI] BAR5 has size 0 - skipping\n");
+                        return false;
+                    }
+                    let page_size: u64 = 0x1000;
+                    let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
+
+                    let pm_offset = crate::mm::higher_half::physical_memory_offset();
+                    let mut manager = unsafe { crate::mm::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+                    let flags = crate::mm::higher_half::PageFlags::write_combining();
+
+                    match unsafe { manager.map_range(
+                        crate::mm::higher_half::VirtAddr::new(base_virt),
+                        crate::mm::higher_half::PhysAddr::new(base_phys),
+                        map_size,
+                        flags,
+                    ) } {
+                        Ok(()) => {
+                            crate::io::log::early_print("[AHCI] mapped BAR region ");
+                            crate::io::log::early_print_hex(base_phys);
+                            crate::io::log::early_print(" -> ");
+                            crate::io::log::early_print_hex(base_virt);
+                            crate::io::log::early_print(" size=");
+                            crate::io::log::early_print_hex(map_size);
+                            crate::io::log::early_print("\n");
+                            true
+                        }
+                        Err(e) => {
+                            crate::io::log::early_print("[AHCI] Failed to map BAR region ");
+                            crate::io::log::early_print_hex(base_phys);
+                            crate::io::log::early_print(" err=");
+                            let err_str = match e {
+                                crate::mm::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
+                                crate::mm::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
+                                crate::mm::higher_half::MapError::NotMapped => "NotMapped",
+                                crate::mm::higher_half::MapError::InvalidAddress => "InvalidAddress",
+                                crate::mm::higher_half::MapError::AlignmentError => "AlignmentError",
+                                crate::mm::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
+                                crate::mm::higher_half::MapError::HardwareError => "HardwareError",
+                            };
+                            crate::io::log::early_print(err_str);
+                            crate::io::log::early_print("\n");
+                            false
+                        }
+                    }
+                }
+
+                // Check the actual page table entry for the address
+                match crate::mm::higher_half::get_current_pte(virt_start) {
+                    Some(pte) => {
+                        crate::io::log::early_print("[AHCI] existing PTE present? ");
+                        crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
+                        crate::io::log::early_print(" phys=");
+                        crate::io::log::early_print_hex(pte.phys_addr().as_u64());
+                        crate::io::log::early_print(" flags=");
+                        crate::io::log::early_print_hex(pte.flags().as_u64());
+                        crate::io::log::early_print("\n");
+
+                        if pte.is_present() {
+                            if pte.phys_addr() != phys_expected {
+                                crate::io::log::early_print("[AHCI] PTE mapped to different phys - skipping init\n");
+                                mapping_ok = false;
+                            }
+                        } else {
+                            crate::io::log::early_print("[AHCI] PTE not present - attempting to map pages\n");
+                            mapping_ok = try_map_bar(base_phys, base_virt, bar_size);
+                        }
+                    }
+                    None => {
+                        crate::io::log::early_print("[AHCI] no PTE found - mapping pages\n");
+                        mapping_ok = try_map_bar(base_phys, base_virt, bar_size);
+                    }
+                }
+
+                if !mapping_ok {
+                    warn!(target: "init", "AHCI controller mapping failed or mismatched - skipping init");
+                    continue;
+                }
+
+                // Diagnostic: print current PTE state for the BAR virtual address
+                let pte_opt = crate::mm::higher_half::get_current_pte(crate::mm::higher_half::VirtAddr::new(base_virt));
+                match pte_opt {
+                    Some(pte) => {
+                        crate::io::log::early_print("[AHCI] PTE: present=");
+                        crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
+                        crate::io::log::early_print(" phys=");
+                        crate::io::log::early_print_hex(pte.phys_addr().as_u64());
+                        crate::io::log::early_print(" flags=");
+                        crate::io::log::early_print_hex(pte.flags().as_u64());
+                        crate::io::log::early_print("\n");
+                    }
+                    None => {
+                        crate::io::log::early_print("[AHCI] PTE: not present in page tables\n");
+                    }
+                }
 
                 match crate::io::ahci::init_from_pci(base_virt) {
                     Ok(controller) => {
@@ -765,26 +972,28 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             // BAR0 を取得
             if let Some(bar0) = device_info.bars[0] {
                 let bar0_phys = bar0.base();
-                // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
-                // new_truncate()で無効な高位ビットをマスク
-                let base_virt =
-                    memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
-                info!(target: "init", "xHCI BAR0: phys={:#x} virt={:#x}", bar0_phys, base_virt);
+                let bar0_size = bar0.size();
 
-                // バス制御を有効化
-                device_info.enable_bus_master();
-                device_info.enable_memory_space();
+                if let Some(base_virt) = ensure_phys_bar_mapped(bar0_phys, bar0_size) {
+                    info!(target: "init", "xHCI BAR0: phys={:#x} virt={:#x}", bar0_phys, base_virt);
 
-                // ドライバを登録
-                let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
+                    // バス制御を有効化
+                    device_info.enable_bus_master();
+                    device_info.enable_memory_space();
 
-                // プローブと開始
-                if let Err(e) = driver_registry::driver_registry()
-                    .probe_and_start(usb_handle.expect("Failed to register USB driver"))
-                {
-                    error!(target: "init", "USB xHCI driver init failed: {:?}", e);
+                    // ドライバを登録
+                    let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
+
+                    // プローブと開始
+                    if let Err(e) = driver_registry::driver_registry()
+                        .probe_and_start(usb_handle.expect("Failed to register USB driver"))
+                    {
+                        error!(target: "init", "USB xHCI driver init failed: {:?}", e);
+                    } else {
+                        info!(target: "init", "USB xHCI driver initialized via DriverRegistry");
+                    }
                 } else {
-                    info!(target: "init", "USB xHCI driver initialized via DriverRegistry");
+                    warn!(target: "init", "xHCI BAR0 mapping failed - skipping init");
                 }
             } else {
                 warn!(target: "init", "xHCI controller found but BAR0 is invalid");
@@ -804,9 +1013,8 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         info!(target: "init", "==============================");
     }
 
-    // 3.6. ネットワークサブシステムの初期化 - DISABLED FOR HEAP DEBUG
-    io::log::early_print("[DEBUG] Network init SKIPPED\n");
-    /*
+    // 3.6. ネットワークサブシステムの初期化
+    io::log::early_print("[DEBUG] Network init\n");
     info!(target: "init", "Initializing network subsystem");
     net::init_stack_default();
     net::init_socket_manager();
@@ -815,10 +1023,12 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
     info!(target: "init", "Network stack initialized");
-    */
+
+    // Diagnostic: report bridge status and presence of a global VirtIO-Net device
+    info!(target: "init", "Net Bridge initialized: {}", crate::net::driver_bridge::is_initialized());
+    info!(target: "init", "Global VirtIO-Net device present: {}", crate::io::virtio::with_virtio_net(|_| ()).is_some());
 
     // 3.6.2. VirtIO-Net driver via DriverRegistry
-    /*
     info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
     {
         // debug_heap_check("Before VirtIO-Net init");
@@ -839,7 +1049,6 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
         // debug_heap_check("After VirtIO-Net init");
     }
-    */
 
     // 3.7. ファイルシステム（memfs）の初期化
     io::log::early_print("[DEBUG] Before memfs init\n");
@@ -906,6 +1115,14 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         info!(target: "init", "System integration initialized");
     }
     io::log::early_print("[DEBUG] After integration::init\n");
+
+    // Diagnostic: immediate manual ping attempt to exercise network transmit path
+    io::log::early_print("[DEBUG] Manual ping insertion point\n");
+    info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
+    match crate::net::send_real_icmp_echo([10, 0, 2, 2], 1) {
+        Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
+        Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
+    }
 
     // If built with feature `run-integration-tests`, run the integration tests at boot and exit QEMU
     #[cfg(feature = "run-integration-tests")]
@@ -1141,6 +1358,22 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     //     info!(target: "task6", "Ran {} benchmarks", results.len());
     //     info!(target: "task6", "Benchmark task completed");
     // }));
+
+    // タスク (ネットワーク ping テスト): ゲートウェイへの ICMP を試して結果をログ出力
+    executor.spawn(Task::new(async {
+        info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
+        task::sleep_ms(2000).await;
+
+        crate::io::log::early_print("[NET-PING-MANUAL] sending manual ping now\n");
+        info!(target: "net_test", "Sending ICMP echo to 10.0.2.2 seq=1");
+        match crate::net::send_real_icmp_echo([10, 0, 2, 2], 1) {
+            Ok(rtt) => info!(target: "net_test", "Ping success rtt={} (units depending on implementation)", rtt),
+            Err(e) => warn!(target: "net_test", "Ping failed: {}", e),
+        }
+
+        let bridge_stats = crate::net::get_bridge_stats();
+        info!(target: "net_test", "Bridge stats after ping: init={} rx={} tx={} ", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets);
+    }));
 
     // タスク7: 統合テスト実行
     // 注意: 大量メモリ割り当てでパニックする可能性があるため一時的に無効化

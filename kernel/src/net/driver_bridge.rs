@@ -69,32 +69,35 @@ fn virtio_transmit(data: &[u8]) -> bool {
 
 /// Low-level packet transmission via VirtIO-Net
 fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static str> {
-    // 非同期送信Futureを作成
-    // Note: 完全な非同期実行にはasync executorとの統合が必要
-    // 現時点ではFutureを作成し、送信リクエストをキューに登録する
-    // 実際の送信完了はデバイスの割り込み処理で確認される
-    let _send_future = device.send_async(data);
+    // Synchronously submit the packet using a DMA buffer so that the descriptor
+    // is added and the device is notified immediately. The DMA buffer is
+    // retained in the device's tx_inflight map and freed when the TX completion
+    // is processed in the interrupt handler.
+    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transmit_packet called len={}\n", data.len()));
 
-    // send_asyncはFutureを返すが、内部でVirtQueueにディスクリプタを追加し
-    // デバイスに通知を送る
-    // ここではfire-and-forgetパターンで送信リクエストのみ発行
-
-    // デバッグ用：パケット送信ログ
-    #[cfg(debug_assertions)]
-    if data.len() >= 14 {
-        log::info!(
-            "[NET TX] {} bytes queued, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            data.len(),
-            data[0],
-            data[1],
-            data[2],
-            data[3],
-            data[4],
-            data[5]
-        );
+    match device.submit_tx(data) {
+        Ok(()) => {
+            if data.len() >= 14 {
+                log::info!(
+                    "[NET-TX] {} bytes queued, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    data.len(),
+                    data[0],
+                    data[1],
+                    data[2],
+                    data[3],
+                    data[4],
+                    data[5]
+                );
+            } else {
+                log::info!("[NET-TX] {} bytes queued", data.len());
+            }
+            Ok(())
+        }
+        Err(_) => {
+            log::info!("[NET-TX] submit failed");
+            Err("Failed to submit TX")
+        },
     }
-
-    Ok(())
 }
 
 // ============================================================================
@@ -105,6 +108,8 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
 /// Call this from the interrupt handler or polling loop
 pub fn process_received_packet(data: &[u8]) {
     RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+
+    crate::io::log::early_print(&alloc::format!("[EARLY][NET-RX] Received {} bytes\n", data.len()));
 
     // NetworkStackに渡す
     stack::receive(data);

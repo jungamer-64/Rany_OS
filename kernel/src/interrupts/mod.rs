@@ -636,6 +636,11 @@ fn dispatch_pci_interrupt(irq: u8) {
         crate::io::audio::hda::handle_interrupt();
     }
 
+    // Call VirtIO device interrupt handlers (they will check their own status and do nothing if not pending)
+    crate::io::log::early_print(&alloc::format!("[EARLY][INT] dispatch_pci_interrupt irq={} -> invoking virtio handlers\n", irq));
+    crate::io::virtio::handle_virtio_net_interrupt();
+    crate::io::virtio::handle_virtio_blk_interrupt();
+
     // 将来的には他の PCI デバイスもここに追加
     // 例: NVMe, ネットワークカードなど
 }

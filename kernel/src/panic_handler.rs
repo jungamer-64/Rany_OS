@@ -242,7 +242,7 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     
     // 1. Capture additional debugging info (Registers, Backtrace)
     use crate::graphics::bsod::{BsodInfo, RegisterDump};
-    use crate::unwind::Backtrace;
+
     
     // Capture registers and then a context-aware backtrace
     // so the crashing RIP is guaranteed to be the first frame (more robust for #PFs).
