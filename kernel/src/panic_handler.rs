@@ -244,10 +244,14 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     use crate::graphics::bsod::{BsodInfo, RegisterDump};
     use crate::unwind::Backtrace;
     
-    // Note: Capture backtrace first as it might be relevant for registers? 
-    // Actually registers are from *now*. Backtrace walks *now*.
+    // Capture registers and then a context-aware backtrace
+    // so the crashing RIP is guaranteed to be the first frame (more robust for #PFs).
     let registers = RegisterDump::capture();
-    let backtrace = Backtrace::capture();
+    let backtrace = crate::unwind::capture_from_context(
+        registers.rip as usize,
+        registers.rsp as usize,
+        registers.rbp as usize,
+    );
     
     let (file_str, line, col) = unsafe {
         if PANIC_RECORD_STATE.load(Ordering::Acquire) == 2 {
@@ -276,6 +280,17 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         .with_registers(registers)
         .with_backtrace(backtrace)
         .with_error_code(first_word);
+
+    // If available, print the first resolved symbol (lock-free) to aid quick triage
+    if let Some(first) = bsod_info.backtrace.as_ref().and_then(|bt| bt.iter().next()) {
+        if let Some(sym) = &first.symbol {
+            crate::io::log::early_print("[PANIC] Likely at symbol: ");
+            if let Some(name) = sym.name {
+                crate::io::log::early_print(name);
+                crate::io::log::early_print("\n");
+            }
+        }
+    }
 
     // 3. Dump to Serial (First priority)
     crate::graphics::bsod::dump_bsod_info_to_serial(&bsod_info);

@@ -320,7 +320,23 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
             self.lock.poisoned.store(true, Ordering::Release);
             // テスト環境ではシリアルへのI/Oは特権命令になり得るため、出力を抑止
             #[cfg(not(test))]
-            log::info!("[PoisonLock] Lock poisoned due to panic");
+            {
+                log::info!("[PoisonLock] Lock poisoned due to panic");
+
+                // Debug: capture a lightweight backtrace at the point of panic to help
+                // locate the originating code that caused the poisoning. This uses the
+                // frame-pointer-based capture which does not perform heap allocations.
+                #[cfg(debug_assertions)]
+                {
+                    crate::io::log::early_print("[PoisonLock] Capturing backtrace...\n");
+                    let bt = crate::unwind::Backtrace::capture();
+                    for entry in bt.iter() {
+                        crate::io::log::early_print("[PoisonLock][BT] IP=");
+                        crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                        crate::io::log::early_print("\n");
+                    }
+                }
+            }
         }
 
         // スピンロックを解放

@@ -422,8 +422,23 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
                 }
                 ptr
             }
-            Err(_) => {
+            Err(poisoned) => {
                 crate::io::log::early_print("[ALLOC] Poisoned lock\n");
+
+                // Try to dump buddy allocator state for diagnosis (no heap allocations here).
+                crate::io::log::early_print("[ALLOC] Dumping buddy free_lists (poisoned)\n");
+                // poisoned.get_ref() returns &PoisonLockGuard which Deref-> &BuddyHeapAllocator
+                let guard_ref = poisoned.get_ref();
+                let alloc_ref: &BuddyHeapAllocator = &*guard_ref;
+                for i in 0..=BuddyHeapAllocator::MAX_ORDER {
+                    crate::io::log::early_print("[ALLOC] free_lists[");
+                    crate::io::log::early_print_dec(i as u64);
+                    crate::io::log::early_print("] = ");
+                    let head = alloc_ref.free_lists[i].unwrap_or(0);
+                    crate::io::log::early_print_hex(head as u64);
+                    crate::io::log::early_print("\n");
+                }
+
                 null_mut()
             }
         }
@@ -888,6 +903,15 @@ pub fn verify_buddy_integrity() {
 fn debug_log_suspicious_write(addr: usize, val: usize, context: &str) {
     const SUSPICIOUS_VAL: usize = EXCHANGE_HEAP_SIZE; // 0x400000
     if val == SUSPICIOUS_VAL || val == 0x0000_0000_0400_000usize {
+        // Many of the ExHeap initialization writes will write the exchange heap size
+        // into headers/footers — suppress those to reduce noise unless the write is
+        // outside the exchange-heap region.
+        let ex_start = exchange_heap_start() as usize;
+        let ex_end = ex_start.saturating_add(EXCHANGE_HEAP_SIZE);
+        if addr >= ex_start && addr < ex_end {
+            return; // expected during ExHeap init
+        }
+
         crate::io::log::early_print("[SUSPICIOUS-WRITE] ");
         crate::io::log::early_print(context);
         crate::io::log::early_print(" addr=");
