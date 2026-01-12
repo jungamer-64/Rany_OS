@@ -1380,10 +1380,12 @@ static PAGE_TABLE_MANAGER: PoisonLock<Option<PageTableManager>> = PoisonLock::ne
 
 /// ページテーブルマネージャーを初期化
 pub fn init_page_table_manager(physical_memory_offset: u64) {
+    log::info!("[MM] init_page_table_manager: initializing with offset {:#x}", physical_memory_offset);
     let manager = unsafe { PageTableManager::from_current_cr3(physical_memory_offset) };
     // Initialization-time best-effort recovery for PageTableManager initialization.
     let mut mgr_guard = PAGE_TABLE_MANAGER.lock_for_init("[MM] Page Table Manager init");
     *mgr_guard = Some(manager);
+    log::info!("[MM] init_page_table_manager: manager set");
 }
 
 /// グローバルページテーブルマネージャーでページをマップ
@@ -1402,7 +1404,14 @@ pub unsafe fn global_map_page(
             MapError::HardwareError
         })?;
 
+    // Diagnose None manager case for debugging
+    if guard.as_mut().is_none() {
+        log::error!("[MM] global_map_page: PAGE_TABLE_MANAGER not initialized (None)");
+        return Err(MapError::InvalidAddress);
+    }
+
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    log::info!("[MM] global_map_page: mapping virt={:#x} phys={:#x} flags={:#x}", virt.as_u64(), phys.as_u64(), flags.as_u64());
     unsafe { manager.map_page(virt, phys, flags) }
 }
 

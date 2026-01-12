@@ -7,6 +7,10 @@
 [build]
 target = "x86_64-exorust.json"
 
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
 # Custom kernel target with PIE disabled and higher-half linker script
 # Note: For JSON targets, use the full path including .json extension
 [target.x86_64-exorust]

@@ -33,9 +33,4 @@ insecure_boot = []
 # 使用例: cargo build --no-default-features --features minimal
 minimal = []
 
-[profile.dev]
-panic = "abort"
 
-[profile.release]
-panic = "abort"
-lto = true

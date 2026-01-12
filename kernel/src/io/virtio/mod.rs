@@ -39,7 +39,7 @@ pub use virtio_driver::transport::{
 pub use net::{
     NetVirtQueue, VirtioNetConfig, VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VringDesc,
     features as net_features, handle_virtio_net_interrupt, init_virtio_net,
-    init_virtio_net_for_device, with_virtio_net,
+    init_virtio_net_for_device, init_virtio_net_with_transport, with_virtio_net,
 };
 
 // Re-exports for VirtIO-Blk

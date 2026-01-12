@@ -335,6 +335,7 @@ impl NetVirtQueue {
     /// ディスクリプタを割り当て
     fn alloc_desc(&self) -> Option<u16> {
         let idx = self.free_descs.lock().pop()?;
+        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] alloc_desc -> {}\n", idx));
         self.clear_stale_completion(idx);
         Some(idx)
     }
@@ -361,6 +362,26 @@ impl NetVirtQueue {
             return;
         };
 
+        log::info!(
+            "[VIRTIO-NET] notify called for queue {} addr=0x{:x} is_32bit={}",
+            self.index,
+            addr,
+            self.notify_is_32bit
+        );
+        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] notify called for queue {} addr=0x{:x} is_32bit={}\n", self.index, addr, self.notify_is_32bit));
+
+        // Diagnostic: show avail and used indices and last ring slot
+        unsafe {
+            let avail = &*self.avail_ring.as_ptr();
+            let used = &*self.used_ring.as_ptr();
+            let last_slot = if avail.idx == 0 {
+                avail.ring[(avail.idx % self.size) as usize]
+            } else {
+                avail.ring[((avail.idx.wrapping_sub(1)) % self.size) as usize]
+            };
+            crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] notify: avail_idx={} last_ring_slot={} used_idx=0x{:x}\n", avail.idx, last_slot, used.idx));
+        }
+
         if self.notify_is_32bit {
             crate::io::mmio::mmio_write_u32(addr as usize, self.index as u32);
         } else {
@@ -374,6 +395,7 @@ impl NetVirtQueue {
         header: &VirtioNetHeader,
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
+        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_buffer called data_ptr=0x{:x} len={}\n", data.as_ptr() as u64, data.len()));
         let (desc_idx, data_desc_idx) = self.alloc_desc_pair().ok_or(VirtioNetError::QueueFull)?;
         let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
             (Some(ptr), Some(base)) => (ptr, base),
@@ -409,6 +431,13 @@ impl NetVirtQueue {
             avail.idx = avail_idx.wrapping_add(1);
         }
 
+        log::info!(
+            "[VIRTIO-NET] add_tx desc {} data_ptr=0x{:x} len={}",
+            desc_idx,
+            data.as_ptr() as u64,
+            data.len()
+        );
+
         Ok(desc_idx)
     }
 
@@ -419,6 +448,7 @@ impl NetVirtQueue {
         phys_addr: u64,
         data_len: usize,
     ) -> Result<u16, VirtioNetError> {
+        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_buffer_zero_copy called phys=0x{:x} len={}\n", phys_addr, data_len));
         let (desc_idx, data_desc_idx) = self.alloc_desc_pair().ok_or(VirtioNetError::QueueFull)?;
         let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
             (Some(ptr), Some(base)) => (ptr, base),
@@ -443,16 +473,30 @@ impl NetVirtQueue {
             data_desc.flags = 0;
             data_desc.next = 0;
 
+            crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_zero preparing desc={} phys=0x{:x} len={}\n", desc_idx, phys_addr, data_len));
+
             // Available Ringに追加
             let avail = &mut *self.avail_ring.as_ptr();
             let avail_idx = avail.idx;
+            // used idx for diagnostics
+            let used_idx = (*self.used_ring.as_ptr()).idx;
+
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
 
             // メモリバリア
             core::sync::atomic::fence(Ordering::Release);
 
             avail.idx = avail_idx.wrapping_add(1);
+
+            crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_zero desc={} pre_avail_idx={} post_avail_idx={} ring_slot={} used_idx_before=0x{:x}\n", desc_idx, avail_idx, avail.idx, avail.ring[(avail_idx % self.size) as usize], used_idx));
         }
+
+        log::info!(
+            "[VIRTIO-NET] add_tx_zero desc {} phys=0x{:x} len={}",
+            desc_idx,
+            phys_addr,
+            data_len
+        );
 
         Ok(desc_idx)
     }
@@ -478,6 +522,8 @@ impl NetVirtQueue {
 
             avail.idx = avail_idx.wrapping_add(1);
         }
+
+        log::info!("[VIRTIO-NET] add_rx desc={} ptr=0x{:x} len={}", desc_idx, buffer.as_ptr() as u64, buffer.len());
 
         Ok(desc_idx)
     }
@@ -508,6 +554,8 @@ impl NetVirtQueue {
 
             avail.idx = avail_idx.wrapping_add(1);
         }
+
+        log::info!("[VIRTIO-NET] add_rx_zero desc={} phys=0x{:x} len={}", desc_idx, phys_addr, buffer_len);
 
         Ok(desc_idx)
     }
@@ -711,6 +759,10 @@ pub struct VirtioNetDevice {
     tx_bytes: AtomicU32,
     /// 統計: 受信バイト数
     rx_bytes: AtomicU32,
+    /// 受信用バッファマップ (desc_idx -> VirtioNetRxDmaBuffer)
+    rx_buffers: Mutex<BTreeMap<u16, VirtioNetRxDmaBuffer>>,
+    /// 送信用インフライトバッファ (desc_idx -> CoherentDmaBuffer)
+    tx_inflight: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
 }
 
 impl VirtioNetDevice {
@@ -743,6 +795,8 @@ impl VirtioNetDevice {
             rx_packets: AtomicU32::new(0),
             tx_bytes: AtomicU32::new(0),
             rx_bytes: AtomicU32::new(0),
+            rx_buffers: Mutex::new(BTreeMap::new()),
+            tx_inflight: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -841,14 +895,18 @@ impl VirtioNetDevice {
         let avail_size = 6 + 2 * queue_size as usize;
         let used_size = 6 + 8 * queue_size as usize;
 
+        // Ensure the used Ring is aligned to a 4-byte boundary per VirtIO requirements
+        let used_align = core::mem::align_of::<VringUsed>();
+        let used_offset = align_up(desc_size + avail_size, used_align);
+
         let header_align = core::mem::align_of::<VirtioNetHeader>();
         let header_stride = VirtioNetHeader::SIZE;
-        let header_offset = align_up(desc_size + avail_size + used_size, header_align);
+        let header_offset = align_up(used_offset + used_size, header_align);
         let header_size = header_stride * queue_size as usize;
         let total_size = if queue_index == 1 {
             header_offset + header_size
         } else {
-            desc_size + avail_size + used_size
+            used_offset + used_size
         };
 
         if is_iommu_required() && !is_iommu_enabled() {
@@ -877,7 +935,7 @@ impl VirtioNetDevice {
 
         let desc_table = ptr as *mut VringDesc;
         let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
-        let used_ring = unsafe { ptr.add(desc_size + avail_size) as *mut VringUsed };
+        let used_ring = unsafe { ptr.add(used_offset) as *mut VringUsed };
         let notify_addr = self.transport.get_notify_addr(queue_index);
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
         let (dma_base, iommu_map) = if is_iommu_enabled() {
@@ -939,11 +997,31 @@ impl VirtioNetDevice {
         }
 
         // デバイスにアドレスを設定
-        self.transport.set_queue_desc_addr(dma_base);
-        self.transport
-            .set_queue_avail_addr(dma_base + desc_size as u64);
-        self.transport
-            .set_queue_used_addr(dma_base + desc_size as u64 + avail_size as u64);
+        let desc_addr = dma_base;
+        let avail_addr = dma_base + desc_size as u64;
+        let used_addr = dma_base + used_offset as u64;
+
+        crate::io::log::early_print(&alloc::format!(
+            "[EARLY][VIRTIO-NET] queue {}: dma_base=0x{:x} desc_size={} avail_size={} used_offset={} used_addr=0x{:x} used_size={}\n",
+            queue_index,
+            dma_base,
+            desc_size,
+            avail_size,
+            used_offset,
+            used_addr,
+            used_size
+        ));
+
+        self.transport.set_queue_desc_addr(desc_addr);
+        self.transport.set_queue_avail_addr(avail_addr);
+        self.transport.set_queue_used_addr(used_addr);
+
+        crate::io::log::early_print(&alloc::format!(
+            "[EARLY][VIRTIO-NET] set_queue_desc_addr=0x{:x} avail_addr=0x{:x} used_addr=0x{:x}\n",
+            desc_addr,
+            avail_addr,
+            used_addr
+        ));
 
         // キューを作成
         let queue = unsafe {
@@ -964,6 +1042,44 @@ impl VirtioNetDevice {
 
         if queue_index == 0 {
             self.rx_queue = Some(queue);
+
+            // Pre-allocate and post several RX DMA buffers to the queue
+            // so that we can receive packets without a separate async task.
+            if let Some(ref rxq) = self.rx_queue {
+                let mut added = 0usize;
+                for _ in 0..8 {
+                    if let Some(mut vbuf) = VirtioNetRxDmaBuffer::new() {
+                        match vbuf.start_receive() {
+                            Ok(phys) => {
+                                let buf_len = vbuf.alloc_size;
+                                match rxq.add_rx_buffer_zero_copy(phys, buf_len) {
+                                    Ok(desc_idx) => {
+                                        log::info!(
+                                            "[VIRTIO-NET] posted RX desc={} phys=0x{:x} len={}",
+                                            desc_idx,
+                                            phys,
+                                            buf_len
+                                        );
+                                        self.rx_buffers.lock().insert(desc_idx, vbuf);
+                                        added += 1;
+                                    }
+                                    Err(e) => {
+                                        log::warn!("[VIRTIO-NET] failed to add rx buffer: {:?}", e);
+                                        // Drop vbuf and continue
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("[VIRTIO-NET] failed to start rx buffer: {}", e);
+                            }
+                        }
+                    } else {
+                        log::warn!("[VIRTIO-NET] failed to allocate rx buffer");
+                        break;
+                    }
+                }
+                log::info!("[VIRTIO-NET] posted {} initial RX buffers", added);
+            }
         } else {
             self.tx_queue = Some(queue);
         }
@@ -975,6 +1091,92 @@ impl VirtioNetDevice {
     /// デバイスに通知（キュー更新）
     pub fn notify(&mut self, queue_index: u16) {
         self.transport.notify_queue(queue_index);
+    }
+
+    /// Submit a transmit packet synchronously by copying into a coherent DMA buffer and
+    /// adding it to the TX queue. The buffer is retained in `tx_inflight` until completion
+    /// and freed in the interrupt handler.
+    pub fn submit_tx(&self, data: &[u8]) -> Result<(), VirtioNetError> {
+        let data_len = data.len();
+        crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] submit_tx called len={}\n", data_len));
+        if data_len >= 14 {
+            log::info!(
+                "[NET-TX] submit_tx len={} dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                data_len,
+                data[0],
+                data[1],
+                data[2],
+                data[3],
+                data[4],
+                data[5]
+            );
+        } else {
+            log::info!("[NET-TX] submit_tx len={}", data_len);
+        }
+        let mut buffer = crate::io::dma::CoherentDmaBuffer::new(
+            data_len,
+            crate::io::dma::DmaMemoryAttributes::MMIO,
+        )
+        .ok_or(VirtioNetError::DeviceError)?;
+
+        // Copy payload into the DMA buffer
+        let dst = unsafe { buffer.as_mut_slice() };
+        if dst.len() < data_len {
+            return Err(VirtioNetError::BufferTooSmall);
+        }
+        dst[..data_len].copy_from_slice(data);
+
+        if let Some(ref tx_queue) = self.tx_queue {
+            let phys = buffer.phys_addr().as_u64();
+            crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] about to call add_tx_buffer_zero_copy phys=0x{:x} len={}\n", phys, data_len));
+            match tx_queue.add_tx_buffer_zero_copy(phys, data_len) {
+                Ok(desc_idx) => {
+                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] add_tx_buffer_zero_copy returned desc={}\n", desc_idx));
+                    self.tx_inflight.lock().insert(desc_idx, buffer);
+                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] queued desc={} phys=0x{:x} len={}\n", desc_idx, phys, data_len));
+                    log::info!("[NET-TX] queued desc={} phys=0x{:x} len={}", desc_idx, phys, data_len);
+                    // Diagnostic: read device status/features before notifying
+                    let dev_status = self.transport.get_status();
+                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transport.get_status()=0x{:x}\n", dev_status));
+                    let dev_features = self.transport.get_device_features();
+                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transport.get_device_features()=0x{:x}\n", dev_features));
+
+                    tx_queue.notify();
+                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] notify called for queue={}\n", tx_queue.index));
+
+                    // Diagnostic: check device interrupt status and process used ring immediately
+                    let intr_status = self.transport.get_interrupt_status();
+                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transport.get_interrupt_status()=0x{:x}\n", intr_status));
+
+                    if let Some(ref txq) = self.tx_queue {
+                        let completions = txq.process_used();
+                        if !completions.is_empty() {
+                            crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] post-notify found {} completions\n", completions.len()));
+                            for (didx, len) in completions {
+                                crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] completion desc={} len={}\n", didx, len));
+                                if let Some(_buf) = self.tx_inflight.lock().remove(&didx) {
+                                    crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] TX-COMP freed buffer for desc={} len={}\n", didx, len));
+                                } else {
+                                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] TX completion for unknown desc {}\n", didx));
+                                }
+                            }
+                        } else {
+                            crate::io::log::early_print("[EARLY][NET-TX] no completions found after notify\n");
+                        }
+                    }
+
+                    log::info!("[NET-TX] notify called for queue={}", tx_queue.index);
+                    Ok(())
+                }
+                Err(e) => {
+                    log::warn!("[NET-TX] failed to add tx buffer: {:?}", e);
+                    Err(e)
+                }
+            }
+        } else {
+            log::warn!("[NET-TX] device not initialized");
+            Err(VirtioNetError::NotInitialized)
+        }
     }
 
     /// パケットを送信（非同期）
@@ -1047,18 +1249,102 @@ impl VirtioNetDevice {
 
     /// 割り込みハンドラ
     pub fn handle_interrupt(&self) {
-        // RXキューを処理
+        // RXキュー完了を処理し、パケットをスタックに渡す
         if let Some(ref rx_queue) = self.rx_queue {
-            let completed = rx_queue.process_used_count();
-            self.rx_packets
-                .fetch_add(completed as u32, Ordering::Relaxed);
+            let completions = rx_queue.process_used();
+            if !completions.is_empty() {
+                for (desc_idx, len) in completions {
+                    self.rx_packets.fetch_add(1, Ordering::Relaxed);
+
+                    // Find the RX buffer we queued earlier and complete it
+                    if let Some(mut vbuf) = self.rx_buffers.lock().remove(&desc_idx) {
+                        if let Err(e) = vbuf.complete_receive() {
+                            log::warn!("[VIRTIO-NET] failed to complete rx buffer {}: {}", desc_idx, e);
+                        } else {
+                            // Compute payload length and hand to network stack
+                            let header_size = core::mem::size_of::<VirtioNetHeader>();
+                            let payload_len = (len as usize).saturating_sub(header_size);
+                            if let Some(data) = vbuf.received_data() {
+                                let payload_cap = data.len();
+                                let actual_len = core::cmp::min(payload_len, payload_cap);
+                                let payload_slice = &data[..actual_len];
+
+                                if actual_len >= 12 {
+                                    log::info!(
+                                        "[VIRTIO-NET][RX-COMP] desc={} len={} payload_len={} src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                        desc_idx,
+                                        len,
+                                        actual_len,
+                                        payload_slice[6],
+                                        payload_slice[7],
+                                        payload_slice[8],
+                                        payload_slice[9],
+                                        payload_slice[10],
+                                        payload_slice[11]
+                                    );
+                                } else {
+                                    log::info!(
+                                        "[VIRTIO-NET][RX-COMP] desc={} len={} payload_len={}",
+                                        desc_idx,
+                                        len,
+                                        actual_len
+                                    );
+                                }
+
+                                crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] handing payload desc={} payload_len={} to bridge\n", desc_idx, actual_len));
+                                crate::net::driver_bridge::process_received_packet(payload_slice);
+                            }
+                        }
+
+                        // Re-queue the buffer for further receives
+                        match vbuf.start_receive() {
+                            Ok(phys) => {
+                                let buf_len = vbuf.alloc_size;
+                                match rx_queue.add_rx_buffer_zero_copy(phys, buf_len) {
+                                    Ok(new_desc_idx) => {
+                                        log::info!(
+                                            "[VIRTIO-NET] re-queued rx desc={} phys=0x{:x} len={}",
+                                            new_desc_idx,
+                                            phys,
+                                            buf_len
+                                        );
+                                        self.rx_buffers.lock().insert(new_desc_idx, vbuf);
+                                    }
+                                    Err(e) => {
+                                        log::warn!("[VIRTIO-NET] failed to re-add rx buffer: {:?}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("[VIRTIO-NET] failed to restart rx buffer: {}", e);
+                            }
+                        }
+                    } else {
+                        log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
+                    }
+                }
+            }
         }
 
-        // TXキューを処理
+        // TXキュー完了を処理し、インフライトバッファを解放
         if let Some(ref tx_queue) = self.tx_queue {
-            let completed = tx_queue.process_used_count();
-            self.tx_packets
-                .fetch_add(completed as u32, Ordering::Relaxed);
+            let completions = tx_queue.process_used();
+            if !completions.is_empty() {
+                for (desc_idx, len) in completions {
+                    self.tx_packets.fetch_add(1, Ordering::Relaxed);
+                    self.tx_bytes.fetch_add(len, Ordering::Relaxed);
+
+                    log::info!("[VIRTIO-NET][TX-COMP] desc={} len={}", desc_idx, len);
+
+                    if let Some(_buf) = self.tx_inflight.lock().remove(&desc_idx) {
+                        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] TX-COMP freed buffer for desc={} len={}\n", desc_idx, len));
+                        log::info!("[VIRTIO-NET][TX-COMP] freed buffer for desc={}", desc_idx);
+                        // Buffer dropped here
+                    } else {
+                        log::warn!("[VIRTIO-NET] TX completion for unknown desc {}", desc_idx);
+                    }
+                }
+            }
         }
 
         // HybridIoCoordinator 経由でパケット処理を通知（io_scheduler 統一後）
@@ -1899,6 +2185,16 @@ pub fn init_virtio_net_for_device(
     Ok(())
 }
 
+/// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI)
+pub fn init_virtio_net_with_transport(
+    transport: Box<dyn VirtioTransport>,
+) -> Result<(), VirtioNetError> {
+    let mut device = VirtioNetDevice::new(transport);
+    device.init()?;
+    *VIRTIO_NET_DEVICE.lock() = Some(device);
+    Ok(())
+}
+
 /// VirtIO ネットワークデバイスにアクセス
 pub fn with_virtio_net<F, R>(f: F) -> Option<R>
 where
@@ -1909,7 +2205,13 @@ where
 
 /// 割り込みハンドラ
 pub fn handle_virtio_net_interrupt() {
-    if let Some(ref device) = *VIRTIO_NET_DEVICE.lock() {
+    if let Some(ref mut device) = *VIRTIO_NET_DEVICE.lock() {
+        // Read and ack interrupt status for diagnostics and clearing the device
+        let status = device.transport.get_interrupt_status();
+        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] IRQ status read=0x{:x}\n", status));
+        device.transport.ack_interrupt(status);
+
+        // Now process completions
         device.handle_interrupt();
     }
 }

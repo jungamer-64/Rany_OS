@@ -43,7 +43,6 @@ pub mod psf;
 pub mod bsod;
 #[cfg(not(any(test, feature = "bench")))]
 pub mod compositor;
-#[cfg(not(any(test, feature = "bench")))]
 pub mod qrcode;
 #[cfg(not(any(test, feature = "bench")))]
 pub mod window;

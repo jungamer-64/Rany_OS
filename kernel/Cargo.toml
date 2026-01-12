@@ -166,9 +166,7 @@ test-args = [
 test-success-exit-code = 33
 test-timeout = 300
 
-[profile.test]
-opt-level = 1
-panic = "abort"
+
 
 [[bench]]
 name = "framebuffer_bench"

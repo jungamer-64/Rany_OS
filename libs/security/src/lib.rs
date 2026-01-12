@@ -18,7 +18,7 @@ use std::sync::Once;
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 #[cfg(not(feature = "std"))]
-use alloc::string::String as KernelString;
+
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 

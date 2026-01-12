@@ -603,7 +603,10 @@ impl VirtioBlkDevice {
         let avail_size = 6 + 2 * queue_size as usize; // flags + idx + ring + used_event
         let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
 
-        let total_size = desc_size + avail_size + used_size;
+        // Align used ring per VirtIO requirements
+        let used_align = core::mem::align_of::<VringUsed>();
+        let used_offset = align_up(desc_size + avail_size, used_align);
+        let total_size = used_offset + used_size;
 
         // Use CoherentDmaBuffer for shared queue memory
         // We use Bidirectional as default, allowing device to read/write rings
@@ -628,7 +631,7 @@ impl VirtioBlkDevice {
 
         let desc_table = ptr as *mut VringDesc;
         let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
-        let used_ring = unsafe { ptr.add(desc_size + avail_size) as *mut VringUsed };
+        let used_ring = unsafe { ptr.add(used_offset) as *mut VringUsed };
 
         // Write queue configuration
         self.transport.set_queue_size(queue_size);
@@ -636,7 +639,7 @@ impl VirtioBlkDevice {
         self.transport
             .set_queue_avail_addr(phys_base + desc_size as u64);
         self.transport
-            .set_queue_used_addr(phys_base + desc_size as u64 + avail_size as u64);
+            .set_queue_used_addr(phys_base + used_offset as u64);
 
         // Activate queue
         self.transport.enable_queue();
@@ -1967,6 +1970,10 @@ pub unsafe fn init_virtio_blk_for_device(
     Ok(())
 }
 
+fn align_up(val: usize, align: usize) -> usize {
+    (val + align - 1) & !(align - 1)
+}
+
 /// Get a clone of the global VirtioBlk device Arc if initialized
 pub fn get_virtio_blk_device() -> Option<Arc<VirtioBlkDevice>> {
     VIRTIO_BLK_DEVICE.lock().as_ref().cloned()
@@ -1975,6 +1982,10 @@ pub fn get_virtio_blk_device() -> Option<Arc<VirtioBlkDevice>> {
 /// Handle VirtIO block device interrupt
 pub fn handle_virtio_blk_interrupt() {
     if let Some(device) = VIRTIO_BLK_DEVICE.lock().as_ref() {
+        // Ack interrupt with shared reference
+        let status = device.transport.get_interrupt_status();
+        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-BLK] IRQ status read=0x{:x}\n", status));
+        device.transport.ack_interrupt(status);
         device.handle_interrupt();
     }
 }
