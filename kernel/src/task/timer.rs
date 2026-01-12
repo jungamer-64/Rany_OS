@@ -135,8 +135,9 @@ impl Drop for SleepFuture {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_sleep_future() {
         // テストは割り込み環境が必要なため、統合テストで実施
     }
 }
+

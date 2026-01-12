@@ -126,11 +126,13 @@ impl ClusterBufferAllocator for PageClusterBufferAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
+    use alloc::vec;
     use vfs::block::{ZeroCopyBuffer, ZeroCopyBufferMut};
     use crate::mm::mapping::phys_to_virt;
     use x86_64::PhysAddr;
 
-    #[test]
+    #[test_case]
     fn test_page_cluster_buffer_alloc_fallback_or_contig() {
         let alloc = PageClusterBufferAllocator::new();
         // Try small allocation
@@ -138,14 +140,14 @@ mod tests {
         assert!(b.len() >= 4096);
     }
 
-    #[test]
+    #[test_case]
     fn test_impl_zero_copy_traits() {
         // Compile-time trait bound test
         fn assert_traits<T: ZeroCopyBuffer + ZeroCopyBufferMut>() {}
         assert_traits::<PageClusterBuffer>();
     }
 
-    #[test]
+    #[test_case]
     fn test_page_cluster_buffer_dma_info() {
         let phys = 0x1000_0000u64;
         let size = PAGE_SIZE_4K as usize;
@@ -158,7 +160,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_page_cluster_buffer_physical_alloc_and_write() {
         // Try to allocate contiguous frames for an end-to-end memory-backed buffer
         let frames_needed = 1usize;
@@ -184,7 +186,7 @@ mod tests {
     }
 
     // Integration test: mount FAT using PageClusterBuffer-backed zero-copy device
-    #[test]
+    #[test_case]
     fn test_fat_mount_with_page_allocator_zero_copy() {
         use alloc::sync::Arc;
         use vfs::block::{ZeroCopyBlockDevice, BlockDeviceInfo, BlockError, BlockResult};
@@ -333,4 +335,5 @@ mod tests {
         assert!((*fs).total_sectors() > 0);
     }
 }
+
 

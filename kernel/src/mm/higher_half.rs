@@ -1485,7 +1485,7 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_alloc_page_table_prefers_numa_local_or_buddy() {
         // Verify alloc_page_table succeeds regardless of NUMA availability
         let manager = unsafe { PageTableManager::from_current_cr3(0) };
@@ -1493,7 +1493,7 @@ mod tests {
         assert!(res.is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_global_map_page_poisoned_returns_hardware_error() {
         // Poison the PAGE_TABLE_MANAGER lock
         {
@@ -1513,7 +1513,7 @@ mod tests {
         assert_eq!(res, Err(MapError::HardwareError));
     }
 
-    #[test]
+    #[test_case]
     fn test_global_unmap_page_poisoned_returns_hardware_error() {
         // Poison the PAGE_TABLE_MANAGER lock
         {
@@ -1526,3 +1526,4 @@ mod tests {
         assert_eq!(res, Err(MapError::HardwareError));
     }
 }
+

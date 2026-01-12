@@ -1173,11 +1173,11 @@ fn get_cpu_model_name() -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_procfs_read() {
         let fs = ProcFs::new();
 
@@ -1185,7 +1185,7 @@ mod tests {
         assert!(version.contains("ExoRust"));
     }
 
-    #[test]
+    #[test_case]
     fn test_procfs_directory() {
         let fs = ProcFs::new();
 
@@ -1194,7 +1194,7 @@ mod tests {
         assert!(entries.contains(&String::from("meminfo")));
     }
 
-    #[test]
+    #[test_case]
     fn test_process_entries() {
         let fs = ProcFs::new();
 
@@ -1207,7 +1207,7 @@ mod tests {
         assert!(fs.lookup("1234").is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_mem_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_proc").unwrap();
@@ -1252,7 +1252,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_mem_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -1331,7 +1331,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_maps_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_maps").unwrap();
@@ -1376,7 +1376,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_maps_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -1455,7 +1455,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_cmdline_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_cmdline").unwrap();
@@ -1500,7 +1500,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_cmdline_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -1579,7 +1579,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_fd_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_fd").unwrap();
@@ -1624,7 +1624,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_fd_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -1703,7 +1703,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_exe_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_exe").unwrap();
@@ -1748,7 +1748,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_exe_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -1827,7 +1827,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_proc_fd_listing_shows_open_handles() {
         // Create target process
         let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd_list").unwrap();
@@ -1849,4 +1849,5 @@ mod tests {
         crate::service_impl::EXOKERNEL.fs_close(handle).expect("close should succeed");
     }
 }
+
 

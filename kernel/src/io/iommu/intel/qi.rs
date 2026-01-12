@@ -177,7 +177,7 @@ impl InvalidationQueue {
     /// Create a new Invalidation Queue
     pub fn new(size_log2: u8) -> Option<Self> {
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] InvalidationQueue::new start: size_log2={}",
             size_log2
         );
@@ -186,7 +186,7 @@ impl InvalidationQueue {
         let total_bytes = size * core::mem::size_of::<InvalidationQueueEntry>();
 
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] allocating queue: total_bytes={} entries={}",
             total_bytes, size
         );
@@ -195,7 +195,7 @@ impl InvalidationQueue {
         let layout = Layout::from_size_align(total_bytes, 4096).ok()?;
         let base_ptr = crate::util::allocate_zeroed(layout);
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] allocate_zeroed(queue_layout) returned: {:?}",
             base_ptr.map(|p| p.as_ptr() as usize)
         );
@@ -205,14 +205,14 @@ impl InvalidationQueue {
         let status_layout = Layout::from_size_align(4096, 4096).ok()?;
         let status_ptr = crate::util::allocate_zeroed(status_layout);
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] allocate_zeroed(status_layout) returned: {:?}",
             status_ptr.map(|p| p.as_ptr() as usize)
         );
         let status_addr = status_ptr?.as_ptr() as usize;
 
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] InvalidationQueue::new success base=0x{:x} status_addr=0x{:x} size={}",
             base, status_addr, size
         );

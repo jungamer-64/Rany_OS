@@ -511,7 +511,7 @@ impl UdpSocketTable {
     }
 
     /// Find a socket by port
-    pub fn find(&self, port: u16) -> Option<Arc<PoisonLock<UdpSocketInner>>> {
+    pub(crate) fn find(&self, port: u16) -> Option<Arc<PoisonLock<UdpSocketInner>>> {
         match self.sockets.lock() {
             Ok(sockets) => {
                 let slot = (port as usize) % MAX_UDP_SOCKETS;
@@ -706,7 +706,7 @@ impl Default for UdpProcessor {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_udp_packet() {
         let mut buffer = [0u8; 64];
 
@@ -725,7 +725,7 @@ mod tests {
         assert!(packet.verify_checksum(src_ip, dst_ip));
     }
 
-    #[test]
+    #[test_case]
     fn test_udp_socket_poisoned_methods_return_defaults() {
         use crate::sync::set_panicking;
 
@@ -746,7 +746,7 @@ mod tests {
         socket.close();
     }
 
-    #[test]
+    #[test_case]
     fn test_bind_with_token_reclaim() {
         // Setup: create caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_bind").unwrap();
@@ -761,7 +761,13 @@ mod tests {
 
         // Target binds using token
         crate::task::process::set_current_process(target);
-        let sock = crate::net::bind_udp_with_token(40000, Some(token));
+        let sock = crate::net::stack::bind_udp_with_token(40000, Some(token));
+        let mut buf = [0u8; 1024];
+        
+        // ... (truncated)
+        // I should only replace the specific lines
+        // But context is tricky.
+        // I will do two chunks.
         assert!(sock.is_some());
         assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
 
@@ -777,14 +783,14 @@ mod tests {
 
         // Now unbind the socket (target releases resource)
         crate::task::process::set_current_process(target);
-        crate::net::unbind_udp(40000);
+        crate::net::stack::unbind_udp(40000);
 
         assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
         // Now reclaim should succeed
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_udp_recv_future_poisoned_returns_closed() {
         use crate::sync::set_panicking;
         use core::task::{RawWaker, RawWakerVTable, Waker, Context};
@@ -818,7 +824,7 @@ mod tests {
         assert_eq!(Pin::new(&mut fut).poll(&mut cx), Poll::Ready(None));
     }
 
-    #[test]
+    #[test_case]
     fn test_udp_processor_poisoned_bind_and_process() {
         use crate::sync::set_panicking;
 
@@ -847,3 +853,4 @@ mod tests {
         assert_eq!(stats.2, 1); // rx_dropped == 1
     }
 }
+

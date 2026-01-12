@@ -801,7 +801,7 @@ pub fn data_checksum(data: &[u8], initial: u32) -> u16 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ipv4_address() {
         let addr = Ipv4Address::from_octets(192, 168, 1, 1);
         assert!(addr.is_private());
@@ -811,7 +811,7 @@ mod tests {
         assert!(Ipv4Address::BROADCAST.is_broadcast());
     }
 
-    #[test]
+    #[test_case]
     fn test_subnet() {
         let addr1 = Ipv4Address::from_octets(192, 168, 1, 1);
         let addr2 = Ipv4Address::from_octets(192, 168, 1, 100);
@@ -820,3 +820,4 @@ mod tests {
         assert!(addr1.same_subnet(&addr2, mask));
     }
 }
+

@@ -1054,14 +1054,14 @@ macro_rules! console_println {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ansi_color_rgb() {
         assert_eq!(AnsiColor::Black.to_rgb(), 0x000000);
         assert_eq!(AnsiColor::White.to_rgb(), 0xAAAAAA);
         assert_eq!(AnsiColor::BrightWhite.to_rgb(), 0xFFFFFF);
     }
 
-    #[test]
+    #[test_case]
     fn test_terminal_buffer() {
         let mut buffer = TerminalBuffer::new(80, 25);
         buffer.write_str("Hello, World!");
@@ -1071,7 +1071,7 @@ mod tests {
         assert_eq!(buffer.cursor(), (0, 1));
     }
 
-    #[test]
+    #[test_case]
     fn test_ansi_parser() {
         let mut parser = AnsiParser::new();
 
@@ -1091,7 +1091,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[test_case]
     fn test_virtual_console() {
         let mut vc = VirtualConsole::new(0, 80, 25);
         vc.write("Hello\n");
@@ -1101,3 +1101,4 @@ mod tests {
         vc.write("\x1b[31mRed\x1b[0m");
     }
 }
+

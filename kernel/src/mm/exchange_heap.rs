@@ -1532,7 +1532,7 @@ pub enum ExchangeHeapError {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_exchange_heap_poisoned_allocation_fails() {
         use crate::sync::set_panicking;
 
@@ -1551,7 +1551,7 @@ mod tests {
         assert!(heap.allocate(layout).is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_exchange_heap() {
         // メモリ領域を確保（テスト用）
         const HEAP_SIZE: usize = 4096;
@@ -1576,7 +1576,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_block_coalescing() {
         // Test that adjacent freed blocks are coalesced
         const HEAP_SIZE: usize = 8192;
@@ -1616,3 +1616,4 @@ mod tests {
         );
     }
 }
+

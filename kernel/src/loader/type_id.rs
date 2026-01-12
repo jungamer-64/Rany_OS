@@ -557,7 +557,7 @@ pub fn init_kernel_interfaces() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_const_hash() {
         let hash1 = const_hash(b"test");
         let hash2 = const_hash(b"test");
@@ -567,7 +567,7 @@ mod tests {
         assert_ne!(hash1, hash3);
     }
 
-    #[test]
+    #[test_case]
     fn test_semver_compatibility() {
         let v1_0_0 = SemVer::new(1, 0, 0);
         let v1_1_0 = SemVer::new(1, 1, 0);
@@ -578,3 +578,4 @@ mod tests {
         assert!(!v2_0_0.is_backward_compatible(&v1_0_0));
     }
 }
+

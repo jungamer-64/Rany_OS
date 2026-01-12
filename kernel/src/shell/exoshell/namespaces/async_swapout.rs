@@ -113,7 +113,7 @@ mod tests {
     use crate::shell::exoshell::types::ExoValue;
     use crate::security::CapabilitySet;
 
-    #[test]
+    #[test_case]
     fn test_status_contains_expected_keys() {
         let val = AsyncSwapoutNamespace::status();
         match val {
@@ -127,7 +127,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_set_requires_cap() {
         let ns = AsyncSwapoutNamespace;
         let caps = CapabilitySet::empty();
@@ -140,7 +140,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_set_with_admin() {
         let ns = AsyncSwapoutNamespace;
         let caps = CapabilitySet::full();
@@ -154,3 +154,4 @@ mod tests {
         }
     }
 }
+

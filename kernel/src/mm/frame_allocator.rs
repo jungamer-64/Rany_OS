@@ -1641,7 +1641,7 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_bitmap_allocator() {
         let mut allocator = BitmapFrameAllocator::new();
 
@@ -1665,7 +1665,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_alloc_frame_numa_prefers_local_or_fallback() {
         let regions = [(PhysAddr::new(0x100000), 0x200000u64)];
         unsafe {
@@ -1678,7 +1678,7 @@ mod tests {
         assert!(successes <= attempts);
     }
 
-    #[test]
+    #[test_case]
     fn test_alloc_frame_2m_numa_prefers_local_or_fallback() {
         let regions = [(PhysAddr::new(0x100000), 0x200000u64)];
         unsafe {
@@ -1690,7 +1690,7 @@ mod tests {
         assert!(successes <= attempts);
     }
 
-    #[test]
+    #[test_case]
     fn test_alloc_dealloc_contiguous_wrapper() {
         // Try to allocate a single contiguous 4KiB frame; if not available, test is a no-op
         if let Some(start) = alloc_contiguous_frames(1) {
@@ -1706,3 +1706,4 @@ mod tests {
         }
     }
 }
+

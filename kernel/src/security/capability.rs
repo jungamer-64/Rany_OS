@@ -820,7 +820,7 @@ pub fn capability_name(cap: Capability) -> &'static str {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_capability_set() {
         let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND | CAP_NET_RAW);
 
@@ -836,14 +836,14 @@ mod tests {
         assert!(caps.has_capability(CAP_NET_BIND));
     }
 
-    #[test]
+    #[test_case]
     fn test_raise_not_permitted() {
         let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND);
 
         assert!(caps.raise(CAP_SYS_ADMIN).is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_grant_with_options() {
         let caller: u64 = 1001;
         let target: u64 = 2001;
@@ -866,7 +866,7 @@ mod tests {
         assert_eq!(grants[0].expires, Some(9999));
     }
 
-    #[test]
+    #[test_case]
     fn test_revoke_grant() {
         let caller: u64 = 1010;
         let target: u64 = 2010;
@@ -887,7 +887,7 @@ mod tests {
         assert!(grants[0].revoked);
     }
 
-    #[test]
+    #[test_case]
     fn test_expire_grants() {
         let caller: u64 = 1100;
         let target: u64 = 2100;
@@ -905,7 +905,7 @@ mod tests {
         assert!(manager().list_grants(target).is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_expire_grants_wrapper() {
         let caller: u64 = 1300;
         let target: u64 = 2300;
@@ -921,13 +921,13 @@ mod tests {
         assert!(manager().list_grants(target).is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_spawn_expiry_daemon_task_idempotent() {
         spawn_expiry_daemon_task();
         spawn_expiry_daemon_task();
     }
 
-    #[test]
+    #[test_case]
     fn test_grant_requires_permissions_manager() {
         // Use numeric domain ids to avoid depending on process_manager here
         let caller: u64 = 1000;
@@ -940,7 +940,7 @@ mod tests {
         assert!(res.is_err(), "Expected grant to fail without permissions");
     }
 
-    #[test]
+    #[test_case]
     fn test_reclaim_token() {
         let caller: u64 = 1200;
         let target: u64 = 2200;
@@ -965,7 +965,7 @@ mod tests {
         assert!(manager().list_grants(target).is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_in_flight_blocks_reclaim() {
         let caller: u64 = 1400;
         let target: u64 = 2400;
@@ -999,13 +999,13 @@ mod tests {
         assert!(manager().list_grants(target).is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_spawn_reclamation_daemon_task_idempotent() {
         spawn_reclamation_daemon_task();
         spawn_reclamation_daemon_task();
     }
 
-    #[test]
+    #[test_case]
     fn test_grant_with_permitted_manager() {
         let caller: u64 = 1001;
         let target: u64 = 2001;
@@ -1023,3 +1023,4 @@ mod tests {
         assert!(manager().has_capability(target, CAP_NET_BIND));
     }
 }
+

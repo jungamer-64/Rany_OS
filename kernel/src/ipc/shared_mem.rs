@@ -1082,7 +1082,7 @@ impl<T: Copy> SharedRingBuffer<T> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_shared_memory_basic() {
         let id = shmget(
             ShmKey::IPC_PRIVATE,
@@ -1107,7 +1107,7 @@ mod tests {
         assert_eq!(&buf, b"Hello");
     }
 
-    #[test]
+    #[test_case]
     fn test_named_shared_memory() {
         let name = "/test_shm";
         let id = shm_open(
@@ -1128,7 +1128,7 @@ mod tests {
         assert_eq!(id, id2);
     }
 
-    #[test]
+    #[test_case]
     fn test_zero_copy_region() {
         let domain1 = DomainId::new(1);
 
@@ -1143,7 +1143,7 @@ mod tests {
         assert_eq!(rref.owner(), domain1);
     }
 
-    #[test]
+    #[test_case]
     fn test_shm_attach_with_token_reclaim() {
         // Setup: create caller and target domains
         let caller = crate::task::process::process_manager()
@@ -1208,3 +1208,4 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 }
+

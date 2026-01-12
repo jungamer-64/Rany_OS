@@ -303,7 +303,7 @@ pub fn register_simple(domain_id: u64, name: &str, priority: DomainPriority, mem
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_domain_registration() {
         let info = DomainMemoryInfo {
             domain_id: 1,
@@ -320,7 +320,7 @@ mod tests {
         assert!(!OOM_KILLER.list_domains().iter().any(|d| d.domain_id == 1));
     }
 
-    #[test]
+    #[test_case]
     fn test_victim_selection_by_priority() {
         // Low priority should be selected first
         OOM_KILLER.register_domain(DomainMemoryInfo {
@@ -347,7 +347,7 @@ mod tests {
         OOM_KILLER.unregister_domain(10);
     }
 
-    #[test]
+    #[test_case]
     fn test_critical_domains_protected() {
         OOM_KILLER.register_domain(DomainMemoryInfo {
             domain_id: 20,
@@ -369,7 +369,7 @@ mod tests {
         OOM_KILLER.unregister_domain(20);
     }
 
-    #[test]
+    #[test_case]
     fn test_poisoned_register_skips_and_list_empty() {
         use crate::sync::set_panicking;
         set_panicking(true);
@@ -384,7 +384,7 @@ mod tests {
         assert!(!OOM_KILLER.list_domains().iter().any(|d| d.domain_id == 99));
     }
 
-    #[test]
+    #[test_case]
     fn test_poisoned_stats_returns_zero_total_domains() {
         use crate::sync::set_panicking;
         set_panicking(true);
@@ -393,3 +393,4 @@ mod tests {
         set_panicking(false);
     }
 }
+

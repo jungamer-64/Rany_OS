@@ -535,7 +535,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn pack_rgba_to_bgra_matches_scalar_mode() {
         let pixels_list = [1usize, 2, 7, 8, 9, 15, 16, 17, 24, 32, 33, 64];
         for &pixels in pixels_list.iter() {
@@ -552,7 +552,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn pack_rgba_to_bgra_matches_simd_if_available() {
         #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
         {
@@ -590,7 +590,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn pack_rgba_to_bgr24_matches_scalar_mode() {
         let pixels_list = [1usize, 2, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33, 64];
         for &pixels in pixels_list.iter() {
@@ -607,7 +607,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn pack_rgba_to_bgr24_matches_simd_if_available() {
         #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
         {
@@ -643,3 +643,4 @@ mod tests {
         }
     }
 }
+

@@ -752,7 +752,7 @@ mod tests {
     use crate::mm::types::FrameIndex;
     use core::sync::atomic::Ordering;
     
-    #[test]
+    #[test_case]
     fn test_memcg_counter() {
         let counter = MemcgCounter::new();
         assert_eq!(counter.current(), 0);
@@ -766,14 +766,14 @@ mod tests {
         assert_eq!(counter.peak(), 100); // ピークは変わらない
     }
     
-    #[test]
+    #[test_case]
     fn test_memcg_id() {
         let id = MemcgId::new(42);
         assert_eq!(id.as_u64(), 42);
         assert_eq!(MemcgId::ROOT.as_u64(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_memcg_page_track_and_untrack() {
         // Ensure manager initialized
         init_memcg();
@@ -803,14 +803,14 @@ mod tests {
         assert_eq!(s.anon_pages, 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_memcg_untrack_returns_none_if_not_tracked() {
         init_memcg();
         let frame = FrameIndex::new(1234);
         assert!(memcg_untrack_page(frame).is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_memcg_charge_rollup_to_parent() {
         init_memcg();
         let child = memcg_create(String::from("child"), memcg_root()).expect("create child");
@@ -828,3 +828,4 @@ mod tests {
         assert_eq!(s_child2.anon_pages, 0);
     }
 }
+

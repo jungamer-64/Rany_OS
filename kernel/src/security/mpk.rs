@@ -23,8 +23,9 @@
 #[cfg(test)]
 mod pkey_allocator_tests {
     use super::*;
+    use alloc::vec;
 
-    #[test]
+    #[test_case]
     fn test_pkey_allocator_basic() {
         let mut alloc = PkeyAllocator::new();
         // 予約済み以外を全て割り当て
@@ -610,7 +611,7 @@ pub fn init() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_protection_key_class() {
         assert!(ProtectionKeyClass::Framework.is_trust_level());
         assert!(!ProtectionKeyClass::Framework.is_data_class());
@@ -618,7 +619,7 @@ mod tests {
         assert!(ProtectionKeyClass::CryptoSecrets.is_data_class());
     }
 
-    #[test]
+    #[test_case]
     fn test_pkru_value() {
         let pkru = PkruValue::DENY_ALL;
         assert_eq!(pkru.0, 0xFFFFFFFF);
@@ -631,7 +632,7 @@ mod tests {
         assert_eq!(pkru.0 & 0b11, 0b00); // bits 0-1 should be cleared
     }
 
-    #[test]
+    #[test_case]
     fn test_domain_permissions_pkru_computation() {
         let framework_pkru = DomainPermissions::FRAMEWORK.compute_pkru();
         // Framework should have access to key 0 (Framework trust level)
@@ -650,3 +651,4 @@ mod tests {
         }
     }
 }
+

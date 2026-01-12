@@ -1955,7 +1955,7 @@ impl HugePageBitmap {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_basic_allocation() {
         let bitmap = HierarchicalBitmap::new(1000);
         assert_eq!(bitmap.free_count(), 1000);
@@ -1970,7 +1970,7 @@ mod tests {
         assert!(bitmap.is_free(idx));
     }
 
-    #[test]
+    #[test_case]
     fn test_mark_allocated_free() {
         let bitmap = HierarchicalBitmap::new(100);
 
@@ -1983,7 +1983,7 @@ mod tests {
         assert!(!bitmap.mark_free(50)); // Already free
     }
 
-    #[test]
+    #[test_case]
     fn test_exhaustion() {
         let bitmap = HierarchicalBitmap::new(64);
         let mut allocated = Vec::new();
@@ -2005,7 +2005,7 @@ mod tests {
         assert_eq!(bitmap.free_count(), 64);
     }
 
-    #[test]
+    #[test_case]
     fn test_range_free() {
         let bitmap = HierarchicalBitmap::new(200);
 
@@ -2018,7 +2018,7 @@ mod tests {
         assert!(bitmap.is_range_free(111, 39));
     }
 
-    #[test]
+    #[test_case]
     fn test_claim_word() {
         let bitmap = HierarchicalBitmap::new(128);
 
@@ -2035,7 +2035,7 @@ mod tests {
         assert_eq!(bitmap.free_count(), 128);
     }
 
-    #[test]
+    #[test_case]
     fn test_last_word_partial() {
         // 100 units = 1 full word + 36 bits in last word
         let bitmap = HierarchicalBitmap::new(100);
@@ -2052,3 +2052,4 @@ mod tests {
         assert_eq!(count, 100);
     }
 }
+

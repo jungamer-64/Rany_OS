@@ -44,7 +44,7 @@ impl PageRequestManager for IommuController {
         let guard = match self.page_request_queue.lock() {
             Ok(g) => {
                 #[cfg(test)]
-                eprintln!("[test][IOMMU] page_request_queue.lock() succeeded (not poisoned)");
+                log::info!("[test][IOMMU] page_request_queue.lock() succeeded (not poisoned)");
                 g
             }
             Err(poisoned) => {

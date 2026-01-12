@@ -291,13 +291,13 @@ pub fn check_retransmit_timeouts() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_rto_calculator_initial() {
         let calc = RtoCalculator::new();
         assert_eq!(calc.get_rto(), 1000); // 初期値1秒
     }
 
-    #[test]
+    #[test_case]
     fn test_rto_calculator_update() {
         let mut calc = RtoCalculator::new();
 
@@ -316,7 +316,7 @@ mod tests {
         assert!(rto2 <= rto1); // 安定してきたらRTOは下がる傾向
     }
 
-    #[test]
+    #[test_case]
     fn test_rto_calculator_backoff() {
         let mut calc = RtoCalculator::new();
         calc.update(100);
@@ -330,7 +330,7 @@ mod tests {
         assert!(rto_after >= rto_before);
     }
 
-    #[test]
+    #[test_case]
     fn test_retransmit_queue_push_and_ack() {
         let mut queue = RetransmitQueue::new();
         assert!(queue.is_empty());
@@ -351,7 +351,7 @@ mod tests {
         assert!(queue.is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_retransmit_queue_timeout() {
         let mut queue = RetransmitQueue::new();
 
@@ -366,7 +366,7 @@ mod tests {
         assert!(timed_out.is_some());
     }
 
-    #[test]
+    #[test_case]
     fn test_retransmit_queue_retransmit() {
         let mut queue = RetransmitQueue::new();
         let original_data = alloc::vec![1, 2, 3, 4, 5];
@@ -383,7 +383,7 @@ mod tests {
         assert!(seg.is_retransmit);
     }
 
-    #[test]
+    #[test_case]
     fn test_seq_comparison() {
         // シーケンス番号の比較（wrapping考慮）
         assert!(RetransmitQueue::seq_before(1000, 2000));
@@ -393,3 +393,4 @@ mod tests {
         assert!(RetransmitQueue::seq_before(0xFFFF_FFF0, 0x0000_0010));
     }
 }
+

@@ -755,7 +755,7 @@ pub fn demand_debug_info() {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_prot_flags() {
         let prot = ProtFlags::READ | ProtFlags::WRITE;
         assert!(prot.readable());
@@ -763,7 +763,7 @@ mod tests {
         assert!(!prot.executable());
     }
     
-    #[test]
+    #[test_case]
     fn test_vm_region_contains() {
         let region = VmRegion::new_anonymous(
             VirtAddr::new(0x1000),
@@ -777,10 +777,11 @@ mod tests {
         assert!(!region.contains(VirtAddr::new(0x0FFF)));
     }
     
-    #[test]
+    #[test_case]
     fn test_config_default() {
         let config = DemandPagingConfig::default();
         assert!(config.use_zero_page_cow);
         assert_eq!(config.prefault_pages, 4);
     }
 }
+

@@ -325,8 +325,9 @@ pub type IovaMagazineSet = MagazineSet<u64, DEFAULT_MAGAZINE_CAPACITY, FRAME_SIZ
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
-    #[test]
+    #[test_case]
     fn test_magazine_basic() {
         let mut mag: Magazine<u64, 4> = Magazine::new();
 
@@ -355,7 +356,7 @@ mod tests {
         assert!(mag.is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_magazine_peek() {
         let mut mag: Magazine<u64, 4> = Magazine::new();
 
@@ -369,7 +370,7 @@ mod tests {
         assert_eq!(mag.peek(), Some(43)); // Top changed
     }
 
-    #[test]
+    #[test_case]
     fn test_magazine_drain() {
         let mut mag: Magazine<u64, 4> = Magazine::new();
         mag.push(1);
@@ -383,7 +384,7 @@ mod tests {
         assert!(mag.is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_magazine_transfer() {
         let mut src: Magazine<u64, 4> = Magazine::new();
         let mut dst: Magazine<u64, 4> = Magazine::new();
@@ -398,7 +399,7 @@ mod tests {
         assert_eq!(dst.len(), 2);
     }
 
-    #[test]
+    #[test_case]
     fn test_magazine_set() {
         let mut set: MagazineSet<u64, 4, 3> = MagazineSet::new();
 
@@ -412,3 +413,4 @@ mod tests {
         assert_eq!(set.pop(3), None); // Invalid class
     }
 }
+

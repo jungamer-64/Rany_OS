@@ -283,7 +283,7 @@ pub struct FlowControlDebugInfo {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_initial_state() {
         let fc = FlowController::new();
         assert_eq!(fc.state(), FlowControlState::Normal);
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(fc.buffer_utilization(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_receive_data() {
         let mut fc = FlowController::with_buffer_size(10000);
 
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(fc.advertised_window(), 7000);
     }
 
-    #[test]
+    #[test_case]
     fn test_consume_data() {
         let mut fc = FlowController::with_buffer_size(10000);
 
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(fc.advertised_window(), 8000);
     }
 
-    #[test]
+    #[test_case]
     fn test_zero_window() {
         let mut fc = FlowController::with_buffer_size(1000);
 
@@ -326,7 +326,7 @@ mod tests {
         assert!(fc.advertised_window() > 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_sws_avoidance() {
         let mut fc = FlowController::with_buffer_size(10000);
 
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(fc.advertised_window(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_peer_zero_window() {
         let mut fc = FlowController::new();
 
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(fc.state(), FlowControlState::Normal);
     }
 
-    #[test]
+    #[test_case]
     fn test_probe_timing() {
         let mut fc = FlowController::new();
         fc.update_peer_window(0);
@@ -366,3 +366,4 @@ mod tests {
         assert!(fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS));
     }
 }
+

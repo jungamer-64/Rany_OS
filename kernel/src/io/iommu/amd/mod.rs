@@ -7,7 +7,7 @@
 pub mod cmd;
 pub mod driver;
 
-pub use driver::AmdViDriver;
+
 pub mod tables;
 
 use alloc::sync::Arc;
@@ -2759,7 +2759,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_alias_devids_for_device_dedup() {
         let device = DeviceId::new(0, 1, 0, 0);
         let devid = device.requester_id();
@@ -2792,7 +2792,7 @@ mod tests {
         assert_eq!(aliases, alloc::vec![0x0200, 0x0300]);
     }
 
-    #[test]
+    #[test_case]
     fn test_alias_devids_for_device_no_match() {
         let driver = make_driver(alloc::vec![IvhdDeviceEntry::Select {
             devid: 0x0100,
@@ -2803,7 +2803,7 @@ mod tests {
         assert!(aliases.is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_ivhd_flags_for_device_combined() {
         let device = DeviceId::new(0, 2, 0, 0);
         let devid = device.requester_id();
@@ -2849,7 +2849,7 @@ mod tests {
         assert_eq!(flags, 0xff);
     }
 
-    #[test]
+    #[test_case]
     fn test_ivhd_flags_for_device_acpi_hid() {
         let device = DeviceId::new(0, 2, 0, 0);
         let devid = device.requester_id();
@@ -2859,7 +2859,7 @@ mod tests {
         assert_eq!(flags, 0x03);
     }
 
-    #[test]
+    #[test_case]
     fn test_map_ivmd_ranges_exclusion_splits() {
         let pool = PageTablePool::new(1, 1);
         let domain = DomainState::new(
@@ -2907,7 +2907,7 @@ mod tests {
         assert_eq!(mappings.len(), 2);
     }
 
-    #[test]
+    #[test_case]
     fn test_map_for_device_rejects_exclusion_range() {
         let device = DeviceId::new(0, 0, 1, 0);
         let devid = device.requester_id();
@@ -2957,3 +2957,4 @@ mod tests {
         assert_eq!(result, Err(IommuError::InvalidAddress));
     }
 }
+

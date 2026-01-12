@@ -306,7 +306,7 @@ pub struct CongestionDebugInfo {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_initial_state() {
         let cc = CongestionController::new();
         assert_eq!(cc.state(), CongestionState::SlowStart);
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(cc.ssthresh(), u32::MAX);
     }
 
-    #[test]
+    #[test_case]
     fn test_slow_start_growth() {
         let mut cc = CongestionController::with_mss(1000);
         let initial_cwnd = cc.cwnd();
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(cc.state(), CongestionState::SlowStart);
     }
 
-    #[test]
+    #[test_case]
     fn test_transition_to_congestion_avoidance() {
         let mut cc = CongestionController::with_mss(1000);
         cc.ssthresh = 5000; // 強制的に低く設定
@@ -338,7 +338,7 @@ mod tests {
         assert_eq!(cc.state(), CongestionState::CongestionAvoidance);
     }
 
-    #[test]
+    #[test_case]
     fn test_fast_retransmit() {
         let mut cc = CongestionController::with_mss(1000);
         cc.bytes_in_flight = 10000;
@@ -352,7 +352,7 @@ mod tests {
         assert!(cc.ssthresh() < u32::MAX);
     }
 
-    #[test]
+    #[test_case]
     fn test_timeout() {
         let mut cc = CongestionController::with_mss(1000);
         cc.cwnd = 50000;
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(cc.ssthresh(), 15000); // FlightSize / 2
     }
 
-    #[test]
+    #[test_case]
     fn test_available_window() {
         let mut cc = CongestionController::with_mss(1000);
         cc.cwnd = 10000;
@@ -378,3 +378,4 @@ mod tests {
         assert_eq!(cc.available_window(5000), 2000);
     }
 }
+

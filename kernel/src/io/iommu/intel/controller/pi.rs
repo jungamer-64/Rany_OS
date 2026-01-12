@@ -42,7 +42,7 @@ impl PostedInterruptManager for IommuController {
         let guard = match self.pid_pool.lock() {
             Ok(g) => {
                 #[cfg(test)]
-                eprintln!("[test][IOMMU] pid_pool.lock() succeeded (not poisoned)");
+                log::info!("[test][IOMMU] pid_pool.lock() succeeded (not poisoned)");
                 g
             }
             Err(poisoned) => {

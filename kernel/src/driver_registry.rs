@@ -26,6 +26,7 @@ extern crate alloc;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::string::String;
+
 use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
@@ -766,7 +767,7 @@ mod tests {
         &VTABLE
     }
 
-    #[test]
+    #[test_case]
     fn test_register_abi_driver_and_block_unload() {
         // Register driver
         let handle = register_abi_driver(entry_fn).expect("register failed");
@@ -790,7 +791,7 @@ mod tests {
                 dependencies: Vec::new(),
                 is_safe: true,
                 signature_verified: true,
-                registered_drivers: vec![handle],
+                registered_drivers: alloc::vec![handle],
                 pkey: None,
                 stats: crate::loader::ModuleStats::default(),
             };
@@ -809,7 +810,7 @@ mod tests {
         assert!(res2.is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_unregister_running_fails() {
         // Register driver
         let handle = register_abi_driver(entry_fn).expect("register failed");
@@ -823,7 +824,7 @@ mod tests {
         assert!(res.is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_registry_poisoned_readers_return_defaults() {
         use crate::sync::set_panicking;
 
@@ -842,3 +843,4 @@ mod tests {
         assert!(reg.name(DriverHandle(0)).is_none());
     }
 }
+

@@ -405,15 +405,16 @@ pub fn current_task_id() -> u64 {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_context_size() {
         // CpuContext のサイズが期待通りか確認
         assert_eq!(core::mem::size_of::<CpuContext>(), 72); // 9 * 8 bytes
     }
 
-    #[test]
+    #[test_case]
     fn test_context_alignment() {
         // 8バイトアラインメント
         assert_eq!(core::mem::align_of::<CpuContext>(), 8);
     }
 }
+

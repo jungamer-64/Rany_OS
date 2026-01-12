@@ -340,7 +340,7 @@ pub fn stats() -> EpochStats {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_epoch_advance() {
         let e1 = current_epoch();
         let e2 = advance_epoch();
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(current_epoch(), e2);
     }
 
-    #[test]
+    #[test_case]
     fn test_epoch_guard() {
         let guard = EpochGuard::enter(0);
         assert!(PER_CORE_EPOCHS[0].active.load(Ordering::Relaxed));
@@ -356,7 +356,7 @@ mod tests {
         assert!(!PER_CORE_EPOCHS[0].active.load(Ordering::Relaxed));
     }
 
-    #[test]
+    #[test_case]
     fn test_quiescent_detection() {
         // 全コアが非アクティブなら即座にtrue
         assert!(all_cores_past_epoch(0));
@@ -377,3 +377,4 @@ mod tests {
         assert!(all_cores_past_epoch(start_epoch));
     }
 }
+

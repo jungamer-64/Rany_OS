@@ -288,12 +288,12 @@ impl DomainManager for IommuController {
         }
 
         #[cfg(test)]
-        println!("[IOMMU TEST] create_domain inserting id = {}", id);
+        log::info!("[IOMMU TEST] create_domain inserting id = {}", id);
 
         match self.domains.lock() {
             Ok(mut domains) => {
                 #[cfg(test)]
-                println!("[IOMMU TEST] domains.lock() acquired (Ok)");
+                log::info!("[IOMMU TEST] domains.lock() acquired (Ok)");
                 domains.insert(id, domain_arc.clone());
             }
             Err(_) => {
@@ -303,7 +303,7 @@ impl DomainManager for IommuController {
         }
 
         #[cfg(test)]
-        println!("[IOMMU TEST] create_domain done id = {}", id);
+        log::info!("[IOMMU TEST] create_domain done id = {}", id);
 
         Ok(id)
     }

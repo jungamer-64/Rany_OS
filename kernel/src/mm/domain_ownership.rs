@@ -371,7 +371,7 @@ pub fn get_largest_domain() -> Option<(DomainId, usize)> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_register_unregister() {
         let domain_id = DomainId::new(100);
         let address = 0x1000;
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(domain_total_bytes(domain_id), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_reclaim_domain() {
         let domain_id = DomainId::new(200);
 
@@ -403,15 +403,15 @@ mod tests {
         assert_eq!(allocs.len(), 3);
     }
 
-    #[test]
+    #[test_case]
     fn test_stats() {
         let stats = stats();
         // 基本的な統計が取得できることを確認
-        assert!(stats.total_allocations >= 0);
-        assert!(stats.total_domains >= 0);
+        // assert!(stats.total_allocations >= 0); // usize is always >= 0
+        // assert!(stats.total_domains >= 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_poisoned_register_skips() {
         use crate::sync::set_panicking;
         set_panicking(true);
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(get_domain_allocations(DomainId::new(1)).len(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_poisoned_getters_return_defaults() {
         use crate::sync::set_panicking;
         set_panicking(true);
@@ -429,3 +429,4 @@ mod tests {
         set_panicking(false);
     }
 }
+

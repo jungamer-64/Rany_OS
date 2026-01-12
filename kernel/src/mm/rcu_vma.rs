@@ -757,7 +757,7 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_vma_contains() {
         let vma = VmArea::new(
             VirtAddr::new(0x1000),
@@ -771,7 +771,7 @@ mod tests {
         assert!(!vma.contains(VirtAddr::new(0x0FFF)));
     }
     
-    #[test]
+    #[test_case]
     fn test_page_table_entry() {
         let pte = PageTableEntry::new(0x1234_5000, PageTableEntry::PRESENT | PageTableEntry::WRITABLE);
         
@@ -780,7 +780,7 @@ mod tests {
         assert_eq!(pte.addr(), 0x1234_5000);
     }
     
-    #[test]
+    #[test_case]
     fn test_rcu_pte() {
         let pte = RcuPte::new(PageTableEntry::new(0x1000, PageTableEntry::PRESENT));
         let guard = rcu_read_lock();
@@ -790,10 +790,11 @@ mod tests {
         assert_eq!(entry.addr(), 0x1000);
     }
     
-    #[test]
+    #[test_case]
     fn test_vma_list_empty() {
         let list = VmaList::new();
         assert!(list.is_empty());
         assert_eq!(list.len(), 0);
     }
 }
+

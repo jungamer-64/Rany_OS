@@ -2486,7 +2486,7 @@ pub fn async_io_scheduler() -> &'static AsyncIoScheduler {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_async_file_seek() {
         let attr = FileAttr {
             size: 1000,
@@ -2507,10 +2507,11 @@ mod tests {
         assert_eq!(file.seek(SeekFrom::End(-100)).unwrap(), 900);
     }
 
-    #[test]
+    #[test_case]
     fn test_direct_block_handle() {
         let handle = DirectBlockHandle::new(0, 0, 1000, 512);
         assert_eq!(handle.block_size, 512);
         assert_eq!(handle.block_count, 1000);
     }
 }
+

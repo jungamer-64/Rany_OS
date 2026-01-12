@@ -1466,7 +1466,7 @@ impl Default for PanicCatchGuard {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_uleb128() {
         let mut reader = MemoryReader::new(&[0x00]);
         assert_eq!(reader.read_uleb128().unwrap(), 0);
@@ -1484,7 +1484,7 @@ mod tests {
         assert_eq!(reader.read_uleb128().unwrap(), 624485);
     }
 
-    #[test]
+    #[test_case]
     fn test_sleb128() {
         let mut reader = MemoryReader::new(&[0x00]);
         assert_eq!(reader.read_sleb128().unwrap(), 0);
@@ -1499,3 +1499,4 @@ mod tests {
         assert_eq!(reader.read_sleb128().unwrap(), -128);
     }
 }
+

@@ -441,7 +441,7 @@ pub fn ksm_idle_work(current_time: u64) -> usize {
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_page_hash_compute() {
         let mut data1 = [0u8; PAGE_SIZE_4K];
         let mut data2 = [0u8; PAGE_SIZE_4K];
@@ -459,7 +459,7 @@ mod tests {
         assert_ne!(hash1, hash3);
     }
     
-    #[test]
+    #[test_case]
     fn test_page_hash_bucket() {
         let data = [0u8; PAGE_SIZE_4K];
         let hash = PageHash::compute(&data);
@@ -468,3 +468,4 @@ mod tests {
         assert!(bucket < KSM_HASH_BUCKETS);
     }
 }
+

@@ -671,7 +671,7 @@ pub fn page_cache() -> &'static PageCache {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_cached_page() {
         let page = CachedPage::new_empty(0);
         assert_eq!(page.page_num(), 0);
@@ -683,7 +683,7 @@ mod tests {
         assert_eq!(page.state(), PageState::Dirty);
     }
 
-    #[test]
+    #[test_case]
     fn test_page_pin() {
         let page = CachedPage::new_empty(0);
         assert!(!page.is_pinned());
@@ -695,7 +695,7 @@ mod tests {
         assert!(!page.is_pinned());
     }
 
-    #[test]
+    #[test_case]
     fn test_page_cache() {
         let cache = PageCache::new(64 * 1024);
 
@@ -716,7 +716,7 @@ mod tests {
         assert_eq!(stats.pages, 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_sync_page() {
         let cache = PageCache::new(64 * 1024);
 
@@ -1480,7 +1480,7 @@ pub fn block_cache() -> &'static LRUBlockCache {
 mod block_cache_tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_block_cache_basic() {
         let cache = LRUBlockCache::new(512, 4096); // 4KB cache, 512B blocks
 
@@ -1504,7 +1504,7 @@ mod block_cache_tests {
         assert_eq!(stats.blocks, 2);
     }
 
-    #[test]
+    #[test_case]
     fn test_block_cache_lru_eviction() {
         let cache = LRUBlockCache::new(512, 1024); // 1KB cache, 512B blocks (max 2 blocks)
 
@@ -1521,7 +1521,7 @@ mod block_cache_tests {
         assert!(cache.get(0, 2).is_some());
     }
 
-    #[test]
+    #[test_case]
     fn test_block_cache_dirty_tracking() {
         let cache = LRUBlockCache::new(512, 4096);
 
@@ -1537,7 +1537,7 @@ mod block_cache_tests {
         assert!(block.is_dirty());
     }
 
-    #[test]
+    #[test_case]
     fn test_block_cache_flush() {
         let cache = LRUBlockCache::new(512, 4096);
 
@@ -1560,3 +1560,4 @@ mod block_cache_tests {
         assert!(!block.is_dirty());
     }
 }
+

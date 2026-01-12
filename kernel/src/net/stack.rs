@@ -914,7 +914,7 @@ pub fn unbind_udp(port: u16) {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_network_stack_creation() {
         let stack = NetworkStack::new_default();
         let config = stack.config();
@@ -926,7 +926,7 @@ mod tests {
         assert!(config.icmp_echo_enabled);
     }
 
-    #[test]
+    #[test_case]
     fn test_network_stack_poisoned_runtime_apis_fail() {
         use crate::sync::set_panicking;
 
@@ -945,3 +945,4 @@ mod tests {
         assert!(bind_udp(1234).is_none());
     }
 }
+

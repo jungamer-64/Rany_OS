@@ -417,7 +417,7 @@ pub fn get_domain_numa(id: DomainId) -> Option<usize> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_set_and_get_domain_numa() {
         let id = create_domain(String::from("numa_test")).expect("create_domain failed");
         assert_eq!(get_domain_numa(id), None);
@@ -425,7 +425,7 @@ mod tests {
         assert_eq!(get_domain_numa(id), Some(3usize));
     }
 
-    #[test]
+    #[test_case]
     fn test_domain_poisoned_readers_return_defaults() {
         use crate::sync::set_panicking;
 
@@ -450,7 +450,7 @@ mod tests {
         print_domain_list();
     }
 
-    #[test]
+    #[test_case]
     fn test_create_domain_poisoned_returns_error() {
         use crate::error::{DomainErrorKind, KernelError};
         use crate::sync::set_panicking;
@@ -469,7 +469,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_domain_poisoned_add_remove_task_no_panic() {
         use crate::sync::set_panicking;
 
@@ -486,7 +486,7 @@ mod tests {
         remove_task_from_domain(id, 1234);
     }
 
-    #[test]
+    #[test_case]
     fn test_reclaim_domain_resources_poisoned_no_panic() {
         use crate::sync::set_panicking;
 
@@ -895,3 +895,4 @@ pub fn current_domain() -> DomainId {
 pub fn is_kernel_domain() -> bool {
     current_domain() == DomainId::KERNEL
 }
+

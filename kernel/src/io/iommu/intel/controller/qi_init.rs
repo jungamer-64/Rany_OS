@@ -27,19 +27,19 @@ pub trait QIManager {
 impl QIManager for IommuController {
     fn init_queued_invalidation(&mut self, size_log2: u8) -> Result<(), IommuError> {
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] init_queued_invalidation enter: size_log2={}",
             size_log2
         );
 
         if !self.supports_queued_invalidation() {
             #[cfg(test)]
-            eprintln!("[test][IOMMU] QI not supported");
+            log::info!("[test][IOMMU] QI not supported");
             return Err(IommuError::NotSupported);
         }
 
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] invalidation_queue.is_locked() before lock = {}",
             self.invalidation_queue.is_locked()
         );
@@ -47,7 +47,7 @@ impl QIManager for IommuController {
         let guard = match self.invalidation_queue.lock() {
             Ok(g) => {
                 #[cfg(test)]
-                eprintln!("[test][IOMMU] invalidation_queue.lock() succeeded (not poisoned)");
+                log::info!("[test][IOMMU] invalidation_queue.lock() succeeded (not poisoned)");
                 g
             }
             Err(poisoned) => {
@@ -62,14 +62,14 @@ impl QIManager for IommuController {
         };
         if guard.is_some() {
             #[cfg(test)]
-            eprintln!("[test][IOMMU] invalidation_queue already initialized");
+            log::info!("[test][IOMMU] invalidation_queue already initialized");
             return Err(IommuError::AlreadyInitialized);
         }
 
         drop(guard);
 
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] calling InvalidationQueue::new(size_log2={})",
             size_log2
         );
@@ -77,7 +77,7 @@ impl QIManager for IommuController {
         let iq = InvalidationQueue::new(size_log2).ok_or(IommuError::HardwareError)?;
 
         #[cfg(test)]
-        eprintln!(
+        log::info!(
             "[test][IOMMU] InvalidationQueue::new returned: base=0x{:x} size={} entries",
             iq.base_address(),
             iq.size_log2()
@@ -87,7 +87,7 @@ impl QIManager for IommuController {
         // Bits 2:0 = queue size (log2 - 8), bits 11:0 reserved
         let iqa_value = (iq.base_address() as u64) | (iq.size_log2() as u64 & 0x7);
         #[cfg(test)]
-        eprintln!("[test][IOMMU] writing IQA=0x{:x}", iqa_value);
+        log::info!("[test][IOMMU] writing IQA=0x{:x}", iqa_value);
 
         if let Some(ref cq) = self.command_queue {
             let _ =
@@ -96,11 +96,11 @@ impl QIManager for IommuController {
             self.write64(regs::IQA, iqa_value);
         }
         #[cfg(test)]
-        eprintln!("[test][IOMMU] wrote IQA");
+        log::info!("[test][IOMMU] wrote IQA");
 
         // Set queue head to 0
         #[cfg(test)]
-        eprintln!("[test][IOMMU] writing IQH=0");
+        log::info!("[test][IOMMU] writing IQH=0");
         if let Some(ref cq) = self.command_queue {
             let _ =
                 cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
@@ -108,11 +108,11 @@ impl QIManager for IommuController {
             self.write64(regs::IQH, 0);
         }
         #[cfg(test)]
-        eprintln!("[test][IOMMU] wrote IQH=0");
+        log::info!("[test][IOMMU] wrote IQH=0");
 
         // Set queue tail to 0
         #[cfg(test)]
-        eprintln!("[test][IOMMU] writing IQT=0");
+        log::info!("[test][IOMMU] writing IQT=0");
         if let Some(ref cq) = self.command_queue {
             let _ =
                 cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
@@ -120,23 +120,23 @@ impl QIManager for IommuController {
             self.write64(regs::IQT, 0);
         }
         #[cfg(test)]
-        eprintln!("[test][IOMMU] wrote IQT=0");
+        log::info!("[test][IOMMU] wrote IQT=0");
 
         let mut guard = self
             .invalidation_queue
             .lock_for_init("[IOMMU] invalidation_queue init");
         #[cfg(test)]
-        eprintln!("[test][IOMMU] acquired lock_for_init for finalizing");
+        log::info!("[test][IOMMU] acquired lock_for_init for finalizing");
         *guard = Some(iq);
         #[cfg(test)]
-        eprintln!("[test][IOMMU] stored InvalidationQueue; finalizing");
+        log::info!("[test][IOMMU] stored InvalidationQueue; finalizing");
         log::info!(
             "[IOMMU] Invalidation Queue initialized ({} entries)\n",
             1 << size_log2
         );
 
         #[cfg(test)]
-        eprintln!("[test][IOMMU] init_queued_invalidation completed");
+        log::info!("[test][IOMMU] init_queued_invalidation completed");
 
         if let Some(ref cq) = self.command_queue {
             let _ = cq.process_once(|_k| Ok(0));

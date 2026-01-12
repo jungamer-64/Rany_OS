@@ -426,7 +426,6 @@ impl ExoShell {
                 };
 
                 let mut last_result = ExoValue::Nil;
-                let mut broke = false;
 
                 // Enter loop context
                 self.loop_depth += 1;
@@ -445,7 +444,7 @@ impl ExoShell {
                     self.env.pop_scope();
 
                     match res {
-                        ExoValue::Break => { broke = true; break; }
+                        ExoValue::Break => { break; }
                         ExoValue::Continue => { crate::task::yield_now().await; continue; }
                         ExoValue::Error(_) => { self.loop_depth -= 1; return res; }
                         other => last_result = other,
@@ -1860,7 +1859,7 @@ mod tests {
     use crate::task::block_on;
     use crate::security::CapabilitySet;
 
-    #[test]
+    #[test_case]
     fn test_block_scoping() {
         let mut shell = ExoShell::with_capabilities(CapabilitySet::full());
         let expr = parse_expression("{ let x = 5; x }").unwrap();
@@ -1870,7 +1869,7 @@ mod tests {
         assert!(shell.env.get("x").is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_if_expression_evaluation() {
         let mut shell = ExoShell::new();
         let expr = parse_expression("if true { 1 } else { 2 }").unwrap();
@@ -1878,7 +1877,7 @@ mod tests {
         assert_eq!(val, ExoValue::Int(1));
     }
 
-    #[test]
+    #[test_case]
     fn test_for_expression_evaluation() {
         let mut shell = ExoShell::new();
         let expr = parse_expression("for i in [1,2,3] { i }").unwrap();
@@ -1887,7 +1886,7 @@ mod tests {
         assert!(shell.env.get("i").is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_else_if_chain() {
         let mut shell = ExoShell::new();
         let expr = parse_expression("if false { 1 } else if true { 2 } else { 3 }").unwrap();
@@ -1895,24 +1894,25 @@ mod tests {
         assert_eq!(val, ExoValue::Int(2));
     }
 
-    #[test]
+    #[test_case]
     fn test_break_in_loop() {
         let mut shell = ExoShell::new();
         let val = crate::task::block_on(shell.eval("for i in [1,2,3] { if i == 2 { break } i }"));
         assert_eq!(val, ExoValue::Int(1));
     }
 
-    #[test]
+    #[test_case]
     fn test_continue_in_loop() {
         let mut shell = ExoShell::new();
         let val = crate::task::block_on(shell.eval("for i in [1,2,3] { if i == 2 { continue } i }"));
         assert_eq!(val, ExoValue::Int(3));
     }
 
-    #[test]
+    #[test_case]
     fn test_break_outside_loop_error() {
         let mut shell = ExoShell::new();
         let val = crate::task::block_on(shell.eval("break"));
         assert!(matches!(val, ExoValue::Error(_)));
     }
 }
+

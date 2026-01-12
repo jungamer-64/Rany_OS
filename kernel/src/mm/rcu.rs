@@ -205,7 +205,7 @@ pub type RcuCallback = fn(*mut u8);
 
 /// 遅延解放用のコールバックエントリ
 #[derive(Debug)]
-pub(crate) struct RcuCallbackEntry {
+pub struct RcuCallbackEntry {
     /// 解放対象のポインタ
     ptr: *mut u8,
     /// コールバック関数
@@ -447,7 +447,7 @@ pub fn rcu_stats() -> RcuStats {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_rcu_read_guard() {
         {
             let _guard = rcu_read_lock();
@@ -457,7 +457,7 @@ mod tests {
         assert!(!rcu_read_active());
     }
 
-    #[test]
+    #[test_case]
     fn test_rcu_epoch() {
         let epoch1 = rcu_current_epoch();
         rcu_advance_epoch();
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(epoch2, epoch1 + 1);
     }
 
-    #[test]
+    #[test_case]
     fn test_per_cpu_rcu_state() {
         let state = PerCpuRcuState::new();
 
@@ -478,3 +478,4 @@ mod tests {
         assert!(!state.in_read_section());
     }
 }
+

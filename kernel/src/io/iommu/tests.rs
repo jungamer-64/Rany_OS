@@ -30,13 +30,13 @@ use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-#[test]
+#[test_case]
 fn test_device_id() {
     let dev = DeviceId::new(0, 0, 1, 0);
     assert_eq!(dev.requester_id(), 0x08); // bus=0, dev=1, func=0
 }
 
-#[test]
+#[test_case]
 fn test_sl_pte() {
     let pte = SlPte::mapping(0x1000, true, true);
     assert!(pte.is_present());
@@ -45,7 +45,7 @@ fn test_sl_pte() {
     assert_eq!(pte.phys_addr(), 0x1000);
 }
 
-#[test]
+#[test_case]
 fn test_iommu_domain() {
     let domain = IommuDomain::new(
         1,
@@ -121,7 +121,7 @@ unsafe fn is_superpage_2mb_mapped(domain: &IommuDomain, iova: u64, format: PteFo
     (*pd_entry).is_present() && (*pd_entry).is_super_page(format)
 }
 
-#[test]
+#[test_case]
 fn test_map_rollback_on_overlap_hidden_mapping() {
     let format = PteFormat::Intel;
     let domain = IommuDomain::new(
@@ -160,7 +160,7 @@ fn test_map_rollback_on_overlap_hidden_mapping() {
     assert!(domain.mappings_snapshot().is_empty());
 }
 
-#[test]
+#[test_case]
 fn test_map_rollback_on_overlap_hidden_mapping_amd() {
     let format = PteFormat::Amd;
     let domain = IommuDomain::new(
@@ -206,7 +206,7 @@ fn test_map_rollback_on_overlap_hidden_mapping_amd() {
     assert!(domain.mappings_snapshot().is_empty());
 }
 
-#[test]
+#[test_case]
 fn test_map_rollback_superpage_2mb_collision() {
     let format = PteFormat::Amd;
     let domain = IommuDomain::new(
@@ -250,7 +250,7 @@ fn test_map_rollback_superpage_2mb_collision() {
     assert!(domain.mappings_snapshot().is_empty());
 }
 
-#[test]
+#[test_case]
 fn test_create_domain_with_numa_hint() {
     let ctrl = IommuController::new(0x0, 0);
     let id = ctrl
@@ -266,7 +266,7 @@ fn test_create_domain_with_numa_hint() {
     assert_eq!(ctrl.get_domain_numa(id), Some(5usize));
 }
 
-#[test]
+#[test_case]
 fn test_process_page_requests_poisoned_returns_empty() {
     use crate::sync::set_panicking;
     let mut ctrl = IommuController::new(0x0, 0);
@@ -279,7 +279,7 @@ fn test_process_page_requests_poisoned_returns_empty() {
     assert!(requests.is_empty());
 }
 
-#[test]
+#[test_case]
 fn test_create_domain_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -296,7 +296,7 @@ fn test_create_domain_poisoned_returns_hw_error() {
     );
 }
 
-#[test]
+#[test_case]
 fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -355,7 +355,7 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     assert!(!present);
 }
 
-#[test]
+#[test_case]
 fn test_scalable_mode_pasid0_fault_resolution() {
     struct TestNotifier {
         seen: AtomicBool,
@@ -466,7 +466,7 @@ fn test_scalable_mode_pasid0_fault_resolution() {
     assert_eq!(notifier.domain_id(), domain_id as u32);
 }
 
-#[test]
+#[test_case]
 fn test_domain_map_poisoned_returns_none() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -484,7 +484,7 @@ fn test_domain_map_poisoned_returns_none() {
     assert!(ctrl.domain(id).is_none());
 }
 
-#[test]
+#[test_case]
 fn test_get_domain_for_device_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -514,7 +514,7 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
     );
 }
 
-#[test]
+#[test_case]
 fn test_set_domain_numa_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -535,7 +535,7 @@ fn test_set_domain_numa_poisoned_returns_hw_error() {
     );
 }
 
-#[test]
+#[test_case]
 fn test_iova_allocator_basic() {
     let ctrl = IommuController::new(0x0, 0);
     // Small IOVA space for testing (64KB)
@@ -553,7 +553,7 @@ fn test_iova_allocator_basic() {
     let _c = ctrl.allocate_iova(4096).expect("alloc after free");
 }
 
-#[test]
+#[test_case]
 fn test_init_iova_poisoned_proceeds_with_best_effort() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -579,7 +579,7 @@ fn test_init_iova_poisoned_proceeds_with_best_effort() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_init_interrupt_remapping_poisoned_proceeds_with_best_effort() {
     use crate::sync::set_panicking;
     let mut ctrl = IommuController::new(0x0, 0);
@@ -607,7 +607,7 @@ fn test_init_interrupt_remapping_poisoned_proceeds_with_best_effort() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -623,7 +623,7 @@ fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
     assert_eq!(res.err(), Some(IommuError::HardwareError));
 }
 
-#[test]
+#[test_case]
 fn test_map_for_dma_alloc_non_identity() {
     let ctrl = IommuController::new(0x0, 0);
     ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
@@ -669,7 +669,7 @@ fn test_map_for_dma_alloc_non_identity() {
     ctrl.free_iova(iova, size).expect("free failed");
 }
 
-#[test]
+#[test_case]
 fn test_cmdqueue_map_unmap_with_domain() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let mut ctrl_local = IommuController::new(0x0, 0);
@@ -770,7 +770,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
     assert!(domain_arc.mapping(0x1000).is_none());
 }
 
-#[test]
+#[test_case]
 fn test_map_for_device_async_and_unmap() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let mut ctrl_local = IommuController::new(0x0, 0);
@@ -891,7 +891,7 @@ fn test_map_for_device_async_and_unmap() {
     assert!(domain_arc.mapping(iova).is_none());
 }
 
-#[test]
+#[test_case]
 fn test_map_for_device_respects_dma_mask() {
     use alloc::sync::Arc as AllocArc;
 
@@ -949,13 +949,13 @@ fn test_map_for_device_respects_dma_mask() {
     crate::io::iommu::api::unmap_for_device(&device, iova, 0x1000).expect("unmap");
 }
 /*
-#[test]
+#[test_case]
 fn test_init_iommu_registers_drhd_and_rmrr_and_applies_rmrr() {
     // Test removed due to dependency on global IommuManager which is deprecated.
 }
 */
 
-#[test]
+#[test_case]
 fn test_unmap_reclaims_empty_tables() {
     let domain = IommuDomain::new(
         1,
@@ -991,7 +991,7 @@ fn test_unmap_reclaims_empty_tables() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_unmap_partial_keeps_tables() {
     let domain = IommuDomain::new(
         1,
@@ -1036,7 +1036,7 @@ fn test_unmap_partial_keeps_tables() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_unmap_mixed_superpages() {
     const SIZE_1GB: u64 = 1024 * 1024 * 1024;
     const SIZE_2MB: u64 = 2 * 1024 * 1024;
@@ -1077,7 +1077,7 @@ fn test_unmap_mixed_superpages() {
     }
 }
 
-#[test]
+#[test_case]
 fn test_submit_invalidation_poisoned_returns_error() {
     let mut ctrl = IommuController::new(0x0, 0);
 
@@ -1096,7 +1096,7 @@ fn test_submit_invalidation_poisoned_returns_error() {
     assert_eq!(res, Err(IommuError::HardwareError));
 }
 
-#[test]
+#[test_case]
 fn test_qi_wait_sync_poisoned_returns_error() {
     let mut ctrl = IommuController::new(0x0, 0);
 
@@ -1123,7 +1123,7 @@ fn test_qi_wait_sync_poisoned_returns_error() {
     assert_eq!(res, Err(IommuError::HardwareError));
 }
 
-#[test]
+#[test_case]
 fn test_qi_wait_async_poisoned_returns_error() {
     let mut ctrl = IommuController::new(0x0, 0);
 
@@ -1142,7 +1142,7 @@ fn test_qi_wait_async_poisoned_returns_error() {
     assert_eq!(waiter.submit_result, Err(IommuError::HardwareError));
 }
 
-#[test]
+#[test_case]
 fn test_qi_metrics_pressure() {
     let mut ctrl = IommuController::new(0x0, 0);
 
@@ -1187,7 +1187,7 @@ fn test_qi_metrics_pressure() {
     assert_eq!(stats.submits, safe_submissions as u64);
 }
 
-#[test]
+#[test_case]
 fn test_page_table_scope_commit_preserves_counts() {
     // Verify that commit doesn't overwrite existing counts and increments parent count.
     let mut scope = PageTableScope::new(None).expect("allocate ptable");
@@ -1219,7 +1219,7 @@ fn test_page_table_scope_commit_preserves_counts() {
     super::page_table_pool::unregister_page_table(scope_phys);
 }
 
-#[test]
+#[test_case]
 fn test_page_table_scope_drop_rolls_back_parent() {
     // Verify that dropping an uncommitted scope clears parent entry and frees memory.
     let parent_phys = 0xBABA;
@@ -1297,7 +1297,7 @@ impl super::security::SecurityNotifier for MockSecurityNotifier {
     }
 }
 
-#[test]
+#[test_case]
 fn test_security_notifier_registration() {
     let ctrl = IommuController::new(0x0, 0);
     let notifier = Arc::new(MockSecurityNotifier::new());
@@ -1310,7 +1310,7 @@ fn test_security_notifier_registration() {
     assert!(!ctrl.set_security_notifier(notifier2));
 }
 
-#[test]
+#[test_case]
 fn test_api_security_notifier_registration() {
     if get_iommu_registry().is_none() {
         let ctrl = IommuController::new(0x0, 0);
@@ -1332,7 +1332,7 @@ fn test_api_security_notifier_registration() {
     assert!(!second);
 }
 
-#[test]
+#[test_case]
 fn test_security_event_types_are_copy() {
     use super::security::{IsolationReason, SecurityEvent};
 
@@ -1369,7 +1369,7 @@ fn test_security_event_types_are_copy() {
     let _event8 = event7; // Copy
 }
 
-#[test]
+#[test_case]
 fn test_fault_summary_from_fault_record() {
     use super::security::FaultSummary;
 
@@ -1385,7 +1385,7 @@ fn test_fault_summary_from_fault_record() {
     assert_eq!(summary.reason, 0x42);
 }
 
-#[test]
+#[test_case]
 fn test_isolation_decision_default() {
     use super::security::{IsolationDecision, IsolationReason};
 
@@ -1402,7 +1402,7 @@ fn test_isolation_decision_default() {
 
 /// Test that identity mapping is disabled by default in release builds.
 /// This ensures that IOVAs are always different from physical addresses.
-#[test]
+#[test_case]
 fn test_identity_mapping_disabled_by_default() {
     // In release builds without unsafe_iommu_bypass, identity mapping should be disabled
     #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
@@ -1416,7 +1416,7 @@ fn test_identity_mapping_disabled_by_default() {
 
 /// Test that IOVA allocation produces non-identity addresses.
 /// IOVA should NEVER equal physical address (except for RMRR regions).
-#[test]
+#[test_case]
 fn test_iova_not_equal_phys() {
     let ctrl = IommuController::new(0x0, 0);
     // Start IOVA range at high address to avoid collision with typical phys
@@ -1436,7 +1436,7 @@ fn test_iova_not_equal_phys() {
 }
 
 /// Test that domains use Translated type, not PassThrough.
-#[test]
+#[test_case]
 fn test_domain_type_not_passthrough() {
     let domain = IommuDomain::new(
         0,
@@ -1459,7 +1459,7 @@ fn test_domain_type_not_passthrough() {
 }
 
 /// Test that all mappings have distinct IOVA vs physical addresses.
-#[test]
+#[test_case]
 fn test_mapping_iova_phys_distinct() {
     let ctrl = IommuController::new(0x0, 0);
     ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
@@ -1508,3 +1508,4 @@ fn test_mapping_iova_phys_distinct() {
     domain.unmap(iova).expect("unmap");
     ctrl.free_iova(iova, size).expect("free");
 }
+

@@ -1558,7 +1558,7 @@ pub async fn async_flush(device: DeviceId) -> Result<usize, IoError> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_io_priority_ordering() {
         assert!(IoPriority::Realtime > IoPriority::High);
         assert!(IoPriority::High > IoPriority::Normal);
@@ -1566,7 +1566,7 @@ mod tests {
         assert!(IoPriority::Idle > IoPriority::Background);
     }
 
-    #[test]
+    #[test_case]
     fn test_io_mode_stats() {
         let stats = IoModeStats::new();
         stats.record_io(100);
@@ -1577,7 +1577,7 @@ mod tests {
         assert_eq!(stats.avg_latency_us(), 116); // (100+200+50)/3
     }
 
-    #[test]
+    #[test_case]
     fn test_scheduler_submit() {
         let scheduler = IoScheduler::new();
         let device = DeviceId::Nvme {
@@ -1592,3 +1592,4 @@ mod tests {
         assert_eq!(scheduler.get_state(id), Some(IoState::Completed));
     }
 }
+

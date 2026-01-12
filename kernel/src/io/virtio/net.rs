@@ -1903,7 +1903,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
                 }
                 // 送信完了: PacketRefをドロップしてMempoolに返却
                 let packet = this.packet.take();
-                let len = packet.map(|p| p.data().len()).unwrap_or(0);
+                let len = packet.map(|p: crate::net::mempool::PacketRef| p.data().len()).unwrap_or(0);
                 Poll::Ready(Ok(len))
             } else {
                 tx_queue.register_waker(cx.waker().clone());
@@ -2070,7 +2070,7 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
                         }
                     };
                     if let Some(mut packet) = this.packet.take() {
-                        let copy_len = core::cmp::min(len as usize, packet.capacity());
+                        let copy_len = core::cmp::min(len as usize, packet.capacity() as usize);
                         packet.set_len(copy_len);
                         packet.data_mut()[..copy_len].copy_from_slice(&rref[..copy_len]);
                         packet.advance(VirtioNetHeader::SIZE);
@@ -2085,7 +2085,7 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
 
                 // 受信完了: データ長を設定してPacketRefを返却
                 if let Some(mut packet) = this.packet.take() {
-                    let copy_len = core::cmp::min(len as usize, packet.capacity());
+                    let copy_len = core::cmp::min(len as usize, packet.capacity() as usize);
                     packet.set_len(copy_len);
                     packet.advance(VirtioNetHeader::SIZE);
                     return Poll::Ready(Ok(packet));
@@ -2220,7 +2220,7 @@ pub fn handle_virtio_net_interrupt() {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_virtio_net_header() {
         let header = VirtioNetHeader::new_tx();
         assert_eq!(header.flags, 0);
@@ -2534,3 +2534,4 @@ impl VirtQueueDmaBuffers {
         self.used_ring.phys_addr().as_u64()
     }
 }
+

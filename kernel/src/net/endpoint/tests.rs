@@ -10,7 +10,7 @@ mod tests {
     use crate::net::endpoint::SocketType;
     use alloc::vec::Vec;
 
-    #[test]
+    #[test_case]
     fn test_accepted_connection() {
         let fd = SocketFd::from_raw(100);
         let local = SocketAddr::new([192, 168, 1, 1], 8080);
@@ -24,7 +24,7 @@ mod tests {
         assert_eq!(conn.remote_addr, remote);
     }
 
-    #[test]
+    #[test_case]
     fn test_socket_new_with_fd() {
         let fd = SocketFd::from_raw(42);
         let socket = Socket::new_with_fd(SocketType::Tcp, fd);
@@ -34,7 +34,7 @@ mod tests {
         assert_eq!(socket.state(), SocketState::Created);
     }
 
-    #[test]
+    #[test_case]
     fn test_socket_accept_empty_queue() {
         let socket = Socket::new(SocketType::Tcp);
 
@@ -51,7 +51,7 @@ mod tests {
         assert!(matches!(result, Err(SocketError::Timeout)));
     }
 
-    #[test]
+    #[test_case]
     fn test_socket_accept_with_connection() {
         let listen_socket = Socket::new(SocketType::Tcp);
 
@@ -107,7 +107,7 @@ mod tests {
         None
     }
 
-    #[test]
+    #[test_case]
     fn test_accept_backlog_limit() {
         let socket = Socket::new(SocketType::Tcp);
 
@@ -139,3 +139,4 @@ mod tests {
         assert_eq!(inner.accept_queue.len(), 2);
     }
 }
+

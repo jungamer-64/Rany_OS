@@ -264,7 +264,7 @@ pub fn add_domain_dependency(dependent: DomainId, dependency: DomainId) -> Resul
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_domain_lifecycle() {
         // ドメイン作成
         let id = register_domain("test_domain".into());
@@ -283,3 +283,4 @@ mod tests {
         assert!(result.is_ok());
     }
 }
+

@@ -905,7 +905,7 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    #[test]
+    #[test_case]
     fn test_paged_content_in_inode() {
         let inode = MemoryInode::new_file(1, "test.txt", FileMode::DEFAULT_FILE);
 
@@ -919,7 +919,7 @@ mod tests {
         assert_eq!(&buf, b"Hello, World!");
     }
 
-    #[test]
+    #[test_case]
     fn test_large_file_paging() {
         use super::super::page::PAGE_SIZE;
 
@@ -939,7 +939,7 @@ mod tests {
         assert_eq!(buf, data);
     }
 
-    #[test]
+    #[test_case]
     fn test_cow_copy() {
         let src = MemoryInode::new_file(1, "src.txt", FileMode::DEFAULT_FILE);
         src.write(0, b"Original content").unwrap();
@@ -962,7 +962,7 @@ mod tests {
         assert_eq!(&buf2, b"Original content");
     }
 
-    #[test]
+    #[test_case]
     fn test_sparse_file() {
         let inode = MemoryInode::new_file(1, "sparse.bin", FileMode::DEFAULT_FILE);
 
@@ -981,7 +981,7 @@ mod tests {
         assert_eq!(&buf2, b"sparse data");
     }
 
-    #[test]
+    #[test_case]
     fn test_truncate_releases_pages() {
         use super::super::page::PAGE_SIZE;
 
@@ -998,7 +998,7 @@ mod tests {
         assert_eq!(attr.size, PAGE_SIZE as u64);
     }
 
-    #[test]
+    #[test_case]
     fn test_get_page_zero_copy() {
         let inode = MemoryInode::new_file(1, "zero_copy.bin", FileMode::DEFAULT_FILE);
         inode.write(0, b"Page data for test").unwrap();
@@ -1013,3 +1013,4 @@ mod tests {
         assert!(no_page.is_none());
     }
 }
+

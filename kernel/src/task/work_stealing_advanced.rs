@@ -879,7 +879,7 @@ pub fn schedule(core_id: u32) -> Option<Box<StealableTask>> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_core_affinity() {
         let all = CoreAffinity::all();
         assert!(all.is_allowed(0));
@@ -891,7 +891,7 @@ mod tests {
         assert_eq!(single.preferred_core(), Some(5));
     }
 
-    #[test]
+    #[test_case]
     fn test_priority_ordering() {
         assert!(Priority::RealTime > Priority::High);
         assert!(Priority::High > Priority::Normal);
@@ -899,7 +899,7 @@ mod tests {
         assert!(Priority::Low > Priority::Idle);
     }
 
-    #[test]
+    #[test_case]
     fn test_deque_operations() {
         let mut deque = WorkStealingDeque::new(16);
         assert!(deque.is_empty());
@@ -913,3 +913,4 @@ mod tests {
         assert!(deque.is_empty());
     }
 }
+

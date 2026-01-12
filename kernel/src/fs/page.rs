@@ -197,13 +197,13 @@ impl Default for PagedContent {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_page_constants() {
         assert_eq!(PAGE_SIZE, 4096);
         assert_eq!(1 << PAGE_SHIFT, PAGE_SIZE);
     }
 
-    #[test]
+    #[test_case]
     fn test_paged_content_basic_write_read() {
         let mut content = PagedContent::new();
 
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(&buf, b"Hello, World!");
     }
 
-    #[test]
+    #[test_case]
     fn test_paged_content_sparse() {
         let content = PagedContent::new();
 
@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(&buf, &[0u8; 10]);
     }
 
-    #[test]
+    #[test_case]
     fn test_paged_content_cross_page_write() {
         let mut content = PagedContent::new();
 
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(content.page_count(), 2);
     }
 
-    #[test]
+    #[test_case]
     fn test_cow_clone() {
         let mut original = PagedContent::new();
         original.write(0, b"Original");
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(&buf, b"Modified");
     }
 
-    #[test]
+    #[test_case]
     fn test_truncate() {
         let mut content = PagedContent::new();
         content.write(0, &[0xAA; PAGE_SIZE * 3]);
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(content.page_count(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_get_page_zero_copy() {
         let mut content = PagedContent::new();
         content.write(0, b"Test data");
@@ -287,3 +287,4 @@ mod tests {
         assert!(content.get_page(100).is_none());
     }
 }
+

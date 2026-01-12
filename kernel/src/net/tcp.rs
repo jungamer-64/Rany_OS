@@ -1632,22 +1632,23 @@ impl Default for TcpProcessor {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ipv4_addr() {
         let addr = Ipv4Addr::new(192, 168, 1, 1);
         assert_eq!(addr.octets(), [192, 168, 1, 1]);
         assert_eq!(format!("{}", addr), "192.168.1.1");
     }
 
-    #[test]
+    #[test_case]
     fn test_socket_addr() {
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST, 8080);
         assert_eq!(format!("{}", addr), "127.0.0.1:8080");
     }
 
-    #[test]
+    #[test_case]
     fn test_tcp_state() {
         let tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
         assert_eq!(tcb.state, TcpState::Closed);
     }
 }
+

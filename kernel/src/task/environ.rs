@@ -403,7 +403,7 @@ pub fn get_term() -> Option<EnvValue> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_env_basic() {
         let env = Environment::new();
 
@@ -414,7 +414,7 @@ mod tests {
         assert!(env.get("TEST_VAR").is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_env_key_validation() {
         assert!(EnvKey::new("VALID_KEY").is_valid());
         assert!(EnvKey::new("_also_valid").is_valid());
@@ -425,7 +425,7 @@ mod tests {
         assert!(!EnvKey::new("key-with-dash").is_valid());
     }
 
-    #[test]
+    #[test_case]
     fn test_env_expand() {
         let env = Environment::new();
         env.set("USER", "testuser").unwrap();
@@ -435,8 +435,9 @@ mod tests {
         assert_eq!(env.expand("Home is ${HOME}"), "Home is /home/testuser");
     }
 
-    #[test]
-    fn test_path_parsing() {
+    #[test_case]
+    fn test_environ_parsing() {
+        use alloc::vec;
         let value = EnvValue::new("/bin:/usr/bin:/usr/local/bin");
         let paths = value.parse_path_list();
         assert_eq!(paths, vec!["/bin", "/usr/bin", "/usr/local/bin"]);

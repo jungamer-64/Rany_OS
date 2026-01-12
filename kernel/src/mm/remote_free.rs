@@ -1331,7 +1331,7 @@ pub type FrameQuarantineRing = QuarantineRing<512>;
 mod tests {
     use super::*;
     
-    #[test]
+    #[test_case]
     fn test_remote_free_entry_basics() {
         let empty = RemoteFreeEntry::empty();
         assert!(empty.is_empty());
@@ -1349,7 +1349,7 @@ mod tests {
         assert_eq!(range.total_bytes(), (8 * PAGE_SIZE_2M) as u64);
     }
     
-    #[test]
+    #[test_case]
     fn test_quarantine_ring_push_drain() {
         let mut ring: QuarantineRing<8> = QuarantineRing::new();
         
@@ -1369,7 +1369,7 @@ mod tests {
         assert_eq!(ring.oldest_epoch(), Some(3));
     }
     
-    #[test]
+    #[test_case]
     fn test_quarantine_ring_full() {
         let mut ring: QuarantineRing<4> = QuarantineRing::new();
         
@@ -1390,7 +1390,7 @@ mod tests {
         assert!(ring.push(0x5000, 0, 5));
     }
     
-    #[test]
+    #[test_case]
     fn test_quarantine_epoch_wraparound() {
         let mut ring: QuarantineRing<8> = QuarantineRing::new();
         
@@ -1607,4 +1607,5 @@ pub mod coalescing {
         COALESCE_STATS.load(core::sync::atomic::Ordering::Relaxed)
     }
 }
+
 

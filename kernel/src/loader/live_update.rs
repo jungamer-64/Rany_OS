@@ -699,7 +699,7 @@ impl StateTransfer for StatelessCell {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_request_tracker() {
         let tracker = RequestTracker::new();
 
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(tracker.active_count(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_request_tracker_drain() {
         let tracker = RequestTracker::new();
 
@@ -727,10 +727,11 @@ mod tests {
         assert_eq!(tracker.active_count(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_per_core_epoch() {
         let epoch = PerCoreEpoch::new();
         assert_eq!(epoch.local_epoch.load(Ordering::Relaxed), 0);
         assert!(!epoch.in_critical_section.load(Ordering::Relaxed));
     }
 }
+

@@ -1016,7 +1016,7 @@ mod tests {
             0
         }
 
-        fn ack_interrupt(&mut self, _status: u32) {}
+        fn ack_interrupt(&self, _status: u32) {}
 
         fn read_config_u8(&self, _offset: usize) -> u8 {
             0
@@ -1041,7 +1041,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_submit_read_uses_dma_addr() {
         // Setup small virtqueue memory regions
         let queue_size: u16 = 8;
@@ -1098,7 +1098,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_submit_write_uses_dma_addr() {
         // Setup small virtqueue memory regions
         let queue_size: u16 = 8;
@@ -2013,17 +2013,17 @@ pub fn blk_read_sync(_sector: u64, buf: &mut [u8]) -> Result<usize, BlockError> 
 // ============================================================================
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_virtio_blk_req_type() {
         assert_eq!(VirtioBlkReqType::In as u32, 0);
         assert_eq!(VirtioBlkReqType::Out as u32, 1);
         assert_eq!(VirtioBlkReqType::Flush as u32, 4);
     }
 
-    #[test]
+    #[test_case]
     fn test_block_device_config_default() {
         let config = BlockDeviceConfig::default();
         assert_eq!(config.capacity, 0);
@@ -2031,7 +2031,7 @@ mod tests {
         assert!(!config.read_only);
     }
 
-    #[test]
+    #[test_case]
     fn test_bounce_map_unmap_via_dmahandle() {
         // Verify that bounce allocation + DmaHandle mapping/unmap works
         let len = 4096usize;
@@ -2049,3 +2049,4 @@ mod tests {
         assert_eq!(rref[0], 0xABu8);
     }
 }
+

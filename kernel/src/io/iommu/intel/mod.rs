@@ -35,7 +35,7 @@ use super::types::{DeviceId, IommuDomainType, IommuError};
 use self::registry::get_iommu_registry;
 
 /// Intel VT-d driver wrapper.
-pub use driver::IntelVtDDriver;
+
 
 #[derive(Default)]
 pub struct IntelIommuDriver;

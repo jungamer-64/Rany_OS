@@ -72,7 +72,7 @@ impl Backoff {
                 core::hint::spin_loop();
             }
             // yieldポイント（将来のスケジューラ統合用）
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", not(target_os = "none")))]
             std::thread::yield_now();
         } else {
             // 最大バックオフに達した場合
@@ -1014,7 +1014,7 @@ impl<T, const N: usize> Drop for MpmcRingBuffer<T, N> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_spsc_basic() {
         let rb: SpscRingBuffer<u32, 8> = SpscRingBuffer::new();
 
@@ -1039,7 +1039,7 @@ mod tests {
         assert_eq!(rb.pop(), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_mpsc_basic() {
         let rb: MpscRingBuffer<u32, 8> = MpscRingBuffer::new();
 
@@ -1057,7 +1057,7 @@ mod tests {
         assert_eq!(rb.pop(), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_mpmc_basic() {
         let rb: MpmcRingBuffer<u32, 8> = MpmcRingBuffer::new();
 
@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(rb.pop(), None);
     }
 
-    #[test]
+    #[test_case]
     fn test_mpmc_try_operations() {
         let rb: MpmcRingBuffer<u32, 4> = MpmcRingBuffer::new();
 
@@ -1098,7 +1098,7 @@ mod tests {
         assert!(rb.try_push(5).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_backoff() {
         let mut backoff = Backoff::new();
 
@@ -1116,7 +1116,7 @@ mod tests {
         assert!(!backoff.is_completed());
     }
 
-    #[test]
+    #[test_case]
     fn test_seqlock() {
         let lock: Seqlock<u64> = Seqlock::new(0);
 
@@ -1133,7 +1133,7 @@ mod tests {
         assert_eq!(lock.read(), 100);
     }
 
-    #[test]
+    #[test_case]
     fn test_bounded_channel_static() {
         static BUF: MpscRingBuffer<u64, 8> = MpscRingBuffer::new();
         let (tx, rx) = BoundedChannel::from_static(&BUF);
@@ -1156,10 +1156,11 @@ mod tests {
         assert!(rx.recv().is_none());
     }
 
-    #[test]
+    #[test_case]
     fn test_bounded_channel_new_leak() {
         let (tx, rx) = BoundedChannel::<u32, 8>::new();
         assert!(tx.send(42u32).is_ok());
         assert_eq!(rx.recv(), Some(42u32));
     }
 }
+

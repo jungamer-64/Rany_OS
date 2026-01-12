@@ -767,7 +767,7 @@ mod tests {
     use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
     use crate::task::process::{ProcessId, process_manager, set_current_process};
 
-    #[test]
+    #[test_case]
     fn test_spawn_with_caps_success() {
         let parent = process_manager().create(ProcessId::INIT, "parent_test").unwrap();
         set_current_process(parent);
@@ -780,7 +780,7 @@ mod tests {
         assert!(manager().has_capability(child.as_u64(), CAP_NET_BIND));
     }
 
-    #[test]
+    #[test_case]
     fn test_spawn_with_caps_denied() {
         let parent = process_manager().create(ProcessId::INIT, "parent_test2").unwrap();
         set_current_process(parent);
@@ -791,7 +791,7 @@ mod tests {
         assert!(res.is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_spawn_with_caps_revoke() {
         let parent = process_manager().create(ProcessId::INIT, "parent_test3").unwrap();
         set_current_process(parent);
@@ -818,8 +818,9 @@ mod tests {
         assert!(grants[0].revoked);
     }
 
-    #[test]
+    #[test_case]
     fn test_spawn_with_caps_rollback_on_partial_failure() {
+        use crate::security::capability::CAP_NET_RAW;
         let parent = process_manager().create(ProcessId::INIT, "parent_test4").unwrap();
         set_current_process(parent);
         // parent allowed both caps
@@ -844,7 +845,7 @@ mod tests {
         assert!(manager().list_grants(child_pid.as_u64()).is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_spawn_with_caps_in_flight_reclaim() {
         let parent = process_manager().create(ProcessId::INIT, "parent_ifr").unwrap();
         set_current_process(parent);
@@ -862,7 +863,7 @@ mod tests {
         assert!(matches!(manager().reclaim_token(t), Err(crate::security::capability::CapabilityError::ReclamationBusy)));
 
         // Now exit and reap child, which should decrement in-flight
-        assert!(PROCESS_MANAGER.exit(child, 0).is_ok());
+        assert!(PROCESS_MANAGER.exit(child, ExitCode(0)).is_ok());
         assert!(PROCESS_MANAGER.reap(child).is_ok());
 
         assert_eq!(manager().in_flight_count(t), 0);
@@ -947,10 +948,10 @@ pub fn getpriority(pid: ProcessId) -> Result<Priority, ProcessError> {
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_process_creation() {
         let pid = PROCESS_MANAGER
             .create(ProcessId::INIT, "test_process")
@@ -963,7 +964,7 @@ mod tests {
         assert_eq!(p.state, ProcessState::Creating);
     }
 
-    #[test]
+    #[test_case]
     fn test_process_exit() {
         let pid = PROCESS_MANAGER
             .create(ProcessId::INIT, "exit_test")
@@ -980,3 +981,4 @@ mod tests {
         assert_eq!(p.exit_code, Some(ExitCode::SUCCESS));
     }
 }
+

@@ -359,7 +359,7 @@ mod tests {
     use crate::security::capability::*;
     use crate::task::process::{ProcessId, process_manager, set_current_process};
 
-    #[test]
+    #[test_case]
     fn test_grant_requires_permissions() {
         let caller = process_manager().create(ProcessId::INIT, "caller").unwrap();
         set_current_process(caller);
@@ -375,7 +375,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_grant_with_permitted() {
         let caller = process_manager()
             .create(ProcessId::INIT, "caller2")
@@ -405,7 +405,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_tokens_listing_and_revoke() {
         let caller = process_manager()
             .create(ProcessId::INIT, "caller3")
@@ -455,7 +455,7 @@ mod tests {
         assert!(manager().list_grants(target.as_u64()).is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_sysadmin_can_revoke() {
         let issuer = process_manager()
             .create(ProcessId::INIT, "issuer")
@@ -485,7 +485,7 @@ mod tests {
         assert!(manager().list_grants(target.as_u64()).is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_delegation_allows_regrant() {
         let parent = process_manager()
             .create(ProcessId::INIT, "parent")
@@ -513,7 +513,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_delegation_denies_regrant_when_not_delegatable() {
         let parent = process_manager()
             .create(ProcessId::INIT, "parent2")
@@ -720,3 +720,4 @@ impl ShellNamespace for CapNamespace {
         })
     }
 }
+

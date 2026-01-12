@@ -701,7 +701,7 @@ impl Drop for DevFileHandle {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_null_device() {
         let null = NullDevice;
 
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(null.write(0, data).unwrap(), 4);
     }
 
-    #[test]
+    #[test_case]
     fn test_zero_device() {
         let zero = ZeroDevice;
 
@@ -721,7 +721,7 @@ mod tests {
         assert!(buf.iter().all(|&b| b == 0));
     }
 
-    #[test]
+    #[test_case]
     fn test_random_device() {
         let random = RandomDevice::new();
 
@@ -735,7 +735,7 @@ mod tests {
         assert_ne!(buf1, buf2);
     }
 
-    #[test]
+    #[test_case]
     fn test_dev_open_with_token_reclaim() {
         // Setup: create caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_dev").unwrap();
@@ -776,7 +776,7 @@ mod tests {
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
-    #[test]
+    #[test_case]
     fn test_devfs_structure() {
         let fs = DevFs::new();
 
@@ -786,7 +786,7 @@ mod tests {
         assert!(entries.contains(&String::from("random")));
     }
 
-    #[test]
+    #[test_case]
     fn test_find_block_device_by_number() {
         struct TestBlockDevice;
         impl DeviceOps for TestBlockDevice {
@@ -806,3 +806,4 @@ mod tests {
         ops.close().unwrap();
     }
 }
+
