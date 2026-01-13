@@ -504,8 +504,8 @@ impl HdaController {
         // SAFETY: SFENCE ensures the CORB entry write is visible to the HDA controller
         // before we update the write pointer. This prevents out-of-order writes
         // that could cause the controller to read incomplete command data.
-        // On x86_64, this is implemented as the SFENCE instruction.
-        unsafe { core::arch::x86_64::_mm_sfence() };
+        // Use hal::mmio::sfence() which has proper target_feature guards
+        hal::mmio::sfence();
 
         // Update write pointer
         self.write16(REG_CORBWP, next_wp);
@@ -532,7 +532,11 @@ impl HdaController {
                 // the latest data written by the HDA controller to the RIRB buffer.
                 // While x86_64 provides cache coherency for DMA, the fence ensures
                 // speculative loads don't return stale data.
+                // Use target_feature guard for SSE intrinsics
+                #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
                 unsafe { core::arch::x86_64::_mm_lfence() };
+                #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Acquire);
 
                 // Read response
                 let rirb_entry_addr = self.rirb_addr + (next_rp as u64 * RIRB_ENTRY_SIZE as u64);

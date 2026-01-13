@@ -549,8 +549,11 @@ impl PerCoreNvmeQueue {
                 return Some(cqe);
             }
             // PAUSE命令でCPUリソースを節約
-            #[cfg(target_arch = "x86_64")]
-            core::arch::x86_64::_mm_pause();
+            // Use target_feature guard for SSE intrinsics on soft-float targets
+            #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+            unsafe { core::arch::x86_64::_mm_pause() };
+            #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+            core::hint::spin_loop();
         }
         None
     }

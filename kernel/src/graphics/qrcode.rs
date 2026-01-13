@@ -101,6 +101,7 @@ pub enum QrError {
 }
 
 /// QR Code Buffer
+#[derive(Debug)]
 pub struct QrCode {
     modules: [[Module; QR_SIZE]; QR_SIZE],
 }

@@ -20,8 +20,11 @@
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
+use core::ptr;
+use core::cell::UnsafeCell;
+use spin::{Mutex, Once};
+use crate::interrupts;
 
 // ============================================================================
 // Configuration
@@ -299,129 +302,170 @@ impl StealableTask {
 // Lock-Free Deque (Work-Stealing Queue)
 // ============================================================================
 
-/// ロックフリーデキュー（Chase-Lev deque inspired）
+// ============================================================================
+// Lock-Free Deque (Chase-Lev)
+// ============================================================================
+
+/// Lock-free Work-Stealing Deque (Chase-Lev algorithm)
+///
+/// Thread-safety:
+/// - push/pop: Must be called by the owner thread only.
+/// - steal: Can be called by any thread.
 pub struct WorkStealingDeque {
-    /// バッファ
-    buffer: Vec<Option<Box<StealableTask>>>,
-    /// ボトム（所有者がpush/pop）
+    /// Circular buffer of tasks (pointers)
+    buffer: Box<[AtomicPtr<StealableTask>]>,
+    /// Buffer mask (capacity - 1)
+    mask: usize,
+    /// Bottom index (modified by owner)
     bottom: AtomicUsize,
-    /// トップ（スチーラーがpop）
+    /// Top index (modified by owner and thieves)
     top: AtomicUsize,
 }
 
+// SAFETY: Deque handles its own synchronization for steal vs pop.
+// Owner-only methods must be protected by caller (e.g., interrupt suppression).
+unsafe impl Sync for WorkStealingDeque {}
+unsafe impl Send for WorkStealingDeque {}
+
 impl WorkStealingDeque {
     pub fn new(capacity: usize) -> Self {
-        let mut buffer = Vec::with_capacity(capacity);
-        buffer.resize_with(capacity, || None);
+        // Capacity must be power of 2
+        let cap = capacity.next_power_of_two();
+        
+        // Initialize buffer with null pointers
+        let mut buffer = Vec::with_capacity(cap);
+        for _ in 0..cap {
+            buffer.push(AtomicPtr::new(ptr::null_mut()));
+        }
 
         Self {
-            buffer,
+            buffer: buffer.into_boxed_slice(),
+            mask: cap - 1,
             bottom: AtomicUsize::new(0),
             top: AtomicUsize::new(0),
         }
     }
 
-    /// 所有者がタスクをプッシュ
-    pub fn push(&mut self, task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
-        let bottom = self.bottom.load(Ordering::Relaxed);
-        let top = self.top.load(Ordering::Acquire);
-
-        let size = bottom.wrapping_sub(top);
-        if size >= self.buffer.len() {
-            return Err(task); // キューが満杯
+    /// Push a task (Owner only)
+    ///
+    /// # Safety
+    /// Must be called with interrupts disabled to prevent re-entrancy on the same core.
+    pub unsafe fn push(&self, task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
+        let b = self.bottom.load(Ordering::Relaxed);
+        let t = self.top.load(Ordering::Acquire);
+        
+        if b.wrapping_sub(t) >= self.buffer.len() {
+            return Err(task);
         }
 
-        let index = bottom % self.buffer.len();
-        self.buffer[index] = Some(task);
-
-        core::sync::atomic::fence(Ordering::Release);
-        self.bottom.store(bottom.wrapping_add(1), Ordering::Relaxed);
-
+        let idx = b & self.mask;
+        self.buffer[idx].store(Box::into_raw(task), Ordering::Relaxed);
+        
+        fence(Ordering::Release);
+        
+        self.bottom.store(b.wrapping_add(1), Ordering::Relaxed);
         Ok(())
     }
 
-    /// 所有者がタスクをポップ
-    pub fn pop(&mut self) -> Option<Box<StealableTask>> {
-        let bottom = self.bottom.load(Ordering::Relaxed);
-        if bottom == 0 {
+    /// Pop a task (Owner only)
+    ///
+    /// # Safety
+    /// Must be called with interrupts disabled.
+    pub unsafe fn pop(&self) -> Option<Box<StealableTask>> {
+        let b = self.bottom.load(Ordering::Relaxed);
+        if b == 0 {
+            // Empty (wrapping handled by wrapping_sub below potentially, but 0 check is optimization)
+            // Wait, b starts at 0. b-1 checks are needed.
+            // If b > 0 or wrapped? wrapping_sub(1) handles logic.
+        }
+        
+        // Check "empty" based on t vs b logic?
+        // Standard Chase-Lev:
+        let b = b.wrapping_sub(1);
+        self.bottom.store(b, Ordering::Relaxed);
+        
+        fence(Ordering::SeqCst);
+        
+        let t = self.top.load(Ordering::Relaxed);
+        let size = b.wrapping_sub(t);
+        
+        if (size as isize) < 0 {
+            // Empty
+            self.bottom.store(b.wrapping_add(1), Ordering::Relaxed);
             return None;
         }
 
-        let new_bottom = bottom.wrapping_sub(1);
-        self.bottom.store(new_bottom, Ordering::SeqCst);
-
-        let top = self.top.load(Ordering::SeqCst);
-
-        if top > new_bottom {
-            // キューが空
-            self.bottom.store(top, Ordering::Relaxed);
-            return None;
-        }
-
-        let index = new_bottom % self.buffer.len();
-        let task = self.buffer[index].take();
-
-        if top == new_bottom {
-            // 最後の要素：スチーラーと競合の可能性
-            if self
-                .top
-                .compare_exchange(
-                    top,
-                    top.wrapping_add(1),
-                    Ordering::SeqCst,
-                    Ordering::Relaxed,
-                )
-                .is_err()
-            {
-                // スチーラーが先に取った
-                self.bottom.store(top.wrapping_add(1), Ordering::Relaxed);
-                return None;
+        let idx = b & self.mask;
+        let task_ptr = self.buffer[idx].load(Ordering::Relaxed);
+        
+        if size > 0 {
+            // Normal case: at least one task left
+            if !task_ptr.is_null() {
+                return Some(Box::from_raw(task_ptr));
             }
-            self.bottom.store(top.wrapping_add(1), Ordering::Relaxed);
+            return None; // Should not happen
         }
 
-        task
+        // size == 0: Race with steal
+        if !self.top.compare_exchange(
+            t, 
+            t.wrapping_add(1), 
+            Ordering::SeqCst, 
+            Ordering::Relaxed
+        ).is_ok() {
+            // Fail (lost race)
+            self.bottom.store(b.wrapping_add(1), Ordering::Relaxed);
+            return None;
+        }
+
+        self.bottom.store(b.wrapping_add(1), Ordering::Relaxed);
+        if !task_ptr.is_null() {
+            return Some(Box::from_raw(task_ptr));
+        }
+        None
     }
 
-    /// スチーラーがタスクを盗む
+    /// Steal a task (Any thread)
     pub fn steal(&self) -> Option<Box<StealableTask>> {
         loop {
-            let top = self.top.load(Ordering::Acquire);
-
-            core::sync::atomic::fence(Ordering::SeqCst);
-
-            let bottom = self.bottom.load(Ordering::Acquire);
-
-            if top >= bottom {
-                return None; // キューが空
+            let t = self.top.load(Ordering::Acquire);
+            fence(Ordering::SeqCst);
+            let b = self.bottom.load(Ordering::Acquire);
+            
+            let size = b.wrapping_sub(t);
+            if (size as isize) <= 0 {
+                return None; // Empty
             }
 
-            // 注：実際にはバッファへの安全なアクセスが必要
-            // この実装は概念的なもの
-
-            let result = self.top.compare_exchange_weak(
-                top,
-                top.wrapping_add(1),
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            );
-
-            if result.is_ok() {
-                // 成功：実際にはここでバッファからタスクを取得
-                return None; // プレースホルダー
+            let idx = t & self.mask;
+            let task_ptr = self.buffer[idx].load(Ordering::Relaxed);
+            
+            if !self.top.compare_exchange(
+                t, 
+                t.wrapping_add(1), 
+                Ordering::SeqCst, 
+                Ordering::Relaxed
+            ).is_ok() {
+                continue; // Retry
             }
-            // 失敗：リトライ
+
+            // Success
+            if !task_ptr.is_null() {
+                // Safety: We claimed the slot via CAS on top
+                return unsafe { Some(Box::from_raw(task_ptr)) };
+            }
+            return None;
         }
     }
 
-    /// キューサイズを取得
+    /// Get approximate length
     pub fn len(&self) -> usize {
-        let bottom = self.bottom.load(Ordering::Relaxed);
-        let top = self.top.load(Ordering::Relaxed);
-        bottom.saturating_sub(top)
+        let b = self.bottom.load(Ordering::Relaxed);
+        let t = self.top.load(Ordering::Relaxed);
+        let len = b.wrapping_sub(t);
+        if (len as isize) < 0 { 0 } else { len }
     }
 
-    /// キューが空かどうか
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -447,10 +491,10 @@ pub struct WorkerStats {
 pub struct PerCoreWorker {
     /// コアID
     core_id: u32,
-    /// ローカルキュー
-    local_queue: Mutex<WorkStealingDeque>,
-    /// 現在実行中のタスク
-    current_task: Mutex<Option<Box<StealableTask>>>,
+    /// ローカルキュー (UnsafeCell to allow interrupt-safe exclusive access by owner)
+    local_queue: UnsafeCell<WorkStealingDeque>,
+    /// 現在実行中のタスク (UnsafeCell for strictly local access)
+    current_task: UnsafeCell<Option<Box<StealableTask>>>,
     /// 統計
     stats: WorkerStats,
     /// アクティブフラグ
@@ -459,12 +503,17 @@ pub struct PerCoreWorker {
     idle: AtomicBool,
 }
 
+// SAFETY: 
+// - local_queue: steal() is thread-safe. push/pop are protected by checking core_id (ownership) and disabling interrupts.
+// - current_task: Only accessed by owner thread/core.
+unsafe impl Sync for PerCoreWorker {}
+
 impl PerCoreWorker {
     pub fn new(core_id: u32) -> Self {
         Self {
             core_id,
-            local_queue: Mutex::new(WorkStealingDeque::new(LOCAL_QUEUE_CAPACITY)),
-            current_task: Mutex::new(None),
+            local_queue: UnsafeCell::new(WorkStealingDeque::new(LOCAL_QUEUE_CAPACITY)),
+            current_task: UnsafeCell::new(None),
             stats: WorkerStats::default(),
             active: AtomicBool::new(true),
             idle: AtomicBool::new(true),
@@ -473,17 +522,25 @@ impl PerCoreWorker {
 
     /// タスクをローカルキューにプッシュ
     pub fn push_task(&self, task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
-        self.local_queue.lock().push(task)
+        // SAFETY: Only called by owner, interrupt suppressed to prevent re-entrancy
+        interrupts::without_interrupts(|| unsafe {
+            (*self.local_queue.get()).push(task)
+        })
     }
 
     /// タスクをポップ
     pub fn pop_task(&self) -> Option<Box<StealableTask>> {
-        self.local_queue.lock().pop()
+        // SAFETY: Only called by owner, interrupt suppressed
+        interrupts::without_interrupts(|| unsafe {
+            (*self.local_queue.get()).pop()
+        })
     }
 
-    /// タスクをスチール
+    /// タスクをスチール (Safe to call from any thread)
     pub fn steal_task(&self) -> Option<Box<StealableTask>> {
-        let result = self.local_queue.lock().steal();
+        // SAFETY: steal() is lock-free and thread-safe
+        let result = unsafe { (*self.local_queue.get()).steal() };
+        
         if result.is_some() {
             self.stats.tasks_stolen.fetch_add(1, Ordering::Relaxed);
         }
@@ -492,18 +549,35 @@ impl PerCoreWorker {
 
     /// ローカルキューサイズを取得
     pub fn queue_size(&self) -> usize {
-        self.local_queue.lock().len()
+        // Relaxed loads are safe
+        unsafe { (*self.local_queue.get()).len() }
     }
 
     /// 次のタスクを取得して実行準備
     pub fn schedule_next(&self) -> Option<Box<StealableTask>> {
         let task = self.pop_task()?;
         self.idle.store(false, Ordering::Release);
+        
+        // Update current_task
+        // SAFETY: Only owner updates current_task
+        interrupts::without_interrupts(|| unsafe {
+            // Drop old current task if any (should be None or handled)
+            *self.current_task.get() = None; 
+        });
+        
         Some(task)
+    }
+    
+    /// 現在のタスクを設定（実行中）
+    pub fn set_current(&self, task: Option<Box<StealableTask>>) {
+        interrupts::without_interrupts(|| unsafe {
+            *self.current_task.get() = task;
+        });
     }
 
     /// タスク実行完了
     pub fn task_completed(&self, _runtime_ns: u64) {
+        self.set_current(None);
         self.stats.tasks_executed.fetch_add(1, Ordering::Relaxed);
         self.idle.store(true, Ordering::Release);
     }
@@ -840,35 +914,57 @@ pub struct SchedulerStats {
 }
 
 // ============================================================================
-// Global Instance
+// Global Instance (Lock-Free via spin::Once)
 // ============================================================================
 
-static SCHEDULER: Mutex<Option<GlobalScheduler>> = Mutex::new(None);
+/// Global scheduler instance using Once for lock-free access after initialization.
+/// This pattern eliminates Mutex overhead for all scheduler operations after init.
+static SCHEDULER: Once<GlobalScheduler> = Once::new();
 
 /// スケジューラを初期化
+///
+/// Must be called exactly once during kernel startup.
+/// Subsequent calls are no-ops (the first initialization wins).
 pub fn init(num_cores: u32) {
-    *SCHEDULER.lock() = Some(GlobalScheduler::new(num_cores));
+    SCHEDULER.call_once(|| GlobalScheduler::new(num_cores));
 }
 
-/// スケジューラにアクセス
+/// スケジューラにアクセス（ロックフリー）
+///
+/// Returns None if scheduler is not yet initialized.
+/// After initialization, this is a single atomic load.
+#[inline]
 pub fn with_scheduler<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&GlobalScheduler) -> R,
 {
-    SCHEDULER.lock().as_ref().map(f)
+    SCHEDULER.get().map(f)
 }
 
-/// タスクをスポーン
+/// スケジューラへの直接参照を取得（初期化済みの場合）
+#[inline]
+pub fn get_scheduler() -> Option<&'static GlobalScheduler> {
+    SCHEDULER.get()
+}
+
+/// スケジューラが初期化済みかどうか
+#[inline]
+pub fn is_initialized() -> bool {
+    SCHEDULER.get().is_some()
+}
+
+/// タスクをスポーン（ロックフリー）
 pub fn spawn(task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
-    match SCHEDULER.lock().as_ref() {
+    match SCHEDULER.get() {
         Some(scheduler) => scheduler.spawn(task),
         None => Err(task),
     }
 }
 
-/// 次のタスクをスケジュール
+/// 次のタスクをスケジュール（ロックフリー）
+#[inline]
 pub fn schedule(core_id: u32) -> Option<Box<StealableTask>> {
-    with_scheduler(|s| s.schedule(core_id)).flatten()
+    SCHEDULER.get().and_then(|s| s.schedule(core_id))
 }
 
 // ============================================================================

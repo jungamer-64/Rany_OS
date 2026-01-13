@@ -721,7 +721,7 @@ pub unsafe fn migrate_numa_page(src_frame: FrameIndex, dest_node: u8) -> Migrati
     let dst_virt = (dst_phys + offset) as *mut u8;
     
     // Non-temporal storeを使用（キャッシュを汚染しない）
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
     {
         use core::arch::x86_64::{_mm_stream_si64, _mm_sfence};
         
@@ -738,7 +738,7 @@ pub unsafe fn migrate_numa_page(src_frame: FrameIndex, dest_node: u8) -> Migrati
         _mm_sfence();
     }
     
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse")))]
     {
         core::ptr::copy_nonoverlapping(src_virt, dst_virt, PAGE_SIZE_4K);
     }

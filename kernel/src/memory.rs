@@ -378,11 +378,16 @@ impl BuddyHeapAllocator {
 }
 
 /// スレッドセーフなグローバルアロケータラッパー
-struct LockedBuddyHeap(PoisonLock<BuddyHeapAllocator>);
+pub struct LockedBuddyHeap(PoisonLock<BuddyHeapAllocator>);
 
 impl LockedBuddyHeap {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self(PoisonLock::new(BuddyHeapAllocator::new()))
+    }
+
+    /// Check if the heap allocator is initialized
+    pub fn is_initialized(&self) -> Option<bool> {
+        self.0.lock().ok().map(|g| g.initialized)
     }
 }
 
@@ -398,6 +403,12 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 
         match self.0.lock() {
             Ok(mut guard) => {
+                // Debug: print guard pointer to detect allocator corruption
+                let guard_ptr = (&*guard) as *const _ as usize;
+                crate::io::log::early_print("[HEAP DEBUG] alloc guard ptr=");
+                crate::io::log::early_print_hex(guard_ptr as u64);
+                crate::io::log::early_print("\n");
+
                 let ptr = guard.allocate(layout);
                 if ptr.is_null() {
                     // Manual integer printing (no heap)
@@ -418,7 +429,35 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
                     for k in (i+1)..20 {
                         crate::io::log::early_print_char(buf[k]);
                     }
-                    crate::io::log::early_print(" align=\n"); // Lazy formatting
+
+                    // Print alignment and guard state
+                    crate::io::log::early_print(" align=");
+                    crate::io::log::early_print_dec(layout.align() as u64);
+                    crate::io::log::early_print("\n");
+
+                    crate::io::log::early_print("[ALLOC] guard.initialized=");
+                    crate::io::log::early_print_dec(if guard.initialized { 1 } else { 0 });
+                    crate::io::log::early_print("\n");
+
+                    // Dump free list heads for diagnosis
+                    crate::io::log::early_print("[ALLOC] Dumping free_lists:\n");
+                    for i in 0..=BuddyHeapAllocator::MAX_ORDER {
+                        crate::io::log::early_print("[ALLOC] free_lists[");
+                        crate::io::log::early_print_dec(i as u64);
+                        crate::io::log::early_print("] = ");
+                        let head = guard.free_lists[i].unwrap_or(0);
+                        crate::io::log::early_print_hex(head as u64);
+                        crate::io::log::early_print("\n");
+                    }
+
+                    // Capture and print a backtrace to locate the allocation origin
+                    crate::io::log::early_print("[ALLOC] Backtrace:\n");
+                    let bt = crate::unwind::Backtrace::capture();
+                    for entry in bt.iter() {
+                        crate::io::log::early_print("[ALLOC][BT] IP=");
+                        crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                        crate::io::log::early_print("\n");
+                    }
                 }
                 ptr
             }
@@ -454,11 +493,10 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 /// グローバルヒープアロケータ（Buddy Allocatorベース）
 /// 設計理念: O(log n)割り当てで <100ns を達成
 #[cfg(not(feature = "full_mm_tests"))]
-#[global_allocator]
-static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
+pub static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 
 #[cfg(feature = "full_mm_tests")]
-use crate::ALLOCATOR;
+pub use crate::ALLOCATOR;
 
 /// ヒープのサイズ
 pub const HEAP_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
@@ -1007,6 +1045,13 @@ fn init_global_heap() {
     unsafe {
         guard.init(start as usize, HEAP_SIZE);
     }
+    // Debug: print guard pointer for diagnosing early-allocation issues
+    {
+        let guard_ptr = (&*ALLOCATOR.0.lock().unwrap()) as *const _ as usize;
+        crate::io::log::early_print("[HEAP DEBUG] init guard ptr=");
+        crate::io::log::early_print_hex(guard_ptr as u64);
+        crate::io::log::early_print("\n");
+    }
     crate::io::log::early_print("[HEAP] done\n");
     }
 
@@ -1100,17 +1145,7 @@ pub fn used_memory_kb() -> u64 {
 }
 
 #[cfg(not(test))]
-#[alloc_error_handler]
-fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
-    crate::io::log::early_print("\n!!! ALLOCATION FAILED !!!\n");
-    crate::io::log::early_print("Layout Size: ");
-    crate::io::log::early_print_dec(layout.size() as u64);
-    crate::io::log::early_print("\nLayout Align: ");
-    crate::io::log::early_print_dec(layout.align() as u64);
-    crate::io::log::early_print("\n");
-    
-    panic!("allocation error: size={} align={}", layout.size(), layout.align())
-}
+// #[alloc_error_handler] removed. Defined in kernel_content.rs
 
 #[cfg(test)]
 mod tests {

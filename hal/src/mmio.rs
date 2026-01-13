@@ -231,20 +231,22 @@ impl MmioReg<u64> {
 /// are globally visible before any subsequent loads or stores.
 #[inline]
 pub fn sfence() {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    // Only use SSE intrinsics when target has SSE enabled at compile time
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse"))]
     unsafe {
         core::arch::x86_64::_mm_sfence();
     }
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    // Fallback for soft-float targets or non-x86 architectures
+    #[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse")))]
     {
-        // On other architectures, use a compiler fence as fallback
+        // Use a compiler fence as fallback
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
 }
 
 /// Write a 32-bit value using non-temporal store (bypasses cache).
 /// The address must be 4-byte aligned.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2"))]
 #[inline]
 #[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u32(addr: usize, val: u32) {
@@ -253,14 +255,32 @@ pub fn stream_write_u32(addr: usize, val: u32) {
     }
 }
 
+/// Fallback for soft-float targets: use volatile write
+#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2")))]
+#[inline]
+pub fn stream_write_u32(addr: usize, val: u32) {
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u32, val);
+    }
+}
+
 /// Write a 64-bit value using non-temporal store (bypasses cache).
 /// The address must be 8-byte aligned.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2"))]
 #[inline]
 #[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u64(addr: usize, val: u64) {
     unsafe {
         core::arch::x86_64::_mm_stream_si64(addr as *mut i64, val as i64);
+    }
+}
+
+/// Fallback for soft-float targets: use volatile write
+#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2")))]
+#[inline]
+pub fn stream_write_u64(addr: usize, val: u64) {
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u64, val);
     }
 }
 

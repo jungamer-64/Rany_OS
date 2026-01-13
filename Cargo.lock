@@ -7,7 +7,7 @@ name = "acpi_driver"
 version = "0.1.0"
 dependencies = [
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -16,7 +16,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -56,7 +56,7 @@ dependencies = [
  "hal",
  "kernel_api",
  "log",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -496,7 +496,7 @@ dependencies = [
  "kernel_api",
  "log",
  "pci_driver",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -513,7 +513,7 @@ dependencies = [
  "hal",
  "kernel_api",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -522,7 +522,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -565,16 +565,7 @@ dependencies = [
 name = "kernel_api"
 version = "0.1.0"
 dependencies = [
- "spin 0.10.0",
-]
-
-[[package]]
-name = "lazy_static"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-dependencies = [
- "spin 0.9.8",
+ "spin",
 ]
 
 [[package]]
@@ -620,7 +611,7 @@ dependencies = [
  "hal",
  "kernel_api",
  "log",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -642,7 +633,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "log",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -745,14 +736,14 @@ dependencies = [
  "hid_driver",
  "ide_driver",
  "kernel_api",
- "lazy_static",
  "log",
  "nvme_driver",
+ "once_cell",
  "pci_driver",
  "rtc_driver",
  "serial_driver",
  "sha2",
- "spin 0.10.0",
+ "spin",
  "uart_16550",
  "usb_driver",
  "vfs",
@@ -823,7 +814,7 @@ name = "rtc_driver"
 version = "0.1.0"
 dependencies = [
  "hal",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -852,7 +843,7 @@ name = "security"
 version = "0.1.0"
 dependencies = [
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -904,7 +895,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -924,12 +915,6 @@ name = "slab"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spin"
@@ -1042,7 +1027,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1057,7 +1042,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.10.0",
  "futures",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -1067,7 +1052,7 @@ dependencies = [
  "hal",
  "kernel_api",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]

@@ -209,16 +209,4 @@ pub fn test_task_id_generation() -> TestResult {
     TestResult::Passed
 }
 
-/// Test work stealing queue
-pub fn test_work_stealing_queue() -> TestResult {
-    use crate::task::work_stealing::WorkStealingQueue;
-    
-    let mut queue = WorkStealingQueue::new();
-    
-    // Test empty queue
-    if queue.steal().is_some() {
-        return TestResult::Failed(String::from("Empty queue should return None"));
-    }
-    
-    TestResult::Passed
-}
+// test_work_stealing_queue removed (WorkStealingQueue is deleted)
