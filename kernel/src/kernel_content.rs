@@ -411,6 +411,12 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     );
     info!(target: "init", "Memory management initialized");
 
+    // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
+    // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ
+    info!(target: "init", "Initializing Interrupt Waker Registry (Pre-allocation)");
+    let _ = task::interrupt_waker::interrupt_waker_registry().stats();
+
+
     // 1.5. ACPI & IOMMU Initialization
     // Requires memory management for allocation
     info!(target: "init", "Initializing ACPI...");
@@ -1604,11 +1610,9 @@ struct GlobalAllocatorWrapper;
 #[cfg(not(test))]
 unsafe impl core::alloc::GlobalAlloc for GlobalAllocatorWrapper {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        use core::alloc::GlobalAlloc; // Import trait to call alloc
         crate::memory::ALLOCATOR.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        use core::alloc::GlobalAlloc; // Import trait to call dealloc
         crate::memory::ALLOCATOR.dealloc(ptr, layout)
     }
 }

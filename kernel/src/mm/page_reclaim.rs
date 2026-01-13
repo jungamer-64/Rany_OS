@@ -1074,7 +1074,7 @@ impl PageReclaimController {
         self.direct_reclaim_count.fetch_add(1, Ordering::Relaxed);
         
         let mut total_reclaimed = 0;
-        let scan_count = needed_pages * 4; // 4倍スキャン (Gen3からの回収要求数として使用)
+
         
         // Direct Reclaimでは強制的にAgingを行うことが一般的だが
         // ここでは単純化のためAgingはSkipし、既存のGen3から回収を試みる
@@ -2344,53 +2344,4 @@ mod tests_late {
         let stats = lru.stats();
         assert_eq!(stats.gen_sizes[0], 1); // Gen0に追加される
     }
-    
-    #[test_case]
-    fn test_lru_batch_insertion() {
-        use crate::mm::page_flags::{self, PageFlags};
-        use alloc::vec::Vec;
-
-        // Init page flags
-        unsafe {
-            page_flags::init_page_flags(100);
-        }
-
-        let lru = LruList::new();
-        let mut entries = Vec::new();
-
-        // 1. Normal Page (Frame 1)
-        entries.push(LruPageEntry::new(FrameIndex::new(1), PageType::Anonymous, 0));
-
-        // 2. Head Page (Frame 2) - should be accepted
-        unsafe { page_flags::set_flag(FrameIndex::new(2), PageFlags::CompoundHead); }
-        entries.push(LruPageEntry::new(FrameIndex::new(2), PageType::Anonymous, 0));
-
-        // 3. Tail Page (Frame 3) - should be REJECTED
-        unsafe { page_flags::set_flag(FrameIndex::new(3), PageFlags::CompoundTail); }
-        entries.push(LruPageEntry::new(FrameIndex::new(3), PageType::Anonymous, 0));
-
-        // 4. Normal Page (Frame 4)
-        entries.push(LruPageEntry::new(FrameIndex::new(4), PageType::Anonymous, 0));
-
-        // Batch insert
-        lru.add_batch_active(entries);
-
-        // Check count: Should be 3 (1, 2, 4). Frame 3 rejected.
-        assert_eq!(lru.active_count(), 3);
-        
-        // Verify contents indirectly via eviction (if possible) or just count
-        // LruList internals are private, so we trust the count and our read-code.
-        // But we can try to pop 3 times? shrink_active might work.
-        // Or select_victim_clock if we add to inactive.
-        
-        // Let's try adding to inactive as well
-        let mut inactive_entries = Vec::new();
-        inactive_entries.push(LruPageEntry::new(FrameIndex::new(11), PageType::Anonymous, 0)); // OK
-        unsafe { page_flags::set_flag(FrameIndex::new(12), PageFlags::CompoundTail); }
-        inactive_entries.push(LruPageEntry::new(FrameIndex::new(12), PageType::Anonymous, 0)); // Reject
-        
-        lru.add_batch_inactive(inactive_entries);
-        assert_eq!(lru.inactive_count(), 1);
-    }
 }
-

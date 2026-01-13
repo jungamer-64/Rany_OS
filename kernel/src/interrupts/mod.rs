@@ -466,12 +466,23 @@ pub fn poll_timer_events() {
         // PMMメンテナンス (非ISRコンテキスト)
         crate::mm::pmm_maintenance_tick(tick);
 
+        // Network Stack Batch Flush
+        // check_batch_timeout checks if any batched packets need flushing based on elapsed time.
+        // Assuming TSC frequency is available or passed.
+        // For now, we'll use a simplified check or pass a placeholder frequency until we have a global TSC source accessible here.
+        // Using 2GHz (2000MHz) as a safe default for now if not available.
+        // TODO: Get actual TSC frequency from TimeManager
+        let tsc_freq = 2000; 
+        let current_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        crate::net::driver_bridge::check_batch_timeout(current_tsc, tsc_freq);
+
         // ペンディングのプリエンプションを処理
         if crate::task::preemption::is_preemption_pending() {
             crate::task::preemption::request_yield();
         }
     }
 }
+
 
 // キーボード割り込みハンドラ
 // Interrupt-Wakerブリッジとの連携

@@ -20,6 +20,9 @@ use super::types::NumaNodeId;
 use super::numa::MAX_NUMA_NODES;
 // Remote Free batch support
 use super::remote_free::RemoteFreeEntry;
+// Buddy Allocator Cache
+use super::buddy_allocator::PerCpuFrameCache;
+use crate::sync::IrqMutex;
 
 /// Cache entry for device to domain mapping
 #[derive(Clone, Copy, Default)]
@@ -458,6 +461,8 @@ pub struct PerCpuData {
     pub remote_free_batch: RemoteFreeBatchBuffer,
     /// Per-CPU RCU State (Phase 9)
     pub rcu_state: crate::mm::rcu::PerCpuRcuState,
+    /// Per-CPU Frame Cache (Lock-Free Memory Allocator Phase 1)
+    pub frame_cache: IrqMutex<PerCpuFrameCache>,
 }
 
 impl PerCpuData {
@@ -481,6 +486,7 @@ impl PerCpuData {
             // Remote free batch buffer for cross-CPU memory reclamation
             remote_free_batch: RemoteFreeBatchBuffer::new(),
             rcu_state: crate::mm::rcu::PerCpuRcuState::new(),
+            frame_cache: IrqMutex::new(PerCpuFrameCache::new(cpu_id)),
         }
     }
 

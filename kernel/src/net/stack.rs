@@ -10,7 +10,9 @@ use super::ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
 };
 use super::mempool::{PacketPool, PacketRef};
+use super::optimization::PacketBatch;
 use super::tcp::TcpProcessor;
+
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
 
 use crate::sync::PoisonLock;
@@ -238,6 +240,18 @@ impl NetworkStack {
         }
 
         self.stats.record_rx(packet.len());
+    }
+
+
+    /// Process a batch of incoming packets
+    pub fn receive_batch(&mut self, batch: PacketBatch) {
+        // Since we are already holding the lock (caller must lock),
+        // we can process packets in a loop efficiently.
+        for packet in batch {
+            // Processing logic is identical to single packet receive
+            // receive() takes ownership of PacketRef
+            self.receive(packet);
+        }
     }
 
     /// Process IPv4 packet
@@ -842,7 +856,23 @@ pub fn receive(data: &[u8]) {
     }
 }
 
+/// Process a batch of received packets
+pub fn receive_batch(batch: PacketBatch) {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.receive_batch(batch);
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - dropping batch");
+            // batch is dropped here, packets returned to pool
+        }
+    }
+}
+
 /// Send a UDP datagram
+
 pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {

@@ -2164,7 +2164,6 @@ impl PerCpuFrameCache {
         self.count
     }
 
-    /// 統計情報を取得
     pub fn stats(&self) -> PerCpuFrameCacheStats {
         PerCpuFrameCacheStats {
             cpu_id: self.cpu_id,
@@ -2173,6 +2172,40 @@ impl PerCpuFrameCache {
             cache_misses: self.cache_misses,
             refill_count: self.refill_count,
             drain_count: self.drain_count,
+        }
+    }
+
+    /// バッチリフィル（Buddy Allocatorから）
+    pub fn refill(&mut self, buddy: &mut BuddyFrameAllocator) {
+        let mut refilled = 0;
+        for _ in 0..FRONT_LAYER_REFILL_BATCH {
+            if let Some(frame) = buddy.allocate_4k_frame() {
+                if !self.push(frame.start_address().as_u64()) {
+                    // キャッシュ満杯（ありえないはずだが安全のため）
+                    buddy.deallocate_4k_frame(frame);
+                    break;
+                }
+                refilled += 1;
+            } else {
+                break;
+            }
+        }
+        if refilled > 0 {
+            self.refill_count += 1;
+        }
+    }
+
+    /// バッチドレイン（Buddy Allocatorへ）
+    pub fn drain(&mut self, buddy: &mut BuddyFrameAllocator) {
+        let drain_count = self.count.saturating_sub(FRONT_LAYER_LOW_WATERMARK).min(FRONT_LAYER_REFILL_BATCH);
+        for _ in 0..drain_count {
+            if let Some(addr) = self.pop() {
+                 let frame = unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) };
+                 buddy.deallocate_4k_frame(frame);
+            }
+        }
+        if drain_count > 0 {
+            self.drain_count += 1;
         }
     }
 }
@@ -2188,169 +2221,101 @@ pub struct PerCpuFrameCacheStats {
     pub drain_count: u64,
 }
 
-/// フロントレイヤー全体の管理構造
-pub struct BuddyFrontLayer {
-    /// Per-CPUキャッシュ配列
-    caches: [Option<PerCpuFrameCache>; FRONT_LAYER_MAX_CPUS],
-    /// 初期化されたCPU数
-    initialized_cpus: AtomicUsize,
-    /// 統計: 総キャッシュヒット数
-    total_hits: AtomicUsize,
-    /// 統計: 総キャッシュミス数
-    total_misses: AtomicUsize,
+
+/// フロントレイヤー経由で4KiBフレームを割り当て
+///
+/// NOTE: Lock-Free Allocator Phase 1
+/// グローバルな `BUDDY_FRONT_LAYER` ロックを廃止し、
+/// `PerCpuData` 内の `frame_cache` (`IrqMutex` protected) を使用する。
+/// これにより、他のCPUとの競合を回避し、キャッシュヒット時のレイテンシを大幅に削減する。
+pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
+    // 1. Per-CPUキャッシュからの割り当てを試行
+    // Note: get_per_cpu_data は &PerCpuData を返す
+    let per_cpu = unsafe { crate::mm::per_cpu::get_per_cpu_data(cpu_id) };
+    
+    // Call scope to drop cache lock before potentially locking buddy
+    {
+        let mut cache = per_cpu.frame_cache.lock();
+        if let Some(addr) = cache.pop() {
+            // キャッシュヒット
+            return Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) });
+        }
+        cache.cache_misses += 1;
+    }
+
+    // 2. キャッシュミス: Buddy Allocatorからリフィル
+    // ここで初めてグローバルロックを取得
+    let mut buddy = BUDDY_ALLOCATOR.lock();
+    
+    // 再度キャッシュロックを取得してリフィル
+    {
+        let mut cache = per_cpu.frame_cache.lock();
+        // リフィル
+        cache.refill(&mut buddy);
+        
+        // リフィル後に再度取得試行
+        if let Some(addr) = cache.pop() {
+             return Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) });
+        }
+    }
+    
+    // 3. フォールバック: 直接割り当て (キャッシュ満杯or空でリフィル失敗時)
+    buddy.allocate_4k_frame()
 }
 
-impl BuddyFrontLayer {
-    /// 新しいフロントレイヤーを作成
-    pub const fn new() -> Self {
-        const NONE_CACHE: Option<PerCpuFrameCache> = None;
-        Self {
-            caches: [NONE_CACHE; FRONT_LAYER_MAX_CPUS],
-            initialized_cpus: AtomicUsize::new(0),
-            total_hits: AtomicUsize::new(0),
-            total_misses: AtomicUsize::new(0),
+/// フロントレイヤーを初期化（CPU起動時）
+/// Note: PerCpuDataで初期化されるため、ここでは何もしないが互換性のため残す
+pub fn init_buddy_front_layer_for_cpu(_cpu_id: usize) {
+    // No-op
+}
+
+
+/// フロントレイヤー経由で4KiBフレームを解放
+pub fn buddy_dealloc_frame_fast(cpu_id: usize, frame: PhysFrame<Size4KiB>) {
+    let per_cpu = unsafe { crate::mm::per_cpu::get_per_cpu_data(cpu_id) };
+    let mut cache = per_cpu.frame_cache.lock();
+    
+    // キャッシュへの追加を試行
+    if cache.push(frame.start_address().as_u64()) {
+        // High Watermark チェック
+        if cache.needs_drain() {
+            // ドレインが必要ならBuddyロックを取得
+            // デッドロック回避のため、一度キャッシュロックを解放...
+            // しかし、IrqMutexなので再入は安全ではない。
+            // ここではドレインのためにロック順序を守る: Cache -> Buddy (allocと同じ)
+            let mut buddy = BUDDY_ALLOCATOR.lock();
+            cache.drain(&mut buddy);
+        }
+    } else {
+        // キャッシュ満杯: Buddyに直接返却
+        // ロック順序: Cache -> Buddy
+        let mut buddy = BUDDY_ALLOCATOR.lock();
+        // ドレインしてから追加試行もできるが、直接返却が単純
+        buddy.deallocate_4k_frame(frame);
+    }
+}
+
+/// フロントレイヤー統計を取得
+pub fn buddy_front_layer_stats() -> BuddyFrontLayerStats {
+    let mut total_hits = 0;
+    let mut total_misses = 0;
+    let mut initialized_cpus = 0;
+
+    for i in 0..crate::mm::per_cpu::MAX_CPUS {
+        if crate::mm::per_cpu::is_cpu_online(i) {
+             let per_cpu = unsafe { crate::mm::per_cpu::get_per_cpu_data(i) };
+             let cache = per_cpu.frame_cache.lock();
+             // ヒット数等を合算
+             total_hits += cache.cache_hits as usize;
+             total_misses += cache.cache_misses as usize;
+             initialized_cpus += 1;
         }
     }
 
-    /// 指定CPUのキャッシュを初期化
-    pub fn init_cpu(&mut self, cpu_id: usize) {
-        if cpu_id < FRONT_LAYER_MAX_CPUS && self.caches[cpu_id].is_none() {
-            self.caches[cpu_id] = Some(PerCpuFrameCache::new(cpu_id));
-            self.initialized_cpus.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// 指定CPUのキャッシュを取得
-    #[inline]
-    pub fn get_cache(&mut self, cpu_id: usize) -> Option<&mut PerCpuFrameCache> {
-        self.caches.get_mut(cpu_id).and_then(|c| c.as_mut())
-    }
-
-    /// フレームを割り当て（フロントレイヤー優先）
-    ///
-    /// 1. Per-CPUキャッシュから取得
-    /// 2. キャッシュが空ならBuddyからリフィル
-    pub fn allocate(&mut self, cpu_id: usize, buddy: &mut BuddyFrameAllocator) -> Option<PhysFrame<Size4KiB>> {
-        // キャッシュから取得を試みる
-        let cache_result = if let Some(cache) = self.caches.get_mut(cpu_id).and_then(|c| c.as_mut()) {
-            if let Some(addr) = cache.pop() {
-                Some(Ok(addr)) // キャッシュヒット
-            } else {
-                cache.cache_misses += 1;
-                Some(Err(())) // キャッシュミス、リフィル必要
-            }
-        } else {
-            None // キャッシュなし
-        };
-
-        match cache_result {
-            Some(Ok(addr)) => {
-                self.total_hits.fetch_add(1, Ordering::Relaxed);
-                return Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) });
-            }
-            Some(Err(())) => {
-                self.total_misses.fetch_add(1, Ordering::Relaxed);
-                
-                // バッチでリフィル
-                let mut refilled = 0;
-                let mut frames_to_add = Vec::new();
-                
-                for _ in 0..FRONT_LAYER_REFILL_BATCH {
-                    if let Some(frame) = buddy.allocate_4k_frame() {
-                        frames_to_add.push(frame.start_address().as_u64());
-                    } else {
-                        break;
-                    }
-                }
-                
-                // キャッシュに追加
-                if let Some(cache) = self.caches.get_mut(cpu_id).and_then(|c| c.as_mut()) {
-                    for addr in frames_to_add {
-                        if cache.push(addr) {
-                            refilled += 1;
-                        } else {
-                            // キャッシュが満杯になった場合は戻す
-                            let frame = unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) };
-                            buddy.deallocate_4k_frame(frame);
-                            break;
-                        }
-                    }
-                    
-                    if refilled > 0 {
-                        cache.refill_count += 1;
-                        // リフィルしたので再度取得
-                        if let Some(addr) = cache.pop() {
-                            return Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) });
-                        }
-                    }
-                }
-            }
-            None => {}
-        }
-
-        // フォールバック: 直接Buddyから割り当て
-        buddy.allocate_4k_frame()
-    }
-
-    /// フレームを解放（フロントレイヤー優先）
-    ///
-    /// 1. Per-CPUキャッシュに追加
-    /// 2. キャッシュが満杯ならBuddyにドレイン
-    pub fn deallocate(&mut self, cpu_id: usize, frame: PhysFrame<Size4KiB>, buddy: &mut BuddyFrameAllocator) {
-        let addr = frame.start_address().as_u64();
-
-        // キャッシュへの追加と、必要ならドレインを別々に処理
-        let needs_drain = if let Some(cache) = self.caches.get_mut(cpu_id).and_then(|c| c.as_mut()) {
-            if cache.push(addr) {
-                cache.needs_drain()
-            } else {
-                // キャッシュ満杯 → 先にドレインが必要
-                true
-            }
-        } else {
-            // キャッシュなし → 直接Buddyに返却
-            buddy.deallocate_4k_frame(frame);
-            return;
-        };
-
-        if needs_drain {
-            self.drain_cache(cpu_id, buddy);
-            
-            // ドレイン後、まだ追加できていない場合は再度試みる
-            if let Some(cache) = self.caches.get_mut(cpu_id).and_then(|c| c.as_mut()) {
-                if !cache.push(addr) {
-                    // それでも追加できなければ直接返却
-                    buddy.deallocate_4k_frame(frame);
-                }
-            }
-        }
-    }
-
-    /// キャッシュの一部をBuddyにドレイン
-    fn drain_cache(&mut self, cpu_id: usize, buddy: &mut BuddyFrameAllocator) {
-        if let Some(cache) = self.caches.get_mut(cpu_id).and_then(|c| c.as_mut()) {
-            let drain_count = cache.len().saturating_sub(FRONT_LAYER_LOW_WATERMARK).min(FRONT_LAYER_REFILL_BATCH);
-            
-            for _ in 0..drain_count {
-                if let Some(addr) = cache.pop() {
-                    let frame = unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) };
-                    buddy.deallocate_4k_frame(frame);
-                }
-            }
-
-            if drain_count > 0 {
-                cache.drain_count += 1;
-            }
-        }
-    }
-
-    /// 統計情報を取得
-    pub fn stats(&self) -> BuddyFrontLayerStats {
-        BuddyFrontLayerStats {
-            initialized_cpus: self.initialized_cpus.load(Ordering::Relaxed),
-            total_hits: self.total_hits.load(Ordering::Relaxed),
-            total_misses: self.total_misses.load(Ordering::Relaxed),
-        }
+    BuddyFrontLayerStats {
+        initialized_cpus,
+        total_hits,
+        total_misses,
     }
 }
 
@@ -2360,33 +2325,6 @@ pub struct BuddyFrontLayerStats {
     pub initialized_cpus: usize,
     pub total_hits: usize,
     pub total_misses: usize,
-}
-
-/// グローバルなフロントレイヤー
-static BUDDY_FRONT_LAYER: IrqMutex<BuddyFrontLayer> = IrqMutex::new(BuddyFrontLayer::new());
-
-/// フロントレイヤーを初期化（CPU起動時）
-pub fn init_buddy_front_layer_for_cpu(cpu_id: usize) {
-    BUDDY_FRONT_LAYER.lock().init_cpu(cpu_id);
-}
-
-/// フロントレイヤー経由で4KiBフレームを割り当て
-pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
-    let mut front = BUDDY_FRONT_LAYER.lock();
-    let mut buddy = BUDDY_ALLOCATOR.lock();
-    front.allocate(cpu_id, &mut buddy)
-}
-
-/// フロントレイヤー経由で4KiBフレームを解放
-pub fn buddy_dealloc_frame_fast(cpu_id: usize, frame: PhysFrame<Size4KiB>) {
-    let mut front = BUDDY_FRONT_LAYER.lock();
-    let mut buddy = BUDDY_ALLOCATOR.lock();
-    front.deallocate(cpu_id, frame, &mut buddy);
-}
-
-/// フロントレイヤー統計を取得
-pub fn buddy_front_layer_stats() -> BuddyFrontLayerStats {
-    BUDDY_FRONT_LAYER.lock().stats()
 }
 
 /// グローバルなBuddy Allocator
