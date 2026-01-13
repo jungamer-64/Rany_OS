@@ -40,8 +40,12 @@ pub struct PerCpuScheduler {
     idle_task: Option<TcbPtr>,
     /// 残りタイムスライス
     remaining_slice: u64,
+    /// 残りタイムスライス
+    remaining_slice: u64,
     /// スケジューリングが必要かどうか
     need_reschedule: AtomicBool,
+    /// 直前にスイッチアウトしたタスク（Runningフラグラリア用）
+    prev_switched_out: Option<TcbPtr>,
 }
 
 // SAFETY: TCBポインタはスケジューラが適切に管理する
@@ -58,6 +62,7 @@ impl PerCpuScheduler {
             idle_task: None,
             remaining_slice: DEFAULT_TIME_SLICE,
             need_reschedule: AtomicBool::new(false),
+            prev_switched_out: None,
         }
     }
 
@@ -194,13 +199,14 @@ const MAX_CPUS: usize = 64;
 ///
 /// Each CPU initializes its scheduler exactly once, then accesses it lock-free.
 /// UnsafeCell is used for mutable access since each CPU only accesses its own scheduler.
+/// UnsafeCell is replaced by IrqMutex for granular locking.
 struct PerCpuSchedulerStorage {
-    schedulers: [spin::Once<core::cell::UnsafeCell<PerCpuScheduler>>; MAX_CPUS],
+    schedulers: [spin::Once<IrqMutex<PerCpuScheduler>>; MAX_CPUS],
 }
 
 impl PerCpuSchedulerStorage {
     const fn new() -> Self {
-        const UNINIT: spin::Once<core::cell::UnsafeCell<PerCpuScheduler>> = spin::Once::new();
+        const UNINIT: spin::Once<IrqMutex<PerCpuScheduler>> = spin::Once::new();
         Self {
             schedulers: [UNINIT; MAX_CPUS],
         }
@@ -219,13 +225,15 @@ impl PerCpuSchedulerStorage {
             let idle_tcb = Box::leak(Box::new(TaskControlBlock::idle(cpu_id)));
             scheduler.set_idle_task(idle_tcb);
             
-            core::cell::UnsafeCell::new(scheduler)
+            scheduler.set_idle_task(idle_tcb);
+            
+            IrqMutex::new(scheduler)
         });
     }
 
-    /// Get scheduler for a CPU (lock-free after init)
+    /// Get scheduler for a CPU (lock-free access to the Once wrapper, but mutex inside)
     #[inline]
-    fn get(&self, cpu_id: usize) -> Option<&core::cell::UnsafeCell<PerCpuScheduler>> {
+    fn get(&self, cpu_id: usize) -> Option<&IrqMutex<PerCpuScheduler>> {
         if cpu_id >= MAX_CPUS {
             return None;
         }
@@ -268,11 +276,8 @@ pub fn spawn_task(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<T
     TASK_LIST.lock().push(TcbPtr(tcb_ptr));
 
     // CPU 0 のスケジューラに追加 (lock-free after init)
-    if let Some(sched_cell) = SCHEDULERS.get(0) {
-        // SAFETY: We're on the owning CPU (or during init)
-        unsafe {
-            (*sched_cell.get()).enqueue(tcb_ptr);
-        }
+    if let Some(sched_mutex) = SCHEDULERS.get(0) {
+        sched_mutex.lock().enqueue(tcb_ptr);
     }
 
     Some(task_id)
@@ -280,11 +285,9 @@ pub fn spawn_task(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<T
 
 /// タイマーティック処理 (lock-free)
 pub fn timer_tick(cpu_id: usize) {
-    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
-        // SAFETY: Called from timer interrupt on this CPU
-        unsafe {
-            (*sched_cell.get()).tick();
-        }
+pub fn timer_tick(cpu_id: usize) {
+    if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
+        sched_mutex.lock().tick();
     }
 }
 
@@ -292,22 +295,90 @@ pub fn timer_tick(cpu_id: usize) {
 ///
 /// # Safety
 /// 割り込みコンテキストまたは適切なタイミングで呼び出す必要がある
-pub unsafe fn schedule(cpu_id: usize) {
-    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
-        // SAFETY: Called from same CPU
-        unsafe {
-            (*sched_cell.get()).schedule();
+pub fn schedule(cpu_id: usize) {
+    // 1. 手動で割り込みを禁止 (ロック解放後も禁止状態を維持するため)
+    crate::sync::irq_mutex::disable_interrupts();
+
+    if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
+        // 2. ロック取得 (IrqMutexなので割り込み禁止状態は維持される)
+        // Note: try_lockを使うべきか？デッドロック回避のため
+        // しかし、スケジューラロックはリーフであるべき。
+        let mut scheduler = sched_mutex.lock();
+
+        // リスケジュール不要なら即リターン
+        // Note: 原子性は保証したいが、IrqMutex内なのでRelaxedでもOK?
+        // しかし、他コアからのrequest_rescheduleが見えるようにAcqRel
+        if !scheduler.need_reschedule.swap(false, Ordering::AcqRel) {
+            drop(scheduler);
+            // 割り込み許可を忘れずに
+            unsafe { crate::sync::irq_mutex::enable_interrupts(); }
+            return;
         }
+
+        // 3. スイッチ完了処理 (prev task state clearance)
+        if let Some(prev) = scheduler.prev_switched_out.take() {
+             // prevタスクは現在スタック保存が完了している
+             // is_runningフラグを下して、マイグレーション等を許可する
+             unsafe { (*prev.0).is_running.store(false, Ordering::Release); }
+        }
+
+        let current_ptr = match scheduler.current {
+            Some(c) => c.0,
+            None => { // Should not happen if initialized
+                 drop(scheduler);
+                 unsafe { crate::sync::irq_mutex::enable_interrupts(); }
+                 return;
+            }
+        };
+
+        // 次のタスクを選択
+        let next_ptr = scheduler.pick_next();
+
+        if current_ptr == next_ptr {
+            drop(scheduler);
+            unsafe { crate::sync::irq_mutex::enable_interrupts(); }
+            return;
+        }
+
+        // 4. 状態更新
+        // Enqueue current if Running (yield/preempt)
+        // Blockedなら既にBlockedになっているはず
+        unsafe {
+            if (*current_ptr).state == TaskState::Running {
+                (*current_ptr).state = TaskState::Ready;
+                scheduler.enqueue(current_ptr);
+            }
+            
+            (*next_ptr).state = TaskState::Running;
+            // set_current_task also updates global PER_CPU array?
+            // Yes, inside schedule_switch usually? No context.rs does it.
+            // Here we just update local scheduler state.
+            scheduler.current = Some(TcbPtr(next_ptr));
+            
+            // 重要: prevを記録して、次回のschedule時にフラグを下ろす
+            scheduler.prev_switched_out = Some(TcbPtr(current_ptr));
+            
+            // 5. ロック解放
+            // Note: 割り込みはまだ禁止されている (manual disable)
+            drop(scheduler);
+
+            // 6. コンテキストスイッチ
+            // currentはQueueに入っているが、is_running=trueなので
+            // 他コアのStealerは奪えない (Should be checked in stealing logic)
+            schedule_switch(cpu_id, current_ptr, next_ptr);
+            
+            // 7. 復帰後、割り込み許可
+            crate::sync::irq_mutex::enable_interrupts();
+        }
+    } else {
+        unsafe { crate::sync::irq_mutex::enable_interrupts(); }
     }
 }
 
 /// リスケジュールを要求 (lock-free)
 pub fn request_reschedule(cpu_id: usize) {
-    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
-        // SAFETY: Reading AtomicBool is always safe
-        unsafe {
-            (*sched_cell.get()).request_reschedule();
-        }
+    if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
+        sched_mutex.lock().request_reschedule();
     }
 }
 
@@ -315,9 +386,9 @@ pub fn request_reschedule(cpu_id: usize) {
 pub fn yield_current(cpu_id: usize) {
     request_reschedule(cpu_id);
     // SAFETY: yield は任意のタイミングで安全
-    unsafe {
-        schedule(cpu_id);
-    }
+pub fn yield_current(cpu_id: usize) {
+    request_reschedule(cpu_id);
+    schedule(cpu_id);
 }
 
 /// コンテキストスイッチ回数を取得
@@ -327,21 +398,17 @@ pub fn context_switch_count() -> u64 {
 
 /// スケジューラにタスクを追加（指定CPU）
 pub fn enqueue_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
-    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
-        // SAFETY: Called with proper synchronization
-        unsafe {
-            (*sched_cell.get()).enqueue(tcb);
-        }
+pub fn enqueue_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
+    if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
+        sched_mutex.lock().enqueue(tcb);
     }
 }
 
 /// タスクをアンブロック（指定CPU）
 pub fn unblock_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
-    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
-        // SAFETY: Called with proper synchronization
-        unsafe {
-            (*sched_cell.get()).unblock(tcb);
-        }
+pub fn unblock_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
+    if let Some(sched_mutex) = SCHEDULERS.get(cpu_id) {
+        sched_mutex.lock().unblock(tcb);
     }
 }
 

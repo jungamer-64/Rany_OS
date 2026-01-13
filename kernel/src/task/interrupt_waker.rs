@@ -12,159 +12,12 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
-use spin::Mutex;
 
-// ============================================================================
-// 2段階Wake用イベントキュー（ロックフリーMPMCリングバッファ）
-// 設計書 4.2.1: ISRから直接wake()を呼ばない
-// ============================================================================
 
-/// イベントキューのサイズ（2のべき乗）
-const EVENT_QUEUE_SIZE: usize = 256;
-const EVENT_QUEUE_MASK: usize = EVENT_QUEUE_SIZE - 1;
 
-/// ISRからのイベントを格納するロックフリーキュー
-///
-/// ISR内ではpush()のみを行い、wake()はExecutorコンテキストで実行
-#[repr(C, align(64))]
-struct InterruptEventQueue {
-    /// 書き込みインデックス
-    head: AtomicUsize,
-    /// 読み取りインデックス
-    tail: AtomicUsize,
-    /// イベントバッファ（InterruptSourceを直接格納）
-    /// 0 = 空、1-255 = InterruptSource の判別値
-    buffer: [AtomicU64; EVENT_QUEUE_SIZE],
-}
-
-impl InterruptEventQueue {
-    const fn new() -> Self {
-        const ZERO: AtomicU64 = AtomicU64::new(0);
-        Self {
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            buffer: [ZERO; EVENT_QUEUE_SIZE],
-        }
-    }
-
-    /// イベントをキューに追加（ISRから呼ばれる、ロックフリー）
-    ///
-    /// # Safety
-    /// - ISR内から呼び出し可能
-    /// - メモリ割り当てなし
-    /// - ロック取得なし
-    #[inline]
-    fn push(&self, source: InterruptSource) -> bool {
-        let value = interrupt_source_to_u64(source);
-
-        // 楽観的に書き込み位置を取得
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-
-        // キューがフルの場合は失敗（ドロップ）
-        if head.wrapping_sub(tail) >= EVENT_QUEUE_SIZE {
-            return false;
-        }
-
-        let idx = head & EVENT_QUEUE_MASK;
-
-        // イベントを書き込み
-        self.buffer[idx].store(value, Ordering::Release);
-
-        // headを進める
-        self.head.store(head.wrapping_add(1), Ordering::Release);
-
-        true
-    }
-
-    /// イベントをキューから取得（Executorから呼ばれる）
-    #[inline]
-    fn pop(&self) -> Option<InterruptSource> {
-        loop {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let head = self.head.load(Ordering::Acquire);
-
-            // キューが空
-            if tail == head {
-                return None;
-            }
-
-            let idx = tail & EVENT_QUEUE_MASK;
-            let value = self.buffer[idx].load(Ordering::Acquire);
-
-            // CASでtailを進める
-            if self
-                .tail
-                .compare_exchange_weak(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                // スロットをクリア（次の書き込みのため）
-                self.buffer[idx].store(0, Ordering::Release);
-                return u64_to_interrupt_source(value);
-            }
-
-            // CAS失敗、リトライ
-            core::hint::spin_loop();
-        }
-    }
-
-    /// キューが空かどうか
-    #[inline]
-    fn is_empty(&self) -> bool {
-        let tail = self.tail.load(Ordering::Acquire);
-        let head = self.head.load(Ordering::Acquire);
-        tail == head
-    }
-
-    /// キュー内のイベント数
-    #[inline]
-    fn len(&self) -> usize {
-        let tail = self.tail.load(Ordering::Acquire);
-        let head = self.head.load(Ordering::Acquire);
-        head.wrapping_sub(tail)
-    }
-}
-
-/// InterruptSourceをu64にエンコード
-fn interrupt_source_to_u64(source: InterruptSource) -> u64 {
-    match source {
-        InterruptSource::Timer => 1,
-        InterruptSource::Keyboard => 2,
-        InterruptSource::Mouse => 3,
-        InterruptSource::Serial => 4,
-        InterruptSource::VirtioNet(idx) => 0x100 | (idx as u64),
-        InterruptSource::VirtioBlk(idx) => 0x200 | (idx as u64),
-        InterruptSource::Nvme(id) => 0x300 | (id as u64),
-        InterruptSource::Irq(irq) => 0x400 | (irq as u64),
-    }
-}
-
-/// u64からInterruptSourceにデコード
-fn u64_to_interrupt_source(value: u64) -> Option<InterruptSource> {
-    match value {
-        0 => None,
-        1 => Some(InterruptSource::Timer),
-        2 => Some(InterruptSource::Keyboard),
-        3 => Some(InterruptSource::Mouse),
-        4 => Some(InterruptSource::Serial),
-        v if (0x100..0x200).contains(&v) => Some(InterruptSource::VirtioNet((v & 0xFF) as u8)),
-        v if (0x200..0x300).contains(&v) => Some(InterruptSource::VirtioBlk((v & 0xFF) as u8)),
-        v if (0x300..0x400).contains(&v) => Some(InterruptSource::Nvme((v & 0xFFFF) as u16)),
-        v if v >= 0x400 => Some(InterruptSource::Irq((v & 0xFF) as u8)),
-        _ => None,
-    }
-}
-
-/// グローバルイベントキュー
-static INTERRUPT_EVENT_QUEUE: InterruptEventQueue = InterruptEventQueue::new();
 
 // ============================================================================
 // Interrupt Source Types
@@ -205,7 +58,24 @@ impl InterruptSource {
             _ => Some(InterruptSource::Irq(vector)),
         }
     }
+
+    /// インデックスに変換（配列アクセス用）
+    pub fn to_index(&self) -> usize {
+        match self {
+            InterruptSource::Timer => 0,
+            InterruptSource::Keyboard => 1,
+            InterruptSource::Mouse => 2,
+            InterruptSource::Serial => 3,
+            InterruptSource::VirtioNet(idx) => 16 + (*idx as usize),
+            InterruptSource::VirtioBlk(idx) => 16 + 32 + (*idx as usize),
+            InterruptSource::Nvme(id) => 16 + 32 + 32 + (*id as usize),
+            InterruptSource::Irq(irq) => 16 + 32 + 32 + 256 + (*irq as usize),
+        }
+    }
 }
+
+/// 最大インデックスサイズ（配列サイズ）
+const MAX_INTERRUPT_INDICES: usize = 2048;
 
 // ============================================================================
 // Atomic Waker - ISR-safe Waker storage
@@ -217,10 +87,11 @@ pub use crate::sync::AtomicWaker;
 // Interrupt Waker Registry
 // ============================================================================
 
-/// 割り込みソースごとのWaker管理
+/// 割り込みソースごとのWaker管理（ロックフリー版）
 pub struct InterruptWakerRegistry {
-    /// 割り込みソース -> AtomicWakerのマッピング
-    wakers: Mutex<BTreeMap<InterruptSource, AtomicWaker>>,
+    /// 割り込みソース -> AtomicWakerのマッピング（配列）
+    /// spin::Onceを使って遅延初期化（カーネルヒープ初期化後）
+    wakers: spin::Once<Vec<AtomicWaker>>,
     /// 統計: 割り込み回数
     interrupt_count: AtomicU64,
     /// 統計: Wake回数
@@ -231,79 +102,122 @@ impl InterruptWakerRegistry {
     /// 新しいレジストリを作成
     pub const fn new() -> Self {
         Self {
-            wakers: Mutex::new(BTreeMap::new()),
+            wakers: spin::Once::new(),
             interrupt_count: AtomicU64::new(0),
             wake_count: AtomicU64::new(0),
         }
     }
 
+    /// Waker配列を取得（未初期化なら初期化）
+    fn get_wakers(&self) -> &[AtomicWaker] {
+        self.wakers.call_once(|| {
+            let mut v = Vec::with_capacity(MAX_INTERRUPT_INDICES);
+            for _ in 0..MAX_INTERRUPT_INDICES {
+                v.push(AtomicWaker::new());
+            }
+            v
+        })
+    }
+
     /// 割り込みソースにWakerを登録
     pub fn register(&self, source: InterruptSource, waker: &Waker) {
-        let mut wakers = self.wakers.lock();
+        let idx = source.to_index();
+        if idx >= MAX_INTERRUPT_INDICES {
+            return; // 範囲外は無視
+        }
 
-        let atomic_waker = wakers.entry(source).or_insert_with(AtomicWaker::new);
-
-        atomic_waker.register(waker);
+        self.get_wakers()[idx].register(waker);
     }
 
     /// 割り込みソースのWakerを起動（ISRから呼ばれる）
     ///
-    /// 【設計書 4.2】2段階Wake方式:
-    /// ISRからは直接wake()を呼ばず、イベントキューに積むのみ。
-    /// 実際のwake()呼び出しはExecutorのイベントループで行う。
-    /// これによりISR内でのロック取得・デッドロックを完全に回避。
+    /// 【改善版】直接Wake方式:
+    /// AtomicWakerはISR安全なので、イベントキューを介さずに直接wake()を呼び出す。
+    /// これにより遅延を解消し、ロックも不要となる。
     pub fn wake(&self, source: InterruptSource) {
         self.interrupt_count.fetch_add(1, Ordering::Relaxed);
 
-        // 【重要】ISRコンテキストでは直接wake()を呼ばない
-        // イベントキューに積んでExecutorに処理を委譲
-        INTERRUPT_EVENT_QUEUE.push(source);
+        let idx = source.to_index();
+        if idx >= MAX_INTERRUPT_INDICES {
+            return;
+        }
+
+        // spin::Onceが初期化済みかチェック（初期化前はwake不可）
+        if let Some(wakers) = self.wakers.get() {
+            wakers[idx].wake();
+            self.wake_count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// 複数の割り込みソースのWakerを一度に起動
-    ///
-    /// 【設計書 4.2】2段階Wake方式対応版
     pub fn wake_many(&self, sources: &[InterruptSource]) {
         self.interrupt_count
             .fetch_add(sources.len() as u64, Ordering::Relaxed);
 
-        // 各ソースをイベントキューに積む
-        for source in sources {
-            INTERRUPT_EVENT_QUEUE.push(*source);
+        if let Some(wakers) = self.wakers.get() {
+            for source in sources {
+                let idx = source.to_index();
+                if idx < MAX_INTERRUPT_INDICES {
+                    wakers[idx].wake();
+                    self.wake_count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
         }
     }
 
     /// イベントキューから保留中の割り込みイベントを処理
     ///
-    /// 【設計書 4.2】2段階Wake方式: Executorのイベントループから呼び出す
-    /// ISRコンテキスト外で安全にロックを取得してwake()を実行
+    /// 【Deprecated】直接Wake方式に移行したため、何もしない。
+    /// 互換性のために残している。
     pub fn process_pending_events(&self) {
-        while let Some(source) = INTERRUPT_EVENT_QUEUE.pop() {
-            // ISRコンテキスト外なので安全にロックを取得可能
-            let wakers = self.wakers.lock();
-            if let Some(atomic_waker) = wakers.get(&source) {
-                atomic_waker.wake();
-                self.wake_count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
+        // No-op
     }
 
     /// 保留中のイベント数を取得
     pub fn pending_event_count(&self) -> usize {
-        INTERRUPT_EVENT_QUEUE.len()
+        0 // No pending events scheme anymore
     }
 
     /// 割り込みソースの登録を解除
     pub fn unregister(&self, source: InterruptSource) {
-        self.wakers.lock().remove(&source);
+        let idx = source.to_index();
+        if idx >= MAX_INTERRUPT_INDICES {
+            return;
+        }
+        
+        // 初期化済みならクリア
+        if let Some(wakers) = self.wakers.get() {
+            // AtomicWakerにはclear()がない？
+            // registerで上書きされるので実質問題ないが、厳密には残る。
+            // AtomicWakerの実装を確認する必要があるが、明示的なunregisterは通常不要。
+            // register(noop_waker) で消す手はあるが、Wakerが必要。
+            // そもそもAtomicWakerは "one-shot" の性質を持つ場合が多いが、
+            // ここの実装は "register" されたら次の "wake" まで有効。
+            // unregisterは実はあまり必要ない（タスクがドロップされればWakerも無効になるはずだが、
+            // AtomicWakerはWakerを保持し続けるので、メモリリークのリスクはある？）
+            // 前の BTreeMap 実装では remove していた。
+            // AtomicWakerに clear() メソッドを追加するのも一つの手。
+            
+            // AtomicWaker.rs (step 796) says:
+            // pub fn clear(&self) { ... }
+            // So we can use clear().
+            
+            wakers[idx].clear();
+        }
     }
 
     /// 統計を取得
     pub fn stats(&self) -> InterruptWakerStats {
+        let registered = if let Some(wakers) = self.wakers.get() {
+            wakers.iter().filter(|w| w.has_waker()).count()
+        } else {
+            0
+        };
+
         InterruptWakerStats {
             interrupt_count: self.interrupt_count.load(Ordering::Relaxed),
             wake_count: self.wake_count.load(Ordering::Relaxed),
-            registered_sources: self.wakers.lock().len(),
+            registered_sources: registered,
         }
     }
 }

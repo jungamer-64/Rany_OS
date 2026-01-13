@@ -21,6 +21,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
+use super::mempool::PacketRef;
+
+
+
 // ============================================================================
 // Batch Processing - バッチ処理
 // ============================================================================
@@ -30,82 +34,66 @@ pub const MAX_BATCH_SIZE: usize = 64;
 
 /// パケットバッチ - 複数パケットをまとめて処理
 pub struct PacketBatch {
-    /// バッファへのポインタ配列
-    buffers: [Option<usize>; MAX_BATCH_SIZE], // *mut u8をusizeとして保持
-    /// 各パケットの長さ
-    lengths: [u16; MAX_BATCH_SIZE],
-    /// バッチ内のパケット数
-    count: usize,
+    /// パケットリスト
+    packets: Vec<PacketRef>,
     /// バッチサイズ上限
     capacity: usize,
 }
-
-// Safety: PacketBatchはunsafe操作でのみアクセスされ、適切に同期される
-unsafe impl Send for PacketBatch {}
-unsafe impl Sync for PacketBatch {}
 
 impl PacketBatch {
     /// 新しい空のバッチを作成
     pub const fn new() -> Self {
         Self {
-            buffers: [None; MAX_BATCH_SIZE],
-            lengths: [0; MAX_BATCH_SIZE],
-            count: 0,
+            packets: Vec::new(),
             capacity: MAX_BATCH_SIZE,
         }
     }
 
     /// パケットをバッチに追加
-    ///
-    /// # Safety
-    /// `buffer`は有効なメモリを指している必要があります
-    pub unsafe fn push(&mut self, buffer: *mut u8, length: u16) -> bool {
-        if self.count >= self.capacity {
+    pub fn push(&mut self, packet: PacketRef) -> bool {
+        if self.packets.len() >= self.capacity {
             return false;
         }
-        self.buffers[self.count] = Some(buffer as usize);
-        self.lengths[self.count] = length;
-        self.count += 1;
+        self.packets.push(packet);
         true
     }
 
     /// バッチが満杯か
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.count >= self.capacity
+        self.packets.len() >= self.capacity
     }
 
     /// バッチが空か
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.packets.is_empty()
     }
 
     /// バッチ内のパケット数
     #[inline]
     pub fn len(&self) -> usize {
-        self.count
+        self.packets.len()
     }
 
     /// バッチをクリア
     pub fn clear(&mut self) {
-        for i in 0..self.count {
-            self.buffers[i] = None;
-            self.lengths[i] = 0;
-        }
-        self.count = 0;
-    }
-
-    /// イテレータを取得
-    pub fn iter(&self) -> impl Iterator<Item = (*mut u8, u16)> + '_ {
-        (0..self.count)
-            .filter_map(move |i| self.buffers[i].map(|buf| (buf as *mut u8, self.lengths[i])))
+        self.packets.clear();
     }
 }
 
 impl Default for PacketBatch {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl IntoIterator for PacketBatch {
+    type Item = PacketRef;
+    type IntoIter = alloc::vec::IntoIter<PacketRef>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.packets.into_iter()
     }
 }
 
@@ -215,22 +203,24 @@ impl BatchProcessor {
     }
 
     /// パケットをバッチに追加
-    ///
-    /// # Safety
-    /// `buffer`は有効なメモリを指している必要があります
-    pub unsafe fn enqueue(&self, buffer: *mut u8, length: u16) -> Option<PacketBatch> {
+    pub fn enqueue(&self, packet: PacketRef) -> Option<PacketBatch> {
         if !self.enabled.load(Ordering::Relaxed) {
             // バッチ処理無効時は即座に単一パケットバッチを返す
             let mut batch = PacketBatch::new();
-            batch.push(buffer, length);
+            batch.push(packet);
             return Some(batch);
         }
 
-        let mut batch = self.current_batch.lock();
-        batch.push(buffer, length);
+        let mut batch_guard = self.current_batch.lock();
+        batch_guard.push(packet);
 
-        if batch.is_full() {
-            let ready_batch = core::mem::take(&mut *batch);
+        if batch_guard.is_full() {
+            let ready_batch = core::mem::take(&mut *batch_guard);
+            // capacity was reset by mem::take (default PacketBatch), restore it?
+            // Default PacketBatch has capacity=MAX_BATCH_SIZE (64).
+            // So it's fine.
+            drop(batch_guard); // Release lock before stats/return
+
             self.stats.record_batch(ready_batch.len());
             self.stats.flush_count.fetch_add(1, Ordering::Relaxed);
             Some(ready_batch)
@@ -241,12 +231,14 @@ impl BatchProcessor {
 
     /// バッチを強制フラッシュ
     pub fn flush(&self) -> Option<PacketBatch> {
-        let mut batch = self.current_batch.lock();
-        if batch.is_empty() {
+        let mut batch_guard = self.current_batch.lock();
+        if batch_guard.is_empty() {
             return None;
         }
 
-        let ready_batch = core::mem::take(&mut *batch);
+        let ready_batch = core::mem::take(&mut *batch_guard);
+        drop(batch_guard);
+
         self.stats.record_batch(ready_batch.len());
         self.stats.flush_count.fetch_add(1, Ordering::Relaxed);
         Some(ready_batch)
@@ -260,11 +252,17 @@ impl BatchProcessor {
 
         if elapsed_us >= self.config.max_delay_us as u64 {
             self.last_flush_tsc.store(current_tsc, Ordering::Relaxed);
-            self.stats.timeout_flushes.fetch_add(1, Ordering::Relaxed);
-            self.flush()
-        } else {
-            None
+            // タイムアウトしてもバッチが空なら何もしない
+             let mut batch_guard = self.current_batch.lock();
+            if !batch_guard.is_empty() {
+                let ready_batch = core::mem::take(&mut *batch_guard);
+                drop(batch_guard);
+                self.stats.timeout_flushes.fetch_add(1, Ordering::Relaxed);
+                self.stats.record_batch(ready_batch.len());
+                return Some(ready_batch);
+            }
         }
+        None
     }
 
     /// バッチ処理を有効/無効化
@@ -277,6 +275,7 @@ impl BatchProcessor {
         &self.stats
     }
 }
+
 
 // ============================================================================
 // NUMA-aware Memory Allocation

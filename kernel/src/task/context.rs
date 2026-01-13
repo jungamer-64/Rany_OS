@@ -9,7 +9,7 @@
 use alloc::boxed::Box;
 use super::raw;
 use core::arch::naked_asm;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use x86_64::VirtAddr;
 
 /// タスク状態
@@ -276,6 +276,8 @@ pub struct TaskControlBlock {
     pub cpu_time: u64,
     /// 最後に実行されたCPU
     pub last_cpu: Option<usize>,
+    /// CPU上で実行中かどうか（コンテキストスイッチ中の保護用）
+    pub is_running: AtomicBool,
 }
 
 impl TaskControlBlock {
@@ -294,6 +296,7 @@ impl TaskControlBlock {
             priority,
             cpu_time: 0,
             last_cpu: None,
+            is_running: AtomicBool::new(false),
         })
     }
 
@@ -307,6 +310,7 @@ impl TaskControlBlock {
             priority: 255, // 最低優先度
             cpu_time: 0,
             last_cpu: Some(cpu_id),
+            is_running: AtomicBool::new(true), // アイドルタスクは最初から実行中
         }
     }
 }
@@ -375,8 +379,6 @@ pub unsafe fn schedule_switch(
     // 状態更新
     // SAFETY: current と next は有効なポインタ
     unsafe {
-        (*current).state = TaskState::Ready;
-        (*next).state = TaskState::Running;
         (*next).last_cpu = Some(cpu_id);
 
         // 現在タスクを更新

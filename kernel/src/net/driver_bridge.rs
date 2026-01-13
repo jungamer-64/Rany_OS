@@ -11,6 +11,7 @@
 
 use super::ethernet::MacAddress;
 use super::ipv4::{Ipv4Address, Ipv4Config};
+use super::optimization::{BatchConfig, BatchProcessor};
 use super::stack::{self, NetworkConfig, NetworkStack};
 use crate::io::virtio::{VirtioNetDevice, with_virtio_net};
 use crate::sync::PoisonLock;
@@ -34,6 +35,14 @@ static RX_PACKETS: AtomicU64 = AtomicU64::new(0);
 
 /// Receive buffer for processing
 static RX_BUFFER: PoisonLock<[u8; 2048]> = PoisonLock::new([0u8; 2048]);
+
+/// Batch Processor for RX
+static BATCH_PROCESSOR: BatchProcessor = BatchProcessor::new(BatchConfig {
+    max_batch_size: 64,
+    max_delay_us: 50,
+    min_pps_threshold: 1000,
+    adaptive_batching: true,
+});
 
 // ============================================================================
 // Transmit Bridge
@@ -109,13 +118,31 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
 pub fn process_received_packet(data: &[u8]) {
     RX_PACKETS.fetch_add(1, Ordering::Relaxed);
 
-    crate::io::log::early_print(&alloc::format!("[EARLY][NET-RX] Received {} bytes\n", data.len()));
+    // crate::io::log::early_print(&alloc::format!("[EARLY][NET-RX] Received {} bytes\n", data.len()));
 
-    // NetworkStackに渡す
-    stack::receive(data);
+    use super::mempool::alloc_packet;
+
+    // Allocate PacketRef directly
+    if let Some(mut packet) = alloc_packet() {
+        // Copy data
+        let len = data.len().min(packet.capacity());
+        packet.data_mut()[..len].copy_from_slice(&data[..len]);
+        packet.set_len(len);
+
+        // Enqueue to batch processor
+        if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
+            // Batch is full, process it
+            stack::receive_batch(batch);
+        }
+    } else {
+        // OOM drop
+        #[cfg(debug_assertions)]
+        log::warn!("[NET RX] Dropped packet due to OOM");
+    }
 
     #[cfg(debug_assertions)]
     if data.len() >= 14 {
+        /*
         log::info!(
             "[NET RX] {} bytes, src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             data.len(),
@@ -126,8 +153,10 @@ pub fn process_received_packet(data: &[u8]) {
             data[10],
             data[11]
         );
+        */
     }
 }
+
 
 // ============================================================================
 // Initialization
@@ -204,8 +233,17 @@ pub fn is_initialized() -> bool {
     BRIDGE_INITIALIZED.load(Ordering::Acquire)
 }
 
+/// Check and flush batched packets if timeout occurred
+/// Should be called periodically (e.g. from timer interrupt)
+pub fn check_batch_timeout(current_tsc: u64, tsc_freq: u64) {
+    if let Some(batch) = BATCH_PROCESSOR.check_timeout(current_tsc, tsc_freq) {
+        stack::receive_batch(batch);
+    }
+}
+
 // ============================================================================
 // Shell API Integration
+
 // ============================================================================
 
 /// Get bridge statistics

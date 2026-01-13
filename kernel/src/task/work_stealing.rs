@@ -5,9 +5,9 @@
 #![allow(dead_code)]
 
 use super::Task;
-use alloc::collections::VecDeque;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
-use spin::Mutex;
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 
 /// ワーカーのメタデータ
 /// NUMA優先スティーリングのためにCPUコアIDとNUMAノードIDを保持
