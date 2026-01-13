@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     Build and run RanyOS with ExoLoader bootloader.
@@ -152,7 +152,7 @@ if ($CargoRunner -and $CargoKernelPath) {
 $KERNEL_SIGNED = Join-Path $KERNEL_TARGET_DIR "rany_os_signed"
 $LOADER_EFI = Join-Path $LOADER_TARGET_DIR $LOADER_BIN_NAME
 $SIGNER_TOOL_DIR = Join-Path $TOOLS_DIR "signer"
-$SIGNER_TOOL_BIN = Join-Path $SIGNER_TOOL_DIR "target/release/kernel-signer$EXE_EXT"
+$SIGNER_TOOL_BIN = Join-Path $SIGNER_TOOL_DIR "target/x86_64-pc-windows-msvc/release/kernel-signer$EXE_EXT"
 
 # --- Helper Functions ---
 
@@ -203,7 +203,7 @@ function Test-RustComponent($component) {
     $found = $list | Where-Object { $_ -like "$component*" }
     if (-not $found) {
         Write-Warn "Rust component '$component' is missing."
-        Write-Step "📥" "Installing '$component'..."
+        Write-Step "踏" "Installing '$component'..."
         rustup component add $component
         if ($LASTEXITCODE -ne 0) { throw "Failed to install $component" }
     }
@@ -239,7 +239,7 @@ function Get-HostTarget {
 }
 
 function Check-Dependencies {
-    Write-Step "🔍" "Checking dependencies..."
+    Write-Step "剥" "Checking dependencies..."
     Test-Command "cargo"
     Test-Command "rustup"
     
@@ -258,7 +258,7 @@ function Check-Dependencies {
 }
 
 function Run-Clean {
-    Write-Step "🧹" "Cleaning target directory..."
+    Write-Step "ｧｹ" "Cleaning target directory..."
     if (Test-Path $TARGET_DIR) {
         Remove-Item -Recurse -Force $TARGET_DIR -ErrorAction SilentlyContinue
         Write-Done "Cleaned."
@@ -268,7 +268,7 @@ function Run-Clean {
 # --- Lint & Format ---
 
 function Invoke-Lints {
-    Write-Step "🧹" "Running Cargo Fmt & Clippy..."
+    Write-Step "ｧｹ" "Running Cargo Fmt & Clippy..."
     
     # Format check (don't modify, just check)
     Write-Done "Checking format..."
@@ -325,11 +325,12 @@ function Build-Signer {
     }
     
     if ($needsBuild) {
-        Write-Step "🛠️" "Building Kernel Signer Tool..."
+        Write-Step "屏・・ "Building Kernel Signer Tool..."
         Push-Location $SIGNER_TOOL_DIR
         try {
             $hostTarget = Get-HostTarget
-            $buildArgs = @("build", "--release")
+            # Disable build-std for host tools (override parent .cargo/config.toml)
+            $buildArgs = @("build", "--release", "-Z", "build-std=")
             if ($hostTarget) {
                 $buildArgs += "--target"
                 $buildArgs += $hostTarget
@@ -347,7 +348,7 @@ function Build-Signer {
 
 function Setup-Keys {
     if (-not (Test-Path "$KEYS_DIR/kernel_pub.key")) {
-        Write-Step "🔑" "Generating Secure Boot Keys..."
+        Write-Step "泊" "Generating Secure Boot Keys..."
         if (-not (Test-Path $KEYS_DIR)) { New-Item -ItemType Directory -Path $KEYS_DIR | Out-Null }
         
         # Direct invocation is more reliable cross-platform than Start-Process -NoNewWindow
@@ -360,7 +361,7 @@ function Setup-Keys {
 }
 
 function Build-Loader {
-    Write-Step "🚀" "Building ExoLoader (UEFI)..."
+    Write-Step "噫" "Building ExoLoader (UEFI)..."
     $buildArgs = @(
         "build",
         "-p", $LOADER_CRATE,
@@ -378,7 +379,7 @@ function Build-Loader {
 }
 
 function Build-Kernel {
-    Write-Step "🦀" "Building Kernel ($PROFILE)..."
+    Write-Step "ｦ" "Building Kernel ($PROFILE)..."
     
     $buildArgs = @(
         "build",
@@ -406,7 +407,7 @@ function Build-Kernel {
 }
 
 function Sign-Kernel-Binary {
-    Write-Step "✍️" "Signing Kernel..."
+    Write-Step "笨搾ｸ・ "Signing Kernel..."
     
     if (-not (Test-Path $KERNEL_RAW)) { throw "Kernel binary not found at $KERNEL_RAW" }
 
@@ -425,7 +426,7 @@ function Sign-Kernel-Binary {
 # --- Image Creation ---
 
 function Create-Disk-Image {
-    Write-Step "💾" "Preparing Boot Image..."
+    Write-Step "沈" "Preparing Boot Image..."
     
     $fatRoot = Join-Path $KERNEL_TARGET_DIR "fat_root"
     if (Test-Path $fatRoot) { Remove-Item $fatRoot -Recurse -Force }
@@ -510,7 +511,7 @@ function Get-QemuAccelerator {
 function Start-Qemu {
     param([string]$FatDir)
     
-    Write-Step "🖥️" "Launching QEMU..."
+    Write-Step "箕・・ "Launching QEMU..."
     
     # Firmware Setup
     $ovmfCode = Join-Path $OVMF_DIR "OVMF_CODE.fd"
@@ -709,7 +710,7 @@ try {
     # Performance Report
     $script:TotalWatch.Stop()
     $elapsed = $script:TotalWatch.Elapsed.TotalSeconds.ToString('F2')
-    Write-Step "✅" "Build success in ${elapsed}s"
+    Write-Step "笨・ "Build success in ${elapsed}s"
     
     # 4. Execution
     if (-not $NoRun) {

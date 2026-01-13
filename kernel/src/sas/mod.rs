@@ -15,7 +15,8 @@ pub mod ownership;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use lazy_static::lazy_static;
+use alloc::boxed::Box;
+use once_cell::race::OnceBox;
 use spin::Mutex;
 
 // Use the canonical DomainId when building the full kernel binary, but provide a
@@ -57,10 +58,14 @@ pub use ownership::OwnershipError;
 // Global Heap Registry
 // ============================================================================
 
-lazy_static! {
-    /// グローバルヒープオブジェクトレジストリ
-    /// Sharded + ThreadSafe structure
-    static ref HEAP_REGISTRY: HeapRegistry = HeapRegistry::default();
+/// グローバルヒープオブジェクトレジストリ
+/// Sharded + ThreadSafe structure
+static HEAP_REGISTRY: OnceBox<HeapRegistry> = OnceBox::new();
+
+/// ヒープレジストリを取得（必要に応じて初期化）
+#[inline]
+fn heap_registry() -> &'static HeapRegistry {
+    HEAP_REGISTRY.get_or_init(|| Box::new(HeapRegistry::default()))
 }
 
 // ============================================================================
@@ -170,7 +175,7 @@ impl SingleAddressSpaceManager {
     /// セルのリソースを全て回収
     pub fn reclaim_domain_resources(&mut self, domain_id: DomainId) -> usize {
         // 回収はグローバルレジストリに対して行う
-        let count = HEAP_REGISTRY.reclaim_all(domain_id);
+        let count = heap_registry().reclaim_all(domain_id);
         self.cell_regions.remove(&domain_id);
 
         log::info!("[SAS] Reclaimed {} objects from {}\n", count, domain_id);
@@ -181,7 +186,7 @@ impl SingleAddressSpaceManager {
     pub fn stats(&self) -> SasStats {
         SasStats {
             total_regions: self.cell_regions.values().map(|v: &Vec<MemoryRegion>| v.len()).sum::<usize>(),
-            total_objects: HEAP_REGISTRY.object_count(),
+            total_objects: heap_registry().object_count(),
             domains: self.cell_regions.len(),
             next_addr: self.next_alloc_addr.load(Ordering::Relaxed),
         }
@@ -260,6 +265,46 @@ pub struct SasStats {
     pub next_addr: u64,
 }
 
+/// Atomic statistics for lock-free access to frequently queried metrics
+struct AtomicSasStats {
+    /// Number of domains (updated on domain add/remove)
+    domain_count: AtomicU64,
+    /// Total regions across all domains (updated on region alloc/free)
+    region_count: AtomicU64,
+}
+
+impl AtomicSasStats {
+    const fn new() -> Self {
+        Self {
+            domain_count: AtomicU64::new(0),
+            region_count: AtomicU64::new(0),
+        }
+    }
+
+    #[inline]
+    fn increment_domains(&self) {
+        self.domain_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn decrement_domains(&self) {
+        self.domain_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn increment_regions(&self) {
+        self.region_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn decrement_regions(&self) {
+        self.region_count.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Global atomic stats (lock-free access)
+static ATOMIC_SAS_STATS: AtomicSasStats = AtomicSasStats::new();
+
 // ============================================================================
 // グローバルインスタンス
 // ============================================================================
@@ -295,7 +340,7 @@ pub fn init() {
 
 /// 所有権を移動（公開API）
 pub fn transfer_ownership(ptr: usize, from: DomainId, to: DomainId) -> Result<(), OwnershipError> {
-    HEAP_REGISTRY.change_owner(ptr, from, to).map_err(|e| {
+    heap_registry().change_owner(ptr, from, to).map_err(|e| {
         // Logging moved here since it was inside manager method
         // But logging might be expensive, maybe log only on error or debug
         e
@@ -308,7 +353,7 @@ pub fn transfer_ownership(ptr: usize, from: DomainId, to: DomainId) -> Result<()
 
 /// オブジェクトを登録
 pub fn register_object(ptr: usize, size: usize, owner: DomainId) {
-    HEAP_REGISTRY.register_simple(ptr, size, owner);
+    heap_registry().register_simple(ptr, size, owner);
 }
 
 /// オブジェクトを解除
@@ -331,12 +376,12 @@ pub fn unregister_object(ptr: usize) -> Option<DomainId> {
     // It didn't call `unregister`.
     //
     // If I want to match original behavior:
-    HEAP_REGISTRY.get_owner(ptr)
+    heap_registry().get_owner(ptr)
 }
 
 /// オブジェクトを無条件に登録解除し、情報を返す
 pub fn unregister_any(ptr: usize) -> Option<(DomainId, usize)> {
-    HEAP_REGISTRY.unregister_any(ptr)
+    heap_registry().unregister_any(ptr)
 }
 
 /// アクセス権限をチェック
@@ -346,11 +391,11 @@ pub fn check_access(ptr: usize, accessor: DomainId) -> Result<(), OwnershipError
         return Ok(());
     }
 
-    if HEAP_REGISTRY.check_access(ptr, accessor) {
+    if heap_registry().check_access(ptr, accessor) {
         Ok(())
     } else {
         // Find owner to report detailed error, if possible
-        let owner = HEAP_REGISTRY.get_owner(ptr);
+        let owner = heap_registry().get_owner(ptr);
         match owner {
             Some(o) => Err(OwnershipError::AccessDenied {
                 ptr,
@@ -364,30 +409,30 @@ pub fn check_access(ptr: usize, accessor: DomainId) -> Result<(), OwnershipError
 
 /// 所有者を取得
 pub fn get_owner(ptr: usize) -> Option<DomainId> {
-    HEAP_REGISTRY.get_owner(ptr)
+    heap_registry().get_owner(ptr)
 }
 
 /// ドメインのリソースを回収
 pub fn reclaim_domain_resources(domain: DomainId) -> usize {
-    HEAP_REGISTRY.reclaim_all(domain)
+    heap_registry().reclaim_all(domain)
 }
 
 /// オブジェクトが毒入れされているかチェック
 /// 設計書 8.4: Exchange Heapへの適用
 pub fn is_object_poisoned(ptr: usize) -> bool {
-    HEAP_REGISTRY.is_poisoned(ptr)
+    heap_registry().is_poisoned(ptr)
 }
 
 /// オブジェクトを毒入れする
 /// 設計書 8.4: オーナーがパニックした際にオブジェクトを無効化
 pub fn poison_object(ptr: usize) -> Result<(), heap_registry::RegistryError> {
-    HEAP_REGISTRY.poison_object(ptr)
+    heap_registry().poison_object(ptr)
 }
 
 /// 指定ドメインが所有する全オブジェクトを毒入れ
 /// 設計書 8.4: ドメインパニック時の連鎖クラッシュ防止
 pub fn poison_domain_objects(domain: DomainId) -> usize {
-    HEAP_REGISTRY.poison_domain_objects(domain)
+    heap_registry().poison_domain_objects(domain)
 }
 
 /// 統計を取得
@@ -403,8 +448,28 @@ pub fn stats() -> SasStats {
 
     SasStats {
         total_regions: regions.2,
-        total_objects: HEAP_REGISTRY.object_count(),
+        total_objects: heap_registry().object_count(),
         domains: regions.0,
         next_addr: regions.1,
     }
+}
+
+/// Quick stats using atomic counters (lock-free, approximate).
+///
+/// This provides O(1) access to frequently queried metrics without
+/// acquiring any locks. Values may be slightly stale but are consistent.
+#[inline]
+pub fn quick_stats() -> (u64, u64, u64) {
+    (
+        ATOMIC_SAS_STATS.domain_count.load(Ordering::Relaxed),
+        ATOMIC_SAS_STATS.region_count.load(Ordering::Relaxed),
+        // next_alloc_addr is already atomic in the manager
+        with_sas_manager(|m| m.next_alloc_addr.load(Ordering::Relaxed)),
+    )
+}
+
+/// Get object count (lock-free via heap registry)
+#[inline]
+pub fn object_count() -> usize {
+    heap_registry().object_count()
 }

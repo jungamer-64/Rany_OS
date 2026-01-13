@@ -1,0 +1,5 @@
+# Override workspace config for host tool builds.
+# This explicitly sets the host target to avoid inheriting the kernel target.
+
+[build]
+target = "x86_64-pc-windows-msvc"

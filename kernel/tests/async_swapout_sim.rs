@@ -202,14 +202,16 @@ fn async_swapout_sim_short_baseline() {
             }
         }
     }
-    let elapsed = precise_time_nanos() - start;
-    let success = enqueue_success.load(Ordering::Acquire);
-    let failures = enqueue_failures.load(Ordering::Acquire);
-    let processed = processed.load(Ordering::Acquire);
-    let tokens_left = tokens.load(Ordering::Acquire);
-    let max_q = queue_len_max.load(Ordering::Acquire);
+    let elapsed = precise_time_nanos() - start_time;
+    let s = state.lock();
+    let success = s.enqueue_success;
+    let failures = s.enqueue_failures;
+    let processed = s.processed;
+    let tokens_left = s.tokens;
+    let max_q = s.queue_len_max;
+    let threads = 1; // Single-threaded simulation
 
-    rany_os::println!("async_swapout_sim_short_baseline: threads={} iters={} time={:?}", threads, iters, elapsed);
+    rany_os::println!("async_swapout_sim_short_baseline: threads={} iters={} time={:?} ns", threads, iters, elapsed);
     rany_os::println!("enq_success={}, enq_failures={}, processed={}, tokens_left={}, max_queue_len={}", success, failures, processed, tokens_left, max_q);
 
     // Basic sanity checks

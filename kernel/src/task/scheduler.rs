@@ -184,34 +184,78 @@ impl PerCpuScheduler {
 }
 
 // ============================================================================
-// グローバルスケジューラ管理
+// グローバルスケジューラ管理 (Lock-Free via spin::Once)
 // ============================================================================
 
 /// 最大CPU数
 const MAX_CPUS: usize = 64;
 
-/// Per-CPU スケジューラ配列
-static SCHEDULERS: [IrqMutex<Option<PerCpuScheduler>>; MAX_CPUS] = {
-    const INIT: IrqMutex<Option<PerCpuScheduler>> = IrqMutex::new(None);
-    [INIT; MAX_CPUS]
-};
+/// Per-CPU スケジューラ配列 (OnceCell pattern)
+///
+/// Each CPU initializes its scheduler exactly once, then accesses it lock-free.
+/// UnsafeCell is used for mutable access since each CPU only accesses its own scheduler.
+struct PerCpuSchedulerStorage {
+    schedulers: [spin::Once<core::cell::UnsafeCell<PerCpuScheduler>>; MAX_CPUS],
+}
+
+impl PerCpuSchedulerStorage {
+    const fn new() -> Self {
+        const UNINIT: spin::Once<core::cell::UnsafeCell<PerCpuScheduler>> = spin::Once::new();
+        Self {
+            schedulers: [UNINIT; MAX_CPUS],
+        }
+    }
+
+    /// Initialize scheduler for a CPU (called once per CPU)
+    fn init(&self, cpu_id: usize) {
+        if cpu_id >= MAX_CPUS {
+            return;
+        }
+
+        self.schedulers[cpu_id].call_once(|| {
+            let mut scheduler = PerCpuScheduler::new(cpu_id);
+            
+            // アイドルタスクを作成
+            let idle_tcb = Box::leak(Box::new(TaskControlBlock::idle(cpu_id)));
+            scheduler.set_idle_task(idle_tcb);
+            
+            core::cell::UnsafeCell::new(scheduler)
+        });
+    }
+
+    /// Get scheduler for a CPU (lock-free after init)
+    #[inline]
+    fn get(&self, cpu_id: usize) -> Option<&core::cell::UnsafeCell<PerCpuScheduler>> {
+        if cpu_id >= MAX_CPUS {
+            return None;
+        }
+        self.schedulers[cpu_id].get()
+    }
+
+    /// Check if scheduler is initialized for a CPU
+    #[inline]
+    fn is_initialized(&self, cpu_id: usize) -> bool {
+        cpu_id < MAX_CPUS && self.schedulers[cpu_id].get().is_some()
+    }
+}
+
+// SAFETY: Each CPU only accesses its own scheduler
+unsafe impl Sync for PerCpuSchedulerStorage {}
+
+static SCHEDULERS: PerCpuSchedulerStorage = PerCpuSchedulerStorage::new();
 
 /// グローバルタスクリスト（全タスクの所有権）
+/// Note: This still uses IrqMutex as it's accessed from multiple CPUs
 static TASK_LIST: IrqMutex<Vec<TcbPtr>> = IrqMutex::new(Vec::new());
 
 /// スケジューラを初期化
 pub fn init_scheduler(cpu_id: usize) {
-    let mut guard = SCHEDULERS[cpu_id].lock();
+    SCHEDULERS.init(cpu_id);
+}
 
-    if guard.is_none() {
-        let mut scheduler = PerCpuScheduler::new(cpu_id);
-
-        // アイドルタスクを作成
-        let idle_tcb = Box::leak(Box::new(TaskControlBlock::idle(cpu_id)));
-        scheduler.set_idle_task(idle_tcb);
-
-        *guard = Some(scheduler);
-    }
+/// スケジューラが初期化済みか確認
+pub fn is_scheduler_initialized(cpu_id: usize) -> bool {
+    SCHEDULERS.is_initialized(cpu_id)
 }
 
 /// タスクを生成してスケジューラに追加
@@ -223,39 +267,47 @@ pub fn spawn_task(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<T
     // グローバルリストに追加
     TASK_LIST.lock().push(TcbPtr(tcb_ptr));
 
-    // CPU 0 のスケジューラに追加
-    // Note: ロードバランシングはwork_stealing_advancedモジュールで実装
-    if let Some(ref mut scheduler) = *SCHEDULERS[0].lock() {
-        scheduler.enqueue(tcb_ptr);
+    // CPU 0 のスケジューラに追加 (lock-free after init)
+    if let Some(sched_cell) = SCHEDULERS.get(0) {
+        // SAFETY: We're on the owning CPU (or during init)
+        unsafe {
+            (*sched_cell.get()).enqueue(tcb_ptr);
+        }
     }
 
     Some(task_id)
 }
 
-/// タイマーティック処理
+/// タイマーティック処理 (lock-free)
 pub fn timer_tick(cpu_id: usize) {
-    if let Some(ref mut scheduler) = *SCHEDULERS[cpu_id].lock() {
-        scheduler.tick();
-    }
-}
-
-/// スケジュール実行
-///
-/// # Safety
-/// 割り込みコンテキストまたは適切なタイミングで呼び出す必要がある
-pub unsafe fn schedule(cpu_id: usize) {
-    if let Some(ref mut scheduler) = *SCHEDULERS[cpu_id].lock() {
-        // SAFETY: 呼び出し元が保証
+    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
+        // SAFETY: Called from timer interrupt on this CPU
         unsafe {
-            scheduler.schedule();
+            (*sched_cell.get()).tick();
         }
     }
 }
 
-/// リスケジュールを要求
+/// スケジュール実行 (lock-free)
+///
+/// # Safety
+/// 割り込みコンテキストまたは適切なタイミングで呼び出す必要がある
+pub unsafe fn schedule(cpu_id: usize) {
+    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
+        // SAFETY: Called from same CPU
+        unsafe {
+            (*sched_cell.get()).schedule();
+        }
+    }
+}
+
+/// リスケジュールを要求 (lock-free)
 pub fn request_reschedule(cpu_id: usize) {
-    if let Some(ref scheduler) = *SCHEDULERS[cpu_id].lock() {
-        scheduler.request_reschedule();
+    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
+        // SAFETY: Reading AtomicBool is always safe
+        unsafe {
+            (*sched_cell.get()).request_reschedule();
+        }
     }
 }
 
@@ -272,3 +324,24 @@ pub fn yield_current(cpu_id: usize) {
 pub fn context_switch_count() -> u64 {
     super::context::CONTEXT_SWITCH_COUNT.load(Ordering::Relaxed)
 }
+
+/// スケジューラにタスクを追加（指定CPU）
+pub fn enqueue_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
+    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
+        // SAFETY: Called with proper synchronization
+        unsafe {
+            (*sched_cell.get()).enqueue(tcb);
+        }
+    }
+}
+
+/// タスクをアンブロック（指定CPU）
+pub fn unblock_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
+    if let Some(sched_cell) = SCHEDULERS.get(cpu_id) {
+        // SAFETY: Called with proper synchronization
+        unsafe {
+            (*sched_cell.get()).unblock(tcb);
+        }
+    }
+}
+

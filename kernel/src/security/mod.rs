@@ -41,38 +41,13 @@ pub use capability::CapabilitySet;
 
 // Re-export static capability system (preferred API)
 
-// When building tests we compile the kernel as a std crate and some
-// modules (like `vga`) that export logging macros are not included.
-// To make the security module test-friendly we alias alloc types to
-// their std counterparts when cfg(test) is active and provide a
-// lightweight `log!` macro that forwards to `println!`.
-
-#[cfg(all(test, feature = "std"))]
-use std::string::String as KernelString;
-#[cfg(all(test, feature = "std"))]
-use std::vec::Vec;
-
-#[cfg(any(not(test), not(feature = "std")))]
+// The security module uses alloc types uniformly. No std dependency needed.
 extern crate alloc;
-#[cfg(any(not(test), not(feature = "std")))]
 use alloc::string::String as KernelString;
-#[cfg(any(not(test), not(feature = "std")))]
 use alloc::vec::Vec;
 
-// Provide a simple log macro for tests so `crate::log!` calls resolve
-// without pulling in the full VGA/serial logging subsystems.
-// Provide a test-time log macro that forwards to the host's stdout
-// via the standard `println!` macro. Use the fully-qualified path
-// `::std::println!` to avoid macro hygiene issues in nested modules.
-#[cfg(all(test, feature = "std"))]
-#[macro_export]
-macro_rules! log {
-    ($($arg:tt)*) => ({
-        ::std::println!($($arg)*);
-    });
-}
-
-#[cfg(all(test, not(feature = "std")))]
+// Provide a simple log macro for tests that uses the kernel serial output.
+#[cfg(test)]
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => ({

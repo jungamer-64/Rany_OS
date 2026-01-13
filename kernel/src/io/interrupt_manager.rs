@@ -22,7 +22,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use lazy_static::lazy_static;
+use once_cell::race::OnceBox;
 use spin::{Mutex, RwLock};
 use x86_64::structures::idt::InterruptStackFrame;
 
@@ -1017,18 +1017,22 @@ pub fn waker_count() -> usize {
 /// 割り込みハンドラの型
 pub type InterruptHandler = Box<dyn Fn() + Send + Sync>;
 
-lazy_static! {
-    /// 直接実行される割り込みハンドラのレジストリ
-    ///
-    /// ISRコンテキストで実行されるため、IrqMutexで保護する必要がある。
-    /// これにより、ISR内でのロック取得時のデッドロックを防ぐ。
-    static ref DIRECT_HANDLERS: IrqMutex<Vec<Option<InterruptHandler>>> = {
+/// 直接実行される割り込みハンドラのレジストリ
+///
+/// ISRコンテキストで実行されるため、IrqMutexで保護する必要がある。
+/// これにより、ISR内でのロック取得時のデッドロックを防ぐ。
+static DIRECT_HANDLERS: OnceBox<IrqMutex<Vec<Option<InterruptHandler>>>> = OnceBox::new();
+
+/// ハンドラレジストリを取得（必要に応じて初期化）
+#[inline]
+fn direct_handlers() -> &'static IrqMutex<Vec<Option<InterruptHandler>>> {
+    DIRECT_HANDLERS.get_or_init(|| {
         let mut v = Vec::with_capacity(256);
         for _ in 0..256 {
-            v.push(None); // 初期化
+            v.push(None);
         }
-        IrqMutex::new(v)
-    };
+        Box::new(IrqMutex::new(v))
+    })
 }
 
 /// 割り込みハンドラを登録（直接実行用）
@@ -1036,7 +1040,7 @@ lazy_static! {
 /// ベクタに対応するハンドラを登録する。このハンドラはISR内で直接呼び出されるため、
 /// 実行時間は極力短くし、ブロックする操作を行ってはならない。
 pub fn register_handler(vector: u8, handler: InterruptHandler) {
-    let mut handlers = DIRECT_HANDLERS.lock();
+    let mut handlers = direct_handlers().lock();
     if (vector as usize) < handlers.len() {
         handlers[vector as usize] = Some(handler);
     }
@@ -1051,7 +1055,7 @@ pub fn register_handler(vector: u8, handler: InterruptHandler) {
 pub fn try_dispatch_direct(vector: u8) -> bool {
     // try_lockを使用することで、万が一の再入時のデッドロックも回避
     // (ただしIrqMutexは割り込みを無効化するため、通常は再入しない)
-    if let Some(handlers) = DIRECT_HANDLERS.try_lock() {
+    if let Some(handlers) = direct_handlers().try_lock() {
         if let Some(ref handler) = handlers.get(vector as usize).and_then(|h| h.as_ref()) {
             handler();
             return true;

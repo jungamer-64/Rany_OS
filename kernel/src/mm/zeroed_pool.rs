@@ -38,12 +38,14 @@ use super::types::NumaNodeId;
 pub unsafe fn zero_page_nontemporal(virt_addr: u64) {
     let ptr = virt_addr as *mut u8;
     
-    #[cfg(target_arch = "x86_64")]
+    // Only use SSE2 intrinsics when the target actually has SSE2 enabled.
+    // The kernel target uses +soft-float which disables SSE, so we must
+    // use the scalar fallback to avoid LLVM errors.
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     {
         use core::arch::x86_64::*;
         
-        // Check if AVX2 is available (done at compile time with target_feature)
-        // Use SSE2 which is guaranteed on x86_64
+        // Use SSE2 non-temporal stores
         let zero = _mm_setzero_si128();
         let mut offset = 0usize;
         
@@ -61,9 +63,11 @@ pub unsafe fn zero_page_nontemporal(virt_addr: u64) {
         _mm_sfence();
     }
     
-    #[cfg(not(target_arch = "x86_64"))]
+    // Scalar fallback for soft-float targets or non-x86_64 architectures
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
     {
-        // Fallback for non-x86_64
+        // Standard zeroing - the compiler will optimize this to REP STOSB
+        // which is efficient on modern CPUs
         core::ptr::write_bytes(ptr, 0, 4096);
     }
 }

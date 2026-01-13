@@ -123,9 +123,9 @@ pub fn pack_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
     let mode = get_packer_mode();
     
     match mode {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
         3 => unsafe { pack_rgba_to_bgra_avx2(src.as_ptr(), dst.as_mut_ptr(), bytes) },
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
         2 => unsafe { pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes) },
         #[cfg(target_arch = "aarch64")]
         4 => unsafe { pack_rgba_to_bgra_neon(src.as_ptr(), dst.as_mut_ptr(), bytes) },
@@ -172,7 +172,7 @@ pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
 pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
     use core::arch::x86_64::*;
@@ -235,7 +235,7 @@ pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize)
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
 #[target_feature(enable = "ssse3")]
 pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) {
     use core::arch::x86_64::*;
@@ -317,9 +317,9 @@ pub fn pack_rgba_to_bgr24(src: &[u8], dst: &mut [u8], is_bgr: bool) {
     let mode = get_packer_mode();
     
     match mode {
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
         3 => unsafe { pack_rgba_to_bgr24_avx2(src, dst, pixels, is_bgr) },
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
         2 => unsafe { pack_rgba_to_bgr24_ssse3(src, dst, pixels, is_bgr) },
         #[cfg(target_arch = "aarch64")]
         4 => unsafe { pack_rgba_to_bgr24_neon(src, dst, pixels, is_bgr) },
@@ -356,7 +356,7 @@ pub fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn pack_rgba_to_bgr24_avx2(src: &[u8], dst: &mut [u8], pixels: usize, is_bgr: bool) {
@@ -379,7 +379,7 @@ unsafe fn pack_rgba_to_bgr24_avx2(src: &[u8], dst: &mut [u8], pixels: usize, is_
     pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
 #[inline]
 pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
@@ -424,7 +424,7 @@ pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_b
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
 #[target_feature(enable = "ssse3")]
 #[inline]
 pub unsafe fn pack_rgba_to_bgr24_ssse3(src: &[u8], dst: &mut [u8], pixels: usize, is_bgr: bool) {
@@ -447,7 +447,7 @@ pub unsafe fn pack_rgba_to_bgr24_ssse3(src: &[u8], dst: &mut [u8], pixels: usize
     pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "ssse3"))]
 #[target_feature(enable = "ssse3")]
 #[inline]
 pub unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {

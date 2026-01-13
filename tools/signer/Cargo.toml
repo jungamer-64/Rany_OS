@@ -1,7 +1,7 @@
 [package]
 name = "kernel-signer"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Ed25519 kernel signing tool for RanyOS secure boot"
 license = "MIT"
 

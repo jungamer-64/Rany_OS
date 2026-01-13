@@ -82,7 +82,7 @@ pub use signal::{
 };
 pub use timer::{current_tick, sleep_ms};
 #[allow(unused_imports)]
-pub use work_stealing::{WorkStealingQueue, inject_global, steal_from_global};
+pub use work_stealing::{inject_global, steal_from_global};
 
 // Phase 4: Advanced Work-Stealing re-exports
 #[allow(unused_imports)]

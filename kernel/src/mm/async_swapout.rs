@@ -113,37 +113,180 @@ pub fn stats_async_dealloc_count() -> usize {
 }
 
 // ---------------------------
-// 4KiB Buffer Pool
+// 4KiB Buffer Pool with Per-CPU Cache
 // ---------------------------
+// Per-CPU cache enables lock-free buffer access for the common case.
+// Each CPU has a local cache slot; overflow goes to the global pool.
+
 const BUFFER_POOL_4K_DEFAULT_CAPACITY: usize = 128;
+const MAX_CPUS: usize = 64;
+const PER_CPU_CACHE_SIZE: usize = 4; // Number of buffers cached per CPU
+
+// Global pool (overflow/underflow)
 static BUFFER_POOL_4K_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> = spin::Mutex::new(alloc::vec::Vec::new());
 static BUFFER_POOL_4K_HITS: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_4K_MISSES: AtomicUsize = AtomicUsize::new(0);
 static BUFFER_POOL_4K_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_4K_DEFAULT_CAPACITY);
 
+// Per-CPU local cache statistics
+static BUFFER_POOL_4K_LOCAL_HITS: AtomicUsize = AtomicUsize::new(0);
+
+// Per-CPU cache structure
+struct PerCpuBufferCache4K {
+    // Each slot is an Option<Vec<u8>> wrapped in UnsafeCell
+    // Access is safe because each CPU only accesses its own slots
+    slots: [core::cell::UnsafeCell<Option<alloc::vec::Vec<u8>>>; PER_CPU_CACHE_SIZE],
+    // Track how many slots are used
+    count: AtomicUsize,
+}
+
+impl PerCpuBufferCache4K {
+    const fn new() -> Self {
+        const EMPTY: core::cell::UnsafeCell<Option<alloc::vec::Vec<u8>>> = 
+            core::cell::UnsafeCell::new(None);
+        Self {
+            slots: [EMPTY; PER_CPU_CACHE_SIZE],
+            count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Try to get a buffer from local cache (lock-free)
+    /// SAFETY: Caller must ensure this is only called from the owning CPU
+    #[inline]
+    unsafe fn try_get(&self) -> Option<alloc::vec::Vec<u8>> {
+        let count = self.count.load(AtomicOrdering::Acquire);
+        if count == 0 {
+            return None;
+        }
+        
+        // Find a non-empty slot
+        for slot in &self.slots {
+            let ptr = slot.get();
+            if (*ptr).is_some() {
+                let buf = (*ptr).take();
+                if buf.is_some() {
+                    self.count.fetch_sub(1, AtomicOrdering::Release);
+                    return buf;
+                }
+            }
+        }
+        None
+    }
+
+    /// Try to put a buffer into local cache (lock-free)
+    /// SAFETY: Caller must ensure this is only called from the owning CPU
+    /// Returns the buffer if cache is full
+    #[inline]
+    unsafe fn try_put(&self, buf: alloc::vec::Vec<u8>) -> Option<alloc::vec::Vec<u8>> {
+        let count = self.count.load(AtomicOrdering::Acquire);
+        if count >= PER_CPU_CACHE_SIZE {
+            return Some(buf);
+        }
+        
+        // Find an empty slot
+        for slot in &self.slots {
+            let ptr = slot.get();
+            if (*ptr).is_none() {
+                *ptr = Some(buf);
+                self.count.fetch_add(1, AtomicOrdering::Release);
+                return None;
+            }
+        }
+        Some(buf)
+    }
+}
+
+// SAFETY: Each CPU only accesses its own PerCpuBufferCache4K
+unsafe impl Send for PerCpuBufferCache4K {}
+unsafe impl Sync for PerCpuBufferCache4K {}
+
+// Per-CPU cache array
+static PER_CPU_BUFFER_CACHE_4K: [PerCpuBufferCache4K; MAX_CPUS] = {
+    const CACHE: PerCpuBufferCache4K = PerCpuBufferCache4K::new();
+    [CACHE; MAX_CPUS]
+};
+
+/// Get current CPU ID for cache access
+#[inline]
+fn current_cpu_for_cache() -> usize {
+    // Use the SMP module to get current CPU ID
+    // Falls back to 0 if SMP is not initialized
+    #[cfg(not(any(test, feature = "std")))]
+    {
+        crate::smp::current_cpu() as usize % MAX_CPUS
+    }
+    #[cfg(any(test, feature = "std"))]
+    {
+        0 // Single CPU for tests
+    }
+}
+
 pub fn buffer_pool_get_4k() -> alloc::vec::Vec<u8> {
+    let cpu = current_cpu_for_cache();
+    
+    // Fast path: try local cache first (lock-free)
+    // SAFETY: We are on the owning CPU
+    if let Some(mut buf) = unsafe { PER_CPU_BUFFER_CACHE_4K[cpu].try_get() } {
+        BUFFER_POOL_4K_LOCAL_HITS.fetch_add(1, AtomicOrdering::Relaxed);
+        if buf.len() != crate::mm::PAGE_SIZE_4K { 
+            buf.resize(crate::mm::PAGE_SIZE_4K, 0); 
+        }
+        return buf;
+    }
+    
+    // Slow path: try global pool
     let mut pool = BUFFER_POOL_4K_POOL.lock();
     if let Some(mut buf) = pool.pop() {
         BUFFER_POOL_4K_HITS.fetch_add(1, AtomicOrdering::AcqRel);
-        if buf.len() != crate::mm::PAGE_SIZE_4K { buf.resize(crate::mm::PAGE_SIZE_4K, 0); }
+        if buf.len() != crate::mm::PAGE_SIZE_4K { 
+            buf.resize(crate::mm::PAGE_SIZE_4K, 0); 
+        }
         buf
     } else {
+        drop(pool);
         BUFFER_POOL_4K_MISSES.fetch_add(1, AtomicOrdering::AcqRel);
         alloc::vec![0u8; crate::mm::PAGE_SIZE_4K]
     }
 }
 
 pub fn buffer_pool_put_4k(mut buf: alloc::vec::Vec<u8>) {
-    if buf.len() != crate::mm::PAGE_SIZE_4K { buf.resize(crate::mm::PAGE_SIZE_4K, 0); }
-    let cap = BUFFER_POOL_4K_CAPACITY.load(AtomicOrdering::Acquire);
-    let mut pool = BUFFER_POOL_4K_POOL.lock();
-    if pool.len() < cap {
-        pool.push(buf);
+    if buf.len() != crate::mm::PAGE_SIZE_4K { 
+        buf.resize(crate::mm::PAGE_SIZE_4K, 0); 
+    }
+    
+    let cpu = current_cpu_for_cache();
+    
+    // Fast path: try local cache first (lock-free)
+    // SAFETY: We are on the owning CPU
+    let overflow = unsafe { PER_CPU_BUFFER_CACHE_4K[cpu].try_put(buf) };
+    
+    if let Some(buf) = overflow {
+        // Local cache full, put in global pool
+        let cap = BUFFER_POOL_4K_CAPACITY.load(AtomicOrdering::Acquire);
+        let mut pool = BUFFER_POOL_4K_POOL.lock();
+        if pool.len() < cap {
+            pool.push(buf);
+        }
+        // If global pool is also full, buffer is dropped
     }
 }
 
 pub fn buffer_pool_4k_stats() -> (usize, usize, usize) {
-    (BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire), BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire), BUFFER_POOL_4K_POOL.lock().len())
+    (
+        BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire), 
+        BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire), 
+        BUFFER_POOL_4K_POOL.lock().len()
+    )
+}
+
+/// Extended stats including local cache hits
+pub fn buffer_pool_4k_extended_stats() -> (usize, usize, usize, usize) {
+    (
+        BUFFER_POOL_4K_LOCAL_HITS.load(AtomicOrdering::Acquire),
+        BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire), 
+        BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire), 
+        BUFFER_POOL_4K_POOL.lock().len()
+    )
 }
 
 pub fn buffer_pool_4k_set_capacity(n: usize) {
@@ -155,7 +298,19 @@ pub fn buffer_pool_4k_set_capacity(n: usize) {
 pub fn buffer_pool_4k_clear() {
     BUFFER_POOL_4K_HITS.store(0, AtomicOrdering::Release);
     BUFFER_POOL_4K_MISSES.store(0, AtomicOrdering::Release);
+    BUFFER_POOL_4K_LOCAL_HITS.store(0, AtomicOrdering::Release);
     BUFFER_POOL_4K_POOL.lock().clear();
+    
+    // Clear per-CPU caches too
+    for cpu in 0..MAX_CPUS {
+        // SAFETY: Clearing is safe during initialization/reset
+        unsafe {
+            for slot in &PER_CPU_BUFFER_CACHE_4K[cpu].slots {
+                *slot.get() = None;
+            }
+            PER_CPU_BUFFER_CACHE_4K[cpu].count.store(0, AtomicOrdering::Release);
+        }
+    }
 }
 
 // ---------------------------

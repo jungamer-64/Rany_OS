@@ -239,6 +239,12 @@ impl PerCpuFastMagazine {
 
         // Collect initial bits for first window
         let num_words = (word_end - word_start).min(MAX_WORDS_PER_ARENA);
+        crate::io::log::early_print("[FAST_ALLOC] init_single_writer_arena: cpu=");
+        crate::io::log::early_print_dec(self.cpu_id as u64);
+        crate::io::log::early_print(" num_words=");
+        crate::io::log::early_print_dec(num_words as u64);
+        crate::io::log::early_print("\n");
+
         let mut initial_bits = Vec::with_capacity(num_words);
         for i in 0..num_words {
             let global_idx = word_start + i;
@@ -249,6 +255,9 @@ impl PerCpuFastMagazine {
             };
             initial_bits.push(bits);
         }
+        crate::io::log::early_print("[FAST_ALLOC] init_single_writer_arena: initial_bits done, len=");
+        crate::io::log::early_print_dec(initial_bits.len() as u64);
+        crate::io::log::early_print("\n");
 
         let arena = PerArenaDetail::new(
             self.cpu_id,

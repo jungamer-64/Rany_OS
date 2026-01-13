@@ -48,6 +48,15 @@ pub type IovaGranularity = PageGranularity;
 /// Default capacity for quarantine ring (must be power of 2)
 const QUARANTINE_CAPACITY: usize = 256;
 
+// Global fallback quarantine ring used when per-CPU quarantines cannot be allocated (early boot / OOM).
+// This static ring does not require heap allocation and provides limited quarantine semantics to
+// prevent immediate frees and potential UAF via DMA during early initialization.
+static FALLBACK_QUARANTINE: IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>> =
+    IrqMutex::new(QuarantineRing::new());
+
+// Batch size used to drain fallback ring
+const FALLBACK_DRAIN_BATCH: usize = 32;
+
 // ============================================================================
 // IovaAllocator
 // ============================================================================
@@ -59,7 +68,10 @@ pub struct IovaAllocator {
 
     /// Per-CPU Quarantine Rings (delayed free queue)
     /// Protected by IrqMutex to allow safe access from IRQ handlers
-    quarantines: Box<[IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>]>,
+    ///
+    /// Per-CPU quarantine storage (None = fallback to immediate free)
+    quarantines: Option<Box<[IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>]>>,
+
 
     /// Current global epoch (incremented *before* IOTLB invalidation)
     current_epoch: AtomicU32,
@@ -90,15 +102,40 @@ impl IovaAllocator {
         // Initialize Inner Allocator
         let inner = FastBitmapAllocator::new(base, size);
 
-        // Initialize Per-CPU Quarantine Rings
-        let mut quarantines = Vec::with_capacity(MAX_CPUS);
-        for _ in 0..MAX_CPUS {
-            quarantines.push(IrqMutex::new(QuarantineRing::new()));
+        // Initialize Per-CPU Quarantine Rings (try to allocate, but avoid panic on OOM)
+        crate::io::log::early_print("[IOVA] new: entering IovaAllocator::new\n");
+        // Check heap/allocator state for diagnostics
+        if let Some(initialized) = crate::memory::ALLOCATOR.is_initialized() {
+            crate::io::log::early_print("[IOVA] heap_initialized=");
+            crate::io::log::early_print_dec(if initialized { 1 } else { 0 });
+            crate::io::log::early_print("\n");
+        } else {
+            crate::io::log::early_print("[IOVA] ALLOCATOR lock poisoned\n");
         }
+
+        let quarantines = {
+            let mut v: Vec<IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>> = Vec::new();
+            crate::io::log::early_print("[IOVA] new: try_reserve(MAX_CPUS)\n");
+            if v.try_reserve(MAX_CPUS).is_ok() {
+                crate::io::log::early_print("[IOVA] try_reserve OK, allocating quarantines\n");
+                for _ in 0..MAX_CPUS {
+                    v.push(IrqMutex::new(QuarantineRing::new()));
+                }
+                crate::io::log::early_print("[IOVA] quarantines allocated\n");
+                Some(v.into_boxed_slice())
+            } else {
+                // Heap not available or OOM during early boot: fall back to None and
+                // perform immediate frees instead of quarantining.
+                crate::io::log::early_print("[IOVA] try_reserve FAILED - falling back to immediate frees\n");
+                None
+            }
+        };
+
+        crate::io::log::early_print("[IOVA] new: done\n");
 
         Self {
             inner,
-            quarantines: quarantines.into_boxed_slice(),
+            quarantines,
             current_epoch: AtomicU32::new(0),
             completed_epoch: AtomicU32::new(0),
             stats: IovaAllocatorStats::default(),
@@ -203,35 +240,80 @@ impl IovaAllocator {
             },
         };
 
-        // Try to push to quarantine ring
-        let pushed = {
-            let mut ring = self.quarantines[cpu_id].lock();
-            ring.push(entry.addr, entry.size_class, entry.epoch)
-        };
+        // Try to push to quarantine ring (fall back to immediate free if quarantines unavailable)
+        if let Some(ref qbox) = self.quarantines {
+            // Try to push to quarantine ring
+            let pushed = {
+                let mut ring = qbox[cpu_id].lock();
+                ring.push(entry.addr, entry.size_class, entry.epoch)
+            };
 
-        if pushed {
-            self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        } else {
-            // Ring full: Force drain this ring to make space, then try push again
-            // This is a "forced drain" - potentially expensive but prevents failure
-            self.drain_quarantine_for_cpu(cpu_id, true);
-            self.stats.quarantine_forced_drains.fetch_add(1, Ordering::Relaxed);
-
-            // Retry push
-            let mut ring = self.quarantines[cpu_id].lock();
-            if ring.push(entry.addr, entry.size_class, entry.epoch) {
-                 self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-                 Ok(())
+            if pushed {
+                self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                Ok(())
             } else {
-                // Still full after drain? This is bad. Fallback to immediate free.
-                // NOTE: Immediate free bypasses quarantine safety! 
-                // Only safe if we assume IOTLB flush happens immediately after this call (which it usually doesn't).
-                // But dropping the free is worse (leak).
-                // A better approach might be to wait/spin, but we are in kernel context.
-                self.inner.free_immediate(addr, granularity)
-                    .map_err(|_| IommuError::NotMapped)
+                // Ring full: Force drain this ring to make space, then try push again
+                // This is a "forced drain" - potentially expensive but prevents failure
+                self.drain_quarantine_for_cpu(cpu_id, true);
+                self.stats.quarantine_forced_drains.fetch_add(1, Ordering::Relaxed);
+
+                // Retry push
+                let mut ring = qbox[cpu_id].lock();
+                if ring.push(entry.addr, entry.size_class, entry.epoch) {
+                     self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                     Ok(())
+                } else {
+                    // Still full after drain? This is bad. Fallback to immediate free.
+                    // NOTE: Immediate free bypasses quarantine safety! 
+                    // Only safe if we assume IOTLB flush happens immediately after this call (which it usually doesn't).
+                    // But dropping the free is worse (leak).
+                    // A better approach might be to wait/spin, but we are in kernel context.
+                    self.inner.free_immediate(addr, granularity)
+                        .map_err(|_| IommuError::NotMapped)
+                }
             }
+        } else {
+            // No per-CPU quarantine available (early boot / OOM) - try global fallback quarantine first
+            {
+                let mut fb = FALLBACK_QUARANTINE.lock();
+                // Try to push into fallback ring
+                if fb.push(entry.addr, entry.size_class, entry.epoch) {
+                    self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                    crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE\n");
+                    return Ok(());
+                }
+
+                // Fallback ring full: force drain to make space
+                crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE full, forcing drain\n");
+                let mut batch = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
+                let drained = fb.drain_all(&mut batch);
+                if drained > 0 {
+                    for i in 0..drained {
+                        let e = batch[i];
+                        let g = match e.size_class {
+                            0 => PageGranularity::Page4K,
+                            1 => PageGranularity::Page2M,
+                            2 => PageGranularity::Page1G,
+                            _ => PageGranularity::Page4K,
+                        };
+                        let _ = self.inner.free_immediate(e.addr, g);
+                    }
+                    self.stats.quarantine_forced_drains.fetch_add(drained as u64, Ordering::Relaxed);
+                }
+
+                // Try push again
+                if fb.push(entry.addr, entry.size_class, entry.epoch) {
+                    self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                    crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE after drain\n");
+                    return Ok(());
+                } else {
+                    crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE still full, will immediate free\n");
+                }
+            }
+
+            // Last resort: immediate free
+            self.inner.free_immediate(addr, granularity)
+                .map_err(|_| IommuError::NotMapped)
         }
     }
 
@@ -306,6 +388,10 @@ impl IovaAllocator {
                  self.drain_quarantine_for_cpu(cpu_id, false);
              }
         }
+
+        // Also attempt to reclaim from global fallback quarantine (if any)
+        let completed = self.completed_epoch.load(Ordering::Acquire);
+        self.drain_fallback_for_epoch(completed, false);
     }
 
     /// Drain quarantine ring for a specific CPU
@@ -319,15 +405,17 @@ impl IovaAllocator {
         let mut entries = [QuarantineEntry::default(); 32];
         
         loop {
-            let count = {
-                let mut ring = self.quarantines[cpu_id].lock();
+            let count = if let Some(ref qbox) = self.quarantines {
+                let mut ring = qbox[cpu_id].lock();
                 if force {
                     // In force mode, we just take the oldest items regardless of epoch
                     // WARNING: potentially unsafe for IOTLB, but prevents OOM/deadlock
-                     ring.drain_all(&mut entries)
+                    ring.drain_all(&mut entries)
                 } else {
-                     ring.drain_older_than(completed_epoch, entries.len(), &mut entries)
+                    ring.drain_older_than(completed_epoch, entries.len(), &mut entries)
                 }
+            } else {
+                0
             };
 
             if count == 0 {
@@ -347,11 +435,48 @@ impl IovaAllocator {
                 // Free to the underlying allocator
                 let _ = self.inner.free_immediate(entry.addr, granularity);
             }
-            
+           
             self.stats.quarantine_drains.fetch_add(count as u64, Ordering::Relaxed);
-            
+           
             if count < entries.len() {
                 break; // Ring drained enough
+            }
+        }
+    }
+
+    /// Drain the global fallback quarantine (used when per-CPU rings were not alloc'd)
+    fn drain_fallback_for_epoch(&self, completed_epoch: u32, force: bool) {
+        let mut entries = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
+
+        loop {
+            let count = {
+                let mut fb = FALLBACK_QUARANTINE.lock();
+                if force {
+                    fb.drain_all(&mut entries)
+                } else {
+                    fb.drain_older_than(completed_epoch, entries.len(), &mut entries)
+                }
+            };
+
+            if count == 0 {
+                break;
+            }
+
+            for i in 0..count {
+                let entry = entries[i];
+                let granularity = match entry.size_class {
+                    0 => PageGranularity::Page4K,
+                    1 => PageGranularity::Page2M,
+                    2 => PageGranularity::Page1G,
+                    _ => PageGranularity::Page4K,
+                };
+                let _ = self.inner.free_immediate(entry.addr, granularity);
+            }
+
+            self.stats.quarantine_drains.fetch_add(count as u64, Ordering::Relaxed);
+
+            if count < entries.len() {
+                break;
             }
         }
     }
@@ -367,5 +492,9 @@ impl IovaAllocator {
                  self.drain_quarantine_for_cpu(cpu_id, false);
             }
         }
+
+        // Also attempt to drain global fallback quarantine
+        let completed = self.completed_epoch.load(Ordering::Acquire);
+        self.drain_fallback_for_epoch(completed, false);
     }
 }

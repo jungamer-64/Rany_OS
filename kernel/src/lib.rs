@@ -11,9 +11,7 @@
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(alloc_error_handler))]
 #![feature(format_args_nl)]
-#![feature(const_mut_refs)]
 
-#[macro_use]
 extern crate alloc;
 
 
@@ -28,7 +26,6 @@ mod interrupt_macros;
 
 // ========== Test Runner & Entry Point ==========
 
-// Global Allocator for tests (requires full_mm_tests)
 // Global Allocator for tests (requires full_mm_tests)
 #[cfg(feature = "full_mm_tests")]
 #[global_allocator]
@@ -100,7 +97,7 @@ macro_rules! println {
             std::println!($($arg)*);
         } else {
              // In no_std, use kernel logger
-             crate::io::log::print(format_args_nl!($($arg)*));
+             $crate::io::log::print(format_args_nl!($($arg)*));
         }
     });
 }
@@ -115,7 +112,7 @@ macro_rules! eprintln {
             std::eprintln!($($arg)*);
         } else {
              // In no_std, use kernel logger w/ error level or just print
-             crate::io::log::print(format_args_nl!($($arg)*));
+             $crate::io::log::print(format_args_nl!($($arg)*));
         }
     });
 }

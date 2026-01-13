@@ -469,7 +469,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
                 {
                     match parser.find_table(b"DMAR") {
                         Ok(dmar_addr) => {
-                            use crate::io::iommu::intel::IntelVtDDriver;
+                            use crate::io::iommu::intel::driver::IntelVtDDriver;
                             use crate::driver_registry::{register_driver, driver_registry};
                             use alloc::boxed::Box;
 
@@ -494,7 +494,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
                         }
                         Err(_) => match parser.find_table(b"IVRS") {
                             Ok(ivrs_addr) => {
-                                use crate::io::iommu::amd::AmdViDriver;
+                                use crate::io::iommu::amd::driver::AmdViDriver;
                                 use crate::driver_registry::{register_driver, driver_registry};
                                 use alloc::boxed::Box;
                                 
@@ -1591,4 +1591,40 @@ fn print_logo() {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     panic_handler::handle_panic(info)
+}
+
+// ============================================================================
+// Global Allocator (Binary Only)
+// ============================================================================
+// Defined here to avoid conflict with the library crate `rany_os` which
+// may also define an allocator for tests.
+// Wrapper to delegate to memory::ALLOCATOR
+struct GlobalAllocatorWrapper;
+
+#[cfg(not(test))]
+unsafe impl core::alloc::GlobalAlloc for GlobalAllocatorWrapper {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        use core::alloc::GlobalAlloc; // Import trait to call alloc
+        crate::memory::ALLOCATOR.alloc(layout)
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        use core::alloc::GlobalAlloc; // Import trait to call dealloc
+        crate::memory::ALLOCATOR.dealloc(ptr, layout)
+    }
+}
+
+#[cfg(not(test))]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: GlobalAllocatorWrapper = GlobalAllocatorWrapper;
+
+#[cfg(not(test))]
+#[alloc_error_handler]
+fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
+    crate::io::log::early_print("\n!!! ALLOCATION FAILED !!!\n");
+    crate::io::log::early_print("Layout Size: ");
+    crate::io::log::early_print_dec(layout.size() as u64);
+    crate::io::log::early_print("\nLayout Align: ");
+    crate::io::log::early_print_dec(layout.align() as u64);
+    crate::io::log::early_print("\n");
+    panic!("allocation error: size={} align={}", layout.size(), layout.align())
 }

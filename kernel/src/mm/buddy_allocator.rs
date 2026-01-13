@@ -170,7 +170,10 @@ pub fn find_first_set_bit_simd(bitmap: &[u64]) -> Option<usize> {
 }
 
 /// AVX2によるビットマップスキャン（4 x u64並列）
-#[cfg(target_arch = "x86_64")]
+/// 
+/// This function is only available when AVX2 is enabled at compile time.
+/// Runtime AVX2 detection is done in find_first_set_bit_simd before calling.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[inline]
 fn find_first_set_bit_avx2(bitmap: &[u64]) -> Option<usize> {
     use core::arch::x86_64::*;
@@ -215,6 +218,16 @@ fn find_first_set_bit_avx2(bitmap: &[u64]) -> Option<usize> {
         }
     }
     
+    None
+}
+
+/// Fallback for targets without AVX2 at compile time - just use scalar
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+#[inline]
+fn find_first_set_bit_avx2(_bitmap: &[u64]) -> Option<usize> {
+    // This function should not be called on non-AVX2 targets
+    // The caller (find_first_set_bit_simd) checks has_avx2() at runtime
+    // which would never return true on a soft-float target
     None
 }
 
