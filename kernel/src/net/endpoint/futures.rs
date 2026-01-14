@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/endpoint/futures.rs
+// ============================================================================
 //! # Async Futures - 非同期ソケット操作
 //!
 //! RecvFuture, SendFuture, AcceptFuture, RecvFromFuture

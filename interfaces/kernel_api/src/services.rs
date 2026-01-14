@@ -211,6 +211,49 @@ pub trait KernelServices: Send + Sync {
     fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize>;
 
     // ========================================================================
+    // NVMe DMA Context Management (Option B-2: Full Abstraction)
+    // ========================================================================
+
+    /// Prepare DMA context for NVMe read operation
+    ///
+    /// Allocates a DMA buffer, creates IOMMU mappings, and builds PRP list.
+    /// Returns an opaque handle containing IOVA addresses for command building.
+    ///
+    /// The caller uses `handle.data_iova()` as PRP1 and `handle.prp2()` as PRP2.
+    ///
+    /// # Errors
+    /// - `KapiError::OutOfMemory` if DMA allocation fails
+    /// - `KapiError::IoError` if IOMMU mapping fails
+    fn nvme_prepare_dma_read(
+        &self,
+        device_id: u64,
+        len: usize,
+    ) -> KapiResult<crate::NvmeDmaHandle>;
+
+    /// Prepare DMA context for NVMe write operation
+    ///
+    /// Allocates a DMA buffer, copies data into it, creates IOMMU mappings,
+    /// and builds PRP list.
+    fn nvme_prepare_dma_write(
+        &self,
+        device_id: u64,
+        data: &[u8],
+    ) -> KapiResult<crate::NvmeDmaHandle>;
+
+    /// Complete DMA context after read I/O finished
+    ///
+    /// Returns the data read from the device. Releases all DMA resources.
+    fn nvme_complete_dma_read(
+        &self,
+        handle: crate::NvmeDmaHandle,
+    ) -> KapiResult<alloc::vec::Vec<u8>>;
+
+    /// Complete DMA context after write I/O finished
+    ///
+    /// Releases all DMA resources. Returns `Ok(())` on success.
+    fn nvme_complete_dma_write(&self, handle: crate::NvmeDmaHandle) -> KapiResult<()>;
+
+    // ========================================================================
     // IPC (Inter-Process Communication)
     // ========================================================================
 

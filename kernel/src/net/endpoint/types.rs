@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/endpoint/types.rs
+// ============================================================================
 //! # 基本型定義 - ソケットAPI用の型
 //!
 //! SocketFd, SocketType, SocketState, SocketError, SocketAddr, AcceptedConnection等

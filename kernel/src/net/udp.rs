@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/udp.rs
+// ============================================================================
 //! UDP (User Datagram Protocol) Implementation for ExoRust
 //!
 //! This module implements zero-copy UDP packet processing

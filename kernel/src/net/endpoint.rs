@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/endpoint.rs
+// ============================================================================
 //! # Endpoint Module - SPL/SAS Compliant Network Socket Implementation
 //!
 //! ## Design Philosophy

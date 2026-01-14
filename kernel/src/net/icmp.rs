@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/icmp.rs
+// ============================================================================
 //! ICMP (Internet Control Message Protocol) Implementation for ExoRust
 //!
 //! This module implements ICMP for ping/pong and error messages.

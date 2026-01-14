@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/arp.rs
+// ============================================================================
 //! ARP (Address Resolution Protocol) Implementation for ExoRust
 //!
 //! This module implements ARP for IPv4-to-MAC address resolution

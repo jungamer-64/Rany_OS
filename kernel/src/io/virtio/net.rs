@@ -737,6 +737,14 @@ impl Default for VirtioNetConfig {
     }
 }
 
+/// In-flight entry for a zero-copy TX packet. Holds cleanup handles for unmapping when completed.
+struct TxPacketInflight {
+    packet: crate::net::PacketRef,
+    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    dma_iova: Option<u64>,
+    dma_len: usize,
+}
+
 /// VirtIO ネットワークデバイス
 pub struct VirtioNetDevice {
     /// トランスポート層（MMIO/PCI共通インターフェース）
@@ -763,6 +771,8 @@ pub struct VirtioNetDevice {
     rx_buffers: Mutex<BTreeMap<u16, VirtioNetRxDmaBuffer>>,
     /// 受信用バッファマップ (desc_idx -> PacketRef) - zero-copy posted buffers from mempool
     rx_packetrefs: Mutex<BTreeMap<u16, crate::net::PacketRef>>,
+    /// 送信用 PacketRef インフライトマップ (desc_idx -> TxPacketInflight)
+    tx_packetrefs: Mutex<BTreeMap<u16, TxPacketInflight>>,
     /// 送信用インフライトバッファ (desc_idx -> CoherentDmaBuffer)
     tx_inflight: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
 }
@@ -799,6 +809,7 @@ impl VirtioNetDevice {
             rx_bytes: AtomicU32::new(0),
             rx_buffers: Mutex::new(BTreeMap::new()),
             rx_packetrefs: Mutex::new(BTreeMap::new()),
+            tx_packetrefs: Mutex::new(BTreeMap::new()),
             tx_inflight: Mutex::new(BTreeMap::new()),
         }
     }
@@ -1236,6 +1247,116 @@ impl VirtioNetDevice {
         }
     }
 
+    /// Enqueue a zero-copy PacketRef for transmission without waiting for completion.
+    /// Ownership of `packet` is moved into the device's inflight map; completion will
+    /// perform unmap/cleanup and return the buffer to the pool.
+    pub fn enqueue_send_zero_copy(&self, packet: crate::net::PacketRef) -> Result<(), VirtioNetError> {
+        // Prepare addresses and mapping similar to ZeroCopySendFuture::poll submission
+        if let Some(ref tx_queue) = self.tx_queue {
+            let data = packet.data();
+            let phys_addr = packet.phys_addr();
+            let data_len = core::mem::size_of::<VirtioNetHeader>() + data.len();
+            let phys_addr_val = phys_addr.as_u64();
+            let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+            let page_base = phys_addr_val & !page_mask;
+            let page_offset = (phys_addr_val - page_base) as usize;
+            let map_len = crate::mm::PAGE_SIZE_4K;
+            let can_map_page = page_offset + data_len <= map_len;
+
+            let mut dma_addr = phys_addr_val;
+            let mut mapped_iova: Option<u64> = None;
+            let mut mapped_len = 0usize;
+            let mut bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>> = None;
+
+            if is_iommu_enabled() {
+                if !can_map_page {
+                    let mut rref = match allocate_iommu_bounce_bytes(data_len).map_err(|err| match err {
+                        IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
+                        IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
+                    }) {
+                        Ok(rref) => rref,
+                        Err(err) => return Err(err),
+                    };
+                    if data_len > 0 {
+                        rref[..data_len].fill(0);
+                        let copy_len = core::cmp::min(data.len(), data_len);
+                        rref[..copy_len].copy_from_slice(&data[..copy_len]);
+                    }
+
+                    let handle = match self.iommu_device_id {
+                        Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice),
+                        None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
+                    }
+                    .map_err(|_| VirtioNetError::DeviceError)?;
+                    dma_addr = handle.iova();
+                    bounce_handle = Some(handle);
+                } else {
+                    let mut rref = match allocate_iommu_bounce_bytes(map_len).map_err(|err| match err {
+                        IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
+                        IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
+                    }) {
+                        Ok(rref) => rref,
+                        Err(err) => return Err(err),
+                    };
+
+                    if data_len > 0 {
+                        rref[page_offset..page_offset + data_len].fill(0);
+                        let copy_len = core::cmp::min(data.len(), data_len);
+                        rref[page_offset..page_offset + copy_len].copy_from_slice(&data[..copy_len]);
+                    }
+
+                    let handle = match self.iommu_device_id {
+                        Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice),
+                        None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
+                    }
+                    .map_err(|_| VirtioNetError::DeviceError)?;
+
+                    dma_addr = handle.iova() + page_offset as u64;
+                    bounce_handle = Some(handle);
+                    mapped_len = map_len;
+                }
+            } else {
+                if is_iommu_required() {
+                    return Err(VirtioNetError::DeviceError);
+                }
+            }
+
+            if let Err(err) = check_device_dma_mask(self.iommu_device_id, dma_addr, data_len) {
+                if let Some(handle) = bounce_handle {
+                    let _ = handle.unmap();
+                }
+                if let Some(iova) = mapped_iova {
+                    let _ = unmap_iommu_addr(self.iommu_device_id, iova, mapped_len);
+                }
+                return Err(err);
+            }
+
+            match tx_queue.add_tx_buffer_zero_copy(dma_addr, data.len()) {
+                Ok(desc_idx) => {
+                    let entry = TxPacketInflight {
+                        packet,
+                        bounce_handle,
+                        dma_iova: mapped_iova,
+                        dma_len: mapped_len,
+                    };
+                    self.tx_packetrefs.lock().insert(desc_idx, entry);
+                    tx_queue.notify();
+                    Ok(())
+                }
+                Err(e) => {
+                    if let Some(handle) = bounce_handle {
+                        let _ = handle.unmap();
+                    }
+                    if let Some(iova) = mapped_iova {
+                        let _ = unmap_iommu_addr(self.iommu_device_id, iova, mapped_len);
+                    }
+                    Err(e)
+                }
+            }
+        } else {
+            Err(VirtioNetError::NotInitialized)
+        }
+    }
     /// パケットを受信（非同期）
     pub fn recv_async<'a>(&'a self, buffer: &'a mut [u8]) -> RecvFuture<'a> {
         RecvFuture {
@@ -1398,10 +1519,28 @@ impl VirtioNetDevice {
                         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] TX-COMP freed buffer for desc={} len={}\n", desc_idx, len));
                         log::info!("[VIRTIO-NET][TX-COMP] freed buffer for desc={}", desc_idx);
                         // Buffer dropped here
+                    } else if let Some(entry) = self.tx_packetrefs.lock().remove(&desc_idx) {
+                        // Zero-copy PacketRef completed: unmap any bounce/IOMMU mappings
+                        if let Some(handle) = entry.bounce_handle {
+                            if let Err(err) = handle.unmap() {
+                                log::warn!("[VIRTIO-NET] failed to unmap bounce buffer: {:?}", err);
+                            }
+                        }
+                        if let Some(iova) = entry.dma_iova {
+                            // unmap_iommu_addr logs failures internally
+                            unmap_iommu_addr(self.iommu_device_id, iova, entry.dma_len);
+                        }
+                        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] TX-COMP freed PacketRef for desc={} len={}\n", desc_idx, len));
+                        log::info!("[VIRTIO-NET][TX-COMP] freed PacketRef for desc={}", desc_idx);
                     } else {
                         log::warn!("[VIRTIO-NET] TX completion for unknown desc {}", desc_idx);
                     }
                 }
+
+                // Notify network stack that TX resources became available
+                crate::net::endpoint::event::send_event_ignore(
+                    crate::net::endpoint::event::NetworkEvent::TxAvailable,
+                );
             }
         }
 

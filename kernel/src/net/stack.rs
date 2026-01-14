@@ -749,9 +749,60 @@ impl NetworkStack {
             None => return false, // ARP resolution pending
         };
 
+        // Try zero-copy transmission first (allocate PacketRef and build packet directly into it)
+        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+            if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
+                frame
+                    .set_destination(dst_mac)
+                    .set_source(config.mac)
+                    .set_ether_type(EtherType::Ipv4);
+
+                let eth_payload = frame.payload_mut();
+
+                // Build IP packet
+                if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                    ip_packet
+                        .init_header()
+                        .set_source(src_ip)
+                        .set_destination(dst_ip)
+                        .set_protocol(IpProtocol::Tcp)
+                        .set_ttl(64);
+
+                    let ip_payload = ip_packet.payload_mut();
+
+                    // Copy TCP segment into PacketRef
+                    if ip_payload.len() >= tcp_segment.len() {
+                        ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
+                        ip_packet.finalize(tcp_segment.len());
+
+                        let ip_len = ip_packet.total_len();
+                        frame.set_payload_len(ip_len);
+
+                        // Set PacketRef length and attempt to enqueue zero-copy
+                        let total_len = frame.as_bytes().len();
+                        // Drop the mutable borrow on frame before moving packet
+                        drop(frame);
+                        packet.set_len(total_len);
+
+                        match crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
+                            Ok(()) => {
+                                // Zero-copy enqueue succeeded
+                                // Update stats
+                                self.stats.record_tx(total_len);
+                                return true;
+                            }
+                            Err(_) => {
+                                // Enqueue failed (queue full or device error) - drop packet and fall back
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut buffer = [0u8; MAX_PACKET_SIZE];
 
-        // Build Ethernet frame
+        // Build Ethernet frame (copy-based fallback)
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
             frame
                 .set_destination(dst_mac)

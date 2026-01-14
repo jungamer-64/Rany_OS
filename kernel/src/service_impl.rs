@@ -30,7 +30,7 @@ use kernel_api::KapiResult;
 use kernel_api::services::KernelServices;
 use kernel_api::{
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, OpenMode, TaskHandle, TcpEndpoint,
-    Packet, RawSocketHandle,
+    Packet, RawSocketHandle, NvmeDmaHandle,
 };
 use spin::Mutex;
 
@@ -171,6 +171,213 @@ impl DmaRegistry {
 }
 
 static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
+
+// ============================================================================
+// NVMe DMA Context Registry (Option B-2: Full Abstraction)
+// ============================================================================
+
+use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use x86_64::PhysAddr;
+
+const NVME_PAGE_SIZE: usize = 4096;
+
+/// IOMMU mapping info for cleanup
+struct IommuMapping {
+    device: IommuDeviceId,
+    iova: u64,
+    size: u64,
+}
+
+impl IommuMapping {
+    fn unmap(self) {
+        let _ = crate::io::iommu::api::unmap_for_device(&self.device, self.iova, self.size);
+    }
+}
+
+/// PRP list page (DMA buffer for PRP entries)
+struct PrpListPage {
+    dev: TypedDmaSlice<DeviceOwned>,
+    guard: SliceDmaGuard,
+    map: Option<IommuMapping>,
+    iova: u64,
+}
+
+/// Chain of PRP list pages
+struct PrpListChain {
+    pages: alloc::vec::Vec<PrpListPage>,
+}
+
+impl PrpListChain {
+    fn first_iova(&self) -> u64 {
+        self.pages.first().map(|p| p.iova).unwrap_or(0)
+    }
+
+    fn complete(self) {
+        for page in self.pages {
+            let _ = page.guard.complete(page.dev);
+            if let Some(m) = page.map {
+                m.unmap();
+            }
+        }
+    }
+}
+
+/// Stored DMA context entry
+struct NvmeDmaContextEntry {
+    data_dev: Option<TypedDmaSlice<DeviceOwned>>,
+    data_guard: Option<SliceDmaGuard>,
+    prp_list: Option<PrpListChain>,
+    data_map: Option<IommuMapping>,
+    logical_len: usize,
+}
+
+impl NvmeDmaContextEntry {
+    fn complete(mut self) -> TypedDmaSlice<CpuOwned> {
+        if let Some(prp) = self.prp_list.take() {
+            prp.complete();
+        }
+        let data_dev = self.data_dev.take().expect("missing data_dev");
+        let data_guard = self.data_guard.take().expect("missing data_guard");
+        let data = data_guard.complete(data_dev);
+        if let Some(m) = self.data_map.take() {
+            m.unmap();
+        }
+        data
+    }
+}
+
+struct NvmeDmaContextRegistry {
+    contexts: Mutex<BTreeMap<u64, NvmeDmaContextEntry>>,
+    next_id: AtomicU64,
+}
+
+impl NvmeDmaContextRegistry {
+    const fn new() -> Self {
+        Self {
+            contexts: Mutex::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    fn register(&self, entry: NvmeDmaContextEntry) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.contexts.lock().insert(id, entry);
+        id
+    }
+
+    fn unregister(&self, id: u64) -> Option<NvmeDmaContextEntry> {
+        self.contexts.lock().remove(&id)
+    }
+}
+
+static NVME_DMA_CONTEXT_REGISTRY: NvmeDmaContextRegistry = NvmeDmaContextRegistry::new();
+
+// Helper: align up to page size
+fn align_up_page(value: usize) -> usize {
+    (value + NVME_PAGE_SIZE - 1) & !(NVME_PAGE_SIZE - 1)
+}
+
+// Helper: map physical address for IOMMU
+fn map_for_iommu(
+    device: Option<IommuDeviceId>,
+    phys_addr: u64,
+    size: usize,
+) -> Result<(u64, Option<IommuMapping>), KapiError> {
+    if !crate::io::iommu::api::is_iommu_enabled() {
+        if crate::io::iommu::api::is_iommu_required() {
+            return Err(KapiError::IoError);
+        }
+        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+            return Err(KapiError::IoError);
+        }
+        return Ok((phys_addr, None));
+    }
+
+    let dev = device.ok_or(KapiError::IoError)?;
+    let map_len = align_up_page(size);
+    let iova = unsafe {
+        crate::io::iommu::api::map_for_device(&dev, PhysAddr::new(phys_addr), map_len as u64)
+    }
+    .map_err(|_| KapiError::IoError)?;
+
+    Ok((iova, Some(IommuMapping { device: dev, iova, size: map_len as u64 })))
+}
+
+// Helper: build PRP list for multi-page transfers
+fn build_prp_list_internal(
+    device: Option<IommuDeviceId>,
+    base_addr: u64,
+    len: usize,
+) -> Result<(u64, Option<PrpListChain>), KapiError> {
+    if len == 0 {
+        return Err(KapiError::IoError);
+    }
+
+    let pages = (len + NVME_PAGE_SIZE - 1) / NVME_PAGE_SIZE;
+    if pages <= 1 {
+        return Ok((0, None));
+    }
+    if pages == 2 {
+        return Ok((base_addr + NVME_PAGE_SIZE as u64, None));
+    }
+
+    // Need PRP list for > 2 pages
+    let total_entries = pages - 1;
+    let mut remaining = total_entries;
+    let mut list_buffers = alloc::vec::Vec::new();
+
+    while remaining > 0 {
+        let list = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE)
+            .ok_or(KapiError::OutOfMemory)?;
+        list_buffers.push(list);
+        remaining = if remaining > 512 { remaining - 511 } else { 0 };
+    }
+
+    let mut list_iovas = alloc::vec::Vec::with_capacity(list_buffers.len());
+    let mut list_maps = alloc::vec::Vec::with_capacity(list_buffers.len());
+    for list in &list_buffers {
+        let list_phys = list.phys_addr().as_u64();
+        let (list_addr, list_map) = map_for_iommu(device, list_phys, NVME_PAGE_SIZE)?;
+        list_iovas.push(list_addr);
+        list_maps.push(list_map);
+    }
+
+    // Fill PRP entries
+    let mut filled = 0usize;
+    for idx in 0..list_buffers.len() {
+        let remaining_entries = total_entries - filled;
+        let needs_chain = remaining_entries > 512;
+        let data_capacity = if needs_chain { 511 } else { remaining_entries };
+
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(
+                list_buffers[idx].as_mut_slice().as_mut_ptr() as *mut u64,
+                NVME_PAGE_SIZE / 8,
+            )
+        };
+
+        for j in 0..data_capacity {
+            entries[j] = base_addr + ((filled + j + 1) * NVME_PAGE_SIZE) as u64;
+        }
+
+        if needs_chain {
+            entries[511] = list_iovas.get(idx + 1).copied().ok_or(KapiError::IoError)?;
+        }
+
+        filled += data_capacity;
+    }
+
+    let mut prp_pages = alloc::vec::Vec::with_capacity(list_buffers.len());
+    for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
+        let (dev, guard) = list.start_dma();
+        prp_pages.push(PrpListPage { dev, guard, map, iova });
+    }
+
+    let chain = PrpListChain { pages: prp_pages };
+    let prp2 = chain.first_iova();
+    Ok((prp2, Some(chain)))
+}
 
 // ============================================================================
 // NVMe Direct Handle Registry
@@ -730,6 +937,87 @@ impl KernelServices for ExoKernel {
             driver.sgl_max_entries()
         })
         .flatten()
+    }
+
+    fn nvme_prepare_dma_read(&self, device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle> {
+        if len == 0 {
+            return Err(KapiError::IoError);
+        }
+
+        let alloc_len = align_up_page(len);
+        let data = TypedDmaSlice::<CpuOwned>::new(alloc_len)
+            .ok_or(KapiError::OutOfMemory)?;
+        let data_phys = data.phys_addr().as_u64();
+
+        let device = crate::io::nvme::iommu_device();
+        let (data_addr, data_map) = map_for_iommu(device, data_phys, alloc_len)?;
+        let (prp2, prp_list) = build_prp_list_internal(device, data_addr, alloc_len)?;
+
+        let (data_dev, data_guard) = data.start_dma();
+
+        let entry = NvmeDmaContextEntry {
+            data_dev: Some(data_dev),
+            data_guard: Some(data_guard),
+            prp_list,
+            data_map,
+            logical_len: len,
+        };
+
+        let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
+        Ok(NvmeDmaHandle::new(id, data_addr, prp2, len))
+    }
+
+    fn nvme_prepare_dma_write(&self, device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle> {
+        if data.is_empty() {
+            return Err(KapiError::IoError);
+        }
+
+        let alloc_len = align_up_page(data.len());
+        let mut dma_buf = TypedDmaSlice::<CpuOwned>::new(alloc_len)
+            .ok_or(KapiError::OutOfMemory)?;
+
+        // Copy data into DMA buffer
+        dma_buf.as_mut_slice()[..data.len()].copy_from_slice(data);
+        if alloc_len > data.len() {
+            dma_buf.as_mut_slice()[data.len()..].fill(0);
+        }
+
+        let data_phys = dma_buf.phys_addr().as_u64();
+        let device = crate::io::nvme::iommu_device();
+        let (data_addr, data_map) = map_for_iommu(device, data_phys, alloc_len)?;
+        let (prp2, prp_list) = build_prp_list_internal(device, data_addr, alloc_len)?;
+
+        let (data_dev, data_guard) = dma_buf.start_dma();
+
+        let entry = NvmeDmaContextEntry {
+            data_dev: Some(data_dev),
+            data_guard: Some(data_guard),
+            prp_list,
+            data_map,
+            logical_len: data.len(),
+        };
+
+        let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
+        Ok(NvmeDmaHandle::new(id, data_addr, prp2, data.len()))
+    }
+
+    fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>> {
+        let entry = NVME_DMA_CONTEXT_REGISTRY.unregister(handle.id())
+            .ok_or(KapiError::InvalidHandle)?;
+        let logical_len = entry.logical_len;
+        let dma_slice = entry.complete();
+
+        // Copy data from DMA buffer
+        let mut result = alloc::vec![0u8; logical_len];
+        result.copy_from_slice(&dma_slice.as_slice()[..logical_len]);
+        Ok(result)
+    }
+
+    fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()> {
+        let entry = NVME_DMA_CONTEXT_REGISTRY.unregister(handle.id())
+            .ok_or(KapiError::InvalidHandle)?;
+        let _ = entry.complete();
+        Ok(())
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
