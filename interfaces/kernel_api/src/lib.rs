@@ -56,5 +56,5 @@ pub use security::{
 pub use services::{KernelServices, is_kernel_registered, kernel, register_kernel};
 pub use types::{
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, OpenMode, Packet, SystemInfo,
-    TaskHandle, TcpEndpoint,
+    TaskHandle, TcpEndpoint, RawSocketHandle,
 };

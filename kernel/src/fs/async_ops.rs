@@ -624,10 +624,8 @@ fn prepare_nvme_sgl(
 }
 
 fn nvme_sgl_max_entries() -> Option<usize> {
-    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-        driver.sgl_max_entries()
-    })
-    .flatten()
+    // Use kernel_api abstraction instead of direct driver access
+    kernel_api::kernel().nvme_sgl_max_entries(0)
 }
 
 fn sg_total_bytes(list: &TypedSgList<CpuOwned>) -> FsResult<usize> {
@@ -701,11 +699,9 @@ fn nsid_from_device(device_id: u64) -> u32 {
 }
 
 fn nvme_block_size(device_id: u64) -> u64 {
-    let nsid = nsid_from_device(device_id);
-    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-        driver.namespace_block_size(nsid) as u64
-    })
-    .unwrap_or(NVME_BLOCK_SIZE)
+    // Use kernel_api abstraction instead of direct driver access
+    kernel_api::kernel().nvme_block_size(device_id)
+        .unwrap_or(NVME_BLOCK_SIZE)
 }
 
 fn read_via_page_cache(
