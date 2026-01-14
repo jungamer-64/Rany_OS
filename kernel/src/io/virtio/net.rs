@@ -761,6 +761,8 @@ pub struct VirtioNetDevice {
     rx_bytes: AtomicU32,
     /// 受信用バッファマップ (desc_idx -> VirtioNetRxDmaBuffer)
     rx_buffers: Mutex<BTreeMap<u16, VirtioNetRxDmaBuffer>>,
+    /// 受信用バッファマップ (desc_idx -> PacketRef) - zero-copy posted buffers from mempool
+    rx_packetrefs: Mutex<BTreeMap<u16, crate::net::PacketRef>>,
     /// 送信用インフライトバッファ (desc_idx -> CoherentDmaBuffer)
     tx_inflight: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
 }
@@ -796,6 +798,7 @@ impl VirtioNetDevice {
             tx_bytes: AtomicU32::new(0),
             rx_bytes: AtomicU32::new(0),
             rx_buffers: Mutex::new(BTreeMap::new()),
+            rx_packetrefs: Mutex::new(BTreeMap::new()),
             tx_inflight: Mutex::new(BTreeMap::new()),
         }
     }
@@ -1048,6 +1051,30 @@ impl VirtioNetDevice {
             if let Some(ref rxq) = self.rx_queue {
                 let mut added = 0usize;
                 for _ in 0..8 {
+                    // Prefer allocating PacketRef and posting it for true zero-copy
+                    if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+                        let phys = packet.phys_addr().as_u64();
+                        let buf_len = packet.capacity();
+                        match rxq.add_rx_buffer_zero_copy(phys, buf_len) {
+                            Ok(desc_idx) => {
+                                log::info!(
+                                    "[VIRTIO-NET] posted RX PacketRef desc={} phys=0x{:x} len={}",
+                                    desc_idx,
+                                    phys,
+                                    buf_len
+                                );
+                                self.rx_packetrefs.lock().insert(desc_idx, packet);
+                                added += 1;
+                                continue;
+                            }
+                            Err(e) => {
+                                log::warn!("[VIRTIO-NET] failed to post PacketRef rx buffer: {:?}", e);
+                                // Fall through to allocate a VirtioNetRxDmaBuffer
+                            }
+                        }
+                    }
+
+                    // Fallback to legacy VirtioNetRxDmaBuffer allocation
                     if let Some(mut vbuf) = VirtioNetRxDmaBuffer::new() {
                         match vbuf.start_receive() {
                             Ok(phys) => {
@@ -1255,6 +1282,37 @@ impl VirtioNetDevice {
             if !completions.is_empty() {
                 for (desc_idx, len) in completions {
                     self.rx_packets.fetch_add(1, Ordering::Relaxed);
+
+                    // First, check for a PacketRef posted by the driver_bridge (zero-copy)
+                    if let Some(packet) = self.rx_packetrefs.lock().remove(&desc_idx) {
+                        // This was a PacketRef we posted earlier. Hand it to the bridge without copying.
+                        let header_size = core::mem::size_of::<VirtioNetHeader>();
+                        let payload_len = (len as usize).saturating_sub(header_size);
+                        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET][RX-COMP] desc={} len={} payload_len={} (packetref)\n", desc_idx, len, payload_len));
+
+                        // Pass PacketRef to bridge for zero-copy processing
+                        crate::net::driver_bridge::process_received_packet_zero_copy(packet, header_size, payload_len);
+
+                        // Re-post a new PacketRef buffer to the queue so we keep a steady supply
+                        if let Some(mut new_pkt) = crate::net::mempool::alloc_packet() {
+                            let phys = new_pkt.phys_addr().as_u64();
+                            let buf_len = new_pkt.capacity();
+                            match rx_queue.add_rx_buffer_zero_copy(phys, buf_len) {
+                                Ok(new_desc_idx) => {
+                                    log::info!("[VIRTIO-NET] re-queued RX PacketRef desc={} phys=0x{:x} len={}", new_desc_idx, phys, buf_len);
+                                    self.rx_packetrefs.lock().insert(new_desc_idx, new_pkt);
+                                }
+                                Err(e) => {
+                                    log::warn!("[VIRTIO-NET] failed to re-add rx PacketRef: {:?}", e);
+                                    // Drop new_pkt and try to fall back to vbuf
+                                }
+                            }
+                        } else {
+                            log::warn!("[VIRTIO-NET] OOM allocating replacement PacketRef");
+                        }
+
+                        continue; // Process next completion
+                    }
 
                     // Find the RX buffer we queued earlier and complete it
                     if let Some(mut vbuf) = self.rx_buffers.lock().remove(&desc_idx) {

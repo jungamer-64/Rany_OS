@@ -13,7 +13,7 @@ use super::mempool::{PacketPool, PacketRef};
 use super::optimization::PacketBatch;
 use super::tcp::{
     TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream, 
-    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr
+    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpHeader
 };
 
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
@@ -365,9 +365,8 @@ impl NetworkStack {
 
     /// Process TCP packet
     fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
-        // Note: PacketRef not used yet - TcpProcessor does internal parsing
-        // Zero-copy integration pending future refactor
-        let result = self.tcp.process(data, src_ip, dst_ip);
+        // Zero-copy path: pass PacketRef to the TCP processor so it can enqueue a zero-copy payload view.
+        let result = self.tcp.process_with_packet(data, src_ip, dst_ip, _packet);
 
         match result {
             TcpProcessResult::SendPacket {
@@ -424,7 +423,16 @@ impl NetworkStack {
                 let src_ip_out = Ipv4Address::new(local.ip.octets());
                 let dst_ip_out = Ipv4Address::new(remote.ip.octets());
                 
-                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                // Send segment via IP
+                let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                let now = self.current_time();
+                if sent {
+                    // Record that the segment was sent so that retransmission queues
+                    // and snd_nxt/outstanding bytes are updated
+                    self.tcp.record_sent_packet(local, remote, seq, flags, &payload, now);
+                } else {
+                    log::info!("[NET] send failed for {} -> {} (will retry)", local, remote);
+                }
             }
             TcpProcessResult::None => {}
         }
@@ -556,8 +564,8 @@ impl NetworkStack {
         }
     }
 
-    /// Send a UDP packet
-    pub fn send_udp(
+    /// Send a UDP packet (raw helper)
+    pub fn send_udp_raw(
         &mut self,
         src_port: u16,
         dst_ip: Ipv4Address,
@@ -700,11 +708,14 @@ impl NetworkStack {
             let src_ip_out = Ipv4Address::new(local_addr.ip.octets());
             let dst_ip_out = Ipv4Address::new(remote_addr.ip.octets());
             
-            self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
-        }
-        
-        if let Ok(mut tcb) = stream.tcb.lock() {
-             tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+            let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+            let now = self.current_time();
+            if sent {
+                // Record that a SYN was sent so TCB outstanding bytes and snd_nxt are updated
+                self.tcp.record_sent_packet(local_addr, remote_addr, initial_seq, TcpHeader::FLAG_SYN, &[], now);
+            } else {
+                log::info!("[NET] SYN send failed (ARP unresolved) - will retry");
+            }
         }
 
         Ok(stream)
@@ -770,6 +781,53 @@ impl NetworkStack {
         }
 
         false
+    }
+
+    /// Process retransmission timeouts and attempt to resend timed-out segments.
+    /// Call periodically with current time (ticks) to allow TCP retransmits.
+    pub fn process_timeouts(&mut self, current_time: u64) {
+        let results = self.tcp.check_retransmissions(current_time);
+
+        for res in results {
+            if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } = res {
+                let mut buffer = [0u8; MAX_PACKET_SIZE];
+                let header_len = 20usize;
+                let total_len = header_len + payload.len();
+
+                if total_len > buffer.len() {
+                    continue;
+                }
+
+                // Construct TCP header
+                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
+                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+                buffer[4..8].copy_from_slice(&seq.to_be_bytes());
+                buffer[8..12].copy_from_slice(&ack.to_be_bytes());
+                let offset_flags = ((5u16 << 12) | (flags & 0x1FF)) as u16;
+                buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+                buffer[14..16].copy_from_slice(&window.to_be_bytes());
+                buffer[16..18].fill(0);
+                buffer[18..20].fill(0);
+
+                if !payload.is_empty() {
+                    buffer[20..total_len].copy_from_slice(&payload);
+                }
+
+                super::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
+
+                let src_ip_out = Ipv4Address::new(local.ip.octets());
+                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+
+                let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                let now = self.current_time();
+                if sent {
+                    // Mark retransmit as sent in the processor (updates RTO and counters)
+                    self.tcp.mark_retransmit_sent(local, remote, seq, now);
+                } else {
+                    log::info!("[NET] retransmit send failed for {} -> {}", local, remote);
+                }
+            }
+        }
     }
 
     /// Bind a UDP socket
@@ -1099,7 +1157,7 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {
-                stack.send_udp(src_port, dst_ip, dst_port, data)
+                stack.send_udp_raw(src_port, dst_ip, dst_port, data)
             } else {
                 false
             }
@@ -1135,6 +1193,20 @@ pub fn bind_udp(port: u16) -> Option<UdpSocket> {
         Err(_) => {
             log::error!("[NET] Global Stack poisoned - bind_udp failed");
             None
+        }
+    }
+}
+
+/// Process retransmission timeouts on the global network stack
+pub fn process_timeouts(current_time: u64) {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.process_timeouts(current_time);
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - process_timeouts failed");
         }
     }
 }
