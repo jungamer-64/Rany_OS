@@ -1,16 +1,18 @@
+// ============================================================================
+// kernel/src/time/mod.rs
+// ============================================================================
 //! 時間管理サブシステム
 //!
 //! システム時計、高精度タイマー、RTC (Real-Time Clock) の管理。
 //! TSC, HPET, PIT, RTC など複数のタイマーソースをサポート。
 
 #![allow(dead_code)]
-#![allow(unused_imports)]
 #![allow(unused_variables)]
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use hal::port_io::{IoPort, PortU8, PortU16};
+use crate::sync::irq_mutex::IrqMutex;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use hal::port_io::{IoPort, PortU8};
 use spin::Mutex;
-use x86_64::instructions::port::{PortRead, PortWrite};
 
 /// ナノ秒単位の時間
 pub type Nanoseconds = u64;
@@ -27,10 +29,19 @@ pub const NANOS_PER_MILLI: u64 = 1_000_000;
 /// 1マイクロ秒のナノ秒数
 pub const NANOS_PER_MICRO: u64 = 1_000;
 
-/// Read the Time Stamp Counter (TSC)
+/// Read the Time Stamp Counter (TSC) with LFENCE serialization
 #[inline]
 fn rdtsc() -> u64 {
-    // Inline assembly for reading TSC is `unsafe`, encapsulate here
+    unsafe {
+        // LFENCE ensures all prior instructions complete before reading TSC
+        core::arch::x86_64::_mm_lfence();
+        core::arch::x86_64::_rdtsc()
+    }
+}
+
+/// Read TSC without serialization (for non-critical paths)
+#[inline]
+fn rdtsc_unserialized() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
@@ -62,27 +73,56 @@ pub struct TimerSourceInfo {
 }
 
 /// TSC情報
+#[derive(Clone)]
 pub struct TscInfo {
     /// TSC周波数 (Hz)
     pub frequency: u64,
     /// 不変TSCかどうか
     pub invariant: bool,
-    /// ナノ秒からTSCへの変換係数
-    pub nanos_to_tsc_mult: u64,
-    /// ナノ秒からTSCへの変換シフト
-    pub nanos_to_tsc_shift: u8,
+    /// TSC→ナノ秒変換係数 (固定小数点): nanos = (tsc * mult) >> shift
+    pub tsc_to_nanos_mult: u64,
+    /// TSC→ナノ秒変換シフト
+    pub tsc_to_nanos_shift: u8,
 }
 
 impl TscInfo {
-    /// TSCカウントをナノ秒に変換
+    /// 新しいTscInfoを作成し、固定小数点変換係数を計算
+    pub fn new(frequency: u64, invariant: bool) -> Self {
+        let (mult, shift) = compute_tsc_mult_shift(frequency);
+        Self {
+            frequency,
+            invariant,
+            tsc_to_nanos_mult: mult,
+            tsc_to_nanos_shift: shift,
+        }
+    }
+
+    /// TSCカウントをナノ秒に変換 (固定小数点最適化版)
+    /// 
+    /// `nanos = (tsc * mult) >> shift` で高速変換
+    #[inline]
     pub fn tsc_to_nanos(&self, tsc: u64) -> u64 {
+        if self.tsc_to_nanos_mult == 0 {
+            // フォールバック: 未初期化または設定エラー
+            if self.frequency == 0 {
+                return 0;
+            }
+            let nanos = (tsc as u128 * NANOS_PER_SEC as u128) / self.frequency as u128;
+            return nanos as u64;
+        }
+        // 固定小数点乗算: u128 で中間値を保持してオーバーフロー防止
+        let result = (tsc as u128 * self.tsc_to_nanos_mult as u128) >> self.tsc_to_nanos_shift;
+        result as u64
+    }
+
+    /// TSCカウントをナノ秒に変換 (u128除算版、精度保証)
+    #[inline]
+    pub fn tsc_to_nanos_precise(&self, tsc: u64) -> u64 {
         if self.frequency == 0 {
             return 0;
         }
-        // tsc * 1e9 / frequency をオーバーフローを避けて計算
-        let secs = tsc / self.frequency;
-        let remainder = tsc % self.frequency;
-        secs * NANOS_PER_SEC + (remainder * NANOS_PER_SEC) / self.frequency
+        let nanos = (tsc as u128 * NANOS_PER_SEC as u128) / self.frequency as u128;
+        nanos as u64
     }
 
     /// ナノ秒をTSCカウントに変換
@@ -90,9 +130,48 @@ impl TscInfo {
         if self.frequency == 0 {
             return 0;
         }
-        let secs = nanos / NANOS_PER_SEC;
-        let remainder = nanos % NANOS_PER_SEC;
-        secs * self.frequency + (remainder * self.frequency) / NANOS_PER_SEC
+        // u128を使用してオーバーフローを防止
+        let tsc = (nanos as u128 * self.frequency as u128) / NANOS_PER_SEC as u128;
+        tsc as u64
+    }
+}
+
+/// 固定小数点変換係数 (mult, shift) を計算
+///
+/// TSC → ナノ秒変換を `nanos = (tsc * mult) >> shift` で行うための係数。
+/// Linux カーネルの cyc2ns と同様のアプローチ。
+///
+/// 目標: `mult / 2^shift ≈ 1e9 / frequency`
+/// 精度向上: shift を大きい方から探索 (63→0)
+fn compute_tsc_mult_shift(frequency: u64) -> (u64, u8) {
+    if frequency == 0 {
+        return (0, 0);
+    }
+
+    // 最適なシフト量を大きい方から探す (精度向上)
+    // shift が大きいほど精度が上がるが、mult がオーバーフローするリスク
+    // u64 に収まる最大の shift を選択
+    //
+    // mult = (1e9 << shift) / frequency
+    // mult が u64::MAX を超えないように shift を決定
+    
+    let mut shift: u8 = 63;
+    loop {
+        // (NANOS_PER_SEC << shift) / frequency が u64 に収まるかチェック
+        let numerator = (NANOS_PER_SEC as u128) << shift;
+        let mult = numerator / frequency as u128;
+        
+        if mult <= u64::MAX as u128 {
+            return (mult as u64, shift);
+        }
+        
+        if shift == 0 {
+            // シフト 0 でもオーバーフローする場合 (非常に低い周波数)
+            // フォールバック: 精度は落ちるが動作はする
+            return ((NANOS_PER_SEC / frequency), 0);
+        }
+        
+        shift -= 1;
     }
 }
 
@@ -101,15 +180,20 @@ mod pit {
     pub const CHANNEL0_DATA: u16 = 0x40;
     pub const CHANNEL2_DATA: u16 = 0x42;
     pub const COMMAND: u16 = 0x43;
+    /// Speaker/Timer control port
+    pub const SPEAKER_PORT: u16 = 0x61;
 
     /// PITの基本周波数 (Hz)
     pub const BASE_FREQUENCY: u64 = 1193182;
 
     // モードコマンド
-    pub const MODE_SQUARE_WAVE: u8 = 0x36; // Channel 0, Mode 3
-    pub const MODE_ONE_SHOT: u8 = 0x30; // Channel 0, Mode 0
+    pub const MODE_SQUARE_WAVE: u8 = 0x36; // Channel 0, Mode 3, lobyte/hibyte
+    pub const MODE_ONE_SHOT: u8 = 0x30; // Channel 0, Mode 0, lobyte/hibyte
     pub const MODE_RATE_GEN: u8 = 0x34; // Channel 0, Mode 2
     pub const READBACK: u8 = 0xE2; // Read-back command
+
+    // Channel 2 mode commands (for calibration - does NOT touch Channel 0)
+    pub const CH2_MODE_ONE_SHOT: u8 = 0xB0; // Channel 2, Mode 0, lobyte/hibyte
 }
 
 /// RTC (Real-Time Clock) 定数
@@ -154,6 +238,15 @@ impl DateTime {
         second: 0,
     };
 
+    /// Unixタイムスタンプに変換 (安全版: 1970年以前は None)
+    pub fn to_unix_timestamp_safe(&self) -> Option<u64> {
+        if self.year < 1970 {
+            return None;
+        }
+        let ts = self.to_unix_timestamp();
+        if ts < 0 { None } else { Some(ts as u64) }
+    }
+
     /// Unixタイムスタンプに変換
     pub fn to_unix_timestamp(&self) -> i64 {
         // 簡易計算 (うるう年を考慮)
@@ -190,37 +283,38 @@ impl DateTime {
     }
 }
 
+/// CMOS ポートアクセス用のグローバルロック
+/// CMOS は 0x70→0x71 の2段アクセスなので、途中で割り込まれると壊れる
+static CMOS_LOCK: IrqMutex<()> = IrqMutex::new(());
+
 /// RTCドライバ
-pub struct Rtc {
-    /// NMI無効化状態を保持
-    nmi_disable: bool,
-}
+pub struct Rtc;
+    
+    impl Rtc {
+        /// 新しいRTCドライバを作成
+        pub const fn new() -> Self {
+            Self
+        }
 
-impl Rtc {
-    /// 新しいRTCドライバを作成
-    pub const fn new() -> Self {
-        Self { nmi_disable: false }
-    }
-
-    /// CMOSレジスタを読み込み
+    /// CMOSレジスタを読み込み (IRQ-safe)
     fn read_cmos(&self, reg: u8) -> u8 {
-        let nmi_bit = if self.nmi_disable { 0x80 } else { 0x00 };
+        let _guard = CMOS_LOCK.lock();
 
         let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
         let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
 
-        addr_port.write(reg | nmi_bit);
+        addr_port.write(reg);
         data_port.read()
     }
 
-    /// CMOSレジスタに書き込み
+    /// CMOSレジスタに書き込み (IRQ-safe)
     fn write_cmos(&self, reg: u8, value: u8) {
-        let nmi_bit = if self.nmi_disable { 0x80 } else { 0x00 };
+        let _guard = CMOS_LOCK.lock();
 
         let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
         let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
 
-        addr_port.write(reg | nmi_bit);
+        addr_port.write(reg);
         data_port.write(value);
     }
 
@@ -234,12 +328,56 @@ impl Rtc {
         (value & 0x0F) + ((value >> 4) * 10)
     }
 
+    /// BCD または Binary の値をデコード
+    fn decode_bcd(value: u8, is_binary: bool) -> u8 {
+        if is_binary { value } else { Self::bcd_to_binary(value) }
+    }
+
+    /// 時刻をデコード (12h/24h, BCD/Binary 両対応)
+    ///
+    /// 12時間表記の変換ルール:
+    /// - 12 AM (真夜中) → 0
+    /// - 12 PM (正午)   → 12  
+    /// - 1-11 AM        → 1-11
+    /// - 1-11 PM        → 13-23
+    fn decode_hour(raw: u8, is_binary: bool, is_24h: bool) -> u8 {
+        let pm = (raw & 0x80) != 0;
+        let h = raw & 0x7F;
+
+        // BCD/Binary 変換
+        let hour_val = if is_binary { h } else { Self::bcd_to_binary(h) };
+
+        if is_24h {
+            // 24時間表記: そのまま返す
+            hour_val
+        } else {
+            // 12時間表記: AM/PM 変換
+            match (hour_val, pm) {
+                (12, false) => 0,      // 12 AM = 真夜中
+                (12, true) => 12,      // 12 PM = 正午
+                (h, false) => h,       // AM: 1-11 はそのまま
+                (h, true) => h + 12,   // PM: 1-11 → 13-23
+            }
+        }
+    }
+
     /// 現在の日時を読み取り
     pub fn read_datetime(&self) -> DateTime {
-        // 更新中は待機
-        while self.update_in_progress() {}
+        const MAX_RETRIES: u32 = 3; // 2回一致しなければ3回目で諦める
+        const MAX_UPDATE_WAIT: u32 = 10000;
+        
+        // 更新中は待機 (タイムアウト付き)
+        let mut wait_count = 0;
+        while self.update_in_progress() {
+            core::hint::spin_loop();
+            wait_count += 1;
+            if wait_count > MAX_UPDATE_WAIT {
+                break; 
+            }
+        }
 
-        // 2回読んで一致するまで繰り返す (更新中の読み取りを防ぐ)
+        // 2回読んで一致するまで繰り返す (最大リトライ付き)
+        let mut retries = 0;
         loop {
             let first = self.read_datetime_internal();
             let second = self.read_datetime_internal();
@@ -247,49 +385,62 @@ impl Rtc {
             if first == second {
                 return first;
             }
+            
+            retries += 1;
+            if retries >= MAX_RETRIES {
+                // 最後に読んだ値を返す
+                return second;
+            }
+            
+            core::hint::spin_loop();
         }
     }
 
     fn read_datetime_internal(&self) -> DateTime {
-        let status_b = self.read_cmos(rtc::STATUS_B);
+        // バッチ読み取り (1回のロックで全レジスタを読む)
+        let _guard = CMOS_LOCK.lock();
+        
+        let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
+        let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
+
+        // ヘルパー: ロック済み前提で読む
+        let mut read_cmos_raw = |reg| {
+            addr_port.write(reg);
+            data_port.read()
+        };
+
+        let status_b = read_cmos_raw(rtc::STATUS_B);
         let is_binary = status_b & 0x04 != 0;
         let is_24h = status_b & 0x02 != 0;
 
-        let mut second = self.read_cmos(rtc::SECONDS);
-        let mut minute = self.read_cmos(rtc::MINUTES);
-        let mut hour = self.read_cmos(rtc::HOURS);
-        let mut day = self.read_cmos(rtc::DAY_OF_MONTH);
-        let mut month = self.read_cmos(rtc::MONTH);
-        let mut year = self.read_cmos(rtc::YEAR);
-        let century = self.read_cmos(rtc::CENTURY);
+        let second_raw = read_cmos_raw(rtc::SECONDS);
+        let minute_raw = read_cmos_raw(rtc::MINUTES);
+        let hour_raw = read_cmos_raw(rtc::HOURS);
+        let day_raw = read_cmos_raw(rtc::DAY_OF_MONTH);
+        let month_raw = read_cmos_raw(rtc::MONTH);
+        let year_raw = read_cmos_raw(rtc::YEAR);
+        
+        // Century は ACPI FADT が有効な場合のみ信頼できるが、ここでは簡易的チェック
+        let century_raw = read_cmos_raw(rtc::CENTURY);
 
-        // BCDから変換
-        if !is_binary {
-            second = Self::bcd_to_binary(second);
-            minute = Self::bcd_to_binary(minute);
-            day = Self::bcd_to_binary(day);
-            month = Self::bcd_to_binary(month);
-            year = Self::bcd_to_binary(year);
+        let second = Self::decode_bcd(second_raw, is_binary);
+        let minute = Self::decode_bcd(minute_raw, is_binary);
+        let hour = Self::decode_hour(hour_raw, is_binary, is_24h);
+        let day = Self::decode_bcd(day_raw, is_binary);
+        let month = Self::decode_bcd(month_raw, is_binary);
+        let mut year = Self::decode_bcd(year_raw, is_binary) as u16;
+        let century = Self::decode_bcd(century_raw, is_binary);
 
-            // 時間は特殊処理 (12時間形式の場合)
-            if !is_24h && (hour & 0x80) != 0 {
-                hour = ((Self::bcd_to_binary(hour & 0x7F) + 12) % 24) as u8;
-            } else {
-                hour = Self::bcd_to_binary(hour);
-            }
-        }
-
-        // 年の補正
-        let full_year = if century != 0 && century != 0xFF {
-            Self::bcd_to_binary(century) as u16 * 100 + year as u16
-        } else if year < 70 {
-            2000 + year as u16
+        // 年の補正: Century が妥当なら採用、そうでなければ推定
+        if century != 0 && century != 0xFF {
+            year += (century as u16) * 100;
         } else {
-            1900 + year as u16
-        };
-
+            // 推定: 70以上なら1900年代、それ以外は2000年代
+            year += if year >= 70 { 1900 } else { 2000 };
+        }
+        
         DateTime {
-            year: full_year,
+            year,
             month,
             day,
             hour,
@@ -301,18 +452,24 @@ impl Rtc {
 
 /// システム時計
 pub struct SystemClock {
-    /// 起動時刻 (Unixタイムスタンプ)
+    /// 起動時の時刻 (Unixタイムスタンプ, 秒)
     boot_time: AtomicU64,
-    /// 起動からの経過ナノ秒
+    /// 稼働時間 (ナノ秒, PITベースのmonotonic counter)
     uptime_nanos: AtomicU64,
-    /// 使用中のタイマーソース
-    timer_source: Mutex<TimerSource>,
-    /// TSC情報
-    tsc_info: Mutex<Option<TscInfo>>,
-    /// 最後に読んだTSC値
-    last_tsc: AtomicU64,
-    /// 初期化済みフラグ
-    initialized: AtomicBool,
+    
+    // === Lock-free fast path fields ===
+    /// TSC Epoch: TSC切り替え時点の uptime_nanos (monotonic基準点)
+    tsc_epoch_nanos: AtomicU64,
+    /// TSC Epoch: TSC切り替え時点の TSC (monotonic基準点)
+    tsc_epoch_tsc: AtomicU64,
+    /// TSC 周波数 (Hz) - lock-free アクセス用
+    tsc_freq_hz: AtomicU64,
+    /// TSC 利用可能フラグ (true なら TSC ベース、false なら PIT ベース)
+    tsc_available: AtomicBool,
+    /// 固定小数点乗算係数 (fast path 用)
+    tsc_mult: AtomicU64,
+    /// 固定小数点シフト量 (u8)
+    tsc_shift: AtomicU8,
 }
 
 impl SystemClock {
@@ -321,21 +478,24 @@ impl SystemClock {
         Self {
             boot_time: AtomicU64::new(0),
             uptime_nanos: AtomicU64::new(0),
-            timer_source: Mutex::new(TimerSource::PIT),
-            tsc_info: Mutex::new(None),
-            last_tsc: AtomicU64::new(0),
-            initialized: AtomicBool::new(false),
+            // Lock-free fields
+            tsc_epoch_nanos: AtomicU64::new(0),
+            tsc_epoch_tsc: AtomicU64::new(0),
+            tsc_freq_hz: AtomicU64::new(0),
+            tsc_available: AtomicBool::new(false),
+            tsc_mult: AtomicU64::new(0),
+            tsc_shift: AtomicU8::new(0),
         }
     }
 
     /// 起動時刻を設定
     pub fn set_boot_time(&self, unix_timestamp: u64) {
-        self.boot_time.store(unix_timestamp, Ordering::SeqCst);
+        self.boot_time.store(unix_timestamp, Ordering::Release);
     }
 
     /// 起動時刻を取得 (Unixタイムスタンプ)
     pub fn boot_time(&self) -> u64 {
-        self.boot_time.load(Ordering::SeqCst)
+        self.boot_time.load(Ordering::Acquire)
     }
 
     /// 稼働時間を取得 (ナノ秒)
@@ -363,37 +523,82 @@ impl SystemClock {
         self.uptime_nanos.fetch_add(delta_nanos, Ordering::Relaxed);
     }
 
-    /// TSCを読み取り
+    /// TSCを読み取り (serialized)
     pub fn read_tsc(&self) -> u64 {
-        let value = rdtsc();
-        self.last_tsc.store(value, Ordering::Relaxed);
-        value
+        rdtsc()
     }
 
-    /// TSC情報を設定
+    /// TSC情報を設定し、fast path を有効化
     pub fn set_tsc_info(&self, info: TscInfo) {
-        *self.tsc_info.lock() = Some(info);
-        *self.timer_source.lock() = TimerSource::TSC;
+        // 重要: 切り替え時点の (uptime, TSC) をペアで Atomic に記録
+        // これにより PIT -> TSC の切り替えで時刻が連続する
+        let (epoch_ns, epoch_tsc) = x86_64::instructions::interrupts::without_interrupts(|| {
+            (self.uptime_nanos.load(Ordering::Relaxed), rdtsc())
+        });
+
+        self.tsc_epoch_nanos.store(epoch_ns, Ordering::Release);
+        self.tsc_epoch_tsc.store(epoch_tsc, Ordering::Release);
+        
+        // 周波数を Atomic に格納 (lock-free fast path 用)
+        self.tsc_freq_hz.store(info.frequency, Ordering::Release);
+        
+        // 固定小数点変換係数を Atomic に格納
+        self.tsc_mult.store(info.tsc_to_nanos_mult, Ordering::Release);
+        self.tsc_shift.store(info.tsc_to_nanos_shift, Ordering::Release);
+        
+        // invariant TSC の場合のみ fast path を有効化
+        if info.invariant {
+            self.tsc_available.store(true, Ordering::Release);
+        } else {
+            // Non-invariant: PIT フォールバックのまま
+        }
     }
 
     /// TSC周波数を取得（設定されていれば Some(freq) を返す）
     pub fn tsc_frequency(&self) -> Option<u64> {
-        (*self.tsc_info.lock()).as_ref().map(|t| t.frequency)
+        if self.tsc_available.load(Ordering::Acquire) {
+            Some(self.tsc_freq_hz.load(Ordering::Relaxed))
+        } else {
+            None
+        }
     }
 
-    /// 高精度な時刻を取得 (ナノ秒)
+    /// 高精度な時刻を取得 (ナノ秒) - Lock-free fast path
+    ///
+    /// 起動からの経過時間を返す (monotonic clock)。
+    /// TSC が利用可能な場合は高精度、そうでなければ PIT tick ベース。
+    /// Note: MP環境やInvariant TSCがない環境ではコア間ズレの可能性があります。
     pub fn precise_time_nanos(&self) -> u64 {
-        if let Some(ref tsc_info) = *self.tsc_info.lock() {
-            let tsc = self.read_tsc();
-            return tsc_info.tsc_to_nanos(tsc);
+        // Lock-free: Atomic フラグで TSC 利用可能性をチェック
+        if self.tsc_available.load(Ordering::Acquire) {
+            let base_ns = self.tsc_epoch_nanos.load(Ordering::Relaxed);
+            let base_tsc = self.tsc_epoch_tsc.load(Ordering::Relaxed);
+            let mult = self.tsc_mult.load(Ordering::Relaxed);
+            let shift = self.tsc_shift.load(Ordering::Relaxed);
+            
+            // monotonic な現在時刻 = epoch_ns + (delta_tsc * mult >> shift)
+            // serialized不要 (monotonicity is guaranteed by epoch + delta logic, and we prize speed here)
+            // Note: rdtsc() enforces ordering, rdtsc_unserialized() does not.
+            // We use unserialized here for performance as suggested by review.
+            let now_tsc = rdtsc_unserialized();
+            let delta = now_tsc.wrapping_sub(base_tsc);
+            
+            // u128 で計算してオーバーフロー防止
+            let ns_delta = ((delta as u128 * mult as u128) >> shift) as u64;
+            return base_ns + ns_delta;
         }
 
+        // フォールバック: PIT tick ベースの uptime
         self.uptime_nanos()
     }
 
     /// 使用中のタイマーソースを取得
     pub fn timer_source(&self) -> TimerSource {
-        *self.timer_source.lock()
+        if self.tsc_available.load(Ordering::Acquire) {
+            TimerSource::TSC
+        } else {
+            TimerSource::PIT
+        }
     }
 }
 
@@ -411,8 +616,14 @@ impl Pit {
         }
     }
 
-    /// PITを指定周波数で初期化
+    /// PITを指定周波数で初期化 (Channel 0 のみ)
+    /// 
+    /// Channel 0 は OS の周期 tick 専用。calibration や delay では使用しない。
     pub fn init(&self, frequency: u64) {
+        if frequency == 0 {
+            *self.frequency.lock() = 0;
+            return;
+        }
         let divisor = pit::BASE_FREQUENCY / frequency;
         let divisor = divisor.max(1).min(65535) as u16;
 
@@ -430,29 +641,60 @@ impl Pit {
         *self.frequency.lock() = actual_freq;
     }
 
-    /// ワンショットディレイ (ビジーウェイト)
+    /// ビジーウェイト遅延 - TSC ベース (Channel 0 を壊さない)
+    ///
+    /// TSC が利用可能な場合は TSC で delay、そうでなければ Channel 2 を使用。
     pub fn delay_us(&self, microseconds: u64) {
+        // TSC が利用可能なら TSC で delay (最も高精度で Channel 0 に影響しない)
+        if let Some(freq) = system_clock().tsc_frequency() {
+            // u128 で計算してオーバーフロー防止
+            let ticks_needed = (freq as u128 * microseconds as u128) / 1_000_000;
+            let ticks_needed = ticks_needed as u64;
+            
+            let start = rdtsc_unserialized();
+            while rdtsc_unserialized().wrapping_sub(start) < ticks_needed {
+                core::hint::spin_loop();
+            }
+            return;
+        }
+
+        // フォールバック: Channel 2 を使用 (Channel 0 に影響しない)
+        self.delay_us_channel2(microseconds);
+    }
+
+    /// Channel 2 を使った遅延 (早期ブート用フォールバック)
+    fn delay_us_channel2(&self, microseconds: u64) {
         let ticks = (pit::BASE_FREQUENCY * microseconds) / 1_000_000;
         let ticks = ticks.max(1).min(65535) as u16;
 
         let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
-        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL0_DATA);
+        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL2_DATA);
+        let mut speaker_port: PortU8 = IoPort::new(pit::SPEAKER_PORT);
 
-        // Channel 0, Mode 0 (One-shot), 16-bit
-        cmd_port.write(pit::MODE_ONE_SHOT);
+        // Speaker port: disable speaker (bit 1), enable timer gate (bit 0)
+        let old_speaker = speaker_port.read();
+        
+        // OUT2 を確実に Low にする: Gate=0 (bit0=0) にして待機
+        speaker_port.write(old_speaker & 0xFC);
+        core::hint::spin_loop();
 
-        // カウント値を設定
+        // Channel 2, Mode 0 (One-shot), 16-bit
+        cmd_port.write(pit::CH2_MODE_ONE_SHOT);
+        
+        // Gate=1 (enable) にするが、カウンタ書くまでカウントは始まらない
+        speaker_port.write((old_speaker & 0xFC) | 0x01);
+
+        // カウント値を設定 (これでタイマー開始)
         data_port.write((ticks & 0xFF) as u8);
         data_port.write((ticks >> 8) as u8);
 
-        // カウント完了を待機
-        loop {
-            cmd_port.write(pit::READBACK);
-            let status = data_port.read();
-            if status & 0x80 != 0 {
-                break;
-            }
+        // OUT2 (bit 5) が high になるまで待機
+        while (speaker_port.read() & 0x20) == 0 {
+            core::hint::spin_loop();
         }
+
+        // Speaker port を復元
+        speaker_port.write(old_speaker);
     }
 
     /// 現在の周波数を取得
@@ -461,47 +703,109 @@ impl Pit {
     }
 }
 
-/// TSC周波数をキャリブレーション
+/// TSC周波数をキャリブレーション (Channel 2 使用 - Channel 0 を壊さない)
+///
+/// PIT Channel 2 (speaker timer) を使用して TSC 周波数を測定。
+/// Channel 0 は OS の周期 tick 用に予約されているため使用しない。
+
 pub fn calibrate_tsc() -> Option<TscInfo> {
-    // CPUIDでTSC周波数を取得できるか確認
-    // 簡易実装: PITを使ってTSC周波数を測定
-
-    // 10ms間のTSCカウントを測定
-    let pit_ticks = (pit::BASE_FREQUENCY / 100) as u16; // 10ms
-
-    let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
-    let mut data_port: PortU8 = IoPort::new(pit::CHANNEL0_DATA);
-
-    // Channel 0, Mode 0 (One-shot), 16-bit
-    cmd_port.write(pit::MODE_ONE_SHOT);
-
-    let start_tsc = rdtsc();
-
-    // カウント値を設定
-    data_port.write((pit_ticks & 0xFF) as u8);
-    data_port.write((pit_ticks >> 8) as u8);
-
-    // カウント完了を待機
-    loop {
-        cmd_port.write(0xE2); // Read-back
-        let status = data_port.read();
-        if status & 0x80 != 0 {
-            break;
+    // 1. Invariant TSC の確認 (CPUID.80000007H:EDX[bit 8])
+    // まず最大拡張機能リーフ (0x80000000) を確認して安全にアクセスする
+    let invariant = {
+        let max_ext_leaf = core::arch::x86_64::__cpuid(0x80000000).eax;
+        if max_ext_leaf >= 0x80000007 {
+            let result = core::arch::x86_64::__cpuid(0x80000007);
+            (result.edx >> 8) & 1 == 1
+        } else {
+            false
         }
+    };
+
+    // 2. TSC 周波数測定
+    // 50ms の測定を 3回行い、中央値採用 (ノイズ除去)
+    // 割り込み禁止区間で行うことで測定ブレを防ぐ
+    let measurements = x86_64::instructions::interrupts::without_interrupts(|| {
+        const TRIALS: usize = 3;
+        let mut measurements = [0u64; TRIALS];
+        
+        // 50ms 分の tick 数
+        let pit_ticks = (pit::BASE_FREQUENCY / 20) as u16; 
+
+        // I/O ポート準備
+        let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
+        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL2_DATA);
+        let mut speaker_port: PortU8 = IoPort::new(pit::SPEAKER_PORT);
+
+        // スピーカーポートの初期状態を保存
+        let old_speaker = speaker_port.read();
+
+        for i in 0..TRIALS {
+            // OUT2 を確実に Low にする: Gate=0 (bit0=0) にして待機
+                speaker_port.write(old_speaker & 0xFC);
+                
+                // タイムアウト付き待機 (OUT2 Low)
+                let mut timeout = 100_000;
+                while (speaker_port.read() & 0x20) != 0 {
+                    core::hint::spin_loop();
+                    timeout -= 1;
+                    if timeout == 0 { return None; } // 失敗時は None
+                }
+
+                // Channel 2, Mode 0 (One-shot)
+                cmd_port.write(pit::CH2_MODE_ONE_SHOT);
+                
+                // Gate=1 (enable)
+                speaker_port.write((old_speaker & 0xFC) | 0x01);
+
+                // LFENCE
+                let start_tsc = unsafe {
+                    core::arch::x86_64::_mm_lfence();
+                    core::arch::x86_64::_rdtsc()
+                };
+                
+                // カウント値設定 (High byte write で開始)
+                data_port.write((pit_ticks & 0xFF) as u8);
+                data_port.write((pit_ticks >> 8) as u8);
+                
+                // OUT2 が High になるまで待機 (50ms)
+                // タイムアウト: 余裕を持って
+                let mut timeout = 100_000_000; 
+                loop {
+                    if (speaker_port.read() & 0x20) != 0 {
+                        break;
+                    }
+                    core::hint::spin_loop();
+                    timeout -= 1;
+                    if timeout == 0 { return None; }
+                }
+                
+                let end_tsc = unsafe {
+                    core::arch::x86_64::_mm_lfence();
+                    core::arch::x86_64::_rdtsc()
+                };
+
+                let diff = end_tsc.saturating_sub(start_tsc);
+                measurements[i] = diff * 20; // 50ms * 20 = 1s
+            }
+        
+        // スピーカーポート復元
+        speaker_port.write(old_speaker);
+        Some(measurements)
+    });
+
+    // 計測失敗なら None
+    let mut measurements = measurements?;
+
+    // 中央値 (Median) を取得
+    measurements.sort_unstable();
+    let frequency = measurements[measurements.len() / 2];
+
+    // 異常値チェック (100MHz - 30GHz)
+    if frequency < 100_000_000 || frequency > 30_000_000_000 {
+        return None;
     }
 
-    let end_tsc = rdtsc();
-
-    let tsc_diff = end_tsc.saturating_sub(start_tsc);
-    let frequency = tsc_diff * 100; // 10ms → 1秒に換算
-
-    // 不変TSCかどうかはCPUIDで確認 (簡易実装では常にtrue)
-    Some(TscInfo {
-        frequency,
-        invariant: true,
-        nanos_to_tsc_mult: 0,
-        nanos_to_tsc_shift: 0,
-    })
+    Some(TscInfo::new(frequency, invariant))
 }
 
 /// グローバルシステム時計
@@ -530,15 +834,15 @@ pub fn pit() -> &'static Pit {
 
 /// 時間管理を初期化
 pub fn init(tick_frequency: u64) {
-    // PITを初期化
+    // PITを初期化 (Channel 0 を周期 tick 用に設定)
     PIT.init(tick_frequency);
 
     // RTCから現在時刻を読み取り
     let datetime = RTC.read_datetime();
-    let boot_time = datetime.to_unix_timestamp() as u64;
+    let boot_time = datetime.to_unix_timestamp_safe().unwrap_or(0);
     SYSTEM_CLOCK.set_boot_time(boot_time);
 
-    // TSCをキャリブレーション
+    // TSCをキャリブレーション (Channel 2 使用 - Channel 0 に影響しない)
     if let Some(tsc_info) = calibrate_tsc() {
         SYSTEM_CLOCK.set_tsc_info(tsc_info);
     }
@@ -574,4 +878,96 @@ pub fn current_time_ns() -> u64 {
 #[inline]
 pub fn get_uptime_ms() -> u64 {
     SYSTEM_CLOCK.uptime_millis()
+}
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn test_decode_hour_24h_mode() {
+        // 24時間表記: そのまま返す
+
+        // Binary mode: is_binary=true
+        assert_eq!(Rtc::decode_hour(0, true, true), 0);
+        assert_eq!(Rtc::decode_hour(18, true, true), 18); // Input 18 (0x12) -> 18
+        assert_eq!(Rtc::decode_hour(12, true, true), 12);
+        assert_eq!(Rtc::decode_hour(23, true, true), 23);
+        
+        // BCD mode: is_binary=false
+        assert_eq!(Rtc::decode_hour(0x00, false, true), 0);
+        assert_eq!(Rtc::decode_hour(0x12, false, true), 12); // BCD 0x12 -> 12
+        assert_eq!(Rtc::decode_hour(0x23, false, true), 23); // BCD 0x23 -> 23
+    }
+
+    #[test_case]
+    fn test_decode_hour_12h_mode_edge_cases() {
+        // 12 AM (midnight) → 0
+        assert_eq!(Rtc::decode_hour(0x12, false, false), 0); // BCD 12, no PM bit
+        assert_eq!(Rtc::decode_hour(12, true, false), 0);    // Binary 12, no PM bit
+
+        // 12 PM (noon) → 12
+        assert_eq!(Rtc::decode_hour(0x92, false, false), 12); // BCD 12 with PM bit (0x80 | 0x12)
+        assert_eq!(Rtc::decode_hour(0x8C, true, false), 12);  // Binary 12 with PM bit (0x80 | 12)
+
+        // 1-11 AM → 1-11
+        assert_eq!(Rtc::decode_hour(0x01, false, false), 1);
+        assert_eq!(Rtc::decode_hour(0x11, false, false), 11); // BCD 0x11 = 11
+
+        // 1-11 PM → 13-23
+        assert_eq!(Rtc::decode_hour(0x81, false, false), 13); // BCD 1 with PM
+        assert_eq!(Rtc::decode_hour(0x91, false, false), 23); // BCD 11 with PM (0x80 | 0x11)
+    }
+
+    #[test_case]
+    fn test_tsc_to_nanos_overflow_safe() {
+        // Use TscInfo::new() which computes mult/shift automatically
+        let info = TscInfo::new(3_000_000_000, true); // 3 GHz
+
+        // Large TSC value that would overflow with naive u64 multiplication
+        let tsc = 10_000_000_000_000u64; // 10 trillion ticks
+        let nanos = info.tsc_to_nanos(tsc);
+        
+        // Expected: 10e12 / 3e9 = 3333.33... seconds = 3333333333333 ns
+        // Allow small rounding error due to fixed-point approximation
+        let expected = 3_333_333_333_333u64;
+        let error = if nanos > expected { nanos - expected } else { expected - nanos };
+        assert!(error < 1_000_000, "Error too large: {} (expected ~{})", nanos, expected);
+    }
+
+    #[test_case]
+    fn test_compute_tsc_mult_shift() {
+        // Test that mult/shift computation works for typical CPU frequencies
+        let (mult, shift) = compute_tsc_mult_shift(3_000_000_000); // 3 GHz
+        assert!(mult > 0, "mult should be non-zero");
+        assert!(shift > 0, "shift should be non-zero");
+        
+        // Verify conversion accuracy: 1 second of TSC ticks
+        let tsc = 3_000_000_000u64;
+        let nanos = ((tsc as u128 * mult as u128) >> shift) as u64;
+        let expected = NANOS_PER_SEC;
+        let error = if nanos > expected { nanos - expected } else { expected - nanos };
+        // Allow up to 0.1% error
+        assert!(error < expected / 1000, "Conversion error too large: {} vs {}", nanos, expected);
+    }
+
+    #[test_case]
+    fn test_tsc_to_nanos_precise_vs_optimized() {
+        let info = TscInfo::new(2_500_000_000, true); // 2.5 GHz
+        
+        // Compare precise vs optimized for various TSC values
+        for &tsc in &[1_000_000u64, 1_000_000_000, 10_000_000_000, 100_000_000_000] {
+            let precise = info.tsc_to_nanos_precise(tsc);
+            let optimized = info.tsc_to_nanos(tsc);
+            let error = if optimized > precise { optimized - precise } else { precise - optimized };
+            // Allow up to 0.1% relative error or 1000 ns absolute error
+            let max_error = (precise / 1000).max(1000);
+            assert!(error <= max_error, "tsc={}: precise={}, optimized={}, error={}", 
+                    tsc, precise, optimized, error);
+        }
+    }
 }
