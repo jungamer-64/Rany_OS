@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/endpoint/tcb.rs
+// ============================================================================
 //! # TCP Control Block - 接続状態管理
 //!
 //! TcpConnectionState, TcpControlBlockEntry, TcbTable, tcp_flags

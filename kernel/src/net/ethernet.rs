@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/ethernet.rs
+// ============================================================================
 //! Ethernet frame processing for ExoRust
 //!
 //! This module implements zero-copy Ethernet frame handling

@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/endpoint/handler.rs
+// ============================================================================
 //! # NetworkEventHandler - ネットワークイベントハンドラ
 //!
 //! NetworkEventHandler, EventHandleResult
@@ -42,6 +45,7 @@ impl NetworkEventHandler {
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
         match event {
             NetworkEvent::DataReady { fd, socket_type } => self.handle_data_ready(fd, socket_type),
+            NetworkEvent::TxAvailable => self.handle_tx_available(),
             NetworkEvent::Connect { fd, local, remote } => self.handle_connect(fd, local, remote),
             NetworkEvent::Listen { fd, local, backlog } => self.handle_listen(fd, local, backlog),
             NetworkEvent::Close { fd } => self.handle_close(fd),
@@ -61,9 +65,9 @@ impl NetworkEventHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        // 送信バッファからデータを取得
+        // 送信バッファからデータを取得（drainは送信成功後に行う）
         let (data, local, remote) = {
-            let mut inner = socket.inner().lock();
+            let inner = socket.inner().lock();
             if inner.send_buffer.is_empty() {
                 return EventHandleResult::Success;
             }
@@ -76,28 +80,21 @@ impl NetworkEventHandler {
                 None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
             };
             (
-                inner.send_buffer.drain(..).collect::<Vec<u8>>(),
+                inner.send_buffer.iter().copied().collect::<Vec<u8>>(),
                 local,
                 remote,
             )
         };
 
-        // TCBから現在のシーケンス番号を取得して更新
+        // TCBから seq/ack/window を取得（送信成功後に snd_nxt を更新）
         let data_len = data.len() as u32;
-        let result = tcb_table().lookup_mut(local, remote, |tcb| {
-            if tcb.state != TcpConnectionState::Established {
-                return Err(SocketError::NotConnected);
+        let (seq, ack, window) = match tcb_table().lookup(local, remote) {
+            Some(tcb) => {
+                if tcb.state != TcpConnectionState::Established {
+                    return EventHandleResult::ProtocolError(SocketError::NotConnected);
+                }
+                (tcb.snd_nxt, tcb.rcv_nxt, tcb.rcv_wnd)
             }
-            let seq = tcb.snd_nxt;
-            let ack = tcb.rcv_nxt;
-            let window = tcb.rcv_wnd;
-            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
-            Ok((seq, ack, window))
-        });
-
-        let (seq, ack, window) = match result {
-            Some(Ok(vals)) => vals,
-            Some(Err(e)) => return EventHandleResult::ProtocolError(e),
             None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
         };
 
@@ -105,26 +102,66 @@ impl NetworkEventHandler {
         let mut segment = TcpSegmentBuilder::new(local.port, remote.port)
             .seq(seq)
             .ack(ack)
-            .psh() // PSH: 即座にアプリケーションに渡す
+            .psh()
             .window(window)
             .payload(&data)
             .build();
 
         TcpSegmentBuilder::calculate_checksum(&mut segment, local.ip, remote.ip);
 
-        // パケット送信
-        if let Err(e) = self.send_tcp_segment(local, remote, segment) {
-            log::info!("TCP: Failed to send data: {:?}", e);
-            return EventHandleResult::ProtocolError(SocketError::Internal);
-        }
+        // パケット送信を試みる
+        match self.send_tcp_segment(local, remote, segment) {
+            Ok(()) => {
+                // 送信成功: send_buffer から対応分を削除し、TCB を更新
+                {
+                    let mut inner = socket.inner().lock();
+                    let drain_len = data.len();
+                    inner.send_buffer.drain(..drain_len);
+                    // 送信可能になったため、待ちタスクを起こす
+                    if let Some(w) = inner.send_waker.take() {
+                        w.wake();
+                    }
+                }
 
-        log::info!(
-            "TCP: Sent {} bytes (seq={}, ack={}) fd={}",
-            data.len(),
-            seq,
-            ack,
-            fd.raw()
-        );
+                // TCB 更新（seq を予約）
+                tcb_table().lookup_mut(local, remote, |tcb| {
+                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
+                });
+
+                log::info!(
+                    "TCP: Sent {} bytes (seq={}, ack={}) fd={}",
+                    data.len(),
+                    seq,
+                    ack,
+                    fd.raw()
+                );
+
+                EventHandleResult::Success
+            }
+            Err(SocketError::ResourceExhausted) => {
+                // デバイスまたは ARP 等で送信できない -> 再試行
+                EventHandleResult::Retry
+            }
+            Err(e) => {
+                log::info!("TCP: Failed to send data: {:?}", e);
+                EventHandleResult::ProtocolError(SocketError::Internal)
+            }
+        }
+    }
+
+    /// TX 資源解放通知処理
+    fn handle_tx_available(&self) -> EventHandleResult {
+        // 送信待ちのソケットに DataReady イベントを再送して再試行を促す
+        if let Some(ref mgr) = *SOCKET_MANAGER.read() {
+            mgr.for_each(|socket| {
+                if socket.send_buffer_len() > 0 {
+                    super::event::send_event_ignore(super::event::NetworkEvent::DataReady {
+                        fd: socket.fd(),
+                        socket_type: socket.socket_type(),
+                    });
+                }
+            });
+        }
 
         EventHandleResult::Success
     }

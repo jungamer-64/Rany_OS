@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/endpoint/tcp_rx.rs
+// ============================================================================
 //! # TCP受信処理 - 3ウェイハンドシェイク・データ受信
 //!
 //! process_tcp_segment, network_event_task
@@ -490,6 +493,7 @@ pub async fn network_event_task() {
         let event = event_queue().wait_for_events().await;
 
         // イベントを処理
+        let event_clone = event.clone();
         let result = handler.handle_event(event);
         match result {
             EventHandleResult::Success => {}
@@ -501,18 +505,28 @@ pub async fn network_event_task() {
                 log::info!("Network: Protocol error: {:?}", e);
             }
             EventHandleResult::Retry => {
-                // 再試行が必要な場合
-                // Note: eventは既にhandle_eventで消費されているため、
-                // 再送信にはイベントのクローンが必要
-                // 現在はリトライロジックはスキップ
+                // 再試行が必要な場合はイベントを再キュー
+                if let Err(_) = super::event::send_event(event_clone) {
+                    log::warn!("Network: Event requeue failed due to full queue");
+                }
             }
         }
 
         // 残りのイベントも処理（バッチ処理）
         while let Some(event) = event_queue().recv() {
+            let event_clone = event.clone();
             let result = handler.handle_event(event);
-            if let EventHandleResult::SocketNotFound(fd) = result {
-                log::info!("Network: Socket {} not found", fd.raw());
+            match result {
+                EventHandleResult::SocketNotFound(fd) => {
+                    log::info!("Network: Socket {} not found", fd.raw());
+                }
+                EventHandleResult::Retry => {
+                    // 再試行イベントを再キュー
+                    if let Err(_) = super::event::send_event(event_clone) {
+                        log::warn!("Network: Event requeue failed due to full queue");
+                    }
+                }
+                _ => {}
             }
         }
     }

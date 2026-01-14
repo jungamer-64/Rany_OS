@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/endpoint/event.rs
+// ============================================================================
 //! # イベントシステム - プロトコルスタック連携
 //!
 //! NetworkEvent, NetworkEventQueue, EventWaitFuture
@@ -20,6 +23,8 @@ pub enum NetworkEvent {
         fd: SocketFd,
         socket_type: SocketType,
     },
+    /// TX 資源が解放された（デバイスが送信可能になった）
+    TxAvailable,
     /// 接続要求 - TCPハンドシェイク開始
     Connect {
         fd: SocketFd,

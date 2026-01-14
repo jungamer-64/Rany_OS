@@ -710,6 +710,25 @@ impl ZeroCopyWriter {
         }
         .await
     }
+
+    /// Enqueue a `PacketRef` for true zero-copy transmit via the VirtIO device.
+    ///
+    /// Returns Ok(()) if the packet was successfully queued. This performs no
+    /// completion wait — completion and cleanup occurs in the device interrupt
+    /// handler which will return the buffer to the mempool.
+    pub fn enqueue_via_virtio(packet: crate::net::PacketRef) -> Result<(), &'static str> {
+        // Check device presence first to avoid moving packet into a closure that
+        // might not be executed (which would drop the PacketRef unexpectedly).
+        if crate::io::virtio::with_virtio_net(|_| ()).is_none() {
+            return Err("NotInitialized");
+        }
+
+        match crate::io::virtio::with_virtio_net(|dev| dev.enqueue_send_zero_copy(packet)) {
+            Some(Ok(())) => Ok(()),
+            Some(Err(_)) => Err("DeviceError"),
+            None => Err("NotInitialized"),
+        }
+    }
 }
 
 struct ZeroCopySendFuture<'a> {
