@@ -434,8 +434,10 @@ pub struct PerCpuData {
     pub self_ptr: usize,
     /// CPU ID
     pub cpu_id: usize,
-    /// 現在実行中のタスクID（将来用）
+    /// 現在実行中のタスクID
     pub current_task_id: u64,
+    /// 現在実行中のタスクポインタ (Raw Pointer)
+    pub current_task_ptr: AtomicU64,
     /// Per-CPUヒープ統計
     pub alloc_count: u64,
     pub dealloc_count: u64,
@@ -472,6 +474,7 @@ impl PerCpuData {
             self_ptr: 0,
             cpu_id,
             current_task_id: 0,
+            current_task_ptr: AtomicU64::new(0),
             alloc_count: 0,
             dealloc_count: 0,
             iommu_domain_cache: PerCpuDomainCache::new(),
@@ -598,6 +601,16 @@ static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
 pub unsafe fn get_per_cpu_data(cpu_id: usize) -> &'static PerCpuData {
     &PER_CPU_DATA[cpu_id]
 }
+
+/// Get mutable reference to Per-CPU data for a specific CPU ID
+/// 
+/// # Safety
+/// - Caller must ensure cpu_id is valid (< MAX_CPUS)
+/// - Caller must ensure exclusive access (no concurrent mutable access)
+pub unsafe fn get_per_cpu_data_mut(cpu_id: usize) -> &'static mut PerCpuData {
+    &mut PER_CPU_DATA[cpu_id]
+}
+
 
 /// Check if a CPU is online
 pub fn is_cpu_online(cpu_id: usize) -> bool {

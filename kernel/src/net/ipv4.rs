@@ -38,6 +38,11 @@ impl Ipv4Address {
         &self.0
     }
 
+    /// Get the underlying bytes as octets (alias for as_bytes)
+    pub const fn octets(&self) -> [u8; 4] {
+        self.0
+    }
+
     /// Convert to u32 (network byte order)
     pub const fn to_u32(&self) -> u32 {
         ((self.0[0] as u32) << 24)

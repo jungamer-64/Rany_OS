@@ -369,7 +369,33 @@ impl UdpSocket {
             }
         }
     }
+
+    /// Send a datagram to the specified address (async-friendly, non-blocking)
+    /// 
+    /// Returns the number of bytes sent, or an error.
+    pub fn send_to(&self, data: &[u8], dst: UdpAddr) -> Result<usize, NetworkError> {
+        let local_port = match self.inner.lock() {
+            Ok(g) => {
+                if g.closed {
+                    return Err(NetworkError::ConnectionClosed);
+                }
+                g.local_port
+            }
+            Err(_) => return Err(NetworkError::LockPoisoned),
+        };
+
+        // Send via network stack using existing send_udp
+        let dst_ip = dst.ip;
+        let dst_port = dst.port;
+        
+        if crate::net::stack::send_udp(local_port, dst_ip, dst_port, data) {
+            Ok(data.len())
+        } else {
+            Err(NetworkError::TransmitFailed)
+        }
+    }
 }
+
 
 /// Future for receiving UDP datagrams
 pub struct UdpRecvFuture {

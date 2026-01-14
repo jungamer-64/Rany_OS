@@ -40,8 +40,6 @@ pub struct PerCpuScheduler {
     idle_task: Option<TcbPtr>,
     /// 残りタイムスライス
     remaining_slice: u64,
-    /// 残りタイムスライス
-    remaining_slice: u64,
     /// スケジューリングが必要かどうか
     need_reschedule: AtomicBool,
     /// 直前にスイッチアウトしたタスク（Runningフラグラリア用）
@@ -223,8 +221,6 @@ impl PerCpuSchedulerStorage {
             
             // アイドルタスクを作成
             let idle_tcb = Box::leak(Box::new(TaskControlBlock::idle(cpu_id)));
-            scheduler.set_idle_task(idle_tcb);
-            
             scheduler.set_idle_task(idle_tcb);
             
             IrqMutex::new(scheduler)

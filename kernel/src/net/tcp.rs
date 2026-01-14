@@ -138,8 +138,10 @@ pub struct TcpControlBlock {
     // バッファ
     /// 送信バッファ（ゼロコピー: PacketRefのキュー）
     pub send_buffer: VecDeque<PacketRef>,
-    /// 受信バッファ
+    /// 受信バッファ (zero-copy when available)
     pub recv_buffer: VecDeque<PacketRef>,
+    /// 受信バッファ (コピー版フォールバック)
+    pub recv_queue: VecDeque<Vec<u8>>,
 
     // 輻輳制御
     /// 輻輳ウィンドウ
@@ -151,6 +153,10 @@ pub struct TcpControlBlock {
     pub read_waker: Option<Waker>,
     pub write_waker: Option<Waker>,
     pub connect_waker: Option<Waker>,
+
+    // For listening sockets
+    pub backlog: Option<Arc<PoisonLock<VecDeque<TcpStream>>>>,
+    pub accept_waker: Option<Arc<PoisonLock<Option<Waker>>>>,
 
     /// 統計
     pub stats: TcpStats,
@@ -169,18 +175,21 @@ impl TcpControlBlock {
             rcv_wnd: 65535,
             send_buffer: VecDeque::new(),
             recv_buffer: VecDeque::new(),
+            recv_queue: VecDeque::new(),
             cwnd: 10 * 1460, // 初期値: 10 MSS
             ssthresh: 65535,
             read_waker: None,
             write_waker: None,
             connect_waker: None,
+            backlog: None,
+            accept_waker: None,
             stats: TcpStats::default(),
         }
     }
 
     /// 受信データがあるか
     pub fn has_data(&self) -> bool {
-        !self.recv_buffer.is_empty()
+        !self.recv_buffer.is_empty() || !self.recv_queue.is_empty()
     }
 
     /// 送信可能か
@@ -245,39 +254,27 @@ pub enum TcpError {
 /// 【設計書】POSIXソケットAPIを模倣しない
 /// connect()の代わりにdial()を使用
 pub struct TcpStream {
-    tcb: Arc<PoisonLock<TcpControlBlock>>,
+    pub(crate) tcb: Arc<PoisonLock<TcpControlBlock>>,
 }
 
 impl TcpStream {
     /// 指定アドレスに接続（推奨API）
     ///
     /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
+    /// 指定アドレスに接続（推奨API）
+    ///
+    /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
     pub async fn dial(addr: SocketAddr) -> Result<Self, TcpError> {
-        let local_port = allocate_ephemeral_port();
-        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, local_port);
-
-        let tcb = Arc::new(PoisonLock::new(TcpControlBlock::new(local_addr)));
-
-        // SYN送信
-        match tcb.lock() {
-            Ok(mut tcb_guard) => {
-                tcb_guard.remote_addr = Some(addr);
-                tcb_guard.state = TcpState::SynSent;
-                tcb_guard.snd_nxt = generate_initial_seq();
-                // SYNパケット送信
-                send_syn_packet(tcb_guard.local_addr, addr, tcb_guard.snd_nxt);
-                tcb_guard.snd_nxt = tcb_guard.snd_nxt.wrapping_add(1); // SYNは1バイト消費
-            }
-            Err(_) => {
-                log::error!("[NET] TCP TCB poisoned during dial - aborting connect");
-                return Err(TcpError::ConnectionRefused);
-            }
-        }
-
+        // ローカルポートの割り当てとTCBの作成、初期SYNの送信は Global Stack に委譲
+        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, allocate_ephemeral_port());
+        
+        let stream = crate::net::stack::connect_tcp(local_addr, addr)?;
+        
         // 接続完了を待つ
-        ConnectFuture { tcb: tcb.clone() }.await?;
+        let tcb = stream.tcb.clone();
+        ConnectFuture { tcb }.await?;
 
-        Ok(Self { tcb })
+        Ok(stream)
     }
 
 
@@ -382,6 +379,11 @@ impl AsyncRead for TcpStream {
                     let data = packet.data();
                     let len = data.len().min(buf.len());
                     buf[..len].copy_from_slice(&data[..len]);
+                    tcb.stats.bytes_received += len as u64;
+                    Poll::Ready(Ok(len))
+                } else if let Some(vec) = tcb.recv_queue.pop_front() {
+                    let len = vec.len().min(buf.len());
+                    buf[..len].copy_from_slice(&vec[..len]);
                     tcb.stats.bytes_received += len as u64;
                     Poll::Ready(Ok(len))
                 } else {
@@ -512,18 +514,15 @@ pub struct TcpListener {
 impl TcpListener {
     /// 指定アドレスで新しいリスナーを作成（推奨API）
     ///
-    /// 【設計書】POSIXのbind()ではなく、直接構築する方式を採用
-    pub fn new(addr: SocketAddr) -> Result<Self, TcpError> {
-        // ポートが使用中かチェック
-        if is_port_in_use(addr.port) {
-            return Err(TcpError::AddressInUse);
-        }
+    /// 【設計書】POSIXのbind()と同様の動作
+    pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
+        crate::net::stack::bind_tcp(addr)
+    }
 
-        Ok(Self {
-            local_addr: addr,
-            backlog: Arc::new(PoisonLock::new(VecDeque::new())),
-            accept_waker: Arc::new(PoisonLock::new(None)),
-        })
+    /// Backwards compatibility wrapper (deprecated)
+    #[deprecated(note = "Use TcpListener::bind instead")]
+    pub fn new(addr: SocketAddr) -> Result<Self, TcpError> {
+        Self::bind(addr)
     }
 
 
@@ -841,7 +840,7 @@ fn send_tcp_packet(
 }
 
 /// TCPチェックサム計算（疑似ヘッダ込み）
-fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
+pub(crate) fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
     // チェックサムフィールドをゼロに
     segment[16] = 0;
     segment[17] = 0;
@@ -876,12 +875,12 @@ fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) 
 }
 
 /// SYNパケットを送信
-fn send_syn_packet(local: SocketAddr, remote: SocketAddr, seq: u32) {
+pub(crate) fn send_syn_packet(local: SocketAddr, remote: SocketAddr, seq: u32) {
     send_tcp_packet(local, remote, seq, 0, TcpHeader::FLAG_SYN, 65535, &[]);
 }
 
 /// SYN-ACKパケットを送信
-fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
+pub(crate) fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
     send_tcp_packet(
         local,
         remote,
@@ -894,12 +893,12 @@ fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32
 }
 
 /// ACKパケットを送信
-fn send_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32, window: u16) {
+pub(crate) fn send_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32, window: u16) {
     send_tcp_packet(local, remote, seq, ack, TcpHeader::FLAG_ACK, window, &[]);
 }
 
 /// FINパケットを送信
-fn send_fin_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
+pub(crate) fn send_fin_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
     send_tcp_packet(
         local,
         remote,
@@ -912,7 +911,7 @@ fn send_fin_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
 }
 
 /// データパケットを送信（PSH+ACK）
-fn send_data_packet(
+pub(crate) fn send_data_packet(
     local: SocketAddr,
     remote: SocketAddr,
     seq: u32,
@@ -1238,12 +1237,27 @@ fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Hea
 
 use crate::net::ipv4::Ipv4Address;
 
+/// Result of TCP Processing
+#[derive(Debug)]
+pub enum TcpProcessResult {
+    None,
+    SendPacket {
+        local: SocketAddr,
+        remote: SocketAddr,
+        seq: u32,
+        ack: u32,
+        flags: u16,
+        window: u16,
+        payload: Vec<u8>
+    },
+}
+
 /// TCP segment processor for the network stack
 pub struct TcpProcessor {
     /// TCP connections indexed by (local_addr, remote_addr) tuple
-    connections: BTreeMap<(SocketAddr, SocketAddr), TcpControlBlock>,
+    connections: BTreeMap<(SocketAddr, SocketAddr), Arc<PoisonLock<TcpControlBlock>>>,
     /// Listening sockets indexed by local address
-    listeners: BTreeMap<SocketAddr, TcpControlBlock>,
+    listeners: BTreeMap<SocketAddr, Arc<PoisonLock<TcpControlBlock>>>,
 }
 
 impl TcpProcessor {
@@ -1259,7 +1273,36 @@ impl TcpProcessor {
     pub fn listen(&mut self, local_addr: SocketAddr) {
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.state = TcpState::Listen;
-        self.listeners.insert(local_addr, tcb);
+        self.listeners.insert(local_addr, Arc::new(PoisonLock::new(tcb)));
+    }
+    
+    /// Bind to a specific port
+    pub fn bind(&mut self, addr: SocketAddr) -> Result<TcpListener, TcpError> {
+        if self.listeners.contains_key(&addr) || 
+           self.connections.keys().any(|(local, _)| local == &addr) {
+            return Err(TcpError::AddressInUse);
+        }
+        
+        // Create shared state for backlog and waker
+        let backlog = Arc::new(PoisonLock::new(VecDeque::new()));
+        let accept_waker = Arc::new(PoisonLock::new(None));
+
+        // Create TCB with this shared state
+        let mut tcb = TcpControlBlock::new(addr);
+        tcb.state = TcpState::Listen;
+        tcb.backlog = Some(backlog.clone());
+        tcb.accept_waker = Some(accept_waker.clone());
+        
+        // Wrap in Arc<PoisonLock>
+        let tcb_arc = Arc::new(PoisonLock::new(tcb));
+        
+        self.listeners.insert(addr, tcb_arc);
+        
+        Ok(TcpListener {
+            local_addr: addr,
+            backlog,
+            accept_waker,
+        })
     }
 
     /// Initiate a connection to a remote address
@@ -1267,7 +1310,7 @@ impl TcpProcessor {
         &mut self,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
-    ) -> Result<(), TcpError> {
+    ) -> Result<TcpStream, TcpError> {
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.remote_addr = Some(remote_addr);
         tcb.state = TcpState::SynSent;
@@ -1275,24 +1318,25 @@ impl TcpProcessor {
         tcb.snd_nxt = crate::task::timer::current_tick() as u32;
         tcb.snd_una = tcb.snd_nxt;
 
-        self.connections.insert((local_addr, remote_addr), tcb);
-        // Note: Caller should send SYN packet after this
-        Ok(())
+        let tcb_arc = Arc::new(PoisonLock::new(tcb));
+
+        self.connections.insert(
+            (local_addr, remote_addr),
+            tcb_arc.clone(),
+        );
+        // Note: Caller should send SYN packet after this (handled by stack wrapper or here?)
+        // Better if caller does it, or we return an action.
+        // But connect() is synchronous state setup.
+        
+        Ok(TcpStream { tcb: tcb_arc })
     }
 
-    /// Find a connection by local and remote addresses
-    fn find_connection(
-        &mut self,
-        local: SocketAddr,
-        remote: SocketAddr,
-    ) -> Option<&mut TcpControlBlock> {
-        self.connections.get_mut(&(local, remote))
-    }
+
 
     /// Process an incoming TCP segment
-    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) -> TcpProcessResult {
         if data.len() < TcpHeader::MIN_HEADER_LEN {
-            return;
+            return TcpProcessResult::None;
         }
 
         // Read header fields directly from bytes to avoid packed struct alignment issues
@@ -1336,119 +1380,75 @@ impl TcpProcessor {
         // Handle RST - reset connection immediately
         if flags & TcpHeader::FLAG_RST != 0 {
             self.connections.remove(&(local_addr, remote_addr));
-            return;
+            return TcpProcessResult::None;
         }
 
         // Try to find existing connection
-        if let Some(tcb) = self.connections.get_mut(&(local_addr, remote_addr)) {
-            // Process segment inline to avoid double mutable borrow
-            let syn = flags & TcpHeader::FLAG_SYN != 0;
-            let ack = flags & TcpHeader::FLAG_ACK != 0;
-            let fin = flags & TcpHeader::FLAG_FIN != 0;
-            let _psh = flags & TcpHeader::FLAG_PSH != 0;
-
-            tcb.snd_wnd = window;
-
-            match tcb.state {
-                TcpState::SynSent => {
-                    if syn && ack {
-                        tcb.rcv_nxt = seq_num.wrapping_add(1);
-                        tcb.snd_una = ack_num;
-                        tcb.state = TcpState::Established;
-                    }
-                }
-                TcpState::SynReceived => {
-                    if ack {
-                        tcb.snd_una = ack_num;
-                        tcb.state = TcpState::Established;
-                    }
-                }
-                TcpState::Established => {
-                    if ack {
-                        tcb.snd_una = ack_num;
-                    }
-                    if !payload.is_empty() {
-                        // ペイロードをバッファに追加
-                        // 注: PacketRefへの変換は省略（直接バッファリングせず統計のみ更新）
-                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload.len() as u32);
-                    }
-                    if fin {
-                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                        tcb.state = TcpState::CloseWait;
-                    }
-                }
-                TcpState::FinWait1 => {
-                    if ack {
-                        tcb.snd_una = ack_num;
-                        tcb.state = TcpState::FinWait2;
-                    }
-                    if fin {
-                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                        if ack {
-                            tcb.state = TcpState::TimeWait;
-                        } else {
-                            tcb.state = TcpState::Closing;
-                        }
-                    }
-                }
-                TcpState::FinWait2 => {
-                    if fin {
-                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                        tcb.state = TcpState::TimeWait;
-                    }
-                }
-                TcpState::Closing => {
-                    if ack {
-                        tcb.state = TcpState::TimeWait;
-                    }
-                }
-                TcpState::LastAck => {
-                    if ack {
-                        tcb.state = TcpState::Closed;
-                    }
-                }
-                TcpState::CloseWait | TcpState::TimeWait | TcpState::Closed | TcpState::Listen => {
-                    // Ignore in these states
-                }
+        if let Some(tcb_lock) = self.connections.get(&(local_addr, remote_addr)).cloned() {
+            if let Ok(mut tcb) = tcb_lock.lock() {
+                return self.process_segment(&tcb_lock, &mut *tcb, seq_num, ack_num, flags, window, payload);
             }
-            return;
         }
 
         // Check if this is for a listening socket
-        if let Some(listener) = self.listeners.get(&local_addr) {
-            if listener.state == TcpState::Listen && flags & TcpHeader::FLAG_SYN != 0 {
-                // Create new connection for incoming SYN
-                let mut tcb = TcpControlBlock::new(local_addr);
-                tcb.remote_addr = Some(remote_addr);
-                tcb.state = TcpState::SynReceived;
-                tcb.rcv_nxt = seq_num.wrapping_add(1);
-                tcb.snd_nxt = crate::task::timer::current_tick() as u32;
-                tcb.snd_una = tcb.snd_nxt;
-                tcb.snd_wnd = window;
-
-                self.connections.insert((local_addr, remote_addr), tcb);
-                // Note: Caller should send SYN-ACK
-                return;
+        if let Some(listener_lock) = self.listeners.get(&local_addr) {
+            if let Ok(listener) = listener_lock.lock() {
+                if listener.state == TcpState::Listen && flags & TcpHeader::FLAG_SYN != 0 {
+                    // Create new connection for incoming SYN
+                    let mut tcb = TcpControlBlock::new(local_addr);
+                    tcb.remote_addr = Some(remote_addr);
+                    tcb.state = TcpState::SynReceived;
+                    tcb.rcv_nxt = seq_num.wrapping_add(1);
+                    tcb.snd_nxt = crate::task::timer::current_tick() as u32;
+                    tcb.snd_una = tcb.snd_nxt;
+                    tcb.snd_wnd = window;
+                    
+                    // Propagate backlog/waker from listener to child
+                    tcb.backlog = listener.backlog.clone();
+                    tcb.accept_waker = listener.accept_waker.clone();
+    
+                    // Prepare SYN-ACK
+                    let syn_ack = TcpProcessResult::SendPacket {
+                        local: local_addr,
+                        remote: remote_addr,
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+                        window: 65535, // Default window
+                        payload: Vec::new(),
+                    };
+    
+                    self.connections.insert(
+                        (local_addr, remote_addr),
+                        Arc::new(PoisonLock::new(tcb)),
+                    );
+                    return syn_ack;
+                }
             }
         }
 
         // No matching connection or listener - ignore or send RST
+        TcpProcessResult::None
     }
 
     /// Process a TCP segment for an existing connection
     fn process_segment(
         &mut self,
+        tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
         tcb: &mut TcpControlBlock,
         seq_num: u32,
         ack_num: u32,
         flags: u16,
         window: u16,
         payload: &[u8],
-    ) {
+    ) -> TcpProcessResult {
         let syn = flags & TcpHeader::FLAG_SYN != 0;
         let ack = flags & TcpHeader::FLAG_ACK != 0;
         let fin = flags & TcpHeader::FLAG_FIN != 0;
         let _psh = flags & TcpHeader::FLAG_PSH != 0;
+
+        let payload_len = payload.len();
+        let mut result = TcpProcessResult::None;
 
         // Update send window
         if ack {
@@ -1461,7 +1461,7 @@ impl TcpProcessor {
             }
 
             TcpState::Listen => {
-                // Handled in main process() - new connections
+                // Handled in main process()
             }
 
             TcpState::SynSent => {
@@ -1475,22 +1475,54 @@ impl TcpProcessor {
                     if let Some(waker) = tcb.connect_waker.take() {
                         waker.wake();
                     }
-                    // Note: Caller should send ACK
+                    // Send ACK
+                    result = TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote: tcb.remote_addr.unwrap(),
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_ACK,
+                        window: tcb.rcv_wnd,
+                        payload: Vec::new(),
+                    };
                 } else if syn && !ack {
                     // Simultaneous open
                     tcb.rcv_nxt = seq_num.wrapping_add(1);
                     tcb.state = TcpState::SynReceived;
-                    // Note: Caller should send SYN-ACK
+                    // Send SYN-ACK
+                    result = TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote: tcb.remote_addr.unwrap(),
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+                        window: tcb.rcv_wnd,
+                        payload: Vec::new(),
+                    };
                 }
             }
 
             TcpState::SynReceived => {
-                // Waiting for ACK of our SYN-ACK
                 if ack && ack_num == tcb.snd_nxt.wrapping_add(1) {
                     tcb.snd_una = ack_num;
                     tcb.snd_nxt = ack_num;
                     tcb.state = TcpState::Established;
-                    // Wake connect waker
+                    
+                    // Push to backlog if present
+                    if let Some(backlog_lock) = &tcb.backlog {
+                        if let Ok(mut backlog) = backlog_lock.lock() {
+                            backlog.push_back(TcpStream { tcb: tcb_arc.clone() });
+                            
+                            if let Some(waker_lock) = &tcb.accept_waker {
+                                if let Ok(mut waker_opt) = waker_lock.lock() {
+                                    if let Some(waker) = waker_opt.take() {
+                                        waker.wake();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if let Some(waker) = tcb.connect_waker.take() {
                         waker.wake();
                     }
@@ -1498,39 +1530,77 @@ impl TcpProcessor {
             }
 
             TcpState::Established => {
-                // Process acknowledgments
                 if ack && Self::seq_after(ack_num, tcb.snd_una) {
                     tcb.snd_una = ack_num;
-                    // Wake write waker (more space available)
                     if let Some(waker) = tcb.write_waker.take() {
                         waker.wake();
                     }
                 }
 
-                // Process incoming data
-                if !payload.is_empty() && seq_num == tcb.rcv_nxt {
-                    // In-order data - 受信統計を更新
-                    // 注: 実際のパケット格納にはMempoolからの割り当てが必要
-                    // 現時点ではペイロードをコピーせず、統計のみ更新
-                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload.len() as u32);
-                    tcb.stats.bytes_received += payload.len() as u64;
+                if payload_len > 0 && seq_num == tcb.rcv_nxt {
+                    // In-order data - Update stats
+                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+                    tcb.stats.bytes_received += payload_len as u64;
                     tcb.stats.packets_received += 1;
-                    // Wake read waker
+                    
+                    // Allocate packet and copy payload to recv_buffer
+                    if let Some(mut packet) = super::mempool::alloc_packet() {
+                        let data_slice = packet.data_mut();
+                        if payload_len <= data_slice.len() {
+                            data_slice[..payload_len].copy_from_slice(payload);
+                            packet.set_len(payload_len);
+                            tcb.recv_buffer.push_back(packet);
+                        } else {
+                            // Payload too large for packet, use Vec fallback
+                            tcb.recv_queue.push_back(payload.to_vec());
+                        }
+                    } else {
+                        // mempool exhausted - fallback to copy
+                        tcb.recv_queue.push_back(payload.to_vec());
+                    }
+
+                    
                     if let Some(waker) = tcb.read_waker.take() {
                         waker.wake();
                     }
-                    // Note: Caller should send ACK
+                    // Send ACK
+                    result = TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote: tcb.remote_addr.unwrap(),
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_ACK,
+                        window: tcb.rcv_wnd,
+                        payload: Vec::new(),
+                    };
+                } else if payload_len > 0 {
+                    // Out-of-order - Send ACK for expected
+                     result = TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote: tcb.remote_addr.unwrap(),
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_ACK,
+                        window: tcb.rcv_wnd,
+                        payload: Vec::new(),
+                    };
                 }
 
-                // Handle FIN
                 if fin {
                     tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                     tcb.state = TcpState::CloseWait;
-                    // Wake read waker to signal EOF
                     if let Some(waker) = tcb.read_waker.take() {
                         waker.wake();
                     }
-                    // Note: Caller should send ACK
+                    result = TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote: tcb.remote_addr.unwrap(),
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_ACK,
+                        window: tcb.rcv_wnd,
+                        payload: Vec::new(),
+                    };
                 }
             }
 
@@ -1542,6 +1612,16 @@ impl TcpProcessor {
                         // Simultaneous close
                         tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                         tcb.state = TcpState::TimeWait;
+                        // Send ACK
+                         result = TcpProcessResult::SendPacket {
+                            local: tcb.local_addr,
+                            remote: tcb.remote_addr.unwrap(),
+                            seq: tcb.snd_nxt,
+                            ack: tcb.rcv_nxt,
+                            flags: TcpHeader::FLAG_ACK,
+                            window: tcb.rcv_wnd,
+                            payload: Vec::new(),
+                        };
                     } else {
                         tcb.state = TcpState::FinWait2;
                     }
@@ -1549,6 +1629,16 @@ impl TcpProcessor {
                     // FIN before ACK
                     tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                     tcb.state = TcpState::Closing;
+                     // Send ACK
+                     result = TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote: tcb.remote_addr.unwrap(),
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_ACK,
+                        window: tcb.rcv_wnd,
+                        payload: Vec::new(),
+                    };
                 }
             }
 
@@ -1557,7 +1647,16 @@ impl TcpProcessor {
                 if fin {
                     tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                     tcb.state = TcpState::TimeWait;
-                    // Note: Caller should send ACK
+                    // Send ACK
+                     result = TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote: tcb.remote_addr.unwrap(),
+                        seq: tcb.snd_nxt,
+                        ack: tcb.rcv_nxt,
+                        flags: TcpHeader::FLAG_ACK,
+                        window: tcb.rcv_wnd,
+                        payload: Vec::new(),
+                    };
                 }
             }
 
@@ -1587,6 +1686,8 @@ impl TcpProcessor {
                 // (handled by timer, simplified: just stay in TimeWait)
             }
         }
+        
+        result
     }
 
     /// Check if seq1 is after seq2 (handling wrap-around)
@@ -1596,25 +1697,33 @@ impl TcpProcessor {
 
     /// Close a connection (initiate active close)
     pub fn close(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) {
-        if let Some(tcb) = self.connections.get_mut(&(local_addr, remote_addr)) {
-            match tcb.state {
-                TcpState::Established => {
-                    tcb.state = TcpState::FinWait1;
-                    // Note: Caller should send FIN
+        if let Some(tcb_lock) = self.connections.get(&(local_addr, remote_addr)) {
+            if let Ok(mut tcb) = tcb_lock.lock() {
+                match tcb.state {
+                    TcpState::Established => {
+                        tcb.state = TcpState::FinWait1;
+                        // Note: Caller should send FIN
+                    }
+                    TcpState::CloseWait => {
+                        tcb.state = TcpState::LastAck;
+                        // Note: Caller should send FIN
+                    }
+                    _ => {}
                 }
-                TcpState::CloseWait => {
-                    tcb.state = TcpState::LastAck;
-                    // Note: Caller should send FIN
-                }
-                _ => {}
             }
         }
     }
 
     /// Remove closed connections
     pub fn cleanup_closed(&mut self) {
-        self.connections
-            .retain(|_, tcb| tcb.state != TcpState::Closed);
+        self.connections.retain(|_, tcb_lock| {
+            if let Ok(tcb) = tcb_lock.lock() {
+                tcb.state != TcpState::Closed
+            } else {
+                // If lock is poisoned, remove the connection
+                false
+            }
+        });
     }
 }
 

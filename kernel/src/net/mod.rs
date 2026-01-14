@@ -15,6 +15,16 @@ pub enum NetworkError {
     InvalidAddress,
     Timeout,
     Unknown,
+    /// Connection was closed
+    ConnectionClosed,
+    /// Internal lock was poisoned
+    LockPoisoned,
+    /// ARP resolution is pending (retry later)
+    ArpResolutionPending,
+    /// Buffer too small for operation
+    BufferTooSmall,
+    /// Transmit operation failed
+    TransmitFailed,
 }
 
 pub mod mempool;
