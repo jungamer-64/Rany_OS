@@ -94,6 +94,19 @@ pub trait KernelServices: Send + Sync {
     /// - `KapiError::InvalidHandle` if the endpoint handle is not recognized
     fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> KapiResult<()>;
 
+    /// Receive a packet (async). Returns an owned `Packet` on success.
+    ///
+    /// This returns a future that resolves when data is available for the
+    /// specified endpoint. The implementation may allocate/copy data as
+    /// necessary for cross-domain safety.
+    fn net_recv_packet(&self, endpoint: TcpEndpoint) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
+
+    /// Send a packet (async). Takes ownership of the `Packet`.
+    ///
+    /// This returns a future that completes when the packet has been queued
+    /// for transmission (or an error occurred).
+    fn net_send_packet(&self, endpoint: TcpEndpoint, packet: crate::Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+
     // ========================================================================
     // Filesystem
     // ========================================================================
