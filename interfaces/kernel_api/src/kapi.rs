@@ -193,21 +193,23 @@ pub mod net {
     /// Receive packet (takes ownership)
     pub async fn recv_packet(
         _cap: &NetCapability,
-        _endpoint: &mut crate::TcpEndpoint,
+        endpoint: &mut crate::TcpEndpoint,
     ) -> KapiResult<crate::Packet> {
-        super::task::yield_now().await;
-        Ok(crate::Packet::new(Vec::new()))
+        // Delegate to kernel implementation which returns a future
+        crate::kernel()
+            .net_recv_packet(crate::TcpEndpoint::new(endpoint.id()))
+            .await
     }
 
     /// Send packet (gives up ownership)
     pub async fn send_packet(
         _cap: &NetCapability,
-        _endpoint: &mut crate::TcpEndpoint,
+        endpoint: &mut crate::TcpEndpoint,
         packet: crate::Packet,
     ) -> KapiResult<()> {
-        super::task::yield_now().await;
-        drop(packet);
-        Ok(())
+        crate::kernel()
+            .net_send_packet(crate::TcpEndpoint::new(endpoint.id()), packet)
+            .await
     }
 }
 

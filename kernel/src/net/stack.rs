@@ -1,3 +1,7 @@
+// ============================================================================
+// Network Stack Integration for ExoRust
+// ============================================================================
+
 //! Network Stack Integration for ExoRust
 //!
 //! This module integrates all network protocol layers into
