@@ -288,3 +288,25 @@ impl TcpEndpoint {
         self.id
     }
 }
+
+/// Raw socket handle (for raw/packet-oriented sockets)
+pub struct RawSocketHandle {
+    id: u64,
+}
+
+impl RawSocketHandle {
+    /// Create new raw socket handle (kernel-only)
+    pub const fn new(id: u64) -> Self {
+        Self { id }
+    }
+
+    /// Get raw id
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Consume and return raw id
+    pub fn into_raw(self) -> u64 {
+        self.id
+    }
+}

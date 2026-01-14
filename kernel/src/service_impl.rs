@@ -30,7 +30,7 @@ use kernel_api::KapiResult;
 use kernel_api::services::KernelServices;
 use kernel_api::{
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, OpenMode, TaskHandle, TcpEndpoint,
-    Packet,
+    Packet, RawSocketHandle,
 };
 use spin::Mutex;
 
@@ -429,6 +429,90 @@ impl KernelServices for ExoKernel {
         })
     }
 
+    fn net_create_raw_socket(&self) -> Result<RawSocketHandle, KapiError> {
+        use crate::net::endpoint::create_raw_socket;
+
+        let owned = create_raw_socket();
+        let fd = owned.fd();
+
+        // Detach so it remains registered
+        let _ = owned.into_inner();
+
+        Ok(RawSocketHandle::new(fd.raw() as u64))
+    }
+
+    fn net_close_raw_socket(&self, endpoint: RawSocketHandle) -> Result<(), KapiError> {
+        use crate::net::endpoint::{SocketFd, socket_manager};
+
+        let fd = SocketFd::from_raw(endpoint.id() as u32);
+
+        if let Some(mgr_lock) = socket_manager() {
+            let guard = mgr_lock.read();
+            if let Some(mgr) = guard.as_ref() {
+                if mgr.unregister(fd).is_some() {
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(KapiError::InvalidHandle)
+    }
+
+    fn net_recv_raw(&self, endpoint: RawSocketHandle) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+        Box::pin(async move {
+            use crate::net::endpoint::{SocketFd, socket_manager};
+
+            let fd = SocketFd::from_raw(endpoint.id() as u32);
+
+            if let Some(mgr_lock) = socket_manager() {
+                let guard = mgr_lock.read();
+                if let Some(mgr) = guard.as_ref() {
+                    if let Some(socket) = mgr.get(fd) {
+                        let fut = crate::net::endpoint::futures::RecvFuture::new(socket.clone(), crate::net::stack::MAX_PACKET_SIZE);
+                        match fut.await {
+                            Ok(vec) => Ok(Packet::new(vec)),
+                            Err(_) => Err(KapiError::IoError),
+                        }
+                    } else {
+                        Err(KapiError::InvalidHandle)
+                    }
+                } else {
+                    Err(KapiError::InvalidHandle)
+                }
+            } else {
+                Err(KapiError::NotFound)
+            }
+        })
+    }
+
+    fn net_send_raw(&self, endpoint: RawSocketHandle, packet: Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+        Box::pin(async move {
+            use crate::net::endpoint::{SocketFd, socket_manager};
+
+            let fd = SocketFd::from_raw(endpoint.id() as u32);
+
+            if let Some(mgr_lock) = socket_manager() {
+                let guard = mgr_lock.read();
+                if let Some(mgr) = guard.as_ref() {
+                    if let Some(socket) = mgr.get(fd) {
+                        let data = packet.data().to_vec();
+                        let fut = crate::net::endpoint::futures::SendFuture::new(socket.clone(), data);
+                        match fut.await {
+                            Ok(_) => Ok(()),
+                            Err(_) => Err(KapiError::IoError),
+                        }
+                    } else {
+                        Err(KapiError::InvalidHandle)
+                    }
+                } else {
+                    Err(KapiError::InvalidHandle)
+                }
+            } else {
+                Err(KapiError::NotFound)
+            }
+        })
+    }
+
     // ========================================================================
     // Filesystem (Connected to memfs)
     // ========================================================================
@@ -634,6 +718,18 @@ impl KernelServices for ExoKernel {
                 .await
                 .map_err(|_| KapiError::IoError)
         })
+    }
+
+    fn nvme_block_size(&self, device_id: u64) -> Option<u64> {
+        let nsid = if device_id == 0 { 1 } else { device_id as u32 };
+        crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64)
+    }
+
+    fn nvme_sgl_max_entries(&self, _device_id: u64) -> Option<usize> {
+        crate::io::nvme::global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+            driver.sgl_max_entries()
+        })
+        .flatten()
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {

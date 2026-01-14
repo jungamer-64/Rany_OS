@@ -106,7 +106,17 @@ pub trait KernelServices: Send + Sync {
     /// This returns a future that completes when the packet has been queued
     /// for transmission (or an error occurred).
     fn net_send_packet(&self, endpoint: TcpEndpoint, packet: crate::Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+    /// Create a raw (packet-oriented) socket
+    fn net_create_raw_socket(&self) -> KapiResult<crate::RawSocketHandle>;
 
+    /// Close a raw socket
+    fn net_close_raw_socket(&self, endpoint: crate::RawSocketHandle) -> KapiResult<()>;
+
+    /// Receive a raw packet (async)
+    fn net_recv_raw(&self, endpoint: crate::RawSocketHandle) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
+
+    /// Send a raw packet (async)
+    fn net_send_raw(&self, endpoint: crate::RawSocketHandle, packet: crate::Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     // ========================================================================
     // Filesystem
     // ========================================================================
@@ -186,6 +196,19 @@ pub trait KernelServices: Send + Sync {
         block_offset: u64,
         block_count: u64,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+
+    /// Get block size for an NVMe namespace
+    ///
+    /// Returns the block size in bytes for the specified device (namespace).
+    /// Returns `None` if the device is not available or not an NVMe device.
+    fn nvme_block_size(&self, device_id: u64) -> Option<u64>;
+
+    /// Get maximum SGL (Scatter-Gather List) entries supported
+    ///
+    /// Returns the maximum number of SGL entries that can be used in a single
+    /// I/O command for the specified device. Used for optimizing scatter-gather
+    /// operations. Returns `None` if the device doesn't support SGLs or is not available.
+    fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize>;
 
     // ========================================================================
     // IPC (Inter-Process Communication)

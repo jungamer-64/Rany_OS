@@ -211,6 +211,37 @@ pub mod net {
             .net_send_packet(crate::TcpEndpoint::new(endpoint.id()), packet)
             .await
     }
+
+    /// Create a raw (packet-oriented) socket
+    pub fn create_raw_socket(_cap: &NetCapability) -> KapiResult<crate::RawSocketHandle> {
+        crate::kernel().net_create_raw_socket()
+    }
+
+    /// Close a raw socket
+    pub fn close_raw_socket(_cap: &NetCapability, endpoint: crate::RawSocketHandle) -> KapiResult<()> {
+        crate::kernel().net_close_raw_socket(endpoint)
+    }
+
+    /// Receive raw packet (takes ownership)
+    pub async fn recv_raw_packet(
+        _cap: &NetCapability,
+        endpoint: &mut crate::RawSocketHandle,
+    ) -> KapiResult<crate::Packet> {
+        crate::kernel()
+            .net_recv_raw(crate::RawSocketHandle::new(endpoint.id()))
+            .await
+    }
+
+    /// Send raw packet (gives up ownership)
+    pub async fn send_raw_packet(
+        _cap: &NetCapability,
+        endpoint: &mut crate::RawSocketHandle,
+        packet: crate::Packet,
+    ) -> KapiResult<()> {
+        crate::kernel()
+            .net_send_raw(crate::RawSocketHandle::new(endpoint.id()), packet)
+            .await
+    }
 }
 
 // ========================================================================
