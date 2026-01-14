@@ -202,23 +202,19 @@ impl NetworkEventHandler {
     /// TCPセグメント送信（IPスタック経由）
     fn send_tcp_segment(
         &self,
-        _src: SocketAddr,
-        _dst: SocketAddr,
-        _segment: Vec<u8>,
+        src: SocketAddr,
+        dst: SocketAddr,
+        segment: Vec<u8>,
     ) -> SocketResult<()> {
-        // IPv4パケットを構築して送信
-        // 1. IPv4ヘッダ構築
-        // 2. ネットワークスタック経由で送信
-        //
-        // 実際のIP層統合が完了したら実装:
-        // グローバルネットワークスタックを使用
-        // crate::net::stack::global_stack()?.send_ipv4(
-        //     dst.ip,
-        //     crate::net::ipv4::IpProtocol::TCP,
-        //     &segment
-        // )?;
+        // Convert addresses and forward to the global network stack
+        let src_ip = crate::net::ipv4::Ipv4Address::new(src.ip);
+        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst.ip);
 
-        Ok(())
+        if crate::net::stack::send_tcp(src_ip, dst_ip, &segment) {
+            Ok(())
+        } else {
+            Err(SocketError::ResourceExhausted)
+        }
     }
 
     /// Listenイベント処理
@@ -432,19 +428,23 @@ impl NetworkEventHandler {
     /// UDPパケット送信（IPスタック経由）
     fn send_udp_packet(
         &self,
-        _src: SocketAddr,
-        _dst: SocketAddr,
-        _packet: Vec<u8>,
+        src: SocketAddr,
+        dst: SocketAddr,
+        packet: Vec<u8>,
     ) -> SocketResult<()> {
-        // IPv4パケットを構築してネットワークスタック経由で送信
-        // 実際のIP層統合が完了したら実装
-        // グローバルネットワークスタックを使用:
-        // crate::net::stack::global_stack()?.send_ipv4(
-        //     dst.ip,
-        //     crate::net::ipv4::IpProtocol::UDP,
-        //     &packet
-        // )?;
-        Ok(())
+        // The `packet` contains a UDP header followed by payload. Extract payload.
+        if packet.len() < 8 {
+            return Err(SocketError::InvalidArgument);
+        }
+
+        let payload = &packet[8..];
+        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst.ip);
+
+        if crate::net::stack::send_udp(src.port, dst_ip, dst.port, payload) {
+            Ok(())
+        } else {
+            Err(SocketError::ResourceExhausted)
+        }
     }
 }
 

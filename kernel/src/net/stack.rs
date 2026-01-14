@@ -11,7 +11,10 @@ use super::ipv4::{
 };
 use super::mempool::{PacketPool, PacketRef};
 use super::optimization::PacketBatch;
-use super::tcp::TcpProcessor;
+use super::tcp::{
+    TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream, 
+    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr
+};
 
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
 
@@ -222,7 +225,10 @@ impl NetworkStack {
 
         match result {
             ProcessResult::Ipv4(payload) => {
-                self.process_ipv4(payload, current_time);
+                let offset = unsafe { payload.as_ptr().offset_from(packet.data().as_ptr()) } as usize;
+                let mut ip_packet = packet.clone_ref(); 
+                ip_packet.advance(offset);
+                self.process_ipv4(payload, current_time, ip_packet);
             }
             ProcessResult::Arp(payload) => {
                 self.process_arp(payload, current_time);
@@ -255,18 +261,27 @@ impl NetworkStack {
     }
 
     /// Process IPv4 packet
-    fn process_ipv4(&mut self, data: &[u8], current_time: u64) {
+    fn process_ipv4(&mut self, data: &[u8], current_time: u64, packet: PacketRef) {
         let result = self.ipv4.process(data);
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip) => {
-                self.process_icmp(payload, src_ip, current_time);
+                let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
+                let mut p = packet;
+                p.advance(offset);
+                self.process_icmp(payload, src_ip, current_time, p);
             }
             Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
-                self.process_udp(payload, src_ip, dst_ip);
+                let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
+                let mut p = packet;
+                p.advance(offset);
+                self.process_udp(payload, src_ip, dst_ip, p);
             }
             Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip) => {
-                self.process_tcp(payload, src_ip, dst_ip);
+                let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
+                let mut p = packet;
+                p.advance(offset);
+                self.process_tcp(payload, src_ip, dst_ip, p);
             }
             Ipv4ProcessResult::Dropped => {
                 self.stats.record_dropped();
@@ -297,7 +312,7 @@ impl NetworkStack {
     }
 
     /// Process ICMP packet
-    fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
+    fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64, _packet: PacketRef) {
         if !self.icmp_echo_enabled() {
             return;
         }
@@ -333,7 +348,7 @@ impl NetworkStack {
     }
 
     /// Process UDP packet
-    fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+    fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
         let result = self.udp.process(data, src_ip, dst_ip);
 
         match result {
@@ -349,9 +364,72 @@ impl NetworkStack {
     }
 
     /// Process TCP packet
-    fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
-        self.tcp.process(data, src_ip, dst_ip);
+    fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
+        // Note: PacketRef not used yet - TcpProcessor does internal parsing
+        // Zero-copy integration pending future refactor
+        let result = self.tcp.process(data, src_ip, dst_ip);
+
+        match result {
+            TcpProcessResult::SendPacket {
+                local,
+                remote,
+                seq,
+                ack,
+                flags,
+                window,
+                payload,
+            } => {
+                // Construct and send TCP segment
+                let mut buffer = [0u8; 1518]; // MAX_PACKET_SIZE
+                let header_len = 20; // Default header size
+                let total_len = header_len + payload.len();
+                
+                if total_len > buffer.len() {
+                    return;
+                }
+                
+                // Construct TCP header
+                // Source Port
+                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
+                // Dest Port
+                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+                // Seq
+                buffer[4..8].copy_from_slice(&seq.to_be_bytes());
+                // Ack
+                buffer[8..12].copy_from_slice(&ack.to_be_bytes());
+                // Flags & Offset (Header Length 5 dwords = 20 bytes)
+                let offset_flags = (5 << 12) | (flags & 0x1FF);
+                buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+                // Window
+                buffer[14..16].copy_from_slice(&window.to_be_bytes());
+                // Checksum (zero for now)
+                buffer[16..18].fill(0);
+                // Urgent Pointer
+                buffer[18..20].fill(0);
+                
+                // Payload
+                if !payload.is_empty() {
+                    buffer[20..total_len].copy_from_slice(&payload);
+                }
+                
+                // Calculate Checksum
+                super::tcp::calculate_tcp_checksum(
+                    &mut buffer[..total_len],
+                    local.ip.octets(),
+                    remote.ip.octets(),
+                );
+                
+                // Send via IP
+                // Convert TcpIpv4Addr -> Ipv4Address
+                let src_ip_out = Ipv4Address::new(local.ip.octets());
+                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                
+                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+            }
+            TcpProcessResult::None => {}
+        }
     }
+
 
     /// Send an ARP reply
     fn send_arp_reply(&mut self, target_mac: MacAddress, target_ip: Ipv4Address) {
@@ -570,6 +648,74 @@ impl NetworkStack {
         }
     }
 
+    /// Connect to a remote TCP address
+    pub fn connect_tcp(&mut self, local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
+        let stream = self.tcp.connect(local_addr, remote_addr)?;
+        
+        // Send initial SYN
+        let initial_seq = {
+             match stream.tcb.lock() {
+                Ok(tcb) => tcb.snd_nxt,
+                Err(_) => return Err(TcpError::InvalidState),
+             }
+        };
+        
+        // super::tcp::send_syn_packet(local_addr, remote_addr, initial_seq);
+        // DEADLOCK AVOIDANCE: send_syn_packet locks NETWORK_STACK, but we already hold it.
+        // We must construct and send manually.
+        {
+            let mut buffer = [0u8; 64]; // Minimum 20 bytes header, 64 is safe
+            let header_len = 20;
+            let total_len = header_len; // No payload for SYN
+            
+            // Construct TCP header
+            // Source Port
+            buffer[0..2].copy_from_slice(&local_addr.port.to_be_bytes());
+            // Dest Port
+            buffer[2..4].copy_from_slice(&remote_addr.port.to_be_bytes());
+            // Seq
+            buffer[4..8].copy_from_slice(&initial_seq.to_be_bytes());
+            // Ack (0 for SYN)
+            buffer[8..12].fill(0);
+            // Flags & Offset (Header Length 5 dwords = 20 bytes)
+            // SYN = 0x02
+            let flags = 0x02u16; 
+            let offset_flags = (5 << 12) | flags;
+            buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+            // Window (initial window 65535)
+            buffer[14..16].copy_from_slice(&65535u16.to_be_bytes());
+            // Checksum (zero for now)
+            buffer[16..18].fill(0);
+            // Urgent Pointer
+            buffer[18..20].fill(0);
+            
+             // Calculate Checksum
+            super::tcp::calculate_tcp_checksum(
+                &mut buffer[..total_len],
+                local_addr.ip.octets(),
+                remote_addr.ip.octets(),
+            );
+            
+            // Send via IP
+            let src_ip_out = Ipv4Address::new(local_addr.ip.octets());
+            let dst_ip_out = Ipv4Address::new(remote_addr.ip.octets());
+            
+            self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+        }
+        
+        if let Ok(mut tcb) = stream.tcb.lock() {
+             tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+        }
+
+        Ok(stream)
+    }
+
+    /// Bind a TCP listener
+    pub fn bind_tcp(&mut self, addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
+        // Delegate to processor
+        self.tcp.bind(addr)
+    }
+
     /// Send a raw TCP segment
     /// tcp_segment should already have the TCP header and data, with checksum calculated
     pub fn send_tcp(
@@ -639,6 +785,82 @@ impl NetworkStack {
     /// Unbind a UDP socket (removes binding and decrements any associated token)
     pub fn unbind_udp(&mut self, port: u16) {
         self.udp.bind(port);
+    }
+
+    /// Send a UDP datagram (UdpAddr-based variant)
+    pub fn send_udp_addr(
+        &mut self,
+        src: super::udp::UdpAddr,
+        dst: super::udp::UdpAddr,
+        data: &[u8],
+    ) -> Result<(), super::NetworkError> {
+        let config = self.config.clone();
+        let current_time = self.current_time();
+
+        // Use configured IP if source is ANY
+        let src_ip = if src.ip.is_any() {
+            config.ipv4.address
+        } else {
+            src.ip
+        };
+        let dst_ip = dst.ip;
+
+        // Resolve MAC address
+        let dst_mac = self.resolve_mac(dst_ip, &config, current_time)
+            .ok_or(super::NetworkError::ArpResolutionPending)?;
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+
+        // Build Ethernet frame
+        let mut frame = EthernetFrameMut::new(&mut buffer)
+            .ok_or(super::NetworkError::BufferTooSmall)?;
+        
+        frame
+            .set_destination(dst_mac)
+            .set_source(config.mac)
+            .set_ether_type(EtherType::Ipv4);
+
+        let eth_payload = frame.payload_mut();
+
+        // Build IP packet
+        let mut ip_packet = Ipv4PacketMut::new(eth_payload)
+            .ok_or(super::NetworkError::BufferTooSmall)?;
+        
+        ip_packet
+            .init_header()
+            .set_source(src_ip)
+            .set_destination(dst_ip)
+            .set_protocol(IpProtocol::Udp)
+            .set_ttl(64);
+
+        let ip_payload = ip_packet.payload_mut();
+        
+        // Build UDP datagram
+        let udp_len = super::udp::UdpHeader::SIZE + data.len();
+        if ip_payload.len() < udp_len {
+            return Err(super::NetworkError::BufferTooSmall);
+        }
+
+        // UDP Header
+        ip_payload[0..2].copy_from_slice(&src.port.to_be_bytes());
+        ip_payload[2..4].copy_from_slice(&dst.port.to_be_bytes());
+        ip_payload[4..6].copy_from_slice(&(udp_len as u16).to_be_bytes());
+        ip_payload[6..8].fill(0); // Checksum (optional for UDP over IPv4)
+        
+        // UDP Payload
+        ip_payload[8..8 + data.len()].copy_from_slice(data);
+        
+        // Finalize IP packet
+        ip_packet.finalize(udp_len);
+
+        let ip_len = ip_packet.total_len();
+        frame.set_payload_len(ip_len);
+
+        if self.transmit(frame.as_bytes()) {
+            Ok(())
+        } else {
+            Err(super::NetworkError::TransmitFailed)
+        }
     }
 
     /// Transmit a raw Ethernet frame
@@ -937,6 +1159,40 @@ pub fn unbind_udp(port: u16) {
             }
         }
         Err(_) => log::error!("[NET] Global Stack poisoned - unbind_udp failed"),
+    }
+}
+
+/// Bind a TCP listener
+pub fn bind_tcp(addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.bind_tcp(addr)
+            } else {
+                Err(TcpError::InvalidState)
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - bind_tcp failed");
+            Err(TcpError::InvalidState)
+        }
+    }
+}
+
+/// Connect to a remote TCP address
+pub fn connect_tcp(local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
+     match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.connect_tcp(local_addr, remote_addr)
+            } else {
+                Err(TcpError::InvalidState)
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - connect_tcp failed");
+            Err(TcpError::InvalidState)
+        }
     }
 }
 

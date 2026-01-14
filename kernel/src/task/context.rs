@@ -319,38 +319,36 @@ impl TaskControlBlock {
 // Per-CPU 現在タスク管理
 // ============================================================================
 
-use crate::sync::IrqMutex;
-
-/// Send を実装した TCB ポインタのラッパー
-///
-/// 生ポインタは Send を実装しないが、TCB へのアクセスは
-/// IrqMutex で保護されているため、安全に Send を実装できる
-#[derive(Clone, Copy)]
-struct TcbPtr(*mut TaskControlBlock);
-
-// SAFETY: TcbPtr へのアクセスは IrqMutex で保護されている
-unsafe impl Send for TcbPtr {}
-
-/// 各CPUの現在実行中タスク
-static CURRENT_TASKS: [IrqMutex<Option<TcbPtr>>; 64] = {
-    const INIT: IrqMutex<Option<TcbPtr>> = IrqMutex::new(None);
-    [INIT; 64]
-};
 
 /// 現在のCPUで実行中のタスクを設定
 ///
 /// # Safety
 /// tcb は有効な TaskControlBlock へのポインタである必要がある
 pub unsafe fn set_current_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
-    if cpu_id < 64 {
-        *CURRENT_TASKS[cpu_id].lock() = Some(TcbPtr(tcb));
+    if cpu_id < crate::mm::per_cpu::MAX_CPUS {
+        let per_cpu = crate::mm::per_cpu::get_per_cpu_data_mut(cpu_id);
+        per_cpu.current_task_ptr.store(tcb as u64, Ordering::Release);
+        
+        // Legacy support: update ID if needed
+        if !tcb.is_null() {
+            per_cpu.current_task_id = (*tcb).id.0;
+        } else {
+            per_cpu.current_task_id = 0;
+        }
     }
 }
 
+
 /// 現在のCPUで実行中のタスクを取得
 pub fn get_current_task(cpu_id: usize) -> Option<*mut TaskControlBlock> {
-    if cpu_id < 64 {
-        CURRENT_TASKS[cpu_id].lock().map(|p| p.0)
+    if cpu_id < crate::mm::per_cpu::MAX_CPUS {
+        let per_cpu = unsafe { crate::mm::per_cpu::get_per_cpu_data(cpu_id) };
+        let ptr = per_cpu.current_task_ptr.load(Ordering::Acquire);
+        if ptr == 0 {
+            None
+        } else {
+            Some(ptr as *mut TaskControlBlock)
+        }
     } else {
         None
     }
