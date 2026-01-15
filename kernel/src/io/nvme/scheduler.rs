@@ -15,12 +15,45 @@ use alloc::vec::Vec;
 use spin::{Mutex, RwLock};
 
 use crate::io::io_scheduler::{
-    DeviceId as IoDeviceId, IoError, IoOperationType, IoPayload, IoRequest, IoRequestId, IoResult,
-    ModeThresholds, PollHandler,
+    DeviceId as IoDeviceId, DeviceOps, IoError, IoOperationType, IoPayload, IoRequest,
+    IoRequestId, IoResult, ModeThresholds, PollHandler,
 };
 use crate::io::nvme::SglDescriptor;
 
 use super::global::with_driver;
+
+// ============================================================================
+// NVMe Device Operations (DeviceOps Implementation)
+// ============================================================================
+
+/// NVMeデバイス操作実装
+///
+/// DeviceOpsを実装し、IoSchedulerからの依存逆転を提供する。
+/// IoSchedulerはNVMe固有コードを知らずに、このtrait経由でのみ対話する。
+pub struct NvmeOps {
+    controller_id: u8,
+    namespace_id: u32,
+}
+
+impl NvmeOps {
+    /// 新しいNvmeOpsを作成
+    pub fn new(controller_id: u8, namespace_id: u32) -> Self {
+        Self {
+            controller_id,
+            namespace_id,
+        }
+    }
+}
+
+impl DeviceOps for NvmeOps {
+    fn submit(&self, req: &IoRequest) -> Result<(), IoError> {
+        submit_request(req)
+    }
+
+    fn is_ready(&self) -> bool {
+        with_driver(|d| d.is_active()).unwrap_or(false)
+    }
+}
 
 // ============================================================================
 // Poll Handler
@@ -136,25 +169,24 @@ impl PollHandler for NvmePollHandlerWrapper {
 // Registration
 // ============================================================================
 
-/// NVMeドライバをIoSchedulerに登録
+/// NVMeドライバを注入されたスケジューラに登録（依存注入版）
+///
+/// NVMeがglobalシングルトンを知らなくて済む形。
+/// 呼び出し側（kernel init等）だけがglobalを知る。
 ///
 /// # Arguments
+/// * `scheduler` - IoSchedulerへのArc参照
+/// * `coordinator` - HybridIoCoordinatorへのArc参照
 /// * `controller_id` - NVMeコントローラID
 /// * `namespace_id` - 名前空間ID
 /// * `num_cores` - ポーリングスレッド数
-///
-/// # Returns
-/// 登録されたPollHandlerへの参照（各コア用）
-pub fn register_with_io_scheduler(
+pub fn register_with(
+    scheduler: &Arc<crate::io::io_scheduler::IoScheduler>,
+    coordinator: &Arc<crate::io::io_scheduler::HybridIoCoordinator>,
     controller_id: u8,
     namespace_id: u32,
     num_cores: u32,
 ) -> Result<Vec<Arc<NvmePollHandler>>, &'static str> {
-    use crate::io::io_scheduler::{hybrid_coordinator, io_scheduler};
-
-    let scheduler = io_scheduler();
-    let coordinator = hybrid_coordinator();
-
     let available = with_driver(|driver| driver.io_queue_count()).unwrap_or(0);
     if available == 0 {
         return Err("NVMe driver not initialized or no I/O queues");
@@ -170,8 +202,11 @@ pub fn register_with_io_scheduler(
     // デフォルトのモード閾値でデバイスを登録
     scheduler.register_device(device_id, ModeThresholds::default());
 
+    // DeviceOpsを登録（依存逆転）
+    let nvme_ops = Arc::new(NvmeOps::new(controller_id, namespace_id));
+    scheduler.register_device_ops(device_id, nvme_ops);
+
     for core_id in 0..handler_count {
-        // PollHandlerを作成して登録
         let handler = Arc::new(NvmePollHandler::new(core_id, namespace_id));
         coordinator.polling_executor().register_handler(
             device_id,
@@ -179,7 +214,6 @@ pub fn register_with_io_scheduler(
                 inner: handler.clone(),
             }),
         );
-
         handlers.push(handler);
     }
 
@@ -188,6 +222,25 @@ pub fn register_with_io_scheduler(
         .insert((controller_id, namespace_id), handlers.clone());
 
     Ok(handlers)
+}
+
+/// NVMeドライバをIoSchedulerに登録（後方互換wrapper）
+///
+/// 内部でglobal singletonを使用。新規コードは `register_with()` を推奨。
+pub fn register_with_io_scheduler(
+    controller_id: u8,
+    namespace_id: u32,
+    num_cores: u32,
+) -> Result<Vec<Arc<NvmePollHandler>>, &'static str> {
+    use crate::io::io_scheduler::{hybrid_coordinator, io_scheduler};
+
+    register_with(
+        &io_scheduler(),
+        &hybrid_coordinator(),
+        controller_id,
+        namespace_id,
+        num_cores,
+    )
 }
 
 pub(crate) fn submit_request(request: &IoRequest) -> Result<(), IoError> {

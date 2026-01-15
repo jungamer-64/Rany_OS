@@ -110,8 +110,57 @@ pub enum DeviceId {
     Custom(u32),
 }
 
-/// I/Oリクエスト追加ペイロード
+// ============================================================================
+// Device-Neutral I/O Command (新設計)
+// ============================================================================
+
+/// DMA バッファハンドル（IOVA + 長さ）
+#[derive(Debug, Clone, Copy)]
+pub struct DmaBufHandle {
+    /// デバイス可視アドレス (IOVA)
+    pub iova: u64,
+    /// バッファサイズ
+    pub len: usize,
+}
+
+/// デバイス中立 I/O コマンド
+///
+/// スケジューラは共通I/Oのみを知り、デバイス固有形式（PRP/SGL等）は
+/// `DeviceOps::submit` 内でドライバが変換する。
 #[derive(Debug, Clone)]
+pub enum IoCommand {
+    /// ブロック読み取り
+    BlockRead {
+        lba: u64,
+        blocks: u16,
+        bytes: usize,
+        buf: DmaBufHandle,
+    },
+    /// ブロック書き込み
+    BlockWrite {
+        lba: u64,
+        blocks: u16,
+        bytes: usize,
+        buf: DmaBufHandle,
+    },
+    /// キャッシュフラッシュ
+    Flush,
+    /// TRIM/Discard
+    Discard { lba: u64, blocks: u32 },
+    /// IOCTL (デバイス固有コマンド用)
+    Ioctl { code: u32, buf: Option<DmaBufHandle> },
+}
+
+// ============================================================================
+// Legacy I/O Payload (後方互換用)
+// ============================================================================
+
+/// I/Oリクエスト追加ペイロード
+///
+/// **非推奨**: 新規コードは `IoCommand` を使用してください。
+/// NVMe固有形式がスケジューラ層に漏れる設計上の問題があります。
+#[derive(Debug, Clone)]
+#[deprecated(note = "Use IoCommand instead - IoPayload leaks device-specific details")]
 pub enum IoPayload {
     /// 追加情報なし
     None,
@@ -183,7 +232,10 @@ pub struct IoRequest {
     pub device: DeviceId,
     /// 操作タイプ
     pub operation: IoOperationType,
-    /// 追加ペイロード
+    /// デバイス中立コマンド（新API）
+    pub command: Option<IoCommand>,
+    /// 追加ペイロード（非推奨: 後方互換用）
+    #[allow(deprecated)]
     pub payload: IoPayload,
     /// 優先度
     pub priority: IoPriority,
@@ -245,6 +297,29 @@ where
 
 /// I/O完了フック型
 pub type CompletionHook = Box<dyn IoCompletionHook>;
+
+// ============================================================================
+// Device Operations (Dependency Inversion)
+// ============================================================================
+
+/// デバイス操作インターフェース
+///
+/// 具体的なデバイス（NVMe, VirtIO-blk, AHCI等）は
+/// このtraitを実装してIoSchedulerに登録する。
+/// これによりスケジューラは具体デバイスを知らずに済む（依存逆転）。
+///
+/// Note: ポーリングは PollingExecutor に別途登録する（二重登録を防ぐため）
+pub trait DeviceOps: Send + Sync {
+    /// リクエストをデバイスへ投入
+    ///
+    /// 成功 = 投入完了。完了通知は interrupt/poll で complete_request へ。
+    fn submit(&self, req: &IoRequest) -> Result<(), IoError>;
+
+    /// デバイスが準備完了かどうか
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
 
 // ============================================================================
 // Adaptive I/O Mode Controller
@@ -512,6 +587,8 @@ pub struct IoScheduler {
     requests: RwLock<BTreeMap<IoRequestId, IoRequest>>,
     /// デバイスごとのモードコントローラ
     mode_controllers: RwLock<BTreeMap<DeviceId, Arc<DeviceIoModeController>>>,
+    /// デバイス操作ハンドラ（依存逆転用）
+    device_ops: RwLock<BTreeMap<DeviceId, Arc<dyn DeviceOps>>>,
     /// グローバルI/O統計
     stats: IoSchedulerStats,
     /// 完了フック
@@ -567,6 +644,7 @@ impl IoScheduler {
             ],
             requests: RwLock::new(BTreeMap::new()),
             mode_controllers: RwLock::new(BTreeMap::new()),
+            device_ops: RwLock::new(BTreeMap::new()),
             stats: IoSchedulerStats::new(),
             completion_hooks: Mutex::new(BTreeMap::new()),
             polling_enabled: AtomicBool::new(true),
@@ -578,6 +656,19 @@ impl IoScheduler {
     pub fn register_device(&self, device: DeviceId, thresholds: ModeThresholds) {
         let controller = Arc::new(DeviceIoModeController::new(device, thresholds));
         self.mode_controllers.write().insert(device, controller);
+    }
+
+    /// デバイス操作ハンドラを登録（依存逆転）
+    ///
+    /// 具体デバイス（NVMe, VirtIO等）は起動時にこのメソッドで登録し、
+    /// スケジューラはDeviceOps経由でのみデバイスと対話する。
+    pub fn register_device_ops(&self, device: DeviceId, ops: Arc<dyn DeviceOps>) {
+        self.device_ops.write().insert(device, ops);
+    }
+
+    /// デバイス操作ハンドラを取得
+    pub fn get_device_ops(&self, device: DeviceId) -> Option<Arc<dyn DeviceOps>> {
+        self.device_ops.read().get(&device).cloned()
     }
 
     /// I/Oリクエストをサブミット
@@ -599,10 +690,12 @@ impl IoScheduler {
         payload: IoPayload,
     ) -> IoRequestId {
         let id = IoRequestId::next();
+        #[allow(deprecated)]
         let request = IoRequest {
             id,
             device,
             operation,
+            command: None, // TODO: 新API移行後にpayloadから変換
             payload,
             priority,
             state: IoState::Pending,
@@ -644,6 +737,52 @@ impl IoScheduler {
             }
         }
 
+        id
+    }
+
+    /// デバイス中立コマンドでI/Oをサブミット（新API）
+    ///
+    /// `IoCommand` を使用し、デバイス固有形式（PRP/SGL等）は
+    /// ドライバの `DeviceOps::submit` 内で変換される。
+    #[allow(deprecated)]
+    pub fn submit_command(
+        &self,
+        device: DeviceId,
+        command: IoCommand,
+        priority: IoPriority,
+    ) -> IoRequestId {
+        let id = IoRequestId::next();
+        let operation = match &command {
+            IoCommand::BlockRead { .. } => IoOperationType::Read,
+            IoCommand::BlockWrite { .. } => IoOperationType::Write,
+            IoCommand::Flush => IoOperationType::Flush,
+            IoCommand::Discard { .. } => IoOperationType::Custom(0),
+            IoCommand::Ioctl { code, .. } => IoOperationType::Ioctl,
+        };
+        let request = IoRequest {
+            id,
+            device,
+            operation,
+            command: Some(command),
+            payload: IoPayload::None,
+            priority,
+            state: IoState::Pending,
+            submitted_at: current_tick(),
+            completed_at: None,
+            waker: None,
+            result: None,
+            abandoned: false,
+        };
+        self.requests.write().insert(id, request);
+        let queue_idx = priority as usize;
+        self.queues[queue_idx].lock().push_back(id);
+        self.stats.total_submitted.fetch_add(1, Ordering::Relaxed);
+        let depth = self.stats.current_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        loop {
+            let max = self.stats.max_queue_depth.load(Ordering::Relaxed);
+            if depth <= max { break; }
+            if self.stats.max_queue_depth.compare_exchange_weak(max, depth, Ordering::Relaxed, Ordering::Relaxed).is_ok() { break; }
+        }
         id
     }
 
@@ -1440,9 +1579,12 @@ impl HybridIoCoordinator {
                 continue;
             }
 
-            let result = match request.device {
-                DeviceId::Nvme { .. } => crate::io::nvme::scheduler::submit_request(&request),
-                _ => Err(IoError::NotSupported),
+            // 依存逆転: デバイス固有コードへの直接参照を除去
+            // DeviceOpsレジストリ経由でデバイスへ投入
+            let ops = self.scheduler.get_device_ops(request.device);
+            let result = match ops {
+                Some(ops) => ops.submit(&request),
+                None => Err(IoError::NotSupported),
             };
 
             if let Err(err) = result {

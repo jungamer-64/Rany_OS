@@ -353,7 +353,7 @@ impl NetworkStack {
 
     /// Process UDP packet
     fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
-        let result = self.udp.process(data, src_ip, dst_ip);
+        let result = self.udp.process_with_packet(data, src_ip, dst_ip, _packet);
 
         match result {
             UdpResult::Delivered => {}
@@ -922,6 +922,54 @@ impl NetworkStack {
         let dst_mac = self.resolve_mac(dst_ip, &config, current_time)
             .ok_or(super::NetworkError::ArpResolutionPending)?;
 
+        // Try zero-copy first: build packet directly into a PacketRef and enqueue
+        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+            if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
+                frame
+                    .set_destination(dst_mac)
+                    .set_source(config.mac)
+                    .set_ether_type(EtherType::Ipv4);
+
+                let eth_payload = frame.payload_mut();
+
+                if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                    ip_packet
+                        .init_header()
+                        .set_source(src_ip)
+                        .set_destination(dst_ip)
+                        .set_protocol(IpProtocol::Udp)
+                        .set_ttl(64);
+
+                    let ip_payload = ip_packet.payload_mut();
+
+                    // Build UDP datagram
+                    if let Some(udp_len) = super::udp::UdpProcessor::build_packet(
+                        ip_payload,
+                        config.ipv4.address,
+                        src.port,
+                        dst_ip,
+                        dst.port,
+                        data,
+                    ) {
+                        ip_packet.finalize(udp_len);
+                        let ip_len = ip_packet.total_len();
+                        frame.set_payload_len(ip_len);
+
+                        let total_len = frame.as_bytes().len();
+                        // Release mutable borrow before moving packet
+                        drop(frame);
+                        packet.set_len(total_len);
+
+                        if let Ok(()) = crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
+                            self.stats.record_tx(total_len);
+                            return Ok(());
+                        }
+                        // Fall back to copy-based path on failure
+                    }
+                }
+            }
+        }
+
         let mut buffer = [0u8; MAX_PACKET_SIZE];
 
         // Build Ethernet frame
@@ -1025,7 +1073,62 @@ impl NetworkStack {
         let local_ip = self.ipv4_address();
         let identifier = 0x1234u16; // Fixed identifier for now
 
-        // Allocate packet buffer
+        // Need to resolve target MAC via ARP
+        let current_time = self.current_time();
+        let target_mac = self.arp.cache().lookup(target, current_time);
+
+        let dst_mac = match target_mac {
+            Some(mac) => mac,
+            None => {
+                log::info!("[NET-PING] ARP required for {}.{}.{}.{} seq={} - sending ARP request",
+                    target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+                self.send_arp_request(target);
+                return Err(());
+            }
+        };
+
+        // Try zero-copy path first
+        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+            if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
+                let src_mac = self.mac_address();
+                frame
+                    .set_destination(dst_mac)
+                    .set_source(src_mac)
+                    .set_ether_type(EtherType::Ipv4);
+
+                if let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) {
+                    ip_packet
+                        .init_header()
+                        .set_source(local_ip)
+                        .set_destination(target)
+                        .set_protocol(IpProtocol::Icmp)
+                        .set_ttl(64);
+
+                    if let Some(mut icmp) = IcmpEchoBuilder::new(ip_packet.payload_mut()) {
+                        icmp.build_request(identifier, sequence).write_data(&[]);
+                        let icmp_len = icmp.finalize();
+                        ip_packet.finalize(icmp_len);
+
+                        let ip_len = ip_packet.total_len();
+                        frame.set_payload_len(ip_len);
+
+                        let total_len = frame.as_bytes().len();
+                        let send_time = self.current_time();
+                        drop(frame);
+                        packet.set_len(total_len);
+
+                        if crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet).is_ok() {
+                            self.stats.record_tx(total_len);
+                            log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
+                                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+                            return Ok(send_time);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Allocate packet buffer (fallback)
         let mut buffer = self.tx_pool.alloc().ok_or(())?;
         let buf = buffer.as_mut_slice();
 
@@ -1038,24 +1141,6 @@ impl NetworkStack {
         if buf.len() < total_len {
             return Err(());
         }
-
-        // Need to resolve target MAC via ARP
-        let current_time = self.current_time();
-        // arp.cache() is accessible directly now
-        let target_mac = self.arp.cache().lookup(target, current_time);
-
-        let dst_mac = match target_mac {
-            Some(mac) => mac,
-            None => {
-                // For gateway, use broadcast initially
-                // In a real implementation, we'd send ARP request and wait
-                // Trigger ARP request
-                log::info!("[NET-PING] ARP required for {}.{}.{}.{} seq={} - sending ARP request",
-                    target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
-                self.send_arp_request(target);
-                return Err(());
-            }
-        };
 
         // Build Ethernet header
         let src_mac = self.mac_address();
@@ -1356,6 +1441,41 @@ mod tests {
         assert!(!send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0x1, 0x2]));
         assert!(!send_tcp(Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[]));
         assert!(bind_udp(1234).is_none());
+    }
+
+    #[test_case]
+    fn test_send_udp_fallback_zero_copy() {
+        // Initialize stack and set transmit function to always succeed
+        init_default();
+        if let Ok(mut guard) = stack::stack().lock() {
+            if let Some(ref mut s) = *guard {
+                s.set_transmit_fn(|_data| true);
+            }
+        }
+
+        let dst = Ipv4Address::new([255, 255, 255, 255]); // Broadcast -> immediate MAC
+        assert!(send_udp(1234, dst, 80, &[1, 2, 3]));
+    }
+
+    #[test_case]
+    fn test_send_icmp_fallback_zero_copy() {
+        // Initialize stack and set transmit function
+        init_default();
+        if let Ok(mut guard) = stack::stack().lock() {
+            if let Some(ref mut s) = *guard {
+                s.set_transmit_fn(|_data| true);
+                // Pre-populate ARP cache so ping will proceed
+                let target = Ipv4Address::new([8, 8, 8, 8]);
+                s.arp.cache().insert(
+                    target,
+                    MacAddress::from_octets(0x52, 0x54, 0x00, 0x12, 0x34, 0x56),
+                    s.current_time(),
+                );
+            }
+        }
+
+        let res = send_icmp_echo([8, 8, 8, 8], 1);
+        assert!(res.is_ok());
     }
 }
 

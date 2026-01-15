@@ -26,7 +26,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};

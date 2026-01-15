@@ -253,6 +253,52 @@ pub trait KernelServices: Send + Sync {
     /// Releases all DMA resources. Returns `Ok(())` on success.
     fn nvme_complete_dma_write(&self, handle: crate::NvmeDmaHandle) -> KapiResult<()>;
 
+    /// Get IOMMU device ID for NVMe controller
+    ///
+    /// Returns the IOMMU device ID used for DMA mappings. This abstracts
+    /// the `io::nvme::iommu_device()` call.
+    fn nvme_iommu_device_id(&self, device_id: u64) -> Option<u64>;
+
+    /// Map physical address for NVMe DMA access
+    ///
+    /// Creates an IOMMU mapping for the given physical address.
+    /// Returns (iova, mapping_id) where iova is the device-visible address
+    /// and mapping_id is used for later unmap.
+    fn nvme_iommu_map(
+        &self,
+        device_id: u64,
+        phys_addr: u64,
+        size: usize,
+    ) -> KapiResult<(u64, u64)>;
+
+    /// Unmap a previous IOMMU mapping
+    fn nvme_iommu_unmap(&self, mapping_id: u64) -> KapiResult<()>;
+
+    /// Submit an NVMe read/write I/O request
+    ///
+    /// This abstracts the io_scheduler submit and completion handling.
+    /// Returns a handle that can be used to wait for completion.
+    fn nvme_submit_rw(
+        &self,
+        request: crate::NvmeRwRequest,
+        io_type: crate::NvmeIoType,
+    ) -> KapiResult<crate::NvmeIoHandle>;
+
+    /// Wait for an NVMe I/O request to complete
+    ///
+    /// Blocks until the I/O completes and returns the result.
+    fn nvme_wait_io(
+        &self,
+        handle: crate::NvmeIoHandle,
+    ) -> Pin<Box<dyn Future<Output = crate::NvmeIoResult> + Send>>;
+
+    /// Register a completion callback for an NVMe I/O request
+    fn nvme_register_completion_hook(
+        &self,
+        handle: crate::NvmeIoHandle,
+        hook: Box<dyn FnOnce(crate::NvmeIoResult) + Send>,
+    );
+
     // ========================================================================
     // IPC (Inter-Process Communication)
     // ========================================================================

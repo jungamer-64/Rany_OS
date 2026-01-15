@@ -19,7 +19,6 @@
 
 use crate::sync::IrqMutex;
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
@@ -2054,7 +2053,6 @@ pub struct BuddyAllocatorStats {
 // - Cold Path: Buddyからバッチでリフィル
 // ============================================================================
 
-use core::sync::atomic::AtomicUsize;
 
 /// Per-CPUフロントレイヤーのキャッシュサイズ
 pub const FRONT_LAYER_CACHE_SIZE: usize = 64;

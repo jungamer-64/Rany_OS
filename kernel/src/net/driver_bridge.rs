@@ -113,27 +113,18 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
 // Receive Bridge
 // ============================================================================
 
-/// Process a received payload from VirtIO-Net
-/// Call this from the interrupt handler or polling loop
+/// Process a received payload from VirtIO-Net (compatibility wrapper)
+/// Call this from older interrupt handlers or polling loops.
+/// This delegates to the zero-copy path by allocating a PacketRef and handing it off.
 pub fn process_received_packet(data: &[u8]) {
-    RX_PACKETS.fetch_add(1, Ordering::Relaxed);
-
-    // crate::io::log::early_print(&alloc::format!("[EARLY][NET-RX] Received {} bytes\n", data.len()));
-
+    // Allocate PacketRef and copy payload, then delegate to zero-copy implementation
     use super::mempool::alloc_packet;
 
-    // Allocate PacketRef directly
     if let Some(mut packet) = alloc_packet() {
-        // Copy data
         let len = data.len().min(packet.capacity());
         packet.data_mut()[..len].copy_from_slice(&data[..len]);
-        packet.set_len(len);
-
-        // Enqueue to batch processor
-        if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
-            // Batch is full, process it
-            stack::receive_batch(batch);
-        }
+        // Delegate to zero-copy processing (header_size = 0)
+        process_received_packet_zero_copy(packet, 0, len);
     } else {
         // OOM drop
         #[cfg(debug_assertions)]

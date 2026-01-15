@@ -29,8 +29,9 @@ use kernel_api::error::KapiError;
 use kernel_api::KapiResult;
 use kernel_api::services::KernelServices;
 use kernel_api::{
-    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, OpenMode, TaskHandle, TcpEndpoint,
-    Packet, RawSocketHandle, NvmeDmaHandle,
+    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle,
+    NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
+    OpenMode, Packet, RawSocketHandle, TaskHandle, TcpEndpoint,
 };
 use spin::Mutex;
 
@@ -272,6 +273,33 @@ impl NvmeDmaContextRegistry {
 }
 
 static NVME_DMA_CONTEXT_REGISTRY: NvmeDmaContextRegistry = NvmeDmaContextRegistry::new();
+
+// IOMMU Mapping Registry for tracking active mappings
+struct IommuMappingRegistry {
+    mappings: Mutex<BTreeMap<u64, IommuMapping>>,
+    next_id: AtomicU64,
+}
+
+impl IommuMappingRegistry {
+    const fn new() -> Self {
+        Self {
+            mappings: Mutex::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    fn register(&self, mapping: IommuMapping) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.mappings.lock().insert(id, mapping);
+        id
+    }
+
+    fn unregister(&self, id: u64) -> Option<IommuMapping> {
+        self.mappings.lock().remove(&id)
+    }
+}
+
+static IOMMU_MAPPING_REGISTRY: IommuMappingRegistry = IommuMappingRegistry::new();
 
 // Helper: align up to page size
 fn align_up_page(value: usize) -> usize {
@@ -939,7 +967,7 @@ impl KernelServices for ExoKernel {
         .flatten()
     }
 
-    fn nvme_prepare_dma_read(&self, device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle> {
+    fn nvme_prepare_dma_read(&self, _device_id: u64, len: usize) -> KapiResult<NvmeDmaHandle> {
         if len == 0 {
             return Err(KapiError::IoError);
         }
@@ -967,7 +995,7 @@ impl KernelServices for ExoKernel {
         Ok(NvmeDmaHandle::new(id, data_addr, prp2, len))
     }
 
-    fn nvme_prepare_dma_write(&self, device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle> {
+    fn nvme_prepare_dma_write(&self, _device_id: u64, data: &[u8]) -> KapiResult<NvmeDmaHandle> {
         if data.is_empty() {
             return Err(KapiError::IoError);
         }
@@ -1018,6 +1046,143 @@ impl KernelServices for ExoKernel {
             .ok_or(KapiError::InvalidHandle)?;
         let _ = entry.complete();
         Ok(())
+    }
+
+    fn nvme_iommu_device_id(&self, _device_id: u64) -> Option<u64> {
+        crate::io::nvme::iommu_device().map(|d| {
+            // Pack IommuDeviceId into u64 for API boundary
+            // DeviceId has public fields: segment, bus, device, function
+            ((d.segment as u64) << 32) | ((d.bus as u64) << 16) | ((d.device as u64) << 8) | (d.function as u64)
+        })
+    }
+
+    fn nvme_iommu_map(
+        &self,
+        _device_id: u64,
+        phys_addr: u64,
+        size: usize,
+    ) -> KapiResult<(u64, u64)> {
+        let device = crate::io::nvme::iommu_device();
+        let (iova, mapping) = map_for_iommu(device, phys_addr, size)?;
+        
+        // If we have a mapping, register it and return the ID
+        if let Some(m) = mapping {
+            let id = IOMMU_MAPPING_REGISTRY.register(m);
+            Ok((iova, id))
+        } else {
+            // No IOMMU - identity mapping
+            Ok((iova, 0))
+        }
+    }
+
+    fn nvme_iommu_unmap(&self, mapping_id: u64) -> KapiResult<()> {
+        if mapping_id == 0 {
+            // Identity mapping, nothing to unmap
+            return Ok(());
+        }
+        
+        if let Some(mapping) = IOMMU_MAPPING_REGISTRY.unregister(mapping_id) {
+            mapping.unmap();
+        }
+        Ok(())
+    }
+
+    fn nvme_submit_rw(
+        &self,
+        request: NvmeRwRequest,
+        io_type: NvmeIoType,
+    ) -> KapiResult<NvmeIoHandle> {
+        use crate::io::io_scheduler::{
+            DeviceId as IoDeviceId, IoOperationType, IoPayload, IoPriority, NvmeRwPayload,
+        };
+
+        let device = IoDeviceId::Nvme {
+            controller: 0,
+            namespace: request.namespace_id,
+        };
+
+        let operation = match io_type {
+            NvmeIoType::Read => IoOperationType::Read,
+            NvmeIoType::Write => IoOperationType::Write,
+            NvmeIoType::Flush => IoOperationType::Flush,
+            NvmeIoType::Discard => IoOperationType::Custom(0),
+        };
+
+        let priority = match request.priority {
+            NvmeIoPriority::Background => IoPriority::Background,
+            NvmeIoPriority::Idle => IoPriority::Idle,
+            NvmeIoPriority::Normal => IoPriority::Normal,
+            NvmeIoPriority::High => IoPriority::High,
+            NvmeIoPriority::Realtime => IoPriority::Realtime,
+        };
+
+        let payload = IoPayload::NvmeRw(NvmeRwPayload {
+            lba: request.lba,
+            blocks: request.blocks,
+            prp1: request.prp1,
+            prp2: request.prp2,
+            bytes: request.bytes,
+        });
+
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+            device, operation, priority, payload,
+        );
+        let request_id = future.request_id().0;
+
+        Ok(NvmeIoHandle::new(request_id))
+    }
+
+    fn nvme_wait_io(
+        &self,
+        handle: NvmeIoHandle,
+    ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
+        use crate::io::io_scheduler::{IoRequestId, IoResult as SchedIoResult};
+
+        let request_id = IoRequestId(handle.request_id());
+        
+        Box::pin(async move {
+            // Poll the io_scheduler for completion
+            loop {
+                if let Some(result) = crate::io::io_scheduler::io_scheduler().take_result(request_id) {
+                    return match result {
+                        SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
+                        SchedIoResult::Error(e) => match e {
+                            crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
+                            crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
+                            crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                            _ => NvmeIoResult::DeviceError,
+                        },
+                    };
+                }
+                // Yield to allow other tasks to run
+                core::hint::spin_loop();
+            }
+        })
+    }
+
+    fn nvme_register_completion_hook(
+        &self,
+        handle: NvmeIoHandle,
+        hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
+    ) {
+        use crate::io::io_scheduler::{CompletionHook, IoRequestId, IoResult as SchedIoResult};
+
+        let request_id = IoRequestId(handle.request_id());
+        
+        let wrapper: CompletionHook = Box::new(move |result: SchedIoResult| {
+            let converted = match result {
+                SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
+                SchedIoResult::Error(e) => match e {
+                    crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
+                    crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
+                    crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                    _ => NvmeIoResult::DeviceError,
+                },
+            };
+            hook(converted);
+        });
+
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, wrapper);
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {

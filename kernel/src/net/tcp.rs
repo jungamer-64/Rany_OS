@@ -973,6 +973,7 @@ impl TcpStream {
         WriteFuture { stream: self, buf }
     }
 
+
     /// 【設計書 6.2】ゼロコピー書き込み
     ///
     /// 事前に割り当てたパケットバッファの所有権をTCPスタックに移動します。
@@ -995,6 +996,12 @@ impl TcpStream {
     /// シャットダウン
     pub async fn shutdown(&mut self) -> Result<(), TcpError> {
         ShutdownFuture { stream: self }.await
+    }
+}
+
+impl Clone for TcpStream {
+    fn clone(&self) -> Self {
+        TcpStream { tcb: self.tcb.clone() }
     }
 }
 
@@ -1290,7 +1297,7 @@ struct ConnectTimeoutFuture {
 impl Future for ConnectTimeoutFuture {
     type Output = Result<(), TcpError>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.tcb.lock() {
             Ok(mut tcb) => match tcb.state {
                 TcpState::Established => Poll::Ready(Ok(())),
