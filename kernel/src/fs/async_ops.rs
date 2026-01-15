@@ -26,7 +26,6 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
-use x86_64::PhysAddr;
 
 use kernel_api::DmaBuffer;
 
@@ -36,7 +35,6 @@ use super::fs_abstraction::{
 };
 
 // NVMe per-core API
-use crate::io::nvme::global as nvme_global;
 use crate::io::io_scheduler::{
     CompletionHook,
     DeviceId as IoDeviceId,
@@ -49,22 +47,64 @@ use crate::io::io_scheduler::{
     NvmeSglDescriptor,
     NvmeSglPayload,
 };
-use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::dma::{CpuOwned, DeviceOwned, SgDmaGuard, SliceDmaGuard, TypedDmaSlice, TypedSgList};
 
 const NVME_PAGE_SIZE: usize = 4096;
 const NVME_BLOCK_SIZE: u64 = 512;
 const NVME_MAX_SGL_ENTRIES: usize = 32;
+/// Size of NVMe SGL descriptor (16 bytes)
+const NVME_SGL_DESCRIPTOR_SIZE: usize = 16;
+
+/// Local DSM Range definition to avoid io::nvme import
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct LocalDsmRange {
+    context_attributes: u32,
+    length: u32,
+    starting_lba: u64,
+}
+
+impl LocalDsmRange {
+    fn new(starting_lba: u64, length: u32) -> Self {
+        Self {
+            context_attributes: 0,
+            length,
+            starting_lba,
+        }
+    }
+}
+
+/// Local SGL Descriptor definition to avoid io::nvme import
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct LocalSglDescriptor {
+    addr: u64,
+    length: u32,
+    _reserved: [u8; 3],
+    type_specific: u8,
+}
+
+impl LocalSglDescriptor {
+    fn data_block(addr: u64, length: u32) -> Self {
+        Self {
+            addr,
+            length,
+            _reserved: [0; 3],
+            type_specific: 0x00 << 4, // Data Block
+        }
+    }
+}
 
 struct NvmeIommuMapping {
-    device: IommuDeviceId,
+    /// Kernel-assigned mapping ID for unmap via kernel_api
+    mapping_id: u64,
     iova: u64,
-    size: u64,
 }
 
 impl NvmeIommuMapping {
     fn unmap(self) {
-        let _ = crate::io::iommu::api::unmap_for_device(&self.device, self.iova, self.size);
+        // Use kernel_api abstraction for IOMMU unmap
+        let _ = kernel_api::kernel().nvme_iommu_unmap(self.mapping_id);
     }
 }
 
@@ -291,39 +331,24 @@ fn align_up(value: usize, align: usize) -> usize {
 }
 
 fn map_nvme_iommu(
-    device: Option<IommuDeviceId>,
     phys_addr: u64,
     size: usize,
 ) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
-    if !crate::io::iommu::api::is_iommu_enabled() {
-        if crate::io::iommu::api::is_iommu_required() {
-            return Err(FsError::IoError);
+    // Use kernel_api abstraction for IOMMU mapping
+    match kernel_api::kernel().nvme_iommu_map(0, phys_addr, size) {
+        Ok((iova, mapping_id)) => {
+            if mapping_id == 0 {
+                // Identity mapping (no IOMMU or passthrough)
+                Ok((iova, None))
+            } else {
+                Ok((iova, Some(NvmeIommuMapping { mapping_id, iova })))
+            }
         }
-        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
-            return Err(FsError::IoError);
-        }
-        return Ok((phys_addr, None));
+        Err(_) => Err(FsError::IoError),
     }
-
-    let device = device.ok_or(FsError::IoError)?;
-    let map_len = align_up(size, NVME_PAGE_SIZE);
-    let iova = unsafe {
-        crate::io::iommu::api::map_for_device(&device, PhysAddr::new(phys_addr), map_len as u64)
-    }
-    .map_err(|_| FsError::IoError)?;
-
-    Ok((
-        iova,
-        Some(NvmeIommuMapping {
-            device,
-            iova,
-            size: map_len as u64,
-        }),
-    ))
 }
 
 fn build_prp_list(
-    device: Option<IommuDeviceId>,
     base_addr: u64,
     len: usize,
 ) -> FsResult<(u64, Option<NvmePrpListChain>)> {
@@ -359,7 +384,7 @@ fn build_prp_list(
     let mut list_maps = Vec::with_capacity(list_buffers.len());
     for list in &list_buffers {
         let list_phys = list.phys_addr().as_u64();
-        let (list_addr, list_map) = map_nvme_iommu(device, list_phys, NVME_PAGE_SIZE)?;
+        let (list_addr, list_map) = map_nvme_iommu(list_phys, NVME_PAGE_SIZE)?;
         list_iovas.push(list_addr);
         list_maps.push(list_map);
     }
@@ -419,9 +444,9 @@ fn prepare_dma_read(len: usize) -> FsResult<(NvmeDmaContext, u64, u64)> {
     let alloc_len = align_up(len, NVME_PAGE_SIZE);
     let data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(FsError::NoSpace)?;
     let data_phys = data.phys_addr().as_u64();
-    let device = crate::io::nvme::iommu_device();
-    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
-    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    // Use kernel_api abstractions - device param is now ignored
+    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
     let (data_dev, data_guard) = data.start_dma();
     Ok((
         NvmeDmaContext {
@@ -445,9 +470,9 @@ fn prepare_dma_write(buf: &[u8], dma_len: usize) -> FsResult<(NvmeDmaContext, u6
         data.as_mut_slice()[buf.len()..].fill(0);
     }
     let data_phys = data.phys_addr().as_u64();
-    let device = crate::io::nvme::iommu_device();
-    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
-    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    // Use kernel_api abstractions - device param is now ignored
+    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
     let (data_dev, data_guard) = data.start_dma();
     Ok((
         NvmeDmaContext {
@@ -468,9 +493,9 @@ fn prepare_dma_from_cpu_buffer(
 ) -> FsResult<(NvmeDmaContext, u64, u64)> {
     let alloc_len = data.len();
     let data_phys = data.phys_addr().as_u64();
-    let device = crate::io::nvme::iommu_device();
-    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
-    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    // Use kernel_api abstractions - device param is now ignored
+    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
     let (data_dev, data_guard) = data.start_dma();
     Ok((
         NvmeDmaContext {
@@ -491,9 +516,9 @@ fn prepare_dma_from_kapi_buffer(
 ) -> FsResult<(NvmeExternalDmaContext, u64, u64)> {
     let alloc_len = buffer.size();
     let data_phys = buffer.physical_address();
-    let device = crate::io::nvme::iommu_device();
-    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
-    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    // Use kernel_api abstractions - device param is now ignored
+    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
     Ok((
         NvmeExternalDmaContext {
             prp_list,
@@ -528,12 +553,12 @@ fn prepare_nvme_sgl(
     }
 
     let entry_count = list.entries().len();
-    let device = crate::io::nvme::iommu_device();
+    // Use kernel_api abstractions - device param is now ignored
     let mut data_maps: Vec<NvmeIommuMapping> = Vec::new();
     let mut mapped_entries = Vec::with_capacity(entry_count);
 
     for entry in list.entries() {
-        let (addr, map) = match map_nvme_iommu(device, entry.phys_addr, entry.size as usize) {
+        let (addr, map) = match map_nvme_iommu(entry.phys_addr, entry.size as usize) {
             Ok(v) => v,
             Err(e) => {
                 for map in data_maps.drain(..) {
@@ -565,7 +590,7 @@ fn prepare_nvme_sgl(
         return Ok((ctx, sgl, total_bytes));
     }
 
-    let list_bytes = entry_count * core::mem::size_of::<crate::io::nvme::SglDescriptor>();
+    let list_bytes = entry_count * NVME_SGL_DESCRIPTOR_SIZE;
     let list_len = match u32::try_from(list_bytes) {
         Ok(v) => v,
         Err(_) => {
@@ -586,17 +611,17 @@ fn prepare_nvme_sgl(
     };
     let list_slice = unsafe {
         core::slice::from_raw_parts_mut(
-            list_buf.as_mut_slice().as_mut_ptr() as *mut crate::io::nvme::SglDescriptor,
+            list_buf.as_mut_slice().as_mut_ptr() as *mut LocalSglDescriptor,
             entry_count,
         )
     };
 
     for (dst, (addr, size)) in list_slice.iter_mut().zip(mapped_entries.iter()) {
-        *dst = crate::io::nvme::SglDescriptor::data_block(*addr, *size);
+        *dst = LocalSglDescriptor::data_block(*addr, *size);
     }
 
     let list_phys = list_buf.phys_addr().as_u64();
-    let (list_addr, list_map) = match map_nvme_iommu(device, list_phys, list_bytes) {
+    let (list_addr, list_map) = match map_nvme_iommu(list_phys, list_bytes) {
         Ok(v) => v,
         Err(e) => {
             for map in data_maps.drain(..) {
@@ -2132,21 +2157,21 @@ impl DirectBlockHandle {
 
         let mut dsm = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE)
             .ok_or(FsError::NoSpace)?;
-        let range = crate::io::nvme::commands::DsmRange::new(
+        let range = LocalDsmRange::new(
             self.start_block + block_offset,
             count as u32,
         );
         let dsm_bytes = dsm.as_mut_slice();
         let dst = unsafe {
             core::slice::from_raw_parts_mut(
-                dsm_bytes.as_mut_ptr() as *mut crate::io::nvme::commands::DsmRange,
+                dsm_bytes.as_mut_ptr() as *mut LocalDsmRange,
                 1,
             )
         };
         dst[0] = range;
 
-        let device = crate::io::nvme::iommu_device();
-        let (prp1, prp_map) = map_nvme_iommu(device, dsm.phys_addr().as_u64(), dsm.len())?;
+        // Use kernel_api abstractions - device param is now ignored
+        let (prp1, prp_map) = map_nvme_iommu(dsm.phys_addr().as_u64(), dsm.len())?;
         let prp_map: Option<NvmeIommuMapping> = prp_map;
         let (dev, guard) = dsm.start_dma();
         let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(

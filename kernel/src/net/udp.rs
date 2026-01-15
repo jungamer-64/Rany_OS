@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+use crate::net::mempool::PacketRef;
 use crate::net::NetworkError;
 
 extern crate alloc;
@@ -266,19 +267,27 @@ pub struct UdpDatagram {
 pub(crate) struct UdpSocketInner {
     /// Local port
     local_port: u16,
-    /// Receive queue
+    /// Receive queue (copy-based datagrams)
     rx_queue: VecDeque<UdpDatagram>,
+    /// Receive queue (zero-copy PacketRef)
+    rx_packet_queue: VecDeque<(UdpAddr, PacketRef)>,
     /// Waker for async receive
     waker: Option<Waker>,
     /// Is socket closed
     closed: bool,
     /// Optional associated grant token id used to authorize this binding
     token: Option<u64>,
-} 
+}  
 
 /// UDP socket (async)
 pub struct UdpSocket {
     inner: Arc<PoisonLock<UdpSocketInner>>,
+}
+
+impl Clone for UdpSocket {
+    fn clone(&self) -> Self {
+        UdpSocket { inner: self.inner.clone() }
+    }
 }
 
 impl UdpSocket {
@@ -293,6 +302,7 @@ impl UdpSocket {
             inner: Arc::new(PoisonLock::new(UdpSocketInner {
                 local_port,
                 rx_queue: VecDeque::new(),
+                rx_packet_queue: VecDeque::new(),
                 waker: None,
                 closed: false,
                 token,
@@ -314,6 +324,13 @@ impl UdpSocket {
     /// Receive a datagram (async)
     pub fn recv(&self) -> UdpRecvFuture {
         UdpRecvFuture {
+            socket: self.inner.clone(),
+        }
+    }
+
+    /// Receive a datagram as PacketRef (zero-copy)
+    pub fn recv_packet(&self) -> UdpRecvPacketFuture {
+        UdpRecvPacketFuture {
             socket: self.inner.clone(),
         }
     }
@@ -430,6 +447,36 @@ impl Future for UdpRecvFuture {
     }
 }
 
+/// Future for receiving UDP datagrams as PacketRef
+pub struct UdpRecvPacketFuture {
+    socket: Arc<PoisonLock<UdpSocketInner>>,
+}
+
+impl Future for UdpRecvPacketFuture {
+    type Output = Option<(UdpAddr, PacketRef)>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.socket.lock() {
+            Ok(mut inner) => {
+                if inner.closed {
+                    return Poll::Ready(None);
+                }
+
+                if let Some((addr, packet)) = inner.rx_packet_queue.pop_front() {
+                    Poll::Ready(Some((addr, packet)))
+                } else {
+                    inner.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] UDP Socket poisoned in recv_packet future - returning closed");
+                Poll::Ready(None)
+            }
+        }
+    }
+}
+
 /// Maximum UDP sockets
 const MAX_UDP_SOCKETS: usize = 256;
 
@@ -499,6 +546,7 @@ impl UdpSocketTable {
                 let inner = Arc::new(PoisonLock::new(UdpSocketInner {
                     local_port: port,
                     rx_queue: VecDeque::new(),
+                    rx_packet_queue: VecDeque::new(),
                     waker: None,
                     closed: false,
                     token,
@@ -601,6 +649,39 @@ impl UdpSocketTable {
         }
     }
 
+    /// Deliver a packet to the appropriate socket using a PacketRef (zero-copy)
+    pub fn deliver_packet(&self, src: UdpAddr, dst_port: u16, packet: PacketRef) -> bool {
+        use core::sync::atomic::Ordering;
+
+        if let Some(socket) = self.find(dst_port) {
+            match socket.lock() {
+                Ok(mut inner) => {
+                    if inner.closed {
+                        self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                        return false;
+                    }
+
+                    inner.rx_packet_queue.push_back((src, packet));
+
+                    if let Some(waker) = inner.waker.take() {
+                        waker.wake();
+                    }
+
+                    self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+                    true
+                }
+                Err(_) => {
+                    log::error!("[NET] UDP Socket poisoned during deliver_packet - dropping packet");
+                    self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
+            }
+        } else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+
     /// Get statistics
     pub fn stats(&self) -> (u64, u64, u64, u64) {
         use core::sync::atomic::Ordering;
@@ -671,6 +752,33 @@ impl UdpProcessor {
         };
 
         if self.sockets.deliver(datagram) {
+            UdpResult::Delivered
+        } else {
+            UdpResult::NoSocket
+        }
+    }
+
+    /// Process an incoming UDP packet with an existing PacketRef (zero-copy)
+    pub fn process_with_packet(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, packet: PacketRef) -> UdpResult {
+        use core::sync::atomic::Ordering;
+
+        let packet_view = match UdpPacket::parse(data) {
+            Some(p) => p,
+            None => return UdpResult::Invalid,
+        };
+
+        if !packet_view.verify_checksum(src_ip, dst_ip) {
+            self.sockets
+                .stats
+                .checksum_errors
+                .fetch_add(1, Ordering::Relaxed);
+            return UdpResult::ChecksumError;
+        }
+
+        let src = UdpAddr::new(src_ip, packet_view.src_port());
+        let dst_port = packet_view.dst_port();
+
+        if self.sockets.deliver_packet(src, dst_port, packet) {
             UdpResult::Delivered
         } else {
             UdpResult::NoSocket

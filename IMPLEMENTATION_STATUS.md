@@ -1165,7 +1165,7 @@ pub fn init_bridge() -> Result<(), &'static str>
 // 送信処理 (NetworkStackからの送信コールバック)
 fn virtio_transmit(data: &[u8]) -> bool
 
-// 受信処理
+// 受信処理（互換API：新実装 `process_received_packet_zero_copy` に委譲）
 pub fn process_received_packet(data: &[u8])
 
 // 統計情報

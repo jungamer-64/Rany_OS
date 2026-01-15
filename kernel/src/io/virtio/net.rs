@@ -1063,7 +1063,7 @@ impl VirtioNetDevice {
                 let mut added = 0usize;
                 for _ in 0..8 {
                     // Prefer allocating PacketRef and posting it for true zero-copy
-                    if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+                    if let Some(packet) = crate::net::mempool::alloc_packet() {
                         let phys = packet.phys_addr().as_u64();
                         let buf_len = packet.capacity();
                         match rxq.add_rx_buffer_zero_copy(phys, buf_len) {
@@ -1264,7 +1264,7 @@ impl VirtioNetDevice {
             let can_map_page = page_offset + data_len <= map_len;
 
             let mut dma_addr = phys_addr_val;
-            let mut mapped_iova: Option<u64> = None;
+            let mapped_iova: Option<u64> = None;
             let mut mapped_len = 0usize;
             let mut bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>> = None;
 
@@ -1415,7 +1415,7 @@ impl VirtioNetDevice {
                         crate::net::driver_bridge::process_received_packet_zero_copy(packet, header_size, payload_len);
 
                         // Re-post a new PacketRef buffer to the queue so we keep a steady supply
-                        if let Some(mut new_pkt) = crate::net::mempool::alloc_packet() {
+                        if let Some(new_pkt) = crate::net::mempool::alloc_packet() {
                             let phys = new_pkt.phys_addr().as_u64();
                             let buf_len = new_pkt.capacity();
                             match rx_queue.add_rx_buffer_zero_copy(phys, buf_len) {
@@ -1471,7 +1471,15 @@ impl VirtioNetDevice {
                                 }
 
                                 crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] handing payload desc={} payload_len={} to bridge\n", desc_idx, actual_len));
-                                crate::net::driver_bridge::process_received_packet(payload_slice);
+                                // Allocate a PacketRef and delegate to the zero-copy bridge API
+                                if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+                                    let len_to_copy = core::cmp::min(actual_len, packet.capacity());
+                                    packet.data_mut()[..len_to_copy].copy_from_slice(&payload_slice[..len_to_copy]);
+                                    crate::net::driver_bridge::process_received_packet_zero_copy(packet, 0, len_to_copy);
+                                } else {
+                                    #[cfg(debug_assertions)]
+                                    log::warn!("[VIRTIO-NET] OOM allocating packet for rx copy");
+                                }
                             }
                         }
 

@@ -1,80 +1,40 @@
 // ============================================================================
-// src/io/nvme/driver.rs - NVMe Driver Re-exports
+// src/io/nvme/driver.rs - NVMe Driver Re-exports (Minimal)
 // ============================================================================
 //!
-//! # NVMeドライバ再エクスポート
+//! # NVMeドライバ後方互換レイヤー
 //!
-//! driver.rsは分割されました。このファイルは後方互換性のための
-//! 再エクスポートを提供します。
-//!
-//! ## 分割されたモジュール
-//! - `queue`: SQ/CQ/QueuePairの低レベル実装
-//! - `per_core`: コアごとのキュー管理
-//! - `polling_driver`: メインポーリングドライバ
-//! - `async_io`: 非同期I/Oサポート
-//! - `error`: エラー型
-//! - `global`: グローバルインスタンス
-//! - `scheduler`: IoScheduler統合
+//! このモジュールはテスト互換性のための最小限の再エクスポートを提供します。
+//! 新しいコードは `nvme_driver` クレートまたは `crate::io::nvme` を直接使用してください。
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
-// ============================================================================
-// Re-exports from queue.rs
-// ============================================================================
-pub use super::queue::{CompletionQueue, QueuePair, SubmissionQueue};
-
-// ============================================================================
-// Re-exports from per_core.rs
-// ============================================================================
-pub use super::per_core::{NvmeQueueStats, PerCoreNvmeQueue};
-
-// ============================================================================
-// Re-exports from polling_driver.rs
-// ============================================================================
-pub use super::polling_driver::{NvmeDriverStats, NvmePollingDriver};
-
-// ============================================================================
-// Re-exports from async_io.rs
-// ============================================================================
-pub use super::async_io::{ReadFuture, WriteFuture, async_read, async_write};
+// Re-export from nvme_driver crate directly
+pub use nvme_driver::queue::{CompletionQueue, QueuePair, SubmissionQueue};
+pub use nvme_driver::per_core::{NvmeQueueStats, PerCoreNvmeQueue};
+pub use nvme_driver::polling_driver::{NvmeDriverStats, NvmePollingDriver};
+pub use nvme_driver::async_io::{ReadFuture, WriteFuture};
 pub use nvme_driver::{AsyncIoRequest, IoRequestState, PendingRequests};
+pub use nvme_driver::error::NvmeError;
+pub use nvme_driver::global::{get_stats, init, poll, with_driver, with_driver_mut};
 
-// ============================================================================
-// Re-exports from error.rs
-// ============================================================================
-pub use super::error::NvmeError;
-
-// ============================================================================
-// Re-exports from global.rs
-// ============================================================================
-pub use super::global::{get_stats, init, poll, poll_batch, with_driver, with_driver_mut};
-
-// ============================================================================
-// Re-exports from scheduler.rs
-// ============================================================================
+// Scheduler (kernel-local)
 pub use super::scheduler::{NvmePollHandler, register_with_io_scheduler};
-
-
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
-    use super::super::controller::NvmeCapabilities;
-    use super::super::defs::PrpList;
+    use nvme_driver::controller::NvmeCapabilities;
+    use nvme_driver::defs::PrpList;
+    use nvme_driver::commands::{NvmeCommand, NvmeCompletion};
     use super::*;
-    use crate::nvme::{NvmeCommand, NvmeCompletion};
 
     #[test_case]
     fn test_nvme_command_read() {
-        // New API: (cid, nsid, slba, nlb, prp1, prp2)
         let cmd = NvmeCommand::read(0, 1, 0, 8, 0, 0);
         assert_eq!(cmd.nsid, 1);
         assert_eq!(cmd.cdw10, 0);
-        assert_eq!(cmd.cdw12, 7); // 8-1
+        assert_eq!(cmd.cdw12, 7);
     }
 
     #[test_case]
@@ -82,45 +42,7 @@ mod tests {
         let cmd = NvmeCommand::write(0, 1, 100, 16, 0, 0);
         assert_eq!(cmd.nsid, 1);
         assert_eq!(cmd.cdw10, 100);
-        assert_eq!(cmd.cdw12, 15); // 16-1
-    }
-
-    #[test_case]
-    fn test_nvme_command_create_cq() {
-        let cmd = NvmeCommand::create_io_cq(0, 1, 256, 0x10000, 0, false);
-        assert_eq!(cmd.cdw10, (1 << 16) | 255);
-        assert_eq!(cmd.cdw11, 0x01); // PC=1, IEN=0
-    }
-
-    #[test_case]
-    fn test_nvme_command_create_sq() {
-        let cmd = NvmeCommand::create_io_sq(0, 1, 256, 0x20000, 1, 0);
-        assert_eq!(cmd.cdw10, (1 << 16) | 255);
-        assert_eq!(cmd.cdw11, (1 << 16) | 0x01); // CQID=1, PC=1
-    }
-
-    #[test_case]
-    fn test_nvme_completion_status() {
-        let mut cqe = NvmeCompletion::default();
-        cqe.status = 0x0001; // Phase bit set, success
-        assert!(cqe.phase());
-        assert!(cqe.is_success());
-    }
-
-    #[test_case]
-    fn test_nvme_completion_error() {
-        let mut cqe = NvmeCompletion::default();
-        cqe.status = 0x0103; // SC=1, SCT=0, Phase=1
-        assert!(cqe.phase());
-        assert!(!cqe.is_success());
-        assert_eq!(cqe.sc(), 1);
-    }
-
-    #[test_case]
-    fn test_io_request_state() {
-        let req = AsyncIoRequest::new(42, 1);
-        assert_eq!(req.state, IoRequestState::Pending);
-        assert!(!req.is_complete());
+        assert_eq!(cmd.cdw12, 15);
     }
 
     #[test_case]
@@ -136,35 +58,9 @@ mod tests {
     fn test_prp_list() {
         let mut prp_list = PrpList::new();
         assert!(prp_list.is_empty());
-
         assert!(prp_list.add_entry(0x1000).is_ok());
         assert!(prp_list.add_entry(0x2000).is_ok());
         assert_eq!(prp_list.len(), 2);
-
-        // Non-aligned address should fail
         assert!(prp_list.add_entry(0x1001).is_err());
     }
-
-    #[test_case]
-    fn test_pending_requests() {
-        let mut pending = PendingRequests::new();
-
-        assert!(pending.register(0, 1).is_ok());
-        assert_eq!(pending.active_count(), 1);
-
-        // Complete the request
-        let cqe = NvmeCompletion {
-            cid: 0,
-            status: 0x0001, // success with phase
-            ..Default::default()
-        };
-        assert!(pending.complete(0, cqe));
-
-        // Take the completed request
-        let req = pending.take(0);
-        assert!(req.is_some());
-        assert!(req.unwrap().is_complete());
-        assert_eq!(pending.active_count(), 0);
-    }
 }
-

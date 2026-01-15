@@ -254,6 +254,9 @@ impl NetworkEventHandler {
         }
     }
 
+
+
+
     /// Listenイベント処理
     /// サーバーソケットを設定
     fn handle_listen(&self, fd: SocketFd, local: SocketAddr, backlog: u32) -> EventHandleResult {
@@ -488,6 +491,70 @@ impl NetworkEventHandler {
 impl Default for NetworkEventHandler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// File-level tests for handler
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::endpoint::event::event_queue;
+    use crate::net::endpoint::manager::init_socket_manager;
+    use crate::net::endpoint::{create_tcp_socket, SocketAddr};
+
+    #[test_case]
+    fn test_handle_tx_available_requeues_dataready() {
+        init_socket_manager();
+
+        let sock = create_tcp_socket();
+        let fd = sock.fd();
+
+        // Set local and remote so handler proceeds
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([127, 0, 0, 1], 80);
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock();
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+            inner.send_buffer.extend(&[1, 2, 3]);
+        }
+
+        let handler = NetworkEventHandler::new();
+        let res = handler.handle_tx_available();
+        assert!(matches!(res, EventHandleResult::Success));
+
+        // Event queue should now contain a DataReady event for our fd
+        if let Some(evt) = event_queue().recv() {
+            match evt {
+                super::event::NetworkEvent::DataReady { fd: efd, .. } => assert_eq!(efd.raw(), fd.raw()),
+                _ => panic!("Expected DataReady event"),
+            }
+        } else {
+            panic!("Expected DataReady event in queue");
+        }
+    }
+
+    #[test_case]
+    fn test_handle_data_ready_retry_when_no_device() {
+        init_socket_manager();
+
+        let sock = create_tcp_socket();
+        let fd = sock.fd();
+
+        // Set local and remote so handler proceeds
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([10, 0, 2, 2], 80); // likely ARP unresolved
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock();
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+            inner.send_buffer.extend(&[1, 2, 3, 4]);
+        }
+
+        let handler = NetworkEventHandler::new();
+        let res = handler.handle_data_ready(fd, SocketType::Tcp);
+        // Expect Retry because ARP / device not available
+        assert!(matches!(res, EventHandleResult::Retry));
     }
 }
 
