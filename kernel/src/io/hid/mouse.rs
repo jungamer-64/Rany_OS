@@ -44,23 +44,15 @@ pub fn handle_mouse_packet(data: u8) {
 // Public API - Mouse (ユーザーコード用)
 // ============================================================================
 
-/// マウスイベントを取得（割り込みを無効にして実行）
-///
-/// Deprecated: Prefer event-driven `MouseEvent` streams or `MouseHandler::pop_event()`.
-#[deprecated(since = "0.3.0", note = "Use event-driven MouseEvent streams or `MouseHandler::pop_event()` instead")]
-pub fn poll_mouse_event() -> Option<MouseEvent> {
-    x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().poll_event())
-}
-
-/// マウスイベントがあるか（割り込みを無効にして実行）
-///
-/// Deprecated: Prefer event-driven APIs (avoid polling in hot paths).
-#[deprecated(since = "0.3.0", note = "Use event-driven MouseEvent streams or `mouse::has_event()` alternatives instead")]
-pub fn has_mouse_event() -> bool {
-    x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().has_event())
-}
+// Compatibility polling helpers removed.
+// Use event-driven `MouseEvent` streams (preferred) or query the global `MOUSE` under
+// an interrupts-disabled section when necessary, e.g.:
+//
+// x86_64::instructions::interrupts::without_interrupts(|| crate::io::hid::mouse::MOUSE.lock().poll_event())
+//
+// This preserves deterministic behavior without relying on deprecated wrappers.
 
 /// マウスが初期化されているか
 pub fn is_mouse_initialized() -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().is_initialized())
-}
+} 

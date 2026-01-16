@@ -885,9 +885,9 @@ impl NetworkStack {
         }
     }
 
-    /// Bind a UDP socket
+    /// Bind a UDP socket (uses token-based API)
     pub fn bind_udp(&mut self, port: u16) -> Option<UdpSocket> {
-        self.udp.bind(port)
+        self.udp.bind_with_token(port, None).ok()
     }
 
     /// Bind a UDP socket and associate it with an optional capability token
@@ -897,7 +897,7 @@ impl NetworkStack {
 
     /// Unbind a UDP socket (removes binding and decrements any associated token)
     pub fn unbind_udp(&mut self, port: u16) {
-        self.udp.bind(port);
+        self.udp.unbind(port);
     }
 
     /// Send a UDP datagram (UdpAddr-based variant)

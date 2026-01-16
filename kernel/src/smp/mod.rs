@@ -24,6 +24,20 @@ pub fn current_cpu() -> u32 {
     crate::io::apic::local_apic().id() as u32
 }
 
+/// Get current CPU index (0-based contiguous index for array access)
+///
+/// Unlike `current_cpu()` which may return APIC IDs (potentially non-contiguous),
+/// this returns a safe 0-based index in range [0, cpu_count()).
+/// Falls back to 0 if per-CPU data isn't initialized.
+pub fn cpu_index() -> usize {
+    if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+        // Per-CPU data stores 0-based logical ID
+        return cpu_id as usize;
+    }
+    // Early boot: assumed to be BSP (index 0)
+    0
+}
+
 /// Initialize SMP for the system
 pub fn init_smp() -> Result<(), &'static str> {
     // Get LAPIC address from ACPI

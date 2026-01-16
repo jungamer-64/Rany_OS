@@ -1216,11 +1216,7 @@ impl TcpListener {
         crate::net::stack::bind_tcp(addr)
     }
 
-    /// Backwards compatibility wrapper (deprecated)
-    #[deprecated(note = "Use TcpListener::bind instead")]
-    pub fn new(addr: SocketAddr) -> Result<Self, TcpError> {
-        Self::bind(addr)
-    }
+    // Legacy constructor `TcpListener::new` removed; use `TcpListener::bind(addr)` instead.
 
 
     /// ローカルアドレスを取得

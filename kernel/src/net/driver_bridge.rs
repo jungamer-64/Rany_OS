@@ -116,37 +116,9 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
 /// Process a received payload from VirtIO-Net (compatibility wrapper)
 /// Call this from older interrupt handlers or polling loops.
 /// This delegates to the zero-copy path by allocating a PacketRef and handing it off.
-pub fn process_received_packet(data: &[u8]) {
-    // Allocate PacketRef and copy payload, then delegate to zero-copy implementation
-    use super::mempool::alloc_packet;
+// Compatibility wrapper `process_received_packet` has been removed.
+// Use `process_received_packet_zero_copy` directly instead.
 
-    if let Some(mut packet) = alloc_packet() {
-        let len = data.len().min(packet.capacity());
-        packet.data_mut()[..len].copy_from_slice(&data[..len]);
-        // Delegate to zero-copy processing (header_size = 0)
-        process_received_packet_zero_copy(packet, 0, len);
-    } else {
-        // OOM drop
-        #[cfg(debug_assertions)]
-        log::warn!("[NET RX] Dropped packet due to OOM");
-    }
-
-    #[cfg(debug_assertions)]
-    if data.len() >= 14 {
-        /*
-        log::info!(
-            "[NET RX] {} bytes, src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            data.len(),
-            data[6],
-            data[7],
-            data[8],
-            data[9],
-            data[10],
-            data[11]
-        );
-        */
-    }
-}
 
 /// Process a completed RX buffer without copying: use the provided PacketRef (zero-copy)
 pub fn process_received_packet_zero_copy(mut packet: crate::net::PacketRef, header_size: usize, payload_len: usize) {

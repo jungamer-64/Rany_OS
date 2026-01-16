@@ -151,7 +151,7 @@ pub use stack::{
 pub use driver_bridge::{
     BridgeStats, get_bridge_stats, get_real_arp_cache, get_real_config, get_real_stats,
     init_bridge as init_driver_bridge, is_initialized as driver_bridge_initialized,
-    process_received_packet, send_real_icmp_echo,
+    send_real_icmp_echo,
 };
 
 // VirtIO Netドライバはio/virtio/net.rsにある

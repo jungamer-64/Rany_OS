@@ -516,10 +516,7 @@ impl UdpSocketTable {
         }
     }
 
-    /// Bind a socket to a port (backwards-compatible, no token)
-    pub fn bind(&self, port: u16) -> Option<UdpSocket> {
-        self.bind_with_token(port, None)
-    }
+    // Legacy `bind(port)` wrapper removed. Use `bind_with_token(port, None)` instead.
 
     /// Bind a socket to a port and associate it with an optional capability token.
     /// If `token` is Some(id), this will attempt to increment the token's in-flight
@@ -785,23 +782,17 @@ impl UdpProcessor {
         }
     }
 
-    /// Bind a new socket
-    pub fn bind(&self, port: u16) -> Option<UdpSocket> {
-        self.sockets.bind(port)
-    }
+    // Legacy `bind` removed; use `bind_with_token(port, None)` instead.
 
     /// Bind to a port with a capability token
     pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Result<UdpSocket, NetworkError> {
-        // If no token, just bind (backwards compat / system)
-        let t = match token {
-            Some(v) => v,
-            None => {
-                // No token provided. Just try bind.
-                return self.sockets.bind(port).ok_or(NetworkError::PortInUse);
-            }
-        };
+        // If no token provided, delegate directly to socket table's token-aware bind
+        if token.is_none() {
+            return self.sockets.bind_with_token(port, None).ok_or(NetworkError::PortInUse);
+        }
 
-        // Find the token in the capability manager
+        // Token present - validate ownership and capability
+        let t = token.unwrap();
         let pid = crate::task::process::get_current_process();
         if !crate::security::capability::manager().validate_token(pid.as_u64(), t, crate::security::capability::CAP_NET_BIND) {
              return Err(NetworkError::PermissionDenied);
@@ -974,8 +965,8 @@ mod tests {
         }
         set_panicking(false);
 
-        // Bind should fail
-        assert!(proc.bind(10000).is_none());
+        // Bind should fail (token-aware API returns Err on failure)
+        assert!(proc.bind_with_token(10000, None).is_err());
 
         // Build a packet and process - should be NoSocket and stats increment rx_dropped
         let src_ip = Ipv4Address::from_octets(1, 2, 3, 4);

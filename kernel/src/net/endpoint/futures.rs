@@ -607,7 +607,7 @@ mod tests {
         // Use a UdpProcessor instance and bind a socket to a port
         let proc = crate::net::udp::UdpProcessor::new();
         let port = 40000u16;
-        let u = proc.bind(port).expect("bind failed");
+        let u = proc.bind_with_token(port, None).expect("bind failed");
 
         // Create an OwnedSocket and attach the UdpSocket instance to its inner state
         let sock = create_udp_socket();

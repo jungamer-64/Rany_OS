@@ -1165,13 +1165,17 @@ pub fn init_bridge() -> Result<(), &'static str>
 // 送信処理 (NetworkStackからの送信コールバック)
 fn virtio_transmit(data: &[u8]) -> bool
 
-// 受信処理（互換API：新実装 `process_received_packet_zero_copy` に委譲）
-pub fn process_received_packet(data: &[u8])
+// 受信処理（互換APIは削除され、新実装 `process_received_packet_zero_copy` を使用）
+
 
 // 統計情報
 pub fn get_bridge_stats() -> BridgeStats
 pub fn get_real_config() -> Option<NetworkConfigSnapshot>
 pub fn get_real_stats() -> Option<NetworkStatsSnapshot>
+
+// Tests: Integration tests for bridge (zero-copy path)
+// - `kernel/tests/net_bridge.rs` provides integration tests for `process_received_packet_zero_copy` (zero-copy).
+// - Removed compatibility wrappers: `TcpListener::new` and UDP legacy `bind` wrappers were removed; migrate to `TcpListener::bind()` and token-aware UDP binds (`bind_with_token`) respectively.
 
 // ICMP/ARP操作
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str>

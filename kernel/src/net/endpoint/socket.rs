@@ -162,7 +162,7 @@ impl Socket {
                 local_addr.port,
             );
             let listener =
-                TcpListenerImpl::new(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
+                TcpListenerImpl::bind(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
             inner.tcp_listener = Some(listener);
             inner.transition_to(SocketState::Listening)?;
         }
