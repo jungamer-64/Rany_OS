@@ -1378,13 +1378,13 @@ impl GuiServices for ExoKernel {
         // Try mouse (if feature enabled)
         #[cfg(feature = "mouse")]
         {
-            // Note: poll_mouse_event is also deprecated, allowing it for now or we should fix it too.
-            // But per task instructions: "Replace poll_input_event with KeyboardStream or equivalent"
-            // We will silence the warning or use the non-deprecated path if possible.
-            // Mouse stream is not yet standardized in this codebase context shown.
-            // We'll treat it as existing logic for now, but cleaner to suppress if we can't fix it yet.
-            #[allow(deprecated)] 
-            if let Some(mouse_event) = crate::io::hid::mouse::poll_mouse_event() {
+            // Query the mouse global under interrupts-disabled context (non-deprecated direct access).
+            let mouse_event_opt = x86_64::instructions::interrupts::without_interrupts(|| {
+                // Access global mouse instance directly
+                crate::io::hid::mouse::MOUSE.lock().poll_event()
+            });
+
+            if let Some(mouse_event) = mouse_event_opt {
                 let buttons = MouseButtons(
                     if mouse_event.buttons.left() {
                         MouseButtons::LEFT

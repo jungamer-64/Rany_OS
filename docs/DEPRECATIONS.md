@@ -47,8 +47,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `KeyboardStream` and the async stream APIs.
   - PS/2 alias types (`Ps2DeviceType`, `Ps2KeyCode`, `Ps2KeyEvent`, `Ps2Modifiers`) ✅ **deprecated**
     - Migration: Use generic `KeyCode`, `KeyEvent`, `DeviceType`, `Modifiers` or `hid_driver` types directly.
-  - Mouse polling helpers (`has_mouse_event`, `poll_mouse_event`) ✅ **deprecated**
-    - Migration: Use event-driven `MouseEvent` streams or `mouse::has_event()`.
+  - Mouse polling helpers (`has_mouse_event`, `poll_mouse_event`) ❌ **removed**
+    - Migration: Use event-driven `MouseEvent` streams or query the global `MOUSE` under an interrupts-disabled section, e.g. `x86_64::instructions::interrupts::without_interrupts(|| crate::io::hid::mouse::MOUSE.lock().poll_event())`.
   - HID extension traits (`KeyCodeExt`, `KeyEventExt`) ✅ **deprecated**
     - Migration: Bring traits into scope from `hid_driver` directly (e.g., `use hid_driver::KeyEventExt`).  - `ModifierState` re-export ✅ **deprecated**
     - Migration: Use `hid_driver::ModifierState` directly.
@@ -60,8 +60,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Acquire a `KeyboardStream` via `take_stream()` or initialize the keyboard via `crate::io::hid::keyboard_init()`.
   - `init()` ✅ **deprecated**
     - Migration: Use `crate::io::hid::keyboard_init()` or initialize via the PS/2 controller API.
-  - `handle_keyboard_interrupt()` ✅ **deprecated**
-    - Migration: Use the PS/2 controller's `keyboard_interrupt_handler` or register the handler on the controller.
+  - `handle_keyboard_interrupt()` ❌ **removed** (was deprecated)
+    - Migration: Use `take_stream()` and register the PS/2 driver's handler via the DriverRegistry or call `crate::io::hid::ps2::keyboard_interrupt_handler()`. This avoids using the removed convenience wrapper.
   - `take_stream_or_panic()` ✅ **deprecated**
     - Migration: Use `take_stream()` and handle `StreamAlreadyTaken` errors; avoid panics in production code.
 
@@ -72,8 +72,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `keyboard` APIs or `KeyboardStream` instead.
   - `io::get_mouse_event` ❌ **removed**
     - Migration: Use `MouseEvent` streams or `mouse::poll_event` instead.
-  - `io::handle_keyboard_interrupt` ✅ **deprecated**
-    - Migration: Register the PS/2 driver's interrupt handler via the DriverRegistry or use `keyboard_interrupt_handler` directly.
+  - `io::handle_keyboard_interrupt` ❌ **removed** (was deprecated)
+    - Migration: Register the PS/2 driver's interrupt handler via the DriverRegistry (preferred) or call `keyboard_interrupt_handler` directly.
   - `io::keyboard` ✅ **deprecated**
     - Migration: Acquire a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or call `crate::io::hid::keyboard_init()`.
   - `io::keyboard_init` ✅ **deprecated**
@@ -112,6 +112,10 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `kernel/src/net` (TCP/Socket APIs)
   - POSIX-style socket compatibility methods (e.g., `Socket::bind`, `Socket::connect`, `Socket::listen`, `Socket::accept`, `TcpStream::connect`, `TcpListener::bind`/`accept`) ❌ **removed**
     - Removal: These compatibility wrappers have been removed; migrate to the async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()`.
+  - `TcpListener::new` ❌ **removed** (was deprecated)
+    - Migration: Use `TcpListener::bind(addr)`.
+  - UDP legacy bind wrappers (`UdpSocketTable::bind`, `UdpProcessor::bind`) ❌ **removed**
+    - Migration: Use the token-aware API: `UdpSocketTable::bind_with_token(port, Some(token))`. For the no-token case use `UdpSocketTable::bind_with_token(port, None)` or the stack helper `bind_udp(port)`/`bind_udp_with_token(port, token)` as appropriate.
 
 - `kernel/src/io/mod.rs`
   - `parse_dmar_table()` ✅ **deprecated**

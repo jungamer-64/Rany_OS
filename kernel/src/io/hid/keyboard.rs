@@ -81,14 +81,9 @@ pub(crate) static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
 
 // init() function removed - use Ps2KeyboardDriver via DriverRegistry instead
 
-/// 割り込みハンドラから呼ばれる（PS/2キーボード用）
-///
-/// Deprecated: Use the PS/2 controller's `keyboard_interrupt_handler()` or register the
-/// PS/2 driver's interrupt handler via `driver_registry::register_driver` instead.
-#[deprecated(since = "0.3.0", note = "Use `crate::io::hid::ps2::keyboard_interrupt_handler()` or register the PS/2 driver's handler")]
-pub fn handle_keyboard_interrupt(scancode: u8) {
-    PS2_KEYBOARD.handle_scancode(scancode);
-}
+// Legacy `handle_keyboard_interrupt` removed. Register the PS/2 driver's interrupt handler via
+// `driver_registry::register_driver` or use `crate::io::hid::ps2::keyboard_interrupt_handler()`.
+
 
 /// 保留中のISR通知を処理（Executorから呼び出し）
 ///
@@ -149,35 +144,8 @@ pub fn take_stream_with_arc_keymap(
 
 
 
-/// 次の文字をポーリング（非ブロッキング）
-///
-/// Deprecated: Use `KeyboardStream` and the async stream APIs instead. Acquire a stream with
-/// `crate::io::hid::keyboard::take_stream()` and poll it asynchronously.
-#[doc(hidden)]
-#[deprecated(since = "0.3.0", note = "Use `KeyboardStream` (via `crate::io::hid::keyboard::take_stream()`) and async stream APIs instead")]
-pub(crate) fn poll_char() -> Option<char> {
-    use hid_driver::DriverOps;
-    while let Some(event) = PS2_KEYBOARD.poll_key_event_internal() {
-        if let Some(c) = event.to_char() {
-            return Some(c);
-        }
-    }
-    None
-}
-
-/// 次のキーイベントをポーリング（非ブロッキング）- 内部API
-///
-/// Deprecated: Internal polling shims are deprecated. Prefer `KeyboardStream` and async
-/// stream-based APIs (acquire a stream via `crate::io::hid::keyboard::take_stream()`).
-///
-/// service_impl.rs の poll_input_event から使用されますが、将来的に移行が必要です。
-#[doc(hidden)]
-#[deprecated(since = "0.3.0", note = "Use `KeyboardStream` and async stream APIs (via `take_stream()`) instead")]
-pub(crate) fn poll_input_event() -> Option<KeyEvent> {
-    use hid_driver::DriverOps;
-    PS2_KEYBOARD.poll_key_event_internal()
-}
-
+// Internal polling shims removed: Use `KeyboardStream` via `crate::io::hid::keyboard::take_stream()`
+// and async stream APIs instead of `poll_char()`/`poll_input_event()`.
 // ============================================================================
 // Extern crate declarations
 // ============================================================================

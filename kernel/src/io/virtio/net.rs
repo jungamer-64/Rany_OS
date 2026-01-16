@@ -1478,36 +1478,14 @@ impl VirtioNetDevice {
                                     crate::net::driver_bridge::process_received_packet_zero_copy(packet, 0, len_to_copy);
                                 } else {
                                     #[cfg(debug_assertions)]
-                                    log::warn!("[VIRTIO-NET] OOM allocating packet for rx copy");
-                                }
-                            }
-                        }
-
-                        // Re-queue the buffer for further receives
-                        match vbuf.start_receive() {
-                            Ok(phys) => {
-                                let buf_len = vbuf.alloc_size;
-                                match rx_queue.add_rx_buffer_zero_copy(phys, buf_len) {
-                                    Ok(new_desc_idx) => {
-                                        log::info!(
-                                            "[VIRTIO-NET] re-queued rx desc={} phys=0x{:x} len={}",
-                                            new_desc_idx,
-                                            phys,
-                                            buf_len
-                                        );
-                                        self.rx_buffers.lock().insert(new_desc_idx, vbuf);
-                                    }
-                                    Err(e) => {
-                                        log::warn!("[VIRTIO-NET] failed to re-add rx buffer: {:?}", e);
+                                    {
+                                        log::warn!("[VIRTIO-NET] OOM allocating packet for rx copy");
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                log::warn!("[VIRTIO-NET] failed to restart rx buffer: {}", e);
+                            } else {
+                                log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
                             }
                         }
-                    } else {
-                        log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
                     }
                 }
             }
@@ -2531,14 +2509,19 @@ impl PollHandler for VirtioNetPollHandler {
 unsafe impl Send for VirtioNetPollHandler {}
 unsafe impl Sync for VirtioNetPollHandler {}
 
-/// VirtIO ネットワークを IoScheduler に登録
-pub fn register_virtio_net_with_io_scheduler(index: u8) {
+/// VirtIO ネットワークを IoScheduler に登録（依存注入版）
+pub fn register_virtio_net_with(
+    coordinator: &alloc::sync::Arc<crate::io::io_scheduler::HybridIoCoordinator>,
+    index: u8,
+) {
     let handler = VirtioNetPollHandler::new();
     let handler: Box<dyn PollHandler + Send + Sync> = Box::new(handler);
+    coordinator.polling_executor().register_handler(DeviceId::VirtioNet { index }, handler);
+}
 
-    let coordinator = hybrid_coordinator();
-    let executor = coordinator.polling_executor();
-    executor.register_handler(DeviceId::VirtioNet { index }, handler);
+/// VirtIO ネットワークを IoScheduler に登録（後方互換wrapper）
+pub fn register_virtio_net_with_io_scheduler(index: u8) {
+    register_virtio_net_with(&hybrid_coordinator(), index);
 }
 
 // ============================================================================
@@ -2608,6 +2591,13 @@ impl VirtioNetRxDmaBuffer {
             let end = header_size + VIRTIO_NET_MTU;
             &slice[header_size..end]
         })
+    }
+
+    /// Take ownership of the CPU-owned TypedDmaSlice when completed.
+    /// This consumes the internal buffer and returns it, allowing the caller to
+    /// take ownership and avoid copying (true zero-copy path).
+    pub fn take_cpu_buffer(&mut self) -> Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>> {
+        self.buffer.take()
     }
 
     /// バッファ全体のサイズ（4Kアライン済み）

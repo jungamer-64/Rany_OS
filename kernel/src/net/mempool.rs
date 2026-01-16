@@ -117,144 +117,268 @@ impl PacketBuffer {
 
 /// パケットバッファへの参照
 /// 設計書 6.2: 所有権の連鎖
+///
+/// 拡張: 真のゼロコピーのために外部DMAバッファ（Virtio の vbuf）を
+/// PacketRef として扱えるように `Dma` バリアントを追加します。
+use alloc::sync::Arc;
+use spin::Mutex as SpinMutex;
+use crate::io::dma::{TypedDmaSlice, CpuOwned};
+
+/// 内部で DMA バッファを保持するためのラッパ
+struct DmaBuffer {
+    ptr: NonNull<u8>,
+    phys_addr: PhysAddr,
+    size: usize,
+    /// 所有権を保持する (TypedDmaSlice を保持することでメモリ寿命を延ばす)
+    owner: Arc<SpinMutex<TypedDmaSlice<CpuOwned>>>,
+}
+
+impl DmaBuffer {
+    fn from_typed(slice: TypedDmaSlice<CpuOwned>) -> Self {
+        let size = slice.len();
+        let phys = slice.phys_addr();
+        // Get raw pointer before moving into Arc
+        let ptr = slice.as_slice().as_ptr() as *mut u8;
+        let owner = Arc::new(SpinMutex::new(slice));
+        Self {
+            ptr: NonNull::new(ptr).expect("TypedDmaSlice returned null pointer"),
+            phys_addr: phys,
+            size,
+            owner,
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { crate::util::raw_ptr_as_slice(self.ptr.as_ptr(), self.size) }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { crate::util::raw_ptr_as_slice_mut(self.ptr.as_ptr() as *mut u8, self.size) }
+    }
+}
+
+/// PacketRef の内部バリアント
+enum PacketRefKind {
+    /// 既存の Mempool バッファを指す標準バリアント
+    Pooled {
+        buffer: NonNull<PacketBuffer>,
+        pool: &'static Mempool,
+        offset: usize,
+        len: usize,
+    },
+    /// DMA バッファから構成されるゼロコピーバリアント
+    Dma {
+        buf: Arc<DmaBuffer>,
+        offset: usize,
+        len: usize,
+    },
+}
+
 pub struct PacketRef {
-    buffer: NonNull<PacketBuffer>,
-    pool: &'static Mempool,
-    offset: usize,
-    len: usize,
+    kind: PacketRefKind,
 }
 
 impl PacketRef {
-    /// Create new PacketRef (internal)
+    /// Create new PacketRef (internal) from pooled buffer
     fn new(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> Self {
         let len = unsafe { buffer.as_ref().len() };
         Self {
-            buffer,
-            pool,
-            offset: 0,
-            len,
+            kind: PacketRefKind::Pooled {
+                buffer,
+                pool,
+                offset: 0,
+                len,
+            },
+        }
+    }
+
+    /// Create PacketRef from a TypedDmaSlice (zero-copy)
+    pub fn from_dma_slice(slice: TypedDmaSlice<CpuOwned>) -> Self {
+        let db = DmaBuffer::from_typed(slice);
+        let arc = Arc::new(db);
+        Self {
+            kind: PacketRefKind::Dma {
+                buf: arc,
+                offset: 0,
+                len: 0,
+            },
         }
     }
 
     /// データスライスを取得
     pub fn data(&self) -> &[u8] {
-        unsafe {
-            let slice = self.buffer.as_ref().data();
-            if self.offset >= slice.len() {
-                return &[];
+        match &self.kind {
+            PacketRefKind::Pooled { buffer, offset, len, .. } => unsafe {
+                let slice = buffer.as_ref().data();
+                if *offset >= slice.len() {
+                    return &[];
+                }
+                let end = (*offset + *len).min(slice.len());
+                &slice[*offset..end]
+            },
+            PacketRefKind::Dma { buf, offset, len } => {
+                let cap = buf.size;
+                if *offset >= cap {
+                    return &[];
+                }
+                let end = (*offset + *len).min(cap);
+                unsafe { crate::util::raw_ptr_as_slice(buf.ptr.as_ptr(), end - *offset) }
             }
-            let end = (self.offset + self.len).min(slice.len());
-            &slice[self.offset..end]
         }
     }
 
     /// 可変データスライスを取得（排他的所有時のみ）
     pub fn data_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            let slice = self.buffer.as_mut().data_mut();
-            if self.offset >= slice.len() {
-                return &mut [];
+        match &mut self.kind {
+            PacketRefKind::Pooled { buffer, offset, len, .. } => unsafe {
+                let slice = buffer.as_mut().data_mut();
+                if *offset >= slice.len() {
+                    return &mut [];
+                }
+                let end = (*offset + *len).min(slice.len());
+                &mut slice[*offset..end]
+            },
+            PacketRefKind::Dma { buf, offset, len } => {
+                let cap = buf.size;
+                if *offset >= cap {
+                    return &mut [];
+                }
+                let end = (*offset + *len).min(cap);
+                // SAFETY: We hold Arc to owner which keeps memory alive.
+                unsafe { crate::util::raw_ptr_as_slice_mut(buf.ptr.as_ptr(), end - *offset) }
             }
-            let end = (self.offset + self.len).min(slice.len());
-            &mut slice[self.offset..end]
         }
     }
 
     /// データ長を設定
-    pub fn set_len(&mut self, len: usize) {
-        // Only updates the view length, not the underlying buffer content length unless we want to?
-        // Actually, for RX, set_len usually sets the total valid data.
-        // But here PacketRef is a view.
-        // Let's assume set_len updates the view length.
-        self.len = len;
+    pub fn set_len(&mut self, len_val: usize) {
+        match &mut self.kind {
+            PacketRefKind::Pooled { len, .. } => *len = len_val,
+            PacketRefKind::Dma { len, .. } => *len = len_val,
+        }
     }
 
     /// データ長を取得
     pub fn len(&self) -> usize {
-        self.len
+        match &self.kind {
+            PacketRefKind::Pooled { len, .. } => *len,
+            PacketRefKind::Dma { len, .. } => *len,
+        }
     }
 
     /// 容量を取得
     pub fn capacity(&self) -> usize {
-        DEFAULT_BUFFER_SIZE
+        match &self.kind {
+            PacketRefKind::Pooled { .. } => DEFAULT_BUFFER_SIZE,
+            PacketRefKind::Dma { buf, .. } => buf.size,
+        }
     }
 
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
-        unsafe { self.buffer.as_ref().phys_addr() + self.offset as u64 }
+        match &self.kind {
+            PacketRefKind::Pooled { buffer, offset, .. } => unsafe {
+                buffer.as_ref().phys_addr() + *offset as u64
+            },
+            PacketRefKind::Dma { buf, offset, .. } => {
+                let mut phys = buf.phys_addr;
+                phys + *offset as u64
+            }
+        }
     }
 
     /// ヘッドルームを消費（オフセットを進める）
     pub fn advance(&mut self, size: usize) {
-        self.offset += size;
-        if self.len >= size {
-            self.len -= size;
-        } else {
-            self.len = 0;
+        match &mut self.kind {
+            PacketRefKind::Pooled { offset, len, .. } => {
+                *offset += size;
+                if *len >= size {
+                    *len -= size;
+                } else {
+                    *len = 0;
+                }
+            }
+            PacketRefKind::Dma { offset, len, .. } => {
+                *offset += size;
+                if *len >= size {
+                    *len -= size;
+                } else {
+                    *len = 0;
+                }
+            }
         }
     }
 
     /// クローン（参照カウントをインクリメント）
     pub fn clone_ref(&self) -> Self {
-        unsafe {
-            self.buffer.as_ref().add_ref();
-        }
-        Self {
-            buffer: self.buffer,
-            pool: self.pool,
-            offset: self.offset,
-            len: self.len,
+        match &self.kind {
+            PacketRefKind::Pooled { buffer, pool, offset, len } => unsafe {
+                buffer.as_ref().add_ref();
+                Self {
+                    kind: PacketRefKind::Pooled {
+                        buffer: *buffer,
+                        pool: *pool,
+                        offset: *offset,
+                        len: *len,
+                    },
+                }
+            },
+            PacketRefKind::Dma { buf, offset, len } => Self {
+                kind: PacketRefKind::Dma {
+                    buf: buf.clone(),
+                    offset: *offset,
+                    len: *len,
+                },
+            },
         }
     }
 
     /// Convert to RRef for zero-copy IPC
     /// Consumes the PacketRef and returns an RRef owned by target_domain.
     /// Requires exclusive access (ref_count == 1).
+    /// NOTE: only supported for pooled packet refs (mempool buffers).
     pub fn into_rref(self, target_domain: DomainId) -> Result<RRef<PacketBuffer>, Self> {
-        // Enforce exclusive ownership
-        unsafe {
-            if self
-                .buffer
-                .as_ref()
-                .meta
-                .ref_count
-                .load(Ordering::Acquire)
-                != 1
-            {
-                return Err(self);
-            }
+        match self.kind {
+            PacketRefKind::Pooled { buffer, pool: _, .. } => {
+                // Reconstruct original behavior: ensure exclusive ownership
+                unsafe {
+                    if buffer.as_ref().meta.ref_count.load(Ordering::Acquire) != 1 {
+                        return Err(self);
+                    }
 
-            // Transfer ownership from Kernel(0) to target_domain
-            // Assume current owner is Kernel (0) because PacketRef implies pool ownership
-            // and checking owner via SAS might be expensive.
-            match crate::sas::transfer_ownership(
-                self.buffer.as_ptr() as usize,
-                crate::sas::DomainId::new(0),
-                crate::sas::DomainId::new(target_domain.as_u64()),
-            ) {
-                Ok(_) => {}
-                Err(e) => {
-                    log::error!("Failed to transfer packet ownership: {:?}", e);
-                    return Err(self);
+                    match crate::sas::transfer_ownership(
+                        buffer.as_ptr() as usize,
+                        crate::sas::DomainId::new(0),
+                        crate::sas::DomainId::new(target_domain.as_u64()),
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::error!("Failed to transfer packet ownership: {:?}", e);
+                            return Err(self);
+                        }
+                    }
                 }
+
+                // Prevent Drop from running
+                core::mem::forget(self);
+
+                unsafe { Ok(RRef::from_raw(buffer, target_domain)) }
             }
+            PacketRefKind::Dma { .. } => Err(self), // Cannot convert arbitrary DMA buffer to RRef yet
         }
-
-        let ptr = self.buffer;
-
-        // Forget self to prevent Drop (which would return to pool)
-        core::mem::forget(self);
-
-        unsafe { Ok(RRef::from_raw(ptr, target_domain)) }
     }
 }
 
 impl Drop for PacketRef {
     fn drop(&mut self) {
-        unsafe {
-            if self.buffer.as_ref().release() {
-                // 参照カウントが0になったらプールに返却
-                self.pool.return_buffer(self.buffer);
+        match &self.kind {
+            PacketRefKind::Pooled { buffer, pool, .. } => unsafe {
+                if buffer.as_ref().release() {
+                    pool.return_buffer(*buffer);
+                }
+            },
+            PacketRefKind::Dma { .. } => {
+                // Arc drop will reclaim the TypedDmaSlice when last reference is gone
             }
         }
     }

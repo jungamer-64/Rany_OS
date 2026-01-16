@@ -431,7 +431,8 @@ impl DeviceIoModeController {
         let suggested = self.suggest_mode(iops, avg_latency);
 
         if suggested != current {
-            let count = self.hysteresis.fetch_add(1, Ordering::Relaxed);
+            // fetch_add は加算前の値を返すので +1
+            let count = self.hysteresis.fetch_add(1, Ordering::Relaxed) + 1;
             if count >= self.thresholds.hysteresis_count {
                 self.switch_mode(suggested);
                 self.hysteresis.store(0, Ordering::Relaxed);
@@ -793,6 +794,12 @@ impl IoScheduler {
         }
     }
 
+    /// I/OリクエストのWakerを取得
+    pub fn get_waker(&self, id: IoRequestId) -> Option<Waker> {
+        self.requests.read().get(&id).and_then(|r| r.waker.clone())
+    }
+
+
     /// 次のリクエストを取得（優先度順）
     pub fn next_request(&self) -> Option<IoRequestId> {
         // 高優先度から順にチェック
@@ -901,6 +908,45 @@ impl IoScheduler {
         waker.is_some()
     }
 
+    /// Pending 状態のリクエストのみキャンセル（Future drop 用）
+    ///
+    /// InProgress のリクエストは絶対に remove しない。
+    /// 完了時に `complete_request()` で回収される。
+    pub fn cancel_request_if_pending(&self, id: IoRequestId) -> bool {
+        let result = IoResult::Error(IoError::Cancelled);
+        let (waker, should_remove) = {
+            let mut requests = self.requests.write();
+            let Some(request) = requests.get_mut(&id) else {
+                return false;
+            };
+
+            if request.state != IoState::Pending {
+                // InProgress 等は触らない
+                return false;
+            }
+
+            request.state = IoState::Cancelled;
+            request.result = Some(result.clone());
+            request.abandoned = true; // drop 由来なので即回収OK
+            self.stats.current_queue_depth.fetch_sub(1, Ordering::Relaxed);
+            (request.waker.take(), true)
+        };
+
+        if let Some(hook) = self.completion_hooks.lock().remove(&id) {
+            hook.run(result);
+        }
+
+        if let Some(w) = waker {
+            w.wake();
+        }
+
+        if should_remove {
+            self.requests.write().remove(&id);
+        }
+
+        true
+    }
+
     /// リクエストを破棄（Future drop 時に使用）
     pub fn abandon_request(&self, id: IoRequestId) {
         let mut requests = self.requests.write();
@@ -991,6 +1037,7 @@ impl Clone for IoRequest {
             id: self.id,
             device: self.device,
             operation: self.operation,
+            command: self.command.clone(),
             payload: self.payload.clone(),
             priority: self.priority,
             state: self.state,
@@ -1030,6 +1077,13 @@ pub trait PollHandler {
 
     /// デバイスが準備完了か
     fn is_ready(&self) -> bool;
+
+    /// このハンドラを処理すべきCPU index（None = 全CPU、Some(n) = CPU n のみ）
+    ///
+    /// cpu_index() と同じ 0-based 連番を返す。
+    fn affinity_cpu_index(&self) -> Option<usize> {
+        None // デフォルト: どのCPUでも処理可
+    }
 }
 
 impl PollingExecutor {
@@ -1073,6 +1127,72 @@ impl PollingExecutor {
 
         for (_device, handlers) in handlers.iter() {
             for handler in handlers.iter() {
+                if handler.is_ready() {
+                    for (id, result) in handler.poll_completions() {
+                        self.scheduler.complete_request(id, result);
+                        completed += 1;
+                    }
+                }
+            }
+        }
+
+        completed
+    }
+
+    /// コールバック付きポーリング（pending_requests 掃除用）
+    ///
+    /// 完了ごとに (DeviceId, IoRequestId, IoResult) でコールバックを呼ぶ。
+    /// これにより Coordinator が scheduler.complete_request() と
+    /// bridge.complete_pending() の両方を呼べる。
+    pub fn poll_once_with<F>(&self, mut on_complete: F) -> usize
+    where
+        F: FnMut(DeviceId, IoRequestId, IoResult),
+    {
+        if !self.active.load(Ordering::Acquire) {
+            return 0;
+        }
+
+        let mut completed = 0;
+        let handlers = self.poll_handlers.read();
+
+        for (device, handlers) in handlers.iter() {
+            for handler in handlers.iter() {
+                if handler.is_ready() {
+                    for (id, result) in handler.poll_completions() {
+                        on_complete(*device, id, result.clone());
+                        self.scheduler.complete_request(id, result);
+                        completed += 1;
+                    }
+                }
+            }
+        }
+
+        completed
+    }
+
+    /// 現在のCPUに紐づくハンドラのみポーリング（per-CPU tick用）
+    ///
+    /// マルチコア環境では各CPUが自分のhandlerのみをpollするべき。
+    /// これにより NVMe queue のような per-CPU リソースへの競合を防ぐ。
+    pub fn poll_once_local(&self) -> usize {
+        if !self.active.load(Ordering::Acquire) {
+            return 0;
+        }
+
+        // cpu_index() で 0-based 連番を取得（deferred queue と同じ）
+        let cpu_idx = crate::smp::cpu_index();
+        let mut completed = 0;
+        let handlers = self.poll_handlers.read();
+
+        for (_device, handlers) in handlers.iter() {
+            for handler in handlers.iter() {
+                // affinity_cpu_index() が None = 全CPUで処理可
+                // affinity_cpu_index() が Some(idx) = その CPU index でのみ処理
+                match handler.affinity_cpu_index() {
+                    Some(idx) if idx != cpu_idx => continue,
+                    _ => {}
+                }
+
                 if handler.is_ready() {
                     for (id, result) in handler.poll_completions() {
                         self.scheduler.complete_request(id, result);
@@ -1156,10 +1276,21 @@ impl Future for IoFuture {
                     return Poll::Ready(Err(IoError::DeviceError));
                 }
                 IoState::Pending | IoState::InProgress => {
-                    // Wakerを登録
-                    if !self.registered {
+                    // Wakerを登録（変更がある場合のみ更新）
+                    // executor によっては waker が変わるため will_wake でチェック
+                    let current_waker = cx.waker();
+                    let needs_update = if self.registered {
+                        // 既に登録済みなら、新しい waker が同じか確認
                         self.scheduler
-                            .set_waker(self.request_id, cx.waker().clone());
+                            .get_waker(self.request_id)
+                            .map(|old| !old.will_wake(current_waker))
+                            .unwrap_or(true)
+                    } else {
+                        true
+                    };
+                    if needs_update {
+                        self.scheduler
+                            .set_waker(self.request_id, current_waker.clone());
                         self.registered = true;
                     }
                     return Poll::Pending;
@@ -1173,19 +1304,36 @@ impl Future for IoFuture {
 
 impl Drop for IoFuture {
     fn drop(&mut self) {
+        // Pending のときだけキャンセル＆削除して終わり
+        if self.scheduler.cancel_request_if_pending(self.request_id) {
+            return;
+        }
+        // InProgress なら request は残して完了時に回収させる
+        // (abandoned=true にして wake を無効化)
         self.scheduler.abandon_request(self.request_id);
-        let _ = self.scheduler.cancel_request(self.request_id);
     }
 }
 
 // ============================================================================
 // Deferred I/O Completions (ISR-safe queue)
 // ============================================================================
+//
+// 設計: Per-CPU キュー（SPSC-safe）
+// - 各CPUのISRは自分のキューにのみpush
+// - consumer (tick/bottom-half) は同じCPUのキューからpop
+// - これによりMPMCレースを回避し、lock-free で安全に動作
+//
+// API:
+// - defer_io_completion(): 現在CPUのキューにpush
+// - process_deferred_completions(): 全CPUキューをドレイン
+// - process_deferred_completions_local(): 現在CPUのみ処理
+// ============================================================================
 
 const IO_COMPLETION_QUEUE_SIZE: usize = 256;
 const IO_COMPLETION_QUEUE_MASK: usize = IO_COMPLETION_QUEUE_SIZE - 1;
 const IO_RESULT_ERROR_FLAG: u64 = 1 << 63;
 
+/// ISR-safe deferred I/O completion queue (SPSC想定、MPMC非対応)
 struct DeferredIoCompletionQueue {
     head: AtomicUsize,
     tail: AtomicUsize,
@@ -1258,19 +1406,95 @@ impl DeferredIoCompletionQueue {
     }
 }
 
-static DEFERRED_IO_COMPLETIONS: DeferredIoCompletionQueue = DeferredIoCompletionQueue::new();
+// ============================================================================
+// Per-CPU Deferred Completion Queues (SPSC-safe design)
+// ============================================================================
+//
+// 各CPUのISRは自分のキューにのみpushし、
+// consumer (tick/bottom-half) は同じCPUのキューから popする。
+// これによりSPSC条件が満たされ、MPMCレースを回避。
 
+/// 最大サポートCPU数
+const MAX_CPUS: usize = 64;
+
+/// Per-CPU キュー配列
+struct PerCpuDeferredCompletionQueues {
+    queues: [DeferredIoCompletionQueue; MAX_CPUS],
+}
+
+impl PerCpuDeferredCompletionQueues {
+    const fn new() -> Self {
+        const QUEUE: DeferredIoCompletionQueue = DeferredIoCompletionQueue::new();
+        Self {
+            queues: [QUEUE; MAX_CPUS],
+        }
+    }
+
+    /// 現在のCPUのキューにpush（ISRから呼び出し）
+    fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
+        // cpu_index() は 0-based 連番を返す（APIC ID ではない）
+        let cpu_idx = crate::smp::cpu_index();
+        debug_assert!(cpu_idx < MAX_CPUS, "CPU index {} exceeds MAX_CPUS", cpu_idx);
+        if cpu_idx >= MAX_CPUS {
+            // 万が一範囲外なら失敗（overflow_flag が立つ）
+            return false;
+        }
+        self.queues[cpu_idx].push(device, id, result)
+    }
+
+    /// 指定CPUのキューからpop
+    fn pop_from_cpu(&self, cpu_idx: usize) -> Option<(DeviceId, IoRequestId, IoResult)> {
+        if cpu_idx >= MAX_CPUS {
+            return None;
+        }
+        self.queues[cpu_idx].pop()
+    }
+
+    /// 全CPUのキューからドレイン（メインloop用）
+    fn drain_all<F>(&self, mut callback: F) -> usize
+    where
+        F: FnMut(DeviceId, IoRequestId, IoResult),
+    {
+        let mut total = 0;
+        for queue in &self.queues {
+            while let Some((device, id, result)) = queue.pop() {
+                callback(device, id, result);
+                total += 1;
+            }
+        }
+        total
+    }
+}
+
+static DEFERRED_IO_COMPLETIONS: PerCpuDeferredCompletionQueues = PerCpuDeferredCompletionQueues::new();
+
+/// 割り込みコンテキストから完了を遅延キューに追加
 fn defer_io_completion(device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
     DEFERRED_IO_COMPLETIONS.push(device, id, result)
 }
 
+/// 遅延完了を処理（全CPUキューをドレイン）
 pub fn process_deferred_completions() -> usize {
+    let coordinator = hybrid_coordinator();
+    let scheduler = coordinator.scheduler.clone();
+    let bridge = coordinator.interrupt_bridge();
+
+    DEFERRED_IO_COMPLETIONS.drain_all(|device, id, result| {
+        scheduler.complete_request(id, result);
+        bridge.complete_pending(device, id);
+    })
+}
+
+/// 現在のCPUの遅延完了のみ処理（per-CPU tick用）
+pub fn process_deferred_completions_local() -> usize {
+    // IMPORTANT: push() と同じ cpu_index() を使用して SPSC 条件を満たす
+    let cpu_idx = crate::smp::cpu_index();
     let coordinator = hybrid_coordinator();
     let scheduler = coordinator.scheduler.clone();
     let bridge = coordinator.interrupt_bridge();
     let mut processed = 0;
 
-    while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop() {
+    while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
         scheduler.complete_request(id, result);
         bridge.complete_pending(device, id);
         processed += 1;
@@ -1393,6 +1617,10 @@ pub struct IoInterruptBridge {
     scheduler: Arc<IoScheduler>,
     /// デバイスごとの保留中リクエスト
     pending_requests: RwLock<BTreeMap<DeviceId, VecDeque<IoRequestId>>>,
+    /// 遅延キュー満杯でドロップした完了数（デバッグ/統計用）
+    dropped_completions: AtomicU64,
+    /// 遅延キューオーバーフローフラグ（次tickで追加ポーリング）
+    overflow_flag: AtomicBool,
 }
 
 impl IoInterruptBridge {
@@ -1400,6 +1628,8 @@ impl IoInterruptBridge {
         Self {
             scheduler,
             pending_requests: RwLock::new(BTreeMap::new()),
+            dropped_completions: AtomicU64::new(0),
+            overflow_flag: AtomicBool::new(false),
         }
     }
 
@@ -1413,13 +1643,28 @@ impl IoInterruptBridge {
     }
 
     /// 割り込みハンドラから呼ばれる
+    ///
+    /// ISR-safe: ロックを最小化し、遅延キューに追加のみ
     pub fn handle_interrupt(&self, device: DeviceId, results: &[(IoRequestId, IoResult)]) {
         for (id, result) in results {
             if !defer_io_completion(device, *id, result.clone()) {
-                self.scheduler.complete_request(*id, result.clone());
-                self.complete_pending(device, *id);
+                // キュー満杯: ISRから直接 complete_request は unsafe なので
+                // オーバーフローカウンタをインクリメントし、次tickでpoll強制
+                self.dropped_completions.fetch_add(1, Ordering::Relaxed);
+                self.overflow_flag.store(true, Ordering::Release);
+                // この完了はポーリングで回収される（NVMe CQ等に残っている）
             }
         }
+    }
+
+    /// オーバーフローフラグをチェック＆クリア
+    pub fn check_and_clear_overflow(&self) -> bool {
+        self.overflow_flag.swap(false, Ordering::AcqRel)
+    }
+
+    /// ドロップされた完了数を取得
+    pub fn dropped_completions(&self) -> u64 {
+        self.dropped_completions.load(Ordering::Relaxed)
     }
 
     fn complete_pending(&self, device: DeviceId, request_id: IoRequestId) {
@@ -1508,20 +1753,41 @@ impl HybridIoCoordinator {
             _ => IoMode::Hybrid,
         };
 
-        if matches!(global_mode, IoMode::Interrupt) {
-            // モードに応じて登録先を選択
+        // Polling 以外はpending登録（Interrupt/Hybrid両方で有効）
+        if !matches!(global_mode, IoMode::Polling) {
             let mode = self.scheduler.device_mode(device);
-            match mode {
-                IoMode::Interrupt => {
-                    self.interrupt_bridge.register_pending(device, id);
-                }
-                IoMode::Polling => {
-                    // ポーリングの場合は特に登録不要
-                }
-                IoMode::Hybrid => {
-                    // 両方に登録
-                    self.interrupt_bridge.register_pending(device, id);
-                }
+            // デバイスモードが Polling でない場合のみ登録
+            if !matches!(mode, IoMode::Polling) {
+                self.interrupt_bridge.register_pending(device, id);
+            }
+        }
+
+        IoFuture::new(self.scheduler.clone(), id)
+    }
+
+    /// IoCommandでI/Oをサブミット（新API）
+    ///
+    /// デバイス中立な `IoCommand` を使用。PRP/SGL変換は
+    /// `DeviceOps::submit` 内でドライバが行う。
+    pub fn submit_io_command(
+        &self,
+        device: DeviceId,
+        command: IoCommand,
+        priority: IoPriority,
+    ) -> IoFuture {
+        let id = self.scheduler.submit_command(device, command, priority);
+
+        let global_mode = match self.global_mode.load(Ordering::Acquire) {
+            0 => IoMode::Interrupt,
+            1 => IoMode::Polling,
+            _ => IoMode::Hybrid,
+        };
+
+        // Polling 以外はpending登録（Interrupt/Hybrid両方で有効）
+        if !matches!(global_mode, IoMode::Polling) {
+            let mode = self.scheduler.device_mode(device);
+            if !matches!(mode, IoMode::Polling) {
+                self.interrupt_bridge.register_pending(device, id);
             }
         }
 
@@ -1534,13 +1800,29 @@ impl HybridIoCoordinator {
         // ISRからキューに追加された割り込みイベントを処理し、Wakerを起床
         super::interrupt_manager::process_pending_interrupts();
 
-        // 1. モード評価
+        // 1. ISRから遅延された完了を処理（現CPUのキューのみ）
+        process_deferred_completions_local();
+
+        // 1.5. オーバーフロー時は強制ポーリングで回収
+        // ISRでキュー満杯により積めなかった完了をCQから直接回収
+        if self.interrupt_bridge.check_and_clear_overflow() {
+            let was_active = self.polling_executor.is_active();
+            if !was_active {
+                self.polling_executor.start();
+            }
+            self.polling_executor.poll_batch();
+            if !was_active && matches!(self.global_mode(), IoMode::Interrupt) {
+                self.polling_executor.stop();
+            }
+        }
+
+        // 2. モード評価
         self.scheduler.evaluate_modes(current_tick);
 
-        // 2. ペンディングI/Oをディスパッチ
+        // 3. ペンディングI/Oをディスパッチ
         self.dispatch_pending();
 
-        // 3. ポーリングモードならポーリング実行
+        // 4. ポーリングモードならポーリング実行
         let global_mode = match self.global_mode.load(Ordering::Acquire) {
             0 => IoMode::Interrupt,
             1 => IoMode::Polling,
@@ -1604,9 +1886,11 @@ impl HybridIoCoordinator {
         };
         self.global_mode.store(mode_val, Ordering::Release);
 
+        // Polling と Hybrid ではポーリングを有効化
+        // Interrupt のみポーリングを停止
         match mode {
-            IoMode::Polling => self.polling_executor.start(),
-            _ => self.polling_executor.stop(),
+            IoMode::Polling | IoMode::Hybrid => self.polling_executor.start(),
+            IoMode::Interrupt => self.polling_executor.stop(),
         }
     }
 

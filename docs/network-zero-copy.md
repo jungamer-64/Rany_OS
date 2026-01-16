@@ -26,7 +26,7 @@
 - スタックはゼロコピーを優先する:
   - 可能なら `alloc_packet()` で PacketRef を取得して直接構築 → `enqueue_via_virtio(packet)` を呼び成功なら即座に完了。
   - エンキューに失敗（QueueFull や IOMMU エラー等）した場合は、落ち着いてコピー経路（既存のバッファ / tx_pool）を使用して送信する。
-  - 補足: 互換API（`process_received_packet`）は新API（`process_received_packet_zero_copy`）へ委譲するよう統一され、VirtIO の vbuf 経路も新APIで処理するよう変更されました。
+  - 補足: 互換API（`process_received_packet`）は削除され、ドライバや古いコードは新API（`process_received_packet_zero_copy`）を直接使用してください。
 
 制約と注意点
 - IRQ/ISR: 割り込み処理内で動的アロケーションは行わない。TX 完了処理は minimal なクリーンアップ（unmap 等）とイベント通知のみ行う。
@@ -53,3 +53,22 @@ FAQ（簡易）
 ---
 更新日: 2026-01-15
 作成者: GitHub Copilot (Raptor mini (Preview))
+
+## 🔁 テストの実行方法 (Integration)
+
+Integration テストはカーネルターゲットと QEMU 上で実行する必要があります。以下の手順はリポジトリの推奨フローです：
+
+1. ビルド（統合テスト用フラグを有効）:
+
+   ```bash
+   cargo build --package rany_kernel --target x86_64-exorust.json --features run-integration-tests
+   ```
+
+2. QEMU でテスト実行（スクリプト利用推奨）:
+
+   - Windows PowerShell 例（リポジトリに用意されているスクリプト）:
+     `tools\e2e_zero_copy\run_e2e_qemu.ps1`
+
+   - これによりカーネルが QEMU 上で起動し、Serial 出力上にテストログが出力されます。
+
+> 注: ローカル `cargo test` はホスト向けのビルドとターゲット向けのビルドが混在するため、カーネルの no_std テストはターゲットビルド + QEMU 実行で回すのが安定しています。
