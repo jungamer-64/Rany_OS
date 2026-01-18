@@ -16,11 +16,11 @@ pub mod fuel;
 pub mod interrupt_waker;
 pub mod per_core_executor;
 pub mod preemption;
-pub mod process;
+pub(crate) mod process;
 pub mod io;
 #[cfg(feature = "legacy-scheduler")]
 pub mod scheduler; 
-pub mod signal;
+pub(crate) mod signal;
 pub mod timer;
 mod work_stealing;
 
@@ -29,7 +29,15 @@ mod work_stealing;
 pub mod work_stealing_advanced;
 
 #[allow(unused_imports)]
-pub use context::{CpuContext, KernelStack, TaskControlBlock, TaskState, current_task_id};
+pub use context::{
+    CpuContext,
+    KernelStack,
+    Subject,
+    TaskControlBlock,
+    TaskState,
+    current_subject,
+    current_task_id,
+};
 #[allow(unused_imports)]
 pub use environ::{
     EnvError, EnvKey, EnvValue, Environment, environ, get_home, get_path, get_pwd, get_user,
@@ -67,19 +75,8 @@ pub use preemption::{
     yield_point,
 };
 #[allow(unused_imports)]
-pub use process::{
-    Credentials, ProcessId, ProcessInfo, ProcessManager, ProcessState, ResourceLimits, ThreadId,
-    exit as process_exit, getgid, getpid, getppid, getpriority, getuid, process_manager,
-    setpriority, spawn as spawn_process, waitpid,
-};
-#[allow(unused_imports)]
 #[cfg(feature = "legacy-scheduler")]
 pub use scheduler::{PerCpuScheduler, init_scheduler};
-#[allow(unused_imports)]
-pub use signal::{
-    Signal, SignalAction, SignalContext, SignalFuture, SignalHandler, SignalManager, SignalMask,
-    SignalQueue, kill, sigignore, signal as set_signal, signal_manager,
-};
 pub use timer::{current_tick, sleep_ms};
 #[allow(unused_imports)]
 pub use work_stealing::{inject_global, steal_from_global};
@@ -91,6 +88,37 @@ pub use work_stealing_advanced::{
     StealableTask, TaskId as WsTaskId, TaskState as WsTaskState, WorkStealingDeque, WorkerStats,
     init as init_work_stealing, schedule as ws_schedule, spawn as ws_spawn,
 };
+
+#[cfg(feature = "posix-compat")]
+pub mod compat {
+    pub mod process {
+        pub use super::super::process::{
+            Credentials, ProcessId, ProcessInfo, ProcessManager, ProcessState, ResourceLimits,
+            ThreadId, exit as process_exit, getgid, getpid, getppid, getpriority, getuid,
+            process_manager, setpriority, spawn as spawn_process, waitpid,
+        };
+    }
+
+    pub mod signal {
+        pub use super::super::signal::{
+            Signal, SignalAction, SignalContext, SignalFuture, SignalHandler, SignalManager,
+            SignalMask, SignalQueue, kill, sigignore, signal as set_signal, signal_manager,
+        };
+    }
+
+    #[deprecated(note = "use task::compat::process::*")]
+    pub use process::{
+        Credentials, ProcessId, ProcessInfo, ProcessManager, ProcessState, ResourceLimits, ThreadId,
+        process_exit, getgid, getpid, getppid, getpriority, getuid, process_manager, setpriority,
+        spawn_process, waitpid,
+    };
+
+    #[deprecated(note = "use task::compat::signal::*")]
+    pub use signal::{
+        Signal, SignalAction, SignalContext, SignalFuture, SignalHandler, SignalManager, SignalMask,
+        SignalQueue, kill, sigignore, set_signal, signal_manager,
+    };
+}
 
 // ============================================================================
 // Timeout Support (設計書 4.4)
@@ -269,6 +297,10 @@ impl TaskId {
     pub fn new() -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
         TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub const fn from_raw(id: u64) -> Self {
+        TaskId(id)
     }
 
     #[allow(dead_code)]

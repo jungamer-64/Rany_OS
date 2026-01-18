@@ -109,8 +109,8 @@ impl FileHandleRegistry {
         self.handles.lock().remove(&id)
     }
 
-    /// Return a list of handle IDs owned by `owner`.
-    fn list_handles_by_owner(&self, owner: u64) -> alloc::vec::Vec<u64> {
+/// Return a list of handle IDs owned by `owner` (domain id).
+fn list_handles_by_owner(&self, owner: u64) -> alloc::vec::Vec<u64> {
         let mut result = alloc::vec::Vec::new();
         let handles = self.handles.lock();
         for (id, entry) in handles.iter() {
@@ -131,7 +131,7 @@ impl FileHandleRegistry {
 static FILE_HANDLE_REGISTRY: FileHandleRegistry = FileHandleRegistry::new();
 static CHANNEL_REGISTRY: ChannelRegistry = ChannelRegistry::new();
 
-// Accessors for per-process file handles (used by procfs)
+// Accessors for per-domain file handles (used by procfs)
 pub(crate) fn file_handles_for_owner(owner: u64) -> alloc::vec::Vec<u64> {
     FILE_HANDLE_REGISTRY.list_handles_by_owner(owner)
 }
@@ -780,7 +780,7 @@ impl KernelServices for ExoKernel {
             }
         }
 
-        let caller = context::current_task_id();
+        let caller = context::current_subject().domain.as_u64();
 
         // If token provided, validate and increment in-flight counter
         if let Some(t) = token {
@@ -793,7 +793,7 @@ impl KernelServices for ExoKernel {
             }
         }
 
-        // Register in file handle table (recording owner for /proc/<pid>/fd)
+        // Register in file handle table (recording owner domain for /proc/<pid>/fd)
         let handle_id = FILE_HANDLE_REGISTRY.register(FileHandleEntry {
             path: path_buf,
             mode,
@@ -843,7 +843,7 @@ impl KernelServices for ExoKernel {
             crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid))
                 .unwrap_or(512);
 
-        let caller = context::current_task_id();
+        let caller = context::current_subject().domain.as_u64();
 
         // If token provided, validate and increment in-flight counter
         if let Some(t) = token {
@@ -866,7 +866,7 @@ impl KernelServices for ExoKernel {
             return Err(KapiError::InvalidHandle);
         }
 
-        let caller = context::current_task_id();
+        let caller = context::current_subject().domain.as_u64();
 
         match NVME_DIRECT_REGISTRY.unregister_if_owner_or_admin(id, caller) {
             Some(entry) => {
@@ -1403,8 +1403,33 @@ impl GuiServices for ExoKernel {
 // ============================================================================
 
 use kernel_api::shell::{
-    DirEntry as KapiDirEntry, MemoryStats, ProcessInfo, ShellServices, SystemInfo as KapiSystemInfo,
+    DirEntry as KapiDirEntry, DomainInfo, DomainState as KapiDomainState, MemoryStats,
+    ShellServices, SystemInfo as KapiSystemInfo,
 };
+
+fn map_domain_state(state: crate::domain_system::DomainState) -> KapiDomainState {
+    match state {
+        crate::domain_system::DomainState::Initializing => KapiDomainState::Initializing,
+        crate::domain_system::DomainState::Running => KapiDomainState::Running,
+        crate::domain_system::DomainState::Suspended => KapiDomainState::Suspended,
+        crate::domain_system::DomainState::Stopped => KapiDomainState::Stopped,
+        crate::domain_system::DomainState::Terminated => KapiDomainState::Terminated,
+    }
+}
+
+fn ensure_domain_control(target: crate::domain_system::DomainId) -> Result<(), &'static str> {
+    let subject = crate::task::current_subject();
+    if subject.domain == target {
+        return Ok(());
+    }
+    if subject
+        .caps
+        .has_capability(crate::security::capability::CAP_KILL)
+    {
+        return Ok(());
+    }
+    Err("Permission denied: owner or CAP_KILL required")
+}
 
 impl ShellServices for ExoKernel {
     fn memory_stats(&self) -> MemoryStats {
@@ -1419,123 +1444,55 @@ impl ShellServices for ExoKernel {
         crate::task::timer::current_tick()
     }
 
-    fn list_processes(&self) -> alloc::vec::Vec<ProcessInfo> {
-        let pm = crate::task::process_manager();
-        let mut result = alloc::vec::Vec::new();
-
-        for pid in 0..100u64 {
-            let proc_id = crate::task::ProcessId::new(pid);
-            if let Some(process) = pm.get(proc_id) {
-                let p = process.read();
-                let state = match p.state {
-                    crate::task::ProcessState::Running | crate::task::ProcessState::Ready => {
-                        kernel_api::shell::ProcessState::Running
-                    }
-                    crate::task::ProcessState::Blocked => kernel_api::shell::ProcessState::Blocked,
-                    crate::task::ProcessState::Stopped => kernel_api::shell::ProcessState::Stopped,
-                    crate::task::ProcessState::Zombie => kernel_api::shell::ProcessState::Zombie,
-                    _ => kernel_api::shell::ProcessState::Sleeping,
-                };
-
-                result.push(ProcessInfo {
-                    pid,
-                    name: p.name.clone(),
-                    state,
-                    memory_kb: 0,
-                    cpu_usage: 0.0,
-                    domain: alloc::string::String::from("user"),
-                    uid: p.credentials.uid.as_u32(),
-                });
-            }
-        }
-
-        if result.is_empty() {
-            result.push(ProcessInfo {
-                pid: 0,
-                name: alloc::string::String::from("kernel"),
-                state: kernel_api::shell::ProcessState::Running,
-                memory_kb: crate::memory::used_memory_kb() as usize,
-                cpu_usage: 0.0,
-                domain: alloc::string::String::from("kernel"),
-                uid: 0,
-            });
-        }
-
-        result
-    }
-
-    fn get_process(&self, pid: u64) -> Option<ProcessInfo> {
-        let proc_id = crate::task::ProcessId::new(pid);
-
-        if let Some(process) = crate::task::process_manager().get(proc_id) {
-            let p = process.read();
-            let state = match p.state {
-                crate::task::ProcessState::Running | crate::task::ProcessState::Ready => {
-                    kernel_api::shell::ProcessState::Running
-                }
-                crate::task::ProcessState::Blocked => kernel_api::shell::ProcessState::Blocked,
-                crate::task::ProcessState::Stopped => kernel_api::shell::ProcessState::Stopped,
-                crate::task::ProcessState::Zombie => kernel_api::shell::ProcessState::Zombie,
-                _ => kernel_api::shell::ProcessState::Sleeping,
-            };
-
-            Some(ProcessInfo {
-                pid,
-                name: p.name.clone(),
-                state,
-                memory_kb: 0,
-                cpu_usage: 0.0,
-                domain: alloc::string::String::from("user"),
-                uid: p.credentials.uid.as_u32(),
+    fn list_domains(&self) -> alloc::vec::Vec<DomainInfo> {
+        crate::domain_system::list_domain_snapshots()
+            .into_iter()
+            .map(|snap| DomainInfo {
+                id: snap.id.as_u64(),
+                name: snap.name,
+                state: map_domain_state(snap.state),
+                tasks: snap.tasks,
+                memory_kb: (snap.memory_bytes / 1024) as usize,
+                rrefs: snap.rrefs,
+                last_error: snap.last_error,
             })
-        } else if pid == 0 {
-            Some(ProcessInfo {
-                pid: 0,
-                name: alloc::string::String::from("kernel"),
-                state: kernel_api::shell::ProcessState::Running,
-                memory_kb: crate::memory::used_memory_kb() as usize,
-                cpu_usage: 0.0,
-                domain: alloc::string::String::from("kernel"),
-                uid: 0,
-            })
-        } else {
-            None
-        }
+            .collect()
     }
 
-    fn kill_process(
-        &self,
-        pid: u64,
-        caller_uid: u32,
-        has_cap_kill: bool,
-    ) -> Result<(), &'static str> {
-        if pid == 0 {
-            return Err("Cannot kill kernel process");
-        }
-
-        let proc_id = crate::task::ProcessId::new(pid);
-        let pm = crate::task::process_manager();
-
-        if let Some(process) = pm.get(proc_id) {
-            let target_uid = process.read().credentials.uid.as_u32();
-
-            if caller_uid != target_uid && !has_cap_kill {
-                return Err("Permission denied: Owner or CAP_KILL required");
-            }
-
-            process.write().state = crate::task::ProcessState::Stopped;
-            Ok(())
-        } else {
-            Err("Process not found")
-        }
+    fn get_domain(&self, id: u64) -> Option<DomainInfo> {
+        crate::domain_system::get_domain_snapshot(crate::domain_system::DomainId::new(id)).map(
+            |snap| DomainInfo {
+                id: snap.id.as_u64(),
+                name: snap.name,
+                state: map_domain_state(snap.state),
+                tasks: snap.tasks,
+                memory_kb: (snap.memory_bytes / 1024) as usize,
+                rrefs: snap.rrefs,
+                last_error: snap.last_error,
+            },
+        )
     }
 
-    fn current_uid(&self) -> u32 {
-        crate::task::process::getuid().as_u32()
+    fn terminate_domain(&self, id: u64) -> Result<(), &'static str> {
+        let target = crate::domain_system::DomainId::new(id);
+        ensure_domain_control(target)?;
+        crate::domain_system::terminate_domain(target)
     }
 
-    fn current_pid(&self) -> u64 {
-        crate::task::process::getpid().as_u64()
+    fn stop_domain(&self, id: u64) -> Result<(), &'static str> {
+        let target = crate::domain_system::DomainId::new(id);
+        ensure_domain_control(target)?;
+        crate::domain_system::stop_domain(target)
+    }
+
+    fn resume_domain(&self, id: u64) -> Result<(), &'static str> {
+        let target = crate::domain_system::DomainId::new(id);
+        ensure_domain_control(target)?;
+        crate::domain_system::resume_domain(target)
+    }
+
+    fn current_domain(&self) -> u64 {
+        crate::task::current_subject().domain.as_u64()
     }
 
     fn system_info(&self) -> KapiSystemInfo {
@@ -1863,4 +1820,3 @@ mod fs_tests {
 pub fn exokernel() -> &'static ExoKernel {
     &EXOKERNEL
 }
-

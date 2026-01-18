@@ -37,7 +37,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// 
 /// ## Capability-based Security
 /// メソッド呼び出し時に呼び出し元の CapabilitySet を明示的に渡す。
-/// これにより PID ベースの権限チェックではなく、トークンベースの
+/// これにより主体IDベースの権限チェックではなく、トークンベースの
 /// セキュリティモデルを実現する。
 pub trait ShellNamespace: Send + Sync {
     /// 名前空間の名称 (例: "fs", "net")

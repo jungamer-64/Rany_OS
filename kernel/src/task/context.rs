@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use super::raw;
 use core::arch::naked_asm;
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
@@ -264,6 +265,10 @@ impl Default for KernelStack {
 pub struct TaskControlBlock {
     /// タスクID
     pub id: super::TaskId,
+    /// ドメインID（権限主体）
+    pub domain_id: crate::domain_system::DomainId,
+    /// ドメインセキュリティ（資格情報/ケイパビリティ）
+    pub security: Arc<crate::domain_system::DomainSecurity>,
     /// タスク状態
     pub state: TaskState,
     /// CPUコンテキスト
@@ -282,14 +287,22 @@ pub struct TaskControlBlock {
 
 impl TaskControlBlock {
     /// 新しいTCBを作成
-    pub fn new(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<Self> {
+    pub fn new(
+        entry_point: fn(u64) -> !,
+        arg: u64,
+        priority: u8,
+        domain_id: crate::domain_system::DomainId,
+    ) -> Option<Self> {
         let kernel_stack = KernelStack::new()?;
         let stack_top = kernel_stack.top();
 
         let context = CpuContext::new_task(entry_point, stack_top, arg);
+        let security = crate::domain_system::domain_security_handle(domain_id);
 
         Some(Self {
             id: super::TaskId::new(),
+            domain_id,
+            security,
             state: TaskState::Ready,
             context,
             kernel_stack,
@@ -302,8 +315,12 @@ impl TaskControlBlock {
 
     /// アイドルタスク用のTCBを作成
     pub fn idle(cpu_id: usize) -> Self {
+        let domain_id = crate::domain_system::DomainId::KERNEL;
+        let security = crate::domain_system::domain_security_handle(domain_id);
         Self {
             id: super::TaskId::new(),
+            domain_id,
+            security,
             state: TaskState::Running,
             context: CpuContext::empty(),
             kernel_stack: KernelStack::default(),
@@ -398,6 +415,47 @@ pub fn current_task_id() -> u64 {
         unsafe { (*tcb_ptr).id.0 }
     } else {
         0 // タスクなし
+    }
+}
+
+/// 権限主体（Task -> Domain）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Subject {
+    pub domain: crate::domain_system::DomainId,
+    pub task: super::TaskId,
+    pub cred: crate::domain_system::DomainCredentials,
+    pub caps: crate::security::CapabilitySet,
+}
+
+impl Subject {
+    pub fn kernel() -> Self {
+        let security = crate::domain_system::domain_security_handle(crate::domain_system::DomainId::KERNEL);
+        Self {
+            domain: crate::domain_system::DomainId::KERNEL,
+            // current_task_id() falls back to 0 when no task is active
+            task: super::TaskId::from_raw(0),
+            cred: security.credentials,
+            caps: security.caps,
+        }
+    }
+}
+
+/// 現在の権限主体を取得（タスク不在時はカーネル主体）
+pub fn current_subject() -> Subject {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if let Some(tcb_ptr) = get_current_task(cpu_id) {
+        // SAFETY: get_current_taskは有効なTCBポインタを返す
+        unsafe {
+            let tcb = &*tcb_ptr;
+            Subject {
+                domain: tcb.domain_id,
+                task: tcb.id,
+                cred: tcb.security.credentials,
+                caps: tcb.security.caps,
+            }
+        }
+    } else {
+        Subject::kernel()
     }
 }
 

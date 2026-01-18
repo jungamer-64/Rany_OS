@@ -11,12 +11,15 @@
 // use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 // 【設計書 8.1】PoisonLock使用 - パニック時自動毒入れ
 use crate::error::{DomainErrorKind, KernelError};
+use crate::security::CapabilitySet;
 use crate::sync::PoisonLock;
+use spin::Once;
 
 // ============================================================================
 // ドメインID
@@ -79,6 +82,57 @@ impl DomainState {
 }
 
 // ============================================================================
+// ドメインセキュリティ
+// ============================================================================
+
+/// ドメイン主体の資格情報
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DomainCredentials {
+    pub uid: u32,
+    pub gid: u32,
+}
+
+impl DomainCredentials {
+    pub const ROOT: Self = Self { uid: 0, gid: 0 };
+
+    pub const fn new(uid: u32, gid: u32) -> Self {
+        Self { uid, gid }
+    }
+}
+
+/// ドメイン主体の権限情報
+#[derive(Debug, Clone)]
+pub struct DomainSecurity {
+    pub credentials: DomainCredentials,
+    pub caps: CapabilitySet,
+}
+
+impl DomainSecurity {
+    pub fn kernel() -> Self {
+        Self {
+            credentials: DomainCredentials::ROOT,
+            caps: CapabilitySet::full(),
+        }
+    }
+}
+
+impl Default for DomainSecurity {
+    fn default() -> Self {
+        Self {
+            credentials: DomainCredentials::ROOT,
+            caps: CapabilitySet::empty(),
+        }
+    }
+}
+
+fn kernel_security_handle() -> Arc<DomainSecurity> {
+    static KERNEL_SECURITY: Once<Arc<DomainSecurity>> = Once::new();
+    KERNEL_SECURITY
+        .call_once(|| Arc::new(DomainSecurity::kernel()))
+        .clone()
+}
+
+// ============================================================================
 // ドメイン構造体
 // ============================================================================
 
@@ -91,6 +145,8 @@ pub struct Domain {
     pub name: String,
     /// 現在の状態
     pub state: DomainState,
+    /// セキュリティ主体（資格情報/ケイパビリティ）
+    pub security: Arc<DomainSecurity>,
 
     // タスク管理
     /// このドメインに属するタスクID
@@ -125,13 +181,32 @@ pub struct Domain {
     pub numa_node: Option<usize>,
 }
 
+/// Domain summary snapshot for external queries
+#[derive(Debug, Clone)]
+pub struct DomainSnapshot {
+    pub id: DomainId,
+    pub name: String,
+    pub state: DomainState,
+    pub tasks: usize,
+    pub memory_bytes: u64,
+    pub rrefs: u64,
+    pub last_error: Option<String>,
+}
+
 impl Domain {
     /// 新しいドメインを作成
     pub fn new(id: DomainId, name: String) -> Self {
+        let security = if id == DomainId::KERNEL {
+            kernel_security_handle()
+        } else {
+            Arc::new(DomainSecurity::default())
+        };
+
         Self {
             id,
             name,
             state: DomainState::Initializing,
+            security,
             tasks: Vec::new(),
             dependencies: Vec::new(),
             dependents: Vec::new(),
@@ -308,6 +383,19 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
     }
 }
 
+/// ドメインのセキュリティハンドルを取得
+pub fn domain_security_handle(id: DomainId) -> Arc<DomainSecurity> {
+    match REGISTRY.lock() {
+        Ok(guard) => guard
+            .domains
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.security.clone())
+            .unwrap_or_else(kernel_security_handle),
+        Err(_) => kernel_security_handle(),
+    }
+}
+
 /// ドメインの状態を取得
 pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
     match REGISTRY.lock() {
@@ -344,6 +432,41 @@ where
         Ok(mut guard) => guard.domains.iter_mut().find(|d| d.id == id).map(f),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (with_domain_mut)");
+            None
+        }
+    }
+}
+
+/// Create a lightweight snapshot of a domain for external queries.
+fn to_snapshot(domain: &Domain) -> DomainSnapshot {
+    DomainSnapshot {
+        id: domain.id,
+        name: domain.name.clone(),
+        state: domain.state,
+        tasks: domain.tasks.len(),
+        memory_bytes: domain.allocated_memory,
+        rrefs: domain.rref_count,
+        last_error: domain.last_error.clone(),
+    }
+}
+
+/// List all domain snapshots.
+pub fn list_domain_snapshots() -> Vec<DomainSnapshot> {
+    match REGISTRY.lock() {
+        Ok(guard) => guard.domains.iter().map(to_snapshot).collect(),
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (list_domain_snapshots)");
+            Vec::new()
+        }
+    }
+}
+
+/// Get a single domain snapshot by ID.
+pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
+    match REGISTRY.lock() {
+        Ok(guard) => guard.domains.iter().find(|d| d.id == id).map(to_snapshot),
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (get_domain_snapshot)");
             None
         }
     }
@@ -516,6 +639,31 @@ pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
         }
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (stop_domain)");
+            Err("Domain registry poisoned")
+        }
+    }
+}
+
+/// Resume a stopped or suspended domain
+pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
+    match REGISTRY.lock() {
+        Ok(mut registry) => {
+            if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
+                match domain.state {
+                    DomainState::Stopped | DomainState::Suspended => {
+                        domain.state = DomainState::Running;
+                        log::info!("[DOMAIN] Resumed {}\n", id);
+                        Ok(())
+                    }
+                    DomainState::Running | DomainState::Initializing => Ok(()),
+                    DomainState::Terminated => Err("Domain is terminated"),
+                }
+            } else {
+                Err("Domain not found")
+            }
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (resume_domain)");
             Err("Domain registry poisoned")
         }
     }
@@ -888,7 +1036,13 @@ pub fn set_current_domain(id: DomainId) {
 
 /// 現在のドメインを取得
 pub fn current_domain() -> DomainId {
-    DomainId::new(CURRENT_DOMAIN.load(Ordering::SeqCst))
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if let Some(tcb_ptr) = crate::task::context::get_current_task(cpu_id) {
+        // SAFETY: get_current_taskは有効なTCBポインタを返す
+        unsafe { (*tcb_ptr).domain_id }
+    } else {
+        DomainId::new(CURRENT_DOMAIN.load(Ordering::SeqCst))
+    }
 }
 
 /// 現在のドメインがカーネルかどうか

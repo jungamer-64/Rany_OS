@@ -34,7 +34,7 @@ impl<'a> Display for ExoValue<'a> {
             }
             ExoValue::FileEntry(e) => e.fmt(f),
             ExoValue::NetConnection(c) => c.fmt(f),
-            ExoValue::Process(p) => p.fmt(f),
+            ExoValue::Domain(d) => d.fmt(f),
             ExoValue::Capability(cap) => cap.fmt(f),
             ExoValue::Iterator(it) => write!(
                 f,
@@ -101,14 +101,14 @@ impl Display for NetConnection {
     }
 }
 
-impl Display for ProcessInfo {
+impl Display for DomainInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:>5} {:>8} {:>5.1}% {:>8} KB  {}",
-            self.pid,
+            "{:>5} {:>11} {:>5} {:>8} KB  {}",
+            self.id,
             format!("{:?}", self.state),
-            self.cpu_usage,
+            self.tasks,
             self.memory_kb,
             self.name
         )

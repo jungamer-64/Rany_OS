@@ -669,14 +669,14 @@ impl ExoShell {
         match name {
             "list" | "ps" => ProcNamespace::list(),
             "info" => {
-                let pid = args
+                let id = args
                     .first()
                     .and_then(|v| match v {
-                        ExoValue::Int(n) => Some(*n as u32),
+                        ExoValue::Int(n) => Some(*n as u64),
                         _ => None,
                     })
                     .unwrap_or(0);
-                ProcNamespace::info(pid)
+                ProcNamespace::info(id)
             }
             _ => ExoValue::Error(
                 ParseError::UnknownMethod {
@@ -1246,7 +1246,9 @@ impl ExoShell {
                 ExoValue::FileEntry(entry) => {
                     self.check_file_entry_condition(entry, field, op, &value)
                 }
-                ExoValue::Process(proc) => self.check_process_condition(proc, field, op, &value),
+                ExoValue::Domain(domain) => {
+                    self.check_domain_condition(domain, field, op, &value)
+                }
                 ExoValue::Map(map) => self.check_map_condition(map, field, op, &value),
                 _ => true,
             })
@@ -1279,35 +1281,41 @@ impl ExoShell {
         }
     }
 
-    /// ProcessInfoの条件チェック
-    fn check_process_condition(
+    /// DomainInfoの条件チェック
+    fn check_domain_condition(
         &self,
-        proc: &ProcessInfo,
+        domain: &DomainInfo,
         field: &str,
         op: &str,
         value: &str,
     ) -> bool {
         match field {
-            "pid" => {
-                let cmp_val = value.parse::<u32>().unwrap_or(0);
-                self.compare_numbers(proc.pid as i64, op, cmp_val as i64)
-            }
-            "name" => self.compare_strings(&proc.name, op, value),
-            "cpu" => {
-                let cmp_val = value.parse::<f32>().unwrap_or(0.0);
-                match op {
-                    ">" => proc.cpu_usage > cmp_val,
-                    ">=" => proc.cpu_usage >= cmp_val,
-                    "<" => proc.cpu_usage < cmp_val,
-                    "<=" => proc.cpu_usage <= cmp_val,
-                    "==" | "=" => (proc.cpu_usage - cmp_val).abs() < 0.01,
-                    _ => true,
-                }
-            }
-            "memory" => {
+            "id" => {
                 let cmp_val = value.parse::<u64>().unwrap_or(0);
-                self.compare_numbers(proc.memory_kb as i64, op, cmp_val as i64)
+                self.compare_numbers(domain.id as i64, op, cmp_val as i64)
             }
+            "name" => self.compare_strings(&domain.name, op, value),
+            "state" => {
+                let state_str = format!("{:?}", domain.state);
+                self.compare_strings(&state_str, op, value)
+            }
+            "tasks" => {
+                let cmp_val = value.parse::<usize>().unwrap_or(0);
+                self.compare_numbers(domain.tasks as i64, op, cmp_val as i64)
+            }
+            "memory" | "memory_kb" => {
+                let cmp_val = value.parse::<u64>().unwrap_or(0);
+                self.compare_numbers(domain.memory_kb as i64, op, cmp_val as i64)
+            }
+            "rrefs" => {
+                let cmp_val = value.parse::<u64>().unwrap_or(0);
+                self.compare_numbers(domain.rrefs as i64, op, cmp_val as i64)
+            }
+            "last_error" => domain
+                .last_error
+                .as_ref()
+                .map(|e| self.compare_strings(e, op, value))
+                .unwrap_or(false),
             _ => true,
         }
     }
@@ -1406,11 +1414,17 @@ impl ExoShell {
                     "owner" => ExoValue::String(Cow::Owned(entry.owner)),
                     _ => ExoValue::Nil,
                 },
-                ExoValue::Process(proc) => match field {
-                    "name" => ExoValue::String(Cow::Owned(proc.name)),
-                    "pid" => ExoValue::Int(proc.pid as i64),
-                    "cpu" => ExoValue::Float(proc.cpu_usage as f64),
-                    "memory" => ExoValue::Int(proc.memory_kb as i64),
+                ExoValue::Domain(domain) => match field {
+                    "name" => ExoValue::String(Cow::Owned(domain.name)),
+                    "id" => ExoValue::Int(domain.id as i64),
+                    "state" => ExoValue::String(Cow::Owned(format!("{:?}", domain.state))),
+                    "tasks" => ExoValue::Int(domain.tasks as i64),
+                    "memory" | "memory_kb" => ExoValue::Int(domain.memory_kb as i64),
+                    "rrefs" => ExoValue::Int(domain.rrefs as i64),
+                    "last_error" => domain
+                        .last_error
+                        .map(|e| ExoValue::String(Cow::Owned(e)))
+                        .unwrap_or(ExoValue::Nil),
                     _ => ExoValue::Nil,
                 },
                 ExoValue::Map(map) => map.get(field).cloned().unwrap_or(ExoValue::Nil),
@@ -1482,11 +1496,18 @@ impl ExoShell {
                 "owner" => ExoValue::String(Cow::Owned(entry.owner.clone())),
                 _ => ExoValue::Nil,
             },
-            ExoValue::Process(proc) => match field {
-                "name" => ExoValue::String(Cow::Owned(proc.name.clone())),
-                "pid" => ExoValue::Int(proc.pid as i64),
-                "cpu" => ExoValue::Float(proc.cpu_usage as f64),
-                "memory" => ExoValue::Int(proc.memory_kb as i64),
+            ExoValue::Domain(domain) => match field {
+                "name" => ExoValue::String(Cow::Owned(domain.name.clone())),
+                "id" => ExoValue::Int(domain.id as i64),
+                "state" => ExoValue::String(Cow::Owned(format!("{:?}", domain.state))),
+                "tasks" => ExoValue::Int(domain.tasks as i64),
+                "memory" | "memory_kb" => ExoValue::Int(domain.memory_kb as i64),
+                "rrefs" => ExoValue::Int(domain.rrefs as i64),
+                "last_error" => domain
+                    .last_error
+                    .as_ref()
+                    .map(|e| ExoValue::String(Cow::Owned(e.clone())))
+                    .unwrap_or(ExoValue::Nil),
                 _ => ExoValue::Nil,
             },
             ExoValue::Map(map) => map.get(field).cloned().unwrap_or(ExoValue::Nil),
@@ -1639,9 +1660,9 @@ format!(
     net.arp()             - Show ARP cache
     net.ping("ip", count) - Send ICMP echo
 
-  proc.* - Process/Task
-    proc.list()           - List tasks
-    proc.info(pid)        - Task details
+  proc.* - Domains/Tasks
+    proc.list()           - List domains
+    proc.info(id)         - Domain details
 
   cap.* - Capability (permissions)
     cap.list()            - List current capabilities
@@ -1670,7 +1691,7 @@ format!(
 
 [Method Chaining]
   fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")
-  proc.list().filter("cpu > 50").sort("memory", "desc")
+  proc.list().filter("memory > 1024").sort("tasks", "desc")
 
 [Array Methods]
   .filter(cond)    - Filter elements
@@ -1915,4 +1936,3 @@ mod tests {
         assert!(matches!(val, ExoValue::Error(_)));
     }
 }
-

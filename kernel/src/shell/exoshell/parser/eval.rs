@@ -241,14 +241,19 @@ pub fn get_field<'a>(value: &ExoValue<'a>, field: &str) -> ExoValue<'a> {
             _ => ExoValue::Error(format!("FileEntry has no field '{}'", field)),
         },
 
-        ExoValue::Process(proc) => match field {
-            "pid" => ExoValue::Int(proc.pid as i64),
-            "name" => ExoValue::String(Cow::Owned(proc.name.clone())),
-            "state" => ExoValue::String(Cow::Owned(format!("{:?}", proc.state))),
-            "cpu" => ExoValue::Float(proc.cpu_usage as f64),
-            "memory" => ExoValue::Int(proc.memory_kb as i64),
-            "domain" => ExoValue::String(Cow::Owned(proc.domain.clone())),
-            _ => ExoValue::Error(format!("Process has no field '{}'", field)),
+        ExoValue::Domain(domain) => match field {
+            "id" => ExoValue::Int(domain.id as i64),
+            "name" => ExoValue::String(Cow::Owned(domain.name.clone())),
+            "state" => ExoValue::String(Cow::Owned(format!("{:?}", domain.state))),
+            "tasks" => ExoValue::Int(domain.tasks as i64),
+            "memory" | "memory_kb" => ExoValue::Int(domain.memory_kb as i64),
+            "rrefs" => ExoValue::Int(domain.rrefs as i64),
+            "last_error" => domain
+                .last_error
+                .as_ref()
+                .map(|e| ExoValue::String(Cow::Owned(e.clone())))
+                .unwrap_or(ExoValue::Nil),
+            _ => ExoValue::Error(format!("Domain has no field '{}'", field)),
         },
 
         ExoValue::NetConnection(conn) => match field {

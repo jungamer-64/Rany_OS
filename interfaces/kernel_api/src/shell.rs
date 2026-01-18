@@ -28,29 +28,29 @@ pub struct MemoryStats {
 }
 
 // ============================================================================
-// Process Information
+// Domain Information
 // ============================================================================
 
-/// Process state
+/// Domain state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessState {
+pub enum DomainState {
+    Initializing,
     Running,
-    Sleeping,
-    Blocked,
+    Suspended,
     Stopped,
-    Zombie,
+    Terminated,
 }
 
-/// Process information
+/// Domain information
 #[derive(Debug, Clone)]
-pub struct ProcessInfo {
-    pub pid: u64,
+pub struct DomainInfo {
+    pub id: u64,
     pub name: String,
-    pub state: ProcessState,
+    pub state: DomainState,
+    pub tasks: usize,
     pub memory_kb: usize,
-    pub cpu_usage: f32,
-    pub domain: String,
-    pub uid: u32,
+    pub rrefs: u64,
+    pub last_error: Option<String>,
 }
 
 // ============================================================================
@@ -216,27 +216,25 @@ pub trait ShellServices: Send + Sync {
     /// Get current system tick count
     fn current_tick(&self) -> u64;
 
-    // --- Process ---
+    // --- Domain ---
 
-    /// List all processes
-    fn list_processes(&self) -> Vec<ProcessInfo>;
+    /// List all domains
+    fn list_domains(&self) -> Vec<DomainInfo>;
 
-    /// Get process by PID
-    fn get_process(&self, pid: u64) -> Option<ProcessInfo>;
+    /// Get domain by ID
+    fn get_domain(&self, id: u64) -> Option<DomainInfo>;
 
-    /// Kill a process by PID
-    fn kill_process(
-        &self,
-        pid: u64,
-        caller_uid: u32,
-        has_cap_kill: bool,
-    ) -> Result<(), &'static str>;
+    /// Terminate a domain (requires appropriate capability)
+    fn terminate_domain(&self, id: u64) -> Result<(), &'static str>;
 
-    /// Get current user ID
-    fn current_uid(&self) -> u32;
+    /// Stop a domain (requires appropriate capability)
+    fn stop_domain(&self, id: u64) -> Result<(), &'static str>;
 
-    /// Get current process ID
-    fn current_pid(&self) -> u64;
+    /// Resume a domain (requires appropriate capability)
+    fn resume_domain(&self, id: u64) -> Result<(), &'static str>;
+
+    /// Get current domain ID
+    fn current_domain(&self) -> u64;
 
     // --- System ---
 

@@ -34,8 +34,8 @@ pub enum ExoValue<'a> {
     FileEntry(FileEntry),
     /// ネットワーク接続
     NetConnection(NetConnection),
-    /// プロセス情報
-    Process(ProcessInfo),
+    /// ドメイン情報
+    Domain(DomainInfo),
     /// Capability（権限トークン）
     Capability(Capability),
     /// イテレータ（遅延評価）
@@ -79,7 +79,7 @@ impl<'a> ExoValue<'a> {
             }
             ExoValue::FileEntry(e) => ExoValue::FileEntry(e),
             ExoValue::NetConnection(c) => ExoValue::NetConnection(c),
-            ExoValue::Process(p) => ExoValue::Process(p),
+            ExoValue::Domain(d) => ExoValue::Domain(d),
             ExoValue::Capability(c) => ExoValue::Capability(c),
             ExoValue::Iterator(i) => ExoValue::Iterator(i),
             // BufferRef はゼロコピー - Arc のクローンのみ
@@ -163,24 +163,25 @@ pub struct NetConnection {
     pub tx_bytes: u64,
 }
 
-/// プロセス情報
+/// ドメイン情報
 #[derive(Debug, Clone, PartialEq)]
-pub struct ProcessInfo {
-    pub pid: u32,
+pub struct DomainInfo {
+    pub id: u64,
     pub name: String,
-    pub state: ProcessState,
-    pub cpu_usage: f32,
+    pub state: DomainState,
+    pub tasks: usize,
     pub memory_kb: u64,
-    pub domain: String,
+    pub rrefs: u64,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcessState {
+pub enum DomainState {
+    Initializing,
     Running,
-    Sleeping,
-    Blocked,
+    Suspended,
     Stopped,
-    Zombie,
+    Terminated,
 }
 
 /// Capability（権限トークン）
