@@ -13,7 +13,7 @@
 //! `ed25519-compact` クレートを使用し、no_std環境で動作します。
 //! このクレートはcurve25519-dalekに依存せず、軽量な実装を提供します。
 
-#[cfg(feature = "require_signatures")]
+#[allow(unused_imports)]
 use ed25519_compact::{PublicKey, Signature};
 
 /// Ed25519署名を検証（pre-hashed message用）
@@ -35,17 +35,9 @@ use ed25519_compact::{PublicKey, Signature};
 /// `verify_message`関数を使用してください。
 #[allow(unused_variables)]
 pub fn verify(public_key: &[u8; 32], message: &[u8; 32], signature: &[u8; 64]) -> bool {
-    #[cfg(feature = "require_signatures")]
-    {
-        // ハッシュ済みメッセージをそのまま検証
-        // 注：これはハッシュ済みデータをメッセージとして扱う
-        return verify_message(public_key, message, signature);
-    }
-    #[cfg(not(feature = "require_signatures"))]
-    {
-        // 開発モード：署名検証をスキップ
-        true
-    }
+    // ハッシュ済みメッセージをそのまま検証
+    // 注：これはハッシュ済みデータをメッセージとして扱う
+    verify_message(public_key, message, signature)
 }
 
 /// 公開鍵とメッセージから署名を検証（メッセージ全体を渡す場合）
@@ -61,27 +53,20 @@ pub fn verify(public_key: &[u8; 32], message: &[u8; 32], signature: &[u8; 64]) -
 /// 署名が有効な場合true
 #[allow(unused_variables)]
 pub fn verify_message(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
-    #[cfg(feature = "require_signatures")]
-    {
-        // 公開鍵をパース
-        let pk = match PublicKey::from_slice(public_key) {
-            Ok(key) => key,
-            Err(_) => return false,
-        };
+    // 公開鍵をパース
+    let pk = match PublicKey::from_slice(public_key) {
+        Ok(key) => key,
+        Err(_) => return false,
+    };
 
-        // 署名をパース
-        let sig = match Signature::from_slice(signature) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
+    // 署名をパース
+    let sig = match Signature::from_slice(signature) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
 
-        // 検証を実行
-        return pk.verify(message, &sig).is_ok();
-    }
-    #[cfg(not(feature = "require_signatures"))]
-    {
-        true
-    }
+    // 検証を実行
+    pk.verify(message, &sig).is_ok()
 }
 
 /// 公開鍵が有効な形式かどうかを確認
@@ -93,22 +78,15 @@ pub fn verify_message(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64
 /// 公開鍵が有効な場合true
 #[allow(unused_variables)]
 pub fn is_valid_public_key(public_key: &[u8; 32]) -> bool {
-    #[cfg(feature = "require_signatures")]
-    {
-        // Reject the all-zero representation (defensive check); some `from_bytes`
-        // implementations may accept non-canonical or zero values.
-        if public_key.iter().all(|&b| b == 0) {
-            return false;
-        }
-        return PublicKey::from_slice(public_key).is_ok();
+    // Reject the all-zero representation (defensive check); some `from_bytes`
+    // implementations may accept non-canonical or zero values.
+    if public_key.iter().all(|&b| b == 0) {
+        return false;
     }
-    #[cfg(not(feature = "require_signatures"))]
-    {
-        true
-    }
+    PublicKey::from_slice(public_key).is_ok()
 }
 
-#[cfg(all(test, feature = "require_signatures"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

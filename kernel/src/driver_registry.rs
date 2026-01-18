@@ -31,9 +31,10 @@ use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::driver_abi::{
-    AbiDriverType, AbiError as AbiErrorCode, DriverCapabilities as AbiDriverCapabilities,
-    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn,
-    DriverVTable as AbiDriverVTable,
+    AbiDmaBuffer, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
+    DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
+    DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
+    KernelApiV1, DRIVER_EXPORTS_ABI_VERSION, KERNEL_API_ABI_VERSION,
 };
 use kernel_api::error::{KapiError, KapiResult};
 
@@ -468,6 +469,100 @@ impl fmt::Display for DriverError {
 }
 
 // ============================================================================
+// Kernel API Table (DriverExportsV1)
+// ============================================================================
+
+extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
+    if msg_ptr.is_null() || msg_len == 0 {
+        return;
+    }
+
+    let slice = unsafe { core::slice::from_raw_parts(msg_ptr, msg_len) };
+    let msg = match core::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    match level {
+        2 => log::error!("{}", msg),
+        1 => log::warn!("{}", msg),
+        _ => log::info!("{}", msg),
+    }
+}
+
+extern "C" fn kapi_alloc_dma(size: usize, _align: usize, out: *mut AbiDmaBuffer) -> i32 {
+    if out.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+
+    match kernel_api::services::kernel().alloc_dma(size) {
+        Ok(buffer) => {
+            unsafe {
+                *out = AbiDmaBuffer {
+                    phys_addr: buffer.physical_address(),
+                    virt_addr: buffer.as_ptr() as usize as u64,
+                    size: buffer.size(),
+                };
+            }
+            AbiErrorCode::Success as i32
+        }
+        Err(_) => AbiErrorCode::OutOfMemory as i32,
+    }
+}
+
+extern "C" fn kapi_free_dma(handle: *const AbiDmaBuffer) -> i32 {
+    if handle.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+
+    let h = unsafe { &*handle };
+    let buf = kernel_api::DmaBuffer::new(h.phys_addr, h.virt_addr as usize as *mut u8, h.size);
+    kernel_api::services::kernel().free_dma(buf);
+    AbiErrorCode::Success as i32
+}
+
+extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32 {
+    if out.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+
+    let virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(paddr)).as_u64();
+    unsafe {
+        *out = AbiMmioHandle { base: virt, size };
+    }
+    AbiErrorCode::Success as i32
+}
+
+extern "C" fn kapi_unmap_mmio(_handle: *const AbiMmioHandle) -> i32 {
+    AbiErrorCode::Success as i32
+}
+
+extern "C" fn kapi_irq_bind(_irq: u32, _cookie: u64) -> i32 {
+    AbiErrorCode::NotSupported as i32
+}
+
+extern "C" fn kapi_irq_unbind(_irq: u32) -> i32 {
+    AbiErrorCode::NotSupported as i32
+}
+
+static KERNEL_API_V1: KernelApiV1 = KernelApiV1 {
+    abi_version: KERNEL_API_ABI_VERSION,
+    abi_size: core::mem::size_of::<KernelApiV1>() as u32,
+    log: kapi_log,
+    alloc_dma: kapi_alloc_dma,
+    free_dma: kapi_free_dma,
+    map_mmio: kapi_map_mmio,
+    unmap_mmio: kapi_unmap_mmio,
+    irq_bind: kapi_irq_bind,
+    irq_unbind: kapi_irq_unbind,
+    _reserved: [0; 8],
+};
+
+pub(crate) fn kernel_api_v1() -> &'static KernelApiV1 {
+    &KERNEL_API_V1
+}
+
+// ============================================================================
 // Global Instance
 // ============================================================================
 
@@ -491,8 +586,10 @@ pub fn init_all_drivers() {
     DRIVER_REGISTRY.init_all()
 }
 
-/// Register a driver implemented as an ABI vtable
-pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverError> {
+fn build_abi_driver(
+    entry: AbiEntryFn,
+    exports_fini: Option<extern "C" fn() -> i32>,
+) -> Result<Box<dyn Driver>, DriverError> {
     // Call the entry to get vtable pointer
     let vtable_ptr = entry();
     if vtable_ptr.is_null() {
@@ -502,9 +599,8 @@ pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverErro
     let vtable = unsafe { &*vtable_ptr };
 
     // Validate ABI version
-    match vtable.validate() {
-        Ok(()) => {}
-        Err(_) => return Err(DriverError::InvalidState),
+    if vtable.validate().is_err() {
+        return Err(DriverError::InvalidState);
     }
 
     // Read name
@@ -522,9 +618,87 @@ pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverErro
         vtable: vtable_ptr,
         name,
         ctx: AbiDriverContext::new(),
+        exports_fini,
     });
 
+    Ok(abi_driver)
+}
+
+pub(crate) struct PreparedDriverExports {
+    pub entry: AbiEntryFn,
+    pub fini: Option<extern "C" fn() -> i32>,
+}
+
+pub(crate) fn prepare_driver_exports(
+    exports: *const DriverExportsV1,
+    call_init: bool,
+) -> Result<PreparedDriverExports, DriverError> {
+    if exports.is_null() {
+        return Err(DriverError::InvalidState);
+    }
+
+    let exports_ref = unsafe { &*exports };
+    if exports_ref.abi_version != DRIVER_EXPORTS_ABI_VERSION {
+        log::error!(
+            "[DRIVER] DriverExports ABI mismatch: expected {}, got {}",
+            DRIVER_EXPORTS_ABI_VERSION,
+            exports_ref.abi_version
+        );
+        return Err(DriverError::InvalidState);
+    }
+
+    let min_size = core::mem::size_of::<DriverExportsV1>() as u32;
+    if exports_ref.abi_size < min_size {
+        log::error!(
+            "[DRIVER] DriverExports ABI size too small: expected >= {}, got {}",
+            min_size,
+            exports_ref.abi_size
+        );
+        return Err(DriverError::InvalidState);
+    }
+
+    if call_init {
+        if let Some(init) = exports_ref.init {
+            let res = init(kernel_api_v1() as *const KernelApiV1);
+            if !AbiErrorCode::from_raw(res).is_success() {
+                log::error!(
+                    "[DRIVER] DriverExports init failed: code={}",
+                    res
+                );
+                return Err(DriverError::InvalidState);
+            }
+        }
+    }
+
+    Ok(PreparedDriverExports {
+        entry: exports_ref.entry,
+        fini: exports_ref.fini,
+    })
+}
+
+/// Register a driver implemented as a DriverExports header
+pub fn register_exports_driver(exports: *const DriverExportsV1) -> Result<DriverHandle, DriverError> {
+    let prepared = prepare_driver_exports(exports, true)?;
+    let res = register_abi_driver_with_fini(prepared.entry, prepared.fini);
+    if res.is_err() {
+        if let Some(fini) = prepared.fini {
+            let _ = fini();
+        }
+    }
+    res
+}
+
+pub(crate) fn register_abi_driver_with_fini(
+    entry: AbiEntryFn,
+    exports_fini: Option<extern "C" fn() -> i32>,
+) -> Result<DriverHandle, DriverError> {
+    let abi_driver = build_abi_driver(entry, exports_fini)?;
     DRIVER_REGISTRY.register(abi_driver)
+}
+
+/// Register a driver implemented as an ABI vtable
+pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverError> {
+    register_abi_driver_with_fini(entry, None)
 }
 
 /// Unregister a driver by handle
@@ -533,39 +707,17 @@ pub fn unregister_driver(handle: DriverHandle) -> Result<(), DriverError> {
 }
 
 /// Update an existing driver with a new ABI implementation
-pub fn update_abi_driver(handle: DriverHandle, entry: AbiEntryFn) -> Result<(), DriverError> {
-    // Call the entry to get vtable pointer
-    let vtable_ptr = entry();
-    if vtable_ptr.is_null() {
-        return Err(DriverError::InvalidState);
-    }
-
-    let vtable = unsafe { &*vtable_ptr };
-
-    // Validate ABI version
-    match vtable.validate() {
-        Ok(()) => {}
-        Err(_) => return Err(DriverError::InvalidState),
-    }
-
-    // Read name
-    let name_ptr = (vtable.name)();
-    let name_len = (vtable.name_len)();
-    let name = if name_ptr.is_null() || name_len == 0 {
-        alloc::string::String::from("abi_driver")
-    } else {
-        let bytes = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
-        alloc::string::String::from_utf8_lossy(bytes).into_owned()
-    };
-
-    // Build AbiDriver wrapper
-    let abi_driver = Box::new(AbiDriver {
-        vtable: vtable_ptr,
-        name,
-        ctx: AbiDriverContext::new(),
-    });
-
+pub(crate) fn update_abi_driver_with_fini(
+    handle: DriverHandle,
+    entry: AbiEntryFn,
+    exports_fini: Option<extern "C" fn() -> i32>,
+) -> Result<(), DriverError> {
+    let abi_driver = build_abi_driver(entry, exports_fini)?;
     DRIVER_REGISTRY.replace_driver(handle, abi_driver)
+}
+
+pub fn update_abi_driver(handle: DriverHandle, entry: AbiEntryFn) -> Result<(), DriverError> {
+    update_abi_driver_with_fini(handle, entry, None)
 }
 
 // Adapter to delegate trait calls to ABI vtable
@@ -573,6 +725,7 @@ struct AbiDriver {
     vtable: *const AbiDriverVTable,
     name: alloc::string::String,
     ctx: AbiDriverContext,
+    exports_fini: Option<extern "C" fn() -> i32>,
 }
 
 // Safety: AbiDriver contains a raw pointer to a statically allocated vtable that
@@ -697,7 +850,14 @@ impl Driver for AbiDriver {
 
     fn remove(&mut self) -> KapiResult<()> {
         let res = (self.vtable().remove)(&mut self.ctx as *mut _);
-        Self::map_abi_error(res)
+        let mut out = Self::map_abi_error(res);
+        if let Some(fini) = self.exports_fini {
+            let fini_res = fini();
+            if out.is_ok() {
+                out = Self::map_abi_error(fini_res);
+            }
+        }
+        out
     }
 
     fn supported_devices(&self) -> &[DeviceId] {
@@ -791,6 +951,7 @@ mod tests {
                 dependencies: Vec::new(),
                 is_safe: true,
                 signature_verified: true,
+                required_caps: 0,
                 registered_drivers: alloc::vec![handle],
                 pkey: None,
                 stats: crate::loader::ModuleStats::default(),
@@ -843,4 +1004,3 @@ mod tests {
         assert!(reg.name(DriverHandle(0)).is_none());
     }
 }
-

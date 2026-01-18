@@ -97,7 +97,7 @@ impl DriverNamespace {
 
         if path.is_empty() {
             return ExoValue::Error(String::from(
-                "Path is required. Usage: driver.load(\"/path/to/driver.elf\")",
+                "Path is required. Usage: driver.load(\"/path/to/driver.elf\") or .drvpack",
             ));
         }
 
@@ -121,7 +121,7 @@ impl DriverNamespace {
             .trim_end_matches(".driver");
 
         // ローダーでドライバをロード
-        match loader::load_driver(driver_name, &elf_data, true) {
+        match loader::load_driver_artifact(driver_name, &elf_data, true) {
             Ok(handle) => {
                 // 動的名前空間を自動登録
                 use super::dynamic_driver::DynamicDriverNamespace;
