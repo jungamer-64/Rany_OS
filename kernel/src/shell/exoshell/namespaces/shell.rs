@@ -21,9 +21,9 @@ pub struct ShellControlNamespace;
 impl ShellControlNamespace {
     /// Create a new ShellProxy map
     pub fn spawn_proxy() -> ExoValue<'static> {
-        let pid = kernel_api::services::kernel()
+        let domain_id = kernel_api::services::kernel()
             .shell()
-            .map(|s| s.current_pid())
+            .map(|s| s.current_domain())
             .unwrap_or(0);
 
         let mut map = BTreeMap::new();
@@ -31,7 +31,7 @@ impl ShellControlNamespace {
             "__proxy_type".to_string(),
             ExoValue::String(Cow::Owned(String::from("shell_proxy"))),
         );
-        map.insert("__parent".to_string(), ExoValue::Int(pid as i64));
+        map.insert("__parent".to_string(), ExoValue::Int(domain_id as i64));
         // requested caps: list of maps {resource, cap, expires, delegatable}
         map.insert("__requested".to_string(), ExoValue::Array(Vec::new()));
 
@@ -227,7 +227,10 @@ impl ShellControlNamespace {
                     _ => return ExoValue::Error(String::from("Invalid proxy parent")),
                 };
 
-                let cur = kernel_api::services::kernel().shell().map(|s| s.current_pid()).unwrap_or(0);
+                let cur = kernel_api::services::kernel()
+                    .shell()
+                    .map(|s| s.current_domain())
+                    .unwrap_or(0);
                 if cur != parent && !crate::security::capability::manager().has_capability(cur, crate::security::capability::CAP_SYS_ADMIN) {
                     return ExoValue::Error(String::from("Permission denied: must be proxy owner or CAP_SYS_ADMIN"));
                 }
@@ -253,7 +256,7 @@ impl ShellControlNamespace {
                     Ok((child, tokens_vec)) => {
                         let tokens = tokens_vec.into_iter().map(|t| ExoValue::Int(t as i64)).collect();
                         let mut res = BTreeMap::new();
-                        res.insert("pid".to_string(), ExoValue::Int(child.as_u64() as i64));
+                        res.insert("domain".to_string(), ExoValue::Int(child.as_u64() as i64));
                         res.insert("tokens".to_string(), ExoValue::Array(tokens));
                         return ExoValue::Map(res);
                     }
@@ -305,13 +308,63 @@ impl ShellNamespace for ShellControlNamespace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
     use crate::task::process::{process_manager, ProcessId, set_current_process};
+    use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
     use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
+
+    fn idle_entry(_: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    struct CurrentTaskGuard {
+        prev: Option<*mut TaskControlBlock>,
+        current: *mut TaskControlBlock,
+    }
+
+    impl Drop for CurrentTaskGuard {
+        fn drop(&mut self) {
+            let cpu_id = crate::smp::current_cpu() as usize;
+            let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
+            unsafe {
+                set_current_task(cpu_id, prev_ptr);
+                drop(Box::from_raw(self.current));
+            }
+        }
+    }
+
+    fn set_current_subject_for_process(pid: ProcessId) -> CurrentTaskGuard {
+        let cpu_id = crate::smp::current_cpu() as usize;
+        let prev = get_current_task(cpu_id);
+        let domain_id = DomainId::new(pid.as_u64());
+        let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
+            .expect("failed to create test TCB");
+        let caps = manager().get_capabilities(domain_id.as_u64());
+        tcb.security = Arc::new(DomainSecurity {
+            credentials: DomainCredentials::ROOT,
+            caps,
+        });
+        let boxed = Box::new(tcb);
+        let current = Box::into_raw(boxed);
+        unsafe {
+            set_current_task(cpu_id, current);
+        }
+        CurrentTaskGuard { prev, current }
+    }
+
+    fn set_current_process_and_subject(pid: ProcessId) -> CurrentTaskGuard {
+        set_current_process(pid);
+        set_current_subject_for_process(pid)
+    }
 
     #[test_case]
     fn test_spawn_proxy_basic() {
         let caller = process_manager().create(ProcessId::INIT, "p").unwrap();
-        set_current_process(caller);
+        let _guard = set_current_process_and_subject(caller);
 
         match ShellControlNamespace::spawn_proxy() {
             ExoValue::Map(m) => {
@@ -326,7 +379,7 @@ mod tests {
     #[test_case]
     fn test_spawn_with_caps_helper() {
         let caller = process_manager().create(ProcessId::INIT, "caller").unwrap();
-        set_current_process(caller);
+        let _guard = set_current_process_and_subject(caller);
         manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
         // Create caps array for spawn_with_caps
@@ -347,7 +400,7 @@ mod tests {
     #[test_case]
     fn test_proxy_chain_with_cap_and_run() {
         let caller = process_manager().create(ProcessId::INIT, "caller_chain").unwrap();
-        set_current_process(caller);
+        let _guard = set_current_process_and_subject(caller);
         manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
         // spawn proxy
@@ -373,12 +426,15 @@ mod tests {
 
         match run_res {
             ExoValue::Map(m) => {
-                let pid = m.get("pid").and_then(|v| match v { ExoValue::Int(n) => Some(*n as u64), _ => None }).unwrap();
+                let domain_id = m
+                    .get("domain")
+                    .and_then(|v| match v { ExoValue::Int(n) => Some(*n as u64), _ => None })
+                    .unwrap();
                 // token present
                 let tokens = m.get("tokens").and_then(|v| match v { ExoValue::Array(a) => Some(a.clone()), _ => None }).unwrap();
                 assert!(!tokens.is_empty());
                 // child has cap
-                assert!(manager().has_capability(pid, CAP_NET_BIND));
+                assert!(manager().has_capability(domain_id, CAP_NET_BIND));
             }
             other => panic!("run failed: {:?}", other),
         }

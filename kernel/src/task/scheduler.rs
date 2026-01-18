@@ -264,7 +264,12 @@ pub fn is_scheduler_initialized(cpu_id: usize) -> bool {
 
 /// タスクを生成してスケジューラに追加
 pub fn spawn_task(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<TaskId> {
-    let tcb = TaskControlBlock::new(entry_point, arg, priority)?;
+    let tcb = TaskControlBlock::new(
+        entry_point,
+        arg,
+        priority,
+        crate::domain_system::DomainId::KERNEL,
+    )?;
     let tcb_ptr = Box::leak(Box::new(tcb));
     let task_id = (*tcb_ptr).id;
 

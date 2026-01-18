@@ -636,7 +636,7 @@ impl DevFileHandle {
     pub fn open_with_token(path: &str, token: Option<u64>) -> Result<Self, DevError> {
         use crate::task::context;
 
-        let caller = context::current_task_id();
+        let caller = context::current_subject().domain.as_u64();
 
         // If token provided, validate and increment in-flight counter
         if let Some(t) = token {

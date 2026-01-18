@@ -49,9 +49,9 @@ impl NetNamespace {
                     }
                 }
 
-                let pid = kernel_api::services::kernel()
+                let domain_id = kernel_api::services::kernel()
                     .shell()
-                    .map(|s| s.current_pid())
+                    .map(|s| s.current_domain())
                     .unwrap_or(0);
 
                 if let Some(t) = token_opt {
@@ -62,7 +62,7 @@ impl NetNamespace {
                         None => ExoValue::Error(String::from("bind failed")),
                     }
                 } else {
-                    if !manager().has_capability(pid, CAP_NET_BIND) {
+                    if !manager().has_capability(domain_id, CAP_NET_BIND) {
                         return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
                     }
                     match crate::net::stack::bind_udp(port) {
@@ -174,11 +174,11 @@ impl NetNamespace {
     /// Requires CAP_NET_RAW
     pub async fn ping(ip: [u8; 4], count: u16) -> ExoValue<'static> {
         // セキュリティチェック
-        let pid = kernel_api::services::kernel()
+        let domain_id = kernel_api::services::kernel()
             .shell()
-            .map(|s| s.current_pid())
+            .map(|s| s.current_domain())
             .unwrap_or(0);
-        if !manager().has_capability(pid, CAP_NET_RAW) {
+        if !manager().has_capability(domain_id, CAP_NET_RAW) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_RAW required"));
         }
 
@@ -252,14 +252,14 @@ impl ShellNamespace for NetNamespace {
                         }
                     }
 
-                    let pid = kernel_api::services::kernel()
+                    let domain_id = kernel_api::services::kernel()
                         .shell()
-                        .map(|s| s.current_pid())
+                        .map(|s| s.current_domain())
                         .unwrap_or(0);
 
                     if let Some(t) = token_opt {
                         // Verify token ownership
-                        let grants = manager().list_grants(pid);
+                        let grants = manager().list_grants(domain_id);
                         if !grants.iter().any(|g| g.id == t) {
                             return ExoValue::Error(String::from("Permission denied: token not owned"));
                         }
@@ -268,7 +268,7 @@ impl ShellNamespace for NetNamespace {
                             None => ExoValue::Error(String::from("bind failed")),
                         }
                     } else {
-                        if !manager().has_capability(pid, CAP_NET_BIND) {
+                        if !manager().has_capability(domain_id, CAP_NET_BIND) {
                             return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
                         }
                         match crate::net::bind_udp(port) {

@@ -59,6 +59,12 @@ impl ProcessId {
     }
 }
 
+impl From<ProcessId> for crate::domain_system::DomainId {
+    fn from(pid: ProcessId) -> Self {
+        crate::domain_system::DomainId::new(pid.as_u64())
+    }
+}
+
 /// スレッドID (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ThreadId(u64);
