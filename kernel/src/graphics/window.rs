@@ -157,15 +157,7 @@ pub enum WindowState {
 // Window Events
 // ============================================================================
 
-/// マウスボタン
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MouseButton {
-    Left,
-    Right,
-    Middle,
-    Back,
-    Forward,
-}
+
 
 /// キーコード
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,14 +187,7 @@ pub struct Modifiers {
 /// ウィンドウイベント
 #[derive(Clone, Debug)]
 pub enum WindowEvent {
-    /// マウス移動
-    MouseMove { x: i32, y: i32 },
-    /// マウスボタン押下
-    MouseButtonDown { button: MouseButton, x: i32, y: i32 },
-    /// マウスボタン解放
-    MouseButtonUp { button: MouseButton, x: i32, y: i32 },
-    /// マウスホイール
-    MouseWheel { delta: i32, x: i32, y: i32 },
+
     /// キー押下
     KeyDown { key: KeyCode, modifiers: Modifiers },
     /// キー解放
@@ -469,10 +454,7 @@ pub struct WindowManager {
     next_id: AtomicU32,
     /// フォーカスを持つウィンドウ
     focused: Option<WindowId>,
-    /// ドラッグ中のウィンドウ
-    dragging: Option<(WindowId, i32, i32)>,
-    /// リサイズ中のウィンドウ
-    resizing: Option<(WindowId, ResizeEdge)>,
+
     /// 画面サイズ
     screen_width: u32,
     screen_height: u32,
@@ -482,18 +464,7 @@ pub struct WindowManager {
     desktop_color: Color,
 }
 
-/// リサイズエッジ
-#[derive(Clone, Copy, Debug)]
-pub enum ResizeEdge {
-    Top,
-    Bottom,
-    Left,
-    Right,
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
+
 
 impl WindowManager {
     /// 新しいウィンドウマネージャを作成
@@ -503,8 +474,7 @@ impl WindowManager {
             z_order_list: Vec::new(),
             next_id: AtomicU32::new(1),
             focused: None,
-            dragging: None,
-            resizing: None,
+
             screen_width,
             screen_height,
             wallpaper: None,
@@ -542,11 +512,7 @@ impl WindowManager {
             self.focused = self.z_order_list.last().copied();
         }
 
-        if let Some((dragging_id, _, _)) = self.dragging {
-            if dragging_id == id {
-                self.dragging = None;
-            }
-        }
+
     }
 
     /// ウィンドウを取得
@@ -607,72 +573,7 @@ impl WindowManager {
         None
     }
 
-    /// マウス移動を処理
-    pub fn handle_mouse_move(&mut self, x: i32, y: i32) {
-        // ドラッグ処理
-        if let Some((id, offset_x, offset_y)) = self.dragging {
-            if let Some(window) = self.windows.get_mut(&id) {
-                window.move_to(x - offset_x, y - offset_y);
-            }
-            return;
-        }
 
-        // ホバーウィンドウにイベントを送信
-        if let Some(id) = self.window_at(x, y) {
-            if let Some(window) = self.windows.get_mut(&id) {
-                let (cx, cy) = window.screen_to_client(x, y);
-                window.push_event(WindowEvent::MouseMove { x: cx, y: cy });
-            }
-        }
-    }
-
-    /// マウスボタン押下を処理
-    pub fn handle_mouse_down(&mut self, button: MouseButton, x: i32, y: i32) {
-        if let Some(id) = self.window_at(x, y) {
-            self.set_focus(id);
-
-            if let Some(window) = self.windows.get_mut(&id) {
-                // タイトルバーのドラッグ開始
-                if button == MouseButton::Left && window.title_bar_contains(x, y) {
-                    let offset_x = x - window.rect().x;
-                    let offset_y = y - window.rect().y;
-                    self.dragging = Some((id, offset_x, offset_y));
-                    return;
-                }
-
-                // クライアント領域へのイベント
-                if window.client_contains(x, y) {
-                    let (cx, cy) = window.screen_to_client(x, y);
-                    window.push_event(WindowEvent::MouseButtonDown {
-                        button,
-                        x: cx,
-                        y: cy,
-                    });
-                }
-            }
-        }
-    }
-
-    /// マウスボタン解放を処理
-    pub fn handle_mouse_up(&mut self, button: MouseButton, x: i32, y: i32) {
-        // ドラッグ終了
-        self.dragging = None;
-        self.resizing = None;
-
-        // ウィンドウにイベントを送信
-        if let Some(id) = self.window_at(x, y) {
-            if let Some(window) = self.windows.get_mut(&id) {
-                if window.client_contains(x, y) {
-                    let (cx, cy) = window.screen_to_client(x, y);
-                    window.push_event(WindowEvent::MouseButtonUp {
-                        button,
-                        x: cx,
-                        y: cy,
-                    });
-                }
-            }
-        }
-    }
 
     /// キー押下を処理
     pub fn handle_key_down(&mut self, key: KeyCode, modifiers: Modifiers) {

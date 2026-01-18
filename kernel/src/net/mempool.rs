@@ -126,9 +126,9 @@ use crate::io::dma::{TypedDmaSlice, CpuOwned};
 
 /// 内部で DMA バッファを保持するためのラッパ
 struct DmaBuffer {
-    ptr: NonNull<u8>,
-    phys_addr: PhysAddr,
-    size: usize,
+    pub(super) ptr: NonNull<u8>,
+    pub(super) phys_addr: PhysAddr,
+    pub(super) size: usize,
     /// 所有権を保持する (TypedDmaSlice を保持することでメモリ寿命を延ばす)
     owner: Arc<SpinMutex<TypedDmaSlice<CpuOwned>>>,
 }
@@ -281,7 +281,7 @@ impl PacketRef {
                 buffer.as_ref().phys_addr() + *offset as u64
             },
             PacketRefKind::Dma { buf, offset, .. } => {
-                let mut phys = buf.phys_addr;
+                let phys = buf.phys_addr;
                 phys + *offset as u64
             }
         }

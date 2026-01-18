@@ -17,7 +17,8 @@ use crate::io::io_scheduler::{
 };
 
 use super::controller::AhciController;
-use super::types::{PX_CI, PX_TFD, PortNumber, SlotNumber};
+use super::types::{PX_CI, PX_TFD, PortNumber, SlotNumber, Lba, SectorCount};
+use spin::RwLock;
 
 /// AHCI PollHandler 実装
 pub struct AhciPollHandler {
@@ -75,11 +76,21 @@ impl PollHandler for AhciPollHandler {
             let pending = self.pending.lock();
             for (&request_id, &(port, slot)) in pending.iter() {
                 if let Some(success) = self.check_completion(port, slot) {
+                    // On completion, call port.finish_transfer to clean up and get transferred bytes
+                    let finish_res = {
+                        let controller = self.controller.lock();
+                        controller.with_port(port, |port| port.finish_transfer(slot))
+                    };
+
                     let result = if success {
-                        IoResult::Success(512) // 1セクタを仮定
+                        match finish_res {
+                            Some(Ok(bytes)) => IoResult::Success(bytes),
+                            _ => IoResult::Error(IoError::DeviceError),
+                        }
                     } else {
                         IoResult::Error(IoError::DeviceError)
                     };
+
                     results.push((request_id, result));
                     completed.push(request_id);
                 }
@@ -109,27 +120,108 @@ impl PollHandler for AhciPollHandler {
 pub struct AhciOps {
     controller: Arc<Mutex<AhciController>>,
     port: u8,
+    handler: Option<Arc<AhciPollHandler>>,
 }
 
 impl AhciOps {
-    pub fn new(controller: Arc<Mutex<AhciController>>, port: u8) -> Self {
-        Self { controller, port }
+    pub fn new(
+        controller: Arc<Mutex<AhciController>>,
+        port: u8,
+        handler: Option<Arc<AhciPollHandler>>,
+    ) -> Self {
+        Self { controller, port, handler }
     }
 }
 
 impl DeviceOps for AhciOps {
-    fn submit(&self, req: &IoRequest) -> Result<(), IoError> {
+    fn submit(&self, req: &IoRequest, _cpu_idx: usize) -> Result<(), IoError> {
         // IoCommand 対応
         if let Some(cmd) = &req.command {
             return match cmd {
                 IoCommand::BlockRead { lba, blocks, bytes, buf } => {
-                    // TODO: FIS構築 + コマンド発行
-                    Err(IoError::NotSupported) // 暫定
+                    if *blocks == 0 {
+                        return Err(IoError::InvalidParameter);
+                    }
+                    if *bytes > buf.len {
+                        return Err(IoError::InvalidParameter);
+                    }
+
+                    // Build and submit AHCI command without blocking
+                    let port_num = PortNumber(self.port);
+
+                    let slot_opt = {
+                        let controller = self.controller.lock();
+                        // Use port's start_read_dma (non-blocking) exposed by driver
+                        let res_opt = controller.with_port(port_num, |port| {
+                            port.start_read_dma(Lba(*lba), SectorCount(*blocks), buf.iova, *bytes as u32)
+                        });
+                        match res_opt {
+                            Some(Ok(slot)) => Some(slot),
+                            _ => None,
+                        }
+                    };
+
+                    match slot_opt {
+                        Some(slot) => {
+                            // Register pending with poll handler if available
+                            if let Some(handler) = &self.handler {
+                                handler.add_pending(req.id, PortNumber(self.port), slot);
+                                Ok(())
+                            } else {
+                                // Try global registry
+                                if let Some(h) = AHCI_POLL_HANDLERS.read().get(&self.port).cloned() {
+                                    h.add_pending(req.id, PortNumber(self.port), slot);
+                                    Ok(())
+                                } else {
+                                    Err(IoError::NoResources)
+                                }
+                            }
+                        }
+                        None => Err(IoError::NoResources),
+                    }
                 }
-                IoCommand::BlockWrite { .. } => Err(IoError::NotSupported),
+                IoCommand::BlockWrite { lba, blocks, bytes, buf } => {
+                    if *blocks == 0 {
+                        return Err(IoError::InvalidParameter);
+                    }
+                    if *bytes > buf.len {
+                        return Err(IoError::InvalidParameter);
+                    }
+
+                    let port_num = PortNumber(self.port);
+
+                    let slot_opt = {
+                        let controller = self.controller.lock();
+                        // Use port's start_write_dma (non-blocking) exposed by driver
+                        let res_opt = controller.with_port(port_num, |port| {
+                            port.start_write_dma(Lba(*lba), SectorCount(*blocks), buf.iova, *bytes as u32)
+                        });
+                        match res_opt {
+                            Some(Ok(slot)) => Some(slot),
+                            _ => None,
+                        }
+                    };
+
+                    match slot_opt {
+                        Some(slot) => {
+                            if let Some(handler) = &self.handler {
+                                handler.add_pending(req.id, PortNumber(self.port), slot);
+                                Ok(())
+                            } else {
+                                if let Some(h) = AHCI_POLL_HANDLERS.read().get(&self.port).cloned() {
+                                    h.add_pending(req.id, PortNumber(self.port), slot);
+                                    Ok(())
+                                } else {
+                                    Err(IoError::NoResources)
+                                }
+                            }
+                        }
+                        None => Err(IoError::NoResources),
+                    }
+                }
                 IoCommand::Flush => Err(IoError::NotSupported),
                 _ => Err(IoError::NotSupported),
-            };
+            }
         }
         // 旧形式: 未サポート
         Err(IoError::NotSupported)
@@ -137,6 +229,28 @@ impl DeviceOps for AhciOps {
 
     fn is_ready(&self) -> bool {
         true
+    }
+}
+
+// ============================================================================
+// AHCI PollHandler Registry
+// ============================================================================
+
+/// Global registry for AHCI poll handlers (port -> handler)
+static AHCI_POLL_HANDLERS: RwLock<BTreeMap<u8, Arc<AhciPollHandler>>> = RwLock::new(BTreeMap::new());
+
+// Wrapper to allow registering an Arc<AhciPollHandler> as a PollHandler trait object
+struct AhciPollHandlerWrapper {
+    inner: Arc<AhciPollHandler>,
+}
+
+impl PollHandler for AhciPollHandlerWrapper {
+    fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
+        self.inner.poll_completions()
+    }
+
+    fn is_ready(&self) -> bool {
+        self.inner.is_ready()
     }
 }
 
@@ -154,13 +268,19 @@ pub fn register_ahci_with(
     let device_id = DeviceId::Ahci { port: port_number };
 
     // DeviceOps を登録
-    let ahci_ops = Arc::new(AhciOps::new(controller.clone(), port_number));
-    scheduler.register_device_ops(device_id, ahci_ops);
+    // Create and register a shared poll handler so submit() can add pending requests
+    let handler = Arc::new(AhciPollHandler::new(controller.clone()));
+    coordinator
+        .polling_executor()
+        .register_handler(device_id, Box::new(AhciPollHandlerWrapper { inner: handler.clone() }));
 
-    // PollHandler を登録
-    let handler = AhciPollHandler::new(controller);
-    let handler: Box<dyn PollHandler + Send + Sync> = Box::new(handler);
-    coordinator.polling_executor().register_handler(device_id, handler);
+    // Store in global registry for lookup
+    AHCI_POLL_HANDLERS
+        .write()
+        .insert(port_number, handler.clone());
+
+    let ahci_ops = Arc::new(AhciOps::new(controller.clone(), port_number, Some(handler)));
+    scheduler.register_device_ops(device_id, ahci_ops);
 }
 
 /// AHCI を IoScheduler に登録（後方互換wrapper）

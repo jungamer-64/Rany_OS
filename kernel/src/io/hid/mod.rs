@@ -4,25 +4,21 @@
 //!
 //! # HIDサブシステム
 //!
-//! キーボード、マウスなどの入力デバイスを統合管理するサブシステム。
+//! キーボードなどの入力デバイスを統合管理するサブシステム。
 //!
 //! ## モジュール構成
 //! - `ps2` - PS/2コントローラドライバ
 //! - `keyboard` - 非同期キーボードドライバ (SPSC ownership-based)
 //! - `keymap` - キーボードレイアウト抽象化 (i18n対応)
-//! - `mouse` - PS/2マウスドライバ
 //!
 //! ## 使用方法
 //!
 //! 新しいコードでは直接的なパスを使用してください:
 //! - キーボード: `crate::io::hid::keyboard`
-//! - マウス: `crate::io::hid::mouse`
 //! - PS/2: `crate::io::hid::ps2`
 
 pub mod keyboard;
 pub mod keyboard_driver;
-pub mod mouse;
-pub mod mouse_driver;
 pub use hid_driver::ps2;
 
 // Re-export keymap from hid_driver
@@ -76,28 +72,17 @@ pub use ps2::{
     // Functions
 
     keyboard_interrupt_handler,
-    mouse_interrupt_handler,
     // Constants (use `crate::io::hid::ps2::ports` / `crate::io::hid::ps2::status` directly)
     set_leds,
 };
 
-// ============================================================================
-// Mouse Re-exports
-// ============================================================================
 
-pub use hid_driver::{MouseButton, MouseEvent};
-pub use mouse::{
-    Mouse, MouseInitError, handle_mouse_packet,
-    // init removed - use Ps2MouseDriver via DriverRegistry
-    is_mouse_initialized,
-};
 
 // ============================================================================
 // Driver Trait Re-exports
 // ============================================================================
 
 pub use keyboard_driver::Ps2KeyboardDriver;
-pub use mouse_driver::Ps2MouseDriver;
 
 // ============================================================================
 // Keymap Re-exports
@@ -106,7 +91,3 @@ pub use mouse_driver::Ps2MouseDriver;
 pub use keymap::{
     DEFAULT_KEYMAP, DVORAK_KEYMAP, DvorakKeymap, JIS_KEYMAP, JisKeymap, Keymap, UsQwertyKeymap,
 };
-
-// ============================================================================
-// Internal Backward Compatibility (crate-only)
-// ============================================================================

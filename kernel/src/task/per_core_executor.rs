@@ -397,13 +397,13 @@ impl PerCoreExecutor {
         // 【重要】保留中の割り込みイベントを処理（2段階Wake方式）
         // ISRからのwake()はイベントキューに積まれているため、
         // ここで実際のwake()を実行する
-        crate::task::interrupt_waker::process_interrupt_events();
-
         // タイマーからの保留Wakerも処理
         crate::task::timer::process_pending_timer_wakers();
 
-        // Drive IoScheduler dispatch/poll in non-ISR context.
-        crate::io::io_scheduler::hybrid_coordinator().tick(crate::task::timer::current_tick());
+        // Drive IoScheduler dispatch/poll        // Process IO and interrupts
+        crate::io::io_scheduler::hybrid_coordinator().tick(|| {
+            crate::task::interrupt_waker::process_interrupt_events();
+        });
 
         if let Some(task) = self.next_task() {
             self.run_task(&task);

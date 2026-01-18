@@ -15,9 +15,9 @@ use crate::graphics::image::Image;
 use crate::graphics::{Color, Framebuffer, Point, Rect};
 
 use super::constants::{BLUR_RADIUS, BORDER_WIDTH, SHADOW_SIZE, TITLE_BAR_HEIGHT};
-use super::cursor::{CursorType, MouseCursor};
+
 use super::dirty_rect::{DirtyRect, DirtyRegionManager};
-use super::types::{CompositorWindowId, CompositorWindowStyle, DragState, ResizeEdge, ZOrder};
+use super::types::{CompositorWindowId, CompositorWindowStyle, ZOrder};
 use super::window::CompositorWindow;
 
 // ============================================================================
@@ -34,10 +34,7 @@ pub struct Compositor {
     next_id: AtomicU32,
     /// フォーカスを持つウィンドウ
     focused: Option<CompositorWindowId>,
-    /// ドラッグ状態
-    drag_state: DragState,
-    /// マウスカーソル
-    cursor: MouseCursor,
+
     /// ダーティリージョンマネージャ
     dirty_manager: DirtyRegionManager,
     /// バックバッファ
@@ -65,8 +62,7 @@ impl Compositor {
             z_order_list: Vec::new(),
             next_id: AtomicU32::new(1),
             focused: None,
-            drag_state: DragState::None,
-            cursor: MouseCursor::new(),
+
             dirty_manager: DirtyRegionManager::new(screen_width, screen_height),
             back_buffer: Image::new(screen_width, screen_height),
             wallpaper: None,
@@ -116,13 +112,7 @@ impl Compositor {
             self.focused = self.z_order_list.last().copied();
         }
 
-        if let DragState::Moving { window_id, .. } | DragState::Resizing { window_id, .. } =
-            self.drag_state
-        {
-            if window_id == id {
-                self.drag_state = DragState::None;
-            }
-        }
+
     }
 
     /// Z-orderリストに挿入
@@ -227,199 +217,9 @@ impl Compositor {
         self.dirty_manager.invalidate_all();
     }
 
-    /// マウスカーソルを取得
-    #[allow(dead_code)]
-    pub fn cursor(&self) -> &MouseCursor {
-        &self.cursor
-    }
 
-    /// マウスカーソルをミュータブルに取得
-    #[allow(dead_code)]
-    pub fn cursor_mut(&mut self) -> &mut MouseCursor {
-        &mut self.cursor
-    }
 
-    // ========================================================================
-    // Input Handling
-    // ========================================================================
 
-    /// マウス移動を処理
-    pub fn handle_mouse_move(&mut self, x: i32, y: i32) {
-        // 前回のカーソル位置をダーティに
-        self.dirty_manager.add_dirty(self.cursor.get_rect());
-
-        // カーソル位置を更新
-        self.cursor.set_position(x, y);
-
-        // 新しいカーソル位置をダーティに
-        self.dirty_manager.add_dirty(self.cursor.get_rect());
-
-        // ドラッグ処理
-        match self.drag_state {
-            DragState::Moving {
-                window_id,
-                offset_x,
-                offset_y,
-            } => {
-                if let Some(window) = self.windows.get_mut(&window_id) {
-                    // 前の位置をダーティに
-                    self.dirty_manager.add_dirty(window.rect());
-
-                    window.move_to(x - offset_x, y - offset_y);
-
-                    // 新しい位置をダーティに
-                    self.dirty_manager.add_dirty(window.rect());
-                }
-                return;
-            }
-            DragState::Resizing {
-                window_id,
-                edge,
-                start_rect,
-                start_x,
-                start_y,
-            } => {
-                self.do_resize(window_id, edge, start_rect, x - start_x, y - start_y);
-                return;
-            }
-            DragState::None => {}
-        }
-
-        // カーソルタイプを更新
-        if let Some(id) = self.window_at(x, y) {
-            if let Some(window) = self.windows.get(&id) {
-                if let Some(edge) = window.get_resize_edge(x, y) {
-                    self.cursor.set_cursor_type(edge.cursor_type());
-                } else if window.title_bar_contains(x, y) {
-                    self.cursor.set_cursor_type(CursorType::Arrow);
-                } else {
-                    self.cursor.set_cursor_type(CursorType::Arrow);
-                }
-            }
-        } else {
-            self.cursor.set_cursor_type(CursorType::Arrow);
-        }
-    }
-
-    /// マウスボタン押下を処理
-    pub fn handle_mouse_down(&mut self, x: i32, y: i32, button: u8) {
-        if button != 0 {
-            // 左クリック以外
-            return;
-        }
-
-        if let Some(id) = self.window_at(x, y) {
-            self.set_focus(id);
-
-            if let Some(window) = self.windows.get(&id) {
-                // リサイズエッジのチェック
-                if let Some(edge) = window.get_resize_edge(x, y) {
-                    self.drag_state = DragState::Resizing {
-                        window_id: id,
-                        edge,
-                        start_rect: window.rect(),
-                        start_x: x,
-                        start_y: y,
-                    };
-                    return;
-                }
-
-                // 閉じるボタンのチェック
-                if let Some(close_rect) = window.close_button_rect() {
-                    if close_rect.contains(Point::new(x, y)) {
-                        self.destroy_window(id);
-                        return;
-                    }
-                }
-
-                // タイトルバードラッグ
-                if window.title_bar_contains(x, y) {
-                    let rect = window.rect();
-                    self.drag_state = DragState::Moving {
-                        window_id: id,
-                        offset_x: x - rect.x,
-                        offset_y: y - rect.y,
-                    };
-                    return;
-                }
-            }
-        }
-    }
-
-    /// マウスボタン解放を処理
-    pub fn handle_mouse_up(&mut self, _x: i32, _y: i32, _button: u8) {
-        self.drag_state = DragState::None;
-    }
-
-    /// リサイズを実行
-    fn do_resize(
-        &mut self,
-        window_id: CompositorWindowId,
-        edge: ResizeEdge,
-        start_rect: Rect,
-        dx: i32,
-        dy: i32,
-    ) {
-        if let Some(window) = self.windows.get_mut(&window_id) {
-            // 前の位置をダーティに
-            self.dirty_manager.add_dirty(window.rect());
-
-            let mut new_rect = start_rect;
-
-            match edge {
-                ResizeEdge::Top => {
-                    new_rect.y += dy;
-                    new_rect.height = (start_rect.height as i32 - dy).max(50) as u32;
-                }
-                ResizeEdge::Bottom => {
-                    new_rect.height = (start_rect.height as i32 + dy).max(50) as u32;
-                }
-                ResizeEdge::Left => {
-                    new_rect.x += dx;
-                    new_rect.width = (start_rect.width as i32 - dx).max(100) as u32;
-                }
-                ResizeEdge::Right => {
-                    new_rect.width = (start_rect.width as i32 + dx).max(100) as u32;
-                }
-                ResizeEdge::TopLeft => {
-                    new_rect.x += dx;
-                    new_rect.y += dy;
-                    new_rect.width = (start_rect.width as i32 - dx).max(100) as u32;
-                    new_rect.height = (start_rect.height as i32 - dy).max(50) as u32;
-                }
-                ResizeEdge::TopRight => {
-                    new_rect.y += dy;
-                    new_rect.width = (start_rect.width as i32 + dx).max(100) as u32;
-                    new_rect.height = (start_rect.height as i32 - dy).max(50) as u32;
-                }
-                ResizeEdge::BottomLeft => {
-                    new_rect.x += dx;
-                    new_rect.width = (start_rect.width as i32 - dx).max(100) as u32;
-                    new_rect.height = (start_rect.height as i32 + dy).max(50) as u32;
-                }
-                ResizeEdge::BottomRight => {
-                    new_rect.width = (start_rect.width as i32 + dx).max(100) as u32;
-                    new_rect.height = (start_rect.height as i32 + dy).max(50) as u32;
-                }
-            }
-
-            window.prev_rect = window.rect;
-            window.rect = new_rect;
-            window.client_rect = CompositorWindow::calculate_client_rect(&new_rect, &window.style);
-
-            // コンテンツバッファをリサイズ
-            window.content = Image::filled(
-                window.client_rect.width,
-                window.client_rect.height,
-                Color::WHITE,
-            );
-            window.dirty = true;
-            window.decoration_dirty = true;
-
-            // 新しい位置をダーティに
-            self.dirty_manager.add_dirty(window.rect);
-        }
-    }
 
     // ========================================================================
     // Composition
@@ -461,8 +261,7 @@ impl Compositor {
             }
         }
 
-        // マウスカーソルを描画
-        self.cursor.draw(&mut self.back_buffer);
+
 
         // バックバッファをフレームバッファにコピー
         self.copy_to_framebuffer(fb, None);
@@ -485,16 +284,10 @@ impl Compositor {
             }
         }
 
-        // マウスカーソルを描画
-        self.cursor.draw(&mut self.back_buffer);
-
         // ダーティ領域のみをフレームバッファにコピー
         for dirty in &dirty_regions {
             self.copy_to_framebuffer(fb, Some(dirty.rect));
         }
-
-        // カーソル領域もコピー
-        self.copy_to_framebuffer(fb, Some(self.cursor.get_rect()));
     }
 
     /// デスクトップ背景を描画

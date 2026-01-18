@@ -310,4 +310,17 @@ pub use keymap::{
 };
 
 // Keyboard helpers exported for kernel use (scancode conversion, waker, modifier state)
-pub use keyboard::{IsrSafeWaker, KeyCodeExt, KeyEventExt, ModifierState, StreamAlreadyTaken};
+#[deprecated(since = "0.3.0", note = "Use `hid_driver::keyboard::IsrSafeWaker` directly; prefer kernel-level waker APIs instead.")]
+pub use keyboard::IsrSafeWaker;
+
+#[deprecated(since = "0.3.0", note = "Bring the trait `KeyCodeExt` into scope from `hid_driver::keyboard` or use `hid_driver` APIs directly.")]
+pub use keyboard::KeyCodeExt;
+
+#[deprecated(since = "0.3.0", note = "Bring the trait `KeyEventExt` into scope from `hid_driver::keyboard` or use `hid_driver` APIs directly.")]
+pub use keyboard::KeyEventExt;
+
+#[deprecated(since = "0.3.0", note = "Use `hid_driver::ModifierState` directly.")]
+pub use keyboard::ModifierState;
+
+// `StreamAlreadyTaken` is not deprecated and remains a convenience export
+pub use keyboard::StreamAlreadyTaken;

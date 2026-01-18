@@ -1093,19 +1093,12 @@ impl KernelServices for ExoKernel {
         io_type: NvmeIoType,
     ) -> KapiResult<NvmeIoHandle> {
         use crate::io::io_scheduler::{
-            DeviceId as IoDeviceId, IoOperationType, IoPayload, IoPriority, NvmeRwPayload,
+            DeviceId as IoDeviceId, IoPriority, IoCommand, DmaBufHandle,
         };
 
         let device = IoDeviceId::Nvme {
             controller: 0,
             namespace: request.namespace_id,
-        };
-
-        let operation = match io_type {
-            NvmeIoType::Read => IoOperationType::Read,
-            NvmeIoType::Write => IoOperationType::Write,
-            NvmeIoType::Flush => IoOperationType::Flush,
-            NvmeIoType::Discard => IoOperationType::Custom(0),
         };
 
         let priority = match request.priority {
@@ -1116,16 +1109,35 @@ impl KernelServices for ExoKernel {
             NvmeIoPriority::Realtime => IoPriority::Realtime,
         };
 
-        let payload = IoPayload::NvmeRw(NvmeRwPayload {
-            lba: request.lba,
-            blocks: request.blocks,
-            prp1: request.prp1,
-            prp2: request.prp2,
-            bytes: request.bytes,
-        });
+        // Build IoCommand (new API) and submit via submit_io_command
+        let command = match io_type {
+            NvmeIoType::Read => IoCommand::BlockRead {
+                lba: request.lba,
+                blocks: request.blocks,
+                bytes: request.bytes,
+                buf: DmaBufHandle {
+                    iova: request.prp1,
+                    len: request.bytes,
+                },
+            },
+            NvmeIoType::Write => IoCommand::BlockWrite {
+                lba: request.lba,
+                blocks: request.blocks,
+                bytes: request.bytes,
+                buf: DmaBufHandle {
+                    iova: request.prp1,
+                    len: request.bytes,
+                },
+            },
+            NvmeIoType::Flush => IoCommand::Flush,
+            NvmeIoType::Discard => IoCommand::Discard {
+                lba: request.lba,
+                blocks: request.blocks as u16,
+            },
+        };
 
-        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
-            device, operation, priority, payload,
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+            device, command, priority,
         );
         let request_id = future.request_id().0;
 
@@ -1302,8 +1314,7 @@ impl GuiServices for ExoKernel {
         use spin::Mutex;
         use crate::io::hid::keyboard::KeyboardStream;
 
-        #[cfg(feature = "mouse")]
-        use kernel_api::gui::{MouseEvent as KapiMouseEvent, MouseButtons};
+
 
         // Lazy initialization of the global keyboard stream
         // We use a static Mutex to hold the stream exclusively for GuiServices
@@ -1375,41 +1386,7 @@ impl GuiServices for ExoKernel {
             return Some(InputEvent::Key(kapi_event));
         }
 
-        // Try mouse (if feature enabled)
-        #[cfg(feature = "mouse")]
-        {
-            // Query the mouse global under interrupts-disabled context (non-deprecated direct access).
-            let mouse_event_opt = x86_64::instructions::interrupts::without_interrupts(|| {
-                // Access global mouse instance directly
-                crate::io::hid::mouse::MOUSE.lock().poll_event()
-            });
 
-            if let Some(mouse_event) = mouse_event_opt {
-                let buttons = MouseButtons(
-                    if mouse_event.buttons.left() {
-                        MouseButtons::LEFT
-                    } else {
-                        0
-                    } | if mouse_event.buttons.right() {
-                        MouseButtons::RIGHT
-                    } else {
-                        0
-                    } | if mouse_event.buttons.middle() {
-                        MouseButtons::MIDDLE
-                    } else {
-                        0
-                    },
-                );
-
-                let kapi_mouse = KapiMouseEvent {
-                    dx: mouse_event.delta_x,
-                    dy: mouse_event.delta_y,
-                    buttons,
-                };
-
-                return Some(InputEvent::Mouse(kapi_mouse));
-            }
-        }
 
         None
     }

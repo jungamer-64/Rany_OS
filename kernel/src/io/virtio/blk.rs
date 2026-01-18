@@ -183,6 +183,7 @@ pub struct VirtQueue {
     /// Queue index
     index: u16,
     /// Queue notify address (transport-provided)
+    #[deprecated(since = "0.3.0", note = "Prefer transport-level notify methods and interrupt-driven notifications; avoid per-queue MMIO `notify_addr` when possible.")]
     notify_addr: Option<u64>,
     /// Notify width (MMIO uses 32-bit, PCI uses 16-bit)
     notify_is_32bit: bool,

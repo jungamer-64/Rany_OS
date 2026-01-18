@@ -97,29 +97,11 @@ pub fn mouse_interrupt_handler() {
     }
 }
 
-/// キーイベントを取得
-///
-/// Deprecated: Prefer `KeyboardStream` or `KeyboardHandler::pop_event()` (use `keyboard::take_stream()` to acquire a stream).
-#[deprecated(since = "0.3.0", note = "Use `KeyboardStream` (via `crate::io::hid::keyboard::take_stream()`) or `KeyboardHandler::pop_event()` instead")]
-pub fn get_key_event() -> Option<KeyEvent> {
-    KEYBOARD.lock().as_mut()?.pop_event()
-}
+// Removed: `ps2::get_key_event()` was removed. Use `KeyboardStream` (via `crate::io::hid::keyboard::take_stream()`) or `KeyboardHandler::pop_event()` instead.
 
-/// マウスイベントを取得
-///
-/// Deprecated: Prefer `MouseEvent` streams or `MouseHandler::pop_event()`.
-#[deprecated(since = "0.3.0", note = "Use `MouseHandler::pop_event()` or an event stream instead")]
-pub fn get_mouse_event() -> Option<MouseEvent> {
-    MOUSE.lock().as_mut()?.pop_event()
-}
+// Removed: `ps2::get_mouse_event()` was removed. Use `MouseHandler::pop_event()` or an event stream instead.
 
-/// 修飾キー状態を取得
-///
-/// Deprecated: Prefer `KeyboardStream` APIs or `KeyboardHandler::modifiers()`.
-#[deprecated(since = "0.3.0", note = "Use `KeyboardHandler::modifiers()` or acquire a `KeyboardStream` and query modifiers from it")]
-pub fn get_modifiers() -> Option<Modifiers> {
-    Some(KEYBOARD.lock().as_ref()?.modifiers())
-}
+// Removed: `ps2::get_modifiers()` was removed. Use `KeyboardHandler::modifiers()` or acquire a `KeyboardStream` and query modifiers from it.
 
 /// キーボードLEDを設定
 pub fn set_leds(scroll: bool, num: bool, caps: bool) {

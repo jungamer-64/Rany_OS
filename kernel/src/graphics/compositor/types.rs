@@ -39,7 +39,6 @@ impl ZOrder {
     pub const ABOVE_NORMAL: Self = Self(100);
     pub const TOPMOST: Self = Self(1000);
     pub const SYSTEM: Self = Self(10000);
-    pub const CURSOR: Self = Self(i32::MAX);
 }
 
 // ============================================================================
@@ -151,59 +150,8 @@ pub enum CompositorWindowState {
     Hidden,
 }
 
-// ============================================================================
-// Resize Edge
-// ============================================================================
 
-/// リサイズエッジ
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ResizeEdge {
-    Top,
-    Bottom,
-    Left,
-    Right,
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
 
-impl ResizeEdge {
-    /// エッジに対応するカーソルタイプ
-    pub fn cursor_type(&self) -> super::cursor::CursorType {
-        use super::cursor::CursorType;
-        match self {
-            ResizeEdge::Top | ResizeEdge::Bottom => CursorType::ResizeNS,
-            ResizeEdge::Left | ResizeEdge::Right => CursorType::ResizeEW,
-            ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorType::ResizeNWSE,
-            ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorType::ResizeNESW,
-        }
-    }
-}
 
-// ============================================================================
-// Drag State
-// ============================================================================
 
-use crate::graphics::Rect;
 
-/// ドラッグ状態
-#[derive(Clone, Copy, Debug)]
-pub enum DragState {
-    /// ドラッグなし
-    None,
-    /// ウィンドウ移動中
-    Moving {
-        window_id: CompositorWindowId,
-        offset_x: i32,
-        offset_y: i32,
-    },
-    /// ウィンドウリサイズ中
-    Resizing {
-        window_id: CompositorWindowId,
-        edge: ResizeEdge,
-        start_rect: Rect,
-        start_x: i32,
-        start_y: i32,
-    },
-}

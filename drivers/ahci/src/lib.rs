@@ -92,4 +92,5 @@ pub use types::{
 };
 
 // Re-export ATAPI module
+#[deprecated(since = "0.3.0", note = "Re-exported for backward compatibility; import `ahci_driver::atapi` directly.")]
 pub use atapi::*;

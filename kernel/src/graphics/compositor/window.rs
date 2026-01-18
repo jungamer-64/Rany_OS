@@ -11,9 +11,9 @@ use alloc::string::String;
 use crate::graphics::image::Image;
 use crate::graphics::{Color, Point, Rect};
 
-use super::constants::{BORDER_WIDTH, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
+use super::constants::{BORDER_WIDTH, TITLE_BAR_HEIGHT};
 use super::types::{
-    CompositorWindowId, CompositorWindowState, CompositorWindowStyle, ResizeEdge, ZOrder,
+    CompositorWindowId, CompositorWindowState, CompositorWindowStyle, ZOrder,
 };
 
 // ============================================================================
@@ -245,32 +245,7 @@ impl CompositorWindow {
         title_bar.contains(Point::new(x, y))
     }
 
-    /// リサイズエッジを検出
-    pub fn get_resize_edge(&self, x: i32, y: i32) -> Option<ResizeEdge> {
-        if !self.style.resizable {
-            return None;
-        }
 
-        let r = &self.rect;
-        let handle = RESIZE_HANDLE_SIZE as i32;
-
-        let on_left = x >= r.x && x < r.x + handle;
-        let on_right = x >= r.right() - handle && x < r.right();
-        let on_top = y >= r.y && y < r.y + handle;
-        let on_bottom = y >= r.bottom() - handle && y < r.bottom();
-
-        match (on_left, on_right, on_top, on_bottom) {
-            (true, false, true, false) => Some(ResizeEdge::TopLeft),
-            (false, true, true, false) => Some(ResizeEdge::TopRight),
-            (true, false, false, true) => Some(ResizeEdge::BottomLeft),
-            (false, true, false, true) => Some(ResizeEdge::BottomRight),
-            (true, false, false, false) => Some(ResizeEdge::Left),
-            (false, true, false, false) => Some(ResizeEdge::Right),
-            (false, false, true, false) => Some(ResizeEdge::Top),
-            (false, false, false, true) => Some(ResizeEdge::Bottom),
-            _ => None,
-        }
-    }
 
     /// 閉じるボタンの矩形を取得
     pub fn close_button_rect(&self) -> Option<Rect> {
