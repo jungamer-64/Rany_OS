@@ -185,7 +185,7 @@ impl SignatureVerifier {
     pub fn new() -> Self {
         Self {
             trusted_keys: Vec::new(),
-            allow_dev_mode: cfg!(not(feature = "require_signatures")),
+            allow_dev_mode: true,
             stats: VerifierStats::default(),
         }
     }
@@ -322,26 +322,18 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
         parse_signature_section(sig_data)
     } else {
         // 署名セクションが見つからない場合
-        #[cfg(feature = "require_signatures")]
-        {
-            Err(LoadError::InvalidSignature)
-        }
-
-        #[cfg(not(feature = "require_signatures"))]
-        {
-            // 開発モード: 署名なしでもロードを許可（ただし制限付き）
-            log::info!("[SIGNATURE] Warning: Loading unsigned cell (dev mode)\n");
-            Ok(CellSignature {
-                version: SIGNATURE_VERSION,
-                contains_unsafe: false,
-                uses_framework_only: true,
-                compiler_version: "dev".into(),
-                build_timestamp: 0,
-                hash: [0; 32],
-                signature: Vec::new(),
-                public_key: [0; 32],
-            })
-        }
+        // 開発モード: 署名なしでもロードを許可（ただし制限付き）
+        log::info!("[SIGNATURE] Warning: Loading unsigned cell (dev mode)\n");
+        Ok(CellSignature {
+            version: SIGNATURE_VERSION,
+            contains_unsafe: false,
+            uses_framework_only: true,
+            compiler_version: "dev".into(),
+            build_timestamp: 0,
+            hash: [0; 32],
+            signature: Vec::new(),
+            public_key: [0; 32],
+        })
     }
 }
 

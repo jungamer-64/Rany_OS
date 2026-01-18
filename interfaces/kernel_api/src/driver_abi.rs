@@ -18,6 +18,10 @@
 //! to a static `DriverVTable`. The kernel loads this symbol and uses the
 //! vtable to call driver functions.
 //!
+//! Newer drivers can export a `DRIVER_EXPORTS` symbol that provides
+//! a versioned `DriverExportsV1` header and a `KernelApiV1` function table
+//! for initialization, while keeping `_exorust_driver_entry` as a fallback.
+//!
 //! ## ABI Stability Guidelines
 //!
 //! To maintain the validity of the text-based ABI hash verification in `build.rs`,
@@ -113,6 +117,12 @@ include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
 
 /// The symbol name that all dynamically loadable drivers must export.
 pub const DRIVER_ENTRY_SYMBOL: &str = "_exorust_driver_entry";
+/// The symbol name for the driver exports table.
+pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
+/// ABI version for the KernelApiV1 table.
+pub const KERNEL_API_ABI_VERSION: u32 = 1;
+/// ABI version for the DriverExportsV1 header.
+pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 1;
 
 // ============================================================================
 // Error Codes
@@ -414,6 +424,66 @@ impl DriverVTable {
 /// named `_exorust_driver_entry`. The function returns a pointer to a static
 /// `DriverVTable`.
 pub type DriverEntryFn = extern "C" fn() -> *const DriverVTable;
+
+// ============================================================================
+// Kernel API (Driver Domain C ABI)
+// ============================================================================
+
+/// ABI-stable DMA buffer handle for driver domains.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiDmaBuffer {
+    pub phys_addr: u64,
+    pub virt_addr: u64,
+    pub size: usize,
+}
+
+/// ABI-stable MMIO mapping handle for driver domains.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiMmioHandle {
+    pub base: u64,
+    pub size: usize,
+}
+
+/// Kernel API function table for drivers.
+///
+/// Drivers must validate `abi_version` and `abi_size` before using optional
+/// entries in this table.
+#[repr(C)]
+pub struct KernelApiV1 {
+    pub abi_version: u32,
+    pub abi_size: u32,
+
+    pub log: extern "C" fn(level: u32, msg_ptr: *const u8, msg_len: usize),
+
+    pub alloc_dma: extern "C" fn(size: usize, align: usize, out: *mut AbiDmaBuffer) -> i32,
+    pub free_dma: extern "C" fn(handle: *const AbiDmaBuffer) -> i32,
+
+    pub map_mmio: extern "C" fn(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32,
+    pub unmap_mmio: extern "C" fn(handle: *const AbiMmioHandle) -> i32,
+
+    pub irq_bind: extern "C" fn(irq: u32, cookie: u64) -> i32,
+    pub irq_unbind: extern "C" fn(irq: u32) -> i32,
+
+    pub _reserved: [u64; 8],
+}
+
+/// Driver export header for `DRIVER_EXPORTS`.
+#[repr(C)]
+pub struct DriverExportsV1 {
+    pub abi_version: u32,
+    pub abi_size: u32,
+
+    pub name_ptr: *const u8,
+    pub name_len: usize,
+
+    pub entry: DriverEntryFn,
+    pub init: Option<extern "C" fn(api: *const KernelApiV1) -> i32>,
+    pub fini: Option<extern "C" fn() -> i32>,
+
+    pub _reserved: [u64; 8],
+}
 
 // ============================================================================
 // Helper Functions

@@ -8,6 +8,7 @@
 
 pub mod ed25519;
 pub mod elf;
+pub mod driver_pack;
 pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
 pub mod sha256;
 pub mod signature;
@@ -24,11 +25,11 @@ pub use live_update::{
 #[allow(unused_imports)]
 pub use signature::{CellSignature, SignatureVerifier, verify_cell};
 
-use crate::driver_registry::{DriverHandle, register_abi_driver};
+use crate::driver_registry::{DriverHandle, register_abi_driver, register_exports_driver};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL;
+use kernel_api::driver_abi::{DriverExportsV1, DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL};
 use spin::Mutex;
 
 /// セルの状態
@@ -123,6 +124,8 @@ pub struct CellEntry {
     pub is_safe: bool,
     /// 署名が検証済みかどうか
     pub signature_verified: bool,
+    /// 要求ケイパビリティ（マニフェスト由来、0は未指定）
+    pub required_caps: u64,
     /// 登録されたドライバ（このセルに依存するドライバ）
     pub registered_drivers: Vec<DriverHandle>,
     /// 割り当てられた Protection Key
@@ -299,8 +302,26 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
         return Err(LoadError::InvalidSignature);
     }
 
+    load_cell_with_flags(
+        name,
+        elf_data,
+        allow_unsafe,
+        signature.contains_unsafe,
+        true,
+        0,
+    )
+}
+
+fn load_cell_with_flags(
+    name: &str,
+    elf_data: &[u8],
+    allow_unsafe: bool,
+    contains_unsafe: bool,
+    signature_verified: bool,
+    required_caps: u64,
+) -> Result<CellId, LoadError> {
     // unsafeが許可されていない場合のチェック
-    if !allow_unsafe && signature.contains_unsafe {
+    if !allow_unsafe && contains_unsafe {
         return Err(LoadError::UnsafeNotAllowed);
     }
 
@@ -356,8 +377,9 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
                 .collect(),
             imports: cell_info.imports.iter().map(|s| s.to_string()).collect(),
             dependencies: Vec::new(),
-            is_safe: !signature.contains_unsafe,
-            signature_verified: true,
+            is_safe: !contains_unsafe,
+            signature_verified,
+            required_caps,
             registered_drivers: Vec::new(),
             pkey: loaded.pkey,
             stats: ModuleStats {
@@ -382,6 +404,100 @@ pub fn load_driver(
 ) -> Result<DriverHandle, LoadError> {
     // Load the cell first
     let cell_id = load_cell(name, elf_data, allow_unsafe)?;
+
+    register_driver_from_cell(cell_id)
+}
+
+/// Load a driver pack (manifest + ELF + signature).
+pub fn load_driver_pack(
+    name: &str,
+    pack_data: &[u8],
+    allow_unsafe: bool,
+) -> Result<DriverHandle, LoadError> {
+    let pack = driver_pack::parse_driver_pack(pack_data)?;
+    let signature_verified = driver_pack::verify_driver_pack(&pack)?;
+
+    let driver_abi = pack.manifest.driver_abi_version as u64;
+    if driver_abi != kernel_api::driver_abi::DRIVER_ABI_VERSION {
+        return Err(LoadError::AbiIncompatible(
+            "Driver ABI version mismatch".into(),
+        ));
+    }
+
+    if pack.manifest.kernel_api_min_version > kernel_api::driver_abi::KERNEL_API_ABI_VERSION {
+        return Err(LoadError::AbiIncompatible(
+            "Kernel API ABI version too old".into(),
+        ));
+    }
+
+    let manifest_name = pack.manifest.name_str();
+    let driver_name = if manifest_name.is_empty() {
+        name
+    } else {
+        manifest_name
+    };
+
+    let cell_id = load_cell_with_flags(
+        driver_name,
+        pack.elf,
+        allow_unsafe,
+        pack.manifest.contains_unsafe(),
+        signature_verified,
+        pack.manifest.required_caps,
+    )?;
+
+    register_driver_from_cell(cell_id)
+}
+
+/// Load a driver artifact: raw ELF or driver pack.
+pub fn load_driver_artifact(
+    name: &str,
+    data: &[u8],
+    allow_unsafe: bool,
+) -> Result<DriverHandle, LoadError> {
+    if driver_pack::is_driver_pack(data) {
+        load_driver_pack(name, data, allow_unsafe)
+    } else {
+        load_driver(name, data, allow_unsafe)
+    }
+}
+
+fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
+    // Prefer DRIVER_EXPORTS when available
+    let exports_addr = with_registry(|r| {
+        let cell = r.get(cell_id)?;
+        cell.exports
+            .iter()
+            .find(|(n, _)| n == DRIVER_EXPORTS_SYMBOL)
+            .map(|(_, addr)| *addr)
+    });
+
+    if let Some(addr) = exports_addr {
+        let exports_ptr = addr as *const DriverExportsV1;
+        match register_exports_driver(exports_ptr) {
+            Ok(handle) => {
+                with_registry_mut(|r| {
+                    if let Some(entry) = r.get_mut(cell_id) {
+                        entry.registered_drivers.push(handle);
+                        log::info!(
+                            "[Loader] Driver exports registered: {:?} for cell {:?}\n",
+                            handle,
+                            cell_id.as_u64()
+                        );
+                    }
+                });
+                return Ok(handle);
+            }
+            Err(_) => {
+                with_registry_mut(|r| {
+                    r.unload(cell_id);
+                });
+                return Err(LoadError::InvalidFormat(
+                    "Failed to register DriverExports driver".into(),
+                ));
+            }
+        }
+    }
 
     // Resolve driver entry symbol address from the specific cell
     let entry_addr = with_registry(|r| {
@@ -579,6 +695,7 @@ pub fn init_kernel_cell() {
             dependencies: Vec::new(),
             is_safe: false, // カーネルはunsafeを含む
             signature_verified: true,
+            required_caps: 0,
             registered_drivers: Vec::new(),
             pkey: None,
             stats: ModuleStats::default(),

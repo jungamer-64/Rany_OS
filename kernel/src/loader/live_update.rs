@@ -28,6 +28,7 @@
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use kernel_api::driver_abi::{DriverEntryFn, DriverExportsV1, DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL};
 use spin::Mutex;
 
 // ============================================================================
@@ -353,42 +354,57 @@ impl LiveUpdateManager {
         // Step 3: Swap (Update Driver Registry)
         *self.state.lock() = LiveUpdateState::Switching;
 
-        // Resolve entry symbol in NEW cell
-        let entry_addr = crate::loader::with_registry(|r| {
-            let cell = r.get(new_cell_id)?;
-            cell.exports
-                .iter()
-                .find(|(n, _)| n == kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL)
-                .map(|(_, addr)| *addr)
-        });
+        let resolve_entry = |cell_id, call_init| -> Result<(DriverEntryFn, Option<extern "C" fn() -> i32>), LiveUpdateError> {
+            let exports_addr = crate::loader::with_registry(|r| {
+                let cell = r.get(cell_id)?;
+                cell.exports
+                    .iter()
+                    .find(|(n, _)| n == DRIVER_EXPORTS_SYMBOL)
+                    .map(|(_, addr)| *addr)
+            });
 
-        let entry_addr = match entry_addr {
-            Some(a) => a,
-            None => {
-                // Cleanup new cell
+            if let Some(addr) = exports_addr {
+                let exports_ptr = addr as *const DriverExportsV1;
+                let prepared = crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
+                    .map_err(|_| LiveUpdateError::LoadFailed)?;
+                return Ok((prepared.entry, prepared.fini));
+            }
+
+            let entry_addr = crate::loader::with_registry(|r| {
+                let cell = r.get(cell_id)?;
+                cell.exports
+                    .iter()
+                    .find(|(n, _)| n == DRIVER_ENTRY_SYMBOL)
+                    .map(|(_, addr)| *addr)
+            });
+
+            let entry_addr = match entry_addr {
+                Some(a) => a,
+                None => return Err(LiveUpdateError::LoadFailed),
+            };
+
+            let entry_fn: DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
+            Ok((entry_fn, None))
+        };
+
+        // Resolve entry symbol in NEW cell
+        let (entry_fn, entry_fini) = match resolve_entry(new_cell_id, true) {
+            Ok(v) => v,
+            Err(_) => {
                 let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
                 return Err(LiveUpdateError::LoadFailed);
             }
         };
 
-        let entry_fn: kernel_api::driver_abi::DriverEntryFn =
-            unsafe { core::mem::transmute(entry_addr) };
-
         // Resolve entry symbol in OLD cell (for rollback)
-        let old_entry_addr = crate::loader::with_registry(|r| {
-            let cell = r.get(old_cell_id)?;
-            cell.exports
-                .iter()
-                .find(|(n, _)| n == kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL)
-                .map(|(_, addr)| *addr)
-        });
+        let old_entry = resolve_entry(old_cell_id, false).ok();
 
         // Update all drivers registered to the old cell
         let mut updated_handles = Vec::new();
         let mut update_failed = false;
 
         for handle in &old_drivers {
-            match crate::driver_registry::update_abi_driver(*handle, entry_fn) {
+            match crate::driver_registry::update_abi_driver_with_fini(*handle, entry_fn, entry_fini) {
                 Ok(_) => updated_handles.push(*handle),
                 Err(_) => {
                     update_failed = true;
@@ -400,13 +416,16 @@ impl LiveUpdateManager {
         if update_failed {
             log::error!("[LIVE_UPDATE] Update failed, rolling back {} drivers...\n", updated_handles.len());
             // Rollback successful updates
-            if let Some(old_addr) = old_entry_addr {
-                let old_entry_fn: kernel_api::driver_abi::DriverEntryFn =
-                    unsafe { core::mem::transmute(old_addr) };
-                
+            if let Some((old_entry_fn, old_entry_fini)) = old_entry {
                 for handle in updated_handles {
-                    if let Err(e) = crate::driver_registry::update_abi_driver(handle, old_entry_fn) {
-                         log::error!("[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n", handle, e);
+                    if let Err(e) =
+                        crate::driver_registry::update_abi_driver_with_fini(handle, old_entry_fn, old_entry_fini)
+                    {
+                        log::error!(
+                            "[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n",
+                            handle,
+                            e
+                        );
                     }
                 }
             } else {

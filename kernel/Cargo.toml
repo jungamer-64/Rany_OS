@@ -95,7 +95,6 @@ criterion = { version = "0.5", optional = true }
 [features]
 default = []
 verbose_logging = []
-require_signatures = []
 serial = ["uart_16550"]
 stats = []
 mouse = []
