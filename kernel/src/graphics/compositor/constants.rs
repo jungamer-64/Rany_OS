@@ -13,8 +13,7 @@ pub const TITLE_BAR_HEIGHT: u32 = 28;
 /// ウィンドウ境界線の幅
 pub const BORDER_WIDTH: u32 = 1;
 
-/// リサイズハンドルのサイズ
-pub const RESIZE_HANDLE_SIZE: u32 = 8;
+
 
 /// シャドウサイズ
 pub const SHADOW_SIZE: u32 = 8;

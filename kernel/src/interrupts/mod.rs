@@ -65,7 +65,7 @@ pub enum InterruptVector {
     Free1 = PIC2_OFFSET + 1,
     Free2 = PIC2_OFFSET + 2,
     Free3 = PIC2_OFFSET + 3,
-    Mouse = PIC2_OFFSET + 4,
+    // Mouse (PIC2+4) removed
     Fpu = PIC2_OFFSET + 5,
     PrimaryAta = PIC2_OFFSET + 6,
 
@@ -186,9 +186,8 @@ fn init_idt() {
         idt[PIC2_OFFSET + 3].set_handler_fn(handler_to_x86!(
             pci_irq11_handler as extern "x86-interrupt" fn(InterruptStackFrame)
         )); // IRQ11 (Free3)
-        idt[InterruptVector::Mouse as u8].set_handler_fn(handler_to_x86!(
-            mouse_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-        )); // IRQ12 (Mouse)
+        // Mouse interrupt handler removed
+
 
         // TLB Flush IPI Vector (0xF1 = 241)
         // マルチコア環境でのTLBシュートダウンに使用
@@ -341,8 +340,8 @@ fn init_pic() {
         // IRQ8=RTC, IRQ9, IRQ10, IRQ11, IRQ12=Mouse
         // ビット1=IRQ9, ビット2=IRQ10, ビット3=IRQ11, ビット4=IRQ12
         // 0=有効, 1=マスク
-        // ~(0x02 | 0x04 | 0x08 | 0x10) = 0xE1
-        crate::io::outb(PIC2_DATA, 0b11100001); // IRQ9, IRQ10, IRQ11, IRQ12(Mouse) を有効
+        // ~(0x02 | 0x04 | 0x08) = 0xF1 (Mouse IRQ12/bit4 is now masked: 1)
+        crate::io::outb(PIC2_DATA, 0b11110001); // IRQ9, IRQ10, IRQ11 を有効 (Mouse mask)
     }
 }
 
@@ -506,32 +505,7 @@ define_interrupt!(
     }
 );
 
-// マウス割り込みハンドラ (IRQ12)
-// PS/2マウスからのデータ受信時に呼ばれる
-define_interrupt!(
-    fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
-        // Port import not needed; use crate::io::inb for port reads
 
-        // マウスデータポートから読み取り（これをしないと次の割り込みが来ない）
-        let data: u8 = crate::io::inb(0x60);
-
-        // データをhidモジュールに渡して処理
-        crate::io::hid::handle_mouse_packet(data);
-
-        // Interrupt-Wakerブリッジにマウス割り込みを通知
-        crate::task::interrupt_waker::wake_from_interrupt(
-            crate::task::interrupt_waker::InterruptSource::Mouse,
-        );
-
-        // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
-        crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Mouse as u8);
-
-        // EOI を送信 (IRQ12はPIC2のIRQ4)
-        unsafe {
-            send_eoi(InterruptVector::Mouse as u8 - PIC1_OFFSET);
-        }
-    }
-);
 
 // COM1 (Serial) 割り込みハンドラ
 // シリアルポートからのデータ受信時に呼ばれる

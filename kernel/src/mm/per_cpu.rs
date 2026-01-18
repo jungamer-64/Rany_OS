@@ -426,6 +426,207 @@ impl RemoteFreeBatchBuffer {
     }
 }
 
+// ============================================================================
+// Hot/Cold Per-CPU Data Structures (Phase 3 Optimization)
+// ============================================================================
+//
+// GSBase points to PerCpuHot (64 bytes, one cache line).
+// Less-frequently accessed data lives in PerCpuCold, accessed via indirection.
+// This reduces cache footprint for hot paths like current_cpu_id().
+// ============================================================================
+
+use core::ptr::NonNull;
+
+/// Hot per-CPU data - GSBase points here directly
+/// 
+/// Must fit in a single cache line (64 bytes) for optimal performance.
+/// Contains only the most frequently accessed fields.
+#[repr(C, align(64))]
+pub struct PerCpuHot {
+    /// Self-validation pointer (must match address of this struct)
+    pub self_ptr: usize,
+    /// CPU ID (0-based logical index)
+    pub cpu_id: usize,
+    /// Interrupt nesting depth (incremented on ISR entry, decremented on exit)
+    pub interrupt_depth: core::sync::atomic::AtomicU32,
+    /// Padding to align current_task_ptr to 8 bytes
+    _pad0: u32,
+    /// Current task pointer (frequently accessed by scheduler)
+    pub current_task_ptr: AtomicU64,
+    /// Current task ID
+    pub current_task_id: u64,
+    /// Link to cold data (never null after initialization)
+    cold: Option<NonNull<PerCpuCold>>,
+}
+
+// Compile-time size and alignment guarantee
+const _: () = {
+    assert!(core::mem::size_of::<PerCpuHot>() <= 64);
+    assert!(core::mem::align_of::<PerCpuHot>() == 64);
+};
+
+impl PerCpuHot {
+    /// Create a new PerCpuHot (cold pointer set separately)
+    pub const fn new(cpu_id: usize) -> Self {
+        Self {
+            self_ptr: 0,
+            cpu_id,
+            interrupt_depth: core::sync::atomic::AtomicU32::new(0),
+            _pad0: 0,
+            current_task_ptr: AtomicU64::new(0),
+            current_task_id: 0,
+            cold: None,
+        }
+    }
+
+    /// Set the self-pointer for validation
+    pub fn set_self_ptr(&mut self) {
+        self.self_ptr = self as *const _ as usize;
+    }
+
+    /// Link to cold data
+    /// 
+    /// # Safety
+    /// cold_ptr must point to valid PerCpuCold that outlives this PerCpuHot
+    pub unsafe fn set_cold(&mut self, cold_ptr: *mut PerCpuCold) {
+        self.cold = NonNull::new(cold_ptr);
+    }
+
+    /// Get reference to cold data
+    /// 
+    /// # Panics
+    /// Panics if cold is not set (should never happen after proper initialization)
+    #[inline]
+    pub fn cold(&self) -> &PerCpuCold {
+        match self.cold {
+            Some(ptr) => unsafe { ptr.as_ref() },
+            None => panic!("PerCpuHot.cold not initialized"),
+        }
+    }
+
+    /// Get mutable reference to cold data
+    /// 
+    /// # Safety
+    /// Caller must ensure exclusive access
+    #[inline]
+    pub unsafe fn cold_mut(&mut self) -> &mut PerCpuCold {
+        match self.cold {
+            Some(mut ptr) => unsafe { ptr.as_mut() },
+            None => panic!("PerCpuHot.cold not initialized"),
+        }
+    }
+
+    /// Get cold data as Option (for early init checks)
+    #[inline]
+    pub fn cold_opt(&self) -> Option<&PerCpuCold> {
+        self.cold.map(|ptr| unsafe { ptr.as_ref() })
+    }
+
+    /// Check if in interrupt context
+    #[inline]
+    pub fn in_interrupt(&self) -> bool {
+        self.interrupt_depth.load(core::sync::atomic::Ordering::Relaxed) > 0
+    }
+
+    /// Enter interrupt context
+    #[inline]
+    pub fn enter_interrupt(&self) {
+        self.interrupt_depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Exit interrupt context
+    #[inline]
+    pub fn exit_interrupt(&self) {
+        self.interrupt_depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Cold per-CPU data - accessed via indirection from PerCpuHot
+/// 
+/// Contains less-frequently accessed fields like caches and statistics.
+pub struct PerCpuCold {
+    /// Per-CPU heap statistics
+    pub alloc_count: u64,
+    pub dealloc_count: u64,
+    /// IOMMU Domain Cache (True Per-CPU)
+    pub iommu_domain_cache: PerCpuDomainCache,
+    /// IOMMU IOVA Magazines (per-controller cache)
+    pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
+    /// IOMMU Page Table Magazine (per-CPU cache for PageTablePool)
+    pub pt_magazine: PtMagazine,
+    /// NUMA Zonelist: pre-sorted list of NUMA nodes by distance from local node
+    pub numa_zonelist: [NumaNodeId; MAX_NUMA_NODES],
+    /// Number of valid entries in numa_zonelist
+    pub numa_zonelist_len: u8,
+    /// Local NUMA node ID for this CPU
+    pub local_numa_node: NumaNodeId,
+    /// Remote Free Batch Buffer
+    pub remote_free_batch: RemoteFreeBatchBuffer,
+    /// Per-CPU RCU State
+    pub rcu_state: crate::mm::rcu::PerCpuRcuState,
+    /// Per-CPU Frame Cache
+    pub frame_cache: IrqMutex<PerCpuFrameCache>,
+}
+
+impl PerCpuCold {
+    /// Create a new PerCpuCold
+    pub const fn new(cpu_id: usize) -> Self {
+        Self {
+            alloc_count: 0,
+            dealloc_count: 0,
+            iommu_domain_cache: PerCpuDomainCache::new(),
+            iova_magazines: [const { IovaMagazine::new() }; MAX_IOMMU_CONTROLLERS],
+            pt_magazine: PtMagazine::new(),
+            numa_zonelist: [const { NumaNodeId::new(0) }; MAX_NUMA_NODES],
+            numa_zonelist_len: 1,
+            local_numa_node: NumaNodeId::new(0),
+            remote_free_batch: RemoteFreeBatchBuffer::new(),
+            rcu_state: crate::mm::rcu::PerCpuRcuState::new(),
+            frame_cache: IrqMutex::new(PerCpuFrameCache::new(cpu_id)),
+        }
+    }
+
+    /// Initialize the NUMA zonelist
+    pub fn setup_numa_zonelist(
+        &mut self,
+        local_node: NumaNodeId,
+        sorted_nodes: &[NumaNodeId; MAX_NUMA_NODES],
+        node_count: usize,
+    ) {
+        self.local_numa_node = local_node;
+        self.numa_zonelist_len = (node_count as u8).min(MAX_NUMA_NODES as u8);
+        for i in 0..self.numa_zonelist_len as usize {
+            self.numa_zonelist[i] = sorted_nodes[i];
+        }
+    }
+
+    /// Get the local NUMA node
+    #[inline]
+    pub fn get_local_numa_node(&self) -> NumaNodeId {
+        self.local_numa_node
+    }
+
+    /// Get zonelist iterator
+    #[inline]
+    pub fn zonelist_iter(&self) -> impl Iterator<Item = NumaNodeId> + '_ {
+        self.numa_zonelist[..self.numa_zonelist_len as usize].iter().copied()
+    }
+
+    /// Get nth zonelist node
+    #[inline]
+    pub fn get_zonelist_node(&self, index: usize) -> Option<NumaNodeId> {
+        if index < self.numa_zonelist_len as usize {
+            Some(self.numa_zonelist[index])
+        } else {
+            None
+        }
+    }
+}
+
+// ============================================================================
+// Legacy PerCpuData (kept for backward compatibility during migration)
+// ============================================================================
+
 /// Per-CPUデータ構造
 /// GsBaseからのオフセットでアクセス
 #[repr(C, align(64))]
@@ -579,7 +780,19 @@ impl PerCpuData {
 /// 最大CPU数
 pub const MAX_CPUS: usize = 64;
 
-/// 静的に確保されたPer-CPUデータ配列
+/// Hot per-CPU data (GSBase points here)
+static mut PER_CPU_HOT: [PerCpuHot; MAX_CPUS] = {
+    const INIT: PerCpuHot = PerCpuHot::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// Cold per-CPU data (accessed via hot.cold())
+static mut PER_CPU_COLD: [PerCpuCold; MAX_CPUS] = {
+    const INIT: PerCpuCold = PerCpuCold::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// 静的に確保されたPer-CPUデータ配列 (Legacy - for backward compatibility)
 /// 各CPUに対応するデータが格納される
 static mut PER_CPU_DATA: [PerCpuData; MAX_CPUS] = {
     const INIT: PerCpuData = PerCpuData::new(0);
@@ -593,6 +806,50 @@ static INITIALIZED: spin::Once<()> = spin::Once::new();
 static ACTIVE_CPUS: Mutex<usize> = Mutex::new(0);
 /// Online CPU bitmask (bit N set => CPU N online)
 static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
+
+/// Fastpath adoption flag: true = CPUID supports FSGSBASE and we adopt rdgsbase/wrgsbase
+/// Note: This is a global adoption decision. Each CPU must still enable CR4.FSGSBASE before use.
+static GSBASE_FASTPATH: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Check if FSGSBASE fastpath is adopted (CPUID supports it)
+#[inline]
+pub fn can_use_fsgsbase() -> bool {
+    GSBASE_FASTPATH.load(Ordering::Relaxed)
+}
+
+/// Read GSBase using the appropriate method for this CPU
+/// 
+/// Uses rdgsbase if fastpath is adopted AND this CPU has CR4.FSGSBASE enabled,
+/// otherwise falls back to MSR read. This prevents #UD on APs before their CR4 is set.
+/// 
+/// # Safety
+/// Must be called in kernel mode
+#[inline]
+pub unsafe fn read_gsbase_any() -> u64 {
+    if can_use_fsgsbase() && is_fsgsbase_enabled() {
+        read_gs_base()
+    } else {
+        read_gs_base_msr()
+    }
+}
+
+/// Write GSBase using the appropriate method for this CPU
+/// 
+/// Uses wrgsbase if fastpath is adopted AND this CPU has CR4.FSGSBASE enabled,
+/// otherwise falls back to MSR write. This prevents #UD on APs before their CR4 is set.
+/// 
+/// # Safety
+/// - Must be called in kernel mode
+/// - Value must point to valid Per-CPU data
+#[inline]
+pub unsafe fn write_gsbase_any(value: u64) {
+    if can_use_fsgsbase() && is_fsgsbase_enabled() {
+        write_gs_base(value)
+    } else {
+        write_gs_base_msr(value)
+    }
+}
 
 /// Get reference to Per-CPU data for a specific CPU ID
 /// 
@@ -609,6 +866,83 @@ pub unsafe fn get_per_cpu_data(cpu_id: usize) -> &'static PerCpuData {
 /// - Caller must ensure exclusive access (no concurrent mutable access)
 pub unsafe fn get_per_cpu_data_mut(cpu_id: usize) -> &'static mut PerCpuData {
     &mut PER_CPU_DATA[cpu_id]
+}
+
+// ============================================================================
+// Hot/Cold Per-CPU Accessors
+// ============================================================================
+
+/// Get reference to hot per-CPU data for a specific CPU ID
+/// 
+/// # Safety
+/// Caller must ensure cpu_id is valid (< MAX_CPUS)
+#[inline]
+pub unsafe fn get_per_cpu_hot(cpu_id: usize) -> &'static PerCpuHot {
+    &PER_CPU_HOT[cpu_id]
+}
+
+/// Get mutable reference to hot per-CPU data
+/// 
+/// # Safety
+/// - cpu_id must be valid (< MAX_CPUS)
+/// - Caller must ensure exclusive access
+#[inline]
+pub unsafe fn get_per_cpu_hot_mut(cpu_id: usize) -> &'static mut PerCpuHot {
+    &mut PER_CPU_HOT[cpu_id]
+}
+
+/// Get reference to cold per-CPU data for a specific CPU ID
+/// 
+/// # Safety
+/// Caller must ensure cpu_id is valid (< MAX_CPUS)
+#[inline]
+pub unsafe fn get_per_cpu_cold(cpu_id: usize) -> &'static PerCpuCold {
+    &PER_CPU_COLD[cpu_id]
+}
+
+/// Get mutable reference to cold per-CPU data
+/// 
+/// # Safety
+/// - cpu_id must be valid (< MAX_CPUS)
+/// - Caller must ensure exclusive access
+#[inline]
+pub unsafe fn get_per_cpu_cold_mut(cpu_id: usize) -> &'static mut PerCpuCold {
+    &mut PER_CPU_COLD[cpu_id]
+}
+
+/// Get the current CPU's hot data via GSBase
+/// 
+/// Returns None if GSBase is not initialized or validation fails
+#[inline]
+pub unsafe fn current_per_cpu_hot() -> Option<&'static PerCpuHot> {
+    let gs_base = read_gsbase_any();
+    if gs_base == 0 {
+        return None;
+    }
+    let hot = &*(gs_base as *const PerCpuHot);
+    // Validate self_ptr to ensure GSBase points to valid PerCpuHot
+    if hot.self_ptr != gs_base as usize {
+        return None;
+    }
+    Some(hot)
+}
+
+/// Get the current CPU's hot data (mutable) via GSBase
+/// 
+/// # Safety
+/// Caller must ensure exclusive access
+#[inline]
+pub unsafe fn current_per_cpu_hot_mut() -> Option<&'static mut PerCpuHot> {
+    let gs_base = read_gsbase_any();
+    if gs_base == 0 {
+        return None;
+    }
+    let hot = &mut *(gs_base as *mut PerCpuHot);
+    // Validate self_ptr to ensure GSBase points to valid PerCpuHot
+    if hot.self_ptr != gs_base as usize {
+        return None;
+    }
+    Some(hot)
 }
 
 
@@ -916,6 +1250,8 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             unsafe {
                 enable_fsgsbase();
             }
+            // Set global adoption flag - each AP will still need to enable CR4 in setup_current_cpu
+            GSBASE_FASTPATH.store(true, Ordering::Release);
             crate::io::log::early_print("[PCPU] fsgs enabled\n");
         }
         crate::io::log::early_print("[PCPU] fsgs ok\n");
@@ -924,16 +1260,18 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
         // これにより、以降の初期化コード内でcurrent_cpu_id()が使えるようになる
         crate::io::log::early_print("[PCPU] bsp setup\n");
         unsafe {
-            PER_CPU_DATA[0].cpu_id = 0;
-            PER_CPU_DATA[0].self_ptr = 0;
-            PER_CPU_DATA[0].current_task_id = 0;
-            PER_CPU_DATA[0].alloc_count = 0;
-            PER_CPU_DATA[0].dealloc_count = 0;
-            PER_CPU_DATA[0].iommu_domain_cache = PerCpuDomainCache::new();
+            // Initialize Hot/Cold structures (Phase 3)
+            PER_CPU_HOT[0] = PerCpuHot::new(0);
+            PER_CPU_COLD[0] = PerCpuCold::new(0);
+            PER_CPU_HOT[0].set_self_ptr();
+            PER_CPU_HOT[0].set_cold(&mut PER_CPU_COLD[0] as *mut PerCpuCold);
+
+            // Legacy: Full initialization for backward compatibility
+            PER_CPU_DATA[0] = PerCpuData::new(0);
             PER_CPU_DATA[0].set_self_ptr();
 
-            // BSPのGsBaseを設定（これでcurrent_cpu_id()が動作する）
-            let bsp_ptr = &PER_CPU_DATA[0] as *const _ as u64;
+            // BSPのGsBaseを設定 - PER_CPU_HOT を使用（Phase 3 Hot/Cold最適化）
+            let bsp_ptr = &PER_CPU_HOT[0] as *const _ as u64;
             // FSGSBASEが有効な場合は高速版、そうでなければMSR版を使用
             if fsgsbase_supported {
                 write_gs_base(bsp_ptr);
@@ -994,18 +1332,25 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
         crate::io::log::early_print("[PCPU] loop start\n");
         let mut i = 1usize; // CPU 0は既に初期化済み
         while i < num_cpus {
-            crate::io::log::early_print("[PCPU] i=");
-            crate::io::log::early_print_char(b'0' + (i as u8));
+            crate::io::log::early_print("[PCPU] i=0x");
+            // 2-digit hex output (supports CPU 0-63)
+            let hi = (i >> 4) & 0xF;
+            let lo = i & 0xF;
+            let to_hex = |n: usize| if n < 10 { b'0' + n as u8 } else { b'a' + (n - 10) as u8 };
+            crate::io::log::early_print_char(to_hex(hi));
+            crate::io::log::early_print_char(to_hex(lo));
             crate::io::log::early_print("\n");
 
             // SAFETY: 初期化中は他のCPUからアクセスされない
+            // Initialize Hot/Cold structures (Phase 3)
             unsafe {
-                PER_CPU_DATA[i].cpu_id = i;
-                PER_CPU_DATA[i].self_ptr = 0;
-                PER_CPU_DATA[i].current_task_id = 0;
-                PER_CPU_DATA[i].alloc_count = 0;
-                PER_CPU_DATA[i].dealloc_count = 0;
-                PER_CPU_DATA[i].iommu_domain_cache = PerCpuDomainCache::new();
+                PER_CPU_HOT[i] = PerCpuHot::new(i);
+                PER_CPU_COLD[i] = PerCpuCold::new(i);
+                PER_CPU_HOT[i].set_self_ptr();
+                PER_CPU_HOT[i].set_cold(&mut PER_CPU_COLD[i] as *mut PerCpuCold);
+
+                // Legacy: Full init for backward compatibility
+                PER_CPU_DATA[i] = PerCpuData::new(i);
                 PER_CPU_DATA[i].set_self_ptr();
             }
             crate::io::log::early_print("[PCPU] ok\n");
@@ -1035,29 +1380,32 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
         return;
     }
 
-    // Initialize per-CPU slot on demand if it wasn't pre-initialized.
-    if unsafe { PER_CPU_DATA[cpu_id].self_ptr } == 0 {
+    // If fastpath is adopted globally, enable CR4.FSGSBASE on THIS CPU
+    // (CR4 is per-core, so each AP must enable it independently)
+    if can_use_fsgsbase() && !is_fsgsbase_enabled() {
+        unsafe { enable_fsgsbase(); }
+    }
+
+    // Use addr_of! to avoid creating a reference to static mut
+    let hot_slot_ptr = core::ptr::addr_of!(PER_CPU_HOT[cpu_id]) as usize;
+    
+    // Idempotent: only initialize if not already done (check self_ptr)
+    if unsafe { PER_CPU_HOT[cpu_id].self_ptr } != hot_slot_ptr {
         unsafe {
+            // Initialize Hot/Cold structures
+            PER_CPU_HOT[cpu_id] = PerCpuHot::new(cpu_id);
+            PER_CPU_COLD[cpu_id] = PerCpuCold::new(cpu_id);
+            PER_CPU_HOT[cpu_id].set_self_ptr();
+            PER_CPU_HOT[cpu_id].set_cold(&mut PER_CPU_COLD[cpu_id] as *mut PerCpuCold);
+
+            // Legacy: also init PerCpuData for backward compatibility
             PER_CPU_DATA[cpu_id] = PerCpuData::new(cpu_id);
             PER_CPU_DATA[cpu_id].set_self_ptr();
         }
     }
 
-    // SAFETY: cpu_idは有効範囲内
-    let per_cpu_ptr = unsafe { &PER_CPU_DATA[cpu_id] as *const _ as u64 };
-
-    // GsBaseを設定（FSGSBASEが有効な場合は高速版を使用）
-    if is_fsgsbase_enabled() {
-        // SAFETY: per_cpu_ptrは有効なPer-CPUデータを指す
-        unsafe {
-            write_gs_base(per_cpu_ptr);
-        }
-    } else {
-        // SAFETY: MSR版でGsBaseを設定
-        unsafe {
-            write_gs_base_msr(per_cpu_ptr);
-        }
-    }
+    // Set GSBase to PER_CPU_HOT for this CPU (Phase 3 optimization)
+    unsafe { write_gsbase_any(hot_slot_ptr as u64); }
 
     mark_cpu_online(cpu_id);
 }
@@ -1092,7 +1440,7 @@ pub fn online_cpu_ids() -> Vec<usize> {
 
 /// 現在のCPU IDを取得
 ///
-/// GsBase経由でPer-CPUデータからCPU IDを読み取る
+/// GsBase経由でPerCpuHotからCPU IDを読み取る
 /// 従来の引数渡しが不要になる
 ///
 /// # Panics
@@ -1100,13 +1448,8 @@ pub fn online_cpu_ids() -> Vec<usize> {
 /// これにより setup_current_cpu() 呼び忘れを早期に検出できる。
 #[inline]
 pub fn current_cpu_id() -> usize {
-    // FSGSBASEが有効でない場合は初期化前と判断してpanic
-    if !is_fsgsbase_enabled() {
-        panic!("CPU Local Storage not initialized: FSGSBASE not enabled");
-    }
-
-    // SAFETY: GsBaseを読み取り
-    let gs_base = unsafe { read_gs_base() };
+    // Use unified helper that handles both FSGSBASE and MSR paths
+    let gs_base = unsafe { read_gsbase_any() };
 
     // GsBaseが0の場合は setup_current_cpu() が呼ばれていない
     if gs_base == 0 {
@@ -1115,17 +1458,18 @@ pub fn current_cpu_id() -> usize {
         );
     }
 
-    let per_cpu_ptr = gs_base as *const PerCpuData;
+    // GSBase now points to PerCpuHot (Phase 3)
+    let hot_ptr = gs_base as *const PerCpuHot;
 
-    // SAFETY: per_cpu_ptrは有効なPerCpuDataを指す
-    let per_cpu = unsafe { &*per_cpu_ptr };
+    // SAFETY: hot_ptrは有効なPerCpuHotを指す
+    let hot = unsafe { &*hot_ptr };
 
-    // self_ptrで検証：本当に有効なPerCpuDataを指しているか
-    if per_cpu.self_ptr != per_cpu_ptr as usize {
+    // self_ptrで検証：本当に有効なPerCpuHotを指しているか
+    if hot.self_ptr != hot_ptr as usize {
         panic!("CPU Local Storage corrupted: self_ptr mismatch");
     }
 
-    per_cpu.cpu_id
+    hot.cpu_id
 }
 
 /// 現在のCPU IDを取得（パニックしない版）
@@ -1134,67 +1478,77 @@ pub fn current_cpu_id() -> usize {
 /// 初期化されていない場合は None を返す。
 #[inline]
 pub fn try_current_cpu_id() -> Option<usize> {
-    if !is_fsgsbase_enabled() {
-        return None;
-    }
-
-    let gs_base = unsafe { read_gs_base() };
+    // Use unified helper - safe even before per-CPU init
+    let gs_base = unsafe { read_gsbase_any() };
     if gs_base == 0 {
         return None;
     }
 
-    let per_cpu_ptr = gs_base as *const PerCpuData;
-    let per_cpu = unsafe { &*per_cpu_ptr };
+    // GSBase now points to PerCpuHot (Phase 3)
+    let hot_ptr = gs_base as *const PerCpuHot;
+    let hot = unsafe { &*hot_ptr };
 
     // 検証
-    if per_cpu.self_ptr != per_cpu_ptr as usize {
+    if hot.self_ptr != hot_ptr as usize {
         return None;
     }
 
-    Some(per_cpu.cpu_id)
+    Some(hot.cpu_id)
 }
 
-/// 現在のCPUのPer-CPUデータへの参照を取得
+/// 現在のCPUの Legacy Per-CPUデータへの参照を取得
+///
+/// GSBase は PerCpuHot を指すため、cpu_id 経由で PER_CPU_DATA を引く
 ///
 /// # Safety
-/// GsBaseが有効なPer-CPUデータを指している必要がある
+/// init_per_cpu() が呼ばれている必要がある
 #[inline]
 pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
-    if !is_fsgsbase_enabled() {
+    // Get cpu_id from Hot (GSBase -> PerCpuHot)
+    let hot = current_per_cpu_hot()?;
+    let cpu = hot.cpu_id;
+    if cpu >= MAX_CPUS {
         return None;
     }
 
-    // SAFETY: GsBaseは初期化済みのPer-CPUデータを指している
-    let per_cpu_ptr = unsafe { read_gs_base() } as *const PerCpuData;
+    // Access legacy PER_CPU_DATA via cpu_id
+    let ptr = core::ptr::addr_of!(PER_CPU_DATA[cpu]);
+    let pc = &*ptr;
 
-    if per_cpu_ptr.is_null() {
+    // Validate legacy self_ptr as well
+    if pc.self_ptr != ptr as usize {
         return None;
     }
 
-    // SAFETY: per_cpu_ptrは有効なPerCpuDataを指す
-    unsafe { Some(&*per_cpu_ptr) }
+    Some(pc)
 }
 
-/// 現在のCPUのPer-CPUデータへの可変参照を取得
+/// 現在のCPUの Legacy Per-CPUデータへの可変参照を取得
+///
+/// GSBase は PerCpuHot を指すため、cpu_id 経由で PER_CPU_DATA を引く
 ///
 /// # Safety
-/// - GsBaseが有効なPer-CPUデータを指している必要がある
+/// - init_per_cpu() が呼ばれている必要がある
 /// - 同時に複数の可変参照を取得してはならない
 #[inline]
 pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
-    if !is_fsgsbase_enabled() {
+    // Get cpu_id from Hot (GSBase -> PerCpuHot)
+    let hot = current_per_cpu_hot()?;
+    let cpu = hot.cpu_id;
+    if cpu >= MAX_CPUS {
         return None;
     }
 
-    // SAFETY: GsBaseは初期化済みのPer-CPUデータを指している
-    let per_cpu_ptr = unsafe { read_gs_base() } as *mut PerCpuData;
+    // Access legacy PER_CPU_DATA via cpu_id
+    let ptr = core::ptr::addr_of_mut!(PER_CPU_DATA[cpu]);
+    let pc = &mut *ptr;
 
-    if per_cpu_ptr.is_null() {
+    // Validate legacy self_ptr as well
+    if pc.self_ptr != ptr as usize {
         return None;
     }
 
-    // SAFETY: 呼び出し元が排他的アクセスを保証
-    unsafe { Some(&mut *per_cpu_ptr) }
+    Some(pc)
 }
 
 /// 特定のCPUのPer-CPUデータへの参照を取得
@@ -1226,52 +1580,49 @@ pub fn active_cpu_count() -> usize {
 
 /// Check if the current CPU is executing in interrupt context.
 ///
-/// This is a safe wrapper that handles the case where Per-CPU data is not
-/// yet initialized (returns `false` in that case).
+/// Uses PerCpuHot directly for fast access (Hot/Cold optimization).
 ///
 /// # Returns
 /// - `true` if running inside an interrupt handler (ISR)
 /// - `false` if running in normal context or Per-CPU is not initialized
 #[inline]
 pub fn in_interrupt_context() -> bool {
-    // SAFETY: Reading Per-CPU data is safe; we handle the None case.
+    // Use PerCpuHot directly (Hot/Cold optimization)
     unsafe {
-        current_per_cpu()
-            .map(|pc| pc.in_interrupt())
+        current_per_cpu_hot()
+            .map(|hot| hot.in_interrupt())
             .unwrap_or(false)
     }
 }
 
 /// Enter interrupt context (call at the start of every ISR).
 ///
-/// This must be called at the very beginning of every interrupt handler
-/// to enable accurate interrupt context detection.
+/// Uses PerCpuHot directly for fast access (Hot/Cold optimization).
 ///
 /// # Safety
 /// Must only be called from actual interrupt handler entry points.
 #[inline]
 pub fn enter_interrupt() {
-    // SAFETY: We're in an ISR, Per-CPU data should be initialized.
+    // Use PerCpuHot directly (Hot/Cold optimization)
     unsafe {
-        if let Some(pc) = current_per_cpu() {
-            pc.enter_interrupt();
+        if let Some(hot) = current_per_cpu_hot() {
+            hot.enter_interrupt();
         }
     }
 }
 
 /// Exit interrupt context (call at the end of every ISR).
 ///
-/// This must be called at the very end of every interrupt handler,
-/// before the `iret` instruction.
+/// Uses PerCpuHot directly for fast access (Hot/Cold optimization).
 ///
 /// # Safety
 /// Must only be called from actual interrupt handler exit points.
 #[inline]
 pub fn exit_interrupt() {
-    // SAFETY: We're in an ISR, Per-CPU data should be initialized.
+    // Use PerCpuHot directly (Hot/Cold optimization)
     unsafe {
-        if let Some(pc) = current_per_cpu() {
-            pc.exit_interrupt();
+        if let Some(hot) = current_per_cpu_hot() {
+            hot.exit_interrupt();
         }
     }
 }
@@ -1284,9 +1635,14 @@ mod tests {
     fn test_per_cpu_data_layout() {
         // Per-CPUデータがキャッシュラインにアラインされていることを確認
         assert_eq!(core::mem::align_of::<PerCpuData>(), 64);
+    }
 
-        // サイズが1キャッシュライン以内であることを確認
-        assert!(core::mem::size_of::<PerCpuData>() <= 64);
+    #[test_case]
+    fn test_per_cpu_hot_layout() {
+        // PerCpuHotはキャッシュラインにアラインされていることを確認
+        assert_eq!(core::mem::align_of::<PerCpuHot>(), 64);
+        // PerCpuHotは1キャッシュライン以内であることを確認
+        assert!(core::mem::size_of::<PerCpuHot>() <= 64);
     }
 }
 

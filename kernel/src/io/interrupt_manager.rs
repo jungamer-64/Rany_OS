@@ -1151,7 +1151,7 @@ mod tests {
         // Push some vectors
         assert!(queue.push(32)); // Timer
         assert!(queue.push(33)); // Keyboard
-        assert!(queue.push(44)); // Mouse
+
 
         // Pop in FIFO order
         assert_eq!(queue.pop(), Some(32));

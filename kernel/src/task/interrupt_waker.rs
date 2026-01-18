@@ -30,8 +30,7 @@ pub enum InterruptSource {
     Timer,
     /// キーボード割り込み
     Keyboard,
-    /// マウス割り込み (IRQ12)
-    Mouse,
+
     /// シリアルポート (COM1)
     Serial,
     /// VirtIO ネットワーク
@@ -51,7 +50,7 @@ impl InterruptSource {
             0x20 => Some(InterruptSource::Timer),
             0x21 => Some(InterruptSource::Keyboard),
             0x24 => Some(InterruptSource::Serial), // COM1 = IRQ4 = 0x20 + 4
-            0x2C => Some(InterruptSource::Mouse),  // IRQ12 = 0x20 + 12
+
             0x30..=0x3F => Some(InterruptSource::VirtioNet((vector - 0x30) as u8)),
             0x40..=0x4F => Some(InterruptSource::VirtioBlk((vector - 0x40) as u8)),
             0x50..=0x5F => Some(InterruptSource::Nvme((vector - 0x50) as u16)),
@@ -64,7 +63,7 @@ impl InterruptSource {
         match self {
             InterruptSource::Timer => 0,
             InterruptSource::Keyboard => 1,
-            InterruptSource::Mouse => 2,
+
             InterruptSource::Serial => 3,
             InterruptSource::VirtioNet(idx) => 16 + (*idx as usize),
             InterruptSource::VirtioBlk(idx) => 16 + 32 + (*idx as usize),

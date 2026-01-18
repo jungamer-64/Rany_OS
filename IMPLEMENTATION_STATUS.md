@@ -147,6 +147,11 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 
 **注意 (2026-01-10)**: `hid` のトップレベル PS/2 再エクスポート (`ps2_init`, `ps2_ports`, `ps2_status`, `ps2_commands`) を削除しました。移行先: `crate::io::hid::ps2::<symbol>` を直接呼び出すか、`driver_registry::register_driver(Box::new(Ps2Driver::new()))` を使用してください。
 
+**注意 (2026-01-17)**: `drivers/nvme` の再エクスポート群を削除しました（以前は非推奨化していました）。移行先: それぞれの型や関数を `nvme_driver` の該当モジュールから直接 import してください（例: `nvme_driver::queue::CompletionQueue`, `nvme_driver::async_io::ReadFuture`, `nvme_driver::global::init`）。
+**注意 (2026-01-17)**: `drivers/ahci` の `atapi` モジュール再エクスポートは `#[deprecated]` 属性を付与しました（2026-01-17）。移行先: `ahci_driver::atapi::<symbol>` を直接インポートしてください。
+**注意 (2026-01-17)**: `drivers/pci::legacy::get_legacy_accessor()` は公開範囲を縮小（crate 内部化）しました。外部呼び出しは `pci_driver::EcamAccess` を利用してください。
+**注意 (2026-01-16)**: `drivers/hid` の PS/2 便利関数 (`ps2::get_key_event`, `ps2::get_mouse_event`, `ps2::get_modifiers`) を削除しました。移行先: `KeyboardStream` または `KeyboardHandler::pop_event()` を使用してください。
+
 | **ACPIテーブル解析 (7.2)** | ✅ 完了 | `src/io/acpi/` |
 | **AHCIドライバ** | ✅ 完了 | `src/io/ahci/` |
 | **IDEドライバ** | ✅ 完了 | `src/io/ide.rs` |
@@ -172,6 +177,7 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | Async IOTLB Invalidation | ✅ 完了 | `src/io/iommu/cmdqueue.rs` | Futureベース非同期待機 |
 
 **Feature Flags:**
+
 - `async_unmap_default`: DmaHandle::unmap()を遅延無効化モードにする
 - `unsafe_iommu_bypass`: Identity Mapping許可（デバッグ用）
 

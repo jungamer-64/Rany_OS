@@ -22,45 +22,47 @@
 // ============================================================================
 // Re-exports from queue.rs
 // ============================================================================
-pub use super::queue::{CompletionQueue, QueuePair, SubmissionQueue};
+// Removed: compatibility re-export. Import `nvme_driver::queue::CompletionQueue`,
+// `nvme_driver::queue::QueuePair`, and `nvme_driver::queue::SubmissionQueue` directly.
 
 // ============================================================================
 // Re-exports from per_core.rs
 // ============================================================================
-pub use super::per_core::{NvmeQueueStats, PerCoreNvmeQueue};
+// Removed: compatibility re-export. Import `nvme_driver::per_core::NvmeQueueStats` and
+// `nvme_driver::per_core::PerCoreNvmeQueue` directly.
 
 // ============================================================================
 // Re-exports from polling_driver.rs
 // ============================================================================
-pub use super::polling_driver::{NvmeDriverStats, NvmePollingDriver};
+// Removed: compatibility re-export. Import `nvme_driver::polling_driver::NvmeDriverStats` and
+// `nvme_driver::polling_driver::NvmePollingDriver` directly.
 
 // ============================================================================
 // Re-exports from async_io.rs
 // ============================================================================
-pub use super::async_io::{
-    async_read, async_write, AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture,
-    WriteFuture,
-};
+// Removed: compatibility re-export. Import async I/O types/functions directly from
+// `nvme_driver::async_io` (e.g., `nvme_driver::async_io::AsyncIoRequest`).
 
 // ============================================================================
 // Re-exports from error.rs
 // ============================================================================
-pub use super::error::NvmeError;
+// Removed: compatibility re-export. Import `nvme_driver::error::NvmeError` directly.
 
 // ============================================================================
 // Re-exports from global.rs
 // ============================================================================
-pub use super::global::{get_stats, init, poll, poll_batch, with_driver, with_driver_mut};
+// Removed: compatibility re-export. Import global helpers from `nvme_driver::global` directly (e.g., `nvme_driver::global::init`).
 
 // ============================================================================
 // Re-exports from scheduler.rs
 // ============================================================================
-pub use super::scheduler::{register_with_io_scheduler, NvmePollHandler};
+// Removed: compatibility re-export. Import `nvme_driver::scheduler::register_with_io_scheduler` or
+// `nvme_driver::scheduler::NvmePollHandler` directly.
 
 // ============================================================================
 // Re-exports from commands.rs (for backward compatibility)
 // ============================================================================
-pub use super::commands::{NvmeCommand, NvmeCompletion};
+// Removed: compatibility re-export. Use `nvme_driver::commands::{NvmeCommand, NvmeCompletion}` directly.
 
 // ============================================================================
 // Tests
@@ -68,7 +70,8 @@ pub use super::commands::{NvmeCommand, NvmeCompletion};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::commands::{NvmeCommand, NvmeCompletion};
+    use super::async_io::{AsyncIoRequest, IoRequestState, PendingRequests};
     use super::super::controller::NvmeCapabilities;
     use super::super::defs::PrpList;
 

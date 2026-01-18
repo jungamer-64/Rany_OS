@@ -170,7 +170,12 @@ pub fn pci_read8(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
     GLOBAL_LEGACY_ACCESSOR.read8(bdf, offset as u16)
 }
 
-/// グローバルアクセサを取得
-pub fn get_legacy_accessor() -> &'static LegacyPciAccessor {
+/// グローバルアクセサを取得（内部利用限定）
+///
+/// NOTE: External callers should prefer ECAM APIs (`EcamAccess`) or
+/// `pci_driver`'s modern accessors. This function's visibility is intentionally
+/// restricted to crate-local use to avoid propagating legacy I/O accessors.
+#[doc(hidden)]
+pub(crate) fn get_legacy_accessor() -> &'static LegacyPciAccessor {
     &GLOBAL_LEGACY_ACCESSOR
 }

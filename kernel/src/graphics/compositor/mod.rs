@@ -8,7 +8,6 @@
 //!
 //! ## 機能
 //! - ダーティ矩形による部分再描画
-//! - マウスカーソルオーバーレイ合成
 //! - ウィンドウのドラッグ・リサイズ
 //! - アクリル効果（ガウシアンブラー + SIMD）
 //! - Z-order管理
@@ -20,7 +19,6 @@
 //! +-------------------+
 //! | - windows[]       |
 //! | - dirty_regions[] |
-//! | - cursor          |
 //! | - back_buffer     |
 //! +-------------------+
 //!         |
@@ -34,7 +32,7 @@
 
 mod compositor;
 mod constants;
-mod cursor;
+
 mod dirty_rect;
 mod types;
 mod window;
@@ -42,10 +40,9 @@ mod window;
 // Re-exports
 pub use compositor::Compositor;
 pub use constants::*;
-pub use cursor::{CursorType, MouseCursor};
 pub use dirty_rect::{DirtyRect, DirtyRegionManager};
 pub use types::{
-    CompositorWindowId, CompositorWindowState, CompositorWindowStyle, DragState, ResizeEdge, ZOrder,
+    CompositorWindowId, CompositorWindowState, CompositorWindowStyle, ZOrder,
 };
 pub use window::CompositorWindow;
 
@@ -102,17 +99,4 @@ pub fn compose(fb: &mut Framebuffer) {
     with_compositor_mut(|c| c.compose(fb));
 }
 
-/// マウス移動を処理
-pub fn handle_mouse_move(x: i32, y: i32) {
-    with_compositor_mut(|c| c.handle_mouse_move(x, y));
-}
 
-/// マウスボタン押下を処理
-pub fn handle_mouse_down(x: i32, y: i32, button: u8) {
-    with_compositor_mut(|c| c.handle_mouse_down(x, y, button));
-}
-
-/// マウスボタン解放を処理
-pub fn handle_mouse_up(x: i32, y: i32, button: u8) {
-    with_compositor_mut(|c| c.handle_mouse_up(x, y, button));
-}

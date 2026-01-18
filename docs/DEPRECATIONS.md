@@ -41,8 +41,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `MouseButton` and `MouseEvent` directly.
   - PS/2 helpers (`get_key_event`, `get_modifiers`, `get_mouse_event`) ❌ **removed**
     - Migration: Prefer `KeyboardStream` or unified HID driver APIs; use `keyboard::take_stream()` or `keyboard::has_event()` instead.
-  - `drivers/hid` PS/2 convenience accessors (`ps2::get_key_event`, `ps2::get_mouse_event`, `ps2::get_modifiers`) ✅ **deprecated**
-    - Migration: Use `KeyboardStream` (via `crate::io::hid::keyboard::take_stream()`), `MouseHandler::pop_event()`, or driver-level APIs instead; these will be removed in a future release.
+  - `drivers/hid` PS/2 convenience accessors (`ps2::get_key_event`, `ps2::get_mouse_event`, `ps2::get_modifiers`) ❌ **removed**
+    - Migration: Use `KeyboardStream` (via `crate::io::hid::keyboard::take_stream()`), `MouseHandler::pop_event()`, or driver-level APIs instead.
   - Internal polling shims (`poll_key_char`, `poll_key_event`, `poll_input_event`) ✅ **deprecated**
     - Migration: Use `KeyboardStream` and the async stream APIs.
   - PS/2 alias types (`Ps2DeviceType`, `Ps2KeyCode`, `Ps2KeyEvent`, `Ps2Modifiers`) ✅ **deprecated**
@@ -102,7 +102,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 ## Notes
 
 - `kernel/src/io/ahci_atapi.rs`
-  - Re-export of `ahci_driver::atapi` ✅ **deprecated**
+  - Re-export of `ahci_driver::atapi` ✅ **deprecated** (marked deprecated in `drivers/ahci` on 2026-01-17)
     - Migration: Use `ahci_driver::atapi` directly.
 
 - `kernel/src/io/virtio/net.rs`
@@ -138,8 +138,8 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `drivers/pci` (`drivers/pci/src/lib.rs`)
   - `LegacyPciAccessor` ❌ **removed** (was deprecated)
     - Migration: Use `pci_driver::EcamAccess` or the new PCI APIs instead. The internal helper remains in `drivers/pci::legacy` but is no longer publicly re-exported.
-  - `get_legacy_accessor()` ❌ **removed** (was deprecated)
-    - Migration: Prefer `pci_driver` accessors or ECAM APIs; for internal debugging use `drivers::pci::legacy::get_legacy_accessor` if necessary.
+  - `get_legacy_accessor()` ❌ **no longer publicly re-exported (internal)**
+    - Migration: Prefer `pci_driver` accessors or ECAM APIs; the helper remains internal (`drivers::pci::legacy::get_legacy_accessor`) for in-repo use and is not intended for external callers.
 
 - `drivers/serial` (`drivers/serial/src/lib.rs`)
   - `serial_print!`, `serial_println!` macros ❌ **removed**
@@ -150,6 +150,10 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Replacement: Register the serial driver with `driver_registry::register_driver(Box::new(SerialDriver::new()))` and let the DriverRegistry perform initialization.
   - `handle_interrupt()` ❌ **removed**
     - Replacement: Prefer driver-registered interrupt handling via the DriverRegistry or the driver's interrupt methods; use `serial::dispatch_interrupt()` for direct dispatch in low-level code.
+
+- `drivers/nvme` (`drivers/nvme/src/driver.rs`)
+  - Re-exported convenience APIs (e.g., `queue::CompletionQueue`, `QueuePair`, `SubmissionQueue`, `per_core::NvmeQueueStats`, `per_core::PerCoreNvmeQueue`, `polling_driver::NvmeDriverStats`, `NvmePollingDriver`, `async_io::{async_read, async_write, ReadFuture, WriteFuture}`, `error::NvmeError`, `global::{get_stats, init, poll, poll_batch}`, `scheduler::{register_with_io_scheduler, NvmePollHandler}`, `commands::{NvmeCommand, NvmeCompletion}`) ❌ **removed**
+    - Migration: Import the specific types from `nvme_driver` module paths directly (for example, `nvme_driver::queue::CompletionQueue`, `nvme_driver::async_io::ReadFuture`, `nvme_driver::global::init`). These re-exports are removed as of 2026-01-17; update any usage to import from `nvme_driver` directly.
 
 ## Notes
 

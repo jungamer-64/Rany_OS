@@ -702,7 +702,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     {
         use alloc::boxed::Box;
         use driver_registry::register_driver;
-        use io::hid::{Ps2KeyboardDriver, Ps2MouseDriver};
+        use io::hid::Ps2KeyboardDriver;
 
         // PS/2 キーボードドライバを登録
         let kb_handle = register_driver(Box::new(Ps2KeyboardDriver::new()));
@@ -714,15 +714,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             info!(target: "init", "PS/2 Keyboard driver initialized via DriverRegistry");
         }
 
-        // PS/2 マウスドライバを登録
-        let mouse_handle = register_driver(Box::new(Ps2MouseDriver::new()));
-        if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(mouse_handle.expect("Failed to register PS/2 Mouse driver"))
-        {
-            warn!(target: "init", "PS/2 Mouse driver init failed: {:?}", e);
-        } else {
-            info!(target: "init", "PS/2 Mouse driver initialized via DriverRegistry");
-        }
+
     }
     info!(target: "init", "HID drivers initialized");
 

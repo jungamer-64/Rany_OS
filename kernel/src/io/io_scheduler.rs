@@ -123,20 +123,34 @@ pub struct DmaBufHandle {
     pub len: usize,
 }
 
-/// デバイス中立 I/O コマンド
+/// デバイス操作トレイト（抽象化レイヤー）
 ///
-/// スケジューラは共通I/Oのみを知り、デバイス固有形式（PRP/SGL等）は
+/// ドライバはこのトレイトを実装して、具体的なI/O処理を提供する。
+/// スケジューラはデバイスの詳細（PCI/MMIO等）を知らずにこのトレイトを通じて操作する。
+pub trait DeviceOps: Send + Sync {
+    /// リクエストをサブミット（非同期）
+    ///
+    /// * `req`: I/Oリクエスト
+    /// * `cpu_idx`: 送信元CPUのインデックス（0-based, contiguous）
+    fn submit(&self, req: &IoRequest, cpu_idx: usize) -> Result<(), IoError>;
+
+    /// デバイスが準備完了か
+    fn is_ready(&self) -> bool;
+}
+
+/// I/Oコマンド（デバイス中立）
+///
 /// `DeviceOps::submit` 内でドライバが変換する。
 #[derive(Debug, Clone)]
 pub enum IoCommand {
-    /// ブロック読み取り
+    /// ブロック読み取り（連続バッファ）
     BlockRead {
         lba: u64,
         blocks: u16,
         bytes: usize,
         buf: DmaBufHandle,
     },
-    /// ブロック書き込み
+    /// ブロック書き込み（連続バッファ）
     BlockWrite {
         lba: u64,
         blocks: u16,
@@ -146,48 +160,29 @@ pub enum IoCommand {
     /// キャッシュフラッシュ
     Flush,
     /// TRIM/Discard
-    Discard { lba: u64, blocks: u32 },
-    /// IOCTL (デバイス固有コマンド用)
-    Ioctl { code: u32, buf: Option<DmaBufHandle> },
+    Discard {
+        lba: u64,
+        blocks: u16,
+    },
+    /// デバイス固有コマンド（ioctl的）
+    ///
+    /// コードとバッファの解釈はデバイスドライバに委ねられる
+    Ioctl {
+        code: u32,
+        buf: DmaBufHandle,
+    },
 }
 
 // ============================================================================
 // Legacy I/O Payload (後方互換用)
 // ============================================================================
 
-/// I/Oリクエスト追加ペイロード
-///
-/// **非推奨**: 新規コードは `IoCommand` を使用してください。
-/// NVMe固有形式がスケジューラ層に漏れる設計上の問題があります。
-#[derive(Debug, Clone)]
-#[deprecated(note = "Use IoCommand instead - IoPayload leaks device-specific details")]
-pub enum IoPayload {
-    /// 追加情報なし
-    None,
-    /// NVMe Read/Write 用
-    NvmeRw(NvmeRwPayload),
-    /// NVMe SGL Read/Write 用
-    NvmeSgl(NvmeSglPayload),
-    /// NVMe Dataset Management 用
-    NvmeDsm(NvmeDsmPayload),
-}
+// Legacy `IoPayload` removed - use `IoCommand` variants instead.
+// (Removed types: IoPayload, NvmeRwPayload, NvmeSglPayload, NvmeDsmPayload)  
 
-/// NVMe Read/Write ペイロード
-#[derive(Debug, Clone)]
-pub struct NvmeRwPayload {
-    pub lba: u64,
-    pub blocks: u16,
-    pub prp1: u64,
-    pub prp2: u64,
-    pub bytes: usize,
-}
 
-/// NVMe Dataset Management ペイロード
-#[derive(Debug, Clone)]
-pub struct NvmeDsmPayload {
-    pub prp1: u64,
-    pub nr: u8,
-}
+
+
 
 /// NVMe SGL ディスクリプタ（I/Oスケジューラ用）
 #[derive(Debug, Clone, Copy)]
@@ -215,14 +210,7 @@ impl NvmeSglDescriptor {
     }
 }
 
-/// NVMe SGL Read/Write ペイロード
-#[derive(Debug, Clone)]
-pub struct NvmeSglPayload {
-    pub lba: u64,
-    pub blocks: u16,
-    pub sgl: NvmeSglDescriptor,
-    pub bytes: usize,
-}
+
 
 /// I/Oリクエスト記述子
 pub struct IoRequest {
@@ -234,9 +222,6 @@ pub struct IoRequest {
     pub operation: IoOperationType,
     /// デバイス中立コマンド（新API）
     pub command: Option<IoCommand>,
-    /// 追加ペイロード（非推奨: 後方互換用）
-    #[allow(deprecated)]
-    pub payload: IoPayload,
     /// 優先度
     pub priority: IoPriority,
     /// 状態
@@ -298,28 +283,7 @@ where
 /// I/O完了フック型
 pub type CompletionHook = Box<dyn IoCompletionHook>;
 
-// ============================================================================
-// Device Operations (Dependency Inversion)
-// ============================================================================
 
-/// デバイス操作インターフェース
-///
-/// 具体的なデバイス（NVMe, VirtIO-blk, AHCI等）は
-/// このtraitを実装してIoSchedulerに登録する。
-/// これによりスケジューラは具体デバイスを知らずに済む（依存逆転）。
-///
-/// Note: ポーリングは PollingExecutor に別途登録する（二重登録を防ぐため）
-pub trait DeviceOps: Send + Sync {
-    /// リクエストをデバイスへ投入
-    ///
-    /// 成功 = 投入完了。完了通知は interrupt/poll で complete_request へ。
-    fn submit(&self, req: &IoRequest) -> Result<(), IoError>;
-
-    /// デバイスが準備完了かどうか
-    fn is_ready(&self) -> bool {
-        true
-    }
-}
 
 // ============================================================================
 // Adaptive I/O Mode Controller
@@ -673,31 +637,19 @@ impl IoScheduler {
     }
 
     /// I/Oリクエストをサブミット
+    #[allow(deprecated)]
     pub fn submit(
         &self,
         device: DeviceId,
         operation: IoOperationType,
         priority: IoPriority,
     ) -> IoRequestId {
-        self.submit_with_payload(device, operation, priority, IoPayload::None)
-    }
-
-    /// ペイロード付きI/Oリクエストをサブミット
-    pub fn submit_with_payload(
-        &self,
-        device: DeviceId,
-        operation: IoOperationType,
-        priority: IoPriority,
-        payload: IoPayload,
-    ) -> IoRequestId {
         let id = IoRequestId::next();
-        #[allow(deprecated)]
         let request = IoRequest {
             id,
             device,
             operation,
-            command: None, // TODO: 新API移行後にpayloadから変換
-            payload,
+            command: None,
             priority,
             state: IoState::Pending,
             submitted_at: current_tick(),
@@ -741,6 +693,8 @@ impl IoScheduler {
         id
     }
 
+
+
     /// デバイス中立コマンドでI/Oをサブミット（新API）
     ///
     /// `IoCommand` を使用し、デバイス固有形式（PRP/SGL等）は
@@ -758,14 +712,13 @@ impl IoScheduler {
             IoCommand::BlockWrite { .. } => IoOperationType::Write,
             IoCommand::Flush => IoOperationType::Flush,
             IoCommand::Discard { .. } => IoOperationType::Custom(0),
-            IoCommand::Ioctl { code, .. } => IoOperationType::Ioctl,
+            IoCommand::Ioctl { code: _, .. } => IoOperationType::Ioctl,
         };
         let request = IoRequest {
             id,
             device,
             operation,
             command: Some(command),
-            payload: IoPayload::None,
             priority,
             state: IoState::Pending,
             submitted_at: current_tick(),
@@ -987,6 +940,53 @@ impl IoScheduler {
         None
     }
 
+    /// IoFuture用: 状態確認とWaker登録を1つのロックで行う（lost wake防止）
+    ///
+    /// このAPIは `get_state()` と `set_waker()` の間のレース条件を防ぐ。
+    /// 同一 write lock 内で:
+    /// 1. 完了済みなら結果を返す
+    /// 2. Pending/InProgress なら waker を登録して Pending を返す
+    pub fn poll_result_or_register_waker(
+        &self,
+        id: IoRequestId,
+        waker: &Waker,
+        registered: &mut bool,
+    ) -> Poll<Result<usize, IoError>> {
+        let mut reqs = self.requests.write();
+        let Some(req) = reqs.get_mut(&id) else {
+            return Poll::Ready(Err(IoError::InvalidParameter));
+        };
+
+        match req.state {
+            IoState::Completed | IoState::Failed | IoState::Cancelled => {
+                // 完了済み: 結果を取り出して削除
+                let result = req.result.take().unwrap_or(IoResult::Error(IoError::DeviceError));
+                reqs.remove(&id);
+                Poll::Ready(match result {
+                    IoResult::Success(n) => Ok(n),
+                    IoResult::Error(e) => Err(e),
+                })
+            }
+            IoState::Pending | IoState::InProgress => {
+                // Waker 更新が必要か判定
+                let needs_update = if *registered {
+                    req.waker.as_ref().map(|old| !old.will_wake(waker)).unwrap_or(true)
+                } else {
+                    true
+                };
+                if needs_update {
+                    req.waker = Some(waker.clone());
+                    *registered = true;
+                }
+
+                // ★同ロック内で再チェック（complete_request がこの間に来ても安全）
+                // （実際は上の match で state を見てるので、ここでの再チェックは
+                //   将来の "state が変わるケース" への防御として残す）
+                Poll::Pending
+            }
+        }
+    }
+
     /// 完了フックを登録
     pub fn register_completion_hook(&self, id: IoRequestId, hook: CompletionHook) {
         self.completion_hooks.lock().insert(id, hook);
@@ -1038,7 +1038,6 @@ impl Clone for IoRequest {
             device: self.device,
             operation: self.operation,
             command: self.command.clone(),
-            payload: self.payload.clone(),
             priority: self.priority,
             state: self.state,
             submitted_at: self.submitted_at,
@@ -1255,50 +1254,15 @@ impl Future for IoFuture {
     type Output = Result<usize, IoError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // 状態をチェック
-        if let Some(state) = self.scheduler.get_state(self.request_id) {
-            match state {
-                IoState::Completed => {
-                    if let Some(result) = self.scheduler.take_result(self.request_id) {
-                        return Poll::Ready(match result {
-                            IoResult::Success(bytes) => Ok(bytes),
-                            IoResult::Error(e) => Err(e),
-                        });
-                    }
-                }
-                IoState::Failed | IoState::Cancelled => {
-                    if let Some(result) = self.scheduler.take_result(self.request_id) {
-                        return Poll::Ready(match result {
-                            IoResult::Success(bytes) => Ok(bytes),
-                            IoResult::Error(e) => Err(e),
-                        });
-                    }
-                    return Poll::Ready(Err(IoError::DeviceError));
-                }
-                IoState::Pending | IoState::InProgress => {
-                    // Wakerを登録（変更がある場合のみ更新）
-                    // executor によっては waker が変わるため will_wake でチェック
-                    let current_waker = cx.waker();
-                    let needs_update = if self.registered {
-                        // 既に登録済みなら、新しい waker が同じか確認
-                        self.scheduler
-                            .get_waker(self.request_id)
-                            .map(|old| !old.will_wake(current_waker))
-                            .unwrap_or(true)
-                    } else {
-                        true
-                    };
-                    if needs_update {
-                        self.scheduler
-                            .set_waker(self.request_id, current_waker.clone());
-                        self.registered = true;
-                    }
-                    return Poll::Pending;
-                }
-            }
-        }
-
-        Poll::Ready(Err(IoError::InvalidParameter))
+        // 原子的に状態チェックとWaker登録を行う（lost wake race 防止）
+        // Borrow checker回避: self.scheduler(immutable) と &mut self.registered(mutable) が競合するため
+        // Arcをクローンして別の所有権/参照パスを作る
+        let scheduler = self.scheduler.clone();
+        scheduler.poll_result_or_register_waker(
+            self.request_id,
+            cx.waker(),
+            &mut self.registered,
+        )
     }
 }
 
@@ -1726,43 +1690,36 @@ impl HybridIoCoordinator {
     }
 
     /// I/Oをサブミット
+    #[allow(deprecated)]
     pub fn submit_io(
         &self,
         device: DeviceId,
         operation: IoOperationType,
         priority: IoPriority,
     ) -> IoFuture {
-        self.submit_io_with_payload(device, operation, priority, IoPayload::None)
-    }
+        match operation {
+            IoOperationType::Flush => self.submit_io_command(device, IoCommand::Flush, priority),
+            _ => {
+                // Fall back to creating a command-less request (deprecated pattern)
+                let id = self.scheduler.submit(device, operation, priority);
 
-    /// ペイロード付きI/Oをサブミット
-    pub fn submit_io_with_payload(
-        &self,
-        device: DeviceId,
-        operation: IoOperationType,
-        priority: IoPriority,
-        payload: IoPayload,
-    ) -> IoFuture {
-        let id = self
-            .scheduler
-            .submit_with_payload(device, operation, priority, payload);
+                let global_mode = match self.global_mode.load(Ordering::Acquire) {
+                    0 => IoMode::Interrupt,
+                    1 => IoMode::Polling,
+                    _ => IoMode::Hybrid,
+                };
 
-        let global_mode = match self.global_mode.load(Ordering::Acquire) {
-            0 => IoMode::Interrupt,
-            1 => IoMode::Polling,
-            _ => IoMode::Hybrid,
-        };
+                // Polling 以外はpending登録（Interrupt/Hybrid両方で有効）
+                if !matches!(global_mode, IoMode::Polling) {
+                    let mode = self.scheduler.device_mode(device);
+                    if !matches!(mode, IoMode::Polling) {
+                        self.interrupt_bridge.register_pending(device, id);
+                    }
+                }
 
-        // Polling 以外はpending登録（Interrupt/Hybrid両方で有効）
-        if !matches!(global_mode, IoMode::Polling) {
-            let mode = self.scheduler.device_mode(device);
-            // デバイスモードが Polling でない場合のみ登録
-            if !matches!(mode, IoMode::Polling) {
-                self.interrupt_bridge.register_pending(device, id);
+                IoFuture::new(self.scheduler.clone(), id)
             }
         }
-
-        IoFuture::new(self.scheduler.clone(), id)
     }
 
     /// IoCommandでI/Oをサブミット（新API）
@@ -1794,15 +1751,32 @@ impl HybridIoCoordinator {
         IoFuture::new(self.scheduler.clone(), id)
     }
 
-    /// メインループの1回の反復
-    pub fn tick(&self, current_tick: u64) {
-        // 0. Interrupt-Waker Bridge処理（設計書 4.2: 2段階Wake方式）
-        // ISRからキューに追加された割り込みイベントを処理し、Wakerを起床
-        super::interrupt_manager::process_pending_interrupts();
+    /// 定期的なメンテナンス（タイマー割り込み等から呼ぶ）
+    pub fn tick<F>(&self, process_interrupts: F)
+    where
+        F: FnOnce(),
+    {
+        // 1. 割り込み処理（外部注入）
+        process_interrupts();
 
-        // 1. ISRから遅延された完了を処理（現CPUのキューのみ）
-        process_deferred_completions_local();
+        // 2. ローカルキューの遅延完了を処理
+        // memo: ここで全CPU分を回す必要はない。自CPU分のみ処理し、
+        // 必要ならIPIで他CPUを起こす設計だが、現状はポーリング主体。
+        //
+        // 注意: process_deferred_completions_local は再入不可ロックを取るため、
+        // 割り込みコンテキストでの呼び出しには注意が必要。
+        // 現在は tick() 呼び出し元が安全なコンテキスト（メインループ等）であることを想定。
+        // 注意: process_deferred_completions_local は再入不可ロックを取るため、
+        // 割り込みコンテキストでの呼び出しには注意が必要。
+        // 現在は tick() 呼び出し元が安全なコンテキスト（メインループ等）であることを想定。
+        let cpu_idx = crate::smp::cpu_index();
+        while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
+            self.scheduler.complete_request(id, result);
+            self.interrupt_bridge.complete_pending(device, id);
+        }
 
+        // 1.5. オーバーフロー時は強制ポーリングで回収
+        // ISRでキュー満杯により積めなかった完了をCQから直接回収
         // 1.5. オーバーフロー時は強制ポーリングで回収
         // ISRでキュー満杯により積めなかった完了をCQから直接回収
         if self.interrupt_bridge.check_and_clear_overflow() {
@@ -1810,14 +1784,27 @@ impl HybridIoCoordinator {
             if !was_active {
                 self.polling_executor.start();
             }
-            self.polling_executor.poll_batch();
+            
+            // poll_batch 相当を callback 付きで回す
+            // これにより、回収された完了に対して pending_requests の掃除が行われる
+            for _ in 0..self.polling_executor.max_poll_iterations {
+                let n = self.polling_executor.poll_once_with(|device, id, _res| {
+                    // 同一モジュール内なので private method も呼べる前提
+                    // (IoInterruptBridge::complete_pending は pub(super) または pub)
+                    self.interrupt_bridge.complete_pending(device, id);
+                });
+                if n == 0 {
+                    break;
+                }
+            }
+
             if !was_active && matches!(self.global_mode(), IoMode::Interrupt) {
                 self.polling_executor.stop();
             }
         }
 
         // 2. モード評価
-        self.scheduler.evaluate_modes(current_tick);
+        self.scheduler.evaluate_modes(current_tick());
 
         // 3. ペンディングI/Oをディスパッチ
         self.dispatch_pending();
@@ -1864,8 +1851,9 @@ impl HybridIoCoordinator {
             // 依存逆転: デバイス固有コードへの直接参照を除去
             // DeviceOpsレジストリ経由でデバイスへ投入
             let ops = self.scheduler.get_device_ops(request.device);
+            let cpu_idx = crate::smp::cpu_index();
             let result = match ops {
-                Some(ops) => ops.submit(&request),
+                Some(ops) => ops.submit(&request, cpu_idx),
                 None => Err(IoError::NotSupported),
             };
 

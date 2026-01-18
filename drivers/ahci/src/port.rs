@@ -200,7 +200,7 @@ impl AhciPort {
         ))
     }
 
-    /// Read sectors
+    /// Synchronous read (existing)
     pub fn read_sectors(
         &mut self,
         lba: Lba,
@@ -326,6 +326,119 @@ impl AhciPort {
         }
 
         result
+    }
+
+    /// Start a read transfer using a device-visible DMA address (non-blocking)
+    pub fn start_read_dma(
+        &mut self,
+        lba: Lba,
+        count: SectorCount,
+        dma_addr: u64,
+        bytes: u32,
+    ) -> AhciResult<SlotNumber> {
+        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
+
+        let cmd_table_buf = kernel()
+            .alloc_dma(core::mem::size_of::<CommandTable>())
+            .map_err(|_| AhciError::InternalError)?;
+
+        unsafe {
+            let cmd_table = &mut *(cmd_table_buf.as_ptr() as *mut CommandTable);
+            ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1);
+
+            let fis = FisRegH2D::read_dma_ext(lba, count);
+            ptr::copy_nonoverlapping(
+                &fis as *const _ as *const u8,
+                cmd_table.cfis.as_mut_ptr(),
+                core::mem::size_of::<FisRegH2D>(),
+            );
+
+            cmd_table.prdt[0] = PhysicalRegionDescriptor::new(dma_addr, bytes, true);
+        }
+
+        unsafe {
+            let headers = slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32);
+            let header = &mut headers[slot.as_usize()];
+            header.set_flags(5, false, false, false);
+            header.prdtl = 1;
+            header.prdbc = 0;
+            header.set_ctba(cmd_table_buf.physical_address());
+        }
+
+        self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
+
+        self.write_port(PX_CI, 1 << slot.as_u8());
+
+        Ok(slot)
+    }
+
+    /// Start a write transfer using a device-visible DMA address (non-blocking)
+    pub fn start_write_dma(
+        &mut self,
+        lba: Lba,
+        count: SectorCount,
+        dma_addr: u64,
+        bytes: u32,
+    ) -> AhciResult<SlotNumber> {
+        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
+
+        let cmd_table_buf = kernel()
+            .alloc_dma(core::mem::size_of::<CommandTable>())
+            .map_err(|_| AhciError::InternalError)?;
+
+        unsafe {
+            let cmd_table = &mut *(cmd_table_buf.as_ptr() as *mut CommandTable);
+            ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1);
+
+            let fis = FisRegH2D::write_dma_ext(lba, count);
+            ptr::copy_nonoverlapping(
+                &fis as *const _ as *const u8,
+                cmd_table.cfis.as_mut_ptr(),
+                core::mem::size_of::<FisRegH2D>(),
+            );
+
+            cmd_table.prdt[0] = PhysicalRegionDescriptor::new(dma_addr, bytes, true);
+        }
+
+        unsafe {
+            let headers = slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32);
+            let header = &mut headers[slot.as_usize()];
+            header.set_flags(5, true, false, false);
+            header.prdtl = 1;
+            header.prdbc = 0;
+            header.set_ctba(cmd_table_buf.physical_address());
+        }
+
+        self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
+
+        self.write_port(PX_CI, 1 << slot.as_u8());
+
+        Ok(slot)
+    }
+
+    /// Finish and clean up a completed transfer for the given slot. Returns transferred bytes.
+    pub fn finish_transfer(&mut self, slot: SlotNumber) -> AhciResult<usize> {
+        // Check for task file errors
+        let tfd = self.read_port(PX_TFD);
+        let status = (tfd & 0xFF) as u8;
+        let error = ((tfd >> 8) & 0xFF) as u8;
+
+        if (status & 0x01) != 0 {
+            return Err(AhciError::TaskFileError(error));
+        }
+
+        // Read prdbc from header to determine bytes transferred
+        let headers = unsafe { slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32) };
+        let header = &mut headers[slot.as_usize()];
+        let transferred = header.prdbc as usize;
+
+        // Free command table buffer
+        let kernel = kernel_api::services::kernel();
+        if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
+            kernel.free_dma(cmd_buf);
+        }
+
+        Ok(transferred)
     }
 
     pub fn wait_completion(&self, slot: SlotNumber) -> AhciResult<()> {

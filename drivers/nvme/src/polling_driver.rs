@@ -802,6 +802,26 @@ impl NvmePollingDriver {
         Ok(cid)
     }
 
+    /// Dataset Management (DSM) コマンドを発行 (TRIM等)
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// prp1は有効な物理アドレスである必要がある (DSM Range Buffer)。
+    /// prp2は現在未使用 (バッファサイズが1ページ以下を想定)。
+    pub unsafe fn submit_dsm(
+        &self,
+        core_id: u32,
+        nsid: u32,
+        prp1: u64,
+        _prp2: u64,
+    ) -> Result<u16, &'static str> {
+        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        // nr=0 (1 range). async_ops.rs currently only constructs single-range DSMs.
+        let cid = unsafe { queue.dataset_management(nsid, 0, prp1) }?;
+        unsafe { queue.flush_doorbell() };
+        Ok(cid)
+    }
+
     /// SGL最大エントリ数を取得
     pub fn sgl_max_entries(&self) -> Option<usize> {
         let ctrl = self.identify_controller?;
