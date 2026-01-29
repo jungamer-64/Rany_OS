@@ -106,18 +106,6 @@ pub mod compat {
         };
     }
 
-    #[deprecated(note = "use task::compat::process::*")]
-    pub use process::{
-        Credentials, ProcessId, ProcessInfo, ProcessManager, ProcessState, ResourceLimits, ThreadId,
-        process_exit, getgid, getpid, getppid, getpriority, getuid, process_manager, setpriority,
-        spawn_process, waitpid,
-    };
-
-    #[deprecated(note = "use task::compat::signal::*")]
-    pub use signal::{
-        Signal, SignalAction, SignalContext, SignalFuture, SignalHandler, SignalManager, SignalMask,
-        SignalQueue, kill, sigignore, set_signal, signal_manager,
-    };
 }
 
 // ============================================================================

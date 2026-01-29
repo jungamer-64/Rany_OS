@@ -70,6 +70,24 @@ jobs:
         retention-days: 7
 
   # ============================================================================
+  # Compat OFF Build Job
+  # ============================================================================
+  compat-off:
+    name: Build (posix-compat OFF)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src, llvm-tools-preview
+
+    - name: Build kernel without default features
+      run: cargo build -p rany_kernel --no-default-features --target x86_64-rany_os.json
+
+  # ============================================================================
   # Lint Job
   # ============================================================================
   lint:
@@ -90,6 +108,9 @@ jobs:
     - name: Clippy lints
       run: cargo clippy --target x86_64-rany_os.json -- -D warnings
       continue-on-error: true  # no_std環境では一部警告が出る可能性
+
+    - name: ProcessId allowlist check
+      run: bash scripts/check-posix-compat.sh
 
   # ============================================================================
   # Documentation Job

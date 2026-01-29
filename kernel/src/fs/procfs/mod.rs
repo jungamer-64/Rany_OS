@@ -12,7 +12,11 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::domain_system::DomainId;
-use crate::task::process::{ProcessState, ProcessId, process_manager};
+use crate::task::process::{ProcessId, process_manager};
+
+#[path = "../../compat/posix/procfs_pid.rs"]
+mod pid;
+pub use pid::Pid;
 
 /// inode番号 (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -26,23 +30,6 @@ impl ProcInode {
     }
 
     pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
-
-/// プロセスID (Newtype)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct Pid(u32);
-
-impl Pid {
-    pub const KERNEL: Self = Self(0);
-    pub const INIT: Self = Self(1);
-
-    pub const fn new(id: u32) -> Self {
-        Self(id)
-    }
-
-    pub fn as_u32(&self) -> u32 {
         self.0
     }
 }
@@ -153,6 +140,14 @@ pub enum ProcError {
     InvalidArgument,
 }
 
+fn read_sysfs_text(path: &str) -> Result<String, ProcError> {
+    match crate::fs::sysfs::read_file(path) {
+        Some(Ok(bytes)) => String::from_utf8(bytes).map_err(|_| ProcError::NotReadable),
+        Some(Err(_)) => Err(ProcError::NotFound),
+        None => Err(ProcError::NotFound),
+    }
+}
+
 /// procfs ファイルシステム
 pub struct ProcFs {
     /// ルートエントリ
@@ -177,65 +172,16 @@ impl ProcFs {
 
     /// 静的エントリを初期化
     fn init_static_entries(&self) {
-        // /proc/version
-        self.add_file("version", || {
-            Ok(alloc::format!(
-                "ExoRust Kernel {} ({}) (gcc version 12.0.0)\n",
-                env!("CARGO_PKG_VERSION"),
-                "x86_64"
-            ))
-        });
-
-        // /proc/uptime
-        self.add_file("uptime", || {
-            // システム稼働時間を計算（ミリ秒から秒に変換）
-            let uptime_ms = crate::time::current_tick();
-            let uptime_secs = uptime_ms / 1000;
-            let uptime_frac = (uptime_ms % 1000) / 10; // 小数点2桁
-            // アイドル時間（簡易実装：稼働時間の90%と仮定）
-            let idle_secs = uptime_secs * 9 / 10;
-            let idle_frac = uptime_frac * 9 / 10;
-            Ok(alloc::format!(
-                "{}.{:02} {}.{:02}\n",
-                uptime_secs,
-                uptime_frac,
-                idle_secs,
-                idle_frac
-            ))
-        });
-
-        // /proc/meminfo
-        self.add_file("meminfo", || Ok(Self::generate_meminfo()));
-
-        // /proc/cpuinfo
-        self.add_file("cpuinfo", || Ok(Self::generate_cpuinfo()));
-
-        // /proc/stat
-        self.add_file("stat", || Ok(Self::generate_stat()));
-
-        // /proc/loadavg
-        self.add_file("loadavg", || Ok(alloc::format!("0.00 0.00 0.00 1/1 1\n")));
-
-        // /proc/filesystems
-        self.add_file("filesystems", || {
-            Ok(alloc::format!(
-                "nodev\tproc\n\
-                 nodev\tdevfs\n\
-                 \text2\n\
-                 nodev\ttmpfs\n"
-            ))
-        });
-
-        // /proc/mounts
-        self.add_file("mounts", || {
-            Ok(alloc::format!(
-                "proc /proc proc rw,nosuid,nodev,noexec 0 0\n\
-                 devfs /dev devfs rw,nosuid 0 0\n"
-            ))
-        });
-
-        // /proc/cmdline
-        self.add_file("cmdline", || Ok(alloc::format!("console=ttyS0\n")));
+        // /proc/* system surface delegates to /sys/system
+        self.add_file("version", || read_sysfs_text("/sys/system/version"));
+        self.add_file("uptime", || read_sysfs_text("/sys/system/uptime"));
+        self.add_file("meminfo", || read_sysfs_text("/sys/system/meminfo"));
+        self.add_file("cpuinfo", || read_sysfs_text("/sys/system/cpuinfo"));
+        self.add_file("stat", || read_sysfs_text("/sys/system/stat"));
+        self.add_file("loadavg", || read_sysfs_text("/sys/system/loadavg"));
+        self.add_file("filesystems", || read_sysfs_text("/sys/system/filesystems"));
+        self.add_file("mounts", || read_sysfs_text("/sys/system/mounts"));
+        self.add_file("cmdline", || read_sysfs_text("/sys/system/cmdline"));
 
         // /proc/sys ディレクトリ
         self.add_directory("sys");
@@ -248,37 +194,28 @@ impl ProcFs {
 
     /// sys エントリを追加
     fn add_sys_entries(&self) {
-        // sysctlスタイルの設定エントリを追加
-        // /proc/sys/kernel/hostname
+        // sysctl-style entries under /proc/sys/kernel
+        let kernel_inode = self.allocate_inode();
+        let mut kernel_entry = ProcEntry::directory(kernel_inode, "kernel");
+
         let hostname_inode = self.allocate_inode();
-        let hostname_entry = ProcEntry::file(hostname_inode, "kernel/hostname", || {
-            Ok(alloc::string::String::from("exorust\n"))
-        });
-        let mut root = self.root.write();
-        if let Some(sys_dir) = root.children.get_mut("sys") {
-            sys_dir.add_child(hostname_entry);
-        }
-        drop(root);
+        let hostname_entry =
+            ProcEntry::file(hostname_inode, "hostname", || read_sysfs_text("/sys/system/kernel/hostname"));
+        kernel_entry.add_child(hostname_entry);
 
-        // /proc/sys/kernel/ostype
         let ostype_inode = self.allocate_inode();
-        let ostype_entry = ProcEntry::file(ostype_inode, "kernel/ostype", || {
-            Ok(alloc::string::String::from("ExoRust\n"))
-        });
-        let mut root = self.root.write();
-        if let Some(sys_dir) = root.children.get_mut("sys") {
-            sys_dir.add_child(ostype_entry);
-        }
-        drop(root);
+        let ostype_entry =
+            ProcEntry::file(ostype_inode, "ostype", || read_sysfs_text("/sys/system/kernel/ostype"));
+        kernel_entry.add_child(ostype_entry);
 
-        // /proc/sys/kernel/version
         let version_inode = self.allocate_inode();
-        let version_entry = ProcEntry::file(version_inode, "kernel/version", || {
-            Ok(alloc::format!("#1 SMP {}\n", "ExoRust 0.1.0"))
-        });
+        let version_entry =
+            ProcEntry::file(version_inode, "version", || read_sysfs_text("/sys/system/kernel/version"));
+        kernel_entry.add_child(version_entry);
+
         let mut root = self.root.write();
         if let Some(sys_dir) = root.children.get_mut("sys") {
-            sys_dir.add_child(version_entry);
+            sys_dir.add_child(kernel_entry);
         }
     }
 
@@ -286,16 +223,7 @@ impl ProcFs {
     fn add_net_entries(&self) {
         // /proc/net/dev - ネットワークデバイス統計
         let dev_inode = self.allocate_inode();
-        let dev_entry = ProcEntry::file(dev_inode, "dev", || {
-            let mut output = alloc::string::String::from(
-                "Inter-|   Receive                                                |  Transmit\n\
-                 face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n",
-            );
-            // 仮想ネットワーク統計（将来的にはNetworkStackから取得）
-            output.push_str("    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n");
-            output.push_str("  eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n");
-            Ok(output)
-        });
+        let dev_entry = ProcEntry::file(dev_inode, "dev", || read_sysfs_text("/sys/system/net/dev"));
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
             net_dir.add_child(dev_entry);
@@ -304,13 +232,7 @@ impl ProcFs {
 
         // /proc/net/tcp - TCP接続情報
         let tcp_inode = self.allocate_inode();
-        let tcp_entry = ProcEntry::file(tcp_inode, "tcp", || {
-            let output = alloc::string::String::from(
-                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
-            );
-            // 将来的にはTcpProcessorから取得
-            Ok(output)
-        });
+        let tcp_entry = ProcEntry::file(tcp_inode, "tcp", || read_sysfs_text("/sys/system/net/tcp"));
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
             net_dir.add_child(tcp_entry);
@@ -319,11 +241,7 @@ impl ProcFs {
 
         // /proc/net/udp - UDP接続情報
         let udp_inode = self.allocate_inode();
-        let udp_entry = ProcEntry::file(udp_inode, "udp", || {
-            Ok(alloc::string::String::from(
-                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
-            ))
-        });
+        let udp_entry = ProcEntry::file(udp_inode, "udp", || read_sysfs_text("/sys/system/net/udp"));
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
             net_dir.add_child(udp_entry);
@@ -332,11 +250,7 @@ impl ProcFs {
 
         // /proc/net/arp - ARPテーブル
         let arp_inode = self.allocate_inode();
-        let arp_entry = ProcEntry::file(arp_inode, "arp", || {
-            Ok(alloc::string::String::from(
-                "IP address       HW type     Flags       HW address            Mask     Device\n",
-            ))
-        });
+        let arp_entry = ProcEntry::file(arp_inode, "arp", || read_sysfs_text("/sys/system/net/arp"));
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
             net_dir.add_child(arp_entry);
@@ -367,92 +281,6 @@ impl ProcFs {
 
         let mut root = self.root.write();
         root.add_child(entry);
-    }
-
-    /// プロセスエントリを追加
-    pub fn add_process(&self, pid: Pid) {
-        let pid_str = alloc::format!("{}", pid.as_u32());
-
-        let mut proc_dir = ProcEntry::directory(self.allocate_inode(), &pid_str);
-
-        // /proc/[pid]/status
-        let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(
-            self.allocate_inode(),
-            "status",
-            move || Ok(Self::generate_process_status(pid_copy)),
-        ));
-
-        // /proc/[pid]/stat
-        let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "stat", move || {
-            Ok(Self::generate_process_stat(pid_copy))
-        }));
-
-        // /proc/[pid]/maps
-        let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "maps", move || {
-            Self::generate_process_maps(pid_copy)
-        }));
-
-        // /proc/[pid]/cmdline
-        let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(
-            self.allocate_inode(),
-            "cmdline",
-            move || Self::generate_process_cmdline(pid_copy),
-        ));
-
-        // /proc/[pid]/exe (permission-checked entry)
-        let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "exe", move || {
-            let proc_id = ProcessId::new(pid_copy.as_u32() as u64);
-            let caller = crate::task::context::current_subject().domain;
-            let proc_domain: DomainId = proc_id.into();
-            if let Some(_process) = process_manager().get(proc_id) {
-                if caller == proc_domain
-                    || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_FOWNER)
-                    || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
-                    || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
-                {
-                    Ok(String::from("/bin/process"))
-                } else {
-                    Err(ProcError::PermissionDenied)
-                }
-            } else {
-                Err(ProcError::NotFound)
-            }
-        }));
-
-        // /proc/[pid]/cwd (symlink)
-        proc_dir.add_child(ProcEntry::symlink(
-            self.allocate_inode(),
-            "cwd",
-            String::from("/"),
-        ));
-
-        // /proc/[pid]/mem
-        /*
-        let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(
-            self.allocate_inode(),
-            "mem",
-            move || Self::generate_process_mem(pid_copy),
-        ));
-        */
-
-        // /proc/[pid]/fd ディレクトリ
-        proc_dir.add_child(ProcEntry::directory(self.allocate_inode(), "fd")); // permission-checked via ProcDirHandle::readdir()
-
-        let mut root = self.root.write();
-        root.add_child(proc_dir);
-    }
-
-    /// プロセスエントリを削除
-    pub fn remove_process(&self, pid: Pid) {
-        let pid_str = alloc::format!("{}", pid.as_u32());
-        let mut root = self.root.write();
-        root.children.remove(&pid_str);
     }
 
     /// パスからエントリを検索
@@ -570,308 +398,6 @@ impl ProcFs {
         self.read(path)
     }
 
-    // --- 情報生成関数 ---
-
-    fn generate_meminfo() -> String {
-        // 実際のメモリ情報を取得
-        let total_kb = crate::memory::total_memory_kb();
-        let free_kb = crate::memory::free_memory_kb();
-        let available_kb = free_kb + (free_kb / 4); // 利用可能メモリの推定
-        let used_kb = total_kb.saturating_sub(free_kb);
-        let cached_kb = used_kb / 4; // キャッシュの推定
-        let buffers_kb = used_kb / 8; // バッファの推定
-        let active_kb = used_kb / 2;
-        let inactive_kb = used_kb / 4;
-
-        alloc::format!(
-            "MemTotal:       {:8} kB\n\
-             MemFree:        {:8} kB\n\
-             MemAvailable:   {:8} kB\n\
-             Buffers:        {:8} kB\n\
-             Cached:         {:8} kB\n\
-             SwapCached:            0 kB\n\
-             Active:         {:8} kB\n\
-             Inactive:       {:8} kB\n\
-             SwapTotal:             0 kB\n\
-             SwapFree:              0 kB\n",
-            total_kb,
-            free_kb,
-            available_kb,
-            buffers_kb,
-            cached_kb,
-            active_kb,
-            inactive_kb
-        )
-    }
-
-    fn generate_cpuinfo() -> String {
-        // 実際のCPU情報を取得
-        let cpu_count = crate::smp::cpu_count();
-        let mut info = String::new();
-
-        for cpu_id in 0..cpu_count {
-            use core::fmt::Write;
-            let _ = write!(
-                info,
-                "processor\t: {}\n\
-                 vendor_id\t: {}\n\
-                 cpu family\t: 6\n\
-                 model\t\t: 142\n\
-                 model name\t: {}\n\
-                 stepping\t: 10\n\
-                 cpu MHz\t\t: {:.3}\n\
-                 cache size\t: {} KB\n\
-                 physical id\t: 0\n\
-                 siblings\t: {}\n\
-                 core id\t\t: {}\n\
-                 cpu cores\t: {}\n\
-                 flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 sse sse2 ss ht syscall nx lm constant_tsc\n\
-                 bugs\t\t:\n\
-                 bogomips\t: {:.2}\n\n",
-                cpu_id,
-                get_cpu_vendor(),
-                get_cpu_model_name(),
-                3000.0, // MHz - 実際にはTSC周波数から計算可能
-                8192,   // キャッシュサイズ（KB）
-                cpu_count,
-                cpu_id,
-                cpu_count,
-                6000.0 // bogomips
-            );
-        }
-
-        info
-    }
-
-    fn generate_stat() -> String {
-        // 実際の統計情報を取得
-        let timer_ticks = crate::interrupts::get_timer_ticks();
-        let ctx_switches = crate::task::context::CONTEXT_SWITCH_COUNT.load(Ordering::Relaxed);
-        let boot_time = crate::time::now().saturating_sub(crate::time::current_tick() / 1000);
-        let cpu_count = crate::smp::cpu_count();
-        let process_count = process_manager().count();
-
-        use core::fmt::Write;
-        let mut output = String::new();
-
-        // 総CPU時間
-        let _ = write!(
-            output,
-            "cpu  {} 0 {} 0 0 0 {} 0 0 0\n",
-            timer_ticks / 10,
-            timer_ticks / 5,
-            timer_ticks / 20
-        );
-
-        // 各CPUの時間
-        for i in 0..cpu_count {
-            let _ = write!(
-                output,
-                "cpu{} {} 0 {} 0 0 0 {} 0 0 0\n",
-                i,
-                timer_ticks / (10 * cpu_count as u64),
-                timer_ticks / (5 * cpu_count as u64),
-                timer_ticks / (20 * cpu_count as u64)
-            );
-        }
-
-        let _ = write!(output, "intr {}\n", timer_ticks);
-        let _ = write!(output, "ctxt {}\n", ctx_switches);
-        let _ = write!(output, "btime {}\n", boot_time);
-        let _ = write!(output, "processes {}\n", process_count);
-        let _ = write!(output, "procs_running 1\n");
-        let _ = write!(output, "procs_blocked 0\n");
-        let _ = write!(output, "softirq 0 0 0 0 0 0 0 0 0 0 0\n");
-
-        output
-    }
-
-    fn generate_process_status(pid: Pid) -> String {
-        // プロセスマネージャーから情報を取得
-        let proc_id = ProcessId::new(pid.as_u32() as u64);
-        if let Some(process) = process_manager().get(proc_id) {
-            let p = process.read();
-            let state_char = match p.state {
-                ProcessState::Running => 'R',
-                ProcessState::Blocked => 'S',
-                ProcessState::Ready => 'R',
-                ProcessState::Stopped => 'T',
-                ProcessState::Zombie => 'Z',
-                ProcessState::Dead => 'X',
-                ProcessState::Creating => 'D',
-            };
-            alloc::format!(
-                "Name:\t{}\n\
-                 Umask:\t0022\n\
-                 State:\t{} ({})\n\
-                 Tgid:\t{}\n\
-                 Ngid:\t0\n\
-                 Pid:\t{}\n\
-                 PPid:\t{}\n\
-                 TracerPid:\t0\n\
-                 Uid:\t{}\t{}\t{}\t{}\n\
-                 Gid:\t{}\t{}\t{}\t{}\n\
-                 FDSize:\t64\n\
-                 VmPeak:\t    4096 kB\n\
-                 VmSize:\t    4096 kB\n\
-                 VmRSS:\t    1024 kB\n\
-                 Threads:\t{}\n",
-                p.name,
-                state_char,
-                match state_char {
-                    'R' => "running",
-                    'S' => "sleeping",
-                    'T' => "stopped",
-                    'Z' => "zombie",
-                    'X' => "dead",
-                    _ => "unknown",
-                },
-                pid.as_u32(),
-                pid.as_u32(),
-                p.ppid.as_u64(),
-                p.credentials.uid.as_u32(),
-                p.credentials.uid.as_u32(),
-                p.credentials.uid.as_u32(),
-                p.credentials.uid.as_u32(),
-                p.credentials.gid.as_u32(),
-                p.credentials.gid.as_u32(),
-                p.credentials.gid.as_u32(),
-                p.credentials.gid.as_u32(),
-                p.threads().len().max(1)
-            )
-        } else {
-            // プロセスが見つからない場合はデフォルト値
-            alloc::format!(
-                "Name:\tunknown\n\
-                 Umask:\t0022\n\
-                 State:\tS (sleeping)\n\
-                 Tgid:\t{}\n\
-                 Ngid:\t0\n\
-                 Pid:\t{}\n\
-                 PPid:\t1\n\
-                 TracerPid:\t0\n\
-                 Uid:\t0\t0\t0\t0\n\
-                 Gid:\t0\t0\t0\t0\n\
-                 FDSize:\t64\n\
-                 VmPeak:\t    4096 kB\n\
-                 VmSize:\t    4096 kB\n\
-                 VmRSS:\t    1024 kB\n\
-                 Threads:\t1\n",
-                pid.as_u32(),
-                pid.as_u32()
-            )
-        }
-    }
-
-    fn generate_process_stat(pid: Pid) -> String {
-        // プロセスマネージャーから情報を取得
-        let proc_id = ProcessId::new(pid.as_u32() as u64);
-        if let Some(process) = process_manager().get(proc_id) {
-            let p = process.read();
-            let state_char = match p.state {
-                ProcessState::Running => 'R',
-                ProcessState::Blocked => 'S',
-                ProcessState::Ready => 'R',
-                ProcessState::Stopped => 'T',
-                ProcessState::Zombie => 'Z',
-                ProcessState::Dead => 'X',
-                ProcessState::Creating => 'D',
-            };
-            alloc::format!(
-                "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 {} 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-                pid.as_u32(),
-                p.name,
-                state_char,
-                p.ppid.as_u64(),
-                pid.as_u32(),                   // pgid
-                pid.as_u32(),                   // sid
-                p.priority.as_i8() as i32 + 20, // nice value
-                p.threads().len().max(1)
-            )
-        } else {
-            alloc::format!(
-                "{} (unknown) S 1 {} {} 0 0 0 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-                pid.as_u32(),
-                pid.as_u32(),
-                pid.as_u32()
-            )
-        }
-    }
-
-    fn generate_process_maps(pid: Pid) -> Result<String, ProcError> {
-        // プロセスのメモリマップ（簡易実装）
-        let proc_id = ProcessId::new(pid.as_u32() as u64);
-        let caller = crate::task::context::current_subject().domain;
-        let proc_domain: DomainId = proc_id.into();
-
-        if let Some(_process) = process_manager().get(proc_id) {
-            if caller == proc_domain
-                || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
-                || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
-            {
-                Ok(alloc::format!(
-                    "00400000-00401000 r-xp 00000000 00:00 0          /bin/process{}\n\
-                     00600000-00601000 r--p 00000000 00:00 0          /bin/process{}\n\
-                     00601000-00602000 rw-p 00001000 00:00 0          /bin/process{}\n\
-                     7ffff7ff8000-7ffff7ffa000 r-xp 00000000 00:00 0  [vdso]\n\
-                     7ffffffde000-7ffffffff000 rw-p 00000000 00:00 0  [stack]\n",
-                    pid.as_u32(),
-                    pid.as_u32(),
-                    pid.as_u32()
-                ))
-            } else {
-                Err(ProcError::PermissionDenied)
-            }
-        } else {
-            Err(ProcError::NotFound)
-        }
-    }
-
-    fn generate_process_cmdline(pid: Pid) -> Result<String, ProcError> {
-        // プロセスマネージャーから情報を取得
-        let proc_id = ProcessId::new(pid.as_u32() as u64);
-        let caller = crate::task::context::current_subject().domain;
-        let proc_domain: DomainId = proc_id.into();
-
-        if let Some(process) = process_manager().get(proc_id) {
-            if caller == proc_domain
-                || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
-                || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
-            {
-                let p = process.read();
-                if p.cmdline.is_empty() {
-                    Ok(alloc::format!("{}\0", p.name))
-                } else {
-                    Ok(p.cmdline.join("\0") + "\0")
-                }
-            } else {
-                Err(ProcError::PermissionDenied)
-            }
-        } else {
-            Err(ProcError::NotFound)
-        }
-    }
-
-    fn generate_process_mem(pid: Pid) -> Result<String, ProcError> {
-        // プロセスのメモリへのアクセスは、通常自身か CAP_SYS_PTRACE/CAP_SYS_ADMIN を要求します
-        let proc_id = ProcessId::new(pid.as_u32() as u64);
-        let caller = crate::task::context::current_subject().domain;
-        let proc_domain: DomainId = proc_id.into();
-
-        if let Some(_process) = process_manager().get(proc_id) {
-            if caller == proc_domain
-                || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
-                || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
-            {
-                // 実際の /proc/[pid]/mem 実装は未完（ここではプレースホルダを返す）
-                Ok(alloc::format!("Process {} memory (placeholder)\n", pid.as_u32()))
-            } else {
-                Err(ProcError::PermissionDenied)
-            }
-        } else {
-            Err(ProcError::NotFound)
-        }
-    }
 }
 
 /// グローバル procfs インスタンス
@@ -1112,74 +638,6 @@ impl ProcFs {
         Ok(ProcDirHandle { path: String::from(path), token })
     }
 }
-// ============================================================================
-// CPU情報取得ヘルパー
-// ============================================================================
-
-/// CPUベンダーIDを取得
-fn get_cpu_vendor() -> &'static str {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use core::arch::x86_64::__cpuid;
-        // CPUID is safe to call directly
-        let result = __cpuid(0);
-        let vendor_bytes = [
-            (result.ebx as u8),
-            ((result.ebx >> 8) as u8),
-            ((result.ebx >> 16) as u8),
-            ((result.ebx >> 24) as u8),
-            (result.edx as u8),
-            ((result.edx >> 8) as u8),
-            ((result.edx >> 16) as u8),
-            ((result.edx >> 24) as u8),
-            (result.ecx as u8),
-            ((result.ecx >> 8) as u8),
-            ((result.ecx >> 16) as u8),
-            ((result.ecx >> 24) as u8),
-        ];
-        // 一般的なベンダーIDをチェック
-        if &vendor_bytes[..12] == b"GenuineIntel" {
-            "GenuineIntel"
-        } else if &vendor_bytes[..12] == b"AuthenticAMD" {
-            "AuthenticAMD"
-        } else {
-            "Unknown"
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        "Unknown"
-    }
-}
-
-/// CPUモデル名を取得
-fn get_cpu_model_name() -> &'static str {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use core::arch::x86_64::__cpuid;
-        // CPUID拡張機能チェック
-        let result = __cpuid(0x80000000);
-        if result.eax >= 0x80000004 {
-            // モデル名はCPUID 0x80000002-0x80000004で取得可能だが、
-            // 静的文字列を返すためベンダーに基づく推定を使用
-            let vendor = get_cpu_vendor();
-            if vendor == "GenuineIntel" {
-                "Intel(R) Core(TM) Processor"
-            } else if vendor == "AuthenticAMD" {
-                "AMD Processor"
-            } else {
-                "Unknown Processor"
-            }
-        } else {
-            "Unknown Processor"
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        "Unknown Processor"
-    }
-}
-
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;

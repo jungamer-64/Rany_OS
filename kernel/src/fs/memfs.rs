@@ -643,10 +643,21 @@ pub fn init_shell_fs() {
             let _ = root.mkdir("dev", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("etc", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("home", FileMode::DEFAULT_DIR);
+            let _ = root.mkdir("sys", FileMode::DEFAULT_DIR);
+            #[cfg(feature = "posix-compat")]
             let _ = root.mkdir("proc", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("tmp", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("var", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("drivers", FileMode::DEFAULT_DIR); // For dynamic driver loading
+
+            if let Ok(sys) = root.lookup("sys") {
+                let _ = sys.mkdir("cell", FileMode::DEFAULT_DIR);
+                let _ = sys.mkdir("system", FileMode::DEFAULT_DIR);
+                if let Ok(system) = sys.lookup("system") {
+                    let _ = system.mkdir("kernel", FileMode::DEFAULT_DIR);
+                    let _ = system.mkdir("net", FileMode::DEFAULT_DIR);
+                }
+            }
 
             // /etc/hostname を作成
             if let Ok(etc) = root.lookup("etc") {

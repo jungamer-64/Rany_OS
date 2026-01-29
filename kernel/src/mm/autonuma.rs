@@ -374,19 +374,17 @@ impl NumaScanner {
 
 /// 現在のプロセスのAutoNUMAスキャンを試行
 pub fn try_scan_current_process() {
-    // TODO: Fix ProcessInfo type mismatch - scan_task expects a different struct
-    // than what process::ProcessInfo provides. Need to either:
-    // 1. Add numa_scan_addr field to process::ProcessInfo
-    // 2. Create a separate NumaScanInfo trait/struct
-    // 3. Change scan_task signature to accept just PID
-    
+    // TODO: Align AutoNUMA scan info with Task/Domain context.
+    // scan_task expects a struct carrying numa_scan_addr; options:
+    // 1. Move numa_scan_addr onto TaskContext or a Domain-scoped record
+    // 2. Introduce a NumaScanInfo trait/struct keyed by DomainId
+    // 3. Change scan_task to accept DomainId + scan cursor directly
+    //
     // Temporarily disabled until design is resolved.
-    // use crate::task::process::{get_current_process, process_manager};
-    // let pid = get_current_process();
-    // if pid != crate::task::process::ProcessId::KERNEL {
-    //     if let Some(proc_lock) = process_manager().get(pid) {
-    //         // ...
-    //     }
+    // use crate::task::context::current_subject;
+    // let domain = current_subject().domain;
+    // if domain != crate::domain_system::DomainId::KERNEL {
+    //     // ...
     // }
 }
 

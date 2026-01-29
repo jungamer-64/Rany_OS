@@ -311,7 +311,6 @@ mod tests {
     use alloc::boxed::Box;
     use alloc::sync::Arc;
     use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
-    use crate::task::process::{process_manager, ProcessId, set_current_process};
     use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
     use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
 
@@ -337,10 +336,9 @@ mod tests {
         }
     }
 
-    fn set_current_subject_for_process(pid: ProcessId) -> CurrentTaskGuard {
+    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
         let cpu_id = crate::smp::current_cpu() as usize;
         let prev = get_current_task(cpu_id);
-        let domain_id = DomainId::new(pid.as_u64());
         let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
             .expect("failed to create test TCB");
         let caps = manager().get_capabilities(domain_id.as_u64());
@@ -356,15 +354,10 @@ mod tests {
         CurrentTaskGuard { prev, current }
     }
 
-    fn set_current_process_and_subject(pid: ProcessId) -> CurrentTaskGuard {
-        set_current_process(pid);
-        set_current_subject_for_process(pid)
-    }
-
     #[test_case]
     fn test_spawn_proxy_basic() {
-        let caller = process_manager().create(ProcessId::INIT, "p").unwrap();
-        let _guard = set_current_process_and_subject(caller);
+        let caller = DomainId::new(200);
+        let _guard = set_current_subject(caller);
 
         match ShellControlNamespace::spawn_proxy() {
             ExoValue::Map(m) => {
@@ -378,8 +371,8 @@ mod tests {
 
     #[test_case]
     fn test_spawn_with_caps_helper() {
-        let caller = process_manager().create(ProcessId::INIT, "caller").unwrap();
-        let _guard = set_current_process_and_subject(caller);
+        let caller = DomainId::new(210);
+        let _guard = set_current_subject(caller);
         manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
         // Create caps array for spawn_with_caps
@@ -399,8 +392,8 @@ mod tests {
 
     #[test_case]
     fn test_proxy_chain_with_cap_and_run() {
-        let caller = process_manager().create(ProcessId::INIT, "caller_chain").unwrap();
-        let _guard = set_current_process_and_subject(caller);
+        let caller = DomainId::new(220);
+        let _guard = set_current_subject(caller);
         manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
         // spawn proxy

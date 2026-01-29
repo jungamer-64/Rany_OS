@@ -1081,6 +1081,51 @@ impl<T: Copy> SharedRingBuffer<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use crate::domain_system::{DomainCredentials, DomainSecurity};
+    use crate::security::capability::{manager, CapabilitySet, CAP_IPC_LOCK};
+    use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
+
+    fn idle_entry(_: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    struct CurrentTaskGuard {
+        prev: Option<*mut TaskControlBlock>,
+        current: *mut TaskControlBlock,
+    }
+
+    impl Drop for CurrentTaskGuard {
+        fn drop(&mut self) {
+            let cpu_id = crate::smp::current_cpu() as usize;
+            let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
+            unsafe {
+                set_current_task(cpu_id, prev_ptr);
+                drop(Box::from_raw(self.current));
+            }
+        }
+    }
+
+    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
+        let cpu_id = crate::smp::current_cpu() as usize;
+        let prev = get_current_task(cpu_id);
+        let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
+            .expect("failed to create test TCB");
+        let caps = manager().get_capabilities(domain_id.as_u64());
+        tcb.security = Arc::new(DomainSecurity {
+            credentials: DomainCredentials::ROOT,
+            caps,
+        });
+        let boxed = Box::new(tcb);
+        let current = Box::into_raw(boxed);
+        unsafe {
+            set_current_task(cpu_id, current);
+        }
+        CurrentTaskGuard { prev, current }
+    }
 
     #[test_case]
     fn test_shared_memory_basic() {
@@ -1146,32 +1191,24 @@ mod tests {
     #[test_case]
     fn test_shm_attach_with_token_reclaim() {
         // Setup: create caller and target domains
-        let caller = crate::task::process::process_manager()
-            .create(crate::task::process::ProcessId::INIT, "caller_shm")
-            .unwrap();
-        let target = crate::task::process::process_manager()
-            .create(crate::task::process::ProcessId::INIT, "target_shm")
-            .unwrap();
+        let caller = DomainId::new(1);
+        let target = DomainId::new(2);
 
         // Caller gets permission to grant CAP_IPC_LOCK
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(
-            caller.as_u64(),
-            crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_IPC_LOCK),
-        );
+        manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_IPC_LOCK));
+        let _caller_guard = set_current_subject(caller);
 
         // Grant token to target
-        let token = crate::security::capability::manager().grant_capability_with_opts(
+        let token = manager().grant_capability_with_opts(
             caller.as_u64(),
             target.as_u64(),
-            crate::security::capability::CAP_IPC_LOCK,
+            CAP_IPC_LOCK,
             None,
             false,
         )
         .unwrap();
 
         // Caller creates the named shared memory
-        crate::task::process::set_current_process(caller);
         let name = "/token_shm";
         let id = shm_open(
             name,
@@ -1184,28 +1221,32 @@ mod tests {
         .unwrap();
 
         // Target attaches using token
-        crate::task::process::set_current_process(target);
-        let handle = shmat_with_token(id, Some(token)).unwrap();
-        assert!(handle.is_attached());
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+        let handle = {
+            let _target_guard = set_current_subject(target);
+            let handle = shmat_with_token(id, Some(token)).unwrap();
+            assert!(handle.is_attached());
+            assert_eq!(manager().in_flight_count(token), 1);
+            handle
+        };
 
         // Issuer revokes token
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+        assert!(manager().revoke_grant(caller.as_u64(), token, false).is_ok());
 
         // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
+        match manager().reclaim_token(token) {
             Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
             other => panic!("expected ReclamationBusy, got {:?}", other),
         }
 
         // Now detach (target releases resource)
-        crate::task::process::set_current_process(target);
-        handle.detach().unwrap();
+        {
+            let _target_guard = set_current_subject(target);
+            handle.detach().unwrap();
+        }
 
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+        assert_eq!(manager().in_flight_count(token), 0);
         // Now reclaim should succeed
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        assert!(manager().reclaim_token(token).is_ok());
     }
 }
 
