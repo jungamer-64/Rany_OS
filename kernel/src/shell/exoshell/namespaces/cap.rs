@@ -18,6 +18,19 @@ use crate::security::capability::{
 use crate::shell::exoshell::types::*;
 use alloc::boxed::Box;
 
+#[cfg(feature = "posix-compat")]
+const TRACE_RESOURCE: &str = "/proc/*/trace";
+#[cfg(not(feature = "posix-compat"))]
+const TRACE_RESOURCE: &str = "/sys/cell/*/trace";
+#[cfg(feature = "posix-compat")]
+const SIGNAL_RESOURCE: &str = "/proc/*/signal";
+#[cfg(not(feature = "posix-compat"))]
+const SIGNAL_RESOURCE: &str = "/sys/cell/*/signal";
+#[cfg(feature = "posix-compat")]
+const PRIORITY_RESOURCE: &str = "/proc/*/priority";
+#[cfg(not(feature = "posix-compat"))]
+const PRIORITY_RESOURCE: &str = "/sys/cell/*/priority";
+
 /// Capability 名前空間（権限管理）
 pub struct CapNamespace;
 
@@ -51,7 +64,7 @@ impl CapNamespace {
             (CAP_SYS_TIME, "/sys/time", vec![CapOperation::Write]),
             (
                 CAP_SYS_PTRACE,
-                "/proc/*/trace",
+                TRACE_RESOURCE,
                 vec![CapOperation::Read, CapOperation::Write],
             ),
             (
@@ -63,7 +76,7 @@ impl CapNamespace {
                     CapOperation::Delete,
                 ],
             ),
-            (CAP_KILL, "/proc/*/signal", vec![CapOperation::Execute]),
+            (CAP_KILL, SIGNAL_RESOURCE, vec![CapOperation::Execute]),
             (CAP_SETUID, "/identity/uid", vec![CapOperation::Write]),
             (CAP_SETGID, "/identity/gid", vec![CapOperation::Write]),
             (CAP_CHOWN, "/fs/*/owner", vec![CapOperation::Write]),
@@ -78,7 +91,7 @@ impl CapNamespace {
                 vec![CapOperation::Read, CapOperation::Write],
             ),
             (CAP_IPC_LOCK, "/mem/lock", vec![CapOperation::Execute]),
-            (CAP_SYS_NICE, "/proc/*/priority", vec![CapOperation::Write]),
+            (CAP_SYS_NICE, PRIORITY_RESOURCE, vec![CapOperation::Write]),
             (CAP_SYS_MODULE, "/sys/module", vec![CapOperation::Execute]),
             (
                 CAP_SYS_PHYSMEM,
@@ -318,8 +331,14 @@ impl CapNamespace {
             "/sys/module" => CAP_SYS_MODULE,
             "/sys/rawio" => CAP_SYS_RAWIO,
             "/sys/physmem" => CAP_SYS_PHYSMEM,
+            "/sys/cell/*/trace" => CAP_SYS_PTRACE,
+            "/sys/cell/*/signal" => CAP_KILL,
+            "/sys/cell/*/priority" => CAP_SYS_NICE,
+            #[cfg(feature = "posix-compat")]
             "/proc/*/trace" => CAP_SYS_PTRACE,
+            #[cfg(feature = "posix-compat")]
             "/proc/*/signal" => CAP_KILL,
+            #[cfg(feature = "posix-compat")]
             "/proc/*/priority" => CAP_SYS_NICE,
             "/identity/uid" => CAP_SETUID,
             "/identity/gid" => CAP_SETGID,
@@ -371,7 +390,6 @@ mod tests {
     use crate::security::capability::*;
     use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
     use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
-    use crate::task::process::{ProcessId, process_manager, set_current_process};
 
     fn idle_entry(_: u64) -> ! {
         loop {
@@ -395,10 +413,9 @@ mod tests {
         }
     }
 
-    fn set_current_subject_for_process(pid: ProcessId) -> CurrentTaskGuard {
+    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
         let cpu_id = crate::smp::current_cpu() as usize;
         let prev = get_current_task(cpu_id);
-        let domain_id = DomainId::new(pid.as_u64());
         let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
             .expect("failed to create test TCB");
         let caps = manager().get_capabilities(domain_id.as_u64());
@@ -414,19 +431,14 @@ mod tests {
         CurrentTaskGuard { prev, current }
     }
 
-    fn set_current_process_and_subject(pid: ProcessId) -> CurrentTaskGuard {
-        set_current_process(pid);
-        set_current_subject_for_process(pid)
-    }
-
     #[test_case]
     fn test_grant_requires_permissions() {
-        let caller = process_manager().create(ProcessId::INIT, "caller").unwrap();
-        let _guard = set_current_process_and_subject(caller);
+        let caller = DomainId::new(100);
+        let _guard = set_current_subject(caller);
         // caller has no capabilities
         manager().set_capabilities(caller.as_u64(), CapabilitySet::empty());
 
-        let target = process_manager().create(ProcessId::INIT, "target").unwrap();
+        let target = DomainId::new(101);
 
         let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
         match res {
@@ -437,16 +449,12 @@ mod tests {
 
     #[test_case]
     fn test_grant_with_permitted() {
-        let caller = process_manager()
-            .create(ProcessId::INIT, "caller2")
-            .unwrap();
-        let _guard = set_current_process_and_subject(caller);
+        let caller = DomainId::new(110);
+        let _guard = set_current_subject(caller);
         // give caller permitted CAP_NET_BIND
         manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let target = process_manager()
-            .create(ProcessId::INIT, "target2")
-            .unwrap();
+        let target = DomainId::new(111);
 
         let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
 
@@ -467,15 +475,11 @@ mod tests {
 
     #[test_case]
     fn test_tokens_listing_and_revoke() {
-        let caller = process_manager()
-            .create(ProcessId::INIT, "caller3")
-            .unwrap();
-        let mut _guard = set_current_process_and_subject(caller);
+        let caller = DomainId::new(120);
+        let mut _guard = set_current_subject(caller);
         manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let target = process_manager()
-            .create(ProcessId::INIT, "target3")
-            .unwrap();
+        let target = DomainId::new(121);
 
         // Grant a token
         let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
@@ -485,7 +489,7 @@ mod tests {
         };
 
         // Switch to target and list tokens
-        _guard = set_current_process_and_subject(target);
+        _guard = set_current_subject(target);
         match CapNamespace::tokens(None) {
             ExoValue::Array(arr) => {
                 assert_eq!(arr.len(), 1);
@@ -498,14 +502,14 @@ mod tests {
         }
 
         // Try to revoke as non-issuer (should fail)
-        _guard = set_current_process_and_subject(target);
+        _guard = set_current_subject(target);
         match CapNamespace::revoke(token_id) {
             ExoValue::Error(_) => {}
             other => panic!("Expected error on unauthorized revoke, got {:?}", other),
         }
 
         // Revoke as issuer
-        _guard = set_current_process_and_subject(caller);
+        _guard = set_current_subject(caller);
         match CapNamespace::revoke(token_id) {
             ExoValue::Bool(true) => {}
             other => panic!("Expected success on revoke by issuer, got {:?}", other),
@@ -517,15 +521,11 @@ mod tests {
 
     #[test_case]
     fn test_sysadmin_can_revoke() {
-        let issuer = process_manager()
-            .create(ProcessId::INIT, "issuer")
-            .unwrap();
-        let mut _guard = set_current_process_and_subject(issuer);
+        let issuer = DomainId::new(130);
+        let mut _guard = set_current_subject(issuer);
         manager().set_capabilities(issuer.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let target = process_manager()
-            .create(ProcessId::INIT, "target_admin")
-            .unwrap();
+        let target = DomainId::new(131);
 
         let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
         let token_id = match res {
@@ -533,10 +533,10 @@ mod tests {
             other => panic!("grant failed: {:?}", other),
         };
 
-        let admin = process_manager().create(ProcessId::INIT, "admin").unwrap();
+        let admin = DomainId::new(132);
         manager().set_capabilities(admin.as_u64(), CapabilitySet::with_permitted(CAP_SYS_ADMIN));
 
-        _guard = set_current_process_and_subject(admin);
+        _guard = set_current_subject(admin);
         match CapNamespace::revoke(token_id) {
             ExoValue::Bool(true) => {}
             other => panic!("Expected admin revoke to succeed, got {:?}", other),
@@ -547,14 +547,12 @@ mod tests {
 
     #[test_case]
     fn test_delegation_allows_regrant() {
-        let parent = process_manager()
-            .create(ProcessId::INIT, "parent")
-            .unwrap();
-        let mut _guard = set_current_process_and_subject(parent);
+        let parent = DomainId::new(140);
+        let mut _guard = set_current_subject(parent);
         manager().set_capabilities(parent.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let child = process_manager().create(ProcessId::INIT, "child").unwrap();
-        let grand = process_manager().create(ProcessId::INIT, "grand").unwrap();
+        let child = DomainId::new(141);
+        let grand = DomainId::new(142);
 
         // Parent grants to child with delegatable=true
         let _t = match CapNamespace::grant("/net/bind", &[], &format!("{}", child.as_u64()), None, true) {
@@ -563,7 +561,7 @@ mod tests {
         };
 
         // Child re-grants to grand
-        _guard = set_current_process_and_subject(child);
+        _guard = set_current_subject(child);
         let res = CapNamespace::grant("/net/bind", &[], &format!("{}", grand.as_u64()), None, false);
         match res {
             ExoValue::Capability(cap) => {
@@ -575,14 +573,12 @@ mod tests {
 
     #[test_case]
     fn test_delegation_denies_regrant_when_not_delegatable() {
-        let parent = process_manager()
-            .create(ProcessId::INIT, "parent2")
-            .unwrap();
-        let mut _guard = set_current_process_and_subject(parent);
+        let parent = DomainId::new(150);
+        let mut _guard = set_current_subject(parent);
         manager().set_capabilities(parent.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let child = process_manager().create(ProcessId::INIT, "child2").unwrap();
-        let grand = process_manager().create(ProcessId::INIT, "grand2").unwrap();
+        let child = DomainId::new(151);
+        let grand = DomainId::new(152);
 
         // Parent grants to child with delegatable=false
         let _t = match CapNamespace::grant("/net/bind", &[], &format!("{}", child.as_u64()), None, false) {
@@ -591,7 +587,7 @@ mod tests {
         };
 
         // Child tries to re-grant to grand and should fail
-        _guard = set_current_process_and_subject(child);
+        _guard = set_current_subject(child);
         match CapNamespace::grant("/net/bind", &[], &format!("{}", grand.as_u64()), None, false) {
             ExoValue::Error(_) => {}
             other => panic!("Expected regrant to fail, got {:?}", other),

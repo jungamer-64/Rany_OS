@@ -188,8 +188,16 @@ pub struct DomainSnapshot {
     pub name: String,
     pub state: DomainState,
     pub tasks: usize,
+    pub task_ids: Vec<u64>,
     pub memory_bytes: u64,
     pub rrefs: u64,
+    pub runtime_ticks: u64,
+    pub context_switches: u64,
+    pub created_at: u64,
+    pub dependencies: Vec<DomainId>,
+    pub dependents: Vec<DomainId>,
+    pub numa_node: Option<usize>,
+    pub panic_message: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -444,8 +452,16 @@ fn to_snapshot(domain: &Domain) -> DomainSnapshot {
         name: domain.name.clone(),
         state: domain.state,
         tasks: domain.tasks.len(),
+        task_ids: domain.tasks.clone(),
         memory_bytes: domain.allocated_memory,
         rrefs: domain.rref_count,
+        runtime_ticks: domain.runtime_ticks,
+        context_switches: domain.context_switches,
+        created_at: domain.created_at,
+        dependencies: domain.dependencies.clone(),
+        dependents: domain.dependents.clone(),
+        numa_node: domain.numa_node,
+        panic_message: domain.panic_message.clone(),
         last_error: domain.last_error.clone(),
     }
 }

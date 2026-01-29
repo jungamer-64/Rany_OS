@@ -1360,6 +1360,7 @@ pub mod task {
         }
     }
     // Minimal process manager stub for tests (provides `process_manager()` and types used by `procfs` tests)
+    #[cfg(feature = "posix-compat")]
     pub mod process {
         use alloc::sync::Arc;
         use alloc::vec::Vec;
@@ -1909,4 +1910,3 @@ mod async_swapout_sim_lib {
         assert!(success > 0);
     }
 }
-

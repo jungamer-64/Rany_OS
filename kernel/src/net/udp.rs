@@ -793,8 +793,8 @@ impl UdpProcessor {
 
         // Token present - validate ownership and capability
         let t = token.unwrap();
-        let pid = crate::task::process::get_current_process();
-        if !crate::security::capability::manager().validate_token(pid.as_u64(), t, crate::security::capability::CAP_NET_BIND) {
+        let caller_domain = crate::task::context::current_subject().domain;
+        if !crate::security::capability::manager().validate_token(caller_domain.as_u64(), t, crate::security::capability::CAP_NET_BIND) {
              return Err(NetworkError::PermissionDenied);
         }
         
@@ -833,6 +833,51 @@ impl Default for UdpProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
+    use crate::security::capability::{manager, CapabilitySet, CAP_NET_BIND};
+    use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
+
+    fn idle_entry(_: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    struct CurrentTaskGuard {
+        prev: Option<*mut TaskControlBlock>,
+        current: *mut TaskControlBlock,
+    }
+
+    impl Drop for CurrentTaskGuard {
+        fn drop(&mut self) {
+            let cpu_id = crate::smp::current_cpu() as usize;
+            let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
+            unsafe {
+                set_current_task(cpu_id, prev_ptr);
+                drop(Box::from_raw(self.current));
+            }
+        }
+    }
+
+    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
+        let cpu_id = crate::smp::current_cpu() as usize;
+        let prev = get_current_task(cpu_id);
+        let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
+            .expect("failed to create test TCB");
+        let caps = manager().get_capabilities(domain_id.as_u64());
+        tcb.security = Arc::new(DomainSecurity {
+            credentials: DomainCredentials::ROOT,
+            caps,
+        });
+        let boxed = Box::new(tcb);
+        let current = Box::into_raw(boxed);
+        unsafe {
+            set_current_task(cpu_id, current);
+        }
+        CurrentTaskGuard { prev, current }
+    }
 
     #[test_case]
     fn test_udp_packet() {
@@ -877,45 +922,44 @@ mod tests {
     #[test_case]
     fn test_bind_with_token_reclaim() {
         // Setup: create caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_bind").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_bind").unwrap();
+        let caller = DomainId::new(1);
+        let target = DomainId::new(2);
 
         // Caller gets permission to grant CAP_NET_BIND
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_NET_BIND));
+        manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
+        let _caller_guard = set_current_subject(caller);
 
         // Grant token to target
-        let token = crate::security::capability::manager().grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_NET_BIND, None, false).unwrap();
+        let token = manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), CAP_NET_BIND, None, false)
+            .unwrap();
 
         // Target binds using token
-        crate::task::process::set_current_process(target);
-        let sock = crate::net::stack::bind_udp_with_token(40000, Some(token));
-        let mut buf = [0u8; 1024];
-        
-        // ... (truncated)
-        // I should only replace the specific lines
-        // But context is tricky.
-        // I will do two chunks.
-        assert!(sock.is_some());
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+        {
+            let _target_guard = set_current_subject(target);
+            let sock = crate::net::stack::bind_udp_with_token(40000, Some(token));
+            assert!(sock.is_some());
+            assert_eq!(manager().in_flight_count(token), 1);
+        }
 
         // Issuer revokes token (mark revoked)
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+        assert!(manager().revoke_grant(caller.as_u64(), token, false).is_ok());
 
         // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
+        match manager().reclaim_token(token) {
             Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
             other => panic!("expected ReclamationBusy, got {:?}", other),
         }
 
         // Now unbind the socket (target releases resource)
-        crate::task::process::set_current_process(target);
-        crate::net::stack::unbind_udp(40000);
+        {
+            let _target_guard = set_current_subject(target);
+            crate::net::stack::unbind_udp(40000);
+        }
 
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+        assert_eq!(manager().in_flight_count(token), 0);
         // Now reclaim should succeed
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        assert!(manager().reclaim_token(token).is_ok());
     }
 
     #[test_case]
@@ -981,4 +1025,3 @@ mod tests {
         assert_eq!(stats.2, 1); // rx_dropped == 1
     }
 }
-

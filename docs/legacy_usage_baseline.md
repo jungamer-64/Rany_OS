@@ -10,7 +10,7 @@ This document establishes the baseline usage of legacy POSIX features (`ProcessI
 *   **`kernel/src/service_impl.rs`**: **HIGH RISK**. Mimics detailed process contexts for NVMe and FS operations.
     *   Creates fake processes (`caller_nvme`, `target_nvme`) to satisfy `Context` checks.
     *   `list_processes` (ps) iterates 0..100 PIDs.
-    *   *Migration:* Must replace with `DomainId` and new `sys/cells` iteration.
+    *   *Migration:* Must replace with `DomainId` and new `/sys/cell` iteration.
 *   **`kernel/src/task/context.rs`**: Likely holds Owner ID context.
 
 ### Replacements Available

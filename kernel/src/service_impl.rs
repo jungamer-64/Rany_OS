@@ -1608,6 +1608,36 @@ impl ShellServices for ExoKernel {
     }
 
     fn list_directory(&self, path: &str) -> Result<alloc::vec::Vec<KapiDirEntry>, &'static str> {
+        if let Some(result) = crate::fs::sysfs::list_directory(path) {
+            return result.map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|e| {
+                        let file_type = match e.file_type {
+                            crate::fs::FileType::Directory => {
+                                kernel_api::shell::FileType::Directory
+                            }
+                            crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
+                            crate::fs::FileType::CharDevice => {
+                                kernel_api::shell::FileType::CharDevice
+                            }
+                            crate::fs::FileType::BlockDevice => {
+                                kernel_api::shell::FileType::BlockDevice
+                            }
+                            crate::fs::FileType::Socket => kernel_api::shell::FileType::Socket,
+                            crate::fs::FileType::Fifo => kernel_api::shell::FileType::Fifo,
+                            _ => kernel_api::shell::FileType::File,
+                        };
+                        KapiDirEntry {
+                            name: e.name,
+                            file_type,
+                            size: 0,
+                            ino: e.ino,
+                        }
+                    })
+                    .collect()
+            });
+        }
         match crate::fs::list_directory(path, "/") {
             Ok(entries) => {
                 let result = entries
@@ -1643,6 +1673,9 @@ impl ShellServices for ExoKernel {
     }
 
     fn read_file(&self, path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
+        if let Some(result) = crate::fs::sysfs::read_file(path) {
+            return result;
+        }
         crate::fs::read_file_content(path, "/").map_err(|_| "Failed to read file")
     }
 
@@ -1653,6 +1686,12 @@ impl ShellServices for ExoKernel {
         // Use async_memfs's Bytes type internally for zero-copy semantics
         use crate::fs::async_memfs::Bytes;
 
+        if let Some(result) = crate::fs::sysfs::read_file(path) {
+            let content = result?;
+            let bytes = Bytes::from(content);
+            return Ok(bytes.into_inner());
+        }
+
         // Read content
         let content = crate::fs::read_file_content(path, "/").map_err(|_| "Failed to read file")?;
 
@@ -1662,10 +1701,32 @@ impl ShellServices for ExoKernel {
     }
 
     fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str> {
+        if crate::fs::sysfs::is_sysfs_path(path) {
+            return Err("sysfs is read-only");
+        }
         crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
     }
 
     fn stat_file(&self, path: &str) -> Result<kernel_api::shell::FileAttributes, &'static str> {
+        if let Some(result) = crate::fs::sysfs::stat_file(path) {
+            return result.map(|attr| {
+                let file_type = match attr.file_type {
+                    crate::fs::FileType::Directory => kernel_api::shell::FileType::Directory,
+                    crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
+                    crate::fs::FileType::CharDevice => kernel_api::shell::FileType::CharDevice,
+                    crate::fs::FileType::BlockDevice => kernel_api::shell::FileType::BlockDevice,
+                    crate::fs::FileType::Socket => kernel_api::shell::FileType::Socket,
+                    crate::fs::FileType::Fifo => kernel_api::shell::FileType::Fifo,
+                    _ => kernel_api::shell::FileType::File,
+                };
+                kernel_api::shell::FileAttributes {
+                    size: attr.size,
+                    ino: attr.ino,
+                    nlink: attr.nlink as u64,
+                    file_type,
+                }
+            });
+        }
         match crate::fs::stat_file(path, "/") {
             Ok(attr) => {
                 let file_type = match attr.file_type {
@@ -1689,14 +1750,23 @@ impl ShellServices for ExoKernel {
     }
 
     fn make_directory(&self, path: &str) -> Result<(), &'static str> {
+        if crate::fs::sysfs::is_sysfs_path(path) {
+            return Err("sysfs is read-only");
+        }
         crate::fs::make_directory(path, "/").map_err(|_| "Failed to create directory")
     }
 
     fn remove_file(&self, path: &str) -> Result<(), &'static str> {
+        if crate::fs::sysfs::is_sysfs_path(path) {
+            return Err("sysfs is read-only");
+        }
         crate::fs::remove_file(path, "/").map_err(|_| "Failed to remove file")
     }
 
     fn remove_directory(&self, path: &str) -> Result<(), &'static str> {
+        if crate::fs::sysfs::is_sysfs_path(path) {
+            return Err("sysfs is read-only");
+        }
         crate::fs::remove_directory(path, "/").map_err(|_| "Failed to remove directory")
     }
 }
@@ -1721,18 +1791,62 @@ pub unsafe fn register_kernel_services() {
 #[cfg(test)]
 mod nvme_tests {
     use super::*;
-    use crate::task::process;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
     use crate::security::capability::{self, CapabilitySet};
+    use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
+
+    fn idle_entry(_: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    struct CurrentTaskGuard {
+        prev: Option<*mut TaskControlBlock>,
+        current: *mut TaskControlBlock,
+    }
+
+    impl Drop for CurrentTaskGuard {
+        fn drop(&mut self) {
+            let cpu_id = crate::smp::current_cpu() as usize;
+            let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
+            unsafe {
+                set_current_task(cpu_id, prev_ptr);
+                drop(Box::from_raw(self.current));
+            }
+        }
+    }
+
+    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
+        let cpu_id = crate::smp::current_cpu() as usize;
+        let prev = get_current_task(cpu_id);
+        let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
+            .expect("failed to create test TCB");
+        let caps = crate::security::capability::manager().get_capabilities(domain_id.as_u64());
+        tcb.security = Arc::new(DomainSecurity {
+            credentials: DomainCredentials::ROOT,
+            caps,
+        });
+        let boxed = Box::new(tcb);
+        let current = Box::into_raw(boxed);
+        unsafe {
+            set_current_task(cpu_id, current);
+        }
+        CurrentTaskGuard { prev, current }
+    }
 
     #[test_case]
     fn test_nvme_open_with_token_reclaim() {
         // Setup: create caller and target domains
-        let caller = process::process_manager().create(process::ProcessId::INIT, "caller_nvme").unwrap();
-        let target = process::process_manager().create(process::ProcessId::INIT, "target_nvme").unwrap();
+        let caller = DomainId::new(300);
+        let target = DomainId::new(301);
 
         // Caller gets permission to grant CAP_DMA
-        process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(crate::security::capability::CAP_DMA));
+        crate::security::capability::manager()
+            .set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(crate::security::capability::CAP_DMA));
+        let _caller_guard = set_current_subject(caller);
 
         // Grant token to target
         let token = crate::security::capability::manager()
@@ -1740,14 +1854,15 @@ mod nvme_tests {
             .unwrap();
 
         // Target opens using token
-        process::set_current_process(target);
-        let handle = EXOKERNEL
-            .nvme_open_direct_with_token(0, 0, 1, Some(token))
-            .expect("open should succeed");
+        let handle = {
+            let _target_guard = set_current_subject(target);
+            EXOKERNEL
+                .nvme_open_direct_with_token(0, 0, 1, Some(token))
+                .expect("open should succeed")
+        };
         assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
 
         // Issue revocation
-        process::set_current_process(caller);
         assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
 
         // Immediate reclaim should fail (in-flight)
@@ -1757,13 +1872,14 @@ mod nvme_tests {
         }
 
         // Target closes handle
-        process::set_current_process(target);
-        assert!(EXOKERNEL.nvme_close_direct(handle).is_ok());
+        {
+            let _target_guard = set_current_subject(target);
+            assert!(EXOKERNEL.nvme_close_direct(handle).is_ok());
+        }
 
         assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
 
         // Now reclaim should succeed
-        process::set_current_process(caller);
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 }
@@ -1771,18 +1887,62 @@ mod nvme_tests {
 #[cfg(test)]
 mod fs_tests {
     use super::*;
-    use crate::task::process;
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
     use crate::security::capability::{self, CapabilitySet};
+    use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
+
+    fn idle_entry(_: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    struct CurrentTaskGuard {
+        prev: Option<*mut TaskControlBlock>,
+        current: *mut TaskControlBlock,
+    }
+
+    impl Drop for CurrentTaskGuard {
+        fn drop(&mut self) {
+            let cpu_id = crate::smp::current_cpu() as usize;
+            let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
+            unsafe {
+                set_current_task(cpu_id, prev_ptr);
+                drop(Box::from_raw(self.current));
+            }
+        }
+    }
+
+    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
+        let cpu_id = crate::smp::current_cpu() as usize;
+        let prev = get_current_task(cpu_id);
+        let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
+            .expect("failed to create test TCB");
+        let caps = crate::security::capability::manager().get_capabilities(domain_id.as_u64());
+        tcb.security = Arc::new(DomainSecurity {
+            credentials: DomainCredentials::ROOT,
+            caps,
+        });
+        let boxed = Box::new(tcb);
+        let current = Box::into_raw(boxed);
+        unsafe {
+            set_current_task(cpu_id, current);
+        }
+        CurrentTaskGuard { prev, current }
+    }
 
     #[test_case]
     fn test_fs_open_with_token_reclaim() {
         // Setup: create caller and target domains
-        let caller = process::process_manager().create(process::ProcessId::INIT, "caller_fs").unwrap();
-        let target = process::process_manager().create(process::ProcessId::INIT, "target_fs").unwrap();
+        let caller = DomainId::new(400);
+        let target = DomainId::new(401);
 
         // Caller gets permission to grant CAP_FOWNER
-        process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+        crate::security::capability::manager()
+            .set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+        let _caller_guard = set_current_subject(caller);
 
         // Grant token to target
         let token = crate::security::capability::manager()
@@ -1790,14 +1950,15 @@ mod fs_tests {
             .unwrap();
 
         // Target opens using token
-        process::set_current_process(target);
-        let handle = EXOKERNEL
-            .fs_open_with_token("test_token_file", kernel_api::OpenMode::Write, Some(token))
-            .expect("open should succeed");
+        let handle = {
+            let _target_guard = set_current_subject(target);
+            EXOKERNEL
+                .fs_open_with_token("test_token_file", kernel_api::OpenMode::Write, Some(token))
+                .expect("open should succeed")
+        };
         assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
 
         // Issue revocation
-        process::set_current_process(caller);
         assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
 
         // Immediate reclaim should fail (in-flight)
@@ -1807,11 +1968,12 @@ mod fs_tests {
         }
 
         // Close file handle
-        process::set_current_process(target);
-        assert!(EXOKERNEL.fs_close(handle).is_ok());
+        {
+            let _target_guard = set_current_subject(target);
+            assert!(EXOKERNEL.fs_close(handle).is_ok());
+        }
 
         // Now reclaim should succeed
-        process::set_current_process(caller);
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 }

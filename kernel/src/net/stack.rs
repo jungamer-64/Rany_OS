@@ -498,6 +498,16 @@ impl NetworkStack {
         }
     }
 
+    /// Resolve an IP address to a MAC from the ARP cache (public wrapper)
+    pub fn arp_resolve(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
+        self.arp.resolve(ip, current_time)
+    }
+
+    /// Insert an entry into the ARP cache (public wrapper for tests/diagnostics)
+    pub fn arp_cache_insert(&mut self, ip: Ipv4Address, mac: MacAddress, current_time: u64) {
+        self.arp.cache().insert(ip, mac, current_time);
+    }
+
     /// Send ICMP echo reply
     fn send_icmp_echo_reply(
         &mut self,
