@@ -40,7 +40,7 @@ pub use event::{EventWaitFuture, NetworkEvent, NetworkEventQueue, event_queue};
 // Re-exports: inner
 
 // Re-exports: tcb
-pub use tcb::{TcbTable, TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
+pub use tcb::{TcbTable, TcpConnectionSnapshot, TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 
 // Re-exports: retransmit
 pub use retransmit::{

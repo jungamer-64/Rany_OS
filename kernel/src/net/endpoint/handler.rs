@@ -205,11 +205,14 @@ impl NetworkEventHandler {
         tcb.state = TcpConnectionState::SynSent;
         tcb_table().insert(tcb);
 
-        // SYNパケット構築
+        // SYNパケット構築 (TCPオプション付き)
+        // MSS=1460 (標準的なイーサネットMTU)
+        // Window Scale=7 (最大8MBウィンドウ)
         let mut syn_segment = TcpSegmentBuilder::new(local_port, remote.port)
             .seq(isn)
             .syn()
             .window(65535)
+            .syn_options(1460, 7) // MSS + Window Scale + SACK Permitted
             .build();
 
         // チェックサム計算

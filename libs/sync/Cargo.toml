@@ -1,0 +1,21 @@
+[package]
+name = "exorust_sync"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+description = "Synchronization primitives for ExoRust"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+spin = "0.10"
+
+[features]
+default = []
+# Enable performance metrics collection
+metrics = []
+# Enable full-featured backoff algorithm
+advanced-backoff = []

@@ -689,6 +689,53 @@ impl UdpSocketTable {
             self.stats.checksum_errors.load(Ordering::Relaxed),
         )
     }
+
+    /// List all bound UDP sockets (for netstat)
+    pub fn list_sockets(&self) -> alloc::vec::Vec<UdpSocketSnapshot> {
+        let mut result = alloc::vec::Vec::new();
+        match self.sockets.lock() {
+            Ok(sockets) => {
+                for slot in sockets.iter() {
+                    if let Some(inner) = slot {
+                        match inner.lock() {
+                            Ok(socket) => {
+                                if !socket.closed {
+                                    result.push(UdpSocketSnapshot {
+                                        local_port: socket.local_port,
+                                        rx_queue_len: socket.rx_queue.len() + socket.rx_packet_queue.len(),
+                                    });
+                                }
+                            }
+                            Err(_) => {
+                                // Skip poisoned sockets
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] UDP Table poisoned during list_sockets");
+            }
+        }
+        result
+    }
+
+    /// Get number of bound sockets
+    pub fn socket_count(&self) -> usize {
+        match self.sockets.lock() {
+            Ok(sockets) => sockets.iter().filter(|s| s.is_some()).count(),
+            Err(_) => 0,
+        }
+    }
+}
+
+/// UDP socket snapshot for monitoring
+#[derive(Debug, Clone)]
+pub struct UdpSocketSnapshot {
+    /// Local port
+    pub local_port: u16,
+    /// Number of pending datagrams in receive queue
+    pub rx_queue_len: usize,
 }
 
 /// UDP processor for handling UDP packets

@@ -466,14 +466,13 @@ pub fn poll_timer_events() {
         crate::mm::pmm_maintenance_tick(tick);
 
         // Network Stack Batch Flush
-        // check_batch_timeout checks if any batched packets need flushing based on elapsed time.
-        // Assuming TSC frequency is available or passed.
-        // For now, we'll use a simplified check or pass a placeholder frequency until we have a global TSC source accessible here.
-        // Using 2GHz (2000MHz) as a safe default for now if not available.
-        // TODO: Get actual TSC frequency from TimeManager
-        let tsc_freq = 2000; 
+        // check_batch_timeout expects MHz; fall back to 2GHz (2000MHz) if TSC frequency is unavailable.
+        let tsc_freq_mhz = crate::time::system_clock()
+            .tsc_frequency()
+            .map(|hz| (hz / 1_000_000).max(1))
+            .unwrap_or(2000);
         let current_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        crate::net::driver_bridge::check_batch_timeout(current_tsc, tsc_freq);
+        crate::net::driver_bridge::check_batch_timeout(current_tsc, tsc_freq_mhz);
 
         // ペンディングのプリエンプションを処理
         if crate::task::preemption::is_preemption_pending() {

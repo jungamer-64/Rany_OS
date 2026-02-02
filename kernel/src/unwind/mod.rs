@@ -406,20 +406,9 @@ impl KernelSymbolTable {
 
         let mut offset = 0;
         while self.base + offset < self.end {
-            // TODO: Centralize pointer->struct dereference validation. `self.table.base` is
-            // an address provided by the linker and may not be validated here. Consider
-            // a safe helper that verifies memory mapping and data size before returning
-            // a reference. For now, this operation is inherently unsafe.
-            let sym = unsafe { &*((self.base + offset) as *const KernelSymbol) };
-
-            // シンボル名を取得
-            let name_ptr = (self.base + offset + core::mem::size_of::<KernelSymbol>()) as *const u8;
-            // TODO: See note above about centralizing memory validation.
-            let name = unsafe {
-                core::str::from_utf8_unchecked(core::slice::from_raw_parts(
-                    name_ptr,
-                    sym.name_len as usize,
-                ))
+            let (sym, name, aligned_size) = match self.symbol_at(offset) {
+                Some(value) => value,
+                None => break,
             };
 
             // アドレスがこのシンボルの範囲内かチェック
@@ -439,8 +428,6 @@ impl KernelSymbolTable {
             }
 
             // 次のエントリへ
-            let entry_size = core::mem::size_of::<KernelSymbol>() + sym.name_len as usize;
-            let aligned_size = (entry_size + 7) & !7;
             offset += aligned_size;
         }
 
@@ -463,6 +450,33 @@ impl KernelSymbolTable {
             table: self,
             offset: 0,
         }
+    }
+
+    fn symbol_at(&self, offset: usize) -> Option<(&KernelSymbol, &str, usize)> {
+        let base = self.base.checked_add(offset)?;
+        let sym_end = base.checked_add(core::mem::size_of::<KernelSymbol>())?;
+        if sym_end > self.end {
+            return None;
+        }
+
+        let sym = unsafe { &*(base as *const KernelSymbol) };
+        let name_len = sym.name_len as usize;
+        let name_start = sym_end;
+        let name_end = name_start.checked_add(name_len)?;
+        if name_end > self.end {
+            return None;
+        }
+
+        let name_bytes = unsafe { core::slice::from_raw_parts(name_start as *const u8, name_len) };
+        let name = core::str::from_utf8(name_bytes).ok()?;
+
+        let entry_size = core::mem::size_of::<KernelSymbol>().checked_add(name_len)?;
+        let aligned_size = entry_size.checked_add(7)? & !7;
+        if aligned_size == 0 {
+            return None;
+        }
+
+        Some((sym, name, aligned_size))
     }
 }
 
@@ -490,21 +504,8 @@ impl<'a> Iterator for KernelSymbolIter<'a> {
             return None;
         }
 
-        // TODO: See note above about centralizing memory validation for symbol table reads.
-        let sym = unsafe { &*((self.table.base + self.offset) as *const KernelSymbol) };
-        let name_ptr =
-            (self.table.base + self.offset + core::mem::size_of::<KernelSymbol>()) as *const u8;
-        let name = unsafe {
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(
-                name_ptr,
-                sym.name_len as usize,
-            ))
-        };
-
-        let entry_size = core::mem::size_of::<KernelSymbol>() + sym.name_len as usize;
-        let aligned_size = (entry_size + 7) & !7;
+        let (sym, name, aligned_size) = self.table.symbol_at(self.offset)?;
         self.offset += aligned_size;
-
         Some((sym, name))
     }
 }

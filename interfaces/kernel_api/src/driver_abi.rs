@@ -974,6 +974,7 @@ macro_rules! export_async_driver {
             use $crate::driver_abi::{DriverContext, DriverVTable, DRIVER_ABI_VERSION, AsyncDriverWrapper};
             use $crate::services::kernel;
             use alloc::boxed::Box;
+            use alloc::format;
             use core::sync::atomic::Ordering;
 
             extern "C" fn probe_adapter(ctx: *mut DriverContext) -> i32 {
@@ -995,9 +996,9 @@ macro_rules! export_async_driver {
                         return;
                     }
 
-                    if let Err(_) = wrapper.driver.probe(ctx_ref).await {
-                         // TODO: Proper error handling
-                         kernel().log("Async probe failed");
+                    if let Err(err) = wrapper.driver.probe(ctx_ref).await {
+                         let msg = format!("Async probe failed: {err}");
+                         kernel().log(&msg);
                     }
 
                     // Release busy

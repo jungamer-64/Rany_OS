@@ -19,6 +19,8 @@ pub struct TcpSegmentBuilder {
     flags: u8,
     window: u16,
     data: Vec<u8>,
+    /// TCPオプション
+    options: Vec<u8>,
 }
 
 impl TcpSegmentBuilder {
@@ -32,6 +34,7 @@ impl TcpSegmentBuilder {
             flags: 0,
             window: 65535,
             data: Vec::new(),
+            options: Vec::new(),
         }
     }
 
@@ -101,10 +104,85 @@ impl TcpSegmentBuilder {
         self
     }
 
+    // ====================
+    // TCPオプション追加メソッド
+    // ====================
+
+    /// MSS (Maximum Segment Size) オプション追加
+    /// Kind=2, Length=4, MSS=value
+    pub fn mss(mut self, mss: u16) -> Self {
+        self.options.push(2); // Kind
+        self.options.push(4); // Length
+        self.options.extend_from_slice(&mss.to_be_bytes());
+        self
+    }
+
+    /// Window Scale オプション追加
+    /// Kind=3, Length=3, Shift=value
+    pub fn window_scale(mut self, scale: u8) -> Self {
+        self.options.push(3); // Kind
+        self.options.push(3); // Length
+        self.options.push(scale);
+        self
+    }
+
+    /// SACK Permitted オプション追加
+    /// Kind=4, Length=2
+    pub fn sack_permitted(mut self) -> Self {
+        self.options.push(4); // Kind
+        self.options.push(2); // Length
+        self
+    }
+
+    /// Timestamp オプション追加
+    /// Kind=8, Length=10, TSval=ts_val, TSecr=ts_ecr
+    pub fn timestamp(mut self, ts_val: u32, ts_ecr: u32) -> Self {
+        self.options.push(8);  // Kind
+        self.options.push(10); // Length
+        self.options.extend_from_slice(&ts_val.to_be_bytes());
+        self.options.extend_from_slice(&ts_ecr.to_be_bytes());
+        self
+    }
+
+    /// NOP (No Operation) オプション追加 - パディング用
+    pub fn nop(mut self) -> Self {
+        self.options.push(1); // Kind=1 (NOP)
+        self
+    }
+
+    /// SYN/SYN-ACK用の標準オプションセットを追加
+    /// MSS + Window Scale + SACK Permitted + NOP (4バイト境界パディング)
+    pub fn syn_options(self, mss: u16, window_scale: u8) -> Self {
+        // MSS(4) + WS(3) + SACK(2) + NOP(1) = 10 bytes → 次の4バイト境界は12
+        // 12バイトにするにはNOP 2個追加
+        self.mss(mss)
+            .window_scale(window_scale)
+            .sack_permitted()
+            .nop()
+            .nop()
+    }
+
+    /// オプション長をパディングして4バイト境界に揃える
+    fn pad_options(&mut self) {
+        // 20バイト + オプション長が4の倍数になるようパディング
+        let options_len = self.options.len();
+        let remainder = options_len % 4;
+        if remainder != 0 {
+            let padding = 4 - remainder;
+            for _ in 0..padding {
+                self.options.push(0); // End of Options (Kind=0) または NOP
+            }
+        }
+    }
+
     /// TCPセグメントをバイト列に構築
-    pub fn build(self) -> Vec<u8> {
-        let data_offset = 5u8; // 20バイト（オプションなし）
-        let header_len = (data_offset as usize) * 4;
+    pub fn build(mut self) -> Vec<u8> {
+        // オプションをパディング
+        self.pad_options();
+        
+        let options_len = self.options.len();
+        let header_len = 20 + options_len;
+        let data_offset = (header_len / 4) as u8; // 4バイト単位
         let total_len = header_len + self.data.len();
 
         let mut segment = alloc::vec![0u8; total_len];
@@ -126,6 +204,11 @@ impl TcpSegmentBuilder {
         segment[16..18].copy_from_slice(&0u16.to_be_bytes());
         // Urgent pointer (2 bytes)
         segment[18..20].copy_from_slice(&0u16.to_be_bytes());
+
+        // Options
+        if !self.options.is_empty() {
+            segment[20..20 + options_len].copy_from_slice(&self.options);
+        }
 
         // Data
         if !self.data.is_empty() {
@@ -268,14 +351,41 @@ mod tests {
     }
 
     #[test_case]
-    fn test_send_tcp_segment_poisoned_stack_drops() {
-        use alloc::vec;
-        use crate::sync::set_panicking;
-        set_panicking(true);
-        let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new([127, 0, 0, 1], 80);
-        send_tcp_segment(local, remote, vec![0u8; 40]);
-        set_panicking(false);
-    }
-}
+    fn test_tcp_segment_with_options() {
+        // SYNセグメント with TCP options
+        let segment = TcpSegmentBuilder::new(12345, 80)
+            .seq(1000)
+            .syn()
+            .window(65535)
+            .syn_options(1460, 7) // MSS=1460, WS=7, SACK
+            .build();
 
+        // ヘッダ20バイト + オプション12バイト = 32バイト
+        assert_eq!(segment.len(), 32);
+
+        // Data Offset = 8 (32バイト / 4 = 8)
+        let data_offset_flags = u16::from_be_bytes([segment[12], segment[13]]);
+        let data_offset = ((data_offset_flags >> 12) & 0xF) as u8;
+        assert_eq!(data_offset, 8);
+
+        // オプション検証
+        // MSS (Kind=2, Length=4, Value=1460)
+        assert_eq!(segment[20], 2);  // Kind
+        assert_eq!(segment[21], 4);  // Length
+        assert_eq!(u16::from_be_bytes([segment[22], segment[23]]), 1460); // MSS
+
+        // Window Scale (Kind=3, Length=3, Shift=7)
+        assert_eq!(segment[24], 3);  // Kind
+        assert_eq!(segment[25], 3);  // Length
+        assert_eq!(segment[26], 7);  // Shift
+
+        // SACK Permitted (Kind=4, Length=2)
+        assert_eq!(segment[27], 4);  // Kind
+        assert_eq!(segment[28], 2);  // Length
+
+        // NOP padding (Kind=1)
+        assert_eq!(segment[29], 1);  // NOP
+        assert_eq!(segment[30], 1);  // NOP
+    }
+
+    #[test_case]

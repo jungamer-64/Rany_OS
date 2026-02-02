@@ -421,8 +421,17 @@ impl ExoShell {
                 // 配列（またはイテレータ）として取得
                 let items = match iter_val {
                     ExoValue::Array(arr) => arr,
-                    // TODO: イテレータ対応
-                    _ => return ExoValue::Error("For loop requires an array".to_string()),
+                    ExoValue::Iterator(iter) => match self.materialize_iterator(iter).await {
+                        ExoValue::Array(arr) => arr,
+                        ExoValue::Error(e) => return ExoValue::Error(e),
+                        other => {
+                            return ExoValue::Error(format!(
+                                "Iterator did not produce an array (got {:?})",
+                                other
+                            ))
+                        }
+                    },
+                    _ => return ExoValue::Error("For loop requires an array or iterator".to_string()),
                 };
 
                 let mut last_result = ExoValue::Nil;
@@ -1085,6 +1094,59 @@ impl ExoShell {
                 method
             )),
         }
+    }
+
+    async fn materialize_iterator(&mut self, iter: ExoIterator) -> ExoValue<'static> {
+        let source_expr = match parser::expr_parser::parse_expression(iter.source.as_str()) {
+            Ok(expr) => expr,
+            Err(err) => {
+                return ExoValue::Error(format!("Iterator source parse error: {err}"));
+            }
+        };
+
+        let source_val = Box::pin(self.evaluate_expr_inner(&source_expr, 0)).await;
+        let mut items = match source_val {
+            ExoValue::Array(arr) => arr,
+            ExoValue::Nil => Vec::new(),
+            other => {
+                return ExoValue::Error(format!(
+                    "Iterator source did not evaluate to an array (got {:?})",
+                    other
+                ))
+            }
+        };
+
+        for filter in iter.filters {
+            let expr = match parser::expr_parser::parse_expression(filter.as_str()) {
+                Ok(expr) => expr,
+                Err(err) => {
+                    return ExoValue::Error(format!("Iterator filter parse error: {err}"));
+                }
+            };
+            items = items
+                .into_iter()
+                .filter(|item| eval_closure_as_bool(&expr, item))
+                .collect();
+        }
+
+        for transform in iter.transforms {
+            let expr = match parser::expr_parser::parse_expression(transform.as_str()) {
+                Ok(expr) => expr,
+                Err(err) => {
+                    return ExoValue::Error(format!("Iterator transform parse error: {err}"));
+                }
+            };
+            items = items
+                .iter()
+                .map(|item| parser::eval::eval_closure(&expr, item).into_owned())
+                .collect();
+        }
+
+        if let Some(limit) = iter.limit {
+            items.truncate(limit);
+        }
+
+        ExoValue::Array(items)
     }
 
     /// 配列をフィルタリング (AST版)

@@ -120,7 +120,7 @@ pub use icmp::{
 #[allow(unused_imports)]
 pub use udp::{
     UdpAddr, UdpDatagram, UdpHeader, UdpPacket, UdpPacketMut, UdpProcessor, UdpResult, UdpSocket,
-    UdpSocketTable,
+    UdpSocketSnapshot, UdpSocketTable,
 };
 
 // Re-export DHCP
@@ -241,6 +241,7 @@ pub use endpoint::{
     SocketType,
     TcbTable,
     // TCP制御ブロック
+    TcpConnectionSnapshot,
     TcpConnectionState,
     TcpControlBlockEntry,
     TcpSegmentBuilder,
@@ -424,12 +425,78 @@ pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
 
 /// Get TCP connections for netstat
 pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
-    // Return None to show demo output in shell
-    None
+    // Get connections from TCB table
+    let snapshots = tcb_table().list_connections();
+    
+    if snapshots.is_empty() {
+        return None;
+    }
+
+    let connections = snapshots
+        .into_iter()
+        .map(|snap| {
+            let local_addr = format!(
+                "{}.{}.{}.{}:{}",
+                snap.local.ip[0], snap.local.ip[1], snap.local.ip[2], snap.local.ip[3],
+                snap.local.port
+            );
+            let remote_addr = format!(
+                "{}.{}.{}.{}:{}",
+                snap.remote.ip[0], snap.remote.ip[1], snap.remote.ip[2], snap.remote.ip[3],
+                snap.remote.port
+            );
+            let state = match snap.state {
+                TcpConnectionState::Closed => "CLOSED",
+                TcpConnectionState::Listen => "LISTEN",
+                TcpConnectionState::SynSent => "SYN_SENT",
+                TcpConnectionState::SynReceived => "SYN_RCVD",
+                TcpConnectionState::Established => "ESTABLISHED",
+                TcpConnectionState::FinWait1 => "FIN_WAIT1",
+                TcpConnectionState::FinWait2 => "FIN_WAIT2",
+                TcpConnectionState::CloseWait => "CLOSE_WAIT",
+                TcpConnectionState::Closing => "CLOSING",
+                TcpConnectionState::LastAck => "LAST_ACK",
+                TcpConnectionState::TimeWait => "TIME_WAIT",
+            };
+            TcpConnectionInfo {
+                local_addr,
+                remote_addr,
+                state: String::from(state),
+            }
+        })
+        .collect();
+
+    Some(connections)
 }
 
 /// Get UDP sockets for netstat
 pub fn get_udp_sockets() -> Option<Vec<UdpSocketInfo>> {
+    // Get sockets from UDP processor via global stack
+    match stack::stack().lock() {
+        Ok(guard) => {
+            if let Some(ref stack_guard) = guard.as_ref() {
+                let snapshots = stack_guard.list_udp_sockets();
+                
+                if snapshots.is_empty() {
+                    return None;
+                }
+
+                let sockets = snapshots
+                    .into_iter()
+                    .map(|snap| UdpSocketInfo {
+                        local_addr: format!("*:{}", snap.local_port),
+                        remote_addr: String::from("*:*"),
+                    })
+                    .collect();
+
+                return Some(sockets);
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Stack lock poisoned (get_udp_sockets)");
+        }
+    }
+    
     None
 }
 
