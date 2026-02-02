@@ -304,6 +304,50 @@ impl TcbTable {
         let mut entries = self.entries.write();
         entries.get_mut(&(local, remote)).map(f)
     }
+
+    /// 全接続のスナップショットを取得（netstat用）
+    pub fn list_connections(&self) -> alloc::vec::Vec<TcpConnectionSnapshot> {
+        self.entries
+            .read()
+            .values()
+            .map(|entry| TcpConnectionSnapshot {
+                local: entry.local,
+                remote: entry.remote,
+                state: entry.state,
+                snd_nxt: entry.snd_nxt,
+                snd_una: entry.snd_una,
+                rcv_nxt: entry.rcv_nxt,
+                snd_wnd: entry.snd_wnd,
+                rcv_wnd: entry.rcv_wnd,
+            })
+            .collect()
+    }
+
+    /// アクティブな接続数を取得
+    pub fn connection_count(&self) -> usize {
+        self.entries.read().len()
+    }
+}
+
+/// TCP接続のスナップショット（統計・モニタリング用）
+#[derive(Debug, Clone)]
+pub struct TcpConnectionSnapshot {
+    /// ローカルアドレス
+    pub local: SocketAddr,
+    /// リモートアドレス
+    pub remote: SocketAddr,
+    /// 接続状態
+    pub state: TcpConnectionState,
+    /// 送信シーケンス番号
+    pub snd_nxt: u32,
+    /// 未確認シーケンス番号
+    pub snd_una: u32,
+    /// 受信シーケンス番号
+    pub rcv_nxt: u32,
+    /// 送信ウィンドウ
+    pub snd_wnd: u16,
+    /// 受信ウィンドウ
+    pub rcv_wnd: u16,
 }
 
 /// グローバルTCBテーブル

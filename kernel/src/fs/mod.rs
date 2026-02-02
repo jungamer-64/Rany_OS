@@ -13,6 +13,10 @@
 //! ## 高速パス vs 互換パス
 //! - **高速パス**: NVMeポーリングによる直接ブロックアクセス（推奨）
 //! - **互換パス**: fs_abstractionを経由したファイルシステムアクセス
+//!
+//! ## ブロックデバイス
+//! ブロックデバイス関連の型は `vfs::block` から再エクスポートしています。
+//! これにより、カーネルとファイルシステム実装で同じ型を共有できます。
 
 #![allow(dead_code)]
 
@@ -20,12 +24,36 @@
 pub mod fs_abstraction;
 
 pub mod async_ops;
-pub mod block;
 pub mod cache;
 pub mod devfs;
 pub mod ext2;
 pub mod fat32_adapter;
 pub mod page_cluster_buffer;
+
+// ============================================================================
+// Block Device (re-exported from vfs)
+// ============================================================================
+// カーネル内で使用されるブロックデバイス型はvfsから再エクスポート。
+// 独自実装は削除し、vfs::blockに統一。
+pub mod block {
+    //! ブロックデバイス抽象化（vfsから再エクスポート）
+    pub use vfs::block::{
+        // Core types
+        BlockDevice, BlockDeviceInfo, BlockError, BlockRequest, BlockResult,
+        RequestState, RequestType,
+        // Zero-copy I/O
+        ZeroCopyBlockDevice, ZeroCopyBuffer, ZeroCopyBufferMut, OwnedBytes,
+        IoBuffer, IoBufferMut, DmaInfo, ZcFuture,
+        // Async futures
+        BlockReadFuture, BlockWriteFuture,
+        // Adapter
+        BlockDeviceZeroCopyAdapter,
+        // RAM disk for testing
+        RamDisk,
+        // Device manager
+        BlockDeviceManager, block_manager,
+    };
+}
 
 // Kernel-provided page-backed cluster allocator
 #[allow(unused_imports)]

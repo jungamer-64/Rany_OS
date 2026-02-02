@@ -11,6 +11,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use app_sdk::AppContext;
+
 /// Shell command result
 #[derive(Debug, Clone)]
 pub enum ShellResult {
@@ -31,6 +33,15 @@ pub enum ShellResult {
 /// This is a stub that can be connected to the kernel's ExoShell
 /// via KernelServices or IPC.
 pub async fn execute_command(cmd: &str, cwd: &str) -> ShellResult {
+    execute_command_with_context(cmd, cwd, None).await
+}
+
+/// Parse and execute a shell command with optional AppContext
+pub async fn execute_command_with_context(
+    cmd: &str,
+    cwd: &str,
+    ctx: Option<&AppContext>,
+) -> ShellResult {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
 
     if parts.is_empty() {
@@ -43,24 +54,32 @@ pub async fn execute_command(cmd: &str, cwd: &str) -> ShellResult {
             ShellResult::Output(output)
         }
         "ls" => {
-            // TODO: Connect to filesystem via AppContext
-            ShellResult::Output(format!("(ls not yet connected to filesystem)"))
+            if ctx.and_then(|c| c.fs()).is_none() {
+                return ShellResult::Error(String::from("filesystem capability not granted"));
+            }
+            ShellResult::Output(format!("(ls not implemented yet for {})", cwd))
         }
         "cat" => {
             if parts.len() < 2 {
                 ShellResult::Error(String::from("usage: cat <file>"))
             } else {
-                // TODO: Connect to filesystem via AppContext
-                ShellResult::Output(format!("(cat not yet connected to filesystem)"))
+                if ctx.and_then(|c| c.fs()).is_none() {
+                    return ShellResult::Error(String::from("filesystem capability not granted"));
+                }
+                ShellResult::Output(format!("(cat not implemented yet for {})", parts[1]))
             }
         }
         "ps" => {
-            // TODO: Connect to task manager via AppContext
-            ShellResult::Output(format!("(ps not yet connected to task manager)"))
+            if ctx.and_then(|c| c.task()).is_none() {
+                return ShellResult::Error(String::from("task capability not granted"));
+            }
+            ShellResult::Output(String::from("(ps not implemented yet)"))
         }
         "net" => {
-            // TODO: Connect to networking via AppContext
-            ShellResult::Output(format!("(net not yet connected to network stack)"))
+            if ctx.and_then(|c| c.net()).is_none() {
+                return ShellResult::Error(String::from("network capability not granted"));
+            }
+            ShellResult::Output(String::from("(net not implemented yet)"))
         }
         _ => ShellResult::Error(format!("command not found: {}", parts[0])),
     }

@@ -13,7 +13,7 @@
 
 #![allow(dead_code)]
 
-use crate::poison_lock::PoisonLock;
+use exorust_sync::PoisonLock;
 use alloc::collections::VecDeque;
 use core::cell::UnsafeCell;
 use core::future::Future;

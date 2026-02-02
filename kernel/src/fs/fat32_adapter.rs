@@ -89,11 +89,20 @@ fn convert_metadata(meta: VfsMetadata, ino: u64) -> FileAttr {
         uid: 0,
         gid: 0,
         rdev: 0,
-        blksize: 4096, // TODO: Get from FS
+        blksize: 512,
         atime: meta.accessed,
         mtime: meta.modified,
         ctime: meta.created,
     }
+}
+
+fn ino_for_name(name: &str) -> u64 {
+    let mut hash = 14695981039346656037u64;
+    for b in name.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
 }
 
 // ============================================================================
@@ -172,10 +181,7 @@ impl Inode for Fat32InodeAdapter {
     fn getattr(&self) -> FsResult<FileAttr> {
         let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let meta = node.metadata().map_err(FsError::from)?;
-        // Inode number is not easily available from VfsNode unless we cast or it has a method.
-        // VfsNode has name(), but not ino().
-        // For now use 0 or hash of name.
-        Ok(convert_metadata(meta, 0))
+        Ok(convert_metadata(meta, ino_for_name(&node.name())))
     }
 
     fn setattr(&self, _attr: &FileAttr) -> FsResult<()> {
@@ -202,7 +208,7 @@ impl Inode for Fat32InodeAdapter {
             .into_iter()
             .map(|e| DirEntry {
                 name: e.name,
-                ino: 0, // TODO
+                ino: ino_for_name(&e.name),
                 file_type: convert_file_type(e.file_type),
             })
             .collect())

@@ -192,7 +192,16 @@ fn process_tcp_new_connection(
 
     let socket = mgr.find_by_port(SocketType::Tcp, local.port);
     let Some(socket) = socket else {
-        // リッスン中のソケットがない → RST送信（TODO）
+        // リッスン中のソケットがない → RST送信
+        let mut rst = TcpSegmentBuilder::new(local.port, remote.port)
+            .seq(0)
+            .ack(seq_num.wrapping_add(1))
+            .rst()
+            .ack_flag()
+            .window(0)
+            .build();
+        TcpSegmentBuilder::calculate_checksum(&mut rst, local.ip, remote.ip);
+        send_tcp_segment(local, remote, rst);
         return;
     };
 
@@ -210,13 +219,16 @@ fn process_tcp_new_connection(
     tcb.state = TcpConnectionState::SynReceived;
     tcb_table().insert(tcb);
 
-    // SYN-ACK送信
+    // SYN-ACK送信 (TCPオプション付き)
+    // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)
+    // Window Scale=7 (最大8MBウィンドウ)
     let mut syn_ack = TcpSegmentBuilder::new(local.port, remote.port)
         .seq(isn)
         .ack(seq_num.wrapping_add(1))
         .syn()
         .ack_flag()
         .window(65535)
+        .syn_options(1460, 7) // MSS + Window Scale + SACK Permitted
         .build();
 
     TcpSegmentBuilder::calculate_checksum(&mut syn_ack, local.ip, remote.ip);

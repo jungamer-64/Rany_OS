@@ -1060,6 +1060,11 @@ impl NetworkStack {
             .collect()
     }
 
+    /// List all UDP sockets (for debugging/statistics)
+    pub fn list_udp_sockets(&self) -> Vec<super::udp::UdpSocketSnapshot> {
+        self.udp.sockets().list_sockets()
+    }
+
     /// Get configuration (for shell commands)
     pub fn get_config(&self) -> NetworkConfig {
         self.config.clone()

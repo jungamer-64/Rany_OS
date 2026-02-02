@@ -97,11 +97,12 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
             let header_size = 4;
             let bytes_per_glyph = header.charsize as u32;
 
-            let unicode_map = None;
+            let mut unicode_map = None;
             if (mode & PSF1_MODEHASTAB) != 0 {
-                // PSF1 Unicode table parsing could be added here
-                // For now, we only implement PSF2 table parsing as it's more common for large fonts
-                // TODO: Implement PSF1 Unicode table
+                let table_offset = header_size + (num_glyphs as usize * bytes_per_glyph as usize);
+                if table_offset < slice.len() {
+                    unicode_map = Some(Self::parse_psf1_table(&slice[table_offset..], num_glyphs));
+                }
             }
 
             return Some(Self {
@@ -206,6 +207,42 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
             }
 
             i += char_len;
+        }
+
+        map
+    }
+
+    /// Parse PSF1 Unicode Table (UCS-2)
+    fn parse_psf1_table(table_data: &[u8], num_glyphs: u32) -> BTreeMap<char, u32> {
+        let mut map = BTreeMap::new();
+        let mut glyph_idx = 0;
+        let mut i = 0;
+
+        while i + 1 < table_data.len() && glyph_idx < num_glyphs {
+            let code = u16::from_le_bytes([table_data[i], table_data[i + 1]]);
+            i += 2;
+
+            if code == PSF1_SEPARATOR {
+                glyph_idx += 1;
+                continue;
+            }
+
+            if code == PSF1_STARTSEQ {
+                // Composite sequences are not fully supported; skip to separator.
+                while i + 1 < table_data.len() {
+                    let next = u16::from_le_bytes([table_data[i], table_data[i + 1]]);
+                    i += 2;
+                    if next == PSF1_SEPARATOR {
+                        glyph_idx += 1;
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            if let Some(c) = core::char::from_u32(code as u32) {
+                map.insert(c, glyph_idx);
+            }
         }
 
         map

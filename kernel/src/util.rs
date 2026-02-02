@@ -131,10 +131,9 @@ pub unsafe fn nonnull_ptr_as_slice<'a>(
     offset: usize,
     len: usize,
 ) -> &'a [u8] {
-    // TODO: We currently trust the caller to ensure the pointer and range are valid.
-    // In the future, consider adding architecture-specific checks (page table mapping,
-    // domain/kernel privileges) before returning a slice to reduce the spread of
-    // `unsafe` callsites.
+    let base = ptr.as_ptr() as usize;
+    let addr = base.checked_add(offset).unwrap_or(usize::MAX);
+    debug_check_ptr_range(addr, len, 1);
     unsafe { core::slice::from_raw_parts(ptr.as_ptr().add(offset), len) }
 }
 
@@ -151,8 +150,7 @@ pub unsafe fn nonnull_ptr_as_slice_mut<'a>(
 ///
 /// Safety: the caller must ensure the pointer is valid for `len` bytes and properly aligned.
 pub unsafe fn raw_ptr_as_slice<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
-    // TODO: Centralize validation for raw virtual addresses (e.g., verify that the
-    // address is mapped and accessible). For now the caller must ensure safety.
+    debug_check_ptr_range(ptr as usize, len, 1);
     unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
@@ -160,7 +158,21 @@ pub unsafe fn raw_ptr_as_slice<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
 ///
 /// Safety: the caller must ensure the pointer is valid for `len` bytes and properly aligned.
 pub unsafe fn raw_ptr_as_slice_mut<'a>(ptr: *mut u8, len: usize) -> &'a mut [u8] {
+    debug_check_ptr_range(ptr as usize, len, 1);
     unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+}
+
+#[inline]
+pub fn debug_check_ptr_range(addr: usize, len: usize, align: usize) {
+    if cfg!(debug_assertions) {
+        if len > 0 {
+            debug_assert!(addr != 0, "null pointer range");
+        }
+        debug_assert!(addr.checked_add(len).is_some(), "pointer range overflow");
+        if align > 1 {
+            debug_assert!(addr % align == 0, "unaligned pointer");
+        }
+    }
 }
 
 /// Allocate memory zero-initialized and return a NonNull pointer if successful.

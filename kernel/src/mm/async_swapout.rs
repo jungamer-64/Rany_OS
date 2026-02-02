@@ -561,7 +561,7 @@ fn try_zswap_store_and_dealloc_any(frame: FrameIndex, buf4k: &mut [u8]) -> bool 
 
 // テスト専用: 永続ワーカ実装（条件変数 + バウンドキュー）
 pub fn stats_huge_2m_skip_count() -> u64 {
-    0 // TODO: Implement tracking
+    GLOBAL_HUGE_2M_SKIPPED.load(AtomicOrdering::Acquire) as u64
 }
 
 #[cfg(all(test, feature = "std"))]

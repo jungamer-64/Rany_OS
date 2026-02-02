@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 vfs = { path = "../../libs/vfs" }
+exorust_sync = { path = "../../libs/sync" }
 log = "0.4"
 hashbrown = "0.16"
 

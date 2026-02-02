@@ -70,18 +70,25 @@ pub fn mmio_write_u64(addr: usize, val: u64) {
 #[inline]
 #[must_use]
 pub fn volatile_read<T: Copy>(addr: usize) -> T {
-    // TODO: Consider adding optional runtime or compile-time checks to validate
-    // that `addr` points to a valid mmio region for this device/driver. For now
-    // the caller is expected to ensure the address is correct.
+    debug_check_mmio_access::<T>(addr);
     unsafe { core::ptr::read_volatile(addr as *const T) }
 }
 
 /// Generic volatile write for Copy types.
 #[inline]
 pub fn volatile_write<T: Copy>(addr: usize, val: T) {
-    // TODO: Consider adding optional address validation to MMIO writes.
+    debug_check_mmio_access::<T>(addr);
     unsafe {
         core::ptr::write_volatile(addr as *mut T, val);
+    }
+}
+
+#[inline]
+fn debug_check_mmio_access<T>(addr: usize) {
+    if cfg!(debug_assertions) {
+        let align = core::mem::align_of::<T>();
+        debug_assert!(addr != 0, "MMIO access with null address");
+        debug_assert!(align == 0 || addr % align == 0, "MMIO access is unaligned");
     }
 }
 
