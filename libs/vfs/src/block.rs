@@ -1151,3 +1151,149 @@ mod borrowed_io_tests {
         assert_eq!(&data[..src.len()], &src);
     }
 }
+
+// ============================================================================
+// Simple Block Device Adapter
+// ============================================================================
+//
+// シンプルなブロックデバイス（USB MSC、IDE等）からVFS BlockDeviceへの変換
+
+/// シンプルなブロックデバイストレイト
+///
+/// USB Mass Storage Class、IDE、SATA等のシンプルなブロックデバイス向け。
+/// このトレイトを実装することで、`SimpleBlockDeviceAdapter`を通じて
+/// VFSの`BlockDevice`として使用可能になる。
+pub trait SimpleBlockDevice: Send + Sync {
+    /// ブロックサイズを取得
+    fn block_size(&self) -> u32;
+
+    /// 総ブロック数を取得
+    fn total_blocks(&self) -> u64;
+
+    /// デバイス名を取得
+    fn name(&self) -> &'static str {
+        "simple_block"
+    }
+
+    /// 読み取り専用かどうか
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
+    /// ブロックを読み取り
+    ///
+    /// # Arguments
+    /// * `start_lba` - 開始論理ブロックアドレス
+    /// * `count` - 読み取るブロック数
+    /// * `buffer` - データを格納するバッファ（サイズは `count * block_size` 以上必要）
+    fn read_blocks(&self, start_lba: u64, count: u32, buffer: &mut [u8]) -> BlockResult<()>;
+
+    /// ブロックを書き込み
+    ///
+    /// # Arguments
+    /// * `start_lba` - 開始論理ブロックアドレス
+    /// * `count` - 書き込むブロック数
+    /// * `buffer` - 書き込むデータ（サイズは `count * block_size` 以上必要）
+    fn write_blocks(&self, start_lba: u64, count: u32, buffer: &[u8]) -> BlockResult<()>;
+
+    /// キャッシュをフラッシュ
+    fn flush(&self) -> BlockResult<()> {
+        Ok(()) // デフォルトは何もしない
+    }
+}
+
+/// シンプルなブロックデバイスをVFS BlockDeviceに変換するアダプター
+pub struct SimpleBlockDeviceAdapter<T: SimpleBlockDevice> {
+    /// 内部デバイス
+    inner: T,
+    /// ペンディングリクエスト
+    pending: Mutex<VecDeque<Arc<BlockRequest>>>,
+    /// リクエストIDカウンター
+    next_id: AtomicU64,
+}
+
+impl<T: SimpleBlockDevice> SimpleBlockDeviceAdapter<T> {
+    /// 新しいアダプターを作成
+    pub fn new(device: T) -> Self {
+        Self {
+            inner: device,
+            pending: Mutex::new(VecDeque::new()),
+            next_id: AtomicU64::new(0),
+        }
+    }
+
+    /// 内部デバイスへの参照を取得
+    pub fn inner(&self) -> &T {
+        &self.inner
+    }
+
+    /// リクエストを処理
+    fn process_request(&self, request: &BlockRequest) {
+        let block_size = self.inner.block_size() as usize;
+        let offset = request.block;
+        let count = request.count;
+
+        match request.op_type {
+            RequestType::Read => {
+                let size = count as usize * block_size;
+                let mut buf = alloc::vec![0u8; size];
+
+                match self.inner.read_blocks(offset, count, &mut buf) {
+                    Ok(()) => {
+                        *request.buffer.lock() = Some(buf);
+                        request.complete();
+                    }
+                    Err(e) => request.fail(e),
+                }
+            }
+            RequestType::Write => {
+                let guard = request.buffer.lock();
+                if let Some(ref data) = *guard {
+                    match self.inner.write_blocks(offset, count, data) {
+                        Ok(()) => request.complete(),
+                        Err(e) => request.fail(e),
+                    }
+                } else {
+                    request.fail(BlockError::InvalidBufferSize);
+                }
+            }
+            RequestType::Flush => {
+                match self.inner.flush() {
+                    Ok(()) => request.complete(),
+                    Err(e) => request.fail(e),
+                }
+            }
+        }
+    }
+}
+
+impl<T: SimpleBlockDevice> BlockDevice for SimpleBlockDeviceAdapter<T> {
+    fn info(&self) -> BlockDeviceInfo {
+        BlockDeviceInfo {
+            name: self.inner.name(),
+            total_blocks: self.inner.total_blocks(),
+            block_size: self.inner.block_size(),
+            read_only: self.inner.is_read_only(),
+            max_sectors: 256,
+            num_queues: 1,
+        }
+    }
+
+    fn submit(&self, request: Arc<BlockRequest>) -> BlockResult<()> {
+        self.pending.lock().push_back(request);
+        Ok(())
+    }
+
+    fn poll_completions(&self) -> usize {
+        let mut completed = 0;
+        let mut pending = self.pending.lock();
+
+        while let Some(request) = pending.pop_front() {
+            self.process_request(&request);
+            completed += 1;
+        }
+
+        completed
+    }
+}
+

@@ -233,3 +233,72 @@ pub fn get_cmdline_option<'a>(cmdline: &'a str, key: &str) -> Option<&'a str> {
     }
     None
 }
+
+// ============================================================================
+// FNV-1a Hash Functions
+// ============================================================================
+
+/// FNV-1a 64ビットハッシュ定数
+pub mod fnv {
+    /// FNV-1a オフセット基底値
+    pub const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    /// FNV-1a 素数
+    pub const FNV_PRIME: u64 = 0x100000001b3;
+}
+
+/// FNV-1a ハッシュをバイト列から計算（const対応）
+///
+/// # Example
+/// ```ignore
+/// let hash = fnv1a_hash(b"hello");
+/// ```
+#[inline]
+pub const fn fnv1a_hash(data: &[u8]) -> u64 {
+    let mut hash = fnv::FNV_OFFSET_BASIS;
+    let mut i = 0;
+    while i < data.len() {
+        hash ^= data[i] as u64;
+        hash = hash.wrapping_mul(fnv::FNV_PRIME);
+        i += 1;
+    }
+    hash
+}
+
+/// 型名とサイズ/アライメントから型ハッシュを計算
+///
+/// Type ID Check（設計書 3.4）用のハッシュ関数。
+/// 型の名前、サイズ、アライメントを組み合わせてハッシュを生成。
+#[inline]
+pub const fn compute_type_hash(type_name: &str, size: usize, align: usize) -> u64 {
+    let name_hash = fnv1a_hash(type_name.as_bytes());
+    let size_bits = (size as u64) << 32;
+    let align_bits = (align as u64) << 48;
+    name_hash ^ size_bits ^ align_bits
+}
+
+/// ページ内容のFNV-1aハッシュ（64ビットワード単位で最適化）
+///
+/// KSM（Kernel Same-page Merging）用の高速ページハッシュ。
+#[inline]
+pub fn fnv1a_page_hash(page_data: &[u8]) -> u64 {
+    let mut hash = fnv::FNV_OFFSET_BASIS;
+
+    // 64ビットワード単位で処理（8倍高速）
+    let word_count = page_data.len() / 8;
+    let ptr = page_data.as_ptr() as *const u64;
+
+    for i in 0..word_count {
+        let word = unsafe { ptr.add(i).read_unaligned() };
+        hash ^= word;
+        hash = hash.wrapping_mul(fnv::FNV_PRIME);
+    }
+
+    // 残りのバイトを処理
+    let remainder_start = word_count * 8;
+    for byte in &page_data[remainder_start..] {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(fnv::FNV_PRIME);
+    }
+
+    hash
+}

@@ -57,23 +57,9 @@ const KSM_HASH_BUCKETS: usize = 256;
 pub struct PageHash(pub u64);
 
 impl PageHash {
-    /// ページ内容からハッシュを計算（xxHash風の高速ハッシュ）
+    /// ページ内容からハッシュを計算（FNV-1a 64ビットワード最適化版）
     pub fn compute(page_data: &[u8; PAGE_SIZE_4K]) -> Self {
-        // FNV-1a ハッシュ（高速で衝突が少ない）
-        const FNV_PRIME: u64 = 0x00000100000001B3;
-        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-        
-        let mut hash = FNV_OFFSET;
-        
-        // 64バイトごとに処理して高速化
-        let ptr = page_data.as_ptr() as *const u64;
-        for i in 0..(PAGE_SIZE_4K / 8) {
-            let word = unsafe { ptr.add(i).read_unaligned() };
-            hash ^= word;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        
-        PageHash(hash)
+        PageHash(crate::util::fnv1a_page_hash(page_data))
     }
     
     /// バケットインデックスを取得

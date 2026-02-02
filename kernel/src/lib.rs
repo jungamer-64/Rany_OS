@@ -948,16 +948,11 @@ pub mod ipc {
 
         #[cfg(debug_assertions)]
         fn debug_type_hash<T: ?Sized>(val: &T) -> u64 {
-            const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-            const FNV_PRIME: u64 = 0x100000001b3;
-            let mut hash = FNV_OFFSET;
-            for byte in core::any::type_name::<T>().as_bytes() {
-                hash ^= *byte as u64;
-                hash = hash.wrapping_mul(FNV_PRIME);
-            }
-            hash ^= (core::mem::size_of_val(val) as u64) << 32;
-            hash ^= (core::mem::align_of_val(val) as u64) << 48;
-            hash
+            crate::util::compute_type_hash(
+                core::any::type_name::<T>(),
+                core::mem::size_of_val(val),
+                core::mem::align_of_val(val),
+            )
         }
     }
 

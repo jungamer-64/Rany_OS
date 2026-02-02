@@ -514,10 +514,24 @@ fn populate_file_page(page_addr: VirtAddr, region: &VmRegion) -> DemandResult {
     // ファイルオフセットを計算
     let file_offset = _file_info.offset + (page_addr.as_u64() - region.start.as_u64());
     
-    // TODO: ファイルシステムからページを読み込む
-    // let result = vfs::read_page(_file_info.inode, file_offset, frame)?;
-    // 仮実装: ゼロクリア
+    // ファイルシステムからページを読み込む（不足分はゼロ埋め）
     zero_page(frame_phys);
+    let remaining = _file_info.file_size.saturating_sub(file_offset);
+    let to_read = remaining.min(super::PAGE_SIZE_4K as u64) as usize;
+    if to_read > 0 {
+        let virt = super::mapping::phys_to_virt(x86_64::PhysAddr::new(frame_phys.as_u64()));
+        let buf = unsafe { core::slice::from_raw_parts_mut(virt.as_u64() as *mut u8, to_read) };
+        if crate::fs::fs_abstraction::read_inode_by_number(
+            _file_info.inode as crate::fs::InodeNum,
+            file_offset,
+            buf,
+        )
+        .is_err()
+        {
+            super::frame_allocator::dealloc_frame(frame);
+            return DemandResult::IoError;
+        }
+    }
     
     // Track frame -> file backing mapping (for targeted writeback)
     let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
