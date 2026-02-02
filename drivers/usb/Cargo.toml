@@ -20,9 +20,12 @@ path = "src/lib.rs"
 hal = { path = "../../hal" }
 spin = "0.10"
 kernel_api = { path = "../../interfaces/kernel_api" }
+vfs = { path = "../../libs/vfs", optional = true }
 
 [features]
 default = []
+# Enables VFS integration for block device support
+vfs_integration = ["vfs"]
 # Enables panic handler and dummy allocator for freestanding build
 standalone = ["export_driver_entry"]
 export_driver_entry = []

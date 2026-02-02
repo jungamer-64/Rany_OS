@@ -18,13 +18,10 @@
 
 extern crate alloc;
 
-mod application;
-mod context;
 mod sdk;
 
-// Re-export public API
-pub use application::Application;
-pub use context::AppContext;
+// Re-export Application and AppContext from kernel_api (canonical source)
+pub use kernel_api::{AppContext, Application};
 pub use sdk::{now, now_nanos, print, sleep, yield_now};
 
 // Re-export kernel_api types for convenience

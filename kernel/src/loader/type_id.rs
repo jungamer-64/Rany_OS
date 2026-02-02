@@ -106,18 +106,10 @@ pub trait TypeIdHash {
 /// コンパイル時定数ハッシュ関数（FNV-1a）
 ///
 /// 型定義文字列からハッシュを計算します。
+/// `crate::util::fnv1a_hash`のエイリアス。
+#[inline]
 pub const fn const_hash(bytes: &[u8]) -> TypeHash {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET_BASIS;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-        i += 1;
-    }
-    hash
+    crate::util::fnv1a_hash(bytes)
 }
 
 /// インターフェース定義のレジストリ

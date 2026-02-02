@@ -548,24 +548,11 @@ pub fn verify_type_hash<T: TypeIdHash>(expected: TypeHash) -> Result<(), TypeHas
     }
 }
 
-pub const fn fnv1a_hash(data: &[u8]) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut hash = FNV_OFFSET;
-    let mut i = 0;
-    while i < data.len() {
-        hash ^= data[i] as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-        i += 1;
-    }
-    hash
-}
+// Re-export from util for backward compatibility
+pub use crate::util::fnv1a_hash;
 
 pub const fn compute_simple_type_hash(type_name: &str, size: usize, align: usize) -> TypeHash {
-    let name_hash = fnv1a_hash(type_name.as_bytes());
-    let size_bits = (size as u64) << 32;
-    let align_bits = (align as u64) << 48;
-    TypeHash::new(name_hash ^ size_bits ^ align_bits)
+    TypeHash::new(crate::util::compute_type_hash(type_name, size, align))
 }
 
 impl TypeIdHash for u8 {

@@ -33,12 +33,13 @@ use super::rcu::rcu_read_lock;
 use super::rcu_vma::{VmArea, VmaFlags};
 use super::frame_allocator::alloc_frame;
 use super::higher_half::{
-    global_map_page, global_translate, global_unmap_page,
+    global_map_page, global_translate, global_unmap_page, global_update_flags,
     PageFlags, MapError, VirtAddr, PhysAddr,
 };
 use super::tlb_batch::flush_tlb_immediate;
 use super::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, MemcgId};
 use super::types::FrameIndex;
+use super::cow::{page_refcount, page_put};
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 // ============================================================================
@@ -510,12 +511,17 @@ fn handle_cow_fault(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultRe
     };
     
     // 参照カウントをチェック
-    // TODO: ページ参照カウントシステムとの統合
-    // let refcount = get_page_refcount(old_phys);
-    // if refcount == 1 {
-    //     // 自分だけが参照 - マッピングをWritableに変更するだけ
-    //     return make_page_writable(page_addr);
-    // }
+    let refcount = page_refcount(old_phys.as_u64());
+    if refcount == 1 {
+        let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
+        match unsafe { global_update_flags(page_addr, flags) } {
+            Ok(()) => {
+                flush_tlb_immediate(x86_64::VirtAddr::new(page_addr.as_u64()));
+                return FaultResult::Resolved;
+            }
+            Err(_) => return FaultResult::KernelBug,
+        }
+    }
     
     // 新しいフレームを割り当て
     let new_frame = match alloc_frame() {
@@ -562,7 +568,7 @@ fn handle_cow_fault(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultRe
     flush_tlb_immediate(x86_64::VirtAddr::new(page_addr.as_u64()));
     
     // 古いページの参照カウントを減らす
-    // TODO: put_page(old_phys);
+    let _ = page_put(old_phys.as_u64());
     
     // LRUに追加
     lru_add_page(new_frame, LruPageType::Anonymous);
@@ -700,11 +706,22 @@ fn handle_file_fault(fault_addr: VirtAddr, vma: &VmArea) -> FaultResult {
     // 物理アドレスをhigher_half型に変換
     let frame_phys = PhysAddr::new(frame.start_address().as_u64());
     
-    // TODO: ファイルシステムからページを読み込む
-    // let result = read_file_page(vma.file_inode, file_offset, frame);
-    // 仮実装: ゼロクリア
+    // ファイルシステムからページを読み込む
     zero_page(frame_phys);
-    let _ = file_offset; // 未使用警告を抑制
+    let virt = super::mapping::phys_to_virt(x86_64::PhysAddr::new(frame_phys.as_u64()));
+    let buf = unsafe {
+        core::slice::from_raw_parts_mut(virt.as_u64() as *mut u8, super::PAGE_SIZE_4K)
+    };
+    if crate::fs::fs_abstraction::read_inode_by_number(
+        vma.file_inode as crate::fs::InodeNum,
+        file_offset,
+        buf,
+    )
+    .is_err()
+    {
+        super::frame_allocator::dealloc_frame(frame);
+        return FaultResult::IoError;
+    }
     
     // Memcgチャージ（ファイルキャッシュ）
     let memcg_id = crate::task::process::get_current_process_memcg_id();
