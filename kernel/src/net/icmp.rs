@@ -95,6 +95,32 @@ pub enum TimeExceededCode {
     FragmentReassemblyExceeded = 1,
 }
 
+/// ICMP Redirect codes (RFC 792)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RedirectCode {
+    /// Redirect for the Network
+    Network = 0,
+    /// Redirect for the Host
+    Host = 1,
+    /// Redirect for Type of Service and Network
+    TosNetwork = 2,
+    /// Redirect for Type of Service and Host
+    TosHost = 3,
+}
+
+impl From<u8> for RedirectCode {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => RedirectCode::Network,
+            1 => RedirectCode::Host,
+            2 => RedirectCode::TosNetwork,
+            3 => RedirectCode::TosHost,
+            _ => RedirectCode::Host, // Default to host redirect
+        }
+    }
+}
+
 /// ICMP header
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
@@ -461,6 +487,15 @@ pub enum IcmpResult {
     EchoReplyReceived { identifier: u16, sequence: u16 },
     /// Error message
     Error { icmp_type: IcmpType, code: u8 },
+    /// ICMP Redirect message (RFC 792)
+    Redirect {
+        /// Redirect code (Network, Host, etc.)
+        code: RedirectCode,
+        /// Gateway IP address to use for the destination
+        gateway: Ipv4Address,
+        /// Original destination IP from the offending packet
+        destination: Ipv4Address,
+    },
     /// Ignored/dropped
     Ignored,
     /// Invalid packet
@@ -532,6 +567,44 @@ impl IcmpProcessor {
                 IcmpResult::Error {
                     icmp_type: packet.icmp_type(),
                     code: packet.code(),
+                }
+            }
+            IcmpType::Redirect => {
+                // ICMP Redirect format (RFC 792):
+                // Bytes 0-3: ICMP header (type, code, checksum)
+                // Bytes 4-7: Gateway IP address
+                // Bytes 8+: Original IP header + first 8 bytes of payload
+                self.stats.errors_rx += 1;
+                
+                let payload = packet.payload();
+                if payload.len() < 4 + 20 {
+                    // Need at least gateway IP (4 bytes) + IP header (20 bytes)
+                    return IcmpResult::Invalid;
+                }
+                
+                // Extract gateway IP (bytes 0-3 of payload, after ICMP header)
+                let gateway = Ipv4Address::from_octets(
+                    payload[0], payload[1], payload[2], payload[3],
+                );
+                
+                // Extract original destination from embedded IP header
+                // Destination IP is at offset 16-19 of IP header
+                let dst_offset = 4 + 16; // 4 bytes gateway + 16 bytes to dst in IP header
+                if payload.len() < dst_offset + 4 {
+                    return IcmpResult::Invalid;
+                }
+                
+                let destination = Ipv4Address::from_octets(
+                    payload[dst_offset],
+                    payload[dst_offset + 1],
+                    payload[dst_offset + 2],
+                    payload[dst_offset + 3],
+                );
+                
+                IcmpResult::Redirect {
+                    code: RedirectCode::from(packet.code()),
+                    gateway,
+                    destination,
                 }
             }
             _ => IcmpResult::Ignored,

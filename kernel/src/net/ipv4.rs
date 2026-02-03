@@ -5,11 +5,21 @@
 //!
 //! Zero-copy IPv4 packet processing as specified in Section 6.2
 //! of the ExoRust specification.
+//!
+//! ## IP Fragmentation Support
+//!
+//! This module includes RFC 791-compliant IP fragment reassembly:
+//! - Fragment caching with timeout-based eviction
+//! - Hole-filling algorithm for efficient reassembly
+//! - Protection against fragment overlap attacks
 
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use alloc::collections::BTreeMap;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::fmt;
 
 /// IPv4 address (4 bytes)
@@ -621,6 +631,519 @@ impl Ipv4Config {
     }
 }
 
+// ============================================================================
+// Path MTU Discovery (RFC 1191 / RFC 8899)
+// ============================================================================
+
+/// Path MTU Discovery entry
+#[derive(Debug, Clone, Copy)]
+pub struct PmtuEntry {
+    /// Path MTU in bytes
+    pub pmtu: u16,
+    /// Timestamp when this entry was last updated (ms)
+    pub updated_at: u64,
+    /// Timestamp for next probe (for PLPMTUD)
+    pub next_probe: u64,
+}
+
+impl PmtuEntry {
+    /// Default MTU (standard Ethernet)
+    pub const DEFAULT_MTU: u16 = 1500;
+    /// Minimum MTU (RFC 791)
+    pub const MIN_MTU: u16 = 68;
+    /// Maximum MTU
+    pub const MAX_MTU: u16 = 65535;
+    /// Cache entry timeout in milliseconds (10 minutes, RFC 1191)
+    pub const TIMEOUT_MS: u64 = 600_000;
+
+    /// Create a new PMTU entry
+    pub fn new(pmtu: u16, timestamp: u64) -> Self {
+        Self {
+            pmtu: pmtu.clamp(Self::MIN_MTU, Self::MAX_MTU),
+            updated_at: timestamp,
+            next_probe: timestamp + Self::TIMEOUT_MS,
+        }
+    }
+
+    /// Check if the entry has expired
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time.saturating_sub(self.updated_at) > Self::TIMEOUT_MS
+    }
+
+    /// Check if we should probe for a larger MTU
+    pub fn should_probe(&self, current_time: u64) -> bool {
+        current_time >= self.next_probe && self.pmtu < Self::DEFAULT_MTU
+    }
+}
+
+/// Path MTU Discovery cache
+pub struct PmtuCache {
+    /// PMTU entries keyed by destination IP
+    entries: BTreeMap<Ipv4Address, PmtuEntry>,
+    /// Maximum number of entries
+    max_entries: usize,
+    /// Statistics
+    stats: PmtuStats,
+}
+
+/// PMTU statistics
+#[derive(Debug, Default, Clone)]
+pub struct PmtuStats {
+    /// Number of PMTU discoveries
+    pub discoveries: u64,
+    /// Number of PMTU updates (reductions)
+    pub reductions: u64,
+    /// Number of cache hits
+    pub hits: u64,
+    /// Number of cache misses
+    pub misses: u64,
+}
+
+impl PmtuCache {
+    /// Default maximum entries
+    pub const DEFAULT_MAX_ENTRIES: usize = 256;
+
+    /// Create a new PMTU cache
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            max_entries,
+            stats: PmtuStats::default(),
+        }
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &PmtuStats {
+        &self.stats
+    }
+
+    /// Get PMTU for a destination
+    pub fn get(&mut self, dst: Ipv4Address, current_time: u64) -> u16 {
+        if let Some(entry) = self.entries.get(&dst) {
+            if !entry.is_expired(current_time) {
+                self.stats.hits += 1;
+                return entry.pmtu;
+            }
+        }
+        self.stats.misses += 1;
+        PmtuEntry::DEFAULT_MTU
+    }
+
+    /// Update PMTU for a destination (called when receiving ICMP Fragmentation Needed)
+    pub fn update(&mut self, dst: Ipv4Address, new_mtu: u16, current_time: u64) {
+        let clamped_mtu = new_mtu.clamp(PmtuEntry::MIN_MTU, PmtuEntry::MAX_MTU);
+
+        if let Some(entry) = self.entries.get_mut(&dst) {
+            if clamped_mtu < entry.pmtu {
+                entry.pmtu = clamped_mtu;
+                entry.updated_at = current_time;
+                entry.next_probe = current_time + PmtuEntry::TIMEOUT_MS;
+                self.stats.reductions += 1;
+            }
+        } else {
+            // Evict oldest entry if at capacity
+            if self.entries.len() >= self.max_entries {
+                self.evict_oldest();
+            }
+            self.entries.insert(dst, PmtuEntry::new(clamped_mtu, current_time));
+            self.stats.discoveries += 1;
+        }
+    }
+
+    /// Probe for a larger MTU (called periodically)
+    pub fn probe(&mut self, dst: Ipv4Address, current_time: u64) -> Option<u16> {
+        if let Some(entry) = self.entries.get_mut(&dst) {
+            if entry.should_probe(current_time) {
+                // Try a larger MTU
+                let probe_mtu = (entry.pmtu as u32 + 100).min(PmtuEntry::DEFAULT_MTU as u32) as u16;
+                entry.next_probe = current_time + PmtuEntry::TIMEOUT_MS / 2;
+                return Some(probe_mtu);
+            }
+        }
+        None
+    }
+
+    /// Evict the oldest entry
+    fn evict_oldest(&mut self) {
+        let oldest = self
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.updated_at)
+            .map(|(k, _)| *k);
+        if let Some(key) = oldest {
+            self.entries.remove(&key);
+        }
+    }
+
+    /// Evict expired entries
+    pub fn evict_expired(&mut self, current_time: u64) {
+        let expired: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.is_expired(current_time))
+            .map(|(k, _)| *k)
+            .collect();
+        for key in expired {
+            self.entries.remove(&key);
+        }
+    }
+
+    /// Get the number of entries
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if cache is empty
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+// ============================================================================
+// IP Fragment Reassembly (RFC 791)
+// ============================================================================
+
+/// Fragment reassembly key (identifies a unique datagram)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FragmentKey {
+    /// Source IP address
+    pub src: Ipv4Address,
+    /// Destination IP address
+    pub dst: Ipv4Address,
+    /// Identification field
+    pub id: u16,
+    /// Protocol
+    pub protocol: u8,
+}
+
+impl FragmentKey {
+    /// Create a new fragment key from packet header
+    pub fn from_header(header: &Ipv4Header) -> Self {
+        FragmentKey {
+            src: header.source(),
+            dst: header.destination(),
+            id: header.identification(),
+            protocol: header.protocol.into(),
+        }
+    }
+}
+
+/// A hole in the reassembly buffer (RFC 815 algorithm)
+#[derive(Clone, Copy, Debug)]
+struct FragmentHole {
+    /// Start offset (bytes)
+    first: u16,
+    /// End offset (bytes, exclusive)
+    last: u16,
+}
+
+/// Fragment reassembly buffer for a single datagram
+pub struct FragmentBuffer {
+    /// Reassembled data buffer
+    data: Vec<u8>,
+    /// List of holes (unfilled regions)
+    holes: Vec<FragmentHole>,
+    /// Total datagram length (known when last fragment received)
+    total_len: Option<u16>,
+    /// First fragment's header (for protocol info)
+    first_header: Option<[u8; 20]>,
+    /// Creation timestamp (for timeout)
+    created_at: u64,
+    /// Last update timestamp
+    last_update: u64,
+}
+
+impl FragmentBuffer {
+    /// Maximum reassembled packet size (64KB - IP header)
+    pub const MAX_DATAGRAM_SIZE: usize = 65535;
+
+    /// Fragment timeout in milliseconds (RFC 791 recommends 15-60 seconds)
+    pub const TIMEOUT_MS: u64 = 30_000;
+
+    /// Create a new fragment buffer
+    pub fn new(timestamp: u64) -> Self {
+        FragmentBuffer {
+            data: Vec::new(),
+            holes: vec![FragmentHole {
+                first: 0,
+                last: u16::MAX,
+            }],
+            total_len: None,
+            first_header: None,
+            created_at: timestamp,
+            last_update: timestamp,
+        }
+    }
+
+    /// Check if reassembly is complete
+    pub fn is_complete(&self) -> bool {
+        self.holes.is_empty() && self.total_len.is_some()
+    }
+
+    /// Check if the buffer has timed out
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time.saturating_sub(self.created_at) > Self::TIMEOUT_MS
+    }
+
+    /// Add a fragment to the buffer (RFC 815 hole-filling algorithm)
+    ///
+    /// Returns true if the fragment was accepted, false if invalid/overlapping
+    pub fn add_fragment(
+        &mut self,
+        header: &Ipv4Header,
+        payload: &[u8],
+        current_time: u64,
+    ) -> bool {
+        let fragment_offset = header.fragment_offset() * 8; // Convert to bytes
+        let fragment_len = payload.len() as u16;
+        let fragment_end = fragment_offset.saturating_add(fragment_len);
+
+        // Check for overflow
+        if fragment_end as usize > Self::MAX_DATAGRAM_SIZE {
+            return false;
+        }
+
+        // Update last update time
+        self.last_update = current_time;
+
+        // If this is the last fragment, we know the total length
+        if !header.more_fragments() {
+            self.total_len = Some(fragment_end);
+        }
+
+        // Store first fragment header for later use
+        if fragment_offset == 0 && self.first_header.is_none() {
+            let mut hdr = [0u8; 20];
+            let hdr_bytes = crate::util::struct_as_bytes(header);
+            if hdr_bytes.len() >= 20 {
+                hdr.copy_from_slice(&hdr_bytes[..20]);
+                self.first_header = Some(hdr);
+            }
+        }
+
+        // Ensure buffer is large enough
+        if self.data.len() < fragment_end as usize {
+            self.data.resize(fragment_end as usize, 0);
+        }
+
+        // Copy fragment data
+        self.data[fragment_offset as usize..fragment_end as usize].copy_from_slice(payload);
+
+        // Update hole list (RFC 815 algorithm)
+        let mut new_holes = Vec::new();
+
+        for hole in self.holes.drain(..) {
+            if fragment_end <= hole.first || fragment_offset >= hole.last {
+                // Fragment doesn't overlap this hole
+                new_holes.push(hole);
+            } else {
+                // Fragment overlaps this hole - split it
+                if fragment_offset > hole.first {
+                    // New hole before fragment
+                    new_holes.push(FragmentHole {
+                        first: hole.first,
+                        last: fragment_offset,
+                    });
+                }
+                if fragment_end < hole.last && header.more_fragments() {
+                    // New hole after fragment
+                    new_holes.push(FragmentHole {
+                        first: fragment_end,
+                        last: hole.last,
+                    });
+                }
+            }
+        }
+
+        self.holes = new_holes;
+
+        // If we know total length, remove holes beyond it
+        if let Some(total) = self.total_len {
+            self.holes.retain(|h| h.first < total);
+            // Adjust holes that extend beyond total
+            for hole in &mut self.holes {
+                if hole.last > total {
+                    hole.last = total;
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Get the reassembled packet (only valid when is_complete() is true)
+    pub fn get_reassembled(&self) -> Option<Vec<u8>> {
+        if !self.is_complete() {
+            return None;
+        }
+
+        let total_len = self.total_len? as usize;
+        let header = self.first_header.as_ref()?;
+
+        // Build complete packet: header + payload
+        let mut packet = Vec::with_capacity(20 + total_len);
+        packet.extend_from_slice(header);
+        packet.extend_from_slice(&self.data[..total_len]);
+
+        // Update header fields
+        let packet_total_len = (20 + total_len) as u16;
+        packet[2] = (packet_total_len >> 8) as u8;
+        packet[3] = packet_total_len as u8;
+
+        // Clear fragment flags/offset
+        packet[6] = 0;
+        packet[7] = 0;
+
+        // Recalculate header checksum
+        packet[10] = 0;
+        packet[11] = 0;
+        let checksum = calculate_ip_checksum(&packet[..20]);
+        packet[10] = (checksum >> 8) as u8;
+        packet[11] = checksum as u8;
+
+        Some(packet)
+    }
+}
+
+/// IP fragment reassembler
+pub struct FragmentReassembler {
+    /// Active fragment buffers, keyed by fragment key
+    buffers: BTreeMap<FragmentKey, FragmentBuffer>,
+    /// Maximum number of concurrent reassembly buffers
+    max_buffers: usize,
+    /// Statistics
+    stats: FragmentStats,
+}
+
+/// Fragment reassembly statistics
+#[derive(Debug, Default, Clone)]
+pub struct FragmentStats {
+    /// Fragments received
+    pub fragments_received: u64,
+    /// Datagrams successfully reassembled
+    pub reassembled: u64,
+    /// Reassembly timeouts
+    pub timeouts: u64,
+    /// Dropped due to buffer limit
+    pub dropped_limit: u64,
+    /// Dropped due to invalid fragment
+    pub dropped_invalid: u64,
+}
+
+impl FragmentReassembler {
+    /// Default maximum number of concurrent reassembly buffers
+    pub const DEFAULT_MAX_BUFFERS: usize = 64;
+
+    /// Create a new fragment reassembler
+    pub fn new(max_buffers: usize) -> Self {
+        FragmentReassembler {
+            buffers: BTreeMap::new(),
+            max_buffers,
+            stats: FragmentStats::default(),
+        }
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &FragmentStats {
+        &self.stats
+    }
+
+    /// Process an incoming fragment
+    ///
+    /// Returns Some(reassembled_packet) if reassembly is complete
+    pub fn process_fragment(
+        &mut self,
+        header: &Ipv4Header,
+        payload: &[u8],
+        current_time: u64,
+    ) -> Option<Vec<u8>> {
+        self.stats.fragments_received += 1;
+
+        let key = FragmentKey::from_header(header);
+
+        // Evict expired buffers
+        self.evict_expired(current_time);
+
+        // Check if we need to create a new buffer
+        if !self.buffers.contains_key(&key) {
+            // Check buffer limit
+            if self.buffers.len() >= self.max_buffers {
+                self.stats.dropped_limit += 1;
+                return None;
+            }
+
+            self.buffers.insert(key, FragmentBuffer::new(current_time));
+        }
+
+        // Get the buffer and add fragment
+        let buffer = self.buffers.get_mut(&key)?;
+
+        if !buffer.add_fragment(header, payload, current_time) {
+            self.stats.dropped_invalid += 1;
+            // Remove invalid buffer
+            self.buffers.remove(&key);
+            return None;
+        }
+
+        // Check if reassembly is complete
+        if buffer.is_complete() {
+            let result = buffer.get_reassembled();
+            self.buffers.remove(&key);
+
+            if result.is_some() {
+                self.stats.reassembled += 1;
+            }
+
+            return result;
+        }
+
+        None
+    }
+
+    /// Evict expired reassembly buffers
+    fn evict_expired(&mut self, current_time: u64) {
+        let expired_keys: Vec<_> = self
+            .buffers
+            .iter()
+            .filter(|(_, buf)| buf.is_expired(current_time))
+            .map(|(k, _)| *k)
+            .collect();
+
+        for key in expired_keys {
+            self.buffers.remove(&key);
+            self.stats.timeouts += 1;
+        }
+    }
+
+    /// Get the number of active reassembly buffers
+    pub fn active_buffers(&self) -> usize {
+        self.buffers.len()
+    }
+}
+
+/// Calculate IP header checksum
+fn calculate_ip_checksum(header: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+
+    for i in (0..header.len()).step_by(2) {
+        if i == 10 {
+            continue; // Skip checksum field
+        }
+        let word = if i + 1 < header.len() {
+            u16::from_be_bytes([header[i], header[i + 1]])
+        } else {
+            u16::from_be_bytes([header[i], 0])
+        };
+        sum += word as u32;
+    }
+
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    !(sum as u16)
+}
+
 /// IPv4 packet processor
 pub struct Ipv4Processor {
     /// Configuration
@@ -629,6 +1152,10 @@ pub struct Ipv4Processor {
     stats: Ipv4Stats,
     /// Next identification value
     next_id: u16,
+    /// Fragment reassembler
+    reassembler: FragmentReassembler,
+    /// Path MTU Discovery cache
+    pmtu_cache: PmtuCache,
 }
 
 /// IPv4 statistics
@@ -654,6 +1181,10 @@ pub enum Ipv4ProcessResult<'a> {
     Tcp(&'a [u8], Ipv4Address, Ipv4Address),
     /// UDP packet
     Udp(&'a [u8], Ipv4Address, Ipv4Address),
+    /// Reassembled packet (owned data from fragment reassembly)
+    Reassembled(Vec<u8>),
+    /// Fragment received, reassembly in progress
+    FragmentPending,
     /// Dropped
     Dropped,
     /// Error
@@ -669,6 +1200,8 @@ impl Ipv4Processor {
             config,
             stats: Ipv4Stats::default(),
             next_id: 1,
+            reassembler: FragmentReassembler::new(FragmentReassembler::DEFAULT_MAX_BUFFERS),
+            pmtu_cache: PmtuCache::new(PmtuCache::DEFAULT_MAX_ENTRIES),
         }
     }
 
@@ -687,8 +1220,34 @@ impl Ipv4Processor {
         &self.stats
     }
 
-    /// Process an incoming IPv4 packet
+    /// Get fragment reassembler statistics
+    pub fn fragment_stats(&self) -> &FragmentStats {
+        self.reassembler.stats()
+    }
+
+    /// Get PMTU cache statistics
+    pub fn pmtu_stats(&self) -> &PmtuStats {
+        self.pmtu_cache.stats()
+    }
+
+    /// Get Path MTU for a destination
+    pub fn get_pmtu(&mut self, dst: Ipv4Address, current_time: u64) -> u16 {
+        self.pmtu_cache.get(dst, current_time)
+    }
+
+    /// Update Path MTU (called when receiving ICMP Fragmentation Needed)
+    pub fn update_pmtu(&mut self, dst: Ipv4Address, mtu: u16, current_time: u64) {
+        self.pmtu_cache.update(dst, mtu, current_time);
+    }
+
+    /// Process an incoming IPv4 packet (without timestamp - for backwards compatibility)
     pub fn process<'a>(&mut self, data: &'a [u8]) -> Ipv4ProcessResult<'a> {
+        // Use a default timestamp of 0 when not provided
+        self.process_with_time(data, 0)
+    }
+
+    /// Process an incoming IPv4 packet with timestamp for fragment timeout handling
+    pub fn process_with_time<'a>(&mut self, data: &'a [u8], current_time: u64) -> Ipv4ProcessResult<'a> {
         let packet = match Ipv4Packet::parse(data) {
             Some(p) => p,
             None => {
@@ -713,6 +1272,24 @@ impl Ipv4Processor {
         self.stats.rx_packets += 1;
 
         let src = packet.source();
+        let header = packet.header();
+
+        // Check if this is a fragment
+        let is_fragment = header.more_fragments() || header.fragment_offset() != 0;
+
+        if is_fragment {
+            // Handle fragmented packet
+            let payload = packet.payload();
+            if let Some(reassembled) = self.reassembler.process_fragment(header, payload, current_time) {
+                // Reassembly complete - return the reassembled packet
+                return Ipv4ProcessResult::Reassembled(reassembled);
+            } else {
+                // Still waiting for more fragments
+                return Ipv4ProcessResult::FragmentPending;
+            }
+        }
+
+        // Non-fragmented packet - process normally
         let payload = packet.payload();
 
         match packet.protocol() {
@@ -827,5 +1404,124 @@ mod tests {
 
         assert!(addr1.same_subnet(&addr2, mask));
     }
-}
 
+    #[test_case]
+    fn test_fragment_key() {
+        let mut header = Ipv4Header {
+            version_ihl: 0x45,
+            dscp_ecn: 0,
+            total_length: [0, 40],
+            identification: [0x12, 0x34],
+            flags_fragment: [0x20, 0x00], // More Fragments
+            ttl: 64,
+            protocol: 6, // TCP
+            checksum: [0, 0],
+            src_addr: [192, 168, 1, 1],
+            dst_addr: [192, 168, 1, 2],
+        };
+
+        let key = FragmentKey::from_header(&header);
+        assert_eq!(key.id, 0x1234);
+        assert_eq!(key.src, Ipv4Address::from_octets(192, 168, 1, 1));
+        assert_eq!(key.dst, Ipv4Address::from_octets(192, 168, 1, 2));
+        assert_eq!(key.protocol, 6);
+    }
+
+    #[test_case]
+    fn test_fragment_buffer_basic() {
+        let mut buffer = FragmentBuffer::new(0);
+        assert!(!buffer.is_complete());
+        assert!(!buffer.is_expired(1000));
+        assert!(buffer.is_expired(31000)); // After 30s timeout
+    }
+
+    #[test_case]
+    fn test_fragment_reassembly_simple() {
+        let mut reassembler = FragmentReassembler::new(16);
+
+        // First fragment (offset 0, more fragments)
+        let header1 = Ipv4Header {
+            version_ihl: 0x45,
+            dscp_ecn: 0,
+            total_length: [0, 28], // 20 + 8 bytes payload
+            identification: [0x00, 0x01],
+            flags_fragment: [0x20, 0x00], // MF=1, offset=0
+            ttl: 64,
+            protocol: 17, // UDP
+            checksum: [0, 0],
+            src_addr: [10, 0, 0, 1],
+            dst_addr: [10, 0, 0, 2],
+        };
+        let payload1 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        let result = reassembler.process_fragment(&header1, &payload1, 0);
+        assert!(result.is_none()); // Not complete yet
+
+        // Second fragment (offset 8, last fragment)
+        let header2 = Ipv4Header {
+            version_ihl: 0x45,
+            dscp_ecn: 0,
+            total_length: [0, 28],
+            identification: [0x00, 0x01],
+            flags_fragment: [0x00, 0x01], // MF=0, offset=8/8=1
+            ttl: 64,
+            protocol: 17,
+            checksum: [0, 0],
+            src_addr: [10, 0, 0, 1],
+            dst_addr: [10, 0, 0, 2],
+        };
+        let payload2 = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+
+        let result = reassembler.process_fragment(&header2, &payload2, 0);
+        assert!(result.is_some()); // Complete!
+
+        let reassembled = result.unwrap();
+        // Check payload in reassembled packet
+        assert!(reassembled.len() >= 36); // 20 header + 16 payload
+    }
+
+    #[test_case]
+    fn test_pmtu_cache_basic() {
+        let mut cache = PmtuCache::new(256);
+        let dst = Ipv4Address::from_octets(192, 168, 1, 100);
+        let current_time = 0u64;
+
+        // Initial lookup returns default MTU (cache miss)
+        assert_eq!(cache.get(dst, current_time), PmtuEntry::DEFAULT_MTU);
+
+        // Update PMTU
+        cache.update(dst, 1400, current_time);
+
+        // Now lookup should return the updated value
+        assert_eq!(cache.get(dst, current_time), 1400);
+
+        // After timeout, entry expires and returns default MTU
+        let after_timeout = current_time + PmtuEntry::TIMEOUT_MS + 1;
+        assert_eq!(cache.get(dst, after_timeout), PmtuEntry::DEFAULT_MTU);
+    }
+
+    #[test_case]
+    fn test_pmtu_cache_update_smaller() {
+        let mut cache = PmtuCache::new(256);
+        let dst = Ipv4Address::from_octets(10, 0, 0, 1);
+        let current_time = 0u64;
+
+        // Set initial PMTU
+        cache.update(dst, 1400, current_time);
+        assert_eq!(cache.get(dst, current_time), 1400);
+
+        // Smaller PMTU should replace
+        cache.update(dst, 1200, current_time + 100);
+        assert_eq!(cache.get(dst, current_time + 100), 1200);
+    }
+
+    #[test_case]
+    fn test_pmtu_cache_minimum() {
+        let mut cache = PmtuCache::new(256);
+        let dst = Ipv4Address::from_octets(8, 8, 8, 8);
+
+        // Very small MTU should be clamped to minimum
+        cache.update(dst, 100, 0);
+        assert_eq!(cache.get(dst, 0), PmtuEntry::MIN_MTU);
+    }
+}

@@ -346,6 +346,8 @@ pub enum ProcessResult<'a> {
     Ipv6(&'a [u8]),
     /// ARP packet to process
     Arp(&'a [u8]),
+    /// VLAN tagged frame - contains (VLAN ID, inner payload, inner EtherType)
+    VlanTagged { vlan_id: u16, pcp: u8, dei: bool, inner_type: EtherType, payload: &'a [u8] },
     /// Frame was dropped (not for us)
     Dropped,
     /// Frame was invalid
@@ -407,7 +409,55 @@ impl EthernetProcessor {
             EtherType::Ipv4 => ProcessResult::Ipv4(frame.payload()),
             EtherType::Ipv6 => ProcessResult::Ipv6(frame.payload()),
             EtherType::Arp => ProcessResult::Arp(frame.payload()),
+            EtherType::Vlan => self.process_vlan_tag(frame.payload()),
             _ => ProcessResult::Dropped,
+        }
+    }
+
+    /// Process a VLAN-tagged frame (802.1Q)
+    fn process_vlan_tag<'a>(&mut self, payload: &'a [u8]) -> ProcessResult<'a> {
+        // VLAN tag is 4 bytes: TPID (2) + TCI (2)
+        // After VLAN tag, we have the inner EtherType (2 bytes) + inner payload
+        if payload.len() < 4 {
+            return ProcessResult::Error;
+        }
+
+        let tci = u16::from_be_bytes([payload[0], payload[1]]);
+        let vlan_id = tci & 0x0FFF;
+        let pcp = ((tci >> 13) & 0x07) as u8;
+        let dei = (tci & 0x1000) != 0;
+
+        // The next 2 bytes are the inner EtherType
+        if payload.len() < 4 {
+            return ProcessResult::Error;
+        }
+        let inner_ethertype = u16::from_be_bytes([payload[2], payload[3]]);
+        let inner_type = EtherType::from(inner_ethertype);
+        let inner_payload = &payload[4..];
+
+        // Return the VLAN tagged result or process the inner frame directly
+        // For simple cases, we can directly dispatch the inner frame
+        match inner_type {
+            EtherType::Ipv4 => ProcessResult::Ipv4(inner_payload),
+            EtherType::Ipv6 => ProcessResult::Ipv6(inner_payload),
+            EtherType::Arp => ProcessResult::Arp(inner_payload),
+            EtherType::Vlan => {
+                // Nested VLAN (Q-in-Q) - return as VlanTagged for caller to handle
+                ProcessResult::VlanTagged {
+                    vlan_id,
+                    pcp,
+                    dei,
+                    inner_type,
+                    payload: inner_payload,
+                }
+            }
+            _ => ProcessResult::VlanTagged {
+                vlan_id,
+                pcp,
+                dei,
+                inner_type,
+                payload: inner_payload,
+            },
         }
     }
 

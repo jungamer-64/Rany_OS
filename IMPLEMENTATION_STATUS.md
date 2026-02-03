@@ -148,9 +148,20 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 **注意 (2026-01-10)**: `hid` のトップレベル PS/2 再エクスポート (`ps2_init`, `ps2_ports`, `ps2_status`, `ps2_commands`) を削除しました。移行先: `crate::io::hid::ps2::<symbol>` を直接呼び出すか、`driver_registry::register_driver(Box::new(Ps2Driver::new()))` を使用してください。
 
 **注意 (2026-01-17)**: `drivers/nvme` の再エクスポート群を削除しました（以前は非推奨化していました）。移行先: それぞれの型や関数を `nvme_driver` の該当モジュールから直接 import してください（例: `nvme_driver::queue::CompletionQueue`, `nvme_driver::async_io::ReadFuture`, `nvme_driver::global::init`）。
-**注意 (2026-01-17)**: `drivers/ahci` の `atapi` モジュール再エクスポートは `#[deprecated]` 属性を付与しました（2026-01-17）。移行先: `ahci_driver::atapi::<symbol>` を直接インポートしてください。
+**注意 (2026-01-17)**: `drivers/ahci` の `atapi` モジュール再エクスポートは削除しました。移行先: `ahci_driver::atapi::<symbol>` を直接インポートしてください。
 **注意 (2026-01-17)**: `drivers/pci::legacy::get_legacy_accessor()` は公開範囲を縮小（crate 内部化）しました。外部呼び出しは `pci_driver::EcamAccess` を利用してください。
 **注意 (2026-01-16)**: `drivers/hid` の PS/2 便利関数 (`ps2::get_key_event`, `ps2::get_mouse_event`, `ps2::get_modifiers`) を削除しました。移行先: `KeyboardStream` または `KeyboardHandler::pop_event()` を使用してください。
+
+**コード統合 (2026-01-21)**: 重複コード削除・統合を実施:
+- `kernel/src/fs/block.rs` を削除 → `vfs::block` からの再エクスポートに統合（~607行削減）
+- `libs/sync` クレート作成 → `PoisonLock`/`Backoff` を共通化（FAT32移行済み）
+- `libs/app_sdk` の `Application`/`AppContext` → `kernel_api` からの再エクスポートに統合（~130行削減）
+- `libs/vfs` に `SimpleBlockDevice` トレイト・アダプタ追加 → ドライバ統合用
+- FNV-1aハッシュ関数を `kernel/src/util.rs` に統合（~50行削減）
+- deprecated後方互換エイリアス削除: `hid` (IsrSafeWaker等4件), `ahci` (atapi再エクスポート), `usb` (BlockDevice型エイリアス)
+- `fat32`: `from_bytes` deprecated関数削除・`SafePackedRead`に安全な実装をインライン化（無限再帰バグ修正含む）
+- PAGE_SIZE定数を `mm/types.rs` に統合 → `fast_allocator.rs`, `ipc/shared_mem.rs` が参照
+- `libs/vfs/block.rs` に `SECTOR_SIZE` 定数追加
 
 | **ACPIテーブル解析 (7.2)** | ✅ 完了 | `src/io/acpi/` |
 | **AHCIドライバ** | ✅ 完了 | `src/io/ahci/` |

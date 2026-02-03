@@ -784,10 +784,6 @@ pub trait UsbBlockDevice: Send + Sync {
     fn flush(&self) -> Result<(), ClassDriverError>;
 }
 
-// 後方互換性のためのエイリアス
-#[deprecated(since = "0.2.0", note = "use UsbBlockDevice instead")]
-pub type BlockDevice = dyn UsbBlockDevice;
-
 // ============================================================================
 // VFS SimpleBlockDevice Integration
 // ============================================================================

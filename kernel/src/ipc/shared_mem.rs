@@ -48,7 +48,8 @@ impl ShmKey {
 pub struct ShmSize(usize);
 
 impl ShmSize {
-    pub const PAGE_SIZE: usize = 4096;
+    /// Page size constant (re-exported from mm/types)
+    pub const PAGE_SIZE: usize = crate::mm::types::PAGE_SIZE_4K;
 
     pub const fn new(size: usize) -> Self {
         Self(size)

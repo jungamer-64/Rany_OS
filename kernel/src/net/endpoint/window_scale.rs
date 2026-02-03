@@ -114,6 +114,95 @@ pub mod tcp_option_kind {
     pub const TIMESTAMP: u8 = 8;
 }
 
+/// TCP Timestamps オプション (RFC 7323)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TimestampsOption {
+    /// Timestamps が有効か
+    pub enabled: bool,
+    /// 自分のタイムスタンプ値
+    pub ts_val: u32,
+    /// 相手のタイムスタンプエコー
+    pub ts_ecr: u32,
+}
+
+impl TimestampsOption {
+    /// 新規作成（無効状態）
+    pub const fn new() -> Self {
+        Self {
+            enabled: false,
+            ts_val: 0,
+            ts_ecr: 0,
+        }
+    }
+
+    /// 有効状態で作成
+    pub fn enabled_with_value(ts_val: u32) -> Self {
+        Self {
+            enabled: true,
+            ts_val,
+            ts_ecr: 0,
+        }
+    }
+
+    /// タイムスタンプ値を更新
+    pub fn update(&mut self, current_time: u32) {
+        if self.enabled {
+            self.ts_val = current_time;
+        }
+    }
+
+    /// 受信したタイムスタンプを処理
+    pub fn process_received(&mut self, ts_val: u32, ts_ecr: u32) {
+        if self.enabled {
+            self.ts_ecr = ts_val; // 次の送信時にエコーする
+        }
+    }
+}
+
+/// SACK オプション (RFC 2018)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SackOption {
+    /// SACK が有効か
+    pub enabled: bool,
+    /// SACK ブロック (最大4つ)
+    pub blocks: [(u32, u32); 4],
+    /// 有効なブロック数
+    pub block_count: u8,
+}
+
+impl SackOption {
+    /// 新規作成（無効状態）
+    pub const fn new() -> Self {
+        Self {
+            enabled: false,
+            blocks: [(0, 0); 4],
+            block_count: 0,
+        }
+    }
+
+    /// 有効状態で作成
+    pub const fn enabled() -> Self {
+        Self {
+            enabled: true,
+            blocks: [(0, 0); 4],
+            block_count: 0,
+        }
+    }
+
+    /// SACKブロックを追加
+    pub fn add_block(&mut self, left_edge: u32, right_edge: u32) {
+        if self.enabled && (self.block_count as usize) < 4 {
+            self.blocks[self.block_count as usize] = (left_edge, right_edge);
+            self.block_count += 1;
+        }
+    }
+
+    /// SACKブロックをクリア
+    pub fn clear(&mut self) {
+        self.block_count = 0;
+    }
+}
+
 /// TCPオプションパーサー
 pub struct TcpOptionParser<'a> {
     data: &'a [u8],
@@ -199,6 +288,143 @@ impl<'a> TcpOptionParser<'a> {
         }
         None
     }
+
+    /// SACK Permitted オプションを探す
+    pub fn find_sack_permitted(&mut self) -> bool {
+        self.pos = 0;
+        while self.pos < self.data.len() {
+            let kind = self.data[self.pos];
+
+            match kind {
+                tcp_option_kind::END_OF_OPTIONS => break,
+                tcp_option_kind::NOP => {
+                    self.pos += 1;
+                }
+                tcp_option_kind::SACK_PERMITTED => {
+                    // Kind(1) + Length(1) = 2 bytes
+                    if self.pos + 2 <= self.data.len() && self.data[self.pos + 1] == 2 {
+                        return true;
+                    }
+                    self.pos += 2;
+                }
+                _ => {
+                    if self.pos + 1 < self.data.len() {
+                        let len = self.data[self.pos + 1] as usize;
+                        if len < 2 || self.pos + len > self.data.len() {
+                            break;
+                        }
+                        self.pos += len;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Timestamps オプションを探す
+    /// Returns (ts_val, ts_ecr) if found
+    pub fn find_timestamps(&mut self) -> Option<(u32, u32)> {
+        self.pos = 0;
+        while self.pos < self.data.len() {
+            let kind = self.data[self.pos];
+
+            match kind {
+                tcp_option_kind::END_OF_OPTIONS => break,
+                tcp_option_kind::NOP => {
+                    self.pos += 1;
+                }
+                tcp_option_kind::TIMESTAMP => {
+                    // Kind(1) + Length(1) + TSval(4) + TSecr(4) = 10 bytes
+                    if self.pos + 10 <= self.data.len() && self.data[self.pos + 1] == 10 {
+                        let ts_val = u32::from_be_bytes([
+                            self.data[self.pos + 2],
+                            self.data[self.pos + 3],
+                            self.data[self.pos + 4],
+                            self.data[self.pos + 5],
+                        ]);
+                        let ts_ecr = u32::from_be_bytes([
+                            self.data[self.pos + 6],
+                            self.data[self.pos + 7],
+                            self.data[self.pos + 8],
+                            self.data[self.pos + 9],
+                        ]);
+                        return Some((ts_val, ts_ecr));
+                    }
+                    self.pos += 10;
+                }
+                _ => {
+                    if self.pos + 1 < self.data.len() {
+                        let len = self.data[self.pos + 1] as usize;
+                        if len < 2 || self.pos + len > self.data.len() {
+                            break;
+                        }
+                        self.pos += len;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// SACK ブロックを探す
+    pub fn find_sack_blocks(&mut self) -> Option<alloc::vec::Vec<(u32, u32)>> {
+        self.pos = 0;
+        while self.pos < self.data.len() {
+            let kind = self.data[self.pos];
+
+            match kind {
+                tcp_option_kind::END_OF_OPTIONS => break,
+                tcp_option_kind::NOP => {
+                    self.pos += 1;
+                }
+                tcp_option_kind::SACK => {
+                    if self.pos + 2 <= self.data.len() {
+                        let len = self.data[self.pos + 1] as usize;
+                        // SACK: Kind(1) + Length(1) + N * (LeftEdge(4) + RightEdge(4))
+                        // Length should be 2 + 8*N where N is number of blocks
+                        if len >= 10 && len <= 34 && (len - 2) % 8 == 0 && self.pos + len <= self.data.len() {
+                            let num_blocks = (len - 2) / 8;
+                            let mut blocks = alloc::vec::Vec::with_capacity(num_blocks);
+                            for i in 0..num_blocks {
+                                let offset = self.pos + 2 + i * 8;
+                                let left = u32::from_be_bytes([
+                                    self.data[offset],
+                                    self.data[offset + 1],
+                                    self.data[offset + 2],
+                                    self.data[offset + 3],
+                                ]);
+                                let right = u32::from_be_bytes([
+                                    self.data[offset + 4],
+                                    self.data[offset + 5],
+                                    self.data[offset + 6],
+                                    self.data[offset + 7],
+                                ]);
+                                blocks.push((left, right));
+                            }
+                            return Some(blocks);
+                        }
+                    }
+                    break;
+                }
+                _ => {
+                    if self.pos + 1 < self.data.len() {
+                        let len = self.data[self.pos + 1] as usize;
+                        if len < 2 || self.pos + len > self.data.len() {
+                            break;
+                        }
+                        self.pos += len;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 /// TCPオプションビルダー
@@ -245,6 +471,46 @@ impl TcpOptionBuilder {
             self.buffer[self.len] = tcp_option_kind::SACK_PERMITTED;
             self.buffer[self.len + 1] = 2; // length
             self.len += 2;
+        }
+        self
+    }
+
+    /// Timestamps オプション追加 (RFC 7323)
+    /// NOP + NOP + Timestamp for 4-byte alignment
+    pub fn add_timestamps(&mut self, ts_val: u32, ts_ecr: u32) -> &mut Self {
+        // NOP(1) + NOP(1) + Kind(1) + Length(1) + TSval(4) + TSecr(4) = 12 bytes
+        if self.len + 12 <= 40 {
+            self.buffer[self.len] = tcp_option_kind::NOP;
+            self.buffer[self.len + 1] = tcp_option_kind::NOP;
+            self.buffer[self.len + 2] = tcp_option_kind::TIMESTAMP;
+            self.buffer[self.len + 3] = 10; // length
+            self.buffer[self.len + 4..self.len + 8].copy_from_slice(&ts_val.to_be_bytes());
+            self.buffer[self.len + 8..self.len + 12].copy_from_slice(&ts_ecr.to_be_bytes());
+            self.len += 12;
+        }
+        self
+    }
+
+    /// SACK ブロックを追加
+    pub fn add_sack_blocks(&mut self, blocks: &[(u32, u32)]) -> &mut Self {
+        if blocks.is_empty() {
+            return self;
+        }
+
+        let num_blocks = blocks.len().min(4);
+        let opt_len = 2 + num_blocks * 8; // Kind + Length + N * 8
+
+        if self.len + opt_len <= 40 {
+            self.buffer[self.len] = tcp_option_kind::SACK;
+            self.buffer[self.len + 1] = opt_len as u8;
+
+            for (i, (left, right)) in blocks.iter().take(num_blocks).enumerate() {
+                let offset = self.len + 2 + i * 8;
+                self.buffer[offset..offset + 4].copy_from_slice(&left.to_be_bytes());
+                self.buffer[offset + 4..offset + 8].copy_from_slice(&right.to_be_bytes());
+            }
+
+            self.len += opt_len;
         }
         self
     }

@@ -9,15 +9,16 @@
 
 use super::arp::{ArpProcessor, ArpResult};
 use super::ethernet::{EtherType, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult};
-use super::icmp::{IcmpEchoBuilder, IcmpProcessor, IcmpResult};
+use super::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode};
+use super::igmp::{IgmpProcessor, IgmpResult, IgmpError, IGMP_PROTOCOL, multicast_ip_to_mac};
 use super::ipv4::{
-    IpProtocol, Ipv4Address, Ipv4Config, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
+    IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
 };
 use super::mempool::{PacketPool, PacketRef};
 use super::optimization::PacketBatch;
 use super::tcp::{
-    TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream, 
-    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpHeader
+    TcpError, TcpFlags, TcpListener, TcpProcessor, TcpProcessResult, TcpSegmentBuilder, TcpStream, 
+    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpHeader, send_tcp_segment
 };
 
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
@@ -109,6 +110,129 @@ impl NetworkStats {
 /// Transmit callback function type
 pub type TransmitFn = fn(&[u8]) -> bool;
 
+/// ICMP Redirect Cache Entry
+/// 
+/// Stores temporary route overrides received from ICMP Redirect messages.
+/// These entries have limited lifetime and should be aged out periodically.
+#[derive(Debug, Clone, Copy)]
+struct RedirectCacheEntry {
+    /// Destination address
+    destination: Ipv4Address,
+    /// Gateway to use
+    gateway: Ipv4Address,
+    /// Timestamp when entry was created (for aging)
+    timestamp: u64,
+}
+
+/// ICMP Redirect Cache
+/// 
+/// A simple fixed-size cache for storing ICMP redirect information.
+/// RFC 792 recommends caching redirects temporarily.
+const REDIRECT_CACHE_SIZE: usize = 32;
+const REDIRECT_CACHE_TTL: u64 = 600_000; // 10 minutes in milliseconds
+
+#[derive(Debug)]
+struct RedirectCache {
+    entries: [Option<RedirectCacheEntry>; REDIRECT_CACHE_SIZE],
+    current_time: u64,
+}
+
+impl RedirectCache {
+    /// Create an empty redirect cache
+    fn new() -> Self {
+        Self {
+            entries: [None; REDIRECT_CACHE_SIZE],
+            current_time: 0,
+        }
+    }
+
+    /// Update the current time for aging
+    fn set_time(&mut self, time: u64) {
+        self.current_time = time;
+    }
+
+    /// Insert or update a redirect entry
+    fn insert(&mut self, destination: Ipv4Address, gateway: Ipv4Address) {
+        // First, try to find existing entry for this destination
+        for entry in self.entries.iter_mut() {
+            if let Some(e) = entry {
+                if e.destination == destination {
+                    e.gateway = gateway;
+                    e.timestamp = self.current_time;
+                    return;
+                }
+            }
+        }
+
+        // Find an empty slot or the oldest entry
+        let mut oldest_idx = 0;
+        let mut oldest_time = u64::MAX;
+        
+        for (i, entry) in self.entries.iter().enumerate() {
+            match entry {
+                None => {
+                    // Empty slot - use it immediately
+                    self.entries[i] = Some(RedirectCacheEntry {
+                        destination,
+                        gateway,
+                        timestamp: self.current_time,
+                    });
+                    return;
+                }
+                Some(e) => {
+                    // Check if expired
+                    if self.current_time.saturating_sub(e.timestamp) > REDIRECT_CACHE_TTL {
+                        // Expired entry - can be replaced
+                        self.entries[i] = Some(RedirectCacheEntry {
+                            destination,
+                            gateway,
+                            timestamp: self.current_time,
+                        });
+                        return;
+                    }
+                    if e.timestamp < oldest_time {
+                        oldest_time = e.timestamp;
+                        oldest_idx = i;
+                    }
+                }
+            }
+        }
+
+        // Replace oldest entry
+        self.entries[oldest_idx] = Some(RedirectCacheEntry {
+            destination,
+            gateway,
+            timestamp: self.current_time,
+        });
+    }
+
+    /// Look up a redirect for a destination
+    fn get(&self, destination: Ipv4Address) -> Option<Ipv4Address> {
+        for entry in self.entries.iter() {
+            if let Some(e) = entry {
+                if e.destination == destination {
+                    // Check if entry is still valid
+                    if self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL {
+                        return Some(e.gateway);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Remove all expired entries
+    fn cleanup(&mut self) {
+        for entry in self.entries.iter_mut() {
+            if let Some(e) = entry {
+                if self.current_time.saturating_sub(e.timestamp) > REDIRECT_CACHE_TTL {
+                    *entry = None;
+                }
+            }
+        }
+    }
+}
+
 /// Integrated network stack
 pub struct NetworkStack {
     /// Configuration
@@ -121,6 +245,8 @@ pub struct NetworkStack {
     arp: ArpProcessor,
     /// ICMP processor
     icmp: IcmpProcessor,
+    /// IGMP processor (multicast group management)
+    igmp: IgmpProcessor,
     /// UDP processor
     udp: UdpProcessor,
     /// TCP processor
@@ -133,6 +259,8 @@ pub struct NetworkStack {
     transmit_fn: Option<TransmitFn>,
     /// Current timestamp (ticks)
     current_time: AtomicU64,
+    /// ICMP Redirect cache
+    redirect_cache: RedirectCache,
 }
 
 impl NetworkStack {
@@ -152,6 +280,7 @@ impl NetworkStack {
             ipv4: Ipv4Processor::new(config.ipv4.clone()),
             arp: ArpProcessor::new(mac, ip),
             icmp: IcmpProcessor::new(ip),
+            igmp: IgmpProcessor::new(ip),
             udp: UdpProcessor::new(),
             tcp: TcpProcessor::new(),
             tx_pool: PacketPool::new(64, MAX_PACKET_SIZE),
@@ -159,6 +288,7 @@ impl NetworkStack {
             stats: NetworkStats::default(),
             transmit_fn: None,
             current_time: AtomicU64::new(0),
+            redirect_cache: RedirectCache::new(),
         }
     }
 
@@ -241,6 +371,34 @@ impl NetworkStack {
                 // IPv6 not yet implemented
                 self.stats.record_dropped();
             }
+            ProcessResult::VlanTagged { vlan_id, pcp: _, dei: _, inner_type, payload } => {
+                // VLAN-tagged frame - process based on inner type
+                // For now, we process the inner payload directly
+                // In a full implementation, we would check VLAN membership
+                let offset = unsafe { payload.as_ptr().offset_from(packet.data().as_ptr()) } as usize;
+                let mut inner_packet = packet.clone_ref();
+                inner_packet.advance(offset);
+
+                match inner_type {
+                    EtherType::Ipv4 => {
+                        self.process_ipv4(payload, current_time, inner_packet);
+                    }
+                    EtherType::Arp => {
+                        self.process_arp(payload, current_time);
+                    }
+                    EtherType::Ipv6 => {
+                        // IPv6 not yet implemented
+                        self.stats.record_dropped();
+                    }
+                    _ => {
+                        // Unsupported inner protocol
+                        self.stats.record_dropped();
+                    }
+                }
+
+                // Log VLAN info if needed
+                let _ = vlan_id; // VLAN ID can be used for filtering/routing
+            }
             ProcessResult::Dropped => {
                 self.stats.record_dropped();
             }
@@ -266,7 +424,7 @@ impl NetworkStack {
 
     /// Process IPv4 packet
     fn process_ipv4(&mut self, data: &[u8], current_time: u64, packet: PacketRef) {
-        let result = self.ipv4.process(data);
+        let result = self.ipv4.process_with_time(data, current_time);
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip) => {
@@ -287,6 +445,15 @@ impl NetworkStack {
                 p.advance(offset);
                 self.process_tcp(payload, src_ip, dst_ip, p);
             }
+            Ipv4ProcessResult::Reassembled(reassembled_data) => {
+                // Process reassembled packet recursively
+                // The reassembled data is a complete IP packet
+                self.process_reassembled_packet(&reassembled_data, current_time);
+            }
+            Ipv4ProcessResult::FragmentPending => {
+                // Fragment received, waiting for more fragments
+                // Nothing to do here
+            }
             Ipv4ProcessResult::Dropped => {
                 self.stats.record_dropped();
             }
@@ -294,6 +461,140 @@ impl NetworkStack {
                 self.stats.record_rx_error();
             }
             Ipv4ProcessResult::Success => {}
+        }
+    }
+
+    /// Process a reassembled IP packet
+    fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64) {
+        // Parse the reassembled packet
+        if let Some(packet) = Ipv4Packet::parse(data) {
+            let src = packet.source();
+            let dst = packet.destination();
+            let payload = packet.payload();
+
+            match packet.protocol() {
+                IpProtocol::Icmp => {
+                    // Process ICMP directly without PacketRef
+                    self.process_icmp_data(payload, src, current_time);
+                }
+                IpProtocol::Udp => {
+                    // Process UDP directly without PacketRef
+                    self.process_udp_data(payload, src, dst);
+                }
+                IpProtocol::Tcp => {
+                    // Process TCP directly without PacketRef
+                    self.process_tcp_data(payload, src, dst);
+                }
+                _ => {
+                    self.stats.record_dropped();
+                }
+            }
+        }
+    }
+
+    /// Process ICMP data (for reassembled packets)
+    fn process_icmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
+        if !self.icmp_echo_enabled() {
+            return;
+        }
+
+        let result = self.icmp.process(data, src_ip);
+
+        match result {
+            IcmpResult::SendEchoReply {
+                src_ip,
+                identifier,
+                sequence,
+                data_offset,
+                data_len,
+            } => {
+                let echo_data = if data_offset + data_len <= data.len() {
+                    &data[data_offset..data_offset + data_len]
+                } else {
+                    &[]
+                };
+                self.send_icmp_echo_reply(src_ip, identifier, sequence, echo_data, current_time);
+            }
+            IcmpResult::EchoReplyReceived { identifier, sequence } => {
+                let _ = (identifier, sequence);
+            }
+            IcmpResult::Error { icmp_type, code } => {
+                // Handle ICMP errors for PMTUD (RFC 1191)
+                self.handle_icmp_error(data, icmp_type, code, current_time);
+            }
+            IcmpResult::Redirect { code, gateway, destination } => {
+                // Handle ICMP Redirect for route optimization (RFC 792)
+                self.handle_icmp_redirect(code, gateway, destination, src_ip);
+            }
+            _ => {}
+        }
+    }
+
+    /// Process UDP data (for reassembled packets)
+    fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+        // For reassembled packets, we don't have a PacketRef for zero-copy
+        // Use the non-zero-copy path
+        let result = self.udp.process(data, src_ip, dst_ip);
+
+        match result {
+            UdpResult::Delivered => {}
+            UdpResult::NoSocket => {
+                self.stats.record_dropped();
+            }
+            UdpResult::ChecksumError | UdpResult::Invalid => {
+                self.stats.record_rx_error();
+            }
+        }
+    }
+
+    /// Process TCP data (for reassembled packets)
+    fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+        // For reassembled packets, use the non-zero-copy TCP processing path
+        let result = self.tcp.process(data, src_ip, dst_ip);
+
+        match result {
+            TcpProcessResult::SendPacket {
+                local,
+                remote,
+                seq,
+                ack,
+                flags,
+                window,
+                payload,
+            } => {
+                let mut buffer = [0u8; 1518];
+                let header_len = 20;
+                let total_len = header_len + payload.len();
+                
+                if total_len > buffer.len() {
+                    return;
+                }
+
+                let segment_buffer = &mut buffer[..total_len];
+                let mut builder = TcpSegmentBuilder::new(local.port, remote.port);
+                builder.seq(seq);
+                if flags.contains(TcpFlags::ACK) {
+                    builder.ack(ack);
+                }
+                builder.window(window);
+                let built = builder.build();
+                segment_buffer[..20].copy_from_slice(&built);
+                if !payload.is_empty() {
+                    segment_buffer[20..].copy_from_slice(&payload);
+                }
+                TcpSegmentBuilder::calculate_checksum(segment_buffer, local.ip, remote.ip);
+                send_tcp_segment(local, remote, segment_buffer.to_vec());
+            }
+            TcpProcessResult::ConnectionEstablished => {}
+            TcpProcessResult::DataReceived => {}
+            TcpProcessResult::ConnectionClosed => {}
+            TcpProcessResult::Dropped => {
+                self.stats.record_dropped();
+            }
+            TcpProcessResult::Error => {
+                self.stats.record_rx_error();
+            }
+            TcpProcessResult::None => {}
         }
     }
 
@@ -346,6 +647,14 @@ impl NetworkStack {
             } => {
                 // Could notify waiting pingers
                 let _ = (identifier, sequence);
+            }
+            IcmpResult::Error { icmp_type, code } => {
+                // Handle ICMP errors for PMTUD (RFC 1191)
+                self.handle_icmp_error(data, icmp_type, code, current_time);
+            }
+            IcmpResult::Redirect { code, gateway, destination } => {
+                // Handle ICMP Redirect for route optimization (RFC 792)
+                self.handle_icmp_redirect(code, gateway, destination, src_ip);
             }
             _ => {}
         }
@@ -578,6 +887,128 @@ impl NetworkStack {
         }
     }
 
+    /// Handle ICMP error messages for Path MTU Discovery (RFC 1191)
+    ///
+    /// When a router cannot forward a packet because it exceeds the next-hop MTU
+    /// and the DF (Don't Fragment) bit is set, it sends back an ICMP Destination
+    /// Unreachable message with code 4 (Fragmentation Needed).
+    ///
+    /// The Next-Hop MTU is encoded in bytes 6-7 of the ICMP message (after the
+    /// 4-byte ICMP header). This value indicates the maximum MTU that should be
+    /// used for that path.
+    fn handle_icmp_error(&mut self, data: &[u8], icmp_type: IcmpType, code: u8, current_time: u64) {
+        // Only handle Destination Unreachable with Fragmentation Needed (RFC 1191)
+        if icmp_type != IcmpType::DestinationUnreachable {
+            return;
+        }
+        if code != DestUnreachCode::FragmentationNeeded as u8 {
+            return;
+        }
+
+        // ICMP Destination Unreachable format:
+        // Bytes 0-3: ICMP header (type, code, checksum)
+        // Bytes 4-5: Unused (must be zero)
+        // Bytes 6-7: Next-Hop MTU (big-endian)
+        // Bytes 8+: Original IP header + first 8 bytes of payload
+        const NEXT_HOP_MTU_OFFSET: usize = 6;
+        if data.len() < NEXT_HOP_MTU_OFFSET + 2 {
+            return;
+        }
+
+        let next_hop_mtu = u16::from_be_bytes([data[NEXT_HOP_MTU_OFFSET], data[NEXT_HOP_MTU_OFFSET + 1]]);
+
+        // If Next-Hop MTU is 0, the router doesn't support RFC 1191
+        // Use a fallback plateau value (RFC 1191 recommends 576 as minimum)
+        let mtu = if next_hop_mtu == 0 {
+            576u16
+        } else {
+            next_hop_mtu
+        };
+
+        // Extract the original destination IP from the embedded IP header
+        // The original IP header starts at byte 8 of the ICMP message
+        const ORIGINAL_IP_OFFSET: usize = 8;
+        const IP_DST_OFFSET: usize = 16; // Destination IP starts at byte 16 of IP header
+        let total_offset = ORIGINAL_IP_OFFSET + IP_DST_OFFSET;
+        
+        if data.len() < total_offset + 4 {
+            return;
+        }
+
+        let dst_octets = [
+            data[total_offset],
+            data[total_offset + 1],
+            data[total_offset + 2],
+            data[total_offset + 3],
+        ];
+        let original_dst = Ipv4Address::from_octets(
+            dst_octets[0],
+            dst_octets[1],
+            dst_octets[2],
+            dst_octets[3],
+        );
+
+        // Update the PMTU cache
+        self.ipv4.update_pmtu(original_dst, mtu, current_time);
+    }
+
+    /// Handle ICMP Redirect message (RFC 792)
+    /// 
+    /// ICMP Redirect is sent by a router when it detects that a better route
+    /// exists for a destination. The host should update its routing table
+    /// to use the new gateway for future packets to that destination.
+    /// 
+    /// Security considerations:
+    /// - Only accept redirects from the current first-hop router
+    /// - Validate that the new gateway is on a directly connected network
+    /// - Ignore redirects for destinations not matching current routes
+    fn handle_icmp_redirect(
+        &mut self,
+        code: RedirectCode,
+        gateway: Ipv4Address,
+        destination: Ipv4Address,
+        redirect_source: Ipv4Address,
+    ) {
+        // Security check 1: Only accept redirects from our current gateway
+        let current_gateway = self.config.ipv4.gateway;
+        if redirect_source != current_gateway {
+            // Ignore redirects from non-gateway sources (potential attack)
+            return;
+        }
+
+        // Security check 2: Ensure the new gateway is on a directly connected network
+        // (same subnet as the host)
+        let local_ip = self.config.ipv4.address;
+        let local_mask = self.config.ipv4.subnet_mask;
+        let local_network = local_ip.apply_mask(local_mask);
+        let gateway_network = gateway.apply_mask(local_mask);
+        
+        if local_network != gateway_network {
+            // New gateway is not on the same network - reject
+            return;
+        }
+
+        // Security check 3: Don't redirect to ourselves
+        if gateway == local_ip {
+            return;
+        }
+
+        // Security check 4: Validate redirect code and destination
+        match code {
+            RedirectCode::Network | RedirectCode::Host => {
+                // Standard redirects - proceed
+            }
+            RedirectCode::TosNetwork | RedirectCode::TosHost => {
+                // TOS-based redirects - less common but valid
+            }
+        }
+
+        // Update redirect cache (temporary route override)
+        // In a full implementation, this would update the routing table
+        // For now, we store redirects in a simple cache
+        self.redirect_cache.insert(destination, gateway);
+    }
+
     /// Send a UDP packet (raw helper)
     pub fn send_udp_raw(
         &mut self,
@@ -652,11 +1083,19 @@ impl NetworkStack {
             return Some(MacAddress::BROADCAST);
         }
 
-        // Determine next hop
+        // Determine next hop, considering ICMP Redirect cache
         let next_hop = if config.ipv4.is_local(&dst_ip) {
             dst_ip
         } else {
-            config.ipv4.gateway
+            // Check redirect cache first for an alternative gateway
+            // Update cache time before lookup
+            self.redirect_cache.set_time(current_time);
+            if let Some(redirected_gateway) = self.redirect_cache.get(dst_ip) {
+                // Use the redirected gateway instead of the default
+                redirected_gateway
+            } else {
+                config.ipv4.gateway
+            }
         };
 
         // Look up in ARP cache
@@ -1492,5 +1931,89 @@ mod tests {
         let res = send_icmp_echo([8, 8, 8, 8], 1);
         assert!(res.is_ok());
     }
-}
 
+    #[test_case]
+    fn test_redirect_cache_basic() {
+        let mut cache = RedirectCache::new();
+        let dst = Ipv4Address::new([10, 0, 0, 100]);
+        let gateway = Ipv4Address::new([192, 168, 1, 2]);
+        
+        // Initially empty
+        assert!(cache.get(dst).is_none());
+        
+        // Insert and retrieve
+        cache.insert(dst, gateway);
+        assert_eq!(cache.get(dst), Some(gateway));
+        
+        // Update existing entry
+        let new_gateway = Ipv4Address::new([192, 168, 1, 3]);
+        cache.insert(dst, new_gateway);
+        assert_eq!(cache.get(dst), Some(new_gateway));
+    }
+
+    #[test_case]
+    fn test_redirect_cache_expiry() {
+        let mut cache = RedirectCache::new();
+        let dst = Ipv4Address::new([10, 0, 0, 100]);
+        let gateway = Ipv4Address::new([192, 168, 1, 2]);
+        
+        // Insert at time 0
+        cache.set_time(0);
+        cache.insert(dst, gateway);
+        
+        // Still valid at TTL - 1
+        cache.set_time(REDIRECT_CACHE_TTL - 1);
+        assert_eq!(cache.get(dst), Some(gateway));
+        
+        // Expired after TTL
+        cache.set_time(REDIRECT_CACHE_TTL + 1);
+        assert!(cache.get(dst).is_none());
+    }
+
+    #[test_case]
+    fn test_redirect_cache_cleanup() {
+        let mut cache = RedirectCache::new();
+        let dst1 = Ipv4Address::new([10, 0, 0, 1]);
+        let dst2 = Ipv4Address::new([10, 0, 0, 2]);
+        let gateway = Ipv4Address::new([192, 168, 1, 2]);
+        
+        cache.set_time(0);
+        cache.insert(dst1, gateway);
+        
+        cache.set_time(REDIRECT_CACHE_TTL / 2);
+        cache.insert(dst2, gateway);
+        
+        // First entry expires, second still valid
+        cache.set_time(REDIRECT_CACHE_TTL + 1);
+        cache.cleanup();
+        
+        // dst1 should be removed, dst2 still valid
+        assert!(cache.get(dst1).is_none());
+        // dst2 is still within TTL from its insertion time
+        cache.set_time(REDIRECT_CACHE_TTL / 2 + REDIRECT_CACHE_TTL - 1);
+        assert_eq!(cache.get(dst2), Some(gateway));
+    }
+
+    #[test_case]
+    fn test_redirect_cache_eviction() {
+        let mut cache = RedirectCache::new();
+        let gateway = Ipv4Address::new([192, 168, 1, 2]);
+        
+        // Fill cache completely
+        for i in 0..REDIRECT_CACHE_SIZE {
+            cache.set_time(i as u64 * 100);
+            let dst = Ipv4Address::new([10, 0, 0, i as u8]);
+            cache.insert(dst, gateway);
+        }
+        
+        // Adding one more should evict the oldest (dst 10.0.0.0)
+        cache.set_time(REDIRECT_CACHE_SIZE as u64 * 100);
+        let new_dst = Ipv4Address::new([10, 0, 1, 0]);
+        cache.insert(new_dst, gateway);
+        
+        // New entry should be present
+        assert_eq!(cache.get(new_dst), Some(gateway));
+        
+        // Oldest entry (10.0.0.0) should be evicted
+        assert!(cache.get(Ipv4Address::new([10, 0, 0, 0])).is_none());
+    }

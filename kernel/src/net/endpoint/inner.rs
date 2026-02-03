@@ -51,6 +51,8 @@ pub struct SocketInner {
     pub connect_waker: Option<core::task::Waker>,
     /// Accept待ちWaker（非同期通知用）
     pub accept_waker: Option<core::task::Waker>,
+    /// Urgent data pending flag (TCP OOB data)
+    pub urgent_pending: bool,
 }
 
 impl SocketInner {
@@ -82,7 +84,20 @@ impl SocketInner {
             send_waker: None,
             connect_waker: None,
             accept_waker: None,
+            urgent_pending: false,
         }
+    }
+
+    /// Set urgent data pending flag
+    #[inline]
+    pub fn set_urgent_pending(&mut self, pending: bool) {
+        self.urgent_pending = pending;
+    }
+
+    /// Check if urgent data is pending
+    #[inline]
+    pub fn has_urgent_pending(&self) -> bool {
+        self.urgent_pending
     }
 
     /// 状態遷移（ガード付き）

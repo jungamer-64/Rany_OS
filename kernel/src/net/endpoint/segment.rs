@@ -21,6 +21,8 @@ pub struct TcpSegmentBuilder {
     data: Vec<u8>,
     /// TCPオプション
     options: Vec<u8>,
+    /// Urgent pointer
+    urgent_ptr: u16,
 }
 
 impl TcpSegmentBuilder {
@@ -35,6 +37,7 @@ impl TcpSegmentBuilder {
             window: 65535,
             data: Vec::new(),
             options: Vec::new(),
+            urgent_ptr: 0,
         }
     }
 
@@ -83,6 +86,22 @@ impl TcpSegmentBuilder {
     /// PSHフラグ追加
     pub fn psh(mut self) -> Self {
         self.flags |= tcp_flags::PSH;
+        self
+    }
+
+    /// URGフラグ追加
+    pub fn urg(mut self) -> Self {
+        self.flags |= tcp_flags::URG;
+        self
+    }
+
+    /// Urgent pointer設定
+    /// Note: URGフラグも自動的に設定される
+    pub fn urgent_pointer(mut self, ptr: u16) -> Self {
+        if ptr > 0 {
+            self.flags |= tcp_flags::URG;
+        }
+        self.urgent_ptr = ptr;
         self
     }
 
@@ -203,7 +222,7 @@ impl TcpSegmentBuilder {
         // Checksum (2 bytes) - will be calculated later
         segment[16..18].copy_from_slice(&0u16.to_be_bytes());
         // Urgent pointer (2 bytes)
-        segment[18..20].copy_from_slice(&0u16.to_be_bytes());
+        segment[18..20].copy_from_slice(&self.urgent_ptr.to_be_bytes());
 
         // Options
         if !self.options.is_empty() {

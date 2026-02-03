@@ -41,6 +41,7 @@ pub mod optimization;
 pub mod arp;
 pub mod ethernet;
 pub mod icmp;
+pub mod igmp;
 pub mod ipv4;
 pub mod udp;
 
