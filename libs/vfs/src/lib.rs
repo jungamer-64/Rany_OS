@@ -57,6 +57,9 @@ pub use error::{VfsError, VfsResult};
 pub use path::Path;
 pub use types::{FileAttr, FileMode, FileType, FsStats, InodeNum, Metadata, OpenFlags, SeekFrom, UnixFileMode};
 
+// Block device types
+pub use block::SECTOR_SIZE;
+
 // Inode-related types (require alloc)
 #[cfg(feature = "alloc")]
 pub use types::DirEntry as InodeDirEntry;

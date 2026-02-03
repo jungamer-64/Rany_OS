@@ -38,13 +38,14 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
     let flags = (data_off_flags & 0x003F) as u8;
     let _window = u16::from_be_bytes([segment[14], segment[15]]);
+    let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
 
     let remote = SocketAddr::new(src_ip, src_port);
     let local = SocketAddr::new(dst_ip, dst_port);
 
     // TCBを検索
     if let Some(tcb) = tcb_table().get(local, remote) {
-        process_tcp_with_tcb(tcb, flags, seq_num, ack_num, segment, data_offset);
+        process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
     } else {
         // 新規接続要求の可能性（LISTENソケット検索）
         process_tcp_new_connection(local, remote, flags, seq_num, segment, data_offset);
@@ -57,6 +58,7 @@ fn process_tcp_with_tcb(
     flags: u8,
     seq_num: u32,
     ack_num: u32,
+    urgent_ptr: u16,
     segment: &[u8],
     data_offset: usize,
 ) {
@@ -64,6 +66,7 @@ fn process_tcp_with_tcb(
     let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_fin = (flags & tcp_flags::FIN) != 0;
     let is_rst = (flags & tcp_flags::RST) != 0;
+    let is_urg = (flags & tcp_flags::URG) != 0;
 
     match tcb.state {
         TcpConnectionState::SynSent => {
@@ -89,6 +92,11 @@ fn process_tcp_with_tcb(
             } else if is_rst {
                 handle_rst_received(tcb);
             } else {
+                // URGフラグ処理（RFC 793/6093）
+                if is_urg && urgent_ptr > 0 {
+                    handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
+                }
+                
                 // データ受信
                 let data_start = data_offset;
                 if data_start < segment.len() {
@@ -97,6 +105,7 @@ fn process_tcp_with_tcb(
                 } else if is_ack {
                     // ACKのみ（データなし）
                     handle_ack_received(tcb, ack_num);
+                }
                 }
             }
         }
@@ -470,6 +479,40 @@ fn handle_final_ack(tcb: TcpControlBlockEntry, ack_num: u32) {
     // リソースクリーンアップ
     retransmit_queue_remove(tcb.local, tcb.remote);
     tcb_table().remove(tcb.local, tcb.remote);
+}
+
+/// Urgent data受信処理 (RFC 793/6093)
+///
+/// URGフラグが設定されたセグメントを受信した際の処理。
+/// urgent pointerは、セグメント開始からurgent dataの最後のバイトまでのオフセットを示す。
+fn handle_urgent_received(tcb: TcpControlBlockEntry, seq_num: u32, urgent_ptr: u16) {
+    // TCBのurgent状態を更新
+    tcb_table().update(tcb.local, tcb.remote, |entry| {
+        let has_new_urgent = entry.on_urgent_received(seq_num, urgent_ptr);
+        
+        if has_new_urgent {
+            // ソケットにurgent dataの存在を通知
+            notify_socket_urgent(entry.fd);
+        }
+    });
+}
+
+/// ソケットにurgent data到着を通知
+fn notify_socket_urgent(fd: SocketFd) {
+    let manager = SOCKET_MANAGER.read();
+    let Some(ref mgr) = *manager else {
+        return;
+    };
+
+    if let Some(socket) = mgr.get(fd) {
+        let mut inner = socket.inner().lock();
+        // urgent flagを設定
+        inner.set_urgent_pending(true);
+        // recv wakerを起こす（OOBデータ待ちの可能性）
+        if let Some(waker) = inner.recv_waker.take() {
+            waker.wake();
+        }
+    }
 }
 
 /// ソケットに接続完了を通知

@@ -326,9 +326,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "exorust_sync"
+version = "0.1.0"
+dependencies = [
+ "spin",
+]
+
+[[package]]
 name = "fat32"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "futures",
  "hashbrown",
  "log",
@@ -1028,6 +1036,7 @@ dependencies = [
  "hal",
  "kernel_api",
  "spin",
+ "vfs",
 ]
 
 [[package]]

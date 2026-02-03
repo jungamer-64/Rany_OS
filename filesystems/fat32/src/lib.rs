@@ -1248,7 +1248,6 @@ impl SafePackedRead for DirEntryRaw {
     /// 4. **Copyトレイト**: 構造体は`Copy`を実装しており、ビット単位のコピーが安全
     /// 5. **有効性**: 任意のビットパターンが有効なDirEntryRaw値を形成する
     ///    （無効なパターンは上位層で検証）
-    #[allow(deprecated)]
     fn from_bytes_safe(bytes: &[u8]) -> Self {
         debug_assert!(
             bytes.len() >= DIR_ENTRY_SIZE,
@@ -1256,8 +1255,36 @@ impl SafePackedRead for DirEntryRaw {
             bytes.len(),
             DIR_ENTRY_SIZE
         );
-        // Delegate to safe field-by-field parser
-        DirEntryRaw::from_bytes(bytes)
+        // Safe field-by-field copy
+        let mut entry = DirEntryRaw {
+            name: [0u8; 8],
+            ext: [0u8; 3],
+            attr: 0,
+            nt_reserved: 0,
+            create_time_tenths: 0,
+            create_time: [0u8; 2],
+            create_date: [0u8; 2],
+            access_date: [0u8; 2],
+            first_cluster_hi: [0u8; 2],
+            modify_time: [0u8; 2],
+            modify_date: [0u8; 2],
+            first_cluster_lo: [0u8; 2],
+            file_size: [0u8; 4],
+        };
+        entry.name.copy_from_slice(&bytes[0..8]);
+        entry.ext.copy_from_slice(&bytes[8..11]);
+        entry.attr = bytes[11];
+        entry.nt_reserved = bytes[12];
+        entry.create_time_tenths = bytes[13];
+        entry.create_time.copy_from_slice(&bytes[14..16]);
+        entry.create_date.copy_from_slice(&bytes[16..18]);
+        entry.access_date.copy_from_slice(&bytes[18..20]);
+        entry.first_cluster_hi.copy_from_slice(&bytes[20..22]);
+        entry.modify_time.copy_from_slice(&bytes[22..24]);
+        entry.modify_date.copy_from_slice(&bytes[24..26]);
+        entry.first_cluster_lo.copy_from_slice(&bytes[26..28]);
+        entry.file_size.copy_from_slice(&bytes[28..32]);
+        entry
     }
 }
 
@@ -1271,7 +1298,6 @@ impl SafePackedRead for LfnEntry {
     /// - `#[repr(C, packed)]`で32バイト固定
     /// - 全フィールドがアラインメント要求1バイト
     /// - 任意のビットパターンが有効（無効パターンは上位層で検証）
-    #[allow(deprecated)]
     fn from_bytes_safe(bytes: &[u8]) -> Self {
         debug_assert!(
             bytes.len() >= DIR_ENTRY_SIZE,
@@ -1279,8 +1305,26 @@ impl SafePackedRead for LfnEntry {
             bytes.len(),
             DIR_ENTRY_SIZE
         );
-        // Delegate to safe field-by-field parser
-        <LfnEntry as SafePackedRead>::from_bytes_safe(bytes)
+        // Safe field-by-field copy
+        let mut entry = LfnEntry {
+            seq: 0,
+            name1: [0u8; 10],
+            attr: FileAttributes::empty(),
+            type_: 0,
+            checksum: 0,
+            name2: [0u8; 12],
+            first_cluster: [0u8; 2],
+            name3: [0u8; 4],
+        };
+        entry.seq = bytes[0];
+        entry.name1.copy_from_slice(&bytes[1..11]);
+        entry.attr = FileAttributes::from_bits_truncate(bytes[11]);
+        entry.type_ = bytes[12];
+        entry.checksum = bytes[13];
+        entry.name2.copy_from_slice(&bytes[14..26]);
+        entry.first_cluster.copy_from_slice(&bytes[26..28]);
+        entry.name3.copy_from_slice(&bytes[28..32]);
+        entry
     }
 }
 
@@ -1829,45 +1873,6 @@ impl fmt::Debug for DirEntryRaw {
 }
 
 impl DirEntryRaw {
-    /// バイト列から安全にDirEntryRawを読み取る
-    #[deprecated(since = "0.3.0", note = "Use `SafePackedRead::from_bytes_safe` or directory-level parsers instead")]
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        // Safe field-by-field copy to avoid relying on #[repr(C, packed)] pointer casting.
-        debug_assert!(
-            bytes.len() >= DIR_ENTRY_SIZE,
-            "Buffer too small for DirEntryRaw"
-        );
-        let mut entry = DirEntryRaw {
-            name: [0u8; 8],
-            ext: [0u8; 3],
-            attr: 0,
-            nt_reserved: 0,
-            create_time_tenths: 0,
-            create_time: [0u8; 2],
-            create_date: [0u8; 2],
-            access_date: [0u8; 2],
-            first_cluster_hi: [0u8; 2],
-            modify_time: [0u8; 2],
-            modify_date: [0u8; 2],
-            first_cluster_lo: [0u8; 2],
-            file_size: [0u8; 4],
-        };
-        entry.name.copy_from_slice(&bytes[0..8]);
-        entry.ext.copy_from_slice(&bytes[8..11]);
-        entry.attr = bytes[11];
-        entry.nt_reserved = bytes[12];
-        entry.create_time_tenths = bytes[13];
-        entry.create_time.copy_from_slice(&bytes[14..16]);
-        entry.create_date.copy_from_slice(&bytes[16..18]);
-        entry.access_date.copy_from_slice(&bytes[18..20]);
-        entry.first_cluster_hi.copy_from_slice(&bytes[20..22]);
-        entry.modify_time.copy_from_slice(&bytes[22..24]);
-        entry.modify_date.copy_from_slice(&bytes[24..26]);
-        entry.first_cluster_lo.copy_from_slice(&bytes[26..28]);
-        entry.file_size.copy_from_slice(&bytes[28..32]);
-        entry
-    }
-
     /// 開始クラスタを取得（型安全なCluster型を返す）
     #[inline]
     pub fn first_cluster(&self) -> Cluster {
@@ -2234,12 +2239,6 @@ impl LfnEntry {
 
     pub fn checksum(&self) -> u8 {
         self.checksum
-    }
-
-    #[deprecated(since = "0.3.0", note = "Use `SafePackedRead::from_bytes_safe` or higher-level parser APIs instead")]
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        debug_assert_eq!(bytes.len(), DIR_ENTRY_SIZE);
-        unsafe { *(bytes.as_ptr() as *const Self) }
     }
 
     pub fn new(seq: u8, name_part: &[u16; 13], checksum: u8, is_last: bool) -> Self {

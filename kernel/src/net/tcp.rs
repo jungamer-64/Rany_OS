@@ -1634,6 +1634,121 @@ pub(crate) fn send_syn_packet(local: SocketAddr, remote: SocketAddr, seq: u32) -
     send_tcp_packet(local, remote, seq, 0, TcpHeader::FLAG_SYN, 65535, &[])
 }
 
+/// SYNパケットをオプション付きで送信 (MSS, Window Scale, SACK Permitted, Timestamps)
+pub(crate) fn send_syn_packet_with_options(
+    local: SocketAddr,
+    remote: SocketAddr,
+    seq: u32,
+    mss: u16,
+    window_scale: u8,
+    sack_permitted: bool,
+    timestamps: Option<(u32, u32)>,
+) -> bool {
+    use crate::net::endpoint::window_scale::TcpOptionBuilder;
+
+    let mut opt_builder = TcpOptionBuilder::new();
+    opt_builder.add_mss(mss);
+    opt_builder.add_window_scale(window_scale);
+    if sack_permitted {
+        opt_builder.add_sack_permitted();
+    }
+    if let Some((ts_val, ts_ecr)) = timestamps {
+        opt_builder.add_timestamps(ts_val, ts_ecr);
+    }
+
+    let options = opt_builder.finalize();
+    send_tcp_packet_with_options(local, remote, seq, 0, TcpHeader::FLAG_SYN, 65535, &[], options)
+}
+
+/// SYN-ACKパケットをオプション付きで送信
+pub(crate) fn send_syn_ack_packet_with_options(
+    local: SocketAddr,
+    remote: SocketAddr,
+    seq: u32,
+    ack: u32,
+    mss: u16,
+    window_scale: u8,
+    sack_permitted: bool,
+    timestamps: Option<(u32, u32)>,
+) -> bool {
+    use crate::net::endpoint::window_scale::TcpOptionBuilder;
+
+    let mut opt_builder = TcpOptionBuilder::new();
+    opt_builder.add_mss(mss);
+    opt_builder.add_window_scale(window_scale);
+    if sack_permitted {
+        opt_builder.add_sack_permitted();
+    }
+    if let Some((ts_val, ts_ecr)) = timestamps {
+        opt_builder.add_timestamps(ts_val, ts_ecr);
+    }
+
+    let options = opt_builder.finalize();
+    send_tcp_packet_with_options(
+        local,
+        remote,
+        seq,
+        ack,
+        TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+        65535,
+        &[],
+        options,
+    )
+}
+
+/// TCPセグメントをオプション付きで構築して送信
+fn send_tcp_packet_with_options(
+    local: SocketAddr,
+    remote: SocketAddr,
+    seq: u32,
+    ack: u32,
+    flags: u16,
+    window: u16,
+    payload: &[u8],
+    options: &[u8],
+) -> bool {
+    use alloc::vec;
+
+    // オプション長は4バイト境界に揃える
+    let options_len = options.len();
+    let padded_options_len = (options_len + 3) & !3;
+    let data_offset: u8 = (20 + padded_options_len as usize / 4) as u8; // 5 + オプション分
+    let header_len = (data_offset as usize) * 4;
+    let total_len = header_len + payload.len();
+
+    let mut segment = vec![0u8; total_len];
+
+    // TCPヘッダ構築
+    segment[0..2].copy_from_slice(&local.port.to_be_bytes());
+    segment[2..4].copy_from_slice(&remote.port.to_be_bytes());
+    segment[4..8].copy_from_slice(&seq.to_be_bytes());
+    segment[8..12].copy_from_slice(&ack.to_be_bytes());
+
+    let data_off_flags = ((data_offset as u16) << 12) | (flags & 0x3F);
+    segment[12..14].copy_from_slice(&data_off_flags.to_be_bytes());
+    segment[14..16].copy_from_slice(&window.to_be_bytes());
+    segment[16..18].copy_from_slice(&0u16.to_be_bytes()); // Checksum placeholder
+    segment[18..20].copy_from_slice(&0u16.to_be_bytes()); // Urgent pointer
+
+    // オプションをコピー
+    if !options.is_empty() {
+        segment[20..20 + options_len].copy_from_slice(options);
+    }
+
+    // ペイロード
+    if !payload.is_empty() {
+        segment[header_len..].copy_from_slice(payload);
+    }
+
+    // チェックサム計算
+    calculate_tcp_checksum(&mut segment, local.ip.0, remote.ip.0);
+
+    // ネットワークスタック経由で送信
+    let src_ip = crate::net::ipv4::Ipv4Address::new(local.ip.0);
+    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.ip.0);
+    crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+}
+
 /// SYN-ACKパケットを送信
 pub(crate) fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) -> bool {
     send_tcp_packet(

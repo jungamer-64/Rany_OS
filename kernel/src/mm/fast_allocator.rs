@@ -55,12 +55,15 @@ use super::frame_magazine::{SubFrameMagazine, LocalFreeWordStack};
 // Constants
 // ============================================================================
 
-/// 4KB page size
-pub const PAGE_SIZE_4K: u64 = 4096;
-/// 2MB super-page size
-pub const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
-/// 1GB huge-page size
-pub const PAGE_SIZE_1G: u64 = 1024 * 1024 * 1024;
+// Page size constants - re-exported from types.rs (as u64)
+pub use super::types::{PAGE_SIZE_4K as PAGE_SIZE_4K_USIZE, PAGE_SIZE_2M as PAGE_SIZE_2M_USIZE, PAGE_SIZE_1G as PAGE_SIZE_1G_USIZE};
+
+/// 4KB page size (u64 for address arithmetic)
+pub const PAGE_SIZE_4K: u64 = PAGE_SIZE_4K_USIZE as u64;
+/// 2MB super-page size (u64 for address arithmetic)
+pub const PAGE_SIZE_2M: u64 = PAGE_SIZE_2M_USIZE as u64;
+/// 1GB huge-page size (u64 for address arithmetic)
+pub const PAGE_SIZE_1G: u64 = PAGE_SIZE_1G_USIZE as u64;
 
 /// Bits per u64 word
 const BITS_PER_WORD: usize = 64;

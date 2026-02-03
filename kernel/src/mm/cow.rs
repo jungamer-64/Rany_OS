@@ -37,7 +37,7 @@ use x86_64::structures::paging::PhysFrame;
 use super::frame_allocator::{alloc_frame, dealloc_frame};
 use super::higher_half::{
     global_map_page, global_translate, global_unmap_page, global_update_flags,
-    PageFlags, MapError, VirtAddr, PhysAddr,
+    get_current_pte, physical_memory_offset, PageFlags, PageTableManager, MapError, VirtAddr, PhysAddr,
 };
 use super::tlb_batch::flush_tlb_immediate;
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
@@ -439,8 +439,6 @@ pub fn cow_fork_prepare(ranges: &[(VirtAddr, VirtAddr)]) -> CowResult {
 /// * `parent_virt` - 親の仮想アドレス
 /// * `child_pt` - 子のページテーブル（将来の実装用）
 ///
-/// TODO: プロセス管理との統合時に完全実装
-#[allow(unused_variables)]
 pub fn cow_copy_pte(parent_virt: VirtAddr, child_pt: u64) -> CowResult {
     // 現在の物理アドレスを取得
     let phys = match global_translate(parent_virt) {
@@ -450,12 +448,27 @@ pub fn cow_copy_pte(parent_virt: VirtAddr, child_pt: u64) -> CowResult {
     
     // 参照カウントを増加（子も参照するため）
     page_get(phys.as_u64());
-    
-    // TODO: 子のページテーブルにエントリを追加
-    // let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::USER); // Read-only
-    // child_pt.map(parent_virt, phys, flags)?;
-    
-    CowResult::Ok
+
+    let parent_pte = match get_current_pte(parent_virt) {
+        Some(pte) => pte,
+        None => return CowResult::PageNotFound,
+    };
+
+    if parent_pte.is_huge() {
+        return CowResult::MappingError;
+    }
+
+    let flags = parent_pte
+        .flags()
+        .clear(PageFlags::WRITABLE)
+        .set(PageFlags::PRESENT);
+
+    let mut manager = unsafe { PageTableManager::new(PhysAddr::new(child_pt), physical_memory_offset()) };
+    match unsafe { manager.map_page(parent_virt, phys, flags) } {
+        Ok(()) => CowResult::Ok,
+        Err(MapError::FrameAllocationFailed) => CowResult::OutOfMemory,
+        Err(_) => CowResult::MappingError,
+    }
 }
 
 // ============================================================================

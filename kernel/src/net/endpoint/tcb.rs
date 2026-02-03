@@ -78,6 +78,15 @@ pub struct TcpControlBlockEntry {
     pub flow_control: FlowController,
     /// Maximum Segment Size (peer's)
     pub mss: u32,
+    // === Urgent Data (RFC 793/6093) ===
+    /// Urgent pointer (send side) - offset from SND.NXT
+    pub snd_up: u32,
+    /// Urgent mode active (send side)
+    pub snd_urg: bool,
+    /// Urgent pointer (receive side) - sequence number of last urgent byte + 1
+    pub rcv_up: u32,
+    /// Urgent mode active (receive side)
+    pub rcv_urg: bool,
 }
 
 impl TcpControlBlockEntry {
@@ -99,6 +108,10 @@ impl TcpControlBlockEntry {
             window_scale: WindowScaleOption::default_enabled(),
             flow_control: FlowController::new(),
             mss: 1460, // Default MSS
+            snd_up: 0,
+            snd_urg: false,
+            rcv_up: 0,
+            rcv_urg: false,
         }
     }
 
@@ -173,6 +186,90 @@ impl TcpControlBlockEntry {
     /// 送信可能かどうか
     pub fn can_send(&self, bytes: u32) -> bool {
         self.effective_send_window() >= bytes && self.flow_control.can_send()
+    }
+
+    // === Urgent Data Handling (RFC 793/6093) ===
+
+    /// Set urgent pointer for sending urgent data
+    /// 
+    /// The urgent pointer points to the sequence number of the last byte
+    /// of urgent data + 1 (per RFC 6093 clarification).
+    pub fn set_urgent(&mut self, urgent_offset: u32) {
+        self.snd_up = self.snd_nxt.wrapping_add(urgent_offset);
+        self.snd_urg = true;
+    }
+
+    /// Clear send urgent mode
+    pub fn clear_send_urgent(&mut self) {
+        self.snd_urg = false;
+    }
+
+    /// Check if we should set URG flag in outgoing segment
+    pub fn should_send_urg(&self) -> bool {
+        self.snd_urg && self.snd_up > self.snd_una
+    }
+
+    /// Calculate urgent pointer value for segment header
+    /// Returns the offset from segment sequence number to urgent pointer
+    pub fn urgent_pointer_for_segment(&self, seg_seq: u32) -> u16 {
+        if !self.snd_urg {
+            return 0;
+        }
+        // Urgent pointer is offset from beginning of segment to urgent byte
+        let offset = self.snd_up.wrapping_sub(seg_seq);
+        // Clamp to u16 max
+        if offset > 0xFFFF {
+            0xFFFF
+        } else {
+            offset as u16
+        }
+    }
+
+    /// Process incoming URG flag and urgent pointer
+    /// 
+    /// Returns true if there is new urgent data to process
+    pub fn on_urgent_received(&mut self, seg_seq: u32, urgent_ptr: u16) -> bool {
+        // Calculate absolute urgent pointer position
+        // RFC 6093: urgent_ptr points to the sequence number immediately
+        // following the last byte of urgent data
+        let new_up = seg_seq.wrapping_add(urgent_ptr as u32);
+
+        // Check if this is newer urgent data
+        // Use sequence number arithmetic for wraparound handling
+        let is_newer = new_up.wrapping_sub(self.rcv_up) < 0x80000000;
+
+        if is_newer && new_up != self.rcv_up {
+            self.rcv_up = new_up;
+            self.rcv_urg = true;
+            return true;
+        }
+        false
+    }
+
+    /// Check if we have pending urgent data to read
+    pub fn has_urgent_data(&self) -> bool {
+        // Urgent data exists if rcv_urg is set and urgent pointer is ahead of rcv_nxt
+        self.rcv_urg && self.rcv_up.wrapping_sub(self.rcv_nxt) < 0x80000000
+    }
+
+    /// Get the position of urgent data in receive buffer
+    /// Returns offset from rcv_nxt to the urgent byte
+    pub fn urgent_data_offset(&self) -> Option<u32> {
+        if !self.has_urgent_data() {
+            return None;
+        }
+        // Offset to the byte immediately before the urgent pointer
+        let offset = self.rcv_up.wrapping_sub(self.rcv_nxt);
+        if offset > 0 {
+            Some(offset - 1)
+        } else {
+            None
+        }
+    }
+
+    /// Clear receive urgent mode after processing
+    pub fn clear_recv_urgent(&mut self) {
+        self.rcv_urg = false;
     }
 }
 

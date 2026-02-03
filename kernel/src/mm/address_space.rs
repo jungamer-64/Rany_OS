@@ -279,6 +279,27 @@ impl MemoryRegion {
     }
 }
 
+/// 既存リージョンから指定範囲のリージョンを複製
+fn clone_region_with_range(
+    base: &MemoryRegion,
+    start: VirtAddr,
+    end: VirtAddr,
+    protection: Protection,
+) -> MemoryRegion {
+    let mut region = MemoryRegion::new(start, end, base.region_type, protection);
+    region.cow = base.cow;
+    region.file_info = base.file_info.clone();
+
+    if let Some(info) = region.file_info.as_mut() {
+        let delta = start.as_u64().saturating_sub(base.start.as_u64());
+        let size = end.as_u64().saturating_sub(start.as_u64());
+        info.offset = info.offset.saturating_add(delta);
+        info.size = size;
+    }
+
+    region
+}
+
 // ============================================================================
 // Process Address Space
 // ============================================================================
@@ -337,7 +358,19 @@ impl ProcessAddressSpace {
         }
         
         // カーネル空間のマッピングをコピー（Higher Half）
-        // TODO: 現在のページテーブルからカーネル部分をコピー
+        let current_pml4_phys = super::higher_half::get_cr3();
+        let new_pml4_phys = PhysAddr::new(pt_phys);
+        let kernel_pml4_index = VirtAddr::new(KERNEL_SPACE_START).page_table_indices()[0];
+        unsafe {
+            let current_pml4 = &*super::higher_half::phys_to_virt(current_pml4_phys)
+                .as_ptr::<super::higher_half::PageTable>();
+            let new_pml4 = &mut *super::higher_half::phys_to_virt(new_pml4_phys)
+                .as_mut_ptr::<super::higher_half::PageTable>();
+
+            for i in kernel_pml4_index..512 {
+                *new_pml4.entry_mut(i) = *current_pml4.entry(i);
+            }
+        }
         
         self.page_table_root.store(pt_phys, Ordering::Release);
         self.initialized.store(true, Ordering::Release);
@@ -473,33 +506,50 @@ impl ProcessAddressSpace {
         
         let mut regions = self.regions.write();
         
-        if let Some(region) = regions.get_mut(&start_key) {
-            // 範囲チェック
-            let end = VirtAddr::new(addr.as_u64() + size);
-            if end > region.end {
-                return Err(AddressSpaceError::InvalidRange);
-            }
-            
-            // 権限を更新
-            // TODO: 部分的な範囲の場合は領域を分割
-            region.protection = prot;
+        let region = match regions.remove(&start_key) {
+            Some(region) => region,
+            None => return Err(AddressSpaceError::RegionNotFound),
+        };
 
-            let vma = region.to_vma();
-            let _ = self.vma_list.remove(region.start);
-            self.vma_list.insert(Box::new(vma));
-            
-            // ページテーブルエントリを更新
-            let page_count = size / PAGE_SIZE;
-            for i in 0..page_count {
-                let page_addr = VirtAddr::new(addr.as_u64() + i * PAGE_SIZE);
-                let flags = prot.to_page_flags();
-                unsafe { let _ = super::higher_half::global_update_flags(page_addr, flags); }
-            }
-            
-            Ok(())
-        } else {
-            Err(AddressSpaceError::RegionNotFound)
+        // 範囲チェック
+        let mut req_start = addr;
+        let mut req_end = VirtAddr::new(addr.as_u64() + size);
+        if size == 0 {
+            req_start = region.start;
+            req_end = region.end;
         }
+        if req_end > region.end {
+            regions.insert(start_key, region);
+            return Err(AddressSpaceError::InvalidRange);
+        }
+
+        let _ = self.vma_list.remove(region.start);
+
+        let mut new_regions = Vec::new();
+        if req_start > region.start {
+            new_regions.push(clone_region_with_range(&region, region.start, req_start, region.protection));
+        }
+        new_regions.push(clone_region_with_range(&region, req_start, req_end, prot));
+        if req_end < region.end {
+            new_regions.push(clone_region_with_range(&region, req_end, region.end, region.protection));
+        }
+
+        for new_region in new_regions {
+            let start = new_region.start.as_u64();
+            let vma = new_region.to_vma();
+            regions.insert(start, Box::new(new_region));
+            self.vma_list.insert(Box::new(vma));
+        }
+
+        // ページテーブルエントリを更新
+        let page_count = size / PAGE_SIZE;
+        for i in 0..page_count {
+            let page_addr = VirtAddr::new(addr.as_u64() + i * PAGE_SIZE);
+            let flags = prot.to_page_flags();
+            unsafe { let _ = super::higher_half::global_update_flags(page_addr, flags); }
+        }
+
+        Ok(())
     }
     
     // ========================================================================
@@ -1256,6 +1306,37 @@ mod tests {
         assert!(region.contains(VirtAddr::new(0x1500)));
         assert!(!region.contains(VirtAddr::new(0x2000)));
         assert!(!region.contains(VirtAddr::new(0x0FFF)));
+    }
+
+    #[test_case]
+    fn test_clone_region_with_range_adjusts_file_info() {
+        let mut base = MemoryRegion::new(
+            VirtAddr::new(0x1000),
+            VirtAddr::new(0x9000),
+            RegionType::FileBacked,
+            Protection::READ,
+        );
+        base.cow = true;
+        base.file_info = Some(FileBackingInfo {
+            inode: 42,
+            offset: 0x2000,
+            size: 0x8000,
+        });
+
+        let sub_start = VirtAddr::new(0x3000);
+        let sub_end = VirtAddr::new(0x5000);
+        let sub = clone_region_with_range(&base, sub_start, sub_end, Protection::READ_WRITE);
+
+        assert_eq!(sub.start, sub_start);
+        assert_eq!(sub.end, sub_end);
+        assert_eq!(sub.region_type, base.region_type);
+        assert!(sub.cow);
+        assert_eq!(sub.protection, Protection::READ_WRITE);
+
+        let info = sub.file_info.expect("file info");
+        assert_eq!(info.inode, 42);
+        assert_eq!(info.offset, 0x2000 + (0x3000 - 0x1000));
+        assert_eq!(info.size, 0x2000);
     }
 }
 

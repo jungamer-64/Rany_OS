@@ -32,6 +32,17 @@ use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
 // ============================================================================
+// Common Constants
+// ============================================================================
+
+/// Standard sector size (512 bytes)
+///
+/// Most block devices use 512-byte sectors. Some advanced devices (NVMe with
+/// 4K sectors, Advanced Format HDDs) may use different sizes, but 512 is the
+/// de-facto standard for compatibility.
+pub const SECTOR_SIZE: usize = 512;
+
+// ============================================================================
 // Block Device Error
 // ============================================================================
 
