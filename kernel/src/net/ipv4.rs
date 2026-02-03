@@ -146,6 +146,8 @@ impl fmt::Display for Ipv4Address {
 pub enum IpProtocol {
     /// Internet Control Message Protocol
     Icmp = 1,
+    /// Internet Group Management Protocol
+    Igmp = 2,
     /// Transmission Control Protocol
     Tcp = 6,
     /// User Datagram Protocol
@@ -160,6 +162,7 @@ impl From<u8> for IpProtocol {
     fn from(value: u8) -> Self {
         match value {
             1 => IpProtocol::Icmp,
+            2 => IpProtocol::Igmp,
             6 => IpProtocol::Tcp,
             17 => IpProtocol::Udp,
             47 => IpProtocol::Gre,
@@ -172,6 +175,7 @@ impl From<IpProtocol> for u8 {
     fn from(value: IpProtocol) -> Self {
         match value {
             IpProtocol::Icmp => 1,
+            IpProtocol::Igmp => 2,
             IpProtocol::Tcp => 6,
             IpProtocol::Udp => 17,
             IpProtocol::Gre => 47,
@@ -545,6 +549,39 @@ impl<'a> Ipv4PacketMut<'a> {
     /// Set TTL
     pub fn set_ttl(&mut self, ttl: u8) -> &mut Self {
         self.header_mut().set_ttl(ttl);
+        self
+    }
+
+    /// Set version (should be 4 for IPv4)
+    pub fn set_version(&mut self, version: u8) -> &mut Self {
+        let header = self.header_mut();
+        header.version_ihl = (version << 4) | (header.version_ihl & 0x0f);
+        self
+    }
+
+    /// Set IHL (Internet Header Length in 32-bit words)
+    pub fn set_ihl(&mut self, ihl: u8) -> &mut Self {
+        let header = self.header_mut();
+        header.version_ihl = (header.version_ihl & 0xf0) | (ihl & 0x0f);
+        self
+    }
+
+    /// Set DSCP (Differentiated Services Code Point)
+    pub fn set_dscp(&mut self, dscp: u8) -> &mut Self {
+        let header = self.header_mut();
+        header.dscp_ecn = (dscp & 0xfc) | (header.dscp_ecn & 0x03);
+        self
+    }
+
+    /// Set total length
+    pub fn set_total_length(&mut self, len: u16) -> &mut Self {
+        self.header_mut().set_total_length(len);
+        self
+    }
+
+    /// Update checksum
+    pub fn update_checksum(&mut self) -> &mut Self {
+        self.header_mut().update_checksum();
         self
     }
 

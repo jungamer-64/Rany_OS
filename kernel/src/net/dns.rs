@@ -146,6 +146,22 @@ impl DnsHeader {
         DnsResponseCode::from_u8((self.flags() & 0x0F) as u8)
     }
 
+    /// TC (Truncated) ビットを取得
+    /// 応答が512バイトを超えてUDPで切り捨てられた場合にtrue
+    pub fn is_truncated(&self) -> bool {
+        (self.flags() >> 9) & 1 == 1
+    }
+
+    /// RD (Recursion Desired) ビットを取得
+    pub fn recursion_desired(&self) -> bool {
+        (self.flags() >> 8) & 1 == 1
+    }
+
+    /// RA (Recursion Available) ビットを取得
+    pub fn recursion_available(&self) -> bool {
+        (self.flags() >> 7) & 1 == 1
+    }
+
     /// 質問数を取得
     pub fn question_count(&self) -> u16 {
         u16::from_be_bytes(self.qdcount)
@@ -659,6 +675,145 @@ impl DnsClient {
             }
         }
     }
+
+    // ========================================================================
+    // DNS over TCP Support (RFC 7766)
+    // ========================================================================
+
+    /// Build a DNS query for TCP transport
+    /// 
+    /// DNS over TCP requires a 2-byte length prefix before the message.
+    /// RFC 7766 specifies that all DNS implementations should support TCP.
+    /// 
+    /// # Arguments
+    /// - `buffer`: Output buffer (must be at least message_len + 2)
+    /// - `name`: Domain name to query
+    /// - `qtype`: Query type (A, AAAA, etc.)
+    /// 
+    /// # Returns
+    /// Total length including the 2-byte length prefix
+    pub fn build_tcp_query(
+        &self,
+        buffer: &mut [u8],
+        name: &str,
+        qtype: DnsQueryType,
+    ) -> Result<usize, &'static str> {
+        if buffer.len() < 2 {
+            return Err("Buffer too small for TCP length prefix");
+        }
+
+        // Build the DNS message after the length prefix
+        let msg_len = self.build_query(&mut buffer[2..], name, qtype)?;
+
+        // Prepend the 2-byte length prefix (network byte order)
+        let len_bytes = (msg_len as u16).to_be_bytes();
+        buffer[0] = len_bytes[0];
+        buffer[1] = len_bytes[1];
+
+        Ok(2 + msg_len)
+    }
+
+    /// Parse a DNS response received over TCP
+    /// 
+    /// TCP responses include a 2-byte length prefix that specifies
+    /// the length of the DNS message.
+    /// 
+    /// # Arguments
+    /// - `data`: Raw TCP data including length prefix
+    /// - `current_tick`: Current time for cache TTL calculation
+    /// 
+    /// # Returns
+    /// Parsed DNS records or error code
+    pub fn parse_tcp_response(
+        &self,
+        data: &[u8],
+        current_tick: u64,
+    ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
+        // TCP responses have a 2-byte length prefix
+        if data.len() < 2 {
+            return Err(DnsResponseCode::FormatError);
+        }
+
+        let msg_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+        
+        if data.len() < 2 + msg_len {
+            return Err(DnsResponseCode::FormatError);
+        }
+
+        // Parse the actual DNS message (skip length prefix)
+        self.parse_response(&data[2..2 + msg_len], current_tick)
+    }
+
+    /// Check if a UDP response requires TCP fallback
+    /// 
+    /// According to RFC 7766, clients should retry with TCP when:
+    /// 1. The TC (Truncated) bit is set in the response
+    /// 2. The response size is exactly 512 bytes (traditional UDP limit)
+    /// 
+    /// # Arguments
+    /// - `data`: Raw UDP DNS response
+    /// 
+    /// # Returns
+    /// `true` if TCP fallback is recommended
+    pub fn needs_tcp_fallback(&self, data: &[u8]) -> bool {
+        if data.len() < DnsHeader::SIZE {
+            return false;
+        }
+
+        let header = match crate::util::get_ref::<DnsHeader>(data, 0) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+
+        // Check TC (Truncated) bit
+        if header.is_truncated() {
+            return true;
+        }
+
+        // Also recommend TCP for responses at the traditional UDP limit
+        // This suggests the response may have been truncated without setting TC
+        if data.len() >= 512 {
+            return true;
+        }
+
+        false
+    }
+
+    /// Calculate expected TCP message length from length prefix
+    /// 
+    /// Used for reading TCP DNS messages which may be fragmented.
+    /// 
+    /// # Arguments
+    /// - `length_prefix`: First 2 bytes of TCP stream
+    /// 
+    /// # Returns
+    /// Expected total message length (excluding prefix)
+    pub fn tcp_message_length(length_prefix: &[u8; 2]) -> u16 {
+        u16::from_be_bytes(*length_prefix)
+    }
+}
+
+/// DNS over TCP constants
+pub mod tcp {
+    /// Maximum DNS message size for TCP (RFC 7766)
+    /// While UDP is limited to 512 bytes (or 4096 with EDNS),
+    /// TCP can carry messages up to 65535 bytes.
+    pub const MAX_TCP_MESSAGE_SIZE: usize = 65535;
+    
+    /// Minimum buffer size for TCP DNS (length prefix + minimal message)
+    pub const MIN_TCP_BUFFER_SIZE: usize = 14; // 2 + 12 (header only)
+    
+    /// Recommended buffer size for TCP DNS queries
+    pub const RECOMMENDED_QUERY_BUFFER: usize = 512;
+    
+    /// Recommended buffer size for TCP DNS responses
+    pub const RECOMMENDED_RESPONSE_BUFFER: usize = 4096;
+    
+    /// TCP connection timeout for DNS (RFC 7766 recommends 30 seconds)
+    pub const TCP_TIMEOUT_MS: u64 = 30_000;
+    
+    /// Idle timeout for persistent TCP connections
+    pub const TCP_IDLE_TIMEOUT_MS: u64 = 30_000;
 }
 
 /// グローバルDNSクライアント
@@ -696,6 +851,63 @@ pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
     }
 }
 
+/// Build a DNS query for TCP transport (global API)
+/// 
+/// Returns the total length including the 2-byte length prefix.
+pub fn build_tcp_query(
+    buffer: &mut [u8],
+    name: &str,
+    qtype: DnsQueryType,
+) -> Result<usize, &'static str> {
+    match DNS_CLIENT.lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.build_tcp_query(buffer, name, qtype)
+            } else {
+                Err("DNS client not initialized")
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (build_tcp_query)");
+            Err("DNS client lock poisoned")
+        }
+    }
+}
+
+/// Parse a DNS response received over TCP (global API)
+pub fn parse_tcp_response(
+    data: &[u8],
+    current_tick: u64,
+) -> Result<Vec<DnsRecord>, DnsResponseCode> {
+    match DNS_CLIENT.lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.parse_tcp_response(data, current_tick)
+            } else {
+                Err(DnsResponseCode::ServerFailure)
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (parse_tcp_response)");
+            Err(DnsResponseCode::ServerFailure)
+        }
+    }
+}
+
+/// Check if a UDP response requires TCP fallback (global API)
+pub fn needs_tcp_fallback(data: &[u8]) -> bool {
+    match DNS_CLIENT.lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.needs_tcp_fallback(data)
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +924,85 @@ mod tests {
         assert_eq!(client.primary_server(), None);
         set_panicking(false);
     }
-}
 
+    #[test_case]
+    fn test_dns_header_truncated_flag() {
+        // Create a header with TC bit set (bit 9 of flags)
+        let mut data = [0u8; 12];
+        // Flags with TC=1: 0x8200 (response + truncated)
+        data[2] = 0x82;
+        data[3] = 0x00;
+        
+        let header = crate::util::get_ref::<DnsHeader>(&data, 0).unwrap();
+        assert!(header.is_truncated());
+        assert!(header.is_response());
+    }
+
+    #[test_case]
+    fn test_dns_header_not_truncated() {
+        let mut data = [0u8; 12];
+        // Flags: standard response without TC
+        data[2] = 0x80;
+        data[3] = 0x00;
+        
+        let header = crate::util::get_ref::<DnsHeader>(&data, 0).unwrap();
+        assert!(!header.is_truncated());
+    }
+
+    #[test_case]
+    fn test_build_tcp_query() {
+        let client = DnsClient::new(100);
+        let mut buffer = [0u8; 256];
+        
+        let len = client.build_tcp_query(&mut buffer, "example.com", DnsQueryType::A).unwrap();
+        
+        // Length prefix should be first 2 bytes
+        let msg_len = u16::from_be_bytes([buffer[0], buffer[1]]) as usize;
+        assert_eq!(len, 2 + msg_len);
+        
+        // DNS header starts at byte 2
+        let header = crate::util::get_ref::<DnsHeader>(&buffer[2..], 0).unwrap();
+        assert!(!header.is_response()); // Query, not response
+    }
+
+    #[test_case]
+    fn test_needs_tcp_fallback_truncated() {
+        let client = DnsClient::new(100);
+        
+        // Create truncated response
+        let mut data = [0u8; 100];
+        data[2] = 0x82; // TC bit set
+        data[3] = 0x00;
+        
+        assert!(client.needs_tcp_fallback(&data));
+    }
+
+    #[test_case]
+    fn test_needs_tcp_fallback_512_bytes() {
+        let client = DnsClient::new(100);
+        
+        // Create response at UDP limit
+        let mut data = [0u8; 512];
+        data[2] = 0x80; // Normal response
+        data[3] = 0x00;
+        
+        assert!(client.needs_tcp_fallback(&data));
+    }
+
+    #[test_case]
+    fn test_needs_tcp_fallback_normal() {
+        let client = DnsClient::new(100);
+        
+        // Create normal response below limit
+        let mut data = [0u8; 100];
+        data[2] = 0x80;
+        data[3] = 0x00;
+        
+        assert!(!client.needs_tcp_fallback(&data));
+    }
+
+    #[test_case]
+    fn test_tcp_message_length() {
+        assert_eq!(DnsClient::tcp_message_length(&[0x00, 0x20]), 32);
+        assert_eq!(DnsClient::tcp_message_length(&[0x01, 0x00]), 256);
+        assert_eq!(DnsClient::tcp_message_length(&[0xFF, 0xFF]), 65535);
