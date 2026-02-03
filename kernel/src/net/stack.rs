@@ -477,6 +477,10 @@ impl NetworkStack {
                     // Process ICMP directly without PacketRef
                     self.process_icmp_data(payload, src, current_time);
                 }
+                IpProtocol::Igmp => {
+                    // Process IGMP for multicast group management
+                    self.process_igmp_data(payload, src);
+                }
                 IpProtocol::Udp => {
                     // Process UDP directly without PacketRef
                     self.process_udp_data(payload, src, dst);
@@ -527,6 +531,154 @@ impl NetworkStack {
                 self.handle_icmp_redirect(code, gateway, destination, src_ip);
             }
             _ => {}
+        }
+    }
+
+    /// Process IGMP data for multicast group management
+    fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address) {
+        let current_time = self.current_time();
+        self.igmp.update_time(current_time);
+        
+        let result = self.igmp.process(data, src_ip);
+        
+        match result {
+            IgmpResult::GeneralQueryReceived { max_resp_time: _ } => {
+                // Timers are set internally, reports will be sent on timer expiry
+            }
+            IgmpResult::GroupQueryReceived { group: _, max_resp_time: _ } => {
+                // Timer set for specific group
+            }
+            IgmpResult::ReportReceived { group: _ } => {
+                // Report suppression handled internally
+            }
+            IgmpResult::Ignored => {}
+            IgmpResult::InvalidPacket | IgmpResult::InvalidChecksum => {
+                self.stats.record_rx_error();
+            }
+            IgmpResult::UnknownType(_) => {
+                self.stats.record_dropped();
+            }
+        }
+        
+        // Process and send any pending IGMP reports
+        self.send_pending_igmp_reports();
+    }
+    
+    /// Send pending IGMP reports
+    fn send_pending_igmp_reports(&mut self) {
+        let pending = self.igmp.take_pending_reports();
+        let current_time = self.current_time();
+        
+        for (group_addr, is_leave) in pending {
+            if is_leave {
+                self.send_igmp_leave(group_addr, current_time);
+            } else {
+                self.send_igmp_report(group_addr, current_time);
+            }
+        }
+    }
+    
+    /// Send an IGMP Membership Report
+    fn send_igmp_report(&mut self, group_addr: Ipv4Address, current_time: u64) {
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let config = self.config.clone();
+        
+        // Build Ethernet frame
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            // Destination is the multicast MAC address for the group
+            let dst_mac = multicast_ip_to_mac(group_addr);
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+            
+            let payload = frame.payload_mut();
+            
+            // Build IPv4 header
+            // IGMPv2 reports are sent to the group address
+            if let Some(mut ip_pkt) = Ipv4PacketMut::new(payload) {
+                ip_pkt
+                    .set_version(4)
+                    .set_ihl(5)
+                    .set_dscp(0xc0) // Internetwork Control
+                    .set_ttl(1) // IGMP messages use TTL=1
+                    .set_protocol(IpProtocol::Igmp)
+                    .set_source(config.ipv4.address)
+                    .set_destination(group_addr);
+                
+                // Build IGMP message
+                let igmp_start = 20; // After IP header
+                if payload.len() >= igmp_start + 8 {
+                    if let Some(len) = super::igmp::IgmpProcessor::build_report(
+                        group_addr,
+                        &mut payload[igmp_start..],
+                    ) {
+                        let total_len = (20 + len) as u16;
+                        ip_pkt.set_total_length(total_len);
+                        ip_pkt.update_checksum();
+                        
+                        // Transmit
+                        let frame_len = 14 + total_len as usize;
+                        if let Some(tx_fn) = self.transmit_fn {
+                            if tx_fn(&buffer[..frame_len]) {
+                                self.stats.record_tx(frame_len);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Send an IGMP Leave Group message
+    fn send_igmp_leave(&mut self, group_addr: Ipv4Address, current_time: u64) {
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let config = self.config.clone();
+        
+        // Build Ethernet frame
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            // Leave messages are sent to all-routers group (224.0.0.2)
+            let all_routers = Ipv4Address::new([224, 0, 0, 2]);
+            let dst_mac = multicast_ip_to_mac(all_routers);
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+            
+            let payload = frame.payload_mut();
+            
+            // Build IPv4 header
+            if let Some(mut ip_pkt) = Ipv4PacketMut::new(payload) {
+                ip_pkt
+                    .set_version(4)
+                    .set_ihl(5)
+                    .set_dscp(0xc0)
+                    .set_ttl(1)
+                    .set_protocol(IpProtocol::Igmp)
+                    .set_source(config.ipv4.address)
+                    .set_destination(all_routers);
+                
+                // Build IGMP leave message
+                let igmp_start = 20;
+                if payload.len() >= igmp_start + 8 {
+                    if let Some(len) = super::igmp::IgmpProcessor::build_leave(
+                        group_addr,
+                        &mut payload[igmp_start..],
+                    ) {
+                        let total_len = (20 + len) as u16;
+                        ip_pkt.set_total_length(total_len);
+                        ip_pkt.update_checksum();
+                        
+                        // Transmit
+                        let frame_len = 14 + total_len as usize;
+                        if let Some(tx_fn) = self.transmit_fn {
+                            if tx_fn(&buffer[..frame_len]) {
+                                self.stats.record_tx(frame_len);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1349,6 +1501,57 @@ impl NetworkStack {
         self.udp.unbind(port);
     }
 
+    // ========================================================================
+    // Multicast Group Management (IGMP)
+    // ========================================================================
+
+    /// Join a multicast group
+    /// 
+    /// Sends an IGMP Membership Report and starts responding to queries
+    /// for the specified group address.
+    /// 
+    /// # Parameters
+    /// - `group`: Multicast group address (224.0.0.0 - 239.255.255.255)
+    /// 
+    /// # Returns
+    /// - `Ok(())` if successfully joined
+    /// - `Err(IgmpError::InvalidGroupAddress)` if not a multicast address
+    /// - `Err(IgmpError::TooManyGroups)` if maximum groups reached
+    pub fn join_multicast_group(&mut self, group: Ipv4Address) -> Result<(), IgmpError> {
+        self.igmp.join_group(group)?;
+        let current_time = self.current_time();
+        self.send_pending_igmp_reports();
+        Ok(())
+    }
+
+    /// Leave a multicast group
+    /// 
+    /// Sends an IGMP Leave Group message and stops responding to queries
+    /// for the specified group address.
+    /// 
+    /// # Parameters
+    /// - `group`: Multicast group address to leave
+    /// 
+    /// # Returns
+    /// - `Ok(())` if successfully left
+    /// - `Err(IgmpError::NotMember)` if not a member of the group
+    pub fn leave_multicast_group(&mut self, group: Ipv4Address) -> Result<(), IgmpError> {
+        self.igmp.leave_group(group)?;
+        let current_time = self.current_time();
+        self.send_pending_igmp_reports();
+        Ok(())
+    }
+
+    /// Check if this host is a member of a multicast group
+    pub fn is_multicast_member(&self, group: Ipv4Address) -> bool {
+        self.igmp.is_member(group)
+    }
+
+    /// Get list of joined multicast groups
+    pub fn multicast_groups(&self) -> &[super::igmp::MulticastGroup] {
+        self.igmp.joined_groups()
+    }
+
     /// Send a UDP datagram (UdpAddr-based variant)
     pub fn send_udp_addr(
         &mut self,
@@ -1862,6 +2065,67 @@ pub fn connect_tcp(local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Res
     }
 }
 
+// ============================================================================
+// Multicast Group Management (Global API)
+// ============================================================================
+
+/// Join a multicast group
+/// 
+/// # Example
+/// ```no_run
+/// use crate::net::stack::join_multicast_group;
+/// use crate::net::ipv4::Ipv4Address;
+/// 
+/// let group = Ipv4Address::new([224, 0, 0, 251]); // mDNS group
+/// join_multicast_group(group).expect("Failed to join multicast group");
+/// ```
+pub fn join_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.join_multicast_group(group)
+            } else {
+                Err(IgmpError::InvalidGroupAddress)
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - join_multicast_group failed");
+            Err(IgmpError::InvalidGroupAddress)
+        }
+    }
+}
+
+/// Leave a multicast group
+pub fn leave_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.leave_multicast_group(group)
+            } else {
+                Err(IgmpError::NotMember)
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - leave_multicast_group failed");
+            Err(IgmpError::NotMember)
+        }
+    }
+}
+
+/// Check if this host is a member of a multicast group
+pub fn is_multicast_member(group: Ipv4Address) -> bool {
+    match NETWORK_STACK.lock() {
+        Ok(guard) => {
+            if let Some(ref s) = *guard {
+                s.is_multicast_member(group)
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2017,3 +2281,5 @@ mod tests {
         // Oldest entry (10.0.0.0) should be evicted
         assert!(cache.get(Ipv4Address::new([10, 0, 0, 0])).is_none());
     }
+}
+
