@@ -599,22 +599,3 @@ impl TransferBuilder {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_command_builder() {
-        let noop = CommandBuilder::noop();
-        assert_eq!((noop.control >> 10) & 0x3F, TrbType::NoOpCommand as u32);
-
-        let enable = CommandBuilder::enable_slot();
-        assert_eq!((enable.control >> 10) & 0x3F, TrbType::EnableSlot as u32);
-    }
-
-    #[test]
-    fn test_transfer_builder() {
-        let setup = TransferBuilder::setup_stage(0x80, 0x06, 0x0100, 0, 18, 3);
-        assert_eq!((setup.control >> 10) & 0x3F, TrbType::SetupStage as u32);
-    }
-}

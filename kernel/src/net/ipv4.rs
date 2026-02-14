@@ -23,7 +23,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 /// IPv4 address (4 bytes)
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv4Address([u8; 4]);
 
 impl Ipv4Address {

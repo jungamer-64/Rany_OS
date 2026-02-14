@@ -365,14 +365,15 @@ impl OwnedSocket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::{create_tcp_socket, create_udp_socket, NetworkEvent};
     use crate::net::endpoint::manager::init_socket_manager;
     use crate::net::stack;
     use crate::net::endpoint::SocketAddr;
     use crate::net::endpoint::tcb::{TcpControlBlockEntry, TcpConnectionState};
     use core::future::Future;
     use core::pin::Pin;
-    use core::task::{Context, RawWaker, RawWakerVTable, Waker, Poll};
     use core::sync::atomic::{AtomicU32, Ordering};
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
     // Simple test that verifies SendFuture writes into socket buffer
     // and is woken when the DataReady event is processed successfully
@@ -384,7 +385,7 @@ mod tests {
         stack::init_default();
         if let Ok(mut guard) = stack::stack().lock() {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_data| true);
+                s.set_transmit_fn(|_data: &[u8]| true);
             }
         }
 
@@ -408,8 +409,12 @@ mod tests {
         static WAKE_COUNT: AtomicU32 = AtomicU32::new(0);
         const VTABLE: RawWakerVTable = RawWakerVTable::new(
             |_| RawWaker::new(core::ptr::null(), &VTABLE),
-            |_| WAKE_COUNT.fetch_add(1, Ordering::SeqCst),
-            |_| WAKE_COUNT.fetch_add(1, Ordering::SeqCst),
+            |_| {
+                WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {
+                WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
             |_| {},
         );
         let raw = RawWaker::new(core::ptr::null(), &VTABLE);
@@ -428,7 +433,7 @@ mod tests {
 
         // Now simulate the network task processing the DataReady event and sending
         let handler = crate::net::endpoint::handler::NetworkEventHandler::new();
-        let res = handler.handle_event(super::event::NetworkEvent::DataReady {
+        let res = handler.handle_event(NetworkEvent::DataReady {
             fd,
             socket_type: crate::net::endpoint::types::SocketType::Tcp,
         });
@@ -490,16 +495,23 @@ mod tests {
         packet.set_len(data.len());
 
         {
-            let mut tlock = tcb_arc.lock();
-            tlock.recv_buffer.push_back(packet);
+            if let Ok(mut tlock) = tcb_arc.lock() {
+                tlock.recv_buffer.push_back(packet);
+            } else {
+                panic!("TCB lock poisoned");
+            }
         }
 
         // Prepare a simple waker
         static WAKE_COUNT: AtomicU32 = AtomicU32::new(0);
         const VTABLE: RawWakerVTable = RawWakerVTable::new(
             |_| RawWaker::new(core::ptr::null(), &VTABLE),
-            |_| WAKE_COUNT.fetch_add(1, Ordering::SeqCst),
-            |_| WAKE_COUNT.fetch_add(1, Ordering::SeqCst),
+            |_| {
+                WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {
+                WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
             |_| {},
         );
         let raw = RawWaker::new(core::ptr::null(), &VTABLE);
@@ -564,9 +576,12 @@ mod tests {
         p2.set_len(d2.len());
 
         {
-            let mut tlock = tcb_arc.lock();
-            tlock.recv_buffer.push_back(p1);
-            tlock.recv_buffer.push_back(p2);
+            if let Ok(mut tlock) = tcb_arc.lock() {
+                tlock.recv_buffer.push_back(p1);
+                tlock.recv_buffer.push_back(p2);
+            } else {
+                panic!("TCB lock poisoned");
+            }
         }
 
         let stream_wrapper = sock.tcp_packet_stream().expect("tcp_packet_stream should exist");
@@ -575,8 +590,12 @@ mod tests {
         static WAKE_COUNT: AtomicU32 = AtomicU32::new(0);
         const VTABLE: RawWakerVTable = RawWakerVTable::new(
             |_| RawWaker::new(core::ptr::null(), &VTABLE),
-            |_| WAKE_COUNT.fetch_add(1, Ordering::SeqCst),
-            |_| WAKE_COUNT.fetch_add(1, Ordering::SeqCst),
+            |_| {
+                WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {
+                WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+            },
             |_| {},
         );
         let raw = RawWaker::new(core::ptr::null(), &VTABLE);
@@ -625,7 +644,8 @@ mod tests {
         let len = crate::net::udp::UdpProcessor::build_packet(packet.data_mut(), src_ip, 12345, dst_ip, port, b"hello").unwrap();
         packet.set_len(len);
 
-        let res = proc.process_with_packet(packet.data(), src_ip, dst_ip, packet);
+        let packet_data = alloc::vec::Vec::from(packet.data());
+        let res = proc.process_with_packet(&packet_data, src_ip, dst_ip, packet);
         assert_eq!(res, crate::net::udp::UdpResult::Delivered);
 
         // Get stream wrapper and receive the packet
@@ -635,8 +655,12 @@ mod tests {
         static WAKE_COUNT2: AtomicU32 = AtomicU32::new(0);
         const VTABLE2: RawWakerVTable = RawWakerVTable::new(
             |_| RawWaker::new(core::ptr::null(), &VTABLE2),
-            |_| WAKE_COUNT2.fetch_add(1, Ordering::SeqCst),
-            |_| WAKE_COUNT2.fetch_add(1, Ordering::SeqCst),
+            |_| {
+                WAKE_COUNT2.fetch_add(1, Ordering::SeqCst);
+            },
+            |_| {
+                WAKE_COUNT2.fetch_add(1, Ordering::SeqCst);
+            },
             |_| {},
         );
         let raw2 = RawWaker::new(core::ptr::null(), &VTABLE2);

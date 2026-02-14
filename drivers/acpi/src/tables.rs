@@ -384,14 +384,3 @@ pub struct Fadt {
     /// Fixed feature flags
     pub flags: u32,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_madt_entry_type() {
-        assert_eq!(MadtEntryType::LocalApic as u8, 0);
-        assert_eq!(MadtEntryType::IoApic as u8, 1);
-    }
-}

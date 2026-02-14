@@ -25,3 +25,4 @@ log = "0.4"
 default = []
 standalone = ["export_driver_entry"]
 export_driver_entry = []
+qemu-test-export = []

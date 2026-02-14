@@ -355,13 +355,3 @@ impl IsrSafeWaker {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_from_scancode_basic() {
-        assert_eq!(KeyCode::from_scancode(0x10, false), KeyCode::Q);
-        assert_eq!(KeyCode::from_scancode(0x48, true), KeyCode::Up);
-    }
-}

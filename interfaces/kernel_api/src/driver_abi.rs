@@ -39,65 +39,6 @@
 //! All functions in the vtable use `extern "C"` calling convention and
 //! only pass C-compatible types across the ABI boundary.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::export_driver;
-
-    fn test_probe(_ctx: &mut DriverContext) -> i32 {
-        0
-    }
-    fn test_remove(_ctx: &mut DriverContext) -> i32 {
-        0
-    }
-    fn test_start(_ctx: &mut DriverContext) -> i32 {
-        123
-    }
-    fn test_name() -> &'static str {
-        "testdrv"
-    }
-    fn test_irq(_ctx: &mut DriverContext) -> bool {
-        true
-    }
-
-    export_driver!(
-        probe: test_probe,
-        remove: test_remove,
-        name: test_name,
-        driver_type: (AbiDriverType::Unknown as u32),
-        version: 0,
-        start: test_start,
-        irq: test_irq
-    );
-
-    #[test]
-    fn vtable_has_expected_values() {
-        let entry: DriverEntryFn = _exorust_driver_entry;
-        let vtbl_ptr = entry();
-        assert!(!vtbl_ptr.is_null());
-        let v = unsafe { &*vtbl_ptr };
-
-        assert_eq!(v.abi_version, DRIVER_ABI_VERSION);
-        assert_eq!(v.type_hash, DRIVER_TYPE_HASH);
-
-        let mut ctx = DriverContext::new();
-        let res_start = (v.start)(&mut ctx as *mut _);
-        assert_eq!(res_start, 123);
-
-        let res_stop = (v.stop)(&mut ctx as *mut _);
-        assert_eq!(res_stop, 0);
-
-        assert!(v.handle_irq.is_some());
-        let irq_fn = v.handle_irq.unwrap();
-        assert!(irq_fn(&mut ctx as *mut _));
-
-        let name_ptr = (v.name)();
-        let name_len = (v.name_len)();
-        let name_slice = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
-        assert_eq!(name_slice, b"testdrv");
-    }
-}
-
 // ============================================================================
 // ABI Version
 // ============================================================================

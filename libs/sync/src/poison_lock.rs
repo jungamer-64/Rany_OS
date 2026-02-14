@@ -442,63 +442,58 @@ pub fn reset_lock_metrics() {
     LOCK_TOTAL_ACQUIRE_TICKS.store(0, Ordering::Relaxed);
 }
 
-// ============================================================================
-// テスト
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
 
-    #[test]
-    fn test_basic_lock() {
+    pub fn basic_lock_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
-        let guard = lock.lock().unwrap();
-        assert_eq!(*guard, 42);
+        let guard = match lock.lock() {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let ok = *guard == 42;
         drop(guard);
 
-        assert!(!lock.is_locked());
-        assert!(!lock.is_poisoned());
+        ok && !lock.is_locked() && !lock.is_poisoned()
     }
 
-    #[test]
-    fn test_try_lock() {
+    pub fn try_lock_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
-        let guard = lock.try_lock().unwrap().unwrap();
-        assert_eq!(*guard, 42);
-
-        // ロック中はtry_lockがNoneを返す
-        assert!(lock.try_lock().is_none());
-
+        let guard = match lock.try_lock() {
+            Some(Ok(v)) => v,
+            _ => return false,
+        };
+        let value_ok = *guard == 42;
+        let contention_ok = lock.try_lock().is_none();
         drop(guard);
 
-        // ロック解放後は取得可能
-        assert!(lock.try_lock().is_some());
+        value_ok && contention_ok && lock.try_lock().is_some()
     }
 
-    #[test]
-    fn test_is_poisoned_initially_false() {
+    pub fn initial_poison_state_smoke() -> bool {
         let lock = PoisonLock::new(0u32);
-        assert!(!lock.is_poisoned());
+        !lock.is_poisoned()
     }
 
-    #[test]
-    fn test_clear_poison() {
+    pub fn clear_poison_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
-        // 手動で毒入れ状態を設定
         lock.poisoned.store(true, Ordering::Release);
-        assert!(lock.is_poisoned());
-
+        if !lock.is_poisoned() {
+            return false;
+        }
         lock.clear_poison();
-        assert!(!lock.is_poisoned());
+        !lock.is_poisoned()
     }
 
-    #[test]
-    fn test_default() {
+    pub fn default_lock_smoke() -> bool {
         let lock: PoisonLock<i32> = PoisonLock::default();
-        assert_eq!(*lock.lock().unwrap(), 0);
+        match lock.lock() {
+            Ok(guard) => *guard == 0,
+            Err(_) => false,
+        }
     }
 }

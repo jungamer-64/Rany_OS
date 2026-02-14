@@ -180,9 +180,14 @@ required-features = ["bench"]
 [[test]]
 name = "async_swapout_sim"
 path = "tests/async_swapout_sim.rs"
-required-features = ["full_mm_tests"]
+required-features = ["full_mm_tests", "run-integration-tests"]
+
+[[test]]
+name = "net_bridge"
+path = "tests/net_bridge.rs"
+required-features = ["run-integration-tests"]
 
 [[test]]
 name = "bench_framebuffer"
 path = "tests/bench_framebuffer.rs"
-required-features = ["full_mm_tests"]
+required-features = ["full_mm_tests", "run-integration-tests"]

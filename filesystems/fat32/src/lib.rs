@@ -8416,3 +8416,22 @@ impl Fat32FileSystem<DefaultZeroCopyBuffer> {
         Ok(result)
     }
 }
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::{Cluster, NextCluster, Sector};
+
+    pub fn cluster_smoke() -> bool {
+        let c = Cluster(10);
+        c.is_valid() && !c.is_free() && !c.is_eof()
+    }
+
+    pub fn next_cluster_smoke() -> bool {
+        NextCluster::from_fat_entry(Cluster::EOF) == NextCluster::Eof
+    }
+
+    pub fn sector_smoke() -> bool {
+        let s = Sector(123);
+        s.as_u64() == 123
+    }
+}

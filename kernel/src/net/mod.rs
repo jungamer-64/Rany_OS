@@ -7,6 +7,8 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use alloc::format;
+
 /// Common Network Errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkError {

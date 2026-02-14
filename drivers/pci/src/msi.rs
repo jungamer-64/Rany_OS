@@ -592,22 +592,3 @@ pub fn enable_intx<A: ConfigSpaceAccessor>(accessor: &A, device: &PciDeviceInfo)
         command & !command_bits::INTERRUPT_DISABLE,
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_msi_config() {
-        let config = MsiConfig::new(0, 33);
-
-        assert_eq!(config.message_address(), 0xFEE00000);
-        assert_eq!(config.message_data(), 33);
-    }
-
-    #[test]
-    fn test_delivery_mode() {
-        assert_eq!(DeliveryMode::Fixed as u32, 0);
-        assert_eq!(DeliveryMode::LowestPriority as u32, 1);
-    }
-}

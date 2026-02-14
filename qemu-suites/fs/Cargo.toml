@@ -1,0 +1,15 @@
+[package]
+name = "qemu_suite_fs"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "QEMU no_std filesystem suite"
+
+[dependencies]
+vfs = { path = "../../libs/vfs", features = ["qemu-test-export"] }
+fat32 = { path = "../../filesystems/fat32", features = ["qemu-test-export"] }

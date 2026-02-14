@@ -501,7 +501,7 @@ impl Default for NetworkEventHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::endpoint::event::event_queue;
+    use crate::net::endpoint::event::{event_queue, NetworkEvent};
     use crate::net::endpoint::manager::init_socket_manager;
     use crate::net::endpoint::{create_tcp_socket, SocketAddr};
 
@@ -529,7 +529,7 @@ mod tests {
         // Event queue should now contain a DataReady event for our fd
         if let Some(evt) = event_queue().recv() {
             match evt {
-                super::event::NetworkEvent::DataReady { fd: efd, .. } => assert_eq!(efd.raw(), fd.raw()),
+                NetworkEvent::DataReady { fd: efd, .. } => assert_eq!(efd.raw(), fd.raw()),
                 _ => panic!("Expected DataReady event"),
             }
         } else {

@@ -52,7 +52,7 @@ pub use hid_driver::{
 };
 
 // Extension traits
-pub use hid_driver::{KeyCodeExt, KeyEventExt};
+pub use hid_driver::keyboard::{KeyCodeExt, KeyEventExt};
 
 // to_char() method on KeyEvent
 // use hid_driver::KeyEventExt as _KeyEventExt;

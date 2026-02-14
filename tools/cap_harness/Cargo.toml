@@ -15,4 +15,7 @@ description = "Capability Test Harness for RanyOS"
 # independent from the repository workspace and can be built for the host target.
 
 [dependencies]
-# No external dependencies; keep this host-only and minimal
+
+[features]
+default = []
+host-tests = []

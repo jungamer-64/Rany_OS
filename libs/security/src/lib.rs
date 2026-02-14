@@ -774,3 +774,33 @@ mod tests {
         assert!(grants[0].revoked);
     }
 }
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn capability_set_smoke() -> bool {
+        let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND);
+        if caps.raise(CAP_NET_BIND).is_err() {
+            return false;
+        }
+        caps.has_capability(CAP_NET_BIND)
+    }
+
+    pub fn grant_flow_smoke() -> bool {
+        let caller: u64 = 9001;
+        let target: u64 = 9002;
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+
+        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        if !manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
+
+        manager().revoke_grant(caller, token, false).is_ok() && !manager().has_capability(target, CAP_NET_BIND)
+    }
+}

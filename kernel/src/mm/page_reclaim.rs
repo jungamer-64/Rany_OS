@@ -1338,6 +1338,16 @@ impl PageReclaimController {
     
     /// ページを実際に回収
     fn reclaim_page(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
+        // Reclaim action policy table:
+        // - unsafe_eviction=false:
+        //   * Anonymous(clean/dirty): BlockedUnsafe
+        //   * FileBacked(clean): FreedNow
+        //   * FileBacked(dirty):
+        //     - with backing: async enqueue or sync writeback success => FreedNow, otherwise Requeued
+        //     - without backing: Requeued (no free)
+        // - Slab/Kernel: Requeued
+        // Each victim yields exactly one terminal outcome:
+        // DeferredAsync / Requeued / FreedNow (or BlockedUnsafe at safety gate).
         let unsafe_eviction = self.unsafe_eviction_enabled();
         if !unsafe_eviction && matches!(entry.page_type, PageType::Anonymous) {
             self.blocked_unsafe.fetch_add(1, Ordering::Relaxed);
@@ -1506,6 +1516,7 @@ pub struct ReclaimStats {
     /// Total reclaimed pages (synchronous frees + async completion successes).
     pub total_reclaimed: u64,
     pub pressure: MemoryPressure,
+    /// Requeue count caused by actual writeback I/O failure.
     pub writeback_skipped: u64,
     pub unsafe_eviction_enabled: bool,
     pub pending_async: u64,
@@ -2817,6 +2828,7 @@ mod tests_late {
         assert_eq!(after.total_reclaimed, before.total_reclaimed);
         assert_eq!(after.writeback_skipped, before.writeback_skipped);
         assert_eq!(after.requeued, before.requeued + 1);
+        assert_eq!(after.blocked_unsafe, before.blocked_unsafe);
         assert!(crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
 
         cleanup_frame_if_allocated(frame_idx);
@@ -2877,6 +2889,38 @@ mod tests_late {
     }
 
     #[test_case]
+    #[cfg(not(feature = "full_mm_tests"))]
+    fn test_already_pending_without_registered_pending_requeues_once_in_direct_reclaim() {
+        reset_test_overrides();
+        crate::mm::async_swapout::set_test_enqueue_override(Some(
+            crate::mm::async_swapout::SwapError::AlreadyPending,
+        ));
+
+        let controller = PageReclaimController::new();
+        controller.set_unsafe_eviction_enabled(true);
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
+        entry.generation = MglruGen::Gen3;
+        entry.flags = LruFlags::DIRTY;
+        entry.referenced.store(false, Ordering::Relaxed);
+        controller.lru_lists[0].add_page_to_generation(entry, 3);
+
+        let before = controller.stats();
+        let reclaimed = controller.direct_reclaim(1);
+        let after = controller.stats();
+
+        assert_eq!(reclaimed, 0);
+        assert_eq!(after.requeued, before.requeued + 1);
+        assert_eq!(after.pending_async, before.pending_async);
+        assert_eq!(after.writeback_skipped, before.writeback_skipped);
+
+        cleanup_frame_if_allocated(frame_idx);
+        reset_test_overrides();
+    }
+
+    #[test_case]
     fn test_queuefull_does_not_count_writeback_skipped() {
         let controller = PageReclaimController::new();
         controller.set_unsafe_eviction_enabled(true);
@@ -2899,6 +2943,40 @@ mod tests_late {
         cleanup_frame_if_allocated(frame_idx);
         crate::mm::async_swapout::set_token_count(1);
         crate::mm::async_swapout::stop_worker();
+    }
+
+    #[test_case]
+    #[cfg(not(feature = "full_mm_tests"))]
+    fn test_notsupported_anonymous_dirty_requeues_without_writeback_skipped() {
+        reset_test_overrides();
+        crate::mm::async_swapout::set_test_enqueue_override(Some(
+            crate::mm::async_swapout::SwapError::NotSupported,
+        ));
+
+        let controller = PageReclaimController::new();
+        controller.set_unsafe_eviction_enabled(true);
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
+        entry.generation = MglruGen::Gen3;
+        entry.flags = LruFlags::DIRTY;
+        entry.referenced.store(false, Ordering::Relaxed);
+        controller.lru_lists[0].add_page_to_generation(entry, 3);
+
+        let before = controller.stats();
+        let reclaimed = controller.direct_reclaim(1);
+        let after = controller.stats();
+
+        assert_eq!(reclaimed, 0);
+        assert_eq!(after.total_reclaimed, before.total_reclaimed);
+        assert_eq!(after.requeued, before.requeued + 1);
+        assert_eq!(after.writeback_skipped, before.writeback_skipped);
+        assert_eq!(after.pending_async, before.pending_async);
+        assert_eq!(after.blocked_unsafe, before.blocked_unsafe);
+
+        cleanup_frame_if_allocated(frame_idx);
+        reset_test_overrides();
     }
 
     #[test_case]
@@ -2936,6 +3014,43 @@ mod tests_late {
     }
 
     #[test_case]
+    #[cfg(not(feature = "full_mm_tests"))]
+    fn test_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure() {
+        reset_test_overrides();
+        crate::mm::async_swapout::set_test_enqueue_override(Some(
+            crate::mm::async_swapout::SwapError::NotSupported,
+        ));
+        set_test_sync_page_writeback_override(Some(false));
+        set_test_sync_all_writeback_override(Some(false));
+
+        let controller = PageReclaimController::new();
+        controller.set_unsafe_eviction_enabled(false);
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        crate::mm::frame_backing::track_frame_backing(frame_idx, 0x33, 3);
+
+        let mut entry = MglruEntry::new(frame_idx, PageType::FileBacked, 0);
+        entry.generation = MglruGen::Gen3;
+        entry.flags = LruFlags::DIRTY;
+        entry.referenced.store(false, Ordering::Relaxed);
+        controller.lru_lists[0].add_page_to_generation(entry, 3);
+
+        let before = controller.stats();
+        let reclaimed = controller.direct_reclaim(1);
+        let after = controller.stats();
+
+        assert_eq!(reclaimed, 0);
+        assert_eq!(after.total_reclaimed, before.total_reclaimed);
+        assert_eq!(after.requeued, before.requeued + 1);
+        assert_eq!(after.writeback_skipped, before.writeback_skipped + 1);
+        assert!(crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+
+        cleanup_frame_if_allocated(frame_idx);
+        reset_test_overrides();
+    }
+
+    #[test_case]
     fn test_async_success_clears_pending_and_accounts_success() {
         let controller = PageReclaimController::new();
         let entry = MglruEntry::new(FrameIndex::new(200), PageType::FileBacked, 0);
@@ -2958,10 +3073,18 @@ mod tests_late {
         controller.enqueue_pending_async(&entry, 3);
 
         controller.on_async_swapout_complete(entry.frame, false);
-        let stats = controller.stats();
-        assert_eq!(stats.pending_async, 0);
-        assert_eq!(stats.async_fail, 1);
-        assert_eq!(stats.requeued, 1);
-        assert_eq!(stats.lru_stats[3].gen_sizes[1], 1);
+        let after = controller.stats();
+        assert_eq!(after.pending_async, 0);
+        assert_eq!(after.async_fail, 1);
+        assert_eq!(after.requeued, 1);
+        assert_eq!(after.lru_stats[3].gen_sizes[1], 1);
+
+        // Duplicate notify must be a no-op when pending entry is already consumed.
+        controller.on_async_swapout_complete(entry.frame, false);
+        let after_duplicate = controller.stats();
+        assert_eq!(after_duplicate.pending_async, after.pending_async);
+        assert_eq!(after_duplicate.async_fail, after.async_fail);
+        assert_eq!(after_duplicate.requeued, after.requeued);
+        assert_eq!(after_duplicate.total_reclaimed, after.total_reclaimed);
     }
 }

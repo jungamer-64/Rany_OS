@@ -85,3 +85,17 @@ pub use pcie_ext::{
     SriovController, UncorrectableErrors, cap_id, device_supports_acs, device_supports_ats,
     ext_cap_id, init_pcie_ext, pcie_ext_config, pcie_ext_manager,
 };
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use crate::{DeliveryMode, MsiConfig};
+
+    pub fn msi_config_smoke() -> bool {
+        let config = MsiConfig::new(0, 33);
+        config.message_address() == 0xFEE0_0000 && config.message_data() == 33
+    }
+
+    pub fn delivery_mode_smoke() -> bool {
+        DeliveryMode::Fixed as u32 == 0 && DeliveryMode::LowestPriority as u32 == 1
+    }
+}

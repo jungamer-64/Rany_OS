@@ -311,3 +311,295 @@ pub use keymap::{
 
 // Keyboard helpers - use `hid_driver::keyboard::*` for full access
 pub use keyboard::StreamAlreadyTaken;
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use crate::keymap::{DvorakKeymap, Keymap, UsQwertyKeymap};
+    use crate::queue::{DEFAULT_QUEUE_SIZE, ScancodeQueue};
+    use crate::{KeyCode, Modifiers};
+
+    pub fn keymap_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        let mut mods = Modifiers::default();
+        if keymap.to_char(KeyCode::A, &mods) != Some('a') {
+            return false;
+        }
+        mods.shift = true;
+        keymap.to_char(KeyCode::A, &mods) == Some('A')
+    }
+
+    pub fn keymap_ctrl_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        let mods = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        keymap.to_char(KeyCode::C, &mods) == Some('\x03')
+            && keymap.to_char(KeyCode::Z, &mods) == Some('\x1A')
+    }
+
+    pub fn dvorak_smoke() -> bool {
+        let keymap = DvorakKeymap;
+        let mods = Modifiers::default();
+        keymap.to_char(KeyCode::S, &mods) == Some('o')
+            && keymap.to_char(KeyCode::Q, &mods) == Some('\'')
+    }
+
+    pub fn queue_basic_smoke() -> bool {
+        let queue = ScancodeQueue::new();
+        if !queue.is_empty() {
+            return false;
+        }
+        if !queue.push(0x1E) {
+            return false;
+        }
+        if queue.is_empty() {
+            return false;
+        }
+        queue.pop() == Some(0x1E) && queue.is_empty()
+    }
+
+    pub fn queue_full_smoke() -> bool {
+        let queue = ScancodeQueue::new();
+        for i in 0..(DEFAULT_QUEUE_SIZE - 1) {
+            if !queue.push(i as u16) {
+                return false;
+            }
+        }
+        if queue.push(0xFFFF) {
+            return false;
+        }
+        for i in 0..(DEFAULT_QUEUE_SIZE - 1) {
+            if queue.pop() != Some(i as u16) {
+                return false;
+            }
+        }
+        queue.is_empty() && queue.pop().is_none()
+    }
+
+    pub fn queue_wraparound_smoke() -> bool {
+        let queue = ScancodeQueue::new();
+
+        for i in 0..10u16 {
+            if !queue.push(i) || queue.pop() != Some(i) {
+                return false;
+            }
+        }
+
+        for i in 0..(DEFAULT_QUEUE_SIZE - 1) {
+            if !queue.push(i as u16) {
+                return false;
+            }
+        }
+
+        for i in 0..(DEFAULT_QUEUE_SIZE - 1) {
+            if queue.pop() != Some(i as u16) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    // =========================================================================
+    // driver.rs smoke tests
+    // =========================================================================
+
+    pub fn driver_new_smoke() -> bool {
+        let driver = crate::driver::KeyboardDriver::new();
+        !driver.has_event() && driver.dropped_events() == 0
+    }
+
+    pub fn driver_handle_scancode_smoke() -> bool {
+        use crate::stream::DriverOps;
+        let driver = crate::driver::KeyboardDriver::new();
+        driver.handle_scancode(0x1E);
+        if !driver.has_event() { return false; }
+        match driver.poll_key_event_internal() {
+            Some(event) => event.key == crate::KeyCode::A && event.state == crate::KeyState::Pressed,
+            None => false,
+        }
+    }
+
+    pub fn driver_extended_scancode_smoke() -> bool {
+        use crate::stream::DriverOps;
+        let driver = crate::driver::KeyboardDriver::new();
+        driver.handle_scancode(0xE0);
+        driver.handle_scancode(0x48);
+        if !driver.has_event() { return false; }
+        match driver.poll_key_event_internal() {
+            Some(event) => event.key == crate::KeyCode::Up,
+            None => false,
+        }
+    }
+
+    pub fn driver_key_release_smoke() -> bool {
+        use crate::stream::DriverOps;
+        let driver = crate::driver::KeyboardDriver::new();
+        driver.handle_scancode(0x9E);
+        match driver.poll_key_event_internal() {
+            Some(event) => event.key == crate::KeyCode::A && event.state == crate::KeyState::Released,
+            None => false,
+        }
+    }
+
+    // =========================================================================
+    // keyboard.rs smoke tests
+    // =========================================================================
+
+    pub fn from_scancode_basic_smoke() -> bool {
+        use crate::keyboard::KeyCodeExt;
+        crate::KeyCode::from_scancode(0x10, false) == crate::KeyCode::Q
+            && crate::KeyCode::from_scancode(0x48, true) == crate::KeyCode::Up
+    }
+
+    // =========================================================================
+    // keymap.rs extended smoke tests
+    // =========================================================================
+
+    fn mods(shift: bool, caps_lock: bool) -> Modifiers {
+        Modifiers { shift, caps_lock, ..Default::default() }
+    }
+
+    fn mods_ctrl() -> Modifiers {
+        Modifiers { ctrl: true, ..Default::default() }
+    }
+
+    pub fn us_qwerty_letters_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        keymap.to_char(KeyCode::A, &mods(false, false)) == Some('a')
+            && keymap.to_char(KeyCode::Z, &mods(false, false)) == Some('z')
+            && keymap.to_char(KeyCode::A, &mods(true, false)) == Some('A')
+            && keymap.to_char(KeyCode::A, &mods(false, true)) == Some('A')
+            && keymap.to_char(KeyCode::A, &mods(true, true)) == Some('a')
+    }
+
+    pub fn us_qwerty_numbers_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        keymap.to_char(KeyCode::Key1, &mods(false, false)) == Some('1')
+            && keymap.to_char(KeyCode::Key1, &mods(true, false)) == Some('!')
+            && keymap.to_char(KeyCode::Key2, &mods(true, false)) == Some('@')
+    }
+
+    pub fn us_qwerty_special_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        keymap.to_char(KeyCode::Space, &mods(false, false)) == Some(' ')
+            && keymap.to_char(KeyCode::Enter, &mods(false, false)) == Some('\n')
+            && keymap.to_char(KeyCode::Tab, &mods(false, false)) == Some('\t')
+    }
+
+    pub fn non_printable_keys_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        keymap.to_char(KeyCode::F1, &mods(false, false)).is_none()
+            && keymap.to_char(KeyCode::Escape, &mods(false, false)).is_none()
+            && keymap.to_char(KeyCode::Up, &mods(false, false)).is_none()
+    }
+
+    pub fn ctrl_characters_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        keymap.to_char(KeyCode::C, &mods_ctrl()) == Some('\x03')
+            && keymap.to_char(KeyCode::D, &mods_ctrl()) == Some('\x04')
+            && keymap.to_char(KeyCode::Z, &mods_ctrl()) == Some('\x1A')
+    }
+
+    pub fn jis_symbols_smoke() -> bool {
+        let keymap = crate::keymap::JisKeymap;
+        keymap.to_char(KeyCode::Key2, &mods(true, false)) == Some('"')
+            && keymap.to_char(KeyCode::Key6, &mods(true, false)) == Some('&')
+            && keymap.to_char(KeyCode::Key7, &mods(true, false)) == Some('\'')
+            && keymap.to_char(KeyCode::LeftBracket, &mods(false, false)) == Some('@')
+            && keymap.to_char(KeyCode::LeftBracket, &mods(true, false)) == Some('{')
+    }
+
+    pub fn jis_letters_smoke() -> bool {
+        let keymap = crate::keymap::JisKeymap;
+        keymap.to_char(KeyCode::A, &mods(false, false)) == Some('a')
+            && keymap.to_char(KeyCode::A, &mods(true, false)) == Some('A')
+            && keymap.to_char(KeyCode::Z, &mods(false, false)) == Some('z')
+    }
+
+    pub fn jis_ctrl_smoke() -> bool {
+        let keymap = crate::keymap::JisKeymap;
+        keymap.to_char(KeyCode::C, &mods_ctrl()) == Some('\x03')
+            && keymap.to_char(KeyCode::D, &mods_ctrl()) == Some('\x04')
+    }
+
+    pub fn dvorak_home_row_smoke() -> bool {
+        let keymap = DvorakKeymap;
+        keymap.to_char(KeyCode::A, &mods(false, false)) == Some('a')
+            && keymap.to_char(KeyCode::S, &mods(false, false)) == Some('o')
+            && keymap.to_char(KeyCode::D, &mods(false, false)) == Some('e')
+            && keymap.to_char(KeyCode::F, &mods(false, false)) == Some('u')
+            && keymap.to_char(KeyCode::G, &mods(false, false)) == Some('i')
+            && keymap.to_char(KeyCode::H, &mods(false, false)) == Some('d')
+            && keymap.to_char(KeyCode::J, &mods(false, false)) == Some('h')
+            && keymap.to_char(KeyCode::K, &mods(false, false)) == Some('t')
+            && keymap.to_char(KeyCode::L, &mods(false, false)) == Some('n')
+            && keymap.to_char(KeyCode::Semicolon, &mods(false, false)) == Some('s')
+    }
+
+    pub fn dvorak_top_row_smoke() -> bool {
+        let keymap = DvorakKeymap;
+        keymap.to_char(KeyCode::Q, &mods(false, false)) == Some('\'')
+            && keymap.to_char(KeyCode::W, &mods(false, false)) == Some(',')
+            && keymap.to_char(KeyCode::E, &mods(false, false)) == Some('.')
+            && keymap.to_char(KeyCode::R, &mods(false, false)) == Some('p')
+            && keymap.to_char(KeyCode::T, &mods(false, false)) == Some('y')
+            && keymap.to_char(KeyCode::Y, &mods(false, false)) == Some('f')
+    }
+
+    pub fn dvorak_bottom_row_smoke() -> bool {
+        let keymap = DvorakKeymap;
+        keymap.to_char(KeyCode::Z, &mods(false, false)) == Some(';')
+            && keymap.to_char(KeyCode::X, &mods(false, false)) == Some('q')
+            && keymap.to_char(KeyCode::C, &mods(false, false)) == Some('j')
+            && keymap.to_char(KeyCode::Slash, &mods(false, false)) == Some('z')
+    }
+
+    pub fn dvorak_caps_lock_smoke() -> bool {
+        let keymap = DvorakKeymap;
+        keymap.to_char(KeyCode::S, &mods(false, true)) == Some('O')
+            && keymap.to_char(KeyCode::S, &mods(true, true)) == Some('o')
+    }
+
+    pub fn global_keymap_instances_smoke() -> bool {
+        crate::keymap::DEFAULT_KEYMAP.name() == "US QWERTY"
+            && crate::keymap::JIS_KEYMAP.name() == "JIS (Japanese)"
+            && crate::keymap::DVORAK_KEYMAP.name() == "Dvorak"
+    }
+
+    pub fn numpad_us_qwerty_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        keymap.to_char(KeyCode::NumPad0, &mods(false, false)) == Some('0')
+            && keymap.to_char(KeyCode::NumPad5, &mods(false, false)) == Some('5')
+            && keymap.to_char(KeyCode::NumPad9, &mods(false, false)) == Some('9')
+            && keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)) == Some('+')
+            && keymap.to_char(KeyCode::NumPadMinus, &mods(false, false)) == Some('-')
+            && keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)) == Some('*')
+            && keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)) == Some('/')
+            && keymap.to_char(KeyCode::NumPadDecimal, &mods(false, false)) == Some('.')
+            && keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)) == Some('\n')
+    }
+
+    pub fn numpad_jis_smoke() -> bool {
+        let keymap = crate::keymap::JisKeymap;
+        keymap.to_char(KeyCode::NumPad0, &mods(false, false)) == Some('0')
+            && keymap.to_char(KeyCode::NumPad5, &mods(false, false)) == Some('5')
+            && keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)) == Some('+')
+            && keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)) == Some('\n')
+    }
+
+    pub fn numpad_dvorak_smoke() -> bool {
+        let keymap = DvorakKeymap;
+        keymap.to_char(KeyCode::NumPad0, &mods(false, false)) == Some('0')
+            && keymap.to_char(KeyCode::NumPad5, &mods(false, false)) == Some('5')
+            && keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)) == Some('*')
+            && keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)) == Some('/')
+    }
+
+    pub fn numpad_shift_ignored_smoke() -> bool {
+        let keymap = UsQwertyKeymap;
+        keymap.to_char(KeyCode::NumPad0, &mods(true, false)) == Some('0')
+            && keymap.to_char(KeyCode::NumPadPlus, &mods(true, false)) == Some('+')
+    }
+}

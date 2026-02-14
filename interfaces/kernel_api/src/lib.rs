@@ -61,3 +61,29 @@ pub use types::{
     NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
     OpenMode, Packet, RawSocketHandle, SystemInfo, TaskHandle, TcpEndpoint,
 };
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use crate::{AbiError, DriverContext, pack_version, unpack_version};
+
+    pub fn version_pack_unpack_smoke() -> bool {
+        let packed = pack_version(3, 5, 8);
+        unpack_version(packed) == (3, 5, 8)
+    }
+
+    pub fn abi_error_decode_smoke() -> bool {
+        AbiError::from_raw(-7) == AbiError::Timeout
+            && AbiError::from_raw(-8) == AbiError::IoError
+            && AbiError::from_raw(0).is_success()
+    }
+
+    pub fn driver_context_default_smoke() -> bool {
+        let ctx = DriverContext::new();
+        ctx.device_address == 0
+            && ctx.device_address_secondary == 0
+            && ctx.irq == 0
+            && ctx.flags == 0
+            && ctx.driver_data == 0
+            && ctx._reserved == [0; 3]
+    }
+}

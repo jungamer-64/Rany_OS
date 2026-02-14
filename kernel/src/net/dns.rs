@@ -818,9 +818,8 @@ impl DnsClient {
             return false;
         }
 
-        let header = match crate::util::get_ref::<DnsHeader>(data, 0) {
-            Ok(h) => h,
-            Err(_) => return false,
+        let Some(header) = crate::util::get_ref::<DnsHeader>(data, 0) else {
+            return false;
         };
 
         // Check TC (Truncated) bit

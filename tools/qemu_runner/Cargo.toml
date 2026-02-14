@@ -1,0 +1,21 @@
+[package]
+name = "qemu_runner"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "QEMU suite build/runner for QEMU-first test orchestration"
+
+[lib]
+name = "qemu_runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qemu-runner"
+path = "src/main.rs"
+
+[dependencies]

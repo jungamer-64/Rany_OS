@@ -37,3 +37,4 @@ default = []
 standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
 # Export _exorust_driver_entry symbol for dynamic loading
 export_driver_entry = ["kernel_api/export_driver_entry"]
+qemu-test-export = []

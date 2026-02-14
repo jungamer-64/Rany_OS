@@ -114,6 +114,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
+name = "cap_harness"
+version = "0.1.0"
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -712,6 +716,63 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "qemu-tests"
+version = "0.1.0"
+dependencies = [
+ "qemu_runner",
+]
+
+[[package]]
+name = "qemu_runner"
+version = "0.1.0"
+
+[[package]]
+name = "qemu_suite_core"
+version = "0.1.0"
+dependencies = [
+ "exorust_sync",
+ "kernel_api",
+ "security",
+]
+
+[[package]]
+name = "qemu_suite_drivers"
+version = "0.1.0"
+dependencies = [
+ "acpi_driver",
+ "ahci_driver",
+ "hda_driver",
+ "hid_driver",
+ "nvme_driver",
+ "pci_driver",
+ "usb_driver",
+ "virtio_driver",
+]
+
+[[package]]
+name = "qemu_suite_fs"
+version = "0.1.0"
+dependencies = [
+ "fat32",
+ "vfs",
+]
+
+[[package]]
+name = "qemu_suite_kernel"
+version = "0.1.0"
+
+[[package]]
+name = "qemu_suite_pending"
+version = "0.1.0"
+
+[[package]]
+name = "qemu_suite_tools"
+version = "0.1.0"
+dependencies = [
+ "cap_harness",
 ]
 
 [[package]]

@@ -1,0 +1,21 @@
+[package]
+name = "qemu_suite_drivers"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "QEMU no_std driver suite"
+
+[dependencies]
+hid_driver = { path = "../../drivers/hid", features = ["qemu-test-export"] }
+pci_driver = { path = "../../drivers/pci", features = ["qemu-test-export"] }
+acpi_driver = { path = "../../drivers/acpi", features = ["qemu-test-export"] }
+ahci_driver = { path = "../../drivers/ahci", features = ["qemu-test-export"] }
+hda_driver = { path = "../../drivers/hda", features = ["qemu-test-export"] }
+nvme_driver = { path = "../../drivers/nvme", features = ["qemu-test-export"] }
+usb_driver = { path = "../../drivers/usb", features = ["qemu-test-export"] }
+virtio_driver = { path = "../../drivers/virtio", features = ["qemu-test-export"] }

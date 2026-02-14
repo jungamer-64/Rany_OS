@@ -142,7 +142,7 @@ pub enum IvhdDeviceEntry {
     },
 }
 
-const IVHD_TYPE_10: u8 = 0x10;
+pub(crate) const IVHD_TYPE_10: u8 = 0x10;
 const IVHD_TYPE_11: u8 = 0x11;
 const IVHD_TYPE_40: u8 = 0x40;
 const IVHD_TYPE_41: u8 = 0x41;
@@ -156,11 +156,11 @@ const fn is_ivhd(block_type: u8) -> bool {
 
 const IVMD_TYPE_ALL: u8 = 0x20;
 const IVMD_TYPE: u8 = 0x21;
-const IVMD_TYPE_RANGE: u8 = 0x22;
+pub(crate) const IVMD_TYPE_RANGE: u8 = 0x22;
 
-const IVMD_FLAG_UNITY_MAP: u8 = 0x01;
-const IVMD_FLAG_IR: u8 = 0x02;
-const IVMD_FLAG_IW: u8 = 0x04;
+pub(crate) const IVMD_FLAG_UNITY_MAP: u8 = 0x01;
+pub(crate) const IVMD_FLAG_IR: u8 = 0x02;
+pub(crate) const IVMD_FLAG_IW: u8 = 0x04;
 const IVMD_FLAG_EXCL_RANGE: u8 = 0x08;
 
 const fn is_ivmd(block_type: u8) -> bool {
@@ -168,13 +168,13 @@ const fn is_ivmd(block_type: u8) -> bool {
 }
 
 const IVHD_DEV_ALL: u8 = 0x01;
-const IVHD_DEV_SELECT: u8 = 0x02;
-const IVHD_DEV_SELECT_RANGE_START: u8 = 0x03;
-const IVHD_DEV_RANGE_END: u8 = 0x04;
-const IVHD_DEV_ALIAS: u8 = 0x42;
-const IVHD_DEV_ALIAS_RANGE: u8 = 0x43;
-const IVHD_DEV_EXT_SELECT: u8 = 0x46;
-const IVHD_DEV_EXT_SELECT_RANGE: u8 = 0x47;
+pub(crate) const IVHD_DEV_SELECT: u8 = 0x02;
+pub(crate) const IVHD_DEV_SELECT_RANGE_START: u8 = 0x03;
+pub(crate) const IVHD_DEV_RANGE_END: u8 = 0x04;
+pub(crate) const IVHD_DEV_ALIAS: u8 = 0x42;
+pub(crate) const IVHD_DEV_ALIAS_RANGE: u8 = 0x43;
+pub(crate) const IVHD_DEV_EXT_SELECT: u8 = 0x46;
+pub(crate) const IVHD_DEV_EXT_SELECT_RANGE: u8 = 0x47;
 const IVHD_DEV_SPECIAL: u8 = 0x48;
 const IVHD_DEV_ACPI_HID: u8 = 0xf0;
 
@@ -458,260 +458,4 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
         ivhds,
         ivmds,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec::Vec;
-
-    fn push_entry(buf: &mut Vec<u8>, entry_type: u8, devid: u16, flags: u8, ext: Option<u32>) {
-        buf.push(entry_type);
-        buf.extend_from_slice(&devid.to_le_bytes());
-        buf.push(flags);
-        if let Some(ext) = ext {
-            buf.extend_from_slice(&ext.to_le_bytes());
-        }
-    }
-
-    #[test]
-    fn test_parse_ivrs_ivhd_device_entries() {
-        let mut entries = Vec::new();
-
-        push_entry(&mut entries, IVHD_DEV_SELECT, 0x0102, 0xaa, None);
-        push_entry(
-            &mut entries,
-            IVHD_DEV_SELECT_RANGE_START,
-            0x0200,
-            0x11,
-            None,
-        );
-        push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0203, 0x00, None);
-        push_entry(
-            &mut entries,
-            IVHD_DEV_ALIAS,
-            0x0300,
-            0x22,
-            Some((0x0310u32) << 8),
-        );
-        push_entry(
-            &mut entries,
-            IVHD_DEV_ALIAS_RANGE,
-            0x0400,
-            0x33,
-            Some((0x0410u32) << 8),
-        );
-        push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0402, 0x00, None);
-        push_entry(
-            &mut entries,
-            IVHD_DEV_EXT_SELECT,
-            0x0500,
-            0x44,
-            Some(0xaabbccdd),
-        );
-        push_entry(
-            &mut entries,
-            IVHD_DEV_EXT_SELECT_RANGE,
-            0x0600,
-            0x55,
-            Some(0x11223344),
-        );
-        push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0602, 0x00, None);
-
-        let ivhd_len = mem::size_of::<IvhdHeader>() + entries.len();
-        let ivhd = IvhdHeader {
-            header: IvrsBlockHeader {
-                block_type: IVHD_TYPE_10,
-                flags: 0,
-                length: ivhd_len as u16,
-            },
-            device_id: 0,
-            capability_offset: 0,
-            iommu_base: 0xfee00000,
-            pci_segment: 0,
-            iommu_info: 0,
-            iommu_feature: 0,
-        };
-
-        let ivrs_len = mem::size_of::<IvrsHeader>() + ivhd_len;
-        let ivrs = IvrsHeader {
-            header: AcpiSdtHeader {
-                signature: *b"IVRS",
-                length: ivrs_len as u32,
-                revision: 1,
-                checksum: 0,
-                oem_id: [0; 6],
-                oem_table_id: [0; 8],
-                oem_revision: 0,
-                creator_id: 0,
-                creator_revision: 0,
-            },
-            info: 0,
-            _reserved: 0,
-        };
-
-        let mut buf = Vec::new();
-        let ivrs_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &ivrs as *const IvrsHeader as *const u8,
-                mem::size_of::<IvrsHeader>(),
-            )
-        };
-        buf.extend_from_slice(ivrs_bytes);
-
-        let ivhd_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &ivhd as *const IvhdHeader as *const u8,
-                mem::size_of::<IvhdHeader>(),
-            )
-        };
-        buf.extend_from_slice(ivhd_bytes);
-        buf.extend_from_slice(&entries);
-
-        let info = unsafe { parse_ivrs(buf.as_ptr() as usize) }.expect("parse should succeed");
-        assert_eq!(info.ivhds.len(), 1);
-        assert!(info.ivmds.is_empty());
-        let ivhd_info = &info.ivhds[0];
-        assert_eq!(ivhd_info.device_entries.len(), 6);
-
-        match &ivhd_info.device_entries[0] {
-            IvhdDeviceEntry::Select { devid, flags } => {
-                assert_eq!(*devid, 0x0102);
-                assert_eq!(*flags, 0xaa);
-            }
-            _ => panic!("expected select entry"),
-        }
-
-        match &ivhd_info.device_entries[1] {
-            IvhdDeviceEntry::Range { start, end, flags } => {
-                assert_eq!(*start, 0x0200);
-                assert_eq!(*end, 0x0203);
-                assert_eq!(*flags, 0x11);
-            }
-            _ => panic!("expected range entry"),
-        }
-
-        match &ivhd_info.device_entries[2] {
-            IvhdDeviceEntry::Alias {
-                devid,
-                alias,
-                flags,
-            } => {
-                assert_eq!(*devid, 0x0300);
-                assert_eq!(*alias, 0x0310);
-                assert_eq!(*flags, 0x22);
-            }
-            _ => panic!("expected alias entry"),
-        }
-
-        match &ivhd_info.device_entries[3] {
-            IvhdDeviceEntry::AliasRange {
-                start,
-                end,
-                alias,
-                flags,
-            } => {
-                assert_eq!(*start, 0x0400);
-                assert_eq!(*end, 0x0402);
-                assert_eq!(*alias, 0x0410);
-                assert_eq!(*flags, 0x33);
-            }
-            _ => panic!("expected alias range entry"),
-        }
-
-        match &ivhd_info.device_entries[4] {
-            IvhdDeviceEntry::ExtSelect {
-                devid,
-                flags,
-                ext_flags,
-            } => {
-                assert_eq!(*devid, 0x0500);
-                assert_eq!(*flags, 0x44);
-                assert_eq!(*ext_flags, 0xaabbccdd);
-            }
-            _ => panic!("expected ext select entry"),
-        }
-
-        match &ivhd_info.device_entries[5] {
-            IvhdDeviceEntry::ExtRange {
-                start,
-                end,
-                flags,
-                ext_flags,
-            } => {
-                assert_eq!(*start, 0x0600);
-                assert_eq!(*end, 0x0602);
-                assert_eq!(*flags, 0x55);
-                assert_eq!(*ext_flags, 0x11223344);
-            }
-            _ => panic!("expected ext range entry"),
-        }
-    }
-
-    #[test]
-    fn test_parse_ivrs_ivmd_range() {
-        let ivmd = IvmdHeader {
-            header: IvrsBlockHeader {
-                block_type: IVMD_TYPE_RANGE,
-                flags: IVMD_FLAG_UNITY_MAP | IVMD_FLAG_IR | IVMD_FLAG_IW,
-                length: mem::size_of::<IvmdHeader>() as u16,
-            },
-            device_id: 0x0100,
-            aux: 0x010f,
-            pci_segment: 0,
-            _reserved: [0; 6],
-            range_start: 0x1000,
-            range_length: 0x2000,
-        };
-
-        let ivrs_len = mem::size_of::<IvrsHeader>() + mem::size_of::<IvmdHeader>();
-        let ivrs = IvrsHeader {
-            header: AcpiSdtHeader {
-                signature: *b"IVRS",
-                length: ivrs_len as u32,
-                revision: 1,
-                checksum: 0,
-                oem_id: [0; 6],
-                oem_table_id: [0; 8],
-                oem_revision: 0,
-                creator_id: 0,
-                creator_revision: 0,
-            },
-            info: 0,
-            _reserved: 0,
-        };
-
-        let mut buf = Vec::new();
-        let ivrs_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &ivrs as *const IvrsHeader as *const u8,
-                mem::size_of::<IvrsHeader>(),
-            )
-        };
-        buf.extend_from_slice(ivrs_bytes);
-
-        let ivmd_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &ivmd as *const IvmdHeader as *const u8,
-                mem::size_of::<IvmdHeader>(),
-            )
-        };
-        buf.extend_from_slice(ivmd_bytes);
-
-        let info = unsafe { parse_ivrs(buf.as_ptr() as usize) }.expect("parse should succeed");
-        assert!(info.ivhds.is_empty());
-        assert_eq!(info.ivmds.len(), 1);
-
-        let ivmd_info = &info.ivmds[0];
-        assert_eq!(ivmd_info.block_type, IVMD_TYPE_RANGE);
-        assert_eq!(
-            ivmd_info.flags,
-            IVMD_FLAG_UNITY_MAP | IVMD_FLAG_IR | IVMD_FLAG_IW
-        );
-        assert_eq!(ivmd_info.device_id, 0x0100);
-        assert_eq!(ivmd_info.aux, 0x010f);
-        assert_eq!(ivmd_info.pci_segment, 0);
-        assert_eq!(ivmd_info.range_start, 0x1000);
-        assert_eq!(ivmd_info.range_length, 0x2000);
-    }
 }

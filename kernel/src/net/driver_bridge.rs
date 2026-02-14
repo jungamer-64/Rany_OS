@@ -302,7 +302,7 @@ mod tests {
         match stack::stack().lock() {
             Ok(mut guard) => {
                 if let Some(ref mut s) = *guard {
-                    s.tcp.connections.insert((local, remote), tcb_arc.clone());
+                    s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
                 }
             }
             Err(_) => panic!("Stack poisoned"),
@@ -334,13 +334,15 @@ mod tests {
 
         // IPv4 header
         let ip_off = eth_off + 14;
-        let mut ipv4_mut = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]).expect("ipv4 mut");
-        ipv4_mut
-            .init_header()
-            .set_source(Ipv4Address::new([127, 0, 0, 1]))
-            .set_destination(Ipv4Address::new([127, 0, 0, 1]))
-            .set_protocol(IpProtocol::Tcp)
-            .set_identification(1);
+        {
+            let mut ipv4_mut = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]).expect("ipv4 mut");
+            ipv4_mut
+                .init_header()
+                .set_source(Ipv4Address::new([127, 0, 0, 1]))
+                .set_destination(Ipv4Address::new([127, 0, 0, 1]))
+                .set_protocol(IpProtocol::Tcp)
+                .set_identification(1);
+        }
         // Write TCP header and payload into IP payload
         let tcp_off = ip_off + 20;
         // Src port 2000, dst port 1000
@@ -359,7 +361,9 @@ mod tests {
         buf[tcp_off + 20..tcp_off + 20 + payload.len()].copy_from_slice(payload);
 
         // Finalize IP header (set total length and checksum)
-        ipv4_mut.finalize(tcp_len);
+        Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20])
+            .expect("ipv4 mut")
+            .finalize(tcp_len);
 
         // Set packet length (virtio header + ethernet frame)
         packet.set_len(header_size + eth_total_len);

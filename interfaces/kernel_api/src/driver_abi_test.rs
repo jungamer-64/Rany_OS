@@ -33,8 +33,7 @@ mod tests {
         "test_async_driver"
     }
 
-    // This test ensures the macro expands correctly and compiles
-    #[test]
+    // This function kept as migration note for async driver macro usage.
     fn test_async_driver_macro_expansion() {
         // We can't easily test the extern "C" functions in unit tests as they are not exported to Rust test harness easily
         // But simply defining the macro usage here is a strong compile-time check.
