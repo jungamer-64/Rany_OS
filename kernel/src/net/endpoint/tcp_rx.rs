@@ -272,12 +272,21 @@ fn handle_rst_received(tcb: TcpControlBlockEntry) {
     tcb_table().remove(tcb.local, tcb.remote);
 }
 
-/// ACK受信処理（データ確認応答）
+/// ACK受信処理（データ確認応答 + 輻輳制御）
 fn handle_ack_received(tcb: TcpControlBlockEntry, ack_num: u32) {
+    // 現在時刻を取得（輻輳制御アルゴリズム用）
+    let current_time_ms = tcb_table().get_current_tick();
+
+    // 重複ACK判定: ack_num == snd_una なら新データ未確認（重複ACK）
+    let is_dup = ack_num == tcb.snd_una;
+
     tcb_table().update(tcb.local, tcb.remote, |entry| {
-        if ack_num > entry.snd_una {
-            entry.snd_una = ack_num;
-            entry.retransmit_count = 0; // 再送カウンタリセット
+        // 輻輳制御に委譲（snd_una更新含む）
+        // RTTサンプルは再送キュー側で測定するため、ここでは0を渡す。
+        // BBRは on_ack 内で独自に計算する。
+        entry.on_ack_received(ack_num, is_dup, current_time_ms, 0);
+        if !is_dup {
+            entry.retransmit_count = 0;
         }
     });
 

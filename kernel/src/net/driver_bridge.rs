@@ -178,6 +178,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
             gateway: Ipv4Address::new([10, 0, 2, 2]), // QEMU gateway
             dns: Some(Ipv4Address::new([10, 0, 2, 3])),
         },
+        ipv6: None,
         icmp_echo_enabled: true,
     };
 

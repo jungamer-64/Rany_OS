@@ -45,6 +45,9 @@ pub mod ethernet;
 pub mod icmp;
 pub mod igmp;
 pub mod ipv4;
+pub mod ipv6;
+pub mod icmpv6;
+pub mod ndp;
 pub mod udp;
 
 // Network services
@@ -104,6 +107,25 @@ pub use ethernet::{
 pub use ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4Header, Ipv4Packet, Ipv4PacketMut, Ipv4Processor,
     Ipv4Stats,
+};
+
+// Re-export IPv6
+#[allow(unused_imports)]
+pub use ipv6::{
+    Ipv6Address, Ipv6Config, Ipv6Header, Ipv6Packet, Ipv6PacketMut, Ipv6ProcessResult,
+    Ipv6Processor, Ipv6Stats,
+};
+
+// Re-export ICMPv6
+#[allow(unused_imports)]
+pub use icmpv6::{
+    Icmpv6EchoBuilder, Icmpv6Header, Icmpv6Processor, Icmpv6Result, Icmpv6Stats, Icmpv6Type,
+};
+
+// Re-export NDP
+#[allow(unused_imports)]
+pub use ndp::{
+    NdpOption, NdpProcessor, NdpResult, NdpStats, NeighborCache, NeighborEntry, NeighborState,
 };
 
 // Re-export ARP
@@ -244,6 +266,8 @@ pub use endpoint::{
     SocketState,
     SocketType,
     TcbTable,
+    // 輻輳制御
+    CongestionAlgorithm,
     // TCP制御ブロック
     TcpConnectionSnapshot,
     TcpConnectionState,
@@ -254,6 +278,7 @@ pub use endpoint::{
     check_retransmit_timeouts,
     // ヘルパー
     create_tcp_socket,
+    create_tcp_socket_with_algorithm,
     create_udp_socket,
     event_queue,
     get_or_create_retransmit_queue,

@@ -1,0 +1,10 @@
+# Pending migration tracker for QEMU suite.
+# - One case per line.
+# - Empty lines and lines starting with '#' are ignored.
+# - This file is for migration visibility only.
+# - Do NOT use this file as #[test] allowlist input.
+#
+kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snapshot: 764 cases)
+kernel/tests/* migration to qemu-suites/kernel (current snapshot: 3 files, 3 #[test_case])
+qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf) smoke checks to broader migrated kernel test groups
+kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

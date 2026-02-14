@@ -11,3 +11,4 @@ categories.workspace = true
 description = "QEMU no_std kernel migration suite"
 
 [dependencies]
+rany_os = { package = "rany_kernel", path = "../../kernel", features = ["qemu-test-export"] }

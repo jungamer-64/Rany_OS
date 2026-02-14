@@ -575,6 +575,21 @@ pub fn create_tcp_socket() -> OwnedSocket {
     OwnedSocket::new(SocketType::Tcp)
 }
 
+/// TCPソケット作成（輻輳制御アルゴリズム指定）
+///
+/// デフォルトはNewReno。CUBIC/BBRを使用する場合はこちらを利用。
+/// アルゴリズムは接続開始時にTCBに反映される。
+pub fn create_tcp_socket_with_algorithm(
+    algorithm: super::congestion::CongestionAlgorithm,
+) -> OwnedSocket {
+    let socket = OwnedSocket::new(SocketType::Tcp);
+    if let Some(inner_socket) = socket.socket() {
+        let mut inner = inner_socket.inner().lock();
+        inner.congestion_algorithm = Some(algorithm);
+    }
+    socket
+}
+
 /// UDPソケット作成
 pub fn create_udp_socket() -> OwnedSocket {
     OwnedSocket::new(SocketType::Udp)

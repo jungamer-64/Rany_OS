@@ -10,10 +10,15 @@
 use super::arp::{ArpProcessor, ArpResult};
 use super::ethernet::{EtherType, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult};
 use super::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode};
+use super::icmpv6::{Icmpv6EchoBuilder, Icmpv6Processor, Icmpv6Result};
 use super::igmp::{IgmpProcessor, IgmpResult, IgmpError, IGMP_PROTOCOL, multicast_ip_to_mac};
 use super::ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
 };
+use super::ipv6::{
+    Ipv6Address, Ipv6Config, Ipv6PacketMut, Ipv6ProcessResult, Ipv6Processor, IPV6_HEADER_SIZE,
+};
+use super::ndp::{NdpProcessor, NdpResult};
 use super::mempool::{PacketPool, PacketRef};
 use super::optimization::PacketBatch;
 use super::tcp::{
@@ -47,6 +52,8 @@ pub struct NetworkConfig {
     pub mac: MacAddress,
     /// IPv4 configuration
     pub ipv4: Ipv4Config,
+    /// IPv6 configuration (optional)
+    pub ipv6: Option<Ipv6Config>,
     /// Enable ICMP echo responses
     pub icmp_echo_enabled: bool,
 }
@@ -56,6 +63,7 @@ impl Default for NetworkConfig {
         NetworkConfig {
             mac: MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01),
             ipv4: Ipv4Config::default(),
+            ipv6: None,
             icmp_echo_enabled: true,
         }
     }
@@ -243,12 +251,18 @@ pub struct NetworkStack {
     ethernet: EthernetProcessor,
     /// IPv4 processor
     ipv4: Ipv4Processor,
+    /// IPv6 processor (optional)
+    ipv6: Option<Ipv6Processor>,
     /// ARP processor
     arp: ArpProcessor,
     /// ICMP processor
     icmp: IcmpProcessor,
+    /// ICMPv6 processor (optional)
+    icmpv6: Option<Icmpv6Processor>,
     /// IGMP processor (multicast group management)
     igmp: IgmpProcessor,
+    /// NDP processor (optional, IPv6 neighbor discovery)
+    ndp: Option<NdpProcessor>,
     /// UDP processor
     udp: UdpProcessor,
     /// TCP processor
@@ -277,12 +291,26 @@ impl NetworkStack {
 
         // Note: ipv4.clone() は Ipv4Config が小さい構造体のため
         // アセンブリでは memcpy やレジスタコピーに展開される
+        let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
+            let mac_bytes = mac.as_bytes();
+            (
+                Some(Ipv6Processor::new(*ipv6_config)),
+                Some(Icmpv6Processor::new(config.icmp_echo_enabled)),
+                Some(NdpProcessor::new(ipv6_config.link_local, *mac_bytes)),
+            )
+        } else {
+            (None, None, None)
+        };
+
         NetworkStack {
             ethernet: EthernetProcessor::new(mac),
             ipv4: Ipv4Processor::new(config.ipv4.clone()),
+            ipv6: ipv6_proc,
             arp: ArpProcessor::new(mac, ip),
             icmp: IcmpProcessor::new(ip),
+            icmpv6: icmpv6_proc,
             igmp: IgmpProcessor::new(ip),
+            ndp: ndp_proc,
             udp: UdpProcessor::new(),
             tcp: TcpProcessor::new(),
             tx_pool: PacketPool::new(64, MAX_PACKET_SIZE),
@@ -372,9 +400,13 @@ impl NetworkStack {
                 self.process_arp(payload, current_time);
                 self.stats.record_rx(pkt_len);
             }
-            ProcessResult::Ipv6(_payload) => {
-                // IPv6 not yet implemented
-                self.stats.record_dropped();
+            ProcessResult::Ipv6(payload) => {
+                if self.ipv6.is_some() {
+                    self.process_ipv6_data(payload, current_time);
+                    self.stats.record_rx(pkt_len);
+                } else {
+                    self.stats.record_dropped();
+                }
             }
             ProcessResult::VlanTagged { vlan_id, pcp: _, dei: _, inner_type, payload } => {
                 // VLAN-tagged frame - process based on inner type
@@ -394,8 +426,12 @@ impl NetworkStack {
                         self.stats.record_rx(pkt_len);
                     }
                     EtherType::Ipv6 => {
-                        // IPv6 not yet implemented
-                        self.stats.record_dropped();
+                        if self.ipv6.is_some() {
+                            self.process_ipv6_data(payload, current_time);
+                            self.stats.record_rx(pkt_len);
+                        } else {
+                            self.stats.record_dropped();
+                        }
                     }
                     _ => {
                         // Unsupported inner protocol
@@ -536,6 +572,232 @@ impl NetworkStack {
                 self.handle_icmp_redirect(code, gateway, destination, src_ip);
             }
             _ => {}
+        }
+    }
+
+    // =========================================================================
+    // IPv6 Processing
+    // =========================================================================
+
+    /// Process IPv6 packet data
+    fn process_ipv6_data(&mut self, data: &[u8], current_time: u64) {
+        let ipv6 = match self.ipv6 {
+            Some(ref ipv6) => ipv6,
+            None => return,
+        };
+
+        let result = ipv6.process(data);
+
+        match result {
+            Ipv6ProcessResult::Icmpv6(payload, src, dst) => {
+                self.process_icmpv6_data(payload, src, dst, current_time);
+            }
+            Ipv6ProcessResult::Tcp(_payload, _src, _dst) => {
+                // TCP over IPv6 - future implementation
+                // Will need dual-stack endpoint support
+                self.stats.record_dropped();
+            }
+            Ipv6ProcessResult::Udp(_payload, _src, _dst) => {
+                // UDP over IPv6 - future implementation
+                self.stats.record_dropped();
+            }
+            Ipv6ProcessResult::Dropped => {
+                self.stats.record_dropped();
+            }
+            Ipv6ProcessResult::Error => {
+                self.stats.record_rx_error();
+            }
+        }
+    }
+
+    /// Process ICMPv6 data
+    fn process_icmpv6_data(
+        &mut self,
+        data: &[u8],
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        current_time: u64,
+    ) {
+        let icmpv6 = match self.icmpv6 {
+            Some(ref icmpv6) => icmpv6,
+            None => return,
+        };
+
+        let result = icmpv6.process(data, src, dst);
+
+        match result {
+            Icmpv6Result::SendEchoReply {
+                dst: reply_dst,
+                identifier,
+                sequence,
+                data: echo_data,
+            } => {
+                self.send_icmpv6_echo_reply(reply_dst, identifier, sequence, &echo_data);
+            }
+            Icmpv6Result::EchoReplyReceived {
+                src: _,
+                identifier,
+                sequence,
+            } => {
+                log::info!("ICMPv6: Echo Reply received id={} seq={}", identifier, sequence);
+            }
+            Icmpv6Result::NdpMessage {
+                msg_type,
+                data: ndp_data,
+                src: ndp_src,
+                dst: ndp_dst,
+            } => {
+                self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, current_time);
+            }
+            Icmpv6Result::PacketTooBig { mtu } => {
+                log::info!("ICMPv6: Packet Too Big, MTU={}", mtu);
+                // Path MTU Discovery for IPv6 - future implementation
+            }
+            Icmpv6Result::Dropped | Icmpv6Result::Error => {}
+        }
+    }
+
+    /// Process NDP message
+    fn process_ndp_message(
+        &mut self,
+        msg_type: super::icmpv6::Icmpv6Type,
+        data: &[u8],
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        current_time: u64,
+    ) {
+        let ndp = match self.ndp {
+            Some(ref mut ndp) => ndp,
+            None => return,
+        };
+
+        let result = ndp.process(msg_type, data, src, dst, current_time);
+
+        match result {
+            NdpResult::SendNeighborAdvertisement {
+                dst: na_dst,
+                target,
+                our_mac,
+                solicited,
+            } => {
+                // Get our link-local address
+                if let Some(ref ipv6) = self.ipv6 {
+                    let our_addr = ipv6.config().link_local;
+                    let na_msg = NdpProcessor::build_na(
+                        &our_addr,
+                        &na_dst,
+                        &target,
+                        &our_mac,
+                        solicited,
+                    );
+                    self.send_ipv6_icmpv6(&our_addr, &na_dst, &na_msg);
+                    log::info!("NDP: Sent NA for {} to {}", target, na_dst);
+                }
+            }
+            NdpResult::NeighborUpdated { ip, mac } => {
+                log::info!(
+                    "NDP: Neighbor {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    ip, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                );
+            }
+            NdpResult::RouterAdvertisement {
+                router,
+                router_mac: _,
+                prefixes,
+            } => {
+                log::info!("NDP: Router Advertisement from {}, {} prefixes", router, prefixes.len());
+                // SLAAC: Apply prefix information - future enhancement
+            }
+            NdpResult::None | NdpResult::Error => {}
+        }
+    }
+
+    /// Send ICMPv6 Echo Reply
+    fn send_icmpv6_echo_reply(
+        &mut self,
+        dst: Ipv6Address,
+        identifier: u16,
+        sequence: u16,
+        echo_data: &[u8],
+    ) {
+        let ipv6_config = match self.ipv6 {
+            Some(ref ipv6) => ipv6.config(),
+            None => return,
+        };
+
+        let src = ipv6_config.link_local;
+        let config = self.config;
+
+        // Build ICMPv6 Echo Reply message (with checksum)
+        let icmpv6_msg = Icmpv6EchoBuilder::build_echo_reply(
+            &src, &dst, identifier, sequence, echo_data,
+        );
+
+        self.send_ipv6_icmpv6(&src, &dst, &icmpv6_msg);
+
+        log::info!(
+            "ICMPv6: Echo Reply sent to {} id={} seq={}",
+            dst, identifier, sequence
+        );
+    }
+
+    /// Send an IPv6 packet containing ICMPv6 payload
+    fn send_ipv6_icmpv6(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
+        let config = self.config;
+
+        // Resolve destination MAC
+        let dst_mac = if dst.is_multicast() {
+            dst.multicast_mac()
+        } else {
+            // Use NDP to resolve
+            match self.ndp {
+                Some(ref ndp) => {
+                    match ndp.resolve(dst) {
+                        Some(mac) => mac,
+                        None => {
+                            // TODO: queue packet and send NS
+                            log::debug!("IPv6: NDP resolution pending for {}", dst);
+                            return;
+                        }
+                    }
+                }
+                None => return,
+            }
+        };
+
+        let dst_mac = MacAddress::new(dst_mac);
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+
+        // Build Ethernet frame
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+
+            // Build IPv6 packet
+            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
+                ip_packet.init_header();
+                ip_packet.set_source(src);
+                ip_packet.set_destination(dst);
+                ip_packet.set_next_header(IpProtocol::Icmpv6);
+                ip_packet.set_hop_limit(255); // NDP/ICMPv6 uses 255
+
+                // Copy ICMPv6 payload
+                let payload = ip_packet.payload_mut();
+                if icmpv6_data.len() <= payload.len() {
+                    payload[..icmpv6_data.len()].copy_from_slice(icmpv6_data);
+                    ip_packet.finalize(icmpv6_data.len());
+
+                    let total_len = IPV6_HEADER_SIZE + icmpv6_data.len();
+                    frame.set_payload_len(total_len);
+
+                    self.transmit(frame.as_bytes());
+                }
+            }
         }
     }
 

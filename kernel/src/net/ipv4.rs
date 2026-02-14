@@ -154,6 +154,8 @@ pub enum IpProtocol {
     Udp = 17,
     /// Generic Routing Encapsulation
     Gre = 47,
+    /// ICMPv6 (RFC 4443)
+    Icmpv6 = 58,
     /// Unknown protocol
     Unknown(u8),
 }
@@ -166,6 +168,7 @@ impl From<u8> for IpProtocol {
             6 => IpProtocol::Tcp,
             17 => IpProtocol::Udp,
             47 => IpProtocol::Gre,
+            58 => IpProtocol::Icmpv6,
             other => IpProtocol::Unknown(other),
         }
     }
@@ -179,6 +182,7 @@ impl From<IpProtocol> for u8 {
             IpProtocol::Tcp => 6,
             IpProtocol::Udp => 17,
             IpProtocol::Gre => 47,
+            IpProtocol::Icmpv6 => 58,
             IpProtocol::Unknown(v) => v,
         }
     }

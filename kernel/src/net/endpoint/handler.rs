@@ -192,15 +192,20 @@ impl NetworkEventHandler {
         };
         let local_addr = SocketAddr::new(local.ip, local_port);
 
-        // ソケットのローカルアドレスを更新
-        {
+        // ソケットのローカルアドレスを更新し、輻輳制御アルゴリズム設定を取得
+        let congestion_algo = {
             let mut inner = socket.inner().lock();
             inner.local_addr = Some(local_addr);
-        }
+            inner.congestion_algorithm
+        };
 
         // TCB（TCP Control Block）を作成
         let isn = tcb_table().generate_isn();
-        let mut tcb = TcpControlBlockEntry::new(fd, local_addr, remote);
+        let mut tcb = if let Some(algo) = congestion_algo {
+            TcpControlBlockEntry::with_algorithm(fd, local_addr, remote, algo)
+        } else {
+            TcpControlBlockEntry::new(fd, local_addr, remote)
+        };
         tcb.initialize_seq(isn);
         tcb.state = TcpConnectionState::SynSent;
         tcb_table().insert(tcb);

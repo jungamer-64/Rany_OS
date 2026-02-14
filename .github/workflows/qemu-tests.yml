@@ -115,5 +115,8 @@ jobs:
           name: qemu-logs-pending
           path: |
             target/qemu-logs
+            target/qemu-logs/pending-summary.txt
+            target/qemu-logs/pending-summary.json
+            scripts/qemu_pending_cases.lst
             scripts/qemu_legacy_test_allowlist.lst
           if-no-files-found: ignore

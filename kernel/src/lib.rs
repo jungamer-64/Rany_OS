@@ -219,6 +219,11 @@ pub fn exit_qemu(code: QemuExitCode) -> ! {
 #[cfg(all(test, not(feature = "full_mm_tests")))]
 pub mod security;
 
+// QEMU suite exports are compiled when `qemu-test-export` is enabled and are
+// consumed by `qemu-suites/*` orchestrators.
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
+
 // Expose additional modules when building tests so unit tests inside those
 // modules can be executed via `cargo test --lib`.
 // Also expose the `graphics` module when compiling benches via the
