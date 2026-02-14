@@ -13,6 +13,7 @@ pub mod registry;
 pub mod sys;
 pub mod shell;
 pub mod async_swapout;
+pub mod reclaim;
 
 pub use cap::CapNamespace;
 pub use driver::DriverNamespace;
@@ -22,6 +23,7 @@ pub use proc::ProcNamespace;
 pub use sys::SysNamespace;
 pub use shell::ShellControlNamespace;
 pub use async_swapout::AsyncSwapoutNamespace;
+pub use reclaim::ReclaimNamespace;
 
 use crate::security::CapabilitySet;
 use crate::shell::exoshell::types::ExoValue;

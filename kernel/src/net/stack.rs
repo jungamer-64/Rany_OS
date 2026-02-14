@@ -353,6 +353,7 @@ impl NetworkStack {
     /// Process an incoming packet (main entry point)
     pub fn receive(&mut self, packet: PacketRef) {
         let current_time = self.current_time();
+        let pkt_len = packet.len();
 
         // Process Ethernet frame (zero-copy via PacketRef view)
         let result = self.ethernet.process(packet.data());
@@ -360,12 +361,14 @@ impl NetworkStack {
         match result {
             ProcessResult::Ipv4(payload) => {
                 let offset = unsafe { payload.as_ptr().offset_from(packet.data().as_ptr()) } as usize;
-                let mut ip_packet = packet.clone_ref(); 
+                let mut ip_packet = packet.clone_ref();
                 ip_packet.advance(offset);
                 self.process_ipv4(payload, current_time, ip_packet);
+                self.stats.record_rx(pkt_len);
             }
             ProcessResult::Arp(payload) => {
                 self.process_arp(payload, current_time);
+                self.stats.record_rx(pkt_len);
             }
             ProcessResult::Ipv6(_payload) => {
                 // IPv6 not yet implemented
@@ -382,9 +385,11 @@ impl NetworkStack {
                 match inner_type {
                     EtherType::Ipv4 => {
                         self.process_ipv4(payload, current_time, inner_packet);
+                        self.stats.record_rx(pkt_len);
                     }
                     EtherType::Arp => {
                         self.process_arp(payload, current_time);
+                        self.stats.record_rx(pkt_len);
                     }
                     EtherType::Ipv6 => {
                         // IPv6 not yet implemented
@@ -406,8 +411,6 @@ impl NetworkStack {
                 self.stats.record_rx_error();
             }
         }
-
-        self.stats.record_rx(packet.len());
     }
 
 
@@ -443,7 +446,7 @@ impl NetworkStack {
                 let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
                 let mut p = packet;
                 p.advance(offset);
-                self.process_tcp(payload, src_ip, dst_ip, p);
+                self.process_tcp(payload, src_ip, dst_ip, p, current_time);
             }
             Ipv4ProcessResult::Reassembled(reassembled_data) => {
                 // Process reassembled packet recursively
@@ -487,7 +490,7 @@ impl NetworkStack {
                 }
                 IpProtocol::Tcp => {
                     // Process TCP directly without PacketRef
-                    self.process_tcp_data(payload, src, dst);
+                    self.process_tcp_data(payload, src, dst, current_time);
                 }
                 _ => {
                     self.stats.record_dropped();
@@ -700,9 +703,9 @@ impl NetworkStack {
     }
 
     /// Process TCP data (for reassembled packets)
-    fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+    fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) {
         // For reassembled packets, use the non-zero-copy TCP processing path
-        let result = self.tcp.process(data, src_ip, dst_ip);
+        let result = self.tcp.process(data, src_ip, dst_ip, current_time);
 
         match result {
             TcpProcessResult::SendPacket {
@@ -829,9 +832,9 @@ impl NetworkStack {
     }
 
     /// Process TCP packet
-    fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
+    fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef, current_time: u64) {
         // Zero-copy path: pass PacketRef to the TCP processor so it can enqueue a zero-copy payload view.
-        let result = self.tcp.process_with_packet(data, src_ip, dst_ip, _packet);
+        let result = self.tcp.process_with_packet(data, src_ip, dst_ip, _packet, current_time);
 
         match result {
             TcpProcessResult::SendPacket {
@@ -1440,6 +1443,7 @@ impl NetworkStack {
     }
 
     /// Process retransmission timeouts and attempt to resend timed-out segments.
+    /// Also processes TCP keepalive timers.
     /// Call periodically with current time (ticks) to allow TCP retransmits.
     pub fn process_timeouts(&mut self, current_time: u64) {
         let results = self.tcp.check_retransmissions(current_time);
@@ -1482,6 +1486,37 @@ impl NetworkStack {
                 } else {
                     log::info!("[NET] retransmit send failed for {} -> {}", local, remote);
                 }
+            }
+        }
+
+        // Process TCP keepalive probes
+        let keepalive_results = self.tcp.process_keepalives(current_time);
+        for res in keepalive_results {
+            if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } = res {
+                let mut buffer = [0u8; MAX_PACKET_SIZE];
+                let header_len = 20usize;
+                let total_len = header_len + payload.len();
+
+                if total_len > buffer.len() {
+                    continue;
+                }
+
+                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
+                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+                buffer[4..8].copy_from_slice(&seq.to_be_bytes());
+                buffer[8..12].copy_from_slice(&ack.to_be_bytes());
+                let offset_flags = ((5u16 << 12) | (flags & 0x1FF)) as u16;
+                buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+                buffer[14..16].copy_from_slice(&window.to_be_bytes());
+                buffer[16..18].fill(0);
+                buffer[18..20].fill(0);
+
+                super::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
+
+                let src_ip_out = Ipv4Address::new(local.ip.octets());
+                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+
+                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
             }
         }
     }
@@ -1883,6 +1918,9 @@ impl NetworkStack {
 
         // Expire old ARP entries
         self.arp.cache().expire_old(current_time);
+
+        // Clean up closed and expired TIME_WAIT TCP connections
+        self.tcp.cleanup_closed();
     }
 }
 

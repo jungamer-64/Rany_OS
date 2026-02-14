@@ -32,7 +32,7 @@
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use crate::sync::IrqMutex;
 
@@ -443,6 +443,19 @@ pub enum PageType {
     Kernel = 3,
 }
 
+/// Reclaim attempt result for a single candidate page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReclaimOutcome {
+    /// Page was freed immediately in reclaim context.
+    FreedNow,
+    /// Reclaim deferred to async worker; completion is tracked separately.
+    DeferredAsync,
+    /// Page was requeued to LRU and not reclaimed.
+    Requeued,
+    /// Reclaim path is blocked by safety policy (unsafe eviction disabled).
+    BlockedUnsafe,
+}
+
 /// LRUフラグ
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(transparent)]
@@ -478,6 +491,15 @@ pub struct MglruEntry {
     pub add_time: u64,
     /// フラグ
     pub flags: LruFlags,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingAsyncMeta {
+    frame: FrameIndex,
+    page_type: PageType,
+    generation: MglruGen,
+    flags: LruFlags,
+    node: u8,
 }
 
 impl MglruEntry {
@@ -552,9 +574,15 @@ impl MglruList {
     
     /// 新しいページを追加（Gen0へ）
     pub fn add_page(&self, entry: MglruEntry) {
-        let mut gen0 = self.generations[0].lock();
-        gen0.push_back(entry);
-        self.gen_sizes[0].fetch_add(1, Ordering::Relaxed);
+        self.add_page_to_generation(entry, 0);
+    }
+
+    /// Add a page to a specific generation list.
+    pub fn add_page_to_generation(&self, entry: MglruEntry, generation_idx: usize) {
+        let idx = generation_idx.min(MGLRU_GENERATIONS - 1);
+        let mut target = self.generations[idx].lock();
+        target.push_back(entry);
+        self.gen_sizes[idx].fetch_add(1, Ordering::Relaxed);
     }
     
     /// Aging cycle: 全世代を1つずつ古くする
@@ -629,13 +657,6 @@ impl MglruList {
             if let Some(entry) = gen3.get(i) {
                 if entry.is_reclaimable() && !entry.referenced.load(Ordering::Relaxed) {
                     if let Some(e) = gen3.remove(i) {
-                        // Workingset: evict されたページの shadow を記録
-                        super::workingset::workingset_evict(
-                            e.frame,
-                            e.generation,
-                            e.page_type as u8,
-                            0, // TODO: NUMAノードを取得
-                        );
                         victims.push(e);
                         continue;
                     }
@@ -645,9 +666,13 @@ impl MglruList {
         }
         
         self.gen_sizes[3].fetch_sub(victims.len(), Ordering::Relaxed);
-        self.reclaimed.fetch_add(victims.len() as u64, Ordering::Relaxed);
         
         victims
+    }
+
+    /// Account successfully reclaimed pages.
+    pub fn account_reclaimed(&self, count: usize) {
+        self.reclaimed.fetch_add(count as u64, Ordering::Relaxed);
     }
 
     /// 統計を取得
@@ -896,6 +921,18 @@ pub struct PageReclaimController {
 
     /// 統計: ダーティなファイルページのライトバックが未実装でスキップした回数
     writeback_skipped: AtomicU64,
+
+    /// Safety gate for potentially unsafe reclaim actions.
+    unsafe_eviction_enabled: AtomicBool,
+
+    /// Pending async reclaim completions (frame -> metadata).
+    pending_async: IrqMutex<BTreeMap<FrameIndex, PendingAsyncMeta>>,
+    pending_async_count: AtomicU64,
+    async_enqueued: AtomicU64,
+    async_success: AtomicU64,
+    async_fail: AtomicU64,
+    requeued: AtomicU64,
+    blocked_unsafe: AtomicU64,
     
     /// スキャン比率（Active:Inactive）
     scan_ratio: AtomicU64,
@@ -924,6 +961,14 @@ impl PageReclaimController {
             background_reclaim_count: AtomicU64::new(0),
             total_reclaimed: AtomicU64::new(0),
             writeback_skipped: AtomicU64::new(0),
+            unsafe_eviction_enabled: AtomicBool::new(false),
+            pending_async: IrqMutex::new(BTreeMap::new()),
+            pending_async_count: AtomicU64::new(0),
+            async_enqueued: AtomicU64::new(0),
+            async_success: AtomicU64::new(0),
+            async_fail: AtomicU64::new(0),
+            requeued: AtomicU64::new(0),
+            blocked_unsafe: AtomicU64::new(0),
             scan_ratio: AtomicU64::new(1), // 1:1
         }
     }
@@ -936,6 +981,94 @@ impl PageReclaimController {
     /// 書き戻しスキップ回数をインクリメント
     pub fn account_writeback_skipped(&self) {
         self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Enable/disable potentially unsafe eviction paths.
+    pub fn set_unsafe_eviction_enabled(&self, enabled: bool) {
+        self.unsafe_eviction_enabled.store(enabled, Ordering::Release);
+    }
+
+    /// Return whether unsafe eviction paths are enabled.
+    pub fn unsafe_eviction_enabled(&self) -> bool {
+        self.unsafe_eviction_enabled.load(Ordering::Acquire)
+    }
+
+    fn finalize_reclaim_success(&self, entry: &MglruEntry, node_idx: usize) {
+        let node = node_idx.min(7) as u8;
+        self.lru_lists[node as usize].account_reclaimed(1);
+        super::workingset::workingset_evict(
+            entry.frame,
+            entry.generation,
+            entry.page_type as u8,
+            node,
+        );
+    }
+
+    fn enqueue_pending_async(&self, entry: &MglruEntry, node_idx: usize) {
+        let mut map = self.pending_async.lock();
+        let old = map.insert(
+            entry.frame,
+            PendingAsyncMeta {
+                frame: entry.frame,
+                page_type: entry.page_type,
+                generation: entry.generation,
+                flags: entry.flags,
+                node: node_idx.min(7) as u8,
+            },
+        );
+        if old.is_none() {
+            self.pending_async_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn take_pending_async(&self, frame: FrameIndex) -> Option<PendingAsyncMeta> {
+        let mut map = self.pending_async.lock();
+        let removed = map.remove(&frame);
+        if removed.is_some() {
+            self.pending_async_count.fetch_sub(1, Ordering::Relaxed);
+        }
+        removed
+    }
+
+    fn requeue_candidate(&self, mut entry: MglruEntry, node_idx: usize) {
+        entry.generation = MglruGen::Gen1;
+        entry.referenced.store(true, Ordering::Relaxed);
+        let idx = node_idx.min(7);
+        self.lru_lists[idx].add_page_to_generation(entry, 1);
+        self.requeued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn pending_meta_to_entry(meta: PendingAsyncMeta) -> MglruEntry {
+        let mut entry = MglruEntry::new(meta.frame, meta.page_type, crate::time::current_time_ns());
+        entry.generation = MglruGen::Gen1;
+        entry.flags = meta.flags;
+        entry.referenced.store(true, Ordering::Relaxed);
+        entry
+    }
+
+    /// Async swapout completion notification.
+    pub fn on_async_swapout_complete(&self, frame: FrameIndex, success: bool) {
+        let Some(meta) = self.take_pending_async(frame) else {
+            return;
+        };
+
+        let node_idx = (meta.node as usize).min(7);
+        if success {
+            self.async_success.fetch_add(1, Ordering::Relaxed);
+            let entry = MglruEntry {
+                frame: meta.frame,
+                page_type: meta.page_type,
+                generation: meta.generation,
+                referenced: AtomicBool::new(false),
+                add_time: 0,
+                flags: meta.flags,
+            };
+            self.finalize_reclaim_success(&entry, node_idx);
+        } else {
+            self.async_fail.fetch_add(1, Ordering::Relaxed);
+            let entry = Self::pending_meta_to_entry(meta);
+            self.requeue_candidate(entry, node_idx);
+        }
     }
     
     /// 空きページ数を更新し、必要なアクションを返す
@@ -1029,7 +1162,7 @@ impl PageReclaimController {
         // Check if we need to run aging cycle
         let run_aging = self.should_age_mglru(current_time);
 
-        for lru in &self.lru_lists {
+        for (node_idx, lru) in self.lru_lists.iter().enumerate() {
             if total_reclaimed >= target_pages {
                 break;
             }
@@ -1045,10 +1178,18 @@ impl PageReclaimController {
             let to_reclaim = (target_pages - total_reclaimed).min(64);
             let victims = lru.reclaim_from_oldest(to_reclaim);
             
-            for entry in &victims {
+            for entry in victims {
                 // 実際にフレームを解放
-                self.reclaim_page(entry);
-                total_reclaimed += 1;
+                match self.reclaim_page(&entry, node_idx) {
+                    ReclaimOutcome::FreedNow => {
+                        self.finalize_reclaim_success(&entry, node_idx);
+                        total_reclaimed += 1;
+                    }
+                    ReclaimOutcome::DeferredAsync => {}
+                    ReclaimOutcome::Requeued | ReclaimOutcome::BlockedUnsafe => {
+                        self.requeue_candidate(entry, node_idx);
+                    }
+                }
             }
         }
         
@@ -1080,7 +1221,7 @@ impl PageReclaimController {
         // ここでは単純化のためAgingはSkipし、既存のGen3から回収を試みる
         // 必要ならAgingを呼び出すロジックを追加可能
 
-        for lru in &self.lru_lists {
+        for (node_idx, lru) in self.lru_lists.iter().enumerate() {
             if total_reclaimed >= needed_pages {
                 break;
             }
@@ -1089,9 +1230,17 @@ impl PageReclaimController {
             let to_reclaim = (needed_pages - total_reclaimed).min(64).max(16);
             let victims = lru.reclaim_from_oldest(to_reclaim);
             
-            for entry in &victims {
-                self.reclaim_page(entry);
-                total_reclaimed += 1;
+            for entry in victims {
+                match self.reclaim_page(&entry, node_idx) {
+                    ReclaimOutcome::FreedNow => {
+                        self.finalize_reclaim_success(&entry, node_idx);
+                        total_reclaimed += 1;
+                    }
+                    ReclaimOutcome::DeferredAsync => {}
+                    ReclaimOutcome::Requeued | ReclaimOutcome::BlockedUnsafe => {
+                        self.requeue_candidate(entry, node_idx);
+                    }
+                }
             }
         }
         
@@ -1116,42 +1265,55 @@ impl PageReclaimController {
     }
     
     /// ページを実際に回収
-    fn reclaim_page(&self, entry: &MglruEntry) {
+    fn reclaim_page(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
+        if !self.unsafe_eviction_enabled() {
+            if matches!(entry.page_type, PageType::Anonymous | PageType::FileBacked) {
+                self.blocked_unsafe.fetch_add(1, Ordering::Relaxed);
+                return ReclaimOutcome::BlockedUnsafe;
+            }
+        }
+
         let order = crate::mm::page_flags::get_order(entry.frame);
         let count = 1u64 << order;
 
         match entry.page_type {
             PageType::Anonymous => {
-                // スワップアウト（未実装の場合はスキップ）
-                // swap 未実装のため、ダーティな匿名ページはスキップしておく
                 if entry.flags.contains(LruFlags::DIRTY) {
-                    // TODO: swapout writeback - currently cannot reclaim dirty anonymous pages
-                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                    match crate::mm::async_swapout::try_enqueue_swapout(
+                        entry.frame,
+                        crate::mm::async_swapout::SwapKind::Anon,
+                    ) {
+                        Ok(_handle) => {
+                            self.enqueue_pending_async(entry, node_idx);
+                            self.async_enqueued.fetch_add(1, Ordering::Relaxed);
+                            ReclaimOutcome::DeferredAsync
+                        }
+                        Err(_) => {
+                            self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                            ReclaimOutcome::Requeued
+                        }
+                    }
                 } else {
-                    // クリーンな匿名ページは即座に回収可能
                     if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
                         let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
                     }
                     self.free_frame(entry.frame);
+                    ReclaimOutcome::FreedNow
                 }
             }
             PageType::FileBacked => {
-                // ダーティならライトバック、そうでなければ破棄
                 if entry.flags.contains(LruFlags::DIRTY) {
-                    // Prefer targeted per-frame writeback if we know the backing inode/page
                     if let Some(backing) = super::frame_backing::get_frame_backing(entry.frame) {
-                        // Try asynchronous enqueue first - if it succeeds the worker will
-                        // perform the writeback and free the frame.
                         match crate::mm::async_swapout::try_enqueue_swapout(
                             entry.frame,
                             crate::mm::async_swapout::SwapKind::File { ino: backing.ino, page_num: backing.page_num },
                         ) {
                             Ok(_handle) => {
-                                // Successfully enqueued - do not free here
-                                return;
+                                self.enqueue_pending_async(entry, node_idx);
+                                self.async_enqueued.fetch_add(1, Ordering::Relaxed);
+                                ReclaimOutcome::DeferredAsync
                             }
                             Err(_) => {
-                                // Enqueue failed - fallback to synchronous writeback (existing path)
                                 let written = crate::fs::page_cache().sync_page(backing.ino, backing.page_num, |offset, data| {
                                     match crate::fs::write_inode_by_number(backing.ino, offset, data) {
                                         Ok(_) => Ok(()),
@@ -1161,77 +1323,62 @@ impl PageReclaimController {
 
                                 match written {
                                     Ok(true) => {
-                                        // Success - untrack memcg and free
                                         if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
                                             let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
                                         }
-                                        // Remove backing mapping
                                         let _ = super::frame_backing::untrack_frame_backing(entry.frame);
                                         self.free_frame(entry.frame);
+                                        ReclaimOutcome::FreedNow
                                     }
-                                    Ok(false) => {
-                                        // Not written (page not found / not dirty) - fallback to global sync
+                                    Ok(false) | Err(_) => {
                                         if self.attempt_writeback_all() {
                                             if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
                                                 let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
                                             }
                                             let _ = super::frame_backing::untrack_frame_backing(entry.frame);
                                             self.free_frame(entry.frame);
+                                            ReclaimOutcome::FreedNow
                                         } else {
                                             self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
-                                        }
-                                    }
-                                    Err(_) => {
-                                        // Writer failed - fallback to global sync
-                                        if self.attempt_writeback_all() {
-                                            if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                                let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
-                                            }
-                                            let _ = super::frame_backing::untrack_frame_backing(entry.frame);
-                                            self.free_frame(entry.frame);
-                                        } else {
-                                            self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                            ReclaimOutcome::Requeued
                                         }
                                     }
                                 }
                             }
                         }
                     } else {
-                        // No precise mapping; attempt async anon swapout first
-                        match crate::mm::async_swapout::try_enqueue_swapout(entry.frame, crate::mm::async_swapout::SwapKind::Anon) {
+                        match crate::mm::async_swapout::try_enqueue_swapout(
+                            entry.frame,
+                            crate::mm::async_swapout::SwapKind::Anon,
+                        ) {
                             Ok(_handle) => {
-                                // enqueued - worker will handle freeing
-                                return;
+                                self.enqueue_pending_async(entry, node_idx);
+                                self.async_enqueued.fetch_add(1, Ordering::Relaxed);
+                                ReclaimOutcome::DeferredAsync
                             }
                             Err(_) => {
-                                // fall back to coarse global sync
                                 if self.attempt_writeback_all() {
                                     if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
                                         let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
                                     }
                                     self.free_frame(entry.frame);
+                                    ReclaimOutcome::FreedNow
                                 } else {
                                     self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                    ReclaimOutcome::Requeued
                                 }
                             }
                         }
                     }
                 } else {
-                    // クリーンなら即座に回収可能
-                    // Memcg: ページがmemcgでトラックされている場合はアンチャージ
                     if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
                         let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
                     }
                     self.free_frame(entry.frame);
+                    ReclaimOutcome::FreedNow
                 }
             }
-            PageType::Slab => {
-                // Slabキャッシュの縮小
-                // TODO: slab shrink callback
-            }
-            PageType::Kernel => {
-                // 回収不可
-            }
+            PageType::Slab | PageType::Kernel => ReclaimOutcome::Requeued,
         }
     }
     
@@ -1266,6 +1413,13 @@ impl PageReclaimController {
             total_reclaimed: self.total_reclaimed.load(Ordering::Relaxed),
             pressure: self.current_pressure(),
             writeback_skipped: self.writeback_skipped.load(Ordering::Relaxed),
+            unsafe_eviction_enabled: self.unsafe_eviction_enabled(),
+            pending_async: self.pending_async_count.load(Ordering::Relaxed),
+            async_enqueued: self.async_enqueued.load(Ordering::Relaxed),
+            async_success: self.async_success.load(Ordering::Relaxed),
+            async_fail: self.async_fail.load(Ordering::Relaxed),
+            requeued: self.requeued.load(Ordering::Relaxed),
+            blocked_unsafe: self.blocked_unsafe.load(Ordering::Relaxed),
             lru_stats,
         }
     }
@@ -1279,6 +1433,13 @@ pub struct ReclaimStats {
     pub total_reclaimed: u64,
     pub pressure: MemoryPressure,
     pub writeback_skipped: u64,
+    pub unsafe_eviction_enabled: bool,
+    pub pending_async: u64,
+    pub async_enqueued: u64,
+    pub async_success: u64,
+    pub async_fail: u64,
+    pub requeued: u64,
+    pub blocked_unsafe: u64,
     pub lru_stats: [MglruStats; 8],
 }
 
@@ -1393,9 +1554,11 @@ pub fn lru_mark_accessed(frame: x86_64::structures::paging::PhysFrame) {
 /// 簡易実装: 単一ノード環境では常に0を返す
 /// 将来的にはACPI SRATテーブルを参照して正確なマッピングを行う
 #[inline]
-fn numa_node_for_phys_addr(_phys_addr: u64) -> usize {
-    // 単一NUMA環境を想定（マルチノードの場合はSRATから取得）
-    0
+fn numa_node_for_phys_addr(phys_addr: u64) -> usize {
+    let addr = x86_64::PhysAddr::new(phys_addr);
+    super::frame_allocator::numa_node_for_addr(addr)
+        .map(|node| node.as_usize())
+        .unwrap_or(0)
 }
 
 /// 空きメモリチェック（割り当て前に呼ぶ）
@@ -1406,6 +1569,33 @@ pub fn check_memory_pressure(free_pages: usize) -> MemoryPressure {
 /// 必要に応じて直接回収を実行
 pub fn try_to_free_pages(needed: usize) -> usize {
     PAGE_RECLAIM.direct_reclaim(needed)
+}
+
+/// Enable or disable unsafe reclaim eviction paths.
+pub fn set_unsafe_eviction_enabled(enabled: bool) {
+    PAGE_RECLAIM.set_unsafe_eviction_enabled(enabled);
+}
+
+/// Return whether unsafe reclaim eviction paths are enabled.
+pub fn unsafe_eviction_enabled() -> bool {
+    PAGE_RECLAIM.unsafe_eviction_enabled()
+}
+
+/// Notify page reclaim that async swapout/writeback completed successfully.
+pub fn notify_async_swapout_success(frame: FrameIndex) {
+    PAGE_RECLAIM.on_async_swapout_complete(frame, true);
+}
+
+/// Notify page reclaim that async swapout/writeback failed.
+pub fn notify_async_swapout_failure(frame: FrameIndex) {
+    PAGE_RECLAIM.on_async_swapout_complete(frame, false);
+}
+
+#[cfg(test)]
+pub fn test_register_pending_async(frame: FrameIndex, page_type: PageType, node_idx: usize) {
+    let mut entry = MglruEntry::new(frame, page_type, 0);
+    entry.generation = MglruGen::Gen3;
+    PAGE_RECLAIM.enqueue_pending_async(&entry, node_idx);
 }
 
 // ============================================================================
@@ -2343,5 +2533,53 @@ mod tests_late {
         lru.add_page(entry);
         let stats = lru.stats();
         assert_eq!(stats.gen_sizes[0], 1); // Gen0に追加される
+    }
+
+    #[test_case]
+    fn test_blocked_unsafe_requeues_victim() {
+        let controller = PageReclaimController::new();
+        let mut entry = MglruEntry::new(FrameIndex::new(123), PageType::Anonymous, 0);
+        entry.generation = MglruGen::Gen3;
+        entry.referenced.store(false, Ordering::Relaxed);
+        controller.lru_lists[0].add_page_to_generation(entry, 3);
+
+        let reclaimed = controller.direct_reclaim(1);
+        assert_eq!(reclaimed, 0);
+
+        let stats = controller.stats();
+        assert_eq!(stats.total_reclaimed, 0);
+        assert_eq!(stats.blocked_unsafe, 1);
+        assert_eq!(stats.requeued, 1);
+        assert_eq!(stats.lru_stats[0].gen_sizes[1], 1);
+    }
+
+    #[test_case]
+    fn test_async_success_clears_pending_and_accounts_success() {
+        let controller = PageReclaimController::new();
+        let entry = MglruEntry::new(FrameIndex::new(200), PageType::FileBacked, 0);
+        controller.enqueue_pending_async(&entry, 2);
+
+        assert_eq!(controller.stats().pending_async, 1);
+        controller.on_async_swapout_complete(entry.frame, true);
+
+        let stats = controller.stats();
+        assert_eq!(stats.pending_async, 0);
+        assert_eq!(stats.async_success, 1);
+        assert_eq!(stats.total_reclaimed, 0);
+        assert_eq!(stats.lru_stats[2].reclaimed, 1);
+    }
+
+    #[test_case]
+    fn test_async_failure_requeues_and_clears_pending() {
+        let controller = PageReclaimController::new();
+        let entry = MglruEntry::new(FrameIndex::new(201), PageType::FileBacked, 0);
+        controller.enqueue_pending_async(&entry, 3);
+
+        controller.on_async_swapout_complete(entry.frame, false);
+        let stats = controller.stats();
+        assert_eq!(stats.pending_async, 0);
+        assert_eq!(stats.async_fail, 1);
+        assert_eq!(stats.requeued, 1);
+        assert_eq!(stats.lru_stats[3].gen_sizes[1], 1);
     }
 }

@@ -202,6 +202,8 @@ pub struct TcpControlBlock {
     pub keepalive_probes_sent: u8,
     /// Last activity timestamp (microseconds) - last data received
     pub last_activity_time: u64,
+    /// Timestamp when TIME_WAIT state was entered (microseconds)
+    pub time_wait_entered: u64,
 
     // TCP Window Scaling (RFC 7323)
     /// Our window scale factor (0-14)
@@ -294,6 +296,7 @@ impl TcpControlBlock {
             keepalive_count: 9,
             keepalive_probes_sent: 0,
             last_activity_time: 0,
+            time_wait_entered: 0,
             // Window Scaling (RFC 7323) - default scale factor 7 = 128KB max window
             snd_wscale: 7,
             rcv_wscale: 0, // Set when peer SYN received
@@ -2204,7 +2207,7 @@ impl TcpProcessor {
 
 
     /// Process an incoming TCP segment
-    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) -> TcpProcessResult {
+    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) -> TcpProcessResult {
         if data.len() < TcpHeader::MIN_HEADER_LEN {
             return TcpProcessResult::None;
         }
@@ -2256,7 +2259,7 @@ impl TcpProcessor {
         // Try to find existing connection
         if let Some(tcb_lock) = self.connections.get(&(local_addr, remote_addr)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
-                return self.process_segment(&tcb_lock, &mut *tcb, seq_num, ack_num, flags, window, header_len, payload, None);
+                return self.process_segment(&tcb_lock, &mut *tcb, seq_num, ack_num, flags, window, header_len, payload, None, current_time);
             }
         }
 
@@ -2308,6 +2311,7 @@ impl TcpProcessor {
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         packet: PacketRef,
+        current_time: u64,
     ) -> TcpProcessResult {
         // Short-circuit to the connection-specific fast-path that can enqueue
         // a zero-copy PacketRef view for payload when possible. For non-connection
@@ -2369,12 +2373,13 @@ impl TcpProcessor {
                     header_len,
                     payload,
                     Some(packet),
+                    current_time,
                 );
             }
         }
 
         // Not an existing connection - fall back to normal processing (listener/SYN handling)
-        self.process(data, src_ip, dst_ip)
+        self.process(data, src_ip, dst_ip, current_time)
     }
 
     /// Process a TCP segment for an existing connection
@@ -2389,6 +2394,7 @@ impl TcpProcessor {
         header_len: usize,
         payload: &[u8],
         packet_opt: Option<PacketRef>,
+        current_time: u64,
     ) -> TcpProcessResult {
         let syn = flags & TcpHeader::FLAG_SYN != 0;
         let ack = flags & TcpHeader::FLAG_ACK != 0;
@@ -2616,6 +2622,7 @@ impl TcpProcessor {
                         // Simultaneous close
                         tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                         tcb.state = TcpState::TimeWait;
+                        tcb.time_wait_entered = current_time;
                         // Send ACK
                          result = TcpProcessResult::SendPacket {
                             local: tcb.local_addr,
@@ -2651,6 +2658,7 @@ impl TcpProcessor {
                 if fin {
                     tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
                     tcb.state = TcpState::TimeWait;
+                    tcb.time_wait_entered = current_time;
                     // Send ACK
                      result = TcpProcessResult::SendPacket {
                         local: tcb.local_addr,
@@ -2674,6 +2682,7 @@ impl TcpProcessor {
                 if ack && ack_num == tcb.snd_nxt {
                     tcb.snd_una = ack_num;
                     tcb.state = TcpState::TimeWait;
+                    tcb.time_wait_entered = current_time;
                 }
             }
 
@@ -2686,8 +2695,12 @@ impl TcpProcessor {
             }
 
             TcpState::TimeWait => {
-                // Wait for 2*MSL then move to Closed
-                // (handled by timer, simplified: just stay in TimeWait)
+                // RFC 793: Wait for 2*MSL (Maximum Segment Lifetime) then move to Closed
+                // MSL = 120 seconds, 2*MSL = 240 seconds = 240_000_000 microseconds
+                const TWO_MSL_US: u64 = 240_000_000;
+                if current_time.saturating_sub(tcb.time_wait_entered) >= TWO_MSL_US {
+                    tcb.state = TcpState::Closed;
+                }
             }
         }
         
@@ -2705,12 +2718,20 @@ impl TcpProcessor {
             if let Ok(mut tcb) = tcb_lock.lock() {
                 match tcb.state {
                     TcpState::Established => {
+                        let seq = tcb.snd_nxt;
+                        let ack = tcb.rcv_nxt;
                         tcb.state = TcpState::FinWait1;
-                        // Note: Caller should send FIN
+                        // Send FIN+ACK
+                        send_fin_packet(local_addr, remote_addr, seq, ack);
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FIN consumes 1 seq
                     }
                     TcpState::CloseWait => {
+                        let seq = tcb.snd_nxt;
+                        let ack = tcb.rcv_nxt;
                         tcb.state = TcpState::LastAck;
-                        // Note: Caller should send FIN
+                        // Send FIN+ACK
+                        send_fin_packet(local_addr, remote_addr, seq, ack);
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FIN consumes 1 seq
                     }
                     _ => {}
                 }
@@ -2718,11 +2739,28 @@ impl TcpProcessor {
         }
     }
 
-    /// Remove closed connections
+    /// Remove closed and expired TIME_WAIT connections
     pub fn cleanup_closed(&mut self) {
+        const TWO_MSL_US: u64 = 240_000_000;
         self.connections.retain(|_, tcb_lock| {
             if let Ok(tcb) = tcb_lock.lock() {
-                tcb.state != TcpState::Closed
+                match tcb.state {
+                    TcpState::Closed => false,
+                    TcpState::TimeWait => {
+                        // Keep if 2MSL has not yet passed
+                        // Use last_activity_time as fallback if time_wait_entered is 0
+                        let entered = if tcb.time_wait_entered > 0 {
+                            tcb.time_wait_entered
+                        } else {
+                            tcb.last_activity_time
+                        };
+                        let elapsed = tcb.last_activity_time
+                            .max(entered)
+                            .saturating_sub(entered);
+                        elapsed < TWO_MSL_US
+                    }
+                    _ => true,
+                }
             } else {
                 // If lock is poisoned, remove the connection
                 false
@@ -2769,6 +2807,52 @@ impl TcpProcessor {
                             });
                         }
                     }
+                }
+            }
+        }
+
+        results
+    }
+
+    /// Process TCP keepalive timers and generate keepalive probes
+    /// Returns packets to send for keepalive probes
+    pub fn process_keepalives(&mut self, current_time: u64) -> Vec<TcpProcessResult> {
+        let mut results = Vec::new();
+        let mut dead_connections = Vec::new();
+
+        for (key, tcb_lock) in self.connections.iter() {
+            if let Ok(mut tcb) = tcb_lock.lock() {
+                match tcb.check_keepalive(current_time) {
+                    Some(true) => {
+                        // Send keepalive probe: ACK with seq = snd_una - 1
+                        if let Some(remote) = tcb.remote_addr {
+                            results.push(TcpProcessResult::SendPacket {
+                                local: tcb.local_addr,
+                                remote,
+                                seq: tcb.snd_una.wrapping_sub(1),
+                                ack: tcb.rcv_nxt,
+                                flags: TcpHeader::FLAG_ACK,
+                                window: tcb.rcv_wnd,
+                                payload: Vec::new(),
+                            });
+                        }
+                    }
+                    Some(false) => {
+                        // Connection dead - too many probes without response
+                        dead_connections.push(*key);
+                    }
+                    None => {
+                        // No action needed
+                    }
+                }
+            }
+        }
+
+        // Mark dead connections as closed
+        for key in dead_connections {
+            if let Some(tcb_lock) = self.connections.get(&key) {
+                if let Ok(mut tcb) = tcb_lock.lock() {
+                    tcb.state = TcpState::Closed;
                 }
             }
         }

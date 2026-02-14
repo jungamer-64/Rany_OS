@@ -409,6 +409,15 @@ impl DhcpClient {
         buffer[offset + 3..offset + 9].copy_from_slice(self.mac_address.as_bytes());
         offset += 9;
 
+        // ホスト名 (Option 12)
+        {
+            let hostname = b"ranyos";
+            buffer[offset] = DhcpOption::Hostname as u8;
+            buffer[offset + 1] = hostname.len() as u8;
+            buffer[offset + 2..offset + 2 + hostname.len()].copy_from_slice(hostname);
+            offset += 2 + hostname.len();
+        }
+
         // 終端
         buffer[offset] = DhcpOption::End as u8;
         offset += 1;

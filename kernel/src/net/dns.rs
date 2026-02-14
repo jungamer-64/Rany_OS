@@ -301,6 +301,11 @@ pub struct DnsClient {
     stats: DnsStats,
 }
 
+/// DNS retry configuration
+pub const DNS_MAX_RETRIES: u8 = 3;
+/// DNS retry timeout (2 seconds in milliseconds)
+pub const DNS_RETRY_TIMEOUT_MS: u64 = 2000;
+
 /// DNS統計情報
 pub struct DnsStats {
     /// クエリ送信数
@@ -429,6 +434,59 @@ impl DnsClient {
         offset += 2;
 
         // QCLASS (IN = 1)
+        buffer[offset..offset + 2].copy_from_slice(&(DnsQueryClass::IN as u16).to_be_bytes());
+        offset += 2;
+
+        self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
+
+        Ok(offset)
+    }
+
+    /// Check if a DNS query should be retried based on attempt count and elapsed time
+    pub fn should_retry(&self, attempt: u8, elapsed_ms: u64) -> bool {
+        attempt < DNS_MAX_RETRIES && elapsed_ms >= DNS_RETRY_TIMEOUT_MS
+    }
+
+    /// Build a retry query using the same transaction ID
+    pub fn build_retry_query(
+        &self,
+        buffer: &mut [u8],
+        name: &str,
+        qtype: DnsQueryType,
+        transaction_id: u16,
+    ) -> Result<usize, &'static str> {
+        if buffer.len() < DnsHeader::SIZE + name.len() + 6 {
+            return Err("Buffer too small");
+        }
+
+        // Use provided transaction ID (same as original query for correlation)
+        buffer[0..2].copy_from_slice(&transaction_id.to_be_bytes());
+        buffer[2..4].copy_from_slice(&0x0100u16.to_be_bytes());
+        buffer[4..6].copy_from_slice(&1u16.to_be_bytes());
+        buffer[6..8].copy_from_slice(&0u16.to_be_bytes());
+        buffer[8..10].copy_from_slice(&0u16.to_be_bytes());
+        buffer[10..12].copy_from_slice(&0u16.to_be_bytes());
+
+        let mut offset = DnsHeader::SIZE;
+
+        for label in name.split('.') {
+            if label.is_empty() {
+                continue;
+            }
+            let len = label.len();
+            if len > 63 {
+                return Err("Label too long");
+            }
+            buffer[offset] = len as u8;
+            offset += 1;
+            buffer[offset..offset + len].copy_from_slice(label.as_bytes());
+            offset += len;
+        }
+
+        buffer[offset] = 0;
+        offset += 1;
+        buffer[offset..offset + 2].copy_from_slice(&(qtype as u16).to_be_bytes());
+        offset += 2;
         buffer[offset..offset + 2].copy_from_slice(&(DnsQueryClass::IN as u16).to_be_bytes());
         offset += 2;
 
