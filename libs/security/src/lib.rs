@@ -340,9 +340,9 @@ impl CapabilityManager {
                 return Err(CapabilityError::NotPermitted);
             }
 
-            #[cfg(test)]
+            #[cfg(any(test, feature = "qemu-test-export"))]
             let now: u64 = 0;
-            #[cfg(not(test))]
+            #[cfg(not(any(test, feature = "qemu-test-export")))]
             let now = 0u64; // host tests don't have timer
 
             if force {
@@ -377,9 +377,9 @@ impl CapabilityManager {
     }
 
     fn expire_grants(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "qemu-test-export"))]
         let now: u64 = 0;
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "qemu-test-export")))]
         let now = 0u64; // For host tests we don't have a timer - keep simple
 
         let mut expired: Vec<GrantToken> = Vec::new();
