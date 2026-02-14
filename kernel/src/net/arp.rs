@@ -226,6 +226,10 @@ pub struct ArpEntry {
     pub timestamp: u64,
     /// Entry state
     pub state: ArpEntryState,
+    /// Number of ARP requests sent for this entry
+    pub request_count: u8,
+    /// Timestamp of last ARP request sent
+    pub last_request_time: u64,
 }
 
 /// ARP entry state
@@ -247,6 +251,8 @@ impl ArpEntry {
             mac,
             timestamp,
             state: ArpEntryState::Resolved,
+            request_count: 0,
+            last_request_time: 0,
         }
     }
 
@@ -257,6 +263,8 @@ impl ArpEntry {
             mac: MacAddress::ZERO,
             timestamp,
             state: ArpEntryState::Incomplete,
+            request_count: 1,
+            last_request_time: timestamp,
         }
     }
 
@@ -274,6 +282,12 @@ const ARP_CACHE_TIMEOUT: u64 = 20 * 60 * 1000;
 
 /// ARP incomplete entry timeout (3 seconds)
 const ARP_INCOMPLETE_TIMEOUT: u64 = 3 * 1000;
+
+/// Minimum interval between ARP requests for the same IP (1 second)
+const ARP_REQUEST_INTERVAL: u64 = 1000;
+
+/// Maximum number of ARP requests before giving up
+const ARP_MAX_REQUESTS: u8 = 5;
 
 /// ARP cache for IPv4-to-MAC resolution
 pub struct ArpCache {
@@ -507,6 +521,36 @@ impl ArpCache {
             self.stats.entries_added.load(Ordering::Relaxed),
             self.stats.entries_expired.load(Ordering::Relaxed),
         )
+    }
+
+    /// Check whether an ARP request should be sent for the given IP.
+    /// Implements rate limiting to prevent ARP storms.
+    pub fn should_send_request(&self, ip: Ipv4Address, current_time: u64) -> bool {
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+
+        for entry in entries.iter_mut() {
+            if let Some(e) = entry {
+                if e.ip == ip && e.state == ArpEntryState::Incomplete {
+                    // Rate limit: check interval and max attempts
+                    if e.request_count >= ARP_MAX_REQUESTS {
+                        return false;
+                    }
+                    if current_time.saturating_sub(e.last_request_time) < ARP_REQUEST_INTERVAL {
+                        return false;
+                    }
+                    // Update rate limit state
+                    e.request_count = e.request_count.saturating_add(1);
+                    e.last_request_time = current_time;
+                    return true;
+                }
+            }
+        }
+
+        // No existing entry - allow the request (caller should create Incomplete entry)
+        true
     }
 
     /// Get all entries (for debugging)

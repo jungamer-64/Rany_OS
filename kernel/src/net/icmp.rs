@@ -496,6 +496,13 @@ pub enum IcmpResult {
         /// Original destination IP from the offending packet
         destination: Ipv4Address,
     },
+    /// Need to send timestamp reply (RFC 792)
+    SendTimestampReply {
+        src_ip: Ipv4Address,
+        identifier: u16,
+        sequence: u16,
+        originate_ts: u32,
+    },
     /// Ignored/dropped
     Ignored,
     /// Invalid packet
@@ -607,6 +614,31 @@ impl IcmpProcessor {
                     destination,
                 }
             }
+            IcmpType::TimestampRequest => {
+                // RFC 792: Timestamp Request has 12 bytes of payload
+                // Bytes 0-1: Identifier, 2-3: Sequence Number
+                // Bytes 4-7: Originate Timestamp (ms since midnight UTC)
+                let payload = packet.payload();
+                if payload.len() >= 12 {
+                    let identifier = u16::from_be_bytes([payload[0], payload[1]]);
+                    let sequence = u16::from_be_bytes([payload[2], payload[3]]);
+                    let originate_ts = u32::from_be_bytes([
+                        payload[4], payload[5], payload[6], payload[7],
+                    ]);
+                    IcmpResult::SendTimestampReply {
+                        src_ip,
+                        identifier,
+                        sequence,
+                        originate_ts,
+                    }
+                } else {
+                    IcmpResult::Invalid
+                }
+            }
+            IcmpType::TimestampReply => {
+                // Just acknowledge receipt
+                IcmpResult::Ignored
+            }
             _ => IcmpResult::Ignored,
         }
     }
@@ -686,6 +718,47 @@ impl IcmpProcessor {
 
         builder.set_payload_len(4 + copy_len);
         Some(builder.finalize())
+    }
+
+    /// Build a timestamp reply packet (RFC 792)
+    ///
+    /// Timestamp reply format (20 bytes total):
+    /// Type(1) Code(1) Checksum(2) Identifier(2) Sequence(2)
+    /// Originate Timestamp(4) Receive Timestamp(4) Transmit Timestamp(4)
+    pub fn build_timestamp_reply(
+        buffer: &mut [u8],
+        identifier: u16,
+        sequence: u16,
+        originate_ts: u32,
+        receive_ts: u32,
+        transmit_ts: u32,
+    ) -> Option<usize> {
+        // Timestamp reply: 8 bytes header + 12 bytes timestamps
+        let total_len = 20;
+        if buffer.len() < total_len {
+            return None;
+        }
+
+        // Type = 14 (Timestamp Reply), Code = 0
+        buffer[0] = u8::from(IcmpType::TimestampReply);
+        buffer[1] = 0;
+        // Checksum placeholder
+        buffer[2..4].copy_from_slice(&[0, 0]);
+        // Identifier and Sequence
+        buffer[4..6].copy_from_slice(&identifier.to_be_bytes());
+        buffer[6..8].copy_from_slice(&sequence.to_be_bytes());
+        // Originate Timestamp (copied from request)
+        buffer[8..12].copy_from_slice(&originate_ts.to_be_bytes());
+        // Receive Timestamp
+        buffer[12..16].copy_from_slice(&receive_ts.to_be_bytes());
+        // Transmit Timestamp
+        buffer[16..20].copy_from_slice(&transmit_ts.to_be_bytes());
+
+        // Calculate checksum
+        let checksum = data_checksum(&buffer[..total_len], 0);
+        buffer[2..4].copy_from_slice(&checksum.to_be_bytes());
+
+        Some(total_len)
     }
 }
 

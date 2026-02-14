@@ -664,13 +664,18 @@ mod test_impl {
                                     // Release memcg accounting and deallocate
                                     release_frame_and_untrack(entry.frame);
                                     TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+                                    crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
+                                } else {
+                                    crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
                                 }
                             }
                             SwapKind::Anon => {
                                 if try_zswap_store_and_dealloc_any(entry.frame, &mut reuse_buf) {
                                     TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+                                    crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
                                 } else {
                                     TEST_ZSWAP_FAILS.fetch_add(1, Ordering::AcqRel);
+                                    crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
                                 }
                             }
                         }
@@ -1064,6 +1069,7 @@ mod kernel_impl {
                             Ok(true) => {
                                 // Release memcg accounting and deallocate
                                 release_frame_and_untrack(entry.frame);
+                                crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
                             }
                             _ => {
                                 // Fall back to global sync; if any were written by global flush, free
@@ -1074,8 +1080,10 @@ mod kernel_impl {
                                     }
                                 }).unwrap_or(0) > 0 {
                                     release_frame_and_untrack(entry.frame);
+                                    crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
                                 } else {
                                     crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
+                                    crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
                                 }
                             }
                         }
@@ -1088,8 +1096,10 @@ mod kernel_impl {
                     SwapKind::Anon => {
                         if try_zswap_store_and_dealloc_any(entry.frame, &mut reuse_buf) {
                             // success: frame deallocated via helper
+                            crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
                         } else {
                             log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
+                            crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
                         }
 
                         page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
@@ -2079,6 +2089,153 @@ mod tests {
     }
 
     #[test_case]
+    fn test_notify_failure_on_file_writeback_error() {
+        crate::fs::init_page_cache(64 * 1024);
+
+        test_impl::stop_worker();
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let before = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        crate::mm::page_reclaim::test_register_pending_async(
+            frame_idx,
+            crate::mm::page_reclaim::PageType::FileBacked,
+            0,
+        );
+
+        let ino = u64::MAX - 1;
+        let page_num = 0u64;
+        let cache = crate::fs::page_cache();
+        cache.insert(ino, page_num, alloc::vec![0x11u8; PAGE_SIZE_4K], PAGE_SIZE_4K as u64);
+        assert!(cache.mark_dirty(ino, page_num));
+
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num })
+            .expect("enqueue file");
+        test_impl::start_worker();
+        h.wait();
+
+        let after = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+        assert_eq!(after.pending_async, before.pending_async);
+        assert!(after.async_fail > before.async_fail);
+        assert!(after.requeued > before.requeued);
+
+        if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
+            let physf = unsafe {
+                x86_64::structures::paging::PhysFrame::from_start_address_unchecked(
+                    x86_64::PhysAddr::new(frame_idx.to_phys_addr()),
+                )
+            };
+            crate::mm::buddy_allocator::buddy_dealloc_frame(physf);
+        }
+
+        stop_worker();
+    }
+
+    #[test_case]
+    fn test_notify_failure_on_anon_zswap_error() {
+        test_impl::stop_worker();
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        crate::mm::zswap::zswap_set_enabled(true);
+        crate::mm::zswap::zswap_update_config(crate::mm::zswap::ZswapConfig {
+            enabled: true,
+            compressor: crate::mm::zswap::CompressionAlgo::Lz4,
+            max_pool_size: 0,
+            max_compression_ratio: 0.9,
+            same_filled_pages_enabled: false,
+            writeback_threshold: 0.8,
+        });
+
+        let before = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        crate::mm::page_reclaim::test_register_pending_async(
+            frame_idx,
+            crate::mm::page_reclaim::PageType::Anonymous,
+            0,
+        );
+
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue anon");
+        test_impl::start_worker();
+        h.wait();
+
+        let after = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+        assert_eq!(after.pending_async, before.pending_async);
+        assert!(after.async_fail > before.async_fail);
+        assert!(after.requeued > before.requeued);
+
+        if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
+            let physf = unsafe {
+                x86_64::structures::paging::PhysFrame::from_start_address_unchecked(
+                    x86_64::PhysAddr::new(frame_idx.to_phys_addr()),
+                )
+            };
+            crate::mm::buddy_allocator::buddy_dealloc_frame(physf);
+        }
+
+        stop_worker();
+    }
+
+    #[test_case]
+    fn test_notify_success_once_per_pending() {
+        test_impl::stop_worker();
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        crate::mm::zswap::zswap_set_enabled(true);
+        crate::mm::zswap::zswap_update_config(crate::mm::zswap::ZswapConfig {
+            enabled: true,
+            compressor: crate::mm::zswap::CompressionAlgo::Lz4,
+            max_pool_size: crate::mm::PAGE_SIZE_2M * 32,
+            max_compression_ratio: 1.0,
+            same_filled_pages_enabled: false,
+            writeback_threshold: 0.8,
+        });
+
+        let before = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        crate::mm::page_reclaim::test_register_pending_async(
+            frame_idx,
+            crate::mm::page_reclaim::PageType::Anonymous,
+            0,
+        );
+
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue anon");
+        test_impl::start_worker();
+        h.wait();
+
+        let after = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+        assert_eq!(after.pending_async, before.pending_async);
+        assert!(after.async_success > before.async_success);
+
+        crate::mm::page_reclaim::notify_async_swapout_success(frame_idx);
+        let after_duplicate = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+        assert_eq!(after_duplicate.async_success, after.async_success);
+        assert_eq!(after_duplicate.pending_async, after.pending_async);
+
+        stop_worker();
+    }
+
+    #[test_case]
     fn test_token_exhaustion_does_not_leave_pending() {
         test_impl::stop_worker();
         for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
@@ -2374,6 +2531,5 @@ mod tests {
         assert!(hits + misses > 0);
     }
 }
-
 
 

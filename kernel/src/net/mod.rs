@@ -48,6 +48,7 @@ pub mod udp;
 // Network services
 pub mod dhcp;
 pub mod dns;
+pub mod mdns;
 
 // Integrated network stack
 pub mod stack;
