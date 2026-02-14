@@ -76,6 +76,33 @@ fn run_pending(suite: &str) {
     }
 }
 
+fn run_runtime_pending(suite: &str) {
+    let guard = suite_lock().lock().expect("qemu suite lock poisoned");
+    let cfg = base_config(suite);
+    let result = run_suite(cfg);
+    drop(guard);
+    match result {
+        Ok(report) => {
+            let (passed_count, failed_count, blocked_count) =
+                write_kernel_runtime_pending_summaries(&report).unwrap_or_else(|err| {
+                    panic!("kernel runtime pending summary generation failed: {err}")
+                });
+            eprintln!(
+                "runtime pending suite '{}' passed in {:?} (log: {}, pass={}, fail={}, blocked={})",
+                report.suite,
+                report.duration,
+                report.log_path.display(),
+                passed_count,
+                failed_count,
+                blocked_count
+            );
+        }
+        Err(err) => {
+            panic!("runtime pending suite '{suite}' failed: {err}");
+        }
+    }
+}
+
 #[test]
 fn suite_core() {
     run_required("core");
@@ -110,6 +137,12 @@ fn suite_tools() {
 #[ignore = "pending suite is informational and non-blocking in CI"]
 fn suite_pending() {
     run_pending("pending");
+}
+
+#[test]
+#[ignore = "runtime pending suite is informational and non-blocking in CI"]
+fn suite_kernel_runtime_pending() {
+    run_runtime_pending("kernel_runtime_pending");
 }
 
 #[test]
@@ -167,6 +200,45 @@ fn json_escape(input: &str) -> String {
         }
     }
     escaped
+}
+
+fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64), String> {
+    let content = std::fs::read_to_string(log_path)
+        .map_err(|err| format!("failed to read runtime pending log '{}': {err}", log_path.display()))?;
+
+    for line in content.lines().rev() {
+        let line = line.trim();
+        if let Some((_, tail)) = line.split_once("kernel_runtime_pending counts ") {
+            let mut passed_count: Option<u64> = None;
+            let mut failed_count: Option<u64> = None;
+            let mut blocked_count: Option<u64> = None;
+
+            for token in tail.split_whitespace() {
+                if let Some(value) = token.strip_prefix("pass=") {
+                    passed_count = value.parse::<u64>().ok();
+                    continue;
+                }
+                if let Some(value) = token.strip_prefix("fail=") {
+                    failed_count = value.parse::<u64>().ok();
+                    continue;
+                }
+                if let Some(value) = token.strip_prefix("blocked=") {
+                    blocked_count = value.parse::<u64>().ok();
+                }
+            }
+
+            if let (Some(passed_count), Some(failed_count), Some(blocked_count)) =
+                (passed_count, failed_count, blocked_count)
+            {
+                return Ok((passed_count, failed_count, blocked_count));
+            }
+        }
+    }
+
+    Err(format!(
+        "failed to find kernel runtime pending counts in '{}'",
+        log_path.display()
+    ))
 }
 
 fn write_pending_summaries(report: &qemu_runner::RunReport) -> Result<usize, String> {
@@ -246,4 +318,62 @@ fn write_pending_summaries(report: &qemu_runner::RunReport) -> Result<usize, Str
     })?;
 
     Ok(pending_count)
+}
+
+fn write_kernel_runtime_pending_summaries(
+    report: &qemu_runner::RunReport,
+) -> Result<(u64, u64, u64), String> {
+    let (passed_count, failed_count, blocked_count) = parse_kernel_runtime_counts(&report.log_path)?;
+
+    let log_dir = qemu_runner::workspace_root().join("target").join("qemu-logs");
+    std::fs::create_dir_all(&log_dir).map_err(|err| {
+        format!(
+            "failed to create runtime pending summary directory '{}': {err}",
+            log_dir.display()
+        )
+    })?;
+
+    let generated_at = generated_at_utc();
+    let txt_path = log_dir.join("kernel-runtime-pending-summary.txt");
+    let json_path = log_dir.join("kernel-runtime-pending-summary.json");
+
+    let mut text = String::new();
+    text.push_str("suite: kernel_runtime_pending\n");
+    text.push_str(&format!("passed_count: {passed_count}\n"));
+    text.push_str(&format!("failed_count: {failed_count}\n"));
+    text.push_str(&format!("blocked_count: {blocked_count}\n"));
+    text.push_str(&format!("generated_at_utc: {generated_at}\n"));
+    text.push_str(&format!("suite_log_path: {}\n", report.log_path.display()));
+
+    std::fs::write(&txt_path, text).map_err(|err| {
+        format!(
+            "failed to write runtime pending text summary '{}': {err}",
+            txt_path.display()
+        )
+    })?;
+
+    let mut json = String::new();
+    json.push_str("{\n");
+    json.push_str("  \"suite\": \"kernel_runtime_pending\",\n");
+    json.push_str(&format!("  \"passed_count\": {passed_count},\n"));
+    json.push_str(&format!("  \"failed_count\": {failed_count},\n"));
+    json.push_str(&format!("  \"blocked_count\": {blocked_count},\n"));
+    json.push_str(&format!(
+        "  \"suite_log_path\": \"{}\",\n",
+        json_escape(&report.log_path.display().to_string())
+    ));
+    json.push_str(&format!(
+        "  \"generated_at_utc\": \"{}\"\n",
+        json_escape(&generated_at)
+    ));
+    json.push_str("}\n");
+
+    std::fs::write(&json_path, json).map_err(|err| {
+        format!(
+            "failed to write runtime pending json summary '{}': {err}",
+            json_path.display()
+        )
+    })?;
+
+    Ok((passed_count, failed_count, blocked_count))
 }

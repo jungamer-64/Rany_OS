@@ -1,5 +1,7 @@
 use crate::error::{KernelError, MemoryError};
 use crate::loader::{ed25519, elf, live_update, sha256, signature, type_id};
+use alloc::collections::{BTreeSet, VecDeque};
+use alloc::sync::Arc;
 use core::fmt::Write;
 use core::sync::atomic::Ordering;
 
@@ -228,4 +230,299 @@ pub fn loader_elf_aslr_enable_disable_smoke() -> bool {
 
 pub fn loader_elf_get_string_zero_copy_smoke() -> bool {
     elf::qemu_smoke_get_string_zero_copy()
+}
+
+pub fn kernel_async_swapout_sim_smoke() -> bool {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum SwapKind {
+        File,
+        Anon,
+    }
+
+    #[derive(Clone, Copy)]
+    struct SwapEntry {
+        frame: usize,
+        kind: SwapKind,
+    }
+
+    struct SimulationState {
+        queue: VecDeque<SwapEntry>,
+        pending: BTreeSet<usize>,
+        file_queue_count: usize,
+        queue_len_max: usize,
+        tokens: usize,
+        enqueue_success: usize,
+        enqueue_failures: usize,
+        processed: usize,
+    }
+
+    impl SimulationState {
+        fn new(capacity: usize) -> Self {
+            Self {
+                queue: VecDeque::new(),
+                pending: BTreeSet::new(),
+                file_queue_count: 0,
+                queue_len_max: 0,
+                tokens: capacity,
+                enqueue_success: 0,
+                enqueue_failures: 0,
+                processed: 0,
+            }
+        }
+    }
+
+    let channel_size: usize = 512;
+    let batch_size: usize = 16;
+    let reserved_file_slots: usize = channel_size / 8;
+    let token_bucket_capacity: usize = channel_size / 4;
+
+    let mut state = SimulationState::new(token_bucket_capacity);
+    let mut rng_seed = 0x1234_5678_9abc_def0u64;
+    let mut rng = || {
+        rng_seed = rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        rng_seed
+    };
+
+    let start = crate::time::precise_time_nanos();
+    for _ in 0..400 {
+        let burst = ((rng() % 5) + 1) as usize;
+        for _ in 0..burst {
+            let frame = (rng() % 10_000) as usize;
+            if state.pending.contains(&frame) {
+                continue;
+            }
+            let kind = if rng() % 2 == 0 {
+                SwapKind::File
+            } else {
+                SwapKind::Anon
+            };
+            let q_len = state.queue.len();
+            let can_enqueue = if kind == SwapKind::File {
+                q_len < channel_size
+                    && (state.tokens > 0 || q_len < channel_size.saturating_sub(reserved_file_slots))
+            } else {
+                q_len < channel_size
+            };
+
+            if can_enqueue {
+                if kind == SwapKind::File && state.tokens > 0 {
+                    state.tokens -= 1;
+                }
+                state.queue.push_back(SwapEntry { frame, kind });
+                state.pending.insert(frame);
+                if kind == SwapKind::File {
+                    state.file_queue_count += 1;
+                }
+                let len = state.queue.len();
+                if len > state.queue_len_max {
+                    state.queue_len_max = len;
+                }
+                state.enqueue_success += 1;
+            } else {
+                state.enqueue_failures += 1;
+            }
+        }
+
+        for _ in 0..batch_size {
+            if let Some(entry) = state.queue.pop_front() {
+                state.pending.remove(&entry.frame);
+                if entry.kind == SwapKind::File && state.file_queue_count > 0 {
+                    state.file_queue_count -= 1;
+                }
+                state.processed += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    while let Some(entry) = state.queue.pop_front() {
+        state.pending.remove(&entry.frame);
+        if entry.kind == SwapKind::File && state.file_queue_count > 0 {
+            state.file_queue_count -= 1;
+        }
+        state.processed += 1;
+    }
+
+    let elapsed = crate::time::precise_time_nanos().saturating_sub(start);
+    let _ = elapsed;
+
+    state.processed == state.enqueue_success
+        && state.enqueue_success > 0
+        && state.pending.is_empty()
+        && state.file_queue_count == 0
+}
+
+pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
+    use crate::net::driver_bridge;
+    use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
+    use crate::net::tcp::{
+        Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
+    };
+    use crate::net::{self, mempool, stack, VirtioNetHeader};
+    use crate::sync::PoisonLock;
+
+    let _ = mempool::init_net_mempool(4);
+
+    let mut config = net::NetworkConfig::default();
+    config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
+    stack::init(config);
+
+    let local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
+    let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
+
+    let mut tcb = TcpControlBlock::new(local);
+    tcb.remote_addr = Some(remote);
+    tcb.state = TcpState::Established;
+    tcb.rcv_nxt = 1;
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+
+    match stack::stack().lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
+            } else {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+
+    let header_size = VirtioNetHeader::SIZE;
+    let payload = b"hello";
+    let tcp_len = 20 + payload.len();
+    let eth_total_len = 14 + 20 + tcp_len;
+
+    let mut packet = match mempool::alloc_packet() {
+        Some(packet) => packet,
+        None => return false,
+    };
+    let buf = packet.data_mut();
+    let needed = header_size + eth_total_len;
+    if buf.len() < needed {
+        return false;
+    }
+
+    for b in &mut buf[0..header_size] {
+        *b = 0;
+    }
+
+    let eth_off = header_size;
+    buf[eth_off..eth_off + 6].copy_from_slice(&[0xff; 6]);
+    buf[eth_off + 6..eth_off + 12].copy_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+    buf[eth_off + 12..eth_off + 14].copy_from_slice(&[0x08, 0x00]);
+
+    let ip_off = eth_off + 14;
+    if let Some(mut ipv4_mut) = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]) {
+        ipv4_mut
+            .init_header()
+            .set_source(Ipv4Address::new([127, 0, 0, 1]))
+            .set_destination(Ipv4Address::new([127, 0, 0, 1]))
+            .set_protocol(IpProtocol::Tcp)
+            .set_identification(1);
+    } else {
+        return false;
+    }
+
+    let tcp_off = ip_off + 20;
+    buf[tcp_off..tcp_off + 2].copy_from_slice(&2000u16.to_be_bytes());
+    buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&1000u16.to_be_bytes());
+    buf[tcp_off + 4..tcp_off + 8].copy_from_slice(&1u32.to_be_bytes());
+    buf[tcp_off + 8..tcp_off + 12].copy_from_slice(&0u32.to_be_bytes());
+    let data_off_flags = (5u16 << 12).to_be_bytes();
+    buf[tcp_off + 12..tcp_off + 14].copy_from_slice(&data_off_flags);
+    buf[tcp_off + 14..tcp_off + 16].copy_from_slice(&65535u16.to_be_bytes());
+    buf[tcp_off + 20..tcp_off + 20 + payload.len()].copy_from_slice(payload);
+
+    if let Some(mut ipv4_mut) = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]) {
+        ipv4_mut.finalize(tcp_len);
+    } else {
+        return false;
+    }
+
+    packet.set_len(header_size + eth_total_len);
+    driver_bridge::process_received_packet_zero_copy(packet, header_size, eth_total_len);
+    driver_bridge::check_batch_timeout(100_000, 1);
+
+    if let Ok(guard) = tcb_arc.lock() {
+        if guard.recv_buffer.is_empty() {
+            return false;
+        }
+        if let Some(first) = guard.recv_buffer.front() {
+            first.data() == payload
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+pub fn kernel_bench_framebuffer_smoke() -> bool {
+    use crate::graphics::image::Image;
+    use crate::graphics::{Color, Framebuffer, FramebufferInfo, PixelFormat};
+
+    let width = 800u32;
+    let height = 600u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let size = info.size();
+    let back = alloc::vec![0u32; (size / 4) as usize];
+    fb.enable_double_buffering_from_vec(back);
+
+    let img_opaque = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
+    let img_alpha = Image::filled(width, height, Color::with_alpha(64, 128, 192, 128));
+
+    for _ in 0..10 {
+        fb.draw_image(&img_opaque, 0, 0);
+    }
+    for _ in 0..10 {
+        fb.draw_image(&img_alpha, 0, 0);
+    }
+    for _ in 0..100 {
+        fb.draw_text(
+            10,
+            10,
+            "Hello, RanyOS Benchmark!",
+            Color::WHITE,
+            Color::BLACK,
+        );
+    }
+    for i in 0..1000 {
+        fb.draw_line(0, 0, width as i32, (i % height) as i32, Color::RED);
+    }
+
+    true
+}
+
+pub fn iommu_cmdqueue_reclaim_completed_slot_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_reclaim_completed_slot_smoke()
+}
+
+pub fn iommu_cmdqueue_cancel_queued_command_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_cancel_queued_command_smoke()
+}
+
+pub fn iommu_cmdqueue_drop_triggers_cancel_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_drop_triggers_cancel_smoke()
+}
+
+pub fn iommu_cmdqueue_process_up_to_respects_fuel_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_process_up_to_respects_fuel_smoke()
+}
+
+pub fn iommu_cmdqueue_fuel_shim_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_fuel_shim_basic_smoke()
+}
+
+pub fn iommu_cmdqueue_metrics_counts_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_metrics_counts_smoke()
 }

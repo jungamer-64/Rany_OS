@@ -1,0 +1,14 @@
+[package]
+name = "qemu_suite_kernel_runtime_pending"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "QEMU no_std runtime pending kernel suite"
+
+[dependencies]
+rany_os = { package = "rany_kernel", path = "../../kernel", features = ["qemu-test-export"] }
