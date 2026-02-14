@@ -777,6 +777,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "qemu_suite_kernel_runtime_pending"
+version = "0.1.0"
+dependencies = [
+ "rany_kernel",
+]
+
+[[package]]
 name = "qemu_suite_pending"
 version = "0.1.0"
 

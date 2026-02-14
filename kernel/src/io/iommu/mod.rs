@@ -15,6 +15,8 @@ pub mod backend;
 pub mod cmdqueue;
 pub mod dma_handle;
 pub mod types;
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
 
 // Re-export specific modules used by api but also useful directly
 pub mod irq; 

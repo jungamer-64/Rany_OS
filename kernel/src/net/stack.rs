@@ -29,7 +29,7 @@ use super::tcp::{
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
 
 use crate::sync::PoisonLock;
-#[cfg(any(test, feature = "full_mm_tests"))]
+#[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -1596,7 +1596,7 @@ impl NetworkStack {
     }
 
     /// Test helper: insert a pre-built TCP connection into the stack.
-    #[cfg(any(test, feature = "full_mm_tests"))]
+    #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
     pub fn insert_test_tcp_connection(
         &mut self,
         local_addr: TcpSocketAddr,

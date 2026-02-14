@@ -386,11 +386,15 @@ cargo test -p qemu-tests -- --nocapture suite_core
 
 # 任意: pending スイート（移行監視・非必須）
 cargo test -p qemu-tests -- --ignored --nocapture suite_pending
+
+# 任意: runtime pending スイート（非必須・runtime依存監視）
+cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 ```
 
 補足:
 - `pending` 監視項目は `scripts/qemu_pending_cases.lst` で管理する。
 - `suite_pending` 実行時に `target/qemu-logs/pending-summary.txt|json` が生成される。
+- `suite_kernel_runtime_pending` 実行時に `target/qemu-logs/kernel-runtime-pending-summary.txt|json` が生成される。
 - `scripts/qemu_legacy_test_allowlist.lst` は `#[test]` 例外検出ガード専用で、pending監視とは独立。
 
 ### 7.2 プロジェクト構造

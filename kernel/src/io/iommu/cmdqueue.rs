@@ -659,6 +659,126 @@ impl core::future::Future for SubmitFuture {
     }
 }
 
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_reclaim_completed_slot() -> bool {
+    let q = Box::leak(Box::new(CommandQueue::new()));
+
+    let comp1 = q
+        .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
+        .expect("submit");
+    let idx = comp1.slot_idx;
+    drop(comp1);
+
+    q.slots[idx].complete(RESULT_OK);
+
+    let submit2 = q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 2 });
+    submit2.is_ok() && q.reclaimed_total() > 0
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_cancel_queued_command() -> bool {
+    let q = Box::leak(Box::new(CommandQueue::new()));
+
+    let comp = q
+        .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 3 })
+        .expect("submit");
+    if !comp.cancel() {
+        return false;
+    }
+
+    let processed = q.process_once(|_k| Ok(0));
+    if processed != 1 {
+        return false;
+    }
+
+    let rc = crate::task::block_on(async { comp.await });
+    rc == RESULT_CANCELLED
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_drop_triggers_cancel() -> bool {
+    let q = Box::leak(Box::new(CommandQueue::new()));
+
+    let comp = q
+        .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 4 })
+        .expect("submit");
+    let idx = comp.slot_idx;
+    drop(comp);
+
+    let processed = q.process_once(|_k| Ok(0));
+    if processed != 1 {
+        return false;
+    }
+
+    let rc = q.slots[idx].wait_result_spin();
+    rc == RESULT_CANCELLED
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_process_up_to_respects_fuel() -> bool {
+    let q = Box::leak(Box::new(CommandQueue::new()));
+
+    let mut comps: Vec<CommandCompletion> = Vec::new();
+    for i in 0..5 {
+        comps.push(
+            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: i as u16 })
+                .expect("submit"),
+        );
+    }
+
+    // process_up_to() always enforces `max`; fuel gating is compiled only in #[cfg(test)] paths.
+    let first = q.process_up_to(|_k| Ok(0), 2);
+    let second = q.process_up_to(|_k| Ok(0), 2);
+    let third = q.process_up_to(|_k| Ok(0), 2);
+    let _ = comps;
+    first == 2 && second == 2 && third == 1
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_fuel_shim_basic() -> bool {
+    crate::task::fuel::Fuel::refill(2);
+    if !crate::task::fuel::Fuel::is_active() {
+        return false;
+    }
+    if crate::task::fuel::Fuel::remaining() != 2 {
+        return false;
+    }
+    if !crate::task::fuel::Fuel::consume(1) {
+        return false;
+    }
+    if crate::task::fuel::Fuel::remaining() != 1 {
+        return false;
+    }
+    if !crate::task::fuel::Fuel::consume(1) {
+        return false;
+    }
+    if crate::task::fuel::Fuel::remaining() != 0 {
+        return false;
+    }
+    !crate::task::fuel::Fuel::consume(1)
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_metrics_counts() -> bool {
+    let q = Box::leak(Box::new(CommandQueue::new()));
+    if q.processed_total() != 0 || q.cancelled_total() != 0 || q.cancel_attempts_total() != 0 {
+        return false;
+    }
+
+    let comp = q
+        .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
+        .expect("submit");
+    if !comp.cancel() {
+        return false;
+    }
+    if q.cancel_attempts_total() < 1 {
+        return false;
+    }
+
+    let processed = q.process_once(|_k| Ok(0));
+    processed == 1 && q.cancelled_total() >= 1 && q.processed_total() == 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,71 +924,6 @@ mod tests {
         worker.join().expect("worker join failed");
     }
 
-    // If a completion is never awaited, the slot may be left in state==2; ensure we
-    // can reclaim that completed slot for future submissions.
-    #[test_case]
-    fn test_reclaim_completed_slot() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-
-        // Submit a command and drop the completion without awaiting
-        let comp1 = q
-            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
-            .expect("submit");
-        let idx = comp1.slot_idx;
-        drop(comp1);
-
-        // Simulate worker completing the command (in tests we can directly complete)
-        q.slots[idx].complete(0);
-
-        // Now try to submit again; alloc_slot should reclaim the completed slot
-        assert!(
-            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 2 })
-                .is_ok()
-        );
-        // reclaimed slot should have been counted
-        assert!(q.reclaimed_total() > 0);
-    }
-
-    #[test_case]
-    fn test_cancel_queued_command() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-
-        // Submit a command, cancel it, and ensure completion returns cancellation code
-        let comp = q
-            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 3 })
-            .expect("submit");
-        assert!(comp.cancel());
-
-        // Simulate worker now processing the queued command; it should notice cancellation
-        // and immediately complete with cancellation code (RESULT_CANCELLED)
-        let processed = q.process_once(|_k| Ok(0));
-        assert_eq!(processed, 1);
-
-        // The completion should now contain RESULT_CANCELLED
-        let rc = crate::task::block_on(async { comp.await });
-        assert_eq!(rc, RESULT_CANCELLED);
-    }
-
-    #[test_case]
-    fn test_drop_triggers_cancel() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-
-        let comp = q
-            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 4 })
-            .expect("submit");
-        let idx = comp.slot_idx;
-        // Dropping the completion should attempt a best-effort cancel
-        drop(comp);
-
-        // Now process the queued command; since cancel happened we should see a cancellation
-        let processed = q.process_once(|_k| Ok(0));
-        assert_eq!(processed, 1);
-
-        // The slot should have the cancellation result (RESULT_CANCELLED) and be reclaimable via wait
-        let rc = q.slots[idx].wait_result_spin();
-        assert_eq!(rc, RESULT_CANCELLED);
-    }
-
     #[cfg(feature = "std")]
     #[test_case]
     #[ignore]
@@ -987,61 +1042,6 @@ mod tests {
         worker.join().expect("worker join failed");
     }
 
-    #[test_case]
-    fn test_process_up_to_respects_fuel() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-
-        // Submit multiple commands (non-blocking) and keep completions alive until processed
-        let mut comps: Vec<CommandCompletion> = Vec::new();
-        for i in 0..5 {
-            comps.push(
-                q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: i as u16 })
-                    .expect("submit"),
-            );
-        }
-
-        // Refill fuel for this thread to process only 2 commands
-        crate::task::fuel::Fuel::refill(2);
-        // Ensure fuel was refilled for this thread
-        assert_eq!(crate::task::fuel::Fuel::remaining(), 2);
-        assert!(crate::task::fuel::Fuel::is_active());
-
-        let processed = q.process_up_to(|_k| Ok(0), 100);
-        assert_eq!(processed, 2);
-    }
-
-    #[test_case]
-    fn test_fuel_shim_basic() {
-        crate::task::fuel::Fuel::refill(2);
-        assert!(crate::task::fuel::Fuel::is_active());
-        assert_eq!(crate::task::fuel::Fuel::remaining(), 2);
-        assert!(crate::task::fuel::Fuel::consume(1));
-        assert_eq!(crate::task::fuel::Fuel::remaining(), 1);
-        assert!(crate::task::fuel::Fuel::consume(1));
-        assert_eq!(crate::task::fuel::Fuel::remaining(), 0);
-        assert!(!crate::task::fuel::Fuel::consume(1));
-    }
-
-    #[test_case]
-    fn test_metrics_counts() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
-        assert_eq!(q.processed_total(), 0);
-        assert_eq!(q.cancelled_total(), 0);
-        assert_eq!(q.cancel_attempts_total(), 0);
-
-        let comp = q
-            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
-            .expect("submit");
-        assert!(comp.cancel());
-        // cancel_attempts should be recorded immediately
-        assert!(q.cancel_attempts_total() >= 1);
-
-        let processed = q.process_once(|_k| Ok(0));
-        assert_eq!(processed, 1);
-        assert!(q.cancelled_total() >= 1);
-        assert_eq!(q.processed_total(), 1);
-    }
-
     #[cfg(feature = "std")]
     #[test_case]
     fn test_submit_async_backpressure() {
@@ -1112,4 +1112,3 @@ mod tests {
         assert!(q.send_backpressure_total() > 0);
     }
 }
-

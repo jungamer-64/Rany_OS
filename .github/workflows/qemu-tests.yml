@@ -106,7 +106,7 @@ jobs:
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
           QEMU_TEST_TIMEOUT_SECS: 90
-        run: cargo test -p qemu-tests -- --ignored --nocapture suite_pending
+        run: cargo test -p qemu-tests -- --ignored --nocapture suite_pending suite_kernel_runtime_pending
 
       - name: Upload pending logs
         if: always()
@@ -117,6 +117,8 @@ jobs:
             target/qemu-logs
             target/qemu-logs/pending-summary.txt
             target/qemu-logs/pending-summary.json
+            target/qemu-logs/kernel-runtime-pending-summary.txt
+            target/qemu-logs/kernel-runtime-pending-summary.json
             scripts/qemu_pending_cases.lst
             scripts/qemu_legacy_test_allowlist.lst
           if-no-files-found: ignore

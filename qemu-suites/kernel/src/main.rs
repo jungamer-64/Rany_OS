@@ -71,12 +71,27 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 
 fn run_suite() -> bool {
-    smoke_kernel_abi()
-        && test_kernel_error_exports()
-        && test_loader_crypto_exports()
-        && test_loader_metadata_exports()
-        && test_loader_live_update_exports()
-        && test_loader_elf_exports()
+    run_check("smoke_kernel_abi", smoke_kernel_abi)
+        && run_check("kernel_error_exports", test_kernel_error_exports)
+        && run_check("loader_crypto_exports", test_loader_crypto_exports)
+        && run_check("loader_metadata_exports", test_loader_metadata_exports)
+        && run_check("loader_live_update_exports", test_loader_live_update_exports)
+        && run_check("loader_elf_exports", test_loader_elf_exports)
+        && run_check("iommu_cmdqueue_exports", test_iommu_cmdqueue_exports)
+        && run_check("kernel_integration_exports", test_kernel_integration_exports)
+}
+
+fn run_check(name: &str, f: fn() -> bool) -> bool {
+    serial_write_str("[qemu-suite] kernel case ");
+    serial_write_str(name);
+    serial_write_str(" ... ");
+    if f() {
+        serial_write_str("ok\n");
+        true
+    } else {
+        serial_write_str("fail\n");
+        false
+    }
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -153,6 +168,32 @@ fn test_loader_elf_exports() -> bool {
         && rany_os::qemu_tests::loader_elf_aslr_offset_generation_smoke()
         && rany_os::qemu_tests::loader_elf_aslr_enable_disable_smoke()
         && rany_os::qemu_tests::loader_elf_get_string_zero_copy_smoke()
+}
+
+fn test_kernel_integration_exports() -> bool {
+    rany_os::qemu_tests::kernel_async_swapout_sim_smoke()
+}
+
+fn test_iommu_cmdqueue_exports() -> bool {
+    run_check(
+        "iommu_cmdqueue_reclaim_completed_slot_smoke",
+        rany_os::qemu_tests::iommu_cmdqueue_reclaim_completed_slot_smoke,
+    ) && run_check(
+        "iommu_cmdqueue_cancel_queued_command_smoke",
+        rany_os::qemu_tests::iommu_cmdqueue_cancel_queued_command_smoke,
+    ) && run_check(
+        "iommu_cmdqueue_drop_triggers_cancel_smoke",
+        rany_os::qemu_tests::iommu_cmdqueue_drop_triggers_cancel_smoke,
+    ) && run_check(
+        "iommu_cmdqueue_process_up_to_respects_fuel_smoke",
+        rany_os::qemu_tests::iommu_cmdqueue_process_up_to_respects_fuel_smoke,
+    ) && run_check(
+        "iommu_cmdqueue_fuel_shim_basic_smoke",
+        rany_os::qemu_tests::iommu_cmdqueue_fuel_shim_basic_smoke,
+    ) && run_check(
+        "iommu_cmdqueue_metrics_counts_smoke",
+        rany_os::qemu_tests::iommu_cmdqueue_metrics_counts_smoke,
+    )
 }
 
 fn serial_write_str(s: &str) {

@@ -2205,7 +2205,7 @@ impl TcpProcessor {
     }
 
     /// Test-only helper to seed an existing connection.
-    #[cfg(any(test, feature = "full_mm_tests"))]
+    #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
     pub fn insert_test_connection(
         &mut self,
         local_addr: SocketAddr,
