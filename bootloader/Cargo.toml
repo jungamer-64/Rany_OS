@@ -1,7 +1,7 @@
 [package]
 name = "exoloader"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "UEFI Bootloader for RanyOS"
 license = "MIT"
 repository = "https://github.com/Start-Rany-OS/Rany_OS"
@@ -32,5 +32,5 @@ insecure_boot = []
 # クラウド/本番用：最小構成（UIなし、テストなし、最速起動）
 # 使用例: cargo build --no-default-features --features minimal
 minimal = []
-
+qemu-test-export = []
 

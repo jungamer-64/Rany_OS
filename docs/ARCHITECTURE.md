@@ -373,13 +373,13 @@ Traditional OS                    ExoRust (SPL)
 
 ```bash
 # ビルド
-cargo build --target x86_64-rany_os.json
+cargo build --target x86_64-exorust.json
 
 # QEMU実行
 ./scripts/qemu-run.sh
 
 # テスト実行
-./scripts/run-tests.ps1
+cargo test
 ```
 
 ### 7.2 プロジェクト構造

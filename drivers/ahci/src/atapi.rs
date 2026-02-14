@@ -201,7 +201,7 @@ impl SenseData { pub fn sense_key(&self) -> SenseKey { SenseKey::from_code(self.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SenseKey { NoSense, RecoveredError, NotReady, MediumError, HardwareError, IllegalRequest, UnitAttention, DataProtect, BlankCheck, VendorSpecific, CopyAborted, AbortedCommand, Obsolete, VolumeOverflow, Miscompare, Reserved }
 
-impl SenseKey { fn from_code(code: u8) -> Self { match code { 0x0 => SenseKey::NoSense, 0x1 => SenseKey::RecoveredError, 0x2 => SenseKey::NotReady, 0x3 => SenseKey::MediumError, 0x4 => SenseKey::HardwareError, 0x5 => SenseKey::IllegalRequest, 0x6 => SenseKey::UnitAttention, 0x7 => SenseKey::DataProtect, 0x8 => SenseKey::BlankCheck, 0x9 => SenseKey::VendorSpecific, 0xA => SenseKey::CopyAborted, 0xB => SenseKey::AbortedCommand, 0xC => SenseKey::Obsolete, 0xD => SenseKey::VolumeOverflow, 0xE => SenseKey::Miscompare, _ => SenseKey::Reserved, } } }
+impl SenseKey { pub(crate) fn from_code(code: u8) -> Self { match code { 0x0 => SenseKey::NoSense, 0x1 => SenseKey::RecoveredError, 0x2 => SenseKey::NotReady, 0x3 => SenseKey::MediumError, 0x4 => SenseKey::HardwareError, 0x5 => SenseKey::IllegalRequest, 0x6 => SenseKey::UnitAttention, 0x7 => SenseKey::DataProtect, 0x8 => SenseKey::BlankCheck, 0x9 => SenseKey::VendorSpecific, 0xA => SenseKey::CopyAborted, 0xB => SenseKey::AbortedCommand, 0xC => SenseKey::Obsolete, 0xD => SenseKey::VolumeOverflow, 0xE => SenseKey::Miscompare, _ => SenseKey::Reserved, } } }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -303,34 +303,3 @@ pub struct CdDvdDriveInfo { pub vendor: String, pub product: String, pub revisio
 pub struct CdDvdDrive { port: AtapiPort, info: Option<CdDvdDriveInfo> }
 
 impl CdDvdDrive { pub fn new(base: u64, port_number: PortNumber) -> Self { Self { port: AtapiPort::new(base, port_number), info: None } } pub fn init(&mut self) -> AhciResult<()> { let inquiry = self.port.inquiry()?; self.info = Some(CdDvdDriveInfo { vendor: inquiry.vendor_string(), product: inquiry.product_string(), revision: inquiry.revision_string(), device_type: inquiry.device_type(), removable: inquiry.is_removable(), }); Ok(()) } pub fn info(&self) -> Option<&CdDvdDriveInfo> { self.info.as_ref() } pub fn is_media_present(&mut self) -> bool { self.port.test_unit_ready().unwrap_or(false) } pub fn media_capacity(&mut self) -> AhciResult<(u64, u32)> { let cap = self.port.read_capacity()?; Ok((cap.total_blocks(), cap.block_length())) } pub fn read(&mut self, lba: u32, count: u16, buffer: &mut [u8]) -> AhciResult<usize> { self.port.read_sectors(lba, count, buffer) } pub fn read_toc(&mut self) -> AhciResult<TableOfContents> { self.port.read_toc() } pub fn eject(&mut self) -> AhciResult<()> { self.port.eject() } pub fn load(&mut self) -> AhciResult<()> { self.port.load() } pub fn last_error(&mut self) -> AhciResult<SenseData> { self.port.request_sense() } }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cdb_read10() {
-        let cdb = ScsiCdb12::read10(0x12345678, 256);
-        assert_eq!(cdb.opcode, ScsiOpcode::Read10 as u8);
-        assert_eq!(cdb.lba_hi, 0x12);
-        assert_eq!(cdb.lba_mid_hi, 0x34);
-        assert_eq!(cdb.lba_mid_lo, 0x56);
-        assert_eq!(cdb.lba_lo, 0x78);
-        assert_eq!(cdb.length_mid_lo, 0x01);
-        assert_eq!(cdb.length_lo, 0x00);
-    }
-
-    #[test]
-    fn test_sense_key() {
-        assert_eq!(SenseKey::from_code(0x00), SenseKey::NoSense);
-        assert_eq!(SenseKey::from_code(0x02), SenseKey::NotReady);
-        assert_eq!(SenseKey::from_code(0x05), SenseKey::IllegalRequest);
-    }
-
-    #[test]
-    fn test_read_capacity_endianness() {
-        let response = ReadCapacityResponse { last_lba_be: 0x01020304u32.to_be(), block_length_be: 0x00000800u32.to_be(), };
-        assert_eq!(response.last_lba(), 0x01020304);
-        assert_eq!(response.block_length(), 2048);
-    }
-}

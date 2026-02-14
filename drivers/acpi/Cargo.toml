@@ -10,6 +10,10 @@ keywords.workspace = true
 categories.workspace = true
 description = "ACPI Driver for RanyOS"
 
+[features]
+default = []
+qemu-test-export = []
+
 [dependencies]
 spin = "0.10"
 log = "0.4"

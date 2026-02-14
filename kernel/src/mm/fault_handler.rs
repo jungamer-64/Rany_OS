@@ -220,6 +220,8 @@ pub enum FaultResult {
     StackGrown,
     /// ファイルバックページロード成功
     FilePageLoaded,
+    /// ファイルバックページI/O失敗
+    IoError,
 }
 
 // ============================================================================
@@ -807,6 +809,7 @@ pub fn fault_result_str(result: FaultResult) -> &'static str {
         FaultResult::DemandPaged => "Demand Paged",
         FaultResult::StackGrown => "Stack Grown",
         FaultResult::FilePageLoaded => "File Page Loaded",
+        FaultResult::IoError => "I/O Error",
     }
 }
 
@@ -841,7 +844,8 @@ pub fn try_handle_page_fault(error_code: u64) -> bool {
         | FaultResult::PermissionDenied
         | FaultResult::OutOfMemory
         | FaultResult::StackOverflow
-        | FaultResult::KernelBug => false,
+        | FaultResult::KernelBug
+        | FaultResult::IoError => false,
     }
 }
 

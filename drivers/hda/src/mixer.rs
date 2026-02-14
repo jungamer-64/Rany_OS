@@ -473,7 +473,7 @@ impl Mixer {
     }
 
     /// モノラルをステレオに変換
-    fn mono_to_stereo(mono: &[f32]) -> Vec<f32> {
+    pub fn mono_to_stereo(mono: &[f32]) -> Vec<f32> {
         let mut stereo = Vec::with_capacity(mono.len() * 2);
         for &sample in mono {
             stereo.push(sample); // Left
@@ -1052,91 +1052,4 @@ pub fn submit_i16(channel_id: u64, samples: &[i16]) -> MixerResult<()> {
 /// ミックス出力を取得（i16形式）
 pub fn mix_output_i16() -> Vec<i16> {
     with_mixer_mut(|m| m.mix_to_i16()).unwrap_or_default()
-}
-
-// ============================================================================
-// Tests (when std is available)
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_mixer_creation() {
-        let mixer = Mixer::default_mixer();
-        assert_eq!(mixer.active_channels(), 0);
-    }
-
-    #[test]
-    fn test_add_channel() {
-        let mut mixer = Mixer::default_mixer();
-        let id = mixer.add_channel(ChannelConfig::default()).unwrap();
-        assert!(id > 0);
-        assert_eq!(mixer.active_channels(), 1);
-    }
-
-    #[test]
-    fn test_volume_control() {
-        let mut mixer = Mixer::default_mixer();
-        let id = mixer.add_channel(ChannelConfig::default()).unwrap();
-        mixer.set_volume(id, 0.5).unwrap();
-        let config = mixer.get_channel_config(id).unwrap();
-        assert!((config.volume - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_pan_control() {
-        let mut mixer = Mixer::default_mixer();
-        let id = mixer.add_channel(ChannelConfig::default()).unwrap();
-        mixer.set_pan(id, -0.5).unwrap();
-        let config = mixer.get_channel_config(id).unwrap();
-        assert!((config.pan - (-0.5)).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_mono_to_stereo() {
-        let mono = vec![0.5, -0.5, 0.25];
-        let stereo = Mixer::mono_to_stereo(&mono);
-        assert_eq!(stereo.len(), 6);
-        assert_eq!(stereo, vec![0.5, 0.5, -0.5, -0.5, 0.25, 0.25]);
-    }
-
-    #[test]
-    fn test_limiter_soft_clip() {
-        let mut mixer = Mixer::default_mixer();
-        mixer.output_buffer = vec![1.5, -1.5, 0.5, -0.5];
-        let mut buffer_copy = mixer.output_buffer.clone();
-        Mixer::apply_limiter_to_buffer(
-            &mut mixer.limiter,
-            mixer.config.limiter_enabled,
-            &mut buffer_copy,
-        );
-        // All samples should be within -1.0 to 1.0
-        for sample in &buffer_copy {
-            assert!(*sample >= -1.0 && *sample <= 1.0);
-        }
-    }
-}
-
-// ============================================================================
-// Math Helpers (Taylor Series Approximation for no_std)
-// ============================================================================
-
-/// Cosine approximation (Taylor series)
-fn cos_approx(rad: f32) -> f32 {
-    let x = rad;
-    let x2 = x * x;
-    let x4 = x2 * x2;
-    let x6 = x4 * x2;
-    1.0 - x2 / 2.0 + x4 / 24.0 - x6 / 720.0
-}
-
-/// Sine approximation (Taylor series)
-fn sin_approx(rad: f32) -> f32 {
-    let x = rad;
-    let x3 = x * x * x;
-    let x5 = x3 * x * x;
-    let x7 = x5 * x * x;
-    x - x3 / 6.0 + x5 / 120.0 - x7 / 5040.0
 }

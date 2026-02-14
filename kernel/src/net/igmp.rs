@@ -311,14 +311,16 @@ impl IgmpProcessor {
 
         if group_addr == Ipv4Address::ANY {
             // General Query - respond for all groups
+            let current_time = self.current_time;
             for group in &mut self.groups {
-                self.set_response_timer(group, max_delay_ms);
+                Self::set_response_timer(current_time, group, max_delay_ms);
             }
             IgmpResult::GeneralQueryReceived { max_resp_time }
         } else {
             // Group-Specific Query
             if let Some(group) = self.groups.iter_mut().find(|g| g.address == group_addr) {
-                self.set_response_timer(group, max_delay_ms);
+                let current_time = self.current_time;
+                Self::set_response_timer(current_time, group, max_delay_ms);
                 IgmpResult::GroupQueryReceived { group: group_addr, max_resp_time }
             } else {
                 IgmpResult::Ignored
@@ -327,13 +329,13 @@ impl IgmpProcessor {
     }
 
     /// Set response timer for a group
-    fn set_response_timer(&self, group: &mut MulticastGroup, max_delay_ms: u64) {
+    fn set_response_timer(current_time: u64, group: &mut MulticastGroup, max_delay_ms: u64) {
         if max_delay_ms == 0 {
             return;
         }
 
         // Generate random delay (simplified: use current time as seed)
-        let random_delay = (self.current_time % max_delay_ms) + 1;
+        let random_delay = (current_time % max_delay_ms) + 1;
 
         // Only set timer if not already running or new delay is shorter
         if group.state == GroupState::IdleMember || 

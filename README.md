@@ -216,10 +216,13 @@ rustup install nightly
 rustup component add rust-src llvm-tools-preview
 
 # 2. カーネルのビルド
-cargo build --target x86_64-unknown-none
+cargo build --target x86_64-exorust.json
 
 # 3. QEMUで実行 (UEFIモード推奨)
 ./scripts/run.sh --uefi
+
+# 4. テスト実行（公式入口）
+cargo test
 
 ```
 

@@ -1,0 +1,19 @@
+[package]
+name = "qemu_suite_core"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "QEMU no_std core suite"
+
+[dependencies]
+security = { path = "../../libs/security", features = ["qemu-test-export"] }
+kernel_api = { path = "../../interfaces/kernel_api", features = ["qemu-test-export"] }
+exorust_sync = { path = "../../libs/sync", features = ["qemu-test-export"] }
+
+[features]
+qemu-test-export = []

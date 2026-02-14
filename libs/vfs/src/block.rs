@@ -1000,42 +1000,39 @@ pub fn block_manager() -> &'static BlockDeviceManager {
     &BLOCK_MANAGER
 }
 
-// ============================================================================
-// Tests for RamDisk
-// ============================================================================
-
-#[cfg(test)]
-mod ramdisk_tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
-
-    #[test]
-    fn test_ramdisk_read_write_sync() {
-        let disk = RamDisk::new(16, 512);
-        let data = [0xABu8; 512];
-        assert_eq!(disk.write_sync(1, &data).unwrap(), 512);
-
-        let mut buf = [0u8; 512];
-        assert_eq!(disk.read_sync(1, &mut buf).unwrap(), 512);
-        assert_eq!(buf, data);
-    }
-
-    #[test]
-    fn test_ramdisk_read_write_multiple_blocks() {
-        let disk = RamDisk::new(4, 512);
-        let data = [0x12u8; 1024]; // two blocks
-        assert_eq!(disk.write_sync(1, &data).unwrap(), 1024);
-
-        let mut buf = [0u8; 1024];
-        assert_eq!(disk.read_sync(1, &mut buf).unwrap(), 1024);
-        assert_eq!(buf, data);
-    }
-}
-
-#[cfg(test)]
-mod borrowed_io_tests {
-    use super::*;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::ptr;
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use futures::executor::block_on;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    fn noop_raw_waker() -> RawWaker {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
+        unsafe fn wake(_: *const ()) {}
+        unsafe fn wake_by_ref(_: *const ()) {}
+        unsafe fn drop(_: *const ()) {}
+        RawWaker::new(
+            ptr::null(),
+            &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+        )
+    }
+
+    fn run_future<F: Future>(fut: F) -> F::Output {
+        let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = Box::pin(fut);
+        loop {
+            match Pin::new(&mut fut).poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => core::hint::spin_loop(),
+            }
+        }
+    }
 
     struct MemDev {
         info: BlockDeviceInfo,
@@ -1112,29 +1109,49 @@ mod borrowed_io_tests {
             let data = &self.data;
 
             Box::pin(async move {
-                let len = buffer.as_slice().len();
+                let bytes: &[u8] = AsRef::<[u8]>::as_ref(&buffer);
+                let len = bytes.len();
                 let mut data = data.lock();
                 if start + len > data.len() {
                     return Err(BlockError::InvalidBlock);
                 }
-                data[start..start + len].copy_from_slice(buffer.as_slice());
+                data[start..start + len].copy_from_slice(bytes);
                 Ok(buffer)
             })
         }
     }
 
-    #[test]
-    fn read_into_buf_invalid_size() {
-        let dev = MemDev::new(4, 2);
-        let mut dst = [0u8; 6];
+    pub fn ramdisk_read_write_sync_smoke() -> bool {
+        let disk = RamDisk::new(16, 512);
+        let data = [0xABu8; 512];
+        if disk.write_sync(1, &data).ok() != Some(512) {
+            return false;
+        }
 
-        let err = block_on(dev.read_into_buf(0, &mut dst)).unwrap_err();
-        assert_eq!(err, BlockError::InvalidBufferSize);
-        assert_eq!(dev.read_calls.load(Ordering::SeqCst), 0);
+        let mut buf = [0u8; 512];
+        disk.read_sync(1, &mut buf).ok() == Some(512) && buf == data
     }
 
-    #[test]
-    fn read_into_buf_default_fallback_copies() {
+    pub fn ramdisk_read_write_multiple_blocks_smoke() -> bool {
+        let disk = RamDisk::new(4, 512);
+        let data = [0x12u8; 1024];
+        if disk.write_sync(1, &data).ok() != Some(1024) {
+            return false;
+        }
+
+        let mut buf = [0u8; 1024];
+        disk.read_sync(1, &mut buf).ok() == Some(1024) && buf == data
+    }
+
+    pub fn read_into_buf_invalid_size_smoke() -> bool {
+        let dev = MemDev::new(4, 2);
+        let mut dst = OwnedBytes::from_vec(vec![0u8; 6]);
+
+        let err = run_future(dev.read_into_buf(0, &mut dst)).err();
+        err == Some(BlockError::InvalidBufferSize) && dev.read_calls.load(Ordering::SeqCst) == 0
+    }
+
+    pub fn read_into_buf_default_fallback_smoke() -> bool {
         let dev = MemDev::new(4, 4);
         let expected = [1u8, 2, 3, 4, 5, 6, 7, 8];
         {
@@ -1142,24 +1159,27 @@ mod borrowed_io_tests {
             data[..expected.len()].copy_from_slice(&expected);
         }
 
-        let mut dst = [0u8; 8];
-        block_on(dev.read_into_buf(0, &mut dst)).unwrap();
+        let mut dst = OwnedBytes::from_vec(vec![0u8; 8]);
+        if run_future(dev.read_into_buf(0, &mut dst)).is_err() {
+            return false;
+        }
 
-        assert_eq!(dst, expected);
-        assert_eq!(dev.read_calls.load(Ordering::SeqCst), 1);
+        AsRef::<[u8]>::as_ref(&dst) == expected.as_slice()
+            && dev.read_calls.load(Ordering::SeqCst) == 1
     }
 
-    #[test]
-    fn write_from_buf_default_fallback_copies() {
+    pub fn write_from_buf_default_fallback_smoke() -> bool {
         let dev = MemDev::new(4, 4);
-        let src = [9u8, 8, 7, 6, 5, 4, 3, 2];
+        let src = OwnedBytes::from_vec(vec![9u8, 8, 7, 6, 5, 4, 3, 2]);
 
-        block_on(dev.write_from_buf(0, &src)).unwrap();
+        if run_future(dev.write_from_buf(0, &src)).is_err() {
+            return false;
+        }
 
-        assert_eq!(dev.alloc_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(dev.write_calls.load(Ordering::SeqCst), 1);
         let data = dev.data.lock();
-        assert_eq!(&data[..src.len()], &src);
+        dev.alloc_calls.load(Ordering::SeqCst) == 1
+            && dev.write_calls.load(Ordering::SeqCst) == 1
+            && &data[..src.len()] == AsRef::<[u8]>::as_ref(&src)
     }
 }
 

@@ -181,18 +181,3 @@ pub fn log(msg: &str) {
         sys_log(msg.as_ptr(), msg.len());
     }
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_kernel_allocator_layout() {
-        // Basic sanity check - allocator struct is zero-sized
-        assert_eq!(core::mem::size_of::<KernelAllocator>(), 0);
-    }
-}

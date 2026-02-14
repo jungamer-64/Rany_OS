@@ -18,3 +18,4 @@ log = "0.4"
 # Default to no-std; enable std explicitly for host tests via `--features std`
 default = []
 std = []
+qemu-test-export = []

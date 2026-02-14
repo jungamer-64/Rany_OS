@@ -19,3 +19,4 @@ default = []
 metrics = []
 # Enable full-featured backoff algorithm
 advanced-backoff = []
+qemu-test-export = []

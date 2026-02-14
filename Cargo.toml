@@ -1,6 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
+    # QEMU-first test orchestration
+    "qemu-tests",
+    "qemu-suites/core",
+    "qemu-suites/drivers",
+    "qemu-suites/fs",
+    "qemu-suites/kernel",
+    "qemu-suites/tools",
+    "qemu-suites/pending",
+    "tools/qemu_runner",
     # Core
     "kernel",
     "hal",
@@ -38,6 +47,7 @@ members = [
     # They are runnable via their manifest paths.
 ]
 exclude = ["tools/framebuffer_bench", "tools/signer", "tools/cap_harness", "tools/symlookup"]
+default-members = ["qemu-tests"]
 
 [workspace.package]
 edition = "2024"
@@ -108,4 +118,3 @@ debug = false
 strip = "symbols"
 
 [profile.test]
-

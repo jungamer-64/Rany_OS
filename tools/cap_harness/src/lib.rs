@@ -1,8 +1,11 @@
-// Minimal harness that re-uses the `security` library for host testing.
+#![no_std]
 
-// Minimal harness to test CapNamespace::grant logic in isolation (host-only)
+extern crate alloc;
 
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 pub type Capability = u64;
 
@@ -85,13 +88,13 @@ impl CapabilitySet {
 
 #[derive(Default, Debug)]
 pub struct Manager {
-    map: HashMap<u64, CapabilitySet>,
+    map: BTreeMap<u64, CapabilitySet>,
 }
 
 impl Manager {
     pub fn new() -> Self {
         Self {
-            map: HashMap::new(),
+            map: BTreeMap::new(),
         }
     }
 
@@ -163,7 +166,7 @@ pub fn grant(
     Ok(cap)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host-tests"))]
 mod tests {
     use super::*;
 

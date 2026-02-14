@@ -23,33 +23,12 @@ use crate::sync::PoisonLock;
 use fat32::DefaultFat32FileSystem;
 use vfs::{
     /*Directory as VfsDirectory, File as VfsFile,*/ FileSystem as VfsFileSystem,
-    FileType as VfsFileType, Metadata as VfsMetadata, VfsError, VfsNode,
+    FileType as VfsFileType, Metadata as VfsMetadata, VfsNode,
 };
 
 // ============================================================================
 // Type Conversion
 // ============================================================================
-
-impl From<VfsError> for FsError {
-    fn from(err: VfsError) -> Self {
-        match err {
-            VfsError::NotFound => FsError::NotFound,
-            VfsError::PermissionDenied => FsError::PermissionDenied,
-            VfsError::AlreadyExists => FsError::AlreadyExists,
-            VfsError::NotADirectory => FsError::NotDirectory,
-            VfsError::IsADirectory => FsError::IsDirectory,
-            VfsError::DirectoryNotEmpty => FsError::NotEmpty,
-            VfsError::InvalidInput => FsError::InvalidArgument,
-            VfsError::StorageFull => FsError::NoSpace,
-            VfsError::ReadOnly => FsError::ReadOnly,
-            VfsError::IoError => FsError::IoError,
-            VfsError::NotSupported => FsError::NotSupported,
-            VfsError::FileSystemCorrupted => FsError::CorruptedFs,
-            VfsError::CrossDeviceLink => FsError::NotSupported,
-            VfsError::Other => FsError::IoError,
-        }
-    }
-}
 
 fn convert_file_type(ft: VfsFileType) -> FileType {
     match ft {
@@ -206,10 +185,14 @@ impl Inode for Fat32InodeAdapter {
 
         Ok(entries
             .into_iter()
-            .map(|e| DirEntry {
-                name: e.name,
-                ino: ino_for_name(&e.name),
-                file_type: convert_file_type(e.file_type),
+            .map(|e| {
+                let name = e.name;
+                let ino = ino_for_name(&name);
+                DirEntry {
+                    name,
+                    ino,
+                    file_type: convert_file_type(e.file_type),
+                }
             })
             .collect())
     }

@@ -197,3 +197,13 @@ mod tests {
         assert_eq!(config.entries[0].name, "Test");
     }
 }
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::parse_config;
+
+    pub fn parse_smoke() -> bool {
+        let cfg = parse_config("timeout=9\n[Main]\nkernel=rany_os\n");
+        cfg.timeout == 9 && cfg.entries.len() == 1 && cfg.entries[0].name == "Main"
+    }
+}

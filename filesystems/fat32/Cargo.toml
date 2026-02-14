@@ -25,3 +25,4 @@ futures = "0.3"
 
 [features]
 debug-trace = []
+qemu-test-export = []

@@ -4,7 +4,7 @@
 
 # 変数定義
 KERNEL_NAME := exorust_kernel
-TARGET := x86_64-rany_os
+TARGET := x86_64-exorust
 BUILD_MODE := debug
 QEMU := qemu-system-x86_64
 CARGO := cargo
@@ -77,13 +77,13 @@ gdb: build
 
 # テスト実行
 test:
-	@echo "Running kernel tests..."
-	$(CARGO) test --target $(TARGET).json
+	@echo "Running QEMU-first test suites..."
+	$(CARGO) test
 
 # 特定のテストを実行
 test-one:
-	@echo "Running single test..."
-	$(CARGO) test --target $(TARGET).json -- --test-threads=1
+	@echo "Running single QEMU-first test case..."
+	$(CARGO) test -- --test-threads=1
 
 # ==============================================================================
 # クリーンアップ

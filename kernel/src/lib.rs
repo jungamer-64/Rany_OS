@@ -2,8 +2,8 @@
 // enable the standard library so benchmark harnesses (Criterion) and
 // alloc-dependent graphics helpers can build and run under the host test
 // runner.
-#![no_std]
-#![cfg_attr(test, no_main)]
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(all(test, not(feature = "std")), no_main)]
 #![feature(custom_test_frameworks)]
 #![cfg_attr(test, test_runner(crate::test_runner))]
 #![reexport_test_harness_main = "test_main"]
@@ -12,6 +12,7 @@
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(alloc_error_handler))]
 #![feature(format_args_nl)]
 
+#[macro_use]
 extern crate alloc;
 
 
@@ -27,15 +28,23 @@ mod interrupt_macros;
 // ========== Test Runner & Entry Point ==========
 
 // Global Allocator for tests (requires full_mm_tests)
-#[cfg(feature = "full_mm_tests")]
+#[cfg(all(feature = "full_mm_tests", not(feature = "std")))]
 #[global_allocator]
 pub static ALLOCATOR: DummyGlobalAlloc = DummyGlobalAlloc;
 
 // Dummy allocator for tests if not found or problematic
-#[cfg(feature = "full_mm_tests")]
+#[cfg(all(feature = "full_mm_tests", not(feature = "std")))]
 pub struct DummyGlobalAlloc;
 
-#[cfg(feature = "full_mm_tests")]
+#[cfg(all(feature = "full_mm_tests", not(feature = "std")))]
+impl DummyGlobalAlloc {
+    /// full_mm_tests のダミー実装ではヒープ未初期化扱い。
+    pub fn is_initialized(&self) -> Option<bool> {
+        Some(false)
+    }
+}
+
+#[cfg(all(feature = "full_mm_tests", not(feature = "std")))]
 unsafe impl core::alloc::GlobalAlloc for DummyGlobalAlloc {
     unsafe fn alloc(&self, _layout: core::alloc::Layout) -> *mut u8 {
         core::ptr::null_mut()
@@ -43,11 +52,11 @@ unsafe impl core::alloc::GlobalAlloc for DummyGlobalAlloc {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
 }
 
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
 #[global_allocator]
 pub static ALLOCATOR: crate::mm::buddy_allocator::LockedBuddyHeap = crate::mm::buddy_allocator::LockedBuddyHeap::empty();
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "std")))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // Minimal serial init for test output
@@ -67,7 +76,7 @@ pub extern "C" fn _start() -> ! {
     exit_qemu(QemuExitCode::Success);
 }
 
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     unsafe {
@@ -80,7 +89,7 @@ fn panic(info: &PanicInfo) -> ! {
     exit_qemu(QemuExitCode::Failed);
 }
 
-#[cfg(all(test, feature = "full_mm_tests"))]
+#[cfg(all(test, feature = "full_mm_tests", not(feature = "std")))]
 #[panic_handler]
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
     crate::panic_handler::panic(info)
@@ -97,7 +106,7 @@ macro_rules! println {
             std::println!($($arg)*);
         } else {
              // In no_std, use kernel logger
-             $crate::io::log::print(format_args_nl!($($arg)*));
+             $crate::io::log::print(format_args!("{}\n", format_args!($($arg)*)));
         }
     });
 }
@@ -112,7 +121,7 @@ macro_rules! eprintln {
             std::eprintln!($($arg)*);
         } else {
              // In no_std, use kernel logger w/ error level or just print
-             $crate::io::log::print(format_args_nl!($($arg)*));
+             $crate::io::log::print(format_args!("{}\n", format_args!($($arg)*)));
         }
     });
 }
@@ -1669,7 +1678,7 @@ pub use crate::task::domain_system as domain_system;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod domain_system;
 
-#[cfg(all(test, not(target_os = "none")))]
+#[cfg(all(test, feature = "std", not(target_os = "none")))]
 mod async_swapout_sim_lib {
     use super::*;
     use std::collections::{HashSet, VecDeque};

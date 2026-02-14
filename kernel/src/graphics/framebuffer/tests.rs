@@ -1009,7 +1009,7 @@ fn test_pack_rgba_to_bgra_basic() {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
 #[test_case]
 fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
     // Only run the detailed SSSE3 check when the feature is available
@@ -1036,7 +1036,7 @@ fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[test_case]
 fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
     // Only run AVX2 check when available
@@ -1062,7 +1062,7 @@ fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[test_case]
 fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
     // Only run AVX2 check when available
@@ -1094,7 +1094,7 @@ fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
     assert_eq!(dst_simd, dst_scalar);
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
 #[test_case]
 fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
     #[cfg(feature = "std")]
@@ -1539,5 +1539,4 @@ fn test_draw_hline_24bit_rgb888_mmio() {
         assert_eq!(vram[off + 2], 255, "Pixel {} B", i);
     }
 }
-
 

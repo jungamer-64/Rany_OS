@@ -17,13 +17,15 @@ use super::ipv4::{
 use super::mempool::{PacketPool, PacketRef};
 use super::optimization::PacketBatch;
 use super::tcp::{
-    TcpError, TcpFlags, TcpListener, TcpProcessor, TcpProcessResult, TcpSegmentBuilder, TcpStream, 
-    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpHeader, send_tcp_segment
+    TcpControlBlock, TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream,
+    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpHeader,
 };
 
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
 
 use crate::sync::PoisonLock;
+#[cfg(any(test, feature = "full_mm_tests"))]
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -608,19 +610,14 @@ impl NetworkStack {
                     .set_protocol(IpProtocol::Igmp)
                     .set_source(config.ipv4.address)
                     .set_destination(group_addr);
-                
-                // Build IGMP message
-                let igmp_start = 20; // After IP header
-                if payload.len() >= igmp_start + 8 {
-                    if let Some(len) = super::igmp::IgmpProcessor::build_report(
-                        group_addr,
-                        &mut payload[igmp_start..],
-                    ) {
+
+                // Build IGMP message into IPv4 payload.
+                let ip_payload = ip_pkt.payload_mut();
+                if ip_payload.len() >= 8 {
+                    if let Some(len) = super::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
-                        ip_pkt.set_total_length(total_len);
-                        ip_pkt.update_checksum();
-                        
-                        // Transmit
+                        ip_pkt.set_total_length(total_len).update_checksum();
+
                         let frame_len = 14 + total_len as usize;
                         if let Some(tx_fn) = self.transmit_fn {
                             if tx_fn(&buffer[..frame_len]) {
@@ -660,19 +657,14 @@ impl NetworkStack {
                     .set_protocol(IpProtocol::Igmp)
                     .set_source(config.ipv4.address)
                     .set_destination(all_routers);
-                
-                // Build IGMP leave message
-                let igmp_start = 20;
-                if payload.len() >= igmp_start + 8 {
-                    if let Some(len) = super::igmp::IgmpProcessor::build_leave(
-                        group_addr,
-                        &mut payload[igmp_start..],
-                    ) {
+
+                // Build IGMP leave into IPv4 payload.
+                let ip_payload = ip_pkt.payload_mut();
+                if ip_payload.len() >= 8 {
+                    if let Some(len) = super::igmp::IgmpProcessor::build_leave(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
-                        ip_pkt.set_total_length(total_len);
-                        ip_pkt.update_checksum();
-                        
-                        // Transmit
+                        ip_pkt.set_total_length(total_len).update_checksum();
+
                         let frame_len = 14 + total_len as usize;
                         if let Some(tx_fn) = self.transmit_fn {
                             if tx_fn(&buffer[..frame_len]) {
@@ -717,37 +709,43 @@ impl NetworkStack {
                 window,
                 payload,
             } => {
-                let mut buffer = [0u8; 1518];
+                let mut buffer = [0u8; MAX_PACKET_SIZE];
                 let header_len = 20;
                 let total_len = header_len + payload.len();
-                
+
                 if total_len > buffer.len() {
                     return;
                 }
 
-                let segment_buffer = &mut buffer[..total_len];
-                let mut builder = TcpSegmentBuilder::new(local.port, remote.port);
-                builder.seq(seq);
-                if flags.contains(TcpFlags::ACK) {
-                    builder.ack(ack);
-                }
-                builder.window(window);
-                let built = builder.build();
-                segment_buffer[..20].copy_from_slice(&built);
+                // Construct TCP header
+                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
+                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+                buffer[4..8].copy_from_slice(&seq.to_be_bytes());
+                buffer[8..12].copy_from_slice(&ack.to_be_bytes());
+                let offset_flags = (5u16 << 12) | (flags & 0x01ff);
+                buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+                buffer[14..16].copy_from_slice(&window.to_be_bytes());
+                buffer[16..18].fill(0);
+                buffer[18..20].fill(0);
                 if !payload.is_empty() {
-                    segment_buffer[20..].copy_from_slice(&payload);
+                    buffer[20..total_len].copy_from_slice(&payload);
                 }
-                TcpSegmentBuilder::calculate_checksum(segment_buffer, local.ip, remote.ip);
-                send_tcp_segment(local, remote, segment_buffer.to_vec());
-            }
-            TcpProcessResult::ConnectionEstablished => {}
-            TcpProcessResult::DataReceived => {}
-            TcpProcessResult::ConnectionClosed => {}
-            TcpProcessResult::Dropped => {
-                self.stats.record_dropped();
-            }
-            TcpProcessResult::Error => {
-                self.stats.record_rx_error();
+
+                super::tcp::calculate_tcp_checksum(
+                    &mut buffer[..total_len],
+                    local.ip.octets(),
+                    remote.ip.octets(),
+                );
+
+                let src_ip_out = Ipv4Address::new(local.ip.octets());
+                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                let now = self.current_time();
+                if sent {
+                    self.tcp.record_sent_packet(local, remote, seq, flags, &payload, now);
+                } else {
+                    log::info!("[NET] send failed for {} -> {} (will retry)", local, remote);
+                }
             }
             TcpProcessResult::None => {}
         }
@@ -1333,6 +1331,18 @@ impl NetworkStack {
     pub fn bind_tcp(&mut self, addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
         // Delegate to processor
         self.tcp.bind(addr)
+    }
+
+    /// Test helper: insert a pre-built TCP connection into the stack.
+    #[cfg(any(test, feature = "full_mm_tests"))]
+    pub fn insert_test_tcp_connection(
+        &mut self,
+        local_addr: TcpSocketAddr,
+        remote_addr: TcpSocketAddr,
+        tcb: Arc<PoisonLock<TcpControlBlock>>,
+    ) {
+        self.tcp
+            .insert_test_connection(local_addr, remote_addr, tcb);
     }
 
     /// Send a raw TCP segment
@@ -2203,9 +2213,9 @@ mod tests {
     fn test_send_udp_fallback_zero_copy() {
         // Initialize stack and set transmit function to always succeed
         init_default();
-        if let Ok(mut guard) = stack::stack().lock() {
+        if let Ok(mut guard) = stack().lock() {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_data| true);
+                s.set_transmit_fn(|_data: &[u8]| true);
             }
         }
 
@@ -2217,9 +2227,9 @@ mod tests {
     fn test_send_icmp_fallback_zero_copy() {
         // Initialize stack and set transmit function
         init_default();
-        if let Ok(mut guard) = stack::stack().lock() {
+        if let Ok(mut guard) = stack().lock() {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_data| true);
+                s.set_transmit_fn(|_data: &[u8]| true);
                 // Pre-populate ARP cache so ping will proceed
                 let target = Ipv4Address::new([8, 8, 8, 8]);
                 s.arp.cache().insert(
@@ -2230,7 +2240,7 @@ mod tests {
             }
         }
 
-        let res = send_icmp_echo([8, 8, 8, 8], 1);
+        let res = crate::net::send_icmp_echo([8, 8, 8, 8], 1);
         assert!(res.is_ok());
     }
 
@@ -2320,4 +2330,3 @@ mod tests {
         assert!(cache.get(Ipv4Address::new([10, 0, 0, 0])).is_none());
     }
 }
-

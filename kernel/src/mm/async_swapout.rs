@@ -2217,6 +2217,7 @@ mod tests {
         assert!(after.async_fail > before.async_fail);
         assert!(after.requeued > before.requeued);
         assert_eq!(after.total_reclaimed, before.total_reclaimed);
+        assert!(after.writeback_skipped > before.writeback_skipped);
 
         if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
             let physf = unsafe {
@@ -2269,6 +2270,7 @@ mod tests {
         assert!(after.async_fail > before.async_fail);
         assert!(after.requeued > before.requeued);
         assert_eq!(after.total_reclaimed, before.total_reclaimed);
+        assert_eq!(after.writeback_skipped, before.writeback_skipped);
 
         if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
             let physf = unsafe {
@@ -2328,6 +2330,43 @@ mod tests {
         assert_eq!(after_duplicate.total_reclaimed, after.total_reclaimed);
 
         stop_worker();
+    }
+
+    #[test_case]
+    fn test_notify_failure_once_per_pending() {
+        let before = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        crate::mm::page_reclaim::test_register_pending_async(
+            frame_idx,
+            crate::mm::page_reclaim::PageType::Anonymous,
+            0,
+        );
+
+        crate::mm::page_reclaim::notify_async_swapout_failure(frame_idx);
+        let after = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+        assert_eq!(after.pending_async, before.pending_async);
+        assert_eq!(after.async_fail, before.async_fail + 1);
+        assert_eq!(after.requeued, before.requeued + 1);
+        assert_eq!(after.total_reclaimed, before.total_reclaimed);
+
+        // Duplicate failure notify should not double count.
+        crate::mm::page_reclaim::notify_async_swapout_failure(frame_idx);
+        let after_duplicate = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+        assert_eq!(after_duplicate.pending_async, after.pending_async);
+        assert_eq!(after_duplicate.async_fail, after.async_fail);
+        assert_eq!(after_duplicate.requeued, after.requeued);
+        assert_eq!(after_duplicate.total_reclaimed, after.total_reclaimed);
+
+        if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
+            let physf = unsafe {
+                x86_64::structures::paging::PhysFrame::from_start_address_unchecked(
+                    x86_64::PhysAddr::new(frame_idx.to_phys_addr()),
+                )
+            };
+            crate::mm::buddy_allocator::buddy_dealloc_frame(physf);
+        }
     }
 
     #[test_case]

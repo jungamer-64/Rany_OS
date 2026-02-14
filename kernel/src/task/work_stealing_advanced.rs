@@ -1001,10 +1001,10 @@ mod tests {
         assert!(deque.is_empty());
 
         let task = Box::new(StealableTask::new(TaskId(1), Priority::Normal));
-        assert!(deque.push(task).is_ok());
+        assert!(unsafe { deque.push(task) }.is_ok());
         assert_eq!(deque.len(), 1);
 
-        let popped = deque.pop();
+        let popped = unsafe { deque.pop() };
         assert!(popped.is_some());
         assert!(deque.is_empty());
     }

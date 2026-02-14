@@ -27,3 +27,5 @@ default = []
 standalone = ["export_driver_entry"]
 # When building as a standalone plugin, export the C ABI driver entry symbol
 export_driver_entry = []
+# Export test functions for QEMU integration tests
+qemu-test-export = []

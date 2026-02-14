@@ -596,3 +596,61 @@ pub fn init() {
     // xHCIコントローラの初期化はPCIスキャン時に行われる
     // Note: logging handled by caller
 }
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use crate::xhci::{
+        CommandBuilder, DoorbellBatch, DoorbellTarget, TransferBuilder, TrbType,
+    };
+
+    pub fn doorbell_target_smoke() -> bool {
+        DoorbellTarget::CommandRing.target_value() == 0
+            && DoorbellTarget::ControlEndpoint0.target_value() == 1
+            && DoorbellTarget::OutEndpoint(1).target_value() == 2
+            && DoorbellTarget::InEndpoint(1).target_value() == 3
+            && DoorbellTarget::OutEndpoint(2).target_value() == 4
+            && DoorbellTarget::InEndpoint(2).target_value() == 5
+    }
+
+    pub fn doorbell_from_endpoint_smoke() -> bool {
+        DoorbellTarget::from_endpoint(0) == DoorbellTarget::ControlEndpoint0
+            && DoorbellTarget::from_endpoint(1) == DoorbellTarget::OutEndpoint(1)
+            && DoorbellTarget::from_endpoint(0x81) == DoorbellTarget::InEndpoint(1)
+            && DoorbellTarget::from_endpoint(0x82) == DoorbellTarget::InEndpoint(2)
+    }
+
+    pub fn doorbell_batch_smoke() -> bool {
+        let mut batch = DoorbellBatch::new();
+        if !batch.is_empty() {
+            return false;
+        }
+        batch
+            .add(1, DoorbellTarget::ControlEndpoint0)
+            .add(2, DoorbellTarget::InEndpoint(1));
+        if batch.len() != 2 {
+            return false;
+        }
+        if batch.is_empty() {
+            return false;
+        }
+        batch.clear();
+        batch.is_empty()
+    }
+
+    pub fn command_builder_smoke() -> bool {
+        let noop = CommandBuilder::noop();
+        let noop_type = (noop.control >> 10) & 0x3F;
+        if noop_type != TrbType::NoOpCommand as u32 {
+            return false;
+        }
+        let enable = CommandBuilder::enable_slot();
+        let enable_type = (enable.control >> 10) & 0x3F;
+        enable_type == TrbType::EnableSlot as u32
+    }
+
+    pub fn transfer_builder_smoke() -> bool {
+        let setup = TransferBuilder::setup_stage(0x80, 0x06, 0x0100, 0, 18, 3);
+        let setup_type = (setup.control >> 10) & 0x3F;
+        setup_type == TrbType::SetupStage as u32
+    }
+}

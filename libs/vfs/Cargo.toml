@@ -21,3 +21,4 @@ futures = "0.3"
 [features]
 default = ["alloc"]
 alloc = []
+qemu-test-export = []

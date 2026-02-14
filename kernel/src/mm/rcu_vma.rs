@@ -244,7 +244,7 @@ impl VmaList {
     pub fn insert(&self, new_vma: Box<VmArea>) {
         // NOTE: 外部ロックが必要（呼び出し側で排他制御）
         let mut prev_ptr: *mut VmArea = core::ptr::null_mut();
-        let mut current_ptr = self.head.ptr.load(Ordering::Acquire);
+        let mut current_ptr = self.head.load_raw_mut();
 
         while !current_ptr.is_null() {
             let current = unsafe { &*current_ptr };
@@ -252,17 +252,17 @@ impl VmaList {
                 break;
             }
             prev_ptr = current_ptr as *mut VmArea;
-            current_ptr = current.next.ptr.load(Ordering::Acquire);
+            current_ptr = current.next.load_raw_mut();
         }
 
-        new_vma.next.ptr.store(current_ptr, Ordering::Release);
+        new_vma.next.store_raw_mut(current_ptr);
         let new_ptr = Box::into_raw(new_vma);
 
         if prev_ptr.is_null() {
-            self.head.ptr.store(new_ptr, Ordering::Release);
+            self.head.store_raw_mut(new_ptr);
         } else {
             unsafe {
-                (*prev_ptr).next.ptr.store(new_ptr, Ordering::Release);
+                (*prev_ptr).next.store_raw_mut(new_ptr);
             }
         }
 
@@ -275,17 +275,17 @@ impl VmaList {
     pub fn remove(&self, addr: VirtAddr) -> bool {
         // NOTE: 外部ロックが必要（呼び出し側で排他制御）
         let mut prev_ptr: *mut VmArea = core::ptr::null_mut();
-        let mut current_ptr = self.head.ptr.load(Ordering::Acquire);
+        let mut current_ptr = self.head.load_raw_mut();
 
         while !current_ptr.is_null() {
             let current = unsafe { &*current_ptr };
             if current.start == addr {
-                let next_ptr = current.next.ptr.load(Ordering::Acquire);
+                let next_ptr = current.next.load_raw_mut();
                 if prev_ptr.is_null() {
-                    self.head.ptr.store(next_ptr, Ordering::Release);
+                    self.head.store_raw_mut(next_ptr);
                 } else {
                     unsafe {
-                        (*prev_ptr).next.ptr.store(next_ptr, Ordering::Release);
+                        (*prev_ptr).next.store_raw_mut(next_ptr);
                     }
                 }
                 self.count.fetch_sub(1, Ordering::Relaxed);
@@ -296,7 +296,7 @@ impl VmaList {
                 break;
             }
             prev_ptr = current_ptr as *mut VmArea;
-            current_ptr = current.next.ptr.load(Ordering::Acquire);
+            current_ptr = current.next.load_raw_mut();
         }
 
         false

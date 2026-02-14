@@ -2204,6 +2204,17 @@ impl TcpProcessor {
         Ok(TcpStream { tcb: tcb_arc })
     }
 
+    /// Test-only helper to seed an existing connection.
+    #[cfg(any(test, feature = "full_mm_tests"))]
+    pub fn insert_test_connection(
+        &mut self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        tcb: Arc<PoisonLock<TcpControlBlock>>,
+    ) {
+        self.connections.insert((local_addr, remote_addr), tcb);
+    }
+
 
 
     /// Process an incoming TCP segment
@@ -2975,8 +2986,14 @@ mod tests {
         packet.set_len(header_len + payload.len());
 
         // Call process_with_packet (zero-copy path)
-        let data = packet.data();
-        let res = processor.process_with_packet(data, Ipv4Address::from_octets(127,0,0,1), Ipv4Address::from_octets(127,0,0,1), packet);
+        let data = alloc::vec::Vec::from(packet.data());
+        let res = processor.process_with_packet(
+            &data,
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            packet,
+            0,
+        );
 
         // Ensure payload was enqueued as PacketRef
         if let Ok(g) = tcb_arc.lock() {
@@ -3101,7 +3118,12 @@ mod tests {
         syn[14..16].copy_from_slice(&65535u16.to_be_bytes());
 
         // Server processes SYN -> should return a SYN-ACK
-        let res = server.process(&syn, Ipv4Address::from_octets(127,0,0,1), Ipv4Address::from_octets(127,0,0,1));
+        let res = server.process(
+            &syn,
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            0,
+        );
         let syn_ack_pkt = match res {
             TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
                 assert!(flags & TcpHeader::FLAG_SYN != 0);
@@ -3122,7 +3144,12 @@ mod tests {
         synack[14..16].copy_from_slice(&65535u16.to_be_bytes());
 
         // Client processes SYN-ACK -> should generate an ACK
-        let client_res = client.process(&synack, Ipv4Address::from_octets(127,0,0,1), Ipv4Address::from_octets(127,0,0,1));
+        let client_res = client.process(
+            &synack,
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            0,
+        );
 
         let ack_pkt = match client_res {
             TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
@@ -3142,7 +3169,12 @@ mod tests {
         ack[12..14].copy_from_slice(&ack_off_flags);
         ack[14..16].copy_from_slice(&65535u16.to_be_bytes());
 
-        let srv_res = server.process(&ack, Ipv4Address::from_octets(127,0,0,1), Ipv4Address::from_octets(127,0,0,1));
+        let srv_res = server.process(
+            &ack,
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            Ipv4Address::from_octets(127, 0, 0, 1),
+            0,
+        );
 
         // Server should have moved the child TCB to Established and queued it in backlog
         match srv_res {
@@ -3336,7 +3368,7 @@ mod tests {
         // First poll: Pending (no backlog)
         match pinned.as_mut().poll(&mut cx) {
             Poll::Pending => {}
-            other => panic!("AcceptFuture expected Pending, got {:?}", other),
+            _ => panic!("AcceptFuture expected Pending"),
         }
 
         // Prepare a TcpStream and push into backlog
@@ -3355,7 +3387,7 @@ mod tests {
                 assert_eq!(addr, remote);
                 assert!(stream.peer_addr().is_some());
             }
-            other => panic!("AcceptFuture expected Ready, got {:?}", other),
+            _ => panic!("AcceptFuture expected Ready"),
         }
     }
 
@@ -3398,5 +3430,3 @@ mod tests {
         }
     }
 }
-
-

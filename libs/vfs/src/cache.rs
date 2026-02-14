@@ -621,57 +621,98 @@ pub fn page_cache() -> &'static PageCache {
     PAGE_CACHE.get().expect("Page cache not initialized")
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
 
-    #[test]
-    fn test_cached_page() {
+    pub fn cached_page_smoke() -> bool {
         let page = CachedPage::new_empty(0);
-        assert_eq!(page.page_num(), 0);
-        assert_eq!(page.state(), PageState::Clean);
-        assert!(!page.is_dirty());
+        if page.page_num() != 0 || page.state() != PageState::Clean || page.is_dirty() {
+            return false;
+        }
 
         page.mark_dirty();
-        assert!(page.is_dirty());
-        assert_eq!(page.state(), PageState::Dirty);
+        page.is_dirty() && page.state() == PageState::Dirty
     }
 
-    #[test]
-    fn test_page_pin() {
+    pub fn page_pin_smoke() -> bool {
         let page = CachedPage::new_empty(0);
-        assert!(!page.is_pinned());
+        if page.is_pinned() {
+            return false;
+        }
 
         page.pin();
-        assert!(page.is_pinned());
+        if !page.is_pinned() {
+            return false;
+        }
 
         page.unpin();
-        assert!(!page.is_pinned());
+        !page.is_pinned()
     }
 
-    #[test]
-    fn test_page_cache() {
+    pub fn page_cache_smoke() -> bool {
         let cache = PageCache::new(64 * 1024);
 
-        // Insert a page
         let data = alloc::vec![0x42u8; PAGE_SIZE];
         cache.insert(1, 0, data, PAGE_SIZE as u64);
 
-        // Read from cache
         let mut buf = [0u8; 10];
         let result = cache.read(1, 0, &mut buf, PAGE_SIZE as u64);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), 10);
-        assert_eq!(buf, [0x42u8; 10]);
-
-        // Check stats
         let stats = cache.stats();
-        assert_eq!(stats.hits, 1);
-        assert_eq!(stats.pages, 1);
+
+        result == Some(10) && buf == [0x42u8; 10] && stats.hits == 1 && stats.pages == 1
+    }
+
+    pub fn block_cache_basic_smoke() -> bool {
+        let cache = LRUBlockCache::new(512, 4096);
+
+        let data1 = alloc::vec![0x11u8; 512];
+        let data2 = alloc::vec![0x22u8; 512];
+        cache.insert(0, 0, data1);
+        cache.insert(0, 1, data2);
+
+        let mut buf = [0u8; 10];
+        let result = cache.read(0, 0, 0, &mut buf);
+        let stats = cache.stats();
+
+        result == Some(10) && buf == [0x11u8; 10] && stats.hits == 1 && stats.blocks == 2
+    }
+
+    pub fn block_cache_lru_eviction_smoke() -> bool {
+        let cache = LRUBlockCache::new(512, 1024);
+
+        cache.insert(0, 0, alloc::vec![0x11u8; 512]);
+        cache.insert(0, 1, alloc::vec![0x22u8; 512]);
+        cache.insert(0, 2, alloc::vec![0x33u8; 512]);
+
+        cache.get(0, 0).is_none() && cache.get(0, 1).is_some() && cache.get(0, 2).is_some()
+    }
+
+    pub fn block_cache_dirty_tracking_smoke() -> bool {
+        let cache = LRUBlockCache::new(512, 4096);
+
+        cache.insert(0, 0, alloc::vec![0x11u8; 512]);
+        if cache.write(0, 0, 0, &[0xFFu8; 10]).is_none() {
+            return false;
+        }
+
+        cache.get(0, 0).map(|block| block.is_dirty()).unwrap_or(false)
+    }
+
+    pub fn block_cache_flush_smoke() -> bool {
+        let cache = LRUBlockCache::new(512, 4096);
+        cache.insert(0, 0, alloc::vec![0x11u8; 512]);
+        let _ = cache.write(0, 0, 0, &[0xFFu8; 10]);
+
+        let mut flushed_data = Vec::new();
+        let result = cache.flush_block(0, 0, |data| {
+            flushed_data = data.to_vec();
+            Ok(())
+        });
+
+        let flushed = result == Ok(true) && flushed_data.first().copied() == Some(0xFF);
+        let clean = cache.get(0, 0).map(|block| !block.is_dirty()).unwrap_or(false);
+        flushed && clean
     }
 }
 
@@ -1394,93 +1435,4 @@ pub fn init_block_cache(block_size: usize, limit: usize) {
 /// Get the global block cache
 pub fn block_cache() -> &'static LRUBlockCache {
     BLOCK_CACHE.get().expect("Block cache not initialized")
-}
-
-// ============================================================================
-// Block Cache Tests
-// ============================================================================
-
-#[cfg(test)]
-mod block_cache_tests {
-    use super::*;
-
-    #[test]
-    fn test_block_cache_basic() {
-        let cache = LRUBlockCache::new(512, 4096); // 4KB cache, 512B blocks
-
-        // Insert blocks
-        let data1 = alloc::vec![0x11u8; 512];
-        let data2 = alloc::vec![0x22u8; 512];
-
-        cache.insert(0, 0, data1);
-        cache.insert(0, 1, data2);
-
-        // Read from cache
-        let mut buf = [0u8; 10];
-        let result = cache.read(0, 0, 0, &mut buf);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), 10);
-        assert_eq!(buf, [0x11u8; 10]);
-
-        // Check stats
-        let stats = cache.stats();
-        assert_eq!(stats.hits, 1);
-        assert_eq!(stats.blocks, 2);
-    }
-
-    #[test]
-    fn test_block_cache_lru_eviction() {
-        let cache = LRUBlockCache::new(512, 1024); // 1KB cache, 512B blocks (max 2 blocks)
-
-        // Insert 3 blocks (should evict first block)
-        cache.insert(0, 0, alloc::vec![0x11u8; 512]);
-        cache.insert(0, 1, alloc::vec![0x22u8; 512]);
-        cache.insert(0, 2, alloc::vec![0x33u8; 512]); // Should evict block 0
-
-        // Block 0 should be evicted
-        assert!(cache.get(0, 0).is_none());
-
-        // Blocks 1 and 2 should still be in cache
-        assert!(cache.get(0, 1).is_some());
-        assert!(cache.get(0, 2).is_some());
-    }
-
-    #[test]
-    fn test_block_cache_dirty_tracking() {
-        let cache = LRUBlockCache::new(512, 4096);
-
-        cache.insert(0, 0, alloc::vec![0x11u8; 512]);
-
-        // Write to block (marks as dirty)
-        let buf = [0xFFu8; 10];
-        let result = cache.write(0, 0, 0, &buf);
-        assert!(result.is_some());
-
-        // Verify block is dirty
-        let block = cache.get(0, 0).unwrap();
-        assert!(block.is_dirty());
-    }
-
-    #[test]
-    fn test_block_cache_flush() {
-        let cache = LRUBlockCache::new(512, 4096);
-
-        cache.insert(0, 0, alloc::vec![0x11u8; 512]);
-        cache.write(0, 0, 0, &[0xFFu8; 10]);
-
-        // Flush the block
-        let mut flushed_data = Vec::new();
-        let result = cache.flush_block(0, 0, |data| {
-            flushed_data = data.to_vec();
-            Ok(())
-        });
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), true);
-        assert_eq!(flushed_data[0], 0xFF);
-
-        // Block should now be clean
-        let block = cache.get(0, 0).unwrap();
-        assert!(!block.is_dirty());
-    }
 }
