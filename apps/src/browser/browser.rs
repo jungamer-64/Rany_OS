@@ -18,8 +18,8 @@ use graphic_types::{Color, Image};
 use super::css::{CssColor, CssParser, Stylesheet};
 use super::dom::Node;
 use super::html::HtmlParser;
-use super::layout::{Dimensions, Rect, layout_tree};
-use super::render::{DisplayCommand, DisplayList, build_display_list};
+use super::layout::{layout_tree, Dimensions, Rect};
+use super::render::{build_display_list, DisplayCommand, DisplayList};
 use super::style::style_tree;
 
 // ============================================================================
@@ -517,30 +517,24 @@ impl Default for Browser {
     }
 }
 
-// ============================================================================
-// Unit Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
 
-    #[test]
-    fn test_browser_creation() {
+    pub fn browser_creation_smoke() -> bool {
         let browser = Browser::new();
-        assert_eq!(browser.state, BrowserState::Idle);
+        browser.state == BrowserState::Idle
     }
 
-    #[test]
-    fn test_history() {
+    pub fn history_smoke() -> bool {
         let mut browser = Browser::new();
         browser.navigate("http://example.com");
 
-        assert!(browser.can_go_back());
-        assert!(!browser.can_go_forward());
+        if !browser.can_go_back() || browser.can_go_forward() {
+            return false;
+        }
 
         browser.go_back();
-        assert!(!browser.can_go_back());
-        assert!(browser.can_go_forward());
+        !browser.can_go_back() && browser.can_go_forward()
     }
 }

@@ -25,6 +25,21 @@ rustflags = [
     # "force-frame-pointers=yes", # Uncomment for better stack traces
 ]
 
+# Kernel unit test target: identity-mapped at 1MB, small code model
+[target.x86_64-exorust-test]
+rustflags = [
+    "-C",
+    "relocation-model=static",
+    "-C",
+    "code-model=small",
+    "-C",
+    "link-arg=--no-gc-sections",
+    "-C",
+    "link-arg=--no-pie",
+    "-C",
+    "link-arg=-Map=kernel-test.map",
+]
+
 [target.'cfg(target_os = "none")']
 runner = ["pwsh", "scripts/run.ps1", "-CargoRunner", "-CargoKernelPath"]
 

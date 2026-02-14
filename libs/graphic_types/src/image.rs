@@ -1416,62 +1416,46 @@ impl IconGenerator {
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
 
-    #[test]
-    fn test_try_new_overflow_protection() {
-        // u32::MAX * u32::MAX would overflow
+    pub fn try_new_overflow_smoke() -> bool {
         let result = Image::try_new(u32::MAX, u32::MAX);
-        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
+        matches!(result, Err(ImageError::DimensionsTooLarge))
     }
 
-    #[test]
-    fn test_try_new_max_size_limit() {
-        // 16384 x 16384 x 4 = 1GB > MAX_IMAGE_SIZE (256MB)
+    pub fn try_new_max_size_smoke() -> bool {
         let result = Image::try_new(16384, 16384);
-        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
+        matches!(result, Err(ImageError::DimensionsTooLarge))
     }
 
-    #[test]
-    fn test_try_new_valid_size() {
-        // 100 x 100 = 40KB < MAX_IMAGE_SIZE
-        let result = Image::try_new(100, 100);
-        assert!(result.is_ok());
-        let img = result.unwrap();
-        assert_eq!(img.width(), 100);
-        assert_eq!(img.height(), 100);
+    pub fn try_new_valid_smoke() -> bool {
+        match Image::try_new(100, 100) {
+            Ok(img) => img.width() == 100 && img.height() == 100,
+            Err(_) => false,
+        }
     }
 
-    #[test]
-    fn test_try_filled_overflow_protection() {
+    pub fn try_filled_overflow_smoke() -> bool {
         let result = Image::try_filled(u32::MAX, 2, Color::RED);
-        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
+        matches!(result, Err(ImageError::DimensionsTooLarge))
     }
 
-    #[test]
-    fn test_image_view_basic() {
+    pub fn image_view_basic_smoke() -> bool {
         let mut img = Image::new(10, 10);
         img.set_pixel(5, 5, Color::RED);
 
         let view = img.as_view();
-        assert_eq!(view.width(), 10);
-        assert_eq!(view.height(), 10);
-        assert_eq!(view.stride(), 40); // 10 * 4
+        if view.width() != 10 || view.height() != 10 || view.stride() != 40 {
+            return false;
+        }
 
         let pixel = view.get_pixel(5, 5);
-        assert_eq!(pixel.red, 255);
-        assert_eq!(pixel.green, 0);
-        assert_eq!(pixel.blue, 0);
+        pixel.red == 255 && pixel.green == 0 && pixel.blue == 0
     }
 
-    #[test]
-    fn test_image_view_mut_set_pixel() {
+    pub fn image_view_mut_set_pixel_smoke() -> bool {
         let mut img = Image::new(10, 10);
 
         {
@@ -1480,12 +1464,10 @@ mod tests {
         }
 
         let pixel = img.get_pixel(3, 3);
-        assert_eq!(pixel.blue, 255);
-        assert_eq!(pixel.red, 0);
+        pixel.blue == 255 && pixel.red == 0
     }
 
-    #[test]
-    fn test_image_view_mut_fill_rect() {
+    pub fn image_view_mut_fill_rect_smoke() -> bool {
         let mut img = Image::new(10, 10);
 
         {
@@ -1493,54 +1475,41 @@ mod tests {
             view.fill_rect(Rect::new(2, 2, 3, 3), Color::GREEN);
         }
 
-        // Inside rect
-        assert_eq!(img.get_pixel(3, 3).green, 255);
-        // Outside rect
-        assert_eq!(img.get_pixel(0, 0).green, 0);
+        img.get_pixel(3, 3).green == 255 && img.get_pixel(0, 0).green == 0
     }
 
-    #[test]
-    fn test_image_view_out_of_bounds() {
+    pub fn image_view_out_of_bounds_smoke() -> bool {
         let img = Image::new(10, 10);
         let view = img.as_view();
-
-        // Should return TRANSPARENT for out-of-bounds
         let pixel = view.get_pixel(100, 100);
-        assert_eq!(pixel.alpha, 0);
+        pixel.alpha == 0
     }
 
-    #[test]
-    fn test_image_view_external_buffer() {
-        // Simulate VRAM buffer
-        let mut buffer = vec![0u8; 100 * 4]; // 10x10 RGBA
-
-        let mut view = ImageViewMut::new(&mut buffer, 10, 10, 40, PixelFormat::Rgba8888).unwrap();
+    pub fn image_view_external_buffer_smoke() -> bool {
+        let mut buffer = vec![0u8; 100 * 4];
+        let mut view = match ImageViewMut::new(&mut buffer, 10, 10, 40, PixelFormat::Rgba8888) {
+            Some(v) => v,
+            None => return false,
+        };
 
         view.set_pixel(0, 0, Color::RED);
 
-        // Check raw buffer was modified
-        assert_eq!(buffer[0], 255); // R
-        assert_eq!(buffer[1], 0); // G
-        assert_eq!(buffer[2], 0); // B
-        assert_eq!(buffer[3], 255); // A
+        buffer[0] == 255 && buffer[1] == 0 && buffer[2] == 0 && buffer[3] == 255
     }
 
-    #[test]
-    fn test_image_view_stride() {
-        // Buffer with padding (stride 48 instead of 40 for 10 pixels)
-        let mut buffer = vec![0u8; 48 * 10]; // 10 rows with 8 byte padding each
+    pub fn image_view_stride_smoke() -> bool {
+        let mut buffer = vec![0u8; 48 * 10];
+        let mut view = match ImageViewMut::new(&mut buffer, 10, 10, 48, PixelFormat::Rgba8888) {
+            Some(v) => v,
+            None => return false,
+        };
 
-        let mut view = ImageViewMut::new(&mut buffer, 10, 10, 48, PixelFormat::Rgba8888).unwrap();
-
-        // Set pixel on second row
         view.set_pixel(0, 1, Color::BLUE);
 
-        // Should be at offset 48 (stride), not 40
-        assert_eq!(buffer[48 + 2], 255); // B at row 1
+        buffer[48 + 2] == 255
     }
 
-    #[test]
-    fn test_max_image_size_constant() {
-        assert_eq!(MAX_IMAGE_SIZE, 256 * 1024 * 1024);
+    pub fn max_image_size_constant_smoke() -> bool {
+        MAX_IMAGE_SIZE == 256 * 1024 * 1024
     }
 }

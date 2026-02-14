@@ -734,6 +734,7 @@ name = "qemu_suite_core"
 version = "0.1.0"
 dependencies = [
  "exorust_sync",
+ "graphic_types",
  "kernel_api",
  "security",
 ]
@@ -761,6 +762,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "qemu_suite_graphics"
+version = "0.1.0"
+dependencies = [
+ "exorust_apps",
+ "graphic_types",
+]
+
+[[package]]
 name = "qemu_suite_kernel"
 version = "0.1.0"
 
@@ -773,6 +782,7 @@ name = "qemu_suite_tools"
 version = "0.1.0"
 dependencies = [
  "cap_harness",
+ "graphic_types",
 ]
 
 [[package]]

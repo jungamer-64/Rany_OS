@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::Waker;
 
 use crate::keyboard::{IsrSafeWaker, KeyCodeExt, ModifierState};
-use crate::keymap::{DEFAULT_KEYMAP, Keymap};
+use crate::keymap::{Keymap, DEFAULT_KEYMAP};
 use crate::queue::ScancodeQueue;
 use crate::stream::{DriverOps, KeyboardStream, KeyboardStreamArc};
 use crate::{KeyCode, KeyEvent, KeyState, Modifiers, StreamAlreadyTaken};
@@ -281,4 +281,3 @@ impl DriverOps for KeyboardDriver {
         KeyboardDriver::return_stream(self)
     }
 }
-

@@ -7,8 +7,6 @@ extern crate alloc;
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
-#[path = "../../../bootloader/src/config.rs"]
-mod bootloader_config;
 
 const HEAP_SIZE: usize = 1024 * 1024;
 
@@ -53,103 +51,49 @@ unsafe impl GlobalAlloc for BumpAlloc {
 
 #[alloc_error_handler]
 fn alloc_error(_layout: Layout) -> ! {
-    serial_write_str("[qemu-suite] core fail\n");
+    serial_write_str("[qemu-suite] graphics fail\n");
     suite_fail_trap()
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    serial_write_str("[qemu-suite] core fail\n");
+    serial_write_str("[qemu-suite] graphics fail\n");
     suite_fail_trap()
 }
 
 fn run_suite() -> bool {
-    test_capability_set()
-        && test_version_pack_unpack()
-        && test_sync_lock_compiles()
-        && test_bootloader_config_parse()
-        && test_security_extended()
-        && test_bootloader_config_extended()
-        && test_graphic_types()
+    test_types() && test_images() && test_browser()
 }
 
 #[cfg(not(target_os = "uefi"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    serial_write_str("[qemu-suite] core start\n");
+    serial_write_str("[qemu-suite] graphics start\n");
 
     if run_suite() {
-        serial_write_str("[qemu-suite] core pass\n");
+        serial_write_str("[qemu-suite] graphics pass\n");
         exit_qemu(0x10);
     }
 
-    serial_write_str("[qemu-suite] core fail\n");
+    serial_write_str("[qemu-suite] graphics fail\n");
     suite_fail_trap()
 }
 
 #[cfg(target_os = "uefi")]
 #[unsafe(no_mangle)]
 pub extern "efiapi" fn efi_main(_image_handle: usize, _system_table: usize) -> usize {
-    serial_write_str("[qemu-suite] core start\n");
+    serial_write_str("[qemu-suite] graphics start\n");
 
     if run_suite() {
-        serial_write_str("[qemu-suite] core pass\n");
+        serial_write_str("[qemu-suite] graphics pass\n");
         return 0;
     }
 
-    serial_write_str("[qemu-suite] core fail\n");
+    serial_write_str("[qemu-suite] graphics fail\n");
     1
 }
 
-fn test_capability_set() -> bool {
-    security::qemu_tests::capability_set_smoke() && security::qemu_tests::grant_flow_smoke()
-}
-
-fn test_version_pack_unpack() -> bool {
-    kernel_api::qemu_tests::version_pack_unpack_smoke()
-        && kernel_api::qemu_tests::abi_error_decode_smoke()
-        && kernel_api::qemu_tests::driver_context_default_smoke()
-}
-
-fn test_sync_lock_compiles() -> bool {
-    exorust_sync::qemu_tests::basic_lock_smoke()
-        && exorust_sync::qemu_tests::try_lock_smoke()
-        && exorust_sync::qemu_tests::initial_poison_state_smoke()
-        && exorust_sync::qemu_tests::clear_poison_smoke()
-        && exorust_sync::qemu_tests::default_lock_smoke()
-}
-
-fn test_bootloader_config_parse() -> bool {
-    let cfg = bootloader_config::parse_config("timeout=5\n[Default]\nkernel=rany_os\n");
-    cfg.timeout == 5 && cfg.entries.len() == 1 && cfg.entries[0].kernel == "rany_os"
-}
-
-fn test_security_extended() -> bool {
-    security::qemu_tests::capability_set_full_smoke()
-        && security::qemu_tests::raise_not_permitted_smoke()
-        && security::qemu_tests::grant_requires_permissions_smoke()
-        && security::qemu_tests::grant_with_permitted_smoke()
-        && security::qemu_tests::grant_with_options_smoke()
-        && security::qemu_tests::reclaim_token_smoke()
-        && security::qemu_tests::in_flight_blocks_reclaim_smoke()
-        && security::qemu_tests::expire_grants_smoke()
-        && security::qemu_tests::revoke_grant_smoke()
-}
-
-fn test_bootloader_config_extended() -> bool {
-    // parse_empty: empty string produces no entries
-    let empty_cfg = bootloader_config::parse_config("");
-    if !empty_cfg.entries.is_empty() {
-        return false;
-    }
-
-    // parse_basic: timeout and single entry
-    let basic_cfg =
-        bootloader_config::parse_config("timeout=10\ndefault=1\n\n[Test]\nkernel=test_kernel\n");
-    basic_cfg.timeout == 10 && basic_cfg.entries.len() == 1 && basic_cfg.entries[0].name == "Test"
-}
-
-fn test_graphic_types() -> bool {
+fn test_types() -> bool {
     graphic_types::qemu_tests::color_ctor_smoke()
         && graphic_types::qemu_tests::color_roundtrip_smoke()
         && graphic_types::qemu_tests::rect_intersection_smoke()
@@ -160,7 +104,10 @@ fn test_graphic_types() -> bool {
         && graphic_types::qemu_tests::rect_layout_smoke()
         && graphic_types::qemu_tests::color_layout_smoke()
         && graphic_types::qemu_tests::pixel_format_layout_smoke()
-        && graphic_types::qemu_tests::image_try_new_overflow_smoke()
+}
+
+fn test_images() -> bool {
+    graphic_types::qemu_tests::image_try_new_overflow_smoke()
         && graphic_types::qemu_tests::image_try_new_max_size_smoke()
         && graphic_types::qemu_tests::image_try_new_valid_smoke()
         && graphic_types::qemu_tests::image_try_filled_overflow_smoke()
@@ -171,6 +118,11 @@ fn test_graphic_types() -> bool {
         && graphic_types::qemu_tests::image_view_external_buffer_smoke()
         && graphic_types::qemu_tests::image_view_stride_smoke()
         && graphic_types::qemu_tests::max_image_size_constant_smoke()
+}
+
+fn test_browser() -> bool {
+    exorust_apps::browser::browser::qemu_tests::browser_creation_smoke()
+        && exorust_apps::browser::browser::qemu_tests::history_smoke()
 }
 
 fn serial_write_str(s: &str) {

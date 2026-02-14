@@ -356,11 +356,11 @@ impl FileSystem {
 ## テスト
 
 ```bash
-# ユニットテストの実行
-cargo test --lib block_cache_tests
+# 公式入口（required suites）
+cargo test
 
-# 特定のテストを実行
-cargo test --lib test_block_cache_lru_eviction
+# ファイルシステム系スイートのみ実行
+cargo test -p qemu-tests -- --nocapture suite_fs
 ```
 
 ## ベンチマーク

@@ -51,21 +51,22 @@ fn run_required(suite: &str) {
     }
 }
 
-fn run_optional_pending() {
+fn run_pending(suite: &str) {
     let guard = suite_lock().lock().expect("qemu suite lock poisoned");
-    let cfg = base_config("pending");
+    let cfg = base_config(suite);
     let result = run_suite(cfg);
     drop(guard);
     match result {
         Ok(report) => {
             eprintln!(
-                "pending suite passed in {:?} (log: {})",
+                "pending suite '{}' passed in {:?} (log: {})",
+                report.suite,
                 report.duration,
                 report.log_path.display()
             );
         }
         Err(err) => {
-            eprintln!("pending suite is non-blocking in migration mode: {err}");
+            panic!("pending suite '{suite}' failed: {err}");
         }
     }
 }
@@ -91,13 +92,19 @@ fn suite_kernel() {
 }
 
 #[test]
+fn suite_graphics() {
+    run_required("graphics");
+}
+
+#[test]
 fn suite_tools() {
     run_required("tools");
 }
 
 #[test]
+#[ignore = "pending suite is informational and non-blocking in CI"]
 fn suite_pending() {
-    run_optional_pending();
+    run_pending("pending");
 }
 
 #[test]

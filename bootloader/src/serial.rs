@@ -169,15 +169,14 @@ unsafe fn inb(port: u16) -> u8 {
     value
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::SerialWriter;
 
-    #[test]
-    fn test_serial_writer() {
-        // This test would need actual hardware or emulation
-        // Just verify the structure compiles
+    pub fn serial_writer_smoke() -> bool {
+        // Verify the structure compiles and can be instantiated
         let writer = SerialWriter::new();
         let _ = writer;
+        true
     }
 }

@@ -52,9 +52,59 @@ unsafe impl core::alloc::GlobalAlloc for DummyGlobalAlloc {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
 }
 
+// Bump allocator for unit tests. Provides a working 64MB heap so tests that
+// use `alloc::vec::Vec`, `alloc::boxed::Box`, etc. succeed in the no_std QEMU
+// test environment (the previous `LockedBuddyHeap::empty()` returned null for
+// every allocation).
+#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
+mod test_bump_alloc {
+    use core::alloc::{GlobalAlloc, Layout};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    const HEAP_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+
+    #[repr(C, align(4096))]
+    struct HeapMem([u8; HEAP_SIZE]);
+
+    static mut HEAP: HeapMem = HeapMem([0; HEAP_SIZE]);
+    static OFFSET: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct BumpAlloc;
+
+    impl BumpAlloc {
+        pub const fn new() -> Self { Self }
+
+        /// Compatibility shim: the kernel sometimes checks `ALLOCATOR.is_initialized()`.
+        pub fn is_initialized(&self) -> Option<bool> { Some(true) }
+    }
+
+    unsafe impl GlobalAlloc for BumpAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            loop {
+                let current = OFFSET.load(Ordering::Relaxed);
+                let aligned = (current + layout.align() - 1) & !(layout.align() - 1);
+                let new_off = aligned + layout.size();
+                if new_off > HEAP_SIZE {
+                    return core::ptr::null_mut();
+                }
+                if OFFSET
+                    .compare_exchange_weak(current, new_off, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return unsafe { HEAP.0.as_mut_ptr().add(aligned) };
+                }
+            }
+        }
+
+        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+            // Bump allocator: no individual deallocation.
+        }
+    }
+}
+
 #[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
 #[global_allocator]
-pub static ALLOCATOR: crate::mm::buddy_allocator::LockedBuddyHeap = crate::mm::buddy_allocator::LockedBuddyHeap::empty();
+pub static ALLOCATOR: test_bump_alloc::BumpAlloc = test_bump_alloc::BumpAlloc::new();
 
 #[cfg(all(test, not(feature = "std")))]
 #[unsafe(no_mangle)]
@@ -78,14 +128,15 @@ pub extern "C" fn _start() -> ! {
 
 #[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn panic(_info: &PanicInfo) -> ! {
     unsafe {
-        // Simple serial print for panic
         for byte in b"[test] FAILED\n" {
             core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") *byte);
         }
+        for byte in b"[qemu-suite] kernel-unit fail\n" {
+            core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") *byte);
+        }
     }
-    // Try to print info if possible (simplified)
     exit_qemu(QemuExitCode::Failed);
 }
 
@@ -128,7 +179,7 @@ macro_rules! eprintln {
 
 #[cfg(test)]
 pub fn test_runner(tests: &[&dyn Fn()]) {
-    // Print using io::log::early_print logic (writes to serial)
+    crate::io::log::early_print("[qemu-suite] kernel-unit start\n");
     crate::io::log::early_print("[test] running ");
     crate::io::log::early_print_dec(tests.len() as u64);
     crate::io::log::early_print(" tests...\n");
@@ -137,6 +188,8 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
         t();
         crate::io::log::early_print("[test] ok\n");
     }
+
+    crate::io::log::early_print("[qemu-suite] kernel-unit pass\n");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

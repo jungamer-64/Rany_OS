@@ -1,7 +1,7 @@
+use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use alloc::sync::Arc;
 
 use crate::{KeyEvent, Keymap, Modifiers};
 
@@ -32,15 +32,25 @@ impl KeyboardStream {
     }
 
     pub fn read_key(&mut self) -> KeyEventFuture {
-        KeyEventFuture { driver: self.driver }
+        KeyEventFuture {
+            driver: self.driver,
+        }
     }
 
     pub fn read_char(&mut self) -> CharFuture {
-        CharFuture { driver: self.driver, keymap: self.keymap, budget: DEFAULT_POLL_BUDGET }
+        CharFuture {
+            driver: self.driver,
+            keymap: self.keymap,
+            budget: DEFAULT_POLL_BUDGET,
+        }
     }
 
     pub fn read_char_with_budget(&mut self, budget: usize) -> CharFuture {
-        CharFuture { driver: self.driver, keymap: self.keymap, budget }
+        CharFuture {
+            driver: self.driver,
+            keymap: self.keymap,
+            budget,
+        }
     }
 
     pub fn poll(&mut self) -> Option<KeyEvent> {
@@ -77,25 +87,48 @@ impl KeyboardStreamArc {
         Self { driver, keymap }
     }
 
-    pub fn read_key(&mut self) -> KeyEventFuture { KeyEventFuture { driver: self.driver } }
+    pub fn read_key(&mut self) -> KeyEventFuture {
+        KeyEventFuture {
+            driver: self.driver,
+        }
+    }
 
-    pub fn read_char(&mut self) -> CharFutureArc<'_> { CharFutureArc { driver: self.driver, keymap: &self.keymap } }
+    pub fn read_char(&mut self) -> CharFutureArc<'_> {
+        CharFutureArc {
+            driver: self.driver,
+            keymap: &self.keymap,
+        }
+    }
 
-    pub fn poll(&mut self) -> Option<KeyEvent> { self.driver.poll_key_event_internal() }
+    pub fn poll(&mut self) -> Option<KeyEvent> {
+        self.driver.poll_key_event_internal()
+    }
 
-    pub fn has_event(&self) -> bool { self.driver.has_event() }
+    pub fn has_event(&self) -> bool {
+        self.driver.has_event()
+    }
 
-    pub fn modifiers(&self) -> Modifiers { self.driver.get_modifiers() }
+    pub fn modifiers(&self) -> Modifiers {
+        self.driver.get_modifiers()
+    }
 
-    pub fn keymap(&self) -> Arc<dyn Keymap> { Arc::clone(&self.keymap) }
+    pub fn keymap(&self) -> Arc<dyn Keymap> {
+        Arc::clone(&self.keymap)
+    }
 
-    pub fn keymap_ref(&self) -> &dyn Keymap { &*self.keymap }
+    pub fn keymap_ref(&self) -> &dyn Keymap {
+        &*self.keymap
+    }
 
-    pub fn set_keymap(&mut self, keymap: Arc<dyn Keymap>) { self.keymap = keymap; }
+    pub fn set_keymap(&mut self, keymap: Arc<dyn Keymap>) {
+        self.keymap = keymap;
+    }
 }
 
 impl Drop for KeyboardStreamArc {
-    fn drop(&mut self) { self.driver.return_stream(); }
+    fn drop(&mut self) {
+        self.driver.return_stream();
+    }
 }
 
 /// Future that yields the next KeyEvent
@@ -218,71 +251,44 @@ impl Future for CharFutureArc<'_> {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
-    extern crate std;
-    use alloc::sync::Arc;
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
-    use core::task::{RawWaker, RawWakerVTable, Waker, Context};
-    use core::pin::Pin;
-    use core::ptr;
     use alloc::boxed::Box;
-    use crate::KeyCode;
+    use core::ptr;
+    use core::task::{RawWaker, RawWakerVTable, Waker};
 
-    // Simple noop waker for tests
     fn noop_raw_waker() -> RawWaker {
-        unsafe fn clone(_: *const ()) -> RawWaker { noop_raw_waker() }
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            noop_raw_waker()
+        }
         unsafe fn wake(_: *const ()) {}
         unsafe fn wake_by_ref(_: *const ()) {}
         unsafe fn drop(_: *const ()) {}
-        RawWaker::new(ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
+        RawWaker::new(
+            ptr::null(),
+            &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+        )
     }
 
-    fn noop_waker() -> Waker { unsafe { Waker::from_raw(noop_raw_waker()) } }
-
-    struct MockDriver {
-        q: Mutex<VecDeque<KeyEvent>>,
-        w: Mutex<Option<Waker>>,
+    fn noop_waker() -> Waker {
+        unsafe { Waker::from_raw(noop_raw_waker()) }
     }
 
-    impl MockDriver {
-        fn new() -> Self { Self { q: Mutex::new(VecDeque::new()), w: Mutex::new(None) } }
-        fn push(&self, e: KeyEvent) {
-            let mut q = self.q.lock().unwrap();
-            q.push_back(e);
-            if let Some(w) = self.w.lock().unwrap().take() {
-                w.wake();
-            }
+    pub fn char_future_ready_smoke() -> bool {
+        let driver: &'static crate::driver::KeyboardDriver =
+            Box::leak(Box::new(crate::driver::KeyboardDriver::new()));
+        let mut stream = KeyboardStream::new(driver, &crate::keymap::DEFAULT_KEYMAP);
+        let mut future = stream.read_char();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        if !Pin::new(&mut future).poll(&mut cx).is_pending() {
+            return false;
         }
-    }
 
-    impl DriverOps for MockDriver {
-        fn poll_key_event_internal(&self) -> Option<KeyEvent> { self.q.lock().unwrap().pop_front() }
-        fn register_waker(&self, waker: &Waker) { *self.w.lock().unwrap() = Some(waker.clone()); }
-        fn process_pending_wake(&self) -> bool { false }
-        fn has_event(&self) -> bool { !self.q.lock().unwrap().is_empty() }
-        fn get_modifiers(&self) -> Modifiers { Modifiers::default() }
-        fn return_stream(&self) {}
-    }
+        driver.handle_scancode(0x1E);
 
-    #[test]
-    fn test_char_future_ready() {
-        // Leak the mock driver so we can pass a 'static reference into the stream
-        let driver_box: &'static MockDriver = Box::leak(Box::new(MockDriver::new()));
-        let mut stream = KeyboardStream::new(driver_box, &crate::keymap::DEFAULT_KEYMAP);
-        let mut f = stream.read_char();
-        let w = noop_waker();
-        let mut cx = Context::from_waker(&w);
-
-        // no events -> pending
-        assert!(Pin::new(&mut f).poll(&mut cx).is_pending());
-
-        // push event
-        driver_box.push(KeyEvent { key: KeyCode::A, state: crate::KeyState::Pressed, modifiers: Modifiers::default(), raw_scancode: 0x1E });
-
-        // now should be ready
-        assert_eq!(Pin::new(&mut f).poll(&mut cx), Poll::Ready('a'));
+        matches!(Pin::new(&mut future).poll(&mut cx), Poll::Ready('a'))
     }
 }

@@ -6,7 +6,7 @@
 
 use kernel_api::driver::DriverType;
 use kernel_api::driver_abi::{
-    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
+    pack_version, DriverCapabilities, DriverContext, DriverVTable, DRIVER_ABI_VERSION,
 };
 
 extern "C" fn hid_probe(_ctx: *mut DriverContext) -> i32 {

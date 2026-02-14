@@ -645,7 +645,7 @@ src/
 
 ```bash
 # ビルドコマンド
-cargo build --target x86_64-rany_os.json
+cargo build --target x86_64-exorust.json
 
 # 警告数: 488 (主にdead_code警告)
 # ステータス: ビルド成功
@@ -658,7 +658,7 @@ cargo build --target x86_64-rany_os.json
 ### ターゲット
 
 - アーキテクチャ: x86_64
-- カスタムターゲット: `x86_64-rany_os.json`
+- カスタムターゲット: `x86_64-exorust.json`
 - Rustエディション: 2024
 - `no_std` 環境
 

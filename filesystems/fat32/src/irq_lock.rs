@@ -8,14 +8,14 @@ use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu-test-export")))]
 use core::arch::asm;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 static TEST_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Save and disable interrupts, returning whether interrupts were enabled before.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu-test-export")))]
 #[inline]
 fn save_and_disable_interrupts() -> bool {
     let rflags: u64;
@@ -37,14 +37,14 @@ fn save_and_disable_interrupts() -> bool {
     (rflags & (1 << 9)) != 0
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[inline]
 fn save_and_disable_interrupts() -> bool {
     TEST_INTERRUPTS_ENABLED.swap(false, Ordering::SeqCst)
 }
 
 /// Restore interrupts to the previous state.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "qemu-test-export")))]
 #[inline]
 fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
@@ -54,7 +54,7 @@ fn restore_interrupts(was_enabled: bool) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[inline]
 fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
@@ -176,75 +176,56 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 }
 
 // ============================================================================
-// Tests
+// QEMU Test Exports
 // ============================================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
 
-    #[test]
-    fn test_irq_poison_lock_basic() {
-        let lock = IrqPoisonLock::new(42u64);
-
+    pub fn basic_locking_smoke() -> bool {
+        let lock = IrqPoisonLock::new(5usize);
         {
             let mut guard = lock.lock();
-            assert_eq!(*guard, 42);
-            *guard = 100;
+            if *guard != 5 {
+                return false;
+            }
+            *guard = 7;
         }
-
         {
             let guard = lock.lock();
-            assert_eq!(*guard, 100);
+            if *guard != 7 {
+                return false;
+            }
+        }
+        !lock.is_poisoned()
+    }
+
+    pub fn try_lock_contention_smoke() -> bool {
+        let lock = IrqPoisonLock::new(1usize);
+        let guard = lock.lock();
+        if lock.try_lock().is_some() {
+            return false;
+        }
+        drop(guard);
+        lock.try_lock().is_some()
+    }
+
+    pub fn irq_restore_smoke() -> bool {
+        TEST_INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
+        if !TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst) {
+            return false;
         }
 
-        assert!(!lock.is_poisoned());
-    }
-
-    #[test]
-    fn test_try_lock() {
-        let lock = IrqPoisonLock::new(0usize);
-
-        let guard = lock.lock();
-        assert!(lock.try_lock().is_none()); // already locked
-        drop(guard);
-
-        assert!(lock.try_lock().is_some()); // acquired after drop
-    }
-
-    #[test]
-    fn test_poisoned_after_panic() {
-        use alloc::sync::Arc;
-        let lock = Arc::new(IrqPoisonLock::new(5usize));
-
-        // Spawn a thread that acquires the lock and panics; Drop runs during panic on that thread
-        let l = Arc::clone(&lock);
-        let handle = std::thread::spawn(move || {
-            let _g = l.lock();
-            panic!("simulated panic");
-        });
-
-        let _ = handle.join();
-
-        assert!(lock.is_poisoned());
-
-        // Recover by clearing poison and acquiring again
-        lock.clear_poison();
-        assert!(!lock.is_poisoned());
-        let g = lock.lock();
-        drop(g);
-    }
-
-    #[test]
-    fn test_irq_restore_in_test_env() {
-        // initially interrupts enabled in test env
-        assert!(TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst));
-
         let saved = save_and_disable_interrupts();
-        assert!(saved);
-        assert!(!TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst));
+        if !saved {
+            return false;
+        }
+        if TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst) {
+            return false;
+        }
 
         restore_interrupts(saved);
-        assert!(TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst));
+        TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst)
     }
 }

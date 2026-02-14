@@ -118,6 +118,7 @@ fn test_hid_driver() -> bool {
         && hid_driver::qemu_tests::driver_handle_scancode_smoke()
         && hid_driver::qemu_tests::driver_extended_scancode_smoke()
         && hid_driver::qemu_tests::driver_key_release_smoke()
+        && hid_driver::qemu_tests::stream_char_future_smoke()
 }
 
 fn test_hid_keyboard() -> bool {

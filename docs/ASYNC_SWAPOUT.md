@@ -118,9 +118,7 @@
 - `TOKEN_REFILL_PER_BATCH = 4`
 - `RESERVED_FILE_SLOTS = 128`
 
-この組合せはホストシミュレーションで 10 回の検証実行を行い、平均 `enq_success = 528`、平均 `processed = 528`（全成功）という良好な結果を示しました。該当スクリプト: `tools/async_swapout_long_sweep.ps1`, 検証スクリプト: `tools/async_swapout_validate_default.ps1`, 集計ファイル: `async_swapout_long_agg.csv` と `async_swapout_recommendation.txt`。
-
-スイープのスクリプトと集計結果: `tools/async_swapout_sweep.ps1`, `async_swapout_sweep_agg.csv`.
+この組合せはホストシミュレーションで 10 回の検証実行を行い、平均 `enq_success = 528`、平均 `processed = 528`（全成功）という良好な結果を示しました。詳細な再現検証は QEMU スイート実行ログ（`cargo test` および `target/qemu-logs`）を基準に確認してください。
 
 - レイテンシ重視（短時間で anon を積極的に解放したい）: `TOKEN_BUCKET_CAPACITY` を増やし、`TOKEN_REFILL_PER_BATCH` を小さめにする。
 - スループット重視（ファイル書き戻し優先）: `RESERVED_FILE_SLOTS` を増やし、`TOKEN_BUCKET_CAPACITY` を控えめにする。
@@ -129,7 +127,7 @@
 
 1. ベースラインを取得する（5–10分）
    - 概要: 現行パラメータの下で軽負荷→中負荷テストを実行し、メトリクスを収集します。
-   - 実行例: `cargo test -p rany_kernel --lib -- --ignored --nocapture`（`test_async_swapout_heavy_stress` / `bench_enqueue_throughput` を含む）
+   - 実行例: `cargo test -p qemu-tests -- --nocapture suite_kernel`
    - 収集対象: `queued_counts()`（総キュー長, fileキュー長）, `token_count()`（トークン残量）, `writeback_skipped`, `enqueue_failures`（QueueFull 発生回数）, ワーカの処理遅延
 
 2. 問題の初期判別と目安
@@ -152,12 +150,12 @@
 
 ### 実践コマンド例（Windows / PowerShell） 🔧
 
-- 全ての重いテストを手動で実行してログを取得:
-  - powershell -Command "cargo test -p rany_kernel --lib -- --ignored --nocapture" | tee async_swapout_stress.log
+- 全ての QEMU required suite を実行してログを取得:
+  - `cargo test`
 - 1分毎に簡易モニタを回してメトリクスをログに落とす（テスト中別セッションで実行する想定）:
   - powershell -Command "while ($true) { python - <<'PY'
 import time,subprocess,sys
-p=subprocess.run(['cargo','test','-p','rany_kernel','--lib','--','--nocapture','--test-threads=1','-q'],capture_output=True,text=True)
+p=subprocess.run(['cargo','test','-p','qemu-tests','--','--nocapture','suite_kernel'],capture_output=True,text=True)
 print(p.stdout)
 time.sleep(60)
 PY
@@ -180,8 +178,8 @@ PY
 
 ### テストとベンチの実行方法
 
-- 単体テスト（軽量、CI向け）: `cargo test -p rany_kernel --lib`（デフォルトで無視される重いテストは実行されません）
-- 重いストレステストとベンチ（手動実行）: `cargo test -p rany_kernel --lib -- --ignored --nocapture`（`test_async_swapout_heavy_stress` と `bench_enqueue_throughput` は `#[ignore]` です）
+- 単体テスト（軽量、CI向け）: `cargo test`（required suites が QEMU 上で実行されます）
+- カーネルスイート手動実行: `cargo test -p qemu-tests -- --nocapture suite_kernel`
 - モニタリング: `queued_counts()` と `token_count()` を使ってキュー長と anon トークン残量を監視できます（テスト/カーネル両方で対応しています）。
 
 ---

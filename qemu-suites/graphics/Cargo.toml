@@ -1,5 +1,5 @@
 [package]
-name = "qemu_suite_tools"
+name = "qemu_suite_graphics"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -8,8 +8,8 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "QEMU no_std tools suite"
+description = "QEMU no_std graphics suite"
 
 [dependencies]
-cap_harness = { path = "../../tools/cap_harness", features = ["qemu-test-export"] }
 graphic_types = { path = "../../libs/graphic_types", features = ["qemu-test-export"] }
+exorust_apps = { path = "../../apps", features = ["qemu-test-export"] }

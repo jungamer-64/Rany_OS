@@ -9,8 +9,7 @@ if [[ ! -f "$ALLOWLIST_FILE" ]]; then
   exit 1
 fi
 
-# shellcheck disable=SC2207
-ALLOWLIST=( $(grep -v '^\s*#' "$ALLOWLIST_FILE" | sed '/^\s*$/d') )
+mapfile -t ALLOWLIST < <(sed -E '/^\s*#/d;/^\s*$/d' "$ALLOWLIST_FILE")
 
 declare -A ALLOWSET
 for item in "${ALLOWLIST[@]}"; do

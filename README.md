@@ -224,7 +224,12 @@ cargo build --target x86_64-exorust.json
 # 4. テスト実行（公式入口）
 cargo test
 
+# 5. 任意: 特定スイートのみ実行
+cargo test -p qemu-tests -- --nocapture suite_core
+
 ```
+
+`cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の各スイートをQEMU上で実行します。
 
 ## **📄 ライセンス**
 
