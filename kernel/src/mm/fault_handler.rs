@@ -42,6 +42,84 @@ use super::types::FrameIndex;
 use super::cow::{page_refcount, page_put};
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 
+use x86_64::structures::paging::{PhysFrame, Size4KiB};
+
+// ============================================================================
+// Anonymous Page Setup Helper
+// ============================================================================
+
+/// 匿名ページの割り当て→ゼロクリア→memcgチャージ→マッピング→LRU追跡
+/// の共通パターンを統合するヘルパー。
+///
+/// `fault_handler`, `demand_paging`, `stack_growth` の計6箇所で
+/// 同一パターンが繰り返されていたものを統合。
+pub struct AnonPageSetup {
+    pub frame: PhysFrame<Size4KiB>,
+    pub frame_phys: PhysAddr,
+    pub frame_idx: FrameIndex,
+    memcg_id: Option<MemcgId>,
+}
+
+impl AnonPageSetup {
+    /// フレーム割り当て + ゼロクリア + memcgチャージ。
+    ///
+    /// - `memcg_id`: `Some(id)` ならチャージ+追跡、`None` ならスキップ
+    /// - 割り当て失敗またはチャージ失敗時は `None` を返す
+    pub fn allocate(memcg_id: Option<MemcgId>) -> Option<Self> {
+        let frame = alloc_frame()?;
+        let frame_phys = PhysAddr::new(frame.start_address().as_u64());
+
+        // ゼロクリア
+        zero_page(frame_phys);
+
+        // Memcgチャージ（有効な場合のみ）
+        if let Some(id) = memcg_id {
+            if memcg_charge(id, 1, ChargeType::Anon).is_err() {
+                super::frame_allocator::dealloc_frame(frame);
+                return None;
+            }
+        }
+
+        let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
+        Some(Self { frame, frame_phys, frame_idx, memcg_id })
+    }
+
+    /// ページをマッピングし、LRU + memcg追跡を完了する。
+    ///
+    /// 成功時は `Ok(())` を返す。
+    /// 失敗時はチャージ+フレームをロールバックし、`MapError` を返す。
+    ///
+    /// # Safety
+    /// ページテーブル操作を行うため unsafe。
+    pub unsafe fn map_and_track(self, page_addr: VirtAddr, flags: PageFlags) -> Result<(), MapError> {
+        match global_map_page(page_addr, self.frame_phys, flags) {
+            Ok(()) => {
+                lru_add_page(self.frame, LruPageType::Anonymous);
+                if let Some(id) = self.memcg_id {
+                    memcg_track_page(self.frame_idx, id, ChargeType::Anon);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                self.rollback_inner();
+                Err(e)
+            }
+        }
+    }
+
+    /// マッピングせずにロールバック（チャージ解除 + フレーム解放）。
+    pub fn rollback(self) {
+        self.rollback_inner();
+    }
+
+    fn rollback_inner(&self) {
+        if let Some(id) = self.memcg_id {
+            memcg_uncharge(id, 1, ChargeType::Anon);
+        }
+        super::frame_allocator::dealloc_frame(self.frame);
+    }
+}
+
 // ============================================================================
 // Page Fault Error Code
 // ============================================================================
@@ -412,72 +490,26 @@ fn handle_vma_fault(
 /// Demand Paging フォルトハンドラ
 ///
 /// 初回アクセス時にページを割り当て、ゼロクリアしてマッピングする。
-#[allow(unused_assignments)]
 fn handle_demand_paging(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultResult {
     FAULT_STATS.demand_paging.fetch_add(1, Ordering::Relaxed);
-    
-    // ページ境界にアラインメント
+
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
-    
-    // 新しい物理フレームを割り当て
-    let frame = match alloc_frame() {
-        Some(f) => f,
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+
+    let setup = match AnonPageSetup::allocate(Some(memcg_id)) {
+        Some(s) => s,
         None => {
             FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
             return FaultResult::OutOfMemory;
         }
     };
-    
-    // 物理アドレスをhigher_half型に変換
-    let frame_phys = PhysAddr::new(frame.start_address().as_u64());
-    
-    // ゼロクリア
-    zero_page(frame_phys);
-    
-    // Memcgチャージ（オプション）
-    let mut memcg_id = MemcgId::ROOT;
-    let mut memcg_charged = false;
-    // Demand Pagingの設定はdemand_paging.rsで管理される場合が多いが、
-    // フォールトハンドラでは常にプロセスのmemcgを参照してチャージを試行
-    memcg_id = crate::task::process::get_current_process_memcg_id();
-    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
-        super::frame_allocator::dealloc_frame(frame);
-        FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
-        return FaultResult::OutOfMemory;
-    }
-    memcg_charged = true;
 
-    // ページマッピング
-    // デフォルトはRead/Write、User accessible
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-
-    // Safety: ページテーブル操作
-    match unsafe { global_map_page(page_addr, frame_phys, flags) } {
-        Ok(()) => {}
-        Err(MapError::AlreadyMapped) => {
-            // 既にマッピングされている（レースコンディション）
-            // チャージを戻してフレームを解放
-            if memcg_charged { memcg_uncharge(memcg_id, 1, ChargeType::Anon); }
-            super::frame_allocator::dealloc_frame(frame);
-            return FaultResult::Resolved;
-        }
-        Err(_) => {
-            if memcg_charged { memcg_uncharge(memcg_id, 1, ChargeType::Anon); }
-            super::frame_allocator::dealloc_frame(frame);
-            return FaultResult::KernelBug;
-        }
+    match unsafe { setup.map_and_track(page_addr, flags) } {
+        Ok(()) => FaultResult::DemandPaged,
+        Err(MapError::AlreadyMapped) => FaultResult::Resolved,
+        Err(_) => FaultResult::KernelBug,
     }
-
-    // LRUに追加
-    lru_add_page(frame, LruPageType::Anonymous);
-
-    // ページとmemcgを追跡
-    if memcg_charged {
-        let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
-        memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
-    }
-
-    FaultResult::DemandPaged
 }
 
 /// ページをゼロクリア
@@ -621,63 +653,30 @@ fn is_potential_stack_access(addr: VirtAddr) -> bool {
 /// スタック拡張フォルトハンドラ
 fn handle_stack_growth(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultResult {
     FAULT_STATS.stack_growth.fetch_add(1, Ordering::Relaxed);
-    
+
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
-    
+
     // スタック限界チェック
     if page_addr.as_u64() < USER_STACK_BOTTOM + STACK_GUARD_SIZE {
         return FaultResult::StackOverflow;
     }
-    
-    // 新しいスタックページを割り当て
-    let frame = match alloc_frame() {
-        Some(f) => f,
+
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+
+    let setup = match AnonPageSetup::allocate(Some(memcg_id)) {
+        Some(s) => s,
         None => {
             FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
             return FaultResult::OutOfMemory;
         }
     };
-    
-    // 物理アドレスをhigher_half型に変換
-    let frame_phys = PhysAddr::new(frame.start_address().as_u64());
-    
-    // ゼロクリア
-    zero_page(frame_phys);
-    
-    // Memcgチャージ
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
-    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
-        super::frame_allocator::dealloc_frame(frame);
-        FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
-        return FaultResult::OutOfMemory;
-    }
-    
-    // マッピング作成
-    let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-    
-    // Safety: ページテーブル操作
-    match unsafe { global_map_page(page_addr, frame_phys, flags) } {
-        Ok(()) => {}
-        Err(MapError::AlreadyMapped) => {
-            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
-            super::frame_allocator::dealloc_frame(frame);
-            return FaultResult::Resolved;
-        }
-        Err(_) => {
-            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
-            super::frame_allocator::dealloc_frame(frame);
-            return FaultResult::KernelBug;
-        }
-    }
-    
-    // LRUに追加
-    lru_add_page(frame, LruPageType::Anonymous);
 
-    // ページとmemcgを追跡
-    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
-    memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
-    
-    FaultResult::StackGrown
+    let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
+    match unsafe { setup.map_and_track(page_addr, flags) } {
+        Ok(()) => FaultResult::StackGrown,
+        Err(MapError::AlreadyMapped) => FaultResult::Resolved,
+        Err(_) => FaultResult::KernelBug,
+    }
 }
 
 // ============================================================================

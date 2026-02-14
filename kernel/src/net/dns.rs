@@ -1064,3 +1064,5 @@ mod tests {
         assert_eq!(DnsClient::tcp_message_length(&[0x00, 0x20]), 32);
         assert_eq!(DnsClient::tcp_message_length(&[0x01, 0x00]), 256);
         assert_eq!(DnsClient::tcp_message_length(&[0xFF, 0xFF]), 65535);
+    }
+}

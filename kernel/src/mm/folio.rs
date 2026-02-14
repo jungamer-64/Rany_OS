@@ -7,7 +7,7 @@
 //! 4KB constituent page.
 
 use crate::mm::types::FrameIndex;
-use crate::mm::page_flags::{self, PageFlags};
+use crate::mm::page_flags::{self, PageMetaFlags};
 
 /// A Folio represents a physically contiguous set of pages.
 /// A Folio is always aligned to its size.
@@ -30,7 +30,7 @@ impl Folio {
 
     /// Check if this frame is marked as a compound head.
     pub fn is_head(&self) -> bool {
-        page_flags::test_flag(self.0, PageFlags::CompoundHead)
+        page_flags::test_flag(self.0, PageMetaFlags::CompoundHead)
     }
 
     /// Try to create a Folio from an arbitrary frame.

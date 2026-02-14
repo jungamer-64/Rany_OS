@@ -26,11 +26,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
 use spin::RwLock;
 
-use super::frame_allocator::alloc_frame;
-use super::higher_half::{global_map_page, PageFlags, MapError, VirtAddr, PhysAddr};
-use super::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType};
-use super::types::FrameIndex;
-use super::page_reclaim::{lru_add_page, PageType as LruPageType};
+use super::higher_half::{PageFlags, MapError, VirtAddr};
+use super::fault_handler::AnonPageSetup;
 
 // ============================================================================
 // Constants
@@ -341,58 +338,19 @@ fn grow_stack_to(stack: &mut StackRegion, target_addr: VirtAddr) -> StackResult 
 
 /// 単一ページを割り当て
 fn grow_single_page(page_addr: VirtAddr) -> StackResult {
-    // フレームを割り当て
-    let frame = match alloc_frame() {
-        Some(f) => f,
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+
+    let setup = match AnonPageSetup::allocate(Some(memcg_id)) {
+        Some(s) => s,
         None => return StackResult::OutOfMemory,
     };
-    
-    let frame_phys = PhysAddr::new(frame.start_address().as_u64());
-    
-    // ゼロクリア
-    zero_page(frame_phys);
-    
-    // Memcgチャージ
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
-    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
-        super::frame_allocator::dealloc_frame(frame);
-        return StackResult::OutOfMemory;
-    }
-    
-    // マッピング作成
+
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-    
-    match unsafe { global_map_page(page_addr, frame_phys, flags) } {
-        Ok(()) => {}
-        Err(MapError::AlreadyMapped) => {
-            // 既にマッピング済み（レースコンディション）
-            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
-            super::frame_allocator::dealloc_frame(frame);
-            return StackResult::Ok;
-        }
-        Err(_) => {
-            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
-            super::frame_allocator::dealloc_frame(frame);
-            return StackResult::OutOfMemory;
-        }
-    }
-    
-    // LRUに追加
-    lru_add_page(frame, LruPageType::Anonymous);
 
-    // ページとmemcgを追跡
-    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
-    memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
-    
-    StackResult::Ok
-}
-
-/// ページをゼロクリア
-fn zero_page(phys_addr: PhysAddr) {
-    let x86_phys = x86_64::PhysAddr::new(phys_addr.as_u64());
-    let virt = super::mapping::phys_to_virt(x86_phys);
-    unsafe {
-        core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, 4096);
+    match unsafe { setup.map_and_track(page_addr, flags) } {
+        Ok(()) => StackResult::Ok,
+        Err(MapError::AlreadyMapped) => StackResult::Ok,
+        Err(_) => StackResult::OutOfMemory,
     }
 }
 

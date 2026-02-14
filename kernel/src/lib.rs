@@ -185,7 +185,7 @@ pub mod fs;
 // Intrusive collections for kernel use (always available)
 pub mod collections;
 
-#[cfg(any(not(test), test, feature = "full_mm_tests"))]
+#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod mm;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod io;

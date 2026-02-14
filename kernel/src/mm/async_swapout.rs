@@ -72,6 +72,40 @@ struct SwapEntry {
 } 
 
 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+use core::sync::atomic::AtomicU8;
+
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+const TEST_ENQUEUE_OVERRIDE_NONE: u8 = 0;
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+const TEST_ENQUEUE_OVERRIDE_QUEUE_FULL: u8 = 1;
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+const TEST_ENQUEUE_OVERRIDE_ALREADY_PENDING: u8 = 2;
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+const TEST_ENQUEUE_OVERRIDE_NOT_SUPPORTED: u8 = 3;
+
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+static TEST_ENQUEUE_OVERRIDE: AtomicU8 = AtomicU8::new(TEST_ENQUEUE_OVERRIDE_NONE);
+
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+fn decode_test_enqueue_override(raw: u8) -> Option<SwapError> {
+    match raw {
+        TEST_ENQUEUE_OVERRIDE_QUEUE_FULL => Some(SwapError::QueueFull),
+        TEST_ENQUEUE_OVERRIDE_ALREADY_PENDING => Some(SwapError::AlreadyPending),
+        TEST_ENQUEUE_OVERRIDE_NOT_SUPPORTED => Some(SwapError::NotSupported),
+        _ => None,
+    }
+}
+
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+fn encode_test_enqueue_override(value: Option<SwapError>) -> u8 {
+    match value {
+        Some(SwapError::QueueFull) => TEST_ENQUEUE_OVERRIDE_QUEUE_FULL,
+        Some(SwapError::AlreadyPending) => TEST_ENQUEUE_OVERRIDE_ALREADY_PENDING,
+        Some(SwapError::NotSupported) => TEST_ENQUEUE_OVERRIDE_NOT_SUPPORTED,
+        None => TEST_ENQUEUE_OVERRIDE_NONE,
+    }
+}
 
 // Helper: atomic saturating decrement (avoid underflow)
 fn atomic_saturating_decrement(a: &core::sync::atomic::AtomicUsize) {
@@ -88,9 +122,7 @@ static GLOBAL_ASYNC_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
     static GLOBAL_HUGE_2M_SKIPPED: AtomicUsize = AtomicUsize::new(0);
 fn release_frame_and_untrack(frame: FrameIndex) {
     // Untrack from memcg if tracked
-    if let Some(info) = crate::mm::memcg::memcg_untrack_page(frame) {
-        let _ = crate::mm::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-    }
+    crate::mm::memcg::memcg_untrack_and_uncharge(frame, 1);
 
     // Untrack frame backing (ignore errors)
     let _ = frame_backing::untrack_frame_backing(frame);
@@ -653,20 +685,36 @@ mod test_impl {
                     for entry in batch {
                         match entry.kind {
                             SwapKind::File { ino, page_num } => {
-                                let res = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
+                                let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
                                     match crate::fs::write_inode_by_number(ino, offset, data) {
                                         Ok(_) => Ok(()),
                                         Err(_) => Err(()),
                                     }
                                 });
 
-                                if res.is_ok() {
-                                    // Release memcg accounting and deallocate
-                                    release_frame_and_untrack(entry.frame);
-                                    TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
-                                    crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
-                                } else {
-                                    crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
+                                match written {
+                                    Ok(true) => {
+                                        // Release memcg accounting and deallocate
+                                        release_frame_and_untrack(entry.frame);
+                                        TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+                                        crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
+                                    }
+                                    _ => {
+                                        // Fall back to global sync; if any were written by global flush, free
+                                        if crate::fs::page_cache().sync_all(|ino, offset, data| {
+                                            match crate::fs::write_inode_by_number(ino, offset, data) {
+                                                Ok(_) => Ok(()),
+                                                Err(_) => Err(()),
+                                            }
+                                        }).unwrap_or(0) > 0 {
+                                            release_frame_and_untrack(entry.frame);
+                                            TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+                                            crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
+                                        } else {
+                                            crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
+                                            crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
+                                        }
+                                    }
                                 }
                             }
                             SwapKind::Anon => {
@@ -941,7 +989,7 @@ mod kernel_impl {
     use crate::sync::lockfree::{BoundedChannel, BoundedSender, BoundedReceiver};
     use crate::sync::AtomicWaker;
     use crate::task::Task;
-    use crate::mm::page_flags::{self, PageFlags};
+    use crate::mm::page_flags::{self, PageMetaFlags};
 
     // Channel capacity and batch size tunables
     const CHANNEL_SIZE: usize = 1024;
@@ -1089,7 +1137,7 @@ mod kernel_impl {
                         }
 
                         // Remove pending flag and update queue counters
-                        page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
+                        page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
                         atomic_saturating_decrement(&QUEUE_COUNT);
                         atomic_saturating_decrement(&FILE_QUEUE_COUNT); // safe to call; saturating at 0
                     }
@@ -1102,7 +1150,7 @@ mod kernel_impl {
                             crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
                         }
 
-                        page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
+                        page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
                         atomic_saturating_decrement(&QUEUE_COUNT);
                     }
                 }
@@ -1169,7 +1217,7 @@ mod kernel_impl {
         }
 
         // Fast-path: try to set pending flag (atomic)
-        if page_flags::test_and_set_flag(frame, PageFlags::SwapPending) {
+        if page_flags::test_and_set_flag(frame, PageMetaFlags::SwapPending) {
              // Already set
              return Err(SwapError::AlreadyPending);
         }
@@ -1178,7 +1226,7 @@ mod kernel_impl {
         if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
             let sender = &ch.0;
             if sender.is_full() {
-                page_flags::clear_flag(frame, PageFlags::SwapPending);
+                page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
                 return Err(SwapError::QueueFull);
             }
 
@@ -1189,7 +1237,7 @@ mod kernel_impl {
                 let reserved = RESERVED_FILE_SLOTS_ATOMIC.load(Ordering::Acquire);
                 if free_slots <= reserved {
                     // reserve slots for file writes — anon enqueues fail fast
-                    page_flags::clear_flag(frame, PageFlags::SwapPending);
+                    page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
                     return Err(SwapError::QueueFull);
                 }
             }
@@ -1198,7 +1246,7 @@ mod kernel_impl {
             let mut token_consumed = false;
             if let SwapKind::Anon = kind {
                 if !try_consume_token() {
-                    page_flags::clear_flag(frame, PageFlags::SwapPending);
+                    page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
                     return Err(SwapError::QueueFull);
                 }
                 token_consumed = true;
@@ -1220,12 +1268,12 @@ mod kernel_impl {
                     if token_consumed {
                         add_tokens(1);
                     }
-                    page_flags::clear_flag(frame, PageFlags::SwapPending);
+                    page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
                     Err(SwapError::QueueFull)
                 }
             }
         } else {
-            page_flags::clear_flag(frame, PageFlags::SwapPending);
+            page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
             Err(SwapError::NotSupported)
         }
     }
@@ -1303,12 +1351,33 @@ mod kernel_impl {
 pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHandle, SwapError> {
     #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
+        if let Some(err) = decode_test_enqueue_override(
+            TEST_ENQUEUE_OVERRIDE.load(AtomicOrdering::Acquire),
+        ) {
+            return Err(err);
+        }
         test_impl::try_enqueue(frame, kind)
     }
 
     #[cfg(any(not(test), feature = "full_mm_tests"))]
     {
         kernel_impl::try_enqueue(frame, kind)
+    }
+}
+
+#[cfg(test)]
+pub fn set_test_enqueue_override(value: Option<SwapError>) {
+    #[cfg(all(test, not(feature = "full_mm_tests")))]
+    {
+        TEST_ENQUEUE_OVERRIDE.store(
+            encode_test_enqueue_override(value),
+            AtomicOrdering::Release,
+        );
+    }
+
+    #[cfg(not(all(test, not(feature = "full_mm_tests"))))]
+    {
+        let _ = value;
     }
 }
 
@@ -1495,6 +1564,28 @@ mod tests {
 
         // after completion backing must be removed
         assert!(frame_backing::get_frame_backing(frame_idx).is_none());
+    }
+
+    #[test_case]
+    #[cfg(not(feature = "full_mm_tests"))]
+    fn test_enqueue_override_forces_error() {
+        crate::mm::async_swapout::set_test_enqueue_override(Some(SwapError::QueueFull));
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let err = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect_err("override must force error");
+        assert_eq!(err, SwapError::QueueFull);
+
+        crate::mm::async_swapout::set_test_enqueue_override(None);
+        if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
+            let physf = unsafe {
+                x86_64::structures::paging::PhysFrame::from_start_address_unchecked(
+                    x86_64::PhysAddr::new(frame_idx.to_phys_addr()),
+                )
+            };
+            crate::mm::buddy_allocator::buddy_dealloc_frame(physf);
+        }
     }
 
     #[test_case]
@@ -2125,6 +2216,7 @@ mod tests {
         assert_eq!(after.pending_async, before.pending_async);
         assert!(after.async_fail > before.async_fail);
         assert!(after.requeued > before.requeued);
+        assert_eq!(after.total_reclaimed, before.total_reclaimed);
 
         if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
             let physf = unsafe {
@@ -2176,6 +2268,7 @@ mod tests {
         assert_eq!(after.pending_async, before.pending_async);
         assert!(after.async_fail > before.async_fail);
         assert!(after.requeued > before.requeued);
+        assert_eq!(after.total_reclaimed, before.total_reclaimed);
 
         if crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()) {
             let physf = unsafe {
@@ -2226,11 +2319,13 @@ mod tests {
         let after = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
         assert_eq!(after.pending_async, before.pending_async);
         assert!(after.async_success > before.async_success);
+        assert!(after.total_reclaimed > before.total_reclaimed);
 
         crate::mm::page_reclaim::notify_async_swapout_success(frame_idx);
         let after_duplicate = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
         assert_eq!(after_duplicate.async_success, after.async_success);
         assert_eq!(after_duplicate.pending_async, after.pending_async);
+        assert_eq!(after_duplicate.total_reclaimed, after.total_reclaimed);
 
         stop_worker();
     }
@@ -2531,5 +2626,3 @@ mod tests {
         assert!(hits + misses > 0);
     }
 }
-
-

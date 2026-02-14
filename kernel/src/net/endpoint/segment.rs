@@ -408,3 +408,21 @@ mod tests {
     }
 
     #[test_case]
+    fn test_tcp_message_length_field_for_checksum() {
+        let mut segment = TcpSegmentBuilder::new(12345, 80)
+            .seq(1)
+            .ack(1)
+            .ack_flag()
+            .payload(b"abc")
+            .build();
+
+        TcpSegmentBuilder::calculate_checksum(
+            &mut segment,
+            [192, 168, 1, 10],
+            [192, 168, 1, 20],
+        );
+
+        let checksum = u16::from_be_bytes([segment[16], segment[17]]);
+        assert_ne!(checksum, 0);
+    }
+}

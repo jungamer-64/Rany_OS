@@ -97,8 +97,14 @@ impl<T: ?Sized> AsyncMutex<T> {
         self.locked.store(false, Ordering::Release);
 
         // Wake one registered waiter, if any.
-        if let Some(w) = self.waiters.try_lock().and_then(|mut q| q.pop_front()) {
-            w.wake();
+        if let Some(waiters_result) = self.waiters.try_lock() {
+            let mut waiters = match waiters_result {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(w) = waiters.pop_front() {
+                w.wake();
+            }
         }
     }
 }
@@ -150,7 +156,10 @@ impl<'a, T: ?Sized> Future for LockFuture<'a, T> {
         }
 
         // Otherwise, register waker and go pending
-        let mut waiters = self.lock.waiters.lock();
+        let mut waiters = match self.lock.waiters.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
 
         // Replace identical waker if present to avoid duplicates; otherwise push
         // (We keep the logic simple: push if will_wake doesn't match any existing waker)

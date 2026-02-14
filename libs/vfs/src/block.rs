@@ -1244,7 +1244,7 @@ impl<T: SimpleBlockDevice> SimpleBlockDeviceAdapter<T> {
         let offset = request.block;
         let count = request.count;
 
-        match request.op_type {
+        match request.req_type {
             RequestType::Read => {
                 let size = count as usize * block_size;
                 let mut buf = alloc::vec![0u8; size];
@@ -1252,27 +1252,31 @@ impl<T: SimpleBlockDevice> SimpleBlockDeviceAdapter<T> {
                 match self.inner.read_blocks(offset, count, &mut buf) {
                     Ok(()) => {
                         *request.buffer.lock() = Some(buf);
-                        request.complete();
+                        request.set_state(RequestState::Completed);
                     }
-                    Err(e) => request.fail(e),
+                    Err(e) => request.set_state(RequestState::Failed(e)),
                 }
             }
             RequestType::Write => {
                 let guard = request.buffer.lock();
                 if let Some(ref data) = *guard {
                     match self.inner.write_blocks(offset, count, data) {
-                        Ok(()) => request.complete(),
-                        Err(e) => request.fail(e),
+                        Ok(()) => request.set_state(RequestState::Completed),
+                        Err(e) => request.set_state(RequestState::Failed(e)),
                     }
                 } else {
-                    request.fail(BlockError::InvalidBufferSize);
+                    request.set_state(RequestState::Failed(BlockError::InvalidBufferSize));
                 }
             }
             RequestType::Flush => {
                 match self.inner.flush() {
-                    Ok(()) => request.complete(),
-                    Err(e) => request.fail(e),
+                    Ok(()) => request.set_state(RequestState::Completed),
+                    Err(e) => request.set_state(RequestState::Failed(e)),
                 }
+            }
+            RequestType::Discard => {
+                // SimpleBlockDevice has no discard primitive; treat as best-effort no-op.
+                request.set_state(RequestState::Completed);
             }
         }
     }
@@ -1307,4 +1311,3 @@ impl<T: SimpleBlockDevice> BlockDevice for SimpleBlockDeviceAdapter<T> {
         completed
     }
 }
-

@@ -27,60 +27,26 @@ use super::types::NumaNodeId;
 // ============================================================================
 
 /// ページを Non-Temporal Store でゼロクリア（AVX2/SSE2）
-/// 
+///
 /// キャッシュを汚さずにメモリを初期化する。アイドル時のバックグラウンド
 /// ゼロクリアに最適。
-/// 
+///
 /// # Safety
 /// - `virt_addr` は 4096 バイト以上のアクセス可能なメモリを指すこと
 /// - `virt_addr` は 64 バイトアライン推奨（パフォーマンス最適化）
 #[inline]
 pub unsafe fn zero_page_nontemporal(virt_addr: u64) {
-    let ptr = virt_addr as *mut u8;
-    
-    // Only use SSE2 intrinsics when the target actually has SSE2 enabled.
-    // The kernel target uses +soft-float which disables SSE, so we must
-    // use the scalar fallback to avoid LLVM errors.
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-    {
-        use core::arch::x86_64::*;
-        
-        // Use SSE2 non-temporal stores
-        let zero = _mm_setzero_si128();
-        let mut offset = 0usize;
-        
-        // 4096 bytes / 16 bytes per MOVNTDQ = 256 iterations
-        // Unroll 4x for better throughput = 64 iterations
-        while offset < 4096 {
-            _mm_stream_si128(ptr.add(offset) as *mut __m128i, zero);
-            _mm_stream_si128(ptr.add(offset + 16) as *mut __m128i, zero);
-            _mm_stream_si128(ptr.add(offset + 32) as *mut __m128i, zero);
-            _mm_stream_si128(ptr.add(offset + 48) as *mut __m128i, zero);
-            offset += 64;
-        }
-        
-        // Memory fence to ensure all stores are visible
-        _mm_sfence();
-    }
-    
-    // Scalar fallback for soft-float targets or non-x86_64 architectures
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
-    {
-        // Standard zeroing - the compiler will optimize this to REP STOSB
-        // which is efficient on modern CPUs
-        core::ptr::write_bytes(ptr, 0, 4096);
-    }
+    super::zero_page::clear_page_nt(virt_addr as *mut u8);
 }
 
 /// ページを標準的な方法でゼロクリア（通常のストア命令）
-/// 
+///
 /// 即座にゼロクリアされたページを使う場合（ユーザー空間への
 /// ページ割り当て直前など）に使用。キャッシュに載るので
 /// 直後の読み書きが高速。
 #[inline]
 pub unsafe fn zero_page_standard(virt_addr: u64) {
-    let ptr = virt_addr as *mut u8;
-    core::ptr::write_bytes(ptr, 0, 4096);
+    super::zero_page::clear_page_memset(virt_addr as *mut u8);
 }
 
 /// Per-NUMAノードのゼロ済みフレームプール容量

@@ -1328,16 +1328,16 @@ impl BuddyFrameAllocator {
 
                 // Phase 6: Set Folio (Compound Page) flags
                 if order > 0 {
-                    use crate::mm::page_flags::{self, PageFlags};
+                    use crate::mm::page_flags::{self, PageMetaFlags};
                     // Set order
                     unsafe { page_flags::set_order(frame, order as u8); }
 
                     // Head page
-                    page_flags::set_flag(frame, PageFlags::CompoundHead);
+                    page_flags::set_flag(frame, PageMetaFlags::CompoundHead);
                     // Tail pages
                     for i in 1..block_size {
                          let tail_frame = FrameIndex::new(frame.as_usize() + i as usize);
-                         page_flags::set_flag(tail_frame, PageFlags::CompoundTail);
+                         page_flags::set_flag(tail_frame, PageMetaFlags::CompoundTail);
                     }
                 }
 
@@ -1377,14 +1377,14 @@ impl BuddyFrameAllocator {
 
         // Phase 6: Clear Folio flags
         if order > 0 {
-            use crate::mm::page_flags::{self, PageFlags};
+            use crate::mm::page_flags::{self, PageMetaFlags};
             unsafe { page_flags::set_order(frame, 0); }
 
             let count = 1usize << order;
-             page_flags::clear_flag(frame, PageFlags::CompoundHead);
+             page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
              for i in 1..count {
                  let tail_frame = FrameIndex::new(frame.as_usize() + i);
-                 page_flags::clear_flag(tail_frame, PageFlags::CompoundTail);
+                 page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
              }
         }
 
@@ -1422,14 +1422,14 @@ impl BuddyFrameAllocator {
 
         // Phase 6: Clear Folio flags
         if order > 0 {
-            use crate::mm::page_flags::{self, PageFlags};
+            use crate::mm::page_flags::{self, PageMetaFlags};
             unsafe { page_flags::set_order(frame, 0); }
 
             let count = 1usize << order;
-             page_flags::clear_flag(frame, PageFlags::CompoundHead);
+             page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
              for i in 1..count {
                  let tail_frame = FrameIndex::new(frame.as_usize() + i);
-                 page_flags::clear_flag(tail_frame, PageFlags::CompoundTail);
+                 page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
              }
         }
 
@@ -1577,15 +1577,13 @@ impl BuddyFrameAllocator {
         let order = crate::mm::page_flags::get_order(frame_idx) as usize;
 
         // Memcg: ページがmemcgでトラックされている場合はアンチャージ
-        if let Some(info) = super::memcg::memcg_untrack_page(frame_idx) {
-            let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-        }
+        super::memcg::memcg_untrack_and_uncharge(frame_idx, 1);
 
         self.deallocate_order(frame_idx, order);
     }
 
     /// 2MiB フレームを解放
-    /// 
+    ///
     /// 大きなブロックは即時結合を使用（スラッシングのリスクが低い）
     pub fn deallocate_2m_frame(&mut self, frame: PhysFrame<Size2MiB>) {
         let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
@@ -1594,9 +1592,7 @@ impl BuddyFrameAllocator {
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
-            if let Some(info) = super::memcg::memcg_untrack_page(idx) {
-                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-            }
+            super::memcg::memcg_untrack_and_uncharge(idx, 1);
         }
 
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
@@ -1604,7 +1600,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 1GiB フレームを解放
-    /// 
+    ///
     /// 大きなブロックは即時結合を使用（スラッシングのリスクが低い）
     pub fn deallocate_1g_frame(&mut self, frame: PhysFrame<Size1GiB>) {
         let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
@@ -1613,9 +1609,7 @@ impl BuddyFrameAllocator {
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
-            if let Some(info) = super::memcg::memcg_untrack_page(idx) {
-                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-            }
+            super::memcg::memcg_untrack_and_uncharge(idx, 1);
         }
 
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
@@ -2758,7 +2752,7 @@ mod tests {
     }
     #[test_case]
     fn test_folio_allocation_and_flags() {
-        use crate::mm::page_flags::{self, PageFlags};
+        use crate::mm::page_flags::{self, PageMetaFlags};
         
         // Initialize page flags for testing (needed for Folio tracking)
         // We allocate enough space for the test frames.
@@ -2787,15 +2781,15 @@ mod tests {
         let frame_idx = frame.as_usize();
         
         // 1. Verify Head Page
-        assert!(page_flags::test_flag(frame, PageFlags::CompoundHead), "Head flag not set");
-        assert!(!page_flags::test_flag(frame, PageFlags::CompoundTail), "Head has Tail flag");
+        assert!(page_flags::test_flag(frame, PageMetaFlags::CompoundHead), "Head flag not set");
+        assert!(!page_flags::test_flag(frame, PageMetaFlags::CompoundTail), "Head has Tail flag");
         assert_eq!(page_flags::get_order(frame), 2, "Head order incorrect");
 
         // 2. Verify Tail Pages
         for i in 1..4 {
             let tail = FrameIndex::new(frame_idx + i);
-            assert!(page_flags::test_flag(tail, PageFlags::CompoundTail), "Tail flag not set at index {}", i);
-            assert!(!page_flags::test_flag(tail, PageFlags::CompoundHead), "Tail has Head flag at index {}", i);
+            assert!(page_flags::test_flag(tail, PageMetaFlags::CompoundTail), "Tail flag not set at index {}", i);
+            assert!(!page_flags::test_flag(tail, PageMetaFlags::CompoundHead), "Tail has Head flag at index {}", i);
             // Allocation only sets order on HEAD. Tail order remains 0.
             assert_eq!(page_flags::get_order(tail), 0, "Tail order should be 0");
         }
@@ -2803,12 +2797,12 @@ mod tests {
         // 3. Verify Deallocation Cleans Up
         allocator.deallocate_order(frame, 2);
 
-        assert!(!page_flags::test_flag(frame, PageFlags::CompoundHead), "Head flag not cleared");
+        assert!(!page_flags::test_flag(frame, PageMetaFlags::CompoundHead), "Head flag not cleared");
         assert_eq!(page_flags::get_order(frame), 0, "Head order not cleared");
         
         for i in 1..4 {
             let tail = FrameIndex::new(frame_idx + i);
-            assert!(!page_flags::test_flag(tail, PageFlags::CompoundTail), "Tail flag not cleared at index {}", i);
+            assert!(!page_flags::test_flag(tail, PageMetaFlags::CompoundTail), "Tail flag not cleared at index {}", i);
         }
     }
 }
