@@ -178,26 +178,6 @@ pub fn default_config() -> BootConfig {
     config
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_empty() {
-        let config = parse_config(b"");
-        assert_eq!(config.entries.len(), 0);
-    }
-
-    #[test]
-    fn test_parse_basic() {
-        let data = b"timeout=10\ndefault=1\n\n[Test]\nkernel=test_kernel\n";
-        let config = parse_config(data);
-        assert_eq!(config.timeout, 10);
-        assert_eq!(config.entries.len(), 1);
-        assert_eq!(config.entries[0].name, "Test");
-    }
-}
-
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::parse_config;
@@ -205,5 +185,15 @@ pub mod qemu_tests {
     pub fn parse_smoke() -> bool {
         let cfg = parse_config("timeout=9\n[Main]\nkernel=rany_os\n");
         cfg.timeout == 9 && cfg.entries.len() == 1 && cfg.entries[0].name == "Main"
+    }
+
+    pub fn parse_empty_smoke() -> bool {
+        let config = parse_config("");
+        config.entries.is_empty()
+    }
+
+    pub fn parse_basic_smoke() -> bool {
+        let config = parse_config("timeout=10\ndefault=1\n\n[Test]\nkernel=test_kernel\n");
+        config.timeout == 10 && config.entries.len() == 1 && config.entries[0].name == "Test"
     }
 }

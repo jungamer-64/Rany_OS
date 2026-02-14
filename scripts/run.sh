@@ -30,6 +30,10 @@ while [[ $# -gt 0 ]]; do
             USE_UEFI=false
             shift
             ;;
+        --uefi)
+            USE_UEFI=true
+            shift
+            ;;
         --debug)
             GDB_DEBUG=true
             shift
@@ -42,6 +46,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [options]"
             echo "Options:"
             echo "  --release    Build in release mode"
+            echo "  --uefi       Use UEFI boot (default)"
             echo "  --bios       Use legacy BIOS boot (default: UEFI)"
             echo "  --debug      Enable GDB debugging on port 1234"
             echo "  --memory N   Set memory size in MB (default: 512)"

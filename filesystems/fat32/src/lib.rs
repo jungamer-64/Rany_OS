@@ -61,9 +61,6 @@ use core::ops::{Add, Sub};
 use hashbrown::{HashMap, HashSet};
 use irq_lock::IrqPoisonLock;
 
-#[cfg(test)]
-extern crate std;
-
 use vfs::block::{
     BlockDevice, BlockDeviceZeroCopyAdapter, BlockError, OwnedBytes, ZeroCopyBlockDevice,
     ZeroCopyBuffer, ZeroCopyBufferMut,
@@ -7508,447 +7505,6 @@ fn try_alloc_vec<T: Clone>(len: usize, value: T) -> FsResult<Vec<T>> {
 }
 
 // ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-
-    #[test]
-    fn test_short_name() {
-        // to_short_name_partsはプライベートなのでDirEntryRaw経由でテスト
-        let entry = DirEntryRaw::new(
-            *b"TEST    ",
-            *b"TXT",
-            FileAttributes::from_bits_truncate(0),
-            Cluster(0),
-            0,
-        );
-        assert_eq!(&entry.name, b"TEST    ");
-        assert_eq!(&entry.ext, b"TXT");
-    }
-
-    #[test]
-    fn test_checksum() {
-        // DirEntryRaw::calculate_checksumを使用
-        let entry = DirEntryRaw::new(
-            *b"TEST    ",
-            *b"TXT",
-            FileAttributes::from_bits_truncate(0),
-            Cluster(0),
-            0,
-        );
-        let sum = entry.calculate_checksum();
-        assert!(sum != 0); // 具体的な値はテストデータによる
-    }
-
-    // ========================================================================
-    // Cluster Tests
-    // ========================================================================
-
-    #[test]
-    fn test_cluster_validation() {
-        // 有効なクラスタ
-        assert!(Cluster(2).is_valid());
-        assert!(Cluster(100).is_valid());
-        assert!(Cluster(0x0FFFFFF0 - 1).is_valid());
-
-        // 無効なクラスタ
-        assert!(!Cluster(0).is_valid()); // FREE
-        assert!(!Cluster(1).is_valid()); // Reserved
-        assert!(!Cluster::EOF.is_valid());
-        assert!(!Cluster::BAD.is_valid());
-    }
-
-    #[test]
-    fn test_cluster_special_values() {
-        assert!(Cluster::FREE.is_free());
-        assert!(Cluster::EOF.is_eof());
-        assert!(Cluster(0x0FFFFFFF).is_eof()); // 任意のEOF値
-    }
-
-    #[test]
-    fn test_cluster_contiguity() {
-        let c1 = Cluster(100);
-        let c2 = Cluster(101);
-        let c3 = Cluster(102);
-        let c5 = Cluster(105);
-
-        assert!(c1.is_contiguous_with(c2));
-        assert!(c2.is_contiguous_with(c3));
-        assert!(!c1.is_contiguous_with(c3)); // スキップ
-        assert!(!c1.is_contiguous_with(c5)); // 離れている
-    }
-
-    #[test]
-    fn test_cluster_in_range() {
-        const MAX_CLUSTERS: u32 = 65525;
-
-        assert!(Cluster::in_range(2, MAX_CLUSTERS));
-        assert!(Cluster::in_range(100, MAX_CLUSTERS));
-        assert!(Cluster::in_range(65524, MAX_CLUSTERS));
-
-        assert!(!Cluster::in_range(0, MAX_CLUSTERS)); // FREE
-        assert!(!Cluster::in_range(1, MAX_CLUSTERS)); // Reserved
-        assert!(!Cluster::in_range(65525, MAX_CLUSTERS)); // Out of range
-        assert!(!Cluster::in_range(100000, MAX_CLUSTERS)); // Way out
-    }
-
-    // ========================================================================
-    // FileOffset Tests
-    // ========================================================================
-
-    #[test]
-    fn test_file_offset_calculation() {
-        let offset = FileOffset(8192);
-        assert_eq!(offset.cluster_index(4096), 2);
-        assert_eq!(offset.offset_in_cluster(4096), 0);
-
-        let offset = FileOffset(5000);
-        assert_eq!(offset.cluster_index(4096), 1);
-        assert_eq!(offset.offset_in_cluster(4096), 904);
-
-        let offset = FileOffset(0);
-        assert_eq!(offset.cluster_index(4096), 0);
-        assert_eq!(offset.offset_in_cluster(4096), 0);
-    }
-
-    #[test]
-    fn test_file_offset_in_range() {
-        const FILE_SIZE: u64 = 1024 * 1024; // 1MB
-
-        assert!(FileOffset::in_range(0, FILE_SIZE));
-        assert!(FileOffset::in_range(500, FILE_SIZE));
-        assert!(FileOffset::in_range(FILE_SIZE - 1, FILE_SIZE));
-
-        assert!(!FileOffset::in_range(FILE_SIZE, FILE_SIZE));
-        assert!(!FileOffset::in_range(FILE_SIZE + 1, FILE_SIZE));
-    }
-
-    #[test]
-    fn test_file_offset_arithmetic() {
-        let offset = FileOffset(100);
-        let new_offset = offset + 50usize;
-        assert_eq!(new_offset.as_u64(), 150);
-    }
-
-    // ========================================================================
-    // ByteCount Tests
-    // ========================================================================
-
-    #[test]
-    fn test_byte_count_operations() {
-        let a = ByteCount(100);
-        let b = ByteCount(50);
-
-        assert_eq!(a.min(b), b);
-        assert_eq!(b.min(a), b);
-        assert_eq!((a - b).as_usize(), 50);
-        assert_eq!((a + b).as_usize(), 150);
-    }
-
-    #[test]
-    fn test_byte_count_saturating_sub() {
-        let a = ByteCount(50);
-        let b = ByteCount(100);
-
-        // saturating_sub により負にならない
-        assert_eq!((a - b).as_usize(), 0);
-    }
-
-    #[test]
-    fn test_byte_count_empty() {
-        assert!(ByteCount::ZERO.is_empty());
-        assert!(ByteCount(0).is_empty());
-        assert!(!ByteCount(1).is_empty());
-    }
-
-    // ========================================================================
-    // NextCluster Tests
-    // ========================================================================
-
-    #[test]
-    fn test_next_cluster_from_fat_entry() {
-        assert_eq!(
-            NextCluster::from_fat_entry(Cluster::FREE),
-            NextCluster::Free
-        );
-        assert_eq!(NextCluster::from_fat_entry(Cluster::EOF), NextCluster::Eof);
-        assert_eq!(NextCluster::from_fat_entry(Cluster::BAD), NextCluster::Bad);
-        assert_eq!(
-            NextCluster::from_fat_entry(Cluster(100)),
-            NextCluster::Valid(Cluster(100))
-        );
-    }
-
-    #[test]
-    fn test_next_cluster_as_valid() {
-        assert_eq!(
-            NextCluster::Valid(Cluster(100)).as_valid(),
-            Some(Cluster(100))
-        );
-        assert_eq!(NextCluster::Eof.as_valid(), None);
-        assert_eq!(NextCluster::Free.as_valid(), None);
-        assert_eq!(NextCluster::Bad.as_valid(), None);
-    }
-
-    // ========================================================================
-    // FileAttributes Tests
-    // ========================================================================
-
-    #[test]
-    fn test_file_attributes() {
-        let attrs = FileAttributes::from_bits_truncate(0x21); // READ_ONLY | ARCHIVE
-        assert!(attrs.is_read_only());
-        assert!((attrs.bits() & FileAttributes::ARCHIVE) != 0); // ARCHIVE check via bits
-        assert!(!attrs.is_hidden());
-        assert!(!attrs.is_system());
-        assert!(!attrs.is_directory());
-    }
-
-    #[test]
-    fn test_file_attributes_directory() {
-        let attrs = FileAttributes::from_bits_truncate(0x10); // DIRECTORY
-        assert!(attrs.is_directory());
-        assert!(!attrs.is_read_only());
-    }
-
-    #[test]
-    fn test_mount_minimal_boot_sector() {
-        use alloc::sync::Arc;
-        use vfs::block::RamDisk;
-
-        let disk = Arc::new(RamDisk::new(2048, 512));
-
-        let mut bs = [0u8; BOOT_SECTOR_SIZE];
-        // Standard BPB offsets (little-endian fields)
-        bs[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes per sector
-        bs[13] = 1; // sectors per cluster
-        bs[14..16].copy_from_slice(&32u16.to_le_bytes()); // reserved sectors
-        bs[16] = 2; // number of FATs
-        bs[32..36].copy_from_slice(&4096u32.to_le_bytes()); // total sectors (32-bit)
-        bs[36..40].copy_from_slice(&1u32.to_le_bytes()); // FAT size 32
-        bs[44..48].copy_from_slice(&2u32.to_le_bytes()); // root cluster
-        bs[82..90].copy_from_slice(b"FAT32   "); // fs type field
-        bs[510] = 0x55; // signature (little-endian 0xAA55)
-        bs[511] = 0xAA;
-
-        disk.write_sync(0, &bs).expect("write boot sector");
-
-        let fs = DefaultFat32FileSystem::mount(disk).expect("mount should succeed");
-        assert_eq!((&*fs).root_cluster, Cluster(2));
-    }
-
-    #[test]
-    fn test_write_and_flush_fat_entry_writes_to_disk() {
-        use alloc::sync::Arc;
-        use vfs::block::RamDisk;
-
-        let disk = Arc::new(RamDisk::new(2048, 512));
-
-        let mut bs = [0u8; BOOT_SECTOR_SIZE];
-        bs[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes per sector
-        bs[13] = 1; // sectors per cluster
-        bs[14..16].copy_from_slice(&1u16.to_le_bytes()); // reserved sectors = 1
-        bs[16] = 2; // number of FATs
-        bs[32..36].copy_from_slice(&4096u32.to_le_bytes()); // total sectors
-        bs[36..40].copy_from_slice(&1u32.to_le_bytes()); // FAT size 32
-        bs[44..48].copy_from_slice(&2u32.to_le_bytes()); // root cluster
-        bs[82..90].copy_from_slice(b"FAT32   "); // fs type field
-        bs[510] = 0x55;
-        bs[511] = 0xAA;
-
-        disk.write_sync(0, &bs).expect("write boot sector");
-
-        let fs = DefaultFat32FileSystem::mount(disk.clone()).expect("mount should succeed");
-
-        // Write FAT entry index 2 -> EOF
-        fs.write_fat_entry(Cluster(2), Cluster::EOF)
-            .expect("write entry");
-
-        assert!(fs.fat_sector_cache.has_dirty());
-
-        // Flush and verify disk contents
-        fs.sync().expect("sync");
-        assert!(!fs.fat_sector_cache.has_dirty());
-
-        // Read primary FAT sector from disk and verify entry value
-        let mut buf = [0u8; BLOCK_SIZE];
-        let device = fs.legacy_device.as_ref().expect("legacy device");
-        device
-            .read_sync(fs.fat_start_sector.as_u64(), &mut buf)
-            .expect("read primary fat");
-
-        let offset = 2 * 4;
-        let val = u32::from_le_bytes([
-            buf[offset],
-            buf[offset + 1],
-            buf[offset + 2],
-            buf[offset + 3],
-        ]) & 0x0FFFFFFF;
-        assert_eq!(val, Cluster::EOF.0 & 0x0FFFFFFF);
-    }
-
-    #[test]
-    fn test_file_attributes_lfn() {
-        let attrs = FileAttributes::from_bits_truncate(0x0F); // LFN marker
-        assert!(attrs.is_long_name());
-    }
-
-    #[test]
-    fn test_lfn_checksum() {
-        // "TEST    TXT" -> checksum: 0x8F (per standard FAT LFN checksum algorithm)
-        let mut base = [b' '; 8];
-        base[0..4].copy_from_slice(b"TEST");
-        let mut ext = [b' '; 3];
-        ext[0..3].copy_from_slice(b"TXT");
-        let entry = DirEntryRaw::new(
-            base,
-            ext,
-            FileAttributes::from_bits_truncate(0),
-            Cluster(2),
-            0,
-        );
-        assert_eq!(entry.calculate_checksum(), 0x8F);
-    }
-
-    #[test]
-    fn test_fat_sector_cache_update_and_dirty() {
-        let cache = FatSectorCache::new(2);
-        let mut data = Vec::with_capacity(FAT_ENTRIES_PER_SECTOR);
-        for i in 0..FAT_ENTRIES_PER_SECTOR {
-            data.push(Cluster(i as u32));
-        }
-
-        cache.insert(5, data);
-        assert!(cache.get(5).is_some());
-        assert!(cache.update_entry(5, 2, Cluster(42)));
-        let got_arc = cache.get(5).unwrap();
-        let got = got_arc.lock();
-        assert_eq!(got[2], Cluster(42));
-        assert!(cache.has_dirty());
-        let dirty = cache.take_dirty_sectors();
-        assert!(dirty.iter().any(|(idx, _)| *idx == 5));
-    }
-
-    #[test]
-    fn test_update_entry_if() {
-        let cache = FatSectorCache::new(2);
-        let data = vec![Cluster(0); FAT_ENTRIES_PER_SECTOR];
-        cache.insert(7, data);
-        assert!(!cache.update_entry_if(7, 1, Cluster(1), Cluster(2)));
-        assert!(cache.update_entry_if(7, 1, Cluster(0), Cluster(9)));
-        let got_arc = cache.get(7).unwrap();
-        let got = got_arc.lock();
-        assert_eq!(got[1], Cluster(9));
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_fat_sector_cache_update() {
-        use std::time::Instant;
-        let cache = FatSectorCache::new(1024);
-        let data = vec![Cluster(0); FAT_ENTRIES_PER_SECTOR];
-        for i in 0..1024u32 {
-            cache.insert(i, data.clone());
-        }
-
-        let iterations = 5000;
-        let start = Instant::now();
-        for i in 0..iterations {
-            let idx = (i as u32) % 1024;
-            let off = (i as usize) % FAT_ENTRIES_PER_SECTOR;
-            cache.update_entry(idx, off, Cluster((i % 1000) as u32));
-        }
-        let elapsed = start.elapsed();
-        std::println!("bench_fat_sector_cache_update: iterations={} elapsed={:?}", iterations, elapsed);
-    }
-
-    #[test]
-    #[ignore]
-    fn bench_dir_entry_cache_get() {
-        use std::time::Instant;
-        let cache = DirEntryCache::new(1024);
-        for i in 0..1024usize {
-            let entry = DirEntryRaw::new(*b"A       ", *b"TXT", FileAttributes::from_bits_truncate(0), Cluster(i as u32), 10);
-            let entries = vec![(alloc::format!("file{}", i), entry)];
-            cache.insert(Cluster(i as u32), entries);
-        }
-
-        let iterations = 100_000;
-        let start = Instant::now();
-        for i in 0..iterations {
-            let cluster = Cluster((i % 1024) as u32);
-            if let Some(entries_arc) = cache.get(cluster) {
-                let slice = entries_arc.as_ref();
-                if !slice.is_empty() {
-                    let _name = &slice[0].0;
-                }
-            }
-        }
-        let elapsed = start.elapsed();
-        std::println!("bench_dir_entry_cache_get: iterations={} elapsed={:?}", iterations, elapsed);
-    }
-
-    #[test]
-    fn test_dir_entry_cache_arc() {
-        let cache = DirEntryCache::new(2);
-        let entry = DirEntryRaw::new(*b"A       ", *b"TXT", FileAttributes::from_bits_truncate(0), Cluster(2), 10);
-        let entries = vec![(String::from("a"), entry)];
-        cache.insert(Cluster(2), entries.clone());
-        let got = cache.get(Cluster(2)).unwrap();
-        assert_eq!(&*got, &entries);
-    }
-
-    #[test]
-    fn test_cluster_chain_cycle_detection() {
-        use alloc::sync::Arc;
-        use vfs::block::RamDisk;
-
-        let disk = Arc::new(RamDisk::new(65536, 512));
-
-        let mut bs = [0u8; BOOT_SECTOR_SIZE];
-        // Standard BPB offsets (little-endian fields)
-        bs[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes per sector
-        bs[13] = 1; // sectors per cluster
-        bs[14..16].copy_from_slice(&32u16.to_le_bytes()); // reserved sectors
-        bs[16] = 2; // number of FATs
-        bs[32..36].copy_from_slice(&4096u32.to_le_bytes()); // total sectors (32-bit)
-        bs[36..40].copy_from_slice(&1u32.to_le_bytes()); // FAT size 32
-        bs[44..48].copy_from_slice(&2u32.to_le_bytes()); // root cluster
-        bs[82..90].copy_from_slice(b"FAT32   "); // fs type field
-        bs[510] = 0x55; // signature (little-endian 0xAA55)
-        bs[511] = 0xAA;
-
-        disk.write_sync(0, &bs).expect("write boot sector");
-
-        let fs = DefaultFat32FileSystem::mount(disk).expect("mount should succeed");
-
-        // Create a chain 2 -> 3 -> 4 -> ... -> N -> 3 (cycle)
-        let start = 2u32;
-        let chain_len = 10u32; // with test interval 1, detection should be quick
-        for i in 0..chain_len {
-            fs.write_fat_entry_to_disk(Cluster(start + i), Cluster(start + i + 1))
-                .expect("write fat entry");
-        }
-        // create cycle: last one point to 3
-        fs.write_fat_entry_to_disk(Cluster(start + chain_len), Cluster(3))
-            .expect("write fat entry");
-        fs.fat_sector_cache.clear();
-
-        let mut iter = fs.clusters(Cluster(2));
-        loop {
-            match iter.next() {
-                Some(Ok(_)) => continue,
-                Some(Err(_)) => return, // success
-                None => panic!("Expected cycle detection, got end of chain"),
-            }
-        }
-    }
-}
-// ============================================================================
 // VFS Implementations
 // ============================================================================
 
@@ -8419,7 +7975,13 @@ impl Fat32FileSystem<DefaultZeroCopyBuffer> {
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
-    use super::{Cluster, NextCluster, Sector};
+    use super::*;
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use alloc::vec::Vec;
+    use alloc::string::String;
+
+    // --- Existing tests ---
 
     pub fn cluster_smoke() -> bool {
         let c = Cluster(10);
@@ -8433,5 +7995,350 @@ pub mod qemu_tests {
     pub fn sector_smoke() -> bool {
         let s = Sector(123);
         s.as_u64() == 123
+    }
+
+    // --- Migrated from #[cfg(test)] mod tests ---
+
+    pub fn short_name_smoke() -> bool {
+        let entry = DirEntryRaw::new(
+            *b"TEST    ",
+            *b"TXT",
+            FileAttributes::from_bits_truncate(0),
+            Cluster(0),
+            0,
+        );
+        entry.name == *b"TEST    " && entry.ext == *b"TXT"
+    }
+
+    pub fn checksum_smoke() -> bool {
+        let entry = DirEntryRaw::new(
+            *b"TEST    ",
+            *b"TXT",
+            FileAttributes::from_bits_truncate(0),
+            Cluster(0),
+            0,
+        );
+        entry.calculate_checksum() != 0
+    }
+
+    pub fn cluster_validation_smoke() -> bool {
+        Cluster(2).is_valid()
+            && Cluster(100).is_valid()
+            && Cluster(0x0FFFFFF0 - 1).is_valid()
+            && !Cluster(0).is_valid()
+            && !Cluster(1).is_valid()
+            && !Cluster::EOF.is_valid()
+            && !Cluster::BAD.is_valid()
+    }
+
+    pub fn cluster_special_values_smoke() -> bool {
+        Cluster::FREE.is_free()
+            && Cluster::EOF.is_eof()
+            && Cluster(0x0FFFFFFF).is_eof()
+    }
+
+    pub fn cluster_contiguity_smoke() -> bool {
+        let c1 = Cluster(100);
+        let c2 = Cluster(101);
+        let c3 = Cluster(102);
+        let c5 = Cluster(105);
+        c1.is_contiguous_with(c2)
+            && c2.is_contiguous_with(c3)
+            && !c1.is_contiguous_with(c3)
+            && !c1.is_contiguous_with(c5)
+    }
+
+    pub fn cluster_in_range_smoke() -> bool {
+        const MAX_CLUSTERS: u32 = 65525;
+        Cluster::in_range(2, MAX_CLUSTERS)
+            && Cluster::in_range(100, MAX_CLUSTERS)
+            && Cluster::in_range(65524, MAX_CLUSTERS)
+            && !Cluster::in_range(0, MAX_CLUSTERS)
+            && !Cluster::in_range(1, MAX_CLUSTERS)
+            && !Cluster::in_range(65525, MAX_CLUSTERS)
+            && !Cluster::in_range(100000, MAX_CLUSTERS)
+    }
+
+    pub fn file_offset_calculation_smoke() -> bool {
+        let o1 = FileOffset(8192);
+        let o2 = FileOffset(5000);
+        let o3 = FileOffset(0);
+        o1.cluster_index(4096) == 2
+            && o1.offset_in_cluster(4096) == 0
+            && o2.cluster_index(4096) == 1
+            && o2.offset_in_cluster(4096) == 904
+            && o3.cluster_index(4096) == 0
+            && o3.offset_in_cluster(4096) == 0
+    }
+
+    pub fn file_offset_in_range_smoke() -> bool {
+        const FILE_SIZE: u64 = 1024 * 1024;
+        FileOffset::in_range(0, FILE_SIZE)
+            && FileOffset::in_range(500, FILE_SIZE)
+            && FileOffset::in_range(FILE_SIZE - 1, FILE_SIZE)
+            && !FileOffset::in_range(FILE_SIZE, FILE_SIZE)
+            && !FileOffset::in_range(FILE_SIZE + 1, FILE_SIZE)
+    }
+
+    pub fn file_offset_arithmetic_smoke() -> bool {
+        let offset = FileOffset(100);
+        let new_offset = offset + 50usize;
+        new_offset.as_u64() == 150
+    }
+
+    pub fn byte_count_operations_smoke() -> bool {
+        let a = ByteCount(100);
+        let b = ByteCount(50);
+        a.min(b) == b
+            && b.min(a) == b
+            && (a - b).as_usize() == 50
+            && (a + b).as_usize() == 150
+    }
+
+    pub fn byte_count_saturating_sub_smoke() -> bool {
+        let a = ByteCount(50);
+        let b = ByteCount(100);
+        (a - b).as_usize() == 0
+    }
+
+    pub fn byte_count_empty_smoke() -> bool {
+        ByteCount::ZERO.is_empty()
+            && ByteCount(0).is_empty()
+            && !ByteCount(1).is_empty()
+    }
+
+    pub fn next_cluster_from_fat_entry_smoke() -> bool {
+        NextCluster::from_fat_entry(Cluster::FREE) == NextCluster::Free
+            && NextCluster::from_fat_entry(Cluster::EOF) == NextCluster::Eof
+            && NextCluster::from_fat_entry(Cluster::BAD) == NextCluster::Bad
+            && NextCluster::from_fat_entry(Cluster(100)) == NextCluster::Valid(Cluster(100))
+    }
+
+    pub fn next_cluster_as_valid_smoke() -> bool {
+        NextCluster::Valid(Cluster(100)).as_valid() == Some(Cluster(100))
+            && NextCluster::Eof.as_valid().is_none()
+            && NextCluster::Free.as_valid().is_none()
+            && NextCluster::Bad.as_valid().is_none()
+    }
+
+    pub fn file_attributes_smoke() -> bool {
+        let attrs = FileAttributes::from_bits_truncate(0x21);
+        attrs.is_read_only()
+            && (attrs.bits() & FileAttributes::ARCHIVE) != 0
+            && !attrs.is_hidden()
+            && !attrs.is_system()
+            && !attrs.is_directory()
+    }
+
+    pub fn file_attributes_directory_smoke() -> bool {
+        let attrs = FileAttributes::from_bits_truncate(0x10);
+        attrs.is_directory() && !attrs.is_read_only()
+    }
+
+    pub fn mount_minimal_boot_sector_smoke() -> bool {
+        use vfs::block::RamDisk;
+        let disk = Arc::new(RamDisk::new(2048, 512));
+
+        let mut bs = [0u8; BOOT_SECTOR_SIZE];
+        bs[11..13].copy_from_slice(&512u16.to_le_bytes());
+        bs[13] = 1;
+        bs[14..16].copy_from_slice(&32u16.to_le_bytes());
+        bs[16] = 2;
+        bs[32..36].copy_from_slice(&4096u32.to_le_bytes());
+        bs[36..40].copy_from_slice(&1u32.to_le_bytes());
+        bs[44..48].copy_from_slice(&2u32.to_le_bytes());
+        bs[82..90].copy_from_slice(b"FAT32   ");
+        bs[510] = 0x55;
+        bs[511] = 0xAA;
+
+        if disk.write_sync(0, &bs).is_err() { return false; }
+        let fs = match DefaultFat32FileSystem::mount(disk) {
+            Ok(fs) => fs,
+            Err(_) => return false,
+        };
+        (&*fs).root_cluster == Cluster(2)
+    }
+
+    pub fn write_and_flush_fat_entry_smoke() -> bool {
+        use vfs::block::RamDisk;
+        let disk = Arc::new(RamDisk::new(2048, 512));
+
+        let mut bs = [0u8; BOOT_SECTOR_SIZE];
+        bs[11..13].copy_from_slice(&512u16.to_le_bytes());
+        bs[13] = 1;
+        bs[14..16].copy_from_slice(&1u16.to_le_bytes());
+        bs[16] = 2;
+        bs[32..36].copy_from_slice(&4096u32.to_le_bytes());
+        bs[36..40].copy_from_slice(&1u32.to_le_bytes());
+        bs[44..48].copy_from_slice(&2u32.to_le_bytes());
+        bs[82..90].copy_from_slice(b"FAT32   ");
+        bs[510] = 0x55;
+        bs[511] = 0xAA;
+
+        if disk.write_sync(0, &bs).is_err() { return false; }
+        let fs = match DefaultFat32FileSystem::mount(disk.clone()) {
+            Ok(fs) => fs,
+            Err(_) => return false,
+        };
+
+        if fs.write_fat_entry(Cluster(2), Cluster::EOF).is_err() { return false; }
+        if !fs.fat_sector_cache.has_dirty() { return false; }
+        if fs.sync().is_err() { return false; }
+        if fs.fat_sector_cache.has_dirty() { return false; }
+
+        let mut buf = [0u8; BLOCK_SIZE];
+        let device = match fs.legacy_device.as_ref() {
+            Some(d) => d,
+            None => return false,
+        };
+        if device.read_sync(fs.fat_start_sector.as_u64(), &mut buf).is_err() { return false; }
+
+        let offset = 2 * 4;
+        let val = u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]) & 0x0FFFFFFF;
+        val == (Cluster::EOF.0 & 0x0FFFFFFF)
+    }
+
+    pub fn file_attributes_lfn_smoke() -> bool {
+        let attrs = FileAttributes::from_bits_truncate(0x0F);
+        attrs.is_long_name()
+    }
+
+    pub fn lfn_checksum_smoke() -> bool {
+        let mut base = [b' '; 8];
+        base[0..4].copy_from_slice(b"TEST");
+        let mut ext = [b' '; 3];
+        ext[0..3].copy_from_slice(b"TXT");
+        let entry = DirEntryRaw::new(
+            base,
+            ext,
+            FileAttributes::from_bits_truncate(0),
+            Cluster(2),
+            0,
+        );
+        entry.calculate_checksum() == 0x8F
+    }
+
+    pub fn fat_sector_cache_update_and_dirty_smoke() -> bool {
+        let cache = FatSectorCache::new(2);
+        let mut data = Vec::with_capacity(FAT_ENTRIES_PER_SECTOR);
+        for i in 0..FAT_ENTRIES_PER_SECTOR {
+            data.push(Cluster(i as u32));
+        }
+
+        cache.insert(5, data);
+        if cache.get(5).is_none() { return false; }
+        if !cache.update_entry(5, 2, Cluster(42)) { return false; }
+        let got_arc = match cache.get(5) {
+            Some(a) => a,
+            None => return false,
+        };
+        let got = got_arc.lock();
+        if got[2] != Cluster(42) { return false; }
+        if !cache.has_dirty() { return false; }
+        let dirty = cache.take_dirty_sectors();
+        dirty.iter().any(|(idx, _)| *idx == 5)
+    }
+
+    pub fn update_entry_if_smoke() -> bool {
+        let cache = FatSectorCache::new(2);
+        let data = vec![Cluster(0); FAT_ENTRIES_PER_SECTOR];
+        cache.insert(7, data);
+        if cache.update_entry_if(7, 1, Cluster(1), Cluster(2)) { return false; }
+        if !cache.update_entry_if(7, 1, Cluster(0), Cluster(9)) { return false; }
+        let got_arc = match cache.get(7) {
+            Some(a) => a,
+            None => return false,
+        };
+        let got = got_arc.lock();
+        got[1] == Cluster(9)
+    }
+
+    pub fn dir_entry_cache_arc_smoke() -> bool {
+        let cache = DirEntryCache::new(2);
+        let entry = DirEntryRaw::new(
+            *b"A       ", *b"TXT",
+            FileAttributes::from_bits_truncate(0),
+            Cluster(2), 10,
+        );
+        let entries = vec![(String::from("a"), entry)];
+        cache.insert(Cluster(2), entries.clone());
+        let got = match cache.get(Cluster(2)) {
+            Some(g) => g,
+            None => return false,
+        };
+        &*got == entries.as_slice()
+    }
+
+    pub fn cluster_chain_cycle_detection_smoke() -> bool {
+        use vfs::block::RamDisk;
+        let disk = Arc::new(RamDisk::new(65536, 512));
+
+        let mut bs = [0u8; BOOT_SECTOR_SIZE];
+        bs[11..13].copy_from_slice(&512u16.to_le_bytes());
+        bs[13] = 1;
+        bs[14..16].copy_from_slice(&32u16.to_le_bytes());
+        bs[16] = 2;
+        bs[32..36].copy_from_slice(&4096u32.to_le_bytes());
+        bs[36..40].copy_from_slice(&1u32.to_le_bytes());
+        bs[44..48].copy_from_slice(&2u32.to_le_bytes());
+        bs[82..90].copy_from_slice(b"FAT32   ");
+        bs[510] = 0x55;
+        bs[511] = 0xAA;
+
+        if disk.write_sync(0, &bs).is_err() { return false; }
+        let fs = match DefaultFat32FileSystem::mount(disk) {
+            Ok(fs) => fs,
+            Err(_) => return false,
+        };
+
+        let start = 2u32;
+        let chain_len = 10u32;
+        for i in 0..chain_len {
+            if fs.write_fat_entry_to_disk(Cluster(start + i), Cluster(start + i + 1)).is_err() {
+                return false;
+            }
+        }
+        if fs.write_fat_entry_to_disk(Cluster(start + chain_len), Cluster(3)).is_err() {
+            return false;
+        }
+        fs.fat_sector_cache.clear();
+
+        let mut iter = fs.clusters(Cluster(2));
+        loop {
+            match iter.next() {
+                Some(Ok(_)) => continue,
+                Some(Err(_)) => return true,
+                None => return false,
+            }
+        }
+    }
+
+    // --- Migrated from async_mutex.rs ---
+
+    pub fn async_mutex_blocking_lock_basic_smoke() -> bool {
+        super::async_mutex::qemu_tests::blocking_lock_basic_smoke()
+    }
+
+    pub fn async_mutex_wait_then_acquire_smoke() -> bool {
+        super::async_mutex::qemu_tests::async_lock_wait_then_acquire_smoke()
+    }
+
+    // --- Migrated from irq_lock.rs ---
+
+    pub fn irq_poison_lock_basic_smoke() -> bool {
+        super::irq_lock::qemu_tests::basic_locking_smoke()
+    }
+
+    pub fn irq_try_lock_smoke() -> bool {
+        super::irq_lock::qemu_tests::try_lock_contention_smoke()
+    }
+
+    pub fn irq_restore_smoke() -> bool {
+        super::irq_lock::qemu_tests::irq_restore_smoke()
     }
 }

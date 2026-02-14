@@ -204,69 +204,61 @@ impl<T: ?Sized> Drop for AsyncGuard<'_, T> {
     }
 }
 
-// ========================= Tests =========================
-#[cfg(test)]
-mod tests {
+// ========================= QEMU Test Exports =========================
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
-    use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::pin::Pin;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-    // Basic blocking behavior
-    #[test]
-    fn blocking_lock_basic() {
-        let m = Arc::new(AsyncMutex::new(0usize));
+    pub fn blocking_lock_basic_smoke() -> bool {
+        let m = AsyncMutex::new(0usize);
         {
             let mut g = m.blocking_lock();
             *g += 1;
         }
-        let g = m.try_lock().expect("should lock");
-        assert_eq!(*g, 1usize);
+        match m.try_lock() {
+            Some(g) => *g == 1usize,
+            None => false,
+        }
     }
 
-    // Simple async lock test using std executor
-    #[test]
-    fn async_lock_order() {
-        use futures::executor::LocalPool;
-        use futures::task::LocalSpawnExt;
+    pub fn async_lock_wait_then_acquire_smoke() -> bool {
+        let m = AsyncMutex::new(0usize);
+        let held = m.blocking_lock();
 
-        let pool = &mut LocalPool::new();
-        let spawner = pool.spawner();
+        let mut fut = m.lock_async();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
 
-        let m = Arc::new(AsyncMutex::new(0usize));
-        let cnt = Arc::new(AtomicUsize::new(0));
-
-        // Task A acquires lock and holds it for one wake cycle
-        {
-            let m = m.clone();
-            let cnt = cnt.clone();
-            spawner
-                .spawn_local(async move {
-                    let mut g = m.lock_async().await;
-                    *g += 1;
-                    // simulate some async yield
-                    cnt.fetch_add(1, Ordering::SeqCst);
-                })
-                .unwrap();
+        if !matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending) {
+            return false;
         }
 
-        // Task B will wait for the lock
-        {
-            let m = m.clone();
-            let cnt = cnt.clone();
-            spawner
-                .spawn_local(async move {
-                    let mut g = m.lock_async().await;
-                    // by the time we get the lock, A should have run
-                    assert!(cnt.load(Ordering::SeqCst) >= 1);
-                    *g += 10;
-                })
-                .unwrap();
+        drop(held);
+
+        let mut guard = match Pin::new(&mut fut).poll(&mut cx) {
+            Poll::Ready(g) => g,
+            Poll::Pending => return false,
+        };
+        *guard += 1;
+        drop(guard);
+
+        match m.try_lock() {
+            Some(g) => *g == 1usize,
+            None => false,
         }
+    }
 
-        pool.run();
-
-        // final value should be 11
-        let g = m.try_lock().expect("lock freed");
-        assert_eq!(*g, 11usize);
+    fn noop_waker() -> Waker {
+        unsafe fn clone(_: *const ()) -> RawWaker {
+            RawWaker::new(core::ptr::null(), &VTABLE)
+        }
+        unsafe fn wake(_: *const ()) {}
+        unsafe fn wake_by_ref(_: *const ()) {}
+        unsafe fn drop(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+        let raw = RawWaker::new(core::ptr::null(), &VTABLE);
+        unsafe { Waker::from_raw(raw) }
     }
 }

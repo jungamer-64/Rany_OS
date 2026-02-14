@@ -6,5 +6,5 @@
 pub mod log;
 
 // Note: IOVA bitmap benchmarks require full mm module dependencies.
-// For IOVA benchmarks, use kernel unit tests instead:
-//   cargo test --package rany_kernel test_bitmap_throughput_comparison
+// For IOVA benchmarks, use the QEMU kernel suite:
+//   cargo test -p qemu-tests -- --nocapture suite_kernel

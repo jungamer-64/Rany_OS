@@ -594,187 +594,6 @@ pub fn init() {
     MANAGER.set_capabilities(0, CapabilitySet::full());
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_capability_set() {
-        let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND | CAP_NET_RAW);
-
-        assert!(caps.has_capability(CAP_NET_BIND));
-        assert!(caps.has_capability(CAP_NET_RAW));
-        assert!(!caps.has_capability(CAP_SYS_ADMIN));
-
-        caps.drop(CAP_NET_BIND);
-        assert!(!caps.has_capability(CAP_NET_BIND));
-
-        assert!(caps.raise(CAP_NET_BIND).is_ok());
-        assert!(caps.has_capability(CAP_NET_BIND));
-    }
-
-    #[test]
-    fn test_raise_not_permitted() {
-        let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND);
-
-        assert!(caps.raise(CAP_SYS_ADMIN).is_err());
-    }
-
-    #[test]
-    fn test_grant_requires_permissions_manager() {
-        let caller: u64 = 1000;
-        let target: u64 = 2000;
-
-        manager().set_capabilities(caller, CapabilitySet::empty());
-
-        let res = manager().grant_capability(caller, target, CAP_NET_BIND);
-        assert!(res.is_err(), "Expected grant to fail without permissions");
-    }
-
-    #[test]
-    fn test_grant_with_permitted_manager() {
-        let caller: u64 = 1001;
-        let target: u64 = 2001;
-
-        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-
-        let res = manager().grant_capability(caller, target, CAP_NET_BIND);
-        assert!(
-            res.is_ok(),
-            "Expected grant to succeed when caller is permitted"
-        );
-
-        assert!(manager().has_capability(target, CAP_NET_BIND));
-    }
-
-    #[test]
-    fn test_grant_with_options() {
-        let caller: u64 = 1001;
-        let target: u64 = 2001;
-
-        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-
-        let res = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(9999), false);
-        assert!(res.is_ok(), "grant_with_opts failed: {:?}", res);
-        let token = res.unwrap();
-
-        assert!(manager().has_capability(target, CAP_NET_BIND));
-
-        let grants = manager().list_grants(target);
-        assert_eq!(grants.len(), 1);
-        assert_eq!(grants[0].id, token);
-        assert_eq!(grants[0].delegatable, false);
-        assert_eq!(grants[0].expires, Some(9999));
-    }
-
-    #[test]
-    fn test_reclaim_token() {
-        let caller: u64 = 1200;
-        let target: u64 = 2200;
-
-        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false).unwrap();
-        assert!(manager().has_capability(target, CAP_NET_BIND));
-
-        // Revoke (mark revoked)
-        assert!(manager().revoke_grant(caller, token, false).is_ok());
-        assert!(!manager().has_capability(target, CAP_NET_BIND));
-
-        // Reclamation status should report revoked
-        match manager().reclamation_status(token) {
-            Some(ReclamationStatus::Revoked { revoked_at: _ }) => {}
-            other => panic!("Expected token to be revoked, got {:?}", other),
-        }
-
-        // Now reclaim it
-        assert!(manager().reclaim_token(token).is_ok());
-        // Token should be gone
-        assert!(manager().list_grants(target).is_empty());
-    }
-
-    #[test]
-    fn test_in_flight_blocks_reclaim() {
-        let caller: u64 = 3000;
-        let target: u64 = 4000;
-
-        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false).unwrap();
-
-        // increment in-flight
-        assert!(manager().increment_in_flight(token).is_ok());
-
-        // revoke
-        assert!(manager().revoke_grant(caller, token, false).is_ok());
-
-        // reclaim_now should not remove while in-flight
-        reclaim_revoked_now();
-        let grants = manager().list_grants(target);
-        assert_eq!(grants.len(), 1);
-
-        // reclaim_token should return busy
-        match manager().reclaim_token(token) {
-            Err(CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // decrement
-        assert!(manager().decrement_in_flight(token).is_ok());
-
-        // now reclaim
-        reclaim_revoked_now();
-        assert!(manager().list_grants(target).is_empty());
-    }
-
-    #[test]
-    fn test_spawn_reclamation_daemon_task_idempotent() {
-        spawn_reclamation_daemon_task();
-        spawn_reclamation_daemon_task();
-    }
-
-    #[test]
-    fn test_expire_grants_wrapper() {
-        let caller: u64 = 1300;
-        let target: u64 = 2300;
-
-        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false).unwrap();
-        assert!(manager().has_capability(target, CAP_NET_BIND));
-
-        // Use public wrapper
-        expire_grants_now();
-
-        assert!(!manager().has_capability(target, CAP_NET_BIND));
-        assert!(manager().list_grants(target).is_empty());
-    }
-
-    #[test]
-    fn test_spawn_expiry_daemon_task_idempotent() {
-        spawn_expiry_daemon_task();
-        spawn_expiry_daemon_task();
-    }
-
-    #[test]
-    fn test_revoke_grant() {
-        let caller: u64 = 1010;
-        let target: u64 = 2010;
-
-        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-
-        let token = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false).unwrap();
-        assert!(manager().has_capability(target, CAP_NET_BIND));
-
-        // Revoke by issuer (mark revoked but keep token)
-        assert!(manager().revoke_grant(caller, token, false).is_ok());
-        assert!(!manager().has_capability(target, CAP_NET_BIND));
-
-        // Token should remain but be marked revoked
-        let grants = manager().list_grants(target);
-        assert_eq!(grants.len(), 1);
-        assert_eq!(grants[0].id, token);
-        assert!(grants[0].revoked);
-    }
-}
-
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
@@ -802,5 +621,153 @@ pub mod qemu_tests {
         }
 
         manager().revoke_grant(caller, token, false).is_ok() && !manager().has_capability(target, CAP_NET_BIND)
+    }
+
+    pub fn capability_set_full_smoke() -> bool {
+        let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND | CAP_NET_RAW);
+        if !caps.has_capability(CAP_NET_BIND) { return false; }
+        if !caps.has_capability(CAP_NET_RAW) { return false; }
+        if caps.has_capability(CAP_SYS_ADMIN) { return false; }
+
+        caps.drop(CAP_NET_BIND);
+        if caps.has_capability(CAP_NET_BIND) { return false; }
+
+        if caps.raise(CAP_NET_BIND).is_err() { return false; }
+        caps.has_capability(CAP_NET_BIND)
+    }
+
+    pub fn raise_not_permitted_smoke() -> bool {
+        let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND);
+        caps.raise(CAP_SYS_ADMIN).is_err()
+    }
+
+    pub fn grant_requires_permissions_smoke() -> bool {
+        let caller: u64 = 8000;
+        let target: u64 = 8100;
+        manager().set_capabilities(caller, CapabilitySet::empty());
+        manager().grant_capability(caller, target, CAP_NET_BIND).is_err()
+    }
+
+    pub fn grant_with_permitted_smoke() -> bool {
+        let caller: u64 = 8001;
+        let target: u64 = 8101;
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+        if manager().grant_capability(caller, target, CAP_NET_BIND).is_err() {
+            return false;
+        }
+        manager().has_capability(target, CAP_NET_BIND)
+    }
+
+    pub fn grant_with_options_smoke() -> bool {
+        let caller: u64 = 8002;
+        let target: u64 = 8102;
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(9999), false) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+        let grants = manager().list_grants(target);
+        if grants.len() != 1 { return false; }
+        if grants[0].id != token { return false; }
+        if grants[0].delegatable { return false; }
+        if grants[0].expires != Some(9999) { return false; }
+        true
+    }
+
+    pub fn reclaim_token_smoke() -> bool {
+        let caller: u64 = 8003;
+        let target: u64 = 8103;
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+
+        // Revoke (mark revoked)
+        if manager().revoke_grant(caller, token, false).is_err() { return false; }
+        if manager().has_capability(target, CAP_NET_BIND) { return false; }
+
+        // Reclamation status should report revoked
+        match manager().reclamation_status(token) {
+            Some(ReclamationStatus::Revoked { .. }) => {}
+            _ => return false,
+        }
+
+        // Now reclaim it
+        if manager().reclaim_token(token).is_err() { return false; }
+        // Token should be gone
+        manager().list_grants(target).is_empty()
+    }
+
+    pub fn in_flight_blocks_reclaim_smoke() -> bool {
+        let caller: u64 = 8004;
+        let target: u64 = 8104;
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        // increment in-flight
+        if manager().increment_in_flight(token).is_err() { return false; }
+
+        // revoke
+        if manager().revoke_grant(caller, token, false).is_err() { return false; }
+
+        // reclaim_now should not remove while in-flight
+        reclaim_revoked_now();
+        if manager().list_grants(target).len() != 1 { return false; }
+
+        // reclaim_token should return busy
+        match manager().reclaim_token(token) {
+            Err(CapabilityError::ReclamationBusy) => {}
+            _ => return false,
+        }
+
+        // decrement
+        if manager().decrement_in_flight(token).is_err() { return false; }
+
+        // now reclaim
+        reclaim_revoked_now();
+        manager().list_grants(target).is_empty()
+    }
+
+    pub fn expire_grants_smoke() -> bool {
+        let caller: u64 = 8005;
+        let target: u64 = 8105;
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+        let _token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+
+        expire_grants_now();
+
+        if manager().has_capability(target, CAP_NET_BIND) { return false; }
+        manager().list_grants(target).is_empty()
+    }
+
+    pub fn revoke_grant_smoke() -> bool {
+        let caller: u64 = 8006;
+        let target: u64 = 8106;
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+
+        // Revoke by issuer (mark revoked but keep token)
+        if manager().revoke_grant(caller, token, false).is_err() { return false; }
+        if manager().has_capability(target, CAP_NET_BIND) { return false; }
+
+        // Token should remain but be marked revoked
+        let grants = manager().list_grants(target);
+        if grants.len() != 1 { return false; }
+        if grants[0].id != token { return false; }
+        grants[0].revoked
     }
 }

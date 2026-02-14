@@ -166,35 +166,30 @@ pub fn grant(
     Ok(cap)
 }
 
-#[cfg(all(test, feature = "host-tests"))]
-mod tests {
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
     use super::*;
 
-    #[test]
-    fn test_grant_requires_permissions() {
+    pub fn grant_requires_permissions_smoke() -> bool {
         let mut manager = Manager::new();
         let caller = 1u64;
         // caller has no capabilities
         manager.set_capabilities(caller, CapabilitySet::empty());
 
         let target = 2u64;
-
-        let res = grant(&mut manager, caller, "/net/bind", &[], target);
-        assert!(res.is_err());
+        grant(&mut manager, caller, "/net/bind", &[], target).is_err()
     }
 
-    #[test]
-    fn test_grant_with_permitted() {
+    pub fn grant_with_permitted_smoke() -> bool {
         let mut manager = Manager::new();
         let caller = 3u64;
         manager.set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
         let target = 4u64;
-
         let res = grant(&mut manager, caller, "/net/bind", &[], target);
-        assert!(res.is_ok());
+        if res.is_err() { return false; }
         let cap = res.unwrap();
-        assert_eq!(cap.resource, "/net/bind");
-        assert!(manager.has_capability(target, CAP_NET_BIND));
+        if cap.resource != "/net/bind" { return false; }
+        manager.has_capability(target, CAP_NET_BIND)
     }
 }

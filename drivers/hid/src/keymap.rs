@@ -188,8 +188,6 @@ pub trait Keymap: Send + Sync {
 
     /// レイアウト名を取得
     fn name(&self) -> &'static str;
-
-
 }
 
 // ============================================================================
@@ -573,4 +571,3 @@ pub static DVORAK_KEYMAP: DvorakKeymap = DvorakKeymap;
 /// 静的ディスパッチのため、コンパイル時に決定される。
 /// 動的なキーマップ切り替えが必要な場合は、`&dyn Keymap`を使用する。
 pub static DEFAULT_KEYMAP: UsQwertyKeymap = UsQwertyKeymap;
-

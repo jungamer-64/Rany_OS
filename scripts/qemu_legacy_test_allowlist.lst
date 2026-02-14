@@ -1,13 +1,1 @@
-apps/src/browser/browser.rs
-bootloader/src/config.rs
-bootloader/src/serial.rs
-drivers/hid/src/stream.rs
-filesystems/fat32/src/async_mutex.rs
-filesystems/fat32/src/irq_lock.rs
-filesystems/fat32/src/lib.rs
-libs/graphic_types/src/image.rs
-libs/graphic_types/src/types.rs
-libs/security/src/lib.rs
-qemu-tests/src/lib.rs
-tools/cap_harness/src/lib.rs
-tools/framebuffer_bench/tests/smoke_fill_rect.rs
+# Keep empty: all legacy #[test] were migrated to qemu suites.

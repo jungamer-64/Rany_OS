@@ -20,3 +20,4 @@ path = "src/lib.rs"
 [features]
 default = []
 alloc = []
+qemu-test-export = ["alloc"]

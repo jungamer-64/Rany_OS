@@ -17,19 +17,15 @@ Benchmarks included:
 
 ## IOVA Bitmap Benchmarks
 
-IOVA Bitmap performance tests are implemented as kernel unit tests due to
-complex module dependencies. Run them with:
+IOVA Bitmap performance tests are migrated into the QEMU suite flow.
+Run the kernel suite through the official QEMU-first entrypoint:
 
 ```bash
-# Run all IOVA bitmap comparison tests
-cargo test --package rany_kernel --target x86_64-exorust.json \
-  -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
-  test_bitmap_throughput
+# Run all required suites
+cargo test
 
-# Specific tests:
-# - test_bitmap_throughput_comparison     - IovaBitmap vs IovaBitmapV2
-# - test_allocator_simple_backend_comparison - IovaAllocatorSimple backends
-# - test_2mb_allocation_comparison        - 2MB allocation comparison
+# Run only the kernel suite
+cargo test -p qemu-tests -- --nocapture suite_kernel
 ```
 
 These tests compare:

@@ -8,7 +8,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-const HEAP_SIZE: usize = 1024 * 1024;
+const HEAP_SIZE: usize = 128 * 1024 * 1024;
 
 #[repr(align(16))]
 struct Heap([u8; HEAP_SIZE]);
@@ -62,7 +62,25 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 
 fn run_suite() -> bool {
-    test_vfs_path() && test_fat32_types()
+    serial_write_str("[qemu-suite] fs case start: vfs_path\n");
+    if !test_vfs_path() {
+        serial_write_str("[qemu-suite] fs case fail: vfs_path\n");
+        return false;
+    }
+
+    serial_write_str("[qemu-suite] fs case start: fat32_types\n");
+    if !test_fat32_types() {
+        serial_write_str("[qemu-suite] fs case fail: fat32_types\n");
+        return false;
+    }
+
+    serial_write_str("[qemu-suite] fs case start: fat32_extended\n");
+    if !test_fat32_extended() {
+        serial_write_str("[qemu-suite] fs case fail: fat32_extended\n");
+        return false;
+    }
+
+    true
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -109,6 +127,55 @@ fn test_fat32_types() -> bool {
     fat32::qemu_tests::cluster_smoke()
         && fat32::qemu_tests::next_cluster_smoke()
         && fat32::qemu_tests::sector_smoke()
+}
+
+fn test_fat32_extended() -> bool {
+    macro_rules! run_fat32_case {
+        ($name:expr, $expr:expr) => {{
+            serial_write_str("[qemu-suite] fs fat32 case start: ");
+            serial_write_str($name);
+            serial_write_str("\n");
+            let ok = $expr;
+            if !ok {
+                serial_write_str("[qemu-suite] fs fat32 case fail: ");
+                serial_write_str($name);
+                serial_write_str("\n");
+                return false;
+            }
+        }};
+    }
+
+    run_fat32_case!("short_name_smoke", fat32::qemu_tests::short_name_smoke());
+    run_fat32_case!("checksum_smoke", fat32::qemu_tests::checksum_smoke());
+    run_fat32_case!("cluster_validation_smoke", fat32::qemu_tests::cluster_validation_smoke());
+    run_fat32_case!("cluster_special_values_smoke", fat32::qemu_tests::cluster_special_values_smoke());
+    run_fat32_case!("cluster_contiguity_smoke", fat32::qemu_tests::cluster_contiguity_smoke());
+    run_fat32_case!("cluster_in_range_smoke", fat32::qemu_tests::cluster_in_range_smoke());
+    run_fat32_case!("file_offset_calculation_smoke", fat32::qemu_tests::file_offset_calculation_smoke());
+    run_fat32_case!("file_offset_in_range_smoke", fat32::qemu_tests::file_offset_in_range_smoke());
+    run_fat32_case!("file_offset_arithmetic_smoke", fat32::qemu_tests::file_offset_arithmetic_smoke());
+    run_fat32_case!("byte_count_operations_smoke", fat32::qemu_tests::byte_count_operations_smoke());
+    run_fat32_case!("byte_count_saturating_sub_smoke", fat32::qemu_tests::byte_count_saturating_sub_smoke());
+    run_fat32_case!("byte_count_empty_smoke", fat32::qemu_tests::byte_count_empty_smoke());
+    run_fat32_case!("next_cluster_from_fat_entry_smoke", fat32::qemu_tests::next_cluster_from_fat_entry_smoke());
+    run_fat32_case!("next_cluster_as_valid_smoke", fat32::qemu_tests::next_cluster_as_valid_smoke());
+    run_fat32_case!("file_attributes_smoke", fat32::qemu_tests::file_attributes_smoke());
+    run_fat32_case!("file_attributes_directory_smoke", fat32::qemu_tests::file_attributes_directory_smoke());
+    run_fat32_case!("mount_minimal_boot_sector_smoke", fat32::qemu_tests::mount_minimal_boot_sector_smoke());
+    run_fat32_case!("write_and_flush_fat_entry_smoke", fat32::qemu_tests::write_and_flush_fat_entry_smoke());
+    run_fat32_case!("file_attributes_lfn_smoke", fat32::qemu_tests::file_attributes_lfn_smoke());
+    run_fat32_case!("lfn_checksum_smoke", fat32::qemu_tests::lfn_checksum_smoke());
+    run_fat32_case!("fat_sector_cache_update_and_dirty_smoke", fat32::qemu_tests::fat_sector_cache_update_and_dirty_smoke());
+    run_fat32_case!("update_entry_if_smoke", fat32::qemu_tests::update_entry_if_smoke());
+    run_fat32_case!("dir_entry_cache_arc_smoke", fat32::qemu_tests::dir_entry_cache_arc_smoke());
+    run_fat32_case!("cluster_chain_cycle_detection_smoke", fat32::qemu_tests::cluster_chain_cycle_detection_smoke());
+    run_fat32_case!("async_mutex_blocking_lock_basic_smoke", fat32::qemu_tests::async_mutex_blocking_lock_basic_smoke());
+    run_fat32_case!("async_mutex_wait_then_acquire_smoke", fat32::qemu_tests::async_mutex_wait_then_acquire_smoke());
+    run_fat32_case!("irq_poison_lock_basic_smoke", fat32::qemu_tests::irq_poison_lock_basic_smoke());
+    run_fat32_case!("irq_try_lock_smoke", fat32::qemu_tests::irq_try_lock_smoke());
+    run_fat32_case!("irq_restore_smoke", fat32::qemu_tests::irq_restore_smoke());
+
+    true
 }
 
 fn serial_write_str(s: &str) {

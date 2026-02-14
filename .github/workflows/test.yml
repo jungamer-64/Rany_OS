@@ -2,9 +2,9 @@ name: CI — Format, Lint, Tests, Audit
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main", "master", "develop" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main", "master" ]
 
 jobs:
   fmt-clippy:
@@ -16,7 +16,7 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-02-01
           components: rustfmt, clippy
           override: true
 
@@ -56,7 +56,7 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-02-01
           components: clippy
           override: true
 

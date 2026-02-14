@@ -1,5 +1,9 @@
 # Investigation: duplicate lang item (E0152) when running tests
 
+> Historical note (old operation): this document records pre-QEMU-unified
+> host test flows (for example `cargo test --lib --manifest-path kernel/Cargo.toml`).
+> Current official test entrypoint is `cargo test` via `qemu-tests`.
+
 Summary
 -------
 While enabling and running kernel-level unit tests locally (e.g., `cargo test --lib --manifest-path kernel/Cargo.toml`), the build frequently fails with error E0152 (duplicate lang item) for `core`/`alloc` (e.g. `sized`, `exchange_malloc`). The compiler reports two different definitions of the same lang item: one from the sysroot (rustup toolchain) and one from a locally built copy in `target/.../deps/libcore-*.rlib` or `liballoc-*.rlib`.

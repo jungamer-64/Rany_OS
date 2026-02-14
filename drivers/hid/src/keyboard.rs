@@ -6,10 +6,10 @@
 //! implementation but don't depend on kernel-only APIs.
 #![allow(dead_code)]
 
+use crate::keymap::Keymap;
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use crate::keymap::Keymap;
 use core::task::Waker;
 
 use crate::keymap::DEFAULT_KEYMAP;
@@ -215,7 +215,9 @@ impl ModifierState {
     pub const SCROLL_LOCK: u32 = 1 << Self::BIT_SCROLL_LOCK;
 
     pub const fn new() -> Self {
-        Self { bits: AtomicU32::new(0) }
+        Self {
+            bits: AtomicU32::new(0),
+        }
     }
 
     pub fn snapshot(&self) -> Modifiers {
@@ -282,10 +284,7 @@ impl IsrSafeWaker {
         Self {
             pending: AtomicBool::new(false),
             current_epoch: AtomicU64::new(0),
-            waker_slots: [
-                UnsafeCell::new(None),
-                UnsafeCell::new(None),
-            ],
+            waker_slots: [UnsafeCell::new(None), UnsafeCell::new(None)],
             has_waker: AtomicBool::new(false),
         }
     }
@@ -354,4 +353,3 @@ impl IsrSafeWaker {
         self.has_waker.load(Ordering::Acquire)
     }
 }
-

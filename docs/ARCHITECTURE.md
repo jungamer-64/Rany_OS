@@ -376,10 +376,13 @@ Traditional OS                    ExoRust (SPL)
 cargo build --target x86_64-exorust.json
 
 # QEMU実行
-./scripts/qemu-run.sh
+./scripts/run.sh --uefi
 
 # テスト実行
 cargo test
+
+# 任意: 特定スイートのみ実行
+cargo test -p qemu-tests -- --nocapture suite_core
 ```
 
 ### 7.2 プロジェクト構造

@@ -33,8 +33,8 @@ pub use driver::KeyboardDriver;
 
 // Re-export stream/future helpers for kernel use
 pub use stream::{
-    CharFuture, CharFutureArc, DEFAULT_POLL_BUDGET, DriverOps, KeyEventFuture, KeyboardStream,
-    KeyboardStreamArc,
+    CharFuture, CharFutureArc, DriverOps, KeyEventFuture, KeyboardStream, KeyboardStreamArc,
+    DEFAULT_POLL_BUDGET,
 };
 
 use alloc::string::String;
@@ -305,8 +305,8 @@ pub type HidResult<T> = Result<T, HidError>;
 // Keymap Re-exports
 // ============================================================================
 pub use keymap::{
-    DEFAULT_KEYMAP, DVORAK_KEYMAP, DvorakKeymap, JIS_KEYMAP, JisKeymap, Keymap, UsQwertyKeymap,
-    ctrl_char_map,
+    ctrl_char_map, DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap, DEFAULT_KEYMAP, DVORAK_KEYMAP,
+    JIS_KEYMAP,
 };
 
 // Keyboard helpers - use `hid_driver::keyboard::*` for full access
@@ -315,7 +315,7 @@ pub use keyboard::StreamAlreadyTaken;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use crate::keymap::{DvorakKeymap, Keymap, UsQwertyKeymap};
-    use crate::queue::{DEFAULT_QUEUE_SIZE, ScancodeQueue};
+    use crate::queue::{ScancodeQueue, DEFAULT_QUEUE_SIZE};
     use crate::{KeyCode, Modifiers};
 
     pub fn keymap_smoke() -> bool {
@@ -401,6 +401,10 @@ pub mod qemu_tests {
         true
     }
 
+    pub fn stream_char_future_smoke() -> bool {
+        crate::stream::qemu_tests::char_future_ready_smoke()
+    }
+
     // =========================================================================
     // driver.rs smoke tests
     // =========================================================================
@@ -414,9 +418,13 @@ pub mod qemu_tests {
         use crate::stream::DriverOps;
         let driver = crate::driver::KeyboardDriver::new();
         driver.handle_scancode(0x1E);
-        if !driver.has_event() { return false; }
+        if !driver.has_event() {
+            return false;
+        }
         match driver.poll_key_event_internal() {
-            Some(event) => event.key == crate::KeyCode::A && event.state == crate::KeyState::Pressed,
+            Some(event) => {
+                event.key == crate::KeyCode::A && event.state == crate::KeyState::Pressed
+            }
             None => false,
         }
     }
@@ -426,7 +434,9 @@ pub mod qemu_tests {
         let driver = crate::driver::KeyboardDriver::new();
         driver.handle_scancode(0xE0);
         driver.handle_scancode(0x48);
-        if !driver.has_event() { return false; }
+        if !driver.has_event() {
+            return false;
+        }
         match driver.poll_key_event_internal() {
             Some(event) => event.key == crate::KeyCode::Up,
             None => false,
@@ -438,7 +448,9 @@ pub mod qemu_tests {
         let driver = crate::driver::KeyboardDriver::new();
         driver.handle_scancode(0x9E);
         match driver.poll_key_event_internal() {
-            Some(event) => event.key == crate::KeyCode::A && event.state == crate::KeyState::Released,
+            Some(event) => {
+                event.key == crate::KeyCode::A && event.state == crate::KeyState::Released
+            }
             None => false,
         }
     }
@@ -458,11 +470,18 @@ pub mod qemu_tests {
     // =========================================================================
 
     fn mods(shift: bool, caps_lock: bool) -> Modifiers {
-        Modifiers { shift, caps_lock, ..Default::default() }
+        Modifiers {
+            shift,
+            caps_lock,
+            ..Default::default()
+        }
     }
 
     fn mods_ctrl() -> Modifiers {
-        Modifiers { ctrl: true, ..Default::default() }
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        }
     }
 
     pub fn us_qwerty_letters_smoke() -> bool {
@@ -491,7 +510,9 @@ pub mod qemu_tests {
     pub fn non_printable_keys_smoke() -> bool {
         let keymap = UsQwertyKeymap;
         keymap.to_char(KeyCode::F1, &mods(false, false)).is_none()
-            && keymap.to_char(KeyCode::Escape, &mods(false, false)).is_none()
+            && keymap
+                .to_char(KeyCode::Escape, &mods(false, false))
+                .is_none()
             && keymap.to_char(KeyCode::Up, &mods(false, false)).is_none()
     }
 

@@ -3,13 +3,7 @@
 
 use core::panic::PanicInfo;
 
-const PENDING_CASES: &[&str] = &[
-    "kernel/src/* legacy #[test_case] migration",
-    "drivers/* legacy #[test] migration",
-    "filesystems/fat32 remaining #[test] migration",
-    "libs/security + libs/graphic_types remaining #[test] migration",
-    "tools/framebuffer_bench smoke tests migration",
-];
+const PENDING_CASES: &[&str] = &[];
 const LEGACY_ALLOWLIST: &str = include_str!("../../../scripts/qemu_legacy_test_allowlist.lst");
 
 #[panic_handler]
@@ -22,10 +16,14 @@ fn run_suite() {
     serial_write_str("[qemu-suite] pending start\n");
     serial_write_str("[qemu-suite] pending list:\n");
 
-    for item in PENDING_CASES {
-        serial_write_str("  - ");
-        serial_write_str(item);
-        serial_write_str("\n");
+    if PENDING_CASES.is_empty() {
+        serial_write_str("  - none\n");
+    } else {
+        for item in PENDING_CASES {
+            serial_write_str("  - ");
+            serial_write_str(item);
+            serial_write_str("\n");
+        }
     }
 
     serial_write_str("[qemu-suite] pending allowlist count: ");
@@ -39,6 +37,7 @@ pub extern "C" fn _start() -> ! {
     run_suite();
 
     // Pending suite is informational and currently non-fatal.
+    serial_write_str("[qemu-suite] pending pass\n");
     exit_qemu(0x10)
 }
 

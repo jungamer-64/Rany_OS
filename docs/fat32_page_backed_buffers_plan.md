@@ -47,7 +47,7 @@
 - `PageClusterBuffer` と `PageClusterBufferAllocator` を実装して `ClusterBufferAllocator` と互換性を保つ
 - `IoBuffer::dma_info()` 経由で DMA 用の物理アドレス情報を取得できる経路を用意する
 - FAT のホットパス（読み取り・書き込み）で **allocator が提供するバッファに直接 I/O** できる経路（`read_into_buf`/`write_from_buf` 等）を確立し、コピーは明示的なフォールバックのみとする
-- 単体テスト／統合テストを追加し、`cargo test -p fat32` がグリーンになる
+- 単体テスト／統合テストを追加し、`cargo test`（QEMU required suites）がグリーンになる
 - パフォーマンス測定により、コピー量が有意に減ることを確認
 - 変更後に Codacy 分析を実行し、指摘点を是正する（リポジトリ方針）
 
@@ -248,7 +248,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
 - vfs: borrowed fallback の read/write テスト
 - I/O: borrowed API の read/write 経路が使われること、フォールバックの動作確認
 - 性能: ベンチマーク（既存 Vec ベースとの比較）
-- 統合: `cargo test -p fat32`、QEMU 上の virtio-blk シナリオ
+- 統合: `cargo test -p qemu-tests -- --nocapture suite_fs`、QEMU 上の virtio-blk シナリオ
 
 ---
 
@@ -332,7 +332,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
 1. PR4: FAT 側に `mount_with_allocator` を追加し、`PageClusterBufferAllocator` を注入可能にする。
 2. PR6: FAT の read/write ホットパスで borrowed API を優先利用する。
 3. PR5: virtio-blk の IOMMU 経路を device-scoped (`DmaHandle`/`DeviceDmaContext`) に寄せる。
-4. テスト: `cargo test -p fat32` で allocator 注入経路を検証。
+4. テスト: `cargo test -p qemu-tests -- --nocapture suite_fs` で allocator 注入経路を検証。
 
 この順で進める前提で、PR4 から着手します。
 

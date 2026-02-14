@@ -14,6 +14,7 @@ description = "QEMU no_std core suite"
 security = { path = "../../libs/security", features = ["qemu-test-export"] }
 kernel_api = { path = "../../interfaces/kernel_api", features = ["qemu-test-export"] }
 exorust_sync = { path = "../../libs/sync", features = ["qemu-test-export"] }
+graphic_types = { path = "../../libs/graphic_types", features = ["alloc", "qemu-test-export"] }
 
 [features]
 qemu-test-export = []

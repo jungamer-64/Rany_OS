@@ -143,6 +143,7 @@ fn suite_package_name(suite: &str) -> Option<&'static str> {
         "fs" => Some("qemu_suite_fs"),
         "kernel" => Some("qemu_suite_kernel"),
         "tools" => Some("qemu_suite_tools"),
+        "graphics" => Some("qemu_suite_graphics"),
         "pending" => Some("qemu_suite_pending"),
         _ => None,
     }
@@ -252,6 +253,76 @@ fn make_report(
     }
 }
 
+/// Shared QEMU execution loop: poll serial log for pass/fail markers and
+/// wait for QEMU to exit within the configured timeout.
+fn poll_qemu(
+    config: &RunConfig,
+    artifact_path: PathBuf,
+    log_path: PathBuf,
+    qemu_stderr_path: PathBuf,
+    mut child: std::process::Child,
+) -> Result<RunReport, RunError> {
+    let start = Instant::now();
+    let timeout = Duration::from_secs(config.timeout_secs);
+
+    loop {
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(RunError::Timeout {
+                timeout_secs: config.timeout_secs,
+                log_path,
+                qemu_stderr_path,
+            });
+        }
+
+        if let Some(success) = detect_suite_result(&log_path, &config.suite) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let host_exit_code = if success { 33 } else { 35 };
+            let report = make_report(
+                config.suite.clone(),
+                artifact_path.clone(),
+                log_path.clone(),
+                qemu_stderr_path.clone(),
+                host_exit_code,
+                start.elapsed(),
+            );
+            if success {
+                return Ok(report);
+            }
+            return Err(RunError::SuiteFailed(report));
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let host_exit_code = status.code().unwrap_or(-1);
+                let suite_token_result = detect_suite_result(&log_path, &config.suite);
+                let report = make_report(
+                    config.suite.clone(),
+                    artifact_path.clone(),
+                    log_path.clone(),
+                    qemu_stderr_path.clone(),
+                    host_exit_code,
+                    start.elapsed(),
+                );
+
+                if suite_token_result == Some(true) || report.isa_debug_value == Some(0x10) {
+                    return Ok(report);
+                }
+                return Err(RunError::SuiteFailed(report));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(err) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunError::QemuLaunch(err));
+            }
+        }
+    }
+}
+
+/// Run a UEFI suite binary via OVMF firmware.
 pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
     ensure_qemu_available()?;
     let artifact = build_suite(&config.suite).map_err(RunError::Build)?;
@@ -261,7 +332,6 @@ pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
     let log_dir = root.join("target").join("qemu-logs");
     std::fs::create_dir_all(&log_dir).map_err(RunError::QemuLaunch)?;
     let log_path = log_dir.join(format!("suite-{}.log", config.suite));
-    // Truncate stale serial output to avoid matching previous run results.
     std::fs::File::create(&log_path).map_err(RunError::QemuLaunch)?;
     let qemu_stderr_path = log_dir.join(format!("suite-{}-qemu-stderr.log", config.suite));
     let qemu_stderr_file =
@@ -324,63 +394,12 @@ pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
         qemu_cmd.arg(extra);
     }
 
-    let start = Instant::now();
-    let mut child = qemu_cmd.spawn().map_err(RunError::QemuLaunch)?;
-
-    let timeout = Duration::from_secs(config.timeout_secs);
-    loop {
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(RunError::Timeout {
-                timeout_secs: config.timeout_secs,
-                log_path,
-                qemu_stderr_path,
-            });
-        }
-
-        if let Some(success) = detect_suite_result(&log_path, &config.suite) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let host_exit_code = if success { 33 } else { 35 };
-            let report = make_report(
-                config.suite.clone(),
-                artifact.binary_path.clone(),
-                log_path.clone(),
-                qemu_stderr_path.clone(),
-                host_exit_code,
-                start.elapsed(),
-            );
-            if success {
-                return Ok(report);
-            }
-            return Err(RunError::SuiteFailed(report));
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let host_exit_code = status.code().unwrap_or(-1);
-                let suite_token_result = detect_suite_result(&log_path, &config.suite);
-                let report = make_report(
-                    config.suite.clone(),
-                    artifact.binary_path.clone(),
-                    log_path.clone(),
-                    qemu_stderr_path.clone(),
-                    host_exit_code,
-                    start.elapsed(),
-                );
-
-                if suite_token_result == Some(true) || report.isa_debug_value == Some(0x10) {
-                    return Ok(report);
-                }
-                return Err(RunError::SuiteFailed(report));
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(RunError::QemuLaunch(err));
-            }
-        }
-    }
+    let child = qemu_cmd.spawn().map_err(RunError::QemuLaunch)?;
+    poll_qemu(
+        &config,
+        artifact.binary_path.clone(),
+        log_path,
+        qemu_stderr_path,
+        child,
+    )
 }

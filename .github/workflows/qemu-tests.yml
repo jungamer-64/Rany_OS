@@ -2,9 +2,9 @@ name: QEMU Tests
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, master, develop ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch: {}
 
 jobs:
@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [core, drivers, fs, kernel, tools]
+        suite: [core, drivers, fs, graphics, kernel, tools]
         cpu: ["qemu64,+rdtscp"]
         memory_mb: [512]
         smp: [1]
@@ -26,6 +26,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2026-02-01
           components: rust-src, llvm-tools-preview
 
       - name: Install QEMU
@@ -60,14 +61,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qemu-logs-${{ matrix.suite }}
-          path: target/qemu-logs
+          path: |
+            target/qemu-logs
+            scripts/qemu_legacy_test_allowlist.lst
           if-no-files-found: ignore
 
   pending-suite:
-    name: Pending QEMU migration suite
+    name: Pending QEMU suite (non-blocking)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
-    needs: required-suites
 
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +78,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
+          toolchain: nightly-2026-02-01
           components: rust-src, llvm-tools-preview
 
       - name: Install QEMU
@@ -82,18 +86,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
 
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-qemu-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-qemu-
+
       - name: Verify legacy #[test] allowlist
         run: bash scripts/verify_qemu_test_only.sh
 
       - name: Run pending suite
         env:
+          QEMU_TEST_CPU: qemu64,+rdtscp
+          QEMU_TEST_MEMORY_MB: 512
+          QEMU_TEST_SMP: 1
           QEMU_TEST_TIMEOUT_SECS: 90
-        run: cargo test -p qemu-tests -- --nocapture suite_pending
+        run: cargo test -p qemu-tests -- --ignored --nocapture suite_pending
 
-      - name: Upload pending suite logs
+      - name: Upload pending logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qemu-logs-pending
-          path: target/qemu-logs
+          path: |
+            target/qemu-logs
+            scripts/qemu_legacy_test_allowlist.lst
           if-no-files-found: ignore

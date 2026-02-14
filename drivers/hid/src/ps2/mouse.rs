@@ -78,7 +78,11 @@ impl MouseHandler {
         // ホイール（4バイトパケットの場合）
         let wheel = if self.packet_size == 4 {
             let w = self.packet[3] as i8;
-            if w > 7 { 0 } else { w }
+            if w > 7 {
+                0
+            } else {
+                w
+            }
         } else {
             0
         };

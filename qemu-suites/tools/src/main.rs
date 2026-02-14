@@ -64,6 +64,8 @@ fn panic(_info: &PanicInfo) -> ! {
 
 fn run_suite() -> bool {
     test_cap_harness_grant()
+        && test_cap_harness_qemu_tests()
+        && test_framebuffer_smoke()
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -106,6 +108,17 @@ fn test_cap_harness_grant() -> bool {
     }
 
     manager.has_capability(target, CAP_NET_BIND)
+}
+
+fn test_cap_harness_qemu_tests() -> bool {
+    cap_harness::qemu_tests::grant_requires_permissions_smoke()
+        && cap_harness::qemu_tests::grant_with_permitted_smoke()
+}
+
+fn test_framebuffer_smoke() -> bool {
+    graphic_types::qemu_tests::image_view_mut_set_pixel_smoke()
+        && graphic_types::qemu_tests::image_view_mut_fill_rect_smoke()
+        && graphic_types::qemu_tests::image_view_external_buffer_smoke()
 }
 
 fn serial_write_str(s: &str) {
