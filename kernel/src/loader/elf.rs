@@ -1119,100 +1119,126 @@ impl Loader for ElfLoader<'_> {
 // Unit Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_empty_data_returns_error() -> bool {
+    match ElfLoader::new(&[]) {
+        Err(LoadError::InvalidFormat(msg)) => msg.contains("too small"),
+        _ => false,
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_invalid_magic_returns_error() -> bool {
+    let mut data = vec![0u8; 64];
+    data[0..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+    match ElfLoader::new(&data) {
+        Err(LoadError::InvalidFormat(msg)) => msg.contains("magic") || msg.contains("Invalid"),
+        _ => false,
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_max_size_constants() -> bool {
+    MAX_ELF_SIZE == 512 * 1024 * 1024
+        && MAX_SEGMENT_SIZE == 256 * 1024 * 1024
+        && MAX_SECTIONS == 1024
+        && MAX_RELOCATIONS == 262144
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_wrong_elf_class() -> bool {
+    let mut data = vec![0u8; 64];
+    data[0..4].copy_from_slice(&ELF_MAGIC);
+    data[4] = 1; // ELFCLASS32
+    ElfLoader::new(&data).is_err()
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_wrong_endianness() -> bool {
+    let mut data = vec![0u8; 64];
+    data[0..4].copy_from_slice(&ELF_MAGIC);
+    data[4] = ELFCLASS64;
+    data[5] = 2; // ELFDATA2MSB
+    ElfLoader::new(&data).is_err()
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_wx_flags() -> bool {
+    PF_W == 0x2 && PF_X == 0x1 && (PF_W | PF_X) == 0x3
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_rela_extraction() -> bool {
+    let rela = Elf64Rela {
+        r_offset: 0x1000,
+        r_info: (42 << 32) | 8,
+        r_addend: 0x100,
+    };
+    rela.symbol() == 42 && rela.reloc_type() == 8
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_symbol_extraction() -> bool {
+    let sym = Elf64Symbol {
+        st_name: 0,
+        st_info: (1 << 4) | 2,
+        st_other: 0,
+        st_shndx: 1,
+        st_value: 0x1000,
+        st_size: 100,
+    };
+    sym.binding() == 1 && sym.symbol_type() == 2
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_aslr_offset_generation() -> bool {
+    let prev = is_aslr_enabled();
+    set_aslr_enabled(true);
+    let offset1 = generate_aslr_offset();
+    let offset2 = generate_aslr_offset();
+    set_aslr_enabled(prev);
+    (offset1 & 0xFFF) == 0
+        && (offset2 & 0xFFF) == 0
+        && offset1 < ASLR_MAX_OFFSET
+        && offset2 < ASLR_MAX_OFFSET
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_aslr_enable_disable() -> bool {
+    let prev = is_aslr_enabled();
+    set_aslr_enabled(false);
+    let disabled = !is_aslr_enabled();
+    set_aslr_enabled(true);
+    let enabled = is_aslr_enabled();
+    set_aslr_enabled(prev);
+    disabled && enabled
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_smoke_get_string_zero_copy() -> bool {
+    let strtab: &[u8] = b"hello\0world\0";
+    let header: Elf64Header = unsafe { core::mem::zeroed() };
+    let loader = ElfLoader {
+        data: strtab,
+        header,
+    };
+    let s1 = loader.get_string(strtab, 0);
+    let s2 = loader.get_string(strtab, 6);
+    s1 == Some("hello") && s2 == Some("world")
+}
+
+#[cfg(all(test, feature = "pkey_integration_test"))]
 mod tests {
     use super::*;
 
-    /// 空のデータでElfLoader::newがエラーを返すことをテスト
-    #[test_case]
-    fn test_empty_data_returns_error() {
-        let result = ElfLoader::new(&[]);
-        assert!(result.is_err());
-        if let Err(LoadError::InvalidFormat(msg)) = result {
-            assert!(msg.contains("too small"));
-        } else {
-            panic!("Expected InvalidFormat error");
-        }
-    }
-
-    /// 不正なマジックナンバーでエラーを返すことをテスト
-    #[test_case]
-    fn test_invalid_magic_returns_error() {
-        // 最小サイズのELFヘッダーサイズ（64バイト）を用意
-        let mut data = vec![0u8; 64];
-        // 不正なマジックナンバーを設定
-        data[0..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-
-        let result = ElfLoader::new(&data);
-        assert!(result.is_err());
-        if let Err(LoadError::InvalidFormat(msg)) = result {
-            assert!(msg.contains("magic") || msg.contains("Invalid"));
-        } else {
-            panic!("Expected InvalidFormat error for invalid magic");
-        }
-    }
-
-    /// MAX_ELF_SIZEを超えるデータでエラーを返すことをテスト
-    /// (実際のアロケーションは行わないため、シミュレーションでテスト)
-    #[test_case]
-    fn test_max_size_check() {
-        // MAX_ELF_SIZE定数の確認
-        assert!(MAX_ELF_SIZE == 512 * 1024 * 1024);
-        assert!(MAX_SEGMENT_SIZE == 256 * 1024 * 1024);
-        assert!(MAX_SECTIONS == 1024);
-        assert!(MAX_RELOCATIONS == 262144);
-    }
-
-    /// 正しいELF64クラスでないデータでエラーを返すことをテスト
-    #[test_case]
-    fn test_wrong_elf_class() {
-        let mut data = vec![0u8; 64];
-        // 正しいマジックナンバー
-        data[0..4].copy_from_slice(&ELF_MAGIC);
-        // ELF32クラス（ELFCLASS64ではない）
-        data[4] = 1; // ELFCLASS32
-
-        let result = ElfLoader::new(&data);
-        assert!(result.is_err());
-    }
-
-    /// リトルエンディアンでないデータでエラーを返すことをテスト
-    #[test_case]
-    fn test_wrong_endianness() {
-        let mut data = vec![0u8; 64];
-        // 正しいマジックナンバー
-        data[0..4].copy_from_slice(&ELF_MAGIC);
-        // ELF64クラス
-        data[4] = ELFCLASS64;
-        // ビッグエンディアン（Little Endianではない）
-        data[5] = 2; // ELFDATA2MSB
-
-        let result = ElfLoader::new(&data);
-        assert!(result.is_err());
-    }
-
-    /// W^Xフラグの定数値をテスト  
-    #[test_case]
-    fn test_wx_flags() {
-        assert_eq!(PF_W, 0x2);
-        assert_eq!(PF_X, 0x1);
-        // W^X: 両方設定されている場合は0x3
-        assert_eq!(PF_W | PF_X, 0x3);
-    }
-
     /// PKEY integration test: verify that loading a cell allocates a PKEY and
-    /// unloading the cell frees it. This test is only compiled when the
-    /// `pkey_integration_test` feature is enabled to avoid requiring full
-    /// kernel runtime in normal unit tests.
+    /// unloading the cell frees it.
     #[test_case]
-    #[cfg(feature = "pkey_integration_test")]
     fn test_pkey_alloc_and_free_on_load_unload() {
         use core::mem;
 
-        // Ensure deterministic allocator state for the test
         crate::security::mpk::test_reset_pkey_allocator();
 
-        // Prepare a minimal ELF with one PT_LOAD segment (filesz=0, memsz=4096)
         let ph_size = mem::size_of::<Elf64ProgramHeader>();
         let mut data = vec![0u8; 64 + ph_size];
 
@@ -1220,7 +1246,7 @@ mod tests {
         header.e_ident[0..4].copy_from_slice(&ELF_MAGIC);
         header.e_ident[4] = ELFCLASS64;
         header.e_ident[5] = ELFDATA2LSB;
-        header.e_machine = 0x3E; // x86_64
+        header.e_machine = 0x3E;
         header.e_phoff = 64;
         header.e_phentsize = ph_size as u16;
         header.e_phnum = 1;
@@ -1240,94 +1266,14 @@ mod tests {
 
         crate::util::write_struct(&mut data, header.e_phoff as usize, ph).expect("write ph");
 
-        // Load and register the cell (this should allocate a PKEY)
         let cell_id = crate::loader::load_cell("test-pkey", &data, false).expect("load_cell");
-
-        // Verify that registry entry has a PKEY and that allocator reports it used
         let pkey_opt = crate::loader::with_registry(|r| r.find_by_name("test-pkey").unwrap().pkey);
         assert!(pkey_opt.is_some());
         let pkey = pkey_opt.unwrap();
         assert!(crate::security::mpk::is_pkey_used(pkey));
 
-        // Unload should free the PKEY
         crate::loader::unload_cell(cell_id).expect("unload");
         assert!(!crate::security::mpk::is_pkey_used(pkey));
-    }
-
-    /// Elf64Relaのシンボル/タイプ抽出をテスト
-    #[test_case]
-    fn test_rela_extraction() {
-        let rela = Elf64Rela {
-            r_offset: 0x1000,
-            r_info: (42 << 32) | 8, // symbol=42, type=8 (R_X86_64_RELATIVE)
-            r_addend: 0x100,
-        };
-        assert_eq!(rela.symbol(), 42);
-        assert_eq!(rela.reloc_type(), 8);
-    }
-
-    /// Elf64Symbolのバインディング/タイプ抽出をテスト
-    #[test_case]
-    fn test_symbol_extraction() {
-        let sym = Elf64Symbol {
-            st_name: 0,
-            st_info: (1 << 4) | 2, // binding=GLOBAL(1), type=FUNC(2)
-            st_other: 0,
-            st_shndx: 1,
-            st_value: 0x1000,
-            st_size: 100,
-        };
-        assert_eq!(sym.binding(), 1); // STB_GLOBAL
-        assert_eq!(sym.symbol_type(), 2); // STT_FUNC
-    }
-
-    /// ASLR オフセット生成のテスト
-    #[test_case]
-    fn test_aslr_offset_generation() {
-        // ASLRを有効にして2つのオフセットを生成
-        set_aslr_enabled(true);
-        let offset1 = generate_aslr_offset();
-        let offset2 = generate_aslr_offset();
-
-        // オフセットはページアラインメント（4KB）されている
-        assert_eq!(offset1 & 0xFFF, 0);
-        assert_eq!(offset2 & 0xFFF, 0);
-
-        // オフセットは最大値以内
-        assert!(offset1 < ASLR_MAX_OFFSET);
-        assert!(offset2 < ASLR_MAX_OFFSET);
-
-        // 連続する2つのオフセットは異なる（確率的）
-        // 注意: 非常に稀に同じになる可能性があるのでこのアサーションは緩い
-        // assert_ne!(offset1, offset2);
-    }
-
-    /// ASLR 有効/無効テスト
-    #[test_case]
-    fn test_aslr_enable_disable() {
-        set_aslr_enabled(false);
-        assert!(!is_aslr_enabled());
-
-        set_aslr_enabled(true);
-        assert!(is_aslr_enabled());
-    }
-
-    /// get_string のゼロコピー戻り値をテスト
-    #[test_case]
-    fn test_get_string_zero_copy() {
-        let strtab: &[u8] = b"hello\0world\0";
-        // ダミーヘッダー（get_string は header を参照しないためゼロ初期化で OK）
-        let header: Elf64Header = unsafe { core::mem::zeroed() };
-        let loader = ElfLoader {
-            data: strtab,
-            header,
-        };
-
-        let s1 = loader.get_string(strtab, 0).expect("should find 'hello'");
-        assert_eq!(s1, "hello");
-
-        let s2 = loader.get_string(strtab, 6).expect("should find 'world'");
-        assert_eq!(s2, "world");
     }
 }
 

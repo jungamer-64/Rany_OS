@@ -58,17 +58,23 @@ FAQ（簡易）
 
 Integration テストはカーネルターゲットと QEMU 上で実行する必要があります。以下の手順はリポジトリの推奨フローです：
 
-1. ビルド（統合テスト用フラグを有効）:
+1. 公式入口（required suites を実行）:
 
    ```bash
-   cargo build --package rany_kernel --target x86_64-exorust.json --features run-integration-tests
+   cargo test
    ```
 
-2. QEMU でテスト実行（スクリプト利用推奨）:
+2. カーネル系のみを個別実行:
+
+   ```bash
+   cargo test -p qemu-tests -- --nocapture suite_kernel
+   ```
+
+3. 補助 E2E フロー（必要時のみ）:
 
    - Windows PowerShell 例（リポジトリに用意されているスクリプト）:
      `tools\e2e_zero_copy\run_e2e_qemu.ps1`
 
-   - これによりカーネルが QEMU 上で起動し、Serial 出力上にテストログが出力されます。
+   - スクリプト側で必要なビルド/起動を実行し、QEMU の Serial 出力上にテストログを出力します。
 
-> 注: ローカル `cargo test` はホスト向けのビルドとターゲット向けのビルドが混在するため、カーネルの no_std テストはターゲットビルド + QEMU 実行で回すのが安定しています。
+> 注: 現在の公式テスト入口は `cargo test`（`qemu-tests` 経由）です。補助 E2E スクリプトは詳細検証用の追加手順として利用してください。

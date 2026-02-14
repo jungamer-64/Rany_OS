@@ -2552,19 +2552,21 @@ test_2mb_allocation_comparison()
 
 ### ベンチマーク実行方法
 
-IOVA Bitmapベンチマークはカーネルユニットテストとして実装されています：
+IOVA Bitmap ベンチマークは QEMU スイート（kernel）経由で実行します：
 
 ```bash
-# テスト実行（QEMU上または適切なテストハーネスで）
-cargo test --package rany_kernel --target x86_64-exorust.json \
-  -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
-  test_bitmap_throughput
+# 公式入口（required suites）
+cargo test
 
-# 利用可能なテスト:
-# - test_bitmap_throughput_comparison
-# - test_allocator_simple_backend_comparison  
-# - test_2mb_allocation_comparison
+# カーネルスイートのみ実行
+cargo test -p qemu-tests -- --nocapture suite_kernel
 ```
+
+観測対象ケース名（`suite_kernel` 内で実行されるテストロジック）:
+
+- `test_bitmap_throughput_comparison`
+- `test_allocator_simple_backend_comparison`
+- `test_2mb_allocation_comparison`
 
 詳細は `tools/iommu_bench/README.md` を参照。
 

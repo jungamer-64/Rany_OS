@@ -13,7 +13,7 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
-use super::congestion::CongestionController;
+use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
 use super::types::{SocketAddr, SocketFd};
@@ -70,8 +70,8 @@ pub struct TcpControlBlockEntry {
     pub retransmit_count: u8,
     /// 最終送信時刻（tick）
     pub last_send_tick: u64,
-    /// 輻輳制御コントローラ
-    pub congestion: CongestionController,
+    /// 輻輳制御コントローラ（NewReno / CUBIC / BBR選択可能）
+    pub congestion: CongestionControllerVariant,
     /// ウィンドウスケーリングオプション
     pub window_scale: WindowScaleOption,
     /// フロー制御コントローラ
@@ -90,8 +90,18 @@ pub struct TcpControlBlockEntry {
 }
 
 impl TcpControlBlockEntry {
-    /// 新規作成
+    /// 新規作成（デフォルト: NewReno）
     pub fn new(fd: SocketFd, local: SocketAddr, remote: SocketAddr) -> Self {
+        Self::with_algorithm(fd, local, remote, CongestionAlgorithm::NewReno)
+    }
+
+    /// アルゴリズム指定で新規作成
+    pub fn with_algorithm(
+        fd: SocketFd,
+        local: SocketAddr,
+        remote: SocketAddr,
+        algorithm: CongestionAlgorithm,
+    ) -> Self {
         Self {
             fd,
             local,
@@ -104,7 +114,7 @@ impl TcpControlBlockEntry {
             rcv_wnd: 65535,
             retransmit_count: 0,
             last_send_tick: 0,
-            congestion: CongestionController::new(),
+            congestion: CongestionControllerVariant::from_algorithm(algorithm),
             window_scale: WindowScaleOption::default_enabled(),
             flow_control: FlowController::new(),
             mss: 1460, // Default MSS
@@ -139,14 +149,18 @@ impl TcpControlBlockEntry {
     }
 
     /// ACK受信時の処理
-    pub fn on_ack_received(&mut self, ack_num: u32, is_dup: bool) {
+    ///
+    /// `current_time_ms`: 現在時刻（ミリ秒）。CUBICやBBRが正確な時刻を必要とする。
+    /// `rtt_sample_ms`: RTTサンプル（ミリ秒）。BBRが帯域推定に使用。0なら無効。
+    pub fn on_ack_received(&mut self, ack_num: u32, is_dup: bool, current_time_ms: u64, rtt_sample_ms: u64) {
         let bytes_acked = if ack_num > self.snd_una && !is_dup {
             ack_num.wrapping_sub(self.snd_una)
         } else {
             0
         };
 
-        self.congestion.on_ack(bytes_acked, is_dup, self.snd_una);
+        self.congestion
+            .on_ack(bytes_acked, is_dup, self.snd_una, current_time_ms, rtt_sample_ms);
 
         if !is_dup && ack_num > self.snd_una {
             self.snd_una = ack_num;
@@ -167,12 +181,14 @@ impl TcpControlBlockEntry {
 
     /// 送信時の処理
     pub fn on_send(&mut self, bytes: u32) {
-        self.congestion.on_send(bytes);
+        let tick = self.last_send_tick;
+        self.congestion.on_send(bytes, tick);
     }
 
     /// タイムアウト時の処理
     pub fn on_timeout(&mut self) {
-        self.congestion.on_timeout();
+        let tick = self.last_send_tick;
+        self.congestion.on_timeout(tick);
         self.retransmit_count = self.retransmit_count.saturating_add(1);
     }
 

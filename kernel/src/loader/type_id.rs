@@ -541,33 +541,4 @@ pub fn init_kernel_interfaces() {
     log::info!("[TypeID] Registered {} kernel interfaces\n", registry.len());
 }
 
-// ============================================================================
-// テスト
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test_case]
-    fn test_const_hash() {
-        let hash1 = const_hash(b"test");
-        let hash2 = const_hash(b"test");
-        let hash3 = const_hash(b"different");
-
-        assert_eq!(hash1, hash2);
-        assert_ne!(hash1, hash3);
-    }
-
-    #[test_case]
-    fn test_semver_compatibility() {
-        let v1_0_0 = SemVer::new(1, 0, 0);
-        let v1_1_0 = SemVer::new(1, 1, 0);
-        let v2_0_0 = SemVer::new(2, 0, 0);
-
-        assert!(v1_1_0.is_backward_compatible(&v1_0_0));
-        assert!(!v1_0_0.is_backward_compatible(&v1_1_0));
-        assert!(!v2_0_0.is_backward_compatible(&v1_0_0));
-    }
-}
 

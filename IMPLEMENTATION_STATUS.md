@@ -748,8 +748,8 @@ pub fn enumerate_bus() -> impl Iterator<Item = PciDevice> {
 
 ```rust
 // src/io/acpi.rs
-// ACPI RSDPからシステム設定を解析
-pub fn find_rsdp() -> Option<&'static Rsdp>;
+// ACPI RSDPからシステム設定を解析 (RSDPアドレスはExoBootInfo経由で取得)
+pub fn init(rsdp_address: u64) -> Result<AcpiParser, AcpiError>;
 pub fn parse_madt(madt: &Madt) -> (Vec<LocalApic>, Vec<IoApic>);
 pub fn parse_mcfg(mcfg: &Mcfg) -> Vec<PcieSegment>;
 ```

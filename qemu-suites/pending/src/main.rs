@@ -3,8 +3,7 @@
 
 use core::panic::PanicInfo;
 
-const PENDING_CASES: &[&str] = &[];
-const LEGACY_ALLOWLIST: &str = include_str!("../../../scripts/qemu_legacy_test_allowlist.lst");
+const PENDING_CASES_LIST: &str = include_str!("../../../scripts/qemu_pending_cases.lst");
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -16,18 +15,20 @@ fn run_suite() {
     serial_write_str("[qemu-suite] pending start\n");
     serial_write_str("[qemu-suite] pending list:\n");
 
-    if PENDING_CASES.is_empty() {
-        serial_write_str("  - none\n");
-    } else {
-        for item in PENDING_CASES {
-            serial_write_str("  - ");
-            serial_write_str(item);
-            serial_write_str("\n");
-        }
+    let mut count = 0usize;
+    for item in iter_pending_cases() {
+        serial_write_str("  - ");
+        serial_write_str(item);
+        serial_write_str("\n");
+        count += 1;
     }
 
-    serial_write_str("[qemu-suite] pending allowlist count: ");
-    serial_write_u64(count_allowlist_entries() as u64);
+    if count == 0 {
+        serial_write_str("  - none\n");
+    }
+
+    serial_write_str("[qemu-suite] pending count: ");
+    serial_write_u64(count as u64);
     serial_write_str("\n");
 }
 
@@ -49,12 +50,15 @@ pub extern "efiapi" fn efi_main(_image_handle: usize, _system_table: usize) -> u
     0
 }
 
-fn count_allowlist_entries() -> usize {
-    LEGACY_ALLOWLIST
+fn iter_pending_cases() -> impl Iterator<Item = &'static str> {
+    PENDING_CASES_LIST
         .lines()
         .map(|line| line.trim())
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .count()
+        .filter(|line| is_active_case(line))
+}
+
+fn is_active_case(line: &str) -> bool {
+    !line.is_empty() && !line.starts_with('#')
 }
 
 fn serial_write_str(s: &str) {

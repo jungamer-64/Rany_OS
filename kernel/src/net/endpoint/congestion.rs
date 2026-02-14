@@ -503,36 +503,49 @@ impl CubicController {
 
     /// Calculate CUBIC window target W_cubic(t)
     /// W_cubic(t) = C * (t - K)^3 + W_max
+    ///
+    /// Uses u128 intermediate calculations to avoid overflow when computing
+    /// (t - K)^3 for large time differences (milliseconds cubed can exceed u64).
     fn cubic_update(&mut self, current_time_ms: u64) -> u32 {
         let mss = self.base.mss as u64;
-        
+        if mss == 0 {
+            return self.origin_point;
+        }
+
         // Calculate time since epoch start
         let t = current_time_ms.saturating_sub(self.epoch_start);
-        
-        // Calculate (t - K)^3 in segments (not bytes)
+
+        // Calculate |t - K| in milliseconds
         let t_k_diff = if t > self.k {
             t - self.k
         } else {
             self.k - t
         };
-        
-        // Cube of difference
-        let t_k_cubed = t_k_diff.saturating_mul(t_k_diff).saturating_mul(t_k_diff);
-        
+
+        // Use u128 for cube calculation to prevent overflow
+        // (t_k_diff in ms)^3 can easily exceed u64 for diffs > ~2642ms
+        let t_k_cubed: u128 = (t_k_diff as u128)
+            .saturating_mul(t_k_diff as u128)
+            .saturating_mul(t_k_diff as u128);
+
         // W_cubic = C * (t - K)^3 + W_max (in segments)
         // Using fixed-point: C * x = (C_NUMERATOR * x) / C_DENOMINATOR
-        let delta = (cubic_constants::C_NUMERATOR * t_k_cubed) / cubic_constants::C_DENOMINATOR / 1000 / 1000 / 1000;
-        
+        // Division by 10^9 converts ms^3 to s^3
+        let delta: u64 = ((cubic_constants::C_NUMERATOR as u128 * t_k_cubed)
+            / (cubic_constants::C_DENOMINATOR as u128 * 1_000_000_000))
+            .min(u64::MAX as u128) as u64;
+
         let origin_segments = self.origin_point as u64 / mss;
-        
+
         let target_segments = if t > self.k {
             origin_segments.saturating_add(delta)
         } else {
             origin_segments.saturating_sub(delta)
         };
-        
-        // Convert back to bytes
-        (target_segments * mss) as u32
+
+        // Convert back to bytes, clamped to u32
+        let result = target_segments.saturating_mul(mss);
+        result.min(u32::MAX as u64) as u32
     }
 
     /// ACK received - CUBIC window update
@@ -692,6 +705,154 @@ impl CubicController {
 impl Default for CubicController {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// =====================================================
+// 統合輻輳制御バリアント (Unified Congestion Control)
+// =====================================================
+//
+// NewReno / CUBIC / BBR をenumで統合。
+// trait objectを避け、ゼロオーバーヘッドで委譲する。
+
+/// 統合輻輳制御コントローラ
+///
+/// TCP接続ごとに選択可能な輻輳制御アルゴリズムをenumで管理。
+/// vtableオーバーヘッドを避け、インライン展開可能な設計。
+#[derive(Debug, Clone)]
+pub enum CongestionControllerVariant {
+    /// RFC 5681 NewReno (デフォルト)
+    NewReno(CongestionController),
+    /// RFC 8312 CUBIC
+    Cubic(CubicController),
+    /// BBRv1
+    Bbr(BbrController),
+}
+
+impl CongestionControllerVariant {
+    /// アルゴリズム指定で作成
+    pub fn from_algorithm(algorithm: CongestionAlgorithm) -> Self {
+        match algorithm {
+            CongestionAlgorithm::NewReno => Self::NewReno(CongestionController::new()),
+            CongestionAlgorithm::Cubic => Self::Cubic(CubicController::new()),
+            CongestionAlgorithm::Bbr => Self::Bbr(BbrController::new()),
+        }
+    }
+
+    /// MSS指定でアルゴリズム選択して作成
+    pub fn from_algorithm_with_mss(algorithm: CongestionAlgorithm, mss: u32) -> Self {
+        match algorithm {
+            CongestionAlgorithm::NewReno => Self::NewReno(CongestionController::with_mss(mss)),
+            CongestionAlgorithm::Cubic => Self::Cubic(CubicController::with_mss(mss)),
+            CongestionAlgorithm::Bbr => Self::Bbr(BbrController::with_mss(mss)),
+        }
+    }
+
+    /// 現在のアルゴリズム種別を取得
+    pub fn algorithm(&self) -> CongestionAlgorithm {
+        match self {
+            Self::NewReno(_) => CongestionAlgorithm::NewReno,
+            Self::Cubic(_) => CongestionAlgorithm::Cubic,
+            Self::Bbr(_) => CongestionAlgorithm::Bbr,
+        }
+    }
+
+    /// 現在の輻輳ウィンドウ取得
+    #[inline]
+    pub fn cwnd(&self) -> u32 {
+        match self {
+            Self::NewReno(c) => c.cwnd(),
+            Self::Cubic(c) => c.cwnd(),
+            Self::Bbr(c) => c.cwnd(),
+        }
+    }
+
+    /// 現在の状態取得 (NewReno/CUBIC用)
+    #[inline]
+    pub fn congestion_state(&self) -> CongestionState {
+        match self {
+            Self::NewReno(c) => c.state(),
+            Self::Cubic(c) => c.state(),
+            Self::Bbr(_) => CongestionState::CongestionAvoidance, // BBRは別ステートマシン
+        }
+    }
+
+    /// MSS取得
+    #[inline]
+    pub fn mss(&self) -> u32 {
+        match self {
+            Self::NewReno(c) => c.mss(),
+            Self::Cubic(c) => c.mss(),
+            Self::Bbr(c) => c.mss(),
+        }
+    }
+
+    /// 送信可能なバイト数を計算
+    pub fn available_window(&self, rwnd: u32) -> u32 {
+        match self {
+            Self::NewReno(c) => c.available_window(rwnd),
+            Self::Cubic(c) => c.available_window(rwnd),
+            Self::Bbr(c) => {
+                // BBRはrwndを考慮しつつ自身のcwndを使用
+                let effective = min(c.cwnd(), rwnd);
+                effective.saturating_sub(c.bytes_in_flight())
+            }
+        }
+    }
+
+    /// データ送信を記録
+    pub fn on_send(&mut self, bytes: u32, current_time_ms: u64) {
+        match self {
+            Self::NewReno(c) => c.on_send(bytes),
+            Self::Cubic(c) => c.on_send(bytes),
+            Self::Bbr(c) => c.on_send(bytes, current_time_ms),
+        }
+    }
+
+    /// ACK受信時の統合処理
+    ///
+    /// - `bytes_acked`: ACKされたバイト数
+    /// - `is_dup_ack`: 重複ACKかどうか
+    /// - `snd_una`: 未確認の最古シーケンス番号
+    /// - `current_time_ms`: 現在時刻（ミリ秒）
+    /// - `rtt_sample_ms`: RTTサンプル（BBR用、0なら無効）
+    pub fn on_ack(
+        &mut self,
+        bytes_acked: u32,
+        is_dup_ack: bool,
+        snd_una: u32,
+        current_time_ms: u64,
+        rtt_sample_ms: u64,
+    ) {
+        match self {
+            Self::NewReno(c) => c.on_ack(bytes_acked, is_dup_ack, snd_una),
+            Self::Cubic(c) => c.on_ack(bytes_acked, is_dup_ack, snd_una, current_time_ms),
+            Self::Bbr(c) => c.on_ack(bytes_acked, rtt_sample_ms, current_time_ms),
+        }
+    }
+
+    /// タイムアウト時の処理
+    pub fn on_timeout(&mut self, current_time_ms: u64) {
+        match self {
+            Self::NewReno(c) => c.on_timeout(),
+            Self::Cubic(c) => c.on_timeout(current_time_ms),
+            Self::Bbr(c) => c.on_timeout(),
+        }
+    }
+
+    /// 接続リセット
+    pub fn reset(&mut self) {
+        match self {
+            Self::NewReno(c) => c.reset(),
+            Self::Cubic(c) => c.reset(),
+            Self::Bbr(c) => c.reset(),
+        }
+    }
+}
+
+impl Default for CongestionControllerVariant {
+    fn default() -> Self {
+        Self::NewReno(CongestionController::new())
     }
 }
 
@@ -1421,6 +1582,134 @@ mod bbr_tests {
         
         bbr.update_startup();
         assert_eq!(bbr.state(), BbrState::Drain);
+    }
+}
+
+// =====================================================
+// CongestionControllerVariant テスト
+// =====================================================
+
+#[cfg(test)]
+mod variant_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_variant_from_algorithm() {
+        let nr = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::NewReno);
+        assert_eq!(nr.algorithm(), CongestionAlgorithm::NewReno);
+        assert_eq!(nr.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
+
+        let cubic = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::Cubic);
+        assert_eq!(cubic.algorithm(), CongestionAlgorithm::Cubic);
+        assert_eq!(cubic.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
+
+        let bbr = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::Bbr);
+        assert_eq!(bbr.algorithm(), CongestionAlgorithm::Bbr);
+        assert_eq!(bbr.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
+    }
+
+    #[test_case]
+    fn test_variant_with_mss() {
+        let v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
+        assert_eq!(v.mss(), 1000);
+        assert_eq!(v.cwnd(), INITIAL_WINDOW * 1000);
+    }
+
+    #[test_case]
+    fn test_variant_newreno_ack_delegation() {
+        let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
+        let initial_cwnd = v.cwnd();
+
+        // New ACK should increase cwnd in slow start
+        v.on_ack(1000, false, 1000, 0, 0);
+        assert!(v.cwnd() > initial_cwnd);
+        assert_eq!(v.congestion_state(), CongestionState::SlowStart);
+    }
+
+    #[test_case]
+    fn test_variant_cubic_ack_delegation() {
+        let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
+        let initial_cwnd = v.cwnd();
+
+        // New ACK should increase cwnd in slow start
+        v.on_ack(1000, false, 1000, 100, 0);
+        assert!(v.cwnd() > initial_cwnd);
+        assert_eq!(v.congestion_state(), CongestionState::SlowStart);
+    }
+
+    #[test_case]
+    fn test_variant_bbr_ack_delegation() {
+        let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Bbr, 1000);
+
+        // Send then receive ACK
+        v.on_send(1000, 0);
+        v.on_ack(1000, false, 0, 50, 50);
+
+        // BBR reports CongestionAvoidance for congestion_state()
+        assert_eq!(v.congestion_state(), CongestionState::CongestionAvoidance);
+    }
+
+    #[test_case]
+    fn test_variant_timeout_delegation() {
+        let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
+
+        // Simulate data in flight then timeout
+        v.on_send(5000, 0);
+        v.on_timeout(100);
+
+        // Should be back in slow start with cwnd = 1 MSS
+        assert_eq!(v.congestion_state(), CongestionState::SlowStart);
+        assert_eq!(v.cwnd(), 1000); // 1 MSS
+    }
+
+    #[test_case]
+    fn test_variant_reset_delegation() {
+        let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
+
+        // Modify state
+        v.on_send(5000, 0);
+        v.on_timeout(100);
+        assert_eq!(v.congestion_state(), CongestionState::SlowStart);
+        assert_ne!(v.cwnd(), INITIAL_WINDOW * 1000);
+
+        // Reset should restore initial state
+        v.reset();
+        assert_eq!(v.cwnd(), INITIAL_WINDOW * 1000);
+        assert_eq!(v.congestion_state(), CongestionState::SlowStart);
+    }
+
+    #[test_case]
+    fn test_variant_available_window() {
+        let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
+
+        v.on_send(3000, 0);
+
+        // cwnd = 10000, bytes_in_flight = 3000, rwnd = 20000
+        // available = min(10000, 20000) - 3000 = 7000
+        assert_eq!(v.available_window(20000), 7000);
+
+        // rwnd limited: min(10000, 5000) - 3000 = 2000
+        assert_eq!(v.available_window(5000), 2000);
+    }
+
+    #[test_case]
+    fn test_variant_fast_retransmit_newreno() {
+        let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
+
+        v.on_send(10000, 0);
+
+        // 3 duplicate ACKs should trigger Fast Recovery
+        v.on_ack(0, true, 1000, 0, 0);
+        v.on_ack(0, true, 1000, 0, 0);
+        v.on_ack(0, true, 1000, 0, 0);
+
+        assert_eq!(v.congestion_state(), CongestionState::FastRecovery);
+    }
+
+    #[test_case]
+    fn test_variant_default() {
+        let v = CongestionControllerVariant::default();
+        assert_eq!(v.algorithm(), CongestionAlgorithm::NewReno);
     }
 }
 

@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use crate::net::tcp::{TcpListener as TcpListenerImpl, TcpStream};
 use crate::net::udp::UdpSocket as RawUdpSocket;
 
+use super::congestion::CongestionAlgorithm;
 use super::types::{AcceptedConnection, SocketAddr, SocketError, SocketResult, SocketState};
 
 /// ソケットの可変状態（Mutex保護対象）
@@ -53,6 +54,8 @@ pub struct SocketInner {
     pub accept_waker: Option<core::task::Waker>,
     /// Urgent data pending flag (TCP OOB data)
     pub urgent_pending: bool,
+    /// 輻輳制御アルゴリズム選択（TCB作成時に使用）
+    pub congestion_algorithm: Option<CongestionAlgorithm>,
 }
 
 impl SocketInner {
@@ -85,6 +88,7 @@ impl SocketInner {
             connect_waker: None,
             accept_waker: None,
             urgent_pending: false,
+            congestion_algorithm: None,
         }
     }
 

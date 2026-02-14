@@ -1,7 +1,9 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use qemu_runner::{run_suite, RunConfig};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn suite_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -58,11 +60,14 @@ fn run_pending(suite: &str) {
     drop(guard);
     match result {
         Ok(report) => {
+            let pending_count = write_pending_summaries(&report)
+                .unwrap_or_else(|err| panic!("pending summary generation failed: {err}"));
             eprintln!(
-                "pending suite '{}' passed in {:?} (log: {})",
+                "pending suite '{}' passed in {:?} (log: {}, pending_count: {})",
                 report.suite,
                 report.duration,
-                report.log_path.display()
+                report.log_path.display(),
+                pending_count
             );
         }
         Err(err) => {
@@ -119,4 +124,126 @@ fn runner_workspace_root_exists() {
     let root = qemu_runner::workspace_root();
     assert!(root.exists());
     assert!(root.join("Cargo.toml").exists());
+}
+
+fn pending_list_path() -> std::path::PathBuf {
+    qemu_runner::workspace_root()
+        .join("scripts")
+        .join("qemu_pending_cases.lst")
+}
+
+fn is_active_pending_line(line: &str) -> bool {
+    !line.is_empty() && !line.starts_with('#')
+}
+
+fn collect_pending_items(path: &Path) -> Result<Vec<String>, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|err| format!("failed to read '{}': {err}", path.display()))?;
+    Ok(content
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| is_active_pending_line(line))
+        .map(std::string::ToString::to_string)
+        .collect())
+}
+
+fn generated_at_utc() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => format!("unix:{}", duration.as_secs()),
+        Err(_) => String::from("unix:0"),
+    }
+}
+
+fn json_escape(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn write_pending_summaries(report: &qemu_runner::RunReport) -> Result<usize, String> {
+    let list_path = pending_list_path();
+    let pending_items = collect_pending_items(&list_path)?;
+    let pending_count = pending_items.len();
+
+    let log_dir = qemu_runner::workspace_root().join("target").join("qemu-logs");
+    std::fs::create_dir_all(&log_dir).map_err(|err| {
+        format!(
+            "failed to create pending summary directory '{}': {err}",
+            log_dir.display()
+        )
+    })?;
+
+    let generated_at = generated_at_utc();
+    let txt_path = log_dir.join("pending-summary.txt");
+    let json_path = log_dir.join("pending-summary.json");
+
+    let mut text = String::new();
+    text.push_str("suite: pending\n");
+    text.push_str(&format!("pending_count: {pending_count}\n"));
+    text.push_str(&format!("generated_at_utc: {generated_at}\n"));
+    text.push_str(&format!("suite_log_path: {}\n", report.log_path.display()));
+    text.push_str("pending_items:\n");
+    if pending_items.is_empty() {
+        text.push_str("- none\n");
+    } else {
+        for item in &pending_items {
+            text.push_str("- ");
+            text.push_str(item);
+            text.push('\n');
+        }
+    }
+
+    std::fs::write(&txt_path, text).map_err(|err| {
+        format!(
+            "failed to write pending text summary '{}': {err}",
+            txt_path.display()
+        )
+    })?;
+
+    let mut json = String::new();
+    json.push_str("{\n");
+    json.push_str("  \"suite\": \"pending\",\n");
+    json.push_str(&format!("  \"pending_count\": {pending_count},\n"));
+    json.push_str("  \"pending_items\": [");
+    if pending_items.is_empty() {
+        json.push_str("],\n");
+    } else {
+        json.push('\n');
+        for (index, item) in pending_items.iter().enumerate() {
+            let comma = if index + 1 == pending_items.len() {
+                ""
+            } else {
+                ","
+            };
+            json.push_str(&format!("    \"{}\"{comma}\n", json_escape(item)));
+        }
+        json.push_str("  ],\n");
+    }
+    json.push_str(&format!(
+        "  \"suite_log_path\": \"{}\",\n",
+        json_escape(&report.log_path.display().to_string())
+    ));
+    json.push_str(&format!(
+        "  \"generated_at_utc\": \"{}\"\n",
+        json_escape(&generated_at)
+    ));
+    json.push_str("}\n");
+
+    std::fs::write(&json_path, json).map_err(|err| {
+        format!(
+            "failed to write pending json summary '{}': {err}",
+            json_path.display()
+        )
+    })?;
+
+    Ok(pending_count)
 }

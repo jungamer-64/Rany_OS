@@ -27,7 +27,7 @@ use spin::Mutex;
 use super::info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
 use super::tables::{
     AcpiError, AcpiSdtHeader, Madt, MadtEntryHeader, MadtInterruptOverride, MadtIoApic,
-    MadtLocalApic, MadtLocalApicOverride, Mcfg, McfgEntry, RSDP_SIGNATURE, Rsdp, signature,
+    MadtLocalApic, MadtLocalApicOverride, Mcfg, McfgEntry, Rsdp, signature,
 };
 
 // ============================================================================
@@ -75,60 +75,6 @@ impl AcpiParser {
             rsdp_address,
             info: None,
         }
-    }
-
-    /// Search for RSDP in BIOS memory regions
-    ///
-    /// # Safety
-    /// This function reads from physical memory addresses
-    pub unsafe fn find_rsdp() -> Option<u64> {
-        // Search in EBDA (Extended BIOS Data Area)
-        let ebda_ptr = unsafe { *(0x40E as *const u16) } as u64;
-        let ebda_start = ebda_ptr << 4;
-
-        if let Some(addr) = unsafe { Self::search_region(ebda_start, ebda_start + 1024) } {
-            return Some(addr);
-        }
-
-        // Search in BIOS ROM area (0xE0000 - 0xFFFFF)
-        unsafe { Self::search_region(0xE0_000, 0x100_000) }
-    }
-
-    /// Search for RSDP signature in a memory region
-    unsafe fn search_region(start: u64, end: u64) -> Option<u64> {
-        let mut addr = start;
-        while addr < end {
-            let ptr = addr as *const [u8; 8];
-            // Safety: We are scanning physical memory regions that are known to be mapped or accessible.
-            // However, since this is a raw pointer dereference, we keep the unsafe block for the dereference itself.
-            // The lint complained about "unnecessary unsafe block" which usually means the block is around safe code,
-            // or we are already in an unsafe block/fn and wrapping safe operations in unsafe.
-            // BUT: search_region IS unsafe. So operations inside it don't need `unsafe {}` unless they are unsafe operations.
-            // Dereferencing raw pointer `*ptr` IS unsafe. So `unsafe { }` is required unless the function body is treated as unsafe block (which it is in older Rust, but with `unsafe_op_in_unsafe_fn` lint, it might require explicit block).
-            // Wait, the lint says "unnecessary unsafe block".
-            // If `unsafe_op_in_unsafe_fn` is NOT enabled/triggered, then the whole body is unsafe.
-            // If the lint says it's unnecessary, then likely we are in a context where it's redundant.
-            // "unnecessary unsafe block ... from rustc".
-
-            // Checking line 126 in original file:
-            // 126:         let entries_ptr = unsafe {
-            // 127:             (rsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u32
-            // 128:         };
-            // This is just pointer arithmetic (safe) and casting (safe). No unsafe op here.
-
-            // Let's fix line 126, 152, 177, 241 as per the lint report.
-
-            // SAFETY: We checked that addr is valid for access in search_region
-            if unsafe { &*ptr } == RSDP_SIGNATURE {
-                // Validate checksum
-                let rsdp = unsafe { &*(addr as *const Rsdp) };
-                if rsdp.validate() {
-                    return Some(addr);
-                }
-            }
-            addr += 16; // RSDP is always aligned to 16 bytes
-        }
-        None
     }
 
     /// Parse ACPI tables

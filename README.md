@@ -227,9 +227,17 @@ cargo test
 # 5. 任意: 特定スイートのみ実行
 cargo test -p qemu-tests -- --nocapture suite_core
 
+# 6. 任意: pending スイート（移行監視・非必須）
+cargo test -p qemu-tests -- --ignored --nocapture suite_pending
+
 ```
 
-`cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の各スイートをQEMU上で実行します。
+`cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の required suites をQEMU上で実行します。`pending` は `--ignored` 指定時のみ実行される非必須スイートです。
+
+`pending` 運用:
+- 監視項目の管理: `scripts/qemu_pending_cases.lst`
+- 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
+- `#[test]` 例外の技術的ガード: `scripts/qemu_legacy_test_allowlist.lst`（pending監視とは別用途）
 
 ## **📄 ライセンス**
 
