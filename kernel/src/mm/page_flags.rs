@@ -11,10 +11,10 @@
 //!
 //! # Usage
 //! ```
-//! use crate::mm::page_flags::{self, PageFlags};
-//! 
+//! use crate::mm::page_flags::{self, PageMetaFlags};
+//!
 //! // Set swap pending flag
-//! if page_flags::test_and_set_flag(frame_idx, PageFlags::SWAP_PENDING) {
+//! if page_flags::test_and_set_flag(frame_idx, PageMetaFlags::SWAP_PENDING) {
 //!     // Already set
 //! } else {
 //!     // Successfully set
@@ -35,9 +35,12 @@ static mut PAGE_ORDERS: *mut u8 = core::ptr::null_mut();
 static mut TOTAL_FRAMES: usize = 0;
 
 /// Atomic flags for each page
+///
+/// ページテーブルエントリフラグ (`higher_half::PageFlags`) との混同を避けるため
+/// `PageMetaFlags` と命名。こちらはページ単位のメタデータフラグ。
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageFlags {
+pub enum PageMetaFlags {
     /// Page is currently queued for swapout (prevent duplicate enqueue)
     SwapPending = 1 << 0,
     /// Page is currently under writeback
@@ -54,7 +57,10 @@ pub enum PageFlags {
     CompoundTail = 1 << 6,
 }
 
-impl PageFlags {
+/// 後方互換性のための型エイリアス
+pub type PageFlags = PageMetaFlags;
+
+impl PageMetaFlags {
     #[inline]
     pub const fn bits(self) -> u8 {
         self as u8
@@ -95,7 +101,7 @@ fn get_atomic(frame: FrameIndex) -> Option<&'static AtomicU8> {
 
 /// Test if specific flag is set
 #[inline]
-pub fn test_flag(frame: FrameIndex, flag: PageFlags) -> bool {
+pub fn test_flag(frame: FrameIndex, flag: PageMetaFlags) -> bool {
     if let Some(atomic) = get_atomic(frame) {
         (atomic.load(Ordering::Relaxed) & flag.bits()) != 0
     } else {
@@ -105,7 +111,7 @@ pub fn test_flag(frame: FrameIndex, flag: PageFlags) -> bool {
 
 /// Set a flag (atomically)
 #[inline]
-pub fn set_flag(frame: FrameIndex, flag: PageFlags) {
+pub fn set_flag(frame: FrameIndex, flag: PageMetaFlags) {
     if let Some(atomic) = get_atomic(frame) {
         atomic.fetch_or(flag.bits(), Ordering::Relaxed);
     }
@@ -113,7 +119,7 @@ pub fn set_flag(frame: FrameIndex, flag: PageFlags) {
 
 /// Clear a flag (atomically)
 #[inline]
-pub fn clear_flag(frame: FrameIndex, flag: PageFlags) {
+pub fn clear_flag(frame: FrameIndex, flag: PageMetaFlags) {
     if let Some(atomic) = get_atomic(frame) {
         atomic.fetch_and(!flag.bits(), Ordering::Relaxed);
     }
@@ -122,7 +128,7 @@ pub fn clear_flag(frame: FrameIndex, flag: PageFlags) {
 /// Test and set a flag (atomically).
 /// Returns true if the flag was ALREADY set.
 #[inline]
-pub fn test_and_set_flag(frame: FrameIndex, flag: PageFlags) -> bool {
+pub fn test_and_set_flag(frame: FrameIndex, flag: PageMetaFlags) -> bool {
     if let Some(atomic) = get_atomic(frame) {
         let prev = atomic.fetch_or(flag.bits(), Ordering::Acquire);
         (prev & flag.bits()) != 0
@@ -134,7 +140,7 @@ pub fn test_and_set_flag(frame: FrameIndex, flag: PageFlags) -> bool {
 /// Test and clear a flag (atomically).
 /// Returns true if the flag was previously set.
 #[inline]
-pub fn test_and_clear_flag(frame: FrameIndex, flag: PageFlags) -> bool {
+pub fn test_and_clear_flag(frame: FrameIndex, flag: PageMetaFlags) -> bool {
     if let Some(atomic) = get_atomic(frame) {
         let prev = atomic.fetch_and(!flag.bits(), Ordering::Release);
         (prev & flag.bits()) != 0

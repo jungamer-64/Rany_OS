@@ -5,7 +5,8 @@
 // VMAの検索、ルーティングテーブルの参照など、読み取り優位なデータ構造に最適。
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, AtomicPtr, Ordering};
+use core::ptr::null_mut;
 use alloc::collections::VecDeque;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -312,59 +313,100 @@ pub fn rcu_pending_callbacks() -> usize {
 // RCU-protected pointer wrapper
 // ============================================================================
 
-/// RCU保護されたポインタ
+/// RCU保護されたポインタ（統合版）
 ///
-/// 読み取り側: rcu_read_lock()のガード内で安全にderef
-/// 書き込み側: 新しい値を公開後、古い値をcall_rcu()で解放
-pub struct RcuPtr<T> {
-    ptr: AtomicUsize,
-    _marker: core::marker::PhantomData<*mut T>,
+/// rcu_vma.rs から移動。AtomicPtr ベースで安全な get() API を提供。
+/// 読み取り側: rcu_read_lock() のガード内で安全にアクセス
+/// 書き込み側: 新しい値を公開後、古い値を call_rcu() で解放
+#[repr(transparent)]
+pub struct RcuPointer<T> {
+    ptr: AtomicPtr<T>,
 }
 
-impl<T> RcuPtr<T> {
-    /// 新しいRcuPtrを作成
-    pub fn new(value: Box<T>) -> Self {
-        Self {
-            ptr: AtomicUsize::new(Box::into_raw(value) as usize),
-            _marker: core::marker::PhantomData,
-        }
-    }
-
+impl<T> RcuPointer<T> {
     /// nullポインタで初期化
     pub const fn null() -> Self {
         Self {
-            ptr: AtomicUsize::new(0),
-            _marker: core::marker::PhantomData,
+            ptr: AtomicPtr::new(null_mut()),
+        }
+    }
+
+    /// 初期値を持つRCUポインタを作成
+    pub fn new(value: Box<T>) -> Self {
+        Self {
+            ptr: AtomicPtr::new(Box::into_raw(value)),
         }
     }
 
     /// RCU読み取りセクション内でポインタを取得
     ///
-    /// # Safety
-    /// rcu_read_lock()のガードが生存している間のみ有効
+    /// ガードのライフタイム内でのみ有効な参照を返す。
     #[inline]
-    pub unsafe fn load(&self, _guard: &RcuReadGuard) -> *const T {
-        self.ptr.load(Ordering::Acquire) as *const T
+    pub fn get<'a>(&self, _guard: &'a RcuReadGuard) -> Option<&'a T> {
+        let ptr = self.ptr.load(Ordering::Acquire);
+        if ptr.is_null() {
+            None
+        } else {
+            // Safety: RcuReadGuard 内なので、ポインタは有効
+            unsafe { Some(&*ptr) }
+        }
     }
 
-    /// 新しい値を公開（古い値を返す）
+    /// RCU読み取りセクション内で生ポインタを取得
+    #[inline]
+    pub fn get_raw(&self, _guard: &RcuReadGuard) -> *const T {
+        self.ptr.load(Ordering::Acquire)
+    }
+
+    /// RCUポインタを更新
     ///
-    /// 戻り値は呼び出し側がcall_rcu()等で適切に解放する責任がある
+    /// 古いポインタはグレース期間後に解放コールバックで処理する必要がある。
+    /// 返される古いポインタは呼び出し側で `call_rcu` に渡すこと。
+    #[inline]
+    pub fn rcu_assign(&self, new_value: Box<T>) -> *mut T {
+        let new_ptr = Box::into_raw(new_value);
+        self.ptr.swap(new_ptr, Ordering::Release)
+    }
+
+    /// 新しい値を公開（`swap` エイリアス、`rcu_assign` と同等）
+    #[inline]
     pub fn swap(&self, new_value: Box<T>) -> *mut T {
-        let new_ptr = Box::into_raw(new_value) as usize;
-        let old_ptr = self.ptr.swap(new_ptr, Ordering::AcqRel);
-        old_ptr as *mut T
+        self.rcu_assign(new_value)
+    }
+
+    /// nullを設定
+    #[inline]
+    pub fn set_null(&self) -> *mut T {
+        self.ptr.swap(null_mut(), Ordering::Release)
     }
 
     /// 現在の生ポインタを取得（デバッグ用）
     pub fn as_ptr(&self) -> *const T {
-        self.ptr.load(Ordering::Acquire) as *const T
+        self.ptr.load(Ordering::Acquire)
+    }
+
+    /// RCU読み取りセクション内でポインタをロード（unsafe版、RcuPtr互換）
+    ///
+    /// # Safety
+    /// rcu_read_lock() のガードが生存している間のみ有効
+    #[inline]
+    pub unsafe fn load(&self, _guard: &RcuReadGuard) -> *const T {
+        self.ptr.load(Ordering::Acquire)
     }
 }
 
-// Safety: RcuPtrはAtomicで保護されており、スレッド間で共有可能
-unsafe impl<T: Send> Send for RcuPtr<T> {}
-unsafe impl<T: Sync> Sync for RcuPtr<T> {}
+impl<T> Default for RcuPointer<T> {
+    fn default() -> Self {
+        Self::null()
+    }
+}
+
+// Safety: AtomicPtr を介したアクセスのみ
+unsafe impl<T: Send + Sync> Send for RcuPointer<T> {}
+unsafe impl<T: Send + Sync> Sync for RcuPointer<T> {}
+
+/// 後方互換エイリアス（旧 RcuPtr → 新 RcuPointer）
+pub type RcuPtr<T> = RcuPointer<T>;
 
 // ============================================================================
 // Per-CPU RCU state (simplified version)

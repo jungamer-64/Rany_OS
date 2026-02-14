@@ -195,6 +195,7 @@ pub use rcu::{
     rcu_process_callbacks,
     rcu_pending_callbacks,
     // RCU-protected pointer
+    RcuPointer,
     RcuPtr,
     // Per-CPU state
     PerCpuRcuState,

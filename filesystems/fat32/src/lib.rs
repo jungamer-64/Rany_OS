@@ -1309,7 +1309,7 @@ impl SafePackedRead for LfnEntry {
         let mut entry = LfnEntry {
             seq: 0,
             name1: [0u8; 10],
-            attr: FileAttributes::empty(),
+            attr: 0,
             type_: 0,
             checksum: 0,
             name2: [0u8; 12],
@@ -1318,7 +1318,7 @@ impl SafePackedRead for LfnEntry {
         };
         entry.seq = bytes[0];
         entry.name1.copy_from_slice(&bytes[1..11]);
-        entry.attr = FileAttributes::from_bits_truncate(bytes[11]);
+        entry.attr = bytes[11];
         entry.type_ = bytes[12];
         entry.checksum = bytes[13];
         entry.name2.copy_from_slice(&bytes[14..26]);

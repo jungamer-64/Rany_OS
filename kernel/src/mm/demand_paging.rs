@@ -36,6 +36,7 @@ use super::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, M
 use super::types::FrameIndex;
 use super::cow::{cow_map_zero_page, zero_page_phys, CowResult};
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
+use super::fault_handler::AnonPageSetup;
 
 // ============================================================================
 // Demand Paging Configuration
@@ -437,63 +438,28 @@ fn populate_anonymous_page(
             }
         }
     }
-    
-    // 新しいフレームを割り当て
-    let frame = match alloc_frame() {
-        Some(f) => f,
+
+    // memcg ID（条件付き）
+    let memcg_id = if config.memcg_enabled {
+        Some(crate::task::process::get_current_process_memcg_id())
+    } else {
+        None
+    };
+
+    let setup = match AnonPageSetup::allocate(memcg_id) {
+        Some(s) => s,
         None => return DemandResult::OutOfMemory,
     };
-    
-    let frame_phys = PhysAddr::new(frame.start_address().as_u64());
-    
-    // ゼロクリア
-    zero_page(frame_phys);
-    
-    // Memcgチャージ
-    let mut memcg_id = MemcgId::ROOT;
-    let mut memcg_charged = false;
-    if config.memcg_enabled {
-        memcg_id = crate::task::process::get_current_process_memcg_id();
-        if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
-            // チャージ失敗 -> OOM
-            super::frame_allocator::dealloc_frame(frame);
-            return DemandResult::OutOfMemory;
-        }
-        memcg_charged = true;
-    }
 
-    // ページマッピング
     let flags = prot.to_page_flags();
-    match unsafe { global_map_page(page_addr, frame_phys, flags) } {
-        Ok(()) => {}
-        Err(MapError::AlreadyMapped) => {
-            if memcg_charged {
-                memcg_uncharge(memcg_id, 1, ChargeType::Anon);
-            }
-            super::frame_allocator::dealloc_frame(frame);
-            return DemandResult::AlreadyMapped;
+    match unsafe { setup.map_and_track(page_addr, flags) } {
+        Ok(()) => {
+            DEMAND_STATS.zero_fill_pages.fetch_add(1, Ordering::Relaxed);
+            DemandResult::Ok
         }
-        Err(_) => {
-            if memcg_charged {
-                memcg_uncharge(memcg_id, 1, ChargeType::Anon);
-            }
-            super::frame_allocator::dealloc_frame(frame);
-            return DemandResult::OutOfMemory;
-        }
+        Err(MapError::AlreadyMapped) => DemandResult::AlreadyMapped,
+        Err(_) => DemandResult::OutOfMemory,
     }
-
-    // LRUに追加
-    lru_add_page(frame, LruPageType::Anonymous);
-
-    // ページとmemcgを追跡
-    if memcg_charged {
-        let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
-        memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
-    }
-
-    DEMAND_STATS.zero_fill_pages.fetch_add(1, Ordering::Relaxed);
-    
-    DemandResult::Ok
 }
 
 /// ファイルバックページの割り当て

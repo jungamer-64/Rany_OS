@@ -230,9 +230,7 @@ impl BitmapFrameAllocator {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
         // Memcg: ページがmemcgでトラックされている場合はuntrackしてチャージを戻す
-        if let Some(info) = super::memcg::memcg_untrack_page(frame_idx) {
-            let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-        }
+        super::memcg::memcg_untrack_and_uncharge(frame_idx, 1);
 
         self.mark_frame_free(frame_idx);
         self.free_frames += 1;
@@ -246,9 +244,7 @@ impl BitmapFrameAllocator {
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
-            if let Some(info) = super::memcg::memcg_untrack_page(idx) {
-                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-            }
+            super::memcg::memcg_untrack_and_uncharge(idx, 1);
             self.mark_frame_free(idx);
         }
         self.free_frames += frames_count as u64;
@@ -262,9 +258,7 @@ impl BitmapFrameAllocator {
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
-            if let Some(info) = super::memcg::memcg_untrack_page(idx) {
-                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-            }
+            super::memcg::memcg_untrack_and_uncharge(idx, 1);
             self.mark_frame_free(idx);
         }
         self.free_frames += frames_count as u64;

@@ -106,7 +106,6 @@ fn process_tcp_with_tcb(
                     // ACKのみ（データなし）
                     handle_ack_received(tcb, ack_num);
                 }
-                }
             }
         }
         TcpConnectionState::FinWait1 => {

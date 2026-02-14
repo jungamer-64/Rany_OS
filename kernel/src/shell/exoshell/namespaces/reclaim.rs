@@ -41,6 +41,7 @@ impl ReclaimNamespace {
         );
         map.insert(
             String::from("total_reclaimed"),
+            // Includes both synchronous reclaim and async swapout/writeback success.
             ExoValue::Int(stats.total_reclaimed as i64),
         );
         map.insert(
@@ -176,4 +177,3 @@ mod tests {
         crate::mm::page_reclaim::set_unsafe_eviction_enabled(false);
     }
 }
-

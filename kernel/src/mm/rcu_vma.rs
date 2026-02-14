@@ -25,92 +25,11 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use core::ptr::null_mut;
+use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::boxed::Box;
 use super::higher_half::VirtAddr;
 
-use super::rcu::{rcu_read_lock, RcuReadGuard};
-
-// ============================================================================
-// RCU-Protected Pointer
-// ============================================================================
-
-/// RCU保護されたポインタ
-///
-/// 読み取り側はRcuReadGuard内でのみアクセス可能。
-/// 更新側は `rcu_assign_pointer` で新しい値を設定し、
-/// 古い値は `call_rcu` で遅延解放する。
-#[repr(transparent)]
-pub struct RcuPointer<T> {
-    ptr: AtomicPtr<T>,
-}
-
-impl<T> RcuPointer<T> {
-    /// 新しいRCUポインタを作成（null）
-    pub const fn null() -> Self {
-        Self {
-            ptr: AtomicPtr::new(null_mut()),
-        }
-    }
-    
-    /// 初期値を持つRCUポインタを作成
-    pub fn new(value: Box<T>) -> Self {
-        Self {
-            ptr: AtomicPtr::new(Box::into_raw(value)),
-        }
-    }
-    
-    /// RCU読み取りセクション内でポインタを取得
-    ///
-    /// # Safety
-    ///
-    /// - 返されたポインタは `_guard` のライフタイム内でのみ有効
-    /// - ポインタの先のデータを変更してはならない
-    #[inline]
-    pub fn get<'a>(&self, _guard: &'a RcuReadGuard) -> Option<&'a T> {
-        let ptr = self.ptr.load(Ordering::Acquire);
-        if ptr.is_null() {
-            None
-        } else {
-            // Safety: RcuReadGuard 内なので、ポインタは有効
-            unsafe { Some(&*ptr) }
-        }
-    }
-    
-    /// RCU読み取りセクション内で生ポインタを取得
-    #[inline]
-    pub fn get_raw(&self, _guard: &RcuReadGuard) -> *const T {
-        self.ptr.load(Ordering::Acquire)
-    }
-    
-    /// RCUポインタを更新
-    ///
-    /// 古いポインタはグレース期間後に解放コールバックで処理する必要がある。
-    /// 返される古いポインタは呼び出し側で `call_rcu` に渡すこと。
-    #[inline]
-    pub fn rcu_assign(&self, new_value: Box<T>) -> *mut T {
-        let new_ptr = Box::into_raw(new_value);
-        let old_ptr = self.ptr.swap(new_ptr, Ordering::Release);
-        old_ptr
-    }
-    
-    /// nullを設定
-    #[inline]
-    pub fn set_null(&self) -> *mut T {
-        self.ptr.swap(null_mut(), Ordering::Release)
-    }
-}
-
-impl<T> Default for RcuPointer<T> {
-    fn default() -> Self {
-        Self::null()
-    }
-}
-
-// Safety: AtomicPtr を介したアクセスのみ
-unsafe impl<T: Send + Sync> Send for RcuPointer<T> {}
-unsafe impl<T: Send + Sync> Sync for RcuPointer<T> {}
+use super::rcu::{rcu_read_lock, RcuReadGuard, RcuPointer};
 
 // ============================================================================
 // VMA (Virtual Memory Area) Structure

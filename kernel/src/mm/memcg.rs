@@ -741,6 +741,16 @@ pub fn memcg_untrack_page(frame: FrameIndex) -> Option<PageMemcgInfo> {
     PAGE_MEMCG_TRACKER.untrack(frame)
 }
 
+/// ページのMemcg追跡を解除し、カウンタをアンチャージする
+///
+/// `memcg_untrack_page` + `memcg_uncharge` の一括ヘルパー。
+/// 複数ファイルに分散していた共通パターンを統合。
+pub fn memcg_untrack_and_uncharge(frame: FrameIndex, pages: u64) {
+    if let Some(info) = memcg_untrack_page(frame) {
+        memcg_uncharge(info.memcg_id, pages, info.charge_type);
+    }
+}
+
 /// ページのCgroup情報を取得
 pub fn memcg_get_page_info(frame: FrameIndex) -> Option<PageMemcgInfo> {
     PAGE_MEMCG_TRACKER.get(frame)
