@@ -2,16 +2,19 @@
 # - One case per line.
 # - Empty lines and lines starting with '#' are ignored.
 # - This file is for migration visibility only.
-# - Do NOT use this file as #[test] allowlist input.
+# - Do NOT use this file as #[test_case] allowlist input.
 #
-kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snapshot: 810 cases)
+kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snapshot: 898 cases)
 kernel/tests/* migration to qemu-suites/kernel (current snapshot: 0 files, 0 #[test_case])
 kernel runtime pending suite execution for full-runtime cases (net_bridge/framebuffer) and blocked-state monitoring
-IOMMU cmdqueue std-gated tests remain pending until no_std-compatible export path is added
-IOMMU residual pending: test_cmdqueue_map_unmap_with_domain (std::thread dependency)
-IOMMU residual pending: test_map_for_device_async_and_unmap (std::thread dependency)
-IOMMU residual pending: test_map_for_device_respects_dma_mask (global registry/driver singleton dependency)
-IOMMU residual pending: test_api_security_notifier_registration (global registry/driver singleton dependency)
-IOMMU residual pending: test_qi_metrics_pressure (queue pressure/timeout time-dependency)
-qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison) smoke checks to broader migrated kernel test groups
+AMD-Vi Wave0 runtime pending suite execution (6 deterministic smoke exports): alias_dedup, alias_no_match, ivhd_flags_combined, ivhd_flags_acpi_hid, ivmd_exclusion_splits, map_rejects_exclusion_range
+IOMMU residual canonical parity tracking (original host test names are kept for migration visibility; required no_std smoke mapping is defined in scripts/qemu_iommu_residual_parity.lst)
+IOMMU residual canonical: test_cmdqueue_map_unmap_with_domain
+IOMMU residual canonical: test_map_for_device_async_and_unmap
+IOMMU residual canonical: test_map_for_device_respects_dma_mask
+IOMMU residual canonical: test_api_security_notifier_registration
+IOMMU residual canonical: test_qi_metrics_pressure
+IOMMU wave3 required deterministic set (source of truth: qemu-suites/kernel/src/main.rs): scalable_mode(pasid0_fault_resolution+detach_cleans_pasid+attach_detach_cycle) + pasid_table(alloc_free+multi_domain+exhaustion) + mapping_slab + zombie_queue + pri_fuel
+IOMMU wave3 pending monitored smoke candidates (not in required): none
+qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri+residual)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel) toward broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

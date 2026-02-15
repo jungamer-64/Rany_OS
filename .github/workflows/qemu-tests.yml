@@ -54,7 +54,15 @@ jobs:
           QEMU_TEST_MEMORY_MB: ${{ matrix.memory_mb }}
           QEMU_TEST_SMP: ${{ matrix.smp }}
           QEMU_TEST_TIMEOUT_SECS: 90
-        run: cargo test -p qemu-tests -- --nocapture suite_${{ matrix.suite }}
+        run: |
+          if [ "${{ matrix.suite }}" = "kernel" ]; then
+            for run in 1 2 3; do
+              echo "kernel stability run ${run}/3"
+              cargo test -p qemu-tests -- --nocapture suite_kernel
+            done
+          else
+            cargo test -p qemu-tests -- --nocapture suite_${{ matrix.suite }}
+          fi
 
       - name: Upload QEMU logs
         if: always()
@@ -100,13 +108,36 @@ jobs:
       - name: Verify legacy #[test] allowlist
         run: bash scripts/verify_qemu_test_only.sh
 
-      - name: Run pending suite
+      - name: Verify IOMMU residual parity mapping
+        run: bash scripts/verify_iommu_residual_parity.sh
+
+      - name: Run runtime pending streak and pending suite
         env:
           QEMU_TEST_CPU: qemu64,+rdtscp
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
           QEMU_TEST_TIMEOUT_SECS: 90
-        run: cargo test -p qemu-tests -- --ignored --nocapture suite_pending suite_kernel_runtime_pending
+        run: |
+          set -euo pipefail
+          for run in 1 2 3; do
+            echo "kernel runtime pending streak ${run}/3"
+            cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
+            python3 - <<'PY'
+import json
+import sys
+
+path = "target/qemu-logs/kernel-runtime-pending-summary.json"
+with open(path, "r", encoding="utf-8") as fp:
+    data = json.load(fp)
+
+amd_failed = int(data.get("amd_failed_count", 0))
+amd_blocked = int(data.get("amd_blocked_count", 0))
+print(f"amd_failed_count={amd_failed} amd_blocked_count={amd_blocked}")
+if amd_failed != 0 or amd_blocked != 0:
+    sys.exit(1)
+PY
+          done
+          cargo test -p qemu-tests -- --ignored --nocapture suite_pending
 
       - name: Upload pending logs
         if: always()
@@ -120,5 +151,6 @@ jobs:
             target/qemu-logs/kernel-runtime-pending-summary.txt
             target/qemu-logs/kernel-runtime-pending-summary.json
             scripts/qemu_pending_cases.lst
+            scripts/qemu_iommu_residual_parity.lst
             scripts/qemu_legacy_test_allowlist.lst
           if-no-files-found: ignore

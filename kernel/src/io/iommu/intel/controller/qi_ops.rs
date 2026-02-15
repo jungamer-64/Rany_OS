@@ -97,6 +97,15 @@ pub trait InvalidationOps {
         size: u8,
     ) -> Result<(), IommuError>;
 
+    /// Submit a global PASID cache invalidation
+    fn qi_invalidate_pasid_cache_global(&self) -> Result<(), IommuError>;
+
+    /// Submit a domain PASID cache invalidation
+    fn qi_invalidate_pasid_cache_domain(&self, domain_id: u16) -> Result<(), IommuError>;
+
+    /// Submit a PASID-based IOTLB invalidation
+    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32, drain: bool) -> Result<(), IommuError>;
+
     /// Submit a wait descriptor and synchronize
     fn qi_wait_sync(&self) -> Result<(), IommuError>;
 
@@ -188,6 +197,24 @@ impl InvalidationOps for IommuController {
     ) -> Result<(), IommuError> {
         let entry =
             InvalidationQueueEntry::device_tlb_invalidate_page(source_id, domain_id, iova, size);
+        self.submit_invalidation(entry)
+    }
+
+    #[inline]
+    fn qi_invalidate_pasid_cache_global(&self) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::pasid_cache_invalidate_global();
+        self.submit_invalidation(entry)
+    }
+
+    #[inline]
+    fn qi_invalidate_pasid_cache_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::pasid_cache_invalidate_domain(domain_id);
+        self.submit_invalidation(entry)
+    }
+
+    #[inline]
+    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32, drain: bool) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::pasid_iotlb_invalidate(domain_id, pasid, drain);
         self.submit_invalidation(entry)
     }
 
@@ -330,6 +357,26 @@ impl IommuInvalidator for IommuController {
                         self.qi_invalidate_iec_global()?; // Fall back to global
                     }
                 }
+                InvalidateKind::PasidIotlb { pasid } => {
+                    // PASID-based IOTLB invalidation (Scalable Mode)
+                    if self.is_queued_invalidation_enabled() {
+                        self.qi_invalidate_pasid_iotlb(req.domain_id, pasid, drain)?;
+                    }
+                }
+                InvalidateKind::PasidCache { pasid } => {
+                    // PASID cache invalidation (Scalable Mode)
+                    if self.is_queued_invalidation_enabled() {
+                        match pasid {
+                            Some(_) => {
+                                // PASID-selective: fall back to domain for now
+                                self.qi_invalidate_pasid_cache_domain(req.domain_id)?;
+                            }
+                            None => {
+                                self.qi_invalidate_pasid_cache_domain(req.domain_id)?;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -388,6 +435,23 @@ impl IommuInvalidator for IommuController {
                     global: _,
                     index: _,
                 } => self.qi_invalidate_iec_global(),
+                InvalidateKind::PasidIotlb { pasid } => {
+                    if self.is_queued_invalidation_enabled() {
+                        self.qi_invalidate_pasid_iotlb(request.domain_id, pasid, drain)
+                    } else {
+                        Ok(())
+                    }
+                }
+                InvalidateKind::PasidCache { pasid } => {
+                    if self.is_queued_invalidation_enabled() {
+                        match pasid {
+                            Some(_) => self.qi_invalidate_pasid_cache_domain(request.domain_id),
+                            None => self.qi_invalidate_pasid_cache_domain(request.domain_id),
+                        }
+                    } else {
+                        Ok(())
+                    }
+                }
             };
 
             submit_result?;

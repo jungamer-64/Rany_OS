@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 const HEAP_SIZE: usize = 64 * 1024 * 1024;
 
-#[repr(align(16))]
+#[repr(align(4096))]
 struct Heap([u8; HEAP_SIZE]);
 
 static mut HEAP: Heap = Heap([0; HEAP_SIZE]);
@@ -31,16 +31,22 @@ unsafe impl GlobalAlloc for BumpAlloc {
         let base = unsafe { core::ptr::addr_of_mut!(HEAP.0) as usize };
         loop {
             let cur = NEXT.load(Ordering::Relaxed);
-            let aligned = (cur + align_mask) & !align_mask;
-            let end = aligned.saturating_add(size);
-            if end > HEAP_SIZE {
+            let cur_addr = base.saturating_add(cur);
+            let aligned_addr = (cur_addr + align_mask) & !align_mask;
+            let Some(end_addr) = aligned_addr.checked_add(size) else {
+                return core::ptr::null_mut();
+            };
+            let Some(end_off) = end_addr.checked_sub(base) else {
+                return core::ptr::null_mut();
+            };
+            if end_off > HEAP_SIZE {
                 return core::ptr::null_mut();
             }
             if NEXT
-                .compare_exchange(cur, end, Ordering::SeqCst, Ordering::SeqCst)
+                .compare_exchange(cur, end_off, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                return (base + aligned) as *mut u8;
+                return aligned_addr as *mut u8;
             }
         }
     }
@@ -91,6 +97,30 @@ fn run_suite() -> bool {
         && run_check("iommu_cmdqueue_exports", test_iommu_cmdqueue_exports)
         && run_check("iommu_wave2_core_exports", test_iommu_wave2_core_exports)
         && run_check("iommu_wave2_poison_exports", test_iommu_wave2_poison_exports)
+        && run_check(
+            "iommu_wave2_grouping_exports",
+            test_iommu_wave2_grouping_exports,
+        )
+        && run_check(
+            "iommu_wave2_ats_pri_exports",
+            test_iommu_wave2_ats_pri_exports,
+        )
+        && run_check(
+            "iommu_wave3_scalable_exports",
+            test_iommu_wave3_scalable_exports,
+        )
+        && run_check(
+            "iommu_wave3_pasid_exports",
+            test_iommu_wave3_pasid_exports,
+        )
+        && run_check(
+            "iommu_wave3_core_structures_exports",
+            test_iommu_wave3_core_structures_exports,
+        )
+        && run_check(
+            "iommu_wave2_residual_exports",
+            test_iommu_wave2_residual_exports,
+        )
         && run_check("kernel_integration_exports", test_kernel_integration_exports)
 }
 
@@ -316,6 +346,118 @@ fn test_iommu_wave2_poison_exports() -> bool {
     ) && run_check(
         "iommu_wave2_qi_wait_async_poisoned_returns_error_smoke",
         rany_os::qemu_tests::iommu_wave2_qi_wait_async_poisoned_returns_error_smoke,
+    )
+}
+
+fn test_iommu_wave2_grouping_exports() -> bool {
+    run_check(
+        "iommu_wave2_group_creation_basic_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_creation_basic_smoke,
+    ) && run_check(
+        "iommu_wave2_group_multifunction_same_group_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_multifunction_same_group_smoke,
+    ) && run_check(
+        "iommu_wave2_group_acs_isolated_separation_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_acs_isolated_separation_smoke,
+    ) && run_check(
+        "iommu_wave2_group_reuse_for_same_group_devices_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_reuse_for_same_group_devices_smoke,
+    ) && run_check(
+        "iommu_wave2_group_poisoned_lock_returns_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_poisoned_lock_returns_error_smoke,
+    ) && run_check(
+        "iommu_wave2_group_full_flow_discovery_to_attach_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_full_flow_discovery_to_attach_smoke,
+    ) && run_check(
+        "iommu_wave2_group_shared_domain_multi_device_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_shared_domain_multi_device_smoke,
+    ) && run_check(
+        "iommu_wave2_group_device_detach_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_device_detach_smoke,
+    ) && run_check(
+        "iommu_wave2_group_poisoned_device_to_group_returns_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_poisoned_device_to_group_returns_error_smoke,
+    )
+}
+
+fn test_iommu_wave2_ats_pri_exports() -> bool {
+    run_check(
+        "iommu_wave2_ats_enable_disable_lifecycle_smoke",
+        rany_os::qemu_tests::iommu_wave2_ats_enable_disable_lifecycle_smoke,
+    ) && run_check(
+        "iommu_wave2_ats_block_untrusted_smoke",
+        rany_os::qemu_tests::iommu_wave2_ats_block_untrusted_smoke,
+    ) && run_check(
+        "iommu_wave2_ats_detach_disables_ats_smoke",
+        rany_os::qemu_tests::iommu_wave2_ats_detach_disables_ats_smoke,
+    )
+}
+
+fn test_iommu_wave3_scalable_exports() -> bool {
+    // Wave3 scalable group:
+    // - PASID0 fault resolution is deterministic baseline.
+    // - detach/attach cycle checks are promoted from pending Phase B;
+    //   if flakiness is observed, demote these two checks back to pending monitoring.
+    run_check(
+        "iommu_wave3_scalable_mode_pasid0_fault_resolution_smoke",
+        rany_os::qemu_tests::iommu_wave3_scalable_mode_pasid0_fault_resolution_smoke,
+    ) && run_check(
+        "iommu_wave3_scalable_mode_detach_cleans_pasid_smoke",
+        rany_os::qemu_tests::iommu_wave3_scalable_mode_detach_cleans_pasid_smoke,
+    ) && run_check(
+        "iommu_wave3_scalable_mode_attach_detach_cycle_smoke",
+        rany_os::qemu_tests::iommu_wave3_scalable_mode_attach_detach_cycle_smoke,
+    )
+}
+
+fn test_iommu_wave3_pasid_exports() -> bool {
+    run_check(
+        "iommu_wave3_pasid_table_alloc_free_smoke",
+        rany_os::qemu_tests::iommu_wave3_pasid_table_alloc_free_smoke,
+    ) && run_check(
+        "iommu_wave3_pasid_table_multi_domain_smoke",
+        rany_os::qemu_tests::iommu_wave3_pasid_table_multi_domain_smoke,
+    ) && run_check(
+        "iommu_wave3_pasid_table_exhaustion_smoke",
+        rany_os::qemu_tests::iommu_wave3_pasid_table_exhaustion_smoke,
+    )
+}
+
+fn test_iommu_wave3_core_structures_exports() -> bool {
+    run_check(
+        "iommu_wave3_mapping_slab_insert_lookup_remove_smoke",
+        rany_os::qemu_tests::iommu_wave3_mapping_slab_insert_lookup_remove_smoke,
+    ) && run_check(
+        "iommu_wave3_mapping_slab_overlap_detection_smoke",
+        rany_os::qemu_tests::iommu_wave3_mapping_slab_overlap_detection_smoke,
+    ) && run_check(
+        "iommu_wave3_zombie_queue_basic_smoke",
+        rany_os::qemu_tests::iommu_wave3_zombie_queue_basic_smoke,
+    ) && run_check(
+        "iommu_wave3_zombie_queue_failed_cleanup_smoke",
+        rany_os::qemu_tests::iommu_wave3_zombie_queue_failed_cleanup_smoke,
+    ) && run_check(
+        "iommu_wave3_pri_fuel_processing_smoke",
+        rany_os::qemu_tests::iommu_wave3_pri_fuel_processing_smoke,
+    )
+}
+
+fn test_iommu_wave2_residual_exports() -> bool {
+    run_check(
+        "iommu_wave2_cmdqueue_map_unmap_with_domain_smoke",
+        rany_os::qemu_tests::iommu_wave2_cmdqueue_map_unmap_with_domain_smoke,
+    ) && run_check(
+        "iommu_wave2_cmdqueue_map_device_nonblocking_smoke",
+        rany_os::qemu_tests::iommu_wave2_cmdqueue_map_device_nonblocking_smoke,
+    ) && run_check(
+        "iommu_wave2_dma_mask_respects_32bit_limit_smoke",
+        rany_os::qemu_tests::iommu_wave2_dma_mask_respects_32bit_limit_smoke,
+    ) && run_check(
+        "iommu_wave2_controller_security_notifier_dispatch_smoke",
+        rany_os::qemu_tests::iommu_wave2_controller_security_notifier_dispatch_smoke,
+    ) && run_check(
+        "iommu_wave2_qi_metrics_pressure_smoke",
+        rany_os::qemu_tests::iommu_wave2_qi_metrics_pressure_smoke,
     )
 }
 

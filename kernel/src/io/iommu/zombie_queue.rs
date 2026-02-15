@@ -44,6 +44,7 @@
 //! periodically and on memory pressure to reclaim IOVAs.
 
 use core::cell::UnsafeCell;
+use core::alloc::Layout;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -721,6 +722,79 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
             }
         }
     })
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_smoke_queue_basic() -> bool {
+    let Some(queue) = qemu_alloc_queue_for_smoke() else {
+        return false;
+    };
+
+    if !queue.try_enqueue(0x1000, 4096, 1u16, 0, None) {
+        return false;
+    }
+
+    let stats = queue.stats();
+    if stats.total_enqueued != 1
+        || stats.total_processed != 0
+        || stats.total_drained != 0
+        || stats.total_dropped != 0
+    {
+        return false;
+    }
+
+    let mut processed_data: Option<ZombieData> = None;
+    let count = queue.process_pending(10, |data| {
+        processed_data = Some(data);
+        true
+    });
+    if count != 1 {
+        return false;
+    }
+    let Some(data) = processed_data else {
+        return false;
+    };
+    if data.iova != 0x1000 || data.size != 4096 || data.domain_id != 1 {
+        return false;
+    }
+
+    let stats = queue.stats();
+    stats.total_processed == 1 && stats.total_drained == 1 && queue.pending_estimate() == 0
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_smoke_failed_cleanup() -> bool {
+    let Some(queue) = qemu_alloc_queue_for_smoke() else {
+        return false;
+    };
+
+    if !queue.try_enqueue(0x1000, 4096, 1u16, 0, None) {
+        return false;
+    }
+    if !queue.try_enqueue(0x2000, 4096, 2u16, 0, None) {
+        return false;
+    }
+
+    let count = queue.process_pending(10, |_| false);
+    if count != 2 {
+        return false;
+    }
+
+    let stats = queue.stats();
+    stats.total_enqueued == 2
+        && stats.total_processed == 0
+        && stats.total_drained == 2
+        && queue.pending_estimate() == 0
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn qemu_alloc_queue_for_smoke() -> Option<alloc::boxed::Box<ZombieQueue>> {
+    let layout = Layout::new::<ZombieQueue>();
+    let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) } as *mut ZombieQueue;
+    if ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { alloc::boxed::Box::from_raw(ptr) })
 }
 
 #[cfg(test)]

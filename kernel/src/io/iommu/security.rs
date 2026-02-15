@@ -230,6 +230,8 @@ pub enum AtsChangeReason {
     AdminRequest,
     /// ATS state changed during live update/migration
     LiveUpdate,
+    /// ATS disabled because device was detached from IOMMU domain
+    DeviceDetach,
 }
 
 /// Reason for device isolation
@@ -778,6 +780,7 @@ fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
                 AtsChangeReason::FaultStorm => "FaultStorm",
                 AtsChangeReason::AdminRequest => "AdminRequest",
                 AtsChangeReason::LiveUpdate => "LiveUpdate",
+                AtsChangeReason::DeviceDetach => "DeviceDetach",
             };
             AuditEvent::new(AuditEventType::IommuEvent, 0)
                 .success(true)
@@ -1616,5 +1619,4 @@ pub(crate) fn notify_security_listener(event: SecurityEvent) {
         notifier.notify(event);
     }
 }
-
 

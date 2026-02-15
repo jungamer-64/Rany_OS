@@ -20,7 +20,6 @@ use crate::io::io_scheduler::{
     ModeThresholds, DeviceId as IoDeviceId,
 };
 
-use super::global::with_driver;
 use super::global;
 
 // ============================================================================

@@ -8,7 +8,7 @@
 #[cfg(not(test))]
 use super::api::is_iommu_enabled;
 #[cfg(not(test))]
-use super::groups::get_iommu_group_manager;
+use super::groups::{get_iommu_group_manager, RealPciTopology};
 #[cfg(not(test))]
 use super::registry::get_iommu_driver;
 #[cfg(not(test))]
@@ -51,11 +51,26 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         device.bdf.device(),
         device.bdf.function(),
     );
-    let _numa_hint = 0; // Use device's NUMA hint if available (not available in PciDeviceInfo yet)
 
     // 1. Determine IOMMU Group and get/create its domain
+    let topology = RealPciTopology::new(pcie_ext_manager);
+    let controller_idx = registry
+        .find_controller_index_for_device(
+            device_id.segment,
+            device_id.bus,
+            device_id.device,
+            device_id.function,
+        )
+        .unwrap_or(0);
+    let controller = registry.controllers.get(controller_idx)?;
+
     let (iommu_group, newly_created) =
-        match iommu_group_manager.find_or_create_group(device_id, registry, pcie_ext_manager) {
+        match iommu_group_manager.find_or_create_group(
+            device_id,
+            controller,
+            controller_idx,
+            &topology,
+        ) {
             Ok(group_info) => group_info,
             Err(e) => {
                 log::error!(
@@ -68,9 +83,6 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         };
 
     let domain_id = iommu_group.domain_id;
-    let controller_idx = iommu_group.controller_idx;
-
-    let controller = registry.controllers.get(controller_idx)?;
 
     // 2. Enable ATS for the device if supported and not already enabled by this IOMMU
     if (controller.ecap & ecap_bits::ECAP_DT) != 0
