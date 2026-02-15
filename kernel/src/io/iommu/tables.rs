@@ -355,14 +355,14 @@ impl Drop for PageTableScope {
 /// - Test: assume identity (pointer value is physical for unit tests)
 #[inline]
 pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "qemu-test-export")))]
     {
         crate::mm::virt_to_phys(crate::mm::VirtAddr::new(ptr as u64))
             .ok_or(IommuError::HardwareError)
             .map(|p| p.as_u64())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "qemu-test-export"))]
     {
         Ok(ptr as u64)
     }
@@ -371,12 +371,12 @@ pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
 /// Helper: convert a physical address (u64) to a virtual address usize.
 #[inline]
 pub fn phys_to_virt_usize(phys: u64) -> usize {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "qemu-test-export")))]
     {
         crate::mm::phys_to_virt(crate::mm::PhysAddr::new(phys)).as_u64() as usize
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "qemu-test-export"))]
     {
         phys as usize
     }

@@ -72,6 +72,9 @@ const BITS_PER_WORD: usize = 64;
 const PAGES_PER_2MB_BLOCK: usize = 512;
 
 /// Maximum CPUs supported
+#[cfg(feature = "qemu-test-export")]
+pub const MAX_CPUS: usize = 1;
+#[cfg(not(feature = "qemu-test-export"))]
 pub const MAX_CPUS: usize = crate::mm::MAX_CPUS;
 
 /// Magazine size classes

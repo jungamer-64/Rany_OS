@@ -37,6 +37,14 @@ pub enum InterruptSource {
     VirtioNet(u8), // queue index
     /// VirtIO ブロック
     VirtioBlk(u8), // queue index
+    /// VirtIO コンソール
+    VirtioConsole(u8), // queue index
+    /// VirtIO 入力
+    VirtioInput(u8), // queue index
+    /// VirtIO バルーン
+    VirtioBalloon(u8), // queue index
+    /// VirtIO GPU
+    VirtioGpu(u8), // queue index
     /// NVMe
     Nvme(u16), // queue ID
     /// 汎用IRQ
@@ -67,8 +75,12 @@ impl InterruptSource {
             InterruptSource::Serial => 3,
             InterruptSource::VirtioNet(idx) => 16 + (*idx as usize),
             InterruptSource::VirtioBlk(idx) => 16 + 32 + (*idx as usize),
-            InterruptSource::Nvme(id) => 16 + 32 + 32 + (*id as usize),
-            InterruptSource::Irq(irq) => 16 + 32 + 32 + 256 + (*irq as usize),
+            InterruptSource::VirtioConsole(idx) => 16 + 32 + 32 + (*idx as usize),
+            InterruptSource::VirtioInput(idx) => 16 + 32 + 32 + 16 + (*idx as usize),
+            InterruptSource::VirtioBalloon(idx) => 16 + 32 + 32 + 16 + 16 + (*idx as usize),
+            InterruptSource::VirtioGpu(idx) => 16 + 32 + 32 + 16 + 16 + 16 + (*idx as usize),
+            InterruptSource::Nvme(id) => 16 + 32 + 32 + 16 + 16 + 16 + 16 + (*id as usize),
+            InterruptSource::Irq(irq) => 16 + 32 + 32 + 16 + 16 + 16 + 16 + 256 + (*irq as usize),
         }
     }
 }

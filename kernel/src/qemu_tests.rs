@@ -526,3 +526,142 @@ pub fn iommu_cmdqueue_fuel_shim_basic_smoke() -> bool {
 pub fn iommu_cmdqueue_metrics_counts_smoke() -> bool {
     crate::io::iommu::qemu_tests::cmdqueue_metrics_counts_smoke()
 }
+
+pub fn iommu_wave2_device_id_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_device_id_smoke()
+}
+
+pub fn iommu_wave2_sl_pte_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_sl_pte_smoke()
+}
+
+pub fn iommu_wave2_iommu_domain_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_iommu_domain_smoke()
+}
+
+pub fn iommu_wave2_map_rollback_hidden_mapping_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_rollback_hidden_mapping_smoke()
+}
+
+pub fn iommu_wave2_map_rollback_hidden_mapping_amd_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_rollback_hidden_mapping_amd_smoke()
+}
+
+pub fn iommu_wave2_map_rollback_superpage_2mb_collision_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_rollback_superpage_2mb_collision_smoke()
+}
+
+pub fn iommu_wave2_create_domain_with_numa_hint_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_create_domain_with_numa_hint_smoke()
+}
+
+pub fn iommu_wave2_iova_allocator_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_iova_allocator_basic_smoke()
+}
+
+pub fn iommu_wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_for_dma_alloc_non_identity_smoke()
+}
+
+pub fn iommu_wave2_unmap_reclaims_empty_tables_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_unmap_reclaims_empty_tables_smoke()
+}
+
+pub fn iommu_wave2_unmap_partial_keeps_tables_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_unmap_partial_keeps_tables_smoke()
+}
+
+pub fn iommu_wave2_unmap_mixed_superpages_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_unmap_mixed_superpages_smoke()
+}
+
+pub fn iommu_wave2_page_table_scope_commit_preserves_counts_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_page_table_scope_commit_preserves_counts_smoke()
+}
+
+pub fn iommu_wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_page_table_scope_drop_rolls_back_parent_smoke()
+}
+
+pub fn iommu_wave2_security_notifier_registration_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_security_notifier_registration_smoke()
+}
+
+pub fn iommu_wave2_security_event_types_are_copy_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_security_event_types_are_copy_smoke()
+}
+
+pub fn iommu_wave2_fault_summary_from_fault_record_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_fault_summary_from_fault_record_smoke()
+}
+
+pub fn iommu_wave2_isolation_decision_default_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_isolation_decision_default_smoke()
+}
+
+pub fn iommu_wave2_identity_mapping_disabled_by_default_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_identity_mapping_disabled_by_default_smoke()
+}
+
+pub fn iommu_wave2_iova_not_equal_phys_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_iova_not_equal_phys_smoke()
+}
+
+pub fn iommu_wave2_domain_type_not_passthrough_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_domain_type_not_passthrough_smoke()
+}
+
+pub fn iommu_wave2_mapping_iova_phys_distinct_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_mapping_iova_phys_distinct_smoke()
+}
+
+pub fn iommu_wave2_process_page_requests_poisoned_returns_empty_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_process_page_requests_poisoned_returns_empty_smoke()
+}
+
+pub fn iommu_wave2_create_domain_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_create_domain_poisoned_returns_hw_error_smoke()
+}
+
+pub fn iommu_wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke(
+    )
+}
+
+pub fn iommu_wave2_domain_map_poisoned_returns_none_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_domain_map_poisoned_returns_none_smoke()
+}
+
+pub fn iommu_wave2_get_domain_for_device_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_get_domain_for_device_poisoned_returns_hw_error_smoke()
+}
+
+pub fn iommu_wave2_set_domain_numa_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_set_domain_numa_poisoned_returns_hw_error_smoke()
+}
+
+pub fn iommu_wave2_init_iova_poisoned_proceeds_with_best_effort_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_init_iova_poisoned_proceeds_with_best_effort_smoke()
+}
+
+pub fn iommu_wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke(
+    )
+}
+
+pub fn iommu_wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke(
+    )
+}
+
+pub fn iommu_wave2_submit_invalidation_poisoned_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_submit_invalidation_poisoned_returns_error_smoke()
+}
+
+pub fn iommu_wave2_qi_wait_sync_poisoned_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_qi_wait_sync_poisoned_returns_error_smoke()
+}
+
+pub fn iommu_wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_qi_wait_async_poisoned_returns_error_smoke()
+}

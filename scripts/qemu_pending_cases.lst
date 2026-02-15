@@ -8,6 +8,10 @@ kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snaps
 kernel/tests/* migration to qemu-suites/kernel (current snapshot: 0 files, 0 #[test_case])
 kernel runtime pending suite execution for full-runtime cases (net_bridge/framebuffer) and blocked-state monitoring
 IOMMU cmdqueue std-gated tests remain pending until no_std-compatible export path is added
-IOMMU orphan test bundle `kernel/src/io/iommu/tests.rs` requires qemu-test-export wiring (wave2)
-qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue smoke checks to broader migrated kernel test groups
+IOMMU residual pending: test_cmdqueue_map_unmap_with_domain (std::thread dependency)
+IOMMU residual pending: test_map_for_device_async_and_unmap (std::thread dependency)
+IOMMU residual pending: test_map_for_device_respects_dma_mask (global registry/driver singleton dependency)
+IOMMU residual pending: test_api_security_notifier_registration (global registry/driver singleton dependency)
+IOMMU residual pending: test_qi_metrics_pressure (queue pressure/timeout time-dependency)
+qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison) smoke checks to broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

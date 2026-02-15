@@ -236,11 +236,13 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 ```
 
 `cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の required suites をQEMU上で実行します。`pending` / `kernel_runtime_pending` は `--ignored` 指定時のみ実行される非必須スイートです。
+`suite_kernel` では IOMMU wave2 の deterministic ケース（core + poison/QI）を required で実行し、`std`/global-singleton/time-pressure 依存ケースは pending で監視します。
 
 `pending` 運用:
 - 監視項目の管理: `scripts/qemu_pending_cases.lst`
 - 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
 - runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`
+- IOMMU residual pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
 - `#[test]` 例外の技術的ガード: `scripts/qemu_legacy_test_allowlist.lst`（pending監視とは別用途）
 
 ## **📄 ライセンス**
