@@ -11,8 +11,10 @@ use hashbrown::HashMap;
 use x86_64::PhysAddr;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
+use crate::io::iommu::cmdqueue::{CommandQueue, IommuCommandKind};
 use crate::io::iommu::domain::IommuDomain as DomainState;
 use crate::io::iommu::page_table_pool::PageTablePool;
+use crate::io::iommu::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::{IovaAllocatorFast, PAGE_SIZE_4K};
 use crate::sync::PoisonLock;
@@ -30,6 +32,7 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         iommu_info: 0,
         iommu_feature: 0,
         device_entries: entries,
+        max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
     };
 
     AmdIommuDriver {
@@ -49,6 +52,7 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         ),
         enabled: AtomicBool::new(false),
         security_notifier: spin::Once::new(),
+        max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
     }
 }
 
@@ -248,4 +252,230 @@ fn test_map_for_device_rejects_exclusion_range() {
     let result =
         unsafe { driver.map_for_device(&device, PhysAddr::new(0x2000), 0x1000) };
     assert_eq!(result, Err(IommuError::InvalidAddress));
+}
+
+// ---------------------------------------------------------------------------
+// Wave1 test support
+// ---------------------------------------------------------------------------
+
+struct TestMockNotifier;
+
+impl SecurityNotifier for TestMockNotifier {
+    fn notify(&self, _event: crate::io::iommu::security::SecurityEvent) {}
+}
+
+fn make_test_driver_small() -> AmdIommuDriver {
+    let unit = AmdIommuUnit {
+        segment: 0,
+        base_addr: 0,
+        flags: 0,
+        device_id: 0,
+        iommu_info: 0,
+        iommu_feature: 0,
+        device_entries: alloc::vec![IvhdDeviceEntry::All { flags: 0 }],
+        max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
+    };
+
+    let page_table_pool = PageTablePool::new(1, 1);
+    let iova_allocator = IovaAllocatorFast::new(
+        PAGE_SIZE_4K as u64,
+        (1u64 << 20) - PAGE_SIZE_4K as u64,
+    );
+
+    let default_domain = DomainState::new(
+        0,
+        None,
+        false,
+        false,
+        AMD_DEFAULT_MAX_ADDR_BITS,
+        IommuDomainType::Translated,
+        page_table_pool.clone(),
+        PteFormat::Amd,
+    );
+    let default_domain = alloc::sync::Arc::new(default_domain);
+    let mut domain_map = HashMap::new();
+    domain_map.insert(0, AmdDomainInfo { domain: default_domain });
+
+    AmdIommuDriver {
+        units: alloc::vec![unit],
+        ivmd_ranges: Vec::new(),
+        cmd_states: Vec::new(),
+        event_logs: Vec::new(),
+        device_tables: HashMap::new(),
+        domains: PoisonLock::new(domain_map),
+        device_domains: PoisonLock::new(HashMap::new()),
+        next_domain_id: AtomicU64::new(1),
+        page_table_pool,
+        command_queue: None,
+        iova_allocator,
+        enabled: AtomicBool::new(false),
+        security_notifier: spin::Once::new(),
+        max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wave1 #[test_case] tests
+// ---------------------------------------------------------------------------
+
+#[test_case]
+fn test_cmdqueue_map_unmap_with_domain() {
+    let driver = make_test_driver_small();
+
+    let domain_id = driver.create_domain(None, IommuDomainType::Translated).unwrap();
+    let device = DeviceId::new(0, 1, 0, 0);
+    {
+        let mut dd = match driver.device_domains.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        dd.insert(device, domain_id);
+    }
+
+    let cq = alloc::boxed::Box::leak(alloc::boxed::Box::new(CommandQueue::new()));
+
+    let iova = 0x1000u64;
+    let phys = 0x10000u64;
+    let size = 0x1000u64;
+
+    let comp = cq
+        .submit(IommuCommandKind::MapRegionDevice {
+            device,
+            iova,
+            phys,
+            size,
+            read: true,
+            write: true,
+        })
+        .expect("submit map");
+
+    let processed = cq.process_once(|kind| match kind {
+        IommuCommandKind::MapRegionDevice {
+            device: d,
+            iova: i,
+            phys: p,
+            size: s,
+            read: r,
+            write: w,
+        } => {
+            let did = driver.domain_id_for_device(*d).map_err(|_| ())?;
+            let domain = driver.domain_for_id(did).map_err(|_| ())?;
+            domain.map(*i, *p, *s, *r, *w).map_err(|_| ())?;
+            Ok(0)
+        }
+        _ => Err(()),
+    });
+    assert_eq!(processed, 1);
+    assert_eq!(comp.wait_blocking(), 0);
+
+    let domain = driver.domain_for_id(domain_id).unwrap();
+    assert!(domain.mapping(iova).is_some());
+
+    let comp2 = cq
+        .submit(IommuCommandKind::UnmapRegionDevice {
+            device,
+            iova,
+            size,
+        })
+        .expect("submit unmap");
+
+    let processed2 = cq.process_once(|kind| match kind {
+        IommuCommandKind::UnmapRegionDevice {
+            device: d,
+            iova: i,
+            ..
+        } => {
+            let did = driver.domain_id_for_device(*d).map_err(|_| ())?;
+            let domain = driver.domain_for_id(did).map_err(|_| ())?;
+            domain.unmap(*i).map(|_| 0).map_err(|_| ())
+        }
+        _ => Err(()),
+    });
+    assert_eq!(processed2, 1);
+    assert_eq!(comp2.wait_blocking(), 0);
+    assert!(domain.mapping(iova).is_none());
+}
+
+#[test_case]
+fn test_map_device_nonblocking() {
+    let driver = make_test_driver_small();
+
+    let domain_id = driver.create_domain(None, IommuDomainType::Translated).unwrap();
+    let device = DeviceId::new(0, 1, 0, 0);
+    {
+        let mut dd = match driver.device_domains.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        dd.insert(device, domain_id);
+    }
+
+    let size = PAGE_SIZE_4K as u64;
+    let iova = driver.allocate_iova_fast(size, None).unwrap();
+    let domain = driver.domain_for_id(domain_id).unwrap();
+
+    domain.map(iova, 0x10000, size, true, true).unwrap();
+    assert!(domain.mapping(iova).is_some());
+
+    domain.unmap(iova).unwrap();
+    driver.free_iova_fast(iova, size).unwrap();
+    assert!(domain.mapping(iova).is_none());
+}
+
+#[test_case]
+fn test_dma_mask_respects_32bit_limit() {
+    let driver = make_test_driver_small();
+
+    let size = PAGE_SIZE_4K as u64;
+    let mask = 0xFFFF_FFFFu64;
+
+    let iova = driver.allocate_iova(size, Some(mask)).unwrap();
+    assert!(iova < 0x1_0000_0000, "IOVA {:#x} exceeds 32-bit mask", iova);
+    driver.free_iova(iova, size).unwrap();
+}
+
+#[test_case]
+fn test_security_notifier_dispatch() {
+    let driver = make_test_driver_small();
+    let notifier: alloc::sync::Arc<dyn SecurityNotifier> =
+        alloc::sync::Arc::new(TestMockNotifier);
+
+    assert!(driver.set_security_notifier(alloc::sync::Arc::clone(&notifier)));
+    assert!(!driver.set_security_notifier(alloc::sync::Arc::clone(&notifier)));
+
+    // Domain created after notifier was set should succeed
+    let _domain_id = driver.create_domain(None, IommuDomainType::Translated).unwrap();
+}
+
+#[test_case]
+fn test_cmdqueue_pressure() {
+    let cq = alloc::boxed::Box::leak(alloc::boxed::Box::new(CommandQueue::new()));
+    let count = 32usize;
+    let device = DeviceId::new(0, 1, 0, 0);
+    let mut completions = Vec::new();
+
+    for i in 0..count {
+        let cmd = IommuCommandKind::MapRegionDevice {
+            device,
+            iova: (i as u64 + 1) * 0x1000,
+            phys: (i as u64 + 1) * 0x1000,
+            size: 0x1000,
+            read: true,
+            write: true,
+        };
+        completions.push(cq.submit(cmd).expect("submit"));
+    }
+
+    let mut total_processed = 0;
+    loop {
+        let n = cq.process_once(|_| Ok(0));
+        total_processed += n;
+        if n == 0 {
+            break;
+        }
+    }
+
+    assert_eq!(total_processed, count);
+    drop(completions);
+    assert_eq!(cq.processed_total(), count);
 }

@@ -69,7 +69,39 @@ pub(crate) const AMD_FAULT_QUEUE_SIZE: usize = 128;
 pub(crate) const AMD_FAULT_LOG_RATE_LIMIT: usize = 128;
 // Use a fixed IOMMU fault vector number to avoid depending on `interrupts` during lib builds
 pub(crate) const AMD_IOMMU_FAULT_VECTOR: u8 = 0x50u8;
-pub(crate) const AMD_DEFAULT_MAX_ADDR_BITS: u8 = 48; // TODO: derive from AMD-Vi capability registers.
+pub(crate) const AMD_DEFAULT_MAX_ADDR_BITS: u8 = 48; // Fallback when EFR is unavailable.
+
+// Extended Feature Register (EFR) — MMIO offset 0x30
+pub(crate) const MMIO_EXT_FEATURE_OFFSET: u64 = 0x0030;
+pub(crate) const EFR_HATS_SHIFT: u32 = 10;
+pub(crate) const EFR_HATS_MASK: u64 = 0x03; // bits [11:10] — Host Address Translation Size
+
+/// Read the supported address width from the IOMMU Extended Feature Register.
+///
+/// HATS encoding (AMD-Vi spec Table 14):
+///  - 0b00 = 4-level page table (48-bit)
+///  - 0b01 = 5-level page table (57-bit)
+///  - 0b10, 0b11 = reserved
+///
+/// Falls back to `AMD_DEFAULT_MAX_ADDR_BITS` on unknown values.
+#[cfg(not(test))]
+pub(super) fn read_max_addr_bits(mmio_base: usize) -> u8 {
+    let efr = crate::io::mmio::mmio_read_u64(mmio_base + MMIO_EXT_FEATURE_OFFSET as usize);
+    let hats = (efr >> EFR_HATS_SHIFT) & EFR_HATS_MASK;
+    match hats {
+        0b00 => 48,
+        0b01 => 57,
+        _ => {
+            log::warn!(
+                "AMD-Vi: Unknown HATS value {} in EFR {:#x}, defaulting to {} bits",
+                hats,
+                efr,
+                AMD_DEFAULT_MAX_ADDR_BITS
+            );
+            AMD_DEFAULT_MAX_ADDR_BITS
+        }
+    }
+}
 
 // IVHD device entry flags
 pub(crate) const IVHD_INIT_PASS: u8 = 1 << 0;

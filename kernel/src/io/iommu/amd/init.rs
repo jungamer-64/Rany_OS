@@ -249,6 +249,11 @@ pub unsafe fn init_iommu_from_ivrs(
 
     let mut units = Vec::new();
     for ivhd in ivrs_info.ivhds {
+        let max_addr_bits = {
+            let mmio_base = phys_to_virt_usize(ivhd.iommu_base);
+            super::registers::read_max_addr_bits(mmio_base)
+        };
+
         units.push(AmdIommuUnit {
             segment: ivhd.pci_segment,
             base_addr: ivhd.iommu_base,
@@ -257,6 +262,7 @@ pub unsafe fn init_iommu_from_ivrs(
             iommu_info: ivhd.iommu_info,
             iommu_feature: ivhd.iommu_feature,
             device_entries: ivhd.device_entries,
+            max_addr_bits,
         });
     }
 

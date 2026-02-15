@@ -801,3 +801,23 @@ pub fn iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke() -> bool {
 pub fn iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke() -> bool {
     crate::io::iommu::qemu_tests::amd_wave0_map_for_device_rejects_exclusion_range_smoke()
 }
+
+pub fn iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_cmdqueue_map_unmap_with_domain_smoke()
+}
+
+pub fn iommu_amd_wave1_map_device_nonblocking_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_map_device_nonblocking_smoke()
+}
+
+pub fn iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_dma_mask_respects_32bit_limit_smoke()
+}
+
+pub fn iommu_amd_wave1_security_notifier_dispatch_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_security_notifier_dispatch_smoke()
+}
+
+pub fn iommu_amd_wave1_cmdqueue_pressure_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_cmdqueue_pressure_smoke()
+}

@@ -395,16 +395,20 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - `pending` 監視項目は `scripts/qemu_pending_cases.lst` で管理する。
 - IOMMU residual の canonical->required smoke parity は `scripts/qemu_iommu_residual_parity.lst` で管理する。
 - parity の整合チェックは `bash scripts/verify_iommu_residual_parity.sh` で実行する。
+- AMD Wave4 required 配線の整合チェックは `bash scripts/verify_iommu_amd_wave4_required.sh` で実行する。
+- AMD Wave5 runtime pending 配線の整合チェックは `bash scripts/verify_iommu_amd_wave5_runtime_pending.sh` で実行する。
 - `suite_pending` 実行時に `target/qemu-logs/pending-summary.txt` と `target/qemu-logs/pending-summary.json` が生成される。
 - `suite_kernel_runtime_pending` 実行時に `target/qemu-logs/kernel-runtime-pending-summary.txt` と `target/qemu-logs/kernel-runtime-pending-summary.json` が生成される。
-- `kernel-runtime-pending-summary` には `amd_passed_count`, `amd_failed_count`, `amd_blocked_count` が含まれる。
-- `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri + residual）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）を実行する。
+- `kernel-runtime-pending-summary` には `amd_passed_count`, `amd_failed_count`, `amd_blocked_count`, `amd_expected_count`, `amd_observed_count`, `amd_execution_guard_passed` が含まれる。
+- runtime pending の分離カウント仕様: `passed/failed/blocked` は runtime依存2件専用、`amd_*` は AMD Wave1 5件専用。
+- CI pending ジョブは `suite_kernel_runtime_pending` を3連続実行し、毎回 `amd_failed_count=0` / `amd_blocked_count=0` / `amd_observed_count=amd_expected_count=5` を監視（non-blocking）。
+- `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri + residual）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）に加えて wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）を実行する。
 - IOMMU residual は二層管理（required no_std smoke + pending canonical 名監視）で運用する。
 - IOMMU residual canonical pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
 - IOMMU wave3 pending monitored smoke（required 未投入）: `none`
-- AMD-Vi Wave0 runtime pending 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
+- AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
+- AMD-Vi Wave1 runtime pending 実行監視対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
-- AMD昇格ルール: pending CIで AMD Wave0 が3連続PASS（`amd_failed_count=0` かつ `amd_blocked_count=0`）なら次段で required 移管提案。
 - `scripts/qemu_legacy_test_allowlist.lst` は `#[test]` 例外検出の実装ガード専用。
 - `scripts/qemu_pending_cases.lst` は移行監視の運用可視化リスト専用。
 - `scripts/qemu_iommu_residual_parity.lst` は residual canonical↔required smoke 対応表専用。
