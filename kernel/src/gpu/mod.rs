@@ -1,39 +1,225 @@
 //! VirtIO GPU ドライバ
 //!
-//! VirtIO GPUデバイスのサポート
-//! - 2D/3D レンダリング
-//! - ディスプレイ管理
-//! - カーソル制御
-//! - スキャンアウト
+//! VirtIO GPUデバイスのサポート (VirtIO Spec 5.7)
+//! - 2D レンダリング (ResourceCreate2D, TransferToHost2D, Flush)
+//! - ディスプレイ管理 (GetDisplayInfo, SetScanout)
+//! - カーソル制御 (UpdateCursor, MoveCursor)
+//! - VirtioTransport抽象化によるMMIO/PCI両対応
 
 #![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
+
+use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+
+pub mod gpu_driver;
 
 // =============================================================================
 // 定数
 // =============================================================================
 
 /// VirtIO GPU フィーチャービット
-const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0; // Virgl 3Dサポート
-const VIRTIO_GPU_F_EDID: u64 = 1 << 1; // EDID取得サポート
-const VIRTIO_GPU_F_RESOURCE_UUID: u64 = 1 << 2; // リソースUUID
-const VIRTIO_GPU_F_RESOURCE_BLOB: u64 = 1 << 3; // BLOBリソース
+const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0;
+const VIRTIO_GPU_F_EDID: u64 = 1 << 1;
+const VIRTIO_GPU_F_RESOURCE_UUID: u64 = 1 << 2;
+const VIRTIO_GPU_F_RESOURCE_BLOB: u64 = 1 << 3;
 
 /// キューインデックス
 const VIRTQUEUE_CTRL: u16 = 0;
 const VIRTQUEUE_CURSOR: u16 = 1;
 
-/// キューサイズ
-const QUEUE_SIZE: u16 = 64;
-
 /// 最大スキャンアウト数
 const MAX_SCANOUTS: usize = 16;
+
+/// VirtQueue最大サイズ
+const VIRTQUEUE_MAX_SIZE: u16 = 256;
+
+// =============================================================================
+// VirtIO Device Status Bits
+// =============================================================================
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VirtioDeviceStatus {
+    Acknowledge = 1,
+    Driver = 2,
+    DriverOk = 4,
+    FeaturesOk = 8,
+    DeviceNeedsReset = 64,
+    Failed = 128,
+}
+
+// =============================================================================
+// VirtQueue Implementation (local, same pattern as balloon.rs)
+// =============================================================================
+
+mod vring_flags {
+    pub const VRING_DESC_F_NEXT: u16 = 1;
+    pub const VRING_DESC_F_WRITE: u16 = 2;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct VringDesc {
+    addr: u64,
+    len: u32,
+    flags: u16,
+    next: u16,
+}
+
+#[repr(C)]
+struct VringAvail {
+    flags: u16,
+    idx: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct VringUsedElem {
+    id: u32,
+    len: u32,
+}
+
+#[repr(C)]
+struct VringUsed {
+    flags: u16,
+    idx: u16,
+}
+
+struct VirtQueue {
+    queue_size: u16,
+    desc_table: *mut VringDesc,
+    avail_ring: *mut VringAvail,
+    used_ring: *mut VringUsed,
+    free_bitmap: AtomicU64,
+    last_used_idx: AtomicU32,
+    dma_buffer: Option<CoherentDmaBuffer>,
+    index: u16,
+    notify_addr: Option<u64>,
+    notify_is_32bit: bool,
+}
+
+unsafe impl Send for VirtQueue {}
+unsafe impl Sync for VirtQueue {}
+
+impl VirtQueue {
+    unsafe fn new(
+        queue_size: u16,
+        desc_table: *mut VringDesc,
+        avail_ring: *mut VringAvail,
+        used_ring: *mut VringUsed,
+        dma_buffer: Option<CoherentDmaBuffer>,
+        index: u16,
+        notify_addr: Option<u64>,
+        notify_is_32bit: bool,
+    ) -> Self {
+        for i in 0..queue_size {
+            unsafe {
+                (*desc_table.add(i as usize)) = VringDesc::default();
+            }
+        }
+        unsafe {
+            (*avail_ring).flags = 0;
+            (*avail_ring).idx = 0;
+            (*used_ring).flags = 0;
+            (*used_ring).idx = 0;
+        }
+
+        Self {
+            queue_size,
+            desc_table,
+            avail_ring,
+            used_ring,
+            free_bitmap: AtomicU64::new((1u64 << queue_size.min(64)) - 1),
+            last_used_idx: AtomicU32::new(0),
+            dma_buffer,
+            index,
+            notify_addr,
+            notify_is_32bit,
+        }
+    }
+
+    fn alloc_desc(&self) -> Option<u16> {
+        loop {
+            let bitmap = self.free_bitmap.load(Ordering::Acquire);
+            if bitmap == 0 {
+                return None;
+            }
+            let idx = bitmap.trailing_zeros() as u16;
+            let new_bitmap = bitmap & !(1u64 << idx);
+            if self
+                .free_bitmap
+                .compare_exchange(bitmap, new_bitmap, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Some(idx);
+            }
+        }
+    }
+
+    fn free_desc(&self, idx: u16) {
+        loop {
+            let bitmap = self.free_bitmap.load(Ordering::Acquire);
+            let new_bitmap = bitmap | (1u64 << idx);
+            if self
+                .free_bitmap
+                .compare_exchange(bitmap, new_bitmap, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
+
+    unsafe fn submit(&self, head: u16) -> u16 {
+        core::sync::atomic::fence(Ordering::Release);
+        let avail_idx = unsafe { (*self.avail_ring).idx };
+        let ring_ptr = unsafe { (self.avail_ring as *mut u16).add(2) };
+        unsafe {
+            *ring_ptr.add((avail_idx % self.queue_size) as usize) = head;
+        }
+        core::sync::atomic::fence(Ordering::Release);
+        unsafe {
+            (*self.avail_ring).idx = avail_idx.wrapping_add(1);
+        }
+        self.index
+    }
+
+    fn notify(&self) {
+        let Some(addr) = self.notify_addr else {
+            return;
+        };
+        if self.notify_is_32bit {
+            crate::io::mmio::mmio_write_u32(addr as usize, self.index as u32);
+        } else {
+            crate::io::mmio::mmio_write_u16(addr as usize, self.index);
+        }
+    }
+
+    fn poll_completions(&self) -> Option<(u16, u32)> {
+        let last_used = self.last_used_idx.load(Ordering::Acquire);
+        core::sync::atomic::fence(Ordering::Acquire);
+        let used_idx = unsafe { (*self.used_ring).idx } as u32;
+        if last_used == used_idx {
+            return None;
+        }
+        let ring_ptr = unsafe { (self.used_ring as *const u8).add(4) as *const VringUsedElem };
+        let elem = unsafe { *ring_ptr.add((last_used % self.queue_size as u32) as usize) };
+        self.last_used_idx
+            .store(last_used.wrapping_add(1), Ordering::Release);
+        Some((elem.id as u16, elem.len))
+    }
+}
 
 // =============================================================================
 // エラー
@@ -41,21 +227,13 @@ const MAX_SCANOUTS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuError {
-    /// デバイスが見つからない
     DeviceNotFound,
-    /// 初期化失敗
     InitFailed,
-    /// リソースが見つからない
     ResourceNotFound,
-    /// 無効なパラメータ
     InvalidParameter,
-    /// メモリ不足
     OutOfMemory,
-    /// デバイスエラー
     DeviceError,
-    /// タイムアウト
     Timeout,
-    /// サポートされていない
     NotSupported,
 }
 
@@ -65,11 +243,9 @@ pub type GpuResult<T> = Result<T, GpuError>;
 // GPU コマンド
 // =============================================================================
 
-/// コマンドタイプ
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuCmd {
-    // 2D コマンド
     GetDisplayInfo = 0x0100,
     ResourceCreate2D = 0x0101,
     ResourceUnref = 0x0102,
@@ -81,12 +257,8 @@ pub enum GpuCmd {
     GetCapsetInfo = 0x0108,
     GetCapset = 0x0109,
     GetEdid = 0x010A,
-
-    // カーソル コマンド
     UpdateCursor = 0x0300,
     MoveCursor = 0x0301,
-
-    // 3D コマンド (Virgl)
     CtxCreate = 0x0200,
     CtxDestroy = 0x0201,
     CtxAttachResource = 0x0202,
@@ -95,8 +267,6 @@ pub enum GpuCmd {
     TransferToHost3D = 0x0205,
     TransferFromHost3D = 0x0206,
     Submit3D = 0x0207,
-
-    // レスポンス
     RespOkNoData = 0x1100,
     RespOkDisplayInfo = 0x1101,
     RespOkCapsetInfo = 0x1102,
@@ -110,9 +280,8 @@ pub enum GpuCmd {
     RespErrInvalidParameter = 0x1205,
 }
 
-/// コントロールヘッダ
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct GpuCtrlHdr {
     pub cmd_type: u32,
     pub flags: u32,
@@ -143,7 +312,6 @@ impl GpuCtrlHdr {
 // ディスプレイ情報
 // =============================================================================
 
-/// 長方形
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rect {
@@ -155,25 +323,18 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
+        Self { x, y, width, height }
     }
 }
 
-/// ディスプレイモード
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DisplayMode {
     pub rect: Rect,
     pub enabled: u32,
     pub flags: u32,
 }
 
-/// ディスプレイ情報レスポンス
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct DisplayInfo {
@@ -184,7 +345,6 @@ pub struct DisplayInfo {
 // リソース
 // =============================================================================
 
-/// ピクセルフォーマット
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -198,7 +358,6 @@ pub enum PixelFormat {
     R8G8B8X8Unorm = 134,
 }
 
-/// 2Dリソース作成リクエスト
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ResourceCreate2D {
@@ -209,7 +368,6 @@ pub struct ResourceCreate2D {
     pub height: u32,
 }
 
-/// バッキングメモリエントリ
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MemEntry {
@@ -218,7 +376,6 @@ pub struct MemEntry {
     pub _padding: u32,
 }
 
-/// バッキングアタッチリクエスト
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ResourceAttachBacking {
@@ -227,7 +384,6 @@ pub struct ResourceAttachBacking {
     pub nr_entries: u32,
 }
 
-/// 2D転送リクエスト
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TransferToHost2D {
@@ -238,7 +394,6 @@ pub struct TransferToHost2D {
     pub _padding: u32,
 }
 
-/// スキャンアウト設定リクエスト
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SetScanout {
@@ -248,7 +403,6 @@ pub struct SetScanout {
     pub resource_id: u32,
 }
 
-/// リソースフラッシュリクエスト
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ResourceFlush {
@@ -258,11 +412,18 @@ pub struct ResourceFlush {
     pub _padding: u32,
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ResourceUnref {
+    pub hdr: GpuCtrlHdr,
+    pub resource_id: u32,
+    pub _padding: u32,
+}
+
 // =============================================================================
 // カーソル
 // =============================================================================
 
-/// カーソル位置
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CursorPos {
@@ -272,7 +433,6 @@ pub struct CursorPos {
     pub _padding: u32,
 }
 
-/// カーソル更新リクエスト
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UpdateCursor {
@@ -285,60 +445,58 @@ pub struct UpdateCursor {
 }
 
 // =============================================================================
-// フレームバッファ
+// フレームバッファ (DMA-backed)
 // =============================================================================
 
-/// フレームバッファ
 pub struct Framebuffer {
     pub resource_id: u32,
     pub width: u32,
     pub height: u32,
     pub format: PixelFormat,
-    pub buffer: Vec<u8>,
+    buffer: CoherentDmaBuffer,
     pub stride: u32,
 }
 
 impl Framebuffer {
-    pub fn new(resource_id: u32, width: u32, height: u32, format: PixelFormat) -> Self {
-        let bpp = 4; // 32ビット
+    pub fn new(resource_id: u32, width: u32, height: u32, format: PixelFormat) -> Option<Self> {
+        let bpp = 4u32;
         let stride = width * bpp;
         let size = (stride * height) as usize;
 
-        Self {
+        let buffer = CoherentDmaBuffer::new(size, DmaMemoryAttributes::MMIO)?;
+
+        Some(Self {
             resource_id,
             width,
             height,
             format,
-            buffer: vec![0u8; size],
+            buffer,
             stride,
-        }
+        })
     }
 
-    /// ピクセルを設定
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
         if x >= self.width || y >= self.height {
             return;
         }
-
         let offset = ((y * self.stride) + (x * 4)) as usize;
-        if offset + 4 <= self.buffer.len() {
-            self.buffer[offset..offset + 4].copy_from_slice(&color.to_le_bytes());
+        let buf = unsafe { self.buffer.as_mut_slice() };
+        if offset + 4 <= buf.len() {
+            buf[offset..offset + 4].copy_from_slice(&color.to_le_bytes());
         }
     }
 
-    /// 領域をクリア
     pub fn clear(&mut self, color: u32) {
         let bytes = color.to_le_bytes();
-        for chunk in self.buffer.chunks_exact_mut(4) {
+        let buf = unsafe { self.buffer.as_mut_slice() };
+        for chunk in buf.chunks_exact_mut(4) {
             chunk.copy_from_slice(&bytes);
         }
     }
 
-    /// 長方形を描画
     pub fn fill_rect(&mut self, rect: &Rect, color: u32) {
         let x_end = (rect.x + rect.width).min(self.width);
         let y_end = (rect.y + rect.height).min(self.height);
-
         for y in rect.y..y_end {
             for x in rect.x..x_end {
                 self.set_pixel(x, y, color);
@@ -346,14 +504,16 @@ impl Framebuffer {
         }
     }
 
-    /// バッファポインタを取得
-    pub fn as_ptr(&self) -> *const u8 {
-        self.buffer.as_ptr()
+    pub fn phys_addr(&self) -> x86_64::PhysAddr {
+        self.buffer.phys_addr()
     }
 
-    /// バッファサイズを取得
     pub fn size(&self) -> usize {
-        self.buffer.len()
+        self.buffer.size()
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        unsafe { self.buffer.as_slice().as_ptr() }
     }
 }
 
@@ -361,68 +521,37 @@ impl Framebuffer {
 // VirtIO GPU デバイス
 // =============================================================================
 
-/// Virtqueueディスクリプタ
-#[repr(C, align(16))]
-#[derive(Debug, Clone, Copy)]
-pub struct VirtqDesc {
-    pub addr: u64,
-    pub len: u32,
-    pub flags: u16,
-    pub next: u16,
-}
-
-/// Virtqueue Availableリング
-#[repr(C, align(2))]
-#[derive(Debug)]
-pub struct VirtqAvail {
-    pub flags: u16,
-    pub idx: u16,
-    pub ring: [u16; QUEUE_SIZE as usize],
-}
-
-/// Virtqueue Usedエレメント
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct VirtqUsedElem {
-    pub id: u32,
-    pub len: u32,
-}
-
-/// VirtIO GPUデバイス
 pub struct VirtioGpu {
-    /// MMIO ベースアドレス
-    base: u64,
-
-    /// フィーチャービット
+    transport: Box<dyn VirtioTransport>,
+    ctrl_queue: Option<Arc<Mutex<VirtQueue>>>,
+    cursor_queue: Option<Arc<Mutex<VirtQueue>>>,
     features: u64,
-
-    /// リソースID生成
     next_resource_id: AtomicU32,
-
-    /// フェンスID生成
     next_fence_id: AtomicU32,
-
-    /// ディスプレイ情報
     display_info: RwLock<Option<DisplayInfo>>,
-
-    /// アクティブなスキャンアウト
     active_scanouts: RwLock<Vec<u32>>,
-
-    /// フレームバッファ
     framebuffers: RwLock<Vec<Framebuffer>>,
-
-    /// 初期化済みフラグ
     initialized: AtomicBool,
-
-    /// 3Dサポート
     has_3d: bool,
+    iommu_device_id: Option<IommuDeviceId>,
 }
+
+unsafe impl Send for VirtioGpu {}
+unsafe impl Sync for VirtioGpu {}
 
 impl VirtioGpu {
-    /// 新しいVirtIO GPUデバイスを作成
-    pub fn new(base: u64) -> Self {
+    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
+        Self::new_with_device(transport, None)
+    }
+
+    pub fn new_with_device(
+        transport: Box<dyn VirtioTransport>,
+        iommu_device_id: Option<IommuDeviceId>,
+    ) -> Self {
         Self {
-            base,
+            transport,
+            ctrl_queue: None,
+            cursor_queue: None,
             features: 0,
             next_resource_id: AtomicU32::new(1),
             next_fence_id: AtomicU32::new(1),
@@ -431,116 +560,375 @@ impl VirtioGpu {
             framebuffers: RwLock::new(Vec::new()),
             initialized: AtomicBool::new(false),
             has_3d: false,
+            iommu_device_id,
         }
     }
 
-    /// デバイスを初期化
-    pub fn init(&mut self) -> GpuResult<()> {
-        // VirtIOデバイス初期化シーケンス
-        self.reset()?;
-        self.acknowledge()?;
-        self.negotiate_features()?;
-        self.setup_queues()?;
-        self.driver_ok()?;
+    /// Initialize the VirtIO GPU device following the standard init sequence.
+    ///
+    /// # Safety
+    /// Caller must ensure the transport's backing MMIO/PCI address is valid.
+    pub unsafe fn init(&mut self) -> GpuResult<()> {
+        // Step 1: Reset
+        self.transport.set_status(0);
 
-        // ディスプレイ情報を取得
-        self.get_display_info()?;
+        // Step 2: Acknowledge
+        self.transport
+            .set_status(VirtioDeviceStatus::Acknowledge as u8);
 
-        self.initialized.store(true, Ordering::SeqCst);
-        Ok(())
-    }
+        // Step 3: Driver
+        self.transport
+            .set_status(VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8);
 
-    fn reset(&self) -> GpuResult<()> {
-        crate::io::mmio_write_u32((self.base + 0x70) as usize, 0);
-        Ok(())
-    }
-
-    fn acknowledge(&self) -> GpuResult<()> {
-        {
-            let current = crate::io::mmio_read_u32((self.base + 0x70) as usize);
-            crate::io::mmio_write_u32((self.base + 0x70) as usize, current | 1); // ACKNOWLEDGE
-        }
-        Ok(())
-    }
-
-    fn negotiate_features(&mut self) -> GpuResult<()> {
-        // ホストフィーチャーを読み取り
-        let feature_sel_addr = (self.base + 0x14) as usize;
-        let feature_addr = (self.base + 0x10) as usize;
-
-        // Low 32 bits
-        crate::io::mmio_write_u32(feature_sel_addr, 0);
-        let low = crate::io::mmio_read_u32(feature_addr);
-
-        // High 32 bits
-        crate::io::mmio_write_u32(feature_sel_addr, 1);
-        let high = crate::io::mmio_read_u32(feature_addr);
-
-        let host_features = ((high as u64) << 32) | (low as u64);
-
-        // サポートするフィーチャーを選択
-        self.features = host_features & (VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_EDID);
+        // Step 4: Negotiate features
+        let device_features = self.transport.get_device_features();
+        let driver_features = device_features & (VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_EDID);
+        self.transport.set_driver_features(driver_features);
+        self.features = driver_features;
         self.has_3d = (self.features & VIRTIO_GPU_F_VIRGL) != 0;
 
-        // ドライバフィーチャーを書き込み
-        let driver_feature_sel_addr = (self.base + 0x24) as usize;
-        let driver_feature_addr = (self.base + 0x20) as usize;
+        // Step 5: Features OK
+        self.transport.set_status(
+            VirtioDeviceStatus::Acknowledge as u8
+                | VirtioDeviceStatus::Driver as u8
+                | VirtioDeviceStatus::FeaturesOk as u8,
+        );
 
-        crate::io::mmio_write_u32(driver_feature_sel_addr, 0);
-        crate::io::mmio_write_u32(driver_feature_addr, self.features as u32);
-
-        crate::io::mmio_write_u32(driver_feature_sel_addr, 1);
-        crate::io::mmio_write_u32(driver_feature_addr, (self.features >> 32) as u32);
-
-        // FEATURES_OK を設定
-        let status_addr = (self.base + 0x70) as usize;
-        let current = crate::io::mmio_read_u32(status_addr);
-        crate::io::mmio_write_u32(status_addr, current | 8); // FEATURES_OK
-        Ok(())
-    }
-
-    fn setup_queues(&self) -> GpuResult<()> {
-        // 簡略化: キュー設定はドライバ実装で行う
-        Ok(())
-    }
-
-    fn driver_ok(&self) -> GpuResult<()> {
-        {
-            let status_addr = (self.base + 0x70) as usize;
-            let current = crate::io::mmio_read_u32(status_addr);
-            crate::io::mmio_write_u32(status_addr, current | 4); // DRIVER_OK
+        let status = self.transport.get_status();
+        if (status & VirtioDeviceStatus::FeaturesOk as u8) == 0 {
+            self.transport.set_status(VirtioDeviceStatus::Failed as u8);
+            return Err(GpuError::InitFailed);
         }
+
+        // Step 6: Setup queues
+        self.setup_queue(VIRTQUEUE_CTRL)?;
+        self.setup_queue(VIRTQUEUE_CURSOR)?;
+
+        // Step 7: Driver OK
+        self.transport.set_status(
+            VirtioDeviceStatus::Acknowledge as u8
+                | VirtioDeviceStatus::Driver as u8
+                | VirtioDeviceStatus::FeaturesOk as u8
+                | VirtioDeviceStatus::DriverOk as u8,
+        );
+
+        // Fetch display info
+        self.refresh_display_info()?;
+
+        self.initialized.store(true, Ordering::Release);
         Ok(())
     }
 
-    /// 新しいリソースIDを割り当て
+    fn setup_queue(&mut self, queue_idx: u16) -> GpuResult<()> {
+        self.transport.select_queue(queue_idx);
+        let max_size = self.transport.get_queue_max_size();
+        if max_size == 0 {
+            return Err(GpuError::InitFailed);
+        }
+
+        let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
+        let notify_addr = self.transport.get_notify_addr(queue_idx);
+        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+
+        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
+        let avail_size = 6 + 2 * queue_size as usize;
+        let used_size = 6 + 8 * queue_size as usize;
+        let used_align = core::mem::align_of::<VringUsed>();
+        let used_offset = align_up(desc_size + avail_size, used_align);
+        let total_size = used_offset + used_size;
+
+        let buffer = CoherentDmaBuffer::new(total_size, DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+
+        let phys_base = buffer.phys_addr().as_u64();
+        let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
+
+        let desc_table = ptr as *mut VringDesc;
+        let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
+        let used_ring = unsafe { ptr.add(used_offset) as *mut VringUsed };
+
+        self.transport.set_queue_size(queue_size);
+        self.transport.set_queue_desc_addr(phys_base);
+        self.transport
+            .set_queue_avail_addr(phys_base + desc_size as u64);
+        self.transport
+            .set_queue_used_addr(phys_base + used_offset as u64);
+
+        self.transport.enable_queue();
+
+        let virtqueue = unsafe {
+            VirtQueue::new(
+                queue_size,
+                desc_table,
+                avail_ring,
+                used_ring,
+                Some(buffer),
+                queue_idx,
+                notify_addr,
+                notify_is_32bit,
+            )
+        };
+
+        match queue_idx {
+            VIRTQUEUE_CTRL => self.ctrl_queue = Some(Arc::new(Mutex::new(virtqueue))),
+            VIRTQUEUE_CURSOR => self.cursor_queue = Some(Arc::new(Mutex::new(virtqueue))),
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Command submission
+    // =========================================================================
+
+    /// Send a raw command to the controlq and synchronously wait for response.
+    ///
+    /// Returns the response DMA buffer (caller reads the response from it).
+    fn send_command_raw(
+        &self,
+        req_bytes: &[u8],
+        resp_size: usize,
+    ) -> GpuResult<CoherentDmaBuffer> {
+        let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
+        let queue_guard = queue.lock();
+
+        let mut req_buf = CoherentDmaBuffer::new(req_bytes.len(), DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+        let resp_buf = CoherentDmaBuffer::new(resp_size, DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+
+        unsafe {
+            req_buf.as_mut_slice()[..req_bytes.len()].copy_from_slice(req_bytes);
+        }
+
+        let desc0 = queue_guard.alloc_desc().ok_or(GpuError::OutOfMemory)?;
+        let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
+            queue_guard.free_desc(desc0);
+            GpuError::OutOfMemory
+        })?;
+
+        unsafe {
+            (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
+                addr: req_buf.phys_addr().as_u64(),
+                len: req_bytes.len() as u32,
+                flags: vring_flags::VRING_DESC_F_NEXT,
+                next: desc1,
+            };
+            (*queue_guard.desc_table.add(desc1 as usize)) = VringDesc {
+                addr: resp_buf.phys_addr().as_u64(),
+                len: resp_size as u32,
+                flags: vring_flags::VRING_DESC_F_WRITE,
+                next: 0,
+            };
+            queue_guard.submit(desc0);
+        }
+
+        queue_guard.notify();
+
+        // Poll for completion (synchronous)
+        loop {
+            if let Some((_id, _len)) = queue_guard.poll_completions() {
+                queue_guard.free_desc(desc0);
+                queue_guard.free_desc(desc1);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+
+        Ok(resp_buf)
+    }
+
+    /// Send a typed command struct and expect a GpuCtrlHdr response.
+    fn send_command<Req: Copy>(&self, req: &Req) -> GpuResult<GpuCtrlHdr> {
+        let req_bytes = unsafe {
+            core::slice::from_raw_parts(
+                req as *const Req as *const u8,
+                core::mem::size_of::<Req>(),
+            )
+        };
+        let resp_buf =
+            self.send_command_raw(req_bytes, core::mem::size_of::<GpuCtrlHdr>())?;
+        let hdr = unsafe {
+            core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr)
+        };
+        if hdr.cmd_type >= GpuCmd::RespErrUnspec as u32 {
+            return Err(GpuError::DeviceError);
+        }
+        Ok(hdr)
+    }
+
+    /// Send a cursor command to the cursor queue.
+    fn send_cursor_command<Req: Copy>(&self, req: &Req) -> GpuResult<()> {
+        let queue = self.cursor_queue.as_ref().ok_or(GpuError::InitFailed)?;
+        let queue_guard = queue.lock();
+
+        let req_size = core::mem::size_of::<Req>();
+        let mut req_buf = CoherentDmaBuffer::new(req_size, DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+
+        unsafe {
+            let src = core::slice::from_raw_parts(req as *const Req as *const u8, req_size);
+            req_buf.as_mut_slice()[..req_size].copy_from_slice(src);
+        }
+
+        let desc0 = queue_guard.alloc_desc().ok_or(GpuError::OutOfMemory)?;
+
+        unsafe {
+            (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
+                addr: req_buf.phys_addr().as_u64(),
+                len: req_size as u32,
+                flags: 0,
+                next: 0,
+            };
+            queue_guard.submit(desc0);
+        }
+
+        queue_guard.notify();
+
+        // Poll for completion
+        loop {
+            if let Some((_id, _len)) = queue_guard.poll_completions() {
+                queue_guard.free_desc(desc0);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+
+        Ok(())
+    }
+
+    /// Send a command with an extra data buffer (3-descriptor chain).
+    /// Used by attach_backing which needs: header + entries array + response.
+    fn send_command_with_data(
+        &self,
+        req_bytes: &[u8],
+        data_bytes: &[u8],
+        resp_size: usize,
+    ) -> GpuResult<CoherentDmaBuffer> {
+        let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
+        let queue_guard = queue.lock();
+
+        let mut req_buf = CoherentDmaBuffer::new(req_bytes.len(), DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+        let mut data_buf = CoherentDmaBuffer::new(data_bytes.len(), DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+        let resp_buf = CoherentDmaBuffer::new(resp_size, DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+
+        unsafe {
+            req_buf.as_mut_slice()[..req_bytes.len()].copy_from_slice(req_bytes);
+            data_buf.as_mut_slice()[..data_bytes.len()].copy_from_slice(data_bytes);
+        }
+
+        let desc0 = queue_guard.alloc_desc().ok_or(GpuError::OutOfMemory)?;
+        let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
+            queue_guard.free_desc(desc0);
+            GpuError::OutOfMemory
+        })?;
+        let desc2 = queue_guard.alloc_desc().ok_or_else(|| {
+            queue_guard.free_desc(desc0);
+            queue_guard.free_desc(desc1);
+            GpuError::OutOfMemory
+        })?;
+
+        unsafe {
+            (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
+                addr: req_buf.phys_addr().as_u64(),
+                len: req_bytes.len() as u32,
+                flags: vring_flags::VRING_DESC_F_NEXT,
+                next: desc1,
+            };
+            (*queue_guard.desc_table.add(desc1 as usize)) = VringDesc {
+                addr: data_buf.phys_addr().as_u64(),
+                len: data_bytes.len() as u32,
+                flags: vring_flags::VRING_DESC_F_NEXT,
+                next: desc2,
+            };
+            (*queue_guard.desc_table.add(desc2 as usize)) = VringDesc {
+                addr: resp_buf.phys_addr().as_u64(),
+                len: resp_size as u32,
+                flags: vring_flags::VRING_DESC_F_WRITE,
+                next: 0,
+            };
+            queue_guard.submit(desc0);
+        }
+
+        queue_guard.notify();
+
+        loop {
+            if let Some((_id, _len)) = queue_guard.poll_completions() {
+                queue_guard.free_desc(desc0);
+                queue_guard.free_desc(desc1);
+                queue_guard.free_desc(desc2);
+                break;
+            }
+            core::hint::spin_loop();
+        }
+
+        Ok(resp_buf)
+    }
+
+    // =========================================================================
+    // GPU Operations
+    // =========================================================================
+
     fn alloc_resource_id(&self) -> u32 {
         self.next_resource_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// 新しいフェンスIDを割り当て
     fn alloc_fence_id(&self) -> u32 {
         self.next_fence_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// ディスプレイ情報を取得
-    pub fn get_display_info(&self) -> GpuResult<DisplayInfo> {
-        // コマンドを送信（簡略化）
-        // 実際の実装ではVirtqueueを使用
-
-        let info = DisplayInfo {
-            modes: [DisplayMode {
-                rect: Rect::new(0, 0, 1920, 1080),
-                enabled: 1,
-                flags: 0,
-            }; MAX_SCANOUTS],
+    /// Get display information from the device.
+    fn refresh_display_info(&self) -> GpuResult<()> {
+        let hdr = GpuCtrlHdr::new(GpuCmd::GetDisplayInfo);
+        let hdr_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &hdr as *const GpuCtrlHdr as *const u8,
+                core::mem::size_of::<GpuCtrlHdr>(),
+            )
         };
 
-        *self.display_info.write() = Some(info.clone());
-        Ok(info)
+        // Response: GpuCtrlHdr + DisplayInfo
+        let resp_size =
+            core::mem::size_of::<GpuCtrlHdr>() + core::mem::size_of::<DisplayInfo>();
+        let resp_buf = self.send_command_raw(hdr_bytes, resp_size)?;
+
+        let resp_slice = unsafe { resp_buf.as_slice() };
+        let resp_hdr =
+            unsafe { core::ptr::read_volatile(resp_slice.as_ptr() as *const GpuCtrlHdr) };
+
+        if resp_hdr.cmd_type != GpuCmd::RespOkDisplayInfo as u32 {
+            return Err(GpuError::DeviceError);
+        }
+
+        // Parse DisplayInfo from offset after GpuCtrlHdr
+        let info_offset = core::mem::size_of::<GpuCtrlHdr>();
+        if resp_slice.len() >= info_offset + core::mem::size_of::<DisplayInfo>() {
+            let info = unsafe {
+                core::ptr::read_volatile(
+                    resp_slice.as_ptr().add(info_offset) as *const DisplayInfo,
+                )
+            };
+            *self.display_info.write() = Some(info);
+        }
+
+        Ok(())
     }
 
-    /// 2Dリソースを作成
+    pub fn get_display_info(&self) -> GpuResult<DisplayInfo> {
+        if let Some(info) = self.display_info.read().clone() {
+            return Ok(info);
+        }
+        self.refresh_display_info()?;
+        self.display_info
+            .read()
+            .clone()
+            .ok_or(GpuError::DeviceError)
+    }
+
     pub fn create_resource_2d(
         &self,
         width: u32,
@@ -548,113 +936,139 @@ impl VirtioGpu {
         format: PixelFormat,
     ) -> GpuResult<u32> {
         let resource_id = self.alloc_resource_id();
-
-        let _req = ResourceCreate2D {
+        let req = ResourceCreate2D {
             hdr: GpuCtrlHdr::new(GpuCmd::ResourceCreate2D),
             resource_id,
             format: format as u32,
             width,
             height,
         };
-
-        // コマンドを送信（簡略化）
-
+        self.send_command(&req)?;
         Ok(resource_id)
     }
 
-    /// リソースを解放
-    pub fn unref_resource(&self, _resource_id: u32) -> GpuResult<()> {
-        // コマンドを送信（簡略化）
+    pub fn unref_resource(&self, resource_id: u32) -> GpuResult<()> {
+        let req = ResourceUnref {
+            hdr: GpuCtrlHdr::new(GpuCmd::ResourceUnref),
+            resource_id,
+            _padding: 0,
+        };
+        self.send_command(&req)?;
         Ok(())
     }
 
-    /// バッキングメモリをアタッチ
-    pub fn attach_backing(&self, _resource_id: u32, _addr: u64, _size: u32) -> GpuResult<()> {
-        // コマンドを送信（簡略化）
+    /// Attach backing memory (DMA buffer) to a resource.
+    pub fn attach_backing(&self, resource_id: u32, phys_addr: u64, size: u32) -> GpuResult<()> {
+        let req = ResourceAttachBacking {
+            hdr: GpuCtrlHdr::new(GpuCmd::ResourceAttachBacking),
+            resource_id,
+            nr_entries: 1,
+        };
+        let entry = MemEntry {
+            addr: phys_addr,
+            length: size,
+            _padding: 0,
+        };
+
+        let req_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &req as *const ResourceAttachBacking as *const u8,
+                core::mem::size_of::<ResourceAttachBacking>(),
+            )
+        };
+        let entry_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &entry as *const MemEntry as *const u8,
+                core::mem::size_of::<MemEntry>(),
+            )
+        };
+
+        let resp_buf = self.send_command_with_data(
+            req_bytes,
+            entry_bytes,
+            core::mem::size_of::<GpuCtrlHdr>(),
+        )?;
+
+        let hdr = unsafe {
+            core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr)
+        };
+        if hdr.cmd_type >= GpuCmd::RespErrUnspec as u32 {
+            return Err(GpuError::DeviceError);
+        }
         Ok(())
     }
 
-    /// ホストに転送
     pub fn transfer_to_host_2d(
         &self,
-        _resource_id: u32,
-        _rect: &Rect,
-        _offset: u64,
+        resource_id: u32,
+        rect: &Rect,
+        offset: u64,
     ) -> GpuResult<()> {
-        // コマンドを送信（簡略化）
+        let req = TransferToHost2D {
+            hdr: GpuCtrlHdr::new(GpuCmd::TransferToHost2D),
+            rect: *rect,
+            offset,
+            resource_id,
+            _padding: 0,
+        };
+        self.send_command(&req)?;
         Ok(())
     }
 
-    /// スキャンアウトを設定
     pub fn set_scanout(&self, scanout_id: u32, resource_id: u32, rect: &Rect) -> GpuResult<()> {
-        let _req = SetScanout {
+        let req = SetScanout {
             hdr: GpuCtrlHdr::new(GpuCmd::SetScanout),
             rect: *rect,
             scanout_id,
             resource_id,
         };
-
-        // コマンドを送信（簡略化）
-
+        self.send_command(&req)?;
         self.active_scanouts.write().push(scanout_id);
         Ok(())
     }
 
-    /// リソースをフラッシュ
-    pub fn flush(&self, _resource_id: u32, _rect: &Rect) -> GpuResult<()> {
-        // コマンドを送信（簡略化）
+    pub fn flush(&self, resource_id: u32, rect: &Rect) -> GpuResult<()> {
+        let req = ResourceFlush {
+            hdr: GpuCtrlHdr::new(GpuCmd::ResourceFlush),
+            rect: *rect,
+            resource_id,
+            _padding: 0,
+        };
+        self.send_command(&req)?;
         Ok(())
     }
 
-    /// フレームバッファを作成
+    /// Create a framebuffer with DMA-backed memory and attach it to a GPU resource.
     pub fn create_framebuffer(&self, width: u32, height: u32) -> GpuResult<u32> {
         let format = PixelFormat::B8G8R8A8Unorm;
-
-        // リソースを作成
         let resource_id = self.create_resource_2d(width, height, format)?;
 
-        // フレームバッファを作成
-        let fb = Framebuffer::new(resource_id, width, height, format);
+        let fb = Framebuffer::new(resource_id, width, height, format)
+            .ok_or(GpuError::OutOfMemory)?;
 
-        // バッキングメモリをアタッチ
-        // 注: 実際の実装では物理アドレスが必要
+        // Attach the DMA buffer as backing memory
+        self.attach_backing(resource_id, fb.phys_addr().as_u64(), fb.size() as u32)?;
 
         self.framebuffers.write().push(fb);
-
         Ok(resource_id)
     }
 
-    /// フレームバッファを取得
-    pub fn framebuffer(&self, resource_id: u32) -> Option<Framebuffer> {
-        self.framebuffers
-            .read()
-            .iter()
-            .find(|fb| fb.resource_id == resource_id)
-            .cloned()
-    }
-
-    /// 画面を更新
+    /// Present a framebuffer: transfer to host then flush.
     pub fn present(&self, resource_id: u32) -> GpuResult<()> {
-        let fb = self
-            .framebuffers
-            .read()
+        let fbs = self.framebuffers.read();
+        let fb = fbs
             .iter()
             .find(|fb| fb.resource_id == resource_id)
-            .cloned()
             .ok_or(GpuError::ResourceNotFound)?;
 
         let rect = Rect::new(0, 0, fb.width, fb.height);
+        drop(fbs);
 
-        // ホストに転送
         self.transfer_to_host_2d(resource_id, &rect, 0)?;
-
-        // フラッシュ
         self.flush(resource_id, &rect)?;
-
         Ok(())
     }
 
-    /// カーソルを更新
     pub fn update_cursor(
         &self,
         resource_id: u32,
@@ -664,7 +1078,7 @@ impl VirtioGpu {
         hot_x: u32,
         hot_y: u32,
     ) -> GpuResult<()> {
-        let _req = UpdateCursor {
+        let req = UpdateCursor {
             hdr: GpuCtrlHdr::new(GpuCmd::UpdateCursor),
             pos: CursorPos {
                 scanout_id,
@@ -677,14 +1091,11 @@ impl VirtioGpu {
             hot_y,
             _padding: 0,
         };
-
-        // コマンドを送信（簡略化）
-        Ok(())
+        self.send_cursor_command(&req)
     }
 
-    /// カーソルを移動
     pub fn move_cursor(&self, scanout_id: u32, x: u32, y: u32) -> GpuResult<()> {
-        let _req = UpdateCursor {
+        let req = UpdateCursor {
             hdr: GpuCtrlHdr::new(GpuCmd::MoveCursor),
             pos: CursorPos {
                 scanout_id,
@@ -697,32 +1108,22 @@ impl VirtioGpu {
             hot_y: 0,
             _padding: 0,
         };
-
-        // コマンドを送信（簡略化）
-        Ok(())
+        self.send_cursor_command(&req)
     }
 
-    /// 3Dサポートがあるか
+    pub fn handle_interrupt(&self) {
+        let status = self.transport.get_interrupt_status();
+        self.transport.ack_interrupt(status);
+        // Synchronous GPU: completions are handled inline in send_command.
+        // This handler is for interrupt-driven mode (future enhancement).
+    }
+
     pub fn has_3d_support(&self) -> bool {
         self.has_3d
     }
 
-    /// 初期化済みか
     pub fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Relaxed)
-    }
-}
-
-impl Clone for Framebuffer {
-    fn clone(&self) -> Self {
-        Self {
-            resource_id: self.resource_id,
-            width: self.width,
-            height: self.height,
-            format: self.format,
-            buffer: self.buffer.clone(),
-            stride: self.stride,
-        }
     }
 }
 
@@ -730,7 +1131,6 @@ impl Clone for Framebuffer {
 // グラフィックスマネージャ
 // =============================================================================
 
-/// グラフィックスマネージャ
 pub struct GraphicsManager {
     gpu: Mutex<Option<VirtioGpu>>,
     primary_scanout: AtomicU32,
@@ -746,17 +1146,14 @@ impl GraphicsManager {
         }
     }
 
-    /// 初期化
-    pub fn init(&self, base: u64) -> GpuResult<()> {
-        let mut gpu = VirtioGpu::new(base);
-        gpu.init()?;
+    pub fn init(&self, transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
+        let mut gpu = VirtioGpu::new(transport);
+        unsafe { gpu.init()? };
 
-        // プライマリフレームバッファを作成
         let display_info = gpu.get_display_info()?;
         if let Some(mode) = display_info.modes.iter().find(|m| m.enabled != 0) {
             let fb_id = gpu.create_framebuffer(mode.rect.width, mode.rect.height)?;
             gpu.set_scanout(0, fb_id, &mode.rect)?;
-
             self.primary_framebuffer.store(fb_id, Ordering::SeqCst);
         }
 
@@ -764,25 +1161,25 @@ impl GraphicsManager {
         Ok(())
     }
 
-    /// 画面をクリア
-    pub fn clear(&self, _color: u32) -> GpuResult<()> {
-        let gpu = self.gpu.lock();
-        let gpu = gpu.as_ref().ok_or(GpuError::DeviceNotFound)?;
-
+    pub fn clear(&self, color: u32) -> GpuResult<()> {
+        let mut gpu_guard = self.gpu.lock();
+        let gpu = gpu_guard.as_mut().ok_or(GpuError::DeviceNotFound)?;
         let fb_id = self.primary_framebuffer.load(Ordering::Relaxed);
 
-        // フレームバッファを取得してクリア（簡略化）
-        // 実際の実装ではミュータブルなアクセスが必要
+        {
+            let mut fbs = gpu.framebuffers.write();
+            if let Some(fb) = fbs.iter_mut().find(|fb| fb.resource_id == fb_id) {
+                fb.clear(color);
+            }
+        }
 
         gpu.present(fb_id)?;
         Ok(())
     }
 
-    /// 画面を更新
     pub fn present(&self) -> GpuResult<()> {
-        let gpu = self.gpu.lock();
-        let gpu = gpu.as_ref().ok_or(GpuError::DeviceNotFound)?;
-
+        let gpu_guard = self.gpu.lock();
+        let gpu = gpu_guard.as_ref().ok_or(GpuError::DeviceNotFound)?;
         let fb_id = self.primary_framebuffer.load(Ordering::Relaxed);
         gpu.present(fb_id)
     }
@@ -798,7 +1195,190 @@ pub fn graphics_manager() -> &'static GraphicsManager {
     GRAPHICS_MANAGER.call_once(GraphicsManager::new)
 }
 
-/// 初期化
-pub fn init(base: u64) -> GpuResult<()> {
-    graphics_manager().init(base)
+/// Global VirtIO GPU device instance
+static VIRTIO_GPU_DEVICE: Mutex<Option<Arc<VirtioGpu>>> = Mutex::new(None);
+
+/// Initialize the global VirtIO GPU device.
+///
+/// # Safety
+/// Caller must ensure the transport's backing address is valid.
+pub unsafe fn init_virtio_gpu(transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
+    let mut gpu = VirtioGpu::new(transport);
+    unsafe { gpu.init()? };
+    *VIRTIO_GPU_DEVICE.lock() = Some(Arc::new(gpu));
+    Ok(())
+}
+
+/// Initialize the global VirtIO GPU device with an IOMMU device ID.
+///
+/// # Safety
+/// Caller must ensure the transport's backing address is valid.
+pub unsafe fn init_virtio_gpu_for_device(
+    transport: Box<dyn VirtioTransport>,
+    iommu_device_id: IommuDeviceId,
+) -> GpuResult<()> {
+    let mut gpu = VirtioGpu::new_with_device(transport, Some(iommu_device_id));
+    unsafe { gpu.init()? };
+    *VIRTIO_GPU_DEVICE.lock() = Some(Arc::new(gpu));
+    Ok(())
+}
+
+/// Handle VirtIO GPU interrupt.
+pub fn handle_virtio_gpu_interrupt() {
+    if let Some(device) = VIRTIO_GPU_DEVICE.lock().as_ref() {
+        device.handle_interrupt();
+    }
+}
+
+/// Get a clone of the global VirtIO GPU device Arc if initialized.
+pub fn get_virtio_gpu_device() -> Option<Arc<VirtioGpu>> {
+    VIRTIO_GPU_DEVICE.lock().as_ref().cloned()
+}
+
+/// Initialize via GraphicsManager.
+pub fn init(transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
+    graphics_manager().init(transport)
+}
+
+fn align_up(val: usize, align: usize) -> usize {
+    (val + align - 1) & !(align - 1)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
+
+    struct NoopTransport;
+
+    impl VirtioTransport for NoopTransport {
+        fn device_type(&self) -> VirtioDeviceType {
+            VirtioDeviceType::Gpu
+        }
+        fn get_status(&self) -> u8 {
+            VirtioDeviceStatus::Acknowledge as u8
+                | VirtioDeviceStatus::Driver as u8
+                | VirtioDeviceStatus::FeaturesOk as u8
+        }
+        fn set_status(&mut self, _status: u8) {}
+        fn get_device_features_low(&self) -> u32 {
+            0
+        }
+        fn get_device_features_high(&self) -> u32 {
+            0
+        }
+        fn set_driver_features_low(&mut self, _features: u32) {}
+        fn set_driver_features_high(&mut self, _features: u32) {}
+        fn get_num_queues(&self) -> u16 {
+            2
+        }
+        fn select_queue(&mut self, _queue_index: u16) {}
+        fn get_queue_max_size(&self) -> u16 {
+            VIRTQUEUE_MAX_SIZE
+        }
+        fn set_queue_size(&mut self, _size: u16) {}
+        fn is_queue_ready(&self) -> bool {
+            false
+        }
+        fn enable_queue(&mut self) {}
+        fn disable_queue(&mut self) {}
+        fn set_queue_desc_addr(&mut self, _addr: u64) {}
+        fn set_queue_avail_addr(&mut self, _addr: u64) {}
+        fn set_queue_used_addr(&mut self, _addr: u64) {}
+        fn notify_queue(&mut self, _queue_index: u16) {}
+        fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+            None
+        }
+        fn get_interrupt_status(&self) -> u32 {
+            0
+        }
+        fn ack_interrupt(&self, _status: u32) {}
+        fn read_config_u8(&self, _offset: usize) -> u8 {
+            0
+        }
+        fn read_config_u16(&self, _offset: usize) -> u16 {
+            0
+        }
+        fn read_config_u32(&self, _offset: usize) -> u32 {
+            0
+        }
+        fn write_config_u8(&mut self, _offset: usize, _value: u8) {}
+        fn write_config_u16(&mut self, _offset: usize, _value: u16) {}
+        fn write_config_u32(&mut self, _offset: usize, _value: u32) {}
+        fn transport_type(&self) -> TransportType {
+            TransportType::Mmio
+        }
+    }
+
+    #[test_case]
+    fn test_gpu_device_creation() {
+        let gpu = VirtioGpu::new(Box::new(NoopTransport));
+        assert!(!gpu.is_initialized());
+        assert!(!gpu.has_3d_support());
+    }
+
+    #[test_case]
+    fn test_gpu_alloc_resource_id() {
+        let gpu = VirtioGpu::new(Box::new(NoopTransport));
+        assert_eq!(gpu.alloc_resource_id(), 1);
+        assert_eq!(gpu.alloc_resource_id(), 2);
+        assert_eq!(gpu.alloc_resource_id(), 3);
+    }
+
+    #[test_case]
+    fn test_gpu_alloc_fence_id() {
+        let gpu = VirtioGpu::new(Box::new(NoopTransport));
+        assert_eq!(gpu.alloc_fence_id(), 1);
+        assert_eq!(gpu.alloc_fence_id(), 2);
+    }
+
+    #[test_case]
+    fn test_gpu_ctrl_hdr_new() {
+        let hdr = GpuCtrlHdr::new(GpuCmd::GetDisplayInfo);
+        assert_eq!(hdr.cmd_type, GpuCmd::GetDisplayInfo as u32);
+        assert_eq!(hdr.flags, 0);
+        assert_eq!(hdr.fence_id, 0);
+    }
+
+    #[test_case]
+    fn test_gpu_ctrl_hdr_with_fence() {
+        let hdr = GpuCtrlHdr::new(GpuCmd::ResourceFlush).with_fence(42);
+        assert_eq!(hdr.flags, 1);
+        assert_eq!(hdr.fence_id, 42);
+    }
+
+    #[test_case]
+    fn test_rect_new() {
+        let r = Rect::new(10, 20, 640, 480);
+        assert_eq!(r.x, 10);
+        assert_eq!(r.y, 20);
+        assert_eq!(r.width, 640);
+        assert_eq!(r.height, 480);
+    }
+
+    #[test_case]
+    fn test_gpu_error_variants() {
+        assert_ne!(GpuError::DeviceNotFound, GpuError::InitFailed);
+        assert_ne!(GpuError::OutOfMemory, GpuError::DeviceError);
+    }
+
+    #[test_case]
+    fn test_align_up() {
+        assert_eq!(align_up(0, 4), 0);
+        assert_eq!(align_up(1, 4), 4);
+        assert_eq!(align_up(4, 4), 4);
+        assert_eq!(align_up(5, 4), 8);
+        assert_eq!(align_up(4096, 4096), 4096);
+        assert_eq!(align_up(4097, 4096), 8192);
+    }
+
+    #[test_case]
+    fn test_pixel_format_values() {
+        assert_eq!(PixelFormat::B8G8R8A8Unorm as u32, 1);
+        assert_eq!(PixelFormat::R8G8B8A8Unorm as u32, 67);
+    }
 }

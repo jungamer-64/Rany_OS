@@ -3,10 +3,11 @@
 #![feature(alloc_error_handler)]
 
 use core::alloc::{GlobalAlloc, Layout};
+use core::fmt;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-const HEAP_SIZE: usize = 1024 * 1024;
+const HEAP_SIZE: usize = 64 * 1024 * 1024;
 
 #[repr(align(16))]
 struct Heap([u8; HEAP_SIZE]);
@@ -49,6 +50,7 @@ unsafe impl GlobalAlloc for BumpAlloc {
 
 #[alloc_error_handler]
 fn alloc_error(_layout: Layout) -> ! {
+    serial_write_str("[qemu-suite] kernel alloc_error\n");
     serial_write_str("[qemu-suite] kernel fail\n");
     suite_fail_trap()
 }
@@ -65,7 +67,12 @@ static __tls_start: u8 = 0;
 static __tls_end: u8 = 0;
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    serial_write_str("[qemu-suite] kernel panic\n");
+    serial_write_str("[qemu-suite] kernel panic info: ");
+    let mut writer = SerialWriter;
+    let _ = fmt::write(&mut writer, format_args!("{info}"));
+    serial_write_str("\n");
     serial_write_str("[qemu-suite] kernel fail\n");
     suite_fail_trap()
 }
@@ -77,7 +84,13 @@ fn run_suite() -> bool {
         && run_check("loader_metadata_exports", test_loader_metadata_exports)
         && run_check("loader_live_update_exports", test_loader_live_update_exports)
         && run_check("loader_elf_exports", test_loader_elf_exports)
+        && run_check(
+            "iommu_wave2_runtime_readiness",
+            report_iommu_wave2_runtime_readiness,
+        )
         && run_check("iommu_cmdqueue_exports", test_iommu_cmdqueue_exports)
+        && run_check("iommu_wave2_core_exports", test_iommu_wave2_core_exports)
+        && run_check("iommu_wave2_poison_exports", test_iommu_wave2_poison_exports)
         && run_check("kernel_integration_exports", test_kernel_integration_exports)
 }
 
@@ -196,6 +209,126 @@ fn test_iommu_cmdqueue_exports() -> bool {
     )
 }
 
+fn test_iommu_wave2_core_exports() -> bool {
+    run_check(
+        "iommu_wave2_device_id_smoke",
+        rany_os::qemu_tests::iommu_wave2_device_id_smoke,
+    ) && run_check(
+        "iommu_wave2_sl_pte_smoke",
+        rany_os::qemu_tests::iommu_wave2_sl_pte_smoke,
+    ) && run_check(
+        "iommu_wave2_iommu_domain_smoke",
+        rany_os::qemu_tests::iommu_wave2_iommu_domain_smoke,
+    ) && run_check(
+        "iommu_wave2_map_rollback_hidden_mapping_smoke",
+        rany_os::qemu_tests::iommu_wave2_map_rollback_hidden_mapping_smoke,
+    ) && run_check(
+        "iommu_wave2_map_rollback_hidden_mapping_amd_smoke",
+        rany_os::qemu_tests::iommu_wave2_map_rollback_hidden_mapping_amd_smoke,
+    ) && run_check(
+        "iommu_wave2_map_rollback_superpage_2mb_collision_smoke",
+        rany_os::qemu_tests::iommu_wave2_map_rollback_superpage_2mb_collision_smoke,
+    ) && run_check(
+        "iommu_wave2_create_domain_with_numa_hint_smoke",
+        rany_os::qemu_tests::iommu_wave2_create_domain_with_numa_hint_smoke,
+    ) && run_check(
+        "iommu_wave2_iova_allocator_basic_smoke",
+        rany_os::qemu_tests::iommu_wave2_iova_allocator_basic_smoke,
+    ) && run_check(
+        "iommu_wave2_map_for_dma_alloc_non_identity_smoke",
+        rany_os::qemu_tests::iommu_wave2_map_for_dma_alloc_non_identity_smoke,
+    ) && run_check(
+        "iommu_wave2_unmap_reclaims_empty_tables_smoke",
+        rany_os::qemu_tests::iommu_wave2_unmap_reclaims_empty_tables_smoke,
+    ) && run_check(
+        "iommu_wave2_unmap_partial_keeps_tables_smoke",
+        rany_os::qemu_tests::iommu_wave2_unmap_partial_keeps_tables_smoke,
+    ) && run_check(
+        "iommu_wave2_unmap_mixed_superpages_smoke",
+        rany_os::qemu_tests::iommu_wave2_unmap_mixed_superpages_smoke,
+    ) && run_check(
+        "iommu_wave2_page_table_scope_commit_preserves_counts_smoke",
+        rany_os::qemu_tests::iommu_wave2_page_table_scope_commit_preserves_counts_smoke,
+    ) && run_check(
+        "iommu_wave2_page_table_scope_drop_rolls_back_parent_smoke",
+        rany_os::qemu_tests::iommu_wave2_page_table_scope_drop_rolls_back_parent_smoke,
+    ) && run_check(
+        "iommu_wave2_security_notifier_registration_smoke",
+        rany_os::qemu_tests::iommu_wave2_security_notifier_registration_smoke,
+    ) && run_check(
+        "iommu_wave2_security_event_types_are_copy_smoke",
+        rany_os::qemu_tests::iommu_wave2_security_event_types_are_copy_smoke,
+    ) && run_check(
+        "iommu_wave2_fault_summary_from_fault_record_smoke",
+        rany_os::qemu_tests::iommu_wave2_fault_summary_from_fault_record_smoke,
+    ) && run_check(
+        "iommu_wave2_isolation_decision_default_smoke",
+        rany_os::qemu_tests::iommu_wave2_isolation_decision_default_smoke,
+    ) && run_check(
+        "iommu_wave2_identity_mapping_disabled_by_default_smoke",
+        rany_os::qemu_tests::iommu_wave2_identity_mapping_disabled_by_default_smoke,
+    ) && run_check(
+        "iommu_wave2_iova_not_equal_phys_smoke",
+        rany_os::qemu_tests::iommu_wave2_iova_not_equal_phys_smoke,
+    ) && run_check(
+        "iommu_wave2_domain_type_not_passthrough_smoke",
+        rany_os::qemu_tests::iommu_wave2_domain_type_not_passthrough_smoke,
+    ) && run_check(
+        "iommu_wave2_mapping_iova_phys_distinct_smoke",
+        rany_os::qemu_tests::iommu_wave2_mapping_iova_phys_distinct_smoke,
+    )
+}
+
+fn test_iommu_wave2_poison_exports() -> bool {
+    run_check(
+        "iommu_wave2_process_page_requests_poisoned_returns_empty_smoke",
+        rany_os::qemu_tests::iommu_wave2_process_page_requests_poisoned_returns_empty_smoke,
+    ) && run_check(
+        "iommu_wave2_create_domain_poisoned_returns_hw_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_create_domain_poisoned_returns_hw_error_smoke,
+    ) && run_check(
+        "iommu_wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke",
+        rany_os::qemu_tests::iommu_wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke,
+    ) && run_check(
+        "iommu_wave2_domain_map_poisoned_returns_none_smoke",
+        rany_os::qemu_tests::iommu_wave2_domain_map_poisoned_returns_none_smoke,
+    ) && run_check(
+        "iommu_wave2_get_domain_for_device_poisoned_returns_hw_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_get_domain_for_device_poisoned_returns_hw_error_smoke,
+    ) && run_check(
+        "iommu_wave2_set_domain_numa_poisoned_returns_hw_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_set_domain_numa_poisoned_returns_hw_error_smoke,
+    ) && run_check(
+        "iommu_wave2_init_iova_poisoned_proceeds_with_best_effort_smoke",
+        rany_os::qemu_tests::iommu_wave2_init_iova_poisoned_proceeds_with_best_effort_smoke,
+    ) && run_check(
+        "iommu_wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke",
+        rany_os::qemu_tests::iommu_wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke,
+    ) && run_check(
+        "iommu_wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke,
+    ) && run_check(
+        "iommu_wave2_submit_invalidation_poisoned_returns_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_submit_invalidation_poisoned_returns_error_smoke,
+    ) && run_check(
+        "iommu_wave2_qi_wait_sync_poisoned_returns_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_qi_wait_sync_poisoned_returns_error_smoke,
+    ) && run_check(
+        "iommu_wave2_qi_wait_async_poisoned_returns_error_smoke",
+        rany_os::qemu_tests::iommu_wave2_qi_wait_async_poisoned_returns_error_smoke,
+    )
+}
+
+fn report_iommu_wave2_runtime_readiness() -> bool {
+    serial_write_str("[qemu-suite] kernel info iommu_wave2 runtime_ready=");
+    if rany_os::memory::is_initialized() {
+        serial_write_str("1\n");
+    } else {
+        serial_write_str("0\n");
+    }
+    true
+}
+
 fn serial_write_str(s: &str) {
     for b in s.bytes() {
         serial_write_byte(b);
@@ -210,6 +343,15 @@ fn serial_write_byte(byte: u8) {
             in("al") byte,
             options(nostack, nomem, preserves_flags)
         );
+    }
+}
+
+struct SerialWriter;
+
+impl fmt::Write for SerialWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        serial_write_str(s);
+        Ok(())
     }
 }
 

@@ -15,12 +15,16 @@
 
 #![allow(dead_code)]
 
-use crate::io::dma::{IommuBounceAllocError, allocate_iommu_bounce_bytes, iommu_needs_bounce};
+use crate::io::dma::{
+    CoherentDmaBuffer, DmaMemoryAttributes, IommuBounceAllocError, allocate_iommu_bounce_bytes,
+    iommu_needs_bounce,
+};
 use crate::io::iommu::api::{
     DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -368,6 +372,53 @@ pub struct BlockRequest {
 }
 
 // ============================================================================
+// DMA-safe request storage
+// ============================================================================
+
+/// DMA-safe storage for a VirtIO block request header and status byte.
+///
+/// Both header and status must remain valid and DMA-accessible until the device
+/// completes the request. This struct allocates a CoherentDmaBuffer to hold
+/// `[VirtioBlkReqHeader | u8 status]` in physically contiguous, uncacheable memory.
+struct BlkRequestDma {
+    /// Coherent DMA buffer holding header + status byte
+    buffer: CoherentDmaBuffer,
+    /// Physical address of the header (start of buffer)
+    header_phys: u64,
+    /// Physical address of the status byte
+    status_phys: u64,
+}
+
+impl BlkRequestDma {
+    /// Allocate DMA memory and copy the header into it.
+    fn new(header: &VirtioBlkReqHeader) -> Option<Self> {
+        let header_size = core::mem::size_of::<VirtioBlkReqHeader>();
+        let total = header_size + 1; // header + 1 status byte
+        let mut buffer = CoherentDmaBuffer::new(total, DmaMemoryAttributes::MMIO)?;
+        let base_phys = buffer.phys_addr().as_u64();
+
+        unsafe {
+            let slice = buffer.as_mut_slice();
+            let src = header as *const VirtioBlkReqHeader as *const u8;
+            core::ptr::copy_nonoverlapping(src, slice.as_mut_ptr(), header_size);
+            // Sentinel status: 0xFF means "not yet completed"
+            slice[header_size] = 0xFF;
+        }
+
+        Some(Self {
+            buffer,
+            header_phys: base_phys,
+            status_phys: base_phys + header_size as u64,
+        })
+    }
+
+    /// Read the status byte written by the device after completion.
+    fn status(&self) -> u8 {
+        unsafe { self.buffer.as_slice()[core::mem::size_of::<VirtioBlkReqHeader>()] }
+    }
+}
+
+// ============================================================================
 // VirtIO Block Device
 // ============================================================================
 
@@ -414,6 +465,8 @@ pub struct VirtioBlkDevice {
     transport: Box<dyn VirtioTransport>,
     /// Features negotiated
     features: u64,
+    /// DMA buffers for inflight requests (header + status), keyed by head descriptor index
+    inflight_dma: Mutex<BTreeMap<u16, BlkRequestDma>>,
 }
 
 unsafe impl Send for VirtioBlkDevice {}
@@ -459,6 +512,7 @@ impl VirtioBlkDevice {
             iommu_device_id,
             transport,
             features: 0,
+            inflight_dma: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -714,6 +768,19 @@ impl VirtioBlkDevice {
         for (q_idx, queue) in self.queues.iter().enumerate() {
             let queue_guard = queue.lock();
             while let Some((desc_id, _len)) = queue_guard.poll_completions() {
+                // Remove and check the DMA buffer for this request
+                if let Some(req_dma) = self.inflight_dma.lock().remove(&desc_id) {
+                    let status = req_dma.status();
+                    if status != VirtioBlkStatus::Ok as u8 {
+                        log::warn!(
+                            "[VIRTIO-BLK] request {} completed with status {}",
+                            desc_id,
+                            status
+                        );
+                    }
+                    // req_dma is dropped here, freeing the DMA allocation
+                }
+
                 // Free descriptor
                 queue_guard.free_desc(desc_id);
 
@@ -748,6 +815,14 @@ impl VirtioBlkDevice {
             return Err(BlockError::InvalidSector);
         }
 
+        // Allocate DMA-safe header + status byte
+        let header = VirtioBlkReqHeader {
+            req_type: VirtioBlkReqType::In as u32,
+            reserved: 0,
+            sector,
+        };
+        let req_dma = BlkRequestDma::new(&header).ok_or(BlockError::NotReady)?;
+
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();
 
@@ -763,22 +838,12 @@ impl VirtioBlkDevice {
             BlockError::QueueFull
         })?;
 
-        // Setup header (device reads)
-        let header = VirtioBlkReqHeader {
-            req_type: VirtioBlkReqType::In as u32,
-            reserved: 0,
-            sector,
-        };
-
-        // In real implementation, header and status would be in separate allocations
-        // For now, we use buf_addr directly with proper offset calculations
-
         unsafe {
             let desc_table = queue_guard.desc_table;
 
-            // Descriptor 0: Header (device reads)
+            // Descriptor 0: Header (device reads from DMA memory)
             (*desc_table.add(desc0 as usize)) = VringDesc {
-                addr: &header as *const _ as u64,
+                addr: req_dma.header_phys,
                 len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc1,
@@ -792,9 +857,9 @@ impl VirtioBlkDevice {
                 next: desc2,
             };
 
-            // Descriptor 2: Status (device writes)
+            // Descriptor 2: Status byte (device writes to DMA memory)
             (*desc_table.add(desc2 as usize)) = VringDesc {
-                addr: 0, // Status byte location
+                addr: req_dma.status_phys,
                 len: 1,
                 flags: vring_flags::VRING_DESC_F_WRITE,
                 next: 0,
@@ -803,6 +868,9 @@ impl VirtioBlkDevice {
             // Submit to available ring
             queue_guard.submit(desc0);
         }
+
+        // Retain DMA buffer until completion
+        self.inflight_dma.lock().insert(desc0, req_dma);
 
         queue_guard.notify();
 
@@ -829,6 +897,14 @@ impl VirtioBlkDevice {
             return Err(BlockError::InvalidSector);
         }
 
+        // Allocate DMA-safe header + status byte
+        let header = VirtioBlkReqHeader {
+            req_type: VirtioBlkReqType::Out as u32,
+            reserved: 0,
+            sector,
+        };
+        let req_dma = BlkRequestDma::new(&header).ok_or(BlockError::NotReady)?;
+
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();
 
@@ -844,18 +920,12 @@ impl VirtioBlkDevice {
             BlockError::QueueFull
         })?;
 
-        let header = VirtioBlkReqHeader {
-            req_type: VirtioBlkReqType::Out as u32,
-            reserved: 0,
-            sector,
-        };
-
         unsafe {
             let desc_table = queue_guard.desc_table;
 
-            // Descriptor 0: Header
+            // Descriptor 0: Header (device reads from DMA memory)
             (*desc_table.add(desc0 as usize)) = VringDesc {
-                addr: &header as *const _ as u64,
+                addr: req_dma.header_phys,
                 len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc1,
@@ -869,9 +939,9 @@ impl VirtioBlkDevice {
                 next: desc2,
             };
 
-            // Descriptor 2: Status
+            // Descriptor 2: Status byte (device writes to DMA memory)
             (*desc_table.add(desc2 as usize)) = VringDesc {
-                addr: 0,
+                addr: req_dma.status_phys,
                 len: 1,
                 flags: vring_flags::VRING_DESC_F_WRITE,
                 next: 0,
@@ -879,6 +949,9 @@ impl VirtioBlkDevice {
 
             queue_guard.submit(desc0);
         }
+
+        // Retain DMA buffer until completion
+        self.inflight_dma.lock().insert(desc0, req_dma);
 
         queue_guard.notify();
 
@@ -896,6 +969,14 @@ impl VirtioBlkDevice {
             return Err(BlockError::Unsupported);
         }
 
+        // Allocate DMA-safe header + status byte
+        let header = VirtioBlkReqHeader {
+            req_type: VirtioBlkReqType::Flush as u32,
+            reserved: 0,
+            sector: 0, // sector is ignored for flush
+        };
+        let req_dma = BlkRequestDma::new(&header).ok_or(BlockError::NotReady)?;
+
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();
 
@@ -906,26 +987,20 @@ impl VirtioBlkDevice {
             BlockError::QueueFull
         })?;
 
-        let header = VirtioBlkReqHeader {
-            req_type: VirtioBlkReqType::Flush as u32,
-            reserved: 0,
-            sector: 0, // sector is ignored for flush
-        };
-
         unsafe {
             let desc_table = queue_guard.desc_table;
 
-            // Descriptor 0: Header (device reads)
+            // Descriptor 0: Header (device reads from DMA memory)
             (*desc_table.add(desc0 as usize)) = VringDesc {
-                addr: &header as *const _ as u64,
+                addr: req_dma.header_phys,
                 len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc1,
             };
 
-            // Descriptor 1: Status (device writes)
+            // Descriptor 1: Status byte (device writes to DMA memory)
             (*desc_table.add(desc1 as usize)) = VringDesc {
-                addr: 0, // Status byte location
+                addr: req_dma.status_phys,
                 len: 1,
                 flags: vring_flags::VRING_DESC_F_WRITE,
                 next: 0,
@@ -933,6 +1008,9 @@ impl VirtioBlkDevice {
 
             queue_guard.submit(desc0);
         }
+
+        // Retain DMA buffer until completion
+        self.inflight_dma.lock().insert(desc0, req_dma);
 
         queue_guard.notify();
 
@@ -1957,6 +2035,29 @@ pub unsafe fn init_virtio_blk_for_device(
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
     };
     let mut dev = VirtioBlkDevice::new_with_device(Box::new(transport), Some(device));
+    unsafe { dev.init()? };
+
+    let device_arc = Arc::new(dev);
+
+    log::info!(
+        "VirtIO-blk initialized: {} sectors, {} bytes/sector\n",
+        device_arc.config().capacity,
+        device_arc.config().block_size
+    );
+
+    *VIRTIO_BLK_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    Ok(())
+}
+
+/// Initialize the global VirtIO block device from an existing VirtioTransport (MMIO or PCI).
+///
+/// # Safety
+/// Caller must ensure the transport is properly initialized and points to a valid device.
+pub unsafe fn init_virtio_blk_with_transport(
+    transport: Box<dyn VirtioTransport>,
+    iommu_device_id: Option<IommuDeviceId>,
+) -> Result<(), BlockError> {
+    let mut dev = VirtioBlkDevice::new_with_device(transport, iommu_device_id);
     unsafe { dev.init()? };
 
     let device_arc = Arc::new(dev);

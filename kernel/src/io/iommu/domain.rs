@@ -766,6 +766,20 @@ impl IommuDomain {
             shards.push(PoisonLock::new(DomainShard::new()));
         }
 
+        let (default_iova_base, default_iova_size) = if cfg!(feature = "qemu-test-export") {
+            // Keep qemu migration suites deterministic under their fixed bump allocator.
+            (0x1_0000_0000, 0x1000_0000) // 4GB base, 256MB window
+        } else {
+            (0x1_0000_0000, 0x8_0000_0000) // 4GB base, 32GB window
+        };
+        crate::io::log::early_print("[IOMMU] domain::new iova base=");
+        crate::io::log::early_print_hex(default_iova_base);
+        crate::io::log::early_print(" size=");
+        crate::io::log::early_print_hex(default_iova_size);
+        crate::io::log::early_print("\n");
+        let per_domain_iova = super::IovaAllocatorFast::new(default_iova_base, default_iova_size);
+        crate::io::log::early_print("[IOMMU] domain::new iova allocator ready\n");
+
         Self {
             id,
             domain_type,
@@ -791,10 +805,7 @@ impl IommuDomain {
             // Avoids low addresses (reserved for 32-bit legacy devices) and
             // provides ample space for typical workloads.
             // Uses bitmap-based IovaAllocatorFast with O(1) magazine allocation.
-            per_domain_iova: super::IovaAllocatorFast::new(
-                0x1_0000_0000,           // 4GB base (above 32-bit space)
-                0x8_0000_0000,           // 32GB size (1MB bitmap)
-            ),
+            per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
         }
     }

@@ -395,6 +395,8 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - `pending` 監視項目は `scripts/qemu_pending_cases.lst` で管理する。
 - `suite_pending` 実行時に `target/qemu-logs/pending-summary.txt|json` が生成される。
 - `suite_kernel_runtime_pending` 実行時に `target/qemu-logs/kernel-runtime-pending-summary.txt|json` が生成される。
+- `suite_kernel` は IOMMU wave2 deterministic ケース（core + poison/QI）を required で実行し、`std`/global-singleton/time-pressure 依存ケースは pending へ残す。
+- IOMMU residual pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
 - `scripts/qemu_legacy_test_allowlist.lst` は `#[test]` 例外検出ガード専用で、pending監視とは独立。
 
 ### 7.2 プロジェクト構造
