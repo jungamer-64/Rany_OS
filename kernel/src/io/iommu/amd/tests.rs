@@ -53,6 +53,7 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         enabled: AtomicBool::new(false),
         security_notifier: spin::Once::new(),
         max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
+        interrupt_remap_tables: alloc::vec![None],
     }
 }
 
@@ -311,6 +312,7 @@ fn make_test_driver_small() -> AmdIommuDriver {
         enabled: AtomicBool::new(false),
         security_notifier: spin::Once::new(),
         max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
+        interrupt_remap_tables: alloc::vec![None],
     }
 }
 
@@ -478,4 +480,93 @@ fn test_cmdqueue_pressure() {
     assert_eq!(total_processed, count);
     drop(completions);
     assert_eq!(cq.processed_total(), count);
+}
+
+// ---------------------------------------------------------------------------
+// Wave5 (Interrupt Remapping) #[test_case] tests
+// ---------------------------------------------------------------------------
+
+use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
+use super::cmd::AmdCommand;
+
+#[test_case]
+fn test_wave5_irt_entry_construction() {
+    let irte = AmdIrte::fixed(0x42, 0x0A, false);
+    assert!(irte.is_present());
+    assert_eq!(irte.vector(), 0x42);
+    assert_eq!(irte.destination(), 0x0A);
+    assert!(!irte.is_logical());
+
+    let irte_logical = AmdIrte::fixed(0xFF, 0xDEAD, true);
+    assert!(irte_logical.is_logical());
+    assert_eq!(irte_logical.vector(), 0xFF);
+    assert_eq!(irte_logical.destination(), 0xDEAD);
+
+    let empty = AmdIrte::new();
+    assert!(!empty.is_present());
+}
+
+#[test_case]
+fn test_wave5_irt_alloc_free() {
+    let mut irt = AmdInterruptRemapTable::new(4).unwrap();
+    let h0 = irt.allocate().unwrap();
+    let h1 = irt.allocate().unwrap();
+    let h2 = irt.allocate().unwrap();
+    assert_ne!(h0, h1);
+    assert_ne!(h1, h2);
+    assert_ne!(h0, h2);
+
+    irt.set_entry(h0, AmdIrte::fixed(0x30, 1, false)).unwrap();
+    irt.free(h0).unwrap();
+    irt.free(h1).unwrap();
+    irt.free(h2).unwrap();
+
+    assert!(!irt.get_entry(h0).unwrap().is_present());
+}
+
+#[test_case]
+fn test_wave5_irt_exhaustion() {
+    let mut irt = AmdInterruptRemapTable::new(2).unwrap(); // 4 entries
+    assert_eq!(irt.capacity(), 4);
+
+    let mut handles = alloc::vec::Vec::new();
+    for _ in 0..4 {
+        handles.push(irt.allocate().unwrap());
+    }
+    assert!(irt.allocate().is_err());
+
+    irt.free(handles[1]).unwrap();
+    assert_eq!(irt.allocate().unwrap(), handles[1]);
+}
+
+#[test_case]
+fn test_wave5_irt_invalidation_cmd_format() {
+    let devid: u16 = 0x0108;
+    let cmd = AmdCommand::invalidate_interrupt_table(devid);
+    assert_eq!(cmd.data[0] & 0xFFFF, devid as u32);
+    assert_eq!((cmd.data[1] >> 28) & 0x0F, 0x05);
+}
+
+#[test_case]
+fn test_wave5_map_interrupt_returns_handle() {
+    let mut driver = make_test_driver_small();
+    let unit_irt = AmdUnitIrt::new(4).unwrap();
+    if let Some(slot) = driver.interrupt_remap_tables.get_mut(0) {
+        *slot = Some(PoisonLock::new(unit_irt));
+    } else {
+        panic!("no IRT slot for unit 0");
+    }
+    let handle = driver.map_interrupt(0, 0, 1, 0, 0x42, 0x0A, false).unwrap();
+    assert!(handle < 16); // 2^4 = 16 entries
+}
+
+#[test_case]
+fn test_wave5_get_remap_msi_message_format() {
+    let (addr, _data) = encode_remap_msi(5);
+    assert_eq!(addr & 0xFFF0_0000, 0xFEE0_0000);
+    assert_ne!(addr & 0x04, 0); // bit 2 = remapped format
+    assert_eq!((addr >> 2) & 0xFFFF, 5);
+
+    let (addr2, _) = encode_remap_msi(10);
+    assert_ne!(addr, addr2);
 }

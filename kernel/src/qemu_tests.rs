@@ -821,3 +821,27 @@ pub fn iommu_amd_wave1_security_notifier_dispatch_smoke() -> bool {
 pub fn iommu_amd_wave1_cmdqueue_pressure_smoke() -> bool {
     crate::io::iommu::qemu_tests::amd_wave1_cmdqueue_pressure_smoke()
 }
+
+pub fn iommu_amd_wave5_irt_entry_construction_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_entry_construction_smoke()
+}
+
+pub fn iommu_amd_wave5_irt_alloc_free_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_alloc_free_smoke()
+}
+
+pub fn iommu_amd_wave5_irt_exhaustion_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_exhaustion_smoke()
+}
+
+pub fn iommu_amd_wave5_irt_invalidation_cmd_format_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_invalidation_cmd_format_smoke()
+}
+
+pub fn iommu_amd_wave5_map_interrupt_returns_handle_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_map_interrupt_returns_handle_smoke()
+}
+
+pub fn iommu_amd_wave5_get_remap_msi_message_format_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_get_remap_msi_message_format_smoke()
+}

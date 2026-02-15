@@ -8,6 +8,7 @@
 pub(crate) const MMIO_DEV_TABLE_OFFSET: u64 = 0x0000;
 pub(crate) const MMIO_EVT_BUF_OFFSET: u64 = 0x0010;
 pub(crate) const MMIO_CONTROL_OFFSET: u64 = 0x0018;
+pub(crate) const MMIO_IRT_BASE_OFFSET: u64 = 0x0068;
 pub(crate) const MMIO_MSI_ADDR_LO_OFFSET: u64 = 0x015c;
 pub(crate) const MMIO_MSI_ADDR_HI_OFFSET: u64 = 0x0160;
 pub(crate) const MMIO_MSI_DATA_OFFSET: u64 = 0x0164;
@@ -19,6 +20,7 @@ pub(crate) const MMIO_STATUS_OFFSET: u64 = 0x2020;
 pub(crate) const CONTROL_IOMMU_EN: u64 = 1 << 0;
 pub(crate) const CONTROL_EVT_LOG_EN: u64 = 1 << 2;
 pub(crate) const CONTROL_EVT_INT_EN: u64 = 1 << 3;
+pub(crate) const CONTROL_INT_MAP_EN: u64 = 1 << 4;
 pub(crate) const CONTROL_CMDBUF_EN: u64 = 1 << 12;
 
 // Device table entry page mode fields

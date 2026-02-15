@@ -16,6 +16,7 @@ pub(super) mod invalidation;
 pub(super) mod domain;
 pub(super) mod dma;
 pub(super) mod init;
+pub(super) mod irt;
 
 #[cfg(test)]
 mod tests;
@@ -51,6 +52,7 @@ use self::domain::align_down;
 use self::domain::align_up;
 use self::event_log::AmdEventLog;
 use self::invalidation::AmdCommandState;
+use self::irt::AmdUnitIrt;
 use self::registers::*;
 
 // ---------------------------------------------------------------------------
@@ -192,6 +194,7 @@ pub struct AmdIommuDriver {
     pub(super) enabled: AtomicBool,
     pub(super) security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
     pub(super) max_addr_bits: u8,
+    pub(super) interrupt_remap_tables: Vec<Option<PoisonLock<AmdUnitIrt>>>,
 }
 
 #[derive(Clone)]
@@ -279,6 +282,12 @@ impl AmdIommuDriver {
             },
         );
 
+        let irt_count = units.len();
+        let mut interrupt_remap_tables = Vec::with_capacity(irt_count);
+        for _ in 0..irt_count {
+            interrupt_remap_tables.push(None);
+        }
+
         Self {
             units,
             ivmd_ranges,
@@ -294,6 +303,7 @@ impl AmdIommuDriver {
             enabled: AtomicBool::new(false),
             security_notifier: spin::Once::new(),
             max_addr_bits,
+            interrupt_remap_tables,
         }
     }
 
@@ -420,6 +430,25 @@ impl AmdIommuDriver {
                 control &= !CONTROL_EVT_LOG_EN;
                 control &= !CONTROL_EVT_INT_EN;
             }
+            // Program IRT if available for this unit
+            if let Some(Some(irt_lock)) = self.interrupt_remap_tables.get(idx) {
+                match irt_lock.lock() {
+                    Ok(irt) => {
+                        let base_reg = irt.table.base_register_value(irt.size_log2);
+                        mmio_write_u64(mmio_base + MMIO_IRT_BASE_OFFSET as usize, base_reg);
+                        control |= CONTROL_INT_MAP_EN;
+                    }
+                    Err(_) => {
+                        log::warn!(
+                            "AMD-Vi IRT lock poisoned for unit @ {:#x}, skipping IR enable",
+                            unit.base_addr
+                        );
+                        control &= !CONTROL_INT_MAP_EN;
+                    }
+                }
+            } else {
+                control &= !CONTROL_INT_MAP_EN;
+            }
             mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
         }
         self.enabled.store(true, Ordering::Release);
@@ -430,8 +459,11 @@ impl AmdIommuDriver {
         for unit in &self.units {
             let mmio_base = phys_to_virt_usize(unit.base_addr);
             let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
-            control &=
-                !(CONTROL_IOMMU_EN | CONTROL_CMDBUF_EN | CONTROL_EVT_LOG_EN | CONTROL_EVT_INT_EN);
+            control &= !(CONTROL_IOMMU_EN
+                | CONTROL_CMDBUF_EN
+                | CONTROL_EVT_LOG_EN
+                | CONTROL_EVT_INT_EN
+                | CONTROL_INT_MAP_EN);
             mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
         }
         self.enabled.store(false, Ordering::Release);
@@ -440,19 +472,41 @@ impl AmdIommuDriver {
 
     pub(crate) fn map_interrupt(
         &self,
-        _segment: u16,
-        _bus: u8,
-        _device: u8,
-        _function: u8,
-        _vector: u8,
-        _dest_id: u32,
-        _logical: bool,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+        vector: u8,
+        dest_id: u32,
+        logical: bool,
     ) -> Result<u16, IommuError> {
-        Err(IommuError::NotSupported)
+        let devid = ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16);
+        let unit_idx = self
+            .units
+            .iter()
+            .position(|unit| unit.segment == segment && unit.covers_devid(devid))
+            .ok_or(IommuError::NotPresent)?;
+
+        let irt_lock = self
+            .interrupt_remap_tables
+            .get(unit_idx)
+            .and_then(|slot| slot.as_ref())
+            .ok_or(IommuError::NotSupported)?;
+
+        let mut irt = irt_lock.lock().map_err(|_| IommuError::Poisoned)?;
+        let handle = irt.table.allocate()?;
+
+        let irte = irt::AmdIrte::fixed(vector, dest_id, logical);
+        if let Err(e) = irt.table.set_entry(handle, irte) {
+            let _ = irt.table.free(handle);
+            return Err(e);
+        }
+
+        Ok(handle)
     }
 
-    pub(crate) fn get_remap_msi_message(&self, _handle: u16) -> (u64, u32) {
-        (0, 0)
+    pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
+        irt::encode_remap_msi(handle)
     }
 }
 
