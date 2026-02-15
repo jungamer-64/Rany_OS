@@ -72,6 +72,9 @@ struct RuntimeCounts {
     passed: u64,
     failed: u64,
     blocked: u64,
+    amd_passed: u64,
+    amd_failed: u64,
+    amd_blocked: u64,
 }
 
 fn report_case(name: &str, state: &str) {
@@ -82,6 +85,28 @@ fn report_case(name: &str, state: &str) {
     serial_write_str("\n");
 }
 
+fn run_runtime_case(name: &str, f: fn() -> bool, counts: &mut RuntimeCounts) {
+    if f() {
+        report_case(name, "pass");
+        counts.passed += 1;
+    } else {
+        report_case(name, "fail");
+        counts.failed += 1;
+    }
+}
+
+fn run_amd_case(name: &str, f: fn() -> bool, counts: &mut RuntimeCounts) {
+    if f() {
+        report_case(name, "pass");
+        counts.passed += 1;
+        counts.amd_passed += 1;
+    } else {
+        report_case(name, "fail");
+        counts.failed += 1;
+        counts.amd_failed += 1;
+    }
+}
+
 fn run_suite() -> RuntimeCounts {
     serial_write_str("[qemu-suite] kernel_runtime_pending start\n");
 
@@ -89,12 +114,46 @@ fn run_suite() -> RuntimeCounts {
         passed: 0,
         failed: 0,
         blocked: 0,
+        amd_passed: 0,
+        amd_failed: 0,
+        amd_blocked: 0,
     };
 
     let memory_ready = rany_os::memory::is_initialized();
     serial_write_str("[qemu-suite] kernel_runtime_pending preflight memory_initialized=");
     serial_write_u64(if memory_ready { 1 } else { 0 });
     serial_write_str("\n");
+
+    run_amd_case(
+        "iommu_amd_wave0_alias_devids_for_device_dedup",
+        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_dedup_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave0_alias_devids_for_device_no_match",
+        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_no_match_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave0_ivhd_flags_for_device_combined",
+        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_combined_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave0_ivhd_flags_for_device_acpi_hid",
+        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave0_map_ivmd_ranges_exclusion_splits",
+        rany_os::qemu_tests::iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave0_map_for_device_rejects_exclusion_range",
+        rany_os::qemu_tests::iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke,
+        &mut counts,
+    );
 
     if !memory_ready {
         report_case("kernel_net_bridge_zero_copy_integration", "blocked");
@@ -103,21 +162,16 @@ fn run_suite() -> RuntimeCounts {
         return counts;
     }
 
-    if rany_os::qemu_tests::kernel_net_bridge_zero_copy_integration_smoke() {
-        report_case("kernel_net_bridge_zero_copy_integration", "pass");
-        counts.passed += 1;
-    } else {
-        report_case("kernel_net_bridge_zero_copy_integration", "fail");
-        counts.failed += 1;
-    }
-
-    if rany_os::qemu_tests::kernel_bench_framebuffer_smoke() {
-        report_case("kernel_bench_framebuffer", "pass");
-        counts.passed += 1;
-    } else {
-        report_case("kernel_bench_framebuffer", "fail");
-        counts.failed += 1;
-    }
+    run_runtime_case(
+        "kernel_net_bridge_zero_copy_integration",
+        rany_os::qemu_tests::kernel_net_bridge_zero_copy_integration_smoke,
+        &mut counts,
+    );
+    run_runtime_case(
+        "kernel_bench_framebuffer",
+        rany_os::qemu_tests::kernel_bench_framebuffer_smoke,
+        &mut counts,
+    );
 
     counts
 }
@@ -129,6 +183,12 @@ fn write_counts(counts: &RuntimeCounts) {
     serial_write_u64(counts.failed);
     serial_write_str(" blocked=");
     serial_write_u64(counts.blocked);
+    serial_write_str(" amd_pass=");
+    serial_write_u64(counts.amd_passed);
+    serial_write_str(" amd_fail=");
+    serial_write_u64(counts.amd_failed);
+    serial_write_str(" amd_blocked=");
+    serial_write_u64(counts.amd_blocked);
     serial_write_str("\n");
 }
 

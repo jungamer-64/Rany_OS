@@ -429,6 +429,8 @@ pub struct HardwareTable<T: Sized + Copy> {
     alloc_bytes: usize,
     /// Number of 4KiB frames backing the table
     frame_count: usize,
+    /// True when backing storage comes from heap fallback (qemu-test-export).
+    heap_backed: bool,
     /// PhantomData for T
     _marker: PhantomData<T>,
 }
@@ -475,45 +477,71 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             return Err(IommuError::InvalidAddress);
         }
 
-        let phys = if frame_count == 1 {
-            let frame = if let Some(node) = numa_hint {
-                crate::mm::frame_allocator::alloc_frame_on_numa_node(crate::mm::types::NumaNodeId::new(
-                    node as u8,
-                ))
-            } else {
-                crate::mm::frame_allocator::alloc_frame()
-            }
-            .ok_or(IommuError::OutOfMemory)?;
-            frame.start_address().as_u64()
-        } else {
-            if numa_hint.is_some() {
-                log::debug!("[IOMMU] NUMA hint ignored for contiguous table allocation");
-            }
-            crate::mm::frame_allocator::alloc_contiguous_frames(frame_count)
+        #[cfg(feature = "qemu-test-export")]
+        {
+            let _ = numa_hint;
+            // qemu migration suites run without full PMM/frame allocator init.
+            let layout = alloc::alloc::Layout::from_size_align(alloc_bytes, page_size)
+                .map_err(|_| IommuError::InvalidAddress)?;
+            let raw_ptr = crate::util::allocate_zeroed(layout)
                 .ok_or(IommuError::OutOfMemory)?
-                .as_u64()
-        };
-
-        // Convert to virtual address using linear mapping
-        let virt_addr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
-        let raw_ptr = virt_addr.as_u64() as *mut u8;
-
-        // Zero the memory (hardware safety requirement)
-        // SAFETY: We just allocated this region and own it exclusively
-        unsafe {
-            core::ptr::write_bytes(raw_ptr, 0, alloc_bytes);
+                .as_ptr();
+            let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
+            let phys = virt_ptr_to_phys(raw_ptr as *const u8)?;
+            return Ok(Self {
+                ptr,
+                phys,
+                count,
+                alloc_bytes,
+                frame_count,
+                heap_backed: true,
+                _marker: PhantomData,
+            });
         }
 
-        let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
+        #[cfg(not(feature = "qemu-test-export"))]
+        {
+            let phys = if frame_count == 1 {
+                let frame = if let Some(node) = numa_hint {
+                    crate::mm::frame_allocator::alloc_frame_on_numa_node(
+                        crate::mm::types::NumaNodeId::new(node as u8),
+                    )
+                } else {
+                    crate::mm::frame_allocator::alloc_frame()
+                }
+                .ok_or(IommuError::OutOfMemory)?;
+                frame.start_address().as_u64()
+            } else {
+                if numa_hint.is_some() {
+                    log::debug!("[IOMMU] NUMA hint ignored for contiguous table allocation");
+                }
+                crate::mm::frame_allocator::alloc_contiguous_frames(frame_count)
+                    .ok_or(IommuError::OutOfMemory)?
+                    .as_u64()
+            };
 
-        Ok(Self {
-            ptr,
-            phys,
-            count,
-            alloc_bytes,
-            frame_count,
-            _marker: PhantomData,
-        })
+            // Convert to virtual address using linear mapping
+            let virt_addr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+            let raw_ptr = virt_addr.as_u64() as *mut u8;
+
+            // Zero the memory (hardware safety requirement)
+            // SAFETY: We just allocated this region and own it exclusively
+            unsafe {
+                core::ptr::write_bytes(raw_ptr, 0, alloc_bytes);
+            }
+
+            let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
+
+            return Ok(Self {
+                ptr,
+                phys,
+                count,
+                alloc_bytes,
+                frame_count,
+                heap_backed: false,
+                _marker: PhantomData,
+            });
+        }
     }
 
     /// Get the virtual pointer (for kernel access)
@@ -605,6 +633,19 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
 
 impl<T: Sized + Copy> Drop for HardwareTable<T> {
     fn drop(&mut self) {
+        if self.heap_backed {
+            if let Ok(layout) = alloc::alloc::Layout::from_size_align(
+                self.alloc_bytes,
+                crate::mm::PAGE_SIZE_4K as usize,
+            ) {
+                // SAFETY: heap-backed tables were allocated via allocate_zeroed.
+                unsafe {
+                    alloc::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
+                }
+            }
+            return;
+        }
+
         // SAFETY: We own the backing frames and they were allocated via PMM.
         // The caller must ensure hardware is not using this table before drop.
         use x86_64::structures::paging::{PhysFrame, Size4KiB};

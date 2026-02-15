@@ -236,14 +236,21 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 ```
 
 `cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の required suites をQEMU上で実行します。`pending` / `kernel_runtime_pending` は `--ignored` 指定時のみ実行される非必須スイートです。
-`suite_kernel` では IOMMU wave2 の deterministic ケース（core + poison/QI）を required で実行し、`std`/global-singleton/time-pressure 依存ケースは pending で監視します。
+`suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri + residual）に加えて wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）を実行します。`std`/global-singleton/time-pressure 依存の canonical 名は pending で監視しつつ、required の no_std smoke を並行維持する二層管理を採用します。
 
 `pending` 運用:
 - 監視項目の管理: `scripts/qemu_pending_cases.lst`
+- IOMMU residual parity マッピング: `scripts/qemu_iommu_residual_parity.lst`
+- 整合ガード: `bash scripts/verify_iommu_residual_parity.sh`
 - 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
 - runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`
-- IOMMU residual pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
-- `#[test]` 例外の技術的ガード: `scripts/qemu_legacy_test_allowlist.lst`（pending監視とは別用途）
+- runtimeサマリ追記: `amd_passed_count`, `amd_failed_count`, `amd_blocked_count`
+- IOMMU residual canonical pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
+- IOMMU wave3 pending monitored smoke（required 未投入）: `none`
+- AMD-Vi Wave0 runtime pending 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
+- 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
+- AMD昇格ルール: pending CIで AMD Wave0 が3連続PASS（`amd_failed_count=0` かつ `amd_blocked_count=0`）なら次段で required 移管提案。
+- `#[test]` 例外の技術的ガード（実装ガード）: `scripts/qemu_legacy_test_allowlist.lst`
 
 ## **📄 ライセンス**
 

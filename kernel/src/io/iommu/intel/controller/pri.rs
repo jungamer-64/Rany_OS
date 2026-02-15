@@ -12,7 +12,7 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
 use super::utils::IommuUtils;
-use crate::io::iommu::intel::qi::{InvalidationQueueEntry, qi_desc_type};
+use crate::io::iommu::intel::qi::InvalidationQueueEntry;
 use crate::io::iommu::intel::registers::regs;
 use crate::io::iommu::common::{PageRequestEntry, PageRequestQueue};
 use crate::io::iommu::types::IommuError;
@@ -21,8 +21,14 @@ pub trait PageRequestManager: InvalidationOps {
     /// Initialize the Page Request Queue
     fn init_page_request(&mut self, size: usize) -> Result<(), IommuError>;
 
-    /// Process pending page requests
+    /// Process pending page requests (drains all)
     fn process_page_requests(&mut self) -> Vec<PageRequestEntry>;
+
+    /// Process up to `fuel` page requests, returning (entries, has_more).
+    fn process_page_requests_with_fuel(
+        &mut self,
+        fuel: usize,
+    ) -> (Vec<PageRequestEntry>, bool);
 
     /// Send a Page Response via Queued Invalidation
     fn send_page_response(
@@ -126,6 +132,45 @@ impl PageRequestManager for IommuController {
         requests
     }
 
+    fn process_page_requests_with_fuel(
+        &mut self,
+        fuel: usize,
+    ) -> (Vec<PageRequestEntry>, bool) {
+        let mut requests = Vec::new();
+        let mut has_more = false;
+
+        let tail = (self.read64(regs::PQT) >> 4) as usize;
+
+        match self.page_request_queue.lock() {
+            Ok(mut prq_guard) => {
+                if let Some(prq) = prq_guard.as_mut() {
+                    prq.update_tail(tail);
+
+                    for _ in 0..fuel {
+                        match prq.pop() {
+                            Some(entry) => requests.push(entry),
+                            None => break,
+                        }
+                    }
+
+                    // Check if there are more entries remaining
+                    has_more = prq.has_pending();
+
+                    let head = prq.head();
+                    let _ = prq;
+                    self.write64(regs::PQH, head as u64);
+                }
+            }
+            Err(_) => {
+                log::error!(
+                    "[IOMMU] page_request_queue lock poisoned during fuel-based processing"
+                );
+            }
+        }
+
+        (requests, has_more)
+    }
+
     fn send_page_response(
         &mut self,
         source_id: u16,
@@ -137,19 +182,13 @@ impl PageRequestManager for IommuController {
             return Err(IommuError::NotSupported);
         }
 
-        // Page Response descriptor format (type 0x5 with subtype)
-        // This is a simplified implementation - full implementation would use
-        // the proper Page Response descriptor format from VT-d spec.
-        let _desc = InvalidationQueueEntry {
-            lo: qi_desc_type::WAIT | // Using wait descriptor as response confirmation
-                ((response_code as u64) << 4) |
-                ((source_id as u64) << 16),
-            hi: if let Some(p) = pasid {
-                (p as u64) | ((prg_index as u64) << 20)
-            } else {
-                (prg_index as u64) << 20
-            },
-        };
+        // Page Group Response descriptor (VT-d Spec §6.5.2.9)
+        let desc = InvalidationQueueEntry::page_group_response(
+            source_id,
+            pasid,
+            prg_index,
+            response_code,
+        );
 
         log::trace!(
             "[IOMMU] Page Response: source_id={:04x} pasid={:?} prg={} code={}\n",
@@ -160,7 +199,7 @@ impl PageRequestManager for IommuController {
         );
 
         // Submit response and wait for completion
-        self.submit_invalidation(_desc)?;
+        self.submit_invalidation(desc)?;
         self.qi_wait_sync()
     }
 }

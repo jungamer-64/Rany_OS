@@ -439,6 +439,18 @@ impl DomainManager for IommuController {
     }
 
     fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
+        // ATS cleanup: disable ATS and invalidate Device-TLB before detaching
+        let ats_was_enabled = match self.ats_enabled_devices.lock() {
+            Ok(set) => set.contains(&device),
+            Err(_) => false,
+        };
+        if ats_was_enabled {
+            self.disable_ats_for_device(
+                device,
+                crate::io::iommu::security::AtsChangeReason::DeviceDetach,
+            );
+        }
+
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
 

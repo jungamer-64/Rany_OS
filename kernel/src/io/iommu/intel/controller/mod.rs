@@ -396,6 +396,11 @@ impl IommuController {
 
     /// Invalidate IOTLB for a specific domain (Register-based / Direct)
     pub unsafe fn invalidate_iotlb_direct(&self, domain_id: u16) {
+        #[cfg(feature = "qemu-test-export")]
+        if self.mmio_base == 0 {
+            return;
+        }
+
         use crate::io::iommu::intel::registers::{iotlb_bits, iotlb_regs};
         let offset = self.iotlb_reg_offset();
 
@@ -416,6 +421,11 @@ impl IommuController {
 
     /// Invalidate Global IOTLB (Register-based / Direct)
     pub unsafe fn invalidate_iotlb_global(&self) {
+        #[cfg(feature = "qemu-test-export")]
+        if self.mmio_base == 0 {
+            return;
+        }
+
         use crate::io::iommu::intel::registers::{iotlb_bits, iotlb_regs};
         let offset = self.iotlb_reg_offset();
 
@@ -476,6 +486,11 @@ impl IommuController {
 
     /// Register-based global context cache invalidation.
     unsafe fn invalidate_context_global_direct(&self) {
+        #[cfg(feature = "qemu-test-export")]
+        if self.mmio_base == 0 {
+            return;
+        }
+
         use crate::io::iommu::intel::registers::ccmd_bits;
         
         // Global context invalidation command

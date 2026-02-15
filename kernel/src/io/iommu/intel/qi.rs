@@ -32,6 +32,8 @@ pub mod qi_desc_type {
     pub const PASID_IOTLB_INV: u64 = 0x7;
     /// PASID-cache Invalidate
     pub const PASID_CACHE_INV: u64 = 0x8;
+    /// Page Group Response Descriptor (VT-d Spec §6.5.2.9)
+    pub const PAGE_GROUP_RESP: u64 = 0x9;
 }
 
 impl InvalidationQueueEntry {
@@ -122,6 +124,67 @@ impl InvalidationQueueEntry {
     /// Create a Page-selective Device-TLB Invalidation
     pub fn device_tlb_invalidate_page(source_id: u16, domain_id: u16, iova: u64, size: u8) -> Self {
         Self::device_tlb_invalidate(source_id, false, iova, size, domain_id)
+    }
+
+    /// Create a PASID Cache Invalidation descriptor (VT-d Spec §6.5.2.7)
+    /// Granularity: 1=global, 2=domain, 3=device-selective
+    pub fn pasid_cache_invalidate(granularity: u8, domain_id: u16, pasid: u32) -> Self {
+        let lo = qi_desc_type::PASID_CACHE_INV
+            | ((granularity as u64 & 0x7) << 4)
+            | ((domain_id as u64) << 16);
+        let hi = (pasid as u64) & 0xFFFFF; // PASID is 20 bits
+        Self { lo, hi }
+    }
+
+    /// Create a Global PASID Cache Invalidation descriptor
+    pub fn pasid_cache_invalidate_global() -> Self {
+        Self::pasid_cache_invalidate(1, 0, 0)
+    }
+
+    /// Create a Domain PASID Cache Invalidation descriptor
+    pub fn pasid_cache_invalidate_domain(domain_id: u16) -> Self {
+        Self::pasid_cache_invalidate(2, domain_id, 0)
+    }
+
+    /// Create a PASID-based IOTLB Invalidation descriptor (VT-d Spec §6.5.2.6)
+    pub fn pasid_iotlb_invalidate(domain_id: u16, pasid: u32, drain: bool) -> Self {
+        let lo = qi_desc_type::PASID_IOTLB_INV
+            | (if drain { 1 << 6 } else { 0 }) // DW (Drain Writes)
+            | (if drain { 1 << 7 } else { 0 }) // DR (Drain Reads)
+            | ((domain_id as u64) << 16);
+        let hi = (pasid as u64) & 0xFFFFF;
+        Self { lo, hi }
+    }
+
+    /// Create a Page Group Response descriptor (VT-d Spec §6.5.2.9)
+    ///
+    /// Used to respond to page requests from devices via PRI.
+    /// Hardware processes this descriptor to send a page response back to the
+    /// requesting device.
+    ///
+    /// # Arguments
+    /// * `source_id` - PCIe Requester ID of the requesting device
+    /// * `pasid` - PASID if the original request was PASID-tagged
+    /// * `prg_index` - Page Request Group Index from the original request
+    /// * `response_code` - Response code (0=Success, 1=Invalid Request, 2=Failure)
+    pub fn page_group_response(
+        source_id: u16,
+        pasid: Option<u32>,
+        prg_index: u16,
+        response_code: u8,
+    ) -> Self {
+        // lo: bits[3:0]=type(0x9), bits[7:4]=response_code, bits[31:16]=source_id,
+        //     bits[47:32]=prg_index
+        let lo = qi_desc_type::PAGE_GROUP_RESP
+            | ((response_code as u64 & 0xF) << 4)
+            | ((source_id as u64) << 16)
+            | ((prg_index as u64) << 32);
+        // hi: bits[19:0]=PASID, bit[63]=PASID present
+        let hi = match pasid {
+            Some(p) => ((p as u64) & 0xFFFFF) | (1u64 << 63),
+            None => 0,
+        };
+        Self { lo, hi }
     }
 
     /// Create an Invalidation Wait descriptor

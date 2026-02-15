@@ -448,4 +448,63 @@ impl PasidTable {
             None
         }
     }
+
+    /// Allocate the next free PASID (PASID 0 is reserved for RID→PASID mapping)
+    pub fn allocate_pasid(&mut self) -> Result<u32, IommuError> {
+        // Reserve PASID 0 once up-front so free-bit search can proceed uniformly.
+        if !self.allocated.is_empty() {
+            self.allocated[0] |= 1u64;
+        }
+
+        for word_idx in 0..self.allocated.len() {
+            let word = self.allocated[word_idx];
+            if word == u64::MAX {
+                continue;
+            }
+            let bit = (!word).trailing_zeros() as usize;
+            let pasid = word_idx * 64 + bit;
+            if pasid >= self.size {
+                return Err(IommuError::OutOfMemory);
+            }
+            self.allocated[word_idx] |= 1u64 << bit;
+            return Ok(pasid as u32);
+        }
+        Err(IommuError::OutOfMemory)
+    }
+
+    /// Free a previously allocated PASID (PASID 0 cannot be freed)
+    pub fn free_pasid(&mut self, pasid: u32) -> Result<(), IommuError> {
+        if pasid == 0 {
+            return Err(IommuError::InvalidAddress);
+        }
+        if (pasid as usize) >= self.size {
+            return Err(IommuError::InvalidAddress);
+        }
+        let word_idx = (pasid as usize) / 64;
+        let bit_idx = (pasid as usize) % 64;
+        if self.allocated[word_idx] & (1u64 << bit_idx) == 0 {
+            return Err(IommuError::NotMapped);
+        }
+        if let Some(entry) = self.table.get_mut(pasid as usize) {
+            entry.clear();
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        }
+        self.allocated[word_idx] &= !(1u64 << bit_idx);
+        Ok(())
+    }
+
+    /// Check if a PASID is currently allocated
+    pub fn is_allocated(&self, pasid: u32) -> bool {
+        if (pasid as usize) >= self.size {
+            return false;
+        }
+        let word_idx = (pasid as usize) / 64;
+        let bit_idx = (pasid as usize) % 64;
+        self.allocated[word_idx] & (1u64 << bit_idx) != 0
+    }
+
+    /// Return the number of currently allocated PASIDs
+    pub fn allocated_count(&self) -> usize {
+        self.allocated.iter().map(|w| w.count_ones() as usize).sum()
+    }
 }

@@ -665,3 +665,139 @@ pub fn iommu_wave2_qi_wait_sync_poisoned_returns_error_smoke() -> bool {
 pub fn iommu_wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave2_qi_wait_async_poisoned_returns_error_smoke()
 }
+
+pub fn iommu_wave3_scalable_mode_pasid0_fault_resolution_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_scalable_mode_pasid0_fault_resolution_smoke()
+}
+
+pub fn iommu_wave3_mapping_slab_insert_lookup_remove_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_mapping_slab_insert_lookup_remove_smoke()
+}
+
+pub fn iommu_wave3_mapping_slab_overlap_detection_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_mapping_slab_overlap_detection_smoke()
+}
+
+pub fn iommu_wave3_zombie_queue_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_zombie_queue_basic_smoke()
+}
+
+pub fn iommu_wave3_zombie_queue_failed_cleanup_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_zombie_queue_failed_cleanup_smoke()
+}
+
+pub fn iommu_wave3_pri_fuel_processing_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pri_fuel_processing_smoke()
+}
+
+pub fn iommu_wave3_pasid_table_alloc_free_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pasid_table_alloc_free_smoke()
+}
+
+pub fn iommu_wave3_pasid_table_multi_domain_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pasid_table_multi_domain_smoke()
+}
+
+pub fn iommu_wave3_pasid_table_exhaustion_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pasid_table_exhaustion_smoke()
+}
+
+pub fn iommu_wave3_scalable_mode_detach_cleans_pasid_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_scalable_mode_detach_cleans_pasid_smoke()
+}
+
+pub fn iommu_wave3_scalable_mode_attach_detach_cycle_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_scalable_mode_attach_detach_cycle_smoke()
+}
+
+pub fn iommu_wave2_group_creation_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_creation_basic_smoke()
+}
+
+pub fn iommu_wave2_group_multifunction_same_group_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_multifunction_same_group_smoke()
+}
+
+pub fn iommu_wave2_group_acs_isolated_separation_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_acs_isolated_separation_smoke()
+}
+
+pub fn iommu_wave2_group_reuse_for_same_group_devices_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_reuse_for_same_group_devices_smoke()
+}
+
+pub fn iommu_wave2_group_poisoned_lock_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_poisoned_lock_returns_error_smoke()
+}
+
+pub fn iommu_wave2_group_full_flow_discovery_to_attach_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_full_flow_discovery_to_attach_smoke()
+}
+
+pub fn iommu_wave2_group_shared_domain_multi_device_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_shared_domain_multi_device_smoke()
+}
+
+pub fn iommu_wave2_group_device_detach_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_device_detach_smoke()
+}
+
+pub fn iommu_wave2_group_poisoned_device_to_group_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_poisoned_device_to_group_returns_error_smoke()
+}
+
+pub fn iommu_wave2_ats_enable_disable_lifecycle_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_ats_enable_disable_lifecycle_smoke()
+}
+
+pub fn iommu_wave2_ats_block_untrusted_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_ats_block_untrusted_smoke()
+}
+
+pub fn iommu_wave2_ats_detach_disables_ats_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_ats_detach_disables_ats_smoke()
+}
+
+pub fn iommu_wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_cmdqueue_map_unmap_with_domain_smoke()
+}
+
+pub fn iommu_wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_cmdqueue_map_device_nonblocking_smoke()
+}
+
+pub fn iommu_wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_dma_mask_respects_32bit_limit_smoke()
+}
+
+pub fn iommu_wave2_controller_security_notifier_dispatch_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_controller_security_notifier_dispatch_smoke()
+}
+
+pub fn iommu_wave2_qi_metrics_pressure_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_qi_metrics_pressure_smoke()
+}
+
+pub fn iommu_amd_wave0_alias_devids_for_device_dedup_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_alias_devids_for_device_dedup_smoke()
+}
+
+pub fn iommu_amd_wave0_alias_devids_for_device_no_match_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_alias_devids_for_device_no_match_smoke()
+}
+
+pub fn iommu_amd_wave0_ivhd_flags_for_device_combined_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_ivhd_flags_for_device_combined_smoke()
+}
+
+pub fn iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_ivhd_flags_for_device_acpi_hid_smoke()
+}
+
+pub fn iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_map_ivmd_ranges_exclusion_splits_smoke()
+}
+
+pub fn iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_map_for_device_rejects_exclusion_range_smoke()
+}

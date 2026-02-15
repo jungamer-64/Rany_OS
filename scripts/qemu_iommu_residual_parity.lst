@@ -1,0 +1,11 @@
+# IOMMU residual parity mapping for QEMU migration tracking.
+# Format: original_case|required_smoke_case|status|notes
+# - Empty lines and lines starting with '#' are ignored.
+# - `original_case` must exist in kernel/src/io/iommu/tests.rs.
+# - `required_smoke_case` must exist in kernel/src/io/iommu/qemu_tests.rs and be wired to suite_kernel.
+
+test_cmdqueue_map_unmap_with_domain|wave2_cmdqueue_map_unmap_with_domain_smoke|tracked|threaded-original
+test_map_for_device_async_and_unmap|wave2_cmdqueue_map_device_nonblocking_smoke|tracked|thread+global-original
+test_map_for_device_respects_dma_mask|wave2_dma_mask_respects_32bit_limit_smoke|tracked|global-singleton-original
+test_api_security_notifier_registration|wave2_controller_security_notifier_dispatch_smoke|tracked|api-vs-controller-delta
+test_qi_metrics_pressure|wave2_qi_metrics_pressure_smoke|tracked|time-pressure-original

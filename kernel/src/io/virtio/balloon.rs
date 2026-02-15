@@ -21,7 +21,6 @@ use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;

@@ -323,7 +323,7 @@ impl DeferredFaultQueue {
 /// Global deferred fault queue (ISR writes, async task reads)
 static DEFERRED_FAULT_QUEUE: DeferredFaultQueue = DeferredFaultQueue::new();
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) fn push_deferred_fault_for_test(event: RawFaultEvent) {
     DEFERRED_FAULT_QUEUE.push(event);
 }

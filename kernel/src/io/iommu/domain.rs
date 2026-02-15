@@ -71,6 +71,16 @@ pub enum InvalidateKind {
         /// Index for non-global invalidation
         index: u16,
     },
+    /// PASID-based IOTLB invalidation (Scalable Mode)
+    PasidIotlb {
+        /// Target PASID
+        pasid: u32,
+    },
+    /// PASID cache invalidation (Scalable Mode)
+    PasidCache {
+        /// Target PASID (None = domain-wide)
+        pasid: Option<u32>,
+    },
 }
 
 bitflags! {
@@ -143,6 +153,26 @@ impl InvalidateRequest {
     pub fn with_drain(mut self) -> Self {
         self.flags |= InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE;
         self
+    }
+
+    /// Create a PASID-based IOTLB invalidation request (Scalable Mode)
+    #[inline]
+    pub fn pasid_iotlb(domain_id: u16, pasid: u32) -> Self {
+        Self {
+            domain_id,
+            kind: InvalidateKind::PasidIotlb { pasid },
+            flags: InvalidateFlags::empty(),
+        }
+    }
+
+    /// Create a PASID cache invalidation request (Scalable Mode)
+    #[inline]
+    pub fn pasid_cache(domain_id: u16, pasid: Option<u32>) -> Self {
+        Self {
+            domain_id,
+            kind: InvalidateKind::PasidCache { pasid },
+            flags: InvalidateFlags::empty(),
+        }
     }
 }
 
@@ -772,13 +802,7 @@ impl IommuDomain {
         } else {
             (0x1_0000_0000, 0x8_0000_0000) // 4GB base, 32GB window
         };
-        crate::io::log::early_print("[IOMMU] domain::new iova base=");
-        crate::io::log::early_print_hex(default_iova_base);
-        crate::io::log::early_print(" size=");
-        crate::io::log::early_print_hex(default_iova_size);
-        crate::io::log::early_print("\n");
         let per_domain_iova = super::IovaAllocatorFast::new(default_iova_base, default_iova_size);
-        crate::io::log::early_print("[IOMMU] domain::new iova allocator ready\n");
 
         Self {
             id,

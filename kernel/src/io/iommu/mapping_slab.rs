@@ -495,6 +495,58 @@ impl Default for MappingSlab {
     }
 }
 
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_smoke_insert_lookup_remove() -> bool {
+    let mut slab = MappingSlab::new();
+
+    let mapping = DmaMapping {
+        iova: 0x1000,
+        phys: 0x2000,
+        size: 0x1000,
+        read: true,
+        write: false,
+        domain_id_placeholder: 0,
+    };
+
+    if slab.insert(mapping).is_err() {
+        return false;
+    }
+    if slab.len() != 1 {
+        return false;
+    }
+    match slab.lookup(0x1000) {
+        Some(found) if found.phys == 0x2000 => {}
+        _ => return false,
+    }
+    if slab.remove(0x1000).is_none() {
+        return false;
+    }
+    slab.len() == 0
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_smoke_overlap_detection() -> bool {
+    let mut slab = MappingSlab::new();
+
+    let mapping = DmaMapping {
+        iova: 0x1000,
+        phys: 0x2000,
+        size: 0x2000,
+        read: true,
+        write: true,
+        domain_id_placeholder: 0,
+    };
+
+    if slab.insert(mapping).is_err() {
+        return false;
+    }
+
+    slab.overlaps(0x1500, 0x1000)
+        && slab.overlaps(0x0800, 0x1000)
+        && !slab.overlaps(0x3000, 0x1000)
+        && !slab.overlaps(0x0000, 0x1000)
+}
+
 // ============================================================================
 // Iterator
 // ============================================================================
