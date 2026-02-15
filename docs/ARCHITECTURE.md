@@ -397,10 +397,11 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - parity の整合チェックは `bash scripts/verify_iommu_residual_parity.sh` で実行する。
 - AMD Wave4 required 配線の整合チェックは `bash scripts/verify_iommu_amd_wave4_required.sh` で実行する。
 - AMD Wave5 required 配線の整合チェックは `bash scripts/verify_iommu_amd_wave5_required.sh` で実行する。
+- Graphics/Framebuffer Wave6 required 配線の整合チェックは `bash scripts/verify_graphics_framebuffer_wave6_required.sh` で実行する。
 - `suite_pending` 実行時に `target/qemu-logs/pending-summary.txt` と `target/qemu-logs/pending-summary.json` が生成される。
 - `suite_kernel_runtime_pending` 実行時に `target/qemu-logs/kernel-runtime-pending-summary.txt` と `target/qemu-logs/kernel-runtime-pending-summary.json` が生成される。
-- `kernel-runtime-pending-summary` には `amd_passed_count`, `amd_failed_count`, `amd_blocked_count`, `amd_expected_count`, `amd_observed_count`, `amd_execution_guard_passed` が含まれる。
-- runtime pending の分離カウント仕様: `passed/failed/blocked` は runtime依存2件専用、`amd_*` は後方互換フィールドとして常時0（`amd_expected_count=0`）。
+- runtime pending は runtime依存2件（`kernel_net_bridge_zero_copy_integration` / `kernel_bench_framebuffer`）専用の non-blocking 監視として運用する。
+- `kernel-runtime-pending-summary` は `suite`, `passed_count`, `failed_count`, `blocked_count`, `suite_log_path`, `generated_at_utc` を出力する。
 - CI pending ジョブは `suite_kernel_runtime_pending` と `suite_pending` を実行し、required 判定には影響させない（non-blocking）。
 - `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri + residual）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）に加えて wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）および wave5 deterministic（AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行する。
 - IOMMU residual は二層管理（required no_std smoke + pending canonical 名監視）で運用する。
@@ -409,6 +410,9 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
 - AMD-Vi Wave1 required 実行対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`
 - AMD-Vi Wave5 required 実行対象（6件 — IRT）: `irt_entry_construction`, `irt_alloc_free`, `irt_exhaustion`, `irt_invalidation_cmd_format`, `map_interrupt_returns_handle`, `get_remap_msi_message_format`
+- Graphics/Framebuffer Wave6 Phase A required 実行対象（24件）: `draw_image_32bit_bgra_backbuffer`, `draw_image_24bit_bgr_backbuffer`, `write_bgr_run_small_mmio`, `write_bgr_run_large_mmio_full`, `write_bgr_run_large_mmio_full_unaligned`, `write_bgr_run_small_mmio_pairs_aligned`, `write_bgr_run_small_mmio_generic_unaligned`, `draw_hline_32bit_backbuffer`, `draw_text_space_32bit_backbuffer`, `draw_line_matches_naive_32bit_backbuffer`, `draw_line_matches_naive_24bit_backbuffer`, `draw_text_space_24bit_backbuffer`, `draw_image_32bit_mmio`, `draw_image_24bit_mmio`, `draw_image_32bit_mmio_rgba`, `write_bytes_mmio_alignment`, `write_opaque_run_24bit_even_odd_mmio`, `pack_rgba_to_bgra_basic`, `pack_rgba_to_bgra_scalar_random`, `draw_image_bgra_stream_matches_backbuffer`, `fill_rect_32bit_mmio`, `dirty_rect_tracking`, `dirty_rect_flush_only_marked_area`, `draw_text_partial_left_clip_32bit_backbuffer`
+- Graphics/Framebuffer Wave6 Phase B required 実行対象（11件）: `write_bgr_run_large_mmio`, `write_bgr_run_large`, `draw_image_24bit_rgb888_backbuffer`, `draw_hline_24bit_rgb888_mmio`, `pack_rgba_to_bgra_ssse3_matches_scalar`, `pack_rgba_to_bgra_avx2_matches_scalar`, `pack_rgba_to_bgr24_avx2_matches_scalar`, `pack_rgba_to_bgr24_ssse3_matches_scalar`, `pack_rgba_to_bgra_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar_rgb`（ターゲット未対応SIMDは deterministic skip）
+- Graphics/Framebuffer Wave6 residual（pending）: bench系5件、packer env系2件
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
 - `scripts/qemu_legacy_test_allowlist.lst` は `#[test]` 例外検出の実装ガード専用。
 - `scripts/qemu_pending_cases.lst` は移行監視の運用可視化リスト専用。

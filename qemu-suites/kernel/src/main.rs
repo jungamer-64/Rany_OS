@@ -126,6 +126,14 @@ fn run_suite() -> bool {
             test_iommu_wave5_amd_exports,
         )
         && run_check(
+            "graphics_framebuffer_wave6_phase_a_exports",
+            test_graphics_framebuffer_wave6_phase_a_exports,
+        )
+        && run_check(
+            "graphics_framebuffer_wave6_phase_b_exports",
+            test_graphics_framebuffer_wave6_phase_b_exports,
+        )
+        && run_check(
             "iommu_wave2_residual_exports",
             test_iommu_wave2_residual_exports,
         )
@@ -509,6 +517,119 @@ fn test_iommu_wave5_amd_exports() -> bool {
     ) && run_check(
         "iommu_amd_wave5_get_remap_msi_message_format_smoke",
         rany_os::qemu_tests::iommu_amd_wave5_get_remap_msi_message_format_smoke,
+    )
+}
+
+fn test_graphics_framebuffer_wave6_phase_a_exports() -> bool {
+    run_check(
+        "graphics_wave6_draw_image_32bit_bgra_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_32bit_bgra_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_24bit_bgr_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_24bit_bgr_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_small_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_small_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_large_mmio_full_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_mmio_full_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_large_mmio_full_unaligned_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_mmio_full_unaligned_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_small_mmio_pairs_aligned_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_small_mmio_pairs_aligned_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_small_mmio_generic_unaligned_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_small_mmio_generic_unaligned_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_hline_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_hline_32bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_text_space_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_text_space_32bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_line_matches_naive_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_line_matches_naive_32bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_line_matches_naive_24bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_line_matches_naive_24bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_text_space_24bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_text_space_24bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_32bit_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_32bit_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_24bit_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_24bit_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_32bit_mmio_rgba_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_32bit_mmio_rgba_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bytes_mmio_alignment_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bytes_mmio_alignment_smoke,
+    ) && run_check(
+        "graphics_wave6_write_opaque_run_24bit_even_odd_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_opaque_run_24bit_even_odd_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_basic_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_basic_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_scalar_random_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_scalar_random_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_bgra_stream_matches_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_bgra_stream_matches_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_fill_rect_32bit_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_fill_rect_32bit_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_dirty_rect_tracking_smoke",
+        rany_os::qemu_tests::graphics_wave6_dirty_rect_tracking_smoke,
+    ) && run_check(
+        "graphics_wave6_dirty_rect_flush_only_marked_area_smoke",
+        rany_os::qemu_tests::graphics_wave6_dirty_rect_flush_only_marked_area_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke,
+    )
+}
+
+fn test_graphics_framebuffer_wave6_phase_b_exports() -> bool {
+    run_check(
+        "graphics_wave6_write_bgr_run_large_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_large_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_24bit_rgb888_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_24bit_rgb888_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_hline_24bit_rgb888_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_hline_24bit_rgb888_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke,
     )
 }
 

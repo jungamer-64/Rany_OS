@@ -503,6 +503,148 @@ pub fn kernel_bench_framebuffer_smoke() -> bool {
     true
 }
 
+pub fn graphics_wave6_draw_image_32bit_bgra_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_32bit_bgra_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_image_24bit_bgr_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_24bit_bgr_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_small_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_large_mmio_full_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_mmio_full_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_large_mmio_full_unaligned_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_mmio_full_unaligned_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_small_mmio_pairs_aligned_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_pairs_aligned_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_small_mmio_generic_unaligned_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_generic_unaligned_smoke()
+}
+
+pub fn graphics_wave6_draw_hline_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_hline_32bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_text_space_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_text_space_32bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_line_matches_naive_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_line_matches_naive_32bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_line_matches_naive_24bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_line_matches_naive_24bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_text_space_24bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_text_space_24bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_image_32bit_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_32bit_mmio_smoke()
+}
+
+pub fn graphics_wave6_draw_image_24bit_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_24bit_mmio_smoke()
+}
+
+pub fn graphics_wave6_draw_image_32bit_mmio_rgba_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_32bit_mmio_rgba_smoke()
+}
+
+pub fn graphics_wave6_write_bytes_mmio_alignment_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bytes_mmio_alignment_smoke()
+}
+
+pub fn graphics_wave6_write_opaque_run_24bit_even_odd_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_opaque_run_24bit_even_odd_mmio_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_basic_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_basic_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_scalar_random_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_scalar_random_smoke()
+}
+
+pub fn graphics_wave6_draw_image_bgra_stream_matches_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_bgra_stream_matches_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_fill_rect_32bit_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_fill_rect_32bit_mmio_smoke()
+}
+
+pub fn graphics_wave6_dirty_rect_tracking_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_dirty_rect_tracking_smoke()
+}
+
+pub fn graphics_wave6_dirty_rect_flush_only_marked_area_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_dirty_rect_flush_only_marked_area_smoke()
+}
+
+pub fn graphics_wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke(
+    )
+}
+
+pub fn graphics_wave6_write_bgr_run_large_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_mmio_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_large_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_smoke()
+}
+
+pub fn graphics_wave6_draw_image_24bit_rgb888_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_24bit_rgb888_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_hline_24bit_rgb888_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_hline_24bit_rgb888_mmio_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke(
+    )
+}
+
 pub fn iommu_cmdqueue_reclaim_completed_slot_smoke() -> bool {
     crate::io::iommu::qemu_tests::cmdqueue_reclaim_completed_slot_smoke()
 }

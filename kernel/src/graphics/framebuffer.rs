@@ -244,6 +244,9 @@ pub struct Framebuffer {
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
+
 unsafe impl Send for Framebuffer {}
 unsafe impl Sync for Framebuffer {}
 
