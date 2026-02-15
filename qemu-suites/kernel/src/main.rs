@@ -122,6 +122,10 @@ fn run_suite() -> bool {
             test_iommu_wave4_amd_exports,
         )
         && run_check(
+            "iommu_wave5_amd_exports",
+            test_iommu_wave5_amd_exports,
+        )
+        && run_check(
             "iommu_wave2_residual_exports",
             test_iommu_wave2_residual_exports,
         )
@@ -465,6 +469,46 @@ fn test_iommu_wave4_amd_exports() -> bool {
     ) && run_check(
         "iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke",
         rany_os::qemu_tests::iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke,
+    )
+}
+
+fn test_iommu_wave5_amd_exports() -> bool {
+    // Wave5 required set:
+    // - AMD Wave1 residual parity smokes (5)
+    // - AMD Wave5 interrupt remapping smokes (6)
+    run_check(
+        "iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_map_device_nonblocking_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_map_device_nonblocking_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_security_notifier_dispatch_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_security_notifier_dispatch_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_cmdqueue_pressure_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_pressure_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_entry_construction_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_entry_construction_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_alloc_free_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_alloc_free_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_exhaustion_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_exhaustion_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_invalidation_cmd_format_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_invalidation_cmd_format_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_map_interrupt_returns_handle_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_map_interrupt_returns_handle_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_get_remap_msi_message_format_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_get_remap_msi_message_format_smoke,
     )
 }
 

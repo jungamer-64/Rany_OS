@@ -549,7 +549,7 @@ fn write_kernel_runtime_pending_summaries(
         .saturating_add(amd_failed_count)
         .saturating_add(amd_blocked_count);
     let amd_execution_guard_passed =
-        amd_expected_count == 0 || amd_observed_count >= amd_expected_count;
+        amd_expected_count == 0 || amd_observed_count == amd_expected_count;
 
     let log_dir = qemu_runner::workspace_root().join("target").join("qemu-logs");
     std::fs::create_dir_all(&log_dir).map_err(|err| {
@@ -619,7 +619,7 @@ fn write_kernel_runtime_pending_summaries(
 
     if !amd_execution_guard_passed {
         return Err(format!(
-            "runtime pending AMD execution guard failed: amd_observed_count ({amd_observed_count}) < amd_expected_count ({amd_expected_count}) in '{}'",
+            "runtime pending AMD execution guard failed: amd_observed_count ({amd_observed_count}) != amd_expected_count ({amd_expected_count}) in '{}'",
             report.log_path.display()
         ));
     }

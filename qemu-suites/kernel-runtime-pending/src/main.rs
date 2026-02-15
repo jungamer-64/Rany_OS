@@ -77,7 +77,7 @@ struct RuntimeCounts {
     amd_blocked: u64,
 }
 
-const AMD_EXPECTED_CASES: u64 = 11;
+const AMD_EXPECTED_CASES: u64 = 0;
 
 fn report_case(name: &str, state: &str) {
     serial_write_str("[qemu-suite] kernel_runtime_pending case ");
@@ -97,16 +97,6 @@ fn run_runtime_case(name: &str, f: fn() -> bool, counts: &mut RuntimeCounts) {
     }
 }
 
-fn run_amd_case(name: &str, f: fn() -> bool, counts: &mut RuntimeCounts) {
-    if f() {
-        report_case(name, "pass");
-        counts.amd_passed += 1;
-    } else {
-        report_case(name, "fail");
-        counts.amd_failed += 1;
-    }
-}
-
 fn run_suite() -> RuntimeCounts {
     serial_write_str("[qemu-suite] kernel_runtime_pending start\n");
 
@@ -119,64 +109,7 @@ fn run_suite() -> RuntimeCounts {
         amd_blocked: 0,
     };
 
-    // AMD Wave1 residual parity checks are preflight-independent and must always run.
-    run_amd_case(
-        "iommu_amd_wave1_cmdqueue_map_unmap_with_domain",
-        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave1_map_device_nonblocking",
-        rany_os::qemu_tests::iommu_amd_wave1_map_device_nonblocking_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave1_dma_mask_respects_32bit_limit",
-        rany_os::qemu_tests::iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave1_security_notifier_dispatch",
-        rany_os::qemu_tests::iommu_amd_wave1_security_notifier_dispatch_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave1_cmdqueue_pressure",
-        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_pressure_smoke,
-        &mut counts,
-    );
-
-    // AMD Wave5 interrupt remapping table tests
-    run_amd_case(
-        "iommu_amd_wave5_irt_entry_construction",
-        rany_os::qemu_tests::iommu_amd_wave5_irt_entry_construction_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave5_irt_alloc_free",
-        rany_os::qemu_tests::iommu_amd_wave5_irt_alloc_free_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave5_irt_exhaustion",
-        rany_os::qemu_tests::iommu_amd_wave5_irt_exhaustion_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave5_irt_invalidation_cmd_format",
-        rany_os::qemu_tests::iommu_amd_wave5_irt_invalidation_cmd_format_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave5_map_interrupt_returns_handle",
-        rany_os::qemu_tests::iommu_amd_wave5_map_interrupt_returns_handle_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave5_get_remap_msi_message_format",
-        rany_os::qemu_tests::iommu_amd_wave5_get_remap_msi_message_format_smoke,
-        &mut counts,
-    );
+    // AMD smoke checks are promoted to required suite_kernel (wave5 required path).
 
     let memory_ready = rany_os::memory::is_initialized();
     serial_write_str("[qemu-suite] kernel_runtime_pending preflight memory_initialized=");
