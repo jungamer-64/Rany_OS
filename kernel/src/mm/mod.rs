@@ -10,6 +10,14 @@ pub mod remote_free; // リモートフリーリング（IOVA_MM_MIGRATION_PLAN 
 pub mod types; // 共通型定義（FrameIndex, NumaNodeId, AddressUnit）
 pub mod buddy_allocator;
 pub mod buddy_freelist; // 新: フリーリストベースBuddy + ページモビリティ
+#[cfg(feature = "buddy_freelist")]
+#[allow(unused_imports)]
+pub use buddy_freelist::{
+    freelist_alloc_frame, freelist_alloc_frame_2m, freelist_alloc_frame_1g,
+    freelist_dealloc_frame, freelist_dealloc_frame_2m, freelist_dealloc_frame_1g,
+    freelist_buddy_stats, init_freelist_buddy,
+    FreeListBuddyStats, MigrateType, AllocFlags,
+};
 pub mod domain_ownership; // 新: ドメインオーナーシップ追跡 (設計書 5.4, 8.1)
 pub mod exchange_heap;
 pub mod frame_allocator;
@@ -273,16 +281,81 @@ impl UnifiedFrameAllocator {
         dealloc_frame_1g(frame);
     }
 
+    // ====================================================================
+    // ユーザーページ用 API（buddy_freelist feature 有効時に専用パスを使用）
+    // ====================================================================
+
+    /// 4KBフレームを割り当て（ユーザーページ用）
+    ///
+    /// buddy_freelist feature 有効時はページモビリティ対応の
+    /// FreeListBuddyAllocator を使用。無効時・枯渇時は PMM にフォールバック。
+    pub fn alloc_4k_user() -> Option<PhysFrame<Size4KiB>> {
+        #[cfg(feature = "buddy_freelist")]
+        {
+            if let Some(frame) = buddy_freelist::freelist_alloc_frame() {
+                return Some(frame);
+            }
+        }
+        alloc_frame()
+    }
+
+    /// 2MBフレームを割り当て（ユーザーページ用）
+    ///
+    /// buddy_freelist feature 有効時はページモビリティによる断片化防止の恩恵を受ける。
+    pub fn alloc_2m_user() -> Option<PhysFrame<Size2MiB>> {
+        #[cfg(feature = "buddy_freelist")]
+        {
+            if let Some(frame) = buddy_freelist::freelist_alloc_frame_2m() {
+                return Some(frame);
+            }
+        }
+        alloc_frame_2m()
+    }
+
+    /// 4KBフレームを解放（ユーザーページ用）
+    ///
+    /// buddy_freelist feature 有効時は FreeListBuddyAllocator へ返却。
+    pub fn dealloc_4k_user(frame: PhysFrame<Size4KiB>) {
+        #[cfg(feature = "buddy_freelist")]
+        {
+            buddy_freelist::freelist_dealloc_frame(frame);
+            return;
+        }
+        #[cfg(not(feature = "buddy_freelist"))]
+        dealloc_frame(frame);
+    }
+
+    /// 2MBフレームを解放（ユーザーページ用）
+    pub fn dealloc_2m_user(frame: PhysFrame<Size2MiB>) {
+        #[cfg(feature = "buddy_freelist")]
+        {
+            buddy_freelist::freelist_dealloc_frame_2m(frame);
+            return;
+        }
+        #[cfg(not(feature = "buddy_freelist"))]
+        dealloc_frame_2m(frame);
+    }
+
     /// 統計を取得
     pub fn stats() -> UnifiedAllocatorStats {
         let (pmm_free, pmm_total_usize) = frame_allocator_stats();
         let buddy = buddy_allocator_stats();
+
+        #[cfg(feature = "buddy_freelist")]
+        let (fl_total, fl_free) = {
+            let s = buddy_freelist::freelist_buddy_stats();
+            (s.total_frames as u64, s.free_frames)
+        };
+        #[cfg(not(feature = "buddy_freelist"))]
+        let (fl_total, fl_free) = (0u64, 0u64);
 
         UnifiedAllocatorStats {
             pmm_total: pmm_total_usize as u64,
             pmm_free,
             buddy_pool_total: buddy.total_frames as u64,
             buddy_pool_free: buddy.free_frames as u64,
+            freelist_total: fl_total,
+            freelist_free: fl_free,
         }
     }
 }
@@ -298,6 +371,10 @@ pub struct UnifiedAllocatorStats {
     pub buddy_pool_total: u64,
     /// Buddyプールの空きフレーム数
     pub buddy_pool_free: u64,
+    /// FreeListBuddy の総フレーム数（buddy_freelist feature 有効時のみ非ゼロ）
+    pub freelist_total: u64,
+    /// FreeListBuddy の空きフレーム数
+    pub freelist_free: u64,
 }
 
 impl UnifiedAllocatorStats {
@@ -319,6 +396,11 @@ impl UnifiedAllocatorStats {
     /// Buddyプール使用フレーム数
     pub fn buddy_pool_used_frames(&self) -> u64 {
         self.buddy_pool_total.saturating_sub(self.buddy_pool_free)
+    }
+
+    /// FreeListBuddy使用フレーム数
+    pub fn freelist_used_frames(&self) -> u64 {
+        self.freelist_total.saturating_sub(self.freelist_free)
     }
 }
 

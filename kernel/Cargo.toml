@@ -101,6 +101,11 @@ mouse = []
 bench = ["std", "dep:criterion"]
 qemu-test-export = []
 
+# FreeList Buddy Allocator with page mobility + cache coloring.
+# When enabled, UnifiedFrameAllocator routes user-page allocations through
+# buddy_freelist for O(1) allocation and THP-friendly pageblock segregation.
+buddy_freelist = []
+
 # IOMMU Features
 # ==============
 
