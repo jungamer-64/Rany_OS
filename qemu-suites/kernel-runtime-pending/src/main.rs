@@ -72,12 +72,7 @@ struct RuntimeCounts {
     passed: u64,
     failed: u64,
     blocked: u64,
-    amd_passed: u64,
-    amd_failed: u64,
-    amd_blocked: u64,
 }
-
-const AMD_EXPECTED_CASES: u64 = 0;
 
 fn report_case(name: &str, state: &str) {
     serial_write_str("[qemu-suite] kernel_runtime_pending case ");
@@ -104,9 +99,6 @@ fn run_suite() -> RuntimeCounts {
         passed: 0,
         failed: 0,
         blocked: 0,
-        amd_passed: 0,
-        amd_failed: 0,
-        amd_blocked: 0,
     };
 
     // AMD smoke checks are promoted to required suite_kernel (wave5 required path).
@@ -144,14 +136,6 @@ fn write_counts(counts: &RuntimeCounts) {
     serial_write_u64(counts.failed);
     serial_write_str(" blocked=");
     serial_write_u64(counts.blocked);
-    serial_write_str(" amd_pass=");
-    serial_write_u64(counts.amd_passed);
-    serial_write_str(" amd_fail=");
-    serial_write_u64(counts.amd_failed);
-    serial_write_str(" amd_blocked=");
-    serial_write_u64(counts.amd_blocked);
-    serial_write_str(" amd_expected=");
-    serial_write_u64(AMD_EXPECTED_CASES);
     serial_write_str("\n");
 }
 

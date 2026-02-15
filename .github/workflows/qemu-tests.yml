@@ -54,6 +54,9 @@ jobs:
       - name: Verify IOMMU AMD Wave5 required wiring
         run: bash scripts/verify_iommu_amd_wave5_required.sh
 
+      - name: Verify Graphics Framebuffer Wave6 required wiring
+        run: bash scripts/verify_graphics_framebuffer_wave6_required.sh
+
       - name: Run suite
         env:
           QEMU_TEST_CPU: ${{ matrix.cpu }}
@@ -119,6 +122,9 @@ jobs:
 
       - name: Verify IOMMU AMD Wave4 required wiring
         run: bash scripts/verify_iommu_amd_wave4_required.sh
+
+      - name: Verify IOMMU AMD Wave5 required wiring
+        run: bash scripts/verify_iommu_amd_wave5_required.sh
 
       - name: Run runtime pending and pending suite
         env:
