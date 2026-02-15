@@ -28,6 +28,10 @@ pub(crate) static PACKER_MODE: AtomicU8 = AtomicU8::new(0);
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
 pub(crate) static PACKER_MODE: AtomicU8 = AtomicU8::new(1); // Default scalar
 
+// QEMU-only packer override hook (0 = disabled, 1..4 = forced mode).
+#[cfg(feature = "qemu-test-export")]
+static QEMU_TEST_PACKER_MODE_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+
 /// Force packer mode (bench only)
 #[cfg(feature = "bench")]
 pub fn force_packer_mode(mode: u8) {
@@ -38,6 +42,31 @@ pub fn force_packer_mode(mode: u8) {
 #[cfg(feature = "bench")]
 pub fn current_packer_mode() -> u8 {
     PACKER_MODE.load(Ordering::Relaxed)
+}
+
+#[inline]
+fn clamp_forced_mode(mode: u8, forced: u8) -> u8 {
+    mode.min(forced).max(1)
+}
+
+/// QEMU test hook: force the packer mode (1..4) and clear cached detection.
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_set_packer_mode_override(mode: u8) {
+    let forced = mode.clamp(1, 4);
+    QEMU_TEST_PACKER_MODE_OVERRIDE.store(forced, Ordering::Relaxed);
+    PACKER_MODE.store(0, Ordering::Relaxed);
+}
+
+/// QEMU test hook: clear forced mode and clear cached detection.
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_clear_packer_mode_override() {
+    QEMU_TEST_PACKER_MODE_OVERRIDE.store(0, Ordering::Relaxed);
+    PACKER_MODE.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn qemu_test_get_packer_mode_override() -> u8 {
+    QEMU_TEST_PACKER_MODE_OVERRIDE.load(Ordering::Relaxed)
 }
 
 // ============================================================================
@@ -80,10 +109,19 @@ fn detect_simd_mode() -> u8 {
             s => s.parse::<u8>().ok(),
         };
         if let Some(f) = forced {
-            mode = mode.min(f).max(1);
+            mode = clamp_forced_mode(mode, f);
         }
     }
-    
+
+    // QEMU override (qemu-test-export only) with the same clamp rule.
+    #[cfg(feature = "qemu-test-export")]
+    {
+        let forced = QEMU_TEST_PACKER_MODE_OVERRIDE.load(Ordering::Relaxed);
+        if forced != 0 {
+            mode = clamp_forced_mode(mode, forced);
+        }
+    }
+
     mode
 }
 

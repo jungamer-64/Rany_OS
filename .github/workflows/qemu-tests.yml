@@ -68,7 +68,17 @@ jobs:
             for run in 1 2 3; do
               echo "kernel stability run ${run}/3"
               cargo test -p qemu-tests -- --nocapture suite_kernel
+              if [ -f target/qemu-logs/suite-kernel.log ]; then
+                cp target/qemu-logs/suite-kernel.log "target/qemu-logs/suite-kernel-run${run}.log"
+              else
+                echo "missing target/qemu-logs/suite-kernel.log after run ${run}" >&2
+                exit 1
+              fi
             done
+            for run in 1 2 3; do
+              test -f "target/qemu-logs/suite-kernel-run${run}.log"
+            done
+            ls -1 target/qemu-logs/suite-kernel-run*.log
           else
             cargo test -p qemu-tests -- --nocapture suite_${{ matrix.suite }}
           fi

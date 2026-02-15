@@ -21,6 +21,7 @@
 
 pub mod blk;
 pub mod blk_driver;
+pub mod blk_scheduler;
 pub mod net;
 pub mod console;
 pub mod console_driver;
@@ -58,6 +59,12 @@ pub use blk::{
     init_virtio_blk, init_virtio_blk_for_device, init_virtio_blk_with_transport,
 };
 pub use blk_driver::VirtioBlkDriver;
+
+// Re-exports for VirtIO-Blk IoScheduler Integration
+pub use blk_scheduler::{
+    VirtioBlkOps, VirtioBlkPollHandler,
+    register_virtio_blk_with_io_scheduler,
+};
 
 // Re-exports for VirtIO-Console
 pub use console::{

@@ -380,7 +380,7 @@ pub struct BlockRequest {
 /// Both header and status must remain valid and DMA-accessible until the device
 /// completes the request. This struct allocates a CoherentDmaBuffer to hold
 /// `[VirtioBlkReqHeader | u8 status]` in physically contiguous, uncacheable memory.
-struct BlkRequestDma {
+pub(crate) struct BlkRequestDma {
     /// Coherent DMA buffer holding header + status byte
     buffer: CoherentDmaBuffer,
     /// Physical address of the header (start of buffer)
@@ -413,7 +413,7 @@ impl BlkRequestDma {
     }
 
     /// Read the status byte written by the device after completion.
-    fn status(&self) -> u8 {
+    pub(crate) fn status(&self) -> u8 {
         unsafe { self.buffer.as_slice()[core::mem::size_of::<VirtioBlkReqHeader>()] }
     }
 }
@@ -466,7 +466,7 @@ pub struct VirtioBlkDevice {
     /// Features negotiated
     features: u64,
     /// DMA buffers for inflight requests (header + status), keyed by head descriptor index
-    inflight_dma: Mutex<BTreeMap<u16, BlkRequestDma>>,
+    pub(crate) inflight_dma: Mutex<BTreeMap<u16, BlkRequestDma>>,
 }
 
 unsafe impl Send for VirtioBlkDevice {}
@@ -728,6 +728,16 @@ impl VirtioBlkDevice {
         self.ready.load(Ordering::Acquire)
     }
 
+    /// キュー数を取得（io_scheduler 統合用）
+    pub(crate) fn queue_count(&self) -> usize {
+        self.queues.len()
+    }
+
+    /// 指定インデックスのキューを取得（io_scheduler 統合用）
+    pub(crate) fn queue(&self, idx: usize) -> Option<&Arc<Mutex<VirtQueue>>> {
+        self.queues.get(idx)
+    }
+
     /// Read sectors asynchronously
     pub fn read_async<'a>(&'a self, sector: u64, buf: &'a mut [u8]) -> ReadFuture<'a> {
         ReadFuture {
@@ -768,8 +778,12 @@ impl VirtioBlkDevice {
         for (q_idx, queue) in self.queues.iter().enumerate() {
             let queue_guard = queue.lock();
             while let Some((desc_id, _len)) = queue_guard.poll_completions() {
-                // Remove and check the DMA buffer for this request
-                if let Some(req_dma) = self.inflight_dma.lock().remove(&desc_id) {
+                // io_scheduler 管理下のリクエストかチェック
+                let io_sched_req = super::blk_scheduler::get_poll_handler(0)
+                    .and_then(|handler| handler.take_pending(q_idx, desc_id));
+
+                // DMA バッファからステータスを確認
+                let status_ok = if let Some(req_dma) = self.inflight_dma.lock().remove(&desc_id) {
                     let status = req_dma.status();
                     if status != VirtioBlkStatus::Ok as u8 {
                         log::warn!(
@@ -778,17 +792,35 @@ impl VirtioBlkDevice {
                             status
                         );
                     }
-                    // req_dma is dropped here, freeing the DMA allocation
-                }
+                    status == VirtioBlkStatus::Ok as u8
+                } else {
+                    true
+                };
 
                 // Free descriptor
                 queue_guard.free_desc(desc_id);
 
-                // Wake pending future
-                let waker_idx = q_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                let mut wakers = self.pending_wakers.lock();
-                if let Some(waker) = wakers.get_mut(waker_idx).and_then(|w| w.take()) {
-                    waker.wake();
+                if let Some((io_id, bytes)) = io_sched_req {
+                    // io_scheduler パス: ISR-safe な遅延完了キューに積む
+                    let result = if status_ok {
+                        crate::io::io_scheduler::IoResult::Success(bytes)
+                    } else {
+                        crate::io::io_scheduler::IoResult::Error(
+                            crate::io::io_scheduler::IoError::DeviceError,
+                        )
+                    };
+                    let device_id =
+                        crate::io::io_scheduler::DeviceId::VirtioBlk { index: 0 };
+                    let bridge =
+                        crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
+                    bridge.handle_interrupt(device_id, &[(io_id, result)]);
+                } else {
+                    // レガシーパス: 既存の Waker を起動
+                    let waker_idx = q_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+                    let mut wakers = self.pending_wakers.lock();
+                    if let Some(waker) = wakers.get_mut(waker_idx).and_then(|w| w.take()) {
+                        waker.wake();
+                    }
                 }
             }
         }
@@ -800,7 +832,7 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a read request (internal)
-    fn submit_read(
+    pub(crate) fn submit_read(
         &self,
         sector: u64,
         buf_addr: u64,
@@ -878,7 +910,7 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a write request (internal)
-    fn submit_write(
+    pub(crate) fn submit_write(
         &self,
         sector: u64,
         buf_addr: u64,
@@ -959,7 +991,7 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a flush request (internal)
-    fn submit_flush(&self, queue_idx: usize) -> Result<u16, BlockError> {
+    pub(crate) fn submit_flush(&self, queue_idx: usize) -> Result<u16, BlockError> {
         if !self.is_ready() {
             return Err(BlockError::NotReady);
         }

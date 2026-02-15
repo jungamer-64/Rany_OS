@@ -431,6 +431,9 @@ impl SystemIntegration {
                                 Ok(()) => {
                                     self.log("    VirtIO-blk PCI transport initialized");
                                     initialized_via_pci = true;
+                                    // IoScheduler に登録
+                                    crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                                    self.log("    VirtIO-blk registered with IoScheduler");
                                 }
                                 Err(e) => {
                                     self.log(&alloc::format!(
@@ -453,6 +456,9 @@ impl SystemIntegration {
                                         self.log(&alloc::format!("    VirtIO-blk driver start failed: {:?}", e));
                                     } else {
                                         self.log("    VirtIO-blk driver initialized via DriverRegistry");
+                                        // IoScheduler に登録
+                                        crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                                        self.log("    VirtIO-blk registered with IoScheduler");
                                     }
                                 }
                                 Err(e) => self.log(&alloc::format!("    VirtIO-blk driver registration failed: {:?}", e)),

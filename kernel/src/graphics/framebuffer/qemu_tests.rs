@@ -1259,3 +1259,32 @@ pub fn wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke() -> bool {
         true
     }
 }
+
+pub fn wave6_packer_env_override_no_std_smoke() -> bool {
+    let previous_simd = hal::mmio::get_simd_level();
+    let previous_override = crate::graphics::packer::qemu_test_get_packer_mode_override();
+
+    unsafe {
+        hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
+    }
+    crate::graphics::packer::qemu_test_set_packer_mode_override(1);
+
+    let mode_forced_scalar = crate::graphics::packer::get_packer_mode() == 1;
+    let mut packer_runs = false;
+    if mode_forced_scalar {
+        let src = vec![0u8, 1, 2, 3, 10, 20, 30, 40, 90, 80, 70, 60];
+        let mut dst = vec![0u8; src.len()];
+        Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
+        packer_runs = dst == vec![2, 1, 0, 3, 30, 20, 10, 40, 70, 80, 90, 60];
+    }
+
+    crate::graphics::packer::qemu_test_clear_packer_mode_override();
+    if previous_override != 0 {
+        crate::graphics::packer::qemu_test_set_packer_mode_override(previous_override);
+    }
+    unsafe {
+        hal::mmio::set_simd_level(previous_simd);
+    }
+
+    mode_forced_scalar && packer_runs
+}
