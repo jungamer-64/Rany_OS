@@ -6,12 +6,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FB_EXPORT_FILE="$ROOT_DIR/kernel/src/graphics/framebuffer/qemu_tests.rs"
+PACKER_FILE="$ROOT_DIR/kernel/src/graphics/packer.rs"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
 KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
 for required_file in \
   "$FB_EXPORT_FILE" \
+  "$PACKER_FILE" \
   "$KERNEL_WRAPPER_FILE" \
   "$KERNEL_SUITE_FILE" \
   "$PENDING_FILE"
@@ -61,6 +63,21 @@ if ! rg -q "graphics_framebuffer_wave6_phase_b_exports" "$KERNEL_SUITE_FILE"; th
   violations=$((violations + 1))
 fi
 
+if ! rg -q "pub fn qemu_test_set_packer_mode_override\\(" "$PACKER_FILE"; then
+  echo "[verify_graphics_framebuffer_wave6_required] missing qemu hook 'qemu_test_set_packer_mode_override' in ${PACKER_FILE#$ROOT_DIR/}"
+  violations=$((violations + 1))
+fi
+
+if ! rg -q "pub fn qemu_test_clear_packer_mode_override\\(" "$PACKER_FILE"; then
+  echo "[verify_graphics_framebuffer_wave6_required] missing qemu hook 'qemu_test_clear_packer_mode_override' in ${PACKER_FILE#$ROOT_DIR/}"
+  violations=$((violations + 1))
+fi
+
+if rg -q "test_packer_env_override" "$PENDING_FILE"; then
+  echo "[verify_graphics_framebuffer_wave6_required] env override legacy case still listed in ${PENDING_FILE#$ROOT_DIR/}"
+  violations=$((violations + 1))
+fi
+
 for case_name in "${cases[@]}"; do
   export_fn="wave6_${case_name}_smoke"
   wrapper_fn="graphics_wave6_${case_name}_smoke"
@@ -98,6 +115,7 @@ phase_b_cases=(
   "pack_rgba_to_bgra_neon_matches_scalar"
   "pack_rgba_to_bgr24_neon_matches_scalar"
   "pack_rgba_to_bgr24_neon_matches_scalar_rgb"
+  "packer_env_override_no_std"
 )
 
 for case_name in "${phase_b_cases[@]}"; do

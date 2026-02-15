@@ -18,6 +18,5 @@ IOMMU wave3 pending monitored smoke candidates (not in required): none
 IOMMU AMD Wave1+Wave5 deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 Graphics/Framebuffer Wave6 Phase A+B deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 Graphics/Framebuffer Wave6 residual (bench only): bench_draw_image_bulk, bench_draw_image_24bit_bulk, bench_draw_image_rgba_bulk, bench_draw_hline_bulk, bench_draw_text_bulk
-Graphics/Framebuffer Wave6 residual (env only): test_packer_env_override, test_packer_env_override_no_std
 qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri+residual)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5(amd-wave1+amd-wave5-irt required) toward broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

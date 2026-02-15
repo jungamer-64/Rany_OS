@@ -630,6 +630,9 @@ fn test_graphics_framebuffer_wave6_phase_b_exports() -> bool {
     ) && run_check(
         "graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke",
         rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke,
+    ) && run_check(
+        "graphics_wave6_packer_env_override_no_std_smoke",
+        rany_os::qemu_tests::graphics_wave6_packer_env_override_no_std_smoke,
     )
 }
 

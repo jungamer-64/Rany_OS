@@ -645,6 +645,10 @@ pub fn graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke() -> bool
     )
 }
 
+pub fn graphics_wave6_packer_env_override_no_std_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_packer_env_override_no_std_smoke()
+}
+
 pub fn iommu_cmdqueue_reclaim_completed_slot_smoke() -> bool {
     crate::io::iommu::qemu_tests::cmdqueue_reclaim_completed_slot_smoke()
 }
