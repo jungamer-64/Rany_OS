@@ -804,6 +804,17 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
         crate::mm::init_buddy_allocator(&usable_regions);
     }
     crate::io::log::early_print("[MEM] buddy ready\n");
+
+    // buddy_freelist: ページモビリティ対応FreeListBuddy Allocatorの初期化
+    #[cfg(feature = "buddy_freelist")]
+    {
+        crate::io::log::early_print("[MEM] freelist buddy init\n");
+        unsafe {
+            crate::mm::buddy_freelist::init_freelist_buddy(&usable_regions);
+        }
+        crate::io::log::early_print("[MEM] freelist buddy ready\n");
+    }
+
     crate::io::log::early_print("[HEAP_CHECK] after init_buddy_allocator\n");
     verify_buddy_integrity();
 
