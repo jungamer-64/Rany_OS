@@ -78,6 +78,7 @@ pub struct AmdIommuUnit {
     pub iommu_info: u16,
     pub iommu_feature: u32,
     pub device_entries: Vec<IvhdDeviceEntry>,
+    pub max_addr_bits: u8,
 }
 
 impl AmdIommuUnit {
@@ -190,6 +191,7 @@ pub struct AmdIommuDriver {
     pub(super) iova_allocator: IovaAllocatorFast,
     pub(super) enabled: AtomicBool,
     pub(super) security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
+    pub(super) max_addr_bits: u8,
 }
 
 #[derive(Clone)]
@@ -210,7 +212,14 @@ impl AmdIommuDriver {
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Self {
         let page_table_pool = PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
-        let iova_bits = AMD_DEFAULT_MAX_ADDR_BITS.min(48).max(12);
+        let max_addr_bits = units
+            .iter()
+            .map(|u| u.max_addr_bits)
+            .min()
+            .unwrap_or(AMD_DEFAULT_MAX_ADDR_BITS)
+            .min(57)
+            .max(12);
+        let iova_bits = max_addr_bits.min(48).max(12);
         let iova_base: u64 = PAGE_SIZE_4K as u64;
         let iova_limit = 1u64 << iova_bits;
         let iova_size = iova_limit.saturating_sub(iova_base);
@@ -257,7 +266,7 @@ impl AmdIommuDriver {
             None,
             false,
             false,
-            AMD_DEFAULT_MAX_ADDR_BITS,
+            max_addr_bits,
             IommuDomainType::Translated,
             page_table_pool.clone(),
             PteFormat::Amd,
@@ -284,6 +293,7 @@ impl AmdIommuDriver {
             iova_allocator,
             enabled: AtomicBool::new(false),
             security_notifier: spin::Once::new(),
+            max_addr_bits,
         }
     }
 
@@ -451,24 +461,39 @@ impl AmdIommuDriver {
 // ---------------------------------------------------------------------------
 
 impl super::interface::IommuHardwareContext for AmdIommuDriver {
-    fn allocate_iova_aligned(&self, _size: u64, _alignment: u64) -> Result<u64, IommuError> {
-        // AMD-Vi uses identity mapping (iova = phys_addr), so allocation is a no-op.
-        // For non-identity scenarios, integrate with IovaAllocator.
-        Err(IommuError::NotSupported)
+    fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
+        if alignment <= PAGE_SIZE_4K as u64 {
+            return self
+                .iova_allocator
+                .allocate_contiguous(size, PAGE_SIZE_4K as u64)
+                .ok_or(IommuError::OutOfIova);
+        }
+
+        let align = if alignment >= 1024 * 1024 * 1024 {
+            1024 * 1024 * 1024
+        } else if alignment >= 2 * 1024 * 1024 {
+            2 * 1024 * 1024
+        } else {
+            PAGE_SIZE_4K as u64
+        };
+
+        self.iova_allocator
+            .allocate_contiguous(size, align)
+            .ok_or(IommuError::OutOfIova)
     }
 
     fn allocate_iova_masked(
         &self,
-        _size: u64,
+        size: u64,
         _alignment: u64,
-        _mask: u64,
+        mask: u64,
     ) -> Result<u64, IommuError> {
-        // AMD-Vi uses identity mapping; masked allocation not supported.
-        Err(IommuError::NotSupported)
+        self.iova_allocator
+            .allocate_with_limit(size, crate::io::iommu::IovaGranularity::Page4K, mask)
+            .ok_or(IommuError::OutOfIova)
     }
 
-    fn free_iova(&self, _iova: u64, _size: u64) -> Result<(), IommuError> {
-        // No-op for identity mapping
-        Ok(())
+    fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        self.iova_allocator.free(iova, size)
     }
 }

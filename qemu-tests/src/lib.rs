@@ -20,6 +20,19 @@ struct PendingSummaryStats {
     iommu_residual_mapped: usize,
 }
 
+#[derive(Debug, Copy, Clone)]
+struct RuntimePendingSummaryStats {
+    passed_count: u64,
+    failed_count: u64,
+    blocked_count: u64,
+    amd_passed_count: u64,
+    amd_failed_count: u64,
+    amd_blocked_count: u64,
+    amd_expected_count: u64,
+    amd_observed_count: u64,
+    amd_execution_guard_passed: bool,
+}
+
 fn suite_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -100,28 +113,24 @@ fn run_runtime_pending(suite: &str) {
     drop(guard);
     match result {
         Ok(report) => {
-            let (
-                passed_count,
-                failed_count,
-                blocked_count,
-                amd_passed_count,
-                amd_failed_count,
-                amd_blocked_count,
-            ) =
+            let summary =
                 write_kernel_runtime_pending_summaries(&report).unwrap_or_else(|err| {
                     panic!("kernel runtime pending summary generation failed: {err}")
                 });
             eprintln!(
-                "runtime pending suite '{}' passed in {:?} (log: {}, pass={}, fail={}, blocked={}, amd_pass={}, amd_fail={}, amd_blocked={})",
+                "runtime pending suite '{}' passed in {:?} (log: {}, pass={}, fail={}, blocked={}, amd_pass={}, amd_fail={}, amd_blocked={}, amd_expected={}, amd_observed={}, amd_execution_guard_passed={})",
                 report.suite,
                 report.duration,
                 report.log_path.display(),
-                passed_count,
-                failed_count,
-                blocked_count,
-                amd_passed_count,
-                amd_failed_count,
-                amd_blocked_count
+                summary.passed_count,
+                summary.failed_count,
+                summary.blocked_count,
+                summary.amd_passed_count,
+                summary.amd_failed_count,
+                summary.amd_blocked_count,
+                summary.amd_expected_count,
+                summary.amd_observed_count,
+                summary.amd_execution_guard_passed
             );
         }
         Err(err) => {
@@ -305,7 +314,7 @@ fn json_escape(input: &str) -> String {
     escaped
 }
 
-fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64, u64, u64, u64), String> {
+fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64, u64, u64, u64, u64), String> {
     let content = std::fs::read_to_string(log_path)
         .map_err(|err| format!("failed to read runtime pending log '{}': {err}", log_path.display()))?;
 
@@ -318,6 +327,7 @@ fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64, u64, u
             let mut amd_passed_count: Option<u64> = None;
             let mut amd_failed_count: Option<u64> = None;
             let mut amd_blocked_count: Option<u64> = None;
+            let mut amd_expected_count: Option<u64> = None;
 
             for token in tail.split_whitespace() {
                 if let Some(value) = token.strip_prefix("pass=") {
@@ -342,6 +352,10 @@ fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64, u64, u
                 }
                 if let Some(value) = token.strip_prefix("amd_blocked=") {
                     amd_blocked_count = value.parse::<u64>().ok();
+                    continue;
+                }
+                if let Some(value) = token.strip_prefix("amd_expected=") {
+                    amd_expected_count = value.parse::<u64>().ok();
                 }
             }
 
@@ -355,6 +369,7 @@ fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64, u64, u
                     amd_passed_count.unwrap_or(0),
                     amd_failed_count.unwrap_or(0),
                     amd_blocked_count.unwrap_or(0),
+                    amd_expected_count.unwrap_or(0),
                 ));
             }
         }
@@ -520,7 +535,7 @@ fn write_pending_summaries(report: &qemu_runner::RunReport) -> Result<PendingSum
 
 fn write_kernel_runtime_pending_summaries(
     report: &qemu_runner::RunReport,
-) -> Result<(u64, u64, u64, u64, u64, u64), String> {
+) -> Result<RuntimePendingSummaryStats, String> {
     let (
         passed_count,
         failed_count,
@@ -528,7 +543,13 @@ fn write_kernel_runtime_pending_summaries(
         amd_passed_count,
         amd_failed_count,
         amd_blocked_count,
+        amd_expected_count,
     ) = parse_kernel_runtime_counts(&report.log_path)?;
+    let amd_observed_count = amd_passed_count
+        .saturating_add(amd_failed_count)
+        .saturating_add(amd_blocked_count);
+    let amd_execution_guard_passed =
+        amd_expected_count == 0 || amd_observed_count >= amd_expected_count;
 
     let log_dir = qemu_runner::workspace_root().join("target").join("qemu-logs");
     std::fs::create_dir_all(&log_dir).map_err(|err| {
@@ -550,6 +571,11 @@ fn write_kernel_runtime_pending_summaries(
     text.push_str(&format!("amd_passed_count: {amd_passed_count}\n"));
     text.push_str(&format!("amd_failed_count: {amd_failed_count}\n"));
     text.push_str(&format!("amd_blocked_count: {amd_blocked_count}\n"));
+    text.push_str(&format!("amd_expected_count: {amd_expected_count}\n"));
+    text.push_str(&format!("amd_observed_count: {amd_observed_count}\n"));
+    text.push_str(&format!(
+        "amd_execution_guard_passed: {amd_execution_guard_passed}\n"
+    ));
     text.push_str(&format!("generated_at_utc: {generated_at}\n"));
     text.push_str(&format!("suite_log_path: {}\n", report.log_path.display()));
 
@@ -569,6 +595,11 @@ fn write_kernel_runtime_pending_summaries(
     json.push_str(&format!("  \"amd_passed_count\": {amd_passed_count},\n"));
     json.push_str(&format!("  \"amd_failed_count\": {amd_failed_count},\n"));
     json.push_str(&format!("  \"amd_blocked_count\": {amd_blocked_count},\n"));
+    json.push_str(&format!("  \"amd_expected_count\": {amd_expected_count},\n"));
+    json.push_str(&format!("  \"amd_observed_count\": {amd_observed_count},\n"));
+    json.push_str(&format!(
+        "  \"amd_execution_guard_passed\": {amd_execution_guard_passed},\n"
+    ));
     json.push_str(&format!(
         "  \"suite_log_path\": \"{}\",\n",
         json_escape(&report.log_path.display().to_string())
@@ -586,12 +617,22 @@ fn write_kernel_runtime_pending_summaries(
         )
     })?;
 
-    Ok((
+    if !amd_execution_guard_passed {
+        return Err(format!(
+            "runtime pending AMD execution guard failed: amd_observed_count ({amd_observed_count}) < amd_expected_count ({amd_expected_count}) in '{}'",
+            report.log_path.display()
+        ));
+    }
+
+    Ok(RuntimePendingSummaryStats {
         passed_count,
         failed_count,
         blocked_count,
         amd_passed_count,
         amd_failed_count,
         amd_blocked_count,
-    ))
+        amd_expected_count,
+        amd_observed_count,
+        amd_execution_guard_passed,
+    })
 }

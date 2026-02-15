@@ -2221,3 +2221,23 @@ pub fn amd_wave0_map_ivmd_ranges_exclusion_splits_smoke() -> bool {
 pub fn amd_wave0_map_for_device_rejects_exclusion_range_smoke() -> bool {
     super::amd::qemu_tests::wave0_map_for_device_rejects_exclusion_range_smoke()
 }
+
+pub fn amd_wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
+    super::amd::qemu_tests::wave1_cmdqueue_map_unmap_with_domain_smoke()
+}
+
+pub fn amd_wave1_map_device_nonblocking_smoke() -> bool {
+    super::amd::qemu_tests::wave1_map_device_nonblocking_smoke()
+}
+
+pub fn amd_wave1_dma_mask_respects_32bit_limit_smoke() -> bool {
+    super::amd::qemu_tests::wave1_dma_mask_respects_32bit_limit_smoke()
+}
+
+pub fn amd_wave1_security_notifier_dispatch_smoke() -> bool {
+    super::amd::qemu_tests::wave1_security_notifier_dispatch_smoke()
+}
+
+pub fn amd_wave1_cmdqueue_pressure_smoke() -> bool {
+    super::amd::qemu_tests::wave1_cmdqueue_pressure_smoke()
+}

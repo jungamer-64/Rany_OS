@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # This file is only for legacy #[test] exception control.
 # Pending migration tracking is managed separately by scripts/qemu_pending_cases.lst.
 # IOMMU residual canonical<->smoke parity is verified by scripts/verify_iommu_residual_parity.sh.
+# IOMMU AMD Wave4 required wiring is verified by scripts/verify_iommu_amd_wave4_required.sh.
 ALLOWLIST_FILE="$ROOT_DIR/scripts/qemu_legacy_test_allowlist.lst"
 
 if [[ ! -f "$ALLOWLIST_FILE" ]]; then

@@ -38,6 +38,7 @@ use crate::sync::IrqMutex;
 
 use crate::mm::fast_allocator::{FastBitmapAllocator, PageGranularity};
 use crate::mm::remote_free::{QuarantineRing, QuarantineEntry}; // Using generic QuarantineRing
+#[cfg(not(feature = "qemu-test-export"))]
 use crate::mm::per_cpu::MAX_CPUS;
 
 use super::IommuError;
@@ -47,6 +48,11 @@ pub type IovaGranularity = PageGranularity;
 
 /// Default capacity for quarantine ring (must be power of 2)
 const QUARANTINE_CAPACITY: usize = 256;
+
+#[cfg(feature = "qemu-test-export")]
+const IOVA_ALLOCATOR_MAX_CPUS: usize = 1;
+#[cfg(not(feature = "qemu-test-export"))]
+const IOVA_ALLOCATOR_MAX_CPUS: usize = MAX_CPUS;
 
 // Global fallback quarantine ring used when per-CPU quarantines cannot be allocated (early boot / OOM).
 // This static ring does not require heap allocation and provides limited quarantine semantics to
@@ -115,10 +121,10 @@ impl IovaAllocator {
 
         let quarantines = {
             let mut v: Vec<IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>> = Vec::new();
-            crate::io::log::early_print("[IOVA] new: try_reserve(MAX_CPUS)\n");
-            if v.try_reserve(MAX_CPUS).is_ok() {
+            crate::io::log::early_print("[IOVA] new: try_reserve(IOVA_ALLOCATOR_MAX_CPUS)\n");
+            if v.try_reserve(IOVA_ALLOCATOR_MAX_CPUS).is_ok() {
                 crate::io::log::early_print("[IOVA] try_reserve OK, allocating quarantines\n");
-                for _ in 0..MAX_CPUS {
+                for _ in 0..IOVA_ALLOCATOR_MAX_CPUS {
                     v.push(IrqMutex::new(QuarantineRing::new()));
                 }
                 crate::io::log::early_print("[IOVA] quarantines allocated\n");
@@ -223,7 +229,7 @@ impl IovaAllocator {
         let cpu_id = crate::mm::per_cpu::try_current_cpu_id().unwrap_or(0);
         
         // Ensure CPU ID is valid
-        if cpu_id >= MAX_CPUS {
+        if cpu_id >= IOVA_ALLOCATOR_MAX_CPUS {
             // Fallback for invalid CPU ID: behave as immediate free? 
             // Or just use CPU 0. Let's use CPU 0 for safety but this shouldn't happen.
             return self.free_immediate(addr, granularity);
@@ -384,7 +390,7 @@ impl IovaAllocator {
         
         // Opportunistic drain: Try to reclaim memory from current CPU's ring
         if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
-             if cpu_id < MAX_CPUS {
+             if cpu_id < IOVA_ALLOCATOR_MAX_CPUS {
                  self.drain_quarantine_for_cpu(cpu_id, false);
              }
         }
@@ -488,7 +494,7 @@ impl IovaAllocator {
 
         // Drain quarantine if needed
         if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
-            if cpu_id < MAX_CPUS {
+            if cpu_id < IOVA_ALLOCATOR_MAX_CPUS {
                  self.drain_quarantine_for_cpu(cpu_id, false);
             }
         }

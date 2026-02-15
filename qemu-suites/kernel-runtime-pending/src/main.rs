@@ -6,7 +6,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-const HEAP_SIZE: usize = 1024 * 1024;
+const HEAP_SIZE: usize = 8 * 1024 * 1024;
 
 #[repr(align(16))]
 struct Heap([u8; HEAP_SIZE]);
@@ -77,6 +77,8 @@ struct RuntimeCounts {
     amd_blocked: u64,
 }
 
+const AMD_WAVE1_EXPECTED_CASES: u64 = 5;
+
 fn report_case(name: &str, state: &str) {
     serial_write_str("[qemu-suite] kernel_runtime_pending case ");
     serial_write_str(name);
@@ -98,11 +100,9 @@ fn run_runtime_case(name: &str, f: fn() -> bool, counts: &mut RuntimeCounts) {
 fn run_amd_case(name: &str, f: fn() -> bool, counts: &mut RuntimeCounts) {
     if f() {
         report_case(name, "pass");
-        counts.passed += 1;
         counts.amd_passed += 1;
     } else {
         report_case(name, "fail");
-        counts.failed += 1;
         counts.amd_failed += 1;
     }
 }
@@ -119,41 +119,37 @@ fn run_suite() -> RuntimeCounts {
         amd_blocked: 0,
     };
 
+    // AMD Wave1 residual parity checks are preflight-independent and must always run.
+    run_amd_case(
+        "iommu_amd_wave1_cmdqueue_map_unmap_with_domain",
+        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave1_map_device_nonblocking",
+        rany_os::qemu_tests::iommu_amd_wave1_map_device_nonblocking_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave1_dma_mask_respects_32bit_limit",
+        rany_os::qemu_tests::iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave1_security_notifier_dispatch",
+        rany_os::qemu_tests::iommu_amd_wave1_security_notifier_dispatch_smoke,
+        &mut counts,
+    );
+    run_amd_case(
+        "iommu_amd_wave1_cmdqueue_pressure",
+        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_pressure_smoke,
+        &mut counts,
+    );
+
     let memory_ready = rany_os::memory::is_initialized();
     serial_write_str("[qemu-suite] kernel_runtime_pending preflight memory_initialized=");
     serial_write_u64(if memory_ready { 1 } else { 0 });
     serial_write_str("\n");
-
-    run_amd_case(
-        "iommu_amd_wave0_alias_devids_for_device_dedup",
-        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_dedup_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave0_alias_devids_for_device_no_match",
-        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_no_match_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave0_ivhd_flags_for_device_combined",
-        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_combined_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave0_ivhd_flags_for_device_acpi_hid",
-        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave0_map_ivmd_ranges_exclusion_splits",
-        rany_os::qemu_tests::iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke,
-        &mut counts,
-    );
-    run_amd_case(
-        "iommu_amd_wave0_map_for_device_rejects_exclusion_range",
-        rany_os::qemu_tests::iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke,
-        &mut counts,
-    );
 
     if !memory_ready {
         report_case("kernel_net_bridge_zero_copy_integration", "blocked");
@@ -189,6 +185,8 @@ fn write_counts(counts: &RuntimeCounts) {
     serial_write_u64(counts.amd_failed);
     serial_write_str(" amd_blocked=");
     serial_write_u64(counts.amd_blocked);
+    serial_write_str(" amd_expected=");
+    serial_write_u64(AMD_WAVE1_EXPECTED_CASES);
     serial_write_str("\n");
 }
 

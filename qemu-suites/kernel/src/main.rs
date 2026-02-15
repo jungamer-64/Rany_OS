@@ -118,6 +118,10 @@ fn run_suite() -> bool {
             test_iommu_wave3_core_structures_exports,
         )
         && run_check(
+            "iommu_wave4_amd_exports",
+            test_iommu_wave4_amd_exports,
+        )
+        && run_check(
             "iommu_wave2_residual_exports",
             test_iommu_wave2_residual_exports,
         )
@@ -439,6 +443,28 @@ fn test_iommu_wave3_core_structures_exports() -> bool {
     ) && run_check(
         "iommu_wave3_pri_fuel_processing_smoke",
         rany_os::qemu_tests::iommu_wave3_pri_fuel_processing_smoke,
+    )
+}
+
+fn test_iommu_wave4_amd_exports() -> bool {
+    run_check(
+        "iommu_amd_wave0_alias_devids_for_device_dedup_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_dedup_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_alias_devids_for_device_no_match_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_no_match_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_ivhd_flags_for_device_combined_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_combined_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke,
     )
 }
 

@@ -399,7 +399,7 @@ impl AmdIommuDriver {
             numa_node,
             false,
             false,
-            AMD_DEFAULT_MAX_ADDR_BITS,
+            self.max_addr_bits,
             domain_type,
             self.page_table_pool.clone(),
             PteFormat::Amd,

@@ -48,6 +48,9 @@ jobs:
       - name: Verify legacy #[test] allowlist
         run: bash scripts/verify_qemu_test_only.sh
 
+      - name: Verify IOMMU AMD Wave4 required wiring
+        run: bash scripts/verify_iommu_amd_wave4_required.sh
+
       - name: Run suite
         env:
           QEMU_TEST_CPU: ${{ matrix.cpu }}
@@ -111,7 +114,13 @@ jobs:
       - name: Verify IOMMU residual parity mapping
         run: bash scripts/verify_iommu_residual_parity.sh
 
-      - name: Run runtime pending streak and pending suite
+      - name: Verify IOMMU AMD Wave4 required wiring
+        run: bash scripts/verify_iommu_amd_wave4_required.sh
+
+      - name: Verify IOMMU AMD Wave5 runtime-pending wiring
+        run: bash scripts/verify_iommu_amd_wave5_runtime_pending.sh
+
+      - name: Run runtime pending and pending suite
         env:
           QEMU_TEST_CPU: qemu64,+rdtscp
           QEMU_TEST_MEMORY_MB: 512
@@ -120,21 +129,45 @@ jobs:
         run: |
           set -euo pipefail
           for run in 1 2 3; do
-            echo "kernel runtime pending streak ${run}/3"
+            echo "kernel runtime pending monitor run ${run}/3"
             cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
-            python3 - <<'PY'
+            python3 - target/qemu-logs/kernel-runtime-pending-summary.json <<'PY'
 import json
+import pathlib
 import sys
 
-path = "target/qemu-logs/kernel-runtime-pending-summary.json"
-with open(path, "r", encoding="utf-8") as fp:
-    data = json.load(fp)
+summary_path = pathlib.Path(sys.argv[1])
+if not summary_path.exists():
+    print(f"missing runtime summary: {summary_path}", file=sys.stderr)
+    raise SystemExit(1)
 
-amd_failed = int(data.get("amd_failed_count", 0))
-amd_blocked = int(data.get("amd_blocked_count", 0))
-print(f"amd_failed_count={amd_failed} amd_blocked_count={amd_blocked}")
-if amd_failed != 0 or amd_blocked != 0:
-    sys.exit(1)
+summary = json.loads(summary_path.read_text(encoding="utf-8"))
+checks = (
+    ("amd_failed_count", 0),
+    ("amd_blocked_count", 0),
+    ("amd_expected_count", 5),
+    ("amd_observed_count", 5),
+)
+errors = []
+for key, expected in checks:
+    actual = summary.get(key)
+    if actual != expected:
+        errors.append(f"{key}={actual} (expected {expected})")
+
+if summary.get("amd_execution_guard_passed") is not True:
+    errors.append("amd_execution_guard_passed != true")
+
+if errors:
+    print("Wave5 runtime pending monitor check failed:", file=sys.stderr)
+    for item in errors:
+        print(f"- {item}", file=sys.stderr)
+    raise SystemExit(1)
+
+print(
+    "Wave5 runtime pending monitor check passed:",
+    f"amd_expected_count={summary.get('amd_expected_count')}",
+    f"amd_observed_count={summary.get('amd_observed_count')}",
+)
 PY
           done
           cargo test -p qemu-tests -- --ignored --nocapture suite_pending
