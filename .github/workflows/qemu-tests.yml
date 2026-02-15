@@ -145,8 +145,8 @@ summary = json.loads(summary_path.read_text(encoding="utf-8"))
 checks = (
     ("amd_failed_count", 0),
     ("amd_blocked_count", 0),
-    ("amd_expected_count", 5),
-    ("amd_observed_count", 5),
+    ("amd_expected_count", 11),
+    ("amd_observed_count", 11),
 )
 errors = []
 for key, expected in checks:

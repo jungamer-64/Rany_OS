@@ -2241,3 +2241,27 @@ pub fn amd_wave1_security_notifier_dispatch_smoke() -> bool {
 pub fn amd_wave1_cmdqueue_pressure_smoke() -> bool {
     super::amd::qemu_tests::wave1_cmdqueue_pressure_smoke()
 }
+
+pub fn amd_wave5_irt_entry_construction_smoke() -> bool {
+    super::amd::qemu_tests::wave5_irt_entry_construction_smoke()
+}
+
+pub fn amd_wave5_irt_alloc_free_smoke() -> bool {
+    super::amd::qemu_tests::wave5_irt_alloc_free_smoke()
+}
+
+pub fn amd_wave5_irt_exhaustion_smoke() -> bool {
+    super::amd::qemu_tests::wave5_irt_exhaustion_smoke()
+}
+
+pub fn amd_wave5_irt_invalidation_cmd_format_smoke() -> bool {
+    super::amd::qemu_tests::wave5_irt_invalidation_cmd_format_smoke()
+}
+
+pub fn amd_wave5_map_interrupt_returns_handle_smoke() -> bool {
+    super::amd::qemu_tests::wave5_map_interrupt_returns_handle_smoke()
+}
+
+pub fn amd_wave5_get_remap_msi_message_format_smoke() -> bool {
+    super::amd::qemu_tests::wave5_get_remap_msi_message_format_smoke()
+}

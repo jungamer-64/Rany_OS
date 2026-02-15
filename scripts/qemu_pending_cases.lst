@@ -6,7 +6,7 @@
 #
 kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snapshot: 898 cases)
 kernel/tests/* migration to qemu-suites/kernel (current snapshot: 0 files, 0 #[test_case])
-kernel runtime pending suite execution for full-runtime cases (net_bridge/framebuffer) and blocked-state monitoring; counts are split (runtime pass/fail/blocked vs amd_pass/amd_fail/amd_blocked) with strict amd_expected=5 execution guard
+kernel runtime pending suite execution for full-runtime cases (net_bridge/framebuffer) and blocked-state monitoring; counts are split (runtime pass/fail/blocked vs amd_pass/amd_fail/amd_blocked) with strict amd_expected=11 execution guard (wave1=5 + wave5=6)
 IOMMU residual canonical parity tracking (original host test names are kept for migration visibility; required no_std smoke mapping is defined in scripts/qemu_iommu_residual_parity.lst)
 IOMMU residual canonical: test_cmdqueue_map_unmap_with_domain
 IOMMU residual canonical: test_map_for_device_async_and_unmap
@@ -16,5 +16,6 @@ IOMMU residual canonical: test_qi_metrics_pressure
 IOMMU wave3 required deterministic set (source of truth: qemu-suites/kernel/src/main.rs): scalable_mode(pasid0_fault_resolution+detach_cleans_pasid+attach_detach_cycle) + pasid_table(alloc_free+multi_domain+exhaustion) + mapping_slab + zombie_queue + pri_fuel
 IOMMU wave3 pending monitored smoke candidates (not in required): none
 IOMMU AMD Wave1 residual parity (runtime-pending executed on every run, strict execution guard amd_expected=5, CI non-blocking 3-run monitor): amd_wave1_cmdqueue_map_unmap_with_domain, amd_wave1_map_device_nonblocking, amd_wave1_dma_mask_respects_32bit_limit, amd_wave1_security_notifier_dispatch, amd_wave1_cmdqueue_pressure
-qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri+residual)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5(amd-wave1-residual) toward broader migrated kernel test groups
+IOMMU AMD Wave5 interrupt remapping (runtime-pending, 6 deterministic IRT tests): amd_wave5_irt_entry_construction, amd_wave5_irt_alloc_free, amd_wave5_irt_exhaustion, amd_wave5_irt_invalidation_cmd_format, amd_wave5_map_interrupt_returns_handle, amd_wave5_get_remap_msi_message_format
+qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri+residual)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5(amd-wave1-residual+amd-wave5-irt) toward broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

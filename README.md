@@ -247,12 +247,13 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
 - runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`
 - runtimeサマリ追記: `amd_passed_count`, `amd_failed_count`, `amd_blocked_count`, `amd_expected_count`, `amd_observed_count`, `amd_execution_guard_passed`
-- runtime pending の分離カウント仕様: `passed/failed/blocked` は runtime依存2件専用、`amd_*` は AMD Wave1 5件専用
-- CI pending ジョブは `suite_kernel_runtime_pending` を3連続実行し、毎回 `amd_failed_count=0` / `amd_blocked_count=0` / `amd_observed_count=amd_expected_count=5` を監視（non-blocking）
+- runtime pending の分離カウント仕様: `passed/failed/blocked` は runtime依存2件専用、`amd_*` は AMD Wave1+Wave5 11件専用
+- CI pending ジョブは `suite_kernel_runtime_pending` を3連続実行し、毎回 `amd_failed_count=0` / `amd_blocked_count=0` / `amd_observed_count=amd_expected_count=11` を監視（non-blocking）
 - IOMMU residual canonical pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
 - IOMMU wave3 pending monitored smoke（required 未投入）: `none`
 - AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
 - AMD-Vi Wave1 runtime pending 実行監視対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`
+- AMD-Vi Wave5 runtime pending 実行監視対象（6件 — IRT）: `irt_entry_construction`, `irt_alloc_free`, `irt_exhaustion`, `irt_invalidation_cmd_format`, `map_interrupt_returns_handle`, `get_remap_msi_message_format`
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
 - `#[test]` 例外の技術的ガード（実装ガード）: `scripts/qemu_legacy_test_allowlist.lst`
 

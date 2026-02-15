@@ -474,6 +474,7 @@ fn make_test_driver() -> AmdIommuDriver {
         enabled: AtomicBool::new(false),
         security_notifier: spin::Once::new(),
         max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
+        interrupt_remap_tables: alloc::vec![None],
     }
 }
 
@@ -849,4 +850,188 @@ pub fn wave1_cmdqueue_pressure_smoke() -> bool {
     drop(completions);
 
     cq.processed_total() == count
+}
+
+// ---------------------------------------------------------------------------
+// Wave5 (Interrupt Remapping) self-contained smoke tests
+// ---------------------------------------------------------------------------
+
+use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
+use super::cmd::AmdCommand;
+
+/// Verify AmdIrte bit layout: RemapEn, vector, destination, DM.
+pub fn wave5_irt_entry_construction_smoke() -> bool {
+    let irte = AmdIrte::fixed(0x42, 0x0A, false);
+    if !irte.is_present() {
+        return false;
+    }
+    if irte.vector() != 0x42 {
+        return false;
+    }
+    if irte.destination() != 0x0A {
+        return false;
+    }
+    if irte.is_logical() {
+        return false;
+    }
+
+    let irte_logical = AmdIrte::fixed(0xFF, 0xDEAD, true);
+    if !irte_logical.is_logical() {
+        return false;
+    }
+    if irte_logical.vector() != 0xFF {
+        return false;
+    }
+    if irte_logical.destination() != 0xDEAD {
+        return false;
+    }
+
+    let empty = AmdIrte::new();
+    !empty.is_present()
+}
+
+/// Allocate 3 entries, verify unique handles, free all, verify bitmap cleared.
+pub fn wave5_irt_alloc_free_smoke() -> bool {
+    let mut irt = match AmdInterruptRemapTable::new(4) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    // Allocate 3
+    let h0 = match irt.allocate() {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    let h1 = match irt.allocate() {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    let h2 = match irt.allocate() {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+
+    // All unique
+    if h0 == h1 || h1 == h2 || h0 == h2 {
+        return false;
+    }
+
+    // Write entries
+    let irte = AmdIrte::fixed(0x30, 1, false);
+    if irt.set_entry(h0, irte).is_err() {
+        return false;
+    }
+
+    // Free all
+    if irt.free(h0).is_err() || irt.free(h1).is_err() || irt.free(h2).is_err() {
+        return false;
+    }
+
+    // Freed entry should be cleared
+    match irt.get_entry(h0) {
+        Some(e) => !e.is_present(),
+        None => false,
+    }
+}
+
+/// Fill a small IRT to capacity, verify error on overflow, free one, re-allocate.
+pub fn wave5_irt_exhaustion_smoke() -> bool {
+    // 2^2 = 4 entries
+    let mut irt = match AmdInterruptRemapTable::new(2) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    if irt.capacity() != 4 {
+        return false;
+    }
+
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        match irt.allocate() {
+            Ok(h) => handles.push(h),
+            Err(_) => return false,
+        }
+    }
+
+    // 5th allocation should fail
+    if irt.allocate().is_ok() {
+        return false;
+    }
+
+    // Free one
+    if irt.free(handles[1]).is_err() {
+        return false;
+    }
+
+    // Should be able to allocate again
+    match irt.allocate() {
+        Ok(h) => h == handles[1], // Should reuse the freed slot
+        Err(_) => false,
+    }
+}
+
+/// Verify CMD_INV_IRT produces a correctly formatted command.
+pub fn wave5_irt_invalidation_cmd_format_smoke() -> bool {
+    let devid: u16 = 0x0108; // bus=1, dev=1, func=0
+    let cmd = AmdCommand::invalidate_interrupt_table(devid);
+
+    // data[0] should contain device_id in lower 16 bits
+    if (cmd.data[0] & 0xFFFF) != devid as u32 {
+        return false;
+    }
+
+    // data[1] bits [31:28] should contain opcode 0x05
+    let opcode = (cmd.data[1] >> 28) & 0x0F;
+    opcode == 0x05
+}
+
+/// map_interrupt returns a valid handle via IRT allocation.
+pub fn wave5_map_interrupt_returns_handle_smoke() -> bool {
+    let mut driver = make_test_driver();
+
+    // Initialize IRT for unit 0
+    let unit_irt = match AmdUnitIrt::new(4) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+    if let Some(slot) = driver.interrupt_remap_tables.get_mut(0) {
+        *slot = Some(PoisonLock::new(unit_irt));
+    } else {
+        return false;
+    }
+
+    // Map an interrupt (segment=0, bus=0, dev=1, func=0)
+    let handle = match driver.map_interrupt(0, 0, 1, 0, 0x42, 0x0A, false) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+
+    // Verify handle is valid (within IRT capacity)
+    handle < 16 // 2^4 = 16 entries
+}
+
+/// get_remap_msi_message returns MSI address with remapped format bit.
+pub fn wave5_get_remap_msi_message_format_smoke() -> bool {
+    let (addr, _data) = encode_remap_msi(5);
+
+    // Address should have MSI prefix 0xFEE0_0000
+    if addr & 0xFFF0_0000 != 0xFEE0_0000 {
+        return false;
+    }
+
+    // Bit 2 should be set (remapped format indicator)
+    if addr & 0x04 == 0 {
+        return false;
+    }
+
+    // Handle should be encoded: (handle << 2)
+    let encoded_handle = (addr >> 2) & 0xFFFF;
+    if encoded_handle != 5 {
+        return false;
+    }
+
+    // Different handle should produce different address
+    let (addr2, _) = encode_remap_msi(10);
+    addr != addr2
 }
