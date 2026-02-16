@@ -158,6 +158,10 @@ fn run_suite() -> bool {
             test_iommu_wave2_residual_exports,
         )
         && run_check(
+            "net_tls_wave8_phase_a_exports",
+            test_net_tls_wave8_phase_a_exports,
+        )
+        && run_check(
             "net_ecdh_exports",
             test_net_ecdh_exports,
         )
@@ -749,6 +753,55 @@ fn test_mm_wave7_page_reclaim_phase_c_exports() -> bool {
     ) && run_check(
         "mm_wave7_queuefull_does_not_count_writeback_skipped_smoke",
         rany_os::qemu_tests::mm_wave7_queuefull_does_not_count_writeback_skipped_smoke,
+    )
+}
+
+fn test_net_tls_wave8_phase_a_exports() -> bool {
+    run_check(
+        "net_tls_wave8_hmac_sha256_rfc4231_case1_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hmac_sha256_rfc4231_case1_smoke,
+    ) && run_check(
+        "net_tls_wave8_hmac_sha256_rfc4231_case2_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hmac_sha256_rfc4231_case2_smoke,
+    ) && run_check(
+        "net_tls_wave8_hmac_sha256_rfc4231_case3_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hmac_sha256_rfc4231_case3_smoke,
+    ) && run_check(
+        "net_tls_wave8_hkdf_rfc5869_case1_extract_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hkdf_rfc5869_case1_extract_smoke,
+    ) && run_check(
+        "net_tls_wave8_hkdf_rfc5869_case1_expand_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hkdf_rfc5869_case1_expand_smoke,
+    ) && run_check(
+        "net_tls_wave8_chacha20_rfc8439_block_smoke",
+        rany_os::qemu_tests::net_tls_wave8_chacha20_rfc8439_block_smoke,
+    ) && run_check(
+        "net_tls_wave8_chacha20_rfc8439_encrypt_smoke",
+        rany_os::qemu_tests::net_tls_wave8_chacha20_rfc8439_encrypt_smoke,
+    ) && run_check(
+        "net_tls_wave8_poly1305_rfc8439_smoke",
+        rany_os::qemu_tests::net_tls_wave8_poly1305_rfc8439_smoke,
+    ) && run_check(
+        "net_tls_wave8_chacha20_poly1305_rfc8439_encrypt_smoke",
+        rany_os::qemu_tests::net_tls_wave8_chacha20_poly1305_rfc8439_encrypt_smoke,
+    ) && run_check(
+        "net_tls_wave8_chacha20_poly1305_rfc8439_decrypt_smoke",
+        rany_os::qemu_tests::net_tls_wave8_chacha20_poly1305_rfc8439_decrypt_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_gcm_roundtrip_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_roundtrip_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_gcm_auth_failure_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_auth_failure_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_ctr_roundtrip_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_ctr_roundtrip_smoke,
+    ) && run_check(
+        "net_tls_wave8_gf128_mul_zero_smoke",
+        rany_os::qemu_tests::net_tls_wave8_gf128_mul_zero_smoke,
+    ) && run_check(
+        "net_tls_wave8_gf_mul_basic_smoke",
+        rany_os::qemu_tests::net_tls_wave8_gf_mul_basic_smoke,
     )
 }
 
