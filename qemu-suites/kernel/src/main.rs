@@ -134,6 +134,14 @@ fn run_suite() -> bool {
             test_graphics_framebuffer_wave6_phase_b_exports,
         )
         && run_check(
+            "mm_wave7_async_swapout_exports",
+            test_mm_wave7_async_swapout_exports,
+        )
+        && run_check(
+            "mm_wave7_page_reclaim_exports",
+            test_mm_wave7_page_reclaim_exports,
+        )
+        && run_check(
             "iommu_wave2_residual_exports",
             test_iommu_wave2_residual_exports,
         )
@@ -633,6 +641,44 @@ fn test_graphics_framebuffer_wave6_phase_b_exports() -> bool {
     ) && run_check(
         "graphics_wave6_packer_env_override_no_std_smoke",
         rany_os::qemu_tests::graphics_wave6_packer_env_override_no_std_smoke,
+    )
+}
+
+fn test_mm_wave7_async_swapout_exports() -> bool {
+    run_check(
+        "mm_wave7_buffer_pool_4k_basic_smoke",
+        rany_os::qemu_tests::mm_wave7_buffer_pool_4k_basic_smoke,
+    ) && run_check(
+        "mm_wave7_buffer_pool_2m_basic_smoke",
+        rany_os::qemu_tests::mm_wave7_buffer_pool_2m_basic_smoke,
+    )
+}
+
+fn test_mm_wave7_page_reclaim_exports() -> bool {
+    run_check(
+        "mm_wave7_watermarks_calculation_smoke",
+        rany_os::qemu_tests::mm_wave7_watermarks_calculation_smoke,
+    ) && run_check(
+        "mm_wave7_pressure_level_smoke",
+        rany_os::qemu_tests::mm_wave7_pressure_level_smoke,
+    ) && run_check(
+        "mm_wave7_mglru_list_add_smoke",
+        rany_os::qemu_tests::mm_wave7_mglru_list_add_smoke,
+    ) && run_check(
+        "mm_wave7_blocked_unsafe_requeues_victim_smoke",
+        rany_os::qemu_tests::mm_wave7_blocked_unsafe_requeues_victim_smoke,
+    ) && run_check(
+        "mm_wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke",
+        rany_os::qemu_tests::mm_wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke,
+    ) && run_check(
+        "mm_wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke",
+        rany_os::qemu_tests::mm_wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke,
+    ) && run_check(
+        "mm_wave7_async_success_clears_pending_and_accounts_success_smoke",
+        rany_os::qemu_tests::mm_wave7_async_success_clears_pending_and_accounts_success_smoke,
+    ) && run_check(
+        "mm_wave7_async_failure_requeues_and_clears_pending_smoke",
+        rany_os::qemu_tests::mm_wave7_async_failure_requeues_and_clears_pending_smoke,
     )
 }
 
