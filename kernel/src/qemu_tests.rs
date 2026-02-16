@@ -473,6 +473,66 @@ pub fn net_ecdh_x25519_rfc7748_vector_smoke() -> bool {
     crate::net::ecdh::qemu_tests::ecdh_x25519_rfc7748_vector_smoke()
 }
 
+pub fn net_tls_wave8_hmac_sha256_rfc4231_case1_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case1_smoke()
+}
+
+pub fn net_tls_wave8_hmac_sha256_rfc4231_case2_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case2_smoke()
+}
+
+pub fn net_tls_wave8_hmac_sha256_rfc4231_case3_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case3_smoke()
+}
+
+pub fn net_tls_wave8_hkdf_rfc5869_case1_extract_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_hkdf_rfc5869_case1_extract_smoke()
+}
+
+pub fn net_tls_wave8_hkdf_rfc5869_case1_expand_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_hkdf_rfc5869_case1_expand_smoke()
+}
+
+pub fn net_tls_wave8_chacha20_rfc8439_block_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_chacha20_rfc8439_block_smoke()
+}
+
+pub fn net_tls_wave8_chacha20_rfc8439_encrypt_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_chacha20_rfc8439_encrypt_smoke()
+}
+
+pub fn net_tls_wave8_poly1305_rfc8439_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_poly1305_rfc8439_smoke()
+}
+
+pub fn net_tls_wave8_chacha20_poly1305_rfc8439_encrypt_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_chacha20_poly1305_rfc8439_encrypt_smoke()
+}
+
+pub fn net_tls_wave8_chacha20_poly1305_rfc8439_decrypt_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_chacha20_poly1305_rfc8439_decrypt_smoke()
+}
+
+pub fn net_tls_wave8_aes_gcm_roundtrip_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_roundtrip_smoke()
+}
+
+pub fn net_tls_wave8_aes_gcm_auth_failure_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_auth_failure_smoke()
+}
+
+pub fn net_tls_wave8_aes_ctr_roundtrip_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_aes_ctr_roundtrip_smoke()
+}
+
+pub fn net_tls_wave8_gf128_mul_zero_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_gf128_mul_zero_smoke()
+}
+
+pub fn net_tls_wave8_gf_mul_basic_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_gf_mul_basic_smoke()
+}
+
 pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     use crate::net::driver_bridge;
     use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
