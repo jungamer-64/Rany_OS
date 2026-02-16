@@ -22,8 +22,16 @@ MM Wave7 Phase B deterministic set is promoted to required suite_kernel (source 
 MM Wave7 Phase C deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 MM Wave7 Phase D deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 NET TLS Wave8 Phase A deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
-NET TLS Wave8 residual monitored cases (post-Phase A): test_tls13_early_secret_no_psk, test_tls13_handshake_secret, test_tls13_master_secret, test_tls13_derive_secret, test_tls13_derive_traffic_keys, test_tls13_finished_key_and_verify_data, test_tls13_full_key_schedule, test_tls13_client_hello_key_share, test_tls13_client_hello_supported_versions, test_tls13_client_hello_psk_modes, test_tls13_strip_content_type, test_tls13_hkdf_expand_label_rfc8446, test_tls13_key_schedule_chain_consistency, test_tls13_finished_round_trip
+NET TLS Wave8 Phase B1 deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET TLS Wave8 Phase B2 deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET TLS Wave8 Phase C deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET TLS Wave8 Phase D deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET TLS Wave8 Phase E deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET TLS Wave8 Phase F deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET ECDH X25519 deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET ECDH Phase B P-256 deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+NET TLS Wave8 residual monitored cases (post-Phase F): none
 Graphics/Framebuffer Wave6 residual (bench only): bench_draw_image_bulk, bench_draw_image_24bit_bulk, bench_draw_image_rgba_bulk, bench_draw_hline_bulk, bench_draw_text_bulk
 MM Wave7 residual monitored cases (std::thread/stress/bench): test_memcg_concurrent_swapout, test_async_swapout_concurrent_dedup, test_async_swapout_stress_concurrency, test_async_swapout_heavy_stress, bench_enqueue_throughput_pool_vs_nopool, bench_buffer_pool_2m_throughput, bench_buffer_pool_1g_throughput
-qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri+residual)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5(amd-wave1+amd-wave5-irt required)+mm-wave7(async_swapout phase-a+phase-d; page_reclaim phase-a+phase-b+phase-c required)+net-wave8(tls-crypto phase-a required) toward broader migrated kernel test groups
+qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri+residual)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5(amd-wave1+amd-wave5-irt required)+mm-wave7(async_swapout phase-a+phase-d; page_reclaim phase-a+phase-b+phase-c required)+net-wave8(tls-crypto phase-a+phase-b1+phase-b2+phase-c+phase-d+phase-e+phase-f required)+net-ecdh(x25519+phase-b required) toward broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

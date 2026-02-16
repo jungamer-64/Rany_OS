@@ -70,6 +70,12 @@ pub mod endpoint;
 // ECDH key exchange
 pub mod ecdh;
 
+// X.509 certificate parsing
+pub mod x509;
+
+// RSA signature verification
+pub mod rsa;
+
 // TLS support
 pub mod tls;
 

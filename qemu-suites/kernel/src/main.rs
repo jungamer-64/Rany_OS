@@ -162,8 +162,36 @@ fn run_suite() -> bool {
             test_net_tls_wave8_phase_a_exports,
         )
         && run_check(
+            "net_tls_wave8_phase_b1_exports",
+            test_net_tls_wave8_phase_b1_exports,
+        )
+        && run_check(
+            "net_tls_wave8_phase_b2_exports",
+            test_net_tls_wave8_phase_b2_exports,
+        )
+        && run_check(
+            "net_tls_wave8_phase_c_exports",
+            test_net_tls_wave8_phase_c_exports,
+        )
+        && run_check(
+            "net_tls_wave8_phase_d_exports",
+            test_net_tls_wave8_phase_d_exports,
+        )
+        && run_check(
+            "net_tls_wave8_phase_e_exports",
+            test_net_tls_wave8_phase_e_exports,
+        )
+        && run_check(
+            "net_tls_wave8_phase_f_exports",
+            test_net_tls_wave8_phase_f_exports,
+        )
+        && run_check(
             "net_ecdh_exports",
             test_net_ecdh_exports,
+        )
+        && run_check(
+            "net_ecdh_phase_b_exports",
+            test_net_ecdh_phase_b_exports,
         )
         && run_check("kernel_integration_exports", test_kernel_integration_exports)
 }
@@ -805,6 +833,211 @@ fn test_net_tls_wave8_phase_a_exports() -> bool {
     )
 }
 
+fn test_net_tls_wave8_phase_b1_exports() -> bool {
+    run_check(
+        "net_tls_wave8_tls13_early_secret_no_psk_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_early_secret_no_psk_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_handshake_secret_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_handshake_secret_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_master_secret_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_master_secret_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_derive_secret_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_derive_secret_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_derive_traffic_keys_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_derive_traffic_keys_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_finished_key_and_verify_data_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_finished_key_and_verify_data_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_full_key_schedule_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_full_key_schedule_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_hkdf_expand_label_rfc8446_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_hkdf_expand_label_rfc8446_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_key_schedule_chain_consistency_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_key_schedule_chain_consistency_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_finished_round_trip_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_finished_round_trip_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_initial_state_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_initial_state_smoke,
+    )
+}
+
+fn test_net_tls_wave8_phase_b2_exports() -> bool {
+    run_check(
+        "net_tls_wave8_tls13_client_hello_key_share_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_client_hello_key_share_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_client_hello_supported_versions_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_client_hello_supported_versions_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_client_hello_psk_modes_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_client_hello_psk_modes_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls13_strip_content_type_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls13_strip_content_type_smoke,
+    )
+}
+
+
+fn test_net_tls_wave8_phase_c_exports() -> bool {
+    run_check(
+        "net_tls_wave8_hmac_sha256_long_key_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hmac_sha256_long_key_smoke,
+    ) && run_check(
+        "net_tls_wave8_hkdf_extract_empty_salt_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hkdf_extract_empty_salt_smoke,
+    ) && run_check(
+        "net_tls_wave8_hkdf_expand_zero_length_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hkdf_expand_zero_length_smoke,
+    ) && run_check(
+        "net_tls_wave8_chacha20_poly1305_auth_failure_smoke",
+        rany_os::qemu_tests::net_tls_wave8_chacha20_poly1305_auth_failure_smoke,
+    ) && run_check(
+        "net_tls_wave8_chacha20_poly1305_roundtrip_smoke",
+        rany_os::qemu_tests::net_tls_wave8_chacha20_poly1305_roundtrip_smoke,
+    ) && run_check(
+        "net_tls_wave8_chacha20_poly1305_empty_plaintext_smoke",
+        rany_os::qemu_tests::net_tls_wave8_chacha20_poly1305_empty_plaintext_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_gcm_256_roundtrip_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_256_roundtrip_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_gcm_corrupted_ciphertext_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_corrupted_ciphertext_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_gcm_empty_plaintext_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_empty_plaintext_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_key_expansion_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_key_expansion_smoke,
+    ) && run_check(
+        "net_tls_wave8_derive_master_secret_length_smoke",
+        rany_os::qemu_tests::net_tls_wave8_derive_master_secret_length_smoke,
+    ) && run_check(
+        "net_tls_wave8_derive_key_block_length_smoke",
+        rany_os::qemu_tests::net_tls_wave8_derive_key_block_length_smoke,
+    ) && run_check(
+        "net_tls_wave8_derive_master_secret_deterministic_smoke",
+        rany_os::qemu_tests::net_tls_wave8_derive_master_secret_deterministic_smoke,
+    ) && run_check(
+        "net_tls_wave8_derive_master_secret_differs_with_input_smoke",
+        rany_os::qemu_tests::net_tls_wave8_derive_master_secret_differs_with_input_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls12_prf_deterministic_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls12_prf_deterministic_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls12_prf_different_labels_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls12_prf_different_labels_smoke,
+    ) && run_check(
+        "net_tls_wave8_hkdf_expand_label_length_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hkdf_expand_label_length_smoke,
+    ) && run_check(
+        "net_tls_wave8_hkdf_expand_label_different_labels_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hkdf_expand_label_different_labels_smoke,
+    ) && run_check(
+        "net_tls_wave8_cipher_suite_helpers_smoke",
+        rany_os::qemu_tests::net_tls_wave8_cipher_suite_helpers_smoke,
+    ) && run_check(
+        "net_tls_wave8_base64_decode_smoke",
+        rany_os::qemu_tests::net_tls_wave8_base64_decode_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls_version_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls_version_smoke,
+    ) && run_check(
+        "net_tls_wave8_cipher_suite_defaults_smoke",
+        rany_os::qemu_tests::net_tls_wave8_cipher_suite_defaults_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls_version_ordering_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls_version_ordering_smoke,
+    )
+}
+
+fn test_net_tls_wave8_phase_d_exports() -> bool {
+    run_check(
+        "net_tls_wave8_tls_connection_initial_state_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls_connection_initial_state_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls_connection_client_hello_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls_connection_client_hello_smoke,
+    ) && run_check(
+        "net_tls_wave8_tls_connection_encrypt_not_established_smoke",
+        rany_os::qemu_tests::net_tls_wave8_tls_connection_encrypt_not_established_smoke,
+    ) && run_check(
+        "net_tls_wave8_process_handshake_multiple_messages_smoke",
+        rany_os::qemu_tests::net_tls_wave8_process_handshake_multiple_messages_smoke,
+    ) && run_check(
+        "net_tls_wave8_process_handshake_truncated_header_smoke",
+        rany_os::qemu_tests::net_tls_wave8_process_handshake_truncated_header_smoke,
+    )
+}
+
+fn test_net_tls_wave8_phase_e_exports() -> bool {
+    run_check(
+        "net_tls_wave8_generate_random_not_all_zeros_smoke",
+        rany_os::qemu_tests::net_tls_wave8_generate_random_not_all_zeros_smoke,
+    ) && run_check(
+        "net_tls_wave8_generate_random_different_calls_smoke",
+        rany_os::qemu_tests::net_tls_wave8_generate_random_different_calls_smoke,
+    ) && run_check(
+        "net_tls_wave8_sha384_empty_smoke",
+        rany_os::qemu_tests::net_tls_wave8_sha384_empty_smoke,
+    ) && run_check(
+        "net_tls_wave8_sha384_abc_smoke",
+        rany_os::qemu_tests::net_tls_wave8_sha384_abc_smoke,
+    ) && run_check(
+        "net_tls_wave8_hmac_sha384_rfc4231_case1_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hmac_sha384_rfc4231_case1_smoke,
+    ) && run_check(
+        "net_tls_wave8_hmac_sha384_rfc4231_case2_smoke",
+        rany_os::qemu_tests::net_tls_wave8_hmac_sha384_rfc4231_case2_smoke,
+    )
+}
+
+fn test_net_tls_wave8_phase_f_exports() -> bool {
+    run_check(
+        "net_tls_wave8_der_parse_tag_length_smoke",
+        rany_os::qemu_tests::net_tls_wave8_der_parse_tag_length_smoke,
+    ) && run_check(
+        "net_tls_wave8_der_parse_integer_smoke",
+        rany_os::qemu_tests::net_tls_wave8_der_parse_integer_smoke,
+    ) && run_check(
+        "net_tls_wave8_der_parse_sequence_smoke",
+        rany_os::qemu_tests::net_tls_wave8_der_parse_sequence_smoke,
+    ) && run_check(
+        "net_tls_wave8_x509_parse_self_signed_smoke",
+        rany_os::qemu_tests::net_tls_wave8_x509_parse_self_signed_smoke,
+    ) && run_check(
+        "net_tls_wave8_x509_extract_rsa_pubkey_smoke",
+        rany_os::qemu_tests::net_tls_wave8_x509_extract_rsa_pubkey_smoke,
+    ) && run_check(
+        "net_tls_wave8_x509_signature_algorithm_oid_smoke",
+        rany_os::qemu_tests::net_tls_wave8_x509_signature_algorithm_oid_smoke,
+    ) && run_check(
+        "net_tls_wave8_rsa_modexp_small_smoke",
+        rany_os::qemu_tests::net_tls_wave8_rsa_modexp_small_smoke,
+    ) && run_check(
+        "net_tls_wave8_rsa_modexp_medium_smoke",
+        rany_os::qemu_tests::net_tls_wave8_rsa_modexp_medium_smoke,
+    ) && run_check(
+        "net_tls_wave8_rsa_pkcs1_verify_smoke",
+        rany_os::qemu_tests::net_tls_wave8_rsa_pkcs1_verify_smoke,
+    ) && run_check(
+        "net_tls_wave8_rsa_pkcs1_verify_bad_sig_smoke",
+        rany_os::qemu_tests::net_tls_wave8_rsa_pkcs1_verify_bad_sig_smoke,
+    ) && run_check(
+        "net_tls_wave8_rsa_biguint_mul_div_smoke",
+        rany_os::qemu_tests::net_tls_wave8_rsa_biguint_mul_div_smoke,
+    )
+}
+
 fn test_net_ecdh_exports() -> bool {
     run_check(
         "net_ecdh_x25519_key_exchange_symmetry_smoke",
@@ -824,6 +1057,28 @@ fn test_net_ecdh_exports() -> bool {
     ) && run_check(
         "net_ecdh_x25519_rfc7748_vector_smoke",
         rany_os::qemu_tests::net_ecdh_x25519_rfc7748_vector_smoke,
+    )
+}
+
+fn test_net_ecdh_phase_b_exports() -> bool {
+    run_check(
+        "net_ecdh_p256_key_exchange_symmetry_smoke",
+        rany_os::qemu_tests::net_ecdh_p256_key_exchange_symmetry_smoke,
+    ) && run_check(
+        "net_ecdh_p256_public_key_length_smoke",
+        rany_os::qemu_tests::net_ecdh_p256_public_key_length_smoke,
+    ) && run_check(
+        "net_ecdh_p256_reject_invalid_peer_key_smoke",
+        rany_os::qemu_tests::net_ecdh_p256_reject_invalid_peer_key_smoke,
+    ) && run_check(
+        "net_ecdh_group_from_named_group_p256_smoke",
+        rany_os::qemu_tests::net_ecdh_group_from_named_group_p256_smoke,
+    ) && run_check(
+        "net_ecdh_p256_point_on_curve_smoke",
+        rany_os::qemu_tests::net_ecdh_p256_point_on_curve_smoke,
+    ) && run_check(
+        "net_ecdh_p256_scalar_mul_base_smoke",
+        rany_os::qemu_tests::net_ecdh_p256_scalar_mul_base_smoke,
     )
 }
 
