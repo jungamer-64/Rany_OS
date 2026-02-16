@@ -449,6 +449,30 @@ pub fn mm_wave7_queuefull_does_not_count_writeback_skipped_smoke() -> bool {
     crate::mm::page_reclaim::qemu_tests::wave7_queuefull_does_not_count_writeback_skipped_smoke()
 }
 
+pub fn net_ecdh_x25519_key_exchange_symmetry_smoke() -> bool {
+    crate::net::ecdh::qemu_tests::ecdh_x25519_key_exchange_symmetry_smoke()
+}
+
+pub fn net_ecdh_x25519_public_key_length_smoke() -> bool {
+    crate::net::ecdh::qemu_tests::ecdh_x25519_public_key_length_smoke()
+}
+
+pub fn net_ecdh_x25519_group_smoke() -> bool {
+    crate::net::ecdh::qemu_tests::ecdh_x25519_group_smoke()
+}
+
+pub fn net_ecdh_group_from_named_group_smoke() -> bool {
+    crate::net::ecdh::qemu_tests::ecdh_group_from_named_group_smoke()
+}
+
+pub fn net_ecdh_x25519_reject_invalid_peer_key_smoke() -> bool {
+    crate::net::ecdh::qemu_tests::ecdh_x25519_reject_invalid_peer_key_smoke()
+}
+
+pub fn net_ecdh_x25519_rfc7748_vector_smoke() -> bool {
+    crate::net::ecdh::qemu_tests::ecdh_x25519_rfc7748_vector_smoke()
+}
+
 pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     use crate::net::driver_bridge;
     use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
