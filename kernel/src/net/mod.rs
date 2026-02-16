@@ -67,6 +67,9 @@ pub mod driver;
 // Endpoint API (旧称: socket → ゼロコピー所有権モデルを反映)
 pub mod endpoint;
 
+// ECDH key exchange
+pub mod ecdh;
+
 // TLS support
 pub mod tls;
 

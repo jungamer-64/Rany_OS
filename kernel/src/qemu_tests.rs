@@ -361,6 +361,22 @@ pub fn mm_wave7_buffer_pool_2m_basic_smoke() -> bool {
     crate::mm::async_swapout::qemu_tests::wave7_buffer_pool_2m_basic_smoke()
 }
 
+pub fn mm_wave7_enqueue_override_forces_error_smoke() -> bool {
+    crate::mm::async_swapout::qemu_tests::wave7_enqueue_override_forces_error_smoke()
+}
+
+pub fn mm_wave7_token_exhaustion_rolls_back_pending_smoke() -> bool {
+    crate::mm::async_swapout::qemu_tests::wave7_token_exhaustion_rolls_back_pending_smoke()
+}
+
+pub fn mm_wave7_token_bucket_clamp_smoke() -> bool {
+    crate::mm::async_swapout::qemu_tests::wave7_token_bucket_clamp_smoke()
+}
+
+pub fn mm_wave7_runtime_tunable_roundtrip_smoke() -> bool {
+    crate::mm::async_swapout::qemu_tests::wave7_runtime_tunable_roundtrip_smoke()
+}
+
 pub fn mm_wave7_watermarks_calculation_smoke() -> bool {
     crate::mm::page_reclaim::qemu_tests::wave7_watermarks_calculation_smoke()
 }

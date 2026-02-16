@@ -28,6 +28,13 @@ async_cases=(
   "buffer_pool_2m_basic"
 )
 
+async_phase_d_cases=(
+  "enqueue_override_forces_error"
+  "token_exhaustion_rolls_back_pending"
+  "token_bucket_clamp"
+  "runtime_tunable_roundtrip"
+)
+
 reclaim_cases=(
   "watermarks_calculation"
   "pressure_level"
@@ -59,6 +66,11 @@ violations=0
 
 if ! rg -q "mm_wave7_async_swapout_exports" "$KERNEL_SUITE_FILE"; then
   echo "[verify_mm_wave7_required] missing mm_wave7_async_swapout_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+  violations=$((violations + 1))
+fi
+
+if ! rg -q "mm_wave7_async_swapout_phase_d_exports" "$KERNEL_SUITE_FILE"; then
+  echo "[verify_mm_wave7_required] missing mm_wave7_async_swapout_phase_d_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
@@ -101,6 +113,31 @@ if ! rg -q "pub fn qemu_test_clear_writeback_overrides\\(" "$ROOT_DIR/kernel/src
   echo "[verify_mm_wave7_required] missing qemu writeback clear hook in kernel/src/mm/page_reclaim.rs"
   violations=$((violations + 1))
 fi
+
+for case_name in "${async_phase_d_cases[@]}"; do
+  export_fn="wave7_${case_name}_smoke"
+  wrapper_fn="mm_wave7_${case_name}_smoke"
+
+  if ! rg -q "pub fn ${export_fn}\\(" "$ASYNC_EXPORT_FILE"; then
+    echo "[verify_mm_wave7_required] missing async phase-d export '${export_fn}' in ${ASYNC_EXPORT_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+
+  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
+    echo "[verify_mm_wave7_required] missing async phase-d wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
+    echo "[verify_mm_wave7_required] missing async phase-d suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+
+  if rg -q "${case_name}" "$PENDING_FILE"; then
+    echo "[verify_mm_wave7_required] promoted async phase-d case '${case_name}' still listed in ${PENDING_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+done
 
 for case_name in "${async_cases[@]}"; do
   export_fn="wave7_${case_name}_smoke"
@@ -214,6 +251,11 @@ fi
 
 if ! rg -q "MM Wave7 Phase C deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
   echo "[verify_mm_wave7_required] missing Wave7 phase-c marker in ${PENDING_FILE#$ROOT_DIR/}"
+  violations=$((violations + 1))
+fi
+
+if ! rg -q "MM Wave7 Phase D deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
+  echo "[verify_mm_wave7_required] missing Wave7 phase-d marker in ${PENDING_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 

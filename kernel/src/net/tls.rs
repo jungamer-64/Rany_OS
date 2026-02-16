@@ -548,6 +548,8 @@ pub struct TlsConnection {
     handshake_messages: Vec<u8>,
     /// Pre-master secret (from key exchange, used to derive master secret)
     pre_master_secret: Vec<u8>,
+    /// ECDH一時鍵ペア（ClientKeyExchange送信用）
+    local_ecdh_keypair: Option<super::ecdh::EcdhKeyPair>,
 }
 
 impl TlsConnection {
@@ -575,6 +577,7 @@ impl TlsConnection {
             send_buffer: Vec::new(),
             handshake_messages: Vec::new(),
             pre_master_secret: Vec::new(),
+            local_ecdh_keypair: None,
         }
     }
 
@@ -874,14 +877,16 @@ impl TlsConnection {
     }
 
     /// ServerKeyExchangeを処理
+    ///
+    /// ECDHEの場合、サーバー公開鍵を受け取り、クライアント側で
+    /// 一時鍵ペアを生成してECDH共有秘密を計算する。
     fn process_server_key_exchange(&mut self, data: &[u8]) -> TlsResult<()> {
-        // キー交換パラメータの処理
-        // ECDHEの場合:
-        // - curve_type (1 byte)
+        // ECDHEフォーマット（RFC 4492 Section 5.4）:
+        // - curve_type (1 byte): 0x03 = named_curve
         // - named_curve (2 bytes)
         // - public_key_length (1 byte)
         // - public_key (variable)
-        // - signature (variable)
+        // - signature (variable) — 署名検証は将来実装
 
         if data.len() < 4 {
             return Err(TlsError::DecodeError);
@@ -893,29 +898,36 @@ impl TlsConnection {
             return Err(TlsError::UnsupportedCipherSuite);
         }
 
-        let _named_curve = ((data[1] as u16) << 8) | (data[2] as u16);
+        let named_curve = ((data[1] as u16) << 8) | (data[2] as u16);
         let pubkey_len = data[3] as usize;
 
         if data.len() < 4 + pubkey_len {
             return Err(TlsError::DecodeError);
         }
 
-        // サーバーの公開鍵を保存
-        let _server_pubkey = &data[4..4 + pubkey_len];
+        let server_pubkey = &data[4..4 + pubkey_len];
 
-        // Generate pre-master secret placeholder.
-        // Full ECDH implementation requires:
-        //   1. Client ephemeral key pair generation (on the negotiated curve)
-        //   2. ECDH shared secret computation: Z = client_priv * server_pub
-        //   3. The shared secret Z becomes the pre-master secret
-        //
-        // For now, generate a random pre-master secret so the key derivation
-        // pipeline can be exercised end-to-end. A real deployment MUST replace
-        // this with actual ECDH computation.
-        let random = generate_random();
-        self.pre_master_secret = random.to_vec();
+        // NamedGroup → EcdhGroup マッピング
+        use super::ecdh::{EcdhGroup, EcdhKeyPair};
+        let group = match named_curve {
+            0x001D => EcdhGroup::X25519,
+            _ => return Err(TlsError::UnsupportedCipherSuite),
+        };
 
-        // Derive master secret from pre-master secret + client/server randoms
+        // クライアント一時鍵ペア生成 + ECDH共有秘密計算
+        let local_keypair =
+            EcdhKeyPair::generate(group).map_err(|_| TlsError::CryptoError)?;
+        let shared_secret = local_keypair
+            .shared_secret(server_pubkey)
+            .map_err(|_| TlsError::CryptoError)?;
+
+        // ClientKeyExchange送信用に鍵ペアを保存
+        self.local_ecdh_keypair = Some(local_keypair);
+
+        // pre_master_secret = ECDH共有秘密
+        self.pre_master_secret = shared_secret;
+
+        // Master secret導出（RFC 5246 Section 8.1）
         self.master_secret = derive_master_secret(
             &self.pre_master_secret,
             &self.client_random,
@@ -923,6 +935,41 @@ impl TlsConnection {
         );
 
         Ok(())
+    }
+
+    /// ClientKeyExchangeメッセージ構築（TLS 1.2 ECDHE）
+    ///
+    /// クライアントの一時公開鍵をサーバーに送信する。
+    /// `process_server_key_exchange()` の後に呼び出す。
+    pub fn build_client_key_exchange(&mut self) -> Option<Vec<u8>> {
+        let keypair = self.local_ecdh_keypair.as_ref()?;
+        let pubkey_bytes = keypair.public_key_bytes();
+
+        // ECPoint format: length(1) + point(N)
+        let mut body = Vec::with_capacity(1 + pubkey_bytes.len());
+        body.push(pubkey_bytes.len() as u8);
+        body.extend_from_slice(&pubkey_bytes);
+
+        // Handshakeヘッダ: type(1) + length(3)
+        let mut message = Vec::with_capacity(4 + body.len());
+        message.push(16); // ClientKeyExchange type = 16
+        message.push(0);
+        message.push((body.len() >> 8) as u8);
+        message.push(body.len() as u8);
+        message.extend_from_slice(&body);
+
+        // ハンドシェイクメッセージを記録（Finished verify用）
+        self.handshake_messages.extend_from_slice(&message);
+
+        // TLSレコードヘッダ
+        let mut record = Vec::with_capacity(5 + message.len());
+        record.push(ContentType::Handshake as u8);
+        record.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+        record.push((message.len() >> 8) as u8);
+        record.push(message.len() as u8);
+        record.extend_from_slice(&message);
+
+        Some(record)
     }
 
     /// ServerHelloDoneを処理
@@ -1820,7 +1867,7 @@ fn rdrand64() -> Option<u64> {
 /// Falls back to a weak LCG for development/boot environments where
 /// RDRAND is not yet available. The LCG fallback MUST NOT be used
 /// for production cryptographic operations.
-fn generate_random() -> [u8; 32] {
+pub(crate) fn generate_random() -> [u8; 32] {
     let mut result = [0u8; 32];
 
     if has_rdrand() {

@@ -138,6 +138,10 @@ fn run_suite() -> bool {
             test_mm_wave7_async_swapout_exports,
         )
         && run_check(
+            "mm_wave7_async_swapout_phase_d_exports",
+            test_mm_wave7_async_swapout_phase_d_exports,
+        )
+        && run_check(
             "mm_wave7_page_reclaim_exports",
             test_mm_wave7_page_reclaim_exports,
         )
@@ -659,6 +663,22 @@ fn test_mm_wave7_async_swapout_exports() -> bool {
     ) && run_check(
         "mm_wave7_buffer_pool_2m_basic_smoke",
         rany_os::qemu_tests::mm_wave7_buffer_pool_2m_basic_smoke,
+    )
+}
+
+fn test_mm_wave7_async_swapout_phase_d_exports() -> bool {
+    run_check(
+        "mm_wave7_enqueue_override_forces_error_smoke",
+        rany_os::qemu_tests::mm_wave7_enqueue_override_forces_error_smoke,
+    ) && run_check(
+        "mm_wave7_token_exhaustion_rolls_back_pending_smoke",
+        rany_os::qemu_tests::mm_wave7_token_exhaustion_rolls_back_pending_smoke,
+    ) && run_check(
+        "mm_wave7_token_bucket_clamp_smoke",
+        rany_os::qemu_tests::mm_wave7_token_bucket_clamp_smoke,
+    ) && run_check(
+        "mm_wave7_runtime_tunable_roundtrip_smoke",
+        rany_os::qemu_tests::mm_wave7_runtime_tunable_roundtrip_smoke,
     )
 }
 
