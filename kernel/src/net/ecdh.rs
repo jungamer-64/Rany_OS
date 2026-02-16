@@ -18,9 +18,7 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use ed25519_compact::x25519::{
-    PublicKey as X25519PublicKey, SecretKey as X25519SecretKey,
-};
+use ed25519_compact::x25519::{PublicKey as X25519PublicKey, SecretKey as X25519SecretKey};
 
 // ============================================================================
 // ECDH Group
@@ -127,8 +125,8 @@ impl EcdhKeyPair {
     pub fn shared_secret(&self, peer_public: &[u8]) -> Result<Vec<u8>, EcdhError> {
         match self {
             EcdhKeyPair::X25519 { sk, .. } => {
-                let peer_pk = X25519PublicKey::from_slice(peer_public)
-                    .map_err(|_| EcdhError::InvalidPeerKey)?;
+                let peer_pk =
+                    X25519PublicKey::from_slice(peer_public).map_err(|_| EcdhError::InvalidPeerKey)?;
                 let dh_output = peer_pk.dh(sk).map_err(|_| EcdhError::SharedSecretFailed)?;
                 let bytes: &[u8; 32] = &dh_output;
                 Ok(bytes.to_vec())
@@ -154,6 +152,89 @@ pub enum EcdhError {
     UnsupportedGroup,
 }
 
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn ecdh_x25519_key_exchange_symmetry_smoke() -> bool {
+        let Ok(alice) = EcdhKeyPair::generate(EcdhGroup::X25519) else {
+            return false;
+        };
+        let Ok(bob) = EcdhKeyPair::generate(EcdhGroup::X25519) else {
+            return false;
+        };
+
+        let alice_pk = alice.public_key_bytes();
+        let bob_pk = bob.public_key_bytes();
+
+        let Ok(alice_secret) = alice.shared_secret(&bob_pk) else {
+            return false;
+        };
+        let Ok(bob_secret) = bob.shared_secret(&alice_pk) else {
+            return false;
+        };
+
+        alice_secret == bob_secret && alice_secret.len() == 32
+    }
+
+    pub fn ecdh_x25519_public_key_length_smoke() -> bool {
+        let Ok(kp) = EcdhKeyPair::generate(EcdhGroup::X25519) else {
+            return false;
+        };
+        kp.public_key_bytes().len() == 32
+    }
+
+    pub fn ecdh_x25519_group_smoke() -> bool {
+        let Ok(kp) = EcdhKeyPair::generate(EcdhGroup::X25519) else {
+            return false;
+        };
+        kp.group() == EcdhGroup::X25519
+    }
+
+    pub fn ecdh_group_from_named_group_smoke() -> bool {
+        EcdhGroup::from_named_group(0x001D) == Some(EcdhGroup::X25519)
+            && EcdhGroup::from_named_group(0x0017).is_none()
+            && EcdhGroup::from_named_group(0x001E).is_none()
+    }
+
+    pub fn ecdh_x25519_reject_invalid_peer_key_smoke() -> bool {
+        let Ok(kp) = EcdhKeyPair::generate(EcdhGroup::X25519) else {
+            return false;
+        };
+
+        kp.shared_secret(&[0u8; 16]).is_err() && kp.shared_secret(&[0u8; 64]).is_err()
+    }
+
+    pub fn ecdh_x25519_rfc7748_vector_smoke() -> bool {
+        let scalar_bytes: [u8; 32] = [
+            0xa5, 0x46, 0xe3, 0x6b, 0xf0, 0x52, 0x7c, 0x9d, 0x3b, 0x16, 0x15, 0x4b, 0x82, 0x46,
+            0x5e, 0xdd, 0x62, 0x14, 0x4c, 0x0a, 0xc1, 0xfc, 0x5a, 0x18, 0x50, 0x6a, 0x22, 0x44,
+            0xba, 0x44, 0x9a, 0xc4,
+        ];
+        let u_bytes: [u8; 32] = [
+            0xe6, 0xdb, 0x68, 0x67, 0x58, 0x30, 0x30, 0xdb, 0x35, 0x94, 0xc1, 0xa4, 0x24, 0xb1,
+            0x5f, 0x7c, 0x72, 0x66, 0x24, 0xec, 0x26, 0xb3, 0x35, 0x3b, 0x10, 0xa9, 0x03, 0xa6,
+            0xd0, 0xab, 0x1c, 0x4c,
+        ];
+        let expected: [u8; 32] = [
+            0xc3, 0xda, 0x55, 0x37, 0x9d, 0xe9, 0xc6, 0x90, 0x8e, 0x94, 0xea, 0x4d, 0xf2, 0x8d,
+            0x08, 0x4f, 0x32, 0xec, 0xcf, 0x03, 0x49, 0x1c, 0x71, 0xf7, 0x54, 0xb4, 0x07, 0x55,
+            0x77, 0xa2, 0x85, 0x52,
+        ];
+
+        let sk = X25519SecretKey::new(scalar_bytes);
+        let Ok(pk) = X25519PublicKey::from_slice(&u_bytes) else {
+            return false;
+        };
+
+        let Ok(output) = pk.dh(&sk) else {
+            return false;
+        };
+        let output: &[u8; 32] = &output;
+        output == &expected
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -165,7 +246,7 @@ mod tests {
     /// X25519 鍵交換対称性テスト
     ///
     /// Alice.shared_secret(Bob.pk) == Bob.shared_secret(Alice.pk)
-    #[test]
+    #[test_case]
     fn test_x25519_key_exchange_symmetry() {
         let alice = EcdhKeyPair::generate(EcdhGroup::X25519).expect("Alice keygen");
         let bob = EcdhKeyPair::generate(EcdhGroup::X25519).expect("Bob keygen");
@@ -181,21 +262,21 @@ mod tests {
     }
 
     /// X25519 公開鍵の長さテスト
-    #[test]
+    #[test_case]
     fn test_x25519_public_key_length() {
         let kp = EcdhKeyPair::generate(EcdhGroup::X25519).expect("keygen");
         assert_eq!(kp.public_key_bytes().len(), 32);
     }
 
     /// X25519 グループ識別テスト
-    #[test]
+    #[test_case]
     fn test_x25519_group() {
         let kp = EcdhKeyPair::generate(EcdhGroup::X25519).expect("keygen");
         assert_eq!(kp.group(), EcdhGroup::X25519);
     }
 
     /// NamedGroup変換テスト
-    #[test]
+    #[test_case]
     fn test_ecdh_group_from_named_group() {
         assert_eq!(EcdhGroup::from_named_group(0x001D), Some(EcdhGroup::X25519));
         assert_eq!(EcdhGroup::from_named_group(0x0017), None); // SECP256R1 — 未サポート
@@ -203,7 +284,7 @@ mod tests {
     }
 
     /// 不正なピア公開鍵の拒否テスト
-    #[test]
+    #[test_case]
     fn test_x25519_reject_invalid_peer_key() {
         let kp = EcdhKeyPair::generate(EcdhGroup::X25519).expect("keygen");
 
@@ -219,7 +300,7 @@ mod tests {
     /// X25519 RFC 7748 テストベクトル
     ///
     /// Section 6.1 の既知のスカラー倍算結果を検証
-    #[test]
+    #[test_case]
     fn test_x25519_rfc7748_vector() {
         // テストベクトル（RFC 7748 Section 6.1）:
         // scalar: a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4

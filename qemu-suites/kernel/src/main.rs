@@ -157,6 +157,10 @@ fn run_suite() -> bool {
             "iommu_wave2_residual_exports",
             test_iommu_wave2_residual_exports,
         )
+        && run_check(
+            "net_ecdh_exports",
+            test_net_ecdh_exports,
+        )
         && run_check("kernel_integration_exports", test_kernel_integration_exports)
 }
 
@@ -745,6 +749,28 @@ fn test_mm_wave7_page_reclaim_phase_c_exports() -> bool {
     ) && run_check(
         "mm_wave7_queuefull_does_not_count_writeback_skipped_smoke",
         rany_os::qemu_tests::mm_wave7_queuefull_does_not_count_writeback_skipped_smoke,
+    )
+}
+
+fn test_net_ecdh_exports() -> bool {
+    run_check(
+        "net_ecdh_x25519_key_exchange_symmetry_smoke",
+        rany_os::qemu_tests::net_ecdh_x25519_key_exchange_symmetry_smoke,
+    ) && run_check(
+        "net_ecdh_x25519_public_key_length_smoke",
+        rany_os::qemu_tests::net_ecdh_x25519_public_key_length_smoke,
+    ) && run_check(
+        "net_ecdh_x25519_group_smoke",
+        rany_os::qemu_tests::net_ecdh_x25519_group_smoke,
+    ) && run_check(
+        "net_ecdh_group_from_named_group_smoke",
+        rany_os::qemu_tests::net_ecdh_group_from_named_group_smoke,
+    ) && run_check(
+        "net_ecdh_x25519_reject_invalid_peer_key_smoke",
+        rany_os::qemu_tests::net_ecdh_x25519_reject_invalid_peer_key_smoke,
+    ) && run_check(
+        "net_ecdh_x25519_rfc7748_vector_smoke",
+        rany_os::qemu_tests::net_ecdh_x25519_rfc7748_vector_smoke,
     )
 }
 
