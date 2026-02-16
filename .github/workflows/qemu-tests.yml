@@ -57,6 +57,9 @@ jobs:
       - name: Verify Graphics Framebuffer Wave6 required wiring
         run: bash scripts/verify_graphics_framebuffer_wave6_required.sh
 
+      - name: Verify MM Wave7 required wiring
+        run: bash scripts/verify_mm_wave7_required.sh
+
       - name: Run suite
         env:
           QEMU_TEST_CPU: ${{ matrix.cpu }}

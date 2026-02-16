@@ -353,6 +353,46 @@ pub fn kernel_async_swapout_sim_smoke() -> bool {
         && state.file_queue_count == 0
 }
 
+pub fn mm_wave7_buffer_pool_4k_basic_smoke() -> bool {
+    crate::mm::async_swapout::qemu_tests::wave7_buffer_pool_4k_basic_smoke()
+}
+
+pub fn mm_wave7_buffer_pool_2m_basic_smoke() -> bool {
+    crate::mm::async_swapout::qemu_tests::wave7_buffer_pool_2m_basic_smoke()
+}
+
+pub fn mm_wave7_watermarks_calculation_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_watermarks_calculation_smoke()
+}
+
+pub fn mm_wave7_pressure_level_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_pressure_level_smoke()
+}
+
+pub fn mm_wave7_mglru_list_add_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_mglru_list_add_smoke()
+}
+
+pub fn mm_wave7_blocked_unsafe_requeues_victim_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_blocked_unsafe_requeues_victim_smoke()
+}
+
+pub fn mm_wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke()
+}
+
+pub fn mm_wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke()
+}
+
+pub fn mm_wave7_async_success_clears_pending_and_accounts_success_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_async_success_clears_pending_and_accounts_success_smoke()
+}
+
+pub fn mm_wave7_async_failure_requeues_and_clears_pending_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_async_failure_requeues_and_clears_pending_smoke()
+}
+
 pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     use crate::net::driver_bridge;
     use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};

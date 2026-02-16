@@ -1497,6 +1497,9 @@ pub fn add_tokens(n: usize) {
     { test_impl::add_tokens(n); }
 }
 
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
+
 // テスト: キューイング API とワーカの動作を検証するユニットテストを追加
 #[cfg(all(test, feature = "std"))]
 mod tests {

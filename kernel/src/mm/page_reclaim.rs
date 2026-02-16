@@ -2606,6 +2606,9 @@ pub fn swap_prefetch_stats() -> SwapPrefetchStats {
     SWAP_PREFETCHER.stats()
 }
 
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
+
 // ============================================================================
 // Tests
 // ============================================================================
