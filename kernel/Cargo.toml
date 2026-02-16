@@ -76,8 +76,8 @@ gimli = { version = "0.32", default-features = false, features = ["read-core"] }
 # no_std向けHashMap
 hashbrown = "0.16"
 
-# Ed25519署名検証用（no_std対応、curve25519-dalek不使用）
-ed25519-compact = { version = "2", default-features = false }
+# Ed25519署名検証 & X25519鍵交換用（no_std対応、curve25519-dalek不使用）
+ed25519-compact = { version = "2", default-features = false, features = ["x25519"] }
 
 # SHA-256ハッシュ計算用
 sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }

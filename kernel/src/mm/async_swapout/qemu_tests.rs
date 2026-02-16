@@ -3,6 +3,46 @@ use super::*;
 const BUFFER_POOL_4K_DEFAULT_CAPACITY: usize = 128;
 const BUFFER_POOL_2M_DEFAULT_CAPACITY: usize = 16;
 
+fn cleanup_frame_if_allocated(frame: FrameIndex) {
+    let _ = crate::mm::frame_backing::untrack_frame_backing(frame);
+    if crate::mm::buddy_allocator::is_frame_allocated(frame.as_usize()) {
+        let physf = unsafe {
+            x86_64::structures::paging::PhysFrame::from_start_address_unchecked(
+                x86_64::PhysAddr::new(frame.to_phys_addr()),
+            )
+        };
+        crate::mm::buddy_allocator::buddy_dealloc_frame(physf);
+    }
+}
+
+struct AsyncSwapoutStateGuard {
+    token_capacity: usize,
+    token_count: usize,
+    reserved_file_slots: usize,
+    token_refill_per_batch: usize,
+}
+
+impl AsyncSwapoutStateGuard {
+    fn capture() -> Self {
+        Self {
+            token_capacity: token_bucket_capacity(),
+            token_count: token_count(),
+            reserved_file_slots: reserved_file_slots(),
+            token_refill_per_batch: token_refill_per_batch(),
+        }
+    }
+}
+
+impl Drop for AsyncSwapoutStateGuard {
+    fn drop(&mut self) {
+        qemu_test_clear_enqueue_override();
+        set_token_bucket_capacity(self.token_capacity);
+        set_token_count(self.token_count.min(self.token_capacity));
+        set_reserved_file_slots(self.reserved_file_slots);
+        set_token_refill_per_batch(self.token_refill_per_batch);
+    }
+}
+
 pub fn wave7_buffer_pool_4k_basic_smoke() -> bool {
     buffer_pool_4k_clear();
     buffer_pool_4k_set_capacity(2);
@@ -89,4 +129,84 @@ pub fn wave7_buffer_pool_2m_basic_smoke() -> bool {
     buffer_pool_2m_set_capacity(BUFFER_POOL_2M_DEFAULT_CAPACITY);
     buffer_pool_2m_clear();
     ok
+}
+
+pub fn wave7_enqueue_override_forces_error_smoke() -> bool {
+    let _guard = AsyncSwapoutStateGuard::capture();
+    qemu_test_set_enqueue_override(Some(SwapError::QueueFull));
+
+    let Some(frame) = crate::mm::alloc_frame() else {
+        return true;
+    };
+    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+    let ok = matches!(
+        try_enqueue_swapout(frame_idx, SwapKind::Anon),
+        Err(SwapError::QueueFull)
+    );
+
+    cleanup_frame_if_allocated(frame_idx);
+    ok
+}
+
+pub fn wave7_token_exhaustion_rolls_back_pending_smoke() -> bool {
+    let _guard = AsyncSwapoutStateGuard::capture();
+    qemu_test_clear_enqueue_override();
+    start_worker();
+    if !is_worker_running() {
+        return false;
+    }
+
+    set_token_bucket_capacity(2);
+    set_token_count(0);
+
+    let Some(frame) = crate::mm::alloc_frame() else {
+        return true;
+    };
+    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+    let enqueue_is_queuefull = matches!(
+        try_enqueue_swapout(frame_idx, SwapKind::Anon),
+        Err(SwapError::QueueFull)
+    );
+
+    let was_pending = crate::mm::page_flags::test_and_set_flag(
+        frame_idx,
+        crate::mm::page_flags::PageMetaFlags::SwapPending,
+    );
+    crate::mm::page_flags::clear_flag(frame_idx, crate::mm::page_flags::PageMetaFlags::SwapPending);
+
+    cleanup_frame_if_allocated(frame_idx);
+    enqueue_is_queuefull && !was_pending
+}
+
+pub fn wave7_token_bucket_clamp_smoke() -> bool {
+    let _guard = AsyncSwapoutStateGuard::capture();
+    qemu_test_clear_enqueue_override();
+
+    set_token_bucket_capacity(2);
+    set_token_count(0);
+    add_tokens(usize::MAX);
+    let first = token_count() == 2;
+
+    set_token_count(1);
+    add_tokens(1);
+    let second = token_count() == 2;
+
+    first && second
+}
+
+pub fn wave7_runtime_tunable_roundtrip_smoke() -> bool {
+    let _guard = AsyncSwapoutStateGuard::capture();
+    qemu_test_clear_enqueue_override();
+
+    set_reserved_file_slots(7);
+    set_token_refill_per_batch(5);
+    let first = reserved_file_slots() == 7 && token_refill_per_batch() == 5;
+
+    set_reserved_file_slots(1);
+    set_token_refill_per_batch(1);
+    let second = reserved_file_slots() == 1 && token_refill_per_batch() == 1;
+
+    first && second
 }
