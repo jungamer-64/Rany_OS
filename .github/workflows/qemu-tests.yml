@@ -63,6 +63,9 @@ jobs:
       - name: Verify NET/TLS Wave8 required wiring
         run: bash scripts/verify_net_tls_wave8_required.sh
 
+      - name: Verify NET/ECDH required wiring
+        run: bash scripts/verify_net_ecdh_required.sh
+
       - name: Run suite
         env:
           QEMU_TEST_CPU: ${{ matrix.cpu }}
