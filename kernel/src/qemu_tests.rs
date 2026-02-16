@@ -393,6 +393,46 @@ pub fn mm_wave7_async_failure_requeues_and_clears_pending_smoke() -> bool {
     crate::mm::page_reclaim::qemu_tests::wave7_async_failure_requeues_and_clears_pending_smoke()
 }
 
+pub fn mm_wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke()
+}
+
+pub fn mm_wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke()
+}
+
+pub fn mm_wave7_file_backed_dirty_without_backing_requeues_with_unsafe_disabled_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_dirty_without_backing_requeues_with_unsafe_disabled_smoke()
+}
+
+pub fn mm_wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_smoke()
+}
+
+pub fn mm_wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke()
+}
+
+pub fn mm_wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke()
+}
+
+pub fn mm_wave7_already_pending_does_not_count_writeback_skipped_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_already_pending_does_not_count_writeback_skipped_smoke()
+}
+
+pub fn mm_wave7_already_pending_without_registered_pending_requeues_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_smoke()
+}
+
+pub fn mm_wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke()
+}
+
+pub fn mm_wave7_queuefull_does_not_count_writeback_skipped_smoke() -> bool {
+    crate::mm::page_reclaim::qemu_tests::wave7_queuefull_does_not_count_writeback_skipped_smoke()
+}
+
 pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     use crate::net::driver_bridge;
     use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};

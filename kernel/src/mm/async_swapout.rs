@@ -72,22 +72,43 @@ struct SwapEntry {
 } 
 
 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(any(
+    all(test, not(feature = "full_mm_tests")),
+    feature = "qemu-test-export"
+))]
 use core::sync::atomic::AtomicU8;
 
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(any(
+    all(test, not(feature = "full_mm_tests")),
+    feature = "qemu-test-export"
+))]
 const TEST_ENQUEUE_OVERRIDE_NONE: u8 = 0;
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(any(
+    all(test, not(feature = "full_mm_tests")),
+    feature = "qemu-test-export"
+))]
 const TEST_ENQUEUE_OVERRIDE_QUEUE_FULL: u8 = 1;
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(any(
+    all(test, not(feature = "full_mm_tests")),
+    feature = "qemu-test-export"
+))]
 const TEST_ENQUEUE_OVERRIDE_ALREADY_PENDING: u8 = 2;
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(any(
+    all(test, not(feature = "full_mm_tests")),
+    feature = "qemu-test-export"
+))]
 const TEST_ENQUEUE_OVERRIDE_NOT_SUPPORTED: u8 = 3;
 
 #[cfg(all(test, not(feature = "full_mm_tests")))]
 static TEST_ENQUEUE_OVERRIDE: AtomicU8 = AtomicU8::new(TEST_ENQUEUE_OVERRIDE_NONE);
 
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(feature = "qemu-test-export")]
+static QEMU_TEST_ENQUEUE_OVERRIDE: AtomicU8 = AtomicU8::new(TEST_ENQUEUE_OVERRIDE_NONE);
+
+#[cfg(any(
+    all(test, not(feature = "full_mm_tests")),
+    feature = "qemu-test-export"
+))]
 fn decode_test_enqueue_override(raw: u8) -> Option<SwapError> {
     match raw {
         TEST_ENQUEUE_OVERRIDE_QUEUE_FULL => Some(SwapError::QueueFull),
@@ -97,7 +118,10 @@ fn decode_test_enqueue_override(raw: u8) -> Option<SwapError> {
     }
 }
 
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(any(
+    all(test, not(feature = "full_mm_tests")),
+    feature = "qemu-test-export"
+))]
 fn encode_test_enqueue_override(value: Option<SwapError>) -> u8 {
     match value {
         Some(SwapError::QueueFull) => TEST_ENQUEUE_OVERRIDE_QUEUE_FULL,
@@ -1349,6 +1373,15 @@ mod kernel_impl {
 
 // 公開API: try_enqueue_swapout
 pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHandle, SwapError> {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        if let Some(err) = decode_test_enqueue_override(
+            QEMU_TEST_ENQUEUE_OVERRIDE.load(AtomicOrdering::Acquire),
+        ) {
+            return Err(err);
+        }
+    }
+
     #[cfg(all(test, not(feature = "full_mm_tests")))]
     {
         if let Some(err) = decode_test_enqueue_override(
@@ -1379,6 +1412,16 @@ pub fn set_test_enqueue_override(value: Option<SwapError>) {
     {
         let _ = value;
     }
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_set_enqueue_override(value: Option<SwapError>) {
+    QEMU_TEST_ENQUEUE_OVERRIDE.store(encode_test_enqueue_override(value), AtomicOrdering::Release);
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_clear_enqueue_override() {
+    qemu_test_set_enqueue_override(None);
 }
 
 /// Start the async swapout worker (tests call test worker, kernel calls kernel worker)

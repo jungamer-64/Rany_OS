@@ -32,7 +32,7 @@
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 use core::sync::atomic::AtomicU8;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
@@ -945,21 +945,21 @@ const fn lru_list_array() -> [MglruList; 8] {
     [LRU; 8]
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 const TEST_WRITEBACK_OVERRIDE_NONE: u8 = 0;
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 const TEST_WRITEBACK_OVERRIDE_SUCCESS: u8 = 1;
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 const TEST_WRITEBACK_OVERRIDE_FAILURE: u8 = 2;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 static TEST_SYNC_PAGE_WRITEBACK_OVERRIDE: AtomicU8 =
     AtomicU8::new(TEST_WRITEBACK_OVERRIDE_NONE);
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 static TEST_SYNC_ALL_WRITEBACK_OVERRIDE: AtomicU8 =
     AtomicU8::new(TEST_WRITEBACK_OVERRIDE_NONE);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 fn decode_test_writeback_override(raw: u8) -> Option<bool> {
     match raw {
         TEST_WRITEBACK_OVERRIDE_SUCCESS => Some(true),
@@ -968,7 +968,7 @@ fn decode_test_writeback_override(raw: u8) -> Option<bool> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 fn encode_test_writeback_override(result: Option<bool>) -> u8 {
     match result {
         Some(true) => TEST_WRITEBACK_OVERRIDE_SUCCESS,
@@ -1295,7 +1295,7 @@ impl PageReclaimController {
         ino: crate::fs::fs_abstraction::InodeNum,
         page_num: u64,
     ) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "qemu-test-export"))]
         if let Some(forced) = decode_test_writeback_override(
             TEST_SYNC_PAGE_WRITEBACK_OVERRIDE.load(Ordering::Acquire),
         ) {
@@ -1316,7 +1316,7 @@ impl PageReclaimController {
     /// Attempt to write back all dirty pages via the global page cache.
     /// Returns true if any pages were written back successfully.
     fn attempt_writeback_all(&self) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "qemu-test-export"))]
         if let Some(forced) = decode_test_writeback_override(
             TEST_SYNC_ALL_WRITEBACK_OVERRIDE.load(Ordering::Acquire),
         ) {
@@ -1694,6 +1694,22 @@ pub fn set_test_sync_all_writeback_override(result: Option<bool>) {
 
 #[cfg(test)]
 pub fn clear_test_writeback_overrides() {
+    TEST_SYNC_PAGE_WRITEBACK_OVERRIDE.store(TEST_WRITEBACK_OVERRIDE_NONE, Ordering::Release);
+    TEST_SYNC_ALL_WRITEBACK_OVERRIDE.store(TEST_WRITEBACK_OVERRIDE_NONE, Ordering::Release);
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_set_sync_page_writeback_override(value: Option<bool>) {
+    TEST_SYNC_PAGE_WRITEBACK_OVERRIDE.store(encode_test_writeback_override(value), Ordering::Release);
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_set_sync_all_writeback_override(value: Option<bool>) {
+    TEST_SYNC_ALL_WRITEBACK_OVERRIDE.store(encode_test_writeback_override(value), Ordering::Release);
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_clear_writeback_overrides() {
     TEST_SYNC_PAGE_WRITEBACK_OVERRIDE.store(TEST_WRITEBACK_OVERRIDE_NONE, Ordering::Release);
     TEST_SYNC_ALL_WRITEBACK_OVERRIDE.store(TEST_WRITEBACK_OVERRIDE_NONE, Ordering::Release);
 }
