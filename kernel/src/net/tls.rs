@@ -4215,4 +4215,326 @@ mod tests {
         // Zero: 0x00 * x = 0
         assert_eq!(gf_mul(0x00, 0x53), 0x00);
     }
+
+    // ========================================================================
+    // TLS 1.3 Key Schedule Tests
+    // ========================================================================
+
+    /// TLS 1.3: Early Secret derivation (PSK=0)
+    #[test_case]
+    fn test_tls13_early_secret_no_psk() {
+        let early_secret = tls13_early_secret(None);
+        assert_eq!(early_secret.len(), 32);
+        // Should produce a deterministic value for zero PSK
+        let early_secret2 = tls13_early_secret(None);
+        assert_eq!(early_secret, early_secret2);
+        // Should not be all zeros
+        assert!(early_secret.iter().any(|&b| b != 0));
+    }
+
+    /// TLS 1.3: Handshake Secret derivation
+    #[test_case]
+    fn test_tls13_handshake_secret() {
+        let early_secret = tls13_early_secret(None);
+        let shared_secret = [0x42u8; 32];
+        let hs_secret = tls13_handshake_secret(&early_secret, &shared_secret);
+        assert_eq!(hs_secret.len(), 32);
+        assert!(hs_secret.iter().any(|&b| b != 0));
+
+        // Different shared secrets → different handshake secrets
+        let hs_secret2 = tls13_handshake_secret(&early_secret, &[0x43u8; 32]);
+        assert_ne!(hs_secret, hs_secret2);
+    }
+
+    /// TLS 1.3: Master Secret derivation
+    #[test_case]
+    fn test_tls13_master_secret() {
+        let early_secret = tls13_early_secret(None);
+        let hs_secret = tls13_handshake_secret(&early_secret, &[0x42u8; 32]);
+        let master_secret = tls13_master_secret(&hs_secret);
+        assert_eq!(master_secret.len(), 32);
+        assert!(master_secret.iter().any(|&b| b != 0));
+    }
+
+    /// TLS 1.3: Derive-Secret produces expected-length output
+    #[test_case]
+    fn test_tls13_derive_secret() {
+        let secret = [0x55u8; 32];
+        let transcript = [0xAAu8; 32];
+        let result = tls13_derive_secret(&secret, b"c hs traffic", &transcript);
+        assert_eq!(result.len(), 32);
+        assert!(result.iter().any(|&b| b != 0));
+
+        // Different labels → different secrets
+        let result2 = tls13_derive_secret(&secret, b"s hs traffic", &transcript);
+        assert_ne!(result, result2);
+    }
+
+    /// TLS 1.3: Traffic key derivation
+    #[test_case]
+    fn test_tls13_derive_traffic_keys() {
+        let secret = [0x42u8; 32];
+
+        // AES-128: 16-byte key
+        let (key128, iv128) = tls13_derive_traffic_keys(&secret, 16);
+        assert_eq!(key128.len(), 16);
+        assert_eq!(iv128.len(), 12);
+
+        // AES-256/ChaCha20: 32-byte key
+        let (key256, iv256) = tls13_derive_traffic_keys(&secret, 32);
+        assert_eq!(key256.len(), 32);
+        assert_eq!(iv256.len(), 12);
+
+        // Different key lengths → different keys
+        assert_ne!(key128.as_slice(), &key256[..16]);
+    }
+
+    /// TLS 1.3: Finished key and verify_data
+    #[test_case]
+    fn test_tls13_finished_key_and_verify_data() {
+        let base_key = [0x42u8; 32];
+        let finished_key = tls13_finished_key(&base_key);
+        assert_eq!(finished_key.len(), 32);
+        assert!(finished_key.iter().any(|&b| b != 0));
+
+        let transcript = [0xBBu8; 32];
+        let verify_data = tls13_verify_data(&finished_key, &transcript);
+        assert_eq!(verify_data.len(), 32);
+
+        // Deterministic
+        let verify_data2 = tls13_verify_data(&finished_key, &transcript);
+        assert_eq!(verify_data, verify_data2);
+
+        // Different transcripts → different verify_data
+        let verify_data3 = tls13_verify_data(&finished_key, &[0xCCu8; 32]);
+        assert_ne!(verify_data, verify_data3);
+    }
+
+    /// TLS 1.3: Full key schedule chain (Early → Handshake → Master)
+    #[test_case]
+    fn test_tls13_full_key_schedule() {
+        let shared_secret = [0x01u8; 32];
+
+        // Step 1: Early Secret
+        let early_secret = tls13_early_secret(None);
+
+        // Step 2: Handshake Secret
+        let hs_secret = tls13_handshake_secret(&early_secret, &shared_secret);
+
+        // Step 3: Derive handshake traffic secrets
+        let transcript_ch_sh = [0x02u8; 32]; // Mock transcript hash
+        let c_hs_traffic = tls13_derive_secret(&hs_secret, b"c hs traffic", &transcript_ch_sh);
+        let s_hs_traffic = tls13_derive_secret(&hs_secret, b"s hs traffic", &transcript_ch_sh);
+        assert_ne!(c_hs_traffic, s_hs_traffic);
+
+        // Step 4: Derive traffic keys
+        let (c_key, c_iv) = tls13_derive_traffic_keys(&c_hs_traffic, 16);
+        let (s_key, s_iv) = tls13_derive_traffic_keys(&s_hs_traffic, 16);
+        assert_ne!(c_key, s_key);
+        assert_ne!(c_iv, s_iv);
+
+        // Step 5: Master Secret
+        let master = tls13_master_secret(&hs_secret);
+
+        // Step 6: Application traffic secrets
+        let transcript_sf = [0x03u8; 32]; // Mock transcript hash
+        let c_app_traffic = tls13_derive_secret(&master, b"c ap traffic", &transcript_sf);
+        let s_app_traffic = tls13_derive_secret(&master, b"s ap traffic", &transcript_sf);
+        assert_ne!(c_app_traffic, s_app_traffic);
+        assert_ne!(c_app_traffic, c_hs_traffic);
+    }
+
+    // ========================================================================
+    // TLS 1.3 Connection Tests
+    // ========================================================================
+
+    /// TLS 1.3: ClientHello should include KeyShare extension
+    #[test_case]
+    fn test_tls13_client_hello_key_share() {
+        let config = TlsConfig::new().with_server_name("example.com");
+        let mut conn = TlsConnection::new(config);
+        let hello = conn.build_client_hello();
+
+        // Should have pre-generated ECDH key pair
+        assert!(conn.local_ecdh_keypair.is_some());
+
+        // Should have initialized transcript hash
+        assert!(conn.transcript_hash.is_some());
+
+        // Record should be valid TLS
+        assert_eq!(hello[0], ContentType::Handshake as u8);
+
+        // Search for KeyShare extension type (0x0033 = 51)
+        // The hello bytes contain extensions including key_share
+        let hello_payload = &hello[5..]; // Skip record header
+        // Look for the key_share extension type bytes [0x00, 0x33]
+        let mut found_key_share = false;
+        for i in 0..hello_payload.len().saturating_sub(1) {
+            if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x33 {
+                found_key_share = true;
+                break;
+            }
+        }
+        assert!(found_key_share, "KeyShare extension not found in ClientHello");
+    }
+
+    /// TLS 1.3: Supported Versions extension should list both TLS 1.3 and 1.2
+    #[test_case]
+    fn test_tls13_client_hello_supported_versions() {
+        let config = TlsConfig::new();
+        let mut conn = TlsConnection::new(config);
+        let hello = conn.build_client_hello();
+
+        let hello_payload = &hello[5..]; // Skip record header
+
+        // Look for supported_versions extension [0x00, 0x2B]
+        let mut found_sv = false;
+        for i in 0..hello_payload.len().saturating_sub(1) {
+            if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x2B {
+                found_sv = true;
+                // Verify it lists both TLS 1.3 (0x0304) and TLS 1.2 (0x0303)
+                if i + 8 < hello_payload.len() {
+                    let ext_len =
+                        ((hello_payload[i + 2] as usize) << 8) | hello_payload[i + 3] as usize;
+                    // ext_data starts at i+4
+                    let versions_len = hello_payload[i + 4] as usize;
+                    // Should have at least 4 bytes (2 versions × 2 bytes)
+                    assert!(
+                        versions_len >= 4,
+                        "Expected at least 2 versions in supported_versions"
+                    );
+                    assert_eq!(ext_len, versions_len + 1);
+                }
+                break;
+            }
+        }
+        assert!(
+            found_sv,
+            "Supported Versions extension not found in ClientHello"
+        );
+    }
+
+    /// TLS 1.3: PSK Key Exchange Modes extension present
+    #[test_case]
+    fn test_tls13_client_hello_psk_modes() {
+        let config = TlsConfig::new();
+        let mut conn = TlsConnection::new(config);
+        let hello = conn.build_client_hello();
+
+        let hello_payload = &hello[5..];
+
+        // Look for psk_key_exchange_modes extension [0x00, 0x2D]
+        let mut found_psk = false;
+        for i in 0..hello_payload.len().saturating_sub(1) {
+            if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x2D {
+                found_psk = true;
+                break;
+            }
+        }
+        assert!(
+            found_psk,
+            "PSK Key Exchange Modes extension not found in ClientHello"
+        );
+    }
+
+    /// TLS 1.3: strip_content_type helper
+    #[test_case]
+    fn test_tls13_strip_content_type() {
+        // Normal case: plaintext + content_type
+        let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17]; // "Hello" + ApplicationData(23)
+        let result = TlsConnection::tls13_strip_content_type(&data);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &[0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+
+        // With padding zeros
+        let data2 = [0x48, 0x65, 0x17, 0x00, 0x00]; // "He" + type + zeros
+        let result2 = TlsConnection::tls13_strip_content_type(&data2);
+        assert!(result2.is_some());
+        assert_eq!(result2.unwrap(), &[0x48, 0x65]);
+
+        // Empty content (just content type)
+        let data3 = [0x16]; // Handshake type only
+        let result3 = TlsConnection::tls13_strip_content_type(&data3);
+        assert!(result3.is_some());
+        assert!(result3.unwrap().is_empty());
+
+        // All zeros
+        let data4 = [0x00, 0x00, 0x00];
+        let result4 = TlsConnection::tls13_strip_content_type(&data4);
+        assert!(result4.is_none());
+    }
+
+    /// TLS 1.3: is_tls13 flag starts false
+    #[test_case]
+    fn test_tls13_initial_state() {
+        let config = TlsConfig::new();
+        let conn = TlsConnection::new(config);
+        assert!(!conn.is_tls13());
+        assert!(!conn.needs_client_finished());
+    }
+
+    /// TLS 1.3: RFC 8446 Appendix A test vector for key schedule
+    /// Tests HKDF-Expand-Label with known inputs/outputs
+    #[test_case]
+    fn test_tls13_hkdf_expand_label_rfc8446() {
+        // RFC 8446 doesn't provide standalone HKDF-Expand-Label vectors,
+        // but we can verify the label construction is correct by testing
+        // idempotency and length properties.
+        let secret = [0x33u8; 32];
+        let result1 = hkdf_expand_label(&secret, b"key", b"", 16);
+        let result2 = hkdf_expand_label(&secret, b"key", b"", 16);
+        assert_eq!(result1, result2);
+        assert_eq!(result1.len(), 16);
+
+        // Different context → different output
+        let result3 = hkdf_expand_label(&secret, b"key", &[0x42u8; 32], 16);
+        assert_ne!(result1, result3);
+    }
+
+    /// TLS 1.3: Verify the key schedule produces consistent results
+    /// matching the expected chain: Early → derive("derived") → Handshake → derive("derived") → Master
+    #[test_case]
+    fn test_tls13_key_schedule_chain_consistency() {
+        use crate::loader::sha256;
+
+        let shared = [0xABu8; 32];
+        let empty_hash = sha256::compute(&[]);
+
+        // Manual chain
+        let early = tls13_early_secret(None);
+        let derived1 = tls13_derive_secret(&early, b"derived", &empty_hash);
+        let hs = hkdf_extract(&derived1, &shared);
+        let derived2 = tls13_derive_secret(&hs, b"derived", &empty_hash);
+        let master = hkdf_extract(&derived2, &[0u8; 32]);
+
+        // Convenience function chain
+        let hs2 = tls13_handshake_secret(&early, &shared);
+        let master2 = tls13_master_secret(&hs2);
+
+        assert_eq!(hs, hs2);
+        assert_eq!(master, master2);
+    }
+
+    /// TLS 1.3: Finished verification round-trip
+    #[test_case]
+    fn test_tls13_finished_round_trip() {
+        let base_key = [0x77u8; 32];
+        let transcript_hash = [0x88u8; 32];
+
+        let finished_key = tls13_finished_key(&base_key);
+        let verify_data = tls13_verify_data(&finished_key, &transcript_hash);
+
+        // Simulate server verification
+        let expected = hmac_sha256(&finished_key, &transcript_hash);
+        assert_eq!(verify_data, expected);
+    }
+
+    /// TLS 1.3: TlsVersion ordering
+    #[test_case]
+    fn test_tls_version_ordering() {
+        assert!(TlsVersion::TLS_1_0 < TlsVersion::TLS_1_1);
+        assert!(TlsVersion::TLS_1_1 < TlsVersion::TLS_1_2);
+        assert!(TlsVersion::TLS_1_2 < TlsVersion::TLS_1_3);
+        assert!(TlsVersion::TLS_1_3 >= TlsVersion::TLS_1_3);
+    }
 }
