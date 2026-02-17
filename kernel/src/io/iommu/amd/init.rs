@@ -230,6 +230,31 @@ pub(super) fn init_device_tables(units: &[AmdIommuUnit]) -> Result<HashMap<u16, 
 
 /// Initialize AMD-Vi using ACPI IVRS table at `ivrs_addr`.
 
+/// Collect AmdIommuUnit entries from parsed IVRS IVHD structures.
+fn collect_ivhd_units(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIommuUnit> {
+    ivrs_info.ivhds.iter().map(|ivhd| {
+        let max_addr_bits = {
+            let mmio_base = phys_to_virt_usize(ivhd.iommu_base);
+            super::registers::read_max_addr_bits(mmio_base)
+        };
+        AmdIommuUnit {
+            segment: ivhd.pci_segment,
+            base_addr: ivhd.iommu_base,
+            flags: ivhd.flags,
+            device_id: ivhd.device_id,
+            iommu_info: ivhd.iommu_info,
+            iommu_feature: ivhd.iommu_feature,
+            device_entries: ivhd.device_entries,
+            max_addr_bits,
+        }
+    }).collect()
+}
+
+/// Collect IVMD ranges from parsed IVRS.
+fn collect_ivmd_ranges(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIvmdRange> {
+    ivrs_info.ivmds.iter().filter_map(|ivmd| AmdIvmdRange::from_ivmd(ivmd.clone())).collect()
+}
+
 pub unsafe fn init_iommu_from_ivrs(
     ivrs_addr: usize,
     config: IommuConfig,
@@ -247,35 +272,12 @@ pub unsafe fn init_iommu_from_ivrs(
         }
     };
 
-    let mut units = Vec::new();
-    for ivhd in ivrs_info.ivhds {
-        let max_addr_bits = {
-            let mmio_base = phys_to_virt_usize(ivhd.iommu_base);
-            super::registers::read_max_addr_bits(mmio_base)
-        };
-
-        units.push(AmdIommuUnit {
-            segment: ivhd.pci_segment,
-            base_addr: ivhd.iommu_base,
-            flags: ivhd.flags,
-            device_id: ivhd.device_id,
-            iommu_info: ivhd.iommu_info,
-            iommu_feature: ivhd.iommu_feature,
-            device_entries: ivhd.device_entries,
-            max_addr_bits,
-        });
-    }
-
+    let units = collect_ivhd_units(&ivrs_info);
     if units.is_empty() {
         return Err(IommuError::NotPresent);
     }
 
-    let mut ivmd_ranges = Vec::new();
-    for ivmd in ivrs_info.ivmds {
-        if let Some(range) = AmdIvmdRange::from_ivmd(ivmd) {
-            ivmd_ranges.push(range);
-        }
-    }
+    let ivmd_ranges = collect_ivmd_ranges(&ivrs_info);
 
     let cmd_states = init_command_states(&units);
     let cmd_ready = cmd_states.iter().filter(|buf| buf.is_some()).count();

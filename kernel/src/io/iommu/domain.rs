@@ -1662,68 +1662,31 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
-        // Extract indices for each level
-        let pml4_idx = ((iova >> 39) & 0x1FF) as usize; // Bits 47:39
-        let pdp_idx = ((iova >> 30) & 0x1FF) as usize; // Bits 38:30
-        let pd_idx = ((iova >> 21) & 0x1FF) as usize; // Bits 29:21
-        let pt_idx = ((iova >> 12) & 0x1FF) as usize; // Bits 20:12
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
 
-        // Track newly allocated page tables for rollback via RAII
-        // Index 0: PDP, 1: PD, 2: PT (order of allocation)
         let mut newly_allocated: [Option<PageTableScope>; 3] = [None, None, None];
 
-        // self.page_table is the PML4 root
         unsafe {
-            // Get pml4 physical address for counting
             let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
 
             // Level 4: PML4 -> PDP
             let pml4_entry = self.page_table.add(pml4_idx);
-            if !(*pml4_entry).is_present() {
-                // Allocate PDP table on the domain's preferred NUMA node when available
-                let mut pdp_scope = match self.allocate_page_table() {
-                    Ok(s) => s,
-                    Err(e) => return Err(e),
-                };
-
-                // Attach to parent (writes parent entry)
-                // We are attaching a PDP (Level 3 table) to PML4
-                pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
-
-                newly_allocated[0] = Some(pdp_scope);
-            }
+            newly_allocated[0] = self.ensure_pdp_table(pml4_entry, pml4_phys)?;
             let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
             let pdp_phys = (*pml4_entry).phys_addr();
 
             // Level 3: PDP -> PD
             let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() {
-                // Allocate PD table on the domain's preferred NUMA node when available
-                let mut pd_scope = match self.allocate_page_table() {
-                    Ok(s) => s,
-                    Err(e) => return Err(e),
-                };
-
-                // We are attaching a PD (Level 2 table) to PDP
-                pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
-                newly_allocated[1] = Some(pd_scope);
-            }
+            newly_allocated[1] = self.ensure_pd_table(pdp_entry, pdp_phys)?;
             let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
             let pd_phys = (*pdp_entry).phys_addr();
 
             // Level 2: PD -> PT
             let pd_entry = pd_table.add(pd_idx);
-            if !(*pd_entry).is_present() {
-                // Allocate PT on the domain's preferred NUMA node when available
-                let mut pt_scope = match self.allocate_page_table() {
-                    Ok(s) => s,
-                    Err(e) => return Err(e),
-                };
-
-                // We are attaching a PT (Level 1 table) to PD
-                pt_scope.attach_to_parent(pd_entry, pd_phys, self.pte_format, 1);
-                newly_allocated[2] = Some(pt_scope);
-            }
+            newly_allocated[2] = self.ensure_pt_table(pd_entry, pd_phys)?;
             let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
             let pt_phys = (*pd_entry).phys_addr();
 
@@ -1738,15 +1701,13 @@ impl IommuDomain {
                     *pt_entry = SlPte::mapping(phys, read, write);
                 }
                 PteFormat::Amd => {
-                    let amd_pte = AmdPte::mapping(phys, read, write, 0); // Level 1 = 4KB
-                    *pt_entry = SlPte(amd_pte.0); // Transmute to SlPte for storage
+                    let amd_pte = AmdPte::mapping(phys, read, write, 0);
+                    *pt_entry = SlPte(amd_pte.0);
                 }
             }
 
-            // Increment PT count
             inc_ref(pt_phys);
 
-            // Commit newly allocated page tables into accounting
             for slot in newly_allocated.iter_mut() {
                 if let Some(scope) = slot {
                     scope.commit();
@@ -1794,6 +1755,20 @@ impl IommuDomain {
         let mut pd_scope = self.allocate_page_table()?;
         pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
         Ok(Some(pd_scope))
+    }
+
+    /// Ensure a PT (Level 1) table exists for the given PD entry, allocating if needed.
+    unsafe fn ensure_pt_table(
+        &self,
+        pd_entry: *mut SlPte,
+        pd_phys: u64,
+    ) -> Result<Option<PageTableScope>, IommuError> {
+        if (*pd_entry).is_present() {
+            return Ok(None);
+        }
+        let mut pt_scope = self.allocate_page_table()?;
+        pt_scope.attach_to_parent(pd_entry, pd_phys, self.pte_format, 1);
+        Ok(Some(pt_scope))
     }
 
     /// Map a 2MB super-page
@@ -2525,6 +2500,36 @@ impl IommuDomain {
         }
     }
 
+    /// Find the next child page table entry starting from `start_idx`.
+    ///
+    /// Returns `(child_ptr, child_level, next_idx_after_child)` or `None` if no child found.
+    unsafe fn find_next_child_table(
+        table_ptr: *mut SlPte,
+        level: usize,
+        start_idx: usize,
+        pte_format: PteFormat,
+    ) -> Option<(*mut SlPte, usize, usize)> {
+        let mut idx = start_idx;
+        while idx < PT_ENTRIES {
+            let pte = unsafe { *table_ptr.add(idx) };
+            idx += 1;
+
+            if !pte.is_present() {
+                continue;
+            }
+
+            // Skip super pages (2MB at level 2, 1GB at level 3)
+            if (level == 3 || level == 2) && pte.is_super_page(pte_format) {
+                continue;
+            }
+
+            let child_phys = pte.phys_addr();
+            let child_ptr = phys_to_virt_usize(child_phys) as *mut SlPte;
+            return Some((child_ptr, level - 1, idx));
+        }
+        None
+    }
+
     /// Iteratively deallocate all page tables using an explicit stack.
     ///
     /// This implementation avoids recursion entirely by using a fixed-size
@@ -2593,48 +2598,26 @@ impl IommuDomain {
             }
 
             // Find next child table to process
-            let mut found_child = false;
-            while next_idx < PT_ENTRIES {
-                let idx = next_idx;
-                next_idx += 1;
-
-                let pte = *table_ptr.add(idx);
-                if !pte.is_present() {
-                    continue;
+            match Self::find_next_child_table(table_ptr, level, next_idx, self.pte_format) {
+                Some((child_ptr, child_level, updated_next_idx)) => {
+                    stack[entry_idx].next_idx = updated_next_idx;
+                    if stack_top < MAX_STACK_DEPTH {
+                        stack[stack_top] = StackEntry {
+                            table_ptr: child_ptr,
+                            level: child_level,
+                            next_idx: 0,
+                        };
+                        stack_top += 1;
+                    } else {
+                        log::error!(
+                            "[IommuDomain] Page table deallocation stack overflow at level {}",
+                            level
+                        );
+                    }
                 }
-
-                // Skip super pages (2MB at level 2, 1GB at level 3)
-                if (level == 3 || level == 2) && pte.is_super_page(self.pte_format) {
-                    continue;
+                None => {
+                    stack[entry_idx].next_idx = PT_ENTRIES;
                 }
-
-                // Found a child page table - update parent's next_idx and push child
-                stack[entry_idx].next_idx = next_idx;
-
-                let child_phys = pte.phys_addr();
-                let child_ptr = phys_to_virt_usize(child_phys) as *mut SlPte;
-
-                if stack_top < MAX_STACK_DEPTH {
-                    stack[stack_top] = StackEntry {
-                        table_ptr: child_ptr,
-                        level: level - 1,
-                        next_idx: 0,
-                    };
-                    stack_top += 1;
-                    found_child = true;
-                    break;
-                } else {
-                    // Stack overflow - this should never happen with correct PT_LEVELS
-                    log::error!(
-                        "[IommuDomain] Page table deallocation stack overflow at level {}",
-                        level
-                    );
-                }
-            }
-
-            // If no child was found, update next_idx to trigger freeing on next iteration
-            if !found_child {
-                stack[entry_idx].next_idx = PT_ENTRIES;
             }
         }
     }}

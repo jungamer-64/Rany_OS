@@ -1540,3 +1540,114 @@ fn test_draw_hline_24bit_rgb888_mmio() {
     }
 }
 
+#[test_case]
+fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
+    let width = 4u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 3,
+        format: PixelFormat::Rgb888,
+        bpp: 24,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    fb.set_pixel(0, 0, Color::RED);
+    fb.set_pixel(1, 0, Color::GREEN);
+    fb.set_pixel(2, 0, Color::BLUE);
+    fb.flush_dirty_area();
+
+    // RGB888 memory layout: [R, G, B]
+    assert_eq!(vram[0], 255);
+    assert_eq!(vram[1], 0);
+    assert_eq!(vram[2], 0);
+
+    assert_eq!(vram[3], 0);
+    assert_eq!(vram[4], 255);
+    assert_eq!(vram[5], 0);
+
+    assert_eq!(vram[6], 0);
+    assert_eq!(vram[7], 0);
+    assert_eq!(vram[8], 255);
+}
+
+#[test_case]
+fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
+    let width = 3u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 3,
+        format: PixelFormat::Bgr888,
+        bpp: 24,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    fb.set_pixel(0, 0, Color::RED);
+    fb.set_pixel(1, 0, Color::GREEN);
+    fb.set_pixel(2, 0, Color::BLUE);
+    fb.flush_dirty_area();
+
+    // BGR888 memory layout: [B, G, R]
+    assert_eq!(vram[0], 0);
+    assert_eq!(vram[1], 0);
+    assert_eq!(vram[2], 255);
+
+    assert_eq!(vram[3], 0);
+    assert_eq!(vram[4], 255);
+    assert_eq!(vram[5], 0);
+
+    assert_eq!(vram[6], 255);
+    assert_eq!(vram[7], 0);
+    assert_eq!(vram[8], 0);
+}
+
+#[test_case]
+fn test_blit_rect_16bit_rgb565_backbuffer_flush() {
+    let width = 2u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 2,
+        format: PixelFormat::Rgb565,
+        bpp: 16,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    fb.set_pixel(0, 0, Color::RED);
+    fb.set_pixel(1, 0, Color::GREEN);
+    fb.flush_dirty_area();
+
+    // RGB565 little-endian bytes
+    // RED   = 0xF800 -> [0x00, 0xF8]
+    // GREEN = 0x07E0 -> [0xE0, 0x07]
+    assert_eq!(vram[0], 0x00);
+    assert_eq!(vram[1], 0xF8);
+    assert_eq!(vram[2], 0xE0);
+    assert_eq!(vram[3], 0x07);
+}
+
