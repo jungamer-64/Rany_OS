@@ -32,6 +32,11 @@ impl TranscriptHash {
 // ============================================================================
 
 /// TLS接続
+///
+/// # NOTE
+/// この構造体は多数のフィールドを持ち、スタック上で数KBを消費します。
+/// スタックオーバーフローを避けるため、`Box<TlsConnection>` での
+/// ヒープ確保を推奨します。
 pub struct TlsConnection {
     /// 設定
     config: TlsConfig,
@@ -163,6 +168,9 @@ pub struct TlsConnection {
     client_auth_requested: bool,
     /// CertificateRequestコンテキスト
     certificate_request_context: Vec<u8>,
+    /// TLS 1.3: server Finishedまでのハンドシェイクメッセージ長
+    /// (アプリケーション鍵導出時のトランスクリプト境界として使用)
+    server_finished_offset: usize,
 }
 
 impl TlsConnection {
@@ -234,6 +242,7 @@ impl TlsConnection {
             early_data_sent: false,
             client_auth_requested: false,
             certificate_request_context: Vec::new(),
+            server_finished_offset: 0,
         }
     }
 
@@ -269,7 +278,17 @@ impl TlsConnection {
         }
 
         // TLS 1.3: トランスクリプトハッシュの初期化
-        self.transcript_hash = Some(TranscriptHash::Sha256(crate::loader::sha256::Sha256::new()));
+        // HRR後の再送時は handshake_messages に synthetic message_hash + HRR ServerHello が
+        // 含まれているため、それらを反映したハッシュ状態を構築する。
+        // 初回送信時は空のハッシュを初期化。
+        {
+            let mut hasher = crate::loader::sha256::Sha256::new();
+            if !self.handshake_messages.is_empty() {
+                // HRR後: 既存のメッセージ (synthetic message_hash 等) をハッシュに含める
+                hasher.update(&self.handshake_messages);
+            }
+            self.transcript_hash = Some(TranscriptHash::Sha256(hasher));
+        }
 
         let mut hello = Vec::new();
 
@@ -367,6 +386,12 @@ impl TlsConnection {
 
         // ハンドシェイクメッセージを記録
         self.handshake_messages.extend_from_slice(&message);
+
+        // トランスクリプトハッシュにClientHelloを追加
+        // (process_handshake()は受信メッセージのみ更新するため、送信側はここで明示的に追加)
+        if let Some(ref mut hasher) = self.transcript_hash {
+            hasher.update(&message);
+        }
 
         // Early Data鍵導出 (RFC 8446 Section 7.1)
         // PSK使用時かつmax_early_data_size > 0の場合、Early Data暗号化鍵を導出
@@ -951,18 +976,11 @@ impl TlsConnection {
                 .map_err(|_| TlsError::CryptoError)?;
 
             // TLS 1.3 鍵スケジュール
-            // ClientHello...ServerHello のトランスクリプトハッシュを計算
-            // (handshake_messages にはまだ ServerHello が追加されていない、
-            //  process_handshake() で追加されるのでここで先に計算)
-            let transcript_hash = {
-                let mut hasher = crate::loader::sha256::Sha256::new();
-                hasher.update(&self.handshake_messages);
-                hasher
-            };
-            // トランスクリプトハッシュはprocess_handshake内のServerHello append後に計算される
-            // ここではハンドシェイクの状態だけ保存して、鍵導出は後で行う
+            // ClientHello...ServerHello のトランスクリプトハッシュは、
+            // process_handshake() で ServerHello が handshake_messages に
+            // 追加された後、tls13_derive_handshake_keys() で一元的に計算する。
+            // ここでは transcript_hash を初期化しない（二重更新を防止）。
             self.pre_master_secret = shared_secret;
-            self.transcript_hash = Some(TranscriptHash::Sha256(transcript_hash));
             self.state = TlsState::ServerHelloReceived;
         } else {
             // TLS 1.2: セッション再開チェック
@@ -1721,20 +1739,28 @@ impl TlsConnection {
         let decrypted = aes_cbc_decrypt(&self.read_key, &iv, ciphertext)
             .ok_or(TlsError::DecryptError)?;
 
-        // Step 3: パディング検証 (定時間)
-        let content_len = tls_verify_padding(&decrypted)
-            .ok_or(TlsError::BadRecordMac)?;
+        // Step 3+4: パディング検証 + MAC検証 (Lucky 13 対策: 定時間)
+        //
+        // パディング不正でも即座にエラーを返さず、MAC計算まで実行して
+        // タイミング差を最小化する。最終的にすべての検証結果を統合。
 
-        // Step 4: MAC分離と検証
-        if content_len < mac_len {
-            return Err(TlsError::BadRecordMac);
-        }
+        // パディング検証 (定時間)
+        let padding_result = tls_verify_padding(&decrypted);
+        // パディング不正の場合もダミーのcontent_lenで処理を継続
+        let content_len = padding_result.unwrap_or(0);
+        let padding_ok = padding_result.is_some() && content_len >= mac_len;
 
-        let fragment_len = content_len - mac_len;
+        // パディング不正時もMAC計算を実行（タイミング差排除）
+        let fragment_len = if padding_ok { content_len - mac_len } else { 0 };
         let fragment = &decrypted[..fragment_len];
-        let received_mac = &decrypted[fragment_len..content_len];
+        let received_mac = if padding_ok {
+            &decrypted[fragment_len..content_len]
+        } else {
+            // ダミー: 空スライスでもMAC計算は実行する
+            &decrypted[..0]
+        };
 
-        // 期待されるMACを計算
+        // 期待されるMACを計算（パディング不正時も常に計算）
         let expected_mac = compute_tls_mac(
             &self.read_mac_key,
             self.read_seq,
@@ -1744,12 +1770,18 @@ impl TlsConnection {
             use_sha1,
         );
 
-        // 定時間比較
+        // 定時間比較: 長さ差もタイミングに漏らさない
+        let len_match = received_mac.len() == expected_mac.len();
+        let compare_len = mac_len.min(expected_mac.len()).min(received_mac.len());
         let mut diff = 0u8;
-        for i in 0..mac_len.min(expected_mac.len()).min(received_mac.len()) {
+        for i in 0..compare_len {
             diff |= received_mac[i] ^ expected_mac[i];
         }
-        if diff != 0 || received_mac.len() != expected_mac.len() {
+        // 長さ不一致もビット演算で統合（分岐を排除）
+        diff |= (!len_match) as u8;
+        diff |= (!padding_ok) as u8;
+
+        if diff != 0 {
             return Err(TlsError::BadRecordMac);
         }
 
@@ -2117,6 +2149,12 @@ impl TlsConnection {
             }
             self.handshake_messages.extend_from_slice(full_msg);
 
+            // server Finished追加後のオフセットを記録
+            // (アプリケーション鍵導出で「server Finishedまで」のトランスクリプトとして使用)
+            if msg_type == 20 {
+                self.server_finished_offset = self.handshake_messages.len();
+            }
+
             offset = body_end;
         }
         Ok(())
@@ -2370,16 +2408,12 @@ impl TlsConnection {
             }
             // RSA-PSS-RSAE-SHA256 (0x0804)
             0x0804 => {
-                // RSA-PSSは現在PKCS#1 v1.5にフォールバック
-                // 完全なPSS実装は将来追加
-                self.verify_rsa_pkcs1_signature(
+                // RFC 8446 requires RSA-PSS for TLS 1.3
+                self.verify_rsa_pss_signature(
                     &verify_content,
                     signature,
                     crate::net::rsa::HashAlgorithm::Sha256,
-                ).or_else(|_| {
-                    // PSS検証が必要な場合、skip_verifyでなければエラー
-                    Err(TlsError::CryptoError)
-                })?;
+                )?;
             }
             // ECDSA-SECP256R1-SHA256 (0x0403)
             0x0403 => {
@@ -2427,6 +2461,38 @@ impl TlsConnection {
         };
 
         crate::net::rsa::rsa_pkcs1_verify(&pubkey, hash_alg, &digest, signature)
+            .map_err(|_| TlsError::CryptoError)
+    }
+
+    /// RSA-PSS 署名検証ヘルパー (RFC 8446 required for TLS 1.3)
+    fn verify_rsa_pss_signature(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+        hash_alg: crate::net::rsa::HashAlgorithm,
+    ) -> TlsResult<()> {
+        let pubkey = match &self.server_public_key {
+            Some(ServerPublicKey::Rsa { modulus, exponent }) => {
+                crate::net::rsa::RsaPublicKey {
+                    modulus,
+                    exponent,
+                }
+            }
+            _ => return Err(TlsError::CertificateError),
+        };
+
+        let digest = match hash_alg {
+            crate::net::rsa::HashAlgorithm::Sha256 => {
+                let h = crate::loader::sha256::compute(message);
+                h.to_vec()
+            }
+            crate::net::rsa::HashAlgorithm::Sha384 => {
+                let h = crate::loader::sha384::compute(message);
+                h.to_vec()
+            }
+        };
+
+        crate::net::rsa::rsa_pss_verify(&pubkey, hash_alg, &digest, signature)
             .map_err(|_| TlsError::CryptoError)
     }
 
@@ -2678,10 +2744,17 @@ impl TlsConnection {
         let hash_len = self.hash_len();
 
         // トランスクリプトハッシュ (ClientHello...server Finished)
-        // handshake_messages からクライアントFinished分を除外
-        let client_finished_len = 4 + hash_len;
-        let msgs_before_cf =
-            &self.handshake_messages[..self.handshake_messages.len() - client_finished_len];
+        // server_finished_offset を使用して正確な境界を取得
+        // (EndOfEarlyData, Certificate等がClientFinished前に追加されうるため、
+        //  単純な client_finished_len 差し引きでは不正確)
+        let sf_offset = if self.server_finished_offset > 0 {
+            self.server_finished_offset
+        } else {
+            // フォールバック: 以前の挙動
+            let client_finished_len = 4 + hash_len;
+            self.handshake_messages.len().saturating_sub(client_finished_len)
+        };
+        let msgs_before_cf = &self.handshake_messages[..sf_offset];
 
         if use_384 {
             let transcript_sf = crate::loader::sha384::compute(msgs_before_cf);

@@ -147,17 +147,27 @@ pub(crate) fn generate_random() -> [u8; 32] {
 ///
 /// WARNING: This is NOT cryptographically secure. It exists only as a
 /// fallback for environments where RDRAND is unavailable.
+/// Uses AtomicU64 to avoid undefined behavior from concurrent access.
 fn generate_random_fallback() -> [u8; 32] {
-    static mut SEED: u64 = 0x1234567890abcdef;
+    static SEED: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(0x1234567890abcdef);
     let mut result = [0u8; 32];
 
-    unsafe {
-        for byte in result.iter_mut() {
-            SEED = SEED
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            *byte = (SEED >> 56) as u8;
-        }
+    for byte in result.iter_mut() {
+        // Atomically advance the LCG state via CAS loop.
+        // fetch_update returns Ok(previous_value); recompute new value for output.
+        let prev = SEED
+            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |s| {
+                Some(
+                    s.wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407),
+                )
+            })
+            .unwrap(); // always succeeds (closure always returns Some)
+        let new_val = prev
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *byte = (new_val >> 56) as u8;
     }
 
     result

@@ -27,7 +27,11 @@ pub(crate) const AES_SBOX: [u8; 256] = [
 /// AES Rcon (round constants)
 const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
-/// AES-128キー展開
+/// AES-128キー展開 (Legacy — テスト用途)
+///
+/// NOTE: 新規コードでは `aes_expand_key_schedule()` を使用してください。
+/// この関数はAES-128のみ対応しています。AES-128/256の両方に対応する
+/// 統合実装は `aes_expand_key_schedule()` です。
 pub(crate) fn aes_key_expansion(key: &[u8; 16]) -> [[u8; 16]; 11] {
     let mut round_keys = [[0u8; 16]; 11];
     round_keys[0].copy_from_slice(key);
