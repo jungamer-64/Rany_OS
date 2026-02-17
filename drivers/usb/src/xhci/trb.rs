@@ -14,6 +14,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec;
+use kernel_api::types::DmaBuffer;
 
 use crate::{SetupPacket, SlotId, TransferStatus};
 
@@ -465,37 +466,94 @@ impl Trb {
 
 /// TRBリングバッファ
 pub struct TrbRing {
-    /// リングバッファ
-    pub(crate) trbs: Box<[Trb]>,
+    /// リングバッファ (CPU仮想アドレスでアクセス)
+    trb_ptr: *mut Trb,
+    /// リングのエントリ数
+    ring_size: usize,
+    /// DMAバッファ (所有権保持用; dropで自動解放)
+    _dma_buf: Option<DmaBuffer>,
     /// 現在のエンキュー位置
     pub(crate) enqueue_index: usize,
     /// 現在のデキュー位置
     pub(crate) dequeue_index: usize,
     /// サイクルビット状態
     pub(crate) cycle_bit: bool,
-    /// リング物理アドレス
+    /// デバイス可視アドレス (IOMMU有効時はIOVA, それ以外は物理アドレス)
     pub(crate) phys_addr: u64,
 }
 
+// Safety: TrbRing のポインタはDMAバッファの寿命内で有効
+unsafe impl Send for TrbRing {}
+
 impl TrbRing {
-    /// 新しいリングを作成
+    /// 新しいリングを作成 (kernel_api DMAバッファ経由)
     pub fn new(size: usize) -> Self {
-        let mut trbs = vec![Trb::default(); size].into_boxed_slice();
+        let byte_size = size * core::mem::size_of::<Trb>();
+        match kernel_api::services::kernel().alloc_dma(byte_size) {
+            Ok(dma_buf) => {
+                let device_addr = dma_buf.device_address();
+                let virt_ptr = dma_buf.as_ptr() as *mut Trb;
 
-        // 物理アドレスを取得（実際の実装ではメモリマネージャを使用）
-        let phys_addr = trbs.as_ptr() as u64;
+                // ゼロ初期化
+                unsafe {
+                    core::ptr::write_bytes(virt_ptr, 0, size);
+                }
 
-        // 最後にリンクTRBを設定
-        let last_idx = size - 1;
-        trbs[last_idx] = Trb::link(phys_addr, true, false);
+                // 最後にリンクTRBを設定 (デバイスから見えるアドレスで)
+                let last_idx = size - 1;
+                let link_trb = Trb::link(device_addr, true, false);
+                unsafe {
+                    core::ptr::write_volatile(virt_ptr.add(last_idx), link_trb);
+                }
 
-        Self {
-            trbs,
-            enqueue_index: 0,
-            dequeue_index: 0,
-            cycle_bit: true,
-            phys_addr,
+                Self {
+                    trb_ptr: virt_ptr,
+                    ring_size: size,
+                    _dma_buf: Some(dma_buf),
+                    enqueue_index: 0,
+                    dequeue_index: 0,
+                    cycle_bit: true,
+                    phys_addr: device_addr,
+                }
+            }
+            Err(_) => {
+                // Fallback: ヒープ割り当て (DMAが利用不可の場合)
+                // 注意: これはIOMMU非対応・identity mappingの場合のみ安全
+                let trbs = vec![Trb::default(); size].into_boxed_slice();
+                let phys_addr = trbs.as_ptr() as u64;
+                let trb_ptr = Box::into_raw(trbs) as *mut Trb;
+
+                let last_idx = size - 1;
+                unsafe {
+                    core::ptr::write_volatile(trb_ptr.add(last_idx), Trb::link(phys_addr, true, false));
+                }
+
+                Self {
+                    trb_ptr,
+                    ring_size: size,
+                    _dma_buf: None,
+                    enqueue_index: 0,
+                    dequeue_index: 0,
+                    cycle_bit: true,
+                    phys_addr,
+                }
+            }
         }
+    }
+
+    /// TRBスライスへの参照を取得
+    pub(crate) fn trbs(&self) -> &[Trb] {
+        unsafe { core::slice::from_raw_parts(self.trb_ptr, self.ring_size) }
+    }
+
+    /// TRBスライスへの可変参照を取得
+    pub(crate) fn trbs_mut(&mut self) -> &mut [Trb] {
+        unsafe { core::slice::from_raw_parts_mut(self.trb_ptr, self.ring_size) }
+    }
+
+    /// リングのエントリ数を取得
+    pub(crate) fn len(&self) -> usize {
+        self.ring_size
     }
 
     /// TRBをエンキュー
@@ -503,16 +561,17 @@ impl TrbRing {
         let idx = self.enqueue_index;
 
         // リンクTRBをスキップ
-        if self.trbs[idx].trb_type() == TrbType::Link as u8 {
+        if self.trbs()[idx].trb_type() == TrbType::Link as u8 {
             // リンクTRBのサイクルビットを更新
-            self.trbs[idx].set_cycle_bit(self.cycle_bit);
+            let cycle = self.cycle_bit;
+            self.trbs_mut()[idx].set_cycle_bit(cycle);
             self.cycle_bit = !self.cycle_bit;
             self.enqueue_index = 0;
             return self.enqueue(trb);
         }
 
         trb.set_cycle_bit(self.cycle_bit);
-        self.trbs[idx] = trb;
+        self.trbs_mut()[idx] = trb;
 
         let trb_addr = self.phys_addr + (idx * 16) as u64;
         self.enqueue_index = idx + 1;
@@ -525,7 +584,7 @@ impl TrbRing {
         self.phys_addr + (self.enqueue_index * 16) as u64
     }
 
-    /// リングの物理アドレスを取得
+    /// リングのデバイス可視アドレスを取得
     pub fn physical_address(&self) -> u64 {
         self.phys_addr
     }
