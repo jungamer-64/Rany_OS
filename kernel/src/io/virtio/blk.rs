@@ -36,7 +36,7 @@ use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
 use vfs::block::{
     BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
-    BlockResult as VfsBlockResult, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,
+    BlockResult as VfsBlockResult, DmaInfo, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,
     ZeroCopyBlockDevice,
 };
 
@@ -1064,6 +1064,224 @@ impl VirtioBlkDevice {
 
         Ok(desc0)
     }
+
+    // ========================================================================
+    // DMA bounce ヘルパー
+    // ========================================================================
+
+    /// Map an RRef bounce buffer for a DMA operation via IOMMU.
+    fn map_bounce_for_device(
+        &self,
+        rref: crate::ipc::RRef<[u8]>,
+        direction: DmaDirection,
+    ) -> VfsBlockResult<DmaHandle<[u8]>> {
+        let handle = if let Some(device) = self.iommu_device_id {
+            map_rref_slice_for_device(rref, &device, direction)
+        } else {
+            DmaHandle::map_rref_slice(rref, 0, direction)
+        }
+        .map_err(|_| VfsBlockError::IoError)?;
+        Ok(handle)
+    }
+
+    /// DMA read via fully-async IOMMU bounce path.
+    fn dma_read_bounce_async<'a>(
+        &'a self,
+        sector: u64,
+        buf: &'a mut [u8],
+        len: usize,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+        Box::pin(async move {
+            let rref = alloc_bounce_buffer(len)?;
+            let handle = self.map_bounce_for_device(rref, DmaDirection::FromDevice)?;
+            let dma_addr = handle.iova();
+            let result = DmaReadFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+            let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+            result.map_err(map_vfs_block_error)?;
+            buf.copy_from_slice(&rref[..len]);
+            Ok(())
+        })
+    }
+
+    /// DMA read via eager-alloc IOMMU bounce path.
+    fn dma_read_bounce_eager<'a>(
+        &'a self,
+        sector: u64,
+        buf: &'a mut [u8],
+        len: usize,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+        let rref = match alloc_bounce_buffer(len) {
+            Ok(r) => r,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        let handle = match self.map_bounce_for_device(rref, DmaDirection::FromDevice) {
+            Ok(handle) => handle,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        let dma_addr = handle.iova();
+        Box::pin(async move {
+            let result = DmaReadFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+            let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+            result.map_err(map_vfs_block_error)?;
+            buf.copy_from_slice(&rref[..len]);
+            Ok(())
+        })
+    }
+
+    /// Dispatch DMA read based on IOMMU state.
+    fn dma_read_dispatch<'a>(
+        &'a self,
+        sector: u64,
+        dma: DmaInfo,
+        buf: &'a mut [u8],
+        len: usize,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+        if dma.len != len {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
+            return self.dma_read_bounce_async(sector, buf, len);
+        }
+        if is_iommu_enabled() {
+            return self.dma_read_bounce_eager(sector, buf, len);
+        }
+        if is_iommu_required() {
+            return Box::pin(async move { Err(VfsBlockError::IoError) });
+        }
+        let dma_addr = dma.phys_addr;
+        Box::pin(async move {
+            let result = DmaReadFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+            result.map_err(map_vfs_block_error)?;
+            Ok(())
+        })
+    }
+
+    /// DMA write via fully-async IOMMU bounce path.
+    fn dma_write_bounce_async<'a>(
+        &'a self,
+        sector: u64,
+        data: &'a [u8],
+        len: usize,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+        Box::pin(async move {
+            let mut rref = alloc_bounce_buffer(len)?;
+            rref[..len].copy_from_slice(data);
+            let handle = self.map_bounce_for_device(rref, DmaDirection::ToDevice)?;
+            let dma_addr = handle.iova();
+            let result = DmaWriteFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf: data,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+            handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+            result.map_err(map_vfs_block_error)?;
+            Ok(())
+        })
+    }
+
+    /// DMA write via eager-alloc IOMMU bounce path.
+    fn dma_write_bounce_eager<'a>(
+        &'a self,
+        sector: u64,
+        data: &'a [u8],
+        len: usize,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+        let mut rref = match alloc_bounce_buffer(len) {
+            Ok(r) => r,
+            Err(e) => return Box::pin(async move { Err(e) }),
+        };
+        rref[..len].copy_from_slice(data);
+        crate::io::dma::flush_cache_range(rref.as_ptr(), rref.len());
+        let handle = match self.map_bounce_for_device(rref, DmaDirection::ToDevice) {
+            Ok(handle) => handle,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        let dma_addr = handle.iova();
+        Box::pin(async move {
+            let result = DmaWriteFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf: data,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+            handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+            result.map_err(map_vfs_block_error)?;
+            Ok(())
+        })
+    }
+
+    /// Dispatch DMA write based on IOMMU state.
+    fn dma_write_dispatch<'a>(
+        &'a self,
+        sector: u64,
+        dma: DmaInfo,
+        data: &'a [u8],
+        len: usize,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+        if dma.len != len {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
+            return self.dma_write_bounce_async(sector, data, len);
+        }
+        if is_iommu_enabled() {
+            return self.dma_write_bounce_eager(sector, data, len);
+        }
+        if is_iommu_required() {
+            return Box::pin(async move { Err(VfsBlockError::IoError) });
+        }
+        let dma_addr = dma.phys_addr;
+        Box::pin(async move {
+            let result = DmaWriteFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf: data,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+            result.map_err(map_vfs_block_error)?;
+            Ok(())
+        })
+    }
 }
 
 // ============================================================================
@@ -1678,6 +1896,40 @@ fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
 // `allocate_iommu_bounce_bytes()` and `map_rref_slice_for_device()` /
 // `DmaHandle::map_rref_slice()` to avoid deprecated APIs.
 
+/// Validate block I/O parameters common to read/write.
+/// Returns `Ok(None)` for empty buffers (caller should return `Ok(())`),
+/// `Ok(Some(sector))` when ready, or `Err` on invalid parameters.
+fn validate_block_io_params(
+    config: &BlockDeviceConfig,
+    block: u64,
+    len: usize,
+) -> VfsBlockResult<Option<u64>> {
+    let block_size = effective_block_size(config) as usize;
+    if block_size == 0 {
+        return Err(VfsBlockError::InvalidBufferSize);
+    }
+    if len == 0 {
+        return Ok(None);
+    }
+    if (len % block_size) != 0 {
+        return Err(VfsBlockError::InvalidBufferSize);
+    }
+    let blocks = len / block_size;
+    if blocks > (u32::MAX as usize) {
+        return Err(VfsBlockError::InvalidBufferSize);
+    }
+    let sector = block_to_sector(block, block_size as u32)?;
+    Ok(Some(sector))
+}
+
+/// Allocate an IOMMU bounce buffer, mapping the error type for VFS.
+fn alloc_bounce_buffer(len: usize) -> VfsBlockResult<crate::ipc::RRef<[u8]>> {
+    allocate_iommu_bounce_bytes(len).map_err(|err| match err {
+        IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
+        IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
+    })
+}
+
 impl ZeroCopyBlockDevice for VirtioBlkDevice {
     type Buffer = OwnedBytes;
 
@@ -1774,125 +2026,18 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         block: u64,
         dst: &'a mut dyn IoBufferMut,
     ) -> ZcFuture<'a, VfsBlockResult<()>> {
-        let block_size = effective_block_size(&self.config) as usize;
-        if block_size == 0 {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-        }
         let dma = dst.dma_info();
         let buf = dst.as_mut_slice();
         let len = buf.len();
-        if len == 0 {
-            return Box::pin(async { Ok(()) });
-        }
-        if (len % block_size) != 0 {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-        }
-        let blocks = len / block_size;
-        if blocks > (u32::MAX as usize) {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-        }
-        let sector = match block_to_sector(block, block_size as u32) {
-            Ok(sector) => sector,
+
+        let sector = match validate_block_io_params(&self.config, block, len) {
+            Ok(Some(sector)) => sector,
+            Ok(None) => return Box::pin(async { Ok(()) }),
             Err(err) => return Box::pin(async move { Err(err) }),
         };
 
         if let Some(dma) = dma {
-            if dma.len != len {
-                return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-            }
-            if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
-                return Box::pin(async move {
-                    let rref = allocate_iommu_bounce_bytes(len).map_err(|err| match err {
-                        IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
-                        IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
-                    })?;
-                    let handle = if let Some(device) = self.iommu_device_id {
-                        map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice)
-                    } else {
-                        DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice)
-                    }
-                    .map_err(|_| VfsBlockError::IoError)?;
-                    let dma_addr = handle.iova();
-
-                    let result = DmaReadFuture {
-                        device: self,
-                        sector,
-                        dma_addr,
-                        buf,
-                        submitted: false,
-                        desc_id: None,
-                        queue_idx: 0,
-                    }
-                    .await;
-
-                    let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-                    result.map_err(map_vfs_block_error)?;
-                    buf.copy_from_slice(&rref[..len]);
-                    Ok(())
-                });
-            }
-            // IOMMU enabled: use a bounce-backed mapping (avoid deprecated raw mapping).
-            if is_iommu_enabled() {
-                // Allocate an aligned bounce buffer and map it for the device (read path - FromDevice)
-                let rref = match allocate_iommu_bounce_bytes(len).map_err(|err| match err {
-                    IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
-                    IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
-                }) {
-                    Ok(r) => r,
-                    Err(e) => return Box::pin(async move { Err(e) }),
-                };
-
-                let handle = match self.iommu_device_id {
-                    Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice),
-                    None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice),
-                }
-                .map_err(|_| VfsBlockError::IoError);
-
-                let handle = match handle {
-                    Ok(handle) => handle,
-                    Err(err) => return Box::pin(async move { Err(err) }),
-                };
-
-                let dma_addr = handle.iova();
-
-                return Box::pin(async move {
-                    let result = DmaReadFuture {
-                        device: self,
-                        sector,
-                        dma_addr,
-                        buf,
-                        submitted: false,
-                        desc_id: None,
-                        queue_idx: 0,
-                    }
-                    .await;
-
-                    // Unmap and copy back from the bounce buffer
-                    let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-                    result.map_err(map_vfs_block_error)?;
-                    buf.copy_from_slice(&rref[..len]);
-                    Ok(())
-                });
-            } else if is_iommu_required() {
-                return Box::pin(async move { Err(VfsBlockError::IoError) });
-            }
-
-            // Fallback: IOMMU not enabled
-            let dma_addr = dma.phys_addr;
-            return Box::pin(async move {
-                let result = DmaReadFuture {
-                    device: self,
-                    sector,
-                    dma_addr,
-                    buf,
-                    submitted: false,
-                    desc_id: None,
-                    queue_idx: 0,
-                }
-                .await;
-                result.map_err(map_vfs_block_error)?;
-                Ok(())
-            });
+            return self.dma_read_dispatch(sector, dma, buf, len);
         }
 
         Box::pin(async move {
@@ -1908,128 +2053,18 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         block: u64,
         src: &'a dyn IoBuffer,
     ) -> ZcFuture<'a, VfsBlockResult<()>> {
-        let block_size = effective_block_size(&self.config) as usize;
-        if block_size == 0 {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-        }
         let dma = src.dma_info();
         let data = src.as_slice();
         let len = data.len();
-        if len == 0 {
-            return Box::pin(async { Ok(()) });
-        }
-        if (len % block_size) != 0 {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-        }
-        let blocks = len / block_size;
-        if blocks > (u32::MAX as usize) {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-        }
-        let sector = match block_to_sector(block, block_size as u32) {
-            Ok(sector) => sector,
+
+        let sector = match validate_block_io_params(&self.config, block, len) {
+            Ok(Some(sector)) => sector,
+            Ok(None) => return Box::pin(async { Ok(()) }),
             Err(err) => return Box::pin(async move { Err(err) }),
         };
 
         if let Some(dma) = dma {
-            if dma.len != len {
-                return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
-            }
-            if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
-                return Box::pin(async move {
-                    let mut rref = allocate_iommu_bounce_bytes(len).map_err(|err| match err {
-                        IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
-                        IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
-                    })?;
-                    rref[..len].copy_from_slice(data);
-                    let handle = if let Some(device) = self.iommu_device_id {
-                        map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
-                    } else {
-                        DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice)
-                    }
-                    .map_err(|_| VfsBlockError::IoError)?;
-                    let dma_addr = handle.iova();
-
-                    let result = DmaWriteFuture {
-                        device: self,
-                        sector,
-                        dma_addr,
-                        buf: data,
-                        submitted: false,
-                        desc_id: None,
-                        queue_idx: 0,
-                    }
-                    .await;
-
-                    handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-                    result.map_err(map_vfs_block_error)?;
-                    Ok(())
-                });
-            }
-            // IOMMU enabled: use bounce-backed mapping (avoid deprecated raw mapping)
-            if is_iommu_enabled() {
-                let mut rref = match allocate_iommu_bounce_bytes(len).map_err(|err| match err {
-                    IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
-                    IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
-                }) {
-                    Ok(r) => r,
-                    Err(e) => return Box::pin(async move { Err(e) }),
-                };
-
-                // Copy source data into the bounce buffer
-                rref[..len].copy_from_slice(data);
-                // Ensure cache is flushed for device
-                crate::io::dma::flush_cache_range(rref.as_ptr(), rref.len());
-
-                let handle = match self.iommu_device_id {
-                    Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice),
-                    None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
-                }
-                .map_err(|_| VfsBlockError::IoError);
-
-                let handle = match handle {
-                    Ok(handle) => handle,
-                    Err(err) => return Box::pin(async move { Err(err) }),
-                };
-
-                let dma_addr = handle.iova();
-
-                return Box::pin(async move {
-                    let result = DmaWriteFuture {
-                        device: self,
-                        sector,
-                        dma_addr,
-                        buf: data,
-                        submitted: false,
-                        desc_id: None,
-                        queue_idx: 0,
-                    }
-                    .await;
-
-                    // Unmap the bounce buffer
-                    handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-                    result.map_err(map_vfs_block_error)?;
-                    Ok(())
-                });
-            } else if is_iommu_required() {
-                return Box::pin(async move { Err(VfsBlockError::IoError) });
-            }
-
-            // Fallback: IOMMU not enabled
-            let dma_addr = dma.phys_addr;
-            return Box::pin(async move {
-                let result = DmaWriteFuture {
-                    device: self,
-                    sector,
-                    dma_addr,
-                    buf: data,
-                    submitted: false,
-                    desc_id: None,
-                    queue_idx: 0,
-                }
-                .await;
-                result.map_err(map_vfs_block_error)?;
-                Ok(())
-            });
+            return self.dma_write_dispatch(sector, dma, data, len);
         }
 
         Box::pin(async move {

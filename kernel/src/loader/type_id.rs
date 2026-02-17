@@ -290,21 +290,16 @@ pub struct DependencyEntry {
     pub min_version: SemVer,
 }
 
-/// ELFバイナリからType ID情報を抽出
-///
-/// セルのメタデータセクション（.rany_type_id）からハッシュ情報を読み取ります。
-pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
-    use crate::loader::elf::{Elf64Header, Elf64SectionHeader};
+/// ELFヘッダーとセクションテーブルを検証し、基本パラメータを返す
+fn validate_elf_sections(elf_data: &[u8]) -> Option<(usize, usize, usize, usize)> {
+    use crate::loader::elf::Elf64Header;
 
-    // ELFヘッダーの検証
     if elf_data.len() < 64 || &elf_data[0..4] != b"\x7fELF" {
         return None;
     }
 
-    // ELFヘッダーを解析
     let header = crate::util::get_ref::<Elf64Header>(elf_data, 0)?;
 
-    // セクションヘッダーテーブルの位置を確認
     let sh_offset = header.e_shoff as usize;
     let sh_entsize = header.e_shentsize as usize;
     let sh_num = header.e_shnum as usize;
@@ -313,24 +308,39 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
     if sh_offset == 0 || sh_num == 0 || shstrtab_idx >= sh_num {
         return None;
     }
-
-    // セクションヘッダーテーブルの境界チェック
     if sh_offset + sh_num * sh_entsize > elf_data.len() {
         return None;
     }
 
-    // セクション名文字列テーブルのセクションを取得
+    Some((sh_offset, sh_entsize, sh_num, shstrtab_idx))
+}
+
+/// セクション名文字列テーブルの範囲を取得
+fn get_shstrtab_range(elf_data: &[u8], sh_offset: usize, sh_entsize: usize, shstrtab_idx: usize) -> Option<(usize, usize)> {
+    use crate::loader::elf::Elf64SectionHeader;
+
     let shstrtab_header_offset = sh_offset + shstrtab_idx * sh_entsize;
     let shstrtab_header =
         crate::util::get_ref::<Elf64SectionHeader>(elf_data, shstrtab_header_offset)?;
-    let shstrtab_start = shstrtab_header.sh_offset as usize;
-    let shstrtab_size = shstrtab_header.sh_size as usize;
+    let start = shstrtab_header.sh_offset as usize;
+    let size = shstrtab_header.sh_size as usize;
 
-    if shstrtab_start + shstrtab_size > elf_data.len() {
+    if start + size > elf_data.len() {
         return None;
     }
 
-    // .rany_type_id セクションを探す
+    Some((start, size))
+}
+
+/// ELFバイナリからType ID情報を抽出
+///
+/// セルのメタデータセクション（.rany_type_id）からハッシュ情報を読み取ります。
+pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
+    use crate::loader::elf::Elf64SectionHeader;
+
+    let (sh_offset, sh_entsize, sh_num, shstrtab_idx) = validate_elf_sections(elf_data)?;
+    let (shstrtab_start, shstrtab_size) = get_shstrtab_range(elf_data, sh_offset, sh_entsize, shstrtab_idx)?;
+
     for i in 0..sh_num {
         let sh_header_offset = sh_offset + i * sh_entsize;
         let section_header =
@@ -341,7 +351,6 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
             continue;
         }
 
-        // セクション名を取得
         let name_start = shstrtab_start + name_offset;
         let mut name_end = name_start;
         while name_end < elf_data.len() && elf_data[name_end] != 0 {
@@ -351,7 +360,6 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
         let section_name = core::str::from_utf8(&elf_data[name_start..name_end]).ok()?;
 
         if section_name == ".rany_type_id" {
-            // .rany_type_id セクションの内容を解析
             let data_start = section_header.sh_offset as usize;
             let data_size = section_header.sh_size as usize;
 

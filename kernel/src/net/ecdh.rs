@@ -936,6 +936,22 @@ pub mod p256 {
         Ok(())
     }
 
+    /// DER INTEGER フィールドを1つパースし、位置を進める
+    fn parse_der_integer<'a>(der: &'a [u8], pos: &mut usize) -> Result<&'a [u8], EcdsaError> {
+        if *pos >= der.len() || der[*pos] != 0x02 {
+            return Err(EcdsaError::InvalidSignature);
+        }
+        *pos += 1;
+        let len = der[*pos] as usize;
+        *pos += 1;
+        if *pos + len > der.len() {
+            return Err(EcdsaError::InvalidSignature);
+        }
+        let data = &der[*pos..*pos + len];
+        *pos += len;
+        Ok(data)
+    }
+
     /// DERエンコードされたECDSA署名をパース
     ///
     /// ECDSA-Sig-Value ::= SEQUENCE {
@@ -957,36 +973,14 @@ pub mod p256 {
         } else {
             return Err(EcdsaError::InvalidSignature);
         };
-        let mut pos = 2;
 
         if der.len() < 2 + seq_len {
             return Err(EcdsaError::InvalidSignature);
         }
 
-        // INTEGER r
-        if pos >= der.len() || der[pos] != 0x02 {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        pos += 1;
-        let r_len = der[pos] as usize;
-        pos += 1;
-        if pos + r_len > der.len() {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        let r_data = &der[pos..pos + r_len];
-        pos += r_len;
-
-        // INTEGER s
-        if pos >= der.len() || der[pos] != 0x02 {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        pos += 1;
-        let s_len = der[pos] as usize;
-        pos += 1;
-        if pos + s_len > der.len() {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        let s_data = &der[pos..pos + s_len];
+        let mut pos = 2;
+        let r_data = parse_der_integer(der, &mut pos)?;
+        let s_data = parse_der_integer(der, &mut pos)?;
 
         // r, s を32バイトに正規化（先頭0x00パディング除去、左パディング）
         let r = normalize_integer_32(r_data)?;
@@ -1693,58 +1687,47 @@ pub mod p384 {
     }
 
     /// DERエンコードされたECDSA署名をパース（P-384用）
-    fn parse_ecdsa_signature_der_384(der: &[u8]) -> Result<([u8; 48], [u8; 48]), EcdsaError> {
-        if der.len() < 6 {
+    /// DER SEQUENCE ヘッダーをデコードし、(シーケンス長, データ開始位置)を返す
+    fn decode_der_sequence_header(der: &[u8]) -> Result<(usize, usize), EcdsaError> {
+        if der.len() < 6 || der[0] != 0x30 {
             return Err(EcdsaError::InvalidSignature);
         }
 
-        // SEQUENCE タグ
-        if der[0] != 0x30 {
-            return Err(EcdsaError::InvalidSignature);
-        }
-
-        // 長さデコード（短い形式と長い形式の両方をサポート）
-        let (seq_len, mut pos) = if der[1] & 0x80 == 0 {
-            (der[1] as usize, 2usize)
+        if der[1] & 0x80 == 0 {
+            Ok((der[1] as usize, 2))
         } else if der[1] == 0x81 {
             if der.len() < 3 {
                 return Err(EcdsaError::InvalidSignature);
             }
-            (der[2] as usize, 3usize)
+            Ok((der[2] as usize, 3))
         } else {
+            Err(EcdsaError::InvalidSignature)
+        }
+    }
+
+    /// DER INTEGERを読み取り、(データスライス, 次のオフセット)を返す
+    fn read_der_integer<'a>(der: &'a [u8], pos: usize) -> Result<(&'a [u8], usize), EcdsaError> {
+        if pos >= der.len() || der[pos] != 0x02 {
             return Err(EcdsaError::InvalidSignature);
-        };
+        }
+        let len = der[pos + 1] as usize;
+        let start = pos + 2;
+        if start + len > der.len() {
+            return Err(EcdsaError::InvalidSignature);
+        }
+        Ok((&der[start..start + len], start + len))
+    }
+
+    fn parse_ecdsa_signature_der_384(der: &[u8]) -> Result<([u8; 48], [u8; 48]), EcdsaError> {
+        let (seq_len, pos) = decode_der_sequence_header(der)?;
 
         if der.len() < pos + seq_len {
             return Err(EcdsaError::InvalidSignature);
         }
 
-        // INTEGER r
-        if pos >= der.len() || der[pos] != 0x02 {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        pos += 1;
-        let r_len = der[pos] as usize;
-        pos += 1;
-        if pos + r_len > der.len() {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        let r_data = &der[pos..pos + r_len];
-        pos += r_len;
+        let (r_data, next_pos) = read_der_integer(der, pos)?;
+        let (s_data, _) = read_der_integer(der, next_pos)?;
 
-        // INTEGER s
-        if pos >= der.len() || der[pos] != 0x02 {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        pos += 1;
-        let s_len = der[pos] as usize;
-        pos += 1;
-        if pos + s_len > der.len() {
-            return Err(EcdsaError::InvalidSignature);
-        }
-        let s_data = &der[pos..pos + s_len];
-
-        // r, s を48バイトに正規化
         let r = normalize_integer_48(r_data)?;
         let s = normalize_integer_48(s_data)?;
 

@@ -408,6 +408,50 @@ impl<'a> ElfLoader<'a> {
         Ok(Self { data, header })
     }
 
+    /// 単一のPT_LOADセグメントを検証・解析する
+    fn validate_load_segment(
+        ph: &Elf64ProgramHeader,
+        segments: &mut Vec<SegmentInfo>,
+        max_addr: &mut usize,
+        alignment: &mut usize,
+    ) -> Result<(), LoadError> {
+        // 【セキュリティ】セグメントサイズのチェック
+        if ph.p_memsz as usize > MAX_SEGMENT_SIZE {
+            return Err(LoadError::InvalidFormat(alloc::format!(
+                "Segment too large: {} bytes (max {})",
+                ph.p_memsz,
+                MAX_SEGMENT_SIZE
+            )));
+        }
+
+        // 【セキュリティ】W^X (Writable XOR Executable) チェック
+        let is_writable = (ph.p_flags & PF_W) != 0;
+        let is_executable = (ph.p_flags & PF_X) != 0;
+        if is_writable && is_executable {
+            return Err(LoadError::InvalidPermissions(alloc::format!(
+                "Segment at vaddr {:#x} is both writable and executable (W^X violation)",
+                ph.p_vaddr
+            )));
+        }
+
+        // 【セキュリティ】オーバーフローチェック
+        let end_addr = (ph.p_vaddr as usize)
+            .checked_add(ph.p_memsz as usize)
+            .ok_or_else(|| LoadError::InvalidFormat("Segment address overflow".into()))?;
+
+        *max_addr = (*max_addr).max(end_addr);
+        *alignment = (*alignment).max(ph.p_align as usize);
+
+        segments.push(SegmentInfo {
+            file_offset: ph.p_offset as usize,
+            vaddr: ph.p_vaddr as usize,
+            file_size: ph.p_filesz as usize,
+            mem_size: ph.p_memsz as usize,
+            flags: ph.p_flags,
+        });
+        Ok(())
+    }
+
     /// ELFをパースしてセル情報を取得
     ///
     /// 最適化:
@@ -451,41 +495,7 @@ impl<'a> ElfLoader<'a> {
                 .ok_or_else(|| LoadError::InvalidFormat("Failed to read program header".into()))?;
 
             if ph.p_type == PT_LOAD {
-                // 【セキュリティ】セグメントサイズのチェック
-                if ph.p_memsz as usize > MAX_SEGMENT_SIZE {
-                    return Err(LoadError::InvalidFormat(alloc::format!(
-                        "Segment too large: {} bytes (max {})",
-                        ph.p_memsz,
-                        MAX_SEGMENT_SIZE
-                    )));
-                }
-
-                // 【セキュリティ】W^X (Writable XOR Executable) チェック
-                // セグメントは書き込み可能かつ実行可能であってはならない
-                let is_writable = (ph.p_flags & PF_W) != 0;
-                let is_executable = (ph.p_flags & PF_X) != 0;
-                if is_writable && is_executable {
-                    return Err(LoadError::InvalidPermissions(alloc::format!(
-                        "Segment at vaddr {:#x} is both writable and executable (W^X violation)",
-                        ph.p_vaddr
-                    )));
-                }
-
-                // 【セキュリティ】オーバーフローチェック
-                let end_addr = (ph.p_vaddr as usize)
-                    .checked_add(ph.p_memsz as usize)
-                    .ok_or_else(|| LoadError::InvalidFormat("Segment address overflow".into()))?;
-
-                max_addr = max_addr.max(end_addr);
-                alignment = alignment.max(ph.p_align as usize);
-
-                segments.push(SegmentInfo {
-                    file_offset: ph.p_offset as usize,
-                    vaddr: ph.p_vaddr as usize,
-                    file_size: ph.p_filesz as usize,
-                    mem_size: ph.p_memsz as usize,
-                    flags: ph.p_flags,
-                });
+                Self::validate_load_segment(&ph, &mut segments, &mut max_addr, &mut alignment)?;
             }
         }
 
@@ -850,7 +860,6 @@ impl<'a> ElfLoader<'a> {
     {
         let rela_count = sh.sh_size as usize / mem::size_of::<Elf64Rela>();
 
-        // 【セキュリティ】リロケーション数のチェック（DoS攻撃防止）
         if rela_count > MAX_RELOCATIONS {
             return Err(LoadError::RelocationFailed(alloc::format!(
                 "Too many relocations: {} (max {})",
@@ -859,68 +868,79 @@ impl<'a> ElfLoader<'a> {
             )));
         }
 
-        // シンボルテーブルと文字列テーブルを取得
         let symtab_sh = self.get_section_header(sh.sh_link as usize)?;
         let strtab = self.get_string_table(symtab_sh.sh_link as usize)?;
 
-        // シンボル毎の解決結果をキャッシュして、同じシンボルの再解決を避ける
         let symtab_count = symtab_sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
         let mut sym_value_cache: Vec<Option<usize>> = vec![None; symtab_count];
 
         for j in 0..rela_count {
             let rela_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Rela>();
-
             if rela_offset + mem::size_of::<Elf64Rela>() > self.data.len() {
                 continue;
             }
-
             let rela: Elf64Rela = crate::util::read_struct(self.data, rela_offset)
                 .ok_or_else(|| LoadError::InvalidFormat("Failed to read relocation".into()))?;
 
-            // シンボルを取得
             let sym_idx = rela.symbol() as usize;
-
-            // sym_idx が範囲外ならスキップ
             if sym_idx >= symtab_count {
                 continue;
             }
 
-            // キャッシュにあればそれを使う
-            let sym_value = if let Some(val) = sym_value_cache[sym_idx] {
-                val
-            } else {
-                let sym_offset =
-                    symtab_sh.sh_offset as usize + sym_idx * mem::size_of::<Elf64Symbol>();
+            let sym_value = self.resolve_symbol_cached(
+                sym_idx,
+                &symtab_sh,
+                strtab,
+                loaded,
+                resolve,
+                &mut sym_value_cache,
+            )?;
 
-                if sym_offset + mem::size_of::<Elf64Symbol>() > self.data.len() {
-                    continue;
-                }
-
-                let sym: Elf64Symbol = crate::util::read_struct(self.data, sym_offset)
-                    .ok_or_else(|| LoadError::InvalidFormat("Failed to read symbol".into()))?;
-
-                let resolved = if sym.st_shndx == 0 {
-                    // 外部シンボル
-                    let name = self
-                        .get_string(strtab, sym.st_name as usize)
-                        .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol name".into()))?;
-                    resolve(name)
-                        .ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))?
-                } else {
-                    // 内部シンボル
-                    loaded.base_address + sym.st_value as usize
-                };
-
-                // キャッシュに保存
-                sym_value_cache[sym_idx] = Some(resolved);
-                resolved
-            };
-
-            // リロケーションを適用
             self.apply_relocation(&rela, loaded.base_address, sym_value)?;
         }
 
         Ok(())
+    }
+
+    /// Resolve a symbol by index, caching the result for reuse.
+    fn resolve_symbol_cached<F>(
+        &self,
+        sym_idx: usize,
+        symtab_sh: &Elf64SectionHeader,
+        strtab: &[u8],
+        loaded: &LoadedCell,
+        resolve: &F,
+        cache: &mut [Option<usize>],
+    ) -> Result<usize, LoadError>
+    where
+        F: Fn(&str) -> Option<usize>,
+    {
+        if let Some(val) = cache[sym_idx] {
+            return Ok(val);
+        }
+
+        let sym_offset =
+            symtab_sh.sh_offset as usize + sym_idx * mem::size_of::<Elf64Symbol>();
+
+        if sym_offset + mem::size_of::<Elf64Symbol>() > self.data.len() {
+            return Err(LoadError::InvalidFormat("Symbol offset out of range".into()));
+        }
+
+        let sym: Elf64Symbol = crate::util::read_struct(self.data, sym_offset)
+            .ok_or_else(|| LoadError::InvalidFormat("Failed to read symbol".into()))?;
+
+        let resolved = if sym.st_shndx == 0 {
+            let name = self
+                .get_string(strtab, sym.st_name as usize)
+                .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol name".into()))?;
+            resolve(name)
+                .ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))?
+        } else {
+            loaded.base_address + sym.st_value as usize
+        };
+
+        cache[sym_idx] = Some(resolved);
+        Ok(resolved)
     }
 
     /// セクションヘッダーを取得

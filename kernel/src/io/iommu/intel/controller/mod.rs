@@ -297,12 +297,21 @@ impl IommuController {
 
     /// Initialize the IOMMU controller hardware
     pub unsafe fn init(&mut self, enable_scalable_mode: bool) -> Result<(), IommuError> {
-        // Read Capabilities
         if self.mmio_base == 0 {
             log::error!("IOMMU MMIO Base is NULL");
             return Err(IommuError::HardwareError);
         }
 
+        self.read_and_log_caps();
+        let scalable_enabled = self.resolve_scalable_mode(enable_scalable_mode);
+        self.setup_and_program_root_table()?;
+        self.allocate_context_tables(scalable_enabled)?;
+
+        Ok(())
+    }
+
+    /// Read capability registers and log address width information.
+    fn read_and_log_caps(&mut self) {
         self.cap = self.read64(regs::CAP);
         log::info!("IOMMU init: CAP read success: {:#x}", self.cap);
 
@@ -326,7 +335,10 @@ impl IommuController {
                 "IOMMU init: 48-bit AGAW not reported in SAGAW; page table compatibility may be limited"
             );
         }
+    }
 
+    /// Resolve whether scalable mode should be enabled.
+    fn resolve_scalable_mode(&mut self, enable_scalable_mode: bool) -> bool {
         if enable_scalable_mode && !self.supports_scalable_mode() {
             log::warn!("[IOMMU] Scalable mode requested but not supported");
         }
@@ -335,12 +347,14 @@ impl IommuController {
         if scalable_enabled {
             log::warn!("[IOMMU] Scalable mode context tables enabled (translation path is experimental)");
         }
+        scalable_enabled
+    }
 
-        // Allocate and set up Root Table
+    /// Allocate root table, program its address, and wait for hardware acknowledgment.
+    unsafe fn setup_and_program_root_table(&mut self) -> Result<(), IommuError> {
         let root_table = HardwareTable::new(256, None)?;
         self.hardware.lock().unwrap().root_table = Some(root_table);
 
-        // Program Root Table Address
         let mut root_phys = self
             .hardware
             .lock()
@@ -354,19 +368,19 @@ impl IommuController {
         }
         self.write64(regs::RTADDR, root_phys);
 
-        // Update Global Command Register to set Root Table Pointer
         self.write32(regs::GCMD, gcmd_bits::GCMD_SRTP);
 
-        // Wait for status update
         use crate::io::iommu::intel::controller::utils::IommuUtils;
         self.wait_for_condition(
             || (self.read32(regs::GSTS) & gsts_bits::GSTS_RTPS) != 0,
             100_000,
             false,
-        )?;
+        )
+    }
 
-        // Allocate context tables (legacy 4KiB or scalable 8KiB)
-        if self.is_scalable_mode_enabled() {
+    /// Allocate context tables (legacy or scalable depending on mode).
+    unsafe fn allocate_context_tables(&mut self, scalable: bool) -> Result<(), IommuError> {
+        if scalable {
             let mut context_tables: Vec<HardwareTable<ScalableContextEntry>> =
                 Vec::with_capacity(256);
             for _ in 0..256 {

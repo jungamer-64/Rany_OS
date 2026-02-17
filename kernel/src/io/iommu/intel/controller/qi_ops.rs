@@ -283,6 +283,104 @@ impl InvalidationOps for IommuController {
     }
 }
 
+// 無効化処理のヘルパーメソッド
+impl IommuController {
+    /// 単一の無効化リクエストを処理する
+    fn process_single_invalidation(
+        &self,
+        req: &InvalidateRequest,
+        any_ats: bool,
+        drain: bool,
+    ) -> Result<(), IommuError> {
+        match req.kind {
+            InvalidateKind::Pages {
+                start_iova,
+                bytes: _,
+            } => self.invalidate_pages(req.domain_id, start_iova, any_ats, drain),
+            InvalidateKind::Domain => self.invalidate_domain(req.domain_id, drain),
+            InvalidateKind::Global => self.invalidate_global(drain),
+            InvalidateKind::Context { source_id } => self.invalidate_context(source_id),
+            InvalidateKind::Iec { global, index } => self.invalidate_iec(global, index),
+            InvalidateKind::PasidIotlb { pasid } => {
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_pasid_iotlb(req.domain_id, pasid, drain)?;
+                }
+                Ok(())
+            }
+            InvalidateKind::PasidCache { pasid: _ } => {
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_pasid_cache_domain(req.domain_id)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// ページ選択的IOTLB無効化
+    fn invalidate_pages(
+        &self,
+        domain_id: u16,
+        start_iova: u64,
+        any_ats: bool,
+        drain: bool,
+    ) -> Result<(), IommuError> {
+        if self.is_queued_invalidation_enabled() {
+            self.qi_invalidate_iotlb_page(domain_id, start_iova, drain)?;
+            if any_ats {
+                log::trace!(
+                    "[IOMMU] ATS Page invalidation requested but source_id not available"
+                );
+            }
+        } else {
+            unsafe { self.invalidate_iotlb_direct(domain_id) };
+        }
+        Ok(())
+    }
+
+    /// ドメイン全体のIOTLB無効化
+    fn invalidate_domain(&self, domain_id: u16, drain: bool) -> Result<(), IommuError> {
+        if self.is_queued_invalidation_enabled() {
+            self.qi_invalidate_iotlb_domain(domain_id, drain)?;
+        } else {
+            unsafe { self.invalidate_iotlb_direct(domain_id) };
+        }
+        Ok(())
+    }
+
+    /// グローバルIOTLB無効化
+    fn invalidate_global(&self, drain: bool) -> Result<(), IommuError> {
+        if self.is_queued_invalidation_enabled() {
+            self.qi_invalidate_iotlb_global(drain)?;
+        } else {
+            unsafe { self.invalidate_iotlb_global() };
+        }
+        Ok(())
+    }
+
+    /// コンテキストキャッシュ無効化
+    fn invalidate_context(&self, source_id: u16) -> Result<(), IommuError> {
+        if self.is_queued_invalidation_enabled() {
+            self.qi_invalidate_context_global()?;
+        }
+        log::trace!(
+            "[IOMMU] Context invalidation for source_id {:04x}",
+            source_id
+        );
+        Ok(())
+    }
+
+    /// 割り込みエントリキャッシュ無効化
+    fn invalidate_iec(&self, global: bool, index: u16) -> Result<(), IommuError> {
+        if global {
+            self.qi_invalidate_iec_global()?;
+        } else {
+            log::trace!("[IOMMU] Indexed IEC invalidation for index {}", index);
+            self.qi_invalidate_iec_global()?; // Fall back to global
+        }
+        Ok(())
+    }
+}
+
 impl IommuInvalidator for IommuController {
     // Note: This impl block now calls methods from InvalidationOps
     // Since IommuController implements InvalidationOps, `self.method()` works.
@@ -292,7 +390,6 @@ impl IommuInvalidator for IommuController {
             return Ok(());
         }
 
-        // Determine if we should use ATS (Device-TLB) invalidation
         let any_ats = requests
             .iter()
             .any(|r| r.flags.contains(InvalidateFlags::ATS_AWARE));
@@ -302,82 +399,7 @@ impl IommuInvalidator for IommuController {
         });
 
         for req in requests {
-            match req.kind {
-                InvalidateKind::Pages {
-                    start_iova,
-                    bytes: _,
-                } => {
-                    // Page-selective IOTLB invalidation
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_iotlb_page(req.domain_id, start_iova, drain)?;
-                        // If ATS-aware, also invalidate Device-TLB (would need source_id)
-                        if any_ats {
-                            log::trace!(
-                                "[IOMMU] ATS Page invalidation requested but source_id not available"
-                            );
-                        }
-                    } else {
-                        // Fall back to domain invalidation without QI
-                        unsafe { self.invalidate_iotlb_direct(req.domain_id) };
-                    }
-                }
-                InvalidateKind::Domain => {
-                    // Domain-wide IOTLB invalidation
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_iotlb_domain(req.domain_id, drain)?;
-                    } else {
-                        unsafe { self.invalidate_iotlb_direct(req.domain_id) };
-                    }
-                }
-                InvalidateKind::Global => {
-                    // Global IOTLB invalidation
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_iotlb_global(drain)?;
-                    } else {
-                        unsafe { self.invalidate_iotlb_global() };
-                    }
-                }
-                InvalidateKind::Context { source_id } => {
-                    // Context cache invalidation for device
-                    if self.is_queued_invalidation_enabled() {
-                        // Note: qi_invalidate_context_device would be ideal but we have global
-                        self.qi_invalidate_context_global()?;
-                    }
-                    log::trace!(
-                        "[IOMMU] Context invalidation for source_id {:04x}",
-                        source_id
-                    );
-                }
-                InvalidateKind::Iec { global, index } => {
-                    // Interrupt Entry Cache invalidation
-                    if global {
-                        self.qi_invalidate_iec_global()?;
-                    } else {
-                        log::trace!("[IOMMU] Indexed IEC invalidation for index {}", index);
-                        self.qi_invalidate_iec_global()?; // Fall back to global
-                    }
-                }
-                InvalidateKind::PasidIotlb { pasid } => {
-                    // PASID-based IOTLB invalidation (Scalable Mode)
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_pasid_iotlb(req.domain_id, pasid, drain)?;
-                    }
-                }
-                InvalidateKind::PasidCache { pasid } => {
-                    // PASID cache invalidation (Scalable Mode)
-                    if self.is_queued_invalidation_enabled() {
-                        match pasid {
-                            Some(_) => {
-                                // PASID-selective: fall back to domain for now
-                                self.qi_invalidate_pasid_cache_domain(req.domain_id)?;
-                            }
-                            None => {
-                                self.qi_invalidate_pasid_cache_domain(req.domain_id)?;
-                            }
-                        }
-                    }
-                }
-            }
+            self.process_single_invalidation(req, any_ats, drain)?;
         }
 
         // Perform synchronous wait to ensure completion

@@ -627,6 +627,46 @@ pub fn get_eh_frame_data() -> Option<&'static [u8]> {
     }
 }
 
+/// CFA（Canonical Frame Address）を計算する
+fn compute_cfa(ctx: &registers::UnwindContext, frame: &StackFrame) -> Result<u64, UnwindError> {
+    match ctx.cfa() {
+        registers::CfaRule::RegisterOffset { register, offset } => {
+            let base = match register {
+                DwarfRegister::Rsp => frame.stack_pointer as u64,
+                DwarfRegister::Rbp => frame.frame_pointer as u64,
+                _ => return Err(UnwindError::InvalidDwarf),
+            };
+            Ok((base as i64 + offset) as u64)
+        }
+        registers::CfaRule::Expression { .. } => {
+            Err(UnwindError::UnsupportedDwarfExpression)
+        }
+    }
+}
+
+/// リターンアドレスをCFAから解決する
+fn resolve_return_address(ctx: &registers::UnwindContext, cfa: u64) -> Result<u64, UnwindError> {
+    match ctx.get_register_rule(DwarfRegister::ReturnAddress) {
+        registers::RegisterRule::Offset(off) => {
+            let addr = (cfa as i64 + off) as usize;
+            Ok(read_u64_checked(addr).unwrap_or(0))
+        }
+        _ => Err(UnwindError::InvalidDwarf),
+    }
+}
+
+/// RBPをCFAから解決する
+fn resolve_rbp(ctx: &registers::UnwindContext, cfa: u64, current_rbp: u64) -> u64 {
+    match ctx.get_register_rule(DwarfRegister::Rbp) {
+        registers::RegisterRule::Offset(off) => {
+            let addr = (cfa as i64 + off) as usize;
+            read_u64_checked(addr).unwrap_or(0)
+        }
+        registers::RegisterRule::SameValue => current_rbp,
+        _ => 0,
+    }
+}
+
 /// DWARFベースのアンワインドを実行
 ///
 /// 型安全な `SafeEhFrameParser` を使用してスタックフレームを巻き戻す
@@ -683,39 +723,9 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
 
     // CFAを計算
     let ctx = interpreter.context();
-    let cfa = match ctx.cfa() {
-        registers::CfaRule::RegisterOffset { register, offset } => {
-            let base = match register {
-                DwarfRegister::Rsp => frame.stack_pointer as u64,
-                DwarfRegister::Rbp => frame.frame_pointer as u64,
-                _ => return Err(UnwindError::InvalidDwarf),
-            };
-            (base as i64 + offset) as u64
-        }
-        registers::CfaRule::Expression { .. } => {
-            return Err(UnwindError::UnsupportedDwarfExpression);
-        }
-    };
-
-    // リターンアドレスを取得
-    let return_address = match ctx.get_register_rule(DwarfRegister::ReturnAddress) {
-        registers::RegisterRule::Offset(off) => {
-            let addr = (cfa as i64 + off) as usize;
-            // Safety: CFAから計算されたアドレスからの読み取り
-            read_u64_checked(addr).unwrap_or(0)
-        }
-        _ => return Err(UnwindError::InvalidDwarf),
-    };
-
-    // 新しいRBPを取得
-    let new_rbp = match ctx.get_register_rule(DwarfRegister::Rbp) {
-        registers::RegisterRule::Offset(off) => {
-            let addr = (cfa as i64 + off) as usize;
-            read_u64_checked(addr).unwrap_or(0)
-        }
-        registers::RegisterRule::SameValue => frame.frame_pointer as u64,
-        _ => 0,
-    };
+    let cfa = compute_cfa(ctx, frame)?;
+    let return_address = resolve_return_address(ctx, cfa)?;
+    let new_rbp = resolve_rbp(ctx, cfa, frame.frame_pointer as u64);
 
     Ok(StackFrame {
         instruction_pointer: return_address as usize,
@@ -822,6 +832,48 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// 特定のPCに対応するFDEを検索
+    /// 単一の eh_frame エントリを解析し、CIEならキャッシュ、FDEなら返す。
+    /// pc にマッチしなFDEは `Ok(None)` 、マッチするものは `Ok(Some(fde))`。
+    fn process_eh_frame_entry(&mut self, entry_start: usize, length: u64, pc: u64) -> Option<Option<SafeFde>> {
+        let entry_end = self.reader.position() + length as usize;
+
+        let cie_id = self.reader.read_u32().ok()?;
+
+        if cie_id == 0 {
+            // CIE: キャッシュして次へ
+            let cie = self.parse_cie_content(length as usize - 4)?;
+            self.cache_cie(entry_start as u64, cie);
+            self.reader.set_position(entry_end);
+            return Some(None);
+        }
+
+        // FDE
+        let cie_offset = entry_start as u64 + 4 - cie_id as u64;
+
+        let fde_encoding = self
+            .get_cached_cie(cie_offset)
+            .and_then(|c| c.augmentation.fde_encoding)
+            .unwrap_or(0x03);
+
+        let initial_location = self.read_encoded_value(fde_encoding)?;
+        let address_range = self.read_encoded_value(fde_encoding & 0x0F)?;
+
+        if pc >= initial_location && pc < initial_location + address_range {
+            let instructions_offset = self.reader.position();
+            let instructions_len = entry_end.saturating_sub(instructions_offset);
+            return Some(Some(SafeFde {
+                cie_offset,
+                initial_location,
+                address_range,
+                instructions_offset,
+                instructions_len,
+            }));
+        }
+
+        self.reader.set_position(entry_end);
+        Some(None)
+    }
+
     pub fn find_fde(&mut self, pc: u64) -> Option<SafeFde> {
         self.reader.set_position(0);
 
@@ -835,51 +887,17 @@ impl<'a> SafeEhFrameParser<'a> {
             }
 
             // 拡張長さ (64-bit format)
-            let (length, _is_64bit) = if length == 0xFFFFFFFF {
-                (self.reader.read_u64().ok()?, true)
+            let length = if length == 0xFFFFFFFF {
+                self.reader.read_u64().ok()?
             } else {
-                (length, false)
+                length
             };
 
-            let entry_end = self.reader.position() + length as usize;
-
-            // CIE IDを読む
-            let cie_id = self.reader.read_u32().ok()?;
-
-            if cie_id == 0 {
-                // CIE: キャッシュして次へ
-                let cie = self.parse_cie_content(length as usize - 4)?;
-                self.cache_cie(entry_start as u64, cie);
-            } else {
-                // FDE
-                let cie_offset = entry_start as u64 + 4 - cie_id as u64;
-
-                // FDEの位置情報を読む
-                let fde_encoding = self
-                    .get_cached_cie(cie_offset)
-                    .and_then(|c| c.augmentation.fde_encoding)
-                    .unwrap_or(0x03); // DW_EH_PE_udata4
-
-                let initial_location = self.read_encoded_value(fde_encoding)?;
-                let address_range = self.read_encoded_value(fde_encoding & 0x0F)?;
-
-                // PCが範囲内か確認
-                if pc >= initial_location && pc < initial_location + address_range {
-                    let instructions_offset = self.reader.position();
-                    let instructions_len = entry_end.saturating_sub(instructions_offset);
-
-                    return Some(SafeFde {
-                        cie_offset,
-                        initial_location,
-                        address_range,
-                        instructions_offset,
-                        instructions_len,
-                    });
-                }
+            match self.process_eh_frame_entry(entry_start, length, pc) {
+                Some(Some(fde)) => return Some(fde),
+                Some(None) => continue,
+                None => return None,
             }
-
-            // 次のエントリへ
-            self.reader.set_position(entry_end);
         }
 
         None
@@ -1037,6 +1055,56 @@ impl<'a> SafeEhFrameParser<'a> {
     ) -> Option<SafeCfiInstruction> {
         match opcode {
             0x00 => Some(SafeCfiInstruction::Nop),
+            0x02..=0x04 => self.parse_advance_loc_extended(opcode),
+            0x05..=0x09 => self.parse_register_rule_instruction(opcode, data_align),
+            0x0A => Some(SafeCfiInstruction::RememberState),
+            0x0B => Some(SafeCfiInstruction::RestoreState),
+            0x0C..=0x0E => self.parse_cfa_instruction(opcode),
+            _ => None,
+        }
+    }
+
+    /// AdvanceLoc拡張命令（1/2/4バイト）をパース
+    fn parse_advance_loc_extended(&mut self, opcode: u8) -> Option<SafeCfiInstruction> {
+        let delta = match opcode {
+            0x02 => self.reader.read_u8().ok()? as u64,
+            0x03 => self.reader.read_u16().ok()? as u64,
+            0x04 => self.reader.read_u32().ok()? as u64,
+            _ => return None,
+        };
+        Some(SafeCfiInstruction::AdvanceLoc { delta })
+    }
+
+    /// レジスタルール命令（offset_extended, restore_extended, undefined, same_value, register）をパース
+    fn parse_register_rule_instruction(
+        &mut self,
+        opcode: u8,
+        data_align: i64,
+    ) -> Option<SafeCfiInstruction> {
+        let reg = self.reader.read_uleb128().ok()? as u8;
+        let register = DwarfRegister::from_dwarf_number(reg)?;
+        match opcode {
+            0x05 => {
+                // DW_CFA_offset_extended
+                let offset = self.reader.read_uleb128().ok()? as i64 * data_align;
+                Some(SafeCfiInstruction::Offset { register, offset })
+            }
+            0x06 => Some(SafeCfiInstruction::SameValue { register }),
+            0x07 => Some(SafeCfiInstruction::Undefined { register }),
+            0x08 => Some(SafeCfiInstruction::SameValue { register }),
+            0x09 => {
+                // DW_CFA_register
+                let src = self.reader.read_uleb128().ok()? as u8;
+                let source = DwarfRegister::from_dwarf_number(src)?;
+                Some(SafeCfiInstruction::Register { register, source })
+            }
+            _ => None,
+        }
+    }
+
+    /// CFA定義命令（def_cfa, def_cfa_register, def_cfa_offset）をパース
+    fn parse_cfa_instruction(&mut self, opcode: u8) -> Option<SafeCfiInstruction> {
+        match opcode {
             0x0C => {
                 // DW_CFA_def_cfa
                 let reg = self.reader.read_uleb128().ok()? as u8;
@@ -1055,56 +1123,6 @@ impl<'a> SafeEhFrameParser<'a> {
                 let offset = self.reader.read_uleb128().ok()?;
                 Some(SafeCfiInstruction::DefCfaOffset { offset })
             }
-            0x02 => {
-                // DW_CFA_advance_loc1
-                let delta = self.reader.read_u8().ok()? as u64;
-                Some(SafeCfiInstruction::AdvanceLoc { delta })
-            }
-            0x03 => {
-                // DW_CFA_advance_loc2
-                let delta = self.reader.read_u16().ok()? as u64;
-                Some(SafeCfiInstruction::AdvanceLoc { delta })
-            }
-            0x04 => {
-                // DW_CFA_advance_loc4
-                let delta = self.reader.read_u32().ok()? as u64;
-                Some(SafeCfiInstruction::AdvanceLoc { delta })
-            }
-            0x05 => {
-                // DW_CFA_offset_extended
-                let reg = self.reader.read_uleb128().ok()? as u8;
-                let register = DwarfRegister::from_dwarf_number(reg)?;
-                let offset = self.reader.read_uleb128().ok()? as i64 * data_align;
-                Some(SafeCfiInstruction::Offset { register, offset })
-            }
-            0x06 => {
-                // DW_CFA_restore_extended
-                let reg = self.reader.read_uleb128().ok()? as u8;
-                let register = DwarfRegister::from_dwarf_number(reg)?;
-                Some(SafeCfiInstruction::SameValue { register })
-            }
-            0x07 => {
-                // DW_CFA_undefined
-                let reg = self.reader.read_uleb128().ok()? as u8;
-                let register = DwarfRegister::from_dwarf_number(reg)?;
-                Some(SafeCfiInstruction::Undefined { register })
-            }
-            0x08 => {
-                // DW_CFA_same_value
-                let reg = self.reader.read_uleb128().ok()? as u8;
-                let register = DwarfRegister::from_dwarf_number(reg)?;
-                Some(SafeCfiInstruction::SameValue { register })
-            }
-            0x09 => {
-                // DW_CFA_register
-                let reg = self.reader.read_uleb128().ok()? as u8;
-                let register = DwarfRegister::from_dwarf_number(reg)?;
-                let src = self.reader.read_uleb128().ok()? as u8;
-                let source = DwarfRegister::from_dwarf_number(src)?;
-                Some(SafeCfiInstruction::Register { register, source })
-            }
-            0x0A => Some(SafeCfiInstruction::RememberState),
-            0x0B => Some(SafeCfiInstruction::RestoreState),
             _ => None,
         }
     }

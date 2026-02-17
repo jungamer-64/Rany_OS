@@ -79,6 +79,75 @@ impl Default for BootConfig {
     }
 }
 
+/// Save a boot entry to config if it has a non-empty kernel path
+fn save_entry_if_valid(config: &mut BootConfig, entry: Option<BootEntry>) {
+    if let Some(entry) = entry {
+        if !entry.kernel.is_empty() {
+            config.entries.push(entry);
+        }
+    }
+}
+
+/// Apply a global setting (before any section) to the config
+fn apply_global_setting(config: &mut BootConfig, key: &str, value: &str) {
+    match key {
+        "timeout" => {
+            if let Ok(t) = value.parse::<u32>() {
+                config.timeout = t;
+            }
+        }
+        "default" => {
+            if let Ok(d) = value.parse::<usize>() {
+                config.default_entry = d;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply an entry-specific setting
+fn apply_entry_setting(entry: &mut BootEntry, key: &str, value: &str) {
+    match key {
+        "kernel" => entry.kernel = String::from(value),
+        "initramfs" => entry.initramfs = Some(String::from(value)),
+        "cmdline" => entry.cmdline = Some(String::from(value)),
+        _ => {}
+    }
+}
+
+/// Process a single configuration line, updating global config or current entry.
+fn process_config_line(
+    config: &mut BootConfig,
+    current_entry: &mut Option<BootEntry>,
+    line: &str,
+) {
+    let line = line.trim();
+
+    if line.is_empty() || line.starts_with('#') {
+        return;
+    }
+
+    if line.starts_with('[') && line.ends_with(']') {
+        save_entry_if_valid(config, current_entry.take());
+        let name = &line[1..line.len() - 1];
+        let mut entry = BootEntry::default();
+        entry.name = String::from(name);
+        *current_entry = Some(entry);
+        return;
+    }
+
+    if let Some(eq_pos) = line.find('=') {
+        let key = line[..eq_pos].trim();
+        let value = line[eq_pos + 1..].trim();
+
+        if current_entry.is_none() {
+            apply_global_setting(config, key, value);
+        } else if let Some(entry) = current_entry {
+            apply_entry_setting(entry, key, value);
+        }
+    }
+}
+
 /// Parse boot configuration from file contents
 ///
 /// # Arguments
@@ -88,74 +157,14 @@ impl Default for BootConfig {
 /// Parsed BootConfig, or default config if parsing fails
 pub fn parse_config(text: &str) -> BootConfig {
     let mut config = BootConfig::default();
-
     let mut current_entry: Option<BootEntry> = None;
 
     for line in text.lines() {
-        let line = line.trim();
-
-        // Skip empty lines and comments
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        // Check for section header [Name]
-        if line.starts_with('[') && line.ends_with(']') {
-            // Save previous entry if any
-            if let Some(entry) = current_entry.take() {
-                if !entry.kernel.is_empty() {
-                    config.entries.push(entry);
-                }
-            }
-
-            // Start new entry
-            let name = &line[1..line.len() - 1];
-            let mut entry = BootEntry::default();
-            entry.name = String::from(name);
-            current_entry = Some(entry);
-            continue;
-        }
-
-        // Parse key=value pairs
-        if let Some(eq_pos) = line.find('=') {
-            let key = line[..eq_pos].trim();
-            let value = line[eq_pos + 1..].trim();
-
-            // Global settings (before any section)
-            if current_entry.is_none() {
-                match key {
-                    "timeout" => {
-                        if let Ok(t) = value.parse::<u32>() {
-                            config.timeout = t;
-                        }
-                    }
-                    "default" => {
-                        if let Ok(d) = value.parse::<usize>() {
-                            config.default_entry = d;
-                        }
-                    }
-                    _ => {}
-                }
-            } else if let Some(ref mut entry) = current_entry {
-                // Entry-specific settings
-                match key {
-                    "kernel" => entry.kernel = String::from(value),
-                    "initramfs" => entry.initramfs = Some(String::from(value)),
-                    "cmdline" => entry.cmdline = Some(String::from(value)),
-                    _ => {}
-                }
-            }
-        }
+        process_config_line(&mut config, &mut current_entry, line);
     }
 
-    // Save last entry
-    if let Some(entry) = current_entry {
-        if !entry.kernel.is_empty() {
-            config.entries.push(entry);
-        }
-    }
+    save_entry_if_valid(&mut config, current_entry);
 
-    // Validate default entry index
     if config.default_entry >= config.entries.len() && !config.entries.is_empty() {
         config.default_entry = 0;
     }

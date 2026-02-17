@@ -175,9 +175,62 @@ impl fmt::Debug for Ipv6Address {
     }
 }
 
+/// Find the start and length of the longest consecutive zero-word run (≥ 2) for :: compression (RFC 5952)
+fn find_longest_zero_run(words: &[u16; 8]) -> (usize, usize) {
+    let mut best_start = 8usize;
+    let mut best_len = 0usize;
+    let mut cur_start = 0usize;
+    let mut cur_len = 0usize;
+
+    for i in 0..8 {
+        if words[i] == 0 {
+            if cur_len == 0 {
+                cur_start = i;
+            }
+            cur_len += 1;
+        } else {
+            if cur_len > best_len && cur_len >= 2 {
+                best_start = cur_start;
+                best_len = cur_len;
+            }
+            cur_len = 0;
+        }
+    }
+    if cur_len > best_len && cur_len >= 2 {
+        best_start = cur_start;
+        best_len = cur_len;
+    }
+
+    (best_start, best_len)
+}
+
+/// Write IPv6 address words with :: compression
+fn write_ipv6_compressed(f: &mut fmt::Formatter<'_>, words: &[u16; 8], best_start: usize, best_len: usize) -> fmt::Result {
+    let mut i = 0;
+    let mut first = true;
+    while i < 8 {
+        if i == best_start && best_len > 0 {
+            if i == 0 {
+                write!(f, "::")?;
+            } else {
+                write!(f, ":")?;
+            }
+            i += best_len;
+            first = i >= 8;
+            continue;
+        }
+        if !first {
+            write!(f, ":")?;
+        }
+        write!(f, "{:x}", words[i])?;
+        first = false;
+        i += 1;
+    }
+    Ok(())
+}
+
 impl fmt::Display for Ipv6Address {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Group bytes into 16-bit words
         let words: [u16; 8] = [
             u16::from_be_bytes([self.0[0], self.0[1]]),
             u16::from_be_bytes([self.0[2], self.0[3]]),
@@ -189,53 +242,8 @@ impl fmt::Display for Ipv6Address {
             u16::from_be_bytes([self.0[14], self.0[15]]),
         ];
 
-        // Find longest run of zero words for :: compression (RFC 5952)
-        let mut best_start = 8usize;
-        let mut best_len = 0usize;
-        let mut cur_start = 0usize;
-        let mut cur_len = 0usize;
-
-        for i in 0..8 {
-            if words[i] == 0 {
-                if cur_len == 0 {
-                    cur_start = i;
-                }
-                cur_len += 1;
-            } else {
-                if cur_len > best_len && cur_len >= 2 {
-                    best_start = cur_start;
-                    best_len = cur_len;
-                }
-                cur_len = 0;
-            }
-        }
-        if cur_len > best_len && cur_len >= 2 {
-            best_start = cur_start;
-            best_len = cur_len;
-        }
-
-        let mut i = 0;
-        let mut first = true;
-        while i < 8 {
-            if i == best_start && best_len > 0 {
-                if i == 0 {
-                    write!(f, "::")?;
-                } else {
-                    write!(f, ":")?;
-                }
-                i += best_len;
-                first = i >= 8;
-                continue;
-            }
-            if !first {
-                write!(f, ":")?;
-            }
-            write!(f, "{:x}", words[i])?;
-            first = false;
-            i += 1;
-        }
-
-        Ok(())
+        let (best_start, best_len) = find_longest_zero_run(&words);
+        write_ipv6_compressed(f, &words, best_start, best_len)
     }
 }
 

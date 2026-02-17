@@ -341,63 +341,59 @@ impl ProcFs {
     pub fn read_with_token(&self, path: &str, token: Option<u64>) -> Result<String, ProcError> {
         use crate::task::context;
         let caller = context::current_subject().domain;
-
-        // Special-case: per-process fd entries like `<pid>/fd/<n>`
         let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         if comps.len() >= 3 && comps[comps.len() - 2] == "fd" {
-            let pid_comp = comps[comps.len() - 3];
-            if let Ok(pid_num) = pid_comp.parse::<u32>() {
-                let pid = Pid::new(pid_num);
-                let proc_id = ProcessId::new(pid.as_u32() as u64);
-                let proc_domain: DomainId = proc_id.into();
-                if process_manager().get(proc_id).is_none() {
-                    return Err(ProcError::NotFound);
-                }
-
-                // permission: same domain/process, CAP_FOWNER, CAP_SYS_PTRACE, CAP_SYS_ADMIN, or valid token
-                let mut allowed = false;
-                if caller == proc_domain {
-                    allowed = true;
-                }
-                if !allowed {
-                    if crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_FOWNER)
-                        || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
-                        || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
-                    {
-                        allowed = true;
-                    }
-                }
-                if !allowed {
-                    if let Some(t) = token {
-                        if crate::security::capability::manager().validate_token(caller.as_u64(), t, crate::security::capability::CAP_FOWNER) {
-                            allowed = true;
-                        }
-                    }
-                }
-                if !allowed {
-                    return Err(ProcError::PermissionDenied);
-                }
-
-                // Last component is handle id
-                let handle_comp = comps.last().unwrap();
-                if let Ok(handle_id) = handle_comp.parse::<u64>() {
-                    if let Some(p) = crate::service_impl::file_handle_path(handle_id) {
-                        return Ok(p);
-                    } else {
-                        return Err(ProcError::NotFound);
-                    }
-                } else {
-                    return Err(ProcError::InvalidArgument);
-                }
-            } else {
-                return Err(ProcError::InvalidArgument);
-            }
+            return resolve_fd_entry(&comps, caller, token);
         }
-
-        // Fallback to regular read for static entries
         self.read(path)
     }
 
+}
+
+/// fdアクセス権限を検証する
+fn check_fd_access_permission(
+    caller: DomainId,
+    proc_domain: DomainId,
+    token: Option<u64>,
+) -> bool {
+    if caller == proc_domain {
+        return true;
+    }
+    let mgr = crate::security::capability::manager();
+    let id = caller.as_u64();
+    if mgr.has_capability(id, crate::security::capability::CAP_FOWNER)
+        || mgr.has_capability(id, crate::security::capability::CAP_SYS_PTRACE)
+        || mgr.has_capability(id, crate::security::capability::CAP_SYS_ADMIN)
+    {
+        return true;
+    }
+    token.is_some_and(|t| mgr.validate_token(id, t, crate::security::capability::CAP_FOWNER))
+}
+
+/// fdパスエントリを解決する
+fn resolve_fd_entry(
+    comps: &[&str],
+    caller: DomainId,
+    token: Option<u64>,
+) -> Result<String, ProcError> {
+    let pid_num = comps[comps.len() - 3]
+        .parse::<u32>()
+        .map_err(|_| ProcError::InvalidArgument)?;
+    let pid = Pid::new(pid_num);
+    let proc_id = ProcessId::new(pid.as_u32() as u64);
+    let proc_domain: DomainId = proc_id.into();
+    if process_manager().get(proc_id).is_none() {
+        return Err(ProcError::NotFound);
+    }
+    if !check_fd_access_permission(caller, proc_domain, token) {
+        return Err(ProcError::PermissionDenied);
+    }
+    let handle_id = comps
+        .last()
+        .unwrap()
+        .parse::<u64>()
+        .map_err(|_| ProcError::InvalidArgument)?;
+    crate::service_impl::file_handle_path(handle_id).ok_or(ProcError::NotFound)
 }
 
 /// グローバル procfs インスタンス
@@ -435,26 +431,28 @@ impl ProcFileHandle {
         Self::open_with_token(path, None)
     }
 
+    /// パスに応じた必要ケーパビリティを判定
+    fn determine_required_capability(comps: &[&str]) -> u64 {
+        let last = match comps.last() {
+            Some(l) => *l,
+            None => return crate::security::capability::CAP_SYS_PTRACE,
+        };
+        match last {
+            "mem" | "maps" | "cmdline" => crate::security::capability::CAP_SYS_PTRACE,
+            "exe" | "fd" => crate::security::capability::CAP_FOWNER,
+            _ if comps.len() >= 2 && comps[comps.len()-2] == "fd" => {
+                crate::security::capability::CAP_FOWNER
+            }
+            _ => crate::security::capability::CAP_SYS_PTRACE,
+        }
+    }
+
     pub fn open_with_token(path: &str, token: Option<u64>) -> Result<Self, ProcError> {
         use crate::task::context;
 
         let caller = context::current_subject().domain;
-
-        // Determine required capability for tokens based on path
         let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let required_cap = if let Some(last) = comps.last() {
-            if *last == "mem" || *last == "maps" || *last == "cmdline" {
-                crate::security::capability::CAP_SYS_PTRACE
-            } else if *last == "exe" || *last == "fd" {
-                crate::security::capability::CAP_FOWNER
-            } else if comps.len() >= 2 && comps[comps.len()-2] == "fd" {
-                crate::security::capability::CAP_FOWNER
-            } else {
-                crate::security::capability::CAP_SYS_PTRACE
-            }
-        } else {
-            crate::security::capability::CAP_SYS_PTRACE
-        };
+        let required_cap = Self::determine_required_capability(&comps);
 
         // If token provided, validate and increment in-flight counter
         if let Some(t) = token {
@@ -531,52 +529,56 @@ impl ProcDirHandle {
         // If this is a per-process fd directory, do permission checks
         let comps: alloc::vec::Vec<&str> = self.path.split('/').filter(|s| !s.is_empty()).collect();
         if comps.len() >= 2 && comps[comps.len() - 1] == "fd" {
-            let pid_comp = comps[comps.len() - 2];
-            if let Ok(pid_num) = pid_comp.parse::<u32>() {
-                let pid = Pid::new(pid_num);
-                let proc_id = ProcessId::new(pid.as_u32() as u64);
-                let proc_domain: DomainId = proc_id.into();
-                if process_manager().get(proc_id).is_none() {
-                    return Err(ProcError::NotFound);
-                }
-
-                // permission: same domain/process, CAP_FOWNER, CAP_SYS_PTRACE, CAP_SYS_ADMIN, or valid token
-                let mut allowed = false;
-                if caller == proc_domain {
-                    allowed = true;
-                }
-                if !allowed {
-                    if crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_FOWNER)
-                        || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
-                        || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
-                    {
-                        allowed = true;
-                    }
-                }
-                if !allowed {
-                    if let Some(t) = self.token {
-                        if crate::security::capability::manager().validate_token(caller.as_u64(), t, crate::security::capability::CAP_FOWNER) {
-                            allowed = true;
-                        }
-                    }
-                }
-                if !allowed {
-                    return Err(ProcError::PermissionDenied);
-                }
-
-                // Enumerate real file handles owned by this process
-                let owner_id = proc_domain.as_u64();
-                let handles = crate::service_impl::file_handles_for_owner(owner_id);
-                let mut entries: alloc::vec::Vec<String> = handles.iter().map(|id| id.to_string()).collect();
-                entries.sort();
-                return Ok(entries);
-            } else {
-                return Err(ProcError::InvalidArgument);
-            }
+            return self.readdir_fd(&comps, caller);
         }
 
         // Fallback to regular readdir for other directories
         procfs().readdir(&self.path)
+    }
+
+    /// /proc/<pid>/fd の読み取りと権限チェック
+    fn readdir_fd(
+        &self,
+        comps: &[&str],
+        caller: DomainId,
+    ) -> Result<Vec<String>, ProcError> {
+        let pid_comp = comps[comps.len() - 2];
+        let pid_num = pid_comp.parse::<u32>().map_err(|_| ProcError::InvalidArgument)?;
+        let pid = Pid::new(pid_num);
+        let proc_id = ProcessId::new(pid.as_u32() as u64);
+        let proc_domain: DomainId = proc_id.into();
+        if process_manager().get(proc_id).is_none() {
+            return Err(ProcError::NotFound);
+        }
+
+        if !self.is_fd_access_allowed(caller, proc_domain) {
+            return Err(ProcError::PermissionDenied);
+        }
+
+        let owner_id = proc_domain.as_u64();
+        let handles = crate::service_impl::file_handles_for_owner(owner_id);
+        let mut entries: alloc::vec::Vec<String> = handles.iter().map(|id| id.to_string()).collect();
+        entries.sort();
+        Ok(entries)
+    }
+
+    /// fd ディレクトリへのアクセス権限を判定
+    fn is_fd_access_allowed(&self, caller: DomainId, proc_domain: DomainId) -> bool {
+        if caller == proc_domain {
+            return true;
+        }
+        if crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_FOWNER)
+            || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
+            || crate::security::capability::manager().has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
+        {
+            return true;
+        }
+        if let Some(t) = self.token {
+            if crate::security::capability::manager().validate_token(caller.as_u64(), t, crate::security::capability::CAP_FOWNER) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -589,27 +591,40 @@ impl Drop for ProcDirHandle {
 }
 
 impl ProcFs {
-    /// Open a directory and optionally bind it to a token (increment in-flight).
-    pub fn opendir_with_token(&self, path: &str, token: Option<u64>) -> Result<ProcDirHandle, ProcError> {
-        use crate::task::context;
-        let caller = context::current_subject().domain;
-
-        // Required capability for fd directory is CAP_FOWNER
-        let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let required_cap = if comps.len() >= 1 && comps[comps.len() - 1] == "fd" {
-            crate::security::capability::CAP_FOWNER
-        } else {
-            crate::security::capability::CAP_FOWNER
-        };
-
+    /// Validate and increment in-flight for a capability token.
+    fn validate_and_acquire_token(
+        caller_domain: u64,
+        token: Option<u64>,
+        required_cap: u64,
+    ) -> Result<(), ProcError> {
         if let Some(t) = token {
-            if !crate::security::capability::manager().validate_token(caller.as_u64(), t, required_cap) {
+            if !crate::security::capability::manager().validate_token(caller_domain, t, required_cap) {
                 return Err(ProcError::PermissionDenied);
             }
             if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
                 return Err(ProcError::PermissionDenied);
             }
         }
+        Ok(())
+    }
+
+    /// Release in-flight tracking for a token and return an error.
+    fn release_token_and_fail(token: Option<u64>, err: ProcError) -> Result<ProcDirHandle, ProcError> {
+        if let Some(t) = token {
+            let _ = crate::security::capability::manager().decrement_in_flight(t);
+        }
+        Err(err)
+    }
+
+    /// Open a directory and optionally bind it to a token (increment in-flight).
+    pub fn opendir_with_token(&self, path: &str, token: Option<u64>) -> Result<ProcDirHandle, ProcError> {
+        use crate::task::context;
+        let caller = context::current_subject().domain;
+
+        // Required capability for fd directory is CAP_FOWNER
+        let required_cap = crate::security::capability::CAP_FOWNER;
+
+        Self::validate_and_acquire_token(caller.as_u64(), token, required_cap)?;
 
         // Verify path exists and is directory
         let root = self.root.read();
@@ -618,21 +633,13 @@ impl ProcFs {
             for component in path.split('/').filter(|s| !s.is_empty()) {
                 match current.children.get(component) {
                     Some(entry) => current = entry,
-                    None => {
-                        if let Some(t) = token {
-                            let _ = crate::security::capability::manager().decrement_in_flight(t);
-                        }
-                        return Err(ProcError::NotFound);
-                    }
+                    None => return Self::release_token_and_fail(token, ProcError::NotFound),
                 }
             }
         }
 
         if current.file_type != ProcFileType::Directory {
-            if let Some(t) = token {
-                let _ = crate::security::capability::manager().decrement_in_flight(t);
-            }
-            return Err(ProcError::NotDirectory);
+            return Self::release_token_and_fail(token, ProcError::NotDirectory);
         }
 
         Ok(ProcDirHandle { path: String::from(path), token })

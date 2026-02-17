@@ -455,61 +455,71 @@ impl FastBitmapAllocator {
     // 4KB Allocation
     // ========================================================================
 
-    /// Allocate a 4KB page
-    #[inline]
-    pub fn allocate_4k(&self) -> Option<u64> {
-        // Fast path: try per-CPU optimizations
-        if let Some(cpu_id) = Self::current_cpu_id() {
-            let magazine = &self.magazines[cpu_id];
+    /// Single-writer arena から 4KB ページの割り当てを試みる
+    fn try_arena_4k(&self, magazine: &PerCpuFastMagazine) -> Option<u64> {
+        if !magazine.is_single_writer_enabled() {
+            return None;
+        }
+        let mut arena_guard = magazine.arena_detail.lock();
+        let arena = arena_guard.as_mut()?;
+        if arena.is_frozen() {
+            return None;
+        }
+        self.try_arena_allocate_page(arena)
+    }
 
-            // === FASTEST: Single-writer arena (NO ATOMICS!) ===
-            if magazine.is_single_writer_enabled() {
-                let mut arena_guard = magazine.arena_detail.lock();
-                if let Some(ref mut arena) = *arena_guard {
-                    if !arena.is_frozen() {
-                        if let Some(page_idx) = arena.allocate_page() {
-                            let addr = self.base + (page_idx as u64) * PAGE_SIZE_4K;
-                            self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
-                            return Some(addr);
-                        }
-
-                        // Try window reload for large arenas
-                        if arena.is_windowed() && arena.has_next_window() {
-                            let global_detail = self.bitmap.detail();
-                            if arena.reload_next_window(global_detail) {
-                                if let Some(page_idx) = arena.allocate_page() {
-                                    let addr = self.base + (page_idx as u64) * PAGE_SIZE_4K;
-                                    self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
-                                    return Some(addr);
-                                }
-                            }
-                        }
-                    }
+    /// arena から1ページ割り当て (ウィンドウリロード含む)
+    fn try_arena_allocate_page(&self, arena: &mut PerArenaDetail) -> Option<u64> {
+        if let Some(page_idx) = arena.allocate_page() {
+            self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
+            return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+        }
+        if arena.is_windowed() && arena.has_next_window() {
+            let global_detail = self.bitmap.detail();
+            if arena.reload_next_window(global_detail) {
+                if let Some(page_idx) = arena.allocate_page() {
+                    self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
+                    return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                 }
             }
+        }
+        None
+    }
 
-            // === FAST #0: Sub-magazine (claimed word) ===
-            {
-                let mut sub_mag = magazine.sub_magazine_4k.lock();
-                if sub_mag.has_frames() {
-                    if let Some(frame) = sub_mag.allocate() {
-                        let addr = frame.start_address().as_u64();
-                        self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
-                        return Some(addr);
-                    }
-                }
-            }
-
-            // === FAST #1: Magazine ===
-            if let Some(mag_lock) = magazine.get_magazine(0) {
-                let mut mag = mag_lock.lock();
-                if let Some(addr) = mag.pop() {
+    /// Per-CPU マガジンから 4KB ページの割り当てを試みる (sub-magazine + magazine)
+    fn try_magazine_4k(&self, magazine: &PerCpuFastMagazine) -> Option<u64> {
+        {
+            let mut sub_mag = magazine.sub_magazine_4k.lock();
+            if sub_mag.has_frames() {
+                if let Some(frame) = sub_mag.allocate() {
+                    let addr = frame.start_address().as_u64();
                     self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(addr);
                 }
             }
         }
+        if let Some(mag_lock) = magazine.get_magazine(0) {
+            let mut mag = mag_lock.lock();
+            if let Some(addr) = mag.pop() {
+                self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
+                return Some(addr);
+            }
+        }
+        None
+    }
 
+    /// Allocate a 4KB page
+    #[inline]
+    pub fn allocate_4k(&self) -> Option<u64> {
+        if let Some(cpu_id) = Self::current_cpu_id() {
+            let magazine = &self.magazines[cpu_id];
+            if let Some(addr) = self.try_arena_4k(magazine) {
+                return Some(addr);
+            }
+            if let Some(addr) = self.try_magazine_4k(magazine) {
+                return Some(addr);
+            }
+        }
         // Slow path: bitmap allocation
         self.allocate_4k_from_bitmap()
     }

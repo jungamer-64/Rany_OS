@@ -52,24 +52,14 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         device.bdf.function(),
     );
 
-    // 1. Determine IOMMU Group and get/create its domain
-    let topology = RealPciTopology::new(pcie_ext_manager);
-    let controller_idx = registry
-        .find_controller_index_for_device(
-            device_id.segment,
-            device_id.bus,
-            device_id.device,
-            device_id.function,
-        )
-        .unwrap_or(0);
-    let controller = registry.controllers.get(controller_idx)?;
+    let (controller, controller_idx) = resolve_controller(registry, device_id)?;
 
     let (iommu_group, newly_created) =
         match iommu_group_manager.find_or_create_group(
             device_id,
             controller,
             controller_idx,
-            &topology,
+            &RealPciTopology::new(pcie_ext_manager),
         ) {
             Ok(group_info) => group_info,
             Err(e) => {
@@ -84,50 +74,8 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
     let domain_id = iommu_group.domain_id;
 
-    // 2. Enable ATS for the device if supported and not already enabled by this IOMMU
-    if (controller.ecap & ecap_bits::ECAP_DT) != 0
-        && pci_driver::device_supports_ats(
-            pcie_ext_manager.config(),
-            PcieBdf::from_bdf_address(&device.bdf),
-        )
-    {
-        // Check if ATS is already enabled for this device on this controller
-        let ats_enabled_for_device = match controller.ats_enabled_devices.lock() {
-            Ok(set) => set.contains(&device_id),
-            Err(_) => {
-                log::warn!(
-                    "[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?} - assuming ATS NOT enabled",
-                    device_id
-                );
-                false
-            }
-        };
+    try_enable_ats(controller, pcie_ext_manager, device, device_id);
 
-        if !ats_enabled_for_device {
-            // Attempt to enable ATS
-            if let Some(config) = pcie_ext_config() {
-                if let Ok(ats_ctrl) =
-                    AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf))
-                {
-                    // STU (Smallest Translation Unit) is usually 0 (4KB).
-                    if let Err(e) = ats_ctrl.enable_ats(0) {
-                        log::warn!(
-                            "[IOMMU] Failed to enable ATS for device {:?}: {:?}",
-                            device_id,
-                            e
-                        );
-                    } else {
-                        log::info!("[IOMMU] Enabled ATS for device {:?}", device_id);
-                        // Default to Trusted for now - in production, determine from device context
-                        use crate::io::iommu::security::DeviceTrustLevel;
-                        controller.enable_ats_for_device(device_id, DeviceTrustLevel::Trusted);
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Attach the device to the determined domain
     if let Err(e) = controller.attach_device(device_id, domain_id) {
         log::error!(
             "[IOMMU] Attach failed for device {:?} to domain {}: {:?}\n",
@@ -138,8 +86,87 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         return None;
     }
 
-    // 4. Update device info
     device.iommu_domain_id = Some(domain_id);
+    log_device_protection(device_id, &iommu_group, domain_id, newly_created);
+
+    Some(domain_id)
+}
+
+#[cfg(not(test))]
+fn resolve_controller(
+    registry: &'static crate::io::iommu::intel::registry::IommuRegistry,
+    device_id: DeviceId,
+) -> Option<(&'static alloc::sync::Arc<crate::io::iommu::intel::controller::IommuController>, usize)> {
+    let controller_idx = registry
+        .find_controller_index_for_device(
+            device_id.segment,
+            device_id.bus,
+            device_id.device,
+            device_id.function,
+        )
+        .unwrap_or(0);
+    let controller = registry.controllers.get(controller_idx)?;
+    Some((controller, controller_idx))
+}
+
+#[cfg(not(test))]
+fn try_enable_ats(
+    controller: &alloc::sync::Arc<crate::io::iommu::intel::controller::IommuController>,
+    pcie_ext_manager: &pci_driver::PcieExtManager,
+    device: &crate::io::pci::PciDeviceInfo,
+    device_id: DeviceId,
+) {
+    if (controller.ecap & ecap_bits::ECAP_DT) == 0 {
+        return;
+    }
+    if !pci_driver::device_supports_ats(
+        pcie_ext_manager.config(),
+        PcieBdf::from_bdf_address(&device.bdf),
+    ) {
+        return;
+    }
+
+    let ats_enabled_for_device = match controller.ats_enabled_devices.lock() {
+        Ok(set) => set.contains(&device_id),
+        Err(_) => {
+            log::warn!(
+                "[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?} - assuming ATS NOT enabled",
+                device_id
+            );
+            false
+        }
+    };
+
+    if ats_enabled_for_device {
+        return;
+    }
+
+    if let Some(config) = pcie_ext_config() {
+        if let Ok(ats_ctrl) =
+            AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf))
+        {
+            if let Err(e) = ats_ctrl.enable_ats(0) {
+                log::warn!(
+                    "[IOMMU] Failed to enable ATS for device {:?}: {:?}",
+                    device_id,
+                    e
+                );
+            } else {
+                log::info!("[IOMMU] Enabled ATS for device {:?}", device_id);
+                use crate::io::iommu::security::DeviceTrustLevel;
+                controller.enable_ats_for_device(device_id, DeviceTrustLevel::Trusted);
+            }
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn log_device_protection(
+    device_id: DeviceId,
+    iommu_group: &crate::io::iommu::types::IommuGroup,
+    domain_id: u16,
+    newly_created: bool,
+) {
     if newly_created {
         log::info!(
             "[IOMMU] Protected PCI device {:?} in new group {:?} (domain {})",
@@ -155,8 +182,6 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
             domain_id
         );
     }
-
-    Some(domain_id)
 }
 
 #[cfg(not(test))]

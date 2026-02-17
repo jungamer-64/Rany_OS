@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::io::io_scheduler::{
-    DeviceId, DeviceOps, IoCommand, IoError, IoRequest, IoRequestId, IoResult, PollHandler,
+    DeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId, IoResult, PollHandler,
     hybrid_coordinator, io_scheduler,
 };
 
@@ -131,6 +131,56 @@ impl AhciOps {
     ) -> Self {
         Self { controller, port, handler }
     }
+
+    /// Submit a block read or write DMA command
+    fn submit_block_io(
+        &self,
+        req_id: IoRequestId,
+        lba: u64,
+        blocks: u16,
+        bytes: usize,
+        buf: &DmaBufHandle,
+        is_read: bool,
+    ) -> Result<(), IoError> {
+        if blocks == 0 || bytes > buf.len {
+            return Err(IoError::InvalidParameter);
+        }
+
+        let port_num = PortNumber(self.port);
+
+        let slot_opt = {
+            let controller = self.controller.lock();
+            let res_opt = controller.with_port(port_num, |port| {
+                if is_read {
+                    port.start_read_dma(Lba(lba), SectorCount(blocks), buf.iova, bytes as u32)
+                } else {
+                    port.start_write_dma(Lba(lba), SectorCount(blocks), buf.iova, bytes as u32)
+                }
+            });
+            match res_opt {
+                Some(Ok(slot)) => Some(slot),
+                _ => None,
+            }
+        };
+
+        match slot_opt {
+            Some(slot) => self.register_pending(req_id, slot),
+            None => Err(IoError::NoResources),
+        }
+    }
+
+    /// Register a pending I/O with the poll handler
+    fn register_pending(&self, req_id: IoRequestId, slot: SlotNumber) -> Result<(), IoError> {
+        if let Some(handler) = &self.handler {
+            handler.add_pending(req_id, PortNumber(self.port), slot);
+            Ok(())
+        } else if let Some(h) = AHCI_POLL_HANDLERS.read().get(&self.port).cloned() {
+            h.add_pending(req_id, PortNumber(self.port), slot);
+            Ok(())
+        } else {
+            Err(IoError::NoResources)
+        }
+    }
 }
 
 impl DeviceOps for AhciOps {
@@ -139,85 +189,10 @@ impl DeviceOps for AhciOps {
         if let Some(cmd) = &req.command {
             return match cmd {
                 IoCommand::BlockRead { lba, blocks, bytes, buf } => {
-                    if *blocks == 0 {
-                        return Err(IoError::InvalidParameter);
-                    }
-                    if *bytes > buf.len {
-                        return Err(IoError::InvalidParameter);
-                    }
-
-                    // Build and submit AHCI command without blocking
-                    let port_num = PortNumber(self.port);
-
-                    let slot_opt = {
-                        let controller = self.controller.lock();
-                        // Use port's start_read_dma (non-blocking) exposed by driver
-                        let res_opt = controller.with_port(port_num, |port| {
-                            port.start_read_dma(Lba(*lba), SectorCount(*blocks), buf.iova, *bytes as u32)
-                        });
-                        match res_opt {
-                            Some(Ok(slot)) => Some(slot),
-                            _ => None,
-                        }
-                    };
-
-                    match slot_opt {
-                        Some(slot) => {
-                            // Register pending with poll handler if available
-                            if let Some(handler) = &self.handler {
-                                handler.add_pending(req.id, PortNumber(self.port), slot);
-                                Ok(())
-                            } else {
-                                // Try global registry
-                                if let Some(h) = AHCI_POLL_HANDLERS.read().get(&self.port).cloned() {
-                                    h.add_pending(req.id, PortNumber(self.port), slot);
-                                    Ok(())
-                                } else {
-                                    Err(IoError::NoResources)
-                                }
-                            }
-                        }
-                        None => Err(IoError::NoResources),
-                    }
+                    self.submit_block_io(req.id, *lba, *blocks, *bytes, buf, true)
                 }
                 IoCommand::BlockWrite { lba, blocks, bytes, buf } => {
-                    if *blocks == 0 {
-                        return Err(IoError::InvalidParameter);
-                    }
-                    if *bytes > buf.len {
-                        return Err(IoError::InvalidParameter);
-                    }
-
-                    let port_num = PortNumber(self.port);
-
-                    let slot_opt = {
-                        let controller = self.controller.lock();
-                        // Use port's start_write_dma (non-blocking) exposed by driver
-                        let res_opt = controller.with_port(port_num, |port| {
-                            port.start_write_dma(Lba(*lba), SectorCount(*blocks), buf.iova, *bytes as u32)
-                        });
-                        match res_opt {
-                            Some(Ok(slot)) => Some(slot),
-                            _ => None,
-                        }
-                    };
-
-                    match slot_opt {
-                        Some(slot) => {
-                            if let Some(handler) = &self.handler {
-                                handler.add_pending(req.id, PortNumber(self.port), slot);
-                                Ok(())
-                            } else {
-                                if let Some(h) = AHCI_POLL_HANDLERS.read().get(&self.port).cloned() {
-                                    h.add_pending(req.id, PortNumber(self.port), slot);
-                                    Ok(())
-                                } else {
-                                    Err(IoError::NoResources)
-                                }
-                            }
-                        }
-                        None => Err(IoError::NoResources),
-                    }
+                    self.submit_block_io(req.id, *lba, *blocks, *bytes, buf, false)
                 }
                 IoCommand::Flush => Err(IoError::NotSupported),
                 _ => Err(IoError::NotSupported),

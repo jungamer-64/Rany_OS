@@ -343,47 +343,45 @@ fn map_nvme_iommu(
     }
 }
 
-fn build_prp_list(
-    base_addr: u64,
-    len: usize,
-) -> FsResult<(u64, Option<NvmePrpListChain>)> {
-    if len == 0 {
-        return Err(FsError::InvalidArgument);
-    }
-
-    let pages = (len + NVME_PAGE_SIZE - 1) / NVME_PAGE_SIZE;
-    if pages <= 1 {
-        return Ok((0, None));
-    }
-    if pages == 2 {
-        return Ok((base_addr + NVME_PAGE_SIZE as u64, None));
-    }
-
-    let total_entries = pages - 1;
+/// PRPリストページのDMAバッファを割り当てる
+fn allocate_prp_list_pages(total_entries: usize) -> FsResult<Vec<TypedDmaSlice<CpuOwned>>> {
     let mut remaining = total_entries;
     let mut list_buffers = Vec::new();
-
     while remaining > 0 {
         let list =
             TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
         list_buffers.push(list);
-
         if remaining > 512 {
             remaining = remaining.saturating_sub(511);
         } else {
             remaining = 0;
         }
     }
+    Ok(list_buffers)
+}
 
+/// PRPリストページをIOMMUにマッピングする
+fn map_prp_list_pages(
+    list_buffers: &[TypedDmaSlice<CpuOwned>],
+) -> FsResult<(Vec<u64>, Vec<Option<NvmeIommuMapping>>)> {
     let mut list_iovas = Vec::with_capacity(list_buffers.len());
     let mut list_maps = Vec::with_capacity(list_buffers.len());
-    for list in &list_buffers {
+    for list in list_buffers {
         let list_phys = list.phys_addr().as_u64();
         let (list_addr, list_map) = map_nvme_iommu(list_phys, NVME_PAGE_SIZE)?;
         list_iovas.push(list_addr);
         list_maps.push(list_map);
     }
+    Ok((list_iovas, list_maps))
+}
 
+/// PRPリストエントリにデータページのアドレスを書き込む
+fn fill_prp_list_entries(
+    list_buffers: &mut [TypedDmaSlice<CpuOwned>],
+    list_iovas: &[u64],
+    base_addr: u64,
+    total_entries: usize,
+) -> FsResult<()> {
     let mut filled = 0usize;
     for idx in 0..list_buffers.len() {
         let remaining_entries = total_entries - filled;
@@ -414,15 +412,38 @@ fn build_prp_list(
 
         filled += data_capacity;
     }
+    Ok(())
+}
 
-    let mut pages = Vec::with_capacity(list_buffers.len());
+fn build_prp_list(
+    base_addr: u64,
+    len: usize,
+) -> FsResult<(u64, Option<NvmePrpListChain>)> {
+    if len == 0 {
+        return Err(FsError::InvalidArgument);
+    }
+
+    let pages = (len + NVME_PAGE_SIZE - 1) / NVME_PAGE_SIZE;
+    if pages <= 1 {
+        return Ok((0, None));
+    }
+    if pages == 2 {
+        return Ok((base_addr + NVME_PAGE_SIZE as u64, None));
+    }
+
+    let total_entries = pages - 1;
+    let mut list_buffers = allocate_prp_list_pages(total_entries)?;
+    let (list_iovas, list_maps) = map_prp_list_pages(&list_buffers)?;
+    fill_prp_list_entries(&mut list_buffers, &list_iovas, base_addr, total_entries)?;
+
+    let mut pages_vec = Vec::with_capacity(list_buffers.len());
     for ((list, map), iova) in list_buffers
         .into_iter()
         .zip(list_maps)
         .zip(list_iovas)
     {
         let (dev, guard) = list.start_dma();
-        pages.push(NvmePrpListPage {
+        pages_vec.push(NvmePrpListPage {
             dev,
             guard,
             map,
@@ -430,7 +451,7 @@ fn build_prp_list(
         });
     }
 
-    let chain = NvmePrpListChain { pages };
+    let chain = NvmePrpListChain { pages: pages_vec };
     let prp2 = chain.first_iova();
     Ok((prp2, Some(chain)))
 }
@@ -526,49 +547,119 @@ fn prepare_dma_from_kapi_buffer(
     ))
 }
 
-fn prepare_nvme_sgl(
-    list: TypedSgList<CpuOwned>,
+/// SGLエントリの検証と合計バイト数の計算
+fn validate_sgl_total_bytes(
+    list: &TypedSgList<CpuOwned>,
     max_entries: usize,
-) -> FsResult<(NvmeSglContext, NvmeSglDescriptor, usize)> {
-    if list.is_empty() {
+) -> FsResult<usize> {
+    if list.is_empty() || list.len() > max_entries {
         return Err(FsError::InvalidArgument);
     }
-    if list.len() > max_entries {
-        return Err(FsError::InvalidArgument);
-    }
-
-    let mut total_bytes: usize = 0;
+    let mut total: usize = 0;
     for entry in list.entries() {
         if entry.size == 0 {
             return Err(FsError::InvalidArgument);
         }
-        total_bytes = total_bytes
+        total = total
             .checked_add(entry.size as usize)
             .ok_or(FsError::InvalidArgument)?;
     }
+    Ok(total)
+}
 
-    let entry_count = list.entries().len();
-    // Use kernel_api abstractions - device param is now ignored
+/// IOMMUマッピングを一括解放する
+fn cleanup_nvme_maps(maps: &mut Vec<NvmeIommuMapping>) {
+    for map in maps.drain(..) {
+        map.unmap();
+    }
+}
+
+/// SGLエントリをIOMMU経由でマッピングする
+fn map_sgl_entries(
+    list: &TypedSgList<CpuOwned>,
+) -> FsResult<(Vec<NvmeIommuMapping>, Vec<(u64, u32)>)> {
     let mut data_maps: Vec<NvmeIommuMapping> = Vec::new();
-    let mut mapped_entries = Vec::with_capacity(entry_count);
-
+    let mut mapped = Vec::with_capacity(list.entries().len());
     for entry in list.entries() {
         let (addr, map) = match map_nvme_iommu(entry.phys_addr, entry.size as usize) {
             Ok(v) => v,
             Err(e) => {
-                for map in data_maps.drain(..) {
-                    map.unmap();
-                }
+                cleanup_nvme_maps(&mut data_maps);
                 return Err(e);
             }
         };
-        if let Some(map) = map {
-            data_maps.push(map);
+        if let Some(m) = map {
+            data_maps.push(m);
         }
-        mapped_entries.push((addr, entry.size));
+        mapped.push((addr, entry.size));
     }
+    Ok((data_maps, mapped))
+}
 
-    if entry_count == 1 {
+/// 複数エントリ用のSGLリストバッファを構築する
+fn build_sgl_list_buffer(
+    mapped_entries: &[(u64, u32)],
+    mut data_maps: Vec<NvmeIommuMapping>,
+    list: TypedSgList<CpuOwned>,
+    total_bytes: usize,
+) -> FsResult<(NvmeSglContext, NvmeSglDescriptor, usize)> {
+    let entry_count = mapped_entries.len();
+    let list_bytes = entry_count * NVME_SGL_DESCRIPTOR_SIZE;
+    let list_len = match u32::try_from(list_bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            cleanup_nvme_maps(&mut data_maps);
+            return Err(FsError::InvalidArgument);
+        }
+    };
+    let mut list_buf = match TypedDmaSlice::<CpuOwned>::new(list_bytes) {
+        Some(v) => v,
+        None => {
+            cleanup_nvme_maps(&mut data_maps);
+            return Err(FsError::NoSpace);
+        }
+    };
+    let list_slice = unsafe {
+        core::slice::from_raw_parts_mut(
+            list_buf.as_mut_slice().as_mut_ptr() as *mut LocalSglDescriptor,
+            entry_count,
+        )
+    };
+    for (dst, (addr, size)) in list_slice.iter_mut().zip(mapped_entries.iter()) {
+        *dst = LocalSglDescriptor::data_block(*addr, *size);
+    }
+    let list_phys = list_buf.phys_addr().as_u64();
+    let (list_addr, list_map) = match map_nvme_iommu(list_phys, list_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            cleanup_nvme_maps(&mut data_maps);
+            return Err(e);
+        }
+    };
+    let (data_list, data_guard) = list.start_dma();
+    let (list_dev, list_guard) = list_buf.start_dma();
+    let sgl = NvmeSglDescriptor::last_segment(list_addr, list_len);
+    let ctx = NvmeSglContext {
+        data_list: Some(data_list),
+        data_guard: Some(data_guard),
+        data_maps,
+        list_dev: Some(list_dev),
+        list_guard: Some(list_guard),
+        list_map,
+        completed: false,
+        inflight: false,
+    };
+    Ok((ctx, sgl, total_bytes))
+}
+
+fn prepare_nvme_sgl(
+    list: TypedSgList<CpuOwned>,
+    max_entries: usize,
+) -> FsResult<(NvmeSglContext, NvmeSglDescriptor, usize)> {
+    let total_bytes = validate_sgl_total_bytes(&list, max_entries)?;
+    let (data_maps, mapped_entries) = map_sgl_entries(&list)?;
+
+    if mapped_entries.len() == 1 {
         let (data_list, data_guard) = list.start_dma();
         let (addr, size) = mapped_entries[0];
         let sgl = NvmeSglDescriptor::data_block(addr, size);
@@ -585,62 +676,7 @@ fn prepare_nvme_sgl(
         return Ok((ctx, sgl, total_bytes));
     }
 
-    let list_bytes = entry_count * NVME_SGL_DESCRIPTOR_SIZE;
-    let list_len = match u32::try_from(list_bytes) {
-        Ok(v) => v,
-        Err(_) => {
-            for map in data_maps.drain(..) {
-                map.unmap();
-            }
-            return Err(FsError::InvalidArgument);
-        }
-    };
-    let mut list_buf = match TypedDmaSlice::<CpuOwned>::new(list_bytes) {
-        Some(v) => v,
-        None => {
-            for map in data_maps.drain(..) {
-                map.unmap();
-            }
-            return Err(FsError::NoSpace);
-        }
-    };
-    let list_slice = unsafe {
-        core::slice::from_raw_parts_mut(
-            list_buf.as_mut_slice().as_mut_ptr() as *mut LocalSglDescriptor,
-            entry_count,
-        )
-    };
-
-    for (dst, (addr, size)) in list_slice.iter_mut().zip(mapped_entries.iter()) {
-        *dst = LocalSglDescriptor::data_block(*addr, *size);
-    }
-
-    let list_phys = list_buf.phys_addr().as_u64();
-    let (list_addr, list_map) = match map_nvme_iommu(list_phys, list_bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            for map in data_maps.drain(..) {
-                map.unmap();
-            }
-            return Err(e);
-        }
-    };
-
-    let (data_list, data_guard) = list.start_dma();
-    let (list_dev, list_guard) = list_buf.start_dma();
-    let sgl = NvmeSglDescriptor::last_segment(list_addr, list_len);
-    let ctx = NvmeSglContext {
-        data_list: Some(data_list),
-        data_guard: Some(data_guard),
-        data_maps,
-        list_dev: Some(list_dev),
-        list_guard: Some(list_guard),
-        list_map,
-        completed: false,
-        inflight: false,
-    };
-
-    Ok((ctx, sgl, total_bytes))
+    build_sgl_list_buffer(&mapped_entries, data_maps, list, total_bytes)
 }
 
 fn nvme_sgl_max_entries() -> Option<usize> {
@@ -1080,6 +1116,98 @@ impl<'a> AsyncReadFuture<'a> {
             dma_dma_len: None,
         }
     }
+
+    /// Issue a direct-I/O NVMe read command and return Pending.
+    fn start_direct_io(
+        &mut self,
+        cx: &mut Context<'_>,
+        position: u64,
+        to_read: usize,
+    ) -> Poll<FsResult<usize>> {
+        let block_size = self.file.block_size;
+        let offset_in_block = (position % block_size) as usize;
+        let total_len = offset_in_block + to_read;
+        let blocks_u64 = (total_len as u64 + block_size - 1) / block_size;
+        if blocks_u64 > u16::MAX as u64 {
+            return Poll::Ready(Err(FsError::InvalidArgument));
+        }
+        let blocks = blocks_u64 as u16;
+        let dma_len = (blocks as usize) * (block_size as usize);
+        let lba = self.file.start_block + (position / block_size);
+        let (ctx, prp1, _prp2) = match prepare_dma_read(dma_len) {
+            Ok(v) => v,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+
+        let canceled = Arc::new(AtomicBool::new(false));
+        self.cancel_guard = Some(NvmeCancelGuard::new(canceled.clone()));
+        let slot = Arc::new(Mutex::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
+        let slot_clone = slot.clone();
+        self.dma_result = Some(slot);
+        self.dma_offset_in_block = Some(offset_in_block);
+        self.dma_dma_len = Some(dma_len);
+
+        let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
+        let future = {
+            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+                self.file.io_device(),
+                IoCommand::BlockRead { lba, blocks, bytes: dma_len, buf },
+                IoPriority::Normal,
+            )
+        };
+        let request_id = future.request_id();
+
+        let mut ctx: NvmeDmaContext = ctx;
+        ctx.mark_inflight();
+        let hook: CompletionHook = Box::new(move |result| {
+            let data = ctx.complete();
+            if canceled.load(Ordering::Acquire) {
+                return;
+            }
+            if let IoResult::Success(bytes) = result {
+                *slot_clone.lock() = Some((data, bytes));
+            }
+        });
+        crate::io::io_scheduler::io_scheduler()
+            .register_completion_hook(request_id, hook);
+
+        self.io_future = Some(future);
+        self.dma_user_len = to_read;
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+
+    /// Extract completed DMA data into the user buffer.
+    fn complete_dma_read(&mut self) -> Poll<FsResult<usize>> {
+        if let Some(mut guard) = self.cancel_guard.take() {
+            guard.disarm();
+        }
+        let slot = match self.dma_result.take() {
+            Some(s) => s,
+            None => return Poll::Ready(Err(FsError::IoError)),
+        };
+        let (data, bytes_received) = slot.lock().take().ok_or(FsError::IoError)?;
+        let dma_len = self.dma_dma_len.take().ok_or(FsError::IoError)?;
+        let offset_in_block = self.dma_offset_in_block.take().ok_or(FsError::IoError)?;
+        let available = bytes_received.min(dma_len).min(data.len());
+        let start = offset_in_block.min(available);
+        let remaining = available.saturating_sub(start);
+        let copy_len = remaining.min(self.dma_user_len);
+        if copy_len > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_slice().as_ptr().add(start),
+                    self.buf.as_mut_ptr(),
+                    copy_len,
+                );
+            }
+        }
+        self.file
+            .position
+            .fetch_add(copy_len as u64, Ordering::Relaxed);
+        Poll::Ready(Ok(copy_len))
+    }
 }
 
 impl<'a> Future for AsyncReadFuture<'a> {
@@ -1097,76 +1225,19 @@ impl<'a> Future for AsyncReadFuture<'a> {
             let position = self.file.position.load(Ordering::Relaxed);
             let len = self.buf.len();
 
-            // ファイル終端チェック
             let size = self.file.attr.lock().size;
             if position >= size {
-                return Poll::Ready(Ok(0)); // EOF
+                return Poll::Ready(Ok(0));
             }
 
-            // 読み取り可能なバイト数を計算
             let available = (size - position) as usize;
             let to_read = len.min(available);
-
             if to_read == 0 {
                 return Poll::Ready(Ok(0));
             }
 
-            // ダイレクトI/Oの場合は直接デバイスアクセス
             if self.file.direct_io {
-                // NVMeリードコマンド発行（コア固有のNVMeキューを使用）
-                let block_size = self.file.block_size;
-                let offset_in_block = (position % block_size) as usize;
-                let total_len = offset_in_block + to_read;
-                let blocks_u64 = (total_len as u64 + block_size - 1) / block_size;
-                if blocks_u64 > u16::MAX as u64 {
-                    return Poll::Ready(Err(FsError::InvalidArgument));
-                }
-                let blocks = blocks_u64 as u16;
-                let dma_len = (blocks as usize) * (block_size as usize);
-                let lba = self.file.start_block + (position / block_size);
-                // Prepare DMA
-                let (ctx, prp1, _prp2) = match prepare_dma_read(dma_len) {
-                    Ok(v) => v,
-                    Err(e) => return Poll::Ready(Err(e)),
-                };
-
-                let canceled = Arc::new(AtomicBool::new(false));
-                self.cancel_guard = Some(NvmeCancelGuard::new(canceled.clone()));
-                let slot = Arc::new(Mutex::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
-                let slot_clone = slot.clone();
-                self.dma_result = Some(slot);
-                self.dma_offset_in_block = Some(offset_in_block);
-                self.dma_dma_len = Some(dma_len);
-
-                let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
-                let future = {
-                    let buf = DmaBufHandle { iova: prp1, len: alloc_len };
-                    crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
-                        self.file.io_device(),
-                        IoCommand::BlockRead { lba, blocks, bytes: dma_len, buf },
-                        IoPriority::Normal,
-                    )
-                };
-                let request_id = future.request_id();
-
-                let mut ctx: NvmeDmaContext = ctx;
-                ctx.mark_inflight();
-                let hook: CompletionHook = Box::new(move |result| {
-                    let data = ctx.complete();
-                    if canceled.load(Ordering::Acquire) {
-                        return;
-                    }
-                    if let IoResult::Success(bytes) = result {
-                        *slot_clone.lock() = Some((data, bytes));
-                    }
-                });
-                crate::io::io_scheduler::io_scheduler()
-                    .register_completion_hook(request_id, hook);
-
-                self.io_future = Some(future);
-                self.dma_user_len = to_read;
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
+                return self.start_direct_io(cx, position, to_read);
             }
 
             let file_id = self.file.id;
@@ -1183,36 +1254,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
 
         if let Some(future) = self.io_future.as_mut() {
             match Pin::new(future).poll(cx) {
-                Poll::Ready(Ok(_)) => {
-                    if let Some(mut guard) = self.cancel_guard.take() {
-                        guard.disarm();
-                    }
-
-                    if let Some(slot) = self.dma_result.take() {
-                        let (data, bytes_received) = slot.lock().take().ok_or(FsError::IoError)?;
-                        let dma_len = self.dma_dma_len.take().ok_or(FsError::IoError)?;
-                        let offset_in_block = self.dma_offset_in_block.take().ok_or(FsError::IoError)?;
-                        let available = bytes_received.min(dma_len).min(data.len());
-                        let start = offset_in_block.min(available);
-                        let remaining = available.saturating_sub(start);
-                        let copy_len = remaining.min(self.dma_user_len);
-                        if copy_len > 0 {
-                            unsafe {
-                                core::ptr::copy_nonoverlapping(
-                                    data.as_slice().as_ptr().add(start),
-                                    self.buf.as_mut_ptr(),
-                                    copy_len,
-                                );
-                            }
-                        }
-                        self.file
-                            .position
-                            .fetch_add(copy_len as u64, Ordering::Relaxed);
-                        return Poll::Ready(Ok(copy_len));
-                    }
-
-                    return Poll::Ready(Err(FsError::IoError));
-                }
+                Poll::Ready(Ok(_)) => return self.complete_dma_read(),
                 Poll::Ready(Err(_)) => {
                     if let Some(mut guard) = self.cancel_guard.take() {
                         guard.disarm();
@@ -1277,6 +1319,286 @@ impl<'a> AsyncWriteFuture<'a> {
             unaligned: None,
         }
     }
+
+    /// ファイル位置とサイズを更新する共通ヘルパー
+    fn commit_write(&self, written: usize, base_position: u64) {
+        self.file
+            .position
+            .fetch_add(written as u64, Ordering::Relaxed);
+        let mut attr = self.file.attr.lock();
+        let new_end = base_position + written as u64;
+        if new_end > attr.size {
+            attr.size = new_end;
+        }
+    }
+
+    /// 初回ポーリング時の書き込み開始処理
+    fn poll_start(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
+        self.started = true;
+
+        let position = self.file.position.load(Ordering::Relaxed);
+        let len = self.buf.len();
+
+        if len == 0 {
+            return Poll::Ready(Ok(0));
+        }
+
+        // ダイレクトI/Oの場合
+        if self.file.direct_io {
+            let block_size = self.file.block_size;
+            let offset_in_block = (position % block_size) as usize;
+            if offset_in_block != 0 || (len as u64) % block_size != 0 {
+                return self.start_unaligned_rmw(position, len, cx);
+            }
+            return self.start_aligned_direct_write(position, len, cx);
+        }
+
+        let file_size = self.file.attr.lock().size;
+        match write_via_page_cache(self.file.id, position, self.buf, file_size) {
+            Ok(written) => {
+                self.commit_write(written, position);
+                Poll::Ready(Ok(written))
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+
+    /// 非アラインDMA: Read-Modify-Write開始
+    fn start_unaligned_rmw(
+        &mut self,
+        position: u64,
+        len: usize,
+        cx: &mut Context<'_>,
+    ) -> Poll<FsResult<usize>> {
+        let block_size = self.file.block_size;
+        let offset_in_block = (position % block_size) as usize;
+        let end_pos = position + len as u64;
+        let aligned_start = position / block_size;
+        let aligned_end =
+            (end_pos + block_size - 1) / block_size;
+        let blocks_u64 = aligned_end.saturating_sub(aligned_start);
+
+        if blocks_u64 > u16::MAX as u64 {
+            return Poll::Ready(Err(FsError::InvalidArgument));
+        }
+
+        let blocks = blocks_u64 as u16;
+        let dma_len = (blocks as usize) * (block_size as usize);
+        let lba = self.file.start_block + aligned_start;
+
+        let (ctx, prp1, _prp2) = match prepare_dma_read(dma_len) {
+            Ok(v) => v,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+
+        let data_slot = Arc::new(UnalignedReadSlot::new());
+        let slot = data_slot.clone();
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+            self.file.io_device(),
+            IoCommand::BlockRead { lba, blocks, bytes: dma_len, buf: DmaBufHandle { iova: prp1, len: dma_len } },
+            IoPriority::Normal,
+        );
+        let request_id = future.request_id();
+        let mut ctx: NvmeDmaContext = ctx;
+        ctx.mark_inflight();
+        let hook: CompletionHook = Box::new(move |result| {
+            let data = ctx.complete();
+            if let IoResult::Success(_) = result {
+                *slot.data.lock() = Some(data);
+            }
+        });
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
+
+        self.unaligned = Some(UnalignedWriteState::Reading {
+            io_future: future,
+            data_slot,
+            lba,
+            blocks,
+            offset: offset_in_block,
+            len,
+            start_pos: position,
+        });
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+
+    /// アラインDMAライト開始
+    fn start_aligned_direct_write(
+        &mut self,
+        position: u64,
+        len: usize,
+        cx: &mut Context<'_>,
+    ) -> Poll<FsResult<usize>> {
+        let block_size = self.file.block_size;
+        let blocks_u64 = len as u64 / block_size;
+        if blocks_u64 > u16::MAX as u64 {
+            return Poll::Ready(Err(FsError::InvalidArgument));
+        }
+        let blocks = blocks_u64 as u16;
+        let dma_len = (blocks as usize) * (block_size as usize);
+        let lba = self.file.start_block + (position / block_size);
+
+        let (ctx, prp1, _prp2) = match prepare_dma_write(self.buf, dma_len) {
+            Ok(v) => v,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+
+        let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
+        let future = {
+            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+            crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+                self.file.io_device(),
+                IoCommand::BlockWrite { lba, blocks, bytes: dma_len, buf },
+                IoPriority::Normal,
+            )
+        };
+        let request_id = future.request_id();
+        let mut ctx: NvmeDmaContext = ctx;
+        ctx.mark_inflight();
+        let hook: CompletionHook = Box::new(move |_result| {
+            let _ = ctx.complete();
+        });
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
+
+        self.io_future = Some(future);
+        self.dma_user_len = len;
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+
+    /// アラインDMAライトの完了ポーリング
+    fn poll_aligned_completion(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
+        let future = self.io_future.as_mut().unwrap();
+        match Pin::new(future).poll(cx) {
+            Poll::Ready(Ok(_)) => {
+                let len = self.dma_user_len;
+                let position = self.file.position.load(Ordering::Relaxed);
+                self.commit_write(len, position);
+                Poll::Ready(Ok(len))
+            }
+            Poll::Ready(Err(_)) => Poll::Ready(Err(FsError::IoError)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    /// 非アラインDMAステートのポーリング
+    fn poll_unaligned_state(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
+        let state = self.unaligned.take().unwrap();
+        match state {
+            UnalignedWriteState::Reading {
+                io_future,
+                data_slot,
+                lba,
+                blocks,
+                offset,
+                len,
+                start_pos,
+            } => self.poll_unaligned_reading(
+                io_future, data_slot, lba, blocks, offset, len, start_pos, cx,
+            ),
+            UnalignedWriteState::Writing {
+                io_future,
+                len,
+                start_pos,
+            } => self.poll_unaligned_writing(io_future, len, start_pos, cx),
+        }
+    }
+
+    /// 非アラインDMA Reading状態のポーリング
+    fn poll_unaligned_reading(
+        &mut self,
+        mut io_future: crate::io::io_scheduler::IoFuture,
+        data_slot: Arc<UnalignedReadSlot>,
+        lba: u64,
+        blocks: u16,
+        offset: usize,
+        len: usize,
+        start_pos: u64,
+        cx: &mut Context<'_>,
+    ) -> Poll<FsResult<usize>> {
+        match Pin::new(&mut io_future).poll(cx) {
+            Poll::Ready(Ok(_)) => {
+                let mut data = match data_slot.data.lock().take() {
+                    Some(data) => data,
+                    None => return Poll::Ready(Err(FsError::IoError)),
+                };
+                let end = offset + len;
+                if end > data.len() {
+                    return Poll::Ready(Err(FsError::InvalidArgument));
+                }
+                data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
+
+                let dma_len = data.len();
+                let (write_ctx, prp1, _prp2) = match prepare_dma_from_cpu_buffer(data) {
+                    Ok(v) => v,
+                    Err(e) => return Poll::Ready(Err(e)),
+                };
+                let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
+                let future = {
+                    let buf = DmaBufHandle { iova: prp1, len: alloc_len };
+                    crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+                        self.file.io_device(),
+                        IoCommand::BlockWrite { lba, blocks, bytes: dma_len, buf },
+                        IoPriority::Normal,
+                    )
+                };
+                let request_id = future.request_id();
+                let mut write_ctx: NvmeDmaContext = write_ctx;
+                write_ctx.mark_inflight();
+                let hook: CompletionHook = Box::new(move |_result| {
+                    let _ = write_ctx.complete();
+                });
+                crate::io::io_scheduler::io_scheduler()
+                    .register_completion_hook(request_id, hook);
+
+                self.unaligned = Some(UnalignedWriteState::Writing {
+                    io_future: future,
+                    len,
+                    start_pos,
+                });
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            Poll::Ready(Err(_)) => Poll::Ready(Err(FsError::IoError)),
+            Poll::Pending => {
+                self.unaligned = Some(UnalignedWriteState::Reading {
+                    io_future,
+                    data_slot,
+                    lba,
+                    blocks,
+                    offset,
+                    len,
+                    start_pos,
+                });
+                Poll::Pending
+            }
+        }
+    }
+
+    /// 非アラインDMA Writing状態のポーリング
+    fn poll_unaligned_writing(
+        &mut self,
+        mut io_future: crate::io::io_scheduler::IoFuture,
+        len: usize,
+        start_pos: u64,
+        cx: &mut Context<'_>,
+    ) -> Poll<FsResult<usize>> {
+        match Pin::new(&mut io_future).poll(cx) {
+            Poll::Ready(Ok(_)) => {
+                self.commit_write(len, start_pos);
+                Poll::Ready(Ok(len))
+            }
+            Poll::Ready(Err(_)) => Poll::Ready(Err(FsError::IoError)),
+            Poll::Pending => {
+                self.unaligned = Some(UnalignedWriteState::Writing {
+                    io_future,
+                    len,
+                    start_pos,
+                });
+                Poll::Pending
+            }
+        }
+    }
 }
 
 impl<'a> Future for AsyncWriteFuture<'a> {
@@ -1288,240 +1610,15 @@ impl<'a> Future for AsyncWriteFuture<'a> {
         }
 
         if !self.started {
-            self.started = true;
-
-            let position = self.file.position.load(Ordering::Relaxed);
-            let len = self.buf.len();
-
-            if len == 0 {
-                return Poll::Ready(Ok(0));
-            }
-
-            // ダイレクトI/Oの場合
-            if self.file.direct_io {
-                // NVMeライトコマンド発行（コア固有のNVMeキューを使用）
-                let block_size = self.file.block_size;
-                let offset_in_block = (position % block_size) as usize;
-                if offset_in_block != 0 || (len as u64) % block_size != 0 {
-                    let end_pos = position + len as u64;
-                    let aligned_start = position / block_size;
-                    let aligned_end =
-                        (end_pos + block_size - 1) / block_size;
-                    let blocks_u64 = aligned_end.saturating_sub(aligned_start);
-
-                    if blocks_u64 > u16::MAX as u64 {
-                        return Poll::Ready(Err(FsError::InvalidArgument));
-                    }
-
-                    let blocks = blocks_u64 as u16;
-                    let dma_len = (blocks as usize) * (block_size as usize);
-                    let lba = self.file.start_block + aligned_start;
-
-                    let (ctx, prp1, _prp2) = match prepare_dma_read(dma_len) {
-                        Ok(v) => v,
-                        Err(e) => return Poll::Ready(Err(e)),
-                    };
-
-                    let data_slot = Arc::new(UnalignedReadSlot::new());
-                    let slot = data_slot.clone();
-                    let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
-                        self.file.io_device(),
-                        IoCommand::BlockRead { lba, blocks, bytes: dma_len, buf: DmaBufHandle { iova: prp1, len: dma_len } },
-                        IoPriority::Normal,
-                    );
-                    let request_id = future.request_id();
-                    let mut ctx: NvmeDmaContext = ctx;
-                    ctx.mark_inflight();
-                    let hook: CompletionHook = Box::new(move |result| {
-                        let data = ctx.complete();
-                        if let IoResult::Success(_) = result {
-                            *slot.data.lock() = Some(data);
-                        }
-                    });
-                    crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
-
-                    self.unaligned = Some(UnalignedWriteState::Reading {
-                        io_future: future,
-                        data_slot,
-                        lba,
-                        blocks,
-                        offset: offset_in_block,
-                        len,
-                        start_pos: position,
-                    });
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
-
-                let blocks_u64 = len as u64 / block_size;
-                if blocks_u64 > u16::MAX as u64 {
-                    return Poll::Ready(Err(FsError::InvalidArgument));
-                }
-                let blocks = blocks_u64 as u16;
-                let dma_len = (blocks as usize) * (block_size as usize);
-                let lba = self.file.start_block + (position / block_size);
-
-                let (ctx, prp1, _prp2) = match prepare_dma_write(self.buf, dma_len) {
-                    Ok(v) => v,
-                    Err(e) => return Poll::Ready(Err(e)),
-                };
-
-                let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
-                let future = {
-                    let buf = DmaBufHandle { iova: prp1, len: alloc_len };
-                    crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
-                        self.file.io_device(),
-                        IoCommand::BlockWrite { lba, blocks, bytes: dma_len, buf },
-                        IoPriority::Normal,
-                    )
-                };
-                let request_id = future.request_id();
-                let mut ctx: NvmeDmaContext = ctx;
-                ctx.mark_inflight();
-                let hook: CompletionHook = Box::new(move |_result| {
-                    let _ = ctx.complete();
-                });
-                crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
-
-                self.io_future = Some(future);
-                self.dma_user_len = len;
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-
-            let file_size = self.file.attr.lock().size;
-            match write_via_page_cache(self.file.id, position, self.buf, file_size) {
-                Ok(written) => {
-                    self.file
-                        .position
-                        .fetch_add(written as u64, Ordering::Relaxed);
-                    {
-                        let mut attr = self.file.attr.lock();
-                        let new_end = position + written as u64;
-                        if new_end > attr.size {
-                            attr.size = new_end;
-                        }
-                    }
-                    return Poll::Ready(Ok(written));
-                }
-                Err(e) => return Poll::Ready(Err(e)),
-            }
+            return self.poll_start(cx);
         }
 
-        if let Some(future) = self.io_future.as_mut() {
-            match Pin::new(future).poll(cx) {
-                Poll::Ready(Ok(_)) => {
-                    let len = self.dma_user_len;
-                    let position = self.file.position.load(Ordering::Relaxed);
-                    self.file.position.fetch_add(len as u64, Ordering::Relaxed);
-                    {
-                        let mut attr = self.file.attr.lock();
-                        let new_end = position + len as u64;
-                        if new_end > attr.size {
-                            attr.size = new_end;
-                        }
-                    }
-                    return Poll::Ready(Ok(len));
-                }
-                Poll::Ready(Err(_)) => return Poll::Ready(Err(FsError::IoError)),
-                Poll::Pending => return Poll::Pending,
-            }
+        if self.io_future.is_some() {
+            return self.poll_aligned_completion(cx);
         }
 
-        if let Some(state) = self.unaligned.take() {
-            match state {
-                UnalignedWriteState::Reading {
-                    mut io_future,
-                    data_slot,
-                    lba,
-                    blocks,
-                    offset,
-                    len,
-                    start_pos,
-                } => match Pin::new(&mut io_future).poll(cx) {
-                    Poll::Ready(Ok(_)) => {
-                        let mut data = match data_slot.data.lock().take() {
-                            Some(data) => data,
-                            None => return Poll::Ready(Err(FsError::IoError)),
-                        };
-                        let end = offset + len;
-                        if end > data.len() {
-                            return Poll::Ready(Err(FsError::InvalidArgument));
-                        }
-                        data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
-
-                        let dma_len = data.len();
-                        let (write_ctx, prp1, _prp2) = match prepare_dma_from_cpu_buffer(data) {
-                            Ok(v) => v,
-                            Err(e) => return Poll::Ready(Err(e)),
-                        };
-                        let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
-                        let future = {
-                            let buf = DmaBufHandle { iova: prp1, len: alloc_len };
-                            crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
-                                self.file.io_device(),
-                                IoCommand::BlockWrite { lba, blocks, bytes: dma_len, buf },
-                                IoPriority::Normal,
-                            )
-                        };
-                        let request_id = future.request_id();
-                        let mut write_ctx: NvmeDmaContext = write_ctx;
-                        write_ctx.mark_inflight();
-                        let hook: CompletionHook = Box::new(move |_result| {
-                            let _ = write_ctx.complete();
-                        });
-                        crate::io::io_scheduler::io_scheduler()
-                            .register_completion_hook(request_id, hook);
-
-                        self.unaligned = Some(UnalignedWriteState::Writing {
-                            io_future: future,
-                            len,
-                            start_pos,
-                        });
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                    Poll::Ready(Err(_)) => return Poll::Ready(Err(FsError::IoError)),
-                    Poll::Pending => {
-                        self.unaligned = Some(UnalignedWriteState::Reading {
-                            io_future,
-                            data_slot,
-                            lba,
-                            blocks,
-                            offset,
-                            len,
-                            start_pos,
-                        });
-                        return Poll::Pending;
-                    }
-                },
-                UnalignedWriteState::Writing {
-                    mut io_future,
-                    len,
-                    start_pos,
-                } => match Pin::new(&mut io_future).poll(cx) {
-                    Poll::Ready(Ok(_)) => {
-                        self.file.position.fetch_add(len as u64, Ordering::Relaxed);
-                        {
-                            let mut attr = self.file.attr.lock();
-                            let new_end = start_pos + len as u64;
-                            if new_end > attr.size {
-                                attr.size = new_end;
-                            }
-                        }
-                        return Poll::Ready(Ok(len));
-                    }
-                    Poll::Ready(Err(_)) => return Poll::Ready(Err(FsError::IoError)),
-                    Poll::Pending => {
-                        self.unaligned = Some(UnalignedWriteState::Writing {
-                            io_future,
-                            len,
-                            start_pos,
-                        });
-                        return Poll::Pending;
-                    }
-                },
-            }
+        if self.unaligned.is_some() {
+            return self.poll_unaligned_state(cx);
         }
 
         Poll::Ready(Ok(0))

@@ -694,87 +694,94 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
 
     let mut image = Image::try_new(width, height)?;
     let pixel_data = &data[data_offset..];
-
-    // 行のパディングを計算
     let row_size = ((bpp as u32 * width).div_ceil(32) * 4) as usize;
 
     match bpp {
-        24 => {
-            // 24ビットBMP (BGR)
-            for y in 0..height {
-                let src_y = if top_down { y } else { height - 1 - y };
-                let row_start = src_y as usize * row_size;
-
-                for x in 0..width {
-                    let idx = row_start + x as usize * 3;
-                    if idx + 2 < pixel_data.len() {
-                        let color =
-                            Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
-                        image.set_pixel(x, y, color);
-                    }
-                }
-            }
-        }
-        32 => {
-            // 32ビットBMP (BGRA)
-            for y in 0..height {
-                let src_y = if top_down { y } else { height - 1 - y };
-                let row_start = src_y as usize * row_size;
-
-                for x in 0..width {
-                    let idx = row_start + x as usize * 4;
-                    if idx + 3 < pixel_data.len() {
-                        let color = Color::with_alpha(
-                            pixel_data[idx + 2],
-                            pixel_data[idx + 1],
-                            pixel_data[idx],
-                            pixel_data[idx + 3],
-                        );
-                        image.set_pixel(x, y, color);
-                    }
-                }
-            }
-        }
-        8 => {
-            // 8ビットパレットBMP
-            let palette_offset = 14 + info_header.header_size as usize;
-            let palette_size = if info_header.colors_used > 0 {
-                info_header.colors_used as usize
-            } else {
-                256
-            };
-
-            // パレットを読み取り
-            let mut palette = Vec::with_capacity(palette_size);
-            for i in 0..palette_size {
-                let idx = palette_offset + i * 4;
-                if idx + 3 < data.len() {
-                    palette.push(Color::new(data[idx + 2], data[idx + 1], data[idx]));
-                } else {
-                    palette.push(Color::BLACK);
-                }
-            }
-
-            // ピクセルをデコード
-            for y in 0..height {
-                let src_y = if top_down { y } else { height - 1 - y };
-                let row_start = src_y as usize * row_size;
-
-                for x in 0..width {
-                    let idx = row_start + x as usize;
-                    if idx < pixel_data.len() {
-                        let palette_idx = pixel_data[idx] as usize;
-                        if palette_idx < palette.len() {
-                            image.set_pixel(x, y, palette[palette_idx]);
-                        }
-                    }
-                }
-            }
-        }
+        24 => decode_bmp_rows_24(pixel_data, width, height, top_down, row_size, &mut image),
+        32 => decode_bmp_rows_32(pixel_data, width, height, top_down, row_size, &mut image),
+        8 => decode_bmp_rows_8(data, pixel_data, &info_header, width, height, top_down, row_size, &mut image),
         _ => return Err(ImageError::UnsupportedFormat),
     }
 
     Ok(image)
+}
+
+/// Decode 24-bit BGR rows into an Image.
+fn decode_bmp_rows_24(pixel_data: &[u8], width: u32, height: u32, top_down: bool, row_size: usize, image: &mut Image) {
+    for y in 0..height {
+        let src_y = if top_down { y } else { height - 1 - y };
+        let row_start = src_y as usize * row_size;
+        for x in 0..width {
+            let idx = row_start + x as usize * 3;
+            if idx + 2 < pixel_data.len() {
+                let color = Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
+                image.set_pixel(x, y, color);
+            }
+        }
+    }
+}
+
+/// Decode 32-bit BGRA rows into an Image.
+fn decode_bmp_rows_32(pixel_data: &[u8], width: u32, height: u32, top_down: bool, row_size: usize, image: &mut Image) {
+    for y in 0..height {
+        let src_y = if top_down { y } else { height - 1 - y };
+        let row_start = src_y as usize * row_size;
+        for x in 0..width {
+            let idx = row_start + x as usize * 4;
+            if idx + 3 < pixel_data.len() {
+                let color = Color::with_alpha(
+                    pixel_data[idx + 2],
+                    pixel_data[idx + 1],
+                    pixel_data[idx],
+                    pixel_data[idx + 3],
+                );
+                image.set_pixel(x, y, color);
+            }
+        }
+    }
+}
+
+/// Decode 8-bit palette-indexed rows into an Image.
+fn decode_bmp_rows_8(
+    data: &[u8],
+    pixel_data: &[u8],
+    info_header: &BmpInfoHeader,
+    width: u32,
+    height: u32,
+    top_down: bool,
+    row_size: usize,
+    image: &mut Image,
+) {
+    let palette_offset = 14 + info_header.header_size as usize;
+    let palette_size = if info_header.colors_used > 0 {
+        info_header.colors_used as usize
+    } else {
+        256
+    };
+
+    let mut palette = Vec::with_capacity(palette_size);
+    for i in 0..palette_size {
+        let idx = palette_offset + i * 4;
+        if idx + 3 < data.len() {
+            palette.push(Color::new(data[idx + 2], data[idx + 1], data[idx]));
+        } else {
+            palette.push(Color::BLACK);
+        }
+    }
+
+    for y in 0..height {
+        let src_y = if top_down { y } else { height - 1 - y };
+        let row_start = src_y as usize * row_size;
+        for x in 0..width {
+            let idx = row_start + x as usize;
+            if idx < pixel_data.len() {
+                let palette_idx = pixel_data[idx] as usize;
+                if palette_idx < palette.len() {
+                    image.set_pixel(x, y, palette[palette_idx]);
+                }
+            }
+        }
+    }
 }
 
 /// Decode BMP into a pre-allocated buffer (zero-allocation variant)
@@ -792,17 +799,33 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
 #[allow(clippy::cast_possible_truncation)]
 #[allow(clippy::cast_sign_loss)]
 pub fn decode_bmp_into(data: &[u8], output: &mut ImageViewMut) -> ImageResult<()> {
+    let (pixel_data, row_size, width, height, bpp, top_down) = validate_bmp_headers(data, output)?;
+
+    match bpp {
+        24 => decode_bmp_rows_24_into(pixel_data, output, row_size, width, height, top_down),
+        32 => decode_bmp_rows_32_into(pixel_data, output, row_size, width, height, top_down),
+        _ => return Err(ImageError::UnsupportedFormat),
+    }
+
+    Ok(())
+}
+
+/// Validate BMP file/info headers and return the pixel data slice with metadata.
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_sign_loss)]
+fn validate_bmp_headers<'a>(
+    data: &'a [u8],
+    output: &ImageViewMut,
+) -> ImageResult<(&'a [u8], usize, u32, u32, u16, bool)> {
     if data.len() < 54 {
         return Err(ImageError::InvalidFormat);
     }
-
     if data[0] != b'B' || data[1] != b'M' {
         return Err(ImageError::InvalidFormat);
     }
 
     let file_header =
         read_struct_from_slice::<BmpFileHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
-
     let info_header =
         read_struct_from_slice::<BmpInfoHeader>(data, 14).ok_or(ImageError::InvalidFormat)?;
 
@@ -813,72 +836,237 @@ pub fn decode_bmp_into(data: &[u8], output: &mut ImageViewMut) -> ImageResult<()
     let data_offset = file_header.data_offset as usize;
     let top_down = info_header.height < 0;
 
-    // Check output buffer matches image dimensions
     if output.width() != width || output.height() != height {
         return Err(ImageError::InvalidData);
     }
-
     if compression != BI_RGB && compression != BI_BITFIELDS {
         return Err(ImageError::UnsupportedFormat);
     }
-
     if bpp != 24 && bpp != 32 {
         return Err(ImageError::UnsupportedFormat);
     }
 
     let pixel_data = &data[data_offset..];
     let row_size = ((bpp as u32 * width).div_ceil(32) * 4) as usize;
+    Ok((pixel_data, row_size, width, height, bpp, top_down))
+}
 
-    match bpp {
-        24 => {
-            for y in 0..height {
-                let src_y = if top_down { y } else { height - 1 - y };
-                let row_start = src_y as usize * row_size;
-
-                for x in 0..width {
-                    let idx = row_start + x as usize * 3;
-                    if idx + 2 < pixel_data.len() {
-                        let color =
-                            Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
-                        output.set_pixel(x, y, color);
-                    }
-                }
+/// Decode 24-bpp BMP rows into the output view.
+fn decode_bmp_rows_24_into(
+    pixel_data: &[u8],
+    output: &mut ImageViewMut,
+    row_size: usize,
+    width: u32,
+    height: u32,
+    top_down: bool,
+) {
+    for y in 0..height {
+        let src_y = if top_down { y } else { height - 1 - y };
+        let row_start = src_y as usize * row_size;
+        for x in 0..width {
+            let idx = row_start + x as usize * 3;
+            if idx + 2 < pixel_data.len() {
+                let color =
+                    Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
+                output.set_pixel(x, y, color);
             }
         }
-        32 => {
-            for y in 0..height {
-                let src_y = if top_down { y } else { height - 1 - y };
-                let row_start = src_y as usize * row_size;
-
-                for x in 0..width {
-                    let idx = row_start + x as usize * 4;
-                    if idx + 3 < pixel_data.len() {
-                        let color = Color::with_alpha(
-                            pixel_data[idx + 2],
-                            pixel_data[idx + 1],
-                            pixel_data[idx],
-                            pixel_data[idx + 3],
-                        );
-                        output.set_pixel(x, y, color);
-                    }
-                }
-            }
-        }
-        _ => return Err(ImageError::UnsupportedFormat),
     }
+}
 
-    Ok(())
+/// Decode 32-bpp BMP rows into the output view.
+fn decode_bmp_rows_32_into(
+    pixel_data: &[u8],
+    output: &mut ImageViewMut,
+    row_size: usize,
+    width: u32,
+    height: u32,
+    top_down: bool,
+) {
+    for y in 0..height {
+        let src_y = if top_down { y } else { height - 1 - y };
+        let row_start = src_y as usize * row_size;
+        for x in 0..width {
+            let idx = row_start + x as usize * 4;
+            if idx + 3 < pixel_data.len() {
+                let color = Color::with_alpha(
+                    pixel_data[idx + 2],
+                    pixel_data[idx + 1],
+                    pixel_data[idx],
+                    pixel_data[idx + 3],
+                );
+                output.set_pixel(x, y, color);
+            }
+        }
+    }
 }
 
 // ============================================================================
 // TGA Decoder (Simple)
 // ============================================================================
 
+/// Read a single TGA pixel (BGR or BGRA) from the given offset.
+///
+/// Returns the decoded `Color` from the pixel data at `offset`.
+#[inline]
+fn read_tga_pixel(pixel_data: &[u8], offset: usize, bpp: u8) -> Color {
+    if bpp == 24 {
+        Color::new(
+            pixel_data[offset + 2],
+            pixel_data[offset + 1],
+            pixel_data[offset],
+        )
+    } else {
+        Color::with_alpha(
+            pixel_data[offset + 2],
+            pixel_data[offset + 1],
+            pixel_data[offset],
+            pixel_data[offset + 3],
+        )
+    }
+}
+
+/// Advance the TGA scan position by one pixel, wrapping to the next row.
+#[inline]
+fn tga_advance_pixel(x: &mut u32, y: &mut u32, width: u32) {
+    *x += 1;
+    if *x >= width {
+        *x = 0;
+        *y += 1;
+    }
+}
+
+/// Compute the destination Y coordinate for a TGA scanline.
+#[inline]
+fn tga_dst_y(y: u32, height: u32, top_down: bool) -> u32 {
+    if top_down { y } else { height - 1 - y }
+}
+
+/// Decode uncompressed (type 2) TGA pixel data into an image.
+fn decode_tga_uncompressed(
+    pixel_data: &[u8],
+    image: &mut Image,
+    width: u32,
+    height: u32,
+    bpp: u8,
+    top_down: bool,
+) {
+    let bytes_per_pixel = bpp as usize / 8;
+
+    for y in 0..height {
+        let dst_y = tga_dst_y(y, height, top_down);
+
+        for x in 0..width {
+            let idx = (y * width + x) as usize * bytes_per_pixel;
+            if idx + bytes_per_pixel <= pixel_data.len() {
+                let color = read_tga_pixel(pixel_data, idx, bpp);
+                image.set_pixel(x, dst_y, color);
+            }
+        }
+    }
+}
+
+/// Decode RLE-compressed (type 10) TGA pixel data into an image.
+fn decode_tga_rle(
+    pixel_data: &[u8],
+    image: &mut Image,
+    width: u32,
+    height: u32,
+    bpp: u8,
+    top_down: bool,
+) {
+    let bytes_per_pixel = bpp as usize / 8;
+    let mut src_idx = 0;
+    let mut x = 0u32;
+    let mut y = 0u32;
+
+    while y < height && src_idx < pixel_data.len() {
+        let packet = pixel_data[src_idx];
+        src_idx += 1;
+
+        let count = (packet & 0x7F) as u32 + 1;
+        let is_rle = (packet & 0x80) != 0;
+
+        if is_rle {
+            src_idx = decode_tga_rle_packet(
+                pixel_data, image, src_idx, count, bytes_per_pixel, bpp,
+                width, height, top_down, &mut x, &mut y,
+            );
+        } else {
+            src_idx = decode_tga_raw_packet(
+                pixel_data, image, src_idx, count, bytes_per_pixel, bpp,
+                width, height, top_down, &mut x, &mut y,
+            );
+        }
+    }
+}
+
+/// Decode a single RLE packet (repeated color) into the image.
+///
+/// Returns the updated `src_idx`.
+fn decode_tga_rle_packet(
+    pixel_data: &[u8],
+    image: &mut Image,
+    mut src_idx: usize,
+    count: u32,
+    bytes_per_pixel: usize,
+    bpp: u8,
+    width: u32,
+    height: u32,
+    top_down: bool,
+    x: &mut u32,
+    y: &mut u32,
+) -> usize {
+    if src_idx + bytes_per_pixel > pixel_data.len() {
+        return pixel_data.len(); // signal break
+    }
+
+    let color = read_tga_pixel(pixel_data, src_idx, bpp);
+    src_idx += bytes_per_pixel;
+
+    for _ in 0..count {
+        let dst_y = tga_dst_y(*y, height, top_down);
+        image.set_pixel(*x, dst_y, color);
+        tga_advance_pixel(x, y, width);
+    }
+    src_idx
+}
+
+/// Decode a single raw packet (sequence of distinct colors) into the image.
+///
+/// Returns the updated `src_idx`.
+fn decode_tga_raw_packet(
+    pixel_data: &[u8],
+    image: &mut Image,
+    mut src_idx: usize,
+    count: u32,
+    bytes_per_pixel: usize,
+    bpp: u8,
+    width: u32,
+    height: u32,
+    top_down: bool,
+    x: &mut u32,
+    y: &mut u32,
+) -> usize {
+    for _ in 0..count {
+        if src_idx + bytes_per_pixel > pixel_data.len() {
+            break;
+        }
+
+        let color = read_tga_pixel(pixel_data, src_idx, bpp);
+        src_idx += bytes_per_pixel;
+
+        let dst_y = tga_dst_y(*y, height, top_down);
+        image.set_pixel(*x, dst_y, color);
+        tga_advance_pixel(x, y, width);
+    }
+    src_idx
+}
+
 /// TGAファイルをデコード（簡易実装）
 ///
 /// # Errors
 /// Returns error if format is invalid or unsupported.
-#[allow(clippy::too_many_lines)]
 pub fn decode_tga(data: &[u8]) -> ImageResult<Image> {
     if data.len() < 18 {
         return Err(ImageError::InvalidFormat);
@@ -915,110 +1103,12 @@ pub fn decode_tga(data: &[u8]) -> ImageResult<Image> {
         };
 
     let mut image = Image::try_new(width, height)?;
-    let bytes_per_pixel = bpp as usize / 8;
+    let pixel_data = &data[pixel_data_offset..];
 
     if image_type == 2 {
-        // 非圧縮
-        let pixel_data = &data[pixel_data_offset..];
-
-        for y in 0..height {
-            let dst_y = if top_down { y } else { height - 1 - y };
-
-            for x in 0..width {
-                let idx = (y * width + x) as usize * bytes_per_pixel;
-                if idx + bytes_per_pixel <= pixel_data.len() {
-                    let color = if bpp == 24 {
-                        Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx])
-                    } else {
-                        Color::with_alpha(
-                            pixel_data[idx + 2],
-                            pixel_data[idx + 1],
-                            pixel_data[idx],
-                            pixel_data[idx + 3],
-                        )
-                    };
-                    image.set_pixel(x, dst_y, color);
-                }
-            }
-        }
+        decode_tga_uncompressed(pixel_data, &mut image, width, height, bpp, top_down);
     } else {
-        // RLE圧縮
-        let pixel_data = &data[pixel_data_offset..];
-        let mut src_idx = 0;
-        let mut x = 0u32;
-        let mut y = 0u32;
-
-        while y < height && src_idx < pixel_data.len() {
-            let packet = pixel_data[src_idx];
-            src_idx += 1;
-
-            let count = (packet & 0x7F) as u32 + 1;
-            let is_rle = (packet & 0x80) != 0;
-
-            if is_rle {
-                // RLEパケット
-                if src_idx + bytes_per_pixel > pixel_data.len() {
-                    break;
-                }
-
-                let color = if bpp == 24 {
-                    Color::new(
-                        pixel_data[src_idx + 2],
-                        pixel_data[src_idx + 1],
-                        pixel_data[src_idx],
-                    )
-                } else {
-                    Color::with_alpha(
-                        pixel_data[src_idx + 2],
-                        pixel_data[src_idx + 1],
-                        pixel_data[src_idx],
-                        pixel_data[src_idx + 3],
-                    )
-                };
-                src_idx += bytes_per_pixel;
-
-                for _ in 0..count {
-                    let dst_y = if top_down { y } else { height - 1 - y };
-                    image.set_pixel(x, dst_y, color);
-                    x += 1;
-                    if x >= width {
-                        x = 0;
-                        y += 1;
-                    }
-                }
-            } else {
-                // Rawパケット
-                for _ in 0..count {
-                    if src_idx + bytes_per_pixel > pixel_data.len() {
-                        break;
-                    }
-
-                    let color = if bpp == 24 {
-                        Color::new(
-                            pixel_data[src_idx + 2],
-                            pixel_data[src_idx + 1],
-                            pixel_data[src_idx],
-                        )
-                    } else {
-                        Color::with_alpha(
-                            pixel_data[src_idx + 2],
-                            pixel_data[src_idx + 1],
-                            pixel_data[src_idx],
-                            pixel_data[src_idx + 3],
-                        )
-                    };
-                    src_idx += bytes_per_pixel;
-
-                    let dst_y = if top_down { y } else { height - 1 - y };
-                    image.set_pixel(x, dst_y, color);
-                    x += 1;
-                    if x >= width {
-                        x = 0;
-                        y += 1;
-                    }
-                }
-            }
-        }
+        decode_tga_rle(pixel_data, &mut image, width, height, bpp, top_down);
     }
 
     Ok(image)
@@ -1051,50 +1141,48 @@ struct IcoDirEntry {
     image_offset: u32,
 }
 
+/// 単一のICOエントリをデコードを試みる (PNGはスキップ、BMPをデコード)
+fn try_decode_ico_entry(data: &[u8], index: usize) -> Option<Image> {
+    let entry_offset = 6 + index * 16;
+    if entry_offset + 16 > data.len() {
+        return None;
+    }
+    let entry = read_struct_from_slice::<IcoDirEntry>(data, entry_offset)?;
+    let image_offset = entry.image_offset as usize;
+    let image_size = entry.image_size as usize;
+    if image_offset + image_size > data.len() {
+        return None;
+    }
+    let image_data = &data[image_offset..image_offset + image_size];
+    // PNG形式はスキップ
+    if image_data.len() >= 8 && &image_data[0..8] == b"\x89PNG\r\n\x1a\n" {
+        return None;
+    }
+    decode_ico_bmp(image_data, entry.width, entry.height).ok()
+}
+
+/// ICOヘッダを検証して画像数を返す
+fn validate_ico_header(data: &[u8]) -> ImageResult<usize> {
+    if data.len() < 6 {
+        return Err(ImageError::InvalidFormat);
+    }
+    let header = read_struct_from_slice::<IcoHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
+    if header.reserved != 0 || (header.image_type != 1 && header.image_type != 2) {
+        return Err(ImageError::InvalidFormat);
+    }
+    Ok(header.image_count as usize)
+}
+
 /// ICOファイルをデコード
 ///
 /// # Errors
 /// Returns error if format is invalid or unsupported.
 pub fn decode_ico(data: &[u8]) -> ImageResult<Vec<Image>> {
-    if data.len() < 6 {
-        return Err(ImageError::InvalidFormat);
-    }
-
-    let header = read_struct_from_slice::<IcoHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
-
-    if header.reserved != 0 || (header.image_type != 1 && header.image_type != 2) {
-        return Err(ImageError::InvalidFormat);
-    }
-
-    let image_count = header.image_count as usize;
+    let image_count = validate_ico_header(data)?;
     let mut images = Vec::with_capacity(image_count);
 
     for i in 0..image_count {
-        let entry_offset = 6 + i * 16;
-        if entry_offset + 16 > data.len() {
-            break;
-        }
-
-        let entry = read_struct_from_slice::<IcoDirEntry>(data, entry_offset)
-            .ok_or(ImageError::InvalidFormat)?;
-
-        let image_offset = entry.image_offset as usize;
-        let image_size = entry.image_size as usize;
-
-        if image_offset + image_size > data.len() {
-            continue;
-        }
-
-        let image_data = &data[image_offset..image_offset + image_size];
-
-        // PNGまたはBMPをチェック
-        if image_data.len() >= 8 && &image_data[0..8] == b"\x89PNG\r\n\x1a\n" {
-            // PNG形式（簡易対応は省略）
-            continue;
-        }
-
-        // BMP形式（DIBヘッダから）
-        if let Ok(image) = decode_ico_bmp(image_data, entry.width, entry.height) {
+        if let Some(image) = try_decode_ico_entry(data, i) {
             images.push(image);
         }
     }
@@ -1133,70 +1221,74 @@ fn decode_ico_bmp(data: &[u8], width_hint: u8, height_hint: u8) -> ImageResult<I
     let pixel_data = &data[pixel_data_offset..];
 
     match bpp {
-        32 => {
-            // 32ビット BGRA
-            let row_size = width as usize * 4;
-
-            for y in 0..height {
-                let src_y = height - 1 - y; // ボトムアップ
-                let row_start = src_y as usize * row_size;
-
-                for x in 0..width {
-                    let idx = row_start + x as usize * 4;
-                    if idx + 3 < pixel_data.len() {
-                        let color = Color::with_alpha(
-                            pixel_data[idx + 2],
-                            pixel_data[idx + 1],
-                            pixel_data[idx],
-                            pixel_data[idx + 3],
-                        );
-                        image.set_pixel(x, y, color);
-                    }
-                }
-            }
-        }
-        24 => {
-            // 24ビット BGR + マスク
-            let row_size = ((24 * width + 31) / 32 * 4) as usize;
-            let mask_row_size = ((width + 31) / 32 * 4) as usize;
-            let mask_offset = height as usize * row_size;
-
-            for y in 0..height {
-                let src_y = height - 1 - y;
-                let row_start = src_y as usize * row_size;
-                let mask_row_start = mask_offset + src_y as usize * mask_row_size;
-
-                for x in 0..width {
-                    let idx = row_start + x as usize * 3;
-                    let mask_byte_idx = mask_row_start + x as usize / 8;
-                    let mask_bit = 7 - (x % 8);
-
-                    if idx + 2 < pixel_data.len() {
-                        let alpha = if mask_byte_idx < pixel_data.len() {
-                            if (pixel_data[mask_byte_idx] >> mask_bit) & 1 != 0 {
-                                0
-                            } else {
-                                255
-                            }
-                        } else {
-                            255
-                        };
-
-                        let color = Color::with_alpha(
-                            pixel_data[idx + 2],
-                            pixel_data[idx + 1],
-                            pixel_data[idx],
-                            alpha,
-                        );
-                        image.set_pixel(x, y, color);
-                    }
-                }
-            }
-        }
+        32 => decode_32bpp_ico_rows(&mut image, pixel_data, width, height),
+        24 => decode_24bpp_ico_rows(&mut image, pixel_data, width, height),
         _ => return Err(ImageError::UnsupportedFormat),
     }
 
     Ok(image)
+}
+
+/// 32ビットBGRA行をデコード
+fn decode_32bpp_ico_rows(image: &mut Image, pixel_data: &[u8], width: u32, height: u32) {
+    let row_size = width as usize * 4;
+
+    for y in 0..height {
+        let src_y = height - 1 - y; // ボトムアップ
+        let row_start = src_y as usize * row_size;
+
+        for x in 0..width {
+            let idx = row_start + x as usize * 4;
+            if idx + 3 < pixel_data.len() {
+                let color = Color::with_alpha(
+                    pixel_data[idx + 2],
+                    pixel_data[idx + 1],
+                    pixel_data[idx],
+                    pixel_data[idx + 3],
+                );
+                image.set_pixel(x, y, color);
+            }
+        }
+    }
+}
+
+/// 24ビットBGR + マスク行をデコード
+fn decode_24bpp_ico_rows(image: &mut Image, pixel_data: &[u8], width: u32, height: u32) {
+    let row_size = ((24 * width + 31) / 32 * 4) as usize;
+    let mask_row_size = ((width + 31) / 32 * 4) as usize;
+    let mask_offset = height as usize * row_size;
+
+    for y in 0..height {
+        let src_y = height - 1 - y;
+        let row_start = src_y as usize * row_size;
+        let mask_row_start = mask_offset + src_y as usize * mask_row_size;
+
+        for x in 0..width {
+            let idx = row_start + x as usize * 3;
+            let mask_byte_idx = mask_row_start + x as usize / 8;
+            let mask_bit = 7 - (x % 8);
+
+            if idx + 2 < pixel_data.len() {
+                let alpha = if mask_byte_idx < pixel_data.len() {
+                    if (pixel_data[mask_byte_idx] >> mask_bit) & 1 != 0 {
+                        0
+                    } else {
+                        255
+                    }
+                } else {
+                    255
+                };
+
+                let color = Color::with_alpha(
+                    pixel_data[idx + 2],
+                    pixel_data[idx + 1],
+                    pixel_data[idx],
+                    alpha,
+                );
+                image.set_pixel(x, y, color);
+            }
+        }
+    }
 }
 
 // ============================================================================

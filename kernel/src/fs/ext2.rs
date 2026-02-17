@@ -611,6 +611,48 @@ pub struct Ext2InodeWrapper {
     inode: Ext2Inode,
 }
 
+/// ディレクトリエントリをパースし有効なら追加する
+fn push_dir_entry_if_valid(
+    buffer: &[u8],
+    pos: usize,
+    entry: &Ext2DirEntry,
+    entries: &mut Vec<(String, u32, FileType)>,
+) {
+    if entry.inode == 0 || entry.rec_len == 0 {
+        return;
+    }
+    let name_start = pos + 8;
+    let name_end = name_start + entry.name_len as usize;
+    if name_end > buffer.len() {
+        return;
+    }
+    let name = String::from_utf8_lossy(&buffer[name_start..name_end]).into_owned();
+    if name != "." && name != ".." {
+        entries.push((name, entry.inode, entry.get_file_type()));
+    }
+}
+
+/// ブロックバッファ内のディレクトリエントリを収集する
+fn collect_block_dir_entries(
+    buffer: &[u8],
+    start_pos: usize,
+    base_offset: u64,
+    file_size: u64,
+    entries: &mut Vec<(String, u32, FileType)>,
+) -> FsResult<()> {
+    let mut pos = start_pos;
+    while pos < buffer.len() && (base_offset + (pos - start_pos) as u64) < file_size {
+        let entry: Ext2DirEntry =
+            crate::util::read_struct(buffer, pos).ok_or(FsError::InvalidArgument)?;
+        push_dir_entry_if_valid(buffer, pos, &entry, entries);
+        if entry.rec_len == 0 {
+            break;
+        }
+        pos += entry.rec_len as usize;
+    }
+    Ok(())
+}
+
 impl Ext2InodeWrapper {
     /// ディレクトリエントリを読み取り
     fn read_dir_entries(&self) -> FsResult<Vec<(String, u32, FileType)>> {
@@ -635,31 +677,7 @@ impl Ext2InodeWrapper {
             let mut buffer = vec![0u8; self.fs.block_size as usize];
             self.fs.read_block(physical_block, &mut buffer)?;
 
-            let mut pos = block_offset;
-            while pos < buffer.len() && (offset + (pos - block_offset) as u64) < size {
-                let entry: Ext2DirEntry =
-                    crate::util::read_struct(&buffer, pos).ok_or(FsError::InvalidArgument)?;
-
-                if entry.inode != 0 && entry.rec_len > 0 {
-                    let name_start = pos + 8;
-                    let name_end = name_start + entry.name_len as usize;
-
-                    if name_end <= buffer.len() {
-                        let name =
-                            String::from_utf8_lossy(&buffer[name_start..name_end]).into_owned();
-
-                        if name != "." && name != ".." {
-                            entries.push((name, entry.inode, entry.get_file_type()));
-                        }
-                    }
-                }
-
-                if entry.rec_len == 0 {
-                    break;
-                }
-
-                pos += entry.rec_len as usize;
-            }
+            collect_block_dir_entries(&buffer, block_offset, offset, size, &mut entries)?;
 
             offset = (logical_block as u64 + 1) * block_size;
         }

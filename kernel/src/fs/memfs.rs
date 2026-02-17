@@ -689,37 +689,34 @@ pub fn shell_fs() -> Option<&'static Arc<MemoryFs>> {
     SHELL_FS.get()
 }
 
+/// 相対パスを絶対パスに変換する
+fn build_absolute_path(path: &str, cwd: &str) -> String {
+    if path.starts_with('/') {
+        return path.to_string();
+    }
+    if path == "." {
+        return cwd.to_string();
+    }
+    if path == ".." {
+        let parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.len() <= 1 {
+            return "/".to_string();
+        }
+        return alloc::format!("/{}", parts[..parts.len() - 1].join("/"));
+    }
+    if cwd == "/" {
+        alloc::format!("/{}", path)
+    } else {
+        alloc::format!("{}/{}", cwd, path)
+    }
+}
+
 /// パスを解決してinodeを取得
 pub fn resolve_path(path: &str, cwd: &str) -> FsResult<Arc<dyn Inode>> {
     let fs = shell_fs().ok_or(FsError::IoError)?;
     let root = fs.root()?;
 
-    // 絶対パスを構築
-    let abs_path = if path.starts_with('/') {
-        path.to_string()
-    } else if path == "." {
-        cwd.to_string()
-    } else if path == ".." {
-        let parts: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
-        if parts.is_empty() {
-            "/".to_string()
-        } else {
-            let parent: Vec<&str> = parts[..parts.len().saturating_sub(1)].to_vec();
-            if parent.is_empty() {
-                "/".to_string()
-            } else {
-                alloc::format!("/{}", parent.join("/"))
-            }
-        }
-    } else {
-        if cwd == "/" {
-            alloc::format!("/{}", path)
-        } else {
-            alloc::format!("{}/{}", cwd, path)
-        }
-    };
-
-    // パスをコンポーネントに分解して辿る
+    let abs_path = build_absolute_path(path, cwd);
     let components: Vec<&str> = abs_path.split('/').filter(|s| !s.is_empty()).collect();
 
     if components.is_empty() {
@@ -727,13 +724,8 @@ pub fn resolve_path(path: &str, cwd: &str) -> FsResult<Arc<dyn Inode>> {
     }
 
     let mut current: Arc<dyn Inode> = root;
-
     for component in components {
-        if component == "." {
-            continue;
-        }
-        if component == ".." {
-            // 親ディレクトリは今のところ無視（ルートに留まる）
+        if component == "." || component == ".." {
             continue;
         }
         current = current.lookup(component)?;

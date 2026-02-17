@@ -524,94 +524,12 @@ impl DnsClient {
         // 質問セクションをスキップ
         let mut offset = DnsHeader::SIZE;
         for _ in 0..qcount {
-            // ドメイン名をスキップ
             offset = self.skip_name(data, offset)?;
             offset += 4; // QTYPE + QCLASS
         }
 
         // 回答セクションを解析
-        let mut records = Vec::new();
-        for _ in 0..acount {
-            if offset >= data.len() {
-                break;
-            }
-
-            let (name, new_offset) = self.parse_name(data, offset)?;
-            offset = new_offset;
-
-            if offset + 10 > data.len() {
-                break;
-            }
-
-            let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
-            let rclass = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
-            let ttl = u32::from_be_bytes([
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
-            let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
-            offset += 10;
-
-            if offset + rdlength > data.len() {
-                break;
-            }
-
-            let rdata = &data[offset..offset + rdlength];
-            offset += rdlength;
-
-            let record_data = match DnsQueryType::from_u16(rtype) {
-                Some(DnsQueryType::A) if rdlength == 4 => {
-                    let mut bytes = [0u8; 4];
-                    bytes.copy_from_slice(rdata);
-                    DnsRecordData::A(Ipv4Address::new(bytes))
-                }
-                Some(DnsQueryType::CNAME) | Some(DnsQueryType::NS) | Some(DnsQueryType::PTR) => {
-                    if let Ok((cname, _)) = self.parse_name(data, offset - rdlength) {
-                        DnsRecordData::Name(cname)
-                    } else {
-                        DnsRecordData::Raw(rdata.to_vec())
-                    }
-                }
-                Some(DnsQueryType::MX) if rdlength >= 3 => {
-                    let preference = u16::from_be_bytes([rdata[0], rdata[1]]);
-                    if let Ok((exchange, _)) = self.parse_name(data, offset - rdlength + 2) {
-                        DnsRecordData::MX(preference, exchange)
-                    } else {
-                        DnsRecordData::Raw(rdata.to_vec())
-                    }
-                }
-                Some(DnsQueryType::TXT) => {
-                    // TXTレコードは長さプレフィックス付き
-                    if !rdata.is_empty() {
-                        let txt_len = rdata[0] as usize;
-                        if txt_len < rdlength {
-                            DnsRecordData::TXT(
-                                String::from_utf8_lossy(&rdata[1..1 + txt_len]).into_owned(),
-                            )
-                        } else {
-                            DnsRecordData::Raw(rdata.to_vec())
-                        }
-                    } else {
-                        DnsRecordData::Raw(rdata.to_vec())
-                    }
-                }
-                _ => DnsRecordData::Raw(rdata.to_vec()),
-            };
-
-            records.push(DnsRecord {
-                name,
-                rtype: DnsQueryType::from_u16(rtype).unwrap_or(DnsQueryType::A),
-                rclass: if rclass == 1 {
-                    DnsQueryClass::IN
-                } else {
-                    DnsQueryClass::IN
-                },
-                ttl,
-                data: record_data,
-            });
-        }
+        let records = self.parse_answer_section(data, &mut offset, acount)?;
 
         self.stats
             .responses_received
@@ -630,6 +548,114 @@ impl DnsClient {
         }
 
         Ok(records)
+    }
+
+    /// 回答セクションをパースする
+    fn parse_answer_section(
+        &self,
+        data: &[u8],
+        offset: &mut usize,
+        acount: usize,
+    ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
+        let mut records = Vec::new();
+        for _ in 0..acount {
+            if *offset >= data.len() {
+                break;
+            }
+
+            let (name, new_offset) = self.parse_name(data, *offset)?;
+            *offset = new_offset;
+
+            if *offset + 10 > data.len() {
+                break;
+            }
+
+            let rtype = u16::from_be_bytes([data[*offset], data[*offset + 1]]);
+            let rclass = u16::from_be_bytes([data[*offset + 2], data[*offset + 3]]);
+            let ttl = u32::from_be_bytes([
+                data[*offset + 4],
+                data[*offset + 5],
+                data[*offset + 6],
+                data[*offset + 7],
+            ]);
+            let rdlength = u16::from_be_bytes([data[*offset + 8], data[*offset + 9]]) as usize;
+            *offset += 10;
+
+            if *offset + rdlength > data.len() {
+                break;
+            }
+
+            let rdata = &data[*offset..*offset + rdlength];
+            *offset += rdlength;
+
+            let record_data = self.parse_record_data(data, rdata, rtype, rdlength, *offset);
+
+            records.push(DnsRecord {
+                name,
+                rtype: DnsQueryType::from_u16(rtype).unwrap_or(DnsQueryType::A),
+                rclass: if rclass == 1 {
+                    DnsQueryClass::IN
+                } else {
+                    DnsQueryClass::IN
+                },
+                ttl,
+                data: record_data,
+            });
+        }
+        Ok(records)
+    }
+
+    /// レコードデータ（RDATA）をパースする
+    fn parse_record_data(
+        &self,
+        data: &[u8],
+        rdata: &[u8],
+        rtype: u16,
+        rdlength: usize,
+        offset_after_rdata: usize,
+    ) -> DnsRecordData {
+        match DnsQueryType::from_u16(rtype) {
+            Some(DnsQueryType::A) if rdlength == 4 => {
+                let mut bytes = [0u8; 4];
+                bytes.copy_from_slice(rdata);
+                DnsRecordData::A(Ipv4Address::new(bytes))
+            }
+            Some(DnsQueryType::CNAME) | Some(DnsQueryType::NS) | Some(DnsQueryType::PTR) => {
+                if let Ok((cname, _)) = self.parse_name(data, offset_after_rdata - rdlength) {
+                    DnsRecordData::Name(cname)
+                } else {
+                    DnsRecordData::Raw(rdata.to_vec())
+                }
+            }
+            Some(DnsQueryType::MX) if rdlength >= 3 => {
+                let preference = u16::from_be_bytes([rdata[0], rdata[1]]);
+                if let Ok((exchange, _)) = self.parse_name(data, offset_after_rdata - rdlength + 2) {
+                    DnsRecordData::MX(preference, exchange)
+                } else {
+                    DnsRecordData::Raw(rdata.to_vec())
+                }
+            }
+            Some(DnsQueryType::TXT) => {
+                self.parse_txt_record(rdata, rdlength)
+            }
+            _ => DnsRecordData::Raw(rdata.to_vec()),
+        }
+    }
+
+    /// TXTレコードをパースする
+    fn parse_txt_record(&self, rdata: &[u8], rdlength: usize) -> DnsRecordData {
+        if !rdata.is_empty() {
+            let txt_len = rdata[0] as usize;
+            if txt_len < rdlength {
+                DnsRecordData::TXT(
+                    String::from_utf8_lossy(&rdata[1..1 + txt_len]).into_owned(),
+                )
+            } else {
+                DnsRecordData::Raw(rdata.to_vec())
+            }
+        } else {
+            DnsRecordData::Raw(rdata.to_vec())
+        }
     }
 
     /// ドメイン名をスキップ

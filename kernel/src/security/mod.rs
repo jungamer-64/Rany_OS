@@ -221,33 +221,31 @@ impl AccessControlManager {
     ) -> Result<(), SecurityViolation> {
         let actual = self.get_capabilities(domain_id);
 
-        // 各権限をチェック
-        if required.can_call_kernel_api && !actual.can_call_kernel_api {
-            return self.violation(domain_id, "kernel API call");
-        }
-        if required.can_map_memory && !actual.can_map_memory {
-            return self.violation(domain_id, "memory mapping");
-        }
-        if required.can_access_io && !actual.can_access_io {
-            return self.violation(domain_id, "I/O access");
-        }
-        if required.can_register_interrupts && !actual.can_register_interrupts {
-            return self.violation(domain_id, "interrupt registration");
-        }
-        if required.can_ipc && !actual.can_ipc {
-            return self.violation(domain_id, "IPC");
-        }
-        if required.allows_unsafe && !actual.allows_unsafe {
-            return self.violation(domain_id, "unsafe code");
-        }
-        if required.can_network && !actual.can_network {
-            return self.violation(domain_id, "network access");
-        }
-        if required.can_filesystem && !actual.can_filesystem {
-            return self.violation(domain_id, "filesystem access");
-        }
+        self.check_capability_field(domain_id, required.can_call_kernel_api, actual.can_call_kernel_api, "kernel API call")?;
+        self.check_capability_field(domain_id, required.can_map_memory, actual.can_map_memory, "memory mapping")?;
+        self.check_capability_field(domain_id, required.can_access_io, actual.can_access_io, "I/O access")?;
+        self.check_capability_field(domain_id, required.can_register_interrupts, actual.can_register_interrupts, "interrupt registration")?;
+        self.check_capability_field(domain_id, required.can_ipc, actual.can_ipc, "IPC")?;
+        self.check_capability_field(domain_id, required.allows_unsafe, actual.allows_unsafe, "unsafe code")?;
+        self.check_capability_field(domain_id, required.can_network, actual.can_network, "network access")?;
+        self.check_capability_field(domain_id, required.can_filesystem, actual.can_filesystem, "filesystem access")?;
 
         Ok(())
+    }
+
+    /// 個別の権限フィールドをチェック
+    fn check_capability_field(
+        &self,
+        domain_id: u64,
+        required: bool,
+        actual: bool,
+        operation: &str,
+    ) -> Result<(), SecurityViolation> {
+        if required && !actual {
+            self.violation(domain_id, operation)
+        } else {
+            Ok(())
+        }
     }
 
     /// セキュリティ違反を記録

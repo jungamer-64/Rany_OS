@@ -143,76 +143,17 @@ impl ShellFrontend for ConsoleFrontend {
                     self.input_stream = Some(stream);
                     return Some(line);
                 }
-                KeyCode::Backspace => {
-                    if !self.line_buffer.is_empty() && self.line_buffer.cursor > 0 {
-                        self.line_buffer.backspace();
-                        crate::console::write("\x08 \x08");
-                    }
-                }
-                KeyCode::Delete => {
-                    if self.line_buffer.cursor < self.line_buffer.len() {
-                        self.line_buffer.delete();
-                        // Redraw from cursor to end is tricky with just backspace/space
-                        // Easiest is to clear line visual (from cursor) and reprint
-                         // Or use ANSI to save cursor?
-                        self.clear_line_visual(); // Clears whole line basically
-                        self.redraw_line(shell);
-                    }
+                KeyCode::Backspace | KeyCode::Delete => {
+                    self.handle_delete_key(&event.key, shell);
                 }
                 KeyCode::Tab => {
-                     let completions = shell.complete(self.line_buffer.as_str());
-                    if completions.len() == 1 {
-                        self.clear_line_visual();
-                        self.line_buffer.set(&completions[0]);
-                         self.redraw_line(shell);
-                    } else if completions.len() > 1 {
-                        crate::console::write("\r\n");
-                        for c in &completions {
-                            crate::console::write(&format!("  {}\n", c));
-                        }
-                        self.redraw_line(shell);
-                    }
+                    self.handle_tab_completion(shell);
                 }
-                KeyCode::Up => {
-                    if let Some(prev) = self.navigator.prev(shell.history(), self.line_buffer.as_str()) {
-                        self.clear_line_visual();
-                        self.line_buffer.set(&prev);
-                        self.redraw_line(shell);
-                    }
+                KeyCode::Up | KeyCode::Down => {
+                    self.handle_history_navigation(&event.key, shell);
                 }
-                KeyCode::Down => {
-                    if let Some(next) = self.navigator.next(shell.history()) {
-                         self.clear_line_visual();
-                        self.line_buffer.set(&next);
-                         self.redraw_line(shell);
-                    }
-                }
-                KeyCode::Left => {
-                    if self.line_buffer.cursor > 0 {
-                        self.line_buffer.move_left();
-                        crate::console::write("\x1b[D");
-                    }
-                }
-                KeyCode::Right => {
-                    if self.line_buffer.cursor < self.line_buffer.len() {
-                        self.line_buffer.move_right();
-                        crate::console::write("\x1b[C");
-                    }
-                }
-                 KeyCode::Home => {
-                    let moves = self.line_buffer.cursor;
-                    self.line_buffer.move_home();
-                    // Move cursor left 'moves' times
-                     if moves > 0 {
-                        crate::console::write(&format!("\x1b[{}D", moves));
-                     }
-                }
-                KeyCode::End => {
-                    let moves = self.line_buffer.content.len() - self.line_buffer.cursor;
-                    self.line_buffer.move_end();
-                    if moves > 0 {
-                        crate::console::write(&format!("\x1b[{}C", moves));
-                    }
+                KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => {
+                    self.handle_cursor_movement(&event.key);
                 }
                 KeyCode::PageUp => {
                     crate::console::scroll(10);
@@ -220,42 +161,118 @@ impl ShellFrontend for ConsoleFrontend {
                 KeyCode::PageDown => {
                     crate::console::scroll(-10);
                 }
-                // Handle Ctrl+C, etc. if modifiers present?
-                // For now just basic char input
                 _ => {
                     if let Some(c) = event.to_char() {
-                         // Check for Ctrl+C
-                         if c == '\x03' {
-                             crate::console::write("^C\n");
-                             self.line_buffer.clear();
-                             self.navigator.reset_navigation();
-                             self.print_prompt(&shell.cwd);
-                             continue;
-                         } else if c == '\x0c' {
-                            // Ctrl+L (Form Feed) -> Clear Screen
-                            // Clear terminal and redraw prompt
-                            crate::console::write("\x1b[2J\x1b[H"); 
-                            self.print_prompt(&shell.cwd);
-                            crate::console::write(self.line_buffer.as_str());
-                            continue;
-                         }
-                        
-                        if self.line_buffer.cursor == self.line_buffer.len() {
-                            self.line_buffer.insert(c);
-                            let mut b = [0u8; 4];
-                            crate::console::write(c.encode_utf8(&mut b));
-                        } else {
-                            self.line_buffer.insert(c);
-                            // Insert in middle requires redraw of the rest of the line
-                             // Simplest: update buffer, clear visual, redraw
-                            // Optimize: save cursor, print rest, restore cursor?
-                            // For now:
-                             self.clear_line_visual();
-                            self.redraw_line(shell);
-                        }
+                        self.handle_char_input(c, shell);
                     }
                 }
             }
+        }
+    }
+
+    fn handle_delete_key(&mut self, key: &KeyCode, shell: &ExoShell) {
+        match key {
+            KeyCode::Backspace => {
+                if !self.line_buffer.is_empty() && self.line_buffer.cursor > 0 {
+                    self.line_buffer.backspace();
+                    crate::console::write("\x08 \x08");
+                }
+            }
+            KeyCode::Delete => {
+                if self.line_buffer.cursor < self.line_buffer.len() {
+                    self.line_buffer.delete();
+                    self.clear_line_visual();
+                    self.redraw_line(shell);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_tab_completion(&mut self, shell: &mut ExoShell) {
+        let completions = shell.complete(self.line_buffer.as_str());
+        if completions.len() == 1 {
+            self.clear_line_visual();
+            self.line_buffer.set(&completions[0]);
+            self.redraw_line(shell);
+        } else if completions.len() > 1 {
+            crate::console::write("\r\n");
+            for c in &completions {
+                crate::console::write(&format!("  {}\n", c));
+            }
+            self.redraw_line(shell);
+        }
+    }
+
+    fn handle_history_navigation(&mut self, key: &KeyCode, shell: &mut ExoShell) {
+        let entry = match key {
+            KeyCode::Up => self.navigator.prev(shell.history(), self.line_buffer.as_str()),
+            KeyCode::Down => self.navigator.next(shell.history()),
+            _ => None,
+        };
+        if let Some(text) = entry {
+            self.clear_line_visual();
+            self.line_buffer.set(&text);
+            self.redraw_line(shell);
+        }
+    }
+
+    fn handle_cursor_movement(&mut self, key: &KeyCode) {
+        match key {
+            KeyCode::Left => {
+                if self.line_buffer.cursor > 0 {
+                    self.line_buffer.move_left();
+                    crate::console::write("\x1b[D");
+                }
+            }
+            KeyCode::Right => {
+                if self.line_buffer.cursor < self.line_buffer.len() {
+                    self.line_buffer.move_right();
+                    crate::console::write("\x1b[C");
+                }
+            }
+            KeyCode::Home => {
+                let moves = self.line_buffer.cursor;
+                self.line_buffer.move_home();
+                if moves > 0 {
+                    crate::console::write(&format!("\x1b[{}D", moves));
+                }
+            }
+            KeyCode::End => {
+                let moves = self.line_buffer.content.len() - self.line_buffer.cursor;
+                self.line_buffer.move_end();
+                if moves > 0 {
+                    crate::console::write(&format!("\x1b[{}C", moves));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_char_input(&mut self, c: char, shell: &ExoShell) {
+        // Check for Ctrl+C
+        if c == '\x03' {
+            crate::console::write("^C\n");
+            self.line_buffer.clear();
+            self.navigator.reset_navigation();
+            self.print_prompt(&shell.cwd);
+            return;
+        } else if c == '\x0c' {
+            // Ctrl+L (Form Feed) -> Clear Screen
+            crate::console::write("\x1b[2J\x1b[H");
+            self.print_prompt(&shell.cwd);
+            crate::console::write(self.line_buffer.as_str());
+            return;
+        }
+
+        if self.line_buffer.cursor == self.line_buffer.len() {
+            self.line_buffer.insert(c);
+            let mut b = [0u8; 4];
+            crate::console::write(c.encode_utf8(&mut b));
+        } else {
+            self.line_buffer.insert(c);
+            self.clear_line_visual();
+            self.redraw_line(shell);
         }
     }
 }

@@ -523,6 +523,45 @@ fn detect_frame_page_size(frame: FrameIndex) -> usize {
     crate::mm::PAGE_SIZE_4K
 }
 
+/// Deallocate a physical frame using the buddy allocator (without zswap).
+fn dealloc_frame_by_size(phys: u64, page_size: usize) -> bool {
+    match page_size {
+        s if s == crate::mm::PAGE_SIZE_4K => {
+            let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+            buddy_allocator::buddy_dealloc_frame(physf);
+            true
+        }
+        s if s == crate::mm::PAGE_SIZE_2M => {
+            let physf2m = unsafe { PhysFrame::<Size2MiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+            buddy_allocator::buddy_dealloc_frame_2m(physf2m);
+            true
+        }
+        s if s == crate::mm::PAGE_SIZE_1G => {
+            let physf1g = unsafe { PhysFrame::<Size1GiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+            buddy_allocator::buddy_dealloc_frame_1g(physf1g);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Attempt zswap store for a frame, then deallocate on success.
+/// `buf` must cover the full page contents.
+fn zswap_store_then_dealloc(frame: FrameIndex, phys: u64, page_size: usize, buf: &[u8]) -> bool {
+    match crate::mm::zswap::zswap_store_auto(buf) {
+        Ok(_) => {
+            dealloc_frame_by_size(phys, page_size);
+            GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+            true
+        }
+        Err(e) => {
+            log::warn!("zswap_store failed for {:?} frame {:?}: {:?}", page_size, frame, e);
+            GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
+            false
+        }
+    }
+}
+
 // Generic helper: try storing page to zswap (4K/2M/1G) using available buffer(s) and
 // deallocate via the appropriate buddy deallocator on success. Returns true if deallocated.
 fn try_zswap_store_and_dealloc_any(frame: FrameIndex, buf4k: &mut [u8]) -> bool {
@@ -531,85 +570,32 @@ fn try_zswap_store_and_dealloc_any(frame: FrameIndex, buf4k: &mut [u8]) -> bool 
 
     // If zswap is disabled, just dealloc directly according to page size
     if !crate::mm::zswap::zswap_is_enabled() {
-        match page_size {
-            s if s == crate::mm::PAGE_SIZE_4K => {
-                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
-                buddy_allocator::buddy_dealloc_frame(physf);
-                return true;
-            }
-            s if s == crate::mm::PAGE_SIZE_2M => {
-                let physf2m = unsafe { PhysFrame::<Size2MiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
-                buddy_allocator::buddy_dealloc_frame_2m(physf2m);
-                return true;
-            }
-            s if s == crate::mm::PAGE_SIZE_1G => {
-                let physf1g = unsafe { PhysFrame::<Size1GiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
-                buddy_allocator::buddy_dealloc_frame_1g(physf1g);
-                return true;
-            }
-            _ => return false,
-        }
+        return dealloc_frame_by_size(phys, page_size);
     }
 
-    // zswap enabled: perform store and dealloc on success
+    // zswap enabled: copy page contents, store, and dealloc on success
     match page_size {
         s if s == crate::mm::PAGE_SIZE_4K => {
             let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
             let src = vaddr.as_u64() as *const u8;
             unsafe { core::ptr::copy_nonoverlapping(src, buf4k.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-            match crate::mm::zswap::zswap_store_auto(buf4k) {
-                Ok(_) => {
-                    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
-                    buddy_allocator::buddy_dealloc_frame(physf);
-                    GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
-                    true
-                }
-                Err(e) => {
-                    log::warn!("zswap_store failed for 4K frame {:?}: {:?}", frame, e);
-                    GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
-                    false
-                }
-            }
+            zswap_store_then_dealloc(frame, phys, page_size, buf4k)
         }
         s if s == crate::mm::PAGE_SIZE_2M => {
             let mut buf = crate::mm::async_swapout::buffer_pool_get_2m();
             let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
             unsafe { core::ptr::copy_nonoverlapping(vaddr.as_u64() as *const u8, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_2M); }
-            match crate::mm::zswap::zswap_store_auto(&buf) {
-                Ok(_) => {
-                    let physf2m = unsafe { PhysFrame::<Size2MiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
-                    buddy_allocator::buddy_dealloc_frame_2m(physf2m);
-                    GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
-                    crate::mm::async_swapout::buffer_pool_put_2m(buf);
-                    true
-                }
-                Err(e) => {
-                    log::warn!("zswap_store failed for 2M frame {:?}: {:?}", frame, e);
-                    GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
-                    crate::mm::async_swapout::buffer_pool_put_2m(buf);
-                    false
-                }
-            }
+            let ok = zswap_store_then_dealloc(frame, phys, page_size, &buf);
+            crate::mm::async_swapout::buffer_pool_put_2m(buf);
+            ok
         }
         s if s == crate::mm::PAGE_SIZE_1G => {
             let mut buf = crate::mm::async_swapout::buffer_pool_get_1g();
             let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
             unsafe { core::ptr::copy_nonoverlapping(vaddr.as_u64() as *const u8, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_1G); }
-            match crate::mm::zswap::zswap_store_auto(&buf) {
-                Ok(_) => {
-                    let physf1g = unsafe { PhysFrame::<Size1GiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
-                    buddy_allocator::buddy_dealloc_frame_1g(physf1g);
-                    GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
-                    crate::mm::async_swapout::buffer_pool_put_1g(buf);
-                    true
-                }
-                Err(e) => {
-                    log::warn!("zswap_store failed for 1G frame {:?}: {:?}", frame, e);
-                    GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
-                    crate::mm::async_swapout::buffer_pool_put_1g(buf);
-                    false
-                }
-            }
+            let ok = zswap_store_then_dealloc(frame, phys, page_size, &buf);
+            crate::mm::async_swapout::buffer_pool_put_1g(buf);
+            ok
         }
         _ => false,
     }
@@ -664,6 +650,100 @@ mod test_impl {
 
     static WORKER: Once<Arc<WorkerInner>> = Once::new();
 
+    fn process_file_swap_entry(entry: &SwapEntry, ino: u64, page_num: u64) {
+        let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
+            match crate::fs::write_inode_by_number(ino, offset, data) {
+                Ok(_) => Ok(()),
+                Err(_) => Err(()),
+            }
+        });
+
+        match written {
+            Ok(true) => {
+                release_frame_and_untrack(entry.frame);
+                TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+                crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
+            }
+            _ => {
+                process_file_swap_fallback(entry);
+            }
+        }
+    }
+
+    fn process_file_swap_fallback(entry: &SwapEntry) {
+        if crate::fs::page_cache().sync_all(|ino, offset, data| {
+            match crate::fs::write_inode_by_number(ino, offset, data) {
+                Ok(_) => Ok(()),
+                Err(_) => Err(()),
+            }
+        }).unwrap_or(0) > 0 {
+            release_frame_and_untrack(entry.frame);
+            TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+            crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
+        } else {
+            crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
+            crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
+        }
+    }
+
+    fn process_anon_swap_entry(entry: &SwapEntry, reuse_buf: &mut crate::mm::async_swapout::Buffer4K) {
+        if try_zswap_store_and_dealloc_any(entry.frame, reuse_buf) {
+            TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+            crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
+        } else {
+            TEST_ZSWAP_FAILS.fetch_add(1, Ordering::AcqRel);
+            crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
+        }
+    }
+
+    fn finalize_entry(thread_inner: &WorkerInner, entry: &SwapEntry) {
+        // 完了通知
+        let (lock, cvar) = &*entry.completion;
+        let mut done = lock.lock().unwrap();
+        *done = true;
+        cvar.notify_all();
+
+        // pending を解除
+        thread_inner.pending.lock().unwrap().remove(&entry.frame.as_usize());
+
+        // decrement file queue count when file processed (saturating)
+        if let SwapKind::File { .. } = entry.kind {
+            atomic_saturating_decrement(&TEST_FILE_QUEUE_COUNT);
+        }
+
+        // optional processing delay
+        let d = TEST_PROCESSING_DELAY_MS.load(Ordering::Acquire);
+        if d > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(d));
+        }
+    }
+
+    fn refill_token_bucket() {
+        let add = TEST_REFILL_PER_BATCH;
+        loop {
+            let cur = TEST_TOKENS.load(Ordering::Acquire);
+            let cap = TEST_TOKEN_CAPACITY_DYNAMIC.load(Ordering::Acquire);
+            if cur >= cap { break; }
+            let new = (cur + add).min(cap);
+            match TEST_TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fn drain_batch(q_guard: &mut std::sync::MutexGuard<'_, VecDeque<SwapEntry>>) -> Vec<SwapEntry> {
+        let mut batch = Vec::new();
+        for _ in 0..BATCH_SIZE {
+            if let Some(entry) = q_guard.pop_front() {
+                batch.push(entry);
+            } else {
+                break;
+            }
+        }
+        batch
+    }
+
     fn init_worker() -> Arc<WorkerInner> {
         WORKER.call_once(|| {
             Arc::new(WorkerInner {
@@ -676,117 +756,36 @@ mod test_impl {
         let worker = WORKER.get().as_ref().unwrap().clone(); // Arc clone
 
         // Spawn worker thread if not already running
-
-        // Spawn worker thread if not already running
         if TEST_WORKER_RUNNING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             let thread_inner = worker.clone();
             std::thread::spawn(move || {
-                // reuse buffer to avoid per-page allocations
                 let mut reuse_buf = crate::mm::async_swapout::buffer_pool_get_4k();
                 loop {
-                    // Wait for work or shutdown
                     let mut q_guard = thread_inner.queue.lock().unwrap();
                     while q_guard.is_empty() && !TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
                         q_guard = thread_inner.condvar.wait(q_guard).unwrap();
                     }
 
-                    // if shutdown and queue empty, exit
                     if q_guard.is_empty() && TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
                         break;
                     }
 
-                    let mut batch = Vec::new();
-                    for _ in 0..BATCH_SIZE {
-                        if let Some(entry) = q_guard.pop_front() {
-                            batch.push(entry);
-                        } else {
-                            break;
-                        }
-                    }
+                    let batch = drain_batch(&mut q_guard);
                     drop(q_guard);
 
-                    // バッチ処理
                     for entry in batch {
                         match entry.kind {
                             SwapKind::File { ino, page_num } => {
-                                let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
-                                    match crate::fs::write_inode_by_number(ino, offset, data) {
-                                        Ok(_) => Ok(()),
-                                        Err(_) => Err(()),
-                                    }
-                                });
-
-                                match written {
-                                    Ok(true) => {
-                                        // Release memcg accounting and deallocate
-                                        release_frame_and_untrack(entry.frame);
-                                        TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
-                                        crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
-                                    }
-                                    _ => {
-                                        // Fall back to global sync; if any were written by global flush, free
-                                        if crate::fs::page_cache().sync_all(|ino, offset, data| {
-                                            match crate::fs::write_inode_by_number(ino, offset, data) {
-                                                Ok(_) => Ok(()),
-                                                Err(_) => Err(()),
-                                            }
-                                        }).unwrap_or(0) > 0 {
-                                            release_frame_and_untrack(entry.frame);
-                                            TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
-                                            crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
-                                        } else {
-                                            crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
-                                            crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
-                                        }
-                                    }
-                                }
+                                process_file_swap_entry(&entry, ino, page_num);
                             }
                             SwapKind::Anon => {
-                                if try_zswap_store_and_dealloc_any(entry.frame, &mut reuse_buf) {
-                                    TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
-                                    crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
-                                } else {
-                                    TEST_ZSWAP_FAILS.fetch_add(1, Ordering::AcqRel);
-                                    crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
-                                }
+                                process_anon_swap_entry(&entry, &mut reuse_buf);
                             }
                         }
-
-                        // 完了通知
-                        let (lock, cvar) = &*entry.completion;
-                        let mut done = lock.lock().unwrap();
-                        *done = true;
-                        cvar.notify_all();
-
-                        // pending を解除
-                        thread_inner.pending.lock().unwrap().remove(&entry.frame.as_usize());
-
-                        // decrement file queue count when file processed (saturating)
-                        if let SwapKind::File { .. } = entry.kind {
-                            atomic_saturating_decrement(&TEST_FILE_QUEUE_COUNT);
-                        }
-
-                        // optional processing delay
-                        let d = TEST_PROCESSING_DELAY_MS.load(Ordering::Acquire);
-                        if d > 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(d));
-                        }
+                        finalize_entry(&thread_inner, &entry);
                     }
 
-                    // Refill token bucket after processing batch
-                    {
-                        let add = TEST_REFILL_PER_BATCH;
-                        loop {
-                            let cur = TEST_TOKENS.load(Ordering::Acquire);
-                            let cap = TEST_TOKEN_CAPACITY_DYNAMIC.load(Ordering::Acquire);
-                            if cur >= cap { break; }
-                            let new = (cur + add).min(cap);
-                            match TEST_TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
-                                Ok(_) => break,
-                                Err(_) => continue,
-                            }
-                        }
-                    }
+                    refill_token_bucket();
                 }
 
                 crate::mm::async_swapout::buffer_pool_put_4k(reuse_buf);
@@ -1100,102 +1099,105 @@ mod kernel_impl {
         loop {
             WaitForWork.await;
 
-            // If shutdown requested and channel empty, stop
-            if WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
-                if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
-                    if ch.1.is_empty() {
-                        WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
-                        break;
-                    }
-                } else {
-                    WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
-                    break;
-                }
+            if should_shutdown() {
+                break;
             }
 
-            // Drain up to BATCH_SIZE entries
-            let mut batch: Vec<SwapEntryKernel> = Vec::new();
-            if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
-                let rx = &ch.1;
-                for _ in 0..BATCH_SIZE {
-                    if let Some(entry) = rx.recv() {
-                        batch.push(entry);
-                    } else {
-                        break;
-                    }
-                }
-            }
+            let batch = drain_batch();
 
             // Process batch
             for entry in batch {
-                match entry.kind {
-                    SwapKind::File { ino, page_num } => {
-                        let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
-                            match crate::fs::write_inode_by_number(ino, offset, data) {
-                                Ok(_) => Ok(()),
-                                Err(_) => Err(()),
-                            }
-                        });
-
-                        match written {
-                            Ok(true) => {
-                                // Release memcg accounting and deallocate
-                                release_frame_and_untrack(entry.frame);
-                                crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
-                            }
-                            _ => {
-                                // Fall back to global sync; if any were written by global flush, free
-                                if crate::fs::page_cache().sync_all(|ino, offset, data| {
-                                    match crate::fs::write_inode_by_number(ino, offset, data) {
-                                        Ok(_) => Ok(()),
-                                        Err(_) => Err(()),
-                                    }
-                                }).unwrap_or(0) > 0 {
-                                    release_frame_and_untrack(entry.frame);
-                                    crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
-                                } else {
-                                    crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
-                                    crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
-                                }
-                            }
-                        }
-
-                        // Remove pending flag and update queue counters
-                        page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
-                        atomic_saturating_decrement(&QUEUE_COUNT);
-                        atomic_saturating_decrement(&FILE_QUEUE_COUNT); // safe to call; saturating at 0
-                    }
-                    SwapKind::Anon => {
-                        if try_zswap_store_and_dealloc_any(entry.frame, &mut reuse_buf) {
-                            // success: frame deallocated via helper
-                            crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
-                        } else {
-                            log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
-                            crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
-                        }
-
-                        page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
-                        atomic_saturating_decrement(&QUEUE_COUNT);
-                    }
-                }
+                process_swap_entry(entry, &mut reuse_buf);
             }
 
-
             // Refill token bucket after processing batch
-            // Only refill if we actually processed something or if we just woke up to check
-            // Use a simple strategy: constant refill rate per batch processing cycle
             add_tokens(TOKEN_REFILL_PER_BATCH_ATOMIC.load(Ordering::Acquire));
 
-            // If shutdown requested and channel empty after processing, stop
-            if WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
-                if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
-                    if ch.1.is_empty() {
-                        WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
-                        break;
-                    }
+            if should_shutdown() {
+                break;
+            }
+        }
+    }
+
+    /// Check if the worker should shut down (shutdown requested and channel empty).
+    fn should_shutdown() -> bool {
+        if !WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        let channel_empty = CHANNEL_ONCE
+            .get()
+            .and_then(|opt| opt.as_ref())
+            .map_or(true, |ch| ch.1.is_empty());
+        if channel_empty {
+            WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
+        }
+        channel_empty
+    }
+
+    /// Drain up to BATCH_SIZE entries from the channel.
+    fn drain_batch() -> Vec<SwapEntryKernel> {
+        let mut batch: Vec<SwapEntryKernel> = Vec::new();
+        if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+            let rx = &ch.1;
+            for _ in 0..BATCH_SIZE {
+                if let Some(entry) = rx.recv() {
+                    batch.push(entry);
                 } else {
-                    WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
                     break;
+                }
+            }
+        }
+        batch
+    }
+
+    /// Process a single swap entry (file or anon).
+    fn process_swap_entry(entry: SwapEntryKernel, reuse_buf: &mut Vec<u8>) {
+        match entry.kind {
+            SwapKind::File { ino, page_num } => {
+                process_file_swap(entry.frame, ino, page_num);
+                page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
+                atomic_saturating_decrement(&QUEUE_COUNT);
+                atomic_saturating_decrement(&FILE_QUEUE_COUNT);
+            }
+            SwapKind::Anon => {
+                if try_zswap_store_and_dealloc_any(entry.frame, reuse_buf) {
+                    crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
+                } else {
+                    log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
+                    crate::mm::page_reclaim::notify_async_swapout_failure(entry.frame);
+                }
+                page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
+                atomic_saturating_decrement(&QUEUE_COUNT);
+            }
+        }
+    }
+
+    /// Process a file swapout entry.
+    fn process_file_swap(frame: FrameIndex, ino: u64, page_num: u64) {
+        let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
+            match crate::fs::write_inode_by_number(ino, offset, data) {
+                Ok(_) => Ok(()),
+                Err(_) => Err(()),
+            }
+        });
+
+        match written {
+            Ok(true) => {
+                release_frame_and_untrack(frame);
+                crate::mm::page_reclaim::notify_async_swapout_success(frame);
+            }
+            _ => {
+                if crate::fs::page_cache().sync_all(|ino, offset, data| {
+                    match crate::fs::write_inode_by_number(ino, offset, data) {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(()),
+                    }
+                }).unwrap_or(0) > 0 {
+                    release_frame_and_untrack(frame);
+                    crate::mm::page_reclaim::notify_async_swapout_success(frame);
+                } else {
+                    crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
+                    crate::mm::page_reclaim::notify_async_swapout_failure(frame);
                 }
             }
         }

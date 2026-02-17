@@ -39,6 +39,77 @@ fn register_pci_dma_width(dev: &crate::io::pci::PciDeviceInfo, bits: u8) {
     }
 }
 
+/// VirtIO PCI capabilities の解析結果
+struct VirtioCapabilities {
+    common_cfg: Option<(u8, u32, u32)>,
+    notify_cfg: Option<(u8, u32, u32)>,
+    isr_cfg: Option<(u8, u32, u32)>,
+    device_cfg: Option<(u8, u32, u32)>,
+    notify_multiplier: u32,
+}
+
+/// PCI vendor-specific ケーパビリティから VirtIO 構成を解析
+fn parse_virtio_capabilities(dev: &crate::io::pci::PciDeviceInfo) -> VirtioCapabilities {
+    let bus = dev.bdf.bus();
+    let device = dev.bdf.device();
+    let function = dev.bdf.function();
+
+    let mut caps = VirtioCapabilities {
+        common_cfg: None,
+        notify_cfg: None,
+        isr_cfg: None,
+        device_cfg: None,
+        notify_multiplier: 1,
+    };
+
+    for (_cap_id, cap_ptr) in &dev.capabilities {
+        let cap_id_raw = crate::io::pci::pci_read8(bus, device, function, *cap_ptr);
+        if cap_id_raw != 0x09 {
+            continue;
+        }
+        let ptr = *cap_ptr;
+        let cfg_type = crate::io::pci::pci_read8(bus, device, function, ptr + 3);
+        let bar = crate::io::pci::pci_read8(bus, device, function, ptr + 4);
+        let offset = crate::io::pci::pci_read(bus, device, function, (ptr + 8) as u8);
+        let length = crate::io::pci::pci_read(bus, device, function, (ptr + 12) as u8);
+
+        match cfg_type {
+            1 => caps.common_cfg = Some((bar, offset, length)),
+            2 => {
+                caps.notify_cfg = Some((bar, offset, length));
+                caps.notify_multiplier =
+                    crate::io::pci::pci_read(bus, device, function, (ptr + 16) as u8) as u32;
+            }
+            3 => caps.isr_cfg = Some((bar, offset, length)),
+            4 => caps.device_cfg = Some((bar, offset, length)),
+            _ => {}
+        }
+    }
+
+    caps
+}
+
+/// BAR 情報からオプショナルな仮想アドレスを解決
+fn resolve_bar_virt_addr(
+    dev: &crate::io::pci::PciDeviceInfo,
+    cfg: Option<(u8, u32, u32)>,
+) -> usize {
+    let (bar, offset, _) = match cfg {
+        Some(c) => c,
+        None => return 0,
+    };
+    if (bar as usize) >= dev.bars.len() {
+        return 0;
+    }
+    match dev.bars[bar as usize] {
+        Some(bar_info) => {
+            let phys = bar_info.base() + (offset as u64);
+            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(phys)).as_u64() as usize
+        }
+        None => 0,
+    }
+}
+
 /// Attempt to create a VirtioPciTransport by parsing PCI vendor-specific capabilities.
 ///
 /// Parses cfg_type 1 (common_cfg), 2 (notify_cfg), 3 (isr_cfg), 4 (device_cfg)
@@ -48,42 +119,10 @@ fn try_create_pci_transport(
     dev: &crate::io::pci::PciDeviceInfo,
     device_type: crate::io::virtio::VirtioDeviceType,
 ) -> Option<crate::io::virtio::VirtioPciTransport> {
-    let bus = dev.bdf.bus();
-    let device = dev.bdf.device();
-    let function = dev.bdf.function();
+    let caps = parse_virtio_capabilities(dev);
 
-    let mut common_cfg: Option<(u8, u32, u32)> = None; // (bar, offset, length)
-    let mut notify_cfg: Option<(u8, u32, u32)> = None;
-    let mut isr_cfg: Option<(u8, u32, u32)> = None;
-    let mut device_cfg: Option<(u8, u32, u32)> = None;
-    let mut notify_multiplier: u32 = 1;
-
-    for (_cap_id, cap_ptr) in &dev.capabilities {
-        let cap_id_raw = crate::io::pci::pci_read8(bus, device, function, *cap_ptr);
-        if cap_id_raw != 0x09 {
-            continue; // Not vendor-specific
-        }
-        let ptr = *cap_ptr;
-        let cfg_type = crate::io::pci::pci_read8(bus, device, function, ptr + 3);
-        let bar = crate::io::pci::pci_read8(bus, device, function, ptr + 4);
-        let offset = crate::io::pci::pci_read(bus, device, function, (ptr + 8) as u8);
-        let length = crate::io::pci::pci_read(bus, device, function, (ptr + 12) as u8);
-
-        match cfg_type {
-            1 => common_cfg = Some((bar, offset, length)),
-            2 => {
-                notify_cfg = Some((bar, offset, length));
-                notify_multiplier =
-                    crate::io::pci::pci_read(bus, device, function, (ptr + 16) as u8) as u32;
-            }
-            3 => isr_cfg = Some((bar, offset, length)),
-            4 => device_cfg = Some((bar, offset, length)),
-            _ => {}
-        }
-    }
-
-    let (cbar, coff, _) = common_cfg?;
-    let (dbar, doff, _) = device_cfg?;
+    let (cbar, coff, _) = caps.common_cfg?;
+    let (dbar, doff, _) = caps.device_cfg?;
 
     if (cbar as usize) >= dev.bars.len() || (dbar as usize) >= dev.bars.len() {
         return None;
@@ -100,44 +139,15 @@ fn try_create_pci_transport(
     let device_virt =
         crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(device_phys)).as_u64() as usize;
 
-    let notify_virt = if let Some((nbar, noff, _)) = notify_cfg {
-        if (nbar as usize) < dev.bars.len() {
-            if let Some(nbar_info) = dev.bars[nbar as usize] {
-                let nphys = nbar_info.base() + (noff as u64);
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(nphys)).as_u64()
-                    as usize
-            } else {
-                0
-            }
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let isr_virt = if let Some((ibar, ioff, _)) = isr_cfg {
-        if (ibar as usize) < dev.bars.len() {
-            if let Some(ibar_info) = dev.bars[ibar as usize] {
-                let iphys = ibar_info.base() + (ioff as u64);
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(iphys)).as_u64()
-                    as usize
-            } else {
-                0
-            }
-        } else {
-            0
-        }
-    } else {
-        0
-    };
+    let notify_virt = resolve_bar_virt_addr(dev, caps.notify_cfg);
+    let isr_virt = resolve_bar_virt_addr(dev, caps.isr_cfg);
 
     unsafe {
         crate::io::virtio::VirtioPciTransport::new(
             dev.bdf.to_u16() as u32,
             common_virt,
             notify_virt,
-            notify_multiplier,
+            caps.notify_multiplier,
             isr_virt,
             device_virt,
             device_type,
@@ -391,459 +401,475 @@ impl SystemIntegration {
         let virtio_devices = crate::io::pci::find_virtio_devices();
         for dev in virtio_devices {
             match dev.device_id.0 {
-                0x1001 | 0x1042 => {
-                    // VirtIO Block Device
-                    self.log(&alloc::format!(
-                        "  Initializing VirtIO-Blk at {:02x}:{:02x}.{}",
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function()
-                    ));
-                    let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
-                    register_pci_dma_width(&dev, dma_bits);
-                    let iommu_device = crate::io::iommu::types::DeviceId::new(
-                        dev.segment,
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function(),
-                    );
-                    dev.enable_bus_master();
-                    dev.enable_memory_space();
-
-                    if let Some(bar0) = dev.bars[0] {
-                        let bar0_phys = bar0.base();
-                        let bar0_virt =
-                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                                .as_u64();
-
-                        // Attempt PCI transport first
-                        let mut initialized_via_pci = false;
-                        if let Some(transport) = try_create_pci_transport(
-                            &dev,
-                            crate::io::virtio::VirtioDeviceType::Block,
-                        ) {
-                            match unsafe {
-                                crate::io::virtio::init_virtio_blk_with_transport(
-                                    alloc::boxed::Box::new(transport),
-                                    Some(iommu_device),
-                                )
-                            } {
-                                Ok(()) => {
-                                    self.log("    VirtIO-blk PCI transport initialized");
-                                    initialized_via_pci = true;
-                                    // IoScheduler に登録
-                                    crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
-                                    self.log("    VirtIO-blk registered with IoScheduler");
-                                }
-                                Err(e) => {
-                                    self.log(&alloc::format!(
-                                        "    VirtIO-blk PCI init failed: {:?}, falling back to MMIO",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-
-                        if !initialized_via_pci {
-                            use alloc::boxed::Box;
-                            use crate::driver_registry::{register_driver, driver_registry};
-                            use crate::io::virtio::VirtioBlkDriver;
-
-                            let drv = Box::new(VirtioBlkDriver::new(bar0_virt, iommu_device));
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        self.log(&alloc::format!("    VirtIO-blk driver start failed: {:?}", e));
-                                    } else {
-                                        self.log("    VirtIO-blk driver initialized via DriverRegistry");
-                                        // IoScheduler に登録
-                                        crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
-                                        self.log("    VirtIO-blk registered with IoScheduler");
-                                    }
-                                }
-                                Err(e) => self.log(&alloc::format!("    VirtIO-blk driver registration failed: {:?}", e)),
-                            }
-                        }
-                    } else {
-                        self.log("    VirtIO-blk found but BAR0 is missing, skipping init");
-                    }
-                }
-                0x1000 | 0x1041 => {
-                    // VirtIO Network Device
-                    self.log(&alloc::format!(
-                        "  Initializing VirtIO-Net at {:02x}:{:02x}.{}",
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function()
-                    ));
-                    let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
-                    register_pci_dma_width(&dev, dma_bits);
-                    let iommu_device = crate::io::iommu::types::DeviceId::new(
-                        dev.segment,
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function(),
-                    );
-                    dev.enable_bus_master();
-                    dev.enable_memory_space();
-
-                    if let Some(bar0) = dev.bars[0] {
-                        let bar0_phys = bar0.base();
-                        let bar0_virt =
-                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                                .as_u64();
-
-                        // Attempt PCI transport first
-                        let mut initialized_via_pci = false;
-                        if let Some(transport) = try_create_pci_transport(
-                            &dev,
-                            crate::io::virtio::VirtioDeviceType::Network,
-                        ) {
-                            match crate::io::virtio::init_virtio_net_with_transport(
-                                alloc::boxed::Box::new(transport),
-                            ) {
-                                Ok(()) => {
-                                    self.log("    VirtIO-net PCI transport initialized");
-                                    initialized_via_pci = true;
-
-                                    // Ensure Net Bridge is initialized (idempotent)
-                                    if !crate::net::driver_bridge::is_initialized() {
-                                        match crate::net::init_driver_bridge() {
-                                            Ok(()) => self.log("    Net Bridge initialized by integration"),
-                                            Err(_) => self.log("    Net Bridge init failed"),
-                                        }
-                                    } else {
-                                        self.log("    Net Bridge already initialized");
-                                    }
-                                }
-                                Err(e) => {
-                                    self.log(&alloc::format!(
-                                        "    VirtIO-net PCI init failed: {:?}, falling back to MMIO",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-
-                        // Register Driver via DriverRegistry
-                        use alloc::boxed::Box;
-                        use crate::driver_registry::{register_driver, driver_registry};
-                        use crate::net::driver::VirtioNetDriver;
-
-                        if initialized_via_pci {
-                            let drv = Box::new(VirtioNetDriver::new());
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
-                                    } else {
-                                        self.log("    VirtIO-net driver initialized via DriverRegistry");
-                                    }
-                                }
-                                Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
-                            }
-                        } else {
-                            let drv = Box::new(VirtioNetDriver::new_with_device(bar0_virt as u64, iommu_device));
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
-                                    } else {
-                                        self.log("    VirtIO-net driver initialized via DriverRegistry");
-                                    }
-                                }
-                                Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
-                            }
-                        }
-                    } else {
-                        self.log("    VirtIO-net found but BAR0 is missing, skipping init");
-                    }
-                }
-                0x1003 | 0x1043 => {
-                    // VirtIO Console Device
-                    self.log(&alloc::format!(
-                        "  Initializing VirtIO-Console at {:02x}:{:02x}.{}",
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function()
-                    ));
-                    let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
-                    register_pci_dma_width(&dev, dma_bits);
-                    let iommu_device = crate::io::iommu::types::DeviceId::new(
-                        dev.segment,
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function(),
-                    );
-                    dev.enable_bus_master();
-                    dev.enable_memory_space();
-
-                    if let Some(bar0) = dev.bars[0] {
-                        let bar0_phys = bar0.base();
-                        let bar0_virt =
-                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                                .as_u64();
-
-                        let mut initialized_via_pci = false;
-                        if let Some(transport) = try_create_pci_transport(
-                            &dev,
-                            crate::io::virtio::VirtioDeviceType::Console,
-                        ) {
-                            match unsafe {
-                                crate::io::virtio::init_virtio_console_with_transport(
-                                    alloc::boxed::Box::new(transport),
-                                    Some(iommu_device),
-                                )
-                            } {
-                                Ok(()) => {
-                                    self.log("    VirtIO-console PCI transport initialized");
-                                    initialized_via_pci = true;
-                                }
-                                Err(e) => {
-                                    self.log(&alloc::format!(
-                                        "    VirtIO-console PCI init failed: {:?}, falling back to MMIO",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-
-                        if !initialized_via_pci {
-                            use alloc::boxed::Box;
-                            use crate::driver_registry::{register_driver, driver_registry};
-                            use crate::io::virtio::VirtioConsoleDriver;
-
-                            let drv = Box::new(VirtioConsoleDriver::new(bar0_virt, iommu_device));
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        self.log(&alloc::format!("    VirtIO-console driver start failed: {:?}", e));
-                                    } else {
-                                        self.log("    VirtIO-console driver initialized via DriverRegistry");
-                                    }
-                                }
-                                Err(e) => self.log(&alloc::format!("    VirtIO-console driver registration failed: {:?}", e)),
-                            }
-                        }
-                    } else {
-                        self.log("    VirtIO-console found but BAR0 is missing, skipping init");
-                    }
-                }
-                0x1052 => {
-                    // VirtIO Input Device
-                    self.log(&alloc::format!(
-                        "  Initializing VirtIO-Input at {:02x}:{:02x}.{}",
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function()
-                    ));
-                    let dma_bits: u8 = 64;
-                    register_pci_dma_width(&dev, dma_bits);
-                    let iommu_device = crate::io::iommu::types::DeviceId::new(
-                        dev.segment,
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function(),
-                    );
-                    dev.enable_bus_master();
-                    dev.enable_memory_space();
-
-                    if let Some(bar0) = dev.bars[0] {
-                        let bar0_phys = bar0.base();
-                        let bar0_virt =
-                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                                .as_u64();
-
-                        let mut initialized_via_pci = false;
-                        if let Some(transport) = try_create_pci_transport(
-                            &dev,
-                            crate::io::virtio::VirtioDeviceType::Input,
-                        ) {
-                            match unsafe {
-                                crate::io::virtio::init_virtio_input_with_transport(
-                                    alloc::boxed::Box::new(transport),
-                                    Some(iommu_device),
-                                )
-                            } {
-                                Ok(()) => {
-                                    self.log("    VirtIO-input PCI transport initialized");
-                                    initialized_via_pci = true;
-                                }
-                                Err(e) => {
-                                    self.log(&alloc::format!(
-                                        "    VirtIO-input PCI init failed: {:?}, falling back to MMIO",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-
-                        if !initialized_via_pci {
-                            use alloc::boxed::Box;
-                            use crate::driver_registry::{register_driver, driver_registry};
-                            use crate::io::virtio::VirtioInputDriver;
-
-                            let drv = Box::new(VirtioInputDriver::new(bar0_virt, iommu_device));
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        self.log(&alloc::format!("    VirtIO-input driver start failed: {:?}", e));
-                                    } else {
-                                        self.log("    VirtIO-input driver initialized via DriverRegistry");
-                                    }
-                                }
-                                Err(e) => self.log(&alloc::format!("    VirtIO-input driver registration failed: {:?}", e)),
-                            }
-                        }
-                    } else {
-                        self.log("    VirtIO-input found but BAR0 is missing, skipping init");
-                    }
-                }
-                0x1005 | 0x1045 => {
-                    // VirtIO Balloon Device
-                    self.log(&alloc::format!(
-                        "  Initializing VirtIO-Balloon at {:02x}:{:02x}.{}",
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function()
-                    ));
-                    let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
-                    register_pci_dma_width(&dev, dma_bits);
-                    let iommu_device = crate::io::iommu::types::DeviceId::new(
-                        dev.segment,
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function(),
-                    );
-                    dev.enable_bus_master();
-                    dev.enable_memory_space();
-
-                    if let Some(bar0) = dev.bars[0] {
-                        let bar0_phys = bar0.base();
-                        let bar0_virt =
-                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                                .as_u64();
-
-                        let mut initialized_via_pci = false;
-                        if let Some(transport) = try_create_pci_transport(
-                            &dev,
-                            crate::io::virtio::VirtioDeviceType::Balloon,
-                        ) {
-                            match unsafe {
-                                crate::io::virtio::init_virtio_balloon_with_transport(
-                                    alloc::boxed::Box::new(transport),
-                                    Some(iommu_device),
-                                )
-                            } {
-                                Ok(()) => {
-                                    self.log("    VirtIO-balloon PCI transport initialized");
-                                    initialized_via_pci = true;
-                                }
-                                Err(e) => {
-                                    self.log(&alloc::format!(
-                                        "    VirtIO-balloon PCI init failed: {:?}, falling back to MMIO",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-
-                        if !initialized_via_pci {
-                            use alloc::boxed::Box;
-                            use crate::driver_registry::{register_driver, driver_registry};
-                            use crate::io::virtio::VirtioBalloonDriver;
-
-                            let drv = Box::new(VirtioBalloonDriver::new(bar0_virt, iommu_device));
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        self.log(&alloc::format!("    VirtIO-balloon driver start failed: {:?}", e));
-                                    } else {
-                                        self.log("    VirtIO-balloon driver initialized via DriverRegistry");
-                                    }
-                                }
-                                Err(e) => self.log(&alloc::format!("    VirtIO-balloon driver registration failed: {:?}", e)),
-                            }
-                        }
-                    } else {
-                        self.log("    VirtIO-balloon found but BAR0 is missing, skipping init");
-                    }
-                }
-                0x1050 => {
-                    // VirtIO GPU Device
-                    self.log(&alloc::format!(
-                        "  Initializing VirtIO-GPU at {:02x}:{:02x}.{}",
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function()
-                    ));
-                    let dma_bits: u8 = 64;
-                    register_pci_dma_width(&dev, dma_bits);
-                    let iommu_device = crate::io::iommu::types::DeviceId::new(
-                        dev.segment,
-                        dev.bdf.bus(),
-                        dev.bdf.device(),
-                        dev.bdf.function(),
-                    );
-                    dev.enable_bus_master();
-                    dev.enable_memory_space();
-
-                    if let Some(bar0) = dev.bars[0] {
-                        let bar0_phys = bar0.base();
-                        let bar0_virt =
-                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                                .as_u64();
-
-                        let mut initialized_via_pci = false;
-                        if let Some(transport) = try_create_pci_transport(
-                            &dev,
-                            crate::io::virtio::VirtioDeviceType::Gpu,
-                        ) {
-                            match unsafe {
-                                crate::gpu::init_virtio_gpu_for_device(
-                                    alloc::boxed::Box::new(transport),
-                                    iommu_device,
-                                )
-                            } {
-                                Ok(()) => {
-                                    self.log("    VirtIO-gpu PCI transport initialized");
-                                    initialized_via_pci = true;
-                                }
-                                Err(e) => {
-                                    self.log(&alloc::format!(
-                                        "    VirtIO-gpu PCI init failed: {:?}, falling back to MMIO",
-                                        e
-                                    ));
-                                }
-                            }
-                        }
-
-                        if !initialized_via_pci {
-                            use alloc::boxed::Box;
-                            use crate::driver_registry::{register_driver, driver_registry};
-                            use crate::gpu::gpu_driver::VirtioGpuDriver;
-
-                            let drv = Box::new(VirtioGpuDriver::new(bar0_virt, iommu_device));
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        self.log(&alloc::format!("    VirtIO-gpu driver start failed: {:?}", e));
-                                    } else {
-                                        self.log("    VirtIO-gpu driver initialized via DriverRegistry");
-                                    }
-                                }
-                                Err(e) => self.log(&alloc::format!("    VirtIO-gpu driver registration failed: {:?}", e)),
-                            }
-                        }
-                    } else {
-                        self.log("    VirtIO-gpu found but BAR0 is missing, skipping init");
-                    }
-                }
+                0x1001 | 0x1042 => self.init_virtio_blk_device(&dev),
+                0x1000 | 0x1041 => self.init_virtio_net_device(&dev),
+                0x1003 | 0x1043 => self.init_virtio_console_device(&dev),
+                0x1052 => self.init_virtio_input_device(&dev),
+                0x1005 | 0x1045 => self.init_virtio_balloon_device(&dev),
+                0x1050 => self.init_virtio_gpu_device(&dev),
                 _ => {}
             }
         }
 
         // Initialize NVMe controllers
+        self.init_nvme_devices();
+
+        // Initialize HDA Audio
+        self.init_hda_devices();
+
+        self.status = IntegrationStatus::DevicesInitialized;
+        Ok(())
+    }
+
+    fn init_virtio_blk_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+        self.log(&alloc::format!(
+            "  Initializing VirtIO-Blk at {:02x}:{:02x}.{}",
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function()
+        ));
+        let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
+        register_pci_dma_width(dev, dma_bits);
+        let iommu_device = crate::io::iommu::types::DeviceId::new(
+            dev.segment,
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+        );
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+
+        if let Some(bar0) = dev.bars[0] {
+            let bar0_phys = bar0.base();
+            let bar0_virt =
+                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
+
+            // Attempt PCI transport first
+            let mut initialized_via_pci = false;
+            if let Some(transport) = try_create_pci_transport(
+                dev,
+                crate::io::virtio::VirtioDeviceType::Block,
+            ) {
+                match unsafe {
+                    crate::io::virtio::init_virtio_blk_with_transport(
+                        alloc::boxed::Box::new(transport),
+                        Some(iommu_device),
+                    )
+                } {
+                    Ok(()) => {
+                        self.log("    VirtIO-blk PCI transport initialized");
+                        initialized_via_pci = true;
+                        // IoScheduler に登録
+                        crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                        self.log("    VirtIO-blk registered with IoScheduler");
+                    }
+                    Err(e) => {
+                        self.log(&alloc::format!(
+                            "    VirtIO-blk PCI init failed: {:?}, falling back to MMIO",
+                            e
+                        ));
+                    }
+                }
+            }
+
+            if !initialized_via_pci {
+                use alloc::boxed::Box;
+                use crate::driver_registry::{register_driver, driver_registry};
+                use crate::io::virtio::VirtioBlkDriver;
+
+                let drv = Box::new(VirtioBlkDriver::new(bar0_virt, iommu_device));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    VirtIO-blk driver start failed: {:?}", e));
+                        } else {
+                            self.log("    VirtIO-blk driver initialized via DriverRegistry");
+                            // IoScheduler に登録
+                            crate::io::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                            self.log("    VirtIO-blk registered with IoScheduler");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!("    VirtIO-blk driver registration failed: {:?}", e)),
+                }
+            }
+        } else {
+            self.log("    VirtIO-blk found but BAR0 is missing, skipping init");
+        }
+    }
+
+    fn init_virtio_net_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+        self.log(&alloc::format!(
+            "  Initializing VirtIO-Net at {:02x}:{:02x}.{}",
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function()
+        ));
+        let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
+        register_pci_dma_width(dev, dma_bits);
+        let iommu_device = crate::io::iommu::types::DeviceId::new(
+            dev.segment,
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+        );
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+
+        if let Some(bar0) = dev.bars[0] {
+            let bar0_phys = bar0.base();
+            let bar0_virt =
+                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
+
+            // Attempt PCI transport first
+            let mut initialized_via_pci = false;
+            if let Some(transport) = try_create_pci_transport(
+                dev,
+                crate::io::virtio::VirtioDeviceType::Network,
+            ) {
+                match crate::io::virtio::init_virtio_net_with_transport(
+                    alloc::boxed::Box::new(transport),
+                ) {
+                    Ok(()) => {
+                        self.log("    VirtIO-net PCI transport initialized");
+                        initialized_via_pci = true;
+
+                        // Ensure Net Bridge is initialized (idempotent)
+                        if !crate::net::driver_bridge::is_initialized() {
+                            match crate::net::init_driver_bridge() {
+                                Ok(()) => self.log("    Net Bridge initialized by integration"),
+                                Err(_) => self.log("    Net Bridge init failed"),
+                            }
+                        } else {
+                            self.log("    Net Bridge already initialized");
+                        }
+                    }
+                    Err(e) => {
+                        self.log(&alloc::format!(
+                            "    VirtIO-net PCI init failed: {:?}, falling back to MMIO",
+                            e
+                        ));
+                    }
+                }
+            }
+
+            // Register Driver via DriverRegistry
+            use alloc::boxed::Box;
+            use crate::driver_registry::{register_driver, driver_registry};
+            use crate::net::driver::VirtioNetDriver;
+
+            if initialized_via_pci {
+                let drv = Box::new(VirtioNetDriver::new());
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
+                        } else {
+                            self.log("    VirtIO-net driver initialized via DriverRegistry");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
+                }
+            } else {
+                let drv = Box::new(VirtioNetDriver::new_with_device(bar0_virt as u64, iommu_device));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
+                        } else {
+                            self.log("    VirtIO-net driver initialized via DriverRegistry");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
+                }
+            }
+        } else {
+            self.log("    VirtIO-net found but BAR0 is missing, skipping init");
+        }
+    }
+
+    fn init_virtio_console_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+        self.log(&alloc::format!(
+            "  Initializing VirtIO-Console at {:02x}:{:02x}.{}",
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function()
+        ));
+        let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
+        register_pci_dma_width(dev, dma_bits);
+        let iommu_device = crate::io::iommu::types::DeviceId::new(
+            dev.segment,
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+        );
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+
+        if let Some(bar0) = dev.bars[0] {
+            let bar0_phys = bar0.base();
+            let bar0_virt =
+                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
+
+            let mut initialized_via_pci = false;
+            if let Some(transport) = try_create_pci_transport(
+                dev,
+                crate::io::virtio::VirtioDeviceType::Console,
+            ) {
+                match unsafe {
+                    crate::io::virtio::init_virtio_console_with_transport(
+                        alloc::boxed::Box::new(transport),
+                        Some(iommu_device),
+                    )
+                } {
+                    Ok(()) => {
+                        self.log("    VirtIO-console PCI transport initialized");
+                        initialized_via_pci = true;
+                    }
+                    Err(e) => {
+                        self.log(&alloc::format!(
+                            "    VirtIO-console PCI init failed: {:?}, falling back to MMIO",
+                            e
+                        ));
+                    }
+                }
+            }
+
+            if !initialized_via_pci {
+                use alloc::boxed::Box;
+                use crate::driver_registry::{register_driver, driver_registry};
+                use crate::io::virtio::VirtioConsoleDriver;
+
+                let drv = Box::new(VirtioConsoleDriver::new(bar0_virt, iommu_device));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    VirtIO-console driver start failed: {:?}", e));
+                        } else {
+                            self.log("    VirtIO-console driver initialized via DriverRegistry");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!("    VirtIO-console driver registration failed: {:?}", e)),
+                }
+            }
+        } else {
+            self.log("    VirtIO-console found but BAR0 is missing, skipping init");
+        }
+    }
+
+    fn init_virtio_input_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+        self.log(&alloc::format!(
+            "  Initializing VirtIO-Input at {:02x}:{:02x}.{}",
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function()
+        ));
+        let dma_bits: u8 = 64;
+        register_pci_dma_width(dev, dma_bits);
+        let iommu_device = crate::io::iommu::types::DeviceId::new(
+            dev.segment,
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+        );
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+
+        if let Some(bar0) = dev.bars[0] {
+            let bar0_phys = bar0.base();
+            let bar0_virt =
+                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
+
+            let mut initialized_via_pci = false;
+            if let Some(transport) = try_create_pci_transport(
+                dev,
+                crate::io::virtio::VirtioDeviceType::Input,
+            ) {
+                match unsafe {
+                    crate::io::virtio::init_virtio_input_with_transport(
+                        alloc::boxed::Box::new(transport),
+                        Some(iommu_device),
+                    )
+                } {
+                    Ok(()) => {
+                        self.log("    VirtIO-input PCI transport initialized");
+                        initialized_via_pci = true;
+                    }
+                    Err(e) => {
+                        self.log(&alloc::format!(
+                            "    VirtIO-input PCI init failed: {:?}, falling back to MMIO",
+                            e
+                        ));
+                    }
+                }
+            }
+
+            if !initialized_via_pci {
+                use alloc::boxed::Box;
+                use crate::driver_registry::{register_driver, driver_registry};
+                use crate::io::virtio::VirtioInputDriver;
+
+                let drv = Box::new(VirtioInputDriver::new(bar0_virt, iommu_device));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    VirtIO-input driver start failed: {:?}", e));
+                        } else {
+                            self.log("    VirtIO-input driver initialized via DriverRegistry");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!("    VirtIO-input driver registration failed: {:?}", e)),
+                }
+            }
+        } else {
+            self.log("    VirtIO-input found but BAR0 is missing, skipping init");
+        }
+    }
+
+    fn init_virtio_balloon_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+        self.log(&alloc::format!(
+            "  Initializing VirtIO-Balloon at {:02x}:{:02x}.{}",
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function()
+        ));
+        let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
+        register_pci_dma_width(dev, dma_bits);
+        let iommu_device = crate::io::iommu::types::DeviceId::new(
+            dev.segment,
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+        );
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+
+        if let Some(bar0) = dev.bars[0] {
+            let bar0_phys = bar0.base();
+            let bar0_virt =
+                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
+
+            let mut initialized_via_pci = false;
+            if let Some(transport) = try_create_pci_transport(
+                dev,
+                crate::io::virtio::VirtioDeviceType::Balloon,
+            ) {
+                match unsafe {
+                    crate::io::virtio::init_virtio_balloon_with_transport(
+                        alloc::boxed::Box::new(transport),
+                        Some(iommu_device),
+                    )
+                } {
+                    Ok(()) => {
+                        self.log("    VirtIO-balloon PCI transport initialized");
+                        initialized_via_pci = true;
+                    }
+                    Err(e) => {
+                        self.log(&alloc::format!(
+                            "    VirtIO-balloon PCI init failed: {:?}, falling back to MMIO",
+                            e
+                        ));
+                    }
+                }
+            }
+
+            if !initialized_via_pci {
+                use alloc::boxed::Box;
+                use crate::driver_registry::{register_driver, driver_registry};
+                use crate::io::virtio::VirtioBalloonDriver;
+
+                let drv = Box::new(VirtioBalloonDriver::new(bar0_virt, iommu_device));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    VirtIO-balloon driver start failed: {:?}", e));
+                        } else {
+                            self.log("    VirtIO-balloon driver initialized via DriverRegistry");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!("    VirtIO-balloon driver registration failed: {:?}", e)),
+                }
+            }
+        } else {
+            self.log("    VirtIO-balloon found but BAR0 is missing, skipping init");
+        }
+    }
+
+    fn init_virtio_gpu_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+        self.log(&alloc::format!(
+            "  Initializing VirtIO-GPU at {:02x}:{:02x}.{}",
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function()
+        ));
+        let dma_bits: u8 = 64;
+        register_pci_dma_width(dev, dma_bits);
+        let iommu_device = crate::io::iommu::types::DeviceId::new(
+            dev.segment,
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+        );
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+
+        if let Some(bar0) = dev.bars[0] {
+            let bar0_phys = bar0.base();
+            let bar0_virt =
+                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
+
+            let mut initialized_via_pci = false;
+            if let Some(transport) = try_create_pci_transport(
+                dev,
+                crate::io::virtio::VirtioDeviceType::Gpu,
+            ) {
+                match unsafe {
+                    crate::gpu::init_virtio_gpu_for_device(
+                        alloc::boxed::Box::new(transport),
+                        iommu_device,
+                    )
+                } {
+                    Ok(()) => {
+                        self.log("    VirtIO-gpu PCI transport initialized");
+                        initialized_via_pci = true;
+                    }
+                    Err(e) => {
+                        self.log(&alloc::format!(
+                            "    VirtIO-gpu PCI init failed: {:?}, falling back to MMIO",
+                            e
+                        ));
+                    }
+                }
+            }
+
+            if !initialized_via_pci {
+                use alloc::boxed::Box;
+                use crate::driver_registry::{register_driver, driver_registry};
+                use crate::gpu::gpu_driver::VirtioGpuDriver;
+
+                let drv = Box::new(VirtioGpuDriver::new(bar0_virt, iommu_device));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            self.log(&alloc::format!("    VirtIO-gpu driver start failed: {:?}", e));
+                        } else {
+                            self.log("    VirtIO-gpu driver initialized via DriverRegistry");
+                        }
+                    }
+                    Err(e) => self.log(&alloc::format!("    VirtIO-gpu driver registration failed: {:?}", e)),
+                }
+            }
+        } else {
+            self.log("    VirtIO-gpu found but BAR0 is missing, skipping init");
+        }
+    }
+
+    fn init_nvme_devices(&mut self) {
         let mut nvme_controller_id: u8 = 0;
         let nvme_devices = crate::io::pci::find_by_class(0x01, 0x08);
         for dev in nvme_devices {
@@ -907,8 +933,9 @@ impl SystemIntegration {
 
             nvme_controller_id = nvme_controller_id.wrapping_add(1);
         }
+    }
 
-        // Initialize HDA Audio
+    fn init_hda_devices(&mut self) {
         let hda_devices = crate::io::pci::find_by_class(0x04, 0x03);
         for dev in hda_devices {
              self.log(&alloc::format!(
@@ -944,9 +971,6 @@ impl SystemIntegration {
                 self.log("    HDA device found but BAR0 is missing");
             }
         }
-
-        self.status = IntegrationStatus::DevicesInitialized;
-        Ok(())
     }
 
     /// Phase 5: Security integration

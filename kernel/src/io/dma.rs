@@ -1696,6 +1696,64 @@ impl GlobalDmaAllocator {
             device_id: Some(device_id),
         }
     }
+
+    /// バウンスバッファの準備（必要な場合）とキャッシュフラッシュ
+    fn prepare_streaming_buffer(
+        buffer: &[u8],
+        phys_addr: x86_64::PhysAddr,
+        direction: DmaDirection,
+    ) -> Result<(x86_64::PhysAddr, usize, Option<crate::ipc::RRef<[u8]>>), DmaError> {
+        let host_addr = buffer.as_ptr();
+        let size = buffer.len();
+
+        if crate::io::iommu::api::is_iommu_enabled() && iommu_needs_bounce(phys_addr.as_u64(), size) {
+            let mut rref = allocate_iommu_bounce_bytes(size).map_err(|err| match err {
+                IommuBounceAllocError::InvalidLen => DmaError::InvalidAlignment,
+                IommuBounceAllocError::AllocFailed => DmaError::OutOfMemory,
+            })?;
+
+            if matches!(direction, DmaDirection::ToDevice | DmaDirection::Bidirectional) {
+                rref[..size].copy_from_slice(buffer);
+                flush_cache_range(rref.as_ptr(), rref.len());
+            }
+
+            let bounce_phys = crate::memory::virt_to_phys(x86_64::VirtAddr::new(rref.as_ptr() as u64));
+            let mapped_len = rref.len();
+            Ok((bounce_phys, mapped_len, Some(rref)))
+        } else {
+            if matches!(direction, DmaDirection::ToDevice | DmaDirection::Bidirectional) {
+                flush_cache_range(host_addr, size);
+            }
+            Ok((phys_addr, size, None))
+        }
+    }
+
+    /// IOMMUマッピングを解決してデバイスアドレスを取得
+    fn resolve_iommu_device_addr(
+        &self,
+        phys_addr: x86_64::PhysAddr,
+        mapped_len: usize,
+    ) -> Result<(u64, bool), DmaError> {
+        if crate::io::iommu::api::is_iommu_enabled() {
+            let map_result = if let Some(ref dev) = self.device_id {
+                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, mapped_len as u64) }
+            } else {
+                unsafe { crate::io::iommu::api::map_for_dma(phys_addr, mapped_len as u64) }
+            };
+            match map_result {
+                Ok(iova) => Ok((iova, true)),
+                Err(_) => Err(DmaError::IommuMappingFailed),
+            }
+        } else if crate::io::iommu::api::is_iommu_required() {
+            Err(DmaError::IommuRequired)
+        } else {
+            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+                return Err(DmaError::IommuRequired);
+            }
+            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
+            Ok((phys_addr.as_u64(), false))
+        }
+    }
 }
 
 impl DmaAllocator for GlobalDmaAllocator {
@@ -1780,66 +1838,11 @@ impl DmaAllocator for GlobalDmaAllocator {
             return Err(DmaError::InvalidSize);
         }
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(host_addr as u64));
-        let mut mapped_len = size;
-        let mut bounce = None;
 
-        if crate::io::iommu::api::is_iommu_enabled() && iommu_needs_bounce(phys_addr.as_u64(), size)
-        {
-            let mut rref = allocate_iommu_bounce_bytes(size).map_err(|err| match err {
-                IommuBounceAllocError::InvalidLen => DmaError::InvalidAlignment,
-                IommuBounceAllocError::AllocFailed => DmaError::OutOfMemory,
-            })?;
+        let (final_phys, mapped_len, bounce) =
+            Self::prepare_streaming_buffer(buffer, phys_addr, direction)?;
 
-            if matches!(
-                direction,
-                DmaDirection::ToDevice | DmaDirection::Bidirectional
-            ) {
-                rref[..size].copy_from_slice(buffer);
-                flush_cache_range(rref.as_ptr(), rref.len());
-            }
-
-            mapped_len = rref.len();
-            bounce = Some(rref);
-        } else if matches!(
-            direction,
-            DmaDirection::ToDevice | DmaDirection::Bidirectional
-        ) {
-            flush_cache_range(host_addr, size);
-        }
-
-        let (phys_addr, mapped_len) = if let Some(ref rref) = bounce {
-            let bounce_ptr = rref.as_ptr();
-            let bounce_phys = crate::memory::virt_to_phys(x86_64::VirtAddr::new(bounce_ptr as u64));
-            (bounce_phys, mapped_len)
-        } else {
-            (phys_addr, mapped_len)
-        };
-
-        // キャッシュ操作
-        // Note: For bounce buffers, cache ops are handled above on the bounce memory.
-
-        // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
-        // device_id があればデバイス固有ドメインにマップ
-        let (device_addr, iova_mapped) = if crate::io::iommu::api::is_iommu_enabled() {
-            // SAFETY: Buffer is caller-owned; delegate safety to caller
-            let map_result = if let Some(ref dev) = self.device_id {
-                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, mapped_len as u64) }
-            } else {
-                unsafe { crate::io::iommu::api::map_for_dma(phys_addr, mapped_len as u64) }
-            };
-            match map_result {
-                Ok(iova) => (iova, true),
-                Err(_) => return Err(DmaError::IommuMappingFailed),
-            }
-        } else if crate::io::iommu::api::is_iommu_required() {
-            return Err(DmaError::IommuRequired);
-        } else {
-            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
-                return Err(DmaError::IommuRequired);
-            }
-            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
-            (phys_addr.as_u64(), false)
-        };
+        let (device_addr, iova_mapped) = self.resolve_iommu_device_addr(final_phys, mapped_len)?;
 
         Ok(StreamingMapping {
             host_addr,

@@ -269,7 +269,21 @@ pub struct DhcpClient {
     state_time: AtomicU64,
     /// 再試行回数
     retry_count: AtomicU32,
-} 
+}
+
+/// DHCP応答から解析されたオプション群
+struct ParsedOptions {
+    message_type: Option<DhcpMessageType>,
+    subnet_mask: Option<Ipv4Address>,
+    router: Option<Ipv4Address>,
+    dns_servers: Vec<Ipv4Address>,
+    lease_time: u32,
+    renewal_time: Option<u32>,
+    rebinding_time: Option<u32>,
+    server_id: Option<Ipv4Address>,
+    hostname: Option<Vec<u8>>,
+    domain_name: Option<Vec<u8>>,
+}
 
 impl DhcpClient {
     /// 最大再試行回数
@@ -431,6 +445,98 @@ impl DhcpClient {
         Ok(offset)
     }
 
+    /// Acquire the current DHCP state (helper for lock + error handling).
+    fn lock_dhcp_state(&self) -> Result<DhcpState, &'static str> {
+        match self.state.lock() {
+            Ok(g) => Ok(*g),
+            Err(_) => {
+                log::error!("[NET] DHCP State lock poisoned");
+                Err("State lock poisoned")
+            }
+        }
+    }
+
+    /// Retrieve the lease corresponding to the current DHCP state for REQUEST building.
+    fn get_lease_for_request(&self, state: DhcpState) -> Result<(DhcpLease, bool), &'static str> {
+        match state {
+            DhcpState::Requesting => {
+                let offered = match self.offered_lease.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        log::error!("[NET] DHCP Offer lock poisoned (build_request)");
+                        return Err("Offer lock poisoned");
+                    }
+                };
+                Ok((offered.clone().ok_or("No offer available")?, false))
+            }
+            DhcpState::Renewing | DhcpState::Rebinding => {
+                let l = match self.lease.lock() {
+                    Ok(g) => g,
+                    Err(_) => {
+                        log::error!("[NET] DHCP Lease lock poisoned (build_request)");
+                        return Err("Lease lock poisoned");
+                    }
+                };
+                Ok((l.clone().ok_or("No active lease")?, true))
+            }
+            _ => Err("Invalid state for building request"),
+        }
+    }
+
+    /// Write DHCP REQUEST options into `buffer` starting at `offset`, returning new offset.
+    fn write_request_options(
+        &self,
+        buffer: &mut [u8],
+        mut offset: usize,
+        lease: &DhcpLease,
+        is_renewal: bool,
+    ) -> usize {
+        // マジッククッキー
+        buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+        offset += 4;
+
+        // メッセージタイプ: REQUEST
+        buffer[offset] = DhcpOption::MessageType as u8;
+        buffer[offset + 1] = 1;
+        buffer[offset + 2] = DhcpMessageType::Request as u8;
+        offset += 3;
+
+        if !is_renewal {
+            buffer[offset] = DhcpOption::RequestedIp as u8;
+            buffer[offset + 1] = 4;
+            buffer[offset + 2..offset + 6].copy_from_slice(lease.ip_address.as_bytes());
+            offset += 6;
+
+            buffer[offset] = DhcpOption::ServerIdentifier as u8;
+            buffer[offset + 1] = 4;
+            buffer[offset + 2..offset + 6].copy_from_slice(lease.server_ip.as_bytes());
+            offset += 6;
+        }
+
+        buffer[offset] = DhcpOption::ParameterRequestList as u8;
+        buffer[offset + 1] = 8;
+        buffer[offset + 2] = DhcpOption::SubnetMask as u8;
+        buffer[offset + 3] = DhcpOption::Router as u8;
+        buffer[offset + 4] = DhcpOption::DnsServer as u8;
+        buffer[offset + 5] = DhcpOption::DomainName as u8;
+        buffer[offset + 6] = DhcpOption::LeaseTime as u8;
+        buffer[offset + 7] = DhcpOption::ServerIdentifier as u8;
+        buffer[offset + 8] = DhcpOption::RenewalTime as u8;
+        buffer[offset + 9] = DhcpOption::RebindingTime as u8;
+        offset += 10;
+
+        buffer[offset] = DhcpOption::ClientIdentifier as u8;
+        buffer[offset + 1] = 7;
+        buffer[offset + 2] = 1; // Ethernet
+        buffer[offset + 3..offset + 9].copy_from_slice(self.mac_address.as_bytes());
+        offset += 9;
+
+        buffer[offset] = DhcpOption::End as u8;
+        offset += 1;
+
+        offset
+    }
+
     /// DHCPREQUEST メッセージを構築
     pub fn build_request(
         &self,
@@ -441,40 +547,8 @@ impl DhcpClient {
             return Err("Buffer too small");
         }
 
-        // Decide behavior based on current state (Selecting=Requesting path, Renewing/Rebinding=renewal path)
-        let current_state = match self.state.lock() {
-            Ok(g) => *g,
-            Err(_) => {
-                log::error!("[NET] DHCP State lock poisoned (build_request) - cannot determine state");
-                return Err("State lock poisoned");
-            }
-        };
-
-        let (lease, is_renewal) = match current_state {
-            DhcpState::Requesting => {
-                // Use the offered lease when requesting after an OFFER
-                let offered = match self.offered_lease.lock() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        log::error!("[NET] DHCP Offer lock poisoned (build_request) - cannot use offer");
-                        return Err("Offer lock poisoned");
-                    }
-                };
-                (offered.clone().ok_or("No offer available")?, false)
-            }
-            DhcpState::Renewing | DhcpState::Rebinding => {
-                // Use the currently bound lease for renewal/rebind
-                let l = match self.lease.lock() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        log::error!("[NET] DHCP Lease lock poisoned (build_request) - cannot use lease");
-                        return Err("Lease lock poisoned");
-                    }
-                };
-                (l.clone().ok_or("No active lease")?, true)
-            }
-            _ => return Err("Invalid state for building request"),
-        };
+        let current_state = self.lock_dhcp_state()?;
+        let (lease, is_renewal) = self.get_lease_for_request(current_state)?;
 
         let xid = self.xid.load(Ordering::SeqCst);
 
@@ -488,11 +562,7 @@ impl DhcpClient {
         buffer[8..10].copy_from_slice(&0u16.to_be_bytes()); // secs
 
         // Flags: unicast for renewing, broadcast for rebinding and normal REQUEST
-        let flags: u16 = match current_state {
-            DhcpState::Renewing => 0,
-            DhcpState::Rebinding => 0x8000,
-            _ => 0x8000,
-        };
+        let flags: u16 = if current_state == DhcpState::Renewing { 0 } else { 0x8000 };
         buffer[10..12].copy_from_slice(&flags.to_be_bytes());
 
         // ciaddr must be set for renewals; cleared for new requests
@@ -504,104 +574,53 @@ impl DhcpClient {
 
         buffer[28..34].copy_from_slice(self.mac_address.as_bytes());
 
-        // オプション開始
-        let mut offset = DhcpHeader::SIZE;
+        // オプション書き込み
+        let offset = self.write_request_options(buffer, DhcpHeader::SIZE, &lease, is_renewal);
 
-        // マジッククッキー
-        buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
-        offset += 4;
-
-        // メッセージタイプ: REQUEST
-        buffer[offset] = DhcpOption::MessageType as u8;
-        buffer[offset + 1] = 1;
-        buffer[offset + 2] = DhcpMessageType::Request as u8;
-        offset += 3;
-
-        // For requests in the SELECTING flow include Requested IP and Server Identifier.
-        // In RENEW/REBIND do not include Server Identifier (and Requested IP is unnecessary because ciaddr is set).
-        if !is_renewal {
-            // 要求するIPアドレス
-            buffer[offset] = DhcpOption::RequestedIp as u8;
-            buffer[offset + 1] = 4;
-            buffer[offset + 2..offset + 6].copy_from_slice(lease.ip_address.as_bytes());
-            offset += 6;
-
-            // サーバー識別子
-            buffer[offset] = DhcpOption::ServerIdentifier as u8;
-            buffer[offset + 1] = 4;
-            buffer[offset + 2..offset + 6].copy_from_slice(lease.server_ip.as_bytes());
-            offset += 6;
-        }
-
-        // パラメータ要求リスト (SubnetMask, Router, DNS, DomainName, LeaseTime, ServerIdentifier, Renewal (T1), Rebinding (T2))
-        buffer[offset] = DhcpOption::ParameterRequestList as u8;
-        buffer[offset + 1] = 8;
-        buffer[offset + 2] = DhcpOption::SubnetMask as u8;
-        buffer[offset + 3] = DhcpOption::Router as u8;
-        buffer[offset + 4] = DhcpOption::DnsServer as u8;
-        buffer[offset + 5] = DhcpOption::DomainName as u8;
-        buffer[offset + 6] = DhcpOption::LeaseTime as u8;
-        buffer[offset + 7] = DhcpOption::ServerIdentifier as u8;
-        buffer[offset + 8] = DhcpOption::RenewalTime as u8;
-        buffer[offset + 9] = DhcpOption::RebindingTime as u8;
-        offset += 10;
-
-        // クライアント識別子
-        buffer[offset] = DhcpOption::ClientIdentifier as u8;
-        buffer[offset + 1] = 7;
-        buffer[offset + 2] = 1; // Ethernet
-        buffer[offset + 3..offset + 9].copy_from_slice(self.mac_address.as_bytes());
-        offset += 9;
-
-        // 終端
-        buffer[offset] = DhcpOption::End as u8;
-        offset += 1;
-
-        // 状態を更新
-        match self.state.lock() {
-            Ok(mut g) => {
-                match current_state {
-                    DhcpState::Requesting => *g = DhcpState::Requesting,
-                    DhcpState::Renewing => *g = DhcpState::Renewing,
-                    DhcpState::Rebinding => *g = DhcpState::Rebinding,
-                    _ => {}
-                }
-            }
-            Err(_) => {
-                log::error!("[NET] DHCP State lock poisoned (build_request) - state not updated");
-                return Err("State lock poisoned");
-            }
-        }
         self.state_time.store(current_tick, Ordering::SeqCst);
 
         Ok(offset)
     }
 
-    /// DHCP応答を処理
-    pub fn process_response(
-        &self,
-        data: &[u8],
-        current_tick: u64,
-    ) -> Result<DhcpResponseResult, &'static str> {
+    // ── Helper: parse a 4-byte IPv4 address from an option value ──
+    fn parse_ipv4_option(opt_data: &[u8]) -> Option<Ipv4Address> {
+        if opt_data.len() >= 4 {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&opt_data[..4]);
+            Some(Ipv4Address::new(bytes))
+        } else {
+            None
+        }
+    }
+
+    // ── Helper: parse a 4-byte big-endian u32 from an option value ──
+    fn parse_u32_option(opt_data: &[u8]) -> Option<u32> {
+        if opt_data.len() >= 4 {
+            let mut bytes = [0u8; 4];
+            bytes.copy_from_slice(&opt_data[..4]);
+            Some(u32::from_be_bytes(bytes))
+        } else {
+            None
+        }
+    }
+
+    /// ヘッダを検証し、参照を返す
+    fn validate_header<'a>(&self, data: &'a [u8]) -> Result<&'a DhcpHeader, &'static str> {
         if data.len() < DhcpHeader::SIZE + 4 {
             return Err("Packet too small");
         }
 
-        // ヘッダを解析
         let header =
             crate::util::get_ref::<DhcpHeader>(data, 0).expect("Dhcp header slice out of bounds");
 
-        // トランザクションIDを確認
         if header.xid() != self.xid.load(Ordering::SeqCst) {
             return Err("Transaction ID mismatch");
         }
 
-        // オペレーションを確認
         if header.op != DhcpOperation::Reply as u8 {
             return Err("Not a DHCP reply");
         }
 
-        // CHADDR must match our MAC (first 6 bytes)
         let hlen = header.hlen as usize;
         if hlen < 6 {
             log::warn!("[NET] DHCP header hlen ({}) too small - rejecting", hlen);
@@ -616,25 +635,63 @@ impl DhcpClient {
             }
         }
 
-        // マジッククッキーを確認
         let options_start = DhcpHeader::SIZE;
         if data[options_start..options_start + 4] != DHCP_MAGIC_COOKIE {
             return Err("Invalid magic cookie");
         }
 
-        // オプションを解析
-        let mut message_type = None;
-        let mut subnet_mask = None;
-        let mut router = None;
-        let mut dns_servers = Vec::new();
-        let mut lease_time = 86400u32; // デフォルト1日
-        let mut renewal_time: Option<u32> = None;
-        let mut rebinding_time: Option<u32> = None;
-        let mut server_id = None;
-        let mut hostname = None;
-        let mut domain_name = None; 
+        Ok(header)
+    }
 
-        let mut offset = options_start + 4;
+    /// 単一のDHCPオプションを ParsedOptions に適用する
+    fn apply_option(opts: &mut ParsedOptions, opt: u8, opt_data: &[u8]) {
+        match opt {
+            53 => {
+                if !opt_data.is_empty() {
+                    opts.message_type = DhcpMessageType::from_u8(opt_data[0]);
+                }
+            }
+            1 => opts.subnet_mask = Self::parse_ipv4_option(opt_data),
+            3 => opts.router = Self::parse_ipv4_option(opt_data),
+            6 => {
+                for chunk in opt_data.chunks(4) {
+                    if chunk.len() == 4 {
+                        let mut bytes = [0u8; 4];
+                        bytes.copy_from_slice(chunk);
+                        opts.dns_servers.push(Ipv4Address::new(bytes));
+                    }
+                }
+            }
+            51 => {
+                if let Some(v) = Self::parse_u32_option(opt_data) {
+                    opts.lease_time = v;
+                }
+            }
+            58 => opts.renewal_time = Self::parse_u32_option(opt_data),
+            59 => opts.rebinding_time = Self::parse_u32_option(opt_data),
+            54 => opts.server_id = Self::parse_ipv4_option(opt_data),
+            12 => opts.hostname = Some(opt_data.to_vec()),
+            15 => opts.domain_name = Some(opt_data.to_vec()),
+            _ => {}
+        }
+    }
+
+    /// オプション領域を解析して ParsedOptions を返す
+    fn parse_options(data: &[u8]) -> ParsedOptions {
+        let mut opts = ParsedOptions {
+            message_type: None,
+            subnet_mask: None,
+            router: None,
+            dns_servers: Vec::new(),
+            lease_time: 86400u32, // デフォルト1日
+            renewal_time: None,
+            rebinding_time: None,
+            server_id: None,
+            hostname: None,
+            domain_name: None,
+        };
+
+        let mut offset = DhcpHeader::SIZE + 4;
         while offset < data.len() {
             let opt = data[offset];
 
@@ -652,262 +709,231 @@ impl DhcpClient {
             }
 
             let len = data[offset + 1] as usize;
-            // Ensure the option length does not overrun the packet
             if offset + 2 + len > data.len() {
                 log::warn!("[NET] DHCP option length {} at offset {} overruns packet (len {}) - stopping parse", len, offset, data.len());
                 break;
             }
-            let opt_data = &data[offset + 2..offset + 2 + len];
 
-            match opt {
-                53 => {
-                    // Message Type
-                    if !opt_data.is_empty() {
-                        message_type = DhcpMessageType::from_u8(opt_data[0]);
-                    }
-                }
-                1 => {
-                    // Subnet Mask
-                    if opt_data.len() >= 4 {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(&opt_data[..4]);
-                        subnet_mask = Some(Ipv4Address::new(bytes));
-                    }
-                }
-                3 => {
-                    // Router
-                    if opt_data.len() >= 4 {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(&opt_data[..4]);
-                        router = Some(Ipv4Address::new(bytes));
-                    }
-                }
-                6 => {
-                    // DNS Servers
-                    for chunk in opt_data.chunks(4) {
-                        if chunk.len() == 4 {
-                            let mut bytes = [0u8; 4];
-                            bytes.copy_from_slice(chunk);
-                            dns_servers.push(Ipv4Address::new(bytes));
-                        }
-                    }
-                }
-                51 => {
-                    // Lease Time
-                    if opt_data.len() >= 4 {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(&opt_data[..4]);
-                        lease_time = u32::from_be_bytes(bytes);
-                    }
-                }
-                58 => {
-                    // Renewal (T1)
-                    if opt_data.len() >= 4 {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(&opt_data[..4]);
-                        renewal_time = Some(u32::from_be_bytes(bytes));
-                    }
-                }
-                59 => {
-                    // Rebinding (T2)
-                    if opt_data.len() >= 4 {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(&opt_data[..4]);
-                        rebinding_time = Some(u32::from_be_bytes(bytes));
-                    }
-                }
-                54 => {
-                    // Server Identifier
-                    if opt_data.len() >= 4 {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(&opt_data[..4]);
-                        server_id = Some(Ipv4Address::new(bytes));
-                    }
-                }
-                12 => {
-                    // Hostname
-                    hostname = Some(opt_data.to_vec());
-                }
-                15 => {
-                    // Domain Name
-                    domain_name = Some(opt_data.to_vec());
-                }
-                _ => {}
-            }
-
+            Self::apply_option(&mut opts, opt, &data[offset + 2..offset + 2 + len]);
             offset += 2 + len;
         }
 
-        let msg_type = message_type.ok_or("No message type in response")?;
+        opts
+    }
 
-        // Additional integrity checks for OFFER/ACK
+    /// ACK を Requesting 状態で検証する
+    fn validate_ack_requesting(
+        &self,
+        server_id: Ipv4Address,
+        yiaddr: Ipv4Address,
+    ) -> Result<(), &'static str> {
+        match self.offered_lease.lock() {
+            Ok(off) => {
+                let offered = off.as_ref().ok_or("No offer for ACK")?;
+                if offered.server_ip != server_id {
+                    return Err("ACK server identifier does not match offered server");
+                }
+                if offered.ip_address != yiaddr {
+                    return Err("ACK yiaddr does not match offered IP");
+                }
+                Ok(())
+            }
+            Err(_) => {
+                log::error!("[NET] DHCP Offer lock poisoned (process_response Ack) - cannot verify ACK");
+                Err("Offer lock poisoned")
+            }
+        }
+    }
+
+    /// ACK を Renewing/Rebinding 状態で検証する
+    fn validate_ack_renewing(
+        &self,
+        server_id: Ipv4Address,
+        yiaddr: Ipv4Address,
+    ) -> Result<(), &'static str> {
+        match self.lease.lock() {
+            Ok(l) => {
+                let lease_guard = l.as_ref().ok_or("No active lease for ACK")?;
+                if lease_guard.server_ip != server_id {
+                    return Err("ACK server identifier does not match bound server");
+                }
+                if lease_guard.ip_address != yiaddr {
+                    return Err("ACK yiaddr does not match bound IP");
+                }
+                Ok(())
+            }
+            Err(_) => {
+                log::error!("[NET] DHCP Lease lock poisoned (process_response Ack) - cannot verify ACK");
+                Err("Lease lock poisoned")
+            }
+        }
+    }
+
+    /// OFFER の既存オファーとの整合性を検証する
+    fn validate_offer_server(&self, server_id: Ipv4Address) -> Result<(), &'static str> {
+        match self.offered_lease.lock() {
+            Ok(off) => {
+                if let Some(ref o) = *off {
+                    if o.server_ip != server_id {
+                        return Err("Offer server identifier does not match existing offer");
+                    }
+                }
+                Ok(())
+            }
+            Err(_) => {
+                log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - cannot verify offer");
+                Err("Offer lock poisoned")
+            }
+        }
+    }
+
+    /// ACK の状態依存検証を実行する
+    fn validate_ack_state(
+        &self,
+        current_state: DhcpState,
+        server_id: Ipv4Address,
+        yiaddr: Ipv4Address,
+    ) -> Result<(), &'static str> {
+        match current_state {
+            DhcpState::Requesting => self.validate_ack_requesting(server_id, yiaddr),
+            DhcpState::Renewing | DhcpState::Rebinding => {
+                self.validate_ack_renewing(server_id, yiaddr)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// OFFER / ACK の整合性を検証する
+    fn validate_offer_ack(
+        &self,
+        msg_type: DhcpMessageType,
+        header: &DhcpHeader,
+        server_id: Ipv4Address,
+    ) -> Result<(), &'static str> {
+        let siaddr = header.siaddr();
+        if siaddr != Ipv4Address::new([0, 0, 0, 0]) && siaddr != server_id {
+            log::warn!("[NET] DHCP server identifier ({:?}) and siaddr ({:?}) mismatch", server_id, siaddr);
+            return Err("Server identifier mismatch");
+        }
+
+        if header.yiaddr() == Ipv4Address::new([0, 0, 0, 0]) {
+            return Err("Missing yiaddr in Offer/Ack");
+        }
+
+        let current_state = match self.state.lock() {
+            Ok(g) => *g,
+            Err(_) => {
+                log::error!("[NET] DHCP State lock poisoned (process_response) - cannot verify response");
+                return Err("State lock poisoned");
+            }
+        };
+
+        if msg_type == DhcpMessageType::Offer {
+            self.validate_offer_server(server_id)
+        } else {
+            self.validate_ack_state(current_state, server_id, header.yiaddr())
+        }
+    }
+
+    /// ParsedOptions と DhcpHeader からリース情報を構築する
+    fn build_lease(header: &DhcpHeader, opts: ParsedOptions, current_tick: u64) -> DhcpLease {
+        let t1 = opts.renewal_time.unwrap_or(opts.lease_time / 2);
+        let t2 = opts.rebinding_time.unwrap_or((opts.lease_time * 7) / 8);
+
+        DhcpLease {
+            ip_address: header.yiaddr(),
+            subnet_mask: opts.subnet_mask.unwrap_or(Ipv4Address::new([255, 255, 255, 0])),
+            gateway: opts.router,
+            dns_servers: opts.dns_servers,
+            server_ip: opts.server_id.unwrap_or(header.siaddr()),
+            lease_time: opts.lease_time,
+            t1,
+            t2,
+            obtained_at: current_tick,
+            hostname: opts.hostname,
+            domain_name: opts.domain_name,
+        }
+    }
+
+    /// OFFER 受信時の副作用を適用する
+    fn apply_offer(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
+        match self.offered_lease.lock() {
+            Ok(mut g) => *g = Some(lease.clone()),
+            Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"),
+        }
+
+        // Best-effort: ARP probe the offered IP to detect conflicts
+        match crate::net::stack::stack().lock() {
+            Ok(mut s) => {
+                if let Some(stack) = s.as_mut() {
+                    stack.send_arp_request(lease.ip_address);
+                }
+            }
+            Err(_) => log::error!("[NET] DHCP Global Stack lock poisoned (process_response Offer) - cannot send ARP probe"),
+        }
+        self.offered_probe_at.store(current_tick, Ordering::SeqCst);
+
+        DhcpResponseResult::Offer(lease)
+    }
+
+    /// ACK 受信時の副作用を適用する
+    fn apply_ack(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
+        match self.lease.lock() {
+            Ok(mut g) => *g = Some(lease.clone()),
+            Err(_) => log::error!("[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"),
+        }
+        // Clear any offer probe state
+        self.offered_probe_at.store(0, Ordering::SeqCst);
+        match self.state.lock() {
+            Ok(mut g) => *g = DhcpState::Bound,
+            Err(_) => log::error!("[NET] DHCP State lock poisoned (process_response Ack) - state not updated"),
+        }
+        self.state_time.store(current_tick, Ordering::SeqCst);
+        self.retry_count.store(0, Ordering::SeqCst);
+
+        DhcpResponseResult::Ack(lease)
+    }
+
+    /// NAK 受信時の副作用を適用する
+    fn apply_nak(&self) -> DhcpResponseResult {
+        match self.state.lock() {
+            Ok(mut g) => *g = DhcpState::Init,
+            Err(_) => log::error!("[NET] DHCP State lock poisoned (process_response Nak) - state not updated"),
+        }
+        match self.offered_lease.lock() {
+            Ok(mut g) => *g = None,
+            Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Nak) - skipping clear"),
+        }
+        // Clear any probe timestamp
+        self.offered_probe_at.store(0, Ordering::SeqCst);
+        DhcpResponseResult::Nak
+    }
+
+    /// DHCP応答を処理
+    pub fn process_response(
+        &self,
+        data: &[u8],
+        current_tick: u64,
+    ) -> Result<DhcpResponseResult, &'static str> {
+        let header = self.validate_header(data)?;
+        let opts = Self::parse_options(data);
+        let msg_type = opts.message_type.ok_or("No message type in response")?;
+
         if matches!(msg_type, DhcpMessageType::Offer | DhcpMessageType::Ack) {
-            // Server Identifier (option 54) is required in DHCPOFFER and DHCPACK
-            let sid = server_id.ok_or("No server identifier in response")?;
-
-            // If siaddr is set, it must match the Server Identifier option
-            let siaddr = header.siaddr();
-            if siaddr != Ipv4Address::new([0, 0, 0, 0]) && siaddr != sid {
-                log::warn!("[NET] DHCP server identifier ({:?}) and siaddr ({:?}) mismatch", sid, siaddr);
-                return Err("Server identifier mismatch");
-            }
-
-            // yiaddr must be present in Offer/Ack
-            if header.yiaddr() == Ipv4Address::new([0, 0, 0, 0]) {
-                return Err("Missing yiaddr in Offer/Ack");
-            }
-
-            // State-dependent consistency checks
-            let current_state = match self.state.lock() {
-                Ok(g) => *g,
-                Err(_) => {
-                    log::error!("[NET] DHCP State lock poisoned (process_response) - cannot verify response");
-                    return Err("State lock poisoned");
-                }
-            };
-
-            if msg_type == DhcpMessageType::Offer {
-                // If we already have an offered lease, ensure server matches
-                match self.offered_lease.lock() {
-                    Ok(off) => {
-                        if let Some(ref o) = *off {
-                            if o.server_ip != sid {
-                                return Err("Offer server identifier does not match existing offer");
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - cannot verify offer");
-                        return Err("Offer lock poisoned");
-                    }
-                }
-            } else {
-                // ACK handling: ensure ACK corresponds to our offer (when requesting) or bound lease (when renewing)
-                match current_state {
-                    DhcpState::Requesting => {
-                        match self.offered_lease.lock() {
-                            Ok(off) => {
-                                let offered = off.as_ref().ok_or("No offer for ACK")?;
-                                if offered.server_ip != sid {
-                                    return Err("ACK server identifier does not match offered server");
-                                }
-                                if offered.ip_address != header.yiaddr() {
-                                    return Err("ACK yiaddr does not match offered IP");
-                                }
-                            }
-                            Err(_) => {
-                                log::error!("[NET] DHCP Offer lock poisoned (process_response Ack) - cannot verify ACK");
-                                return Err("Offer lock poisoned");
-                            }
-                        }
-                    }
-                    DhcpState::Renewing | DhcpState::Rebinding => {
-                        match self.lease.lock() {
-                            Ok(l) => {
-                                let lease_guard = l.as_ref().ok_or("No active lease for ACK")?;
-                                if lease_guard.server_ip != sid {
-                                    return Err("ACK server identifier does not match bound server");
-                                }
-                                if lease_guard.ip_address != header.yiaddr() {
-                                    return Err("ACK yiaddr does not match bound IP");
-                                }
-                            }
-                            Err(_) => {
-                                log::error!("[NET] DHCP Lease lock poisoned (process_response Ack) - cannot verify ACK");
-                                return Err("Lease lock poisoned");
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            let sid = opts.server_id.ok_or("No server identifier in response")?;
+            self.validate_offer_ack(msg_type, header, sid)?;
         }
 
         match msg_type {
             DhcpMessageType::Offer => {
-                // Compute T1/T2 defaults if not present
-                let t1 = renewal_time.unwrap_or(lease_time / 2);
-                let t2 = rebinding_time.unwrap_or((lease_time * 7) / 8);
-
-                let lease = DhcpLease {
-                    ip_address: header.yiaddr(),
-                    subnet_mask: subnet_mask.unwrap_or(Ipv4Address::new([255, 255, 255, 0])),
-                    gateway: router,
-                    dns_servers,
-                    server_ip: server_id.unwrap_or(header.siaddr()),
-                    lease_time,
-                    t1,
-                    t2,
-                    obtained_at: current_tick,
-                    hostname,
-                    domain_name,
-                };
-
-                match self.offered_lease.lock() {
-                    Ok(mut g) => *g = Some(lease.clone()),
-                    Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"),
-                }
-
-                // Best-effort: ARP probe the offered IP to detect conflicts
-                match crate::net::stack::stack().lock() {
-                    Ok(mut s) => {
-                        if let Some(stack) = s.as_mut() {
-                            stack.send_arp_request(lease.ip_address);
-                        }
-                    }
-                    Err(_) => log::error!("[NET] DHCP Global Stack lock poisoned (process_response Offer) - cannot send ARP probe"),
-                }
-                self.offered_probe_at.store(current_tick, Ordering::SeqCst);
-
-                Ok(DhcpResponseResult::Offer(lease))
+                let lease = Self::build_lease(header, opts, current_tick);
+                Ok(self.apply_offer(lease, current_tick))
             }
             DhcpMessageType::Ack => {
-                // Compute T1/T2 defaults if not present
-                let t1 = renewal_time.unwrap_or(lease_time / 2);
-                let t2 = rebinding_time.unwrap_or((lease_time * 7) / 8);
-
-                let lease = DhcpLease {
-                    ip_address: header.yiaddr(),
-                    subnet_mask: subnet_mask.unwrap_or(Ipv4Address::new([255, 255, 255, 0])),
-                    gateway: router,
-                    dns_servers,
-                    server_ip: server_id.unwrap_or(header.siaddr()),
-                    lease_time,
-                    t1,
-                    t2,
-                    obtained_at: current_tick,
-                    hostname,
-                    domain_name,
-                };
-
-                match self.lease.lock() {
-                    Ok(mut g) => *g = Some(lease.clone()),
-                    Err(_) => log::error!("[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"),
-                }
-                // Clear any offer probe state
-                self.offered_probe_at.store(0, Ordering::SeqCst);
-                match self.state.lock() {
-                    Ok(mut g) => *g = DhcpState::Bound,
-                    Err(_) => log::error!("[NET] DHCP State lock poisoned (process_response Ack) - state not updated"),
-                }
-                self.state_time.store(current_tick, Ordering::SeqCst);
-                self.retry_count.store(0, Ordering::SeqCst);
-
-                Ok(DhcpResponseResult::Ack(lease))
+                let lease = Self::build_lease(header, opts, current_tick);
+                Ok(self.apply_ack(lease, current_tick))
             }
-            DhcpMessageType::Nak => {
-                match self.state.lock() {
-                    Ok(mut g) => *g = DhcpState::Init,
-                    Err(_) => log::error!("[NET] DHCP State lock poisoned (process_response Nak) - state not updated"),
-                }
-                match self.offered_lease.lock() {
-                    Ok(mut g) => *g = None,
-                    Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Nak) - skipping clear"),
-                }
-                // Clear any probe timestamp
-                self.offered_probe_at.store(0, Ordering::SeqCst);
-                Ok(DhcpResponseResult::Nak)
-            }
+            DhcpMessageType::Nak => Ok(self.apply_nak()),
             _ => Err("Unexpected message type"),
         }
     }
@@ -1090,6 +1116,184 @@ impl DhcpClient {
         self.offered_probe_at.store(0, Ordering::SeqCst);
     }
 
+    // --- check_timeout helper: transition state with error logging ---
+    fn transition_state(&self, new_state: DhcpState) {
+        match self.state.lock() {
+            Ok(mut g) => *g = new_state,
+            Err(_) => log::error!(
+                "[NET] DHCP State lock poisoned - cannot transition state"
+            ),
+        }
+    }
+
+    // --- check_timeout helper: clear all lease state ---
+    fn clear_all_leases(&self) {
+        match self.lease.lock() {
+            Ok(mut g) => *g = None,
+            Err(_) => log::error!("[NET] DHCP Lease lock poisoned - cannot clear lease"),
+        }
+        match self.offered_lease.lock() {
+            Ok(mut g) => *g = None,
+            Err(_) => log::error!("[NET] DHCP Offer lock poisoned - cannot clear offer"),
+        }
+        self.offered_probe_at.store(0, Ordering::SeqCst);
+    }
+
+    // --- check_timeout helper: common retry-or-transition pattern ---
+    fn check_retry_or_transition(&self, elapsed_secs: u64, max_retry_state: DhcpState) -> bool {
+        if elapsed_secs > Self::RETRY_INTERVAL_SECS {
+            let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
+            if retry >= Self::MAX_RETRIES {
+                self.transition_state(max_retry_state);
+                self.retry_count.store(0, Ordering::SeqCst);
+            }
+            return true;
+        }
+        false
+    }
+
+    // --- check_timeout helper: send initial ARP probe for offered IP ---
+    fn send_initial_arp_probe(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
+        match crate::net::stack::stack().lock() {
+            Ok(mut s) => {
+                if let Some(stack) = s.as_mut() {
+                    stack.send_arp_request(offered_ip);
+                    self.offered_probe_at.store(current_tick, Ordering::SeqCst);
+                    return false; // wait for probe reply
+                }
+            }
+            Err(_) => log::error!("[NET] DHCP Global Stack lock poisoned (check_timeout Selecting) - cannot send ARP probe"),
+        }
+        false
+    }
+
+    // --- check_timeout helper: check ARP cache for address conflict ---
+    fn check_arp_conflict(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
+        if let Ok(mut s) = crate::net::stack::stack().lock() {
+            if let Some(stack) = s.as_mut() {
+                if let Some(mac) = stack.arp_resolve(offered_ip, current_tick) {
+                    return mac != self.mac_address && !mac.is_broadcast();
+                }
+            }
+        }
+        false
+    }
+
+    // --- check_timeout helper: handle ARP conflict by sending DECLINE ---
+    fn handle_conflict_decline(&self, offered_ip: Ipv4Address, server_ip: Ipv4Address) {
+        let _ = self.send_decline(offered_ip, Some(server_ip));
+        match self.offered_lease.lock() {
+            Ok(mut og) => *og = None,
+            Err(_) => log::error!("[NET] DHCP Offer lock poisoned (check_timeout) - cannot clear after decline"),
+        }
+        self.offered_probe_at.store(0, Ordering::SeqCst);
+    }
+
+    // --- check_timeout helper: evaluate ARP probe result ---
+    fn check_arp_probe_result(
+        &self,
+        offered_ip: Ipv4Address,
+        server_ip: Ipv4Address,
+        current_tick: u64,
+        tick_rate: u64,
+        probe_at: u64,
+    ) -> bool {
+        let probe_elapsed = (current_tick.saturating_sub(probe_at)) / tick_rate;
+        if probe_elapsed < Self::PROBE_WAIT_SECS {
+            return false; // still waiting for ARP replies
+        }
+
+        if self.check_arp_conflict(offered_ip, current_tick) {
+            self.handle_conflict_decline(offered_ip, server_ip);
+            return true; // prompt caller to retry discovery
+        }
+
+        // No conflict detected -> move to Requesting to accept offer
+        self.transition_state(DhcpState::Requesting);
+        // reset retry count for request flow
+        self.retry_count.store(0, Ordering::SeqCst);
+        true
+    }
+
+    // --- check_timeout helper: try ARP probe flow for Selecting ---
+    fn try_selecting_arp_probe(&self, current_tick: u64, tick_rate: u64) -> Option<bool> {
+        // Extract offered lease info then release the lock to avoid re-entrance deadlock
+        let (offered_ip, server_ip) = {
+            let off = self.offered_lease.lock().ok()?;
+            let offered = off.as_ref()?;
+            (offered.ip_address, offered.server_ip)
+        };
+
+        let probe_at = self.offered_probe_at.load(Ordering::SeqCst);
+        if probe_at == 0 {
+            return Some(self.send_initial_arp_probe(offered_ip, current_tick));
+        }
+        Some(self.check_arp_probe_result(offered_ip, server_ip, current_tick, tick_rate, probe_at))
+    }
+
+    // --- check_timeout helper: handle Selecting state ---
+    fn handle_selecting_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
+        // If we have an offered lease, perform ARP probe & check for conflicts
+        if let Some(result) = self.try_selecting_arp_probe(current_tick, tick_rate) {
+            return result;
+        }
+        // No offer yet or fallback to retransmit DISCOVER
+        self.check_retry_or_transition(elapsed_secs, DhcpState::Init)
+    }
+
+    // --- check_timeout helper: handle Bound state ---
+    fn handle_bound_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
+        if let Ok(guard) = self.lease.lock() {
+            if let Some(lease) = guard.as_ref() {
+                if lease.needs_renewal(current_tick, tick_rate) {
+                    self.transition_state(DhcpState::Renewing);
+                    // initialize retry counter and timestamp
+                    self.state_time.store(current_tick, Ordering::SeqCst);
+                    self.retry_count.store(0, Ordering::SeqCst);
+                    return true;
+                }
+            }
+        } else {
+            log::error!("[NET] DHCP Lease lock poisoned (check_timeout) - skipping renewal check");
+        }
+        false
+    }
+
+    // --- check_timeout helper: handle Renewing state ---
+    fn handle_renewing_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
+        // If T2 is reached, move to Rebinding
+        if let Ok(guard) = self.lease.lock() {
+            if let Some(lease) = guard.as_ref() {
+                if lease.needs_rebind(current_tick, tick_rate) {
+                    self.transition_state(DhcpState::Rebinding);
+                    self.state_time.store(current_tick, Ordering::SeqCst);
+                    self.retry_count.store(0, Ordering::SeqCst);
+                    return true;
+                }
+            }
+        }
+
+        // Retransmit renewal requests at retry interval
+        self.check_retry_or_transition(elapsed_secs, DhcpState::Rebinding)
+    }
+
+    // --- check_timeout helper: handle Rebinding state ---
+    fn handle_rebinding_timeout(&self, elapsed_secs: u64) -> bool {
+        // Retransmit rebind requests; if retried too many times, give up and start over
+        if elapsed_secs > Self::RETRY_INTERVAL_SECS {
+            let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
+            if retry >= Self::MAX_RETRIES {
+                // Give up
+                self.transition_state(DhcpState::Init);
+                self.retry_count.store(0, Ordering::SeqCst);
+                // Clear leases
+                self.clear_all_leases();
+            }
+            return true;
+        }
+        false
+    }
+
     /// タイムアウトをチェック
     pub fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
         let state = match self.state.lock() {
@@ -1103,169 +1307,13 @@ impl DhcpClient {
         let elapsed_secs = (current_tick.saturating_sub(state_time)) / tick_rate;
 
         match state {
-            DhcpState::Selecting => {
-                // If we have an offered lease, perform ARP probe & check for conflicts before moving to Requesting
-                if let Ok(off) = self.offered_lease.lock() {
-                    if let Some(ref offered) = *off {
-                        let probe_at = self.offered_probe_at.load(Ordering::SeqCst);
-                        if probe_at == 0 {
-                            // Send ARP probe (best-effort)
-                            match crate::net::stack::stack().lock() {
-                                Ok(mut s) => {
-                                    if let Some(stack) = s.as_mut() {
-                                        stack.send_arp_request(offered.ip_address);
-                                        self.offered_probe_at.store(current_tick, Ordering::SeqCst);
-                                        return false; // wait for probe reply
-                                    }
-                                }
-                                Err(_) => log::error!("[NET] DHCP Global Stack lock poisoned (check_timeout Selecting) - cannot send ARP probe"),
-                            }
-                        } else {
-                            let probe_elapsed = (current_tick.saturating_sub(probe_at)) / tick_rate;
-                            if probe_elapsed < Self::PROBE_WAIT_SECS {
-                                return false; // still waiting for ARP replies
-                            }
-
-                            // Probe timeout elapsed; check ARP cache for conflict
-                            if let Ok(mut s) = crate::net::stack::stack().lock() {
-                                if let Some(stack) = s.as_mut() {
-                                    if let Some(mac) = stack.arp_resolve(offered.ip_address, current_tick) {
-                                        // If resolved to a MAC different from ours, it's a conflict
-                                        if mac != self.mac_address && !mac.is_broadcast() {
-                                            // Send DECLINE to the server
-                                            let server = Some(offered.server_ip);
-                                            let _ = self.send_decline(offered.ip_address, server);
-
-                                            // Clear offered lease and probe state
-                                            match self.offered_lease.lock() {
-                                                Ok(mut og) => *og = None,
-                                                Err(_) => log::error!("[NET] DHCP Offer lock poisoned (check_timeout) - cannot clear after decline"),
-                                            }
-                                            self.offered_probe_at.store(0, Ordering::SeqCst);
-
-                                            // Prompt caller to retry discovery
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // No conflict detected -> move to Requesting to accept offer
-                            match self.state.lock() {
-                                Ok(mut g) => *g = DhcpState::Requesting,
-                                Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - cannot move to Requesting"),
-                            }
-                            // reset retry count for request flow
-                            self.retry_count.store(0, Ordering::SeqCst);
-                            return true;
-                        }
-                    }
-                }
-
-                // No offer yet or fallback to retransmit DISCOVER
-                if elapsed_secs > Self::RETRY_INTERVAL_SECS {
-                    let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                    if retry >= Self::MAX_RETRIES {
-                        match self.state.lock() {
-                            Ok(mut s) => *s = DhcpState::Init,
-                            Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - cannot reset to Init"),
-                        }
-                        self.retry_count.store(0, Ordering::SeqCst);
-                    }
-                    return true;
-                }
-            }
-            DhcpState::Requesting => {
-                // 4秒でタイムアウト / retransmit
-                if elapsed_secs > Self::RETRY_INTERVAL_SECS {
-                    let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                    if retry >= Self::MAX_RETRIES {
-                        match self.state.lock() {
-                            Ok(mut s) => *s = DhcpState::Init,
-                            Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - cannot reset to Init"),
-                        }
-                        self.retry_count.store(0, Ordering::SeqCst);
-                    }
-                    return true;
-                }
-            }
-            DhcpState::Bound => {
-                if let Ok(guard) = self.lease.lock() {
-                    if let Some(lease) = guard.as_ref() {
-                        if lease.needs_renewal(current_tick, tick_rate) {
-                            match self.state.lock() {
-                                Ok(mut g) => *g = DhcpState::Renewing,
-                                Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - state not updated"),
-                            }
-                            // initialize retry counter and timestamp
-                            self.state_time.store(current_tick, Ordering::SeqCst);
-                            self.retry_count.store(0, Ordering::SeqCst);
-                            return true;
-                        }
-                    }
-                } else {
-                    log::error!("[NET] DHCP Lease lock poisoned (check_timeout) - skipping renewal check");
-                }
-            }
-            DhcpState::Renewing => {
-                // If T2 is reached, move to Rebinding
-                if let Ok(guard) = self.lease.lock() {
-                    if let Some(lease) = guard.as_ref() {
-                        if lease.needs_rebind(current_tick, tick_rate) {
-                            match self.state.lock() {
-                                Ok(mut g) => *g = DhcpState::Rebinding,
-                                Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - cannot move to Rebinding"),
-                            }
-                            self.state_time.store(current_tick, Ordering::SeqCst);
-                            self.retry_count.store(0, Ordering::SeqCst);
-                            return true;
-                        }
-                    }
-                }
-
-                // Retransmit renewal requests at retry interval
-                if elapsed_secs > Self::RETRY_INTERVAL_SECS {
-                    let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                    if retry >= Self::MAX_RETRIES {
-                        // Escalate to Rebinding
-                        match self.state.lock() {
-                            Ok(mut g) => *g = DhcpState::Rebinding,
-                            Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - cannot escalate to Rebinding"),
-                        }
-                        self.retry_count.store(0, Ordering::SeqCst);
-                    }
-                    return true;
-                }
-            }
-            DhcpState::Rebinding => {
-                // Retransmit rebind requests; if retried too many times, give up and start over
-                if elapsed_secs > Self::RETRY_INTERVAL_SECS {
-                    let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                    if retry >= Self::MAX_RETRIES {
-                        // Give up
-                        match self.state.lock() {
-                            Ok(mut s) => *s = DhcpState::Init,
-                            Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - cannot reset to Init"),
-                        }
-                        self.retry_count.store(0, Ordering::SeqCst);
-                        // Clear leases
-                        match self.lease.lock() {
-                            Ok(mut g) => *g = None,
-                            Err(_) => log::error!("[NET] DHCP Lease lock poisoned (check_timeout) - cannot clear lease"),
-                        }
-                        match self.offered_lease.lock() {
-                            Ok(mut g) => *g = None,
-                            Err(_) => log::error!("[NET] DHCP Offer lock poisoned (check_timeout) - cannot clear offer"),
-                        }
-                        self.offered_probe_at.store(0, Ordering::SeqCst);
-                    }
-                    return true;
-                }
-            }
-            _ => {}
+            DhcpState::Selecting => self.handle_selecting_timeout(current_tick, tick_rate, elapsed_secs),
+            DhcpState::Requesting => self.check_retry_or_transition(elapsed_secs, DhcpState::Init),
+            DhcpState::Bound => self.handle_bound_timeout(current_tick, tick_rate),
+            DhcpState::Renewing => self.handle_renewing_timeout(current_tick, tick_rate, elapsed_secs),
+            DhcpState::Rebinding => self.handle_rebinding_timeout(elapsed_secs),
+            _ => false,
         }
-
-        false
     }
 }
 

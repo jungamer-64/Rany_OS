@@ -944,23 +944,13 @@ impl FragmentBuffer {
             return false;
         }
 
-        // Update last update time
         self.last_update = current_time;
 
-        // If this is the last fragment, we know the total length
         if !header.more_fragments() {
             self.total_len = Some(fragment_end);
         }
 
-        // Store first fragment header for later use
-        if fragment_offset == 0 && self.first_header.is_none() {
-            let mut hdr = [0u8; 20];
-            let hdr_bytes = crate::util::struct_as_bytes(header);
-            if hdr_bytes.len() >= 20 {
-                hdr.copy_from_slice(&hdr_bytes[..20]);
-                self.first_header = Some(hdr);
-            }
-        }
+        self.store_first_header_if_needed(header, fragment_offset);
 
         // Ensure buffer is large enough
         if self.data.len() < fragment_end as usize {
@@ -971,23 +961,39 @@ impl FragmentBuffer {
         self.data[fragment_offset as usize..fragment_end as usize].copy_from_slice(payload);
 
         // Update hole list (RFC 815 algorithm)
+        self.update_holes(fragment_offset, fragment_end, header.more_fragments());
+        self.trim_holes_to_total();
+
+        true
+    }
+
+    /// Store the first fragment header for later reassembly
+    fn store_first_header_if_needed(&mut self, header: &Ipv4Header, fragment_offset: u16) {
+        if fragment_offset == 0 && self.first_header.is_none() {
+            let mut hdr = [0u8; 20];
+            let hdr_bytes = crate::util::struct_as_bytes(header);
+            if hdr_bytes.len() >= 20 {
+                hdr.copy_from_slice(&hdr_bytes[..20]);
+                self.first_header = Some(hdr);
+            }
+        }
+    }
+
+    /// RFC 815 hole-list update with a fragment range
+    fn update_holes(&mut self, fragment_offset: u16, fragment_end: u16, more_fragments: bool) {
         let mut new_holes = Vec::new();
 
         for hole in self.holes.drain(..) {
             if fragment_end <= hole.first || fragment_offset >= hole.last {
-                // Fragment doesn't overlap this hole
                 new_holes.push(hole);
             } else {
-                // Fragment overlaps this hole - split it
                 if fragment_offset > hole.first {
-                    // New hole before fragment
                     new_holes.push(FragmentHole {
                         first: hole.first,
                         last: fragment_offset,
                     });
                 }
-                if fragment_end < hole.last && header.more_fragments() {
-                    // New hole after fragment
+                if fragment_end < hole.last && more_fragments {
                     new_holes.push(FragmentHole {
                         first: fragment_end,
                         last: hole.last,
@@ -997,19 +1003,18 @@ impl FragmentBuffer {
         }
 
         self.holes = new_holes;
+    }
 
-        // If we know total length, remove holes beyond it
+    /// Remove or clamp holes beyond the known total length
+    fn trim_holes_to_total(&mut self) {
         if let Some(total) = self.total_len {
             self.holes.retain(|h| h.first < total);
-            // Adjust holes that extend beyond total
             for hole in &mut self.holes {
                 if hole.last > total {
                     hole.last = total;
                 }
             }
         }
-
-        true
     }
 
     /// Get the reassembled packet (only valid when is_complete() is true)

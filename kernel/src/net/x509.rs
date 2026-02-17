@@ -336,25 +336,12 @@ impl<'a> DerParser<'a> {
 ///
 /// `raw_tbs` には署名検証用にTBSCertificateの完全なDER
 /// （タグ+長さ+値）を保持する。
-pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
-    // 外側SEQUENCE
-    let mut outer = DerParser::new(der);
-    let cert_content = outer.read_sequence()?;
-
-    let mut parser = DerParser::new(cert_content);
-
-    // TBSCertificate SEQUENCE — 生DERバイト列をキャプチャ
-    let tbs_start = parser.position();
-    let tbs_content = parser.read_sequence()?;
-    let tbs_end = parser.position();
-    let raw_tbs = &cert_content[tbs_start..tbs_end];
-
-    // TBSCertificateの内容をパース
+/// TBSCertificateフィールドを解析
+fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, usize, usize, usize, usize, SubjectPublicKeyInfo<'a>)> {
     let mut tbs = DerParser::new(tbs_content);
 
-    // Version [0] EXPLICIT（オプション、存在する場合のみ読み取り）
+    // Version [0] EXPLICIT（オプション）
     if tbs.remaining().first() == Some(&0xA0) {
-        // [0] EXPLICIT ラッパーを読み飛ばし（中身はINTEGER）
         let (_tag, _version_content) = tbs.read_tlv()?;
     }
 
@@ -371,7 +358,6 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
     let issuer_start = tbs.position();
     tbs.skip_tlv()?;
     let issuer_end = tbs.position();
-    let issuer_raw = &tbs_content[issuer_start..issuer_end];
 
     // Validity — スキップ
     tbs.skip_tlv()?;
@@ -380,13 +366,34 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
     let subject_start = tbs.position();
     tbs.skip_tlv()?;
     let subject_end = tbs.position();
-    let subject_raw = &tbs_content[subject_start..subject_end];
 
     // SubjectPublicKeyInfo
     let spki_content = tbs.read_sequence()?;
     let subject_public_key_info = parse_spki(spki_content)?;
 
-    // 外側SignatureAlgorithm — スキップ（TBS内で既に取得済み）
+    Some((signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info))
+}
+
+pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
+    // 外側SEQUENCE
+    let mut outer = DerParser::new(der);
+    let cert_content = outer.read_sequence()?;
+
+    let mut parser = DerParser::new(cert_content);
+
+    // TBSCertificate SEQUENCE — 生DERバイト列をキャプチャ
+    let tbs_start = parser.position();
+    let tbs_content = parser.read_sequence()?;
+    let tbs_end = parser.position();
+    let raw_tbs = &cert_content[tbs_start..tbs_end];
+
+    let (signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info) =
+        parse_tbs_fields(tbs_content)?;
+
+    let issuer_raw = &tbs_content[issuer_start..issuer_end];
+    let subject_raw = &tbs_content[subject_start..subject_end];
+
+    // 外側SignatureAlgorithm — スキップ
     parser.skip_tlv()?;
 
     // SignatureValue (BIT STRING)
@@ -415,46 +422,45 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
 /// を解析し、モジュラスの先頭0x00符号バイトを除去する。
 /// ECDSA P-256の場合、アルゴリズムパラメータのsecp256r1 OIDを検証し、
 /// BIT STRINGの内容（非圧縮ポイント）を返す。
+/// RSA 公開鍵を BIT STRING から解析する
+fn parse_rsa_spki<'a>(pubkey_bits: &'a [u8]) -> Option<SubjectPublicKeyInfo<'a>> {
+    let mut rsa_parser = DerParser::new(pubkey_bits);
+    let rsa_content = rsa_parser.read_sequence()?;
+    let mut rsa_inner = DerParser::new(rsa_content);
+    let mut modulus = rsa_inner.read_integer()?;
+    if modulus.len() > 1 && modulus[0] == 0x00 {
+        modulus = &modulus[1..];
+    }
+    let exponent = rsa_inner.read_integer()?;
+    Some(SubjectPublicKeyInfo::Rsa { modulus, exponent })
+}
+
+/// ECDSA 公開鍵をアルゴリズムパラメータから解析する
+fn parse_ec_spki<'a>(
+    alg_parser: &mut DerParser<'a>,
+    pubkey_bits: &'a [u8],
+) -> Option<SubjectPublicKeyInfo<'a>> {
+    let curve_oid = alg_parser.read_oid()?;
+    if curve_oid == OID_SECP256R1 {
+        Some(SubjectPublicKeyInfo::EcdsaP256 { public_key: pubkey_bits })
+    } else if curve_oid == OID_SECP384R1 {
+        Some(SubjectPublicKeyInfo::EcdsaP384 { public_key: pubkey_bits })
+    } else {
+        Some(SubjectPublicKeyInfo::Unknown(pubkey_bits))
+    }
+}
+
 fn parse_spki<'a>(spki_content: &'a [u8]) -> Option<SubjectPublicKeyInfo<'a>> {
     let mut parser = DerParser::new(spki_content);
-
-    // Algorithm SEQUENCE
     let alg_content = parser.read_sequence()?;
     let mut alg_parser = DerParser::new(alg_content);
     let alg_oid = alg_parser.read_oid()?;
-
-    // 公開鍵 BIT STRING
     let pubkey_bits = parser.read_bitstring()?;
 
     if alg_oid == OID_RSA_ENCRYPTION {
-        // RSA: BIT STRING内にSEQUENCE { INTEGER modulus, INTEGER exponent }
-        let mut rsa_parser = DerParser::new(pubkey_bits);
-        let rsa_content = rsa_parser.read_sequence()?;
-        let mut rsa_inner = DerParser::new(rsa_content);
-
-        let mut modulus = rsa_inner.read_integer()?;
-        // 先頭の符号バイト（0x00）を除去
-        if modulus.len() > 1 && modulus[0] == 0x00 {
-            modulus = &modulus[1..];
-        }
-
-        let exponent = rsa_inner.read_integer()?;
-
-        Some(SubjectPublicKeyInfo::Rsa { modulus, exponent })
+        parse_rsa_spki(pubkey_bits)
     } else if alg_oid == OID_EC_PUBLIC_KEY {
-        // ECDSA: アルゴリズムパラメータから曲線OIDを取得
-        let curve_oid = alg_parser.read_oid()?;
-        if curve_oid == OID_SECP256R1 {
-            Some(SubjectPublicKeyInfo::EcdsaP256 {
-                public_key: pubkey_bits,
-            })
-        } else if curve_oid == OID_SECP384R1 {
-            Some(SubjectPublicKeyInfo::EcdsaP384 {
-                public_key: pubkey_bits,
-            })
-        } else {
-            Some(SubjectPublicKeyInfo::Unknown(pubkey_bits))
-        }
+        parse_ec_spki(&mut alg_parser, pubkey_bits)
     } else {
         Some(SubjectPublicKeyInfo::Unknown(pubkey_bits))
     }
@@ -540,6 +546,32 @@ const TEST_CERT_DER: [u8; 154] = [
 ///
 /// # Returns
 /// リーフ証明書のSubjectPublicKeyInfo
+/// 証明書チェーン内のリンク（issuer一致 + 署名）を検証
+fn verify_chain_links(certs: &[Option<X509Certificate<'_>>], chain_len: usize) -> Option<()> {
+    for i in 0..chain_len - 1 {
+        let current = certs[i].as_ref()?;
+        let issuer = certs[i + 1].as_ref()?;
+
+        if current.issuer_raw != issuer.subject_raw {
+            return None;
+        }
+        if !verify_signature(current, &issuer.subject_public_key_info) {
+            return None;
+        }
+    }
+    Some(())
+}
+
+/// リーフ証明書のsubjectにサーバー名が含まれるか簡易チェック
+fn check_server_name_in_leaf(leaf: &X509Certificate<'_>, server_name: Option<&str>) -> Option<()> {
+    if let Some(name) = server_name {
+        if !contains_bytes(leaf.subject_raw, name.as_bytes()) {
+            return None;
+        }
+    }
+    Some(())
+}
+
 pub fn validate_certificate_chain<'a>(
     chain: &[&'a [u8]],
     server_name: Option<&str>,
@@ -548,13 +580,11 @@ pub fn validate_certificate_chain<'a>(
         return None;
     }
 
-    // 全証明書をパース
-    // no_std環境のため固定サイズ配列を使用（最大チェーン長: 8）
     const MAX_CHAIN: usize = 8;
     if chain.len() > MAX_CHAIN {
         return None;
     }
-    // MaybeUninitの代わりにOption配列で安全に初期化
+
     let mut certs: [Option<X509Certificate<'_>>; MAX_CHAIN] = [None, None, None, None, None, None, None, None];
     for (i, &der) in chain.iter().enumerate() {
         certs[i] = Some(parse_x509(der)?);
@@ -562,44 +592,14 @@ pub fn validate_certificate_chain<'a>(
 
     let chain_len = chain.len();
 
-    // server_name簡易チェック（リーフ証明書のsubject_rawにサーバー名が含まれるか）
-    if let Some(name) = server_name {
-        let leaf = certs[0].as_ref()?;
-        let name_bytes = name.as_bytes();
-        if !contains_bytes(leaf.subject_raw, name_bytes) {
-            return None;
-        }
-    }
+    check_server_name_in_leaf(certs[0].as_ref()?, server_name)?;
 
-    // 自己署名証明書（チェーン長1）: issuerとsubjectが一致すればそのまま返す
     if chain_len == 1 {
-        let cert = certs[0].as_ref()?;
-        // 自己署名の場合、issuer == subject
-        if cert.issuer_raw == cert.subject_raw {
-            return Some(cert.subject_public_key_info);
-        }
-        // 自己署名ではないが、チェーンが1つしかない場合も公開鍵を返す
-        // （信頼アンカーが別途検証される前提）
-        return Some(cert.subject_public_key_info);
+        return Some(certs[0].as_ref()?.subject_public_key_info);
     }
 
-    // チェーン検証: chain[i]の署名をchain[i+1]の公開鍵で検証
-    for i in 0..chain_len - 1 {
-        let current = certs[i].as_ref()?;
-        let issuer = certs[i + 1].as_ref()?;
+    verify_chain_links(&certs, chain_len)?;
 
-        // issuer名の一致確認
-        if current.issuer_raw != issuer.subject_raw {
-            return None;
-        }
-
-        // 署名検証: current.raw_tbsのハッシュをissuerの公開鍵で検証
-        if !verify_signature(current, &issuer.subject_public_key_info) {
-            return None;
-        }
-    }
-
-    // リーフ証明書の公開鍵を返す
     Some(certs[0].as_ref()?.subject_public_key_info)
 }
 

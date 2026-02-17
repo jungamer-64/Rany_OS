@@ -270,6 +270,35 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     }
 }
 
+/// 32bpp フォーマットを判定
+fn detect_32bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelFormat {
+    if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
+        PixelFormat::Bgra8888
+    } else if red_shift == 0 && green_shift == 8 && blue_shift == 16 {
+        PixelFormat::Rgba8888
+    } else {
+        PixelFormat::Bgra8888
+    }
+}
+
+/// 24bpp フォーマットを判定
+fn detect_24bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelFormat {
+    if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
+        PixelFormat::Bgr888
+    } else {
+        PixelFormat::Rgb888
+    }
+}
+
+/// 16bpp フォーマットを判定
+fn detect_16bpp_format(red_size: u8, green_size: u8, blue_size: u8) -> PixelFormat {
+    if red_size == 5 && green_size == 6 && blue_size == 5 {
+        PixelFormat::Rgb565
+    } else {
+        PixelFormat::Rgb565
+    }
+}
+
 /// マスク情報からピクセルフォーマットを判定
 fn detect_pixel_format(
     red_size: u8,
@@ -281,34 +310,10 @@ fn detect_pixel_format(
     bpp: u16,
 ) -> PixelFormat {
     match bpp {
-        32 => {
-            // 32bpp: BGRA or RGBA
-            if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
-                PixelFormat::Bgra8888
-            } else if red_shift == 0 && green_shift == 8 && blue_shift == 16 {
-                PixelFormat::Rgba8888
-            } else {
-                // デフォルトはBGRA（最も一般的）
-                PixelFormat::Bgra8888
-            }
-        }
-        24 => {
-            // 24bpp: BGR or RGB
-            if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
-                PixelFormat::Bgr888
-            } else {
-                PixelFormat::Rgb888
-            }
-        }
-        16 => {
-            // 16bpp: RGB565
-            if red_size == 5 && green_size == 6 && blue_size == 5 {
-                PixelFormat::Rgb565
-            } else {
-                PixelFormat::Rgb565 // デフォルト
-            }
-        }
-        _ => PixelFormat::Bgra8888, // 未知のフォーマットはBGRA8888を仮定
+        32 => detect_32bpp_format(red_shift, green_shift, blue_shift),
+        24 => detect_24bpp_format(red_shift, green_shift, blue_shift),
+        16 => detect_16bpp_format(red_size, green_size, blue_size),
+        _ => PixelFormat::Bgra8888,
     }
 }
 

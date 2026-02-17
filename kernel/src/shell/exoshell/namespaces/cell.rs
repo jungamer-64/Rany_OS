@@ -22,99 +22,10 @@ impl CellNamespace {
         args: &[ExoValue<'static>],
     ) -> ExoValue<'static> {
         match method {
-            "list" => {
-                let cells = with_registry(|r| r.list());
-                let mut output = String::from(" ID | Name                 | Size   | Drivers \n");
-                output.push_str("----|----------------------|--------|---------\n");
-
-                for cell in cells {
-                    output.push_str(&format!(
-                        "{:3} | {:20} | {:6} | {:7} \n",
-                        cell.id.as_u64(),
-                        cell.name,
-                        format_size(cell.size),
-                        cell.driver_count
-                    ));
-                }
-                ExoValue::String(output.into())
-            }
-            "stats" => {
-                let id = match args.first() {
-                    Some(ExoValue::Int(n)) => *n as u64,
-                    Some(ExoValue::String(s)) => s.parse().unwrap_or(0),
-                    _ => return ExoValue::Error(String::from("Usage: cell.stats(id)")),
-                };
-
-                with_registry(|r| {
-                    if let Some(cell) = r.get(CellId::from_u64(id)) {
-                        let mut output = format!("Cell Stats: {}\n", cell.name);
-                        output.push_str(&format!("  ID: {}\n", cell.id.as_u64()));
-                        output.push_str(&format!("  Base Address: {:#x}\n", cell.load_address));
-                        output.push_str(&format!("  Size: {} bytes\n", cell.load_size));
-                        output.push_str("  Exports:\n");
-                        for (name, addr) in &cell.exports {
-                            output.push_str(&format!("    - {}: {:#x}\n", name, addr));
-                        }
-                        output.push_str("  Registered Drivers:\n");
-                        for handle in &cell.registered_drivers {
-                             // Assuming we can resolve driver name from registry, but strictly we are in loader lock?
-                             // Loader registry doesn't lock driver registry. Driver registry has its own lock.
-                             // Safe to call driver_registry().name().
-                             let name = crate::driver_registry::driver_registry().name(*handle).unwrap_or_default();
-                             output.push_str(&format!("    - Handle {}: {}\n", handle.index(), name));
-                        }
-                        ExoValue::String(output.into())
-                    } else {
-                        ExoValue::Error(format!("Cell ID {} not found", id))
-                    }
-                })
-            }
-            "unload" => {
-                let id = match args.first() {
-                    Some(ExoValue::Int(n)) => *n as u64,
-                    Some(ExoValue::String(s)) => s.parse().unwrap_or(0),
-                    _ => return ExoValue::Error(String::from("Usage: cell.unload(id)")),
-                };
-
-                if id == 0 {
-                    return ExoValue::Error(String::from("Cannot unload Kernel cell (ID 0)"));
-                }
-
-                match unload_cell(CellId::from_u64(id)) {
-                    Ok(_) => ExoValue::String(format!("Cell {} unloaded successfully", id).into()),
-                    Err(e) => ExoValue::Error(format!("Failed to unload cell {}: {:?}", id, e)),
-                }
-            }
-            "update" => {
-                 let id = match args.first() {
-                    Some(ExoValue::Int(n)) => *n as u64,
-                    Some(ExoValue::String(s)) => s.parse().unwrap_or(0),
-                    _ => return ExoValue::Error(String::from("Usage: cell.update(id, path)")),
-                };
-
-                let path = match args.get(1) {
-                     Some(ExoValue::String(s)) => s.as_ref(),
-                     _ => return ExoValue::Error(String::from("Usage: cell.update(id, path)")),
-                };
-
-                // Read file content via shell service
-                let shell = match kernel_api::services::kernel().shell() {
-                    Some(s) => s,
-                    None => return ExoValue::Error(String::from("Shell services unavailable")),
-                };
-
-                // Read file (Zero Copy returns Arc<Vec<u8>>)
-                let content = match shell.read_file_zero_copy(path) {
-                    Ok(c) => c,
-                    Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
-                };
-
-                // Perform update (Hot-Swap)
-                match live_update_manager().perform_update(id, &content) {
-                    Ok(new_id) => ExoValue::String(format!("Cell {} updated successfully. New ID: {}", id, new_id).into()),
-                    Err(e) => ExoValue::Error(format!("Update failed: {}", e)),
-                }
-            }
+            "list" => Self::dispatch_list(),
+            "stats" => Self::dispatch_stats(args),
+            "unload" => Self::dispatch_unload(args),
+            "update" => Self::dispatch_update(args),
             "reload" => {
                 ExoValue::Error(String::from("reload() is not yet implemented"))
             }
@@ -126,6 +37,97 @@ impl CellNamespace {
                 .to_string()
                     + "\nValid methods: list, stats, unload, update, reload",
             ),
+        }
+    }
+
+    fn dispatch_list() -> ExoValue<'static> {
+        let cells = with_registry(|r| r.list());
+        let mut output = String::from(" ID | Name                 | Size   | Drivers \n");
+        output.push_str("----|----------------------|--------|---------\n");
+
+        for cell in cells {
+            output.push_str(&format!(
+                "{:3} | {:20} | {:6} | {:7} \n",
+                cell.id.as_u64(),
+                cell.name,
+                format_size(cell.size),
+                cell.driver_count
+            ));
+        }
+        ExoValue::String(output.into())
+    }
+
+    fn dispatch_stats(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let id = match args.first() {
+            Some(ExoValue::Int(n)) => *n as u64,
+            Some(ExoValue::String(s)) => s.parse().unwrap_or(0),
+            _ => return ExoValue::Error(String::from("Usage: cell.stats(id)")),
+        };
+
+        with_registry(|r| {
+            if let Some(cell) = r.get(CellId::from_u64(id)) {
+                let mut output = format!("Cell Stats: {}\n", cell.name);
+                output.push_str(&format!("  ID: {}\n", cell.id.as_u64()));
+                output.push_str(&format!("  Base Address: {:#x}\n", cell.load_address));
+                output.push_str(&format!("  Size: {} bytes\n", cell.load_size));
+                output.push_str("  Exports:\n");
+                for (name, addr) in &cell.exports {
+                    output.push_str(&format!("    - {}: {:#x}\n", name, addr));
+                }
+                output.push_str("  Registered Drivers:\n");
+                for handle in &cell.registered_drivers {
+                     let name = crate::driver_registry::driver_registry().name(*handle).unwrap_or_default();
+                     output.push_str(&format!("    - Handle {}: {}\n", handle.index(), name));
+                }
+                ExoValue::String(output.into())
+            } else {
+                ExoValue::Error(format!("Cell ID {} not found", id))
+            }
+        })
+    }
+
+    fn dispatch_unload(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let id = match args.first() {
+            Some(ExoValue::Int(n)) => *n as u64,
+            Some(ExoValue::String(s)) => s.parse().unwrap_or(0),
+            _ => return ExoValue::Error(String::from("Usage: cell.unload(id)")),
+        };
+
+        if id == 0 {
+            return ExoValue::Error(String::from("Cannot unload Kernel cell (ID 0)"));
+        }
+
+        match unload_cell(CellId::from_u64(id)) {
+            Ok(_) => ExoValue::String(format!("Cell {} unloaded successfully", id).into()),
+            Err(e) => ExoValue::Error(format!("Failed to unload cell {}: {:?}", id, e)),
+        }
+    }
+
+    fn dispatch_update(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+         let id = match args.first() {
+            Some(ExoValue::Int(n)) => *n as u64,
+            Some(ExoValue::String(s)) => s.parse().unwrap_or(0),
+            _ => return ExoValue::Error(String::from("Usage: cell.update(id, path)")),
+        };
+
+        let path = match args.get(1) {
+             Some(ExoValue::String(s)) => s.as_ref(),
+             _ => return ExoValue::Error(String::from("Usage: cell.update(id, path)")),
+        };
+
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        let content = match shell.read_file_zero_copy(path) {
+            Ok(c) => c,
+            Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
+        };
+
+        match live_update_manager().perform_update(id, &content) {
+            Ok(new_id) => ExoValue::String(format!("Cell {} updated successfully. New ID: {}", id, new_id).into()),
+            Err(e) => ExoValue::Error(format!("Update failed: {}", e)),
         }
     }
 }

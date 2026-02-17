@@ -103,367 +103,61 @@ impl KeyboardHandler {
         }
 
         let shifted = self.modifiers.shift() ^ self.modifiers.caps_lock;
-
-        // JP配列 (106/109キーボード) マッピング
-        let c = match scancode {
-            0x02 => {
-                if shifted {
-                    '!'
-                } else {
-                    '1'
-                }
-            }
-            0x03 => {
-                if shifted {
-                    '"'
-                } else {
-                    '2'
-                }
-            }
-            0x04 => {
-                if shifted {
-                    '#'
-                } else {
-                    '3'
-                }
-            }
-            0x05 => {
-                if shifted {
-                    '$'
-                } else {
-                    '4'
-                }
-            }
-            0x06 => {
-                if shifted {
-                    '%'
-                } else {
-                    '5'
-                }
-            }
-            0x07 => {
-                if shifted {
-                    '&'
-                } else {
-                    '6'
-                }
-            }
-            0x08 => {
-                if shifted {
-                    '\''
-                } else {
-                    '7'
-                }
-            }
-            0x09 => {
-                if shifted {
-                    '('
-                } else {
-                    '8'
-                }
-            }
-            0x0A => {
-                if shifted {
-                    ')'
-                } else {
-                    '9'
-                }
-            }
-            0x0B => {
-                if shifted {
-                    0 as char
-                } else {
-                    '0'
-                }
-            } // Shift+0 は割り当てなし（環境依存）
-            0x0C => {
-                if shifted {
-                    '='
-                } else {
-                    '-'
-                }
-            }
-            0x0D => {
-                if shifted {
-                    '~'
-                } else {
-                    '^'
-                }
-            }
-            0x10 => {
-                if shifted {
-                    'Q'
-                } else {
-                    'q'
-                }
-            }
-            0x11 => {
-                if shifted {
-                    'W'
-                } else {
-                    'w'
-                }
-            }
-            0x12 => {
-                if shifted {
-                    'E'
-                } else {
-                    'e'
-                }
-            }
-            0x13 => {
-                if shifted {
-                    'R'
-                } else {
-                    'r'
-                }
-            }
-            0x14 => {
-                if shifted {
-                    'T'
-                } else {
-                    't'
-                }
-            }
-            0x15 => {
-                if shifted {
-                    'Y'
-                } else {
-                    'y'
-                }
-            }
-            0x16 => {
-                if shifted {
-                    'U'
-                } else {
-                    'u'
-                }
-            }
-            0x17 => {
-                if shifted {
-                    'I'
-                } else {
-                    'i'
-                }
-            }
-            0x18 => {
-                if shifted {
-                    'O'
-                } else {
-                    'o'
-                }
-            }
-            0x19 => {
-                if shifted {
-                    'P'
-                } else {
-                    'p'
-                }
-            }
-            0x1A => {
-                if shifted {
-                    '`'
-                } else {
-                    '@'
-                }
-            }
-            0x1B => {
-                if shifted {
-                    '{'
-                } else {
-                    '['
-                }
-            }
-            0x1E => {
-                if shifted {
-                    'A'
-                } else {
-                    'a'
-                }
-            }
-            0x1F => {
-                if shifted {
-                    'S'
-                } else {
-                    's'
-                }
-            }
-            0x20 => {
-                if shifted {
-                    'D'
-                } else {
-                    'd'
-                }
-            }
-            0x21 => {
-                if shifted {
-                    'F'
-                } else {
-                    'f'
-                }
-            }
-            0x22 => {
-                if shifted {
-                    'G'
-                } else {
-                    'g'
-                }
-            }
-            0x23 => {
-                if shifted {
-                    'H'
-                } else {
-                    'h'
-                }
-            }
-            0x24 => {
-                if shifted {
-                    'J'
-                } else {
-                    'j'
-                }
-            }
-            0x25 => {
-                if shifted {
-                    'K'
-                } else {
-                    'k'
-                }
-            }
-            0x26 => {
-                if shifted {
-                    'L'
-                } else {
-                    'l'
-                }
-            }
-            0x27 => {
-                if shifted {
-                    '+'
-                } else {
-                    ';'
-                }
-            } // JISの : キー
-            0x28 => {
-                if shifted {
-                    '*'
-                } else {
-                    ':'
-                }
-            } // JISの ] キー位置... ではなく : キー位置?
-            // JIS配列:
-            // 0x27 (US ;) -> ; / +
-            // 0x28 (US ') -> : / *
-            // 0x1A (US [) -> @ / `
-            // 0x1B (US ]) -> [ / {
-            // 0x2B (US \) -> ] / }
-            0x29 => {
-                if shifted {
-                    0 as char
-                } else {
-                    0 as char
-                }
-            } // Hankaku/Zenkaku (usually ignored or handled specially)
-            0x2B => {
-                if shifted {
-                    '}'
-                } else {
-                    ']'
-                }
-            }
-            0x2C => {
-                if shifted {
-                    'Z'
-                } else {
-                    'z'
-                }
-            }
-            0x2D => {
-                if shifted {
-                    'X'
-                } else {
-                    'x'
-                }
-            }
-            0x2E => {
-                if shifted {
-                    'C'
-                } else {
-                    'c'
-                }
-            }
-            0x2F => {
-                if shifted {
-                    'V'
-                } else {
-                    'v'
-                }
-            }
-            0x30 => {
-                if shifted {
-                    'B'
-                } else {
-                    'b'
-                }
-            }
-            0x31 => {
-                if shifted {
-                    'N'
-                } else {
-                    'n'
-                }
-            }
-            0x32 => {
-                if shifted {
-                    'M'
-                } else {
-                    'm'
-                }
-            }
-            0x33 => {
-                if shifted {
-                    '<'
-                } else {
-                    ','
-                }
-            }
-            0x34 => {
-                if shifted {
-                    '>'
-                } else {
-                    '.'
-                }
-            }
-            0x35 => {
-                if shifted {
-                    '?'
-                } else {
-                    '/'
-                }
-            }
-            0x73 => {
-                if shifted {
-                    '_'
-                } else {
-                    '\\'
-                }
-            } // RO / Backslash (JIS only)
-            0x7D => {
-                if shifted {
-                    '|'
-                } else {
-                    '\\'
-                }
-            } // Yen / Pipe (JIS only)
-            0x39 => ' ',
-            0x0F => '\t',
-            0x1C => '\n',
-            _ => return None,
-        };
-
-        Some(c)
+        let table = if shifted { &SHIFTED_MAP } else { &NORMAL_MAP };
+        let idx = scancode as usize;
+        if idx >= table.len() {
+            return None;
+        }
+        let c = table[idx];
+        if c == '\0' { None } else { Some(c) }
     }
 }
+
+/// JP106/109 keyboard scancode-to-character lookup table (unshifted).
+static NORMAL_MAP: [char; 128] = {
+    let mut m = ['\0'; 128];
+    m[0x02] = '1'; m[0x03] = '2'; m[0x04] = '3'; m[0x05] = '4';
+    m[0x06] = '5'; m[0x07] = '6'; m[0x08] = '7'; m[0x09] = '8';
+    m[0x0A] = '9'; m[0x0B] = '0'; m[0x0C] = '-'; m[0x0D] = '^';
+    m[0x0F] = '\t';
+    m[0x10] = 'q'; m[0x11] = 'w'; m[0x12] = 'e'; m[0x13] = 'r';
+    m[0x14] = 't'; m[0x15] = 'y'; m[0x16] = 'u'; m[0x17] = 'i';
+    m[0x18] = 'o'; m[0x19] = 'p'; m[0x1A] = '@'; m[0x1B] = '[';
+    m[0x1C] = '\n';
+    m[0x1E] = 'a'; m[0x1F] = 's'; m[0x20] = 'd'; m[0x21] = 'f';
+    m[0x22] = 'g'; m[0x23] = 'h'; m[0x24] = 'j'; m[0x25] = 'k';
+    m[0x26] = 'l'; m[0x27] = ';'; m[0x28] = ':';
+    m[0x2B] = ']';
+    m[0x2C] = 'z'; m[0x2D] = 'x'; m[0x2E] = 'c'; m[0x2F] = 'v';
+    m[0x30] = 'b'; m[0x31] = 'n'; m[0x32] = 'm';
+    m[0x33] = ','; m[0x34] = '.'; m[0x35] = '/';
+    m[0x39] = ' ';
+    m[0x73] = '\\'; m[0x7D] = '\\';
+    m
+};
+
+/// JP106/109 keyboard scancode-to-character lookup table (shifted).
+static SHIFTED_MAP: [char; 128] = {
+    let mut m = ['\0'; 128];
+    m[0x02] = '!'; m[0x03] = '"'; m[0x04] = '#'; m[0x05] = '$';
+    m[0x06] = '%'; m[0x07] = '&'; m[0x08] = '\''; m[0x09] = '(';
+    m[0x0A] = ')'; m[0x0C] = '='; m[0x0D] = '~';
+    m[0x0F] = '\t';
+    m[0x10] = 'Q'; m[0x11] = 'W'; m[0x12] = 'E'; m[0x13] = 'R';
+    m[0x14] = 'T'; m[0x15] = 'Y'; m[0x16] = 'U'; m[0x17] = 'I';
+    m[0x18] = 'O'; m[0x19] = 'P'; m[0x1A] = '`'; m[0x1B] = '{';
+    m[0x1C] = '\n';
+    m[0x1E] = 'A'; m[0x1F] = 'S'; m[0x20] = 'D'; m[0x21] = 'F';
+    m[0x22] = 'G'; m[0x23] = 'H'; m[0x24] = 'J'; m[0x25] = 'K';
+    m[0x26] = 'L'; m[0x27] = '+'; m[0x28] = '*';
+    m[0x2B] = '}';
+    m[0x2C] = 'Z'; m[0x2D] = 'X'; m[0x2E] = 'C'; m[0x2F] = 'V';
+    m[0x30] = 'B'; m[0x31] = 'N'; m[0x32] = 'M';
+    m[0x33] = '<'; m[0x34] = '>'; m[0x35] = '?';
+    m[0x39] = ' ';
+    m[0x73] = '_'; m[0x7D] = '|';
+    m
+};
 
 impl Default for KeyboardHandler {
     fn default() -> Self {

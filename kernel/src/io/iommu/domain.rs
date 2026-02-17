@@ -1188,18 +1188,8 @@ impl IommuDomain {
         mappings.overlaps(iova, size)
     }
 
-    /// Map a DMA region
-    ///
-    /// This function is transactional: if any page mapping fails, all successfully
-    /// mapped pages are rolled back before returning the error.
-    pub fn map(
-        &self,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<(), IommuError> {
+    /// Validate alignment, address width, and poison state for a map operation.
+    fn validate_map_args(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
         if self.poisoned.load(Ordering::Acquire) {
             return Err(IommuError::Poisoned);
         }
@@ -1212,123 +1202,146 @@ impl IommuDomain {
             return Err(IommuError::InvalidAddress);
         }
 
-        let (start_shard, end_shard) = self.shard_range(iova, size)?;
-        let mut guards = self.lock_shards(start_shard, end_shard)?;
+        Ok(())
+    }
 
+    /// Check that no existing mapping overlaps the given range across all shards.
+    fn check_no_overlap(
+        guards: &[PoisonLockGuard<'_, DomainShard>],
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
         for guard in guards.iter() {
             if Self::mapping_overlaps(&guard.mappings, iova, size) {
                 return Err(IommuError::AlreadyMapped);
             }
         }
+        Ok(())
+    }
 
-        if self.domain_type != IommuDomainType::Passthrough {
-            let mut current_iova = iova;
-            let mut current_phys = phys;
-            let mut remaining = size;
+    /// Check whether a 1GB huge page can be used for the current mapping position.
+    fn can_use_1gb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
+        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+        self.supports_1gb
+            && remaining >= SIZE_1GB
+            && iova % SIZE_1GB == 0
+            && phys % SIZE_1GB == 0
+            && (phys as u64 & 0x3FFF_FFFF) == 0
+    }
 
-            const SIZE_1GB: u64 = 1024 * 1024 * 1024;
-            const SIZE_2MB: u64 = 2 * 1024 * 1024;
-            const SIZE_4KB: u64 = 4096;
+    /// Check whether a 2MB huge page can be used for the current mapping position.
+    fn can_use_2mb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
+        const SIZE_2MB: u64 = 2 * 1024 * 1024;
+        self.supports_2mb
+            && remaining >= SIZE_2MB
+            && iova % SIZE_2MB == 0
+            && phys % SIZE_2MB == 0
+    }
 
-            let start_iova = iova;
-            let mut mapped_len: u64 = 0;
+    /// Attempt to map pages at the best available page size (1GB > 2MB > 4KB).
+    ///
+    /// Returns the number of bytes successfully mapped in this chunk.
+    fn map_next_chunk(
+        &self,
+        iova: u64,
+        phys: u64,
+        remaining: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
+        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+        const SIZE_2MB: u64 = 2 * 1024 * 1024;
+        const SIZE_4KB: u64 = 4096;
 
-            while remaining > 0 {
-                if self.supports_1gb
-                    && remaining >= SIZE_1GB
-                    && current_iova % SIZE_1GB == 0
-                    && current_phys % SIZE_1GB == 0
-                    && (current_phys as u64 & 0x3FFF_FFFF) == 0
-                {
-                    match unsafe { self.map_page_1gb(current_iova, current_phys, read, write) } {
-                        Ok(()) => {
-                            current_iova += SIZE_1GB;
-                            current_phys += SIZE_1GB;
-                            remaining -= SIZE_1GB;
-                            mapped_len += SIZE_1GB;
-                            continue;
-                        }
-                        Err(e) => {
-                            if mapped_len > 0 {
-                                if let Err(rollback_err) =
-                                    self.unmap_range(start_iova, mapped_len)
-                                {
-                                    log::error!(
-                                        "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                                        e,
-                                        rollback_err
-                                    );
-                                    self.poison();
-                                    return Err(IommuError::Poisoned);
-                                }
-                            }
-                            return Err(e);
-                        }
-                    }
+        if self.can_use_1gb_page(iova, phys, remaining) {
+            unsafe { self.map_page_1gb(iova, phys, read, write) }?;
+            return Ok(SIZE_1GB);
+        }
+
+        if self.can_use_2mb_page(iova, phys, remaining) {
+            unsafe { self.map_page_2mb(iova, phys, read, write) }?;
+            return Ok(SIZE_2MB);
+        }
+
+        let pages_remaining = (remaining / SIZE_4KB) as usize;
+        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+        let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
+        let pages_mapped = self.map_range_4k(iova, phys, pages_in_pt, read, write)?;
+        Ok((pages_mapped as u64) * SIZE_4KB)
+    }
+
+    /// Rollback previously mapped pages and return the appropriate error.
+    ///
+    /// If rollback itself fails, the domain is poisoned.
+    fn rollback_mapping(&self, start_iova: u64, mapped_len: u64, error: IommuError) -> IommuError {
+        if mapped_len > 0 {
+            if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
+                log::error!(
+                    "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                    error,
+                    rollback_err
+                );
+                self.poison();
+                return IommuError::Poisoned;
+            }
+        }
+        error
+    }
+
+    /// Map all pages in the given range transactionally.
+    ///
+    /// If any page mapping fails, all successfully mapped pages are rolled back.
+    fn map_pages_transactional(
+        &self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
+        let mut current_iova = iova;
+        let mut current_phys = phys;
+        let mut remaining = size;
+        let mut mapped_len: u64 = 0;
+
+        while remaining > 0 {
+            match self.map_next_chunk(current_iova, current_phys, remaining, read, write) {
+                Ok(bytes) => {
+                    current_iova += bytes;
+                    current_phys += bytes;
+                    remaining -= bytes;
+                    mapped_len += bytes;
                 }
-
-                if self.supports_2mb
-                    && remaining >= SIZE_2MB
-                    && current_iova % SIZE_2MB == 0
-                    && current_phys % SIZE_2MB == 0
-                {
-                    match unsafe { self.map_page_2mb(current_iova, current_phys, read, write) } {
-                        Ok(()) => {
-                            current_iova += SIZE_2MB;
-                            current_phys += SIZE_2MB;
-                            remaining -= SIZE_2MB;
-                            mapped_len += SIZE_2MB;
-                            continue;
-                        }
-                        Err(e) => {
-                            if mapped_len > 0 {
-                                if let Err(rollback_err) =
-                                    self.unmap_range(start_iova, mapped_len)
-                                {
-                                    log::error!(
-                                        "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                                        e,
-                                        rollback_err
-                                    );
-                                    self.poison();
-                                    return Err(IommuError::Poisoned);
-                                }
-                            }
-                            return Err(e);
-                        }
-                    }
-                }
-
-                let pages_remaining = (remaining / SIZE_4KB) as usize;
-                let pt_idx = ((current_iova >> 12) & 0x1FF) as usize;
-                let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
-
-                match self.map_range_4k(current_iova, current_phys, pages_in_pt, read, write) {
-                    Ok(pages_mapped) => {
-                        let mapped_bytes = (pages_mapped as u64) * SIZE_4KB;
-                        current_iova += mapped_bytes;
-                        current_phys += mapped_bytes;
-                        remaining -= mapped_bytes;
-                        mapped_len += mapped_bytes;
-                    }
-                    Err(e) => {
-                        if mapped_len > 0 {
-                            if let Err(rollback_err) =
-                                self.unmap_range(start_iova, mapped_len)
-                            {
-                                log::error!(
-                                    "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                                    e,
-                                    rollback_err
-                                );
-                                self.poison();
-                                return Err(IommuError::Poisoned);
-                            }
-                        }
-                        return Err(e);
-                    }
+                Err(e) => {
+                    return Err(self.rollback_mapping(iova, mapped_len, e));
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    /// Map a DMA region
+    ///
+    /// This function is transactional: if any page mapping fails, all successfully
+    /// mapped pages are rolled back before returning the error.
+    pub fn map(
+        &self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
+        self.validate_map_args(iova, phys, size)?;
+
+        let (start_shard, end_shard) = self.shard_range(iova, size)?;
+        let mut guards = self.lock_shards(start_shard, end_shard)?;
+
+        Self::check_no_overlap(&guards, iova, size)?;
+
+        if self.domain_type != IommuDomainType::Passthrough {
+            self.map_pages_transactional(iova, phys, size, read, write)?;
         }
 
         let mapping = DmaMapping {
@@ -1512,73 +1525,23 @@ impl IommuDomain {
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
         let pt_idx = ((iova >> 12) & 0x1FF) as usize;
 
-        let mut newly_allocated: [Option<PageTableScope>; 3] = [None, None, None];
-
         unsafe {
-            let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
-            let pml4_entry = self.page_table.add(pml4_idx);
+            let (pt_table, pt_phys, mut newly_allocated) =
+                self.ensure_page_tables_4k(pml4_idx, pdp_idx, pd_idx)?;
 
-            if !(*pml4_entry).is_present() {
-                let mut pdp_scope = self.allocate_page_table()?;
-                pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
-                newly_allocated[0] = Some(pdp_scope);
-            }
-
-            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
-            let pdp_phys = (*pml4_entry).phys_addr();
-
-            let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() {
-                let mut pd_scope = self.allocate_page_table()?;
-                pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
-                newly_allocated[1] = Some(pd_scope);
-            } else if (*pdp_entry).is_super_page(self.pte_format) {
-                return Err(IommuError::AlreadyMapped);
-            }
-
-            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
-            let pd_phys = (*pdp_entry).phys_addr();
-
-            let pd_entry = pd_table.add(pd_idx);
-            if !(*pd_entry).is_present() {
-                let mut pt_scope = self.allocate_page_table()?;
-                pt_scope.attach_to_parent(pd_entry, pd_phys, self.pte_format, 1);
-                newly_allocated[2] = Some(pt_scope);
-            } else if (*pd_entry).is_super_page(self.pte_format) {
-                return Err(IommuError::AlreadyMapped);
-            }
-
-            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
-            let pt_phys = (*pd_entry).phys_addr();
             let pages_in_pt = core::cmp::min(pages, PT_ENTRIES - pt_idx);
 
             if newly_allocated[2].is_none() {
-                for idx in 0..pages_in_pt {
-                    let pt_entry = pt_table.add(pt_idx + idx);
-                    if (*pt_entry).is_present() {
-                        return Err(IommuError::AlreadyMapped);
-                    }
-                }
+                Self::check_pt_no_conflicts(pt_table, pt_idx, pages_in_pt)?;
             }
 
-            for idx in 0..pages_in_pt {
-                let pt_entry = pt_table.add(pt_idx + idx);
-                let entry_phys = phys + (idx as u64 * SIZE_4KB);
-                match self.pte_format {
-                    PteFormat::Intel => {
-                        *pt_entry = SlPte::mapping(entry_phys, read, write);
-                    }
-                    PteFormat::Amd => {
-                        let amd_pte = AmdPte::mapping(entry_phys, read, write, 0);
-                        *pt_entry = SlPte(amd_pte.0);
-                    }
-                }
-            }
+            Self::write_pt_entries_4k(
+                pt_table, pt_idx, phys, pages_in_pt,
+                read, write, self.pte_format,
+            );
 
-            for scope in newly_allocated.iter_mut() {
-                if let Some(scope) = scope {
-                    scope.commit();
-                }
+            for scope in newly_allocated.iter_mut().flatten() {
+                scope.commit();
             }
 
             for _ in 0..pages_in_pt {
@@ -1586,6 +1549,105 @@ impl IommuDomain {
             }
 
             Ok(pages_in_pt)
+        }
+    }
+
+    /// Ensure an intermediate page table exists at the given index.
+    ///
+    /// If the entry is not present, allocate a new page table and attach it.
+    /// If `check_super_page` is true and the entry is a super page, return `AlreadyMapped`.
+    /// Returns the child table pointer, its physical address, and an optional scope.
+    unsafe fn ensure_intermediate_table(
+        &self,
+        parent_table: *mut SlPte,
+        parent_phys: u64,
+        idx: usize,
+        level: u8,
+        check_super_page: bool,
+    ) -> Result<(*mut SlPte, u64, Option<PageTableScope>), IommuError> {
+        let entry = parent_table.add(idx);
+        if (*entry).is_present() {
+            if check_super_page && (*entry).is_super_page(self.pte_format) {
+                return Err(IommuError::AlreadyMapped);
+            }
+            let child = (*entry).phys_addr() as *mut SlPte;
+            let phys = (*entry).phys_addr();
+            Ok((child, phys, None))
+        } else {
+            let mut scope = self.allocate_page_table()?;
+            scope.attach_to_parent(entry, parent_phys, self.pte_format, level);
+            let child = (*entry).phys_addr() as *mut SlPte;
+            let phys = (*entry).phys_addr();
+            Ok((child, phys, Some(scope)))
+        }
+    }
+
+    /// Walk 3 levels (PML4→PDP→PD) and ensure each intermediate table exists.
+    ///
+    /// Returns the PT base pointer, PT physical address, and any newly allocated scopes.
+    unsafe fn ensure_page_tables_4k(
+        &self,
+        pml4_idx: usize,
+        pdp_idx: usize,
+        pd_idx: usize,
+    ) -> Result<(*mut SlPte, u64, [Option<PageTableScope>; 3]), IommuError> {
+        let mut newly_allocated: [Option<PageTableScope>; 3] = [None, None, None];
+
+        let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
+
+        let (pdp_table, pdp_phys, scope0) =
+            self.ensure_intermediate_table(self.page_table, pml4_phys, pml4_idx, 3, false)?;
+        newly_allocated[0] = scope0;
+
+        let (pd_table, pd_phys, scope1) =
+            self.ensure_intermediate_table(pdp_table, pdp_phys, pdp_idx, 2, true)?;
+        newly_allocated[1] = scope1;
+
+        let (pt_table, pt_phys, scope2) =
+            self.ensure_intermediate_table(pd_table, pd_phys, pd_idx, 1, true)?;
+        newly_allocated[2] = scope2;
+
+        Ok((pt_table, pt_phys, newly_allocated))
+    }
+
+    /// Check that no existing PT entries in the target range are present.
+    unsafe fn check_pt_no_conflicts(
+        pt_table: *mut SlPte,
+        pt_idx: usize,
+        count: usize,
+    ) -> Result<(), IommuError> {
+        for idx in 0..count {
+            let pt_entry = pt_table.add(pt_idx + idx);
+            if (*pt_entry).is_present() {
+                return Err(IommuError::AlreadyMapped);
+            }
+        }
+        Ok(())
+    }
+
+    /// Write 4KB page table entries for the given range.
+    unsafe fn write_pt_entries_4k(
+        pt_table: *mut SlPte,
+        pt_idx: usize,
+        phys: u64,
+        count: usize,
+        read: bool,
+        write: bool,
+        pte_format: PteFormat,
+    ) {
+        const SIZE_4KB: u64 = 4096;
+        for idx in 0..count {
+            let pt_entry = pt_table.add(pt_idx + idx);
+            let entry_phys = phys + (idx as u64 * SIZE_4KB);
+            match pte_format {
+                PteFormat::Intel => {
+                    *pt_entry = SlPte::mapping(entry_phys, read, write);
+                }
+                PteFormat::Amd => {
+                    let amd_pte = AmdPte::mapping(entry_phys, read, write, 0);
+                    *pt_entry = SlPte(amd_pte.0);
+                }
+            }
         }
     }
 
@@ -1702,6 +1764,38 @@ impl IommuDomain {
         PageTableScope::new_with_pool(self.page_table_pool.clone(), self.numa_node())
     }
 
+    /// Ensure a PDP table exists for the given PML4 entry, allocating if needed.
+    unsafe fn ensure_pdp_table(
+        &self,
+        pml4_entry: *mut SlPte,
+        pml4_phys: u64,
+    ) -> Result<Option<PageTableScope>, IommuError> {
+        if (*pml4_entry).is_present() {
+            return Ok(None);
+        }
+        let mut pdp_scope = self.allocate_page_table()?;
+        pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
+        Ok(Some(pdp_scope))
+    }
+
+    /// Ensure a PD table exists for the given PDP entry, allocating if needed.
+    /// Returns Err(AlreadyMapped) if a 1GB super-page already exists.
+    unsafe fn ensure_pd_table(
+        &self,
+        pdp_entry: *mut SlPte,
+        pdp_phys: u64,
+    ) -> Result<Option<PageTableScope>, IommuError> {
+        if (*pdp_entry).is_present() {
+            if (*pdp_entry).is_super_page(self.pte_format) {
+                return Err(IommuError::AlreadyMapped);
+            }
+            return Ok(None);
+        }
+        let mut pd_scope = self.allocate_page_table()?;
+        pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
+        Ok(Some(pd_scope))
+    }
+
     /// Map a 2MB super-page
     ///
     /// Uses 3-level page table walking (PML4 -> PDP -> PD) and sets super-page at PD level.
@@ -1721,60 +1815,29 @@ impl IommuDomain {
             return Err(IommuError::InvalidAddress);
         }
 
-        // Calculate indices for 4-level paging (but stop at PD level for 2MB pages)
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
 
-        // Track newly allocated page tables for rollback via RAII
-        // Index 0: PDP, 1: PD
         let mut newly_allocated: [Option<PageTableScope>; 2] = [None, None];
 
         let pml4_table = self.page_table;
         let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
+        let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
 
-        // Ensure PDP exists
-        if !(unsafe { *pml4_entry }).is_present() {
-            let mut pdp_scope = match self.allocate_page_table() {
-                Ok(s) => s,
-                Err(e) => return Err(e),
-            };
-
-            // Attach to parent (writes PML4 entry)
-            let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
-
-            // Attach to parent (writes PML4 entry)
-            // Attaching PDP (Level 3) to PML4
-            pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
-            newly_allocated[0] = Some(pdp_scope);
-        }
+        newly_allocated[0] = unsafe { self.ensure_pdp_table(pml4_entry, pml4_phys)? };
 
         let pdp_table = (unsafe { *pml4_entry }).phys_addr() as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
         let pdp_phys = (unsafe { *pml4_entry }).phys_addr();
 
-        // Ensure PD exists
-        if !(unsafe { *pdp_entry }).is_present() {
-            let mut pd_scope = match self.allocate_page_table() {
-                Ok(s) => s,
-                Err(e) => return Err(e),
-            };
-
-            pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
-            newly_allocated[1] = Some(pd_scope);
-        } else if (unsafe { *pdp_entry }).is_super_page(self.pte_format) {
-            // Already a 1GB super-page at this level
-            return Err(IommuError::AlreadyMapped);
-        }
+        newly_allocated[1] = unsafe { self.ensure_pd_table(pdp_entry, pdp_phys)? };
 
         let pd_table = (unsafe { *pdp_entry }).phys_addr() as *mut SlPte;
         let pd_entry = unsafe { pd_table.add(pd_idx) };
         let pd_phys = (unsafe { *pdp_entry }).phys_addr();
 
-        // Check if already mapped
         if (unsafe { *pd_entry }).is_present() {
-            // If a mapping already exists, let RAII (PageTableScope Drop) roll back any
-            // newly allocated page tables and return an error.
             return Err(IommuError::AlreadyMapped);
         }
 
@@ -1782,16 +1845,12 @@ impl IommuDomain {
         match self.pte_format {
             PteFormat::Intel => unsafe { *pd_entry = SlPte::super_page_2mb(phys, read, write) },
             PteFormat::Amd => {
-                // For AMD, 2MB page is at Level 2 (PD). Next Level field (9-11) should be 0.
-                // Level 2 entry -> Next Level 0 -> Maps 2MB page
-                let amd_pte = AmdPte::mapping(phys, read, write, 0); // Mapping creates leaf (Next Level 0)
+                let amd_pte = AmdPte::mapping(phys, read, write, 0);
                 unsafe { *pd_entry = SlPte(amd_pte.0) };
             }
         }
-        // Increment PD count (valid entry)
         inc_ref(pd_phys);
 
-        // Commit any newly allocated page tables into accounting
         for slot in newly_allocated.iter_mut() {
             if let Some(scope) = slot {
                 scope.commit();
@@ -1992,6 +2051,46 @@ impl IommuDomain {
         Ok(None)
     }
 
+    /// Cascade-cleanup empty page tables after all 4K entries in a PT are removed.
+    unsafe fn cleanup_empty_page_tables_4k(
+        &self,
+        pml4_entry: *mut SlPte,
+        pdp_entry: *mut SlPte,
+        pdp_table: *mut SlPte,
+        pdp_phys: u64,
+        pd_entry: *mut SlPte,
+        pd_table: *mut SlPte,
+        pd_phys: u64,
+        pt_table: *mut SlPte,
+        pt_phys: u64,
+        layout: alloc::alloc::Layout,
+    ) {
+        if get_ref_count(pt_phys) != 0 {
+            return;
+        }
+        *pd_entry = SlPte::new();
+        alloc::alloc::dealloc(pt_table as *mut u8, layout);
+        unregister_page_table(pt_phys);
+
+        if !dec_ref(pd_phys) {
+            return;
+        }
+        *pdp_entry = SlPte::new();
+        alloc::alloc::dealloc(pd_table as *mut u8, layout);
+        unregister_page_table(pd_phys);
+
+        if !dec_ref(pdp_phys) {
+            return;
+        }
+        *pml4_entry = SlPte::new();
+        alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+        unregister_page_table(pdp_phys);
+
+        let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)
+            .expect("Failed to get pml4 phys");
+        dec_ref(pml4_phys);
+    }
+
     /// Unmap a contiguous run of 4KB entries within a single PT.
     fn unmap_range_4k(&self, iova: u64, pages: usize) -> Result<usize, IommuError> {
         if pages == 0 {
@@ -2049,27 +2148,11 @@ impl IommuDomain {
                 let _ = dec_ref(pt_phys);
             }
 
-            if get_ref_count(pt_phys) == 0 {
-                *pd_entry = SlPte::new();
-                alloc::alloc::dealloc(pt_table as *mut u8, layout);
-                unregister_page_table(pt_phys);
-
-                if dec_ref(pd_phys) {
-                    *pdp_entry = SlPte::new();
-                    alloc::alloc::dealloc(pd_table as *mut u8, layout);
-                    unregister_page_table(pd_phys);
-
-                    if dec_ref(pdp_phys) {
-                        *pml4_entry = SlPte::new();
-                        alloc::alloc::dealloc(pdp_table as *mut u8, layout);
-                        unregister_page_table(pdp_phys);
-
-                        let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)
-                            .expect("Failed to get pml4 phys");
-                        dec_ref(pml4_phys);
-                    }
-                }
-            }
+            self.cleanup_empty_page_tables_4k(
+                pml4_entry, pdp_entry, pdp_table, pdp_phys,
+                pd_entry, pd_table, pd_phys,
+                pt_table, pt_phys, layout,
+            );
         }
 
         Ok(pages_in_pt)

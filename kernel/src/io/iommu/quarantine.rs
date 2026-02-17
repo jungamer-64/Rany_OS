@@ -388,6 +388,61 @@ impl InvSlotGuard {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reap helpers (free functions to keep QuarantineQueue methods lean)
+// ---------------------------------------------------------------------------
+
+/// Inspect a single quarantine entry during reap. Returns true if the slot was freed.
+fn scan_entry_for_reap(
+    entry: &mut QuarantineEntry,
+    scan_threshold: u64,
+    to_free_iova: &mut alloc::vec::Vec<(u64, u64)>,
+    to_wake: &mut alloc::vec::Vec<core::task::Waker>,
+    to_drop: &mut alloc::vec::Vec<RRefRawParts>,
+) -> bool {
+    if !entry.in_use || !entry.committed || entry.batch_id > scan_threshold {
+        return false;
+    }
+    if entry.iova != 0 && entry.iova_size != 0 {
+        to_free_iova.push((entry.iova, entry.iova_size));
+        entry.iova = 0;
+        entry.iova_size = 0;
+    }
+    if entry.abandoned {
+        if let Some(raw) = entry.raw.take() {
+            to_drop.push(raw);
+        }
+        entry.reset();
+        return true;
+    }
+    if let Some(waker) = entry.waker.take() {
+        to_wake.push(waker);
+    }
+    false
+}
+
+/// Process collected reap results outside the lock.
+fn flush_reaped_resources(
+    to_free_iova: alloc::vec::Vec<(u64, u64)>,
+    to_drop: alloc::vec::Vec<RRefRawParts>,
+    to_wake: alloc::vec::Vec<core::task::Waker>,
+    capacity_waker: Option<Waker>,
+    context: &dyn IommuHardwareContext,
+) {
+    for (iova, size) in to_free_iova {
+        let _ = context.free_iova(iova, size);
+    }
+    for raw in to_drop {
+        unsafe { raw.drop_erased() };
+    }
+    for waker in to_wake {
+        waker.wake();
+    }
+    if let Some(waker) = capacity_waker {
+        waker.wake();
+    }
+}
+
 impl QuarantineQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -897,41 +952,60 @@ impl QuarantineQueue {
             return Poll::Ready(Err(QuarantineError::Poisoned));
         }
 
-        loop {
-            // Fast path: check completed_batch without lock
-            let completed = self.completed_batch.load(Ordering::Acquire);
-            if completed < batch_id {
-                // Not yet complete - register waker
-                {
-                    let mut inner = self.inner.lock();
-                    if (slot as usize) < QUARANTINE_CAPACITY {
-                        // Read slot_gen first to avoid borrow conflict
-                        let current_slot_gen = inner.slot_generations[slot as usize];
-                        let entry = &mut inner.entries[slot as usize];
-                        if entry.in_use && current_slot_gen == slot_gen {
-                            // Avoid unnecessary clone if waker is the same
-                            let w = cx.waker();
-                            let should_replace =
-                                entry.waker.as_ref().map_or(true, |old| !old.will_wake(w));
-                            if should_replace {
-                                entry.waker = Some(w.clone());
-                            }
-                        }
-                    }
-                }
-                // Double-check: if batch completed while we were registering, retry
-                if self.completed_batch.load(Ordering::Acquire) >= batch_id {
-                    continue;
-                }
-                return Poll::Pending;
-            }
-
-            // Batch complete - exit loop to take the entry
-            break;
+        if !self.wait_for_batch(slot, slot_gen, batch_id, cx) {
+            return Poll::Pending;
         }
 
-        // Batch complete - try to take the entry
-        // Take raw under lock, then process outside lock (Issue 5)
+        self.take_completed_entry(slot, slot_gen, cx)
+    }
+
+    /// Spin until the batch is complete, registering a waker if still pending.
+    /// Returns `true` if the batch has completed, `false` if still pending.
+    fn wait_for_batch(
+        &self,
+        slot: u32,
+        slot_gen: u32,
+        batch_id: u64,
+        cx: &mut Context<'_>,
+    ) -> bool {
+        loop {
+            let completed = self.completed_batch.load(Ordering::Acquire);
+            if completed >= batch_id {
+                return true;
+            }
+            self.poll_register_waker(slot, slot_gen, cx);
+            // Double-check: if batch completed while we were registering, retry
+            if self.completed_batch.load(Ordering::Acquire) >= batch_id {
+                continue;
+            }
+            return false;
+        }
+    }
+
+    /// Register the waker for a pending entry under lock.
+    fn poll_register_waker(&self, slot: u32, slot_gen: u32, cx: &mut Context<'_>) {
+        let mut inner = self.inner.lock();
+        if (slot as usize) < QUARANTINE_CAPACITY {
+            let current_slot_gen = inner.slot_generations[slot as usize];
+            let entry = &mut inner.entries[slot as usize];
+            if entry.in_use && current_slot_gen == slot_gen {
+                let w = cx.waker();
+                let should_replace =
+                    entry.waker.as_ref().map_or(true, |old| !old.will_wake(w));
+                if should_replace {
+                    entry.waker = Some(w.clone());
+                }
+            }
+        }
+    }
+
+    /// Take raw parts of a completed entry under lock, then reconstruct `RRef<T>`.
+    fn take_completed_entry<T: 'static>(
+        &self,
+        slot: u32,
+        slot_gen: u32,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<RRef<T>, QuarantineError>> {
         let raw = {
             let mut inner = self.inner.lock();
 
@@ -939,10 +1013,7 @@ impl QuarantineQueue {
                 return Poll::Ready(Err(QuarantineError::SlotGenerationMismatch));
             }
 
-            // Read slot_gen first to avoid borrow conflict
             let current_slot_gen = inner.slot_generations[slot as usize];
-
-            // Verify slot generation
             if current_slot_gen != slot_gen {
                 return Poll::Ready(Err(QuarantineError::SlotGenerationMismatch));
             }
@@ -953,7 +1024,6 @@ impl QuarantineQueue {
                 return Poll::Ready(Err(QuarantineError::SlotGenerationMismatch));
             }
 
-            // Issue 4: If not committed yet, register waker and return Pending
             if !entry.committed {
                 let w = cx.waker();
                 let should_replace = entry.waker.as_ref().map_or(true, |old| !old.will_wake(w));
@@ -967,23 +1037,14 @@ impl QuarantineQueue {
                 return Poll::Ready(Err(QuarantineError::EntryAbandoned));
             }
 
-            // Take the raw parts (may be None if already taken)
             let raw = entry.raw.take();
-
-            // Always free the slot
             entry.reset();
             inner.active_count = inner.active_count.saturating_sub(1);
-
             raw
-        }; // Lock released here (Issue 5)
+        };
 
-        // Process raw outside lock
         let raw = raw.ok_or(QuarantineError::TypeMismatch)?;
-
-        // Reconstruct RRef OUTSIDE lock (Issue 5)
-        // SAFETY: Ticket<T> guarantees the type matches
         let rref = unsafe { raw.into_rref::<T>()? };
-
         Poll::Ready(Ok(rref))
     }
 
@@ -1053,9 +1114,8 @@ impl QuarantineQueue {
     pub fn reap_completed(&self, completed_batch: u64, context: &dyn IommuHardwareContext) {
         use alloc::vec::Vec;
 
-        // Collect items to process outside lock
         let mut to_wake: Vec<core::task::Waker> = Vec::new();
-        let mut to_free_iova: Vec<(u64, u64)> = Vec::new(); // (iova, size)
+        let mut to_free_iova: Vec<(u64, u64)> = Vec::new();
         let mut to_drop: Vec<RRefRawParts> = Vec::new();
         let mut capacity_waker: Option<Waker> = None;
         let mut freed_slots = false;
@@ -1063,7 +1123,6 @@ impl QuarantineQueue {
         {
             let mut inner = self.inner.lock();
 
-            // Round 5: Compute scan_threshold INSIDE lock
             let old = self.completed_batch.load(Ordering::Relaxed);
             let scan_threshold = if completed_batch > old {
                 completed_batch
@@ -1071,81 +1130,30 @@ impl QuarantineQueue {
                 old
             };
 
-            // Scan entries with threshold (idempotent due to zero-on-collect)
             for slot_idx in 0..QUARANTINE_CAPACITY {
-                let entry = &mut inner.entries[slot_idx];
-
-                if !entry.in_use {
-                    continue;
-                }
-
-                // Only process committed entries
-                if !entry.committed {
-                    continue;
-                }
-
-                if entry.batch_id > scan_threshold {
-                    // Entry belongs to a future batch
-                    continue;
-                }
-
-                // Collect IOVA and ZERO it to prevent double free (idempotent)
-                if entry.iova != 0 && entry.iova_size != 0 {
-                    to_free_iova.push((entry.iova, entry.iova_size));
-                    entry.iova = 0;
-                    entry.iova_size = 0;
-                }
-
-                if entry.abandoned {
-                    // Collect raw parts to drop (outside lock)
-                    if let Some(raw) = entry.raw.take() {
-                        to_drop.push(raw);
-                    }
-                    // Free the slot
-                    entry.reset();
+                if scan_entry_for_reap(
+                    &mut inner.entries[slot_idx],
+                    scan_threshold,
+                    &mut to_free_iova,
+                    &mut to_wake,
+                    &mut to_drop,
+                ) {
                     inner.active_count = inner.active_count.saturating_sub(1);
                     freed_slots = true;
-                } else {
-                    // Collect waker for later wake (outside lock)
-                    if let Some(waker) = entry.waker.take() {
-                        to_wake.push(waker);
-                    }
                 }
             }
 
-            // Round 5: Publish AFTER scan, BEFORE unlock
-            // This prevents poll_entry from resetting entry before we collect IOVA
             if scan_threshold > old {
                 self.completed_batch
                     .store(scan_threshold, Ordering::Release);
             }
 
-            // Collect capacity waker if slots were freed (backpressure notification)
             if freed_slots {
                 capacity_waker = inner.capacity_waker.take();
             }
-        } // Lock released here
-
-        // Free IOVAs outside lock
-        for (iova, size) in to_free_iova {
-            let _ = context.free_iova(iova, size);
         }
 
-        // Drop abandoned raw parts outside lock
-        for raw in to_drop {
-            // SAFETY: drop_fn was set correctly when RRefRawParts was created
-            unsafe { raw.drop_erased() };
-        }
-
-        // Wake all waiters OUTSIDE the lock
-        for waker in to_wake {
-            waker.wake();
-        }
-
-        // Wake capacity waiter if slots were freed (backpressure notification)
-        if let Some(waker) = capacity_waker {
-            waker.wake();
-        }
+        flush_reaped_resources(to_free_iova, to_drop, to_wake, capacity_waker, context);
     }
 
     /// Get statistics

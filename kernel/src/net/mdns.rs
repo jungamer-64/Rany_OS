@@ -299,22 +299,10 @@ impl MdnsService {
         src_ip: Ipv4Address,
         current_time: u64,
     ) -> MdnsResult {
-        let mut offset = DNS_HEADER_SIZE;
-
-        // Skip question section
-        for _ in 0..qdcount {
-            let (_, new_offset) = match decode_dns_name(data, offset) {
-                Some(result) => result,
-                None => return MdnsResult::InvalidPacket,
-            };
-            offset = new_offset;
-
-            // Skip QTYPE and QCLASS
-            if offset + 4 > data.len() {
-                return MdnsResult::InvalidPacket;
-            }
-            offset += 4;
-        }
+        let mut offset = match skip_dns_questions(data, DNS_HEADER_SIZE, qdcount) {
+            Some(o) => o,
+            None => return MdnsResult::InvalidPacket,
+        };
 
         // Parse answer section
         let mut last_resolved_name: Option<String> = None;
@@ -325,69 +313,21 @@ impl MdnsService {
                 break;
             }
 
-            // Decode the answer name
-            let (name, new_offset) = match decode_dns_name(data, offset) {
-                Some(result) => result,
+            let record = match parse_dns_answer_record(data, offset) {
+                Some(r) => r,
                 None => return MdnsResult::InvalidPacket,
             };
-            offset = new_offset;
-
-            // Need at least 10 bytes: TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
-            if offset + 10 > data.len() {
-                return MdnsResult::InvalidPacket;
-            }
-
-            let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
-            let rclass = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
-            let ttl = u32::from_be_bytes([
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
-            let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
-            offset += 10;
-
-            // Validate RDATA length
-            if offset + rdlength > data.len() {
-                return MdnsResult::InvalidPacket;
-            }
-
-            let rdata = &data[offset..offset + rdlength];
-            offset += rdlength;
-
-            // Strip cache-flush bit from class for comparison
-            let rclass_masked = rclass & 0x7FFF;
+            offset = record.3;
 
             // Only process A records (IN class)
-            if rtype == DNS_TYPE_A && rclass_masked == DNS_CLASS_IN && rdlength == 4 {
+            if is_inet_a_record(record.0, record.1, record.2) {
+                let rdata = &data[record.4..record.4 + record.2];
                 let ip = Ipv4Address::new([rdata[0], rdata[1], rdata[2], rdata[3]]);
-                let name_lower = to_lowercase(&name);
+                let name_lower = to_lowercase(&record.5);
 
-                // Calculate expiry time
-                let expiry = if ttl == 0 {
-                    // TTL=0 means goodbye packet, remove from cache
-                    self.cache.remove(&name_lower);
+                if !self.cache_a_record(&name_lower, ip, record.6, current_time) {
                     continue;
-                } else {
-                    current_time + ttl as u64
-                };
-
-                // Evict oldest entry if cache is full
-                if !self.cache.contains_key(&name_lower)
-                    && self.cache.len() >= MDNS_MAX_CACHE_ENTRIES
-                {
-                    self.evict_oldest();
                 }
-
-                // Update or insert cache entry
-                self.cache.insert(
-                    name_lower.clone(),
-                    MdnsCacheEntry {
-                        ip,
-                        expiry_time: expiry,
-                    },
-                );
 
                 last_resolved_name = Some(name_lower);
                 last_resolved_ip = Some(ip);
@@ -405,6 +345,27 @@ impl MdnsService {
                 }
             }
         }
+    }
+
+    /// Aレコードをキャッシュに追加・更新する。TTL=0のgoodbyeパケットはキャッシュ削除。
+    /// 正常にキャッシュ更新された場合trueを返す。
+    fn cache_a_record(&mut self, name_lower: &str, ip: Ipv4Address, ttl: u32, current_time: u64) -> bool {
+        if ttl == 0 {
+            self.cache.remove(name_lower);
+            return false;
+        }
+
+        let expiry = current_time + ttl as u64;
+
+        if !self.cache.contains_key(name_lower) && self.cache.len() >= MDNS_MAX_CACHE_ENTRIES {
+            self.evict_oldest();
+        }
+
+        self.cache.insert(
+            String::from(name_lower),
+            MdnsCacheEntry { ip, expiry_time: expiry },
+        );
+        true
     }
 
     /// キャッシュからホスト名を解決
@@ -777,6 +738,50 @@ fn names_equal(a: &str, b: &str) -> bool {
     a.bytes()
         .zip(b.bytes())
         .all(|(ca, cb)| ca.to_ascii_lowercase() == cb.to_ascii_lowercase())
+}
+
+/// DNS質問セクションをスキップし、新しいオフセットを返す
+fn skip_dns_questions(data: &[u8], mut offset: usize, qdcount: u16) -> Option<usize> {
+    for _ in 0..qdcount {
+        let (_, new_offset) = decode_dns_name(data, offset)?;
+        offset = new_offset;
+        if offset + 4 > data.len() {
+            return None;
+        }
+        offset += 4;
+    }
+    Some(offset)
+}
+
+/// DNS応答レコードをパースする
+/// 返り値: (rtype, rclass_masked, rdlength, next_offset, rdata_start, name, ttl)
+fn parse_dns_answer_record(data: &[u8], offset: usize) -> Option<(u16, u16, usize, usize, usize, String, u32)> {
+    let (name, new_offset) = decode_dns_name(data, offset)?;
+    let mut offset = new_offset;
+
+    if offset + 10 > data.len() {
+        return None;
+    }
+
+    let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
+    let rclass = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
+    let ttl = u32::from_be_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+    let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
+    offset += 10;
+
+    if offset + rdlength > data.len() {
+        return None;
+    }
+
+    let rdata_start = offset;
+    let rclass_masked = rclass & 0x7FFF;
+
+    Some((rtype, rclass_masked, rdlength, offset + rdlength, rdata_start, name, ttl))
+}
+
+/// Aレコード（INクラス、4バイト）かどうか判定
+fn is_inet_a_record(rtype: u16, rclass_masked: u16, rdlength: usize) -> bool {
+    rtype == DNS_TYPE_A && rclass_masked == DNS_CLASS_IN && rdlength == 4
 }
 
 /// 文字列をASCII小文字に変換

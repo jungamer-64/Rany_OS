@@ -64,207 +64,281 @@ impl ShellControlNamespace {
 
     /// Internal: handle proxy method dispatch (called from shell.apply_map_method)
     pub(crate) fn proxy_dispatch(
-        mut m: BTreeMap<String, ExoValue<'static>>,
+        m: BTreeMap<String, ExoValue<'static>>,
         method: &str,
         args: &[ExoValue<'static>],
     ) -> ExoValue<'static> {
         match method {
-            "with_cap" => {
-                // args: resource (string), optional options (map/int/bool)
-                let resource = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    })
-                    .unwrap_or("");
-                if resource.is_empty() {
-                    return ExoValue::Error(String::from(
-                        "with_cap(resource, [options]) requires a resource string",
-                    ));
-                }
-
-                // resolve resource -> cap bit
-                let cap_bit = crate::security::capability::resource_to_capability(resource);
-                if cap_bit == 0 {
-                    return ExoValue::Error(format!("Unknown resource: {}", resource));
-                }
-
-                // parse options
-                let mut expires: Option<u64> = None;
-                let mut delegatable: bool = false;
-
-                if let Some(v) = args.get(1) {
-                    match v {
-                        ExoValue::Int(n) => expires = Some(*n as u64),
-                        ExoValue::Bool(b) => delegatable = *b,
-                        ExoValue::Map(mapopts) => {
-                            if let Some(e) = mapopts.get("expires") {
-                                if let ExoValue::Int(n) = e { expires = Some(*n as u64); }
-                            }
-                            if let Some(d) = mapopts.get("delegatable") {
-                                if let ExoValue::Bool(b) = d { delegatable = *b; }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // permission check: parent must be issuer or sysadmin or permitted
-                let parent = match m.get("__parent") {
-                    Some(ExoValue::Int(n)) => *n as u64,
-                    _ => return ExoValue::Error(String::from("Invalid proxy parent")),
-                };
-
-                let caller_caps = crate::security::capability::manager().get_capabilities(parent);
-                let mut allowed = false;
-                if crate::security::capability::manager().has_capability(parent, crate::security::capability::CAP_SYS_ADMIN) {
-                    allowed = true;
-                } else if caller_caps.is_permitted(cap_bit) {
-                    allowed = true;
-                } else {
-                    let grants = crate::security::capability::manager().list_grants(parent);
-                    if grants.iter().any(|t| t.cap == cap_bit && t.delegatable) {
-                        allowed = true;
-                    }
-                }
-
-                if !allowed {
-                    return ExoValue::Error(String::from("Permission denied: parent cannot grant this capability"));
-                }
-
-                // append to __requested
-                let reqs = m.remove("__requested").unwrap_or(ExoValue::Array(Vec::new()));
-                let mut arr = match reqs {
-                    ExoValue::Array(a) => a,
-                    _ => Vec::new(),
-                };
-
-                let mut entry = BTreeMap::new();
-                entry.insert("resource".to_string(), ExoValue::String(Cow::Owned(resource.to_string())));
-                entry.insert("cap".to_string(), ExoValue::Int(cap_bit as i64));
-                if let Some(e) = expires { entry.insert("expires".to_string(), ExoValue::Int(e as i64)); }
-                entry.insert("delegatable".to_string(), ExoValue::Bool(delegatable));
-
-                arr.push(ExoValue::Map(entry));
-                m.insert("__requested".to_string(), ExoValue::Array(arr));
-                ExoValue::Map(m)
-            }
-
-            "revoke" => {
-                // remove requested cap by resource string or cap number
-                let target = args.first();
-                let mut reqs = match m.remove("__requested") {
-                    Some(ExoValue::Array(a)) => a,
-                    _ => Vec::new(),
-                };
-
-                if let Some(targ) = target {
-                    reqs.retain(|item| {
-                        match (item, targ) {
-                            (ExoValue::Map(map), ExoValue::String(s)) => {
-                                let res = map.get("resource").and_then(|v| v.as_str());
-                                res.map(|r| r != s.as_ref()).unwrap_or(true)
-                            }
-                            (ExoValue::Map(map), ExoValue::Int(n)) => {
-                                let cap = map.get("cap").and_then(|v| v.as_int()).unwrap_or(-1);
-                                cap != *n
-                            }
-                            _ => true,
-                        }
-                    });
-                } else {
-                    // no arg = clear all
-                    reqs.clear();
-                }
-
-                m.insert("__requested".to_string(), ExoValue::Array(reqs));
-                ExoValue::Map(m)
-            }
-
-            "list_caps" | "requested_caps" => {
-                let reqs = match m.get("__requested") {
-                    Some(ExoValue::Array(a)) => a.clone(),
-                    _ => Vec::new(),
-                };
-                // Convert to Capability list
-                let mut out: Vec<ExoValue<'static>> = Vec::new();
-                for r in reqs {
-                    if let ExoValue::Map(map) = r {
-                        let cap = map.get("cap").and_then(|v| v.as_int()).unwrap_or(0) as u64;
-                        let resource = map.get("resource").and_then(|v| v.as_str()).unwrap_or("");
-                        let expires = map.get("expires").and_then(|v| v.as_int()).map(|n| n as u64);
-                        let delegatable = map.get("delegatable").and_then(|v| match v { ExoValue::Bool(b) => Some(*b), _ => None }).unwrap_or(false);
-                        let c = Capability {
-                            id: cap,
-                            resource: resource.to_string(),
-                            operations: Vec::new(),
-                            issuer: format!("domain:{}", m.get("__parent").and_then(|v| v.as_int()).unwrap_or(0)),
-                            expires,
-                            delegatable,
-                        };
-                        out.push(ExoValue::Capability(c));
-                    }
-                }
-                ExoValue::Array(out)
-            }
-
-            "run" => {
-                // run(name) -> spawn a child process and apply requested caps
-                let name = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    })
-                    .unwrap_or("");
-                if name.is_empty() {
-                    return ExoValue::Error(String::from("run(name) requires process name"));
-                }
-
-                let parent = match m.get("__parent") {
-                    Some(ExoValue::Int(n)) => *n as u64,
-                    _ => return ExoValue::Error(String::from("Invalid proxy parent")),
-                };
-
-                let cur = kernel_api::services::kernel()
-                    .shell()
-                    .map(|s| s.current_domain())
-                    .unwrap_or(0);
-                if cur != parent && !crate::security::capability::manager().has_capability(cur, crate::security::capability::CAP_SYS_ADMIN) {
-                    return ExoValue::Error(String::from("Permission denied: must be proxy owner or CAP_SYS_ADMIN"));
-                }
-
-                // Build requested cap list
-                let reqs = match m.get("__requested") {
-                    Some(ExoValue::Array(a)) => a.clone(),
-                    _ => Vec::new(),
-                };
-
-                let mut requested_caps: Vec<crate::task::process::RequestedCap> = Vec::new();
-                for r in reqs {
-                    if let ExoValue::Map(map) = r {
-                        let cap = map.get("cap").and_then(|v| v.as_int()).unwrap_or(0) as u64;
-                        let expires = map.get("expires").and_then(|v| v.as_int()).map(|n| n as u64);
-                        let delegatable = map.get("delegatable").and_then(|v| match v { ExoValue::Bool(b) => Some(*b), _ => None }).unwrap_or(false);
-                        requested_caps.push(crate::task::process::RequestedCap{ cap, expires, delegatable });
-                    }
-                }
-
-                // Spawn child with caps via process API
-                match crate::task::process::spawn_with_caps(name, &requested_caps) {
-                    Ok((child, tokens_vec)) => {
-                        let tokens = tokens_vec.into_iter().map(|t| ExoValue::Int(t as i64)).collect();
-                        let mut res = BTreeMap::new();
-                        res.insert("domain".to_string(), ExoValue::Int(child.as_u64() as i64));
-                        res.insert("tokens".to_string(), ExoValue::Array(tokens));
-                        return ExoValue::Map(res);
-                    }
-                    Err(e) => return ExoValue::Error(format!("spawn_with_caps failed: {:?}", e)),
-                }
-            }
-
+            "with_cap" => Self::handle_with_cap(m, args),
+            "revoke" => Self::handle_revoke(m, args),
+            "list_caps" | "requested_caps" => Self::handle_list_caps(&m),
+            "run" => Self::handle_run(m, args),
             _ => ExoValue::Error(format!("Shell proxy does not have method '{}'", method)),
+        }
+    }
+
+    // -- helper: parse capability options from the second arg of with_cap ----
+
+    /// Parse capability options (expires, delegatable) from the second argument.
+    fn parse_cap_options(v: &ExoValue<'static>) -> (Option<u64>, bool) {
+        let mut expires: Option<u64> = None;
+        let mut delegatable: bool = false;
+        match v {
+            ExoValue::Int(n) => expires = Some(*n as u64),
+            ExoValue::Bool(b) => delegatable = *b,
+            ExoValue::Map(mapopts) => {
+                if let Some(ExoValue::Int(n)) = mapopts.get("expires") {
+                    expires = Some(*n as u64);
+                }
+                if let Some(ExoValue::Bool(b)) = mapopts.get("delegatable") {
+                    delegatable = *b;
+                }
+            }
+            _ => {}
+        }
+        (expires, delegatable)
+    }
+
+    // -- helper: permission check for capability granting -------------------
+
+    /// Check whether the parent domain is allowed to grant the given capability.
+    fn check_grant_permission(parent: u64, cap_bit: u64) -> bool {
+        if crate::security::capability::manager()
+            .has_capability(parent, crate::security::capability::CAP_SYS_ADMIN)
+        {
+            return true;
+        }
+        let caller_caps = crate::security::capability::manager().get_capabilities(parent);
+        if caller_caps.is_permitted(cap_bit) {
+            return true;
+        }
+        let grants = crate::security::capability::manager().list_grants(parent);
+        grants.iter().any(|t| t.cap == cap_bit && t.delegatable)
+    }
+
+    // -- with_cap -----------------------------------------------------------
+
+    /// Handle the `with_cap` proxy method.
+    fn handle_with_cap(
+        mut m: BTreeMap<String, ExoValue<'static>>,
+        args: &[ExoValue<'static>],
+    ) -> ExoValue<'static> {
+        let resource = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            })
+            .unwrap_or("");
+        if resource.is_empty() {
+            return ExoValue::Error(String::from(
+                "with_cap(resource, [options]) requires a resource string",
+            ));
+        }
+
+        let cap_bit = crate::security::capability::resource_to_capability(resource);
+        if cap_bit == 0 {
+            return ExoValue::Error(format!("Unknown resource: {}", resource));
+        }
+
+        let (expires, delegatable) = args
+            .get(1)
+            .map(Self::parse_cap_options)
+            .unwrap_or((None, false));
+
+        let parent = match m.get("__parent") {
+            Some(ExoValue::Int(n)) => *n as u64,
+            _ => return ExoValue::Error(String::from("Invalid proxy parent")),
+        };
+
+        if !Self::check_grant_permission(parent, cap_bit) {
+            return ExoValue::Error(String::from(
+                "Permission denied: parent cannot grant this capability",
+            ));
+        }
+
+        let reqs = m.remove("__requested").unwrap_or(ExoValue::Array(Vec::new()));
+        let mut arr = match reqs {
+            ExoValue::Array(a) => a,
+            _ => Vec::new(),
+        };
+
+        let mut entry = BTreeMap::new();
+        entry.insert("resource".to_string(), ExoValue::String(Cow::Owned(resource.to_string())));
+        entry.insert("cap".to_string(), ExoValue::Int(cap_bit as i64));
+        if let Some(e) = expires {
+            entry.insert("expires".to_string(), ExoValue::Int(e as i64));
+        }
+        entry.insert("delegatable".to_string(), ExoValue::Bool(delegatable));
+
+        arr.push(ExoValue::Map(entry));
+        m.insert("__requested".to_string(), ExoValue::Array(arr));
+        ExoValue::Map(m)
+    }
+
+    // -- revoke -------------------------------------------------------------
+
+    /// Handle the `revoke` proxy method.
+    fn handle_revoke(
+        mut m: BTreeMap<String, ExoValue<'static>>,
+        args: &[ExoValue<'static>],
+    ) -> ExoValue<'static> {
+        let target = args.first();
+        let mut reqs = match m.remove("__requested") {
+            Some(ExoValue::Array(a)) => a,
+            _ => Vec::new(),
+        };
+
+        if let Some(targ) = target {
+            reqs.retain(|item| match (item, targ) {
+                (ExoValue::Map(map), ExoValue::String(s)) => {
+                    let res = map.get("resource").and_then(|v| v.as_str());
+                    res.map(|r| r != s.as_ref()).unwrap_or(true)
+                }
+                (ExoValue::Map(map), ExoValue::Int(n)) => {
+                    let cap = map.get("cap").and_then(|v| v.as_int()).unwrap_or(-1);
+                    cap != *n
+                }
+                _ => true,
+            });
+        } else {
+            // no arg = clear all
+            reqs.clear();
+        }
+
+        m.insert("__requested".to_string(), ExoValue::Array(reqs));
+        ExoValue::Map(m)
+    }
+
+    // -- list_caps / requested_caps -----------------------------------------
+
+    /// Handle the `list_caps` / `requested_caps` proxy method.
+    fn handle_list_caps(m: &BTreeMap<String, ExoValue<'static>>) -> ExoValue<'static> {
+        let reqs = match m.get("__requested") {
+            Some(ExoValue::Array(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        let parent_str = format!(
+            "domain:{}",
+            m.get("__parent").and_then(|v| v.as_int()).unwrap_or(0),
+        );
+        let mut out: Vec<ExoValue<'static>> = Vec::new();
+        for r in reqs {
+            if let ExoValue::Map(map) = r {
+                out.push(Self::cap_entry_to_capability(&map, &parent_str));
+            }
+        }
+        ExoValue::Array(out)
+    }
+
+    /// Convert a capability entry map to a `Capability` `ExoValue`.
+    fn cap_entry_to_capability(
+        map: &BTreeMap<String, ExoValue<'static>>,
+        issuer: &str,
+    ) -> ExoValue<'static> {
+        let cap = map.get("cap").and_then(|v| v.as_int()).unwrap_or(0) as u64;
+        let resource = map.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+        let expires = map.get("expires").and_then(|v| v.as_int()).map(|n| n as u64);
+        let delegatable = map
+            .get("delegatable")
+            .and_then(|v| match v {
+                ExoValue::Bool(b) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false);
+        ExoValue::Capability(Capability {
+            id: cap,
+            resource: resource.to_string(),
+            operations: Vec::new(),
+            issuer: issuer.to_string(),
+            expires,
+            delegatable,
+        })
+    }
+
+    // -- run ----------------------------------------------------------------
+
+    /// Parse an `ExoValue` array of capability entries into `RequestedCap` structs.
+    fn parse_requested_caps(
+        reqs: &[ExoValue<'static>],
+    ) -> Vec<crate::task::process::RequestedCap> {
+        let mut out = Vec::new();
+        for r in reqs {
+            if let ExoValue::Map(map) = r {
+                let cap = map.get("cap").and_then(|v| v.as_int()).unwrap_or(0) as u64;
+                let expires = map
+                    .get("expires")
+                    .and_then(|v| v.as_int())
+                    .map(|n| n as u64);
+                let delegatable = map
+                    .get("delegatable")
+                    .and_then(|v| match v {
+                        ExoValue::Bool(b) => Some(*b),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                out.push(crate::task::process::RequestedCap {
+                    cap,
+                    expires,
+                    delegatable,
+                });
+            }
+        }
+        out
+    }
+
+    /// Handle the `run` proxy method.
+    fn handle_run(
+        m: BTreeMap<String, ExoValue<'static>>,
+        args: &[ExoValue<'static>],
+    ) -> ExoValue<'static> {
+        let name = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            })
+            .unwrap_or("");
+        if name.is_empty() {
+            return ExoValue::Error(String::from("run(name) requires process name"));
+        }
+
+        let parent = match m.get("__parent") {
+            Some(ExoValue::Int(n)) => *n as u64,
+            _ => return ExoValue::Error(String::from("Invalid proxy parent")),
+        };
+
+        let cur = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if cur != parent
+            && !crate::security::capability::manager()
+                .has_capability(cur, crate::security::capability::CAP_SYS_ADMIN)
+        {
+            return ExoValue::Error(String::from(
+                "Permission denied: must be proxy owner or CAP_SYS_ADMIN",
+            ));
+        }
+
+        let reqs = match m.get("__requested") {
+            Some(ExoValue::Array(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        let requested_caps = Self::parse_requested_caps(&reqs);
+
+        match crate::task::process::spawn_with_caps(name, &requested_caps) {
+            Ok((child, tokens_vec)) => {
+                let tokens = tokens_vec
+                    .into_iter()
+                    .map(|t| ExoValue::Int(t as i64))
+                    .collect();
+                let mut res = BTreeMap::new();
+                res.insert("domain".to_string(), ExoValue::Int(child.as_u64() as i64));
+                res.insert("tokens".to_string(), ExoValue::Array(tokens));
+                ExoValue::Map(res)
+            }
+            Err(e) => ExoValue::Error(format!("spawn_with_caps failed: {:?}", e)),
         }
     }
 }
