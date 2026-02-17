@@ -168,6 +168,103 @@ unsafe impl<T: Send> Send for MapleTree<T> {}
 unsafe impl<T: Sync> Sync for MapleTree<T> {}
 
 // ============================================================================
+// QEMU smoke tests
+// ============================================================================
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn maple_empty_smoke() -> bool {
+        let mt: MapleTree<u32> = MapleTree::new();
+        mt.is_empty() && mt.load(0).is_none()
+    }
+
+    pub fn maple_single_range_smoke() -> bool {
+        let mut mt: MapleTree<u32> = MapleTree::new();
+        mt.store_range(10, 20, 42);
+
+        mt.len() == 1
+            && mt.load(9).is_none()
+            && mt.load(10) == Some(&42)
+            && mt.load(19) == Some(&42)
+            && mt.load(20).is_none()
+    }
+
+    pub fn maple_multiple_ranges_smoke() -> bool {
+        let mut mt: MapleTree<u32> = MapleTree::new();
+
+        mt.store_range(0, 100, 1);
+        mt.store_range(200, 300, 2);
+        mt.store_range(500, 600, 3);
+
+        mt.len() == 3
+            && mt.load(50) == Some(&1)
+            && mt.load(150).is_none()
+            && mt.load(250) == Some(&2)
+    }
+
+    pub fn maple_overlapping_store_smoke() -> bool {
+        let mut mt: MapleTree<u32> = MapleTree::new();
+
+        mt.store_range(0, 100, 1);
+        mt.store_range(50, 150, 2);
+
+        mt.len() == 1 && mt.load(75) == Some(&2)
+    }
+
+    pub fn maple_erase_smoke() -> bool {
+        let mut mt: MapleTree<u32> = MapleTree::new();
+
+        mt.store_range(0, 100, 1);
+        mt.store_range(200, 300, 2);
+        mt.erase_range(0, 100);
+
+        mt.len() == 1
+            && mt.load(50).is_none()
+            && mt.load(250) == Some(&2)
+    }
+
+    pub fn maple_find_gap_smoke() -> bool {
+        let mut mt: MapleTree<u32> = MapleTree::new();
+
+        mt.store_range(0, 100, 1);
+        mt.store_range(200, 300, 2);
+
+        match mt.find_gap(0, 50) {
+            Some((start, end)) => start == 100 && end == 200,
+            None => false,
+        }
+    }
+
+    pub fn maple_range_coalescing_smoke() -> bool {
+        let mut mt: MapleTree<u32> = MapleTree::new();
+
+        mt.store_range(0, 100, 1);
+        mt.store_range(100, 200, 1);
+
+        mt.len() == 1
+            && mt.load(50) == Some(&1)
+            && mt.load(150) == Some(&1)
+    }
+
+    pub fn maple_many_ranges_smoke() -> bool {
+        let mut mt: MapleTree<u32> = MapleTree::new();
+
+        for i in 0..50u32 {
+            mt.store_range((i as usize) * 100, (i as usize) * 100 + 50, i);
+        }
+
+        if mt.len() != 50 { return false; }
+
+        for i in 0..50u32 {
+            if mt.load((i as usize) * 100 + 25) != Some(&i) { return false; }
+        }
+        true
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

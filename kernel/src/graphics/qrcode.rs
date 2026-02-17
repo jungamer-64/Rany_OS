@@ -257,13 +257,9 @@ impl QrCode {
 
     /// Determine whether a cell in the 7×7 finder pattern is dark or light.
     fn finder_module(dx: usize, dy: usize) -> Module {
-        let is_border = dx == 0 || dx == 6 || dy == 0 || dy == 6;
-        let is_inner = dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4;
-        if is_border || is_inner {
-            Module::FuncDark
-        } else {
-            Module::FuncLight
-        }
+        // Ring distance from edge: border=0, white ring=1, inner center=2..3
+        let ring = dx.min(6 - dx).min(dy.min(6 - dy));
+        if ring == 1 { Module::FuncLight } else { Module::FuncDark }
     }
 
     /// データビットを1モジュールに配置する
@@ -286,23 +282,15 @@ impl QrCode {
 
     /// ファインダーパターン位置に基づきセパレータを配置
     fn place_separator_at(&mut self, fx: usize, fy: usize) {
-        if fx == 0 && fy == 0 {
-            for i in 0..8 {
-                self.set_reserved(7, i, Module::FuncLight);
-                self.set_reserved(i, 7, Module::FuncLight);
-            }
-        }
-        if fx > 0 && fy == 0 {
-             for i in 0..8 {
-                 self.set_reserved(QR_SIZE - 8, i, Module::FuncLight);
-                 self.set_reserved(QR_SIZE - 8 + i, 7, Module::FuncLight);
-             }
-        }
-        if fx == 0 && fy > 0 {
-             for i in 0..8 {
-                 self.set_reserved(i, QR_SIZE - 8, Module::FuncLight);
-                 self.set_reserved(7, QR_SIZE - 8 + i, Module::FuncLight);
-             }
+        let (vx, vy_start, hx_start, hy) = match (fx == 0, fy == 0) {
+            (true, true)   => (7, 0, 0, 7),
+            (false, true)  => (QR_SIZE - 8, 0, QR_SIZE - 8, 7),
+            (true, false)  => (7, QR_SIZE - 8, 0, QR_SIZE - 8),
+            (false, false) => return,
+        };
+        for i in 0..8 {
+            self.set_reserved(vx, vy_start + i, Module::FuncLight);
+            self.set_reserved(hx_start + i, hy, Module::FuncLight);
         }
     }
 
@@ -789,20 +777,5 @@ pub fn generate_error_qr(error_code: &str) -> Option<QrCode> {
 
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test_case]
-    fn test_rs_ec7_known_vector() {
-        // Known vector test for Reed-Solomon RS(26,19) over GF(256) with primitive 0x11D.
-        // Data derived from standard example but adapted for 19 data bytes (V1-L).
-        let data19: [u8; 19] = [
-            0x41, 0x17, 0x77, 0x77, 0x72, 0xE7, 0x76, 0x96, 0xB6, 0x97,
-            0x06, 0x56, 0x46, 0x96, 0x12, 0xE6, 0xF7, 0x26, 0x70,
-        ];
-        let ec = rs_encode_ec7(&data19);
-        // Correct EC codewords for this input using our generator polynomial
-        assert_eq!(ec, [0xAE, 0xAD, 0xEF, 0x06, 0x97, 0x8F, 0x25]);
-    }
-}
+mod tests;
 

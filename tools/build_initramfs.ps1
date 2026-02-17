@@ -9,16 +9,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== ExoRust Initramfs Builder ===" -ForegroundColor Cyan
+Write-Output "=== ExoRust Initramfs Builder ==="
 
 # Determine build profile
 $Profile = if ($Release) { "release" } else { "debug" }
-Write-Host "Profile: $Profile"
+Write-Output "Profile: $Profile"
 
 # Create cells directory if it doesn't exist
 if (-not (Test-Path $CellsDir)) {
     New-Item -ItemType Directory -Path $CellsDir -Force | Out-Null
-    Write-Host "Created directory: $CellsDir"
+    Write-Output "Created directory: $CellsDir"
 }
 
 # List of drivers to build as Cells (add more as needed)
@@ -31,7 +31,7 @@ $Drivers = @(
 $BuiltCells = @()
 
 foreach ($Driver in $Drivers) {
-    Write-Host "`nBuilding $($Driver.Name) as standalone Cell..." -ForegroundColor Yellow
+    Write-Output "`nBuilding $($Driver.Name) as standalone Cell..."
     
     # Temporarily modify Cargo.toml to enable cdylib
     $CargoPath = "drivers/$($Driver.Name -replace '_driver', '')/Cargo.toml"
@@ -60,7 +60,7 @@ foreach ($Driver in $Drivers) {
             $BuildArgs += "--release"
         }
         
-        Write-Host "cargo $($BuildArgs -join ' ')"
+        Write-Output "cargo $($BuildArgs -join ' ')"
         & cargo @BuildArgs
         
         if ($LASTEXITCODE -eq 0) {
@@ -77,7 +77,7 @@ foreach ($Driver in $Drivers) {
                 $CellPath = Join-Path $CellsDir $Driver.Output
                 Copy-Item $LibPath $CellPath -Force
                 $BuiltCells += $Driver.Output
-                Write-Host "Created: $CellPath" -ForegroundColor Green
+                Write-Output "Created: $CellPath"
             } else {
                 Write-Warning "Built library not found for $($Driver.Name)"
             }
@@ -92,7 +92,7 @@ foreach ($Driver in $Drivers) {
 
 # Create TAR archive
 if ($BuiltCells.Count -gt 0) {
-    Write-Host "`nCreating initramfs.tar..." -ForegroundColor Yellow
+    Write-Output "`nCreating initramfs.tar..."
     
     # Use tar command (available on Windows 10+)
     Push-Location $CellsDir
@@ -102,19 +102,19 @@ if ($BuiltCells.Count -gt 0) {
         
         if ($LASTEXITCODE -eq 0) {
             $TarPath = Join-Path (Split-Path $CellsDir -Parent) "initramfs.tar"
-            Write-Host "`nSuccess! Created: $TarPath" -ForegroundColor Green
-            Write-Host "Contents:"
+            Write-Output "`nSuccess! Created: $TarPath"
+            Write-Output "Contents:"
             & tar -tvf "../initramfs.tar"
             
             # Copy to target root for easy access
             Copy-Item "../initramfs.tar" $OutputPath -Force
-            Write-Host "`nCopied to: $OutputPath"
+            Write-Output "`nCopied to: $OutputPath"
         }
     } finally {
         Pop-Location
     }
 } else {
-    Write-Host "`nNo Cells were built." -ForegroundColor Yellow
+    Write-Output "`nNo Cells were built."
 }
 
-Write-Host "`n=== Build Complete ===" -ForegroundColor Cyan
+Write-Output "`n=== Build Complete ==="

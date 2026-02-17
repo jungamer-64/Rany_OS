@@ -18,7 +18,7 @@ Push-Location $root\.. | Out-Null
 $drivers = Get-ChildItem -Path "drivers" -Directory 2>$null
 
 if (-not $drivers) {
-    Write-Host "No drivers directory found; nothing to check." -ForegroundColor Yellow
+    Write-Output "No drivers directory found; nothing to check."
     Pop-Location | Out-Null
     exit 0
 }
@@ -30,7 +30,7 @@ foreach ($driver in $drivers) {
     $cargoPath = Join-Path $driver.FullName 'Cargo.toml'
 
     if (-not (Test-Path $cargoPath)) {
-        Write-Host "[$($driver.Name)] - No Cargo.toml found" -ForegroundColor Yellow
+        Write-Output "[$($driver.Name)] - No Cargo.toml found"
         continue
     }
 
@@ -39,7 +39,7 @@ foreach ($driver in $drivers) {
     # Check for kernel dependency in a dependency table entry (exact match)
     # Use regex to avoid matching kernel_api
     if ($content -match '(^|\n)\s*kernel\s*=') {
-        Write-Host "ERROR: [$($driver.Name)] Cargo.toml depends on 'kernel' crate. Drivers must not depend on kernel." -ForegroundColor Red
+        Write-Output "ERROR: [$($driver.Name)] Cargo.toml depends on 'kernel' crate. Drivers must not depend on kernel."
         $foundViolation = $true
     }
 
@@ -51,20 +51,20 @@ foreach ($driver in $drivers) {
 }
 
 if ($foundWarnings.Count -gt 0) {
-    Write-Host "" -ForegroundColor Gray
-    Write-Host "Warnings:" -ForegroundColor Yellow
+    Write-Output ""
+    Write-Output "Warnings:"
     foreach ($w in $foundWarnings) {
-        Write-Host $w -ForegroundColor Yellow
+        Write-Output $w
     }
 }
 
 if ($foundViolation) {
-    Write-Host "" -ForegroundColor Gray
-    Write-Host "One or more drivers depend on 'kernel' crate. Fix them by depending on 'kernel_api' instead." -ForegroundColor Red
+    Write-Output ""
+    Write-Output "One or more drivers depend on 'kernel' crate. Fix them by depending on 'kernel_api' instead."
     Pop-Location | Out-Null
     exit 1
 }
 
-Write-Host "All drivers satisfy dependency policy." -ForegroundColor Green
+Write-Output "All drivers satisfy dependency policy."
 Pop-Location | Out-Null
 exit 0

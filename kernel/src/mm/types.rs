@@ -495,6 +495,77 @@ impl AddressUnit for u64 {
 }
 
 // ============================================================================
+// QEMU Smoke Tests (wave10)
+// ============================================================================
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn frame_index_basic_smoke() -> bool {
+        let frame = FrameIndex::new(100);
+        frame.as_usize() == 100 && frame.to_phys_addr() == 100 * 4096
+    }
+
+    pub fn frame_index_from_phys_addr_smoke() -> bool {
+        let frame = FrameIndex::from_phys_addr(0x10000);
+        frame.as_usize() == 16
+    }
+
+    pub fn frame_index_word_and_bit_smoke() -> bool {
+        let frame = FrameIndex::new(65);
+        frame.word_index() == 1 && frame.bit_index() == 1
+    }
+
+    pub fn frame_index_buddy_smoke() -> bool {
+        FrameIndex::new(0).buddy(0).as_usize() == 1
+            && FrameIndex::new(1).buddy(0).as_usize() == 0
+            && FrameIndex::new(0).buddy(1).as_usize() == 2
+            && FrameIndex::new(2).buddy(1).as_usize() == 0
+            && FrameIndex::new(0).buddy(2).as_usize() == 4
+            && FrameIndex::new(4).buddy(2).as_usize() == 0
+    }
+
+    pub fn frame_index_align_down_smoke() -> bool {
+        FrameIndex::new(0).align_down(2).as_usize() == 0
+            && FrameIndex::new(3).align_down(2).as_usize() == 0
+            && FrameIndex::new(4).align_down(2).as_usize() == 4
+            && FrameIndex::new(7).align_down(2).as_usize() == 4
+    }
+
+    pub fn frame_index_align_up_smoke() -> bool {
+        FrameIndex::new(0).align_up(2).as_usize() == 0
+            && FrameIndex::new(1).align_up(2).as_usize() == 4
+            && FrameIndex::new(4).align_up(2).as_usize() == 4
+            && FrameIndex::new(5).align_up(2).as_usize() == 8
+    }
+
+    pub fn frame_index_arithmetic_smoke() -> bool {
+        let a = FrameIndex::new(10);
+        let b = FrameIndex::new(5);
+        (a + 5).as_usize() == 15 && (a - 3).as_usize() == 7 && (a - b) == 5
+    }
+
+    pub fn numa_node_id_smoke() -> bool {
+        let node = NumaNodeId::new(3);
+        node.as_u8() == 3
+            && node.as_usize() == 3
+            && node.is_valid()
+            && !NumaNodeId::new(20).is_valid()
+    }
+
+    pub fn address_unit_frame_index_smoke() -> bool {
+        let frame: FrameIndex = AddressUnit::from_word_and_bit(1, 5);
+        frame.as_usize() == 69
+    }
+
+    pub fn address_unit_u64_smoke() -> bool {
+        let addr: u64 = AddressUnit::from_word_and_bit(1, 5);
+        addr == 69 * 4096
+    }
+}
+
+// ============================================================================
 // テスト
 // ============================================================================
 

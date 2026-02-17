@@ -26,6 +26,36 @@ def find_closest_symbol(elf, target_addr):
     return best
 
 
+def _get_cu_address_range(top_die):
+    """Extract (low_pc, high_pc) from a compilation unit's top DIE."""
+    if 'DW_AT_low_pc' not in top_die.attributes:
+        return None, None
+    low_pc = top_die.attributes['DW_AT_low_pc'].value
+    if 'DW_AT_high_pc' not in top_die.attributes:
+        return low_pc, None
+    hi_attr = top_die.attributes['DW_AT_high_pc']
+    if hi_attr.form == 'DW_FORM_addr':
+        return low_pc, hi_attr.value
+    return low_pc, low_pc + hi_attr.value
+
+
+def _search_line_program(lineprog, target_addr):
+    """Search a line program for file/line matching target_addr."""
+    prev_state = None
+    for entry in lineprog.get_entries():
+        if entry.state is None:
+            continue
+        state = entry.state
+        if state.address == target_addr:
+            file_entry = lineprog.header.file_entry[state.file - 1]
+            return (file_entry.name.decode('utf-8'), state.line)
+        if state.address > target_addr and prev_state is not None:
+            file_entry = lineprog.header.file_entry[prev_state.file - 1]
+            return (file_entry.name.decode('utf-8'), prev_state.line)
+        prev_state = state
+    return None
+
+
 def addr_to_line(elf, target_addr):
     try:
         dwarfinfo = elf.get_dwarf_info()
@@ -34,40 +64,15 @@ def addr_to_line(elf, target_addr):
 
     for cu in dwarfinfo.iter_CUs():
         top = cu.get_top_DIE()
-        low_pc = None
-        high_pc = None
-
-        # Try to get ranges from DIE
-        if 'DW_AT_low_pc' in top.attributes:
-            low_pc = top.attributes['DW_AT_low_pc'].value
-        if 'DW_AT_high_pc' in top.attributes:
-            hi_attr = top.attributes['DW_AT_high_pc']
-            # high_pc can be offset or absolute
-            if hi_attr.form == 'DW_FORM_addr':
-                high_pc = hi_attr.value
-            else:
-                # DW_FORM_data* => offset from low_pc
-                if low_pc is not None:
-                    high_pc = low_pc + hi_attr.value
-
-        if low_pc is not None and high_pc is not None and low_pc <= target_addr <= high_pc:
-            # Search line programs for file/line
-            lineprog = dwarfinfo.line_program_for_CU(cu)
-            prev_state = None
-            for entry in lineprog.get_entries():
-                if entry.state is None:
-                    continue
-                state = entry.state
-                if state.address == target_addr:
-                    file_entry = lineprog.header.file_entry[state.file - 1]
-                    fname = file_entry.name.decode('utf-8')
-                    return (fname, state.line)
-                if state.address > target_addr:
-                    if prev_state is not None:
-                        file_entry = lineprog.header.file_entry[prev_state.file - 1]
-                        fname = file_entry.name.decode('utf-8')
-                        return (fname, prev_state.line)
-                prev_state = state
+        low_pc, high_pc = _get_cu_address_range(top)
+        if low_pc is None or high_pc is None:
+            continue
+        if not (low_pc <= target_addr <= high_pc):
+            continue
+        lineprog = dwarfinfo.line_program_for_CU(cu)
+        result = _search_line_program(lineprog, target_addr)
+        if result is not None:
+            return result
     return None
 
 

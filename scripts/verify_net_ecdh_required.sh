@@ -51,7 +51,7 @@ for suite_group in \
   "net_ecdh_phase_b_exports"
 do
   if ! rg -q "${suite_group}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_ecdh_required] missing ${suite_group} in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_net_ecdh_required] missing ${suite_group} in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
@@ -66,13 +66,13 @@ for forbidden_wrapper in \
   "net_tls_wave8_ecdh_group_from_named_group_p256_smoke"
 do
   if rg -q "${forbidden_wrapper}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_ecdh_required] unexpected TLS-routed P-256 wiring '${forbidden_wrapper}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_net_ecdh_required] unexpected TLS-routed P-256 wiring '${forbidden_wrapper}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
 
 if ! rg -q "pub mod qemu_tests" "$ECDH_EXPORT_FILE"; then
-  echo "[verify_net_ecdh_required] missing qemu_tests module in ${ECDH_EXPORT_FILE#$ROOT_DIR/}"
+  echo "[verify_net_ecdh_required] missing qemu_tests module in ${ECDH_EXPORT_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -82,22 +82,22 @@ verify_case() {
   local wrapper_fn="$3"
 
   if ! rg -q "pub fn ${export_fn}\\(" "$ECDH_EXPORT_FILE"; then
-    echo "[verify_net_ecdh_required] missing ECDH export '${export_fn}' in ${ECDH_EXPORT_FILE#$ROOT_DIR/}"
+    echo "[verify_net_ecdh_required] missing ECDH export '${export_fn}' in ${ECDH_EXPORT_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_net_ecdh_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_net_ecdh_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_ecdh_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_net_ecdh_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if rg -q "${case_name}" "$PENDING_FILE"; then
-    echo "[verify_net_ecdh_required] promoted case '${case_name}' still listed in ${PENDING_FILE#$ROOT_DIR/}"
+    echo "[verify_net_ecdh_required] promoted case '${case_name}' still listed in ${PENDING_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 }
@@ -115,7 +115,7 @@ for marker in \
   "NET ECDH Phase B P-256 deterministic set is promoted to required suite_kernel"
 do
   if ! rg -q "${marker}" "$PENDING_FILE"; then
-    echo "[verify_net_ecdh_required] missing marker '${marker}' in ${PENDING_FILE#$ROOT_DIR/}"
+    echo "[verify_net_ecdh_required] missing marker '${marker}' in ${PENDING_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
