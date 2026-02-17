@@ -1,0 +1,682 @@
+// ============================================================================
+// tls/types.rs - TLS Type Definitions
+// ============================================================================
+
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
+// ============================================================================
+// Type-Safe Identifiers
+// ============================================================================
+
+/// TLSバージョン
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TlsVersion(pub u16);
+
+impl TlsVersion {
+    pub const TLS_1_0: Self = Self(0x0301);
+    pub const TLS_1_1: Self = Self(0x0302);
+    pub const TLS_1_2: Self = Self(0x0303);
+    pub const TLS_1_3: Self = Self(0x0304);
+
+    pub fn major(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+
+    pub fn minor(self) -> u8 {
+        self.0 as u8
+    }
+
+    pub fn to_bytes(self) -> [u8; 2] {
+        self.0.to_be_bytes()
+    }
+}
+
+/// セッションID
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SessionId(pub [u8; 32]);
+
+impl SessionId {
+    pub fn new(data: [u8; 32]) -> Self {
+        Self(data)
+    }
+
+    pub fn empty() -> Self {
+        Self([0; 32])
+    }
+}
+
+// ============================================================================
+// Cipher Suites
+// ============================================================================
+
+/// 暗号スイート
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CipherSuite(pub u16);
+
+impl CipherSuite {
+    // TLS 1.2 AEAD
+    pub const TLS_RSA_WITH_AES_128_GCM_SHA256: Self = Self(0x009C);
+    pub const TLS_RSA_WITH_AES_256_GCM_SHA384: Self = Self(0x009D);
+    pub const TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: Self = Self(0xC02F);
+    pub const TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: Self = Self(0xC030);
+    pub const TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256: Self = Self(0xC02B);
+    pub const TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384: Self = Self(0xC02C);
+    pub const TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256: Self = Self(0xCCA8);
+    pub const TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256: Self = Self(0xCCA9);
+
+    // TLS 1.3
+    pub const TLS_AES_128_GCM_SHA256: Self = Self(0x1301);
+    pub const TLS_AES_256_GCM_SHA384: Self = Self(0x1302);
+    pub const TLS_CHACHA20_POLY1305_SHA256: Self = Self(0x1303);
+
+    // TLS 1.0/1.1/1.2 CBC 暗号スイート
+    pub const TLS_RSA_WITH_AES_128_CBC_SHA: Self = Self(0x002F);
+    pub const TLS_RSA_WITH_AES_256_CBC_SHA: Self = Self(0x0035);
+    pub const TLS_RSA_WITH_AES_128_CBC_SHA256: Self = Self(0x003C);
+    pub const TLS_RSA_WITH_AES_256_CBC_SHA256: Self = Self(0x003D);
+    pub const TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA: Self = Self(0xC013);
+    pub const TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA: Self = Self(0xC014);
+    pub const TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256: Self = Self(0xC027);
+    pub const TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: Self = Self(0xC009);
+    pub const TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA: Self = Self(0xC00A);
+
+    /// Check if this is a ChaCha20-Poly1305 cipher suite
+    pub fn is_chacha20_poly1305(&self) -> bool {
+        matches!(self.0, 0xCCA8 | 0xCCA9 | 0x1303)
+    }
+
+    /// Check if this is an AES-GCM cipher suite
+    pub fn is_aes_gcm(&self) -> bool {
+        matches!(
+            self.0,
+            0x009C | 0x009D | 0xC02F | 0xC030 | 0xC02B | 0xC02C | 0x1301 | 0x1302
+        )
+    }
+
+    /// Get the key length in bytes for this cipher suite
+    pub fn key_len(&self) -> usize {
+        match self.0 {
+            // AES-128 suites (GCM)
+            0x009C | 0xC02F | 0xC02B | 0x1301 => 16,
+            // AES-256 suites (GCM)
+            0x009D | 0xC030 | 0xC02C | 0x1302 => 32,
+            // ChaCha20-Poly1305 suites (256-bit key)
+            0xCCA8 | 0xCCA9 | 0x1303 => 32,
+            // AES-128 CBC suites
+            0x002F | 0x003C | 0xC013 | 0xC027 | 0xC009 => 16,
+            // AES-256 CBC suites
+            0x0035 | 0x003D | 0xC014 | 0xC00A => 32,
+            // Default to 16
+            _ => 16,
+        }
+    }
+
+    /// Get the IV length in bytes for this cipher suite
+    pub fn iv_len(&self) -> usize {
+        match self.0 {
+            // AES-GCM uses 4-byte implicit IV (TLS 1.2)
+            0x009C | 0x009D | 0xC02F | 0xC030 | 0xC02B | 0xC02C => 4,
+            // TLS 1.3 AES-GCM uses 12-byte IV
+            0x1301 | 0x1302 => 12,
+            // ChaCha20-Poly1305 uses 12-byte IV
+            0xCCA8 | 0xCCA9 | 0x1303 => 12,
+            // CBC uses 16-byte IV
+            0x002F | 0x0035 | 0x003C | 0x003D |
+            0xC013 | 0xC014 | 0xC027 | 0xC009 | 0xC00A => 16,
+            // Default to 4
+            _ => 4,
+        }
+    }
+
+    /// デフォルトの暗号スイート一覧
+    pub fn defaults() -> Vec<Self> {
+        vec![
+            // TLS 1.3 AEAD
+            Self::TLS_AES_128_GCM_SHA256,
+            Self::TLS_AES_256_GCM_SHA384,
+            Self::TLS_CHACHA20_POLY1305_SHA256,
+            // TLS 1.2 AEAD
+            Self::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            Self::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+            Self::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            Self::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            // TLS 1.0/1.1/1.2 CBC
+            Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+            Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            Self::TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+            Self::TLS_RSA_WITH_AES_128_CBC_SHA256,
+            Self::TLS_RSA_WITH_AES_256_CBC_SHA256,
+            Self::TLS_RSA_WITH_AES_128_CBC_SHA,
+            Self::TLS_RSA_WITH_AES_256_CBC_SHA,
+        ]
+    }
+
+    /// CBC暗号スイートかどうか
+    pub fn is_cbc(&self) -> bool {
+        matches!(
+            self.0,
+            0x002F | 0x0035 | 0x003C | 0x003D |
+            0xC013 | 0xC014 | 0xC027 |
+            0xC009 | 0xC00A
+        )
+    }
+
+    /// RSA鍵転送を使用するか (TLS_RSA_WITH_*)
+    pub fn is_rsa_key_transport(&self) -> bool {
+        matches!(self.0, 0x002F | 0x0035 | 0x003C | 0x003D | 0x009C | 0x009D)
+    }
+
+    /// MAC鍵の長さ (バイト)
+    pub fn mac_key_len(&self) -> usize {
+        match self.0 {
+            // SHA-1 MAC: 20 bytes
+            0x002F | 0x0035 | 0xC013 | 0xC014 | 0xC009 | 0xC00A => 20,
+            // SHA-256 MAC: 32 bytes
+            0x003C | 0x003D | 0xC027 => 32,
+            _ => 0,
+        }
+    }
+
+    /// MACの出力長 (バイト)
+    pub fn mac_len(&self) -> usize {
+        self.mac_key_len()
+    }
+
+    /// SHA-1 MACを使用するか
+    pub fn uses_sha1_mac(&self) -> bool {
+        matches!(
+            self.0,
+            0x002F | 0x0035 | 0xC013 | 0xC014 | 0xC009 | 0xC00A
+        )
+    }
+
+    /// CBC暗号スイートのIV長
+    pub fn cbc_iv_len(&self) -> usize {
+        if self.is_cbc() { 16 } else { 0 }
+    }
+
+    /// SHA-384ベースの暗号スイートかどうか
+    pub fn uses_sha384(&self) -> bool {
+        matches!(self.0, 0x009D | 0xC030 | 0xC02C | 0x1302)
+    }
+
+    /// TLS 1.0/1.1 で使用可能か
+    pub fn is_legacy_compatible(&self) -> bool {
+        self.is_cbc() || self.is_rsa_key_transport()
+    }
+}
+
+/// 署名アルゴリズム
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignatureScheme(pub u16);
+
+impl SignatureScheme {
+    pub const RSA_PKCS1_SHA256: Self = Self(0x0401);
+    pub const RSA_PKCS1_SHA384: Self = Self(0x0501);
+    pub const RSA_PKCS1_SHA512: Self = Self(0x0601);
+    pub const ECDSA_SECP256R1_SHA256: Self = Self(0x0403);
+    pub const ECDSA_SECP384R1_SHA384: Self = Self(0x0503);
+    pub const RSA_PSS_RSAE_SHA256: Self = Self(0x0804);
+    pub const RSA_PSS_RSAE_SHA384: Self = Self(0x0805);
+    pub const RSA_PSS_RSAE_SHA512: Self = Self(0x0806);
+    pub const ED25519: Self = Self(0x0807);
+    pub const ED448: Self = Self(0x0808);
+}
+
+/// 名前付きグループ（楕円曲線）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedGroup(pub u16);
+
+impl NamedGroup {
+    pub const SECP256R1: Self = Self(0x0017);
+    pub const SECP384R1: Self = Self(0x0018);
+    pub const SECP521R1: Self = Self(0x0019);
+    pub const X25519: Self = Self(0x001D);
+    pub const X448: Self = Self(0x001E);
+    pub const FFDHE2048: Self = Self(0x0100);
+    pub const FFDHE3072: Self = Self(0x0101);
+}
+
+// ============================================================================
+// TLS Records
+// ============================================================================
+
+/// コンテントタイプ
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentType {
+    ChangeCipherSpec = 20,
+    Alert = 21,
+    Handshake = 22,
+    ApplicationData = 23,
+    Heartbeat = 24,
+}
+
+impl ContentType {
+    pub(crate) fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            20 => Some(Self::ChangeCipherSpec),
+            21 => Some(Self::Alert),
+            22 => Some(Self::Handshake),
+            23 => Some(Self::ApplicationData),
+            24 => Some(Self::Heartbeat),
+            _ => None,
+        }
+    }
+}
+
+/// ハンドシェイクタイプ
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeType {
+    ClientHello = 1,
+    ServerHello = 2,
+    NewSessionTicket = 4,
+    EndOfEarlyData = 5,
+    EncryptedExtensions = 8,
+    Certificate = 11,
+    CertificateRequest = 13,
+    CertificateVerify = 15,
+    Finished = 20,
+    KeyUpdate = 24,
+    MessageHash = 254,
+}
+
+/// TLSレコードヘッダ
+#[derive(Clone, Copy, Debug)]
+#[repr(C, packed)]
+pub struct RecordHeader {
+    pub content_type: u8,
+    pub version: [u8; 2],
+    pub length: [u8; 2],
+}
+
+impl RecordHeader {
+    pub fn version(&self) -> TlsVersion {
+        TlsVersion(((self.version[0] as u16) << 8) | self.version[1] as u16)
+    }
+
+    pub fn length(&self) -> u16 {
+        ((self.length[0] as u16) << 8) | self.length[1] as u16
+    }
+}
+
+// ============================================================================
+// Alert
+// ============================================================================
+
+/// アラートレベル
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlertLevel {
+    Warning = 1,
+    Fatal = 2,
+}
+
+/// アラート説明
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlertDescription {
+    CloseNotify = 0,
+    UnexpectedMessage = 10,
+    BadRecordMac = 20,
+    RecordOverflow = 22,
+    HandshakeFailure = 40,
+    BadCertificate = 42,
+    UnsupportedCertificate = 43,
+    CertificateRevoked = 44,
+    CertificateExpired = 45,
+    CertificateUnknown = 46,
+    IllegalParameter = 47,
+    UnknownCa = 48,
+    AccessDenied = 49,
+    DecodeError = 50,
+    DecryptError = 51,
+    ProtocolVersion = 70,
+    InsufficientSecurity = 71,
+    InternalError = 80,
+    InappropriateFallback = 86,
+    UserCanceled = 90,
+    MissingExtension = 109,
+    UnsupportedExtension = 110,
+    UnrecognizedName = 112,
+    BadCertificateStatusResponse = 113,
+    UnknownPskIdentity = 115,
+    CertificateRequired = 116,
+    NoApplicationProtocol = 120,
+}
+
+// ============================================================================
+// TLS Connection State
+// ============================================================================
+
+/// TLS接続状態
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsState {
+    /// 初期状態
+    Initial,
+    /// ClientHello送信済み
+    ClientHelloSent,
+    /// ServerHello受信済み
+    ServerHelloReceived,
+    /// ハンドシェイク中
+    Handshaking,
+    /// TLS 1.3: ServerHello処理後、暗号化ハンドシェイク待ち
+    Tls13WaitEncryptedExtensions,
+    /// TLS 1.3: EncryptedExtensions受信後、Certificate待ち
+    Tls13WaitCertificate,
+    /// TLS 1.3: Certificate受信後、CertificateVerify待ち
+    Tls13WaitCertificateVerify,
+    /// TLS 1.3: CertificateVerify受信後、Finished待ち
+    Tls13WaitFinished,
+    /// TLS 1.3: サーバーFinished受信済み、クライアントFinished送信待ち
+    Tls13ServerFinishedReceived,
+    /// TLS 1.3: HelloRetryRequest 受信済み、再ClientHello送信待ち
+    HelloRetryReceived,
+    /// TLS 1.2: 略式ハンドシェイク中、サーバーChangeCipherSpec+Finished待ち
+    WaitFinishedResumed,
+    /// 接続確立
+    Established,
+    /// シャットダウン中
+    Closing,
+    /// 接続終了
+    Closed,
+    /// エラー
+    Error,
+}
+
+// ============================================================================
+// Extensions
+// ============================================================================
+
+/// TLS拡張タイプ
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtensionType(pub u16);
+
+impl ExtensionType {
+    pub const SERVER_NAME: Self = Self(0);
+    pub const MAX_FRAGMENT_LENGTH: Self = Self(1);
+    pub const STATUS_REQUEST: Self = Self(5);
+    pub const SUPPORTED_GROUPS: Self = Self(10);
+    pub const SIGNATURE_ALGORITHMS: Self = Self(13);
+    pub const USE_SRTP: Self = Self(14);
+    pub const HEARTBEAT: Self = Self(15);
+    pub const APPLICATION_LAYER_PROTOCOL_NEGOTIATION: Self = Self(16);
+    pub const SIGNED_CERTIFICATE_TIMESTAMP: Self = Self(18);
+    pub const CLIENT_CERTIFICATE_TYPE: Self = Self(19);
+    pub const SERVER_CERTIFICATE_TYPE: Self = Self(20);
+    pub const PADDING: Self = Self(21);
+    pub const ENCRYPT_THEN_MAC: Self = Self(22);
+    pub const EXTENDED_MASTER_SECRET: Self = Self(23);
+    pub const SESSION_TICKET: Self = Self(35);
+    pub const PRE_SHARED_KEY: Self = Self(41);
+    pub const EARLY_DATA: Self = Self(42);
+    pub const SUPPORTED_VERSIONS: Self = Self(43);
+    pub const COOKIE: Self = Self(44);
+    pub const PSK_KEY_EXCHANGE_MODES: Self = Self(45);
+    pub const CERTIFICATE_AUTHORITIES: Self = Self(47);
+    pub const OID_FILTERS: Self = Self(48);
+    pub const POST_HANDSHAKE_AUTH: Self = Self(49);
+    pub const SIGNATURE_ALGORITHMS_CERT: Self = Self(50);
+    pub const KEY_SHARE: Self = Self(51);
+}
+
+/// Server Name Indication
+#[derive(Clone, Debug)]
+pub struct ServerNameList {
+    pub names: Vec<ServerName>,
+}
+
+/// サーバー名
+#[derive(Clone, Debug)]
+pub struct ServerName {
+    pub name_type: u8, // 0 = hostname
+    pub name: String,
+}
+
+// ============================================================================
+// TLS Configuration
+// ============================================================================
+
+/// TLS設定
+#[derive(Clone)]
+pub struct TlsConfig {
+    /// 最小バージョン
+    pub min_version: TlsVersion,
+    /// 最大バージョン
+    pub max_version: TlsVersion,
+    /// 暗号スイート
+    pub cipher_suites: Vec<CipherSuite>,
+    /// 署名アルゴリズム
+    pub signature_schemes: Vec<SignatureScheme>,
+    /// 名前付きグループ
+    pub named_groups: Vec<NamedGroup>,
+    /// ALPN
+    pub alpn_protocols: Vec<String>,
+    /// SNI
+    pub server_name: Option<String>,
+    /// セッション再開を許可
+    pub enable_session_resumption: bool,
+    /// クライアント証明書
+    pub client_cert: Option<Certificate>,
+    /// クライアント秘密鍵
+    pub client_key: Option<PrivateKey>,
+    /// CA証明書
+    pub ca_certs: Vec<Certificate>,
+    /// 証明書検証を無効化（デバッグ用）
+    pub skip_verify: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            min_version: TlsVersion::TLS_1_0,
+            max_version: TlsVersion::TLS_1_3,
+            cipher_suites: CipherSuite::defaults(),
+            signature_schemes: vec![
+                SignatureScheme::ECDSA_SECP256R1_SHA256,
+                SignatureScheme::ECDSA_SECP384R1_SHA384,
+                SignatureScheme::RSA_PSS_RSAE_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA256,
+            ],
+            named_groups: vec![
+                NamedGroup::X25519,
+                NamedGroup::SECP256R1,
+                NamedGroup::SECP384R1,
+            ],
+            alpn_protocols: Vec::new(),
+            server_name: None,
+            enable_session_resumption: true,
+            client_cert: None,
+            client_key: None,
+            ca_certs: Vec::new(),
+            skip_verify: false,
+        }
+    }
+}
+
+impl TlsConfig {
+    /// 新しいTLS設定を作成
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// サーバー名を設定
+    pub fn with_server_name(mut self, name: &str) -> Self {
+        self.server_name = Some(String::from(name));
+        self
+    }
+
+    /// ALPNプロトコルを設定
+    pub fn with_alpn(mut self, protocols: &[&str]) -> Self {
+        self.alpn_protocols = protocols.iter().map(|s| String::from(*s)).collect();
+        self
+    }
+}
+
+// ============================================================================
+// Certificates
+// ============================================================================
+
+/// 証明書
+#[derive(Clone, Debug)]
+pub struct Certificate {
+    /// DERエンコードされた証明書
+    pub der: Vec<u8>,
+}
+
+impl Certificate {
+    /// DERデータから作成
+    pub fn from_der(der: Vec<u8>) -> Self {
+        Self { der }
+    }
+
+    /// PEMから作成（簡易パース）
+    pub fn from_pem(pem: &str) -> Option<Self> {
+        let lines: Vec<&str> = pem.lines().collect();
+        let mut in_cert = false;
+        let mut base64_data = String::new();
+
+        for line in lines {
+            if line.contains("BEGIN CERTIFICATE") {
+                in_cert = true;
+            } else if line.contains("END CERTIFICATE") {
+                break;
+            } else if in_cert {
+                base64_data.push_str(line.trim());
+            }
+        }
+
+        // Base64デコード（簡易）
+        base64_decode(&base64_data).map(|der| Self { der })
+    }
+}
+
+/// 秘密鍵
+#[derive(Clone)]
+pub struct PrivateKey {
+    /// DERエンコードされた秘密鍵
+    pub der: Vec<u8>,
+    /// 鍵タイプ
+    pub key_type: KeyType,
+}
+
+/// 鍵タイプ
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyType {
+    Rsa,
+    Ecdsa,
+    Ed25519,
+}
+
+/// 簡易Base64デコード
+pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut output = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0;
+
+    for c in input.chars() {
+        if c == '=' {
+            break;
+        }
+
+        let value = TABLE.iter().position(|&x| x == c as u8)? as u32;
+        buf = (buf << 6) | value;
+        bits += 6;
+
+        if bits >= 8 {
+            bits -= 8;
+            output.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+
+    Some(output)
+}
+
+// ============================================================================
+// Server Public Key (extracted from X.509 certificate)
+// ============================================================================
+
+/// サーバー証明書から抽出した公開鍵情報
+#[derive(Clone, Debug)]
+pub enum ServerPublicKey {
+    /// RSA公開鍵 (modulus, exponent をビッグエンディアンで保持)
+    Rsa { modulus: Vec<u8>, exponent: Vec<u8> },
+    /// ECDSA P-256公開鍵 (非圧縮ポイント 04 || x || y)
+    EcdsaP256 { point: Vec<u8> },
+    /// ECDSA P-384公開鍵 (非圧縮ポイント 04 || x || y)
+    EcdsaP384 { point: Vec<u8> },
+}
+
+/// TLS 1.3 セッションチケット (RFC 8446 Section 4.6.1)
+pub struct SessionTicket {
+    /// チケット有効期間（秒）
+    pub lifetime: u32,
+    /// チケットエイジ加算値（難読化用）
+    pub age_add: u32,
+    /// チケットnonce
+    pub nonce: Vec<u8>,
+    /// チケットデータ
+    pub ticket: Vec<u8>,
+}
+
+// ============================================================================
+// Session Cache (TLS 1.2 Abbreviated Handshake)
+// ============================================================================
+
+/// セッションキャッシュエントリ
+#[derive(Clone, Debug)]
+pub struct SessionCacheEntry {
+    /// セッションID
+    pub session_id: [u8; 32],
+    /// マスターシークレット
+    pub master_secret: [u8; 48],
+    /// ネゴシエートされた暗号スイート
+    pub cipher_suite: CipherSuite,
+    /// サーバー名
+    pub server_name: Option<String>,
+    /// TLSバージョン
+    pub version: TlsVersion,
+}
+
+/// セッションキャッシュ
+#[derive(Clone, Debug)]
+pub struct SessionCache {
+    entries: Vec<SessionCacheEntry>,
+    max_entries: usize,
+}
+
+impl SessionCache {
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries,
+        }
+    }
+
+    pub fn insert(&mut self, entry: SessionCacheEntry) {
+        // 同じセッションIDがあれば上書き
+        if let Some(pos) = self.entries.iter().position(|e| e.session_id == entry.session_id) {
+            self.entries[pos] = entry;
+        } else {
+            if self.entries.len() >= self.max_entries {
+                self.entries.remove(0); // LRU: 最古のエントリを削除
+            }
+            self.entries.push(entry);
+        }
+    }
+
+    pub fn find(&self, session_id: &[u8]) -> Option<&SessionCacheEntry> {
+        if session_id.len() != 32 {
+            return None;
+        }
+        self.entries.iter().find(|e| e.session_id == session_id)
+    }
+
+    pub fn find_by_server_name(&self, name: &str) -> Option<&SessionCacheEntry> {
+        self.entries.iter().rev().find(|e| {
+            e.server_name.as_deref() == Some(name)
+        })
+    }
+}
