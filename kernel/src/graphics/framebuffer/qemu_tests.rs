@@ -1421,11 +1421,11 @@ pub fn wave9_draw_char_8x16_24bit_smoke() -> bool {
     info2.address = vram.as_mut_ptr() as u64;
     let mut fb = unsafe { Framebuffer::new(info2) };
     fb.draw_char_8x16(0, 0, '!', Color::GREEN, Some(Color::BLACK));
-    // Row 2 0x18 -> bits 3,4 ON. Bgr888: green=[0x00,0x80,0x00], black=[0,0,0]
+    // Row 2 0x18 -> bits 3,4 ON. Bgr888: green=[0x00,0xFF,0x00], black=[0,0,0]
     let off = |x: usize| 2 * stride as usize + x * 3;
     vram[off(2)] == 0 && vram[off(2)+1] == 0 && vram[off(2)+2] == 0
-        && vram[off(3)] == 0x00 && vram[off(3)+1] == 0x80 && vram[off(3)+2] == 0x00
-        && vram[off(4)] == 0x00 && vram[off(4)+1] == 0x80 && vram[off(4)+2] == 0x00
+        && vram[off(3)] == 0x00 && vram[off(3)+1] == 0xFF && vram[off(3)+2] == 0x00
+        && vram[off(4)] == 0x00 && vram[off(4)+1] == 0xFF && vram[off(4)+2] == 0x00
         && vram[off(5)] == 0 && vram[off(5)+1] == 0 && vram[off(5)+2] == 0
 }
 
