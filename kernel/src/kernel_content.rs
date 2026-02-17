@@ -204,120 +204,63 @@ pub extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     );
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
-    // Early serial output to confirm kernel loaded
+/// Early serial port (COM1) initialization and boot message output.
+fn init_early_serial() {
     unsafe {
-        // Initialize COM1 (0x3F8)
         let port = 0x3F8u16;
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port + 1,
-            in("al") 0u8,  // Disable interrupts
-        );
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port + 3,
-            in("al") 0x80u8,  // DLAB on
-        );
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port + 0,
-            in("al") 0x03u8,  // Divisor low
-        );
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port + 1,
-            in("al") 0x00u8,  // Divisor high
-        );
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port + 3,
-            in("al") 0x03u8,  // 8N1
-        );
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port + 2,
-            in("al") 0xC7u8,  // FIFO
-        );
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port + 4,
-            in("al") 0x0Bu8,  // RTS/DSR
-        );
-
-        // Output 'M' to serial to confirm we reached this point in kmain
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") port,
-            in("al") b'M',
-        );
-
-        // Send boot message
+        core::arch::asm!("out dx, al", in("dx") port + 1, in("al") 0u8);
+        core::arch::asm!("out dx, al", in("dx") port + 3, in("al") 0x80u8);
+        core::arch::asm!("out dx, al", in("dx") port + 0, in("al") 0x03u8);
+        core::arch::asm!("out dx, al", in("dx") port + 1, in("al") 0x00u8);
+        core::arch::asm!("out dx, al", in("dx") port + 3, in("al") 0x03u8);
+        core::arch::asm!("out dx, al", in("dx") port + 2, in("al") 0xC7u8);
+        core::arch::asm!("out dx, al", in("dx") port + 4, in("al") 0x0Bu8);
+        core::arch::asm!("out dx, al", in("dx") port, in("al") b'M');
         for byte in b"RanyOS UEFI Boot OK!\r\n" {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") port,
-                in("al") *byte,
-            );
+            core::arch::asm!("out dx, al", in("dx") port, in("al") *byte);
         }
     }
+}
 
-    // Removed local `serial_print` helper in favor of `io::log::early_print` for early boot messages.
-    // Use `log` macros (e.g., `info!`, `debug!`) after the logger has been initialized.
-
-    // Limine protocol check removed.
-    // Verify ExoBootInfo version if necessary.
-    io::log::early_print("[BOOT] Booted via ExoLoader!\n");
-    if boot_info.version != EXO_BOOT_INFO_VERSION {
-        io::log::early_print("[BOOT] WARNING: Protocol version mismatch\n");
-    }
-
-    // SSE/SSE2を有効化（x86_64ではABIで必須）
+/// Enable SSE/SSE2 (required by x86_64 ABI).
+fn init_sse() {
     io::log::early_print("[BOOT] Enabling SSE...\n");
     unsafe {
         use core::arch::asm;
-        // CR0: EM=0, TS=0
         let mut cr0: u64;
         asm!("mov {}, cr0", out(reg) cr0);
         cr0 &= !(1 << 2); // EM=0
         cr0 &= !(1 << 3); // TS=0
         asm!("mov cr0, {}", in(reg) cr0);
 
-        // CR4: OSFXSR=1, OSXMMEXCPT=1
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4);
-        cr4 |= 1 << 9; // OSFXSR
-        cr4 |= 1 << 10; // OSXMMEXCPT  
+        cr4 |= 1 << 9;  // OSFXSR
+        cr4 |= 1 << 10; // OSXMMEXCPT
         asm!("mov cr4, {}", in(reg) cr4);
     }
     io::log::early_print("[BOOT] SSE enabled\n");
+}
 
-    // Enable AVX/AVX2 if available
+/// Detect and enable AVX/AVX2 if the CPU supports them.
+fn init_avx() {
     unsafe {
         use core::arch::x86_64::{__cpuid, __cpuid_count};
 
-        // 1. Check AVX support (CPUID.1:ECX.AVX[bit 28])
         let res = __cpuid(1);
         let has_avx = (res.ecx & (1 << 28)) != 0;
-        let has_osxsave = (res.ecx & (1 << 27)) != 0; // OSXSAVE support
+        let has_osxsave = (res.ecx & (1 << 27)) != 0;
 
         if has_avx && has_osxsave {
             io::log::early_print("[BOOT] Enabling AVX...\n");
 
-            // 2. Enable OSXSAVE in CR4 (bit 18)
             let mut cr4: u64;
             core::arch::asm!("mov {}, cr4", out(reg) cr4);
             cr4 |= 1 << 18;
             core::arch::asm!("mov cr4, {}", in(reg) cr4);
 
-            // 3. Enable YMM state in XCR0 (bits 2)
-            // XCR0 bits: 0=x87, 1=SSE, 2=AVX
-            // We need to set bit 2. Bit 0 and 1 must be set.
             let xcr0_low: u32;
             let xcr0_high: u32;
-
-            // XGETBV (ecx=0)
             core::arch::asm!(
                 "xgetbv",
                 in("ecx") 0,
@@ -325,9 +268,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
                 out("edx") xcr0_high,
             );
 
-            let new_xcr0_low = xcr0_low | 6; // Set bit 1 (SSE) and 2 (AVX)
-
-            // XSETBV (ecx=0)
+            let new_xcr0_low = xcr0_low | 6;
             core::arch::asm!(
                 "xsetbv",
                 in("ecx") 0,
@@ -336,11 +277,8 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             );
 
             io::log::early_print("[BOOT] AVX enabled (XCR0 set)\n");
-
-            // 4. Notify HAL
             hal::mmio::set_simd_level(hal::mmio::simd_level::AVX);
 
-            // 5. Check AVX2 (CPUID.7:EBX.AVX2[bit 5])
             let res7 = __cpuid_count(7, 0);
             if (res7.ebx & (1 << 5)) != 0 {
                 io::log::early_print("[BOOT] AVX2 detected\n");
@@ -350,6 +288,529 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             io::log::early_print("[BOOT] AVX not supported\n");
         }
     }
+}
+
+/// ACPI and IOMMU initialization.
+fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
+    if boot_info.rsdp_addr == 0 {
+        warn!(target: "init", "No RSDP found provided by bootloader");
+        return;
+    }
+
+    let rsdp_addr = boot_info.rsdp_addr as usize;
+    let parser = match unsafe { io::acpi::init(rsdp_addr as u64) } {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(target: "init", "ACPI initialization failed: {:?}", e);
+            return;
+        }
+    };
+    info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
+
+    let iommu_config = parse_iommu_cmdline(boot_info, phys_mem_offset);
+    init_iommu_driver(&parser, &iommu_config);
+
+    if io::iommu::api::is_iommu_enabled() {
+        if let Err(e) = io::iommu::panic::init_panic_dma_pool_default() {
+            warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
+        } else {
+            info!(target: "init", "IOMMU panic DMA pool initialized");
+        }
+    }
+
+    match parser.find_table(b"MCFG") {
+        Ok(addr) => info!(target: "init", "MCFG table found at {:#x}", addr),
+        Err(_) => warn!(target: "init", "No MCFG table found."),
+    }
+
+    pci_driver::init();
+    info!(target: "init", "PCI driver initialized");
+    memory::reclaim_acpi_reclaimable(boot_info);
+}
+
+/// Parse IOMMU configuration from kernel command line.
+fn parse_iommu_cmdline(boot_info: &ExoBootInfo, phys_mem_offset: u64) -> io::iommu::config::IommuConfig {
+    let mut config = io::iommu::config::IommuConfig::default();
+    if boot_info.cmdline_len == 0 {
+        return config;
+    }
+
+    let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
+    let slice = unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+    let cmdline = match core::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => return config,
+    };
+    info!(target: "init", "Kernel cmdline: {}", cmdline);
+
+    if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
+        match val {
+            "off" => config.enabled = false,
+            "pt" | "passthrough" => config.passthrough = true,
+            "force" => config.force = true,
+            _ => {}
+        }
+    }
+    if let Some(val) = util::get_cmdline_option(cmdline, "iommu_global") {
+        match val {
+            "on" | "1" | "true" => config.allow_global_mappings = true,
+            "off" | "0" | "false" => config.allow_global_mappings = false,
+            _ => {}
+        }
+    }
+    if let Some(val) = util::get_cmdline_option(cmdline, "iommu_scalable") {
+        match val {
+            "on" | "1" | "true" => config.scalable_mode = true,
+            "off" | "0" | "false" => config.scalable_mode = false,
+            _ => {}
+        }
+    }
+    config
+}
+
+/// Try to register and start an IOMMU driver (Intel VT-d or AMD-Vi).
+fn init_iommu_driver(parser: &io::acpi::AcpiParser, iommu_config: &io::iommu::config::IommuConfig) {
+    use alloc::boxed::Box;
+    use crate::driver_registry::{register_driver, driver_registry};
+
+    match parser.find_table(b"DMAR") {
+        Ok(dmar_addr) => {
+            use crate::io::iommu::intel::driver::IntelVtDDriver;
+            let drv = Box::new(IntelVtDDriver::new(dmar_addr, iommu_config.clone()));
+            match register_driver(drv) {
+                Ok(handle) => {
+                    info!(target: "init", "Registered Intel VT-d driver");
+                    if let Err(e) = driver_registry().probe_and_start(handle) {
+                        warn!(target: "init", "Intel VT-d start failed: {:?}", e);
+                    } else {
+                        info!(target: "init", "Intel VT-d initialized via DriverRegistry");
+                        if let Err(e) = io::iommu::api::enable_iommu() {
+                            error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                        } else {
+                            info!(target: "init", "IOMMU translation enabled");
+                        }
+                    }
+                }
+                Err(e) => warn!(target: "init", "Intel VT-d registration failed: {:?}", e),
+            }
+        }
+        Err(_) => match parser.find_table(b"IVRS") {
+            Ok(ivrs_addr) => {
+                use crate::io::iommu::amd::driver::AmdViDriver;
+                let drv = Box::new(AmdViDriver::new(ivrs_addr, iommu_config.clone()));
+                match register_driver(drv) {
+                    Ok(handle) => {
+                        info!(target: "init", "Registered AMD-Vi driver");
+                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                            warn!(target: "init", "AMD-Vi start failed: {:?}", e);
+                        } else {
+                            info!(target: "init", "AMD-Vi initialized via DriverRegistry");
+                            if let Err(e) = io::iommu::api::enable_iommu() {
+                                error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                            } else {
+                                info!(target: "init", "IOMMU translation enabled");
+                            }
+                        }
+                    }
+                    Err(e) => warn!(target: "init", "AMD-Vi registration failed: {:?}", e),
+                }
+            }
+            Err(_) => info!(target: "init", "IOMMU not initialized (No DMAR/IVRS table)"),
+        },
+    }
+}
+
+/// Scan PCI bus for NVMe controllers and initialize them.
+fn init_nvme_controllers() {
+    io::log::early_print("[DEBUG] NVMe scan STARTING\n");
+    info!(target: "init", "Scanning for NVMe controllers...");
+
+    let mut nvme_controller_id: u8 = 0;
+    let nvme_devices = pci_driver::find_by_class(0x01, 0x08);
+    for dev in nvme_devices {
+        info!(target: "init", "NVMe controller found at {}", dev.bdf);
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+
+        let iommu_device = crate::io::iommu::types::DeviceId::new(
+            dev.segment,
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+        );
+        crate::io::nvme::set_iommu_device(iommu_device);
+
+        if crate::io::nvme::with_driver(|_| ()).is_some() {
+            info!(target: "init", "NVMe driver already initialized, skipping");
+            continue;
+        }
+
+        init_single_nvme_controller(&dev, nvme_controller_id);
+        nvme_controller_id = nvme_controller_id.wrapping_add(1);
+    }
+}
+
+/// Initialize a single NVMe controller from a PCI device.
+fn init_single_nvme_controller(dev: &pci_driver::PciDeviceInfo, nvme_controller_id: u8) {
+    let bar0 = match dev.bars[0] {
+        Some(b) => b,
+        None => {
+            warn!(target: "init", "NVMe controller found but BAR0 is missing");
+            return;
+        }
+    };
+
+    let bar0_virt = match ensure_phys_bar_mapped(bar0.base(), bar0.size()) {
+        Some(v) => v,
+        None => {
+            warn!(target: "init", "NVMe controller BAR0 mapping failed - skipping init");
+            return;
+        }
+    };
+
+    let num_cores = crate::smp::cpu_count();
+    match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
+        Ok(()) => {
+            info!(target: "init", "NVMe driver initialized (polling)");
+            let apic_id = crate::io::apic::local_apic().id() as u32;
+            let core_id = crate::smp::current_cpu();
+            crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
+            if let Err(e) = crate::io::nvme::register_with_io_scheduler(nvme_controller_id, 1, num_cores) {
+                warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
+            }
+            crate::io::log::early_print("[HEAP_CHECK] after NVMe controller init\n");
+            crate::memory::verify_buddy_integrity();
+        }
+        Err(e) => warn!(target: "init", "NVMe driver init failed: {}", e),
+    }
+}
+
+/// Scan PCI bus for AHCI controllers and initialize them.
+fn init_ahci_controllers() {
+    io::log::early_print("[DEBUG] AHCI scan STARTING\n");
+    info!(target: "init", "Scanning for AHCI controllers...");
+
+    let ahci_devices = pci_driver::find_by_class(0x01, 0x06);
+    for dev in ahci_devices {
+        info!(target: "init", "AHCI controller found at {}", dev.bdf);
+        dev.enable_bus_master();
+        dev.enable_memory_space();
+        init_single_ahci_controller(&dev);
+    }
+}
+
+/// Initialize a single AHCI controller from its BAR5 address.
+fn init_single_ahci_controller(dev: &pci_driver::PciDeviceInfo) {
+    let bar5 = match dev.bars[5] {
+        Some(b) => b,
+        None => {
+            warn!(target: "init", "AHCI controller found but BAR5 is missing");
+            return;
+        }
+    };
+
+    let base_phys = bar5.base();
+    let bar_size = bar5.size();
+    let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
+
+    crate::io::log::early_print("[AHCI] BAR5 phys=");
+    crate::io::log::early_print_hex(base_phys);
+    crate::io::log::early_print(" size=");
+    crate::io::log::early_print_hex(bar_size);
+    crate::io::log::early_print(" base_virt=");
+    crate::io::log::early_print_hex(base_virt);
+    crate::io::log::early_print("\n");
+
+    let virt_start = crate::mm::higher_half::VirtAddr::new(base_virt);
+    let phys_expected = crate::mm::higher_half::PhysAddr::new(base_phys);
+
+    let mapping_ok = ahci_ensure_mapping(virt_start, phys_expected, base_phys, base_virt, bar_size);
+
+    if !mapping_ok {
+        warn!(target: "init", "AHCI controller mapping failed or mismatched - skipping init");
+        return;
+    }
+
+    // Diagnostic PTE log
+    if let Some(pte) = crate::mm::higher_half::get_current_pte(crate::mm::higher_half::VirtAddr::new(base_virt)) {
+        crate::io::log::early_print("[AHCI] PTE: present=");
+        crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
+        crate::io::log::early_print(" phys=");
+        crate::io::log::early_print_hex(pte.phys_addr().as_u64());
+        crate::io::log::early_print(" flags=");
+        crate::io::log::early_print_hex(pte.flags().as_u64());
+        crate::io::log::early_print("\n");
+    } else {
+        crate::io::log::early_print("[AHCI] PTE: not present in page tables\n");
+    }
+
+    match crate::io::ahci::init_from_pci(base_virt) {
+        Ok(controller) => {
+            info!(target: "init", "AHCI controller initialized");
+            let first_port = controller.lock().get_port_start_index().unwrap_or(0) as u8;
+            crate::io::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
+            crate::io::log::early_print("[HEAP_CHECK] after AHCI controller init\n");
+            crate::memory::verify_buddy_integrity();
+        }
+        Err(e) => warn!(target: "init", "AHCI init failed: {:?}", e),
+    }
+}
+
+/// Ensure a BAR region PTE is correct, mapping pages if needed.
+fn ahci_ensure_mapping(
+    virt_start: crate::mm::higher_half::VirtAddr,
+    phys_expected: crate::mm::higher_half::PhysAddr,
+    base_phys: u64,
+    base_virt: u64,
+    bar_size: u64,
+) -> bool {
+    fn try_map_bar(base_phys: u64, base_virt: u64, bar_size: u64) -> bool {
+        if bar_size == 0 {
+            crate::io::log::early_print("[AHCI] BAR5 has size 0 - skipping\n");
+            return false;
+        }
+        let page_size: u64 = 0x1000;
+        let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
+        let pm_offset = crate::mm::higher_half::physical_memory_offset();
+        let mut manager = unsafe { crate::mm::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        let flags = crate::mm::higher_half::PageFlags::write_combining();
+        match unsafe {
+            manager.map_range(
+                crate::mm::higher_half::VirtAddr::new(base_virt),
+                crate::mm::higher_half::PhysAddr::new(base_phys),
+                map_size,
+                flags,
+            )
+        } {
+            Ok(()) => {
+                crate::io::log::early_print("[AHCI] mapped BAR region ");
+                crate::io::log::early_print_hex(base_phys);
+                crate::io::log::early_print(" -> ");
+                crate::io::log::early_print_hex(base_virt);
+                crate::io::log::early_print(" size=");
+                crate::io::log::early_print_hex(map_size);
+                crate::io::log::early_print("\n");
+                true
+            }
+            Err(e) => {
+                crate::io::log::early_print("[AHCI] Failed to map BAR region ");
+                crate::io::log::early_print_hex(base_phys);
+                crate::io::log::early_print(" err=");
+                let err_str = match e {
+                    crate::mm::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
+                    crate::mm::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
+                    crate::mm::higher_half::MapError::NotMapped => "NotMapped",
+                    crate::mm::higher_half::MapError::InvalidAddress => "InvalidAddress",
+                    crate::mm::higher_half::MapError::AlignmentError => "AlignmentError",
+                    crate::mm::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
+                    crate::mm::higher_half::MapError::HardwareError => "HardwareError",
+                };
+                crate::io::log::early_print(err_str);
+                crate::io::log::early_print("\n");
+                false
+            }
+        }
+    }
+
+    match crate::mm::higher_half::get_current_pte(virt_start) {
+        Some(pte) => {
+            crate::io::log::early_print("[AHCI] existing PTE present? ");
+            crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
+            crate::io::log::early_print(" phys=");
+            crate::io::log::early_print_hex(pte.phys_addr().as_u64());
+            crate::io::log::early_print(" flags=");
+            crate::io::log::early_print_hex(pte.flags().as_u64());
+            crate::io::log::early_print("\n");
+
+            if pte.is_present() {
+                pte.phys_addr() == phys_expected
+            } else {
+                crate::io::log::early_print("[AHCI] PTE not present - attempting to map pages\n");
+                try_map_bar(base_phys, base_virt, bar_size)
+            }
+        }
+        None => {
+            crate::io::log::early_print("[AHCI] no PTE found - mapping pages\n");
+            try_map_bar(base_phys, base_virt, bar_size)
+        }
+    }
+}
+
+/// Initialize HID (keyboard) and serial port drivers via DriverRegistry.
+fn init_hid_and_serial_drivers() {
+    use alloc::boxed::Box;
+    use driver_registry::register_driver;
+
+    // PS/2 Keyboard
+    info!(target: "init", "Initializing HID drivers via DriverRegistry");
+    {
+        use io::hid::Ps2KeyboardDriver;
+        let kb_handle = register_driver(Box::new(Ps2KeyboardDriver::new()));
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(kb_handle.expect("Failed to register PS/2 Keyboard driver"))
+        {
+            warn!(target: "init", "PS/2 Keyboard driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "PS/2 Keyboard driver initialized via DriverRegistry");
+        }
+    }
+    info!(target: "init", "HID drivers initialized");
+    info!(target: "boot", "BOOT COMPLETE!");
+
+    // Serial port
+    io::log::early_print("[DEBUG] Before Serial Driver\n");
+    info!(target: "init", "Initializing serial port via DriverRegistry");
+    {
+        use io::serial::SerialDriver;
+        let serial_handle = register_driver(Box::new(SerialDriver::new()));
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(serial_handle.expect("Failed to register Serial driver"))
+        {
+            warn!(target: "init", "Serial driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "Serial driver initialized via DriverRegistry");
+        }
+    }
+    io::log::early_print("[DEBUG] After Serial Driver\n");
+}
+
+/// Initialize the network subsystem, shell API, and VirtIO-Net driver.
+fn init_network_subsystem() {
+    io::log::early_print("[DEBUG] Network init\n");
+    info!(target: "init", "Initializing network subsystem");
+    net::init_stack_default();
+    net::init_socket_manager();
+
+    info!(target: "init", "Initializing network shell API");
+    net::init_network_shell();
+    info!(target: "init", "Network stack initialized");
+
+    info!(target: "init", "Net Bridge initialized: {}", crate::net::driver_bridge::is_initialized());
+    info!(target: "init", "Global VirtIO-Net device present: {}", crate::io::virtio::with_virtio_net(|_| ()).is_some());
+
+    // VirtIO-Net driver via DriverRegistry
+    info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
+    {
+        use alloc::boxed::Box;
+        use driver_registry::register_driver;
+        use net::driver::VirtioNetDriver;
+
+        let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+        {
+            warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
+        }
+    }
+}
+
+/// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.
+fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
+    #[cfg(feature = "run-integration-tests")]
+    {
+        info!(target: "init", "Feature run-integration-tests enabled: running integration tests (storage)");
+        let (_passed, failed) = integration::run_all_integration_tests();
+        use hal::port_io::PortU32;
+
+        let mut port = PortU32::new(0xf4);
+        if failed == 0 {
+            port.write(0x10u32);
+        } else {
+            port.write(0x11u32);
+        }
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+
+    if boot_info.cmdline_len > 0 {
+        let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
+        let slice = unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+        if let Ok(cmdline) = core::str::from_utf8(slice) {
+            if let Some(val) = util::get_cmdline_option(cmdline, "run_integration") {
+                if val == "storage" || val == "1" {
+                    info!(target: "init", "Running integration tests (storage) as requested by cmdline");
+                    let (_passed, failed) = crate::test::integration::run_all_integration_tests();
+                    use hal::port_io::PortU32;
+
+                    let mut port = PortU32::new(0xf4);
+                    if failed == 0 {
+                        port.write(0x10u32);
+                    } else {
+                        port.write(0x11u32);
+                    }
+                    loop {
+                        x86_64::instructions::hlt();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Scan PCI bus for USB xHCI controllers and initialize them.
+fn init_usb_controllers() {
+    io::log::early_print("[DEBUG] USB scan STARTING\n");
+    info!(target: "init", "Scanning for USB xHCI controllers...");
+
+    use alloc::boxed::Box;
+    use driver_registry::register_driver;
+    use pci_driver::find_by_class;
+    use usb_driver::driver_impl::UsbDriverWrapper;
+
+    let devices = find_by_class(0x0C, 0x03);
+    for device_info in devices.iter().filter(|d| d.class_code.is_xhci()) {
+        info!(target: "init", "USB xHCI controller found at {}", device_info.bdf);
+
+        let bar0 = match device_info.bars[0] {
+            Some(b) => b,
+            None => {
+                warn!(target: "init", "xHCI controller found but BAR0 is invalid");
+                continue;
+            }
+        };
+
+        let base_virt = match ensure_phys_bar_mapped(bar0.base(), bar0.size()) {
+            Some(v) => v,
+            None => {
+                warn!(target: "init", "xHCI BAR0 mapping failed - skipping init");
+                continue;
+            }
+        };
+
+        info!(target: "init", "xHCI BAR0: phys={:#x} virt={:#x}", bar0.base(), base_virt);
+        device_info.enable_bus_master();
+        device_info.enable_memory_space();
+
+        let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(usb_handle.expect("Failed to register USB driver"))
+        {
+            error!(target: "init", "USB xHCI driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "USB xHCI driver initialized via DriverRegistry");
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
+    // Early serial output to confirm kernel loaded
+    init_early_serial();
+
+    // Verify ExoBootInfo version if necessary.
+    io::log::early_print("[BOOT] Booted via ExoLoader!\n");
+    if boot_info.version != EXO_BOOT_INFO_VERSION {
+        io::log::early_print("[BOOT] WARNING: Protocol version mismatch\n");
+    }
+
+    // SSE/SSE2を有効化（x86_64ではABIで必須）
+    init_sse();
+
+    // Enable AVX/AVX2 if available
+    init_avx();
 
     // Get physical memory offset from ExoBootInfo
     io::log::early_print("[BOOT] Getting HHDM offset...\n");
@@ -424,145 +885,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // Configure ACPI driver with HHDM offset for physical-to-virtual translation
     io::acpi::set_hhdm_offset(phys_mem_offset);
 
-    // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
-    // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
-    if boot_info.rsdp_addr != 0 {
-        let rsdp_addr = boot_info.rsdp_addr as usize;
-        // Function init expects u64 physical address usually
-        match unsafe { io::acpi::init(rsdp_addr as u64) } {
-            Ok(parser) => {
-                info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
-
-                let mut iommu_config = io::iommu::config::IommuConfig::default();
-                if boot_info.cmdline_len > 0 {
-                    let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
-                    let slice =
-                        unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
-                    if let Ok(cmdline) = core::str::from_utf8(slice) {
-                        info!(target: "init", "Kernel cmdline: {}", cmdline);
-
-                        // Parse 'iommu' option
-                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
-                            match val {
-                                "off" => iommu_config.enabled = false,
-                                "pt" | "passthrough" => iommu_config.passthrough = true,
-                                "force" => iommu_config.force = true,
-                                _ => {}
-                            }
-                        }
-                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu_global") {
-                            match val {
-                                "on" | "1" | "true" => iommu_config.allow_global_mappings = true,
-                                "off" | "0" | "false" => {
-                                    iommu_config.allow_global_mappings = false;
-                                }
-                                _ => {}
-                            }
-                        }
-                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu_scalable") {
-                            match val {
-                                "on" | "1" | "true" => iommu_config.scalable_mode = true,
-                                "off" | "0" | "false" => {
-                                    iommu_config.scalable_mode = false;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-
-                // Initialize IOMMU using ACPI tables and config
-                {
-                    match parser.find_table(b"DMAR") {
-                        Ok(dmar_addr) => {
-                            use crate::io::iommu::intel::driver::IntelVtDDriver;
-                            use crate::driver_registry::{register_driver, driver_registry};
-                            use alloc::boxed::Box;
-
-                            let drv = Box::new(IntelVtDDriver::new(dmar_addr, iommu_config.clone()));
-                            match register_driver(drv) {
-                                Ok(handle) => {
-                                    info!(target: "init", "Registered Intel VT-d driver");
-                                    if let Err(e) = driver_registry().probe_and_start(handle) {
-                                        warn!(target: "init", "Intel VT-d start failed: {:?}", e);
-                                    } else {
-                                        info!(target: "init", "Intel VT-d initialized via DriverRegistry");
-                                        // Enable IOMMU API
-                                        if let Err(e) = io::iommu::api::enable_iommu() {
-                                            error!(target: "init", "Failed to enable IOMMU: {:?}", e);
-                                        } else {
-                                            info!(target: "init", "IOMMU translation enabled");
-                                        }
-                                    }
-                                }
-                                Err(e) => warn!(target: "init", "Intel VT-d registration failed: {:?}", e),
-                            }
-                        }
-                        Err(_) => match parser.find_table(b"IVRS") {
-                            Ok(ivrs_addr) => {
-                                use crate::io::iommu::amd::driver::AmdViDriver;
-                                use crate::driver_registry::{register_driver, driver_registry};
-                                use alloc::boxed::Box;
-                                
-                                let drv = Box::new(AmdViDriver::new(ivrs_addr, iommu_config.clone()));
-                                match register_driver(drv) {
-                                    Ok(handle) => {
-                                        info!(target: "init", "Registered AMD-Vi driver");
-                                        if let Err(e) = driver_registry().probe_and_start(handle) {
-                                            warn!(target: "init", "AMD-Vi start failed: {:?}", e);
-                                        } else {
-                                            info!(target: "init", "AMD-Vi initialized via DriverRegistry");
-                                             if let Err(e) = io::iommu::api::enable_iommu() {
-                                                error!(target: "init", "Failed to enable IOMMU: {:?}", e);
-                                            } else {
-                                                info!(target: "init", "IOMMU translation enabled");
-                                            }
-                                        }
-                                    }
-                                    Err(e) => warn!(target: "init", "AMD-Vi registration failed: {:?}", e),
-                                }
-                            }
-                            Err(_) => {
-                                info!(target: "init", "IOMMU not initialized (No DMAR/IVRS table)");
-                            }
-                        },
-                    }
-
-                    if io::iommu::api::is_iommu_enabled() {
-                        if let Err(e) = io::iommu::panic::init_panic_dma_pool_default() {
-                            warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
-                        } else {
-                            info!(target: "init", "IOMMU panic DMA pool initialized");
-                        }
-                    }
-
-                    let mut _mcfg_base_addr: Option<u64> = None;
-                    match parser.find_table(b"MCFG") {
-                        Ok(addr) => {
-                            _mcfg_base_addr = Some(addr as u64);
-                            info!(target: "init", "MCFG table found at {:#x}", addr);
-                        }
-                        Err(_) => {
-                            warn!(target: "init", "No MCFG table found.");
-                        }
-                    }
-
-                    // Initialize PCI subsystem
-                    // Initialize PCI subsystem
-                    pci_driver::init();
-                    info!(target: "init", "PCI driver initialized");
-
-                    // ACPI tables have been parsed; reclaim ACPI-reclaimable memory.
-                    memory::reclaim_acpi_reclaimable(boot_info);
-                }
-            }
-            Err(e) => {
-                warn!(target: "init", "ACPI initialization failed: {:?}", e);
-            }
-        }
-    } else {
-        warn!(target: "init", "No RSDP found provided by bootloader");
-    }
+    init_acpi_and_iommu(boot_info, phys_mem_offset);
 
 
 
@@ -697,308 +1020,12 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         debug!(target: "init", "No initramfs or no Cells found");
     }
 
-    // 3. HID ドライバの初期化 (DriverRegistry 経由)
-    info!(target: "init", "Initializing HID drivers via DriverRegistry");
-    {
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use io::hid::Ps2KeyboardDriver;
-
-        // PS/2 キーボードドライバを登録
-        let kb_handle = register_driver(Box::new(Ps2KeyboardDriver::new()));
-        if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(kb_handle.expect("Failed to register PS/2 Keyboard driver"))
-        {
-            warn!(target: "init", "PS/2 Keyboard driver init failed: {:?}", e);
-        } else {
-            info!(target: "init", "PS/2 Keyboard driver initialized via DriverRegistry");
-        }
-
-
-    }
-    info!(target: "init", "HID drivers initialized");
-
-    // 完了
-    info!(target: "boot", "BOOT COMPLETE!");
-
-    // 3.5. シリアルポートの初期化（デバッグ用）via DriverRegistry
-    io::log::early_print("[DEBUG] Before Serial Driver\n");
-    info!(target: "init", "Initializing serial port via DriverRegistry");
-    {
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use io::serial::SerialDriver;
-
-        // Serialドライバを登録
-        let serial_handle = register_driver(Box::new(SerialDriver::new()));
-
-        // プローブと開始
-        if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(serial_handle.expect("Failed to register Serial driver"))
-        {
-            warn!(target: "init", "Serial driver init failed: {:?}", e);
-        } else {
-            info!(target: "init", "Serial driver initialized via DriverRegistry");
-        }
-    }
-    io::log::early_print("[DEBUG] After Serial Driver\n");
+    init_hid_and_serial_drivers();
     io::log::early_print("[DEBUG] calling info! for NVMe\n");
-    // 3.5.5. NVMeドライバの初期化（PCIスキャン）
-    io::log::early_print("[DEBUG] NVMe scan STARTING\n");
-    info!(target: "init", "Scanning for NVMe controllers...");
-    {
-        let mut nvme_controller_id: u8 = 0;
-        let nvme_devices = pci_driver::find_by_class(0x01, 0x08);
-        for dev in nvme_devices {
-            info!(target: "init", "NVMe controller found at {}", dev.bdf);
-            dev.enable_bus_master();
-            dev.enable_memory_space();
-
-            let iommu_device = crate::io::iommu::types::DeviceId::new(
-                dev.segment,
-                dev.bdf.bus(),
-                dev.bdf.device(),
-                dev.bdf.function(),
-            );
-            crate::io::nvme::set_iommu_device(iommu_device);
-
-            if crate::io::nvme::with_driver(|_| ()).is_some() {
-                info!(target: "init", "NVMe driver already initialized, skipping");
-                continue;
-            }
-
-            if let Some(bar0) = dev.bars[0] {
-                let bar0_phys = bar0.base();
-                let bar0_size = bar0.size();
-
-                if let Some(bar0_virt) = ensure_phys_bar_mapped(bar0_phys, bar0_size) {
-                    let num_cores = crate::smp::cpu_count();
-
-                    match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
-                        Ok(()) => {
-                            info!(target: "init", "NVMe driver initialized (polling)");
-                            let apic_id = crate::io::apic::local_apic().id() as u32;
-                            let core_id = crate::smp::current_cpu();
-                            crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
-                            if let Err(e) = crate::io::nvme::register_with_io_scheduler(
-                                nvme_controller_id,
-                                1,
-                                num_cores,
-                            ) {
-                                warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
-                            }
-                            crate::io::log::early_print("[HEAP_CHECK] after NVMe controller init\n");
-                            crate::memory::verify_buddy_integrity();
-                        }
-                        Err(e) => {
-                            warn!(target: "init", "NVMe driver init failed: {}", e);
-                        }
-                    }
-                } else {
-                    warn!(target: "init", "NVMe controller BAR0 mapping failed - skipping init");
-                }
-            } else {
-                warn!(target: "init", "NVMe controller found but BAR0 is missing");
-            }
-
-            nvme_controller_id = nvme_controller_id.wrapping_add(1);
-        }
-    }
-
-
-    // 3.5.6. AHCIドライバの初期化（PCIスキャン）
-    io::log::early_print("[DEBUG] AHCI scan STARTING\n");
-    info!(target: "init", "Scanning for AHCI controllers...");
-    {
-        let ahci_devices = pci_driver::find_by_class(0x01, 0x06);
-        for dev in ahci_devices {
-            info!(target: "init", "AHCI controller found at {}", dev.bdf);
-            dev.enable_bus_master();
-            dev.enable_memory_space();
-
-            // Use BAR5 if available (common for AHCI HBA registers)
-            if let Some(bar5) = dev.bars[5] {
-                let base_phys = bar5.base();
-                let bar_size = bar5.size();
-                let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
-
-                crate::io::log::early_print("[AHCI] BAR5 phys=");
-                crate::io::log::early_print_hex(base_phys);
-                crate::io::log::early_print(" size=");
-                crate::io::log::early_print_hex(bar_size);
-                crate::io::log::early_print(" base_virt=");
-                crate::io::log::early_print_hex(base_virt);
-                crate::io::log::early_print("\n");
-
-                // Ensure the BAR physical range is actually mapped in the page tables (PTE present).
-                // Using `global_translate` is an arithmetic transform and does not reflect PTE presence.
-                let mut mapping_ok = true;
-                let virt_start = crate::mm::higher_half::VirtAddr::new(base_virt);
-                let phys_expected = crate::mm::higher_half::PhysAddr::new(base_phys);
-
-                // Helper: map the BAR region using a local PageTableManager
-                fn try_map_bar(base_phys: u64, base_virt: u64, bar_size: u64) -> bool {
-                    if bar_size == 0 {
-                        crate::io::log::early_print("[AHCI] BAR5 has size 0 - skipping\n");
-                        return false;
-                    }
-                    let page_size: u64 = 0x1000;
-                    let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
-
-                    let pm_offset = crate::mm::higher_half::physical_memory_offset();
-                    let mut manager = unsafe { crate::mm::higher_half::PageTableManager::from_current_cr3(pm_offset) };
-                    let flags = crate::mm::higher_half::PageFlags::write_combining();
-
-                    match unsafe { manager.map_range(
-                        crate::mm::higher_half::VirtAddr::new(base_virt),
-                        crate::mm::higher_half::PhysAddr::new(base_phys),
-                        map_size,
-                        flags,
-                    ) } {
-                        Ok(()) => {
-                            crate::io::log::early_print("[AHCI] mapped BAR region ");
-                            crate::io::log::early_print_hex(base_phys);
-                            crate::io::log::early_print(" -> ");
-                            crate::io::log::early_print_hex(base_virt);
-                            crate::io::log::early_print(" size=");
-                            crate::io::log::early_print_hex(map_size);
-                            crate::io::log::early_print("\n");
-                            true
-                        }
-                        Err(e) => {
-                            crate::io::log::early_print("[AHCI] Failed to map BAR region ");
-                            crate::io::log::early_print_hex(base_phys);
-                            crate::io::log::early_print(" err=");
-                            let err_str = match e {
-                                crate::mm::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
-                                crate::mm::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
-                                crate::mm::higher_half::MapError::NotMapped => "NotMapped",
-                                crate::mm::higher_half::MapError::InvalidAddress => "InvalidAddress",
-                                crate::mm::higher_half::MapError::AlignmentError => "AlignmentError",
-                                crate::mm::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
-                                crate::mm::higher_half::MapError::HardwareError => "HardwareError",
-                            };
-                            crate::io::log::early_print(err_str);
-                            crate::io::log::early_print("\n");
-                            false
-                        }
-                    }
-                }
-
-                // Check the actual page table entry for the address
-                match crate::mm::higher_half::get_current_pte(virt_start) {
-                    Some(pte) => {
-                        crate::io::log::early_print("[AHCI] existing PTE present? ");
-                        crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
-                        crate::io::log::early_print(" phys=");
-                        crate::io::log::early_print_hex(pte.phys_addr().as_u64());
-                        crate::io::log::early_print(" flags=");
-                        crate::io::log::early_print_hex(pte.flags().as_u64());
-                        crate::io::log::early_print("\n");
-
-                        if pte.is_present() {
-                            if pte.phys_addr() != phys_expected {
-                                crate::io::log::early_print("[AHCI] PTE mapped to different phys - skipping init\n");
-                                mapping_ok = false;
-                            }
-                        } else {
-                            crate::io::log::early_print("[AHCI] PTE not present - attempting to map pages\n");
-                            mapping_ok = try_map_bar(base_phys, base_virt, bar_size);
-                        }
-                    }
-                    None => {
-                        crate::io::log::early_print("[AHCI] no PTE found - mapping pages\n");
-                        mapping_ok = try_map_bar(base_phys, base_virt, bar_size);
-                    }
-                }
-
-                if !mapping_ok {
-                    warn!(target: "init", "AHCI controller mapping failed or mismatched - skipping init");
-                    continue;
-                }
-
-                // Diagnostic: print current PTE state for the BAR virtual address
-                let pte_opt = crate::mm::higher_half::get_current_pte(crate::mm::higher_half::VirtAddr::new(base_virt));
-                match pte_opt {
-                    Some(pte) => {
-                        crate::io::log::early_print("[AHCI] PTE: present=");
-                        crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
-                        crate::io::log::early_print(" phys=");
-                        crate::io::log::early_print_hex(pte.phys_addr().as_u64());
-                        crate::io::log::early_print(" flags=");
-                        crate::io::log::early_print_hex(pte.flags().as_u64());
-                        crate::io::log::early_print("\n");
-                    }
-                    None => {
-                        crate::io::log::early_print("[AHCI] PTE: not present in page tables\n");
-                    }
-                }
-
-                match crate::io::ahci::init_from_pci(base_virt) {
-                    Ok(controller) => {
-                        info!(target: "init", "AHCI controller initialized");
-                        // Register with IO scheduler for port handlers
-                        let first_port = controller.lock().get_port_start_index().unwrap_or(0) as u8;
-                        crate::io::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
-                        crate::io::log::early_print("[HEAP_CHECK] after AHCI controller init\n");
-                        crate::memory::verify_buddy_integrity();
-                    }
-                    Err(e) => {
-                        warn!(target: "init", "AHCI init failed: {:?}", e);
-                    }
-                }
-            } else {
-                warn!(target: "init", "AHCI controller found but BAR5 is missing");
-            }
-        }
-    }
-
-
-    // 3.5.7. USBドライバの初期化（PCIスキャン）
-    io::log::early_print("[DEBUG] USB scan STARTING\n");
-    info!(target: "init", "Scanning for USB xHCI controllers...");
-    {
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use pci_driver::find_by_class;
-        use usb_driver::driver_impl::UsbDriverWrapper;
-
-        // xHCIコントローラを検索 (Class 0Ch, Subclass 03h, ProgIF 30h)
-        let devices = find_by_class(0x0C, 0x03);
-        for device_info in devices.iter().filter(|d| d.class_code.is_xhci()) {
-            info!(target: "init", "USB xHCI controller found at {}", device_info.bdf);
-
-            // BAR0 を取得
-            if let Some(bar0) = device_info.bars[0] {
-                let bar0_phys = bar0.base();
-                let bar0_size = bar0.size();
-
-                if let Some(base_virt) = ensure_phys_bar_mapped(bar0_phys, bar0_size) {
-                    info!(target: "init", "xHCI BAR0: phys={:#x} virt={:#x}", bar0_phys, base_virt);
-
-                    // バス制御を有効化
-                    device_info.enable_bus_master();
-                    device_info.enable_memory_space();
-
-                    // ドライバを登録
-                    let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
-
-                    // プローブと開始
-                    if let Err(e) = driver_registry::driver_registry()
-                        .probe_and_start(usb_handle.expect("Failed to register USB driver"))
-                    {
-                        error!(target: "init", "USB xHCI driver init failed: {:?}", e);
-                    } else {
-                        info!(target: "init", "USB xHCI driver initialized via DriverRegistry");
-                    }
-                } else {
-                    warn!(target: "init", "xHCI BAR0 mapping failed - skipping init");
-                }
-            } else {
-                warn!(target: "init", "xHCI controller found but BAR0 is invalid");
-            }
-        }
-    }
+    // 3.5.5 – 3.5.7. Storage and USB controller scanning
+    init_nvme_controllers();
+    init_ahci_controllers();
+    init_usb_controllers();
     // 3.5.8. ドライバ初期化サマリ
     io::log::early_print("[DEBUG] Driver Summary STARTING\n");
     {
@@ -1012,42 +1039,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         info!(target: "init", "==============================");
     }
 
-    // 3.6. ネットワークサブシステムの初期化
-    io::log::early_print("[DEBUG] Network init\n");
-    info!(target: "init", "Initializing network subsystem");
-    net::init_stack_default();
-    net::init_socket_manager();
-
-    // 3.6.1. ネットワークシェルAPIの初期化
-    info!(target: "init", "Initializing network shell API");
-    net::init_network_shell();
-    info!(target: "init", "Network stack initialized");
-
-    // Diagnostic: report bridge status and presence of a global VirtIO-Net device
-    info!(target: "init", "Net Bridge initialized: {}", crate::net::driver_bridge::is_initialized());
-    info!(target: "init", "Global VirtIO-Net device present: {}", crate::io::virtio::with_virtio_net(|_| ()).is_some());
-
-    // 3.6.2. VirtIO-Net driver via DriverRegistry
-    info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
-    {
-        // debug_heap_check("Before VirtIO-Net init");
-
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use net::driver::VirtioNetDriver;
-
-        let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
-
-        if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
-        {
-            warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
-        } else {
-            info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
-        }
-
-        // debug_heap_check("After VirtIO-Net init");
-    }
+    init_network_subsystem();
 
     // 3.7. ファイルシステム（memfs）の初期化
     io::log::early_print("[DEBUG] Before memfs init\n");
@@ -1123,50 +1115,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
     }
 
-    // If built with feature `run-integration-tests`, run the integration tests at boot and exit QEMU
-    #[cfg(feature = "run-integration-tests")]
-    {
-        info!(target: "init", "Feature run-integration-tests enabled: running integration tests (storage)");
-        let (_passed, failed) = integration::run_all_integration_tests();
-        use hal::port_io::PortU32;
-
-        let mut port = PortU32::new(0xf4);
-        if failed == 0 {
-            port.write(0x10u32); // QEMU success
-        } else {
-            port.write(0x11u32); // QEMU failure
-        }
-        loop {
-            x86_64::instructions::hlt();
-        }
-    }
-
-    // If requested on the kernel cmdline, run integration tests and exit QEMU.
-    if boot_info.cmdline_len > 0 {
-        let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
-        let slice = unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
-        if let Ok(cmdline) = core::str::from_utf8(slice) {
-            if let Some(val) = util::get_cmdline_option(cmdline, "run_integration") {
-                if val == "storage" || val == "1" {
-                    info!(target: "init", "Running integration tests (storage) as requested by cmdline");
-                    let (_passed, failed) = crate::test::integration::run_all_integration_tests();
-                    use hal::port_io::PortU32;
-
-                    let mut port = PortU32::new(0xf4);
-                    if failed == 0 {
-                        port.write(0x10u32); // QEMU success
-                    } else {
-                        port.write(0x11u32); // QEMU failure
-                    }
-
-                    // Stop here; QEMU will exit on the port write
-                    loop {
-                        x86_64::instructions::hlt();
-                    }
-                }
-            }
-        }
-    }
+    run_integration_tests_if_requested(boot_info, phys_mem_offset);
 
     // 6. 割り込みを有効化
     io::log::early_print("[DEBUG] Before enable interrupts\n");
