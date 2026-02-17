@@ -32,6 +32,21 @@ pub trait PostedInterruptManager {
     fn post_interrupt(&mut self, pid_index: u16, vector: u8) -> Result<(), IommuError>;
 }
 
+/// Configure a PID with notification vector and destination.
+#[inline]
+fn configure_pid(
+    pool: &mut PostedInterruptPool,
+    pid_index: u16,
+    notification_vector: u8,
+    notification_dest: u32,
+) {
+    if let Some(pid) = pool.get_mut(pid_index) {
+        let nv = (notification_vector as u64) << 16;
+        let ndst = (notification_dest as u64) << 32;
+        pid.notification_info.store(nv | ndst, Ordering::SeqCst);
+    }
+}
+
 impl PostedInterruptManager for IommuController {
     fn init_posted_interrupts(&mut self, num_pids: usize) -> Result<(), IommuError> {
         if !self.supports_posted_interrupts() {
@@ -94,12 +109,7 @@ impl PostedInterruptManager for IommuController {
         let (pid_index, pid_addr) = pid_pool.allocate().ok_or(IommuError::HardwareError)?;
 
         // Configure the PID with notification info
-        if let Some(pid) = pid_pool.get_mut(pid_index) {
-            // Set notification vector and destination
-            let nv = (notification_vector as u64) << 16;
-            let ndst = (notification_dest as u64) << 32;
-            pid.notification_info.store(nv | ndst, Ordering::SeqCst);
-        }
+        configure_pid(pid_pool, pid_index, notification_vector, notification_dest);
 
         // Allocate an IRTE
         let irte_index = irt.allocate().ok_or(IommuError::HardwareError)?;
