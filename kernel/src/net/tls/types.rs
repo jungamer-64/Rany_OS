@@ -462,6 +462,11 @@ pub struct TlsConfig {
     /// CA証明書
     pub ca_certs: Vec<Certificate>,
     /// 証明書検証を無効化（デバッグ用）
+    ///
+    /// # WARNING
+    /// 現在、CA証明書チェーン検証は未実装です。このフラグに関わらず
+    /// サーバー証明書の真正性はCA署名によって検証されません。
+    /// ca_certsフィールドの照合機能は将来実装予定です。
     pub skip_verify: bool,
 }
 
@@ -643,14 +648,14 @@ pub struct SessionCacheEntry {
 /// セッションキャッシュ
 #[derive(Clone, Debug)]
 pub struct SessionCache {
-    entries: Vec<SessionCacheEntry>,
+    entries: alloc::collections::VecDeque<SessionCacheEntry>,
     max_entries: usize,
 }
 
 impl SessionCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
-            entries: Vec::new(),
+            entries: alloc::collections::VecDeque::new(),
             max_entries,
         }
     }
@@ -661,9 +666,9 @@ impl SessionCache {
             self.entries[pos] = entry;
         } else {
             if self.entries.len() >= self.max_entries {
-                self.entries.remove(0); // LRU: 最古のエントリを削除
+                self.entries.pop_front(); // LRU: O(1) で最古のエントリを削除
             }
-            self.entries.push(entry);
+            self.entries.push_back(entry);
         }
     }
 
