@@ -29,7 +29,7 @@ with open(mapfile,'r', encoding='utf-8', errors='ignore') as f:
                 vma = int(nums[0], 16)
                 # second number may be LMA/offset, third is size
                 size = int(nums[2], 16)
-            except Exception:
+            except (ValueError, IndexError):
                 continue
             sym_start = vma
             sym_end = vma + size
@@ -48,7 +48,7 @@ with open(mapfile,'r', encoding='utf-8', errors='ignore') as f:
             vma_token = int(first_token, 16)
             if vma_token <= addr:
                 best = (vma_token, line)
-        except Exception:
+        except ValueError:
             pass
 
 if best:

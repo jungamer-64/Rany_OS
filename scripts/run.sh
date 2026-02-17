@@ -188,7 +188,7 @@ TARGET_DIR="$ROOT_DIR/target"
 KERNEL_TARGET_DIR="$TARGET_DIR/x86_64-exorust/$PROFILE"
 LOADER_TARGET_DIR="$TARGET_DIR/$TARGET_LOADER/release"  # Loader is always release
 
-if $CARGO_RUNNER && [[ -n "$CARGO_KERNEL_PATH" ]]; then
+if [[ "$CARGO_RUNNER" = true ]] && [[ -n "$CARGO_KERNEL_PATH" ]]; then
     KERNEL_RAW="$CARGO_KERNEL_PATH"
 else
     KERNEL_RAW="$KERNEL_TARGET_DIR/exorust_kernel"
@@ -240,7 +240,7 @@ check_dependencies() {
     fi
 
     # QEMU check (only if we're going to run)
-    if ! $NO_RUN; then
+    if [[ "$NO_RUN" != true ]]; then
         if ! command -v qemu-system-x86_64 &>/dev/null; then
             fail_ "qemu-system-x86_64 not found."
             exit 1
@@ -311,13 +311,13 @@ build_signer() {
         fi
     fi
 
-    if $needs_build; then
+    if [[ "$needs_build" = true ]]; then
         step "Building Kernel Signer Tool..."
         local build_args=("build" "--release" "-Z" "build-std=")
         if [[ -n "$HOST_TARGET" ]]; then
             build_args+=("--target" "$HOST_TARGET")
         fi
-        if ! $VERBOSE; then build_args+=("--quiet"); fi
+        if [[ "$VERBOSE" != true ]]; then build_args+=("--quiet"); fi
 
         (cd "$SIGNER_TOOL_DIR" && cargo "${build_args[@]}")
         done_ "Signer tool built."
@@ -344,7 +344,7 @@ build_loader() {
         -Z build-std=core,compiler_builtins,alloc
         -Z build-std-features=compiler-builtins-mem
     )
-    if ! $VERBOSE; then build_args+=("--quiet"); fi
+    if [[ "$VERBOSE" != true ]]; then build_args+=("--quiet"); fi
 
     cargo "${build_args[@]}"
     done_ "ExoLoader built."
@@ -362,6 +362,7 @@ build_kernel() {
     # Feature flags
     if [[ ${#FEATURES[@]} -gt 0 ]]; then
         local joined
+        # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
         joined="$(IFS=','; echo "${FEATURES[*]}")"
         build_args+=("--features" "$joined")
         done_ "Enabled features: $joined"
@@ -372,7 +373,7 @@ build_kernel() {
         -Z build-std=core,compiler_builtins,alloc
         -Z build-std-features=compiler-builtins-mem
     )
-    if ! $VERBOSE; then build_args+=("--quiet"); fi
+    if [[ "$VERBOSE" != true ]]; then build_args+=("--quiet"); fi
 
     cargo "${build_args[@]}"
     done_ "Kernel compiled."
@@ -437,7 +438,7 @@ create_disk_image() {
 
 get_qemu_accelerator() {
     # Force TCG if requested
-    if $TCG; then
+    if [[ "$TCG" = true ]]; then
         warn_ "[ACCEL] TCG (forced via --tcg flag)"
         echo "tcg"
         return
@@ -484,7 +485,7 @@ start_qemu() {
     fi
 
     # Reset UEFI variables if requested
-    if $RESET_VARS && [[ -f "$ovmf_vars_local" ]]; then
+    if [[ "$RESET_VARS" = true ]] && [[ -f "$ovmf_vars_local" ]]; then
         rm -f "$ovmf_vars_local"
         done_ "[UEFI] OVMF_VARS.fd reset to original state"
     fi
@@ -519,14 +520,14 @@ start_qemu() {
     # [ExoRust] IOMMU: separate "requested" vs "active" states
     local iommu_requested=false
     local iommu_active=false
-    if $IOMMU && ! $NO_IOMMU; then
+    if [[ "$IOMMU" = true ]] && [[ "$NO_IOMMU" != true ]]; then
         iommu_requested=true
         iommu_active=true
     fi
 
     # Machine spec: kernel-irqchip=split only when IOMMU is active
     local machine_spec
-    if $iommu_active; then
+    if [[ "$iommu_active" = true ]]; then
         machine_spec="q35,kernel-irqchip=split"
     else
         machine_spec="q35"
@@ -547,17 +548,17 @@ start_qemu() {
     )
 
     # [ExoRust] IOMMU (Intel VT-d) Support
-    if $iommu_active; then
+    if [[ "$iommu_active" = true ]]; then
         qemu_args+=(-device "intel-iommu,intremap=on,caching-mode=on")
         done_ "[IOMMU] Intel VT-d enabled (intremap=on) [DEFAULT]"
     fi
 
     # [ExoRust] NUMA Topology Simulation
     local numa_requested=false
-    if $NUMA && ! $NO_NUMA; then
+    if [[ "$NUMA" = true ]] && [[ "$NO_NUMA" != true ]]; then
         numa_requested=true
     fi
-    if $numa_requested && [[ "$SMP" -ge 2 ]]; then
+    if [[ "$numa_requested" = true ]] && [[ "$SMP" -ge 2 ]]; then
         local cores_node0=$(( SMP / 2 ))
         local mem_node0=$(( MEMORY / 2 ))
         local mem_node1=$(( MEMORY - mem_node0 ))
@@ -571,10 +572,10 @@ start_qemu() {
     fi
 
     # [ExoRust] VirtIO Network with IOMMU Support
-    if $NETWORK; then
+    if [[ "$NETWORK" = true ]]; then
         local netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
         local device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"
-        if $iommu_active; then
+        if [[ "$iommu_active" = true ]]; then
             device_args+=",iommu_platform=on,disable-legacy=on"
         fi
         qemu_args+=(-netdev "$netdev_args" -device "$device_args")
@@ -597,18 +598,18 @@ start_qemu() {
     fi
 
     # Debug / Test Flags
-    if $GDB_DEBUG; then
+    if [[ "$GDB_DEBUG" = true ]]; then
         qemu_args+=(-s -S)
         warn_ "GDB Stub: localhost:1234 (CPU Frozen)"
     fi
 
     # [ExoRust] QEMU Monitor for runtime inspection
-    if $MONITOR || $GDB_DEBUG; then
+    if [[ "$MONITOR" = true ]] || [[ "$GDB_DEBUG" = true ]]; then
         qemu_args+=(-monitor "telnet:127.0.0.1:4444,server,nowait")
         done_ "[MONITOR] telnet localhost 4444 (info tlb, info mem, etc.)"
     fi
 
-    if $TEST_MODE; then
+    if [[ "$TEST_MODE" = true ]]; then
         qemu_args+=(-device "isa-debug-exit,iobase=0xf4,iosize=0x04" -display none)
         done_ "Test mode: Headless execution"
     fi
@@ -630,7 +631,7 @@ start_qemu() {
     set -e
 
     # QEMU isa-debug-exit normalization
-    if $TEST_MODE; then
+    if [[ "$TEST_MODE" = true ]]; then
         if [[ $exit_code -eq 33 ]]; then
             done_ "TEST RESULT: PASSED"
             return 0
@@ -640,7 +641,7 @@ start_qemu() {
         fi
     fi
 
-    return $exit_code
+    return "$exit_code"
 }
 
 # ===========================================================================
@@ -650,10 +651,10 @@ start_qemu() {
 TOTAL_START="$(date +%s%N 2>/dev/null || date +%s)"
 
 check_dependencies
-if $CLEAN; then run_clean; fi
+if [[ "$CLEAN" = true ]]; then run_clean; fi
 
 # 0. Lint (optional)
-if $LINT; then invoke_lints; fi
+if [[ "$LINT" = true ]]; then invoke_lints; fi
 
 # 1. Tools
 build_signer
@@ -661,7 +662,7 @@ setup_keys
 
 # 2. Compilation
 build_loader
-if ! $CARGO_RUNNER; then
+if [[ "$CARGO_RUNNER" != true ]]; then
     build_kernel
 fi
 
@@ -681,7 +682,7 @@ else
 fi
 
 # 4. Execution
-if ! $NO_RUN; then
+if [[ "$NO_RUN" != true ]]; then
     create_disk_image
     start_qemu
     exit $?

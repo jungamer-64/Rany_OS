@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 from pathlib import Path
 
 # Try decoding using these encodings in order when file is not valid utf-8
@@ -13,7 +12,7 @@ for p in root.rglob('*.rs'):
         b.decode('utf-8')
         # valid utf-8
         continue
-    except Exception:
+    except UnicodeDecodeError:
         # try other encodings
         for enc in encodings[1:]:
             try:
@@ -27,7 +26,7 @@ for p in root.rglob('*.rs'):
                 p.write_text(s, encoding='utf-8')
                 changed.append((p, enc))
                 break
-            except Exception:
+            except (UnicodeDecodeError, UnicodeEncodeError):
                 continue
         else:
             print(f"Failed to decode {p} in known encodings; skipping")

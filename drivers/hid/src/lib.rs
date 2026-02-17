@@ -319,7 +319,7 @@ pub mod qemu_tests {
     use crate::{KeyCode, Modifiers};
 
     pub fn keymap_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         let mut mods = Modifiers::default();
         if keymap.to_char(KeyCode::A, &mods) != Some('a') {
             return false;
@@ -329,7 +329,7 @@ pub mod qemu_tests {
     }
 
     pub fn keymap_ctrl_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         let mods = Modifiers {
             ctrl: true,
             ..Default::default()
@@ -339,7 +339,7 @@ pub mod qemu_tests {
     }
 
     pub fn dvorak_smoke() -> bool {
-        let keymap = DvorakKeymap;
+        let keymap = DvorakKeymap; // gitleaks:allow
         let mods = Modifiers::default();
         keymap.to_char(KeyCode::S, &mods) == Some('o')
             && keymap.to_char(KeyCode::Q, &mods) == Some('\'')
@@ -485,7 +485,7 @@ pub mod qemu_tests {
     }
 
     pub fn us_qwerty_letters_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::A, &mods(false, false)) == Some('a')
             && keymap.to_char(KeyCode::Z, &mods(false, false)) == Some('z')
             && keymap.to_char(KeyCode::A, &mods(true, false)) == Some('A')
@@ -494,21 +494,21 @@ pub mod qemu_tests {
     }
 
     pub fn us_qwerty_numbers_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::Key1, &mods(false, false)) == Some('1')
             && keymap.to_char(KeyCode::Key1, &mods(true, false)) == Some('!')
             && keymap.to_char(KeyCode::Key2, &mods(true, false)) == Some('@')
     }
 
     pub fn us_qwerty_special_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::Space, &mods(false, false)) == Some(' ')
             && keymap.to_char(KeyCode::Enter, &mods(false, false)) == Some('\n')
             && keymap.to_char(KeyCode::Tab, &mods(false, false)) == Some('\t')
     }
 
     pub fn non_printable_keys_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::F1, &mods(false, false)).is_none()
             && keymap
                 .to_char(KeyCode::Escape, &mods(false, false))
@@ -517,14 +517,14 @@ pub mod qemu_tests {
     }
 
     pub fn ctrl_characters_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::C, &mods_ctrl()) == Some('\x03')
             && keymap.to_char(KeyCode::D, &mods_ctrl()) == Some('\x04')
             && keymap.to_char(KeyCode::Z, &mods_ctrl()) == Some('\x1A')
     }
 
     pub fn jis_symbols_smoke() -> bool {
-        let keymap = crate::keymap::JisKeymap;
+        let keymap = crate::keymap::JisKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::Key2, &mods(true, false)) == Some('"')
             && keymap.to_char(KeyCode::Key6, &mods(true, false)) == Some('&')
             && keymap.to_char(KeyCode::Key7, &mods(true, false)) == Some('\'')
@@ -533,20 +533,20 @@ pub mod qemu_tests {
     }
 
     pub fn jis_letters_smoke() -> bool {
-        let keymap = crate::keymap::JisKeymap;
+        let keymap = crate::keymap::JisKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::A, &mods(false, false)) == Some('a')
             && keymap.to_char(KeyCode::A, &mods(true, false)) == Some('A')
             && keymap.to_char(KeyCode::Z, &mods(false, false)) == Some('z')
     }
 
     pub fn jis_ctrl_smoke() -> bool {
-        let keymap = crate::keymap::JisKeymap;
+        let keymap = crate::keymap::JisKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::C, &mods_ctrl()) == Some('\x03')
             && keymap.to_char(KeyCode::D, &mods_ctrl()) == Some('\x04')
     }
 
     pub fn dvorak_home_row_smoke() -> bool {
-        let keymap = DvorakKeymap;
+        let keymap = DvorakKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::A, &mods(false, false)) == Some('a')
             && keymap.to_char(KeyCode::S, &mods(false, false)) == Some('o')
             && keymap.to_char(KeyCode::D, &mods(false, false)) == Some('e')
@@ -560,7 +560,7 @@ pub mod qemu_tests {
     }
 
     pub fn dvorak_top_row_smoke() -> bool {
-        let keymap = DvorakKeymap;
+        let keymap = DvorakKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::Q, &mods(false, false)) == Some('\'')
             && keymap.to_char(KeyCode::W, &mods(false, false)) == Some(',')
             && keymap.to_char(KeyCode::E, &mods(false, false)) == Some('.')
@@ -570,7 +570,7 @@ pub mod qemu_tests {
     }
 
     pub fn dvorak_bottom_row_smoke() -> bool {
-        let keymap = DvorakKeymap;
+        let keymap = DvorakKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::Z, &mods(false, false)) == Some(';')
             && keymap.to_char(KeyCode::X, &mods(false, false)) == Some('q')
             && keymap.to_char(KeyCode::C, &mods(false, false)) == Some('j')
@@ -578,7 +578,7 @@ pub mod qemu_tests {
     }
 
     pub fn dvorak_caps_lock_smoke() -> bool {
-        let keymap = DvorakKeymap;
+        let keymap = DvorakKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::S, &mods(false, true)) == Some('O')
             && keymap.to_char(KeyCode::S, &mods(true, true)) == Some('o')
     }
@@ -590,7 +590,7 @@ pub mod qemu_tests {
     }
 
     pub fn numpad_us_qwerty_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::NumPad0, &mods(false, false)) == Some('0')
             && keymap.to_char(KeyCode::NumPad5, &mods(false, false)) == Some('5')
             && keymap.to_char(KeyCode::NumPad9, &mods(false, false)) == Some('9')
@@ -603,7 +603,7 @@ pub mod qemu_tests {
     }
 
     pub fn numpad_jis_smoke() -> bool {
-        let keymap = crate::keymap::JisKeymap;
+        let keymap = crate::keymap::JisKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::NumPad0, &mods(false, false)) == Some('0')
             && keymap.to_char(KeyCode::NumPad5, &mods(false, false)) == Some('5')
             && keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)) == Some('+')
@@ -611,7 +611,7 @@ pub mod qemu_tests {
     }
 
     pub fn numpad_dvorak_smoke() -> bool {
-        let keymap = DvorakKeymap;
+        let keymap = DvorakKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::NumPad0, &mods(false, false)) == Some('0')
             && keymap.to_char(KeyCode::NumPad5, &mods(false, false)) == Some('5')
             && keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)) == Some('*')
@@ -619,7 +619,7 @@ pub mod qemu_tests {
     }
 
     pub fn numpad_shift_ignored_smoke() -> bool {
-        let keymap = UsQwertyKeymap;
+        let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::NumPad0, &mods(true, false)) == Some('0')
             && keymap.to_char(KeyCode::NumPadPlus, &mods(true, false)) == Some('+')
     }
