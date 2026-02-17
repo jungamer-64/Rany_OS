@@ -2103,33 +2103,16 @@ impl Framebuffer {
     fn clear_rgb565(&mut self, color: Color) {
         let width = self.info.width as usize;
         let stride = self.info.stride as usize;
-        let r = (color.red as u16 >> 3) & 0x1F;
-        let g = (color.green as u16 >> 2) & 0x3F;
-        let b = (color.blue as u16 >> 3) & 0x1F;
-        let pixel = (r << 11) | (g << 5) | b;
-        let row_bytes = width * 2;
-        self.ensure_scratch_u8(row_bytes);
-        for i in 0..width {
-            let off = i * 2;
-            self.scratch_u8[off] = (pixel & 0xFF) as u8;
-            self.scratch_u8[off + 1] = (pixel >> 8) as u8;
-        }
-        if let Some(ref mut back) = self.back_buffer {
-            for y in 0..self.info.height as usize {
-                let offset = y * stride;
-                unsafe {
-                    ptr::copy_nonoverlapping(
-                        self.scratch_u8.as_ptr(),
-                        (back.as_mut_ptr() as *mut u8).add(offset),
-                        row_bytes,
-                    );
-                }
-            }
+        let pixel = Self::color_to_rgb565(color);
+
+        if let Some(ref mut _back) = self.back_buffer {
+            // Backbuffer is always u32/BGRA in this implementation.
+            debug_assert!(false, "clear_rgb565 called with u32 backbuffer");
         } else {
             for y in 0..self.info.height as usize {
                 let offset = y * stride;
                 let addr = self.buffer as usize + offset;
-                self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..row_bytes]);
+                self.write_u16_run_streaming_nofence(addr, width, pixel);
             }
             mmio::sfence();
         }
@@ -2213,21 +2196,24 @@ impl Framebuffer {
     /// 4bpp垂直線描画ヘルパー
     fn draw_vline_4bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
         let color_u32 = color.to_u32();
+        let mut off = start_y * stride + x_off * 4;
         if self.back_buffer.is_some() {
             let base = self.draw_buffer();
             for i in 0..run_len {
-                let y = start_y + i;
-                let off = y * stride + x_off * 4;
                 unsafe {
                     ptr::write_unaligned(base.add(off) as *mut u32, color_u32);
+                }
+                if i + 1 < run_len {
+                    off += stride;
                 }
             }
         } else {
             let base_addr = self.draw_buffer() as usize;
             for i in 0..run_len {
-                let y = start_y + i;
-                let off = base_addr + y * stride + x_off * 4;
-                mmio::mmio_write_u32(off, color_u32);
+                mmio::mmio_write_u32(base_addr + off, color_u32);
+                if i + 1 < run_len {
+                    off += stride;
+                }
             }
         }
     }
@@ -2245,30 +2231,31 @@ impl Framebuffer {
             debug_assert!(false, "24bpp vline called on u32 backbuffer");
         } else {
             let base_addr = self.draw_buffer() as usize;
+            let mut off = base_addr + start_y * stride + x_off * 3;
             for i in 0..run_len {
-                let y = start_y + i;
-                let off = base_addr + y * stride + x_off * 3;
                 mmio::volatile_write(off, c0);
                 mmio::volatile_write(off + 1, c1);
                 mmio::volatile_write(off + 2, c2);
+                if i + 1 < run_len {
+                    off += stride;
+                }
             }
         }
     }
 
     /// 2bpp垂直線描画ヘルパー
     fn draw_vline_2bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
-        let r = (color.red as u16 >> 3) & 0x1F;
-        let g = (color.green as u16 >> 2) & 0x3F;
-        let b = (color.blue as u16 >> 3) & 0x1F;
-        let pixel = (r << 11) | (g << 5) | b;
+        let pixel = Self::color_to_rgb565(color);
         if let Some(ref mut _back) = self.back_buffer {
             debug_assert!(false, "16bpp vline called on u32 backbuffer");
         } else {
             let base_addr = self.draw_buffer() as usize;
+            let mut off = base_addr + start_y * stride + x_off * 2;
             for i in 0..run_len {
-                let y = start_y + i;
-                let off = base_addr + y * stride + x_off * 2;
                 mmio::mmio_write_u16(off, pixel);
+                if i + 1 < run_len {
+                    off += stride;
+                }
             }
         }
     }
@@ -3026,6 +3013,34 @@ impl Framebuffer {
     }
 
     /// Write a clipped run of foreground pixels at 16bpp (RGB565) using MMIO streaming.
+    fn write_clipped_rgb565_run_nofence(
+        &mut self,
+        dst_x: i32,
+        run_len: usize,
+        dst_y: i32,
+        stride: usize,
+        color: Color,
+    ) -> bool {
+        let dst_start_x = dst_x.max(self.clip.x);
+        let dst_end_x = (dst_x + run_len as i32 - 1).min(self.clip.right() - 1);
+        if dst_end_x < dst_start_x {
+            return false;
+        }
+
+        let clipped_len = (dst_end_x - dst_start_x + 1) as usize;
+        let start_offset = (dst_y as usize * stride) + (dst_start_x as usize * 2);
+        let pixel = Self::color_to_rgb565(color);
+
+        if self.back_buffer.is_some() {
+            debug_assert!(false, "16bpp draw called on u32 backbuffer");
+            false
+        } else {
+            let addr = self.buffer as usize + start_offset;
+            self.write_u16_run_streaming_nofence(addr, clipped_len, pixel);
+            true
+        }
+    }
+
     fn write_clipped_rgb565_run(
         &mut self,
         dst_x: i32,
@@ -3034,19 +3049,8 @@ impl Framebuffer {
         stride: usize,
         color: Color,
     ) {
-        let dst_start_x = dst_x.max(self.clip.x);
-        let dst_end_x = (dst_x + run_len as i32 - 1).min(self.clip.right() - 1);
-        if dst_end_x >= dst_start_x {
-            let clipped_len = (dst_end_x - dst_start_x + 1) as usize;
-            let start_offset = (dst_y as usize * stride) + (dst_start_x as usize * 2);
-            let pixel = Self::color_to_rgb565(color);
-
-            if self.back_buffer.is_some() {
-                debug_assert!(false, "16bpp draw called on u32 backbuffer");
-            } else {
-                let addr = self.buffer as usize + start_offset;
-                self.write_u16_run_streaming(addr, clipped_len, pixel);
-            }
+        if self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color) {
+            self.counted_sfence();
         }
     }
 
@@ -3084,7 +3088,8 @@ impl Framebuffer {
         dst_y: i32,
         stride: usize,
         color: Color,
-    ) {
+    ) -> bool {
+        let mut wrote_mmio = false;
         let mut col = 0usize;
         while col < 8 && (byte_idx * 8 + col) < width as usize {
             let (run_start, run_len, new_col) =
@@ -3094,8 +3099,9 @@ impl Framebuffer {
                 continue;
             }
             let dst_x = px_start + run_start as i32;
-            self.write_clipped_rgb565_run(dst_x, run_len, dst_y, stride, color);
+            wrote_mmio |= self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color);
         }
+        wrote_mmio
     }
 
     /// Flush a horizontal run during Bresenham line drawing.
@@ -3158,8 +3164,7 @@ impl Framebuffer {
                 false
             }
             2 => {
-                self.glyph_byte_runs_16bpp(byte, byte_idx, width, px_start, dst_y, stride, color);
-                false
+                self.glyph_byte_runs_16bpp(byte, byte_idx, width, px_start, dst_y, stride, color)
             }
             _ => {
                 self.glyph_byte_fallback(byte, px_start, dst_y, glyph_x, width, color);
@@ -3267,10 +3272,7 @@ impl Framebuffer {
                 true
             }
             2 => {
-                let r = (color.red as u16 >> 3) & 0x1F;
-                let g = (color.green as u16 >> 2) & 0x3F;
-                let b = (color.blue as u16 >> 3) & 0x1F;
-                let pixel = (r << 11) | (g << 5) | b;
+                let pixel = Self::color_to_rgb565(color);
 
                 if self.back_buffer.is_some() {
                     let base = unsafe { self.draw_buffer().add(start_offset) };
@@ -3289,13 +3291,12 @@ impl Framebuffer {
                             ptr::write_unaligned(base.add(i * 2) as *mut u16, pixel);
                         }
                     }
+                    false
                 } else {
-                    let base_addr = self.draw_buffer() as usize + start_offset;
-                    for i in 0..clipped_len {
-                        mmio::mmio_write_u16(base_addr + i * 2, pixel);
-                    }
+                    let addr = self.draw_buffer() as usize + start_offset;
+                    self.write_u16_run_streaming_nofence(addr, clipped_len, pixel);
+                    true
                 }
-                false
             }
             _ => {
                 for i in 0..clipped_len {
@@ -3576,6 +3577,23 @@ impl Framebuffer {
                     self.write_clipped_bgr_run(dst_x, run_len, dst_y, stride, color);
                 }
                 false
+            }
+            2 => {
+                let mut wrote_mmio = false;
+                let mut col = 0usize;
+                while col < 8 {
+                    let (run_start, run_len, new_col) = Self::next_on_run(byte, col, 8);
+                    col = new_col;
+                    if run_len == 0 {
+                        continue;
+                    }
+                    let dst_x = x + run_start as i32;
+                    if dst_x >= self.clip.right() {
+                        continue;
+                    }
+                    wrote_mmio |= self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color);
+                }
+                wrote_mmio
             }
             _ => {
                 self.glyph_byte_fallback(byte, x, dst_y, x, 8, color);

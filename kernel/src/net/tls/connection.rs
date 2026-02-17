@@ -2463,64 +2463,51 @@ impl TlsConnection {
             return Ok(());
         }
 
-        // RFC 8446 Section 4.4.3: 署名検証対象メッセージの構築
-        // content = 64 * 0x20 || "TLS 1.3, server CertificateVerify" || 0x00 || transcript_hash
+        let verify_content = self.build_tls13_cv_verify_content(
+            b"TLS 1.3, server CertificateVerify",
+        );
+
+        self.dispatch_tls13_signature_verification(sig_algorithm, &verify_content, signature)?;
+
+        self.state = TlsState::Tls13WaitFinished;
+        Ok(())
+    }
+
+    /// TLS 1.3 CertificateVerify用の検証対象コンテンツを構築
+    ///
+    /// RFC 8446 Section 4.4.3:
+    /// content = 64 * 0x20 || label || 0x00 || transcript_hash
+    fn build_tls13_cv_verify_content(&self, label: &[u8]) -> Vec<u8> {
         let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
         let transcript_hash: Vec<u8> = if use_384 {
             crate::loader::sha384::compute(&self.handshake_messages).to_vec()
         } else {
-            let h = crate::loader::sha256::compute(&self.handshake_messages);
-            h.to_vec()
+            crate::loader::sha256::compute(&self.handshake_messages).to_vec()
         };
 
-        let mut verify_content = Vec::with_capacity(64 + 34 + transcript_hash.len());
-        verify_content.extend_from_slice(&[0x20u8; 64]);
-        verify_content.extend_from_slice(b"TLS 1.3, server CertificateVerify");
-        verify_content.push(0x00);
-        verify_content.extend_from_slice(&transcript_hash);
+        let mut content = Vec::with_capacity(64 + label.len() + 1 + transcript_hash.len());
+        content.extend_from_slice(&[0x20u8; 64]);
+        content.extend_from_slice(label);
+        content.push(0x00);
+        content.extend_from_slice(&transcript_hash);
+        content
+    }
 
-        // 署名アルゴリズムに基づく検証
+    /// 署名アルゴリズムに基づくTLS 1.3署名検証ディスパッチ
+    fn dispatch_tls13_signature_verification(
+        &self,
+        sig_algorithm: u16,
+        content: &[u8],
+        signature: &[u8],
+    ) -> TlsResult<()> {
         match sig_algorithm {
-            // RSA-PKCS1-SHA256 (0x0401)
-            0x0401 => {
-                self.verify_rsa_pkcs1_signature(
-                    &verify_content,
-                    signature,
-                    crate::net::rsa::HashAlgorithm::Sha256,
-                )?;
-            }
-            // RSA-PKCS1-SHA384 (0x0501)
-            0x0501 => {
-                self.verify_rsa_pkcs1_signature(
-                    &verify_content,
-                    signature,
-                    crate::net::rsa::HashAlgorithm::Sha384,
-                )?;
-            }
-            // RSA-PSS-RSAE-SHA256 (0x0804)
-            0x0804 => {
-                // RFC 8446 requires RSA-PSS for TLS 1.3
-                self.verify_rsa_pss_signature(
-                    &verify_content,
-                    signature,
-                    crate::net::rsa::HashAlgorithm::Sha256,
-                )?;
-            }
-            // ECDSA-SECP256R1-SHA256 (0x0403)
-            0x0403 => {
-                self.verify_ecdsa_p256_signature(&verify_content, signature)?;
-            }
-            // ECDSA-SECP384R1-SHA384 (0x0503)
-            0x0503 => {
-                self.verify_ecdsa_p384_signature(&verify_content, signature)?;
-            }
-            _ => {
-                return Err(TlsError::UnsupportedCipherSuite);
-            }
+            0x0401 => self.verify_rsa_pkcs1_signature(content, signature, crate::net::rsa::HashAlgorithm::Sha256),
+            0x0501 => self.verify_rsa_pkcs1_signature(content, signature, crate::net::rsa::HashAlgorithm::Sha384),
+            0x0804 => self.verify_rsa_pss_signature(content, signature, crate::net::rsa::HashAlgorithm::Sha256),
+            0x0403 => self.verify_ecdsa_p256_signature(content, signature),
+            0x0503 => self.verify_ecdsa_p384_signature(content, signature),
+            _ => Err(TlsError::UnsupportedCipherSuite),
         }
-
-        self.state = TlsState::Tls13WaitFinished;
-        Ok(())
     }
 
     /// RSA PKCS#1 v1.5 署名検証ヘルパー

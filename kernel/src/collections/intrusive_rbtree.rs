@@ -451,53 +451,70 @@ impl<A: KeyAdapter> RBTree<A> {
             }
             
             if parent == (*grandparent).left {
-                let uncle = (*grandparent).right;
-                
-                if !uncle.is_null() && (*uncle).color() == Color::Red {
-                    // Case 1: 叔父が赤
-                    (*parent).set_color(Color::Black);
-                    (*uncle).set_color(Color::Black);
-                    (*grandparent).set_color(Color::Red);
-                    node = grandparent;
-                } else {
-                    if node == (*parent).right {
-                        // Case 2: node は右子 -> 左回転
-                        node = parent;
-                        self.rotate_left(node);
-                    }
-                    // Case 3: node は左子 -> 右回転
-                    let parent = (*node).parent();
-                    let grandparent = (*parent).parent();
-                    (*parent).set_color(Color::Black);
-                    (*grandparent).set_color(Color::Red);
-                    self.rotate_right(grandparent);
-                }
+                self.insert_fixup_left(&mut node, parent, grandparent);
             } else {
-                // 対称ケース
-                let uncle = (*grandparent).left;
-                
-                if !uncle.is_null() && (*uncle).color() == Color::Red {
-                    (*parent).set_color(Color::Black);
-                    (*uncle).set_color(Color::Black);
-                    (*grandparent).set_color(Color::Red);
-                    node = grandparent;
-                } else {
-                    if node == (*parent).left {
-                        node = parent;
-                        self.rotate_right(node);
-                    }
-                    let parent = (*node).parent();
-                    let grandparent = (*parent).parent();
-                    (*parent).set_color(Color::Black);
-                    (*grandparent).set_color(Color::Red);
-                    self.rotate_left(grandparent);
-                }
+                self.insert_fixup_right(&mut node, parent, grandparent);
             }
         }
         
         // ルートは常に黒
         if !self.root.is_null() {
             (*self.root).set_color(Color::Black);
+        }
+    }
+
+    /// insert_fixup: 親が左子の場合
+    unsafe fn insert_fixup_left(
+        &mut self,
+        node: &mut *mut RBLink,
+        parent: *mut RBLink,
+        grandparent: *mut RBLink,
+    ) {
+        let uncle = (*grandparent).right;
+        if !uncle.is_null() && (*uncle).color() == Color::Red {
+            // Case 1: 叔父が赤
+            (*parent).set_color(Color::Black);
+            (*uncle).set_color(Color::Black);
+            (*grandparent).set_color(Color::Red);
+            *node = grandparent;
+        } else {
+            if *node == (*parent).right {
+                // Case 2: node は右子 -> 左回転
+                *node = parent;
+                self.rotate_left(*node);
+            }
+            // Case 3: node は左子 -> 右回転
+            let parent = (**node).parent();
+            let grandparent = (*parent).parent();
+            (*parent).set_color(Color::Black);
+            (*grandparent).set_color(Color::Red);
+            self.rotate_right(grandparent);
+        }
+    }
+
+    /// insert_fixup: 親が右子の場合（対称ケース）
+    unsafe fn insert_fixup_right(
+        &mut self,
+        node: &mut *mut RBLink,
+        parent: *mut RBLink,
+        grandparent: *mut RBLink,
+    ) {
+        let uncle = (*grandparent).left;
+        if !uncle.is_null() && (*uncle).color() == Color::Red {
+            (*parent).set_color(Color::Black);
+            (*uncle).set_color(Color::Black);
+            (*grandparent).set_color(Color::Red);
+            *node = grandparent;
+        } else {
+            if *node == (*parent).left {
+                *node = parent;
+                self.rotate_right(*node);
+            }
+            let parent = (**node).parent();
+            let grandparent = (*parent).parent();
+            (*parent).set_color(Color::Black);
+            (*grandparent).set_color(Color::Red);
+            self.rotate_left(grandparent);
         }
     }
 
