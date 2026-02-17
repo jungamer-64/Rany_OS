@@ -511,39 +511,49 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    if let Some(ref cq) = controller.command_queue {
-                        let domain_id = domain_arc.id();
-                        let mapping = domain_arc
-                            .mapping(iova)
-                            .ok_or(IommuError::NotMapped)?;
-                        let mapping_size = mapping.size;
-                        let cmd = IommuCommandKind::UnmapRegion {
-                            domain: domain_id,
-                            iova,
-                            size,
-                        };
-                        cq.submit_sync(cmd).map_err(|_| IommuError::HardwareError)?;
-                        let _ = controller.free_iova(iova, mapping_size);
-                        return Ok(());
-                    }
-
-                    let mapping = domain_arc.unmap(iova)?;
-                    let domain_id = domain_arc.id();
-
-                    if let Some(ref cq) = controller.command_queue {
-                        cq.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
-                            .map_err(|_| IommuError::HardwareError)?;
-                    } else {
-                        controller.invalidate_iotlb(domain_id);
-                    }
-
-                    let _ = controller.free_iova(iova, mapping.size);
-                    return Ok(());
+                    return Self::perform_unmap(controller, &domain_arc, iova, size);
                 }
             }
         }
 
         Err(IommuError::DomainNotFound)
+    }
+
+    /// Execute the actual unmap on a resolved domain, using CQ fast-path when available.
+    fn perform_unmap(
+        controller: &controller::IommuController,
+        domain_arc: &Arc<IommuDomain>,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        if let Some(ref cq) = controller.command_queue {
+            let domain_id = domain_arc.id();
+            let mapping = domain_arc
+                .mapping(iova)
+                .ok_or(IommuError::NotMapped)?;
+            let mapping_size = mapping.size;
+            let cmd = IommuCommandKind::UnmapRegion {
+                domain: domain_id,
+                iova,
+                size,
+            };
+            cq.submit_sync(cmd).map_err(|_| IommuError::HardwareError)?;
+            let _ = controller.free_iova(iova, mapping_size);
+            return Ok(());
+        }
+
+        let mapping = domain_arc.unmap(iova)?;
+        let domain_id = domain_arc.id();
+
+        if let Some(ref cq) = controller.command_queue {
+            cq.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
+                .map_err(|_| IommuError::HardwareError)?;
+        } else {
+            controller.invalidate_iotlb(domain_id);
+        }
+
+        let _ = controller.free_iova(iova, mapping.size);
+        Ok(())
     }
 
     /// コマンドキュー経由で非同期 UnmapRegion を実行する

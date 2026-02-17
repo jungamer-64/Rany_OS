@@ -930,35 +930,53 @@ impl TlsConnection {
                 break;
             }
 
-            match ext_type {
-                43 if ext_len >= 2 => {
-                    actual_version =
-                        TlsVersion(((data[eoff] as u16) << 8) | data[eoff + 1] as u16);
-                }
-                41 if ext_len >= 2 => {
-                    let selected_index =
-                        ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
-                    if selected_index == 0 && has_psk {
-                        *tls13_using_psk = true;
-                    }
-                }
-                51 if ext_len >= 4 => {
-                    let group =
-                        ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
-                    let key_len =
-                        ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
-                    if ext_len >= 4 + key_len {
-                        server_key_share =
-                            Some((group, data[eoff + 4..eoff + 4 + key_len].to_vec()));
-                    }
-                }
-                _ => {}
-            }
+            Self::apply_server_hello_extension(
+                data, eoff, ext_type, ext_len,
+                &mut actual_version, &mut server_key_share,
+                tls13_using_psk, has_psk,
+            );
 
             eoff += ext_len;
         }
 
         (actual_version, server_key_share)
+    }
+
+    /// Process a single ServerHello extension by type.
+    fn apply_server_hello_extension(
+        data: &[u8],
+        eoff: usize,
+        ext_type: u16,
+        ext_len: usize,
+        actual_version: &mut TlsVersion,
+        server_key_share: &mut Option<(u16, Vec<u8>)>,
+        tls13_using_psk: &mut bool,
+        has_psk: bool,
+    ) {
+        match ext_type {
+            43 if ext_len >= 2 => {
+                *actual_version =
+                    TlsVersion(((data[eoff] as u16) << 8) | data[eoff + 1] as u16);
+            }
+            41 if ext_len >= 2 => {
+                let selected_index =
+                    ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
+                if selected_index == 0 && has_psk {
+                    *tls13_using_psk = true;
+                }
+            }
+            51 if ext_len >= 4 => {
+                let group =
+                    ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
+                let key_len =
+                    ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
+                if ext_len >= 4 + key_len {
+                    *server_key_share =
+                        Some((group, data[eoff + 4..eoff + 4 + key_len].to_vec()));
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Handle TLS 1.3 ServerHello key exchange.
@@ -2178,31 +2196,7 @@ impl TlsConnection {
             let payload = &data[body_start..body_end];
             let full_msg = &data[offset..body_end];
 
-            match msg_type {
-                8 => {
-                    // EncryptedExtensions
-                    self.tls13_process_encrypted_extensions(payload)?;
-                }
-                11 => {
-                    // Certificate (TLS 1.3 format)
-                    self.tls13_process_certificate(payload)?;
-                }
-                13 => {
-                    // CertificateRequest (RFC 8446 Section 4.3.2)
-                    self.tls13_process_certificate_request(payload)?;
-                }
-                15 => {
-                    // CertificateVerify
-                    self.tls13_process_certificate_verify(payload)?;
-                }
-                20 => {
-                    // Finished
-                    // トランスクリプトハッシュにFinished以前のメッセージを更新
-                    // (Finishedが含まれる前のハッシュでverify_dataを検証)
-                    self.tls13_process_server_finished(payload)?;
-                }
-                _ => {}
-            }
+            self.tls13_dispatch_handshake_msg(msg_type, payload)?;
 
             // トランスクリプトハッシュを更新
             // (Finishedメッセージ自体もトランスクリプトに含める)
@@ -2218,6 +2212,36 @@ impl TlsConnection {
             }
 
             offset = body_end;
+        }
+        Ok(())
+    }
+
+    /// Dispatch a single TLS 1.3 handshake message to its handler.
+    fn tls13_dispatch_handshake_msg(&mut self, msg_type: u8, payload: &[u8]) -> TlsResult<()> {
+        match msg_type {
+            8 => {
+                // EncryptedExtensions
+                self.tls13_process_encrypted_extensions(payload)?;
+            }
+            11 => {
+                // Certificate (TLS 1.3 format)
+                self.tls13_process_certificate(payload)?;
+            }
+            13 => {
+                // CertificateRequest (RFC 8446 Section 4.3.2)
+                self.tls13_process_certificate_request(payload)?;
+            }
+            15 => {
+                // CertificateVerify
+                self.tls13_process_certificate_verify(payload)?;
+            }
+            20 => {
+                // Finished
+                // トランスクリプトハッシュにFinished以前のメッセージを更新
+                // (Finishedが含まれる前のハッシュでverify_dataを検証)
+                self.tls13_process_server_finished(payload)?;
+            }
+            _ => {}
         }
         Ok(())
     }

@@ -91,32 +91,35 @@ impl AcpiParser {
         let mut info = AcpiInfo::new(rsdp.revision);
 
         // Get table addresses from XSDT (ACPI 2.0+) or RSDT (ACPI 1.0)
-        // Note: These addresses are physical addresses stored in the RSDP,
-        // we convert them to virtual using HHDM offset
         let table_addresses = if rsdp.is_xsdt_available() {
             unsafe { self.parse_xsdt(phys_to_virt(rsdp.xsdt_address))? }
         } else {
             unsafe { self.parse_rsdt(phys_to_virt(rsdp.rsdt_address as u64))? }
         };
 
-        // Parse individual tables
-        // Note: table_addresses returned from parse_xsdt/rsdt are already virtual
         for &table_addr in &table_addresses {
-            let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
-
-            if header.signature == signature::MADT {
-                unsafe { self.parse_madt(table_addr, &mut info)? };
-            } else if header.signature == signature::MCFG {
-                unsafe { self.parse_mcfg(table_addr, &mut info)? };
-            } else if header.signature == signature::SRAT {
-                // Parse SRAT for NUMA information
-                unsafe { self.parse_srat(table_addr, &mut info)? };
-            }
+            unsafe { self.dispatch_table(table_addr, &mut info)? };
         }
 
         self.info = Some(info);
         // 直前で Some(info) を設定したため、unwrap は必ず成功する。
         Ok(self.info.as_ref().unwrap())
+    }
+
+    /// Dispatch a single ACPI table to its appropriate parser.
+    ///
+    /// # Safety
+    /// Caller must ensure `table_addr` points to a valid ACPI SDT header.
+    unsafe fn dispatch_table(&mut self, table_addr: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
+        let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
+        if header.signature == signature::MADT {
+            unsafe { self.parse_madt(table_addr, info)? };
+        } else if header.signature == signature::MCFG {
+            unsafe { self.parse_mcfg(table_addr, info)? };
+        } else if header.signature == signature::SRAT {
+            unsafe { self.parse_srat(table_addr, info)? };
+        }
+        Ok(())
     }
 
     /// Parse RSDT (Root System Description Table)
@@ -273,6 +276,51 @@ impl AcpiParser {
         Ok(())
     }
 
+    /// Parse a Processor Local APIC/SAPIC Affinity entry from SRAT.
+    unsafe fn parse_srat_processor_affinity(
+        offset: usize,
+        entry_len: usize,
+        info: &mut AcpiInfo,
+    ) {
+        let apic_id = unsafe { core::ptr::read((offset + 3) as *const u8) };
+        let proximity = if entry_len >= 8 {
+            unsafe { core::ptr::read_unaligned((offset + 4) as *const u32) }
+        } else if entry_len >= 3 {
+            unsafe { core::ptr::read((offset + 2) as *const u8) } as u32
+        } else {
+            0u32
+        };
+        info.cpu_proximity.push((apic_id, proximity));
+    }
+
+    /// Parse a Memory Affinity entry from SRAT.
+    unsafe fn parse_srat_memory_affinity(
+        offset: usize,
+        entry_len: usize,
+        info: &mut AcpiInfo,
+    ) {
+        if entry_len < 24 {
+            return;
+        }
+        let proximity =
+            unsafe { core::ptr::read_unaligned((offset + 2) as *const u32) };
+        if entry_len < 24 + 8 {
+            return;
+        }
+        let base =
+            unsafe { core::ptr::read_unaligned((offset + 8) as *const u64) };
+        let length =
+            unsafe { core::ptr::read_unaligned((offset + 16) as *const u64) };
+        let flags = if entry_len >= 28 {
+            unsafe { core::ptr::read_unaligned((offset + 24) as *const u32) }
+        } else {
+            1u32
+        };
+        if flags & 0x1 != 0 {
+            info.numa_memory.push((base, length, proximity));
+        }
+    }
+
     /// Parse SRAT (System Resource Affinity Table) for NUMA topology
     unsafe fn parse_srat(&self, srat_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
         let header = unsafe { &*(srat_address as *const AcpiSdtHeader) };
@@ -293,49 +341,9 @@ impl AcpiParser {
             }
 
             match entry_type {
-                0 => {
-                    // Processor Local APIC/SAPIC Affinity
-                    // Try to extract APIC ID and proximity domain
-                    let apic_id = unsafe { core::ptr::read((offset + 3) as *const u8) };
-                    let mut proximity = 0u32;
-                    if entry_len >= 8 {
-                        // common layout contains a 32-bit proximity at offset 4
-                        proximity =
-                            unsafe { core::ptr::read_unaligned((offset + 4) as *const u32) };
-                    } else if entry_len >= 3 {
-                        proximity = unsafe { core::ptr::read((offset + 2) as *const u8) } as u32;
-                    }
-                    info.cpu_proximity.push((apic_id, proximity));
-                }
-                1 => {
-                    // Memory Affinity structure
-                    // layout (common): u8 type, u8 length, u32 proximity_domain, reserved, u64 base, u64 length, u32 flags
-                    if entry_len >= 24 {
-                        let proximity =
-                            unsafe { core::ptr::read_unaligned((offset + 2) as *const u32) };
-                        // Ensure we can read base/length safely
-                        if entry_len >= 24 + 8 {
-                            let base =
-                                unsafe { core::ptr::read_unaligned((offset + 8) as *const u64) };
-                            let length =
-                                unsafe { core::ptr::read_unaligned((offset + 16) as *const u64) };
-                            // Flags may be at offset 24
-                            let flags = if entry_len >= 28 {
-                                unsafe { core::ptr::read_unaligned((offset + 24) as *const u32) }
-                            } else {
-                                1u32
-                            };
-
-                            // If the memory affinity entry indicates the region is enabled, record it
-                            if flags & 0x1 != 0 {
-                                info.numa_memory.push((base, length, proximity));
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    // Other SRAT structures are ignored for now
-                }
+                0 => unsafe { Self::parse_srat_processor_affinity(offset, entry_len, info) },
+                1 => unsafe { Self::parse_srat_memory_affinity(offset, entry_len, info) },
+                _ => {}
             }
 
             offset += entry_len;

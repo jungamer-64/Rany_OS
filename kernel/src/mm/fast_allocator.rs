@@ -658,33 +658,46 @@ impl FastBitmapAllocator {
         // Try local magazine first
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
-
-            // Check if in single-writer arena
-            if magazine.is_single_writer_enabled() {
-                let mut arena_guard = magazine.arena_detail.lock();
-                if let Some(ref mut arena) = *arena_guard {
-                    if arena.in_current_window(page_idx) && !arena.is_frozen() {
-                        if arena.free_page(page_idx) {
-                            self.stats.single_writer_frees.fetch_add(1, Ordering::Relaxed);
-                            return true;
-                        }
-                    }
-                }
+            if self.try_free_single_writer(magazine, page_idx) {
+                return true;
             }
-
-            // Try magazine
-            if let Some(mag_lock) = magazine.get_magazine(0) {
-                let mut mag = mag_lock.lock();
-                if !mag.is_full() {
-                    if mag.push(addr) {
-                        return true;
-                    }
-                }
+            if Self::try_free_magazine(magazine, addr) {
+                return true;
             }
         }
 
         // Fallback: direct bitmap free
         self.bitmap.free_4k(page_idx)
+    }
+
+    /// Attempt to free a page via the single-writer arena path.
+    fn try_free_single_writer(&self, magazine: &Magazine, page_idx: usize) -> bool {
+        if !magazine.is_single_writer_enabled() {
+            return false;
+        }
+        let mut arena_guard = magazine.arena_detail.lock();
+        if let Some(ref mut arena) = *arena_guard {
+            if arena.in_current_window(page_idx) && !arena.is_frozen() {
+                if arena.free_page(page_idx) {
+                    self.stats.single_writer_frees.fetch_add(1, Ordering::Relaxed);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Attempt to free a page via the per-CPU magazine.
+    fn try_free_magazine(magazine: &Magazine, addr: u64) -> bool {
+        if let Some(mag_lock) = magazine.get_magazine(0) {
+            let mut mag = mag_lock.lock();
+            if !mag.is_full() {
+                if mag.push(addr) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Free a 2MB super-page

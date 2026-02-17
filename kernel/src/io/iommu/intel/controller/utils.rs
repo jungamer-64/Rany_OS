@@ -32,6 +32,47 @@ impl IommuUtils for IommuController {
     /// - If yielding is allowed and the scheduler is available, use the millisecond tick and yield
     /// - Otherwise use `time::precise_time_nanos()` for high-resolution busy-waiting
     /// - If timers are not yet initialized (early boot), fall back to an rdtsc-based busy-wait
+    /// Busy-wait using precise_time_nanos(). Returns None if timer not available.
+    fn busy_wait_precise<F>(&self, condition: &F, timeout_us: u64) -> Option<Result<(), IommuError>>
+    where
+        F: Fn() -> bool,
+    {
+        let start_ns = crate::time::precise_time_nanos();
+        if start_ns == 0 {
+            return None;
+        }
+        let timeout_ns = timeout_us.saturating_mul(1000);
+        loop {
+            if condition() {
+                return Some(Ok(()));
+            }
+            let now_ns = crate::time::precise_time_nanos();
+            if now_ns.saturating_sub(start_ns) >= timeout_ns {
+                return Some(Err(IommuError::Timeout));
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Busy-wait using rdtsc (early boot fallback with conservative 3GHz assumption).
+    fn busy_wait_rdtsc<F>(&self, condition: &F, timeout_us: u64) -> Result<(), IommuError>
+    where
+        F: Fn() -> bool,
+    {
+        let cycles = timeout_us.saturating_mul(3000);
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
+        loop {
+            if condition() {
+                return Ok(());
+            }
+            let current = unsafe { core::arch::x86_64::_rdtsc() };
+            if current.saturating_sub(start) > cycles {
+                return Err(IommuError::Timeout);
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     fn wait_for_condition<F>(
         &self,
         condition: F,
@@ -79,38 +120,11 @@ impl IommuUtils for IommuController {
         }
 
         // Busy-wait path: prefer kernel's precise time API
-        let start_ns = crate::time::precise_time_nanos();
-        if start_ns != 0 {
-            let timeout_ns = timeout_us.saturating_mul(1000);
-            loop {
-                if condition() {
-                    return Ok(());
-                }
-
-                let now_ns = crate::time::precise_time_nanos();
-                if now_ns.saturating_sub(start_ns) >= timeout_ns {
-                    return Err(IommuError::Timeout);
-                }
-
-                core::hint::spin_loop();
-            }
+        if let Some(result) = self.busy_wait_precise(&condition, timeout_us) {
+            return result;
         }
 
-        // Fallback for very early boot: rdtsc-based busy wait (conservative 3GHz assumption)
-        let cycles = timeout_us.saturating_mul(3000);
-        let start = unsafe { core::arch::x86_64::_rdtsc() };
-
-        loop {
-            if condition() {
-                return Ok(());
-            }
-
-            let current = unsafe { core::arch::x86_64::_rdtsc() };
-            if current.saturating_sub(start) > cycles {
-                return Err(IommuError::Timeout);
-            }
-
-            core::hint::spin_loop();
-        }
+        // Fallback for very early boot: rdtsc-based busy wait
+        self.busy_wait_rdtsc(&condition, timeout_us)
     }
 }

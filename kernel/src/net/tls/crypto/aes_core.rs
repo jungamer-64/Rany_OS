@@ -166,44 +166,45 @@ pub(crate) struct AesRoundKeySchedule {
     pub(crate) rounds: usize,
 }
 
-/// Expand AES key schedule for AES-128 (16-byte key) or AES-256 (32-byte key).
-pub(crate) fn aes_expand_key_schedule(key: &[u8]) -> Option<AesRoundKeySchedule> {
-    let nk = match key.len() {
-        16 => 4, // AES-128
-        32 => 8, // AES-256
-        _ => return None,
-    };
+/// Apply RotWord + SubWord to a 4-byte AES temp word.
+fn rotate_sub_word(temp: &mut [u8; 4]) {
+    temp.rotate_left(1);
+    for b in temp.iter_mut() {
+        *b = AES_SBOX[*b as usize];
+    }
+}
 
-    let nr = nk + 6; // 10 (AES-128) or 14 (AES-256)
-    let total_words = 4 * (nr + 1); // 44 or 60
+/// Apply SubWord only (AES-256 extra step).
+fn sub_word(temp: &mut [u8; 4]) {
+    for b in temp.iter_mut() {
+        *b = AES_SBOX[*b as usize];
+    }
+}
 
+/// Expand raw 4-byte words from the AES key.
+fn expand_aes_words(key: &[u8], nk: usize, total_words: usize) -> [[u8; 4]; 60] {
     let mut words = [[0u8; 4]; 60];
     for i in 0..nk {
         let base = i * 4;
         words[i].copy_from_slice(&key[base..base + 4]);
     }
-
     for i in nk..total_words {
         let mut temp = words[i - 1];
-
         if i % nk == 0 {
-            temp.rotate_left(1); // RotWord
-            for b in &mut temp {
-                *b = AES_SBOX[*b as usize]; // SubWord
-            }
+            rotate_sub_word(&mut temp);
             temp[0] ^= RCON[(i / nk) - 1];
         } else if nk > 6 && i % nk == 4 {
-            // AES-256 additional SubWord step
-            for b in &mut temp {
-                *b = AES_SBOX[*b as usize];
-            }
+            sub_word(&mut temp);
         }
-
         for j in 0..4 {
             words[i][j] = words[i - nk][j] ^ temp[j];
         }
     }
+    words
+}
 
+/// Pack expanded words into round key arrays.
+fn words_to_round_keys(words: &[[u8; 4]; 60], nr: usize) -> [[u8; 16]; 15] {
     let mut round_keys = [[0u8; 16]; 15];
     for round in 0..=nr {
         for word_idx in 0..4 {
@@ -212,6 +213,21 @@ pub(crate) fn aes_expand_key_schedule(key: &[u8]) -> Option<AesRoundKeySchedule>
             round_keys[round][start..start + 4].copy_from_slice(&word);
         }
     }
+    round_keys
+}
+
+/// Expand AES key schedule for AES-128 (16-byte key) or AES-256 (32-byte key).
+pub(crate) fn aes_expand_key_schedule(key: &[u8]) -> Option<AesRoundKeySchedule> {
+    let nk = match key.len() {
+        16 => 4, // AES-128
+        32 => 8, // AES-256
+        _ => return None,
+    };
+
+    let nr = nk + 6;
+    let total_words = 4 * (nr + 1);
+    let words = expand_aes_words(key, nk, total_words);
+    let round_keys = words_to_round_keys(&words, nr);
 
     Some(AesRoundKeySchedule {
         round_keys,

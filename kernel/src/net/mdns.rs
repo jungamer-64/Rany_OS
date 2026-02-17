@@ -630,6 +630,38 @@ pub fn encode_dns_name(buffer: &mut [u8], mut offset: usize, name: &str) -> Opti
 /// DNSワイヤーフォーマットの名前をデコードし、ドット区切りの文字列に変換する。
 /// RFC 1035のラベル圧縮ポインター (0xC0プレフィックス) にも対応。
 ///
+/// Handle a DNS compression pointer. Returns `Some(new_current)` on success,
+/// or `None` if the pointer is invalid or jump limit exceeded.
+/// Updates `final_offset` and `jumped` on the first jump.
+#[inline]
+fn handle_compression_pointer(
+    data: &[u8],
+    current: usize,
+    final_offset: &mut usize,
+    jumped: &mut bool,
+    jump_count: &mut usize,
+    max_jumps: usize,
+) -> Option<usize> {
+    if current + 1 >= data.len() {
+        return None;
+    }
+    if !*jumped {
+        *final_offset = current + 2;
+    }
+    let pointer = ((data[current] as usize & 0x3F) << 8) | data[current + 1] as usize;
+    if pointer >= data.len() {
+        return None;
+    }
+    *jump_count += 1;
+    if *jump_count > max_jumps {
+        return None;
+    }
+    *jumped = true;
+    Some(pointer)
+}
+
+/// DNS名をデコードする（圧縮ポインタにも対応）
+///
 /// # Arguments
 /// - `data` - パケット全体のバイト列
 /// - `offset` - 名前の開始位置
@@ -642,7 +674,6 @@ pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
     let mut current = offset;
     let mut jumped = false;
     let mut final_offset = offset;
-    // Limit jump count to prevent infinite loops
     let mut jump_count = 0;
     let max_jumps = 128;
 
@@ -663,30 +694,9 @@ pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
 
         // Compression pointer (top 2 bits set = 0xC0)
         if len_byte & DNS_COMPRESSION_MASK == DNS_COMPRESSION_MASK {
-            if current + 1 >= data.len() {
-                return None;
-            }
-
-            // Record the offset past the pointer only for the first jump
-            if !jumped {
-                final_offset = current + 2;
-            }
-
-            // Extract the pointer target offset
-            let pointer = ((len_byte as usize & 0x3F) << 8) | data[current + 1] as usize;
-
-            // Prevent forward references and self-references
-            if pointer >= data.len() {
-                return None;
-            }
-
-            jump_count += 1;
-            if jump_count > max_jumps {
-                return None;
-            }
-
-            current = pointer;
-            jumped = true;
+            current = handle_compression_pointer(
+                data, current, &mut final_offset, &mut jumped, &mut jump_count, max_jumps,
+            )?;
             continue;
         }
 
@@ -698,12 +708,10 @@ pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
             return None;
         }
 
-        // Add dot separator between labels
         if !name.is_empty() {
             name.push('.');
         }
 
-        // Append the label as UTF-8 (lossy)
         let label_bytes = &data[current..current + label_len];
         for &b in label_bytes {
             name.push(b as char);

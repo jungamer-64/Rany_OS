@@ -1234,6 +1234,36 @@ mod kernel_impl {
 
 
 
+    /// Check channel capacity and anon-specific reservation/token constraints.
+    /// Returns `true` if the anon token was consumed (must be restored on send failure).
+    fn check_anon_constraints(
+        sender: &crossbeam_channel::Sender<SwapEntryKernel>,
+        frame: FrameIndex,
+        kind: &SwapKind,
+    ) -> Result<bool, SwapError> {
+        if sender.is_full() {
+            page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
+            return Err(SwapError::QueueFull);
+        }
+
+        if let SwapKind::Anon = kind {
+            let total = QUEUE_COUNT.load(Ordering::Acquire);
+            let free_slots = CHANNEL_SIZE.saturating_sub(total);
+            let reserved = RESERVED_FILE_SLOTS_ATOMIC.load(Ordering::Acquire);
+            if free_slots <= reserved {
+                page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
+                return Err(SwapError::QueueFull);
+            }
+            if !try_consume_token() {
+                page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
+                return Err(SwapError::QueueFull);
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {
         ensure_channel_started();
 
@@ -1251,32 +1281,7 @@ mod kernel_impl {
         // Check sender capacity
         if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
             let sender = &ch.0;
-            if sender.is_full() {
-                page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
-                return Err(SwapError::QueueFull);
-            }
-
-            // Enforce strict reservation for file writes: keep RESERVED_FILE_SLOTS free for file entries
-            if let SwapKind::Anon = kind {
-                let total = QUEUE_COUNT.load(Ordering::Acquire);
-                let free_slots = CHANNEL_SIZE.saturating_sub(total);
-                let reserved = RESERVED_FILE_SLOTS_ATOMIC.load(Ordering::Acquire);
-                if free_slots <= reserved {
-                    // reserve slots for file writes — anon enqueues fail fast
-                    page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
-                    return Err(SwapError::QueueFull);
-                }
-            }
-
-            // Token-bucket consumption for anon entries
-            let mut token_consumed = false;
-            if let SwapKind::Anon = kind {
-                if !try_consume_token() {
-                    page_flags::clear_flag(frame, PageMetaFlags::SwapPending);
-                    return Err(SwapError::QueueFull);
-                }
-                token_consumed = true;
-            }
+            let token_consumed = Self::check_anon_constraints(sender, frame, &kind)?;
 
             match sender.send(SwapEntryKernel { frame, kind }) {
                 Ok(()) => {

@@ -663,14 +663,7 @@ impl UsbMouse {
             return;
         }
 
-        let buttons = data[0];
-        let dx = data[1] as i8 as i32;
-        let dy = data[2] as i8 as i32;
-        let wheel = if data.len() > 3 {
-            data[3] as i8 as i32
-        } else {
-            0
-        };
+        let (buttons, dx, dy, wheel) = Self::parse_report_data(data);
 
         // 移動量を累積
         *self.accumulated_x.lock() += dx;
@@ -686,17 +679,15 @@ impl UsbMouse {
             }
 
             // ボタンイベント
-            for (bit, button) in [
+            for &(bit, button) in &[
                 (0x01, MouseButton::Left),
                 (0x02, MouseButton::Right),
                 (0x04, MouseButton::Middle),
                 (0x08, MouseButton::Button4),
                 (0x10, MouseButton::Button5),
             ] {
-                if (buttons & bit) != 0 && (prev_buttons & bit) == 0 {
-                    callback(MouseEvent::ButtonDown(button));
-                } else if (buttons & bit) == 0 && (prev_buttons & bit) != 0 {
-                    callback(MouseEvent::ButtonUp(button));
+                if let Some(event) = Self::button_event(buttons, prev_buttons, bit, button) {
+                    callback(event);
                 }
             }
 
@@ -704,6 +695,30 @@ impl UsbMouse {
             if wheel != 0 {
                 callback(MouseEvent::Wheel(wheel));
             }
+        }
+    }
+
+    /// Decode raw HID report bytes into (buttons, dx, dy, wheel).
+    fn parse_report_data(data: &[u8]) -> (u8, i32, i32, i32) {
+        let buttons = data[0];
+        let dx = data[1] as i8 as i32;
+        let dy = data[2] as i8 as i32;
+        let wheel = if data.len() > 3 {
+            data[3] as i8 as i32
+        } else {
+            0
+        };
+        (buttons, dx, dy, wheel)
+    }
+
+    /// Determine the mouse event for a single button, if its state changed.
+    fn button_event(buttons: u8, prev: u8, bit: u8, button: MouseButton) -> Option<MouseEvent> {
+        if (buttons & bit) != 0 && (prev & bit) == 0 {
+            Some(MouseEvent::ButtonDown(button))
+        } else if (buttons & bit) == 0 && (prev & bit) != 0 {
+            Some(MouseEvent::ButtonUp(button))
+        } else {
+            None
         }
     }
 }

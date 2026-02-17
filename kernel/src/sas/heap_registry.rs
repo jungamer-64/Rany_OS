@@ -270,14 +270,19 @@ impl HeapRegistry {
         Ok(generation)
     }
 
-    /// オブジェクトの登録を解除
-    pub fn unregister(&self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
-        // Find object in primary shard to determine its size
+    /// Look up object size from primary shard, validate owner, then lock all
+    /// shards covering the range in ascending order. Returns (guards, primary_position).
+    fn lock_shards_for_owner(
+        &self,
+        address: usize,
+        owner: DomainId,
+        op_name: &str,
+    ) -> Result<(alloc::vec::Vec<crate::sync::MutexGuard<'_, RegistryShard>>, usize), RegistryError> {
         let primary = self.get_shard_index(address);
         let primary_guard = match self.shards[primary].lock() {
             Ok(g) => g,
             Err(_) => {
-                log::error!("[HEAP] Registry shard lock poisoned - unregister skipped");
+                log::error!("[HEAP] Registry shard lock poisoned - {} skipped", op_name);
                 return Err(RegistryError::PermissionDenied);
             }
         };
@@ -285,41 +290,43 @@ impl HeapRegistry {
             .objects
             .get(&address)
             .ok_or(RegistryError::NotFound)?;
-
         if object.owner != owner {
             return Err(RegistryError::PermissionDenied);
         }
-
         let size = object.size;
         drop(primary_guard);
 
-        // Determine all shards touched and lock them (ascending order)
         let mut idxs = self.shards_for_range(address, size);
         idxs.sort_unstable();
         idxs.dedup();
 
-        let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
+        let mut guards = alloc::vec::Vec::new();
         for idx in &idxs {
             match self.shards[*idx].lock() {
                 Ok(g) => guards.push(g),
                 Err(_) => {
-                    log::error!("[HEAP] Registry shard lock poisoned - unregister skipped");
+                    log::error!("[HEAP] Registry shard lock poisoned - {} skipped", op_name);
                     return Err(RegistryError::PermissionDenied);
                 }
             }
         }
 
-        // Re-validate and remove from all shards
-        // Use the primary shard position to verify ownership again
         let primary_pos = idxs
             .iter()
             .position(|&i| i == primary)
             .ok_or(RegistryError::NotFound)?;
 
+        Ok((guards, primary_pos))
+    }
+
+    /// オブジェクトの登録を解除
+    pub fn unregister(&self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
+        let (mut guards, primary_pos) = self.lock_shards_for_owner(address, owner, "unregister")?;
+
+        // Re-validate and remove from all shards
         if !guards[primary_pos].objects.contains_key(&address) {
             return Err(RegistryError::NotFound);
         }
-
         if guards[primary_pos].objects.get(&address).unwrap().owner != owner {
             return Err(RegistryError::PermissionDenied);
         }
@@ -344,53 +351,12 @@ impl HeapRegistry {
         from: DomainId,
         to: DomainId,
     ) -> Result<(), RegistryError> {
-        // Read size from primary shard first
-        let primary = self.get_shard_index(address);
-        let primary_guard = match self.shards[primary].lock() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("[HEAP] Registry shard lock poisoned - transfer skipped");
-                return Err(RegistryError::PermissionDenied);
-            }
-        };
-        let object = primary_guard
-            .objects
-            .get(&address)
-            .ok_or(RegistryError::NotFound)?;
-
-        if object.owner != from {
-            return Err(RegistryError::PermissionDenied);
-        }
-
-        let size = object.size;
-        drop(primary_guard);
-
-        // Lock all touched shards
-        let mut idxs = self.shards_for_range(address, size);
-        idxs.sort_unstable();
-        idxs.dedup();
-
-        let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
-        for idx in &idxs {
-            match self.shards[*idx].lock() {
-                Ok(g) => guards.push(g),
-                Err(_) => {
-                    log::error!("[HEAP] Registry shard lock poisoned - transfer skipped");
-                    return Err(RegistryError::PermissionDenied);
-                }
-            }
-        }
+        let (mut guards, primary_pos) = self.lock_shards_for_owner(address, from, "transfer")?;
 
         // Re-validate ownership and apply change across shards
-        let primary_pos = idxs
-            .iter()
-            .position(|&i| i == primary)
-            .ok_or(RegistryError::NotFound)?;
-
         if !guards[primary_pos].objects.contains_key(&address) {
             return Err(RegistryError::NotFound);
         }
-
         if guards[primary_pos].objects.get(&address).unwrap().owner != from {
             return Err(RegistryError::PermissionDenied);
         }

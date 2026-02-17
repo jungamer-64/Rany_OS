@@ -88,25 +88,9 @@ pub struct ShimLock {
     ) -> Status,
 }
 
-/// Detect Shim loader and MOK state
-///
-/// # Returns
-/// ShimMokInfo containing Shim/MOK detection results
-pub fn detect_shim_mok() -> ShimMokInfo {
-    let mut info = ShimMokInfo::default();
-    
-    // 1. Check for Shim Lock Protocol
-    // If this protocol exists, we were launched by Shim
-    info.shim_detected = detect_shim_lock_protocol();
-    
-    if info.shim_detected {
-        info!("Shim bootloader detected (SHIM_LOCK protocol present)");
-    }
-    
-    // 2. Read MOK-related variables
-    
+/// Read MOK-related UEFI variables and populate info fields.
+fn detect_mok_variables(info: &mut ShimMokInfo) {
     // Check MokSBState (Secure Boot state within Shim)
-    // This is different from UEFI SecureBoot variable
     if let Some(value) = read_mok_u8_variable("MokSBState") {
         info.mok_sb_state = value;
         info!("MokSBState: {} ({})", value, 
@@ -117,7 +101,6 @@ pub fn detect_shim_mok() -> ShimMokInfo {
     info.mok_list_present = mok_variable_exists("MokList");
     if info.mok_list_present {
         info!("MokList present (MOK certificates enrolled)");
-        // Try to count certificates
         info.mok_count = count_mok_certificates();
         if info.mok_count > 0 {
             info!("  {} MOK certificate(s) enrolled", info.mok_count);
@@ -141,14 +124,10 @@ pub fn detect_shim_mok() -> ShimMokInfo {
     if info.sbat_level_present {
         info!("SbatLevel present (SBAT revocation data)");
     }
-    
-    // 3. Try to verify ourselves with Shim (if protocol available)
-    if info.shim_detected {
-        info.shim_validated = true; // If Shim launched us, we passed validation
-        info!("Shim validation: PASSED (we were loaded by Shim)");
-    }
-    
-    // Summary
+}
+
+/// Log a summary of the Shim/MOK detection results.
+fn log_shim_summary(info: &ShimMokInfo) {
     if info.shim_detected {
         if info.mok_sb_state == 1 {
             info!("MOK Secure Boot: ENABLED");
@@ -158,6 +137,33 @@ pub fn detect_shim_mok() -> ShimMokInfo {
     } else {
         info!("Shim bootloader not detected (direct UEFI boot)");
     }
+}
+
+/// Detect Shim loader and MOK state
+///
+/// # Returns
+/// ShimMokInfo containing Shim/MOK detection results
+pub fn detect_shim_mok() -> ShimMokInfo {
+    let mut info = ShimMokInfo::default();
+    
+    // 1. Check for Shim Lock Protocol
+    info.shim_detected = detect_shim_lock_protocol();
+    
+    if info.shim_detected {
+        info!("Shim bootloader detected (SHIM_LOCK protocol present)");
+    }
+    
+    // 2. Read MOK-related variables
+    detect_mok_variables(&mut info);
+    
+    // 3. Try to verify ourselves with Shim (if protocol available)
+    if info.shim_detected {
+        info.shim_validated = true;
+        info!("Shim validation: PASSED (we were loaded by Shim)");
+    }
+    
+    // Summary
+    log_shim_summary(&info);
     
     info
 }
