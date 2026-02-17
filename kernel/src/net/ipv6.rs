@@ -795,38 +795,20 @@ impl Ipv6Processor {
 
     /// Check if a destination address is for this interface
     fn is_for_us(&self, addr: &Ipv6Address) -> bool {
-        // Our link-local address
-        if *addr == self.config.link_local {
+        // Direct matches: link-local, all-nodes multicast, solicited-node, loopback
+        if *addr == self.config.link_local
+            || *addr == Ipv6Address::ALL_NODES_LINK_LOCAL
+            || *addr == self.config.link_local.solicited_node()
+            || addr.is_loopback()
+        {
             return true;
         }
 
-        // Our global address (if configured)
+        // Global address and its solicited-node multicast
         if let Some(ref global) = self.config.global {
-            if addr == global {
+            if addr == global || *addr == global.solicited_node() {
                 return true;
             }
-        }
-
-        // All-nodes link-local multicast (ff02::1)
-        if *addr == Ipv6Address::ALL_NODES_LINK_LOCAL {
-            return true;
-        }
-
-        // Solicited-node multicast for our link-local address
-        if *addr == self.config.link_local.solicited_node() {
-            return true;
-        }
-
-        // Solicited-node multicast for our global address
-        if let Some(ref global) = self.config.global {
-            if *addr == global.solicited_node() {
-                return true;
-            }
-        }
-
-        // Loopback
-        if addr.is_loopback() {
-            return true;
         }
 
         false

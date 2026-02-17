@@ -392,6 +392,25 @@ impl InvSlotGuard {
 // Reap helpers (free functions to keep QuarantineQueue methods lean)
 // ---------------------------------------------------------------------------
 
+/// Check if the entry should be skipped during reap.
+#[inline]
+fn should_skip_for_reap(entry: &QuarantineEntry, scan_threshold: u64) -> bool {
+    !entry.in_use || !entry.committed || entry.batch_id > scan_threshold
+}
+
+/// Collect IOVA information from an entry and clear its IOVA fields.
+#[inline]
+fn collect_entry_iova(
+    entry: &mut QuarantineEntry,
+    to_free_iova: &mut alloc::vec::Vec<(u64, u64)>,
+) {
+    if entry.iova != 0 && entry.iova_size != 0 {
+        to_free_iova.push((entry.iova, entry.iova_size));
+        entry.iova = 0;
+        entry.iova_size = 0;
+    }
+}
+
 /// Inspect a single quarantine entry during reap. Returns true if the slot was freed.
 fn scan_entry_for_reap(
     entry: &mut QuarantineEntry,
@@ -400,14 +419,10 @@ fn scan_entry_for_reap(
     to_wake: &mut alloc::vec::Vec<core::task::Waker>,
     to_drop: &mut alloc::vec::Vec<RRefRawParts>,
 ) -> bool {
-    if !entry.in_use || !entry.committed || entry.batch_id > scan_threshold {
+    if should_skip_for_reap(entry, scan_threshold) {
         return false;
     }
-    if entry.iova != 0 && entry.iova_size != 0 {
-        to_free_iova.push((entry.iova, entry.iova_size));
-        entry.iova = 0;
-        entry.iova_size = 0;
-    }
+    collect_entry_iova(entry, to_free_iova);
     if entry.abandoned {
         if let Some(raw) = entry.raw.take() {
             to_drop.push(raw);

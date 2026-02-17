@@ -1092,14 +1092,6 @@ impl ExoShell {
         }
     }
 
-    /// ExoValueのスライスから指定インデックスの文字列を抽出
-    fn extract_string_arg(args: &[ExoValue<'_>], idx: usize) -> Option<String> {
-        args.get(idx).and_then(|v| match v {
-            ExoValue::String(s) => Some(s.as_ref().to_string()),
-            _ => None,
-        })
-    }
-
     /// 配列の変換メソッド（map, sort, join, contains）
     async fn apply_array_transform(
         &mut self,
@@ -1110,12 +1102,12 @@ impl ExoShell {
         let evaluated_args = self.evaluate_args(args).await;
         match method {
             "map" | "select" => {
-                let field = Self::extract_string_arg(&evaluated_args, 0)
+                let field = Self::extract_string_arg(&evaluated_args)
                     .unwrap_or_else(|| String::from("name"));
                 self.map_array(list, &field)
             }
             "sort" | "order" => {
-                let field = Self::extract_string_arg(&evaluated_args, 0);
+                let field = Self::extract_string_arg(&evaluated_args);
                 let desc = evaluated_args
                     .get(1)
                     .and_then(|v| match v {
@@ -1126,7 +1118,7 @@ impl ExoShell {
                 self.sort_array(list, field.as_deref(), desc)
             }
             "join" => {
-                let sep = Self::extract_string_arg(&evaluated_args, 0)
+                let sep = Self::extract_string_arg(&evaluated_args)
                     .unwrap_or_else(|| String::from(", "));
                 let joined: String = list
                     .iter()

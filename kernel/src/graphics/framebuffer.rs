@@ -3837,6 +3837,71 @@ impl Framebuffer {
     /// drawing used by `BitmapFont::draw_char`. It attempts to use
     /// 64-bit writes on 32-bit framebuffers and `write_bgr_run` on 24-bit
     /// framebuffers to minimize per-pixel overhead.
+    /// Determine fast-path rendering mode for draw_char_8x16.
+    /// Returns 0 (none), 2 (16bpp), 3 (24bpp), or 4 (32bpp).
+    #[inline]
+    fn determine_char_fast_mode(
+        bg: Option<Color>,
+        is_fully_visible: bool,
+        no_backbuf: bool,
+        bpp: usize,
+    ) -> usize {
+        if bg.is_some() && is_fully_visible && no_backbuf {
+            match bpp {
+                4 | 2 | 3 => bpp,
+                _ => 0,
+            }
+        } else if bg.is_some() && is_fully_visible && bpp == 4 {
+            4
+        } else {
+            0
+        }
+    }
+
+    /// Render glyph rows in 16-bit (RGB565) fast path.
+    fn render_glyph_16bit(
+        &mut self,
+        glyph: &[u8],
+        x: i32,
+        y: i32,
+        stride: usize,
+        color: Color,
+        bg_color: Color,
+    ) -> bool {
+        let fg_u16 = Self::color_to_rgb565(color);
+        let bg_u16 = Self::color_to_rgb565(bg_color);
+        let mut wrote = false;
+        for (row, &byte) in glyph.iter().enumerate() {
+            let dst_y = y + row as i32;
+            if !self.clip_y_visible(dst_y) { continue; }
+            let offset = (dst_y as usize * stride) + (x as usize * 2);
+            wrote |= self.write_glyph_row_16bit_nofence(byte, offset, fg_u16, bg_u16);
+        }
+        wrote
+    }
+
+    /// Render glyph rows in 24-bit (BGR) fast path.
+    fn render_glyph_24bit(
+        &mut self,
+        glyph: &[u8],
+        x: i32,
+        y: i32,
+        stride: usize,
+        color: Color,
+        bg_color: Color,
+    ) -> bool {
+        let fg_bytes = self.bgr_color_order(color);
+        let bg_bytes = self.bgr_color_order(bg_color);
+        let mut wrote = false;
+        for (row, &byte) in glyph.iter().enumerate() {
+            let dst_y = y + row as i32;
+            if !self.clip_y_visible(dst_y) { continue; }
+            let offset = (dst_y as usize * stride) + (x as usize * 3);
+            wrote |= self.write_glyph_row_24bit_nofence(byte, offset, fg_bytes, bg_bytes);
+        }
+        wrote
+    }
+
     pub fn draw_char_8x16(&mut self, x: i32, y: i32, c: char, color: Color, bg: Option<Color>) {
         let font = BitmapFont::default_8x16();
         let glyph = match font.glyph(c) {
@@ -3853,18 +3918,7 @@ impl Framebuffer {
 
         let is_fully_visible = x >= self.clip.x && (x + char_w_i32) <= self.clip.right();
         let no_backbuf = self.back_buffer.is_none();
-
-        // Determine fast path mode: 0 = none, 4 = 32bpp, 2 = 16bpp, 3 = 24bpp
-        let fast_mode = if bg.is_some() && is_fully_visible && no_backbuf {
-            match bpp {
-                4 | 2 | 3 => bpp,
-                _ => 0,
-            }
-        } else if bg.is_some() && is_fully_visible && bpp == 4 {
-            4 // 32bpp works with or without backbuffer
-        } else {
-            0
-        };
+        let fast_mode = Self::determine_char_fast_mode(bg, is_fully_visible, no_backbuf, bpp);
 
         // Pre-fill background only when not using single-pass fast path
         if let Some(bg_color) = bg {
@@ -3878,30 +3932,8 @@ impl Framebuffer {
                 let (fg_u32, bg_u32) = self.preencode_colors_32(color, bg.unwrap());
                 self.render_char_rows(glyph, x, y, true, fg_u32, bg_u32, bpp, stride, color)
             }
-            2 => {
-                let fg_u16 = Self::color_to_rgb565(color);
-                let bg_u16 = Self::color_to_rgb565(bg.unwrap());
-                let mut wrote = false;
-                for (row, &byte) in glyph.iter().enumerate() {
-                    let dst_y = y + row as i32;
-                    if !self.clip_y_visible(dst_y) { continue; }
-                    let offset = (dst_y as usize * stride) + (x as usize * 2);
-                    wrote |= self.write_glyph_row_16bit_nofence(byte, offset, fg_u16, bg_u16);
-                }
-                wrote
-            }
-            3 => {
-                let fg_bytes = self.bgr_color_order(color);
-                let bg_bytes = self.bgr_color_order(bg.unwrap());
-                let mut wrote = false;
-                for (row, &byte) in glyph.iter().enumerate() {
-                    let dst_y = y + row as i32;
-                    if !self.clip_y_visible(dst_y) { continue; }
-                    let offset = (dst_y as usize * stride) + (x as usize * 3);
-                    wrote |= self.write_glyph_row_24bit_nofence(byte, offset, fg_bytes, bg_bytes);
-                }
-                wrote
-            }
+            2 => self.render_glyph_16bit(glyph, x, y, stride, color, bg.unwrap()),
+            3 => self.render_glyph_24bit(glyph, x, y, stride, color, bg.unwrap()),
             _ => {
                 self.render_char_rows(glyph, x, y, false, 0, 0, bpp, stride, color)
             }

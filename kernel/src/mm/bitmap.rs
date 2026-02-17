@@ -1135,6 +1135,26 @@ impl HugePageBitmap {
     }
 
     /// Scan a bitmap for a usable block below the given limits and allocate a page from it.
+    /// Scan individual bits in a single bitmap word for an allocatable page below limit.
+    fn scan_word_bits_below(
+        &self,
+        word: u64,
+        word_idx: usize,
+        limit_block: usize,
+        limit_page_idx: usize,
+    ) -> Option<usize> {
+        for bit in 0..BITS_PER_WORD {
+            let block_idx = word_idx * BITS_PER_WORD + bit;
+            if block_idx >= limit_block { return None; }
+            if (word & (1u64 << bit)) != 0 {
+                if let Some(page) = self.allocate_from_block(block_idx) {
+                    if page < limit_page_idx { return Some(page); }
+                }
+            }
+        }
+        None
+    }
+
     fn scan_bitmap_below(
         &self,
         bitmap: &[AtomicU64],
@@ -1149,15 +1169,8 @@ impl HugePageBitmap {
             let word = bitmap[word_idx].load(Ordering::Acquire);
             if word == 0 { continue; }
 
-            for bit in 0..BITS_PER_WORD {
-                let block_idx = word_idx * BITS_PER_WORD + bit;
-                if block_idx >= limit_block { return None; }
-
-                if (word & (1u64 << bit)) != 0 {
-                    if let Some(page) = self.allocate_from_block(block_idx) {
-                        if page < limit_page_idx { return Some(page); }
-                    }
-                }
+            if let Some(page) = self.scan_word_bits_below(word, word_idx, limit_block, limit_page_idx) {
+                return Some(page);
             }
         }
         None

@@ -169,7 +169,9 @@ impl ShellFrontend for ConsoleFrontend {
             }
         }
     }
+}
 
+impl ConsoleFrontend {
     fn handle_delete_key(&mut self, key: &KeyCode, shell: &ExoShell) {
         match key {
             KeyCode::Backspace => {

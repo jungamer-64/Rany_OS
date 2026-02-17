@@ -560,6 +560,29 @@ impl IommuController {
     }
 }
 
+impl IommuController {
+    /// Resolve domain Arc and extract key fields for attach_device.
+    fn resolve_domain_for_attach(
+        &self,
+        domain_id: u16,
+        device: DeviceId,
+    ) -> Result<(IommuDomainType, u64, usize, usize), IommuError> {
+        let domain_arc = {
+            let domains = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
+            domains
+                .get(&domain_id)
+                .cloned()
+                .ok_or(IommuError::DomainNotFound)?
+        };
+        map_rmrr_for_device(&domain_arc, device)?;
+        let domain_type = domain_arc.domain_type();
+        let page_table_addr = domain_arc.page_table_addr();
+        let bus = device.bus as usize;
+        let devfn = ((device.device as usize) << 3) | (device.function as usize);
+        Ok((domain_type, page_table_addr, bus, devfn))
+    }
+}
+
 impl DomainManager for IommuController {
     fn create_domain(
         &self,
@@ -645,19 +668,8 @@ impl DomainManager for IommuController {
     }
 
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
-        let domain_arc = {
-            let domains = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
-            domains
-                .get(&domain_id)
-                .cloned()
-                .ok_or(IommuError::DomainNotFound)?
-        };
-        map_rmrr_for_device(&domain_arc, device)?;
-        let domain_type = domain_arc.domain_type();
-        let page_table_addr = domain_arc.page_table_addr();
-
-        let bus = device.bus as usize;
-        let devfn = ((device.device as usize) << 3) | (device.function as usize);
+        let (domain_type, page_table_addr, bus, devfn) =
+            self.resolve_domain_for_attach(domain_id, device)?;
 
         let mut hw_guard = self
             .hardware

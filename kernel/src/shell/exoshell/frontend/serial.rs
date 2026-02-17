@@ -104,7 +104,9 @@ impl ShellFrontend for SerialFrontend {
             }
         }
     }
+}
 
+impl SerialFrontend {
     fn handle_tab(&mut self, shell: &ExoShell) {
         let completions = shell.complete(self.line_buffer.as_str());
         if completions.len() == 1 {
@@ -198,7 +200,9 @@ impl ShellFrontend for SerialFrontend {
             }
         }
     }
+}
 
+impl ShellFrontend for SerialFrontend {
     async fn read_line(&mut self, shell: &mut ExoShell) -> Option<String> {
         self.line_buffer.clear();
         self.navigator.reset_navigation();

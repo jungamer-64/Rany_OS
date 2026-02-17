@@ -742,31 +742,14 @@ impl PerCpuMagazineSet {
     }
 
     /// Buddyアロケータから補充
-    fn refill(&mut self) {
-        self.refill_count += 1;
-        self.adaptive_batch.record_refill();
-        
+    /// Try to fill the active magazine from the given allocator closure.
+    fn refill_from<F>(&mut self, mut alloc_fn: F)
+    where
+        F: FnMut() -> Option<PhysFrame<Size4KiB>>,
+    {
         let batch_size = self.adaptive_batch.batch_size();
-
-        // Per-Node Buddyを優先使用
-        if per_node_buddy::is_per_node_initialized() {
-            if let Some(allocator) = per_node_buddy::get_node_allocator(self.numa_node) {
-                for _ in 0..batch_size {
-                    if let Some(frame) = allocator.allocate_4k() {
-                        if self.active.push(frame).is_err() {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                return;
-            }
-        }
-
-        // フォールバック: グローバルBuddy
         for _ in 0..batch_size {
-            if let Some(frame) = buddy_allocator::buddy_alloc_frame() {
+            if let Some(frame) = alloc_fn() {
                 if self.active.push(frame).is_err() {
                     break;
                 }
@@ -774,6 +757,22 @@ impl PerCpuMagazineSet {
                 break;
             }
         }
+    }
+
+    fn refill(&mut self) {
+        self.refill_count += 1;
+        self.adaptive_batch.record_refill();
+
+        // Per-Node Buddyを優先使用
+        if per_node_buddy::is_per_node_initialized() {
+            if let Some(allocator) = per_node_buddy::get_node_allocator(self.numa_node) {
+                self.refill_from(|| allocator.allocate_4k());
+                return;
+            }
+        }
+
+        // フォールバック: グローバルBuddy
+        self.refill_from(buddy_allocator::buddy_alloc_frame);
     }
 
     /// Buddyアロケータへ返却
