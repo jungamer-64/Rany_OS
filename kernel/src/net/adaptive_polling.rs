@@ -295,28 +295,9 @@ impl AdaptivePoller {
         self.budget = budget;
     }
 
-    /// 適応調整を実行
-    pub fn adapt(&mut self, current_time_ms: u64) {
-        // 調整間隔をチェック
-        if current_time_ms - self.last_adaptation < ADAPTATION_INTERVAL_MS {
-            return;
-        }
-
-        let elapsed = current_time_ms - self.last_adaptation;
-        self.last_adaptation = current_time_ms;
-
-        // 現在のパケットレートを計算
-        let rx_now = self.stats.rx_packets.load(Ordering::Relaxed);
-        let tx_now = self.stats.tx_packets.load(Ordering::Relaxed);
-        let (rx_last, tx_last) = self.last_stats_snapshot;
-
-        let packets = (rx_now - rx_last) + (tx_now - tx_last);
-        let pps = packets * 1000 / elapsed;
-
-        self.last_stats_snapshot = (rx_now, tx_now);
-
-        // モード決定
-        let new_mode = match self.mode {
+    /// 現在のモードとパケットレートから次のモードを決定
+    fn next_mode(&self, pps: u64) -> PollingMode {
+        match self.mode {
             PollingMode::InterruptDriven => {
                 if pps >= self.threshold_high {
                     PollingMode::BusyPolling
@@ -342,7 +323,31 @@ impl AdaptivePoller {
                     PollingMode::BusyPolling
                 }
             }
-        };
+        }
+    }
+
+    /// 適応調整を実行
+    pub fn adapt(&mut self, current_time_ms: u64) {
+        // 調整間隔をチェック
+        if current_time_ms - self.last_adaptation < ADAPTATION_INTERVAL_MS {
+            return;
+        }
+
+        let elapsed = current_time_ms - self.last_adaptation;
+        self.last_adaptation = current_time_ms;
+
+        // 現在のパケットレートを計算
+        let rx_now = self.stats.rx_packets.load(Ordering::Relaxed);
+        let tx_now = self.stats.tx_packets.load(Ordering::Relaxed);
+        let (rx_last, tx_last) = self.last_stats_snapshot;
+
+        let packets = (rx_now - rx_last) + (tx_now - tx_last);
+        let pps = packets * 1000 / elapsed;
+
+        self.last_stats_snapshot = (rx_now, tx_now);
+
+        // モード決定
+        let new_mode = self.next_mode(pps);
 
         // モード切り替え
         if new_mode != self.mode {

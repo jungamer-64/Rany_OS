@@ -198,6 +198,10 @@ fn run_suite() -> bool {
             test_net_ecdh_phase_b_exports,
         )
         && run_check("kernel_integration_exports", test_kernel_integration_exports)
+        && run_check(
+            "graphics_framebuffer_wave9_exports",
+            test_graphics_framebuffer_wave9_exports,
+        )
 }
 
 fn run_check(name: &str, f: fn() -> bool) -> bool {
@@ -291,6 +295,40 @@ fn test_loader_elf_exports() -> bool {
 
 fn test_kernel_integration_exports() -> bool {
     rany_os::qemu_tests::kernel_async_swapout_sim_smoke()
+}
+
+fn test_graphics_framebuffer_wave9_exports() -> bool {
+    run_check(
+        "graphics_wave9_draw_circle_symmetric_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_circle_symmetric_smoke,
+    ) && run_check(
+        "graphics_wave9_fill_circle_no_gaps_smoke",
+        rany_os::qemu_tests::graphics_wave9_fill_circle_no_gaps_smoke,
+    ) && run_check(
+        "graphics_wave9_draw_rect_outline_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_rect_outline_smoke,
+    ) && run_check(
+        "graphics_wave9_draw_line_steep_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_line_steep_smoke,
+    ) && run_check(
+        "graphics_wave9_draw_text_24bit_single_pass_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_text_24bit_single_pass_smoke,
+    ) && run_check(
+        "graphics_wave9_draw_char_8x16_24bit_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_char_8x16_24bit_smoke,
+    ) && run_check(
+        "graphics_wave9_draw_image_rgb565_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_image_rgb565_mmio_smoke,
+    ) && run_check(
+        "graphics_wave9_write_opaque_run_32bit_simd_smoke",
+        rany_os::qemu_tests::graphics_wave9_write_opaque_run_32bit_simd_smoke,
+    ) && run_check(
+        "graphics_wave9_draw_text_rgb565_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_text_rgb565_mmio_smoke,
+    ) && run_check(
+        "graphics_wave9_draw_char_8x16_rgb565_smoke",
+        rany_os::qemu_tests::graphics_wave9_draw_char_8x16_rgb565_smoke,
+    )
 }
 
 fn test_iommu_cmdqueue_exports() -> bool {

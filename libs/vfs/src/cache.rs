@@ -454,31 +454,35 @@ impl PageCache {
         false
     }
 
+    /// 全ファイルからLRUページを検索する
+    fn find_lru_page_globally(
+        files: &alloc::collections::BTreeMap<InodeNum, FileCache>,
+    ) -> Option<(InodeNum, u64)> {
+        let mut best_page: Option<(InodeNum, u64, u64)> = None;
+        let mut best_access_time = u64::MAX;
+
+        for (ino, file_cache) in files.iter() {
+            if let Some(page_num) = file_cache.find_lru_page() {
+                if let Some(page) = file_cache.get_page(page_num) {
+                    let access_time = page.last_access();
+                    if access_time < best_access_time {
+                        best_access_time = access_time;
+                        best_page = Some((*ino, page_num, access_time));
+                    }
+                }
+            }
+        }
+
+        best_page.map(|(ino, page_num, _)| (ino, page_num))
+    }
+
     /// Evict pages to free space
     fn evict_pages(&self, needed: usize) {
         let mut freed = 0;
         let mut files = self.files.write();
 
         while freed < needed {
-            // Find LRU page across all files
-            let mut best_page: Option<(InodeNum, u64, u64)> = None;
-            let mut best_access_time = u64::MAX;
-
-            for (ino, file_cache) in files.iter() {
-                if let Some(page_num) = file_cache.find_lru_page() {
-                    if let Some(page) = file_cache.get_page(page_num) {
-                        let access_time = page.last_access();
-                        // unwrap() を廃止し、直接比較で分岐を削減
-                        // アセンブリ: Option::unwrap() の cmp + panic branch → 単純な cmp
-                        if access_time < best_access_time {
-                            best_access_time = access_time;
-                            best_page = Some((*ino, page_num, access_time));
-                        }
-                    }
-                }
-            }
-
-            if let Some((ino, page_num, _)) = best_page {
+            if let Some((ino, page_num)) = Self::find_lru_page_globally(&files) {
                 if let Some(file_cache) = files.get_mut(&ino) {
                     if file_cache.remove_page(page_num).is_some() {
                         freed += PAGE_SIZE;

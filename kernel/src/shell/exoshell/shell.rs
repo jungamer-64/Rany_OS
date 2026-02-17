@@ -150,6 +150,33 @@ impl ExoShell {
         }
     }
 
+    /// Command文の評価
+    async fn eval_command_stmt(&mut self, name: String, args: Vec<Expr<'_>>) -> ExoResult<ExoValue<'static>> {
+        // 1. Try built-in command
+        if let Some(cmd) = self.commands.get(&name) {
+            let mut eval_args = Vec::new();
+            for arg in args {
+                eval_args.push(Box::pin(self.evaluate_expr(&arg)).await);
+            }
+            return cmd.execute(self, &eval_args);
+        }
+
+        // 2. If no args, try variable or alias
+        if args.is_empty() {
+            if let Some(val) = self.env.get(&name) {
+                return Ok(val.clone());
+            }
+            // Alias fallback (legacy)
+            let alias_result = self.eval_alias(&name).await;
+            if matches!(alias_result, ExoValue::Error(_)) {
+                 return Err(super::error::ShellError::CommandNotFound(name));
+            }
+            return Ok(alias_result);
+        }
+
+        Err(super::error::ShellError::CommandNotFound(name))
+    }
+
     /// 文を評価
     async fn eval_stmt(&mut self, stmt: Stmt<'_>) -> ExoResult<ExoValue<'static>> {
         match stmt {
@@ -175,34 +202,7 @@ impl ExoShell {
                 }
             }
 
-            Stmt::Command { name, args } => {
-                // 1. Try built-in command
-                if let Some(cmd) = self.commands.get(&name) {
-                    let mut eval_args = Vec::new();
-                    for arg in args {
-                        eval_args.push(Box::pin(self.evaluate_expr(&arg)).await);
-                    }
-                    return cmd.execute(self, &eval_args);
-                }
-
-                // 2. If no args, try variable or alias
-                if args.is_empty() {
-                    if let Some(val) = self.env.get(&name) {
-                        return Ok(val.clone());
-                    }
-                    // Alias fallback (legacy)
-                    let alias_result = self.eval_alias(&name).await;
-                    // If alias returns generic error, it usually means not found or failed.
-                    // But eval_alias returns ExoValue.
-                    // If it returns Error, we wrap it?
-                    if matches!(alias_result, ExoValue::Error(_)) {
-                         return Err(super::error::ShellError::CommandNotFound(name));
-                    }
-                    return Ok(alias_result);
-                }
-
-                Err(super::error::ShellError::CommandNotFound(name))
-            }
+            Stmt::Command { name, args } => self.eval_command_stmt(name, args).await,
             Stmt::Expr(expr) => Ok(Box::pin(self.evaluate_expr(&expr)).await),
         }
     }
@@ -1092,6 +1092,14 @@ impl ExoShell {
         }
     }
 
+    /// ExoValueのスライスから指定インデックスの文字列を抽出
+    fn extract_string_arg(args: &[ExoValue<'_>], idx: usize) -> Option<String> {
+        args.get(idx).and_then(|v| match v {
+            ExoValue::String(s) => Some(s.as_ref().to_string()),
+            _ => None,
+        })
+    }
+
     /// 配列の変換メソッド（map, sort, join, contains）
     async fn apply_array_transform(
         &mut self,
@@ -1102,20 +1110,12 @@ impl ExoShell {
         let evaluated_args = self.evaluate_args(args).await;
         match method {
             "map" | "select" => {
-                let field = evaluated_args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
+                let field = Self::extract_string_arg(&evaluated_args, 0)
                     .unwrap_or_else(|| String::from("name"));
                 self.map_array(list, &field)
             }
             "sort" | "order" => {
-                let field = evaluated_args.first().and_then(|v| match v {
-                    ExoValue::String(s) => Some(s.as_ref().to_string()),
-                    _ => None,
-                });
+                let field = Self::extract_string_arg(&evaluated_args, 0);
                 let desc = evaluated_args
                     .get(1)
                     .and_then(|v| match v {
@@ -1126,12 +1126,7 @@ impl ExoShell {
                 self.sort_array(list, field.as_deref(), desc)
             }
             "join" => {
-                let sep = evaluated_args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
+                let sep = Self::extract_string_arg(&evaluated_args, 0)
                     .unwrap_or_else(|| String::from(", "));
                 let joined: String = list
                     .iter()

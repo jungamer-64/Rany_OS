@@ -1708,15 +1708,21 @@ impl IommuDomain {
 
             inc_ref(pt_phys);
 
-            for slot in newly_allocated.iter_mut() {
-                if let Some(scope) = slot {
-                    scope.commit();
-                }
-            }
+            Self::commit_allocated_tables(&mut newly_allocated);
         }
 
         Ok(())
     }
+
+    /// 新規割り当て済みページテーブルをコミットする
+    fn commit_allocated_tables(tables: &mut [Option<PageTableScope>; 3]) {
+        for slot in tables.iter_mut() {
+            if let Some(scope) = slot {
+                scope.commit();
+            }
+        }
+    }
+
     /// Allocate a zeroed page table from the pool (Phase 6)
     ///
     /// Uses the domain's page table pool for NUMA-aware recycling.
@@ -1922,8 +1928,8 @@ impl IommuDomain {
         &self,
         start_shard: usize,
         end_shard: usize,
-        first_guard: crate::sync::MutexGuard<'_, DmaShard>,
-    ) -> Result<Vec<crate::sync::MutexGuard<'_, DmaShard>>, IommuError> {
+        first_guard: crate::sync::PoisonLockGuard<'_, DomainShard>,
+    ) -> Result<Vec<crate::sync::PoisonLockGuard<'_, DomainShard>>, IommuError> {
         let mut guards = Vec::with_capacity(end_shard.saturating_sub(start_shard) + 1);
         guards.push(first_guard);
         for idx in (start_shard + 1)..=end_shard {

@@ -1230,7 +1230,7 @@ mod kernel_impl {
     /// Check channel capacity and anon-specific reservation/token constraints.
     /// Returns `true` if the anon token was consumed (must be restored on send failure).
     fn check_anon_constraints(
-        sender: &crossbeam_channel::Sender<SwapEntryKernel>,
+        sender: &BoundedSender<SwapEntryKernel, CHANNEL_SIZE>,
         frame: FrameIndex,
         kind: &SwapKind,
     ) -> Result<bool, SwapError> {
@@ -1274,7 +1274,7 @@ mod kernel_impl {
         // Check sender capacity
         if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
             let sender = &ch.0;
-            let token_consumed = Self::check_anon_constraints(sender, frame, &kind)?;
+            let token_consumed = check_anon_constraints(sender, frame, &kind)?;
 
             match sender.send(SwapEntryKernel { frame, kind }) {
                 Ok(()) => {

@@ -219,16 +219,36 @@ impl TerminalBuffer {
         }
     }
 
+    /// 次の行に進む（スクロールも含む）
+    fn advance_to_next_line(&mut self) {
+        self.cursor_x = 0;
+        self.cursor_y += 1;
+        if self.cursor_y >= self.rows {
+            self.scroll_up();
+            self.cursor_y = self.rows - 1;
+        }
+    }
+
+    /// 通常の印字可能文字を書き込む
+    fn write_printable_char(&mut self, ch: char) {
+        if self.cursor_x >= self.cols {
+            self.advance_to_next_line();
+        }
+        let idx = self.cursor_y * self.cols + self.cursor_x;
+        if idx < self.screen.len() {
+            self.screen[idx] = CharCell {
+                ch,
+                attr: self.current_attr,
+            };
+        }
+        self.cursor_x += 1;
+    }
+
     /// 文字を書き込む
     pub fn write_char(&mut self, ch: char) {
         match ch {
             '\n' => {
-                self.cursor_x = 0;
-                self.cursor_y += 1;
-                if self.cursor_y >= self.rows {
-                    self.scroll_up();
-                    self.cursor_y = self.rows - 1;
-                }
+                self.advance_to_next_line();
             }
             '\r' => {
                 self.cursor_x = 0;
@@ -249,23 +269,7 @@ impl TerminalBuffer {
                 // ビープ音を鳴らす（実装依存）
             }
             _ => {
-                if self.cursor_x >= self.cols {
-                    self.cursor_x = 0;
-                    self.cursor_y += 1;
-                    if self.cursor_y >= self.rows {
-                        self.scroll_up();
-                        self.cursor_y = self.rows - 1;
-                    }
-                }
-
-                let idx = self.cursor_y * self.cols + self.cursor_x;
-                if idx < self.screen.len() {
-                    self.screen[idx] = CharCell {
-                        ch,
-                        attr: self.current_attr,
-                    };
-                }
-                self.cursor_x += 1;
+                self.write_printable_char(ch);
             }
         }
         

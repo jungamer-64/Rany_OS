@@ -285,7 +285,7 @@ impl HeapRegistry {
         address: usize,
         owner: DomainId,
         op_name: &str,
-    ) -> Result<(alloc::vec::Vec<crate::sync::MutexGuard<'_, RegistryShard>>, usize), RegistryError> {
+    ) -> Result<(alloc::vec::Vec<crate::sync::PoisonLockGuard<'_, RegistryShard>>, usize), RegistryError> {
         let primary = self.get_shard_index(address);
         let primary_guard = match self.shards[primary].lock() {
             Ok(g) => g,

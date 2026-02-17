@@ -775,6 +775,26 @@ impl IoScheduler {
         requests.get(&id).cloned()
     }
 
+    /// 完了統計とレイテンシレポートを記録する
+    fn report_completion_stats(&self, request: &IoRequest, result: &IoResult) {
+        self.stats.total_completed.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .current_queue_depth
+            .fetch_sub(1, Ordering::Relaxed);
+
+        if matches!(result, IoResult::Error(_)) {
+            self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // モードコントローラにレイテンシを報告
+        if let Some(completed) = request.completed_at {
+            let latency_us = (completed - request.submitted_at) * 1000; // tick to μs (仮)
+            if let Some(controller) = self.mode_controllers.read().get(&request.device) {
+                controller.record_completion(latency_us);
+            }
+        }
+    }
+
     /// リクエスト完了を通知
     pub fn complete_request(&self, id: IoRequestId, result: IoResult) {
         let (waker, abandoned) = {
@@ -787,23 +807,7 @@ impl IoScheduler {
                 request.completed_at = Some(current_tick());
                 request.result = Some(result.clone());
 
-                // 統計更新
-                self.stats.total_completed.fetch_add(1, Ordering::Relaxed);
-                self.stats
-                    .current_queue_depth
-                    .fetch_sub(1, Ordering::Relaxed);
-
-                if matches!(result, IoResult::Error(_)) {
-                    self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
-                }
-
-                // モードコントローラにレイテンシを報告
-                if let Some(completed) = request.completed_at {
-                    let latency_us = (completed - request.submitted_at) * 1000; // tick to μs (仮)
-                    if let Some(controller) = self.mode_controllers.read().get(&request.device) {
-                        controller.record_completion(latency_us);
-                    }
-                }
+                self.report_completion_stats(request, &result);
 
                 (request.waker.take(), request.abandoned)
             } else {

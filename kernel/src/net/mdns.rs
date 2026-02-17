@@ -290,6 +290,30 @@ impl MdnsService {
         MdnsResult::Ignored
     }
 
+    /// 単一のDNS応答レコードを処理し、Aレコードなら解決結果を返す
+    fn try_process_dns_answer(
+        &mut self,
+        data: &[u8],
+        offset: &mut usize,
+        current_time: u64,
+    ) -> Result<Option<(String, Ipv4Address)>, ()> {
+        let record = match parse_dns_answer_record(data, *offset) {
+            Some(r) => r,
+            None => return Err(()),
+        };
+        *offset = record.3;
+        if !is_inet_a_record(record.0, record.1, record.2) {
+            return Ok(None);
+        }
+        let rdata = &data[record.4..record.4 + record.2];
+        let ip = Ipv4Address::new([rdata[0], rdata[1], rdata[2], rdata[3]]);
+        let name_lower = to_lowercase(&record.5);
+        if !self.cache_a_record(&name_lower, ip, record.6, current_time) {
+            return Ok(None);
+        }
+        Ok(Some((name_lower, ip)))
+    }
+
     /// mDNS応答を処理
     fn process_response(
         &mut self,
@@ -304,40 +328,22 @@ impl MdnsService {
             None => return MdnsResult::InvalidPacket,
         };
 
-        // Parse answer section
-        let mut last_resolved_name: Option<String> = None;
-        let mut last_resolved_ip: Option<Ipv4Address> = None;
+        let mut last_resolved: Option<(String, Ipv4Address)> = None;
 
         for _ in 0..ancount {
             if offset >= data.len() {
                 break;
             }
-
-            let record = match parse_dns_answer_record(data, offset) {
-                Some(r) => r,
-                None => return MdnsResult::InvalidPacket,
-            };
-            offset = record.3;
-
-            // Only process A records (IN class)
-            if is_inet_a_record(record.0, record.1, record.2) {
-                let rdata = &data[record.4..record.4 + record.2];
-                let ip = Ipv4Address::new([rdata[0], rdata[1], rdata[2], rdata[3]]);
-                let name_lower = to_lowercase(&record.5);
-
-                if !self.cache_a_record(&name_lower, ip, record.6, current_time) {
-                    continue;
-                }
-
-                last_resolved_name = Some(name_lower);
-                last_resolved_ip = Some(ip);
+            match self.try_process_dns_answer(data, &mut offset, current_time) {
+                Err(()) => return MdnsResult::InvalidPacket,
+                Ok(Some((name, ip))) => last_resolved = Some((name, ip)),
+                Ok(None) => {}
             }
         }
 
-        // Return the most appropriate result
-        match (last_resolved_name, last_resolved_ip) {
-            (Some(name), Some(ip)) => MdnsResult::Resolved { name, ip },
-            _ => {
+        match last_resolved {
+            Some((name, ip)) => MdnsResult::Resolved { name, ip },
+            None => {
                 if ancount > 0 {
                     MdnsResult::CacheUpdated
                 } else {

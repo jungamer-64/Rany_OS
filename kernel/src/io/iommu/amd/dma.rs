@@ -231,9 +231,9 @@ impl AmdIommuDriver {
     /// コマンドキュー経由で同期アンマップを実行する
     fn unmap_via_command_queue(
         &self,
-        cq: &super::command_queue::AmdIommuCommandQueue,
+        cq: &crate::io::iommu::cmdqueue::CommandQueue,
         device: &DeviceId,
-        domain: &IommuDomain,
+        domain: &crate::io::iommu::domain::IommuDomain,
         iova: u64,
     ) -> Result<(), IommuError> {
         let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
@@ -274,9 +274,9 @@ impl AmdIommuDriver {
     /// コマンドキュー経由で非同期アンマップを実行する
     async fn unmap_via_command_queue_async(
         &self,
-        cq: &super::command_queue::AmdIommuCommandQueue,
+        cq: &crate::io::iommu::cmdqueue::CommandQueue,
         device: &DeviceId,
-        domain: &IommuDomain,
+        domain: &crate::io::iommu::domain::IommuDomain,
         iova: u64,
     ) -> Result<(), IommuError> {
         let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;

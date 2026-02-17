@@ -20,18 +20,7 @@ pub trait IommuUtils {
         F: Fn() -> bool;
 }
 
-impl IommuUtils for IommuController {
-    /// Wait for a condition to be true with a timeout
-    ///
-    /// # Arguments
-    /// * `condition` - Predicate to check
-    /// * `timeout_us` - Timeout in microseconds
-    /// * `can_yield` - Whether it's safe to yield (must be false in ISR or early boot)
-    ///
-    /// Uses the kernel timer APIs when possible:
-    /// - If yielding is allowed and the scheduler is available, use the millisecond tick and yield
-    /// - Otherwise use `time::precise_time_nanos()` for high-resolution busy-waiting
-    /// - If timers are not yet initialized (early boot), fall back to an rdtsc-based busy-wait
+impl IommuController {
     /// Busy-wait using precise_time_nanos(). Returns None if timer not available.
     fn busy_wait_precise<F>(&self, condition: &F, timeout_us: u64) -> Option<Result<(), IommuError>>
     where
@@ -72,7 +61,9 @@ impl IommuUtils for IommuController {
             core::hint::spin_loop();
         }
     }
+}
 
+impl IommuUtils for IommuController {
     fn wait_for_condition<F>(
         &self,
         condition: F,

@@ -286,7 +286,7 @@ impl AcpiParser {
         let proximity = if entry_len >= 8 {
             unsafe { core::ptr::read_unaligned((offset + 4) as *const u32) }
         } else if entry_len >= 3 {
-            unsafe { core::ptr::read((offset + 2) as *const u8) } as u32
+            (unsafe { core::ptr::read((offset + 2) as *const u8) }) as u32
         } else {
             0u32
         };

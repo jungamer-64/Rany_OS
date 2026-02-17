@@ -66,6 +66,40 @@ impl VirtioBlkPollHandler {
         }
     }
 
+    /// 生の完了をpendingマップとマッチしてIoResultを生成する
+    fn match_raw_completions(
+        &self,
+        device: &super::blk::VirtioBlkDevice,
+        raw_completions: &[(usize, u16, u32)],
+    ) -> Vec<(IoRequestId, IoResult)> {
+        let mut results = Vec::new();
+        let mut pending = self.pending.lock();
+        for &(queue_idx, desc_id, _len) in raw_completions {
+            let key = (queue_idx, desc_id);
+            if let Some(req) = pending.remove(&key) {
+                let status_ok = device
+                    .inflight_dma
+                    .lock()
+                    .remove(&desc_id)
+                    .map(|dma| dma.status() == VirtioBlkStatus::Ok as u8)
+                    .unwrap_or(true);
+
+                let result = if status_ok {
+                    IoResult::Success(req.bytes)
+                } else {
+                    IoResult::Error(IoError::DeviceError)
+                };
+
+                if let Some(queue_arc) = device.queue(queue_idx) {
+                    queue_arc.lock().free_desc(desc_id);
+                }
+
+                results.push((req.io_id, result));
+            }
+        }
+        results
+    }
+
     /// リクエストを保留マップに追加（submit 成功後に呼ぶ）
     pub fn add_pending(
         &self,
@@ -99,11 +133,9 @@ impl VirtioBlkPollHandler {
 
 impl PollHandler for VirtioBlkPollHandler {
     fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
-        let mut results = Vec::new();
-
         let device = match get_virtio_blk_device() {
             Some(dev) => dev,
-            None => return results,
+            None => return Vec::new(),
         };
 
         // Phase 1: 全キューの used ring から生の完了を収集
@@ -120,35 +152,7 @@ impl PollHandler for VirtioBlkPollHandler {
         }
 
         // Phase 2: pending マップとマッチし IoResult を生成
-        let mut pending = self.pending.lock();
-        for (queue_idx, desc_id, _len) in raw_completions {
-            let key = (queue_idx, desc_id);
-            if let Some(req) = pending.remove(&key) {
-                // DMA メタデータからステータスバイトを確認
-                let status_ok = device
-                    .inflight_dma
-                    .lock()
-                    .remove(&desc_id)
-                    .map(|dma| dma.status() == VirtioBlkStatus::Ok as u8)
-                    .unwrap_or(true);
-
-                let result = if status_ok {
-                    IoResult::Success(req.bytes)
-                } else {
-                    IoResult::Error(IoError::DeviceError)
-                };
-
-                // ディスクリプタをキューに返却
-                if let Some(queue_arc) = device.queue(queue_idx) {
-                    queue_arc.lock().free_desc(desc_id);
-                }
-
-                results.push((req.io_id, result));
-            }
-            // else: io_scheduler 管理外の完了 → レガシーパスで処理済み
-        }
-
-        results
+        self.match_raw_completions(&device, &raw_completions)
     }
 
     fn is_ready(&self) -> bool {

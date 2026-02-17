@@ -845,7 +845,7 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a read request (internal)
-    fn alloc_three_descriptors(queue: &crate::io::virtio::VirtQueueGuard) -> Result<(u16, u16, u16), BlockError> {
+    fn alloc_three_descriptors(queue: &VirtQueue) -> Result<(u16, u16, u16), BlockError> {
         let desc0 = queue.alloc_desc().ok_or(BlockError::QueueFull)?;
         let desc1 = queue.alloc_desc().ok_or_else(|| {
             queue.free_desc(desc0);

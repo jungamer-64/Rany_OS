@@ -993,6 +993,7 @@ impl<T> DmaHandle<[T]> {
         domain_id: u16,
         direction: DmaDirection,
     ) -> Result<Self, MapError<[T]>> {
+        use x86_64::VirtAddr;
         if crate::io::iommu::api::is_iommu_required()
             || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
         {
@@ -1078,7 +1079,7 @@ impl<T> DmaHandle<[T]> {
         ))
     }
 
-    fn map_rref_slice_no_iommu(
+    fn try_identity_map_rref_slice(
         rref: &RRef<[T]>,
         size: u64,
         direction: DmaDirection,
@@ -1113,7 +1114,7 @@ impl<T> DmaHandle<[T]> {
         };
 
         if !crate::io::iommu::api::is_iommu_enabled() {
-            match Self::map_rref_slice_no_iommu(&rref, size, direction) {
+            match Self::try_identity_map_rref_slice(&rref, size, direction) {
                 Some((iova, phys, sz, kind)) => {
                     return Ok(Self::new_slice(rref, iova, phys, sz, 0, direction, kind));
                 }
@@ -1348,6 +1349,25 @@ impl<T> DmaHandle<T> {
     /// # Returns
     /// - `Ok(QuarantineTicket<T>)` - On success or after flush. Poll for completion.
     /// - `Err(QuarantineLazyUnmapError<T>)` - On failure after flush attempt.
+    /// Flush-and-retry ヘルパー: キューがいっぱいの場合、flushしてリトライ
+    fn flush_and_retry_unmap<I: IommuInvalidator>(
+        handle: DmaHandle<T>,
+        domain: &IommuDomain,
+        context: &dyn IommuHardwareContext,
+        invalidator: &I,
+    ) -> Result<super::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
+    where
+        T: 'static,
+    {
+        if let Err(flush_err) = domain.flush(invalidator, context) {
+            return Err(QuarantineLazyUnmapError {
+                handle,
+                kind: QuarantineLazyUnmapErrorKind::IommuError(flush_err),
+            });
+        }
+        handle.try_unmap_lazy(domain, context)
+    }
+
     pub(crate) fn unmap_lazy<I: IommuInvalidator>(
         self,
         domain: &IommuDomain,
@@ -1376,19 +1396,8 @@ impl<T> DmaHandle<T> {
         match handle.try_unmap_lazy(domain, context) {
             Ok(ticket) => Ok(ticket),
             Err(err) => {
-                // If queue full, try one flush and retry
                 if matches!(err.kind, QuarantineLazyUnmapErrorKind::QueueFull) {
-                    let handle = err.handle;
-                    if let Err(flush_err) = domain.flush(invalidator, context) {
-                        return Err(QuarantineLazyUnmapError {
-                            handle,
-                            kind: QuarantineLazyUnmapErrorKind::IommuError(flush_err),
-                        });
-                    }
-                    match handle.try_unmap_lazy(domain, context) {
-                        Ok(ticket) => Ok(ticket),
-                        Err(e) => Err(e),
-                    }
+                    Self::flush_and_retry_unmap(err.handle, domain, context, invalidator)
                 } else {
                     Err(err)
                 }

@@ -343,6 +343,37 @@ impl MacPolicy {
             .map(|(_, ctx)| ctx.clone())
     }
 
+    /// Enforce Bell-LaPadula dominance check.
+    ///
+    /// `dominant` must dominate `subordinate` for the access to be allowed.
+    /// `subject`/`object` are the original contexts used for error reporting.
+    fn enforce_dominance(
+        &self,
+        dominant: &SecurityContext,
+        subordinate: &SecurityContext,
+        subject_level: SecurityLevel,
+        object_level: SecurityLevel,
+    ) -> Result<MacDecision, MacError> {
+        if dominant.dominates(subordinate) {
+            return Ok(MacDecision::Allow);
+        }
+        if !self.enforcing {
+            return Ok(MacDecision::AllowWithAudit);
+        }
+        if !dominant.level.dominates(subordinate.level) {
+            return Err(MacError::LevelDenied {
+                subject_level,
+                object_level,
+            });
+        }
+        let missing: Vec<_> = subordinate
+            .categories
+            .difference(&dominant.categories)
+            .copied()
+            .collect();
+        Err(MacError::CategoryDenied { missing })
+    }
+
     /// Check access (Bell-LaPadula model)
     pub fn check_access(
         &self,
@@ -357,53 +388,13 @@ impl MacPolicy {
         match access_type {
             AccessType::Read | AccessType::Execute => {
                 // Simple Security Property: No Read Up
-                // Subject can read object only if subject dominates object
-                if !subject.dominates(object) {
-                    if self.enforcing {
-                        // Check which constraint failed
-                        if !subject.level.dominates(object.level) {
-                            return Err(MacError::LevelDenied {
-                                subject_level: subject.level,
-                                object_level: object.level,
-                            });
-                        }
-
-                        let missing: Vec<_> = object
-                            .categories
-                            .difference(&subject.categories)
-                            .copied()
-                            .collect();
-                        return Err(MacError::CategoryDenied { missing });
-                    }
-                    return Ok(MacDecision::AllowWithAudit);
-                }
+                self.enforce_dominance(subject, object, subject.level, object.level)
             }
             AccessType::Write | AccessType::Append | AccessType::Create | AccessType::Delete => {
                 // *-Property (Star Property): No Write Down
-                // Subject can write to object only if object dominates subject
-                // This prevents information leakage to lower levels
-                if !object.dominates(subject) {
-                    if self.enforcing {
-                        if !object.level.dominates(subject.level) {
-                            return Err(MacError::LevelDenied {
-                                subject_level: subject.level,
-                                object_level: object.level,
-                            });
-                        }
-
-                        let missing: Vec<_> = subject
-                            .categories
-                            .difference(&object.categories)
-                            .copied()
-                            .collect();
-                        return Err(MacError::CategoryDenied { missing });
-                    }
-                    return Ok(MacDecision::AllowWithAudit);
-                }
+                self.enforce_dominance(object, subject, subject.level, object.level)
             }
         }
-
-        Ok(MacDecision::Allow)
     }
 
     /// Check access between domains

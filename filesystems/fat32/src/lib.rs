@@ -3437,44 +3437,43 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         Ok(fs)
     }
 
+    /// BootSectorからFAT32パラメータを検証・計算する
+    fn validate_boot_sector_params(
+        boot_sector: &BootSector,
+    ) -> FsResult<(Sector, Sector, u32, u32, u32)> {
+        let fs_type = boot_sector.fs_type();
+        if &fs_type[0..5] != b"FAT32" {
+            return Err(FsError::InvalidInput);
+        }
+        let fat_start_sector = Sector(boot_sector.reserved_sectors() as u32);
+        let fat_size = boot_sector.fat_size_32();
+        let num_fats = boot_sector.num_fats() as u32;
+        let fat_area_size = fat_size
+            .checked_mul(num_fats)
+            .ok_or(FsError::FileSystemCorrupted)?;
+        let data_start_sector = fat_start_sector + fat_area_size;
+        let total_sectors = boot_sector.total_sectors();
+        let data_sectors = total_sectors
+            .checked_sub(data_start_sector.0)
+            .ok_or(FsError::FileSystemCorrupted)?;
+        let sectors_per_cluster = boot_sector.sectors_per_cluster() as u32;
+        if sectors_per_cluster == 0 {
+            return Err(FsError::FileSystemCorrupted);
+        }
+        let total_clusters = data_sectors
+            .checked_div(sectors_per_cluster)
+            .ok_or(FsError::FileSystemCorrupted)?;
+        Ok((fat_start_sector, data_start_sector, sectors_per_cluster, total_clusters, fat_size))
+    }
+
     fn mount_from_boot(
         boot_sector: BootSector,
         zc_device: Arc<dyn ZeroCopyBlockDevice<Buffer = B>>,
         legacy_device: Option<Arc<dyn BlockDevice>>,
         allocator: Option<alloc::sync::Arc<dyn ClusterBufferAllocator>>,
     ) -> FsResult<Arc<Self>> {
-        // FAT32であることを確認
-        let fs_type = boot_sector.fs_type();
-        if &fs_type[0..5] != b"FAT32" {
-            return Err(FsError::InvalidInput);
-        }
-
-        // 各パラメータを計算（型安全）
-        // 型変換と安全性チェック（オーバーフローやゼロ除算を回避）
-        let fat_start_sector = Sector(boot_sector.reserved_sectors() as u32);
-        let fat_size = boot_sector.fat_size_32();
-        let num_fats = boot_sector.num_fats() as u32;
-
-        // fat_area_size = fat_size * num_fats
-        let fat_area_size = fat_size
-            .checked_mul(num_fats)
-            .ok_or(FsError::FileSystemCorrupted)?;
-
-        let data_start_sector = fat_start_sector + fat_area_size;
-
-        let total_sectors = boot_sector.total_sectors();
-        let data_sectors = total_sectors
-            .checked_sub(data_start_sector.0)
-            .ok_or(FsError::FileSystemCorrupted)?;
-
-        let sectors_per_cluster = boot_sector.sectors_per_cluster() as u32;
-        if sectors_per_cluster == 0 {
-            return Err(FsError::FileSystemCorrupted);
-        }
-
-        let total_clusters = data_sectors
-            .checked_div(sectors_per_cluster)
-            .ok_or(FsError::FileSystemCorrupted)?;
+        let (fat_start_sector, data_start_sector, sectors_per_cluster, total_clusters, fat_size) =
+            Self::validate_boot_sector_params(&boot_sector)?;
 
         // デバイスIDを生成（静的カウンタを使用）
         static DEVICE_ID_COUNTER: core::sync::atomic::AtomicU64 =
@@ -3627,6 +3626,22 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         Ok(self.data_start_sector + (cluster.0 - 2) * self.sectors_per_cluster)
     }
 
+    /// FATセクタバッファをClusterベクタにデコードする
+    fn decode_fat_sector_to_clusters(buffer: &[u8]) -> FsResult<Vec<Cluster>> {
+        let mut sector_data = try_alloc_vec(FAT_ENTRIES_PER_SECTOR, Cluster::FREE)?;
+        for i in 0..FAT_ENTRIES_PER_SECTOR {
+            let off = i * 4;
+            let val = u32::from_le_bytes([
+                buffer[off],
+                buffer[off + 1],
+                buffer[off + 2],
+                buffer[off + 3],
+            ]) & 0x0FFFFFFF;
+            sector_data[i] = Cluster(val);
+        }
+        Ok(sector_data)
+    }
+
     /// FATエントリを読み取り（型安全）
     fn read_fat_entry(&self, cluster: Cluster) -> FsResult<Cluster> {
         trace_fat_operation!("read", cluster);
@@ -3649,18 +3664,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         let mut buffer = [0u8; BLOCK_SIZE];
         self.read_sector_cached(sector.as_u64(), &mut buffer)?;
 
-        let mut sector_data = try_alloc_vec(FAT_ENTRIES_PER_SECTOR, Cluster::FREE)?;
-        for i in 0..FAT_ENTRIES_PER_SECTOR {
-            let off = i * 4;
-            let val = u32::from_le_bytes([
-                buffer[off],
-                buffer[off + 1],
-                buffer[off + 2],
-                buffer[off + 3],
-            ]) & 0x0FFFFFFF;
-            sector_data[i] = Cluster(val);
-        }
-
+        let sector_data = Self::decode_fat_sector_to_clusters(&buffer)?;
         let result = sector_data[offset_in_sector];
 
         if let Some((evicted_idx, evicted_data, was_dirty)) =
@@ -3697,18 +3701,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         self.read_sector_cached_async(sector.as_u64(), &mut buffer)
             .await?;
 
-        let mut sector_data = try_alloc_vec(FAT_ENTRIES_PER_SECTOR, Cluster::FREE)?;
-        for i in 0..FAT_ENTRIES_PER_SECTOR {
-            let off = i * 4;
-            let val = u32::from_le_bytes([
-                buffer[off],
-                buffer[off + 1],
-                buffer[off + 2],
-                buffer[off + 3],
-            ]) & 0x0FFFFFFF;
-            sector_data[i] = Cluster(val);
-        }
-
+        let sector_data = Self::decode_fat_sector_to_clusters(&buffer)?;
         let result = sector_data[offset_in_sector];
 
         if let Some((evicted_idx, evicted_data, was_dirty)) =
@@ -4441,6 +4434,29 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         }
     }
 
+    /// 連続クラスタの検出・読み取り・次クラスタ取得を一括で行うヘルパー
+    ///
+    /// # Returns
+    /// `Ok((clusters_count, next_cluster))` - 読み取ったクラスタ数と次のクラスタ
+    fn try_read_next_batch(
+        &self,
+        current_cluster: Cluster,
+        buffer: &mut [u8],
+        clusters_read: usize,
+        cluster_size: usize,
+        max_remaining: usize,
+    ) -> FsResult<(usize, Option<Cluster>)> {
+        let (start, count) = self.find_contiguous_clusters(current_cluster, max_remaining)?;
+        if count == 0 {
+            return Ok((0, None));
+        }
+        let batch_size = count * cluster_size;
+        let offset = clusters_read * cluster_size;
+        self.read_contiguous_clusters(start, count, &mut buffer[offset..offset + batch_size])?;
+        let next = self.get_next_cluster_after_batch(start, count)?;
+        Ok((count, next))
+    }
+
     /// クラスタバッチ読み取りの内部実装
     ///
     /// # Arguments
@@ -4469,44 +4485,24 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         let mut first_error: Option<FsError> = None;
 
         while clusters_read < max_clusters && first_error.is_none() {
-            // 連続したクラスタの開始点と長さを検出
-            match self.find_contiguous_clusters(current_cluster, max_clusters - clusters_read) {
-                Ok((contiguous_start, contiguous_count)) => {
-                    if contiguous_count == 0 {
-                        break;
-                    }
-
-                    // 連続したクラスタをバッチ読み取り
-                    let batch_size = contiguous_count * cluster_size;
-                    let buffer_offset = clusters_read * cluster_size;
-
-                    if let Err(e) = self.read_contiguous_clusters(
-                        contiguous_start,
-                        contiguous_count,
-                        &mut buffer[buffer_offset..buffer_offset + batch_size],
-                    ) {
-                        first_error = Some(e);
-                        if !allow_partial {
-                            break;
-                        }
-                    } else {
-                        total_read += batch_size;
-                        clusters_read += contiguous_count;
-                    }
-
-                    // 次のクラスタを取得
-                    match self.get_next_cluster_after_batch(contiguous_start, contiguous_count) {
-                        Ok(Some(next)) => current_cluster = next,
-                        Ok(None) => break, // チェーン終端
-                        Err(e) => {
-                            first_error = Some(e);
-                            break;
-                        }
+            match self.try_read_next_batch(
+                current_cluster, buffer, clusters_read, cluster_size,
+                max_clusters - clusters_read,
+            ) {
+                Ok((0, _)) => break,
+                Ok((count, next)) => {
+                    total_read += count * cluster_size;
+                    clusters_read += count;
+                    match next {
+                        Some(n) => current_cluster = n,
+                        None => break,
                     }
                 }
                 Err(e) => {
                     first_error = Some(e);
-                    break;
+                    if !allow_partial {
+                        break;
+                    }
                 }
             }
         }
@@ -5156,7 +5152,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     /// Resolve the effective name of a Standard directory entry, consuming any
     /// accumulated LFN parts. Returns the resolved name and clears `lfn_parts`.
     fn resolve_entry_name(
-        raw: &crate::dir_entry::RawDirEntry,
+        raw: &DirEntryRaw,
         lfn_parts: &mut Vec<(u8, String, u8)>,
     ) -> String {
         if !lfn_parts.is_empty() {
