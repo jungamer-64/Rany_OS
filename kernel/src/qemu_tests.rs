@@ -1392,6 +1392,10 @@ pub fn iommu_wave5_qi_metrics_pressure_canonical_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave5_qi_metrics_pressure_canonical_smoke()
 }
 
+pub fn iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
+}
+
 pub fn iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave5_cmdqueue_map_unmap_with_domain_residual_smoke()
 }
@@ -1401,9 +1405,9 @@ pub fn iommu_wave5_map_for_device_async_and_unmap_residual_smoke() -> bool {
 }
 
 // Compat alias: legacy wave2 residual wrapper.
-// Required suite does not use this wrapper; it forwards to the Wave5 residual wrapper.
+// Required suite does not use this wrapper; it forwards to the Wave5 canonical wrapper.
 pub fn iommu_wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
-    iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke()
+    iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
 }
 
 // Compat alias: legacy wave2 residual wrapper.

@@ -8,9 +8,8 @@ kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snaps
 kernel/tests/* migration to qemu-suites/kernel (current snapshot: 0 files, 0 #[test_case])
 kernel runtime pending suite execution for full-runtime cases (net_bridge/framebuffer) and blocked-state monitoring (runtime pass/fail/blocked only)
 IOMMU residual canonical parity tracking (original host test names are kept for migration visibility; required no_std smoke mapping is defined in scripts/qemu_iommu_residual_parity.lst)
-IOMMU residual canonical: test_cmdqueue_map_unmap_with_domain
 IOMMU residual canonical: test_map_for_device_async_and_unmap
-IOMMU Wave5 canonical deterministic set is promoted to required suite_kernel: test_map_for_device_respects_dma_mask, test_api_security_notifier_registration, test_qi_metrics_pressure
+IOMMU Wave5 canonical deterministic set is promoted to required suite_kernel: test_cmdqueue_map_unmap_with_domain, test_map_for_device_respects_dma_mask, test_api_security_notifier_registration, test_qi_metrics_pressure
 IOMMU wave3 required deterministic set (source of truth: qemu-suites/kernel/src/main.rs): scalable_mode(pasid0_fault_resolution+detach_cleans_pasid+attach_detach_cycle) + pasid_table(alloc_free+multi_domain+exhaustion) + mapping_slab + zombie_queue + pri_fuel
 IOMMU wave3 pending monitored smoke candidates (not in required): none
 IOMMU AMD Wave1+Wave5 deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)

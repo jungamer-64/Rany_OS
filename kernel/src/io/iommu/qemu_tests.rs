@@ -1897,7 +1897,7 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
 
 /// CQ map/unmap with domain: single-thread sequential submit → process → verify.
 /// Migrated from test_cmdqueue_map_unmap_with_domain (removed std::thread).
-fn wave5_cmdqueue_map_unmap_with_domain_residual_impl() -> bool {
+fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
     use super::cmdqueue::{CommandQueue, IommuCommandKind};
     use super::intel::controller::dma::DomainManager;
 
@@ -2215,9 +2215,14 @@ pub fn wave5_qi_metrics_pressure_canonical_smoke() -> bool {
     wave5_qi_metrics_pressure_canonical_impl()
 }
 
-/// Wave5 residual export retained in required suite for staged migration.
+/// Wave5 canonical required export: cmdqueue map/unmap with domain parity.
+pub fn wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
+    wave5_cmdqueue_map_unmap_with_domain_canonical_impl()
+}
+
+/// Wave5 residual export retained for compatibility with parity monitoring.
 pub fn wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {
-    wave5_cmdqueue_map_unmap_with_domain_residual_impl()
+    wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
 }
 
 /// Wave5 residual export retained in required suite for staged migration.
@@ -2226,9 +2231,9 @@ pub fn wave5_map_for_device_async_and_unmap_residual_smoke() -> bool {
 }
 
 // Compat alias: legacy wave2 residual name.
-// Required suite does not use this entrypoint; it forwards to the Wave5 residual export.
+// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
 pub fn wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
-    wave5_cmdqueue_map_unmap_with_domain_residual_smoke()
+    wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
 }
 
 // Compat alias: legacy wave2 residual name.

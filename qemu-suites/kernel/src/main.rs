@@ -1088,6 +1088,9 @@ fn test_net_ecdh_phase_b_exports() -> bool {
 
 fn test_iommu_wave5_canonical_exports() -> bool {
     run_check(
+        "iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke,
+    ) && run_check(
         "iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke",
         rany_os::qemu_tests::iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke,
     ) && run_check(
@@ -1101,9 +1104,6 @@ fn test_iommu_wave5_canonical_exports() -> bool {
 
 fn test_iommu_wave5_residual_exports() -> bool {
     run_check(
-        "iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke",
-        rany_os::qemu_tests::iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke,
-    ) && run_check(
         "iommu_wave5_map_for_device_async_and_unmap_residual_smoke",
         rany_os::qemu_tests::iommu_wave5_map_for_device_async_and_unmap_residual_smoke,
     )

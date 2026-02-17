@@ -4,5 +4,4 @@
 # - `original_case` must exist in kernel/src/io/iommu/tests.rs.
 # - `required_smoke_case` must exist in kernel/src/io/iommu/qemu_tests.rs and be wired to suite_kernel.
 
-test_cmdqueue_map_unmap_with_domain|wave5_cmdqueue_map_unmap_with_domain_residual_smoke|tracked|threaded-original
 test_map_for_device_async_and_unmap|wave5_map_for_device_async_and_unmap_residual_smoke|tracked|thread+global-original
