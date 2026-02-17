@@ -319,6 +319,19 @@ impl QrCode {
         }
     }
 
+    /// Place format information bits at the given positions.
+    fn place_format_bits(
+        &mut self,
+        format: u16,
+        positions: &[(usize, usize)],
+        shift_start: u8,
+    ) {
+        for (i, (x, y)) in positions.iter().enumerate() {
+            let bit = ((format >> (shift_start - i as u8)) & 1) != 0;
+            self.force_reserved(*x, *y, if bit { Module::FuncDark } else { Module::FuncLight });
+        }
+    }
+
     fn place_format_info(&mut self, mask: u8) {
         let data = ((0b01u16) << 3) | (mask as u16);
         let mut rem = data << 10;
@@ -329,18 +342,9 @@ impl QrCode {
         let bch = (data << 10) | (rem & 0x03FF);
         let format = bch ^ 0b101010000010010u16;
 
-        for (i, (x, y)) in FORMAT_POS_TL.iter().enumerate() {
-            let bit = ((format >> (14 - i)) & 1) != 0;
-            self.force_reserved(*x, *y, if bit { Module::FuncDark } else { Module::FuncLight });
-        }
-        for (i, (x, y)) in FORMAT_POS_TR.iter().enumerate() {
-            let bit = ((format >> (14 - i)) & 1) != 0;
-            self.force_reserved(*x, *y, if bit { Module::FuncDark } else { Module::FuncLight });
-        }
-        for (i, (x, y)) in FORMAT_POS_BL.iter().enumerate() {
-            let bit = ((format >> (6 - i)) & 1) != 0;
-            self.force_reserved(*x, *y, if bit { Module::FuncDark } else { Module::FuncLight });
-        }
+        self.place_format_bits(format, &FORMAT_POS_TL, 14);
+        self.place_format_bits(format, &FORMAT_POS_TR, 14);
+        self.place_format_bits(format, &FORMAT_POS_BL, 6);
     }
 
     fn place_data(&mut self, data: &[u8]) {

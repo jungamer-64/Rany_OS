@@ -974,25 +974,25 @@ pub mod p256 {
     ///   r INTEGER,
     ///   s INTEGER
     /// }
-    fn parse_ecdsa_signature_der(der: &[u8]) -> Result<([u8; 32], [u8; 32]), EcdsaError> {
-        if der.len() < 6 {
+    /// Validate the DER SEQUENCE header for an ECDSA signature.
+    /// Returns the sequence body start position and length.
+    fn validate_der_sequence_header(der: &[u8]) -> Result<usize, EcdsaError> {
+        if der.len() < 6 || der[0] != 0x30 {
             return Err(EcdsaError::InvalidSignature);
         }
-
-        // SEQUENCE タグ
-        if der[0] != 0x30 {
-            return Err(EcdsaError::InvalidSignature);
-        }
-
         let seq_len = if der[1] & 0x80 == 0 {
             der[1] as usize
         } else {
             return Err(EcdsaError::InvalidSignature);
         };
-
         if der.len() < 2 + seq_len {
             return Err(EcdsaError::InvalidSignature);
         }
+        Ok(seq_len)
+    }
+
+    fn parse_ecdsa_signature_der(der: &[u8]) -> Result<([u8; 32], [u8; 32]), EcdsaError> {
+        let _seq_len = Self::validate_der_sequence_header(der)?;
 
         let mut pos = 2;
         let r_data = parse_der_integer(der, &mut pos)?;
