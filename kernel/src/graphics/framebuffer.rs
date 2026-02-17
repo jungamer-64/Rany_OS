@@ -1596,73 +1596,85 @@ impl Framebuffer {
     /// 全画面コピーより効率的
     /// 注: "Swap"ではなく"Blit"（一方向コピー）
     pub fn blit_rect(&mut self, rect: Rect) {
-        if let Some(ref back) = self.back_buffer {
-            let stride_mmio = self.info.stride as usize;
-            let bytes_per_pixel = (self.info.bpp / 8) as usize;
+        let back_ptr = match self.back_buffer.as_ref() {
+            Some(back) => back.as_ptr(),
+            None => return,
+        };
 
-            // 境界チェック
-            let x = (rect.x.max(0) as u32).min(self.info.width) as usize;
-            let y = (rect.y.max(0) as u32).min(self.info.height) as usize;
-            let w = (rect.width as usize).min(self.info.width as usize - x);
-            let h = (rect.height as usize).min(self.info.height as usize - y);
+        let stride_mmio = self.info.stride as usize;
+        let bytes_per_pixel = (self.info.bpp / 8) as usize;
 
-            if w == 0 || h == 0 {
-                return;
-            }
+        // 境界チェック
+        let x = (rect.x.max(0) as u32).min(self.info.width) as usize;
+        let y = (rect.y.max(0) as u32).min(self.info.height) as usize;
+        let w = (rect.width as usize).min(self.info.width as usize - x);
+        let h = (rect.height as usize).min(self.info.height as usize - y);
 
-            // Iterate rows
-            for row in 0..h {
-                let src_y = y + row;
-                let src_idx = src_y * self.info.width as usize + x;
-                let src_slice = &back[src_idx .. src_idx + w];
+        if w == 0 || h == 0 {
+            return;
+        }
 
-                let dst_offset = (y + row) * stride_mmio + x * bytes_per_pixel;
-                let dst_addr = self.buffer as usize + dst_offset;
+        // 24/16bppは行単位でscratchへ変換して一括ストアする
+        let row_bytes = w * bytes_per_pixel;
+        if bytes_per_pixel == 3 || bytes_per_pixel == 2 {
+            self.ensure_scratch_u8(row_bytes);
+        }
 
-                match bytes_per_pixel {
-                    4 => {
-                        // 32-bit to 32-bit: Direct copy (MMIO optimized)
-                        // Cast src_slice (u32) to u8 bytes
-                        let src_bytes = unsafe {
-                            core::slice::from_raw_parts(src_slice.as_ptr() as *const u8, w * 4)
-                        };
-                        self.write_bytes_mmio_streaming(dst_addr, src_bytes);
-                    }
-                    3 => {
-                        // 32-bit BGRA to 24-bit BGR: Pack and write
-                        // We iterate pixels and write 3 bytes.
-                        // Can use volatile writes manually for best perf without intermediate buf
-                        let mut curr_addr = dst_addr;
-                        for &pixel in src_slice {
-                            // Little Endian: pixel = BB GG RR AA
-                            // We want BB GG RR
-                            let b = (pixel & 0xFF) as u8;
-                            let g = ((pixel >> 8) & 0xFF) as u8;
-                            let r = ((pixel >> 16) & 0xFF) as u8;
-                            mmio::volatile_write::<u8>(curr_addr, b);
-                            mmio::volatile_write::<u8>(curr_addr + 1, g);
-                            mmio::volatile_write::<u8>(curr_addr + 2, r);
-                            curr_addr += 3;
+        let is_bgr_24 = matches!(self.info.format, PixelFormat::Bgr888);
+
+        // Iterate rows
+        for row in 0..h {
+            let src_y = y + row;
+            let src_idx = src_y * self.info.width as usize + x;
+            // SAFETY: back_ptr points to back_buffer allocation. src_idx..src_idx+w
+            // is in-bounds due to clipping above.
+            let src_slice = unsafe { core::slice::from_raw_parts(back_ptr.add(src_idx), w) };
+
+            let dst_offset = (y + row) * stride_mmio + x * bytes_per_pixel;
+            let dst_addr = self.buffer as usize + dst_offset;
+
+            match bytes_per_pixel {
+                4 => {
+                    // 32-bit to 32-bit: stream u32 words directly
+                    self.write_u32_slice_mmio_streaming(dst_addr, src_slice);
+                }
+                3 => {
+                    // 32-bit BGRA backbuffer -> 24-bit BGR/RGB (format-aware)
+                    for (i, &pixel) in src_slice.iter().enumerate() {
+                        let b = (pixel & 0xFF) as u8;
+                        let g = ((pixel >> 8) & 0xFF) as u8;
+                        let r = ((pixel >> 16) & 0xFF) as u8;
+                        let off = i * 3;
+                        if is_bgr_24 {
+                            self.scratch_u8[off] = b;
+                            self.scratch_u8[off + 1] = g;
+                            self.scratch_u8[off + 2] = r;
+                        } else {
+                            self.scratch_u8[off] = r;
+                            self.scratch_u8[off + 1] = g;
+                            self.scratch_u8[off + 2] = b;
                         }
                     }
-                    2 => {
-                         // 16-bit
-                         let mut curr_addr = dst_addr;
-                         for &pixel in src_slice {
-                             // Convert 8888 -> 565
-                             let b = (pixel & 0xFF) as u8;
-                             let g = ((pixel >> 8) & 0xFF) as u8;
-                             let r = ((pixel >> 16) & 0xFF) as u8;
-                             let rgb565 = ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | (b as u16 >> 3);
-                             mmio::mmio_write_u16(curr_addr, rgb565);
-                             curr_addr += 2;
-                         }
-                    }
-                    _ => {}
+                    self.write_bytes_mmio_streaming(dst_addr, &self.scratch_u8[..row_bytes]);
                 }
+                2 => {
+                    // 32-bit BGRA backbuffer -> 16-bit RGB565
+                    for (i, &pixel) in src_slice.iter().enumerate() {
+                        let b = (pixel & 0xFF) as u8;
+                        let g = ((pixel >> 8) & 0xFF) as u8;
+                        let r = ((pixel >> 16) & 0xFF) as u8;
+                        let rgb565 =
+                            ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | (b as u16 >> 3);
+                        let off = i * 2;
+                        self.scratch_u8[off] = (rgb565 & 0xFF) as u8;
+                        self.scratch_u8[off + 1] = (rgb565 >> 8) as u8;
+                    }
+                    self.write_bytes_mmio_streaming(dst_addr, &self.scratch_u8[..row_bytes]);
+                }
+                _ => {}
             }
-            mmio::sfence();
         }
+        mmio::sfence();
     }
 
     /// 描画先バッファを取得
@@ -2053,6 +2065,69 @@ impl Framebuffer {
         self.draw_vline_raw(x, start_y, end_y, color);
     }
 
+    /// 4bpp垂直線描画ヘルパー
+    fn draw_vline_4bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
+        let color_u32 = color.to_u32();
+        if self.back_buffer.is_some() {
+            let base = self.draw_buffer();
+            for i in 0..run_len {
+                let y = start_y + i;
+                let off = y * stride + x_off * 4;
+                unsafe {
+                    ptr::write_unaligned(base.add(off) as *mut u32, color_u32);
+                }
+            }
+        } else {
+            let base_addr = self.draw_buffer() as usize;
+            for i in 0..run_len {
+                let y = start_y + i;
+                let off = base_addr + y * stride + x_off * 4;
+                mmio::mmio_write_u32(off, color_u32);
+            }
+        }
+    }
+
+    /// 3bpp垂直線描画ヘルパー
+    fn draw_vline_3bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
+        let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
+        let (c0, c1, c2) = if is_bgr {
+            (color.blue, color.green, color.red)
+        } else {
+            (color.red, color.green, color.blue)
+        };
+
+        if let Some(ref mut _back) = self.back_buffer {
+            debug_assert!(false, "24bpp vline called on u32 backbuffer");
+        } else {
+            let base_addr = self.draw_buffer() as usize;
+            for i in 0..run_len {
+                let y = start_y + i;
+                let off = base_addr + y * stride + x_off * 3;
+                mmio::volatile_write(off, c0);
+                mmio::volatile_write(off + 1, c1);
+                mmio::volatile_write(off + 2, c2);
+            }
+        }
+    }
+
+    /// 2bpp垂直線描画ヘルパー
+    fn draw_vline_2bpp(&mut self, x_off: usize, start_y: usize, run_len: usize, stride: usize, color: Color) {
+        let r = (color.red as u16 >> 3) & 0x1F;
+        let g = (color.green as u16 >> 2) & 0x3F;
+        let b = (color.blue as u16 >> 3) & 0x1F;
+        let pixel = (r << 11) | (g << 5) | b;
+        if let Some(ref mut _back) = self.back_buffer {
+            debug_assert!(false, "16bpp vline called on u32 backbuffer");
+        } else {
+            let base_addr = self.draw_buffer() as usize;
+            for i in 0..run_len {
+                let y = start_y + i;
+                let off = base_addr + y * stride + x_off * 2;
+                mmio::mmio_write_u16(off, pixel);
+            }
+        }
+    }
+
     /// Dirty Rectangle更新を行わない垂直線描画（クリッピング済み前提）
     fn draw_vline_raw(&mut self, x: i32, start_y: i32, end_y: i32, color: Color) {
         let (bytes_per_pixel, stride) = if self.back_buffer.is_some() {
@@ -2064,66 +2139,9 @@ impl Framebuffer {
         let run_len = (end_y - start_y + 1) as usize;
 
         match bytes_per_pixel {
-            4 => {
-                let color_u32 = color.to_u32();
-                // Branch once: either write to back buffer (fast pointer writes)
-                // or write via MMIO helper.
-                if let Some(_) = self.back_buffer {
-                    let base = self.draw_buffer();
-                    for i in 0..run_len {
-                        let y = (start_y as usize) + i;
-                        let off = y * stride + x_off * 4;
-                        unsafe {
-                            ptr::write_unaligned(base.add(off) as *mut u32, color_u32);
-                        }
-                    }
-                } else {
-                    let base_addr = self.draw_buffer() as usize;
-                    for i in 0..run_len {
-                        let y = (start_y as usize) + i;
-                        let off = base_addr + y * stride + x_off * 4;
-                        mmio::mmio_write_u32(off, color_u32);
-                    }
-                }
-            }
-            3 => {
-                let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
-                let (c0, c1, c2) = if is_bgr {
-                    (color.blue, color.green, color.red)
-                } else {
-                    (color.red, color.green, color.blue)
-                };
-
-                if let Some(ref mut _back) = self.back_buffer {
-                    debug_assert!(false, "24bpp vline called on u32 backbuffer");
-                } else {
-                    let base_addr = self.draw_buffer() as usize;
-                    for i in 0..run_len {
-                        let y = (start_y as usize) + i;
-                        let off = base_addr + y * stride + x_off * 3;
-                        mmio::volatile_write(off, c0);
-                        mmio::volatile_write(off + 1, c1);
-                        mmio::volatile_write(off + 2, c2);
-                    }
-                }
-            }
-
-            2 => {
-                let r = (color.red as u16 >> 3) & 0x1F;
-                let g = (color.green as u16 >> 2) & 0x3F;
-                let b = (color.blue as u16 >> 3) & 0x1F;
-                let pixel = (r << 11) | (g << 5) | b;
-                if let Some(ref mut _back) = self.back_buffer {
-                    debug_assert!(false, "16bpp vline called on u32 backbuffer");
-                } else {
-                    let base_addr = self.draw_buffer() as usize;
-                    for i in 0..run_len {
-                        let y = (start_y as usize) + i;
-                        let off = base_addr + y * stride + x_off * 2;
-                        mmio::mmio_write_u16(off, pixel);
-                    }
-                }
-            }
+            4 => self.draw_vline_4bpp(x_off, start_y as usize, run_len, stride, color),
+            3 => self.draw_vline_3bpp(x_off, start_y as usize, run_len, stride, color),
+            2 => self.draw_vline_2bpp(x_off, start_y as usize, run_len, stride, color),
             _ => {
                 for y in start_y..=end_y {
                     self.set_pixel_raw(x, y, color);
@@ -2527,14 +2545,18 @@ impl Framebuffer {
         match dst_bpp {
             4 => {
                 if needs_swizzle {
-                    let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4);
+                    let dst_slice = unsafe {
+                        core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4)
+                    };
                     crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
                 } else {
                     self.write_bytes_mmio_streaming(dst_ptr as usize, src_row);
                 }
             }
             3 => {
-                let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 3);
+                let dst_slice = unsafe {
+                    core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 3)
+                };
                 crate::graphics::packer::pack_rgba_to_bgr24(src_row, dst_slice, needs_swizzle);
             }
             _ => {}

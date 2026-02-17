@@ -340,6 +340,54 @@ pub fn drain_deferred_faults() -> usize {
     drain_deferred_faults_with_controller(None)
 }
 
+/// Process a single non-overflow fault event with controller
+fn process_fault_with_controller(event: &DeferredFaultEvent, controller: &IommuController) {
+    use crate::io::iommu::security::SecurityEvent;
+
+    if let Some(log) = controller.fault_log.lock().as_mut() {
+        log.push(event.to_fault_record());
+    }
+
+    let device_id = device_id_from_source_id(controller.segment, event.source_id);
+    let domain_id = controller
+        .get_domain_for_device(device_id)
+        .ok()
+        .flatten()
+        .or_else(|| domain_id_from_context_entry(controller, device_id))
+        .or_else(|| {
+            domain_id_from_scalable_context_entry(controller, device_id, event.pasid)
+        })
+        .map(u32::from);
+    controller.notify_security(SecurityEvent::DmaViolation {
+        source_id: event.source_id,
+        fault_address: event.fault_address,
+        reason: event.reason,
+        domain_id,
+    });
+}
+
+/// Log QI stats when a critical fault occurs
+fn log_critical_qi_stats(controller: &IommuController) {
+    match controller.qi_stats() {
+        Ok(Some(stats)) => {
+            log::error!(
+                "[IOMMU] QI stats at fault: submits={} full_checks={} head_refreshes={} waits={} wait_timeouts={}",
+                stats.submits,
+                stats.full_checks,
+                stats.head_refreshes,
+                stats.waits,
+                stats.wait_timeouts
+            );
+        }
+        Ok(None) => {
+            log::info!("[IOMMU] QI stats unavailable (QI not initialized)");
+        }
+        Err(e) => {
+            log::warn!("[IOMMU] QI stats unavailable at fault ({:?})", e);
+        }
+    }
+}
+
 /// Drain deferred faults with optional controller access for full processing
 ///
 /// When controller is provided, also updates fault_log and notifies security.
@@ -350,7 +398,6 @@ pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuCon
     let mut _overflow_cleared = false;
 
     while let Some(event) = DEFERRED_FAULT_QUEUE.pop() {
-        // 1. Log the fault (safe context)
         if event.is_overflow {
             log::warn!("[IOMMU] Fault overflow cleared");
             _overflow_cleared = true;
@@ -363,52 +410,14 @@ pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuCon
                 event.pasid
             );
 
-            // 2. Add to fault log (if controller available)
             if let Some(ctrl) = controller {
-                if let Some(log) = ctrl.fault_log.lock().as_mut() {
-                    log.push(event.to_fault_record());
-                }
-
-                // 3. Notify security monitor
-                let device_id = device_id_from_source_id(ctrl.segment, event.source_id);
-                let domain_id = ctrl
-                    .get_domain_for_device(device_id)
-                    .ok()
-                    .flatten()
-                    .or_else(|| domain_id_from_context_entry(ctrl, device_id))
-                    .or_else(|| {
-                        domain_id_from_scalable_context_entry(ctrl, device_id, event.pasid)
-                    })
-                    .map(u32::from);
-                ctrl.notify_security(SecurityEvent::DmaViolation {
-                    source_id: event.source_id,
-                    fault_address: event.fault_address,
-                    reason: event.reason,
-                    domain_id,
-                });
+                process_fault_with_controller(&event, ctrl);
             }
         }
 
         if let Some(ctrl) = controller {
             if event.is_critical() {
-                match ctrl.qi_stats() {
-                    Ok(Some(stats)) => {
-                        log::error!(
-                            "[IOMMU] QI stats at fault: submits={} full_checks={} head_refreshes={} waits={} wait_timeouts={}",
-                            stats.submits,
-                            stats.full_checks,
-                            stats.head_refreshes,
-                            stats.waits,
-                            stats.wait_timeouts
-                        );
-                    }
-                    Ok(None) => {
-                        log::info!("[IOMMU] QI stats unavailable (QI not initialized)");
-                    }
-                    Err(e) => {
-                        log::warn!("[IOMMU] QI stats unavailable at fault ({:?})", e);
-                    }
-                }
+                log_critical_qi_stats(ctrl);
             }
         }
         count += 1;

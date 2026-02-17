@@ -2167,6 +2167,66 @@ pub struct ZeroCopyRecvFuture<'a> {
     bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
+impl<'a> ZeroCopyRecvFuture<'a> {
+    /// Submit an RX buffer: allocate from mempool, prepare DMA mapping, and enqueue.
+    fn submit_rx_buffer(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), VirtioNetError>> {
+        let packet = self.pool.alloc().ok_or(VirtioNetError::BufferTooSmall)?;
+        let phys_addr_val = packet.phys_addr().as_u64();
+        let buffer_len = packet.capacity();
+
+        let mut prep = match prepare_dma_mapping_rx(
+            self.device.iommu_device_id, phys_addr_val, buffer_len,
+        ) {
+            Ok(p) => p,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+
+        if let Err(err) = check_device_dma_mask(self.device.iommu_device_id, prep.dma_addr, buffer_len) {
+            cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle.take(), prep.mapped_iova.take(), prep.mapped_len);
+            return Poll::Ready(Err(err));
+        }
+
+        let rx_queue = match self.device.rx_queue.as_ref() {
+            Some(q) => q,
+            None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
+        };
+        match rx_queue.add_rx_buffer_zero_copy(prep.dma_addr, buffer_len) {
+            Ok(desc_idx) => {
+                self.packet = Some(packet);
+                self.submitted = true;
+                self.desc_idx = desc_idx;
+                self.dma_iova = prep.mapped_iova;
+                self.dma_len = prep.mapped_len;
+                self.bounce_handle = prep.bounce_handle;
+                rx_queue.register_waker(cx.waker().clone());
+                Poll::Pending
+            }
+            Err(e) => {
+                cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
+                Poll::Ready(Err(e))
+            }
+        }
+    }
+
+    /// Finalize a completed RX packet: unmap DMA and copy bounce if needed.
+    fn finalize_packet(&mut self, len: u32) -> Result<PacketRef, VirtioNetError> {
+        let rref = unmap_dma_on_completion(
+            self.device.iommu_device_id, &mut self.bounce_handle, &mut self.dma_iova, self.dma_len,
+        )?;
+
+        let mut packet = self.packet.take().ok_or(VirtioNetError::BufferTooSmall)?;
+        let copy_len = core::cmp::min(len as usize, packet.capacity() as usize);
+        if let Some(rref) = rref {
+            packet.set_len(copy_len);
+            packet.data_mut()[..copy_len].copy_from_slice(&rref[..copy_len]);
+        } else {
+            packet.set_len(copy_len);
+        }
+        packet.advance(VirtioNetHeader::SIZE);
+        Ok(packet)
+    }
+}
+
 impl<'a> Future for ZeroCopyRecvFuture<'a> {
     type Output = Result<PacketRef, VirtioNetError>;
 
@@ -2174,69 +2234,19 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
         let this = &mut *self;
 
         if !this.submitted {
-            // Mempoolからバッファを割り当て
-            let packet = this.pool.alloc().ok_or(VirtioNetError::BufferTooSmall)?;
-            let phys_addr_val = packet.phys_addr().as_u64();
-            let buffer_len = packet.capacity();
-
-            let mut prep = match prepare_dma_mapping_rx(
-                this.device.iommu_device_id, phys_addr_val, buffer_len,
-            ) {
-                Ok(p) => p,
-                Err(e) => return Poll::Ready(Err(e)),
-            };
-
-            if let Err(err) = check_device_dma_mask(this.device.iommu_device_id, prep.dma_addr, buffer_len) {
-                cleanup_dma_resources(this.device.iommu_device_id, prep.bounce_handle.take(), prep.mapped_iova.take(), prep.mapped_len);
-                return Poll::Ready(Err(err));
-            }
-
-            // 受信バッファをキューに追加
-            let rx_queue = match this.device.rx_queue.as_ref() {
-                Some(q) => q,
-                None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
-            };
-            match rx_queue.add_rx_buffer_zero_copy(prep.dma_addr, buffer_len) {
-                Ok(desc_idx) => {
-                    this.packet = Some(packet);
-                    this.submitted = true;
-                    this.desc_idx = desc_idx;
-                    this.dma_iova = prep.mapped_iova;
-                    this.dma_len = prep.mapped_len;
-                    this.bounce_handle = prep.bounce_handle;
-                    rx_queue.register_waker(cx.waker().clone());
-                }
-                Err(e) => {
-                    cleanup_dma_resources(this.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
-                    return Poll::Ready(Err(e));
-                }
+            match this.submit_rx_buffer(cx) {
+                Poll::Pending => {} // submitted successfully, fall through to check completion
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => unreachable!(),
             }
         }
 
-        // 完了を確認
         let rx_queue = match this.device.rx_queue.as_ref() {
             Some(q) => q,
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };
         if let Some(len) = rx_queue.take_completion(this.desc_idx) {
-            let rref = unmap_dma_on_completion(
-                this.device.iommu_device_id, &mut this.bounce_handle, &mut this.dma_iova, this.dma_len,
-            )?;
-
-            let mut packet = match this.packet.take() {
-                Some(p) => p,
-                None => return Poll::Ready(Err(VirtioNetError::BufferTooSmall)),
-            };
-
-            let copy_len = core::cmp::min(len as usize, packet.capacity() as usize);
-            if let Some(rref) = rref {
-                packet.set_len(copy_len);
-                packet.data_mut()[..copy_len].copy_from_slice(&rref[..copy_len]);
-            } else {
-                packet.set_len(copy_len);
-            }
-            packet.advance(VirtioNetHeader::SIZE);
-            Poll::Ready(Ok(packet))
+            Poll::Ready(this.finalize_packet(len))
         } else {
             rx_queue.register_waker(cx.waker().clone());
             Poll::Pending
