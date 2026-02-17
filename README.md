@@ -198,6 +198,30 @@ src/
 
 ```
 
+## **🔌 Bootloader → Kernel Early Console Handoff（現状）**
+
+ExoRust の early console handoff は、現在次の順序で動作します。
+
+1. **Bootloader 側で COM1 を最初期化**
+    - `bootloader/src/main.rs` で `serial::init()` を実行し、UEFI 段階からシリアルログを出力。
+
+2. **BootInfo を構築してカーネルへ渡す**
+    - `ExoBootInfo`（`libs/boot_proto/src/lib.rs`）へ HHDM、メモリマップ、framebuffer、cmdline 等を格納。
+    - `switch_cr3_and_jump()` で `CR3` をカーネル用に切り替え、`RDI` に `boot_info` ポインタを載せて `jmp`。
+
+3. **カーネル入口で最小シリアル確認**
+    - `kernel/src/main.rs` の `_start` で COM1 に `K!` を送出して、エントリ到達を可視化。
+
+4. **`kmain_inner` で early serial → logger へ移行**
+    - `kernel/src/kernel_content.rs` の `init_early_serial()` で初期メッセージを出力。
+    - 続けて `io::log::init()` を呼び、以後は `log` クレート経由の通常ログへ移行。
+
+5. **デバッグ用シリアルマーカー**
+    - Bootloader 側 `switch_cr3_and_jump()` は `J1234` マーカーを COM1 に出力（CLI/memory fence/CR3/RDI 直後）。
+    - これにより handoff 失敗箇所を「ジャンプ直前 / 直後」で切り分け可能。
+
+このため、現行実装は「**Bootloader のシリアル初期化で最速可視化 → BootInfo/CR3/RDI handoff → Kernel 側 early serial で継続**」という二段階モデルです。
+
 ## **🚀 クイックスタート**
 
 ### **必要条件**

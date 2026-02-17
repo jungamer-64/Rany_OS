@@ -243,6 +243,94 @@ pub fn is_sysfs_path(path: &str) -> bool {
     is_sys_path(&comps)
 }
 
+fn list_cell_directory(comps: &[&str]) -> Option<Result<Vec<DirEntry>, &'static str>> {
+    match comps.len() {
+        2 => {
+            let mut snaps = list_domain_snapshots();
+            snaps.sort_by_key(|s| s.id.as_u64());
+            let entries = snaps
+                .into_iter()
+                .map(|snap| DirEntry {
+                    name: snap.id.as_u64().to_string(),
+                    ino: ino_for(&format!("/sys/cell/{}", snap.id.as_u64())),
+                    file_type: FileType::Directory,
+                })
+                .collect();
+            Some(Ok(entries))
+        }
+        3 => {
+            let id = match parse_domain_id(comps[2]) {
+                Ok(id) => id,
+                Err(e) => return Some(Err(e)),
+            };
+            if get_domain_snapshot(id).is_none() {
+                return Some(Err("Not found"));
+            }
+            let entries = CELL_FIELDS
+                .iter()
+                .map(|name| DirEntry {
+                    name: (*name).to_string(),
+                    ino: ino_for(&format!("/sys/cell/{}/{}", id.as_u64(), name)),
+                    file_type: FileType::Regular,
+                })
+                .collect();
+            Some(Ok(entries))
+        }
+        _ => Some(Err("Not a directory")),
+    }
+}
+
+fn list_system_directory(comps: &[&str]) -> Option<Result<Vec<DirEntry>, &'static str>> {
+    match comps.len() {
+        2 => {
+            let mut entries: Vec<DirEntry> = SYSTEM_DIRS
+                .iter()
+                .map(|name| DirEntry {
+                    name: (*name).to_string(),
+                    ino: ino_for(&format!("/sys/system/{}", name)),
+                    file_type: FileType::Directory,
+                })
+                .collect();
+            entries.extend(SYSTEM_ROOT_FILES.iter().map(|name| DirEntry {
+                name: (*name).to_string(),
+                ino: ino_for(&format!("/sys/system/{}", name)),
+                file_type: FileType::Regular,
+            }));
+            Some(Ok(entries))
+        }
+        3 => {
+            let leaf = comps[2];
+            if leaf == "kernel" {
+                let entries = SYSTEM_KERNEL_FILES
+                    .iter()
+                    .map(|name| DirEntry {
+                        name: (*name).to_string(),
+                        ino: ino_for(&format!("/sys/system/kernel/{}", name)),
+                        file_type: FileType::Regular,
+                    })
+                    .collect();
+                return Some(Ok(entries));
+            }
+            if leaf == "net" {
+                let entries = SYSTEM_NET_FILES
+                    .iter()
+                    .map(|name| DirEntry {
+                        name: (*name).to_string(),
+                        ino: ino_for(&format!("/sys/system/net/{}", name)),
+                        file_type: FileType::Regular,
+                    })
+                    .collect();
+                return Some(Ok(entries));
+            }
+            if SYSTEM_ROOT_FILES.iter().any(|name| *name == leaf) {
+                return Some(Err("Not a directory"));
+            }
+            Some(Err("Not found"))
+        }
+        _ => Some(Err("Not a directory")),
+    }
+}
+
 pub fn list_directory(path: &str) -> Option<Result<Vec<DirEntry>, &'static str>> {
     let comps = split_path(path);
     if !is_sys_path(&comps) {
@@ -262,91 +350,11 @@ pub fn list_directory(path: &str) -> Option<Result<Vec<DirEntry>, &'static str>>
     }
 
     if is_cell_path(&comps) {
-        match comps.len() {
-            2 => {
-                let mut snaps = list_domain_snapshots();
-                snaps.sort_by_key(|s| s.id.as_u64());
-                let entries = snaps
-                    .into_iter()
-                    .map(|snap| DirEntry {
-                        name: snap.id.as_u64().to_string(),
-                        ino: ino_for(&format!("/sys/cell/{}", snap.id.as_u64())),
-                        file_type: FileType::Directory,
-                    })
-                    .collect();
-                return Some(Ok(entries));
-            }
-            3 => {
-                let id = match parse_domain_id(comps[2]) {
-                    Ok(id) => id,
-                    Err(e) => return Some(Err(e)),
-                };
-                if get_domain_snapshot(id).is_none() {
-                    return Some(Err("Not found"));
-                }
-                let entries = CELL_FIELDS
-                    .iter()
-                    .map(|name| DirEntry {
-                        name: (*name).to_string(),
-                        ino: ino_for(&format!("/sys/cell/{}/{}", id.as_u64(), name)),
-                        file_type: FileType::Regular,
-                    })
-                    .collect();
-                return Some(Ok(entries));
-            }
-            _ => return Some(Err("Not a directory")),
-        }
+        return list_cell_directory(&comps);
     }
 
     if is_system_path(&comps) {
-        match comps.len() {
-            2 => {
-                let mut entries: Vec<DirEntry> = SYSTEM_DIRS
-                    .iter()
-                    .map(|name| DirEntry {
-                        name: (*name).to_string(),
-                        ino: ino_for(&format!("/sys/system/{}", name)),
-                        file_type: FileType::Directory,
-                    })
-                    .collect();
-                entries.extend(SYSTEM_ROOT_FILES.iter().map(|name| DirEntry {
-                    name: (*name).to_string(),
-                    ino: ino_for(&format!("/sys/system/{}", name)),
-                    file_type: FileType::Regular,
-                }));
-                return Some(Ok(entries));
-            }
-            3 => {
-                let leaf = comps[2];
-                if leaf == "kernel" {
-                    let entries = SYSTEM_KERNEL_FILES
-                        .iter()
-                        .map(|name| DirEntry {
-                            name: (*name).to_string(),
-                            ino: ino_for(&format!("/sys/system/kernel/{}", name)),
-                            file_type: FileType::Regular,
-                        })
-                        .collect();
-                    return Some(Ok(entries));
-                }
-                if leaf == "net" {
-                    let entries = SYSTEM_NET_FILES
-                        .iter()
-                        .map(|name| DirEntry {
-                            name: (*name).to_string(),
-                            ino: ino_for(&format!("/sys/system/net/{}", name)),
-                            file_type: FileType::Regular,
-                        })
-                        .collect();
-                    return Some(Ok(entries));
-                }
-                if SYSTEM_ROOT_FILES.iter().any(|name| *name == leaf) {
-                    return Some(Err("Not a directory"));
-                }
-                return Some(Err("Not found"));
-            }
-            _ => return Some(Err("Not a directory")),
-        }
+        return list_system_directory(&comps);
     }
 
     Some(Err("Not found"))

@@ -2190,50 +2190,70 @@ impl Framebuffer {
         }
     }
 
+    /// Flush one horizontal run collected by shallow Bresenham.
+    #[inline]
+    fn flush_shallow_run(&mut self, run_y: i32, run_start: i32, run_end: i32, color: Color) {
+        if run_y < self.clip.y || run_y >= self.clip.bottom() {
+            return;
+        }
+
+        let mut start = run_start.min(run_end);
+        let mut end = run_start.max(run_end);
+        start = start.max(self.clip.x);
+        end = end.min(self.clip.right() - 1);
+
+        if start <= end {
+            self.draw_hline_raw(start, end, run_y, color);
+        }
+    }
+
     /// Shallow Bresenham: coalesce horizontal runs (|dx| >= |dy|).
     fn draw_line_shallow(&mut self, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
         let dx = (x2 - x1).abs();
-        let dy = -((y2 - y1).abs());
+        let dy = -(y2 - y1).abs();
         let sx = if x1 < x2 { 1 } else { -1 };
         let sy = if y1 < y2 { 1 } else { -1 };
         let mut err = dx + dy;
         let mut x = x1;
         let mut y = y1;
-        let mut run_start = x;
+
         let mut run_y = y;
-        let mut run_len = 1usize;
+        let mut run_start = x;
+        let mut run_end = x;
 
         loop {
             if x == x2 && y == y2 {
-                self.flush_hrun(run_start, run_len, run_y, sx, color);
-                break;
+                self.flush_shallow_run(run_y, run_start, run_end, color);
+                return;
             }
 
+            // Compute next Bresenham point first, then decide whether it
+            // belongs to the current horizontal run or starts a new row run.
+            let mut next_x = x;
+            let mut next_y = y;
             let e2 = 2 * err;
             if e2 >= dy {
                 err += dy;
-                x += sx;
+                next_x += sx;
             }
-
-            let y_changed = if e2 <= dx {
+            if e2 <= dx {
                 err += dx;
-                y += sy;
-                true
-            } else {
-                false
-            };
-
-            if y_changed {
-                self.flush_hrun(run_start, run_len, run_y, sx, color);
-                run_start = x;
-                run_y = y;
-                run_len = 1;
-            } else {
-                // Only X changed, extend run
-                run_len += 1;
+                next_y += sy;
             }
-        } // end loop
-    } // end fn draw_line_shallow
+
+            if next_y == run_y {
+                run_end = next_x;
+            } else {
+                self.flush_shallow_run(run_y, run_start, run_end, color);
+                run_y = next_y;
+                run_start = next_x;
+                run_end = next_x;
+            }
+
+            x = next_x;
+            y = next_y;
+        }
+    }
 
     /// Naive per-pixel Bresenham implementation useful for benchmarking and
     /// correctness comparisons. Enabled when `bench` feature is active.
@@ -3423,6 +3443,54 @@ impl Framebuffer {
         mmio_written
     }
 
+    /// 24-bitチャンクサイズ選択
+    fn choose_chunk_24_pixels(run_len: usize) -> usize {
+        if run_len >= 8192 {
+            4096
+        } else if run_len >= 2048 {
+            1024
+        } else {
+            512
+        }
+    }
+
+    /// scratchバッファからバック/MMIOへチャンク書き込み
+    fn flush_scratch_24bit(
+        &mut self,
+        run_len: usize,
+        dst_byte_offset: usize,
+    ) {
+        // Tunable chunk size for 24-bit writes
+        #[cfg(feature = "std")]
+        let chunk_24_pixels: usize = std::env::var("RANY_CHUNK_24_PIXELS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or_else(|| Self::choose_chunk_24_pixels(run_len));
+        #[cfg(not(feature = "std"))]
+        let chunk_24_pixels: usize = Self::choose_chunk_24_pixels(run_len);
+
+        let mut processed = 0usize;
+        while processed < run_len {
+            let chunk = core::cmp::min(chunk_24_pixels, run_len - processed);
+            let chunk_bytes = chunk * 3;
+            let start = processed * 3;
+            let end = start + chunk_bytes;
+            if let Some(ref mut back) = self.back_buffer {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.scratch_u8.as_ptr().add(start),
+                        (back.as_mut_ptr() as *mut u8).add(dst_byte_offset + start),
+                        chunk_bytes,
+                    );
+                }
+            } else {
+                let addr = self.buffer as usize + dst_byte_offset + start;
+                self.write_bytes_mmio_streaming(addr, &self.scratch_u8[start..end]);
+            }
+            processed += chunk;
+        }
+    }
+
     /// 24-bit不透明ランの描画
     fn write_opaque_run_24bit(
         &mut self,
@@ -3476,50 +3544,7 @@ impl Framebuffer {
         }
 
         if handled_in_scratch {
-            // Tunable chunk size for 24-bit writes; use `RANY_CHUNK_24_PIXELS`
-            // to experiment with different chunk sizes when benching.
-            #[cfg(feature = "std")]
-            let chunk_24_pixels: usize = std::env::var("RANY_CHUNK_24_PIXELS")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or_else(|| {
-                    if run_len >= 8192 {
-                        4096
-                    } else if run_len >= 2048 {
-                        1024
-                    } else {
-                        512
-                    }
-                });
-            #[cfg(not(feature = "std"))]
-            let chunk_24_pixels: usize = if run_len >= 8192 {
-                4096
-            } else if run_len >= 2048 {
-                1024
-            } else {
-                512
-            };
-
-            let mut processed = 0usize;
-            while processed < run_len {
-                let chunk = core::cmp::min(chunk_24_pixels, run_len - processed);
-                let chunk_bytes = chunk * 3;
-                let start = processed * 3;
-                let end = start + chunk_bytes;
-                if let Some(ref mut back) = self.back_buffer {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            self.scratch_u8.as_ptr().add(start),
-                            (back.as_mut_ptr() as *mut u8).add(dst_byte_offset + start),
-                            chunk_bytes,
-                        );
-                    }
-                } else {
-                    let addr = self.buffer as usize + dst_byte_offset + start;
-                    self.write_bytes_mmio_streaming(addr, &self.scratch_u8[start..end]);
-                }
-                processed += chunk;
-            }
+            self.flush_scratch_24bit(run_len, dst_byte_offset);
             // Ensure streaming stores are globally visible after the full run
             if self.back_buffer.is_none() {
                 // mmio::sfence(); // DEFERRED

@@ -61,6 +61,57 @@ pub fn eval_expr<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>) -> ExoValue<'a> {
     eval_expr_with_depth(expr, ctx, 0)
 }
 
+/// 識別子を解決するヘルパー
+fn eval_ident<'a>(name: &str, ctx: &EvalContext<'a>) -> ExoValue<'a> {
+    // 1. 予約キーワード
+    match name {
+        "true" => return ExoValue::Bool(true),
+        "false" => return ExoValue::Bool(false),
+        "nil" => return ExoValue::Nil,
+        _ => {}
+    }
+
+    // 2. クロージャパラメータと一致するか
+    if let (Some(param_name), Some(param_value)) = (ctx.param_name, ctx.param_value) {
+        if name == param_name {
+            return param_value.clone();
+        }
+    }
+
+    // 3. 暗黙のターゲットのフィールドとして検索
+    if let Some(target) = ctx.target {
+        let val = get_field(target, name);
+        if !matches!(val, ExoValue::Error(_)) {
+            return val;
+        }
+    }
+
+    ExoValue::Error(format!("Unknown identifier: '{}'", name))
+}
+
+/// インデックスアクセスを評価するヘルパー
+fn eval_index_access<'a>(obj: &ExoValue<'a>, idx: &ExoValue<'a>) -> ExoValue<'a> {
+    match (obj, idx) {
+        (ExoValue::Array(arr), ExoValue::Int(i)) => {
+            let i = *i as usize;
+            if i < arr.len() {
+                arr[i].clone()
+            } else {
+                ExoValue::Error(format!("Index {} out of bounds (len={})", i, arr.len()))
+            }
+        }
+        (ExoValue::String(s), ExoValue::Int(i)) => {
+            let i = *i as usize;
+            if let Some(c) = s.chars().nth(i) {
+                ExoValue::String(Cow::Owned(c.to_string()))
+            } else {
+                ExoValue::Error(format!("String index {} out of bounds", i))
+            }
+        }
+        _ => ExoValue::Error(format!("Cannot index {:?} with {:?}", obj, idx)),
+    }
+}
+
 fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize) -> ExoValue<'a> {
     if depth > 256 {
         return ExoValue::Error("Stack overflow: expression too complex".into());
@@ -68,36 +119,10 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
 
     match expr {
         // リテラル値はそのまま返す
-        // リテラルがCow::Ownedなら、cloneしてもOwned。
         Expr::Literal(val) => val.clone(),
 
         // 識別子の解決
-        Expr::Ident(name) => {
-            // 1. 予約キーワード
-            match name.as_str() {
-                "true" => return ExoValue::Bool(true),
-                "false" => return ExoValue::Bool(false),
-                "nil" => return ExoValue::Nil,
-                _ => {}
-            }
-
-            // 2. クロージャパラメータと一致するか
-            if let (Some(param_name), Some(param_value)) = (ctx.param_name, ctx.param_value) {
-                if name == param_name {
-                    return param_value.clone();
-                }
-            }
-
-            // 3. 暗黙のターゲットのフィールドとして検索
-            if let Some(target) = ctx.target {
-                let val = get_field(target, name);
-                if !matches!(val, ExoValue::Error(_)) {
-                    return val;
-                }
-            }
-
-            ExoValue::Error(format!("Unknown identifier: '{}'", name))
-        }
+        Expr::Ident(name) => eval_ident(name.as_str(), ctx),
 
         // フィールドアクセス
         Expr::FieldAccess { object, field } => {
@@ -149,26 +174,7 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
         Expr::Index { object, index } => {
             let obj = eval_expr_with_depth(object, ctx, depth + 1);
             let idx = eval_expr_with_depth(index, ctx, depth + 1);
-
-            match (&obj, &idx) {
-                (ExoValue::Array(arr), ExoValue::Int(i)) => {
-                    let i = *i as usize;
-                    if i < arr.len() {
-                        arr[i].clone()
-                    } else {
-                        ExoValue::Error(format!("Index {} out of bounds (len={})", i, arr.len()))
-                    }
-                }
-                (ExoValue::String(s), ExoValue::Int(i)) => {
-                    let i = *i as usize;
-                    if let Some(c) = s.chars().nth(i) {
-                        ExoValue::String(Cow::Owned(c.to_string()))
-                    } else {
-                        ExoValue::Error(format!("String index {} out of bounds", i))
-                    }
-                }
-                _ => ExoValue::Error(format!("Cannot index {:?} with {:?}", obj, idx)),
-            }
+            eval_index_access(&obj, &idx)
         }
 
         // マップリテラル
