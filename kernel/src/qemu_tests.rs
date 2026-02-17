@@ -1380,24 +1380,54 @@ pub fn iommu_wave2_ats_detach_disables_ats_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave2_ats_detach_disables_ats_smoke()
 }
 
+pub fn iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_map_for_device_respects_dma_mask_canonical_smoke()
+}
+
+pub fn iommu_wave5_api_security_notifier_registration_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_api_security_notifier_registration_canonical_smoke()
+}
+
+pub fn iommu_wave5_qi_metrics_pressure_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_qi_metrics_pressure_canonical_smoke()
+}
+
+pub fn iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_cmdqueue_map_unmap_with_domain_residual_smoke()
+}
+
+pub fn iommu_wave5_map_for_device_async_and_unmap_residual_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_map_for_device_async_and_unmap_residual_smoke()
+}
+
+// Compat alias: legacy wave2 residual wrapper.
+// Required suite does not use this wrapper; it forwards to the Wave5 residual wrapper.
 pub fn iommu_wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_cmdqueue_map_unmap_with_domain_smoke()
+    iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke()
 }
 
+// Compat alias: legacy wave2 residual wrapper.
+// Required suite does not use this wrapper; it forwards to the Wave5 residual wrapper.
 pub fn iommu_wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_cmdqueue_map_device_nonblocking_smoke()
+    iommu_wave5_map_for_device_async_and_unmap_residual_smoke()
 }
 
+// Compat alias: legacy wave2 residual wrapper.
+// Required suite does not use this wrapper; it forwards to the Wave5 canonical wrapper.
 pub fn iommu_wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_dma_mask_respects_32bit_limit_smoke()
+    iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke()
 }
 
+// Compat alias: legacy wave2 residual wrapper.
+// Required suite does not use this wrapper; it forwards to the Wave5 canonical wrapper.
 pub fn iommu_wave2_controller_security_notifier_dispatch_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_controller_security_notifier_dispatch_smoke()
+    iommu_wave5_api_security_notifier_registration_canonical_smoke()
 }
 
+// Compat alias: legacy wave2 residual wrapper.
+// Required suite does not use this wrapper; it forwards to the Wave5 canonical wrapper.
 pub fn iommu_wave2_qi_metrics_pressure_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_qi_metrics_pressure_smoke()
+    iommu_wave5_qi_metrics_pressure_canonical_smoke()
 }
 
 pub fn iommu_amd_wave0_alias_devids_for_device_dedup_smoke() -> bool {

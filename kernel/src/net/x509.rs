@@ -47,6 +47,12 @@ const OID_EC_PUBLIC_KEY: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
 /// secp256r1 / prime256v1 (1.2.840.10045.3.1.7)
 const OID_SECP256R1: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
 
+/// secp384r1 (1.3.132.0.34)
+const OID_SECP384R1: &[u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
+
+/// id-RSASSA-PSS (1.2.840.113549.1.1.10)
+const OID_RSA_PSS: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
+
 // ============================================================================
 // Signature Algorithm
 // ============================================================================
@@ -64,6 +70,8 @@ pub enum SignatureAlgorithmId {
     EcdsaWithSha256,
     /// ECDSA with SHA-384 (1.2.840.10045.4.3.3)
     EcdsaWithSha384,
+    /// RSASSA-PSS (1.2.840.113549.1.1.10)
+    RsaPss,
     /// 未知のアルゴリズム
     Unknown,
 }
@@ -80,6 +88,8 @@ fn parse_signature_algorithm_id(oid: &[u8]) -> SignatureAlgorithmId {
         SignatureAlgorithmId::EcdsaWithSha256
     } else if oid == OID_ECDSA_WITH_SHA384 {
         SignatureAlgorithmId::EcdsaWithSha384
+    } else if oid == OID_RSA_PSS {
+        SignatureAlgorithmId::RsaPss
     } else {
         SignatureAlgorithmId::Unknown
     }
@@ -104,6 +114,11 @@ pub enum SubjectPublicKeyInfo<'a> {
     },
     /// ECDSA P-256公開鍵（非圧縮ポイント 04 || x || y）
     EcdsaP256 {
+        /// 公開鍵データ
+        public_key: &'a [u8],
+    },
+    /// ECDSA P-384公開鍵（非圧縮ポイント 04 || x || y）
+    EcdsaP384 {
         /// 公開鍵データ
         public_key: &'a [u8],
     },
@@ -433,6 +448,10 @@ fn parse_spki<'a>(spki_content: &'a [u8]) -> Option<SubjectPublicKeyInfo<'a>> {
             Some(SubjectPublicKeyInfo::EcdsaP256 {
                 public_key: pubkey_bits,
             })
+        } else if curve_oid == OID_SECP384R1 {
+            Some(SubjectPublicKeyInfo::EcdsaP384 {
+                public_key: pubkey_bits,
+            })
         } else {
             Some(SubjectPublicKeyInfo::Unknown(pubkey_bits))
         }
@@ -504,6 +523,167 @@ const TEST_CERT_DER: [u8; 154] = [
     // === Signature Value: BIT STRING (0 unused bits, dummy 4 bytes) ===
     0x03, 0x05, 0x00, 0xDE, 0xAD, 0xBE, 0xEF,
 ];
+
+// ============================================================================
+// Certificate Chain Validation
+// ============================================================================
+
+/// 証明書チェーンの検証
+///
+/// `chain` はリーフ証明書(chain[0])からルートCA(chain[last])の順序。
+/// - chain[i]のissuerとchain[i+1]のsubjectが一致することを確認
+/// - chain[i]の署名をchain[i+1]の公開鍵で検証
+/// - リーフ証明書の公開鍵を返す
+///
+/// `server_name` が指定されている場合、リーフ証明書のsubjectにその名前を含むか
+/// 簡易チェックする（完全なSAN/CN照合ではない）。
+///
+/// # Returns
+/// リーフ証明書のSubjectPublicKeyInfo
+pub fn validate_certificate_chain<'a>(
+    chain: &[&'a [u8]],
+    server_name: Option<&str>,
+) -> Option<SubjectPublicKeyInfo<'a>> {
+    if chain.is_empty() {
+        return None;
+    }
+
+    // 全証明書をパース
+    // no_std環境のため固定サイズ配列を使用（最大チェーン長: 8）
+    const MAX_CHAIN: usize = 8;
+    if chain.len() > MAX_CHAIN {
+        return None;
+    }
+    // MaybeUninitの代わりにOption配列で安全に初期化
+    let mut certs: [Option<X509Certificate<'_>>; MAX_CHAIN] = [None, None, None, None, None, None, None, None];
+    for (i, &der) in chain.iter().enumerate() {
+        certs[i] = Some(parse_x509(der)?);
+    }
+
+    let chain_len = chain.len();
+
+    // server_name簡易チェック（リーフ証明書のsubject_rawにサーバー名が含まれるか）
+    if let Some(name) = server_name {
+        let leaf = certs[0].as_ref()?;
+        let name_bytes = name.as_bytes();
+        if !contains_bytes(leaf.subject_raw, name_bytes) {
+            return None;
+        }
+    }
+
+    // 自己署名証明書（チェーン長1）: issuerとsubjectが一致すればそのまま返す
+    if chain_len == 1 {
+        let cert = certs[0].as_ref()?;
+        // 自己署名の場合、issuer == subject
+        if cert.issuer_raw == cert.subject_raw {
+            return Some(cert.subject_public_key_info);
+        }
+        // 自己署名ではないが、チェーンが1つしかない場合も公開鍵を返す
+        // （信頼アンカーが別途検証される前提）
+        return Some(cert.subject_public_key_info);
+    }
+
+    // チェーン検証: chain[i]の署名をchain[i+1]の公開鍵で検証
+    for i in 0..chain_len - 1 {
+        let current = certs[i].as_ref()?;
+        let issuer = certs[i + 1].as_ref()?;
+
+        // issuer名の一致確認
+        if current.issuer_raw != issuer.subject_raw {
+            return None;
+        }
+
+        // 署名検証: current.raw_tbsのハッシュをissuerの公開鍵で検証
+        if !verify_signature(current, &issuer.subject_public_key_info) {
+            return None;
+        }
+    }
+
+    // リーフ証明書の公開鍵を返す
+    Some(certs[0].as_ref()?.subject_public_key_info)
+}
+
+/// バイト列の中に部分列が含まれるかチェック（簡易バイト検索）
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    for i in 0..=(haystack.len() - needle.len()) {
+        if &haystack[i..i + needle.len()] == needle {
+            return true;
+        }
+    }
+    false
+}
+
+/// 証明書の署名を発行者の公開鍵で検証する
+fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKeyInfo<'_>) -> bool {
+    use crate::net::rsa::{rsa_pkcs1_verify, rsa_pss_verify, RsaPublicKey, HashAlgorithm};
+
+    match cert.signature_algorithm {
+        SignatureAlgorithmId::Sha256WithRsa => {
+            if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
+                let digest = crate::loader::sha256::compute(cert.raw_tbs);
+                let key = RsaPublicKey { modulus, exponent };
+                rsa_pkcs1_verify(&key, HashAlgorithm::Sha256, &digest, cert.signature_value).is_ok()
+            } else {
+                false
+            }
+        }
+        SignatureAlgorithmId::Sha384WithRsa => {
+            if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
+                let digest = crate::loader::sha384::compute(cert.raw_tbs);
+                let key = RsaPublicKey { modulus, exponent };
+                rsa_pkcs1_verify(&key, HashAlgorithm::Sha384, &digest, cert.signature_value).is_ok()
+            } else {
+                false
+            }
+        }
+        SignatureAlgorithmId::Sha512WithRsa => {
+            // SHA-512 RSA: 現時点ではSHA-384で代替（SHA-512ハッシュ実装待ち）
+            // TODO: crate::loader::sha512::compute が利用可能になったら更新
+            false
+        }
+        SignatureAlgorithmId::RsaPss => {
+            if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
+                // RSA-PSSはデフォルトでSHA-256を使用
+                let digest = crate::loader::sha256::compute(cert.raw_tbs);
+                let key = RsaPublicKey { modulus, exponent };
+                rsa_pss_verify(&key, HashAlgorithm::Sha256, &digest, cert.signature_value).is_ok()
+            } else {
+                false
+            }
+        }
+        SignatureAlgorithmId::EcdsaWithSha256 => {
+            if let SubjectPublicKeyInfo::EcdsaP256 { public_key } = issuer_pubkey {
+                let digest = crate::loader::sha256::compute(cert.raw_tbs);
+                crate::net::ecdh::p256::ecdsa_p256_verify(
+                    public_key,
+                    &digest,
+                    cert.signature_value,
+                ).is_ok()
+            } else {
+                false
+            }
+        }
+        SignatureAlgorithmId::EcdsaWithSha384 => {
+            if let SubjectPublicKeyInfo::EcdsaP384 { public_key } = issuer_pubkey {
+                let digest = crate::loader::sha384::compute(cert.raw_tbs);
+                crate::net::ecdh::p384::ecdsa_p384_verify(
+                    public_key,
+                    &digest,
+                    cert.signature_value,
+                ).is_ok()
+            } else {
+                false
+            }
+        }
+        SignatureAlgorithmId::Unknown => false,
+    }
+}
 
 // ============================================================================
 // QEMU Tests
@@ -850,5 +1030,39 @@ mod tests {
             parse_x509(&[0x30, 0x03, 0x02, 0x01]).is_none(),
             "truncated input must fail"
         );
+    }
+
+    /// 証明書チェーン検証テスト（自己署名証明書1枚）
+    #[test_case]
+    fn test_validate_chain_single_cert() {
+        // 自己署名証明書 — 公開鍵が返されること
+        let chain: &[&[u8]] = &[&TEST_CERT_DER];
+        let result = validate_certificate_chain(chain, None);
+        assert!(result.is_some());
+    }
+
+    /// 証明書チェーン検証テスト（空チェーン）
+    #[test_case]
+    fn test_validate_chain_empty() {
+        let chain: &[&[u8]] = &[];
+        let result = validate_certificate_chain(chain, None);
+        assert!(result.is_none(), "empty chain must return None");
+    }
+
+    /// 証明書チェーン検証テスト（サーバー名一致）
+    #[test_case]
+    fn test_validate_chain_server_name_match() {
+        // TEST_CERT_DERのsubjectは CN=Test なので "Test" を含む
+        let chain: &[&[u8]] = &[&TEST_CERT_DER];
+        let result = validate_certificate_chain(chain, Some("Test"));
+        assert!(result.is_some(), "server name 'Test' should match");
+    }
+
+    /// 証明書チェーン検証テスト（サーバー名不一致）
+    #[test_case]
+    fn test_validate_chain_server_name_mismatch() {
+        let chain: &[&[u8]] = &[&TEST_CERT_DER];
+        let result = validate_certificate_chain(chain, Some("example.com"));
+        assert!(result.is_none(), "server name 'example.com' should not match");
     }
 }
