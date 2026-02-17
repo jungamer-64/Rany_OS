@@ -2334,10 +2334,10 @@ fn test_draw_char_8x16_24bit_mmio() {
     let row = 2usize;
     let off = |x: usize| row * info.stride as usize + x * 3;
 
-    // Bgr888: green = [0x00, 0x80, 0x00], black = [0x00, 0x00, 0x00]
+    // Bgr888: green = [0x00, 0xFF, 0x00], black = [0x00, 0x00, 0x00]
     assert_eq!(&vram[off(2)..off(2) + 3], &[0x00, 0x00, 0x00], "bg");
-    assert_eq!(&vram[off(3)..off(3) + 3], &[0x00, 0x80, 0x00], "fg");
-    assert_eq!(&vram[off(4)..off(4) + 3], &[0x00, 0x80, 0x00], "fg");
+    assert_eq!(&vram[off(3)..off(3) + 3], &[0x00, 0xFF, 0x00], "fg");
+    assert_eq!(&vram[off(4)..off(4) + 3], &[0x00, 0xFF, 0x00], "fg");
     assert_eq!(&vram[off(5)..off(5) + 3], &[0x00, 0x00, 0x00], "bg");
 }
 
