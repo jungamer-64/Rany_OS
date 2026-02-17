@@ -10,26 +10,26 @@ import sys
 from elftools.elf.elffile import ELFFile
 
 
-def find_closest_symbol(elffile, addr):
+def find_closest_symbol(elf, target_addr):
     best = None
-    for section in elffile.iter_sections():
+    for section in elf.iter_sections():
         if not section.header['sh_type'] in ('SHT_SYMTAB', 'SHT_DYNSYM'):
             continue
         for sym in section.iter_symbols():
             if sym['st_value'] == 0:
                 continue
             sym_addr = sym['st_value']
-            if sym_addr <= addr:
-                dist = addr - sym_addr
+            if sym_addr <= target_addr:
+                dist = target_addr - sym_addr
                 if best is None or dist < best[0]:
                     best = (dist, sym.name, sym_addr)
     return best
 
 
-def addr_to_line(elffile, addr):
+def addr_to_line(elf, target_addr):
     try:
-        dwarfinfo = elffile.get_dwarf_info()
-    except Exception:
+        dwarfinfo = elf.get_dwarf_info()
+    except (AttributeError, KeyError):
         return None
 
     for cu in dwarfinfo.iter_CUs():
@@ -50,7 +50,7 @@ def addr_to_line(elffile, addr):
                 if low_pc is not None:
                     high_pc = low_pc + hi_attr.value
 
-        if low_pc is not None and high_pc is not None and low_pc <= addr <= high_pc:
+        if low_pc is not None and high_pc is not None and low_pc <= target_addr <= high_pc:
             # Search line programs for file/line
             lineprog = dwarfinfo.line_program_for_CU(cu)
             prev_state = None
@@ -58,13 +58,15 @@ def addr_to_line(elffile, addr):
                 if entry.state is None:
                     continue
                 state = entry.state
-                if state.address == addr:
-                    file = lineprog['file_entry'][state.file - 1].name.decode('utf-8')
-                    return (file, state.line)
-                if state.address > addr:
+                if state.address == target_addr:
+                    file_entry = lineprog.header.file_entry[state.file - 1]
+                    fname = file_entry.name.decode('utf-8')
+                    return (fname, state.line)
+                if state.address > target_addr:
                     if prev_state is not None:
-                        file = lineprog['file_entry'][prev_state.file - 1].name.decode('utf-8')
-                        return (file, prev_state.line)
+                        file_entry = lineprog.header.file_entry[prev_state.file - 1]
+                        fname = file_entry.name.decode('utf-8')
+                        return (fname, prev_state.line)
                 prev_state = state
     return None
 
@@ -83,18 +85,18 @@ if __name__ == '__main__':
     binpath = sys.argv[2] if len(sys.argv) > 2 else 'target/x86_64-exorust/debug/exorust_kernel'
 
     with open(binpath, 'rb') as f:
-        elffile = ELFFile(f)
+        elf = ELFFile(f)
 
-        sym = find_closest_symbol(elffile, addr)
+        sym = find_closest_symbol(elf, addr)
         if sym:
             dist, name, sym_addr = sym
             print(f'Closest symbol: {name} + {dist:#x} (sym_addr={sym_addr:#x})')
         else:
             print('No symbol found')
 
-        line = addr_to_line(elffile, addr)
-        if line:
-            file, ln = line
-            print(f'Approx source: {file}:{ln}')
+        line_info = addr_to_line(elf, addr)
+        if line_info:
+            src_file, ln = line_info
+            print(f'Approx source: {src_file}:{ln}')
         else:
             print('No DWARF line info available for this address')

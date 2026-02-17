@@ -5,7 +5,6 @@ If any median exceeds the baseline by the provided threshold (fraction), the
 script exits with status 1 to indicate a regression.
 """
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -42,7 +41,7 @@ for name, base_val in baseline.items():
     median = None
     try:
         median = data["median"]["point_estimate"]
-    except Exception:
+    except (KeyError, TypeError):
         print(f"Unexpected estimates.json format for '{name}'", file=sys.stderr)
         failed = True
         continue

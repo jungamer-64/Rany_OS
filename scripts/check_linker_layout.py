@@ -17,13 +17,13 @@ import subprocess
 try:
     from elftools.elf.elffile import ELFFile
     from elftools.elf.constants import SH_FLAGS
-except Exception:
+except ImportError:
     print("pyelftools not found, attempting to install via pip...")
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyelftools"])  # type: ignore
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyelftools"])  # noqa: S603
         from elftools.elf.elffile import ELFFile
         from elftools.elf.constants import SH_FLAGS
-    except Exception as e:
+    except (subprocess.CalledProcessError, ImportError) as e:
         print("Error: pyelftools not installed and automatic install failed. Please run 'pip install pyelftools' and try again.")
         sys.exit(2)
 
@@ -114,9 +114,11 @@ def main():
             name_i, s_i0, s_i1, flags_i, sh_type_i, idx_i = secs[i]
             name_j, s_j0, s_j1, flags_j, sh_type_j, idx_j = secs[i + 1]
             if ranges_overlap((s_i0, s_i1), (s_j0, s_j1)):
+                name_i_display = name_i or '<unnamed>'
+                name_j_display = name_j or '<unnamed>'
                 print('ERROR: section overlap detected:')
-                print(f'  idx {idx_i}: {name_i or '<unnamed>'} (type={sh_type_i}, flags={hex(flags_i)}): [{hex(s_i0)}, {hex(s_i1)}]')
-                print(f'  idx {idx_j}: {name_j or '<unnamed>'} (type={sh_type_j}, flags={hex(flags_j)}): [{hex(s_j0)}, {hex(s_j1)}]')
+                print(f'  idx {idx_i}: {name_i_display} (type={sh_type_i}, flags={hex(flags_i)}): [{hex(s_i0)}, {hex(s_i1)}]')
+                print(f'  idx {idx_j}: {name_j_display} (type={sh_type_j}, flags={hex(flags_j)}): [{hex(s_j0)}, {hex(s_j1)}]')
                 errors += 1
 
         # Gather PT_LOAD ranges
@@ -137,8 +139,9 @@ def main():
             if not is_alloc:
                 for p0, p1 in loads:
                     if ranges_overlap((s0, s1), (p0, p1)):
+                        sec_name = name or '<unnamed>'
                         print('WARNING: non-ALLOC section lies inside PT_LOAD range:')
-                        print(f'  idx {idx}: section {name or '<unnamed>'} (type={sh_type}): [{hex(s0)}, {hex(s1)}]')
+                        print(f'  idx {idx}: section {sec_name} (type={sh_type}): [{hex(s0)}, {hex(s1)}]')
                         print(f'  PT_LOAD: [{hex(p0)}, {hex(p1)}]')
                         errors += 1
 
