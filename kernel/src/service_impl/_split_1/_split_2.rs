@@ -1,0 +1,159 @@
+use super::*;
+
+impl KernelServices for ExoKernel {
+
+    fn nvme_submit_rw(
+        &self,
+        request: NvmeRwRequest,
+        io_type: NvmeIoType,
+    ) -> KapiResult<NvmeIoHandle> {
+        use crate::io::io_scheduler::{
+            DeviceId as IoDeviceId, IoPriority, IoCommand, DmaBufHandle,
+        };
+
+        let device = IoDeviceId::Nvme {
+            controller: 0,
+            namespace: request.namespace_id,
+        };
+
+        let priority = match request.priority {
+            NvmeIoPriority::Background => IoPriority::Background,
+            NvmeIoPriority::Idle => IoPriority::Idle,
+            NvmeIoPriority::Normal => IoPriority::Normal,
+            NvmeIoPriority::High => IoPriority::High,
+            NvmeIoPriority::Realtime => IoPriority::Realtime,
+        };
+
+        // Build IoCommand (new API) and submit via submit_io_command
+        let command = match io_type {
+            NvmeIoType::Read => IoCommand::BlockRead {
+                lba: request.lba,
+                blocks: request.blocks,
+                bytes: request.bytes,
+                buf: DmaBufHandle {
+                    iova: request.prp1,
+                    len: request.bytes,
+                },
+            },
+            NvmeIoType::Write => IoCommand::BlockWrite {
+                lba: request.lba,
+                blocks: request.blocks,
+                bytes: request.bytes,
+                buf: DmaBufHandle {
+                    iova: request.prp1,
+                    len: request.bytes,
+                },
+            },
+            NvmeIoType::Flush => IoCommand::Flush,
+            NvmeIoType::Discard => IoCommand::Discard {
+                lba: request.lba,
+                blocks: request.blocks as u16,
+            },
+        };
+
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
+            device, command, priority,
+        );
+        let request_id = future.request_id().0;
+
+        Ok(NvmeIoHandle::new(request_id))
+    }
+
+    fn nvme_wait_io(
+        &self,
+        handle: NvmeIoHandle,
+    ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
+        use crate::io::io_scheduler::{IoRequestId, IoResult as SchedIoResult};
+
+        let request_id = IoRequestId(handle.request_id());
+        
+        Box::pin(async move {
+            // Poll the io_scheduler for completion
+            loop {
+                if let Some(result) = crate::io::io_scheduler::io_scheduler().take_result(request_id) {
+                    return match result {
+                        SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
+                        SchedIoResult::Error(e) => match e {
+                            crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
+                            crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
+                            crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                            _ => NvmeIoResult::DeviceError,
+                        },
+                    };
+                }
+                // Yield to allow other tasks to run
+                core::hint::spin_loop();
+            }
+        })
+    }
+
+    fn nvme_register_completion_hook(
+        &self,
+        handle: NvmeIoHandle,
+        hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
+    ) {
+        use crate::io::io_scheduler::{CompletionHook, IoRequestId, IoResult as SchedIoResult};
+
+        let request_id = IoRequestId(handle.request_id());
+        
+        let wrapper: CompletionHook = Box::new(move |result: SchedIoResult| {
+            let converted = match result {
+                SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
+                SchedIoResult::Error(e) => match e {
+                    crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
+                    crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
+                    crate::io::io_scheduler::IoError::InvalidParameter => NvmeIoResult::InvalidParameter,
+                    _ => NvmeIoResult::DeviceError,
+                },
+            };
+            hook(converted);
+        });
+
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, wrapper);
+    }
+
+    fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
+        // Create a new pipe
+        let pipe = crate::ipc::pipe::pipe();
+
+        // Register reader and writer
+        let reader_id = CHANNEL_REGISTRY.register(ChannelEntry::Reader(pipe.reader));
+        let writer_id = CHANNEL_REGISTRY.register(ChannelEntry::Writer(pipe.writer));
+
+        // info!(target: "ipc", "Created channel: reader={}, writer={}", reader_id, writer_id);
+
+        Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id))) // Return (Sender, Receiver)
+    }
+
+    fn ipc_close(&self, channel: ChannelHandle) -> Result<(), KapiError> {
+        let channel_id = channel.id();
+        if CHANNEL_REGISTRY.unregister(channel_id).is_some() {
+            Ok(())
+        } else {
+            Err(KapiError::InvalidHandle)
+        }
+    }
+
+    fn gui(&self) -> Option<&dyn kernel_api::gui::GuiServices> {
+        #[cfg(not(any(test, feature = "bench")))]
+        {
+            // GUI services are available only if framebuffer exists
+            if crate::graphics::framebuffer().is_some() {
+                Some(self)
+            } else {
+                None
+            }
+        }
+
+        #[cfg(any(test, feature = "bench"))]
+        {
+            // In test/bench builds, graphics subsystem is disabled
+            None
+        }
+    }
+
+    fn shell(&self) -> Option<&dyn kernel_api::shell::ShellServices> {
+        // Shell services are always available
+        Some(self)
+    }
+}

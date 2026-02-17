@@ -1,0 +1,74 @@
+use super::*;
+
+
+/// Handle VirtIO block device interrupt
+pub fn handle_virtio_blk_interrupt() {
+    if let Some(device) = VIRTIO_BLK_DEVICE.lock().as_ref() {
+        // Ack interrupt with shared reference
+        let status = device.transport.get_interrupt_status();
+        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-BLK] IRQ status read=0x{:x}\n", status));
+        device.transport.ack_interrupt(status);
+        device.handle_interrupt();
+    }
+}
+
+/// Synchronous read from global device
+///
+/// Note: For a proper async implementation, you would need to use
+/// Arc<VirtioBlkDevice> to allow the future to outlive the lock.
+pub fn blk_read_sync(_sector: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
+    let device_guard = VIRTIO_BLK_DEVICE.lock();
+    let _device = device_guard.as_ref().ok_or(BlockError::NotReady)?;
+
+    // Placeholder: In production, this would submit the request and poll for completion
+    // For now, just verify parameters
+    if buf.is_empty() {
+        return Err(BlockError::InvalidBufferSize);
+    }
+
+    // Would need to implement polling-based read here
+    Err(BlockError::NotReady)
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test_case]
+    fn test_virtio_blk_req_type() {
+        assert_eq!(VirtioBlkReqType::In as u32, 0);
+        assert_eq!(VirtioBlkReqType::Out as u32, 1);
+        assert_eq!(VirtioBlkReqType::Flush as u32, 4);
+    }
+
+    #[test_case]
+    fn test_block_device_config_default() {
+        let config = BlockDeviceConfig::default();
+        assert_eq!(config.capacity, 0);
+        assert_eq!(config.block_size, 512);
+        assert!(!config.read_only);
+    }
+
+    #[test_case]
+    fn test_bounce_map_unmap_via_dmahandle() {
+        // Verify that bounce allocation + DmaHandle mapping/unmap works
+        let len = 4096usize;
+        let mut rref = allocate_iommu_bounce_bytes(len).expect("alloc bounce bytes failed");
+        for i in 0..len {
+            rref[i] = 0xABu8;
+        }
+
+        // Map (domain 0 / identity mapping in test env)
+        let handle = crate::io::iommu::dma_handle::DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice)
+            .expect("map_rref_slice failed");
+        let _iova = handle.iova();
+        // Unmap and recover RRef
+        let rref = handle.unmap().expect("unmap failed");
+        assert_eq!(rref[0], 0xABu8);
+    }
+}
+
