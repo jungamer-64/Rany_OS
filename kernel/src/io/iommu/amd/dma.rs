@@ -57,6 +57,15 @@ impl AmdIommuDriver {
         unsafe { self.map_for_dma_with_perms(phys_addr, size, true, true) }
     }
 
+    /// Validate that physical address and size are 4K-page aligned and non-zero.
+    fn validate_dma_alignment(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError> {
+        let align = crate::mm::PAGE_SIZE_4K as u64;
+        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
+            return Err(IommuError::InvalidAlignment);
+        }
+        Ok(())
+    }
+
     pub(crate) unsafe fn map_for_dma_with_perms(
         &self,
         phys_addr: PhysAddr,
@@ -64,10 +73,7 @@ impl AmdIommuDriver {
         read: bool,
         write: bool,
     ) -> Result<u64, IommuError> {
-        let align = crate::mm::PAGE_SIZE_4K as u64;
-        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
-            return Err(IommuError::InvalidAlignment);
-        }
+        Self::validate_dma_alignment(phys_addr, size)?;
 
         let iova = self.allocate_iova_fast(size, None)?;
         let domain = self.domain_for_id(0)?;

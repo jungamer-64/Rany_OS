@@ -516,6 +516,20 @@ impl UsbKeyboard {
     }
 
     /// レポートを処理
+    /// Detect newly pressed and released keys between two reports and invoke callback.
+    fn detect_key_changes(old: &[u8; 6], new: &[u8; 6], callback: &dyn Fn(u8, bool)) {
+        for &key in new {
+            if key != 0 && !old.contains(&key) {
+                callback(key, true);
+            }
+        }
+        for &key in old {
+            if key != 0 && !new.contains(&key) {
+                callback(key, false);
+            }
+        }
+    }
+
     pub fn process_report(&self, data: &[u8]) {
         if data.len() < 8 {
             return;
@@ -531,19 +545,7 @@ impl UsbKeyboard {
 
         // キー押下/解放を検出
         if let Some(ref callback) = *self.key_callback.lock() {
-            // 新しく押されたキー
-            for &keycode in &report.keycodes {
-                if keycode != 0 && !prev.keycodes.contains(&keycode) {
-                    callback(keycode, true);
-                }
-            }
-
-            // 解放されたキー
-            for &keycode in &prev.keycodes {
-                if keycode != 0 && !report.keycodes.contains(&keycode) {
-                    callback(keycode, false);
-                }
-            }
+            Self::detect_key_changes(&prev.keycodes, &report.keycodes, callback);
         }
 
         *self.prev_report.lock() = report;

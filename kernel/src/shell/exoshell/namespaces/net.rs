@@ -209,12 +209,6 @@ impl NetNamespace {
         }
         ExoValue::Array(results)
     }
-}
-
-impl ShellNamespace for NetNamespace {
-    fn name(&self) -> &str {
-        "net"
-    }
 
     fn handle_bind(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match _args.get(0) {
@@ -255,6 +249,12 @@ impl ShellNamespace for NetNamespace {
                 None => ExoValue::Error(String::from("bind failed")),
             }
         }
+    }
+}
+
+impl ShellNamespace for NetNamespace {
+    fn name(&self) -> &str {
+        "net"
     }
 
     fn call<'a>(

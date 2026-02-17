@@ -492,31 +492,31 @@ fn try_zswap_store_and_dealloc(frame: FrameIndex, buf: &mut [u8]) -> bool {
 
 // Detect page size for a given frame. Returns PAGE_SIZE_1G / PAGE_SIZE_2M / PAGE_SIZE_4K
 // Conservative check: alignment + all subframes allocated.
+/// Check if ALL frames in a contiguous range starting at `base` with count `frame_count` are allocated.
+fn are_contiguous_frames_allocated(base: usize, frame_count: usize) -> bool {
+    for i in 0..frame_count {
+        if !crate::mm::buddy_allocator::is_frame_allocated(base + i) {
+            return false;
+        }
+    }
+    true
+}
+
 fn detect_frame_page_size(frame: FrameIndex) -> usize {
     // Try 1GiB first (very rare)
     let frames_per_1g = crate::mm::PAGE_SIZE_1G / crate::mm::PAGE_SIZE_4K;
-    if frame.as_usize() % frames_per_1g == 0 {
-        let mut ok = true;
-        for i in 0..frames_per_1g {
-            if !crate::mm::buddy_allocator::is_frame_allocated(frame.as_usize() + i) {
-                ok = false;
-                break;
-            }
-        }
-        if ok { return crate::mm::PAGE_SIZE_1G; }
+    if frame.as_usize() % frames_per_1g == 0
+        && are_contiguous_frames_allocated(frame.as_usize(), frames_per_1g)
+    {
+        return crate::mm::PAGE_SIZE_1G;
     }
 
     // Try 2MiB
     let frames_per_2m = crate::mm::PAGE_SIZE_2M / crate::mm::PAGE_SIZE_4K;
-    if frame.as_usize() % frames_per_2m == 0 {
-        let mut ok = true;
-        for i in 0..frames_per_2m {
-            if !crate::mm::buddy_allocator::is_frame_allocated(frame.as_usize() + i) {
-                ok = false;
-                break;
-            }
-        }
-        if ok { return crate::mm::PAGE_SIZE_2M; }
+    if frame.as_usize() % frames_per_2m == 0
+        && are_contiguous_frames_allocated(frame.as_usize(), frames_per_2m)
+    {
+        return crate::mm::PAGE_SIZE_2M;
     }
 
     // Otherwise treat as 4KiB page

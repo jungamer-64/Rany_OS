@@ -594,10 +594,22 @@ impl DmaResourceRegistry {
     ///
     /// Returns all entries that need to be force-unmapped.
     /// After this call, the registry is empty.
+    /// Acquire all three locks needed by drain_all.
+    fn lock_all_for_drain(
+        &self,
+    ) -> Result<(
+        crate::sync::PoisonLockGuard<'_, Box<[RegistrySlot]>>,
+        crate::sync::PoisonLockGuard<'_, Box<[u16]>>,
+        crate::sync::PoisonLockGuard<'_, u16>,
+    ), IommuError> {
+        let slots_guard = self.slots.lock().map_err(|_| IommuError::Poisoned)?;
+        let buckets_guard = self.hash_buckets.lock().map_err(|_| IommuError::Poisoned)?;
+        let free_guard = self.free_head.lock().map_err(|_| IommuError::Poisoned)?;
+        Ok((slots_guard, buckets_guard, free_guard))
+    }
+
     pub fn drain_all(&self) -> Result<Vec<DmaRegistryEntry>, IommuError> {
-        let mut slots_guard = self.slots.lock().map_err(|_| IommuError::Poisoned)?;
-        let mut buckets_guard = self.hash_buckets.lock().map_err(|_| IommuError::Poisoned)?;
-        let mut free_guard = self.free_head.lock().map_err(|_| IommuError::Poisoned)?;
+        let (mut slots_guard, mut buckets_guard, mut free_guard) = self.lock_all_for_drain()?;
 
         let mut entries = Vec::new();
 
@@ -1048,23 +1060,30 @@ impl IommuDomain {
     ///
     /// # Safety
     /// The caller must ensure the IOVA range will be freed after IOTLB invalidation.
-    pub fn clear_mapping_only(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+    /// Verify domain is not poisoned, look up the mapping, and lock shards.
+    fn verify_and_lock_for_clear(
+        &self,
+        iova: u64,
+        size: u64,
+    ) -> Result<(DmaMapping, Vec<crate::sync::PoisonLockGuard<'_, DomainShard>>), IommuError> {
         if self.poisoned.load(Ordering::Acquire) {
             return Err(IommuError::Poisoned);
         }
-
         let (start_shard, end_shard) = self.shard_range(iova, size)?;
-        let mut guards = self.lock_shards(start_shard, end_shard)?;
-
+        let guards = self.lock_shards(start_shard, end_shard)?;
         let mapping = guards[0]
             .mappings
             .lookup(iova)
             .cloned()
             .ok_or(IommuError::NotMapped)?;
-
         if mapping.size != size {
             return Err(IommuError::NotMapped);
         }
+        Ok((mapping, guards))
+    }
+
+    pub fn clear_mapping_only(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        let (_mapping, mut guards) = self.verify_and_lock_for_clear(iova, size)?;
 
         for guard in guards.iter_mut() {
             guard.mappings.remove(iova);

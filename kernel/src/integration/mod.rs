@@ -498,7 +498,7 @@ impl SystemIntegration {
         }
     }
 
-    fn register_and_start_virtio_net_driver(&mut self, drv: Box<VirtioNetDriver>) {
+    fn register_and_start_virtio_net_driver(&mut self, drv: alloc::boxed::Box<crate::net::driver::VirtioNetDriver>) {
         use crate::driver_registry::{register_driver, driver_registry};
         match register_driver(drv) {
             Ok(handle) => {

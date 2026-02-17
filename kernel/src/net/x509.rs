@@ -199,6 +199,20 @@ impl<'a> DerParser<'a> {
     ///
     /// 短形式（< 128）: 1バイトで長さを直接表現
     /// 長形式（>= 128）: 先頭バイトの下位7ビットが後続の長さバイト数を示す
+    /// Parse a DER long-form length from `data` starting at `pos`.
+    fn parse_long_form_length(data: &[u8], pos: &mut usize, num_bytes: usize) -> Option<usize> {
+        if num_bytes > 4 || *pos + num_bytes > data.len() {
+            return None;
+        }
+        let mut length: usize = 0;
+        for i in 0..num_bytes {
+            length = length.checked_shl(8)?;
+            length = length.checked_add(data[*pos + i] as usize)?;
+        }
+        *pos += num_bytes;
+        Some(length)
+    }
+
     pub fn read_length(&mut self) -> Option<usize> {
         if self.pos >= self.data.len() {
             return None;
@@ -214,17 +228,7 @@ impl<'a> DerParser<'a> {
             None
         } else {
             // 長形式: 下位7ビットが長さバイト数
-            let num_bytes = (first & 0x7F) as usize;
-            if num_bytes > 4 || self.pos + num_bytes > self.data.len() {
-                return None;
-            }
-            let mut length: usize = 0;
-            for i in 0..num_bytes {
-                length = length.checked_shl(8)?;
-                length = length.checked_add(self.data[self.pos + i] as usize)?;
-            }
-            self.pos += num_bytes;
-            Some(length)
+            Self::parse_long_form_length(self.data, &mut self.pos, (first & 0x7F) as usize)
         }
     }
 
