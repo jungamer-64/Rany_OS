@@ -304,7 +304,7 @@ fn run_harness(args: &Vec<String>) {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().collect(); // nosemgrep: codacy.tools-configs.rust.lang.security.args.args
     if args.iter().any(|a| a == "harness") {
         run_harness(&args);
         return;
