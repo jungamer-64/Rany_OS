@@ -1325,7 +1325,7 @@ pub fn wave9_fill_circle_no_gaps_smoke() -> bool {
     let mut fb = unsafe { Framebuffer::new(info) };
     fb.enable_double_buffering_from_vec(vec![0u32; (w * h) as usize]);
     let (cx, cy, r) = (16i32, 16i32, 7i32);
-    fb.fill_circle(cx, cy, r as u32, Color::with_alpha(0, 0, 255, 255));
+    fb.fill_circle(cx, cy, r, Color::with_alpha(0, 0, 255, 255));
     let buf = fb.back_buffer.as_ref().unwrap();
     for y in (cy - r)..=(cy + r) {
         for x in (cx - r)..=(cx + r) {

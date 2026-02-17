@@ -1928,6 +1928,45 @@ pub struct SendFuture<'a> {
     bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
+impl<'a> SendFuture<'a> {
+    /// 送信バッファのサブミットを試みる
+    fn try_submit(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
+        let tx_queue = self.device.tx_queue.as_ref()
+            .ok_or(VirtioNetError::NotInitialized)?;
+
+        let data_len = self.len;
+        let data_ptr = self.data;
+        let phys_addr_val = crate::mm::mapping::virt_to_phys(VirtAddr::new(data_ptr as u64)).as_u64();
+        let data_slice = unsafe { crate::util::raw_ptr_as_slice(data_ptr, data_len) };
+
+        let mut prep = prepare_dma_mapping_tx(
+            self.device.iommu_device_id, phys_addr_val, data_slice, data_len,
+        )?;
+
+        if let Err(err) = check_device_dma_mask(self.device.iommu_device_id, prep.dma_addr, data_len) {
+            cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle.take(), prep.mapped_iova.take(), prep.mapped_len);
+            return Err(err);
+        }
+
+        match tx_queue.add_tx_buffer_zero_copy(prep.dma_addr, data_len) {
+            Ok(desc_idx) => {
+                self.submitted = true;
+                self.desc_idx = desc_idx;
+                self.dma_iova = prep.mapped_iova;
+                self.dma_len = prep.mapped_len;
+                self.bounce_handle = prep.bounce_handle;
+                tx_queue.register_waker(cx.waker().clone());
+                tx_queue.notify();
+                Ok(())
+            }
+            Err(e) => {
+                cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
+                Err(e)
+            }
+        }
+    }
+}
+
 impl<'a> Future for SendFuture<'a> {
     type Output = Result<usize, VirtioNetError>;
 
@@ -1935,42 +1974,8 @@ impl<'a> Future for SendFuture<'a> {
         let this = &mut *self;
 
         if !this.submitted {
-            let tx_queue = match this.device.tx_queue.as_ref() {
-                Some(q) => q,
-                None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
-            };
-
-            let data_len = this.len;
-            let data_ptr = this.data;
-            let phys_addr_val = crate::mm::mapping::virt_to_phys(VirtAddr::new(data_ptr as u64)).as_u64();
-            let data_slice = unsafe { crate::util::raw_ptr_as_slice(data_ptr, data_len) };
-
-            let mut prep = match prepare_dma_mapping_tx(
-                this.device.iommu_device_id, phys_addr_val, data_slice, data_len,
-            ) {
-                Ok(p) => p,
-                Err(e) => return Poll::Ready(Err(e)),
-            };
-
-            if let Err(err) = check_device_dma_mask(this.device.iommu_device_id, prep.dma_addr, data_len) {
-                cleanup_dma_resources(this.device.iommu_device_id, prep.bounce_handle.take(), prep.mapped_iova.take(), prep.mapped_len);
-                return Poll::Ready(Err(err));
-            }
-
-            match tx_queue.add_tx_buffer_zero_copy(prep.dma_addr, data_len) {
-                Ok(desc_idx) => {
-                    this.submitted = true;
-                    this.desc_idx = desc_idx;
-                    this.dma_iova = prep.mapped_iova;
-                    this.dma_len = prep.mapped_len;
-                    this.bounce_handle = prep.bounce_handle;
-                    tx_queue.register_waker(cx.waker().clone());
-                    tx_queue.notify();
-                }
-                Err(e) => {
-                    cleanup_dma_resources(this.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
-                    return Poll::Ready(Err(e));
-                }
+            if let Err(e) = this.try_submit(cx) {
+                return Poll::Ready(Err(e));
             }
         }
 

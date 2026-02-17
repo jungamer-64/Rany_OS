@@ -671,7 +671,7 @@ impl FastBitmapAllocator {
     }
 
     /// Attempt to free a page via the single-writer arena path.
-    fn try_free_single_writer(&self, magazine: &Magazine, page_idx: usize) -> bool {
+    fn try_free_single_writer(&self, magazine: &PerCpuFastMagazine, page_idx: usize) -> bool {
         if !magazine.is_single_writer_enabled() {
             return false;
         }
@@ -688,7 +688,7 @@ impl FastBitmapAllocator {
     }
 
     /// Attempt to free a page via the per-CPU magazine.
-    fn try_free_magazine(magazine: &Magazine, addr: u64) -> bool {
+    fn try_free_magazine(magazine: &PerCpuFastMagazine, addr: u64) -> bool {
         if let Some(mag_lock) = magazine.get_magazine(0) {
             let mut mag = mag_lock.lock();
             if !mag.is_full() {

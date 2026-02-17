@@ -486,22 +486,25 @@ impl Mixer {
     // Resampling (Linear Interpolation)
     // ========================================================================
 
+    /// リサンプリング不要時のファストパス
+    fn no_resample_fast_path(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
+        let needed = output_frames * 2; // stereo
+        if channel.buffer.len() >= needed {
+            channel.buffer.drain(..needed).collect()
+        } else {
+            let mut result = channel.buffer.drain(..).collect::<Vec<_>>();
+            result.resize(needed, 0.0);
+            result
+        }
+    }
+
     /// 線形補間によるリサンプリング
     fn resample_channel(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
         let ratio = channel.resample_ratio();
 
         // No resampling needed if same sample rate
         if (ratio - 1.0).abs() < 0.0001 {
-            let needed = output_frames * 2; // stereo
-            if channel.buffer.len() >= needed {
-                let result: Vec<f32> = channel.buffer.drain(..needed).collect();
-                return result;
-            } else {
-                // Not enough samples, pad with silence
-                let mut result = channel.buffer.drain(..).collect::<Vec<_>>();
-                result.resize(needed, 0.0);
-                return result;
-            }
+            return Self::no_resample_fast_path(channel, output_frames);
         }
 
         let mut output = Vec::with_capacity(output_frames * 2);

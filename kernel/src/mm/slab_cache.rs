@@ -858,7 +858,7 @@ impl SlabCache {
                 curr = *(obj_ptr as *const Option<u16>);
             }
         }
-        
+
         // 2. Iterate all slots
         for i in 0..total as usize {
             if i >= 512 { break; } 
@@ -871,25 +871,33 @@ impl SlabCache {
                     let base_ptr = (page.as_ptr() as *mut u8).add(offset);
                     let old_ptr = NonNull::new_unchecked(base_ptr.add(i * object_size));
                     
-                    if let Some(new_ptr) = self.allocate() {
-                        let success = if let Some(migrator) = &self.migrator {
-                             migrator.migrate(old_ptr, new_ptr)
-                        } else { false };
-
-                        if success {
-                             // Manual deallocate from victim page
-                             let ph = page.as_mut();
-                             ph.free(old_ptr, object_size);
-                             self.dealloc_count += 1;
-                             moved += 1;
-                        } else {
-                             self.deallocate(new_ptr);
-                        }
+                    if self.try_migrate_object(old_ptr) {
+                         // Manual deallocate from victim page
+                         let ph = page.as_mut();
+                         ph.free(old_ptr, object_size);
+                         self.dealloc_count += 1;
+                         moved += 1;
                     }
                 }
             }
         }
         moved
+    }
+
+    /// 単一オブジェクトの移行を試みる。成功時trueを返す。
+    fn try_migrate_object(&mut self, old_ptr: NonNull<u8>) -> bool {
+        let new_ptr = match self.allocate() {
+            Some(p) => p,
+            None => return false,
+        };
+        let success = match &self.migrator {
+            Some(migrator) => migrator.migrate(old_ptr, new_ptr),
+            None => false,
+        };
+        if !success {
+            self.deallocate(new_ptr);
+        }
+        success
     }
 
 }

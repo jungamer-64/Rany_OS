@@ -393,10 +393,10 @@ pub mod p256 {
         acc[7] -= c[13] as i64;
 
         // キャリー伝播と4個のu64リムへ変換
-        let (result, carry) = Self::carry_propagate_to_limbs(&mut acc);
+        let (result, carry) = carry_propagate_to_limbs(&mut acc);
 
         // 残りのキャリーとpによる正規化
-        Self::normalize_mod_p(result, carry)
+        normalize_mod_p(result, carry)
     }
 
     // ========================================================================

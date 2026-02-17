@@ -432,7 +432,7 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
     }
 }
 
-impl LockedHeap {
+impl LockedBuddyHeap {
     fn dump_alloc_failure(guard: &BuddyHeapAllocator, layout: Layout, size: usize) {
         crate::io::log::early_print("[ALLOC] FAILED size=");
         let mut s = size;

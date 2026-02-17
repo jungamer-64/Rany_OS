@@ -244,7 +244,7 @@ fn collect_ivhd_units(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIom
             device_id: ivhd.device_id,
             iommu_info: ivhd.iommu_info,
             iommu_feature: ivhd.iommu_feature,
-            device_entries: ivhd.device_entries,
+            device_entries: ivhd.device_entries.clone(),
             max_addr_bits,
         }
     }).collect()

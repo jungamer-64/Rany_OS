@@ -392,7 +392,7 @@ impl AmdIommuDriver {
     fn configure_event_and_irt(
         &self,
         idx: usize,
-        unit: &super::ivrs::IvhdUnit,
+        unit: &AmdIommuUnit,
         mmio_base: usize,
         control: &mut u64,
     ) {

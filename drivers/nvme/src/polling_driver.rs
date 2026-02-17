@@ -308,20 +308,26 @@ impl NvmePollingDriver {
         Ok(())
     }
 
+    /// アラインメント検証付きDMAバッファを割り当てる
+    fn alloc_dma_aligned(size: usize, alloc_err: &'static str) -> Result<DmaBuffer, &'static str> {
+        let kernel = kernel_api::services::kernel();
+        let buffer = kernel
+            .alloc_dma(size)
+            .map_err(|_| alloc_err)?;
+        if buffer.physical_address() & 0xFFF != 0 {
+            return Err("DMA buffer not 4KB aligned");
+        }
+        Ok(buffer)
+    }
+
     /// Allocate and create a single I/O queue pair for the given core.
     fn allocate_io_queue_for_core(&mut self, core_id: u32, depth: u16) -> Result<(), &'static str> {
         let cq_size = (depth as usize) * CQ_ENTRY_SIZE;
         let sq_size = (depth as usize) * QUEUE_ENTRY_SIZE;
-        let kernel = kernel_api::services::kernel();
 
         // CQバッファはホストメモリから確保
-        let cq_buffer = kernel
-            .alloc_dma(cq_size)
-            .map_err(|_| "Failed to allocate IO CQ DMA buffer")?;
+        let cq_buffer = Self::alloc_dma_aligned(cq_size, "Failed to allocate IO CQ DMA buffer")?;
         let cq_phys = cq_buffer.physical_address();
-        if cq_phys & 0xFFF != 0 {
-            return Err("IO CQ DMA buffer not 4KB aligned");
-        }
         let cq_ptr = cq_buffer.as_ptr() as *mut NvmeCompletion;
 
         // SQはCMB優先（利用不可ならホストメモリ）
@@ -334,13 +340,8 @@ impl NvmePollingDriver {
             }
         }
 
-        let sq_buffer = kernel
-            .alloc_dma(sq_size)
-            .map_err(|_| "Failed to allocate IO SQ DMA buffer")?;
+        let sq_buffer = Self::alloc_dma_aligned(sq_size, "Failed to allocate IO SQ DMA buffer")?;
         let sq_phys = sq_buffer.physical_address();
-        if sq_phys & 0xFFF != 0 {
-            return Err("IO SQ DMA buffer not 4KB aligned");
-        }
         let sq_ptr = sq_buffer.as_ptr() as *mut NvmeCommand;
 
         self.create_io_queue_pair_internal(

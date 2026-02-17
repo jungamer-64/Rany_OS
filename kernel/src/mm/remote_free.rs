@@ -342,12 +342,9 @@ impl<const N: usize> RemoteFreeRing<N> {
     ///
     /// # Returns
     /// Number of entries drained
-    pub fn drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
-        let mut drained = 0;
-        
-        // 1. Drain from overflow list primarily (it has the "oldest" failed pushes, theoretically)
-        // Or drain it to clear the lock pressure? 
-        // Let's drain overflow first to return memory quickly.
+    /// overflowリストからエントリをドレインする
+    fn drain_overflow(&self, out: &mut [RemoteFreeEntry], start: usize) -> usize {
+        let mut drained = start;
         if !self.overflow.lock().is_empty() {
              let mut lock = self.overflow.lock();
              while drained < out.len() {
@@ -359,6 +356,11 @@ impl<const N: usize> RemoteFreeRing<N> {
                  }
              }
         }
+        drained
+    }
+
+    pub fn drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
+        let mut drained = self.drain_overflow(out, 0);
 
         if drained >= out.len() {
             return drained;
@@ -448,10 +450,15 @@ impl<const N: usize> RemoteFreeRing<N> {
         }
         
         // Step 3: Merge adjacent entries with same size_class
+        Self::merge_sorted_entries(entries, drained)
+    }
+    
+    /// ソート済みエントリの隣接マージを実行する
+    fn merge_sorted_entries(entries: &mut [RemoteFreeEntry], count: usize) -> usize {
         let mut write_idx = 0;
         let mut read_idx = 1;
         
-        while read_idx < entries.len() {
+        while read_idx < count {
             let current = &entries[write_idx];
             let next = &entries[read_idx];
             

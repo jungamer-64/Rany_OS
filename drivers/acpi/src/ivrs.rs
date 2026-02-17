@@ -430,11 +430,13 @@ unsafe fn process_ivrs_block(
             return;
         }
 
-        let ivhd = &*(entry_ptr as *const IvhdHeader);
-        let devices = parse_ivhd_device_entries(
-            (entry_ptr as *const u8).add(header_size),
-            entry_len - header_size,
-        );
+        let ivhd = unsafe { &*(entry_ptr as *const IvhdHeader) };
+        let devices = unsafe {
+            parse_ivhd_device_entries(
+                (entry_ptr as *const u8).add(header_size),
+                entry_len - header_size,
+            )
+        };
         ivhds.push(IvhdInfo {
             block_type: ivhd.header.block_type,
             flags: ivhd.header.flags,
@@ -451,7 +453,7 @@ unsafe fn process_ivrs_block(
         if entry_len < mem::size_of::<IvmdHeader>() {
             return;
         }
-        let ivmd = &*(entry_ptr as *const IvmdHeader);
+        let ivmd = unsafe { &*(entry_ptr as *const IvmdHeader) };
         ivmds.push(IvmdInfo {
             block_type: ivmd.header.block_type,
             flags: ivmd.header.flags,

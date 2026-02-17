@@ -223,24 +223,9 @@ impl DeferredFaultQueue {
     /// Uses compare_exchange_weak CAS loop to atomically reserve a slot.
     /// Multiple cores can push concurrently without data corruption.
     /// Critical events get priority slot if normal queue is full.
-    fn push(&self, event: RawFaultEvent) {
-        // For critical events, try reserved slot first if queue looks full
-        if Self::is_critical(&event) {
-            // Check if queue is nearly full (fast path check)
-            let tail = self.tail.load(Ordering::Relaxed);
-            let head = self.head.load(Ordering::Relaxed);
-            let queue_len = (tail + DEFERRED_QUEUE_SIZE - head) % DEFERRED_QUEUE_SIZE;
-
-            // If queue is > 75% full, try critical slot first
-            if queue_len > (DEFERRED_QUEUE_SIZE * 3 / 4) {
-                if self.critical_slot.try_push(event) {
-                    return;
-                }
-            }
-        }
-
-        // Normal queue path
-        // Retry limit to prevent infinite spin in pathological cases
+    /// Try to push an event to the normal (non-critical) queue.
+    /// Returns true if push succeeded, false if queue full or retry limit.
+    fn try_push_normal_queue(&self, event: &RawFaultEvent) -> bool {
         const MAX_RETRIES: usize = 16;
 
         for _ in 0..MAX_RETRIES {
@@ -249,13 +234,10 @@ impl DeferredFaultQueue {
             let head = self.head.load(Ordering::Acquire);
 
             if next_tail == head {
-                // Queue full, drop event
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-                return;
+                return false;
             }
 
-            // CAS to atomically reserve this slot
-            // If another core reserved it first, tail will have changed and CAS fails
             match self.tail.compare_exchange_weak(
                 tail,
                 next_tail,
@@ -263,27 +245,44 @@ impl DeferredFaultQueue {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
-                    // Successfully reserved slot at `tail`
-                    // SAFETY: We exclusively own this slot until we write to it
                     unsafe {
                         let ptr = &self.events as *const _
                             as *mut [Option<RawFaultEvent>; DEFERRED_QUEUE_SIZE];
-                        core::ptr::write_volatile(&mut (*ptr)[tail], Some(event));
+                        core::ptr::write_volatile(&mut (*ptr)[tail], Some(*event));
                     }
-                    return;
+                    return true;
                 }
                 Err(_) => {
-                    // Another producer won the race, retry with new tail
                     core::hint::spin_loop();
                     continue;
                 }
             }
         }
+        false
+    }
 
-        // Exceeded retry limit - extremely rare, but handle gracefully
-        // Try to save critical events to reserved slot as last resort
+    fn push(&self, event: RawFaultEvent) {
+        // For critical events, try reserved slot first if queue looks full
+        if Self::is_critical(&event) {
+            let tail = self.tail.load(Ordering::Relaxed);
+            let head = self.head.load(Ordering::Relaxed);
+            let queue_len = (tail + DEFERRED_QUEUE_SIZE - head) % DEFERRED_QUEUE_SIZE;
+
+            if queue_len > (DEFERRED_QUEUE_SIZE * 3 / 4) {
+                if self.critical_slot.try_push(event) {
+                    return;
+                }
+            }
+        }
+
+        // Normal queue path
+        if self.try_push_normal_queue(&event) {
+            return;
+        }
+
+        // Exceeded retry limit - try critical slot as last resort
         if Self::is_critical(&event) && self.critical_slot.try_push(event) {
-            return; // Saved to critical slot
+            return;
         }
         self.dropped.fetch_add(1, Ordering::Relaxed);
     }
@@ -341,7 +340,7 @@ pub fn drain_deferred_faults() -> usize {
 }
 
 /// Process a single non-overflow fault event with controller
-fn process_fault_with_controller(event: &DeferredFaultEvent, controller: &IommuController) {
+fn process_fault_with_controller(event: &RawFaultEvent, controller: &IommuController) {
     use crate::io::iommu::security::SecurityEvent;
 
     if let Some(log) = controller.fault_log.lock().as_mut() {

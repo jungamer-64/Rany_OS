@@ -680,6 +680,19 @@ impl VirtioInputDevice {
     /// 1. Extract the `VirtioInputEvent` from the DMA buffer
     /// 2. Dispatch to the registered event handler (if any)
     /// 3. Repost the buffer so the device can write new events
+    /// DMAバッファから入力イベントを抽出する
+    fn extract_input_event(&self, desc_id: u16, len: u32) -> Option<VirtioInputEvent> {
+        let buffers = self.event_buffers.lock();
+        let dma_buf = buffers.get(&desc_id)?;
+        let event_size = core::mem::size_of::<VirtioInputEvent>();
+        if (len as usize) < event_size {
+            return None;
+        }
+        let slice = unsafe { dma_buf.as_slice() };
+        let event_ptr = slice.as_ptr() as *const VirtioInputEvent;
+        Some(unsafe { core::ptr::read_volatile(event_ptr) })
+    }
+
     pub fn handle_interrupt(&self) {
         let event_queue = match self.event_queue.as_ref() {
             Some(q) => q,
@@ -700,24 +713,7 @@ impl VirtioInputDevice {
 
         for (desc_id, len) in completions {
             // Extract event from DMA buffer
-            let event = {
-                let buffers = self.event_buffers.lock();
-                if let Some(dma_buf) = buffers.get(&desc_id) {
-                    let event_size = core::mem::size_of::<VirtioInputEvent>();
-                    if len as usize >= event_size {
-                        let slice = unsafe { dma_buf.as_slice() };
-                        let event_ptr = slice.as_ptr() as *const VirtioInputEvent;
-                        Some(unsafe { core::ptr::read_volatile(event_ptr) })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            };
-
-            // Dispatch event to handler
-            if let Some(event) = event {
+            if let Some(event) = self.extract_input_event(desc_id, len) {
                 if let Some(handler_fn) = handler {
                     handler_fn(event);
                 }

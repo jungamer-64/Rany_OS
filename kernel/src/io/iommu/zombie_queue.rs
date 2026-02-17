@@ -403,6 +403,49 @@ impl ZombieQueue {
     ///
     /// # Returns
     /// Number of entries processed (drained from queue).
+    /// 単一のゾンビエントリを処理する
+    fn process_single_zombie<F>(
+        &self,
+        entry: &ZombieEntry,
+        sg: u64,
+        callback: &mut F,
+    ) -> bool
+    where
+        F: FnMut(ZombieData) -> bool,
+    {
+        if !entry.try_acquire_for_processing_with(sg) {
+            return false;
+        }
+        // SAFETY: We own the slot (Processing state)
+        let payload = unsafe { entry.read_payload() };
+        
+        let data = ZombieData {
+            iova: payload.iova,
+            size: payload.size,
+            domain_id: payload.domain_id,
+            mapping_kind: payload.mapping_kind,
+        };
+
+        let success = callback(data);
+        
+        if success {
+            let raw = ZombieRawPartsComponents {
+                ptr: payload.raw_ptr,
+                owner: payload.raw_owner,
+                meta: payload.raw_meta,
+                drop_fn: payload.raw_drop_fn,
+            };
+            if let Some((ptr, owner, meta, drop_fn)) = raw.into_drop_parts() {
+                unsafe { drop_fn(ptr, owner, meta) };
+            }
+            self.total_processed.fetch_add(1, Ordering::Relaxed);
+        }
+
+        entry.release();
+        self.total_drained.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
     pub fn process_pending<F>(&self, max_count: usize, mut callback: F) -> usize
     where
         F: FnMut(ZombieData) -> bool,
@@ -411,7 +454,6 @@ impl ZombieQueue {
         let start = self.consumer_pos.load(Ordering::Relaxed) as usize;
         let mut last_offset = 0;
 
-        // Scan up to 2x max_count to find pending entries
         let scan_limit = ZOMBIE_QUEUE_CAPACITY.min(max_count * 2);
 
         for offset in 0..scan_limit {
@@ -422,51 +464,15 @@ impl ZombieQueue {
             let idx = (start + offset) & ZOMBIE_QUEUE_MASK;
             let entry = &self.entries[idx];
 
-            // Single load for state check, pass to CAS if Pending
             let sg = entry.state_gen.load(Ordering::Relaxed);
             if ZombieEntry::extract_state(sg) == ZombieState::Pending {
-                if entry.try_acquire_for_processing_with(sg) {
-                    // SAFETY: We own the slot (Processing state)
-                    let payload = unsafe { entry.read_payload() };
-                    
-                    let data = ZombieData {
-                        iova: payload.iova,
-                        size: payload.size,
-                        domain_id: payload.domain_id,
-                        mapping_kind: payload.mapping_kind,
-                    };
-
-                    // Call callback - if it returns true, unmap succeeded
-                    let success = callback(data);
-                    
-                    if success {
-                        // Run RRef drop if present
-                        let raw = ZombieRawPartsComponents {
-                            ptr: payload.raw_ptr,
-                            owner: payload.raw_owner,
-                            meta: payload.raw_meta,
-                            drop_fn: payload.raw_drop_fn,
-                        };
-                        if let Some((ptr, owner, meta, drop_fn)) = raw.into_drop_parts() {
-                            // SAFETY: drop_fn and ptr were stored from valid RRef
-                            unsafe { drop_fn(ptr, owner, meta) };
-                        }
-                        self.total_processed.fetch_add(1, Ordering::Relaxed);
-                    }
-                    // Note: If callback returned false, we still drain the entry.
-                    // The zombie is permanently leaked (IOVA stays mapped).
-                    // This prevents pending_estimate from growing unboundedly.
-
-                    // Release slot back to empty
-                    entry.release();
-                    self.total_drained.fetch_add(1, Ordering::Relaxed);
+                if self.process_single_zombie(entry, sg, &mut callback) {
                     processed += 1;
                     last_offset = offset;
                 }
             }
         }
 
-        // Update consumer position hint based on last processed offset
         if processed > 0 {
             self.consumer_pos.store(
                 ((start + last_offset + 1) & ZOMBIE_QUEUE_MASK) as u64,

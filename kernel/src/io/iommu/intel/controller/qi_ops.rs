@@ -379,36 +379,6 @@ impl IommuController {
         }
         Ok(())
     }
-}
-
-impl IommuInvalidator for IommuController {
-    // Note: This impl block now calls methods from InvalidationOps
-    // Since IommuController implements InvalidationOps, `self.method()` works.
-
-    fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {
-        if requests.is_empty() {
-            return Ok(());
-        }
-
-        let any_ats = requests
-            .iter()
-            .any(|r| r.flags.contains(InvalidateFlags::ATS_AWARE));
-        let drain = requests.iter().any(|r| {
-            r.flags
-                .intersects(InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE)
-        });
-
-        for req in requests {
-            self.process_single_invalidation(req, any_ats, drain)?;
-        }
-
-        // Perform synchronous wait to ensure completion
-        if self.is_queued_invalidation_enabled() {
-            self.qi_wait_sync()?;
-        }
-
-        Ok(())
-    }
 
     /// Dispatch a single invalidation command based on its kind
     fn dispatch_invalidation_kind(&self, request: &InvalidateRequest, drain: bool) -> Result<(), IommuError> {
@@ -469,6 +439,36 @@ impl IommuInvalidator for IommuController {
                 }
             }
         }
+    }
+}
+
+impl IommuInvalidator for IommuController {
+    // Note: This impl block now calls methods from InvalidationOps
+    // Since IommuController implements InvalidationOps, `self.method()` works.
+
+    fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        let any_ats = requests
+            .iter()
+            .any(|r| r.flags.contains(InvalidateFlags::ATS_AWARE));
+        let drain = requests.iter().any(|r| {
+            r.flags
+                .intersects(InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE)
+        });
+
+        for req in requests {
+            self.process_single_invalidation(req, any_ats, drain)?;
+        }
+
+        // Perform synchronous wait to ensure completion
+        if self.is_queued_invalidation_enabled() {
+            self.qi_wait_sync()?;
+        }
+
+        Ok(())
     }
 
     /// Optimized async invalidation using QI wait

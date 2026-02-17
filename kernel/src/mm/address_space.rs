@@ -499,6 +499,34 @@ impl ProcessAddressSpace {
         self.remove_region(start_key)
     }
     
+    /// mprotectで必要な領域分割を行い、新領域を登録する
+    fn split_and_reinsert_regions(
+        &self,
+        regions: &mut alloc::collections::BTreeMap<u64, Box<AddressRegion>>,
+        region: Box<AddressRegion>,
+        req_start: VirtAddr,
+        req_end: VirtAddr,
+        prot: Protection,
+    ) {
+        let _ = self.vma_list.remove(region.start);
+
+        let mut new_regions = Vec::new();
+        if req_start > region.start {
+            new_regions.push(clone_region_with_range(&region, region.start, req_start, region.protection));
+        }
+        new_regions.push(clone_region_with_range(&region, req_start, req_end, prot));
+        if req_end < region.end {
+            new_regions.push(clone_region_with_range(&region, req_end, region.end, region.protection));
+        }
+
+        for new_region in new_regions {
+            let start = new_region.start.as_u64();
+            let vma = new_region.to_vma();
+            regions.insert(start, Box::new(new_region));
+            self.vma_list.insert(Box::new(vma));
+        }
+    }
+
     /// メモリ保護を変更（mprotectの実装）
     pub fn mprotect(&self, addr: VirtAddr, size: u64, prot: Protection) -> Result<(), AddressSpaceError> {
         let start_key = self.find_region(addr)
@@ -523,23 +551,7 @@ impl ProcessAddressSpace {
             return Err(AddressSpaceError::InvalidRange);
         }
 
-        let _ = self.vma_list.remove(region.start);
-
-        let mut new_regions = Vec::new();
-        if req_start > region.start {
-            new_regions.push(clone_region_with_range(&region, region.start, req_start, region.protection));
-        }
-        new_regions.push(clone_region_with_range(&region, req_start, req_end, prot));
-        if req_end < region.end {
-            new_regions.push(clone_region_with_range(&region, req_end, region.end, region.protection));
-        }
-
-        for new_region in new_regions {
-            let start = new_region.start.as_u64();
-            let vma = new_region.to_vma();
-            regions.insert(start, Box::new(new_region));
-            self.vma_list.insert(Box::new(vma));
-        }
+        self.split_and_reinsert_regions(&mut regions, region, req_start, req_end, prot);
 
         // ページテーブルエントリを更新
         let page_count = size / PAGE_SIZE;
@@ -772,6 +784,33 @@ impl ProcessAddressSpace {
             heap_size: self.heap_end.load(Ordering::Relaxed) - DEFAULT_HEAP_START,
         }
     }
+    /// 領域内のページをスキャンしてNUMAヒントを設定する
+    fn scan_region_numa_hints(
+        &self,
+        region_start: VirtAddr,
+        region_end: VirtAddr,
+        scan_from: VirtAddr,
+        remaining: usize,
+    ) -> (usize, usize, VirtAddr) {
+        let region_scan_start = if scan_from < region_start {
+            region_start
+        } else {
+            scan_from
+        };
+
+        let mut page_addr = region_scan_start;
+        let mut scanned = 0;
+        let mut faults = 0;
+        while page_addr < region_end && scanned < remaining {
+            if self.update_pte_for_numa_hint(page_addr) {
+                faults += 1;
+            }
+            scanned += 1;
+            page_addr = VirtAddr::new(page_addr.as_u64() + PAGE_SIZE);
+        }
+        (scanned, faults, page_addr)
+    }
+
     /// NUMAヒントスキャンを実行
     ///
     /// 指定されたアドレスからスキャンを開始し、PresentなページのPresentフラグを落とし、
@@ -785,56 +824,30 @@ impl ProcessAddressSpace {
         let mut current_addr = start_addr;
         let regions = self.regions.read();
 
-        // 指定アドレス以降の領域を検索
-        // Note: BTreeMap::range works on keys. start_addr might be in the middle of a region.
-        // We find the first region that ends after start_addr.
         for (&_r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
             if scanned >= batch_size {
                 break;
             }
 
             // スキャン対象外の領域（カーネル、デバイスなど）はスキップ
-            // Anon / Shared / FileBacked のみを対象とする
             match region.region_type {
                 RegionType::Data | RegionType::Stack | RegionType::Heap | RegionType::Bss | RegionType::Mmap => {} // OK
                 _ => {
-                    // Skip this region, move current_addr to end
                     if current_addr < region.end {
                         current_addr = region.end;
                     }
                     continue;
                 }
             }
-            
-            // 権限チェック (Read/Write access requires Present)
-            // If not present (e.g. pure guard page), skip.
-            // But we check PTEs.
-            
-            // 領域内のスキャン開始位置
-            let region_scan_start = if current_addr < region.start {
-                region.start
-            } else {
-                current_addr
-            };
 
-            let mut page_addr = region_scan_start;
-            while page_addr < region.end && scanned < batch_size {
-                // ページテーブル設定
-                // Note: walking page tables recursively. 
-                // Using a helper to update PTE directly.
-                if self.update_pte_for_numa_hint(page_addr) {
-                    faults += 1;
-                }
-                
-                scanned += 1;
-                page_addr = VirtAddr::new(page_addr.as_u64() + PAGE_SIZE);
-            }
-            current_addr = page_addr;
+            let (s, f, next_addr) = self.scan_region_numa_hints(
+                region.start, region.end, current_addr, batch_size - scanned,
+            );
+            scanned += s;
+            faults += f;
+            current_addr = next_addr;
         }
 
-        // If we ran out of regions, wrap around? 
-        // Caller handles wrap around.
-        
         (scanned, faults, current_addr)
     }
 

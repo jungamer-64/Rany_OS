@@ -681,6 +681,21 @@ impl QuarantineQueue {
     ///
     /// Panics in debug builds if the buffer capacity is insufficient.
     /// In release builds, excess requests are dropped with an error log.
+    /// Pass 1: Verify no Reserved slots exist in pending invalidations.
+    /// Returns Some(batch) if corruption is detected, None if all clear.
+    fn verify_no_reserved_slots(&self, inner: &QuarantineInner) -> Option<u64> {
+        for slot in inner.pending_invalidations.iter() {
+            if let InvSlot::Reserved { .. } = slot {
+                debug_assert!(
+                    false,
+                    "drain saw Reserved despite counts - state corruption"
+                );
+                return Some(inner.current_batch);
+            }
+        }
+        None
+    }
+
     pub fn drain_pending_invalidations(
         &self,
         requests: &mut alloc::vec::Vec<InvalidateRequest>,
@@ -697,8 +712,6 @@ impl QuarantineQueue {
 
         let mut inner = self.inner.lock();
 
-        // Round 13: Check poisoned ONLY inside lock? No, check atomic first is okay but inner has batch.
-        // Actually, logic: if poisoned, we return Poisoned { batch }.
         if self.poisoned.load(Ordering::Acquire) {
             return DrainResult::Poisoned {
                 batch: inner.current_batch,
@@ -711,7 +724,6 @@ impl QuarantineQueue {
             };
         }
 
-        // Round 8 Safety Check:
         if inner.ready_count != inner.pending_count {
             return DrainResult::NotReady {
                 batch: inner.current_batch,
@@ -720,35 +732,20 @@ impl QuarantineQueue {
 
         // Round 12: 2-Pass Drain for Safety
         // Pass 1: Verify NO Reserved slots exist
-        // If we find a Reserved slot here, it contradicts ready_count check above.
-        // This implies internal corruption. Fail-stop.
-        for slot in inner.pending_invalidations.iter() {
-            if let InvSlot::Reserved { .. } = slot {
-                debug_assert!(
-                    false,
-                    "drain saw Reserved despite counts - state corruption"
-                );
-                // Round 14: Simplify poison logic
-                let batch = inner.current_batch;
-                drop(inner); // Drop lock
-                self.poison_system();
-                return DrainResult::Poisoned { batch };
-            }
+        if let Some(batch) = self.verify_no_reserved_slots(&inner) {
+            drop(inner);
+            self.poison_system();
+            return DrainResult::Poisoned { batch };
         }
 
         let drained_batch = inner.current_batch;
 
         // Pass 2: Drain (Mutation)
-        // Since we verified no Reserved slots exist, we can safely replace.
-        // All pending slots are Ready -> We can drain them!
-        // Iterate and collect Ready requests using mem::replace to avoid clone
         for slot in inner.pending_invalidations.iter_mut() {
-            // Round 10: Check the REPLACED value, not the result of assignment
             match core::mem::replace(slot, InvSlot::Empty) {
                 InvSlot::Ready(req) => requests.push(req),
                 InvSlot::Empty => {}
                 InvSlot::Reserved { .. } => {
-                    // unreachable due to pass 1
                     debug_assert!(false, "Unreachable: Reserved found in pass 2");
                 }
             }

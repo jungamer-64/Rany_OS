@@ -1722,7 +1722,7 @@ impl NetworkStack {
     fn build_tcp_packet_from_result(
         res: &TcpProcessResult,
         buffer: &mut [u8; MAX_PACKET_SIZE],
-    ) -> Option<(super::net_types::SocketAddr, super::net_types::SocketAddr, u32, usize)> {
+    ) -> Option<(TcpSocketAddr, TcpSocketAddr, u32, usize)> {
         if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, ref payload } = *res {
             let header_len = 20usize;
             let total_len = header_len + payload.len();
@@ -1848,11 +1848,11 @@ impl NetworkStack {
     /// ゼロコピーUDP送信を試行する
     fn try_send_udp_zero_copy(
         &mut self,
-        config: &super::config::NetworkConfig,
-        src_ip: super::Ipv4Addr,
+        config: &NetworkConfig,
+        src_ip: Ipv4Address,
         src_port: u16,
-        dst_ip: super::Ipv4Addr,
-        dst_mac: super::MacAddress,
+        dst_ip: Ipv4Address,
+        dst_mac: MacAddress,
         dst_port: u16,
         data: &[u8],
     ) -> Option<Result<(), super::NetworkError>> {

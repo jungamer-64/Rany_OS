@@ -136,7 +136,7 @@ fn try_map_rmrr_region(
     start: usize,
     size: usize,
 ) -> Result<(), IommuError> {
-    if let Err(e) = validate_rmrr_region(start, start + size) {
+    if let Err(e) = validate_rmrr_region(start as u64, (start + size) as u64) {
         log::error!(
             "[IOMMU][CRITICAL] RMRR validation failed for {:04x}:{:02x}:{:02x}.{}: \
              region {:#x}-{:#x}, error: {:?}",
@@ -146,7 +146,7 @@ fn try_map_rmrr_region(
         return Err(IommuError::RmrrMapFailed);
     }
 
-    match domain.map(start, start, size, true, true) {
+    match domain.map(start as u64, start as u64, size as u64, true, true) {
         Ok(()) => {
             log::debug!(
                 "[IOMMU] RMRR mapped for {:04x}:{:02x}:{:02x}.{}: {:#x}-{:#x}",
@@ -507,6 +507,57 @@ impl IommuController {
         }
         let _ = self.qi_wait_sync();
     }
+
+    /// ATSが有効なら無効化する
+    fn check_and_clear_ats(&self, device: DeviceId) {
+        let ats_was_enabled = match self.ats_enabled_devices.lock() {
+            Ok(set) => set.contains(&device),
+            Err(_) => false,
+        };
+        if ats_was_enabled {
+            self.disable_ats_for_device(
+                device,
+                crate::io::iommu::security::AtsChangeReason::DeviceDetach,
+            );
+        }
+    }
+
+    /// ハードウェアのコンテキストエントリをクリア
+    fn clear_hw_context_entry(
+        &self,
+        bus: usize,
+        devfn: usize,
+        device: DeviceId,
+    ) -> Result<(), IommuError> {
+        let mut hw = self
+            .hardware
+            .lock()
+            .map_err(|_| IommuError::HardwareError)?;
+        if self.is_scalable_mode_enabled() {
+            let context_table = hw
+                .scalable_context_tables
+                .get_mut(bus)
+                .ok_or(IommuError::InvalidAddress)?;
+            if let Some(context_entry) = context_table.get_mut(devfn) {
+                *context_entry = ScalableContextEntry::default();
+            }
+
+            let mut device_pasid_tables = self
+                .device_pasid_tables
+                .lock()
+                .map_err(|_| IommuError::HardwareError)?;
+            device_pasid_tables.remove(&device);
+        } else {
+            let context_table = hw
+                .legacy_context_tables
+                .get_mut(bus)
+                .ok_or(IommuError::InvalidAddress)?;
+            if let Some(context_entry) = context_table.get_mut(devfn) {
+                *context_entry = ContextEntry::default();
+            }
+        }
+        Ok(())
+    }
 }
 
 impl DomainManager for IommuController {
@@ -626,57 +677,6 @@ impl DomainManager for IommuController {
             .map_err(|_| IommuError::HardwareError)?;
         device_domains.insert(device, domain_id);
 
-        Ok(())
-    }
-
-    /// ATSが有効なら無効化する
-    fn check_and_clear_ats(&self, device: DeviceId) {
-        let ats_was_enabled = match self.ats_enabled_devices.lock() {
-            Ok(set) => set.contains(&device),
-            Err(_) => false,
-        };
-        if ats_was_enabled {
-            self.disable_ats_for_device(
-                device,
-                crate::io::iommu::security::AtsChangeReason::DeviceDetach,
-            );
-        }
-    }
-
-    /// ハードウェアのコンテキストエントリをクリア
-    fn clear_hw_context_entry(
-        &self,
-        bus: usize,
-        devfn: usize,
-        device: DeviceId,
-    ) -> Result<(), IommuError> {
-        let mut hw = self
-            .hardware
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?;
-        if self.is_scalable_mode_enabled() {
-            let context_table = hw
-                .scalable_context_tables
-                .get_mut(bus)
-                .ok_or(IommuError::InvalidAddress)?;
-            if let Some(context_entry) = context_table.get_mut(devfn) {
-                *context_entry = ScalableContextEntry::default();
-            }
-
-            let mut device_pasid_tables = self
-                .device_pasid_tables
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            device_pasid_tables.remove(&device);
-        } else {
-            let context_table = hw
-                .legacy_context_tables
-                .get_mut(bus)
-                .ok_or(IommuError::InvalidAddress)?;
-            if let Some(context_entry) = context_table.get_mut(devfn) {
-                *context_entry = ContextEntry::default();
-            }
-        }
         Ok(())
     }
 

@@ -586,6 +586,72 @@ impl MglruList {
         target.push_back(entry);
         self.gen_sizes[idx].fetch_add(1, Ordering::Relaxed);
     }
+
+    /// 単一世代のagingを実行する
+    ///
+    /// `gen_idx` のエントリを走査し:
+    /// - 参照ビットが立っているページ → Gen0 に若返り
+    /// - それ以外 → gen_idx + 1 に老化
+    ///
+    /// 返り値: (aged, rejuvenated)
+    fn age_single_generation(&self, gen_idx: usize) -> (usize, usize) {
+        let target_gen_idx = gen_idx + 1;
+        if target_gen_idx >= MGLRU_GENERATIONS {
+            return (0, 0);
+        }
+
+        let mut aged = 0usize;
+        let mut rejuvenated = 0usize;
+
+        let mut source = self.generations[gen_idx].lock();
+        let count = source.len();
+        let mut remaining = VecDeque::with_capacity(count);
+        let mut to_rejuvenate = Vec::new();
+        let mut to_age = Vec::new();
+
+        while let Some(mut entry) = source.pop_front() {
+            if entry.test_clear_referenced() {
+                // 参照ビットあり → Gen0に若返り
+                entry.generation = MglruGen::Gen0;
+                to_rejuvenate.push(entry);
+                rejuvenated += 1;
+            } else {
+                // 参照ビットなし → 次の世代へ老化
+                entry.generation = entry.generation.age();
+                to_age.push(entry);
+                aged += 1;
+            }
+        }
+        drop(source);
+
+        // Gen0に若返りページを追加
+        if !to_rejuvenate.is_empty() && gen_idx != 0 {
+            let mut gen0 = self.generations[0].lock();
+            for entry in to_rejuvenate {
+                gen0.push_back(entry);
+            }
+        } else {
+            // gen_idx == 0 の場合、若返りはそのまま元に戻す
+            remaining.extend(to_rejuvenate);
+        }
+
+        // 次の世代に老化ページを追加
+        let mut target = self.generations[target_gen_idx].lock();
+        for entry in to_age {
+            target.push_back(entry);
+        }
+        drop(target);
+
+        // 残りページを元の世代に戻す
+        if !remaining.is_empty() {
+            let mut source = self.generations[gen_idx].lock();
+            while let Some(entry) = remaining.pop_front() {
+                source.push_back(entry);
+            }
+        }
+
+        (aged, rejuvenated)
+    }
     
     /// Aging cycle: 全世代を1つずつ古くする
     /// 
@@ -2116,6 +2182,27 @@ impl ClockProList {
     /// 
     /// # Returns
     /// 回収するフレームのリスト
+    /// Coldエントリを回収試行し、成功時はTestエントリに変換する
+    fn try_evict_cold_entry(
+        &self,
+        pages: &mut alloc::collections::VecDeque<ClockProEntry>,
+        hand: usize,
+    ) -> Option<FrameIndex> {
+        let entry = pages.get(hand)?;
+        if entry.test_clear_referenced() {
+            return None; // 参照あり → Hotに昇格予定
+        }
+        let frame = entry.frame;
+        if let Some(mut removed) = pages.remove(hand) {
+            removed.state = ClockProState::Test;
+            pages.push_back(removed);
+            self.cold_count.fetch_sub(1, Ordering::Relaxed);
+            self.test_count.fetch_add(1, Ordering::Relaxed);
+        }
+        self.cold_evictions.fetch_add(1, Ordering::Relaxed);
+        Some(frame)
+    }
+
     pub fn run_hand_cold(&self, target_count: usize) -> Vec<FrameIndex> {
         let mut pages = self.pages.lock();
         let mut victims = Vec::new();
@@ -2138,22 +2225,8 @@ impl ClockProList {
             if let Some(entry) = pages.get(hand) {
                 match entry.state {
                     ClockProState::Cold => {
-                        if entry.test_clear_referenced() {
-                            // 参照あり → Hotに昇格
-                            // (実際の昇格は後で処理)
-                        } else {
-                            // 参照なし → 回収
-                            victims.push(entry.frame);
-                            
-                            // Testエントリに変換（履歴保持）
-                            if let Some(mut removed) = pages.remove(hand) {
-                                removed.state = ClockProState::Test;
-                                pages.push_back(removed);
-                                self.cold_count.fetch_sub(1, Ordering::Relaxed);
-                                self.test_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                            
-                            self.cold_evictions.fetch_add(1, Ordering::Relaxed);
+                        if let Some(frame) = self.try_evict_cold_entry(&mut pages, hand) {
+                            victims.push(frame);
                             continue; // handは同じ位置で次の要素を見る
                         }
                     }
@@ -2162,7 +2235,6 @@ impl ClockProList {
                     }
                     ClockProState::Test => {
                         // Test: 期限切れなら削除
-                        // (簡略化: ここでは何もしない)
                     }
                 }
             }

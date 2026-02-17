@@ -1050,7 +1050,7 @@ pub unsafe fn init_numa_frame_allocator_from_info(numa_info: &NumaInfo) -> bool 
 
 /// NUMAノード単位でアリーナを再構成
 fn reconfigure_numa_node(
-    numa: &mut crate::mm::numa_allocator::NumaAwareAllocator,
+    numa: &mut NumaPmmAllocator,
     node_idx: usize,
     allowed: &[bool; crate::mm::per_cpu::MAX_CPUS],
     cpu_ids: &[usize],

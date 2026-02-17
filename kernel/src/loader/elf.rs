@@ -694,6 +694,46 @@ impl<'a> ElfLoader<'a> {
         });
     }
 
+    /// 各セグメントをメモリにロードする
+    fn load_segments(
+        &self,
+        info: &CellInfo<'a>,
+        base_address: usize,
+        pkey: u8,
+    ) -> Result<(), LoadError> {
+        for segment in &info.segments {
+            let dest = base_address + segment.vaddr;
+            let src_start = segment.file_offset;
+            let src_end = src_start + segment.file_size;
+
+            if src_end > self.data.len() {
+                return Err(LoadError::InvalidFormat(
+                    "Segment data out of bounds".into(),
+                ));
+            }
+
+            // データをコピー
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.data.as_ptr().add(src_start),
+                    dest as *mut u8,
+                    segment.file_size,
+                );
+
+                // BSS領域をゼロで初期化
+                if segment.mem_size > segment.file_size {
+                    let bss_start = dest + segment.file_size;
+                    let bss_size = segment.mem_size - segment.file_size;
+                    core::ptr::write_bytes(bss_start as *mut u8, 0, bss_size);
+                }
+            }
+
+            // Apply page flags (may be a no-op in test builds)
+            self.apply_page_flags(dest, segment.mem_size, segment.flags, pkey)?;
+        }
+        Ok(())
+    }
+
     /// メモリを割り当て
     ///
     /// ASLRが有効な場合、ランダムなオフセットを加算してベースアドレスを予測困難にする
