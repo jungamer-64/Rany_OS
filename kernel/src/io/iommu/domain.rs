@@ -1715,7 +1715,7 @@ impl IommuDomain {
     }
 
     /// 新規割り当て済みページテーブルをコミットする
-    fn commit_allocated_tables(tables: &mut [Option<PageTableScope>; 3]) {
+    fn commit_allocated_tables(tables: &mut [Option<PageTableScope>]) {
         for slot in tables.iter_mut() {
             if let Some(scope) = slot {
                 scope.commit();
@@ -1775,14 +1775,6 @@ impl IommuDomain {
         let mut pt_scope = self.allocate_page_table()?;
         pt_scope.attach_to_parent(pd_entry, pd_phys, self.pte_format, 1);
         Ok(Some(pt_scope))
-    }
-
-    fn commit_allocated_tables(tables: &mut [Option<PageTableScope>]) {
-        for slot in tables.iter_mut() {
-            if let Some(scope) = slot {
-                scope.commit();
-            }
-        }
     }
 
     /// Map a 2MB super-page
@@ -1924,12 +1916,12 @@ impl IommuDomain {
     }
 
     /// 複数シャードのガードを取得する
-    fn acquire_shard_guards(
-        &self,
+    fn acquire_shard_guards<'a>(
+        &'a self,
         start_shard: usize,
         end_shard: usize,
-        first_guard: crate::sync::PoisonLockGuard<'_, DomainShard>,
-    ) -> Result<Vec<crate::sync::PoisonLockGuard<'_, DomainShard>>, IommuError> {
+        first_guard: crate::sync::PoisonLockGuard<'a, DomainShard>,
+    ) -> Result<Vec<crate::sync::PoisonLockGuard<'a, DomainShard>>, IommuError> {
         let mut guards = Vec::with_capacity(end_shard.saturating_sub(start_shard) + 1);
         guards.push(first_guard);
         for idx in (start_shard + 1)..=end_shard {

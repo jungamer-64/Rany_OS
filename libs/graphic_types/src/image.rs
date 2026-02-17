@@ -1488,6 +1488,14 @@ impl IconGenerator {
         image
     }
 
+    /// Check if a pixel is inside the corner cutout area of the file icon.
+    fn is_in_corner_cutout(x: u32, y: u32, size: u32, corner_size: u32) -> bool {
+        x >= size - corner_size && y < corner_size && {
+            let local_x = x - (size - corner_size);
+            local_x + y < corner_size
+        }
+    }
+
     /// ファイルアイコンを生成
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_possible_wrap)]
@@ -1498,13 +1506,8 @@ impl IconGenerator {
         // メインの四角形
         for y in 0..size {
             for x in 0..size {
-                // 右上の角を除外
-                if x >= size - corner_size && y < corner_size {
-                    let local_x = x - (size - corner_size);
-                    let local_y = y;
-                    if local_x + local_y < corner_size {
-                        continue;
-                    }
+                if Self::is_in_corner_cutout(x, y, size, corner_size) {
+                    continue;
                 }
                 image.set_pixel(x, y, color);
             }

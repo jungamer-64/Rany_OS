@@ -1045,6 +1045,15 @@ impl PageTableManager {
         Ok(())
     }
 
+    /// Adjust PAT flag for huge pages (2MB/1GB): PAT bit moves from bit 7 to bit 12.
+    fn adjust_pat_for_huge(flags: PageFlags) -> PageFlags {
+        if flags.contains(PageFlags::PAT) {
+            flags.clear(PageFlags::PAT).set(PageFlags::PAT_LARGE)
+        } else {
+            flags
+        }
+    }
+
     /// 2MiBページをマップ（設計書5.1対応）
     ///
     /// # Safety
@@ -1061,13 +1070,7 @@ impl PageTableManager {
             return Err(MapError::AlignmentError);
         }
 
-        // PAT bit handling:
-        // For 4KB pages, PAT is bit 7.
-        // For Huge Pages (2MB/1GB), bit 7 is PS (Page Size), so PAT moves to bit 12.
-        let mut actual_flags = flags;
-        if actual_flags.contains(PageFlags::PAT) {
-            actual_flags = actual_flags.clear(PageFlags::PAT).set(PageFlags::PAT_LARGE);
-        }
+        let actual_flags = Self::adjust_pat_for_huge(flags);
 
         let indices = virt.page_table_indices();
 

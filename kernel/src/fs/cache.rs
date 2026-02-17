@@ -479,7 +479,7 @@ impl PageCache {
 
     /// 全ファイルからLRUページを検索する
     fn find_lru_page_globally(
-        files: &alloc::collections::BTreeMap<InodeNum, FilePageCache>,
+        files: &alloc::collections::BTreeMap<InodeNum, FileCache>,
     ) -> Option<(InodeNum, u64)> {
         let mut best_page: Option<(InodeNum, u64, u64)> = None;
         let mut best_access_time = u64::MAX;

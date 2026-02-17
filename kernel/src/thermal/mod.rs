@@ -572,22 +572,27 @@ impl FanController {
     }
 
     /// 温度に基づいてファンを自動制御
+    /// Map temperature to fan level.
+    fn temp_to_fan_level(celsius: i32) -> FanLevel {
+        if celsius >= 85 {
+            FanLevel::Full
+        } else if celsius >= 75 {
+            FanLevel::High
+        } else if celsius >= 65 {
+            FanLevel::Medium
+        } else if celsius >= 55 {
+            FanLevel::Low
+        } else {
+            FanLevel::Silent
+        }
+    }
+
     pub fn auto_control(&self, temp: Temperature) {
         if !self.auto_mode.load(Ordering::Relaxed) {
             return;
         }
 
-        let level = if temp.celsius() >= 85 {
-            FanLevel::Full
-        } else if temp.celsius() >= 75 {
-            FanLevel::High
-        } else if temp.celsius() >= 65 {
-            FanLevel::Medium
-        } else if temp.celsius() >= 55 {
-            FanLevel::Low
-        } else {
-            FanLevel::Silent
-        };
+        let level = Self::temp_to_fan_level(temp.celsius());
 
         let mut fans = self.fans.write();
         for fan in fans.iter_mut() {

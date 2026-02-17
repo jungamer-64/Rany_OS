@@ -279,34 +279,22 @@ pub fn find_first_set_bit_from(bitmap: &[u64], start_word: usize) -> Option<usiz
 /// 連続したnビットのセット（空き）を検索。
 /// 2MBや1GBページの割り当てに使用。
 #[inline]
-pub fn find_contiguous_set_bits(bitmap: &[u64], count: usize) -> Option<usize> {
-    if count == 0 || bitmap.is_empty() {
-        return None;
-    }
-    
-    if count == 1 {
-        return find_first_set_bit_simd(bitmap);
-    }
-    
-    // 連続ビット検索（シンプル版）
+/// Scan bitmap words for a contiguous run of set bits with the given length.
+fn scan_contiguous_run(bitmap: &[u64], count: usize) -> Option<usize> {
     let mut run_start = None;
     let mut run_len = 0;
-    
+
     for word_idx in 0..bitmap.len() {
         let word = bitmap[word_idx];
-        
+
         for bit in 0..64 {
             let bit_idx = word_idx * 64 + bit;
-            let is_set = (word >> bit) & 1 != 0;
-            
-            if is_set {
+            if (word >> bit) & 1 != 0 {
                 if run_start.is_none() {
                     run_start = Some(bit_idx);
-                    run_len = 1;
-                } else {
-                    run_len += 1;
+                    run_len = 0;
                 }
-                
+                run_len += 1;
                 if run_len >= count {
                     return run_start;
                 }
@@ -316,8 +304,20 @@ pub fn find_contiguous_set_bits(bitmap: &[u64], count: usize) -> Option<usize> {
             }
         }
     }
-    
+
     None
+}
+
+pub fn find_contiguous_set_bits(bitmap: &[u64], count: usize) -> Option<usize> {
+    if count == 0 || bitmap.is_empty() {
+        return None;
+    }
+
+    if count == 1 {
+        return find_first_set_bit_simd(bitmap);
+    }
+
+    scan_contiguous_run(bitmap, count)
 }
 
 /// 最大オーダー（2^MAX_ORDER * 4KiB = 最大ブロックサイズ）
@@ -1681,71 +1681,49 @@ impl BuddyFrameAllocator {
         None
     }
 
-    /// Try to allocate a 4KiB frame on a preferred NUMA node; fallback to others and global
-    pub fn allocate_4k_frame_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
-        // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
+    /// NUMA-aware allocation helper: try preferred node, then other nodes.
+    /// Returns a raw FrameIndex if successful.
+    fn allocate_on_numa_node(&mut self, node: NumaNodeId, order: usize) -> Option<FrameIndex> {
         let map_clone = self.numa_regions.clone();
-        if let Some(map) = map_clone.as_ref() {
-            if let Some(ranges) = map.get(&node) {
-                for &(start, end) in ranges.iter() {
-                    if let Some(frame) =
-                        self.allocate_order_in_range(0, start.as_usize(), end.as_usize())
-                    {
-                        let addr = PhysAddr::new(frame.to_phys_addr());
-                        return Some(PhysFrame::containing_address(addr));
-                    }
-                }
-            }
+        let map = map_clone.as_ref()?;
 
-            for (&other, ranges) in map.iter() {
-                if other == node {
-                    continue;
-                }
-                for &(start, end) in ranges.iter() {
-                    if let Some(frame) =
-                        self.allocate_order_in_range(0, start.as_usize(), end.as_usize())
-                    {
-                        let addr = PhysAddr::new(frame.to_phys_addr());
-                        return Some(PhysFrame::containing_address(addr));
-                    }
+        // Preferred node first
+        if let Some(ranges) = map.get(&node) {
+            for &(start, end) in ranges.iter() {
+                if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                    return Some(frame);
                 }
             }
         }
 
-        // global fallback
+        // Fallback to other nodes
+        for (&other, ranges) in map.iter() {
+            if other == node { continue; }
+            for &(start, end) in ranges.iter() {
+                if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                    return Some(frame);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Try to allocate a 4KiB frame on a preferred NUMA node; fallback to others and global
+    pub fn allocate_4k_frame_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
+        if let Some(frame) = self.allocate_on_numa_node(node, 0) {
+            let addr = PhysAddr::new(frame.to_phys_addr());
+            return Some(PhysFrame::containing_address(addr));
+        }
         self.allocate_4k_frame()
     }
 
     /// 2MiB allocation on a preferred NUMA node
     pub fn allocate_2m_frame_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
-        // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
-        let map_clone = self.numa_regions.clone();
-        if let Some(map) = map_clone.as_ref() {
-            if let Some(ranges) = map.get(&node) {
-                for &(start, end) in ranges.iter() {
-                    if let Some(frame) =
-                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
-                    {
-                        let addr = PhysAddr::new(frame.to_phys_addr());
-                        return Some(PhysFrame::containing_address(addr));
-                    }
-                }
-            }
-
-            for (&other, ranges) in map.iter() {
-                if other == node {
-                    continue;
-                }
-                for &(start, end) in ranges.iter() {
-                    if let Some(frame) =
-                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
-                    {
-                        let addr = PhysAddr::new(frame.to_phys_addr());
-                        return Some(PhysFrame::containing_address(addr));
-                    }
-                }
-            }
+        if let Some(frame) = self.allocate_on_numa_node(node, order) {
+            let addr = PhysAddr::new(frame.to_phys_addr());
+            return Some(PhysFrame::containing_address(addr));
         }
         self.allocate_2m_frame()
     }
@@ -1753,35 +1731,10 @@ impl BuddyFrameAllocator {
     /// 1GiB allocation on a preferred NUMA node
     pub fn allocate_1g_frame_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size1GiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
-        // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
-        let map_clone = self.numa_regions.clone();
-        if let Some(map) = map_clone.as_ref() {
-            if let Some(ranges) = map.get(&node) {
-                for &(start, end) in ranges.iter() {
-                    if let Some(frame) =
-                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
-                    {
-                        let addr = PhysAddr::new(frame.to_phys_addr());
-                        return Some(PhysFrame::containing_address(addr));
-                    }
-                }
-            }
-
-            for (&other, ranges) in map.iter() {
-                if other == node {
-                    continue;
-                }
-                for &(start, end) in ranges.iter() {
-                    if let Some(frame) =
-                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
-                    {
-                        let addr = PhysAddr::new(frame.to_phys_addr());
-                        return Some(PhysFrame::containing_address(addr));
-                    }
-                }
-            }
+        if let Some(frame) = self.allocate_on_numa_node(node, order) {
+            let addr = PhysAddr::new(frame.to_phys_addr());
+            return Some(PhysFrame::containing_address(addr));
         }
-
         self.allocate_1g_frame()
     }
 
@@ -2540,6 +2493,22 @@ pub fn is_managed_by_buddy(addr: PhysAddr) -> bool {
 /// 指定範囲がBuddy Allocatorで管理されているかチェック
 ///
 /// 範囲は [start, start+size) の半開区間。
+/// Check if [start, end) is fully contained within any NUMA range.
+fn is_range_in_numa_regions(
+    map: &alloc::collections::BTreeMap<NumaNodeId, alloc::vec::Vec<(FrameIndex, FrameIndex)>>,
+    start: u64,
+    end: u64,
+) -> bool {
+    for (_node, ranges) in map.iter() {
+        for &(range_start, range_end) in ranges.iter() {
+            if start >= range_start.to_phys_addr() && end <= range_end.to_phys_addr() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn is_range_managed_by_buddy(start: PhysAddr, size: u64) -> bool {
     if size == 0 {
         return false;
@@ -2552,16 +2521,7 @@ pub fn is_range_managed_by_buddy(start: PhysAddr, size: u64) -> bool {
     let allocator = BUDDY_ALLOCATOR.lock();
 
     if let Some(map) = allocator.numa_regions.as_ref() {
-        for (_node, ranges) in map.iter() {
-            for &(range_start, range_end) in ranges.iter() {
-                let start_addr = range_start.to_phys_addr();
-                let end_addr = range_end.to_phys_addr();
-                if start.as_u64() >= start_addr && end <= end_addr {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return is_range_in_numa_regions(map, start.as_u64(), end);
     }
 
     if allocator.total_frames == 0 {

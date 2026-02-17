@@ -450,45 +450,7 @@ impl<const N: usize> RemoteFreeRing<N> {
         }
         
         // Step 3: Merge adjacent entries with same size_class
-        Self::merge_sorted_entries(entries, drained)
-    }
-    
-    /// ソート済みエントリの隣接マージを実行する
-    fn merge_sorted_entries(entries: &mut [RemoteFreeEntry], count: usize) -> usize {
-        let mut write_idx = 0;
-        let mut read_idx = 1;
-        
-        while read_idx < count {
-            let current = &entries[write_idx];
-            let next = &entries[read_idx];
-            
-            // Check if can merge: same size_class and adjacent addresses
-            if current.size_class == next.size_class {
-                let page_size = current.page_size();
-                let current_end = current.addr.saturating_add(page_size * (current.count as u64));
-                
-                if current_end == next.addr {
-                    // Merge: extend current entry's count
-                    let new_count = current.count.saturating_add(next.count);
-                    entries[write_idx] = RemoteFreeEntry {
-                        addr: current.addr,
-                        count: new_count,
-                        size_class: current.size_class,
-                    };
-                    read_idx += 1;
-                    continue;
-                }
-            }
-            
-            // Can't merge, move to next output slot
-            write_idx += 1;
-            if write_idx != read_idx {
-                entries[write_idx] = entries[read_idx];
-            }
-            read_idx += 1;
-        }
-        
-        write_idx + 1 // Return number of merged entries
+        Self::merge_sorted_entries(entries)
     }
     
     /// Compare entries for sorting: (size_class, addr)

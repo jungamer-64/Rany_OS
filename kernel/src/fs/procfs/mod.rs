@@ -226,39 +226,21 @@ impl ProcFs {
 
     /// net エントリを追加
     fn add_net_entries(&self) {
-        // /proc/net/dev - ネットワークデバイス統計
-        let dev_inode = self.allocate_inode();
-        let dev_entry = ProcEntry::file(dev_inode, "dev", || read_sysfs_text("/sys/system/net/dev"));
-        let mut root = self.root.write();
-        if let Some(net_dir) = root.children.get_mut("net") {
-            net_dir.add_child(dev_entry);
-        }
-        drop(root);
+        let net_files: &[(&str, &str)] = &[
+            ("dev", "/sys/system/net/dev"),
+            ("tcp", "/sys/system/net/tcp"),
+            ("udp", "/sys/system/net/udp"),
+            ("arp", "/sys/system/net/arp"),
+        ];
 
-        // /proc/net/tcp - TCP接続情報
-        let tcp_inode = self.allocate_inode();
-        let tcp_entry = ProcEntry::file(tcp_inode, "tcp", || read_sysfs_text("/sys/system/net/tcp"));
-        let mut root = self.root.write();
-        if let Some(net_dir) = root.children.get_mut("net") {
-            net_dir.add_child(tcp_entry);
-        }
-        drop(root);
-
-        // /proc/net/udp - UDP接続情報
-        let udp_inode = self.allocate_inode();
-        let udp_entry = ProcEntry::file(udp_inode, "udp", || read_sysfs_text("/sys/system/net/udp"));
-        let mut root = self.root.write();
-        if let Some(net_dir) = root.children.get_mut("net") {
-            net_dir.add_child(udp_entry);
-        }
-        drop(root);
-
-        // /proc/net/arp - ARPテーブル
-        let arp_inode = self.allocate_inode();
-        let arp_entry = ProcEntry::file(arp_inode, "arp", || read_sysfs_text("/sys/system/net/arp"));
-        let mut root = self.root.write();
-        if let Some(net_dir) = root.children.get_mut("net") {
-            net_dir.add_child(arp_entry);
+        for &(name, sysfs_path) in net_files {
+            let inode = self.allocate_inode();
+            let path = sysfs_path.to_string();
+            let entry = ProcEntry::file(inode, name, move || read_sysfs_text(&path));
+            let mut root = self.root.write();
+            if let Some(net_dir) = root.children.get_mut("net") {
+                net_dir.add_child(entry);
+            }
         }
     }
 

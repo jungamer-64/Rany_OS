@@ -683,7 +683,7 @@ impl QuarantineQueue {
     /// In release builds, excess requests are dropped with an error log.
     /// Pass 1: Verify no Reserved slots exist in pending invalidations.
     /// Returns Some(batch) if corruption is detected, None if all clear.
-    fn verify_no_reserved_slots(&self, inner: &QuarantineInner) -> Option<u64> {
+    fn verify_no_reserved_slots(&self, inner: &QuarantineQueueInner) -> Option<u64> {
         for slot in inner.pending_invalidations.iter() {
             if let InvSlot::Reserved { .. } = slot {
                 debug_assert!(

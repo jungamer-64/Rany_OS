@@ -708,6 +708,13 @@ impl VirtioConsoleDevice {
     /// (extracting data and reposting buffers), then wakes any pending futures.
     pub fn handle_interrupt(&self) {
         // Process TX queue completions
+        self.process_tx_completions();
+
+        // Process RX queue completions
+        self.process_rx_wakeups();
+    }
+
+    fn process_tx_completions(&self) {
         if let Some(ref tx_queue) = self.tx_queue {
             let queue_guard = tx_queue.lock();
             while let Some((desc_id, _len)) = queue_guard.poll_completions() {
@@ -727,8 +734,9 @@ impl VirtioConsoleDevice {
                 }
             }
         }
+    }
 
-        // Process RX queue completions
+    fn process_rx_wakeups(&self) {
         // Note: RX completions are typically consumed via read_bytes(), but
         // we also wake any async waiters here so they can poll.
         if let Some(ref rx_queue) = self.rx_queue {

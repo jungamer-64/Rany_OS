@@ -714,35 +714,39 @@ impl NumaPmmAllocator {
         ids
     }
 
+    fn init_numa_node(&mut self, node_idx: usize, usable_regions: &[(PhysAddr, u64, NumaNodeId)]) -> bool {
+        let node_id = NumaNodeId::new(node_idx as u8);
+        let node_regions: Vec<(PhysAddr, u64)> = usable_regions
+            .iter()
+            .filter(|&&(_, size, region_node)| region_node == node_id && size > 0)
+            .map(|&(addr, size, _)| (addr, size))
+            .collect();
+
+        if node_regions.is_empty() {
+            return false;
+        }
+
+        if let Some(mut pmm) = build_pmm_from_regions(&node_regions) {
+            let cpu_ids = self.cpu_ids_for_node(node_idx);
+            pmm.configure_arenas_for_cpu_ids(&cpu_ids);
+            pmm.enable_single_writer();
+            self.node_allocators[node_idx] = Some(pmm);
+        }
+
+        for (addr, size) in node_regions {
+            self.topology.nodes[node_idx].add_memory_range(addr.as_u64(), size);
+        }
+
+        true
+    }
+
     fn init_numa(&mut self, usable_regions: &[(PhysAddr, u64, NumaNodeId)]) {
         let mut max_node = 0usize;
 
         for node_idx in 0..MAX_NUMA_NODES {
-            let node_id = NumaNodeId::new(node_idx as u8);
-            let mut node_regions: Vec<(PhysAddr, u64)> = Vec::new();
-
-            for &(addr, size, region_node) in usable_regions {
-                if region_node == node_id && size > 0 {
-                    node_regions.push((addr, size));
-                }
+            if self.init_numa_node(node_idx, usable_regions) {
+                max_node = max_node.max(node_idx + 1);
             }
-
-            if node_regions.is_empty() {
-                continue;
-            }
-
-            if let Some(mut pmm) = build_pmm_from_regions(&node_regions) {
-                let cpu_ids = self.cpu_ids_for_node(node_idx);
-                pmm.configure_arenas_for_cpu_ids(&cpu_ids);
-                pmm.enable_single_writer();
-                self.node_allocators[node_idx] = Some(pmm);
-            }
-
-            for (addr, size) in node_regions {
-                self.topology.nodes[node_idx].add_memory_range(addr.as_u64(), size);
-            }
-
-            max_node = max_node.max(node_idx + 1);
         }
 
         if max_node > 0 {
@@ -1467,6 +1471,21 @@ pub fn get_cpu_numa_node(cpu_id: u8) -> NumaNodeId {
     NUMA_FRAME_ALLOCATOR.lock().topology().cpu_to_node(cpu_id)
 }
 
+/// Check if a range is contained within any NUMA node's memory ranges.
+fn is_range_in_numa_topology(topo: &super::numa::NumaTopology, start: u64, end: u64) -> bool {
+    for node_idx in 0..topo.node_count() {
+        let node = &topo.nodes[node_idx];
+        for i in 0..node.range_count {
+            let (range_start, range_size) = node.memory_ranges[i];
+            let range_end = range_start.saturating_add(range_size);
+            if start >= range_start && end <= range_end {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 指定範囲がPMMで管理されているか（ベストエフォート）
 pub fn is_range_managed_by_pmm(start: PhysAddr, size: u64) -> bool {
     if size == 0 {
@@ -1477,18 +1496,7 @@ pub fn is_range_managed_by_pmm(start: PhysAddr, size: u64) -> bool {
     };
 
     if let Some(numa) = pmm_numa() {
-        let topo = numa.topology();
-        for node_idx in 0..topo.node_count() {
-            let node = &topo.nodes[node_idx];
-            for i in 0..node.range_count {
-                let (range_start, range_size) = node.memory_ranges[i];
-                let range_end = range_start.saturating_add(range_size);
-                if start.as_u64() >= range_start && end <= range_end {
-                    return true;
-                }
-            }
-        }
-        return false;
+        return is_range_in_numa_topology(numa.topology(), start.as_u64(), end);
     }
 
     if let Some(pmm) = pmm_global() {

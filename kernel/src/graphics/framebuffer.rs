@@ -1578,6 +1578,33 @@ impl Framebuffer {
         merge_pair
     }
 
+    /// Try to merge rect with an existing dirty rect, or insert into an empty slot.
+    /// Returns true if successfully placed.
+    fn try_merge_or_insert_dirty(&mut self, draw_rect: Rect) -> bool {
+        for slot in self.dirty_rects.iter_mut() {
+            if let Some(existing) = slot {
+                let merged = existing.union(&draw_rect);
+                let existing_area = existing.width as u64 * existing.height as u64;
+                let draw_area = draw_rect.width as u64 * draw_rect.height as u64;
+                let merged_area = merged.width as u64 * merged.height as u64;
+
+                if merged_area <= (existing_area + draw_area) * 3 / 2 {
+                    *slot = Some(merged);
+                    return true;
+                }
+            }
+        }
+
+        for slot in self.dirty_rects.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(draw_rect);
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn mark_dirty(&mut self, rect: Rect) {
         // クリップ領域との共通部分をとる
         let draw_rect = match rect.intersection(&self.clip) {
@@ -1589,27 +1616,8 @@ impl Framebuffer {
             return;
         }
 
-        // Try to merge with an overlapping or adjacent existing rect
-        for slot in self.dirty_rects.iter_mut() {
-            if let Some(existing) = slot {
-                let merged = existing.union(&draw_rect);
-                let existing_area = existing.width as u64 * existing.height as u64;
-                let draw_area = draw_rect.width as u64 * draw_rect.height as u64;
-                let merged_area = merged.width as u64 * merged.height as u64;
-                
-                if merged_area <= (existing_area + draw_area) * 3 / 2 {
-                    *slot = Some(merged);
-                    return;
-                }
-            }
-        }
-
-        // Try to find an empty slot
-        for slot in self.dirty_rects.iter_mut() {
-            if slot.is_none() {
-                *slot = Some(draw_rect);
-                return;
-            }
+        if self.try_merge_or_insert_dirty(draw_rect) {
+            return;
         }
 
         // All slots full: force merge the two rects with smallest area INCREASE

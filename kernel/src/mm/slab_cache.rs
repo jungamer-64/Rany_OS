@@ -891,11 +891,11 @@ impl SlabCache {
             None => return false,
         };
         let success = match &self.migrator {
-            Some(migrator) => migrator.migrate(old_ptr, new_ptr),
+            Some(migrator) => unsafe { migrator.migrate(old_ptr, new_ptr) },
             None => false,
         };
         if !success {
-            self.deallocate(new_ptr);
+            unsafe { self.deallocate(new_ptr) };
         }
         success
     }
