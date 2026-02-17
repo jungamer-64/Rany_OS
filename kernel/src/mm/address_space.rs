@@ -912,6 +912,24 @@ impl ProcessAddressSpace {
     /// THP昇格候補を検索
     ///
     /// 指定されたアドレスからスキャンを開始し、昇格可能な2MB領域を探す。
+    /// Scan a 2MB-aligned range within a region for THP candidates.
+    fn scan_aligned_range_for_thp(
+        &self,
+        scan_start: VirtAddr,
+        region_end: VirtAddr,
+        limit: usize,
+        candidates: &mut Vec<ThpCandidate>,
+    ) -> VirtAddr {
+        let mut cursor = VirtAddr::new((scan_start.as_u64() + 0x1FFFFF) & !0x1FFFFF);
+        while cursor.as_u64() + 0x200000 <= region_end.as_u64() && candidates.len() < limit {
+            if let Some(candidate) = self.check_if_thp_candidate(cursor) {
+                candidates.push(candidate);
+            }
+            cursor = VirtAddr::new(cursor.as_u64() + 0x200000);
+        }
+        cursor
+    }
+
     pub fn find_thp_candidates(&self, start_addr: VirtAddr, limit: usize) -> (Vec<ThpCandidate>, VirtAddr) {
         let mut candidates = Vec::new();
         let mut current_addr = start_addr;
@@ -935,18 +953,7 @@ impl ProcessAddressSpace {
             
             // Adjust scan start within this region
             let region_scan_start = if current_addr < region.start { region.start } else { current_addr };
-            
-            // Align to 2MB
-            let mut scan_cursor = VirtAddr::new((region_scan_start.as_u64() + 0x1FFFFF) & !0x1FFFFF);
-            
-            while scan_cursor.as_u64() + 0x200000 <= region.end.as_u64() && candidates.len() < limit {
-                if let Some(candidate) = self.check_if_thp_candidate(scan_cursor) {
-                    candidates.push(candidate);
-                }
-                scan_cursor = VirtAddr::new(scan_cursor.as_u64() + 0x200000);
-            }
-            
-            current_addr = scan_cursor;
+            current_addr = self.scan_aligned_range_for_thp(region_scan_start, region.end, limit, &mut candidates);
         }
         
         (candidates, current_addr)

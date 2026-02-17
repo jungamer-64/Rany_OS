@@ -104,6 +104,55 @@ impl ShellFrontend for SerialFrontend {
             }
         }
     }
+
+    async fn read_line(&mut self, shell: &mut ExoShell) -> Option<String> {
+        self.line_buffer.clear();
+        self.navigator.reset_navigation();
+        
+        loop {
+            let byte = serial::read_byte().await;
+
+            match byte {
+                b'\r' | b'\n' => {
+                    crate::console::write("\r\n");
+                    let line = self.line_buffer.as_str().to_string();
+                    if !line.trim().is_empty() {
+                         shell.add_history(line.clone());
+                    }
+                    return Some(line);
+                }
+                0x08 | 0x7F => {
+                    if !self.line_buffer.is_empty() && self.line_buffer.cursor > 0 {
+                        self.line_buffer.backspace();
+                        crate::console::write("\x08 \x08");
+                    }
+                }
+                b'\t' => self.handle_tab(shell),
+                0x03 => {
+                    crate::console::write("^C\n");
+                    self.line_buffer.clear();
+                    self.navigator.reset_navigation();
+                    self.print_prompt(&shell.cwd);
+                }
+                0x1B => {
+                    let b2 = serial::read_byte().await;
+                    if b2 == b'[' {
+                        let b3 = serial::read_byte().await;
+                        if b3 == b'3' {
+                            let tilde = serial::read_byte().await;
+                            if tilde == b'~' {
+                                self.handle_delete_key(&shell.cwd);
+                            }
+                        } else {
+                            self.handle_escape_csi(b3, shell);
+                        }
+                    }
+                }
+                0x20..=0x7E => self.handle_printable(byte, &shell.cwd),
+                _ => {}
+            }
+        }
+    }
 }
 
 impl SerialFrontend {
@@ -197,57 +246,6 @@ impl SerialFrontend {
             let diff = self.line_buffer.len() - self.line_buffer.cursor;
             for _ in 0..diff {
                 crate::console::write("\x08");
-            }
-        }
-    }
-}
-
-impl ShellFrontend for SerialFrontend {
-    async fn read_line(&mut self, shell: &mut ExoShell) -> Option<String> {
-        self.line_buffer.clear();
-        self.navigator.reset_navigation();
-        
-        loop {
-            let byte = serial::read_byte().await;
-
-            match byte {
-                b'\r' | b'\n' => {
-                    crate::console::write("\r\n");
-                    let line = self.line_buffer.as_str().to_string();
-                    if !line.trim().is_empty() {
-                         shell.add_history(line.clone());
-                    }
-                    return Some(line);
-                }
-                0x08 | 0x7F => {
-                    if !self.line_buffer.is_empty() && self.line_buffer.cursor > 0 {
-                        self.line_buffer.backspace();
-                        crate::console::write("\x08 \x08");
-                    }
-                }
-                b'\t' => self.handle_tab(shell),
-                0x03 => {
-                    crate::console::write("^C\n");
-                    self.line_buffer.clear();
-                    self.navigator.reset_navigation();
-                    self.print_prompt(&shell.cwd);
-                }
-                0x1B => {
-                    let b2 = serial::read_byte().await;
-                    if b2 == b'[' {
-                        let b3 = serial::read_byte().await;
-                        if b3 == b'3' {
-                            let tilde = serial::read_byte().await;
-                            if tilde == b'~' {
-                                self.handle_delete_key(&shell.cwd);
-                            }
-                        } else {
-                            self.handle_escape_csi(b3, shell);
-                        }
-                    }
-                }
-                0x20..=0x7E => self.handle_printable(byte, &shell.cwd),
-                _ => {}
             }
         }
     }

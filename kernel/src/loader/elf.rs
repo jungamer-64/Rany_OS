@@ -362,24 +362,27 @@ pub struct ElfLoader<'a> {
 
 // Use util::get_slice from the top-level util module
 
+/// Validate ELF file size constraints.
+fn validate_elf_size(data: &[u8]) -> Result<(), LoadError> {
+    if data.len() < mem::size_of::<Elf64Header>() {
+        return Err(LoadError::InvalidFormat("File too small".into()));
+    }
+    if data.len() > MAX_ELF_SIZE {
+        return Err(LoadError::InvalidFormat(alloc::format!(
+            "ELF file too large: {} bytes (max {})",
+            data.len(),
+            MAX_ELF_SIZE
+        )));
+    }
+    Ok(())
+}
+
 impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
     ///
     /// 【セキュリティ】入力データの境界チェックを厳密に実行
     pub fn new(data: &'a [u8]) -> Result<Self, LoadError> {
-        // ファイルサイズチェック
-        if data.len() < mem::size_of::<Elf64Header>() {
-            return Err(LoadError::InvalidFormat("File too small".into()));
-        }
-
-        // 【セキュリティ】最大ファイルサイズチェック
-        if data.len() > MAX_ELF_SIZE {
-            return Err(LoadError::InvalidFormat(alloc::format!(
-                "ELF file too large: {} bytes (max {})",
-                data.len(),
-                MAX_ELF_SIZE
-            )));
-        }
+        validate_elf_size(data)?;
 
         // 【設計書 2.2】安全なラッパーを使用してヘッダーを読み取り
         let header: Elf64Header = crate::util::read_struct(data, 0)

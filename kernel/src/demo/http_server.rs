@@ -67,6 +67,22 @@ pub struct HttpRequest<'a> {
     pub body: &'a [u8],
 }
 
+/// Parse HTTP header lines into key-value pairs.
+fn parse_http_headers<'a>(lines: core::str::Lines<'a>) -> Vec<(&'a str, &'a str)> {
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some(colon_pos) = line.find(':') {
+            let name = line[..colon_pos].trim();
+            let value = line[colon_pos + 1..].trim();
+            headers.push((name, value));
+        }
+    }
+    headers
+}
+
 impl<'a> HttpRequest<'a> {
     /// Parse HTTP request from bytes (zero-copy where possible)
     pub fn parse(data: &'a [u8]) -> Option<Self> {
@@ -83,17 +99,7 @@ impl<'a> HttpRequest<'a> {
         let version = parts.next()?;
         
         // Parse headers
-        let mut headers = Vec::new();
-        for line in lines {
-            if line.is_empty() {
-                break;
-            }
-            if let Some(colon_pos) = line.find(':') {
-                let name = line[..colon_pos].trim();
-                let value = line[colon_pos + 1..].trim();
-                headers.push((name, value));
-            }
-        }
+        let headers = parse_http_headers(lines);
         
         Some(HttpRequest {
             method,
