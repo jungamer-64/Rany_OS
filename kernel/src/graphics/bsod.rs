@@ -340,35 +340,69 @@ fn draw_error_message_section(
     y += 30;
 
     let max_len_chars = ((content_width / 8) as usize).max(10);
+    y = wrap_and_draw_message(fb, font, info.message, margin_x, y, max_len_chars);
+    y = draw_location_info(fb, font, info, margin_x, y);
+
+    y + 10
+}
+
+/// Find a word-break point in `msg_bytes` starting at `current_pos` within `max_len` chars.
+/// Returns `(split_end, next_start)` where `split_end` is the byte to split at
+/// and `next_start` is the first non-space byte after the split.
+fn find_word_break(msg_bytes: &[u8], current_pos: usize, max_len: usize) -> (usize, usize) {
+    let end = (current_pos + max_len).min(msg_bytes.len());
+    let mut split = end;
+    if split < msg_bytes.len() {
+        let scan_start = if split > 10 { split - 10 } else { current_pos };
+        for i in (scan_start..split).rev() {
+            if msg_bytes[i] == b' ' {
+                split = i;
+                break;
+            }
+        }
+    }
+    if split == current_pos {
+        split = end;
+    }
+    let mut next = split;
+    while next < msg_bytes.len() && msg_bytes[next] == b' ' {
+        next += 1;
+    }
+    (split, next)
+}
+
+/// Draw up to 5 word-wrapped lines of a message. Returns the updated y position.
+fn wrap_and_draw_message(
+    fb: &mut Framebuffer,
+    font: &BitmapFont,
+    msg: &str,
+    margin_x: i32,
+    mut y: i32,
+    max_len_chars: usize,
+) -> i32 {
+    let msg_bytes = msg.as_bytes();
     let mut current_pos = 0;
-    let msg_bytes = info.message.as_bytes();
     let mut line_count = 0;
     while current_pos < msg_bytes.len() && line_count < 5 {
-        let end = (current_pos + max_len_chars).min(msg_bytes.len());
-        let mut split = end;
-        if split < msg_bytes.len() {
-             let scan_start = if split > 10 { split - 10 } else { current_pos };
-             for i in (scan_start..split).rev() {
-                 if msg_bytes[i] == b' ' {
-                     split = i;
-                     break;
-                 }
-             }
-        }
-        
-        if split == current_pos { split = end; } 
-        
+        let (split, next) = find_word_break(msg_bytes, current_pos, max_len_chars);
         if let Ok(sub) = core::str::from_utf8(&msg_bytes[current_pos..split]) {
             font.draw_string(fb, margin_x, y, sub, colors::ERROR_CODE, None);
         }
         y += 18;
-        current_pos = split;
-        while current_pos < msg_bytes.len() && msg_bytes[current_pos] == b' ' {
-            current_pos += 1;
-        }
+        current_pos = next;
         line_count += 1;
     }
+    y
+}
 
+/// Draw file:line:col location info if available. Returns the updated y position.
+fn draw_location_info(
+    fb: &mut Framebuffer,
+    font: &BitmapFont,
+    info: &BsodInfo,
+    margin_x: i32,
+    mut y: i32,
+) -> i32 {
     if let (Some(file), Some(line), Some(col)) = (info.file, info.line, info.column) {
         let mut buf = [0u8; 128];
         let mut w = StackFmtWriter::new(&mut buf);
@@ -376,8 +410,7 @@ fn draw_error_message_section(
         font.draw_string(fb, margin_x, y, w.as_str(), colors::TEXT_SECONDARY, None);
         y += 18;
     }
-
-    y + 10
+    y
 }
 
 fn draw_stack_trace_section(

@@ -875,30 +875,52 @@ impl<'a> ElfLoader<'a> {
         let mut sym_value_cache: Vec<Option<usize>> = vec![None; symtab_count];
 
         for j in 0..rela_count {
-            let rela_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Rela>();
-            if rela_offset + mem::size_of::<Elf64Rela>() > self.data.len() {
-                continue;
-            }
-            let rela: Elf64Rela = crate::util::read_struct(self.data, rela_offset)
-                .ok_or_else(|| LoadError::InvalidFormat("Failed to read relocation".into()))?;
-
-            let sym_idx = rela.symbol() as usize;
-            if sym_idx >= symtab_count {
-                continue;
-            }
-
-            let sym_value = self.resolve_symbol_cached(
-                sym_idx,
-                &symtab_sh,
-                strtab,
-                loaded,
-                resolve,
-                &mut sym_value_cache,
+            self.process_single_relocation(
+                sh, j, &symtab_sh, strtab, symtab_count,
+                loaded, resolve, &mut sym_value_cache,
             )?;
-
-            self.apply_relocation(&rela, loaded.base_address, sym_value)?;
         }
 
+        Ok(())
+    }
+
+    /// Process one relocation entry at index `j` within section `sh`.
+    fn process_single_relocation<F>(
+        &self,
+        sh: &Elf64SectionHeader,
+        j: usize,
+        symtab_sh: &Elf64SectionHeader,
+        strtab: &[u8],
+        symtab_count: usize,
+        loaded: &LoadedCell,
+        resolve: &F,
+        sym_value_cache: &mut Vec<Option<usize>>,
+    ) -> Result<(), LoadError>
+    where
+        F: Fn(&str) -> Option<usize>,
+    {
+        let rela_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Rela>();
+        if rela_offset + mem::size_of::<Elf64Rela>() > self.data.len() {
+            return Ok(());
+        }
+        let rela: Elf64Rela = crate::util::read_struct(self.data, rela_offset)
+            .ok_or_else(|| LoadError::InvalidFormat("Failed to read relocation".into()))?;
+
+        let sym_idx = rela.symbol() as usize;
+        if sym_idx >= symtab_count {
+            return Ok(());
+        }
+
+        let sym_value = self.resolve_symbol_cached(
+            sym_idx,
+            symtab_sh,
+            strtab,
+            loaded,
+            resolve,
+            sym_value_cache,
+        )?;
+
+        self.apply_relocation(&rela, loaded.base_address, sym_value)?;
         Ok(())
     }
 

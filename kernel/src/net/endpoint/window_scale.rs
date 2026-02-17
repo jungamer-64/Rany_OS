@@ -382,48 +382,60 @@ impl<'a> TcpOptionParser<'a> {
                     self.pos += 1;
                 }
                 tcp_option_kind::SACK => {
-                    if self.pos + 2 <= self.data.len() {
-                        let len = self.data[self.pos + 1] as usize;
-                        // SACK: Kind(1) + Length(1) + N * (LeftEdge(4) + RightEdge(4))
-                        // Length should be 2 + 8*N where N is number of blocks
-                        if len >= 10 && len <= 34 && (len - 2) % 8 == 0 && self.pos + len <= self.data.len() {
-                            let num_blocks = (len - 2) / 8;
-                            let mut blocks = alloc::vec::Vec::with_capacity(num_blocks);
-                            for i in 0..num_blocks {
-                                let offset = self.pos + 2 + i * 8;
-                                let left = u32::from_be_bytes([
-                                    self.data[offset],
-                                    self.data[offset + 1],
-                                    self.data[offset + 2],
-                                    self.data[offset + 3],
-                                ]);
-                                let right = u32::from_be_bytes([
-                                    self.data[offset + 4],
-                                    self.data[offset + 5],
-                                    self.data[offset + 6],
-                                    self.data[offset + 7],
-                                ]);
-                                blocks.push((left, right));
-                            }
-                            return Some(blocks);
-                        }
-                    }
-                    break;
+                    return self.parse_sack_option();
                 }
                 _ => {
-                    if self.pos + 1 < self.data.len() {
-                        let len = self.data[self.pos + 1] as usize;
-                        if len < 2 || self.pos + len > self.data.len() {
-                            break;
-                        }
-                        self.pos += len;
-                    } else {
+                    if !self.skip_generic_option() {
                         break;
                     }
                 }
             }
         }
         None
+    }
+
+    /// Parse a SACK option at the current position.
+    /// Returns `Some(blocks)` if valid, `None` otherwise.
+    fn parse_sack_option(&self) -> Option<alloc::vec::Vec<(u32, u32)>> {
+        if self.pos + 2 > self.data.len() {
+            return None;
+        }
+        let len = self.data[self.pos + 1] as usize;
+        if len < 10 || len > 34 || (len - 2) % 8 != 0 || self.pos + len > self.data.len() {
+            return None;
+        }
+        let num_blocks = (len - 2) / 8;
+        let mut blocks = alloc::vec::Vec::with_capacity(num_blocks);
+        for i in 0..num_blocks {
+            let offset = self.pos + 2 + i * 8;
+            let left = u32::from_be_bytes([
+                self.data[offset],
+                self.data[offset + 1],
+                self.data[offset + 2],
+                self.data[offset + 3],
+            ]);
+            let right = u32::from_be_bytes([
+                self.data[offset + 4],
+                self.data[offset + 5],
+                self.data[offset + 6],
+                self.data[offset + 7],
+            ]);
+            blocks.push((left, right));
+        }
+        Some(blocks)
+    }
+
+    /// Skip a generic TCP option. Returns `false` if the option is malformed.
+    fn skip_generic_option(&mut self) -> bool {
+        if self.pos + 1 >= self.data.len() {
+            return false;
+        }
+        let len = self.data[self.pos + 1] as usize;
+        if len < 2 || self.pos + len > self.data.len() {
+            return false;
+        }
+        self.pos += len;
+        true
     }
 }
 

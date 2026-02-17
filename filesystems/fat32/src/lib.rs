@@ -5153,6 +5153,32 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         }
     }
 
+    /// Resolve the effective name of a Standard directory entry, consuming any
+    /// accumulated LFN parts. Returns the resolved name and clears `lfn_parts`.
+    fn resolve_entry_name(
+        raw: &crate::dir_entry::RawDirEntry,
+        lfn_parts: &mut Vec<(u8, String, u8)>,
+    ) -> String {
+        if !lfn_parts.is_empty() {
+            let expected_checksum = raw.calculate_checksum();
+            if lfn_parts
+                .first()
+                .map_or(false, |&(_, _, cs)| cs == expected_checksum)
+            {
+                lfn_parts.sort_by_key(|&(seq, _, _)| seq);
+                let long_name: String =
+                    lfn_parts.iter().map(|(_, s, _)| s.as_str()).collect();
+                lfn_parts.clear();
+                long_name
+            } else {
+                lfn_parts.clear();
+                raw.short_name()
+            }
+        } else {
+            raw.short_name()
+        }
+    }
+
     /// 指定された名前を持つSFNエントリの場所（クラスタとオフセット）を検索します。
     /// このメソッドはロングファイルネームを正しく処理します。
     fn find_sfn_location(&self, name_to_find: &str) -> FsResult<Option<(Cluster, usize)>> {
@@ -5194,29 +5220,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
                         continue;
                     }
                     DirectoryEntryKind::Standard(raw) => {
-                        let name = if !lfn_parts.is_empty() {
-                            let expected_checksum = raw.calculate_checksum();
-                            if lfn_parts
-                                .first()
-                                .map_or(false, |&(_, _, cs)| cs == expected_checksum)
-                            {
-                                lfn_parts.sort_by_key(|&(seq, _, _)| seq);
-                                let long_name: String =
-                                    lfn_parts.iter().map(|(_, s, _)| s.as_str()).collect();
-                                long_name
-                            } else {
-                                lfn_parts.clear();
-                                raw.short_name()
-                            }
-                        } else {
-                            raw.short_name()
-                        };
-
+                        let name = Self::resolve_entry_name(&raw, &mut lfn_parts);
                         if name.eq_ignore_ascii_case(name_to_find) {
                             return Ok(Some((cluster, offset)));
                         }
-
-                        lfn_parts.clear();
                     }
                 }
             }

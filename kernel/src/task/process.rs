@@ -595,42 +595,13 @@ impl ProcessManager {
             return Err(ProcessError::NoChild);
         }
 
-        // 特定の子またはいずれかの子を待つ
-        let target = if let Some(target_pid) = pid {
-            if !children.contains(&target_pid) {
-                return Err(ProcessError::NoChild);
-            }
-            Some(target_pid)
-        } else {
-            None
-        };
+        let target = self.validate_wait_target(pid, &children)?;
 
-        for child_pid in children {
-            if target.is_some() && target != Some(child_pid) {
-                continue;
-            }
-
-            if let Some(child) = self.get(child_pid) {
-                let exit_code = {
-                    let c = child.read();
-                    if c.state == ProcessState::Zombie {
-                        c.exit_code
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some(code) = exit_code {
-                    // ゾンビを完全に削除
-                    self.reap(child_pid)?;
-
-                    // 親の子リストから削除
-                    let mut p = parent.write();
-                    p.remove_child(child_pid);
-
-                    return Ok((child_pid, code));
-                }
-            }
+        if let Some((child_pid, code)) = self.find_zombie_child(&children, target) {
+            self.reap(child_pid)?;
+            let mut p = parent.write();
+            p.remove_child(child_pid);
+            return Ok((child_pid, code));
         }
 
         // 待機する子がいない
@@ -641,6 +612,44 @@ impl ProcessManager {
         // 2. 子プロセスがexitしたときにwakeupする
         // 3. シグナル(SIGCHLD)との統合
         Err(ProcessError::NoChild)
+    }
+
+    /// Validate the `pid` argument for `wait`, returning the resolved target.
+    fn validate_wait_target(
+        &self,
+        pid: Option<ProcessId>,
+        children: &[ProcessId],
+    ) -> Result<Option<ProcessId>, ProcessError> {
+        if let Some(target_pid) = pid {
+            if !children.contains(&target_pid) {
+                return Err(ProcessError::NoChild);
+            }
+            Ok(Some(target_pid))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Search `children` for the first zombie matching `target`, returning its pid and exit code.
+    fn find_zombie_child(
+        &self,
+        children: &[ProcessId],
+        target: Option<ProcessId>,
+    ) -> Option<(ProcessId, ExitCode)> {
+        for &child_pid in children {
+            if target.is_some() && target != Some(child_pid) {
+                continue;
+            }
+            if let Some(child) = self.get(child_pid) {
+                let c = child.read();
+                if c.state == ProcessState::Zombie {
+                    if let Some(code) = c.exit_code {
+                        return Some((child_pid, code));
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// ゾンビを回収
@@ -701,6 +710,57 @@ pub struct RequestedCap {
     pub delegatable: bool,
 }
 
+/// Check whether `parent_id` is allowed to grant `cap`.
+fn validate_cap_request(parent_id: u64, cap: u64) -> bool {
+    let mgr = crate::security::capability::manager();
+    if mgr.has_capability(parent_id, crate::security::capability::CAP_SYS_ADMIN) {
+        return true;
+    }
+    let caller_caps = mgr.get_capabilities(parent_id);
+    if caller_caps.is_permitted(cap) {
+        return true;
+    }
+    let grants = mgr.list_grants(parent_id);
+    grants.iter().any(|t| t.cap == cap && t.delegatable)
+}
+
+/// Apply capability grants to `child_id`, rolling back on failure.
+fn apply_cap_grants(
+    parent_id: u64,
+    child_id: u64,
+    requested: &[RequestedCap],
+) -> Result<Vec<u64>, ProcessError> {
+    let mut created_tokens: Vec<u64> = Vec::new();
+    for r in requested.iter() {
+        match crate::security::capability::manager().grant_capability_with_opts(
+            parent_id,
+            child_id,
+            r.cap,
+            r.expires,
+            r.delegatable,
+        ) {
+            Ok(token_id) => created_tokens.push(token_id),
+            Err(_e) => {
+                rollback_grants(parent_id, child_id, &created_tokens);
+                return Err(ProcessError::PermissionDenied);
+            }
+        }
+    }
+    // Mark granted tokens as in-flight for the lifetime of the process.
+    for t in &created_tokens {
+        let _ = crate::security::capability::manager().increment_in_flight(*t);
+    }
+    Ok(created_tokens)
+}
+
+/// Revoke previously created grants and clear the child's capability set.
+fn rollback_grants(parent_id: u64, child_id: u64, tokens: &[u64]) {
+    for t in tokens {
+        let _ = crate::security::capability::manager().revoke_grant(parent_id, *t, false);
+    }
+    crate::security::capability::manager().set_capabilities(child_id, crate::security::capability::CapabilitySet::empty());
+}
+
 /// Spawn a new process with requested capabilities applied atomically.
 ///
 /// Validation: parent (current process) must be allowed to grant each requested
@@ -715,20 +775,7 @@ pub fn spawn_with_caps(
 
     // Validate each requested cap
     for r in requested.iter() {
-        let cap = r.cap;
-        let caller_caps = crate::security::capability::manager().get_capabilities(parent_id);
-        let mut allowed = false;
-        if crate::security::capability::manager().has_capability(parent_id, crate::security::capability::CAP_SYS_ADMIN) {
-            allowed = true;
-        } else if caller_caps.is_permitted(cap) {
-            allowed = true;
-        } else {
-            let grants = crate::security::capability::manager().list_grants(parent_id);
-            if grants.iter().any(|t| t.cap == cap && t.delegatable) {
-                allowed = true;
-            }
-        }
-        if !allowed {
+        if !validate_cap_request(parent_id, r.cap) {
             return Err(ProcessError::PermissionDenied);
         }
     }
@@ -737,32 +784,7 @@ pub fn spawn_with_caps(
     let child = PROCESS_MANAGER.create(parent, name)?;
 
     // Apply grants
-    let mut created_tokens: Vec<u64> = Vec::new();
-    for r in requested.iter() {
-        match crate::security::capability::manager().grant_capability_with_opts(
-            parent_id,
-            child.as_u64(),
-            r.cap,
-            r.expires,
-            r.delegatable,
-        ) {
-            Ok(token_id) => created_tokens.push(token_id),
-            Err(_e) => {
-                // rollback
-                for t in &created_tokens {
-                    let _ = crate::security::capability::manager().revoke_grant(parent_id, *t, false);
-                }
-                crate::security::capability::manager().set_capabilities(child.as_u64(), crate::security::capability::CapabilitySet::empty());
-                return Err(ProcessError::PermissionDenied);
-            }
-        }
-    }
-
-    // Mark granted tokens as in-flight for the lifetime of the process.
-    for t in &created_tokens {
-        // Best-effort increment (should succeed immediately after grant)
-        let _ = crate::security::capability::manager().increment_in_flight(*t);
-    }
+    let created_tokens = apply_cap_grants(parent_id, child.as_u64(), requested)?;
 
     Ok((child, created_tokens))
 }

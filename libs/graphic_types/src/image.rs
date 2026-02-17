@@ -283,6 +283,34 @@ pub struct Image {
     height: u32,
 }
 
+/// Determine the corner-center coordinate for one axis of a rounded rect.
+///
+/// Returns `Some(center)` if `coord` falls inside the corner radius, `None` otherwise.
+fn corner_center(coord: u32, size: u32, r: u32) -> Option<u32> {
+    if coord < r {
+        Some(r)
+    } else if coord >= size - r {
+        Some(size - r - 1)
+    } else {
+        None
+    }
+}
+
+/// Test whether pixel (x, y) is inside a rounded rectangle of the given `size` and radius `r`.
+fn is_inside_rounded_rect(x: u32, y: u32, size: u32, r: u32) -> bool {
+    if r == 0 {
+        return true;
+    }
+    match (corner_center(x, size, r), corner_center(y, size, r)) {
+        (Some(cx), Some(cy)) => {
+            let dx = cx.abs_diff(x);
+            let dy = cy.abs_diff(y);
+            dx * dx + dy * dy <= r * r
+        }
+        _ => true,
+    }
+}
+
 impl Image {
     /// Try to create an empty image with checked arithmetic
     ///
@@ -1392,31 +1420,15 @@ impl IconGenerator {
     }
 
     /// 四角形アイコンを生成
+    ///
+    /// Corner hit-test is delegated to [`is_inside_rounded_rect`].
     pub fn square(size: u32, color: Color, corner_radius: u32) -> Image {
         let mut image = Image::new(size, size);
         let r = corner_radius.min(size / 2);
 
         for y in 0..size {
             for x in 0..size {
-                let in_corner = |cx: u32, cy: u32| -> bool {
-                    let dx = cx.abs_diff(x);
-                    let dy = cy.abs_diff(y);
-                    dx * dx + dy * dy <= r * r
-                };
-
-                let inside = if x < r && y < r {
-                    in_corner(r, r)
-                } else if x >= size - r && y < r {
-                    in_corner(size - r - 1, r)
-                } else if x < r && y >= size - r {
-                    in_corner(r, size - r - 1)
-                } else if x >= size - r && y >= size - r {
-                    in_corner(size - r - 1, size - r - 1)
-                } else {
-                    true
-                };
-
-                if inside {
+                if is_inside_rounded_rect(x, y, size, r) {
                     image.set_pixel(x, y, color);
                 }
             }

@@ -415,60 +415,53 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
     }
 }
 
-/// Write a contiguous slice of bytes using streaming stores.
-/// Handles alignment and falls back to volatile writes for unaligned portions.
-///
-/// Automatically uses AVX (256-bit) stores if `set_simd_level` was called with >= 1.
+/// AVX (256-bit) streaming write pass. Returns (updated addr, updated index).
 ///
 /// # Safety
-/// - Caller must ensure the destination address range is valid for writing
+/// Caller must ensure the destination address range is valid for AVX writes.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
-    let mut i = 0usize;
+#[inline]
+unsafe fn stream_write_avx_pass(mut addr: usize, data: &[u8], mut i: usize) -> (usize, usize) {
     let len = data.len();
-    let level = SIMD_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
-
     unsafe {
-        if level >= simd_level::AVX {
-            // AVX Path: Align to 32 bytes and use 256-bit stores
-
-            // 1. Align to 32 bytes
-            while i < len && (addr & 31) != 0 {
-                core::ptr::write_volatile(addr as *mut u8, data[i]);
-                addr += 1;
-                i += 1;
-            }
-
-            // 2. Loop unrolling: 4x 32-byte (128 bytes per iteration)
-            while i + 128 <= len {
-                let ptr = data.as_ptr().add(i);
-                stream_write_256(addr, &*(ptr.cast::<[u8; 32]>()));
-                stream_write_256(addr + 32, &*(ptr.add(32).cast::<[u8; 32]>()));
-                stream_write_256(addr + 64, &*(ptr.add(64).cast::<[u8; 32]>()));
-                stream_write_256(addr + 96, &*(ptr.add(96).cast::<[u8; 32]>()));
-                addr += 128;
-                i += 128;
-            }
-
-            // 3. Handle remaining 32-byte chunks
-            while i + 32 <= len {
-                let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 32]>();
-                stream_write_256(addr, &*chunk_ptr);
-                addr += 32;
-                i += 32;
-            }
-        } else {
-            // SSE2 Path: Align to 16 bytes
-            while i < len && (addr & 15) != 0 {
-                core::ptr::write_volatile(addr as *mut u8, data[i]);
-                addr += 1;
-                i += 1;
-            }
+        // Align to 32 bytes
+        while i < len && (addr & 31) != 0 {
+            core::ptr::write_volatile(addr as *mut u8, data[i]);
+            addr += 1;
+            i += 1;
         }
 
-        // SSE2 Fallback / Cleanup (also runs if AVX path didn't consume everything or wasn't taken)
-        // If AVX path ran, we are 32-byte aligned, which is also 16-byte aligned.
+        // Loop unrolling: 4x 32-byte (128 bytes per iteration)
+        while i + 128 <= len {
+            let ptr = data.as_ptr().add(i);
+            stream_write_256(addr, &*(ptr.cast::<[u8; 32]>()));
+            stream_write_256(addr + 32, &*(ptr.add(32).cast::<[u8; 32]>()));
+            stream_write_256(addr + 64, &*(ptr.add(64).cast::<[u8; 32]>()));
+            stream_write_256(addr + 96, &*(ptr.add(96).cast::<[u8; 32]>()));
+            addr += 128;
+            i += 128;
+        }
 
+        // Handle remaining 32-byte chunks
+        while i + 32 <= len {
+            let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 32]>();
+            stream_write_256(addr, &*chunk_ptr);
+            addr += 32;
+            i += 32;
+        }
+    }
+    (addr, i)
+}
+
+/// SSE2/trailing streaming write pass. Returns (updated addr, updated index).
+///
+/// # Safety
+/// Caller must ensure the destination address range is valid for writing.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[inline]
+unsafe fn stream_write_trailing(mut addr: usize, data: &[u8], mut i: usize) -> (usize, usize) {
+    let len = data.len();
+    unsafe {
         // Loop unrolling: 4x 16-byte (64 bytes per iteration)
         while i + 64 <= len {
             let ptr = data.as_ptr().add(i);
@@ -488,7 +481,7 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
             i += 16;
         }
 
-        // Handle remaining bytes via u64 streaming if possible (for 8-byte chunks)
+        // Handle remaining bytes via u64 streaming if possible
         while i + 8 <= len {
             let v = core::ptr::read_unaligned(data.as_ptr().add(i).cast::<u64>());
             stream_write_u64(addr, v);
@@ -502,5 +495,37 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
             addr += 1;
             i += 1;
         }
+    }
+    (addr, i)
+}
+
+/// Write a contiguous slice of bytes using streaming stores.
+/// Handles alignment and falls back to volatile writes for unaligned portions.
+///
+/// Automatically uses AVX (256-bit) stores if `set_simd_level` was called with >= 1.
+///
+/// # Safety
+/// - Caller must ensure the destination address range is valid for writing
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
+    let mut i = 0usize;
+    let len = data.len();
+    let level = SIMD_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
+
+    unsafe {
+        if level >= simd_level::AVX {
+            (addr, i) = stream_write_avx_pass(addr, data, i);
+        } else {
+            // SSE2 Path: Align to 16 bytes
+            while i < len && (addr & 15) != 0 {
+                core::ptr::write_volatile(addr as *mut u8, data[i]);
+                addr += 1;
+                i += 1;
+            }
+        }
+
+        // SSE2 Fallback / Cleanup (also runs if AVX path didn't consume everything or wasn't taken)
+        // If AVX path ran, we are 32-byte aligned, which is also 16-byte aligned.
+        let _ = stream_write_trailing(addr, data, i);
     }
 }

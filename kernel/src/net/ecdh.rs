@@ -1742,6 +1742,35 @@ pub mod p384 {
         Ok((r, s))
     }
 
+    /// Validate and parse ECDSA P-384 inputs (public key + DER signature).
+    fn validate_ecdsa_p384_inputs(
+        public_key: &[u8],
+        signature_der: &[u8],
+    ) -> Result<(P384Point, [u8; 48], [u8; 48]), EcdsaError> {
+        let q = parse_uncompressed_point_384(public_key).ok_or(EcdsaError::InvalidPublicKey)?;
+        if !q.is_on_curve() || q.is_identity() {
+            return Err(EcdsaError::InvalidPublicKey);
+        }
+        let (r_bytes, s_bytes) = parse_ecdsa_signature_der_384(signature_der)?;
+        if !scalar_is_valid_384(&r_bytes) || !scalar_is_valid_384(&s_bytes) {
+            return Err(EcdsaError::InvalidSignature);
+        }
+        Ok((q, r_bytes, s_bytes))
+    }
+
+    /// Constant-time comparison of a 48-byte array against a variable-length slice.
+    fn constant_time_eq_48(a: &[u8; 48], b: &[u8]) -> bool {
+        let mut diff = 0u8;
+        for i in 0..48 {
+            if i < b.len() {
+                diff |= a[i] ^ b[i];
+            } else {
+                diff |= a[i];
+            }
+        }
+        diff == 0
+    }
+
     /// ECDSA P-384 署名検証
     ///
     /// # Arguments
@@ -1756,20 +1785,7 @@ pub mod p384 {
         message_hash: &[u8; 48],
         signature_der: &[u8],
     ) -> Result<(), EcdsaError> {
-        // 公開鍵をパース
-        let q = parse_uncompressed_point_384(public_key).ok_or(EcdsaError::InvalidPublicKey)?;
-
-        if !q.is_on_curve() || q.is_identity() {
-            return Err(EcdsaError::InvalidPublicKey);
-        }
-
-        // 署名をDERからパース (r, s)
-        let (r_bytes, s_bytes) = parse_ecdsa_signature_der_384(signature_der)?;
-
-        // r, s が [1, n-1] の範囲内か確認
-        if !scalar_is_valid_384(&r_bytes) || !scalar_is_valid_384(&s_bytes) {
-            return Err(EcdsaError::InvalidSignature);
-        }
+        let (q, r_bytes, s_bytes) = validate_ecdsa_p384_inputs(public_key, signature_der)?;
 
         // s_inv = s^{-1} mod n
         let s_inv = scalar_inv_mod_n_384(&s_bytes);
@@ -1805,16 +1821,7 @@ pub mod p384 {
         let rx_mod_n_bytes = rx_mod_n.to_be_bytes_padded(48);
 
         // r == r' ?
-        let mut diff = 0u8;
-        for i in 0..48 {
-            if i < rx_mod_n_bytes.len() {
-                diff |= r_bytes[i] ^ rx_mod_n_bytes[i];
-            } else {
-                diff |= r_bytes[i];
-            }
-        }
-
-        if diff != 0 {
+        if !constant_time_eq_48(&r_bytes, &rx_mod_n_bytes) {
             return Err(EcdsaError::VerificationFailed);
         }
 

@@ -1580,6 +1580,47 @@ fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
 }
 
 #[test_case]
+fn test_blit_rect_24bit_rgb888_backbuffer_flush_odd_width() {
+    let width = 5u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 3,
+        format: PixelFormat::Rgb888,
+        bpp: 24,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    let colors = [
+        Color::RED,
+        Color::GREEN,
+        Color::BLUE,
+        Color::WHITE,
+        Color::BLACK,
+    ];
+
+    for (x, c) in colors.iter().enumerate() {
+        fb.set_pixel(x as i32, 0, *c);
+    }
+    fb.flush_dirty_area();
+
+    // RGB888 memory layout: [R, G, B]
+    assert_eq!(&vram[0..3], &[255, 0, 0]);
+    assert_eq!(&vram[3..6], &[0, 255, 0]);
+    assert_eq!(&vram[6..9], &[0, 0, 255]);
+    assert_eq!(&vram[9..12], &[255, 255, 255]);
+    assert_eq!(&vram[12..15], &[0, 0, 0]);
+}
+
+#[test_case]
 fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
     let width = 3u32;
     let height = 1u32;
@@ -1649,5 +1690,218 @@ fn test_blit_rect_16bit_rgb565_backbuffer_flush() {
     assert_eq!(vram[1], 0xF8);
     assert_eq!(vram[2], 0xE0);
     assert_eq!(vram[3], 0x07);
+}
+
+#[test_case]
+fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
+    let width = 3u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 2,
+        format: PixelFormat::Rgb565,
+        bpp: 16,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    fb.set_pixel(0, 0, Color::RED);
+    fb.set_pixel(1, 0, Color::GREEN);
+    fb.set_pixel(2, 0, Color::BLUE);
+    fb.flush_dirty_area();
+
+    // RGB565 little-endian bytes
+    // RED   = 0xF800 -> [0x00, 0xF8]
+    // GREEN = 0x07E0 -> [0xE0, 0x07]
+    // BLUE  = 0x001F -> [0x1F, 0x00]
+    assert_eq!(vram[0], 0x00);
+    assert_eq!(vram[1], 0xF8);
+    assert_eq!(vram[2], 0xE0);
+    assert_eq!(vram[3], 0x07);
+    assert_eq!(vram[4], 0x1F);
+    assert_eq!(vram[5], 0x00);
+}
+
+#[test_case]
+fn test_copy_rect_backbuffer_same_row_overlap() {
+    let width = 8u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    {
+        let back = fb.back_buffer.as_mut().unwrap();
+        for x in 0..width as usize {
+            back[x] = Color::with_alpha(x as u8, 0, 0, 255).to_u32();
+        }
+    }
+
+    // same-row overlap: [0..4) -> starts at 2
+    fb.copy_rect(Rect::new(0, 0, 4, 1), 2, 0);
+
+    let back = fb.back_buffer.as_ref().unwrap();
+    let expected_red = [0u8, 1, 0, 1, 2, 3, 6, 7];
+    for (x, &exp) in expected_red.iter().enumerate() {
+        let c = Color::from_u32(back[x]);
+        assert_eq!(c.red, exp, "x={}", x);
+    }
+}
+
+#[test_case]
+fn test_copy_rect_backbuffer_vertical_copy() {
+    let width = 4u32;
+    let height = 4u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    {
+        let back = fb.back_buffer.as_mut().unwrap();
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let idx = y * width as usize + x;
+                let red = (y * 10 + x) as u8;
+                back[idx] = Color::with_alpha(red, 0, 0, 255).to_u32();
+            }
+        }
+    }
+
+    // vertical non-overlap copy: row0 -> row2
+    fb.copy_rect(Rect::new(0, 0, width, 1), 0, 2);
+
+    let back = fb.back_buffer.as_ref().unwrap();
+    for x in 0..width as usize {
+        let src = Color::from_u32(back[x]);
+        let dst = Color::from_u32(back[2 * width as usize + x]);
+        assert_eq!(dst.red, src.red, "x={}", x);
+    }
+}
+
+#[test_case]
+fn test_copy_rect_mmio_same_row_overlap() {
+    let width = 8u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+    let mut fb = unsafe { Framebuffer::new(info2) };
+
+    for x in 0..width as i32 {
+        fb.set_pixel(x, 0, Color::with_alpha(x as u8, 0, 0, 255));
+    }
+
+    // same-row overlap: [0..4) -> starts at 2
+    fb.copy_rect(Rect::new(0, 0, 4, 1), 2, 0);
+
+    let expected_red = [0u8, 1, 0, 1, 2, 3, 6, 7];
+    for (x, &exp) in expected_red.iter().enumerate() {
+        let off = x * 4;
+        // BGRA layout in memory: [B,G,R,A]
+        assert_eq!(vram[off + 2], exp, "x={}", x);
+    }
+}
+
+#[test_case]
+fn test_fill_rect_backbuffer_full_width_span() {
+    let width = 6u32;
+    let height = 4u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+
+    let c = Color::with_alpha(12, 34, 56, 255);
+    fb.fill_rect(Rect::new(0, 1, width, 2), c);
+
+    let back = fb.back_buffer.as_ref().unwrap();
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let px = Color::from_u32(back[y * width as usize + x]);
+            if (1..=2).contains(&y) {
+                assert_eq!(px.red, 12, "({}, {})", x, y);
+                assert_eq!(px.green, 34, "({}, {})", x, y);
+                assert_eq!(px.blue, 56, "({}, {})", x, y);
+            } else {
+                assert_eq!(px.to_u32(), 0, "({}, {})", x, y);
+            }
+        }
+    }
+}
+
+#[test_case]
+fn test_draw_text_rgb565_mmio_run_write() {
+    let width = 8u32;
+    let height = 16u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 2,
+        format: PixelFormat::Rgb565,
+        bpp: 16,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+    let fg = Color::with_alpha(255, 0, 0, 255); // red
+    let bg = Color::with_alpha(0, 0, 0, 255); // black
+
+    fb.draw_text(0, 0, "!", fg, bg);
+
+    // 8x16 font '!' row index 2 is 0x18 -> bits at columns 3 and 4 are ON.
+    // So pixels x=3,4 on row y=2 should be foreground red, neighbors remain black.
+    let row = 2usize;
+    let off = |x: usize| row * info.stride as usize + x * 2;
+
+    // RGB565 little-endian bytes
+    // red   = 0xF800 -> [0x00, 0xF8]
+    // black = 0x0000 -> [0x00, 0x00]
+    assert_eq!(&vram[off(2)..off(2) + 2], &[0x00, 0x00]);
+    assert_eq!(&vram[off(3)..off(3) + 2], &[0x00, 0xF8]);
+    assert_eq!(&vram[off(4)..off(4) + 2], &[0x00, 0xF8]);
+    assert_eq!(&vram[off(5)..off(5) + 2], &[0x00, 0x00]);
 }
 
