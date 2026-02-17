@@ -295,6 +295,27 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
     pub fn height(&self) -> u32 {
         self.height
     }
+
+    /// 文字からグリフインデックスを解決
+    fn resolve_glyph_index(&self, c: char) -> Option<u32> {
+        let idx = if let Some(map) = &self.unicode_map {
+            if let Some(&i) = map.get(&c) {
+                i
+            } else if (c as u32) < self.num_glyphs {
+                c as u32
+            } else {
+                return None;
+            }
+        } else {
+            c as u32
+        };
+
+        if idx >= self.num_glyphs {
+            None
+        } else {
+            Some(idx)
+        }
+    }
 }
 
 impl<T: AsRef<[u8]>> Font for PsfFont<T> {
@@ -307,52 +328,7 @@ impl<T: AsRef<[u8]>> Font for PsfFont<T> {
     }
 
     fn glyph(&self, c: char) -> Option<&[u8]> {
-        let idx = if let Some(map) = &self.unicode_map {
-            *map.get(&c).unwrap_or(&0) // Fallback to 0 (usually replacement char or space) or strict None?
-        // Actually, typical fallback logic:
-        // 1. Try unicode map
-        // 2. If ASCII/Latin-1 compatible (Psf1/NoTable), direct cast?
-        // If map exists, we should rely on it. If not found in map, check if direct index fits?
-        // But if map exists, direct index is meaningless for char > 255.
-        // For now: if map exists, use it. If not found, try direct cast if char < 128 (ASCII compatibility assumption).
-        // Better: if not found, return None. 0 might be a valid glyph but "wrong" one.
-        } else {
-            c as u32
-        };
-
-        if self.unicode_map.is_some() && !self.unicode_map.as_ref().unwrap().contains_key(&c) {
-            // If we have a map but key not found, try simple ASCII fallback if c < 128?
-            // Many fonts map ASCII 1:1 at start.
-            if (c as u32) < 128 {
-                c as u32
-            } else {
-                return None;
-            }
-        } else if idx >= self.num_glyphs {
-            return None;
-        } else {
-            idx
-        };
-
-        // Double check calculated idx vs bounds, 'idx' variable here is slightly confusing due to re-assignment logic above
-        // Let's refine:
-        let glyph_index = if let Some(map) = &self.unicode_map {
-            if let Some(&i) = map.get(&c) {
-                i
-            } else if (c as u32) < self.num_glyphs {
-                // Heuristic: If char code equals glyph index (e.g. ASCII), use it?
-                // Most Linux console fonts put ASCII at 0-127.
-                c as u32
-            } else {
-                return None;
-            }
-        } else {
-            c as u32
-        };
-
-        if glyph_index >= self.num_glyphs {
-            return None;
-        }
+        let glyph_index = self.resolve_glyph_index(c)?;
 
         let slice = self.data.as_ref();
         let glyph_offset =

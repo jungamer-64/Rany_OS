@@ -204,6 +204,14 @@ fn find_longest_zero_run(words: &[u16; 8]) -> (usize, usize) {
     (best_start, best_len)
 }
 
+/// IPv6アドレスの1ワードを出力する
+fn write_ipv6_word(f: &mut fmt::Formatter<'_>, word: u16, first: bool) -> fmt::Result {
+    if !first {
+        write!(f, ":")?;
+    }
+    write!(f, "{:x}", word)
+}
+
 /// Write IPv6 address words with :: compression
 fn write_ipv6_compressed(f: &mut fmt::Formatter<'_>, words: &[u16; 8], best_start: usize, best_len: usize) -> fmt::Result {
     let mut i = 0;
@@ -219,10 +227,7 @@ fn write_ipv6_compressed(f: &mut fmt::Formatter<'_>, words: &[u16; 8], best_star
             first = i >= 8;
             continue;
         }
-        if !first {
-            write!(f, ":")?;
-        }
-        write!(f, "{:x}", words[i])?;
+        write_ipv6_word(f, words[i], first)?;
         first = false;
         i += 1;
     }

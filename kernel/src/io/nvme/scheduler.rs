@@ -124,20 +124,15 @@ impl NvmeOps {
         let submit_qid = handler.core_id;
 
         let (cid, bytes) = match cmd {
-            IoCommand::BlockRead { lba, blocks, bytes, buf } => {
+            IoCommand::BlockRead { lba, blocks, bytes, buf }
+            | IoCommand::BlockWrite { lba, blocks, bytes, buf } => {
                 let (prp1, prp2) = Self::validate_and_get_prps(buf)?;
-                let cid = unsafe {
-                    self.driver.submit_read(submit_qid, self.namespace_id, *lba, *blocks, prp1, prp2)
-                }
-                .ok_or(IoError::NoResources)?;
-                (cid, *bytes)
-            }
-            IoCommand::BlockWrite { lba, blocks, bytes, buf } => {
-                let (prp1, prp2) = Self::validate_and_get_prps(buf)?;
-                let cid = unsafe {
-                    self.driver.submit_write(submit_qid, self.namespace_id, *lba, *blocks, prp1, prp2)
-                }
-                .ok_or(IoError::NoResources)?;
+                let is_read = matches!(cmd, IoCommand::BlockRead { .. });
+                let cid = if is_read {
+                    unsafe { self.driver.submit_read(submit_qid, self.namespace_id, *lba, *blocks, prp1, prp2) }
+                } else {
+                    unsafe { self.driver.submit_write(submit_qid, self.namespace_id, *lba, *blocks, prp1, prp2) }
+                }.ok_or(IoError::NoResources)?;
                 (cid, *bytes)
             }
             IoCommand::Flush => {
@@ -149,22 +144,26 @@ impl NvmeOps {
             }
             IoCommand::Discard { .. } => (0, 0),
             IoCommand::Ioctl { code, buf } => {
-                if *code == 0x09 { // DSM
-                    let prp1 = buf.iova;
-                    // DSM takes a range list. Assuming ptr is in prp1. prp2=0.
-                    let cid = unsafe {
-                        self.driver.submit_dsm(submit_qid, self.namespace_id, prp1, 0)
-                    }
-                    .ok_or(IoError::NoResources)?;
-                    (cid, 0)
-                } else {
-                    return Err(IoError::NotSupported);
-                }
+                self.handle_ioctl_submit(submit_qid, *code, buf)?
             }
         };
 
         handler.register_request(id, cid, bytes);
         Ok(())
+    }
+
+    /// IoctlコマンドをNVMeに変換してsubmit
+    fn handle_ioctl_submit(&self, qid: u32, code: u32, buf: &DmaBufHandle) -> Result<(u16, usize), IoError> {
+        if code == 0x09 {
+            let prp1 = buf.iova;
+            let cid = unsafe {
+                self.driver.submit_dsm(qid, self.namespace_id, prp1, 0)
+            }
+            .ok_or(IoError::NoResources)?;
+            Ok((cid, 0))
+        } else {
+            Err(IoError::NotSupported)
+        }
     }
 
     /// PRP バッファ検証と取得

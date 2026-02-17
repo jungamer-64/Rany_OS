@@ -377,9 +377,9 @@ fn get_section_name<'a>(shstrtab: &'a [u8], name_offset: usize) -> Option<&'a [u
     Some(&shstrtab[name_offset..name_end])
 }
 
-/// 署名セクションを検索
-fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
-    use super::elf::{Elf64Header, Elf64SectionHeader};
+/// ELFヘッダーとshstrtabを検証・取得
+fn validate_and_get_shstrtab<'a>(elf_data: &'a [u8]) -> Option<(super::elf::Elf64Header, &'a [u8])> {
+    use super::elf::Elf64Header;
     use core::mem;
 
     if elf_data.len() < mem::size_of::<Elf64Header>() {
@@ -388,12 +388,20 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
 
     let header: Elf64Header = crate::util::read_struct(elf_data, 0)?;
 
-    // ELFマジック検証
     if &header.e_ident[0..4] != b"\x7FELF" {
         return None;
     }
 
     let shstrtab = get_shstrtab(elf_data, &header)?;
+    Some((header, shstrtab))
+}
+
+/// 署名セクションを検索
+fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
+    use super::elf::Elf64SectionHeader;
+    use core::mem;
+
+    let (header, shstrtab) = validate_and_get_shstrtab(elf_data)?;
 
     // 全セクションを走査して署名セクションを探す
     for i in 0..header.e_shnum {
@@ -418,6 +426,23 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
     }
 
     None
+}
+
+fn read_compiler_version(data: &[u8], header: &SignatureHeader) -> Result<String, LoadError> {
+    if header.compiler_version_len > 0 {
+        let start = header.compiler_version_offset as usize;
+        let end = start + header.compiler_version_len as usize;
+        if end > data.len() {
+            return Err(LoadError::InvalidFormat(
+                "Invalid compiler version offset".into(),
+            ));
+        }
+        Ok(String::from(core::str::from_utf8(&data[start..end]).map_err(|_| {
+            LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into())
+        })?))
+    } else {
+        Ok(String::new())
+    }
 }
 
 /// 署名セクションをパース
@@ -445,24 +470,7 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
         ));
     }
 
-    // コンパイラバージョンを読み取り
-    let compiler_version =
-        if header.compiler_version_len > 0 {
-            let start = header.compiler_version_offset as usize;
-            let end = start + header.compiler_version_len as usize;
-
-            if end > data.len() {
-                return Err(LoadError::InvalidFormat(
-                    "Invalid compiler version offset".into(),
-                ));
-            }
-
-            String::from(core::str::from_utf8(&data[start..end]).map_err(|_| {
-                LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into())
-            })?)
-        } else {
-            String::new()
-        };
+    let compiler_version = read_compiler_version(data, &header)?;
 
     // 署名データを読み取り
     let sig_start = mem::size_of::<SignatureHeader>();

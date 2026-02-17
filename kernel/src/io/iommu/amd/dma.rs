@@ -228,6 +228,30 @@ impl AmdIommuDriver {
         unsafe { self.map_for_device_with_perms_async(device, phys_addr, size, true, true).await }
     }
 
+    /// コマンドキュー経由で同期アンマップを実行する
+    fn unmap_via_command_queue(
+        &self,
+        cq: &super::command_queue::AmdIommuCommandQueue,
+        device: &DeviceId,
+        domain: &IommuDomain,
+        iova: u64,
+    ) -> Result<(), IommuError> {
+        let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
+        let cmd = IommuCommandKind::UnmapRegionDevice {
+            device: *device,
+            iova,
+            size: mapping.size,
+        };
+        let comp = cq
+            .submit(cmd)
+            .map_err(|_| IommuError::HardwareError)?;
+        let rc = comp.wait_blocking();
+        if rc == 0 {
+            return Ok(());
+        }
+        Err(IommuError::HardwareError)
+    }
+
     pub(crate) fn unmap_for_device(
         &self,
         device: &DeviceId,
@@ -237,20 +261,7 @@ impl AmdIommuDriver {
         let domain_id = self.domain_id_for_device(*device)?;
         let domain = self.domain_for_id(domain_id)?;
         if let Some(ref cq) = self.command_queue {
-            let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
-            let cmd = IommuCommandKind::UnmapRegionDevice {
-                device: *device,
-                iova,
-                size: mapping.size,
-            };
-            let comp = cq
-                .submit(cmd)
-                .map_err(|_| IommuError::HardwareError)?;
-            let rc = comp.wait_blocking();
-            if rc == 0 {
-                return Ok(());
-            }
-            return Err(IommuError::HardwareError);
+            return self.unmap_via_command_queue(cq, device, &domain, iova);
         }
         let mapping = domain.unmap(iova)?;
 
@@ -258,6 +269,31 @@ impl AmdIommuDriver {
         self.invalidate_iotlb_pages(*device, iova, mapping.size)?;
         let _ = self.free_iova_fast(iova, mapping.size);
         Ok(())
+    }
+
+    /// コマンドキュー経由で非同期アンマップを実行する
+    async fn unmap_via_command_queue_async(
+        &self,
+        cq: &super::command_queue::AmdIommuCommandQueue,
+        device: &DeviceId,
+        domain: &IommuDomain,
+        iova: u64,
+    ) -> Result<(), IommuError> {
+        let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
+        let cmd = IommuCommandKind::UnmapRegionDevice {
+            device: *device,
+            iova,
+            size: mapping.size,
+        };
+        let comp = cq
+            .submit_async(cmd)
+            .await
+            .map_err(|_| IommuError::HardwareError)?;
+        let rc = comp.await;
+        if rc == 0 {
+            return Ok(());
+        }
+        Err(IommuError::HardwareError)
     }
 
     pub(crate) async fn unmap_for_device_async(
@@ -269,21 +305,7 @@ impl AmdIommuDriver {
         let domain_id = self.domain_id_for_device(*device)?;
         let domain = self.domain_for_id(domain_id)?;
         if let Some(ref cq) = self.command_queue {
-            let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
-            let cmd = IommuCommandKind::UnmapRegionDevice {
-                device: *device,
-                iova,
-                size: mapping.size,
-            };
-            let comp = cq
-                .submit_async(cmd)
-                .await
-                .map_err(|_| IommuError::HardwareError)?;
-            let rc = comp.await;
-            if rc == 0 {
-                return Ok(());
-            }
-            return Err(IommuError::HardwareError);
+            return self.unmap_via_command_queue_async(cq, device, &domain, iova).await;
         }
         let mapping = domain.unmap(iova)?;
 
@@ -346,6 +368,34 @@ impl AmdIommuDriver {
         Ok(())
     }
 
+    /// マップと無効化を実行する
+    fn execute_map_and_invalidate(
+        &self,
+        device: DeviceId,
+        domain_id: u16,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<i32, ()> {
+        let domain = self.domain_for_id(domain_id).map_err(|_| {
+            let _ = self.free_iova_fast(iova, size);
+        })?;
+
+        if let Err(err) = domain.map(iova, phys, size, read, write) {
+            if err != IommuError::AlreadyMapped && err != IommuError::Poisoned {
+                let _ = self.free_iova_fast(iova, size);
+            }
+            return Err(());
+        }
+
+        self.invalidate_iommu_pages(device, domain_id, iova, size).map_err(|_| ())?;
+        self.invalidate_iotlb_pages(device, iova, size).map_err(|_| ())?;
+
+        Ok(0)
+    }
+
     /// Handle MapRegionDevice: validate, map, and invalidate.
     fn handle_map_region_device(
         &self,
@@ -365,21 +415,7 @@ impl AmdIommuDriver {
             let _ = self.free_iova_fast(iova, size);
         })?;
 
-        let domain = self.domain_for_id(domain_id).map_err(|_| {
-            let _ = self.free_iova_fast(iova, size);
-        })?;
-
-        if let Err(err) = domain.map(iova, phys, size, read, write) {
-            if err != IommuError::AlreadyMapped && err != IommuError::Poisoned {
-                let _ = self.free_iova_fast(iova, size);
-            }
-            return Err(());
-        }
-
-        self.invalidate_iommu_pages(device, domain_id, iova, size).map_err(|_| ())?;
-        self.invalidate_iotlb_pages(device, iova, size).map_err(|_| ())?;
-
-        Ok(0)
+        self.execute_map_and_invalidate(device, domain_id, iova, phys, size, read, write)
     }
 
     /// Handle UnmapRegionDevice: unmap, invalidate, and free IOVA.

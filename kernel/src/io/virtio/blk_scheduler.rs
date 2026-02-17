@@ -201,6 +201,16 @@ impl VirtioBlkOps {
             BlockError::IoError => IoError::DeviceError,
         }
     }
+    /// Validate block I/O parameters
+    fn validate_block_params(blocks: u16, bytes: usize, buf_len: usize) -> Result<(), IoError> {
+        if blocks == 0 {
+            return Err(IoError::InvalidParameter);
+        }
+        if bytes > buf_len {
+            return Err(IoError::InvalidParameter);
+        }
+        Ok(())
+    }
 }
 
 impl DeviceOps for VirtioBlkOps {
@@ -216,40 +226,22 @@ impl DeviceOps for VirtioBlkOps {
                 blocks,
                 bytes,
                 buf,
-            } => {
-                if *blocks == 0 {
-                    return Err(IoError::InvalidParameter);
-                }
-                if *bytes > buf.len {
-                    return Err(IoError::InvalidParameter);
-                }
-
-                // lba → sector（VirtIO-blk は 512バイトセクタ単位）
-                // buf.iova → DMAアドレス
-                let desc_id = device
-                    .submit_read(*lba, buf.iova, *bytes as u32, queue_idx)
-                    .map_err(Self::map_block_error)?;
-
-                self.handler
-                    .add_pending(req.id, queue_idx, desc_id, *bytes);
-                Ok(())
             }
-            IoCommand::BlockWrite {
+            | IoCommand::BlockWrite {
                 lba,
                 blocks,
                 bytes,
                 buf,
             } => {
-                if *blocks == 0 {
-                    return Err(IoError::InvalidParameter);
-                }
-                if *bytes > buf.len {
-                    return Err(IoError::InvalidParameter);
-                }
+                Self::validate_block_params(*blocks, *bytes, buf.len)?;
 
-                let desc_id = device
-                    .submit_write(*lba, buf.iova, *bytes as u32, queue_idx)
-                    .map_err(Self::map_block_error)?;
+                let is_read = matches!(cmd, IoCommand::BlockRead { .. });
+                let desc_id = if is_read {
+                    device.submit_read(*lba, buf.iova, *bytes as u32, queue_idx)
+                } else {
+                    device.submit_write(*lba, buf.iova, *bytes as u32, queue_idx)
+                }
+                .map_err(Self::map_block_error)?;
 
                 self.handler
                     .add_pending(req.id, queue_idx, desc_id, *bytes);

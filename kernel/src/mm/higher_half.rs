@@ -990,6 +990,28 @@ impl PageTableManager {
         self.pml4_phys
     }
 
+    /// PDPT→PD→PTまでウォークし、PTの物理アドレスを返す
+    fn walk_to_page_table(
+        &mut self,
+        indices: [usize; 4],
+        flags: PageFlags,
+    ) -> Result<PhysAddr, MapError> {
+        let pml4 = self.get_table_mut(self.pml4_phys);
+        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
+
+        let pdpt = self.get_table_mut(pdpt_phys);
+        if pdpt.entry(indices[1]).is_present() && pdpt.entry(indices[1]).is_huge() {
+            return Err(MapError::ParentEntryHugePage);
+        }
+        let pd_phys = self.ensure_table_entry(pdpt, indices[1], flags)?;
+
+        let pd = self.get_table_mut(pd_phys);
+        if pd.entry(indices[2]).is_present() && pd.entry(indices[2]).is_huge() {
+            return Err(MapError::ParentEntryHugePage);
+        }
+        self.ensure_table_entry(pd, indices[2], flags)
+    }
+
     /// 4KiBページをマップ
     ///
     /// # Safety
@@ -1006,22 +1028,7 @@ impl PageTableManager {
         }
 
         let indices = virt.page_table_indices();
-
-        // PML4 -> PDPT -> PD -> PT をウォーク
-        let pml4 = self.get_table_mut(self.pml4_phys);
-        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
-
-        let pdpt = self.get_table_mut(pdpt_phys);
-        if pdpt.entry(indices[1]).is_present() && pdpt.entry(indices[1]).is_huge() {
-            return Err(MapError::ParentEntryHugePage);
-        }
-        let pd_phys = self.ensure_table_entry(pdpt, indices[1], flags)?;
-
-        let pd = self.get_table_mut(pd_phys);
-        if pd.entry(indices[2]).is_present() && pd.entry(indices[2]).is_huge() {
-            return Err(MapError::ParentEntryHugePage);
-        }
-        let pt_phys = self.ensure_table_entry(pd, indices[2], flags)?;
+        let pt_phys = self.walk_to_page_table(indices, flags)?;
 
         let pt = self.get_table_mut(pt_phys);
         let pte = pt.entry_mut(indices[3]);
@@ -1251,6 +1258,30 @@ impl PageTableManager {
         Ok(())
     }
 
+    /// ページサイズを自動選択して1ページマップ
+    unsafe fn map_one_page(
+        &mut self,
+        virt: u64,
+        phys: u64,
+        remaining: u64,
+        flags: PageFlags,
+    ) -> Result<u64, MapError> {
+        const SIZE_1GB: u64 = PageSize::Size1GiB.as_bytes();
+        const SIZE_2MB: u64 = PageSize::Size2MiB.as_bytes();
+        const SIZE_4KB: u64 = PageSize::Size4KiB.as_bytes();
+
+        if virt % SIZE_1GB == 0 && phys % SIZE_1GB == 0 && remaining >= SIZE_1GB {
+            unsafe { self.map_1gb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
+            return Ok(SIZE_1GB);
+        }
+        if virt % SIZE_2MB == 0 && phys % SIZE_2MB == 0 && remaining >= SIZE_2MB {
+            unsafe { self.map_2mb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
+            return Ok(SIZE_2MB);
+        }
+        unsafe { self.map_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
+        Ok(SIZE_4KB)
+    }
+
     /// 連続した仮想アドレス範囲をマップ
     ///
     /// 自動的に最適なページサイズを選択する。
@@ -1267,30 +1298,9 @@ impl PageTableManager {
 
         while virt < end {
             let remaining = end - virt;
-
-            // 1GiBページを使用可能かチェック
-            const SIZE_1GB: u64 = PageSize::Size1GiB.as_bytes();
-            if virt % SIZE_1GB == 0 && phys % SIZE_1GB == 0 && remaining >= SIZE_1GB {
-                unsafe { self.map_1gb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
-                virt += SIZE_1GB;
-                phys += SIZE_1GB;
-                continue;
-            }
-
-            // 2MiBページを使用可能かチェック
-            const SIZE_2MB: u64 = PageSize::Size2MiB.as_bytes();
-            if virt % SIZE_2MB == 0 && phys % SIZE_2MB == 0 && remaining >= SIZE_2MB {
-                unsafe { self.map_2mb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
-                virt += SIZE_2MB;
-                phys += SIZE_2MB;
-                continue;
-            }
-
-            // 4KiBページ
-            const SIZE_4KB: u64 = PageSize::Size4KiB.as_bytes();
-            unsafe { self.map_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
-            virt += SIZE_4KB;
-            phys += SIZE_4KB;
+            let step = unsafe { self.map_one_page(virt, phys, remaining, flags)? };
+            virt += step;
+            phys += step;
         }
 
         Ok(())

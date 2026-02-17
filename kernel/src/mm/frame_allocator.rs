@@ -555,41 +555,21 @@ impl NumaFrameAllocator {
         // NUMAノードごとの領域をグループ化
         for node_idx in 0..MAX_NUMA_NODES {
             let node_id = NumaNodeId::new(node_idx as u8);
-            let node_regions: [(PhysAddr, u64); 16] = {
-                let mut regions = [(PhysAddr::zero(), 0u64); 16];
-                let mut count = 0;
-                for &(addr, size, region_node) in usable_regions {
-                    if region_node == node_id && count < 16 {
-                        regions[count] = (addr, size);
-                        count += 1;
-                    }
-                }
-                regions
-            };
+            let valid_regions: alloc::vec::Vec<_> = usable_regions
+                .iter()
+                .filter(|&&(_, _, region_node)| region_node == node_id)
+                .map(|&(addr, size, _)| (addr, size))
+                .filter(|&(_, size)| size > 0)
+                .collect();
 
-            // このノードに領域があれば初期化
-            let mut has_regions = false;
-            for &(_, size) in &node_regions {
-                if size > 0 {
-                    has_regions = true;
-                    break;
-                }
-            }
-
-            if has_regions {
-                let valid_regions: alloc::vec::Vec<_> = node_regions
-                    .iter()
-                    .filter(|&&(_, size)| size > 0)
-                    .copied()
-                    .collect();
-
+            if !valid_regions.is_empty() {
                 unsafe {
                     self.node_allocators[node_idx].init(&valid_regions);
                 }
 
                 // トポロジにメモリ範囲を追加
-                for (addr, size) in valid_regions {
-                    self.topology.nodes[node_idx].add_memory_range(addr.as_u64(), size);
+                for (addr, size) in &valid_regions {
+                    self.topology.nodes[node_idx].add_memory_range(addr.as_u64(), *size);
                 }
             }
         }
@@ -1040,22 +1020,7 @@ pub unsafe fn init_numa_frame_allocator_from_info(numa_info: &NumaInfo) -> bool 
         return false;
     }
 
-    let mut regions: Vec<(PhysAddr, u64, NumaNodeId)> = Vec::new();
-    for node_idx in 0..node_count {
-        let node = &numa_info.nodes[node_idx];
-        let range_count = (node.memory_range_count as usize).min(node.memory_ranges.len());
-        for i in 0..range_count {
-            let range = node.memory_ranges[i];
-            if range.length == 0 {
-                continue;
-            }
-            regions.push((
-                PhysAddr::new(range.base),
-                range.length,
-                NumaNodeId::new(node_idx as u8),
-            ));
-        }
-    }
+    let mut regions = collect_numa_memory_regions(numa_info, node_count);
 
     if regions.is_empty() {
         return false;
@@ -1083,6 +1048,35 @@ pub unsafe fn init_numa_frame_allocator_from_info(numa_info: &NumaInfo) -> bool 
     true
 }
 
+/// NUMAノード単位でアリーナを再構成
+fn reconfigure_numa_node(
+    numa: &mut crate::mm::numa_allocator::NumaAwareAllocator,
+    node_idx: usize,
+    allowed: &[bool; crate::mm::per_cpu::MAX_CPUS],
+    cpu_ids: &[usize],
+) {
+    let node_cpu_ids = numa.cpu_ids_for_node(node_idx);
+    let mut filtered = Vec::new();
+    for cpu_id in node_cpu_ids {
+        if cpu_id < allowed.len() && allowed[cpu_id] {
+            filtered.push(cpu_id);
+        }
+    }
+    if let Some(pmm) = numa
+        .node_allocators
+        .get_mut(node_idx)
+        .and_then(|opt| opt.as_mut())
+    {
+        pmm.sync_single_writer_arenas();
+        if filtered.is_empty() {
+            pmm.configure_arenas_for_cpu_ids(cpu_ids);
+        } else {
+            pmm.configure_arenas_for_cpu_ids(&filtered);
+        }
+        pmm.enable_single_writer();
+    }
+}
+
 /// Reconfigure PMM arena ownership for a CPU ID list.
 ///
 /// # Safety
@@ -1098,26 +1092,7 @@ pub unsafe fn pmm_reconfigure_for_cpu_ids(cpu_ids: &[usize]) {
     if let Some(numa) = unsafe { pmm_numa_mut() } {
         let node_count = numa.node_allocators.len();
         for node_idx in 0..node_count {
-            let node_cpu_ids = numa.cpu_ids_for_node(node_idx);
-            let mut filtered = Vec::new();
-            for cpu_id in node_cpu_ids {
-                if cpu_id < allowed.len() && allowed[cpu_id] {
-                    filtered.push(cpu_id);
-                }
-            }
-            if let Some(pmm) = numa
-                .node_allocators
-                .get_mut(node_idx)
-                .and_then(|opt| opt.as_mut())
-            {
-                pmm.sync_single_writer_arenas();
-                if filtered.is_empty() {
-                    pmm.configure_arenas_for_cpu_ids(cpu_ids);
-                } else {
-                    pmm.configure_arenas_for_cpu_ids(&filtered);
-                }
-                pmm.enable_single_writer();
-            }
+            reconfigure_numa_node(numa, node_idx, &allowed, cpu_ids);
         }
         return;
     }
@@ -1574,6 +1549,53 @@ pub fn pmm_maintenance_tick(tick: u64) {
     }
 }
 
+/// NUMAノードから物理範囲を解放
+fn release_range_from_numa(numa: &NumaPmmAllocator, start: u64, end: u64) -> u64 {
+    let node_count = numa.topology.node_count;
+    let mut freed = 0u64;
+    for node_idx in 0..node_count {
+        let node = &numa.topology.nodes[node_idx];
+        let Some(pmm) = numa
+            .node_allocators
+            .get(node_idx)
+            .and_then(|opt| opt.as_ref())
+        else {
+            continue;
+        };
+        for i in 0..node.range_count {
+            let (range_start, range_size) = node.memory_ranges[i];
+            let range_end = range_start.saturating_add(range_size);
+            let rel_start = start.max(range_start);
+            let rel_end = end.min(range_end);
+            if rel_end > rel_start {
+                freed += pmm.release_range_direct(rel_start, rel_end - rel_start);
+            }
+        }
+    }
+    freed
+}
+
+/// NUMA情報からメモリ領域を収集
+fn collect_numa_memory_regions(numa_info: &NumaInfo, node_count: usize) -> Vec<(PhysAddr, u64, NumaNodeId)> {
+    let mut regions: Vec<(PhysAddr, u64, NumaNodeId)> = Vec::new();
+    for node_idx in 0..node_count {
+        let node = &numa_info.nodes[node_idx];
+        let range_count = (node.memory_range_count as usize).min(node.memory_ranges.len());
+        for i in 0..range_count {
+            let range = node.memory_ranges[i];
+            if range.length == 0 {
+                continue;
+            }
+            regions.push((
+                PhysAddr::new(range.base),
+                range.length,
+                NumaNodeId::new(node_idx as u8),
+            ));
+        }
+    }
+    regions
+}
+
 /// 予約済みだった物理範囲をPMMに戻す（ACPI reclaimなど向け）
 pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
     if size == 0 {
@@ -1590,27 +1612,7 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
             }
         }
 
-        let mut freed = 0u64;
-        let node_count = numa.topology.node_count;
-        for node_idx in 0..node_count {
-            let node = &numa.topology.nodes[node_idx];
-            let Some(pmm) = numa
-                .node_allocators
-                .get(node_idx)
-                .and_then(|opt| opt.as_ref())
-            else {
-                continue;
-            };
-            for i in 0..node.range_count {
-                let (range_start, range_size) = node.memory_ranges[i];
-                let range_end = range_start.saturating_add(range_size);
-                let rel_start = start.max(range_start);
-                let rel_end = end.min(range_end);
-                if rel_end > rel_start {
-                    freed += pmm.release_range_direct(rel_start, rel_end - rel_start);
-                }
-            }
-        }
+        let freed = release_range_from_numa(numa, start, end);
 
         for allocator in numa.node_allocators.iter_mut() {
             if let Some(pmm) = allocator.as_mut() {

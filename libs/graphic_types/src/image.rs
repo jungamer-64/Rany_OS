@@ -838,6 +838,26 @@ pub fn decode_bmp_into(data: &[u8], output: &mut ImageViewMut) -> ImageResult<()
     Ok(())
 }
 
+/// BMP圧縮形式・ビット深度・サイズを検証
+fn validate_bmp_format(
+    compression: u32,
+    bpp: u16,
+    width: u32,
+    height: u32,
+    output: &ImageViewMut,
+) -> ImageResult<()> {
+    if output.width() != width || output.height() != height {
+        return Err(ImageError::InvalidData);
+    }
+    if compression != BI_RGB && compression != BI_BITFIELDS {
+        return Err(ImageError::UnsupportedFormat);
+    }
+    if bpp != 24 && bpp != 32 {
+        return Err(ImageError::UnsupportedFormat);
+    }
+    Ok(())
+}
+
 /// Validate BMP file/info headers and return the pixel data slice with metadata.
 #[allow(clippy::cast_possible_truncation)]
 #[allow(clippy::cast_sign_loss)]
@@ -864,15 +884,7 @@ fn validate_bmp_headers<'a>(
     let data_offset = file_header.data_offset as usize;
     let top_down = info_header.height < 0;
 
-    if output.width() != width || output.height() != height {
-        return Err(ImageError::InvalidData);
-    }
-    if compression != BI_RGB && compression != BI_BITFIELDS {
-        return Err(ImageError::UnsupportedFormat);
-    }
-    if bpp != 24 && bpp != 32 {
-        return Err(ImageError::UnsupportedFormat);
-    }
+    validate_bmp_format(compression, bpp, width, height, output)?;
 
     let pixel_data = &data[data_offset..];
     let row_size = ((bpp as u32 * width).div_ceil(32) * 4) as usize;

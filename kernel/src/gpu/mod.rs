@@ -844,6 +844,26 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// Allocate and initialize 3 coherent DMA buffers for a command with data
+    fn alloc_command_buffers(
+        &self,
+        req_bytes: &[u8],
+        data_bytes: &[u8],
+        resp_size: usize,
+    ) -> GpuResult<(CoherentDmaBuffer, CoherentDmaBuffer, CoherentDmaBuffer)> {
+        let mut req_buf = self.alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+        let mut data_buf = self.alloc_coherent(data_bytes.len(), DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+        let resp_buf = self.alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
+            .ok_or(GpuError::OutOfMemory)?;
+        unsafe {
+            req_buf.as_mut_slice()[..req_bytes.len()].copy_from_slice(req_bytes);
+            data_buf.as_mut_slice()[..data_bytes.len()].copy_from_slice(data_bytes);
+        }
+        Ok((req_buf, data_buf, resp_buf))
+    }
+
     /// Send a command with an extra data buffer (3-descriptor chain).
     /// Used by attach_backing which needs: header + entries array + response.
     fn send_command_with_data(
@@ -855,17 +875,7 @@ impl VirtioGpu {
         let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
         let queue_guard = queue.lock();
 
-        let mut req_buf = self.alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
-            .ok_or(GpuError::OutOfMemory)?;
-        let mut data_buf = self.alloc_coherent(data_bytes.len(), DmaMemoryAttributes::MMIO)
-            .ok_or(GpuError::OutOfMemory)?;
-        let resp_buf = self.alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
-            .ok_or(GpuError::OutOfMemory)?;
-
-        unsafe {
-            req_buf.as_mut_slice()[..req_bytes.len()].copy_from_slice(req_bytes);
-            data_buf.as_mut_slice()[..data_bytes.len()].copy_from_slice(data_bytes);
-        }
+        let (req_buf, data_buf, resp_buf) = self.alloc_command_buffers(req_bytes, data_bytes, resp_size)?;
 
         let desc0 = queue_guard.alloc_desc().ok_or(GpuError::OutOfMemory)?;
         let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
@@ -902,15 +912,12 @@ impl VirtioGpu {
 
         queue_guard.notify();
 
-        loop {
-            if let Some((_id, _len)) = queue_guard.poll_completions() {
-                queue_guard.free_desc(desc0);
-                queue_guard.free_desc(desc1);
-                queue_guard.free_desc(desc2);
-                break;
-            }
+        while queue_guard.poll_completions().is_none() {
             core::hint::spin_loop();
         }
+        queue_guard.free_desc(desc0);
+        queue_guard.free_desc(desc1);
+        queue_guard.free_desc(desc2);
 
         Ok(resp_buf)
     }

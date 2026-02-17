@@ -577,63 +577,11 @@ impl IcmpProcessor {
                 }
             }
             IcmpType::Redirect => {
-                // ICMP Redirect format (RFC 792):
-                // Bytes 0-3: ICMP header (type, code, checksum)
-                // Bytes 4-7: Gateway IP address
-                // Bytes 8+: Original IP header + first 8 bytes of payload
                 self.stats.errors_rx += 1;
-                
-                let payload = packet.payload();
-                if payload.len() < 4 + 20 {
-                    // Need at least gateway IP (4 bytes) + IP header (20 bytes)
-                    return IcmpResult::Invalid;
-                }
-                
-                // Extract gateway IP (bytes 0-3 of payload, after ICMP header)
-                let gateway = Ipv4Address::from_octets(
-                    payload[0], payload[1], payload[2], payload[3],
-                );
-                
-                // Extract original destination from embedded IP header
-                // Destination IP is at offset 16-19 of IP header
-                let dst_offset = 4 + 16; // 4 bytes gateway + 16 bytes to dst in IP header
-                if payload.len() < dst_offset + 4 {
-                    return IcmpResult::Invalid;
-                }
-                
-                let destination = Ipv4Address::from_octets(
-                    payload[dst_offset],
-                    payload[dst_offset + 1],
-                    payload[dst_offset + 2],
-                    payload[dst_offset + 3],
-                );
-                
-                IcmpResult::Redirect {
-                    code: RedirectCode::from(packet.code()),
-                    gateway,
-                    destination,
-                }
+                self.process_redirect(&packet)
             }
             IcmpType::TimestampRequest => {
-                // RFC 792: Timestamp Request has 12 bytes of payload
-                // Bytes 0-1: Identifier, 2-3: Sequence Number
-                // Bytes 4-7: Originate Timestamp (ms since midnight UTC)
-                let payload = packet.payload();
-                if payload.len() >= 12 {
-                    let identifier = u16::from_be_bytes([payload[0], payload[1]]);
-                    let sequence = u16::from_be_bytes([payload[2], payload[3]]);
-                    let originate_ts = u32::from_be_bytes([
-                        payload[4], payload[5], payload[6], payload[7],
-                    ]);
-                    IcmpResult::SendTimestampReply {
-                        src_ip,
-                        identifier,
-                        sequence,
-                        originate_ts,
-                    }
-                } else {
-                    IcmpResult::Invalid
-                }
+                self.process_timestamp_request(&packet, src_ip)
             }
             IcmpType::TimestampReply => {
                 // Just acknowledge receipt
@@ -759,6 +707,52 @@ impl IcmpProcessor {
         buffer[2..4].copy_from_slice(&checksum.to_be_bytes());
 
         Some(total_len)
+    }
+
+    /// Process an ICMP Redirect packet.
+    fn process_redirect(&self, packet: &IcmpPacket<'_>) -> IcmpResult {
+        let payload = packet.payload();
+        if payload.len() < 4 + 20 {
+            return IcmpResult::Invalid;
+        }
+        let gateway = Ipv4Address::from_octets(
+            payload[0], payload[1], payload[2], payload[3],
+        );
+        let dst_offset = 4 + 16;
+        if payload.len() < dst_offset + 4 {
+            return IcmpResult::Invalid;
+        }
+        let destination = Ipv4Address::from_octets(
+            payload[dst_offset],
+            payload[dst_offset + 1],
+            payload[dst_offset + 2],
+            payload[dst_offset + 3],
+        );
+        IcmpResult::Redirect {
+            code: RedirectCode::from(packet.code()),
+            gateway,
+            destination,
+        }
+    }
+
+    /// Process an ICMP Timestamp Request packet.
+    fn process_timestamp_request(&mut self, packet: &IcmpPacket<'_>, src_ip: Ipv4Address) -> IcmpResult {
+        let payload = packet.payload();
+        if payload.len() >= 12 {
+            let identifier = u16::from_be_bytes([payload[0], payload[1]]);
+            let sequence = u16::from_be_bytes([payload[2], payload[3]]);
+            let originate_ts = u32::from_be_bytes([
+                payload[4], payload[5], payload[6], payload[7],
+            ]);
+            IcmpResult::SendTimestampReply {
+                src_ip,
+                identifier,
+                sequence,
+                originate_ts,
+            }
+        } else {
+            IcmpResult::Invalid
+        }
     }
 }
 

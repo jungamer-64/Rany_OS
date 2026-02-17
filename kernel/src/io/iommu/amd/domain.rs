@@ -127,6 +127,11 @@ pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> 
 // Domain management methods on AmdIommuDriver
 // ---------------------------------------------------------------------------
 
+/// デバイスIDが範囲内にあるかチェックする
+fn devid_in_range(devid: u16, start: u16, end: u16) -> bool {
+    devid >= start && devid <= end
+}
+
 /// Check if an IVHD device entry matches a given device ID and return its flags.
 fn ivhd_entry_flags_for_devid(entry: &IvhdDeviceEntry, devid: u16) -> u8 {
     match entry {
@@ -139,13 +144,13 @@ fn ivhd_entry_flags_for_devid(entry: &IvhdDeviceEntry, devid: u16) -> u8 {
         }
         IvhdDeviceEntry::Range { start, end, flags }
         | IvhdDeviceEntry::ExtRange { start, end, flags, .. } => {
-            if devid >= *start && devid <= *end { *flags } else { 0 }
+            if devid_in_range(devid, *start, *end) { *flags } else { 0 }
         }
         IvhdDeviceEntry::Alias { devid: e, alias, flags } => {
             if *e == devid || *alias == devid { *flags } else { 0 }
         }
         IvhdDeviceEntry::AliasRange { start, end, alias, flags } => {
-            if (devid >= *start && devid <= *end) || *alias == devid { *flags } else { 0 }
+            if devid_in_range(devid, *start, *end) || *alias == devid { *flags } else { 0 }
         }
     }
 }
@@ -294,6 +299,37 @@ impl AmdIommuDriver {
         Ok(())
     }
 
+    /// DTEエントリを書き込み（デバイス本体+エイリアス）
+    fn write_dte_with_aliases(
+        &self,
+        table: &AmdDeviceTable,
+        device: DeviceId,
+        aliases: &[u16],
+        entry: AmdDeviceTableEntry,
+    ) -> Result<(), IommuError> {
+        let devid = device.requester_id();
+        table.write_entry(devid, entry)?;
+        for alias in aliases {
+            table.write_entry(*alias, entry)?;
+        }
+        Ok(())
+    }
+
+    /// DTEエントリをクリア（デバイス本体+エイリアス）
+    fn clear_dte_with_aliases(
+        &self,
+        table: &AmdDeviceTable,
+        device: DeviceId,
+        aliases: &[u16],
+    ) -> Result<(), IommuError> {
+        let devid = device.requester_id();
+        table.clear_entry(devid)?;
+        for alias in aliases {
+            table.clear_entry(*alias)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn write_device_entries_for_domain(
         &self,
         device: DeviceId,
@@ -301,25 +337,15 @@ impl AmdIommuDriver {
         domain_id: Option<u16>,
     ) -> Result<(), IommuError> {
         let table = self.device_table_for_segment(device.segment)?;
-        let devid = device.requester_id();
         match domain_id {
             Some(domain_id) => {
                 let domain = self.domain_for_id(domain_id)?;
                 let flags = AmdIommuDriver::ivhd_flags_for_device(self, device);
                 let entry = self.build_dte_entry(domain_id, domain.as_ref(), flags)?;
-                table.write_entry(devid, entry)?;
-                for alias in aliases {
-                    table.write_entry(*alias, entry)?;
-                }
+                self.write_dte_with_aliases(table, device, aliases, entry)
             }
-            None => {
-                table.clear_entry(devid)?;
-                for alias in aliases {
-                    table.clear_entry(*alias)?;
-                }
-            }
+            None => self.clear_dte_with_aliases(table, device, aliases),
         }
-        Ok(())
     }
 
     pub(crate) fn domain_id_for_device(&self, device: DeviceId) -> Result<u16, IommuError> {
@@ -467,6 +493,34 @@ impl AmdIommuDriver {
         Ok(())
     }
 
+    /// DTEクリアと無効化を実行し、失敗時にロールバック
+    fn clear_and_invalidate_device(
+        &self,
+        device: DeviceId,
+        aliases: &[u16],
+        previous_domain: u16,
+    ) -> Result<(), IommuError> {
+        self.write_device_entries_for_domain(device, aliases, None)?;
+        self.invalidate_device_entry(device)?;
+        for alias in aliases {
+            self.invalidate_device_entry_by_devid(device.segment, *alias)?;
+        }
+        Ok(())
+    }
+
+    /// デバイスデタッチ失敗時にデバイスドメインを復元
+    fn rollback_device_detach(
+        &self,
+        device: DeviceId,
+        aliases: &[u16],
+        previous_domain: u16,
+    ) {
+        if let Ok(mut device_domains) = self.device_domains.lock() {
+            device_domains.insert(device, previous_domain);
+            let _ = self.write_device_entries_for_domain(device, aliases, Some(previous_domain));
+        }
+    }
+
     pub(crate) fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
         if self.find_unit_for_device(device).is_none() {
             return Err(IommuError::DeviceNotFound);
@@ -483,37 +537,9 @@ impl AmdIommuDriver {
 
         let previous_domain = previous.ok_or(IommuError::DeviceNotFound)?;
 
-        if let Err(err) = self.write_device_entries_for_domain(device, &aliases, None) {
-            let mut device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            device_domains.insert(device, previous_domain);
-            let _ = self.write_device_entries_for_domain(device, &aliases, Some(previous_domain));
+        if let Err(err) = self.clear_and_invalidate_device(device, &aliases, previous_domain) {
+            self.rollback_device_detach(device, &aliases, previous_domain);
             return Err(err);
-        }
-
-        if let Err(err) = self.invalidate_device_entry(device) {
-            let mut device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            device_domains.insert(device, previous_domain);
-            let _ = self.write_device_entries_for_domain(device, &aliases, Some(previous_domain));
-            return Err(err);
-        }
-
-        for alias in &aliases {
-            if let Err(err) = self.invalidate_device_entry_by_devid(device.segment, *alias) {
-                let mut device_domains = self
-                    .device_domains
-                    .lock()
-                    .map_err(|_| IommuError::Poisoned)?;
-                device_domains.insert(device, previous_domain);
-                let _ =
-                    self.write_device_entries_for_domain(device, &aliases, Some(previous_domain));
-                return Err(err);
-            }
         }
 
         Ok(())

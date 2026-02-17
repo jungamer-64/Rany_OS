@@ -170,9 +170,8 @@ impl ProcFs {
         fs
     }
 
-    /// 静的エントリを初期化
-    fn init_static_entries(&self) {
-        // /proc/* system surface delegates to /sys/system
+    /// /proc 直下のシステムファイルを登録する
+    fn add_system_files(&self) {
         self.add_file("version", || read_sysfs_text("/sys/system/version"));
         self.add_file("uptime", || read_sysfs_text("/sys/system/uptime"));
         self.add_file("meminfo", || read_sysfs_text("/sys/system/meminfo"));
@@ -182,6 +181,12 @@ impl ProcFs {
         self.add_file("filesystems", || read_sysfs_text("/sys/system/filesystems"));
         self.add_file("mounts", || read_sysfs_text("/sys/system/mounts"));
         self.add_file("cmdline", || read_sysfs_text("/sys/system/cmdline"));
+    }
+
+    /// 静的エントリを初期化
+    fn init_static_entries(&self) {
+        // /proc/* system surface delegates to /sys/system
+        self.add_system_files();
 
         // /proc/sys ディレクトリ
         self.add_directory("sys");

@@ -317,6 +317,60 @@ impl HdaController {
         }
     }
 
+    /// Generate a stereo square wave into a buffer slice
+    fn generate_stereo_square_wave(buffer_slice: &mut [i16], samples: usize, frequency: u32, sample_rate: u32) {
+        let mono_buffer: Vec<i16> = (0..samples)
+            .map(|i| {
+                let samples_per_period = sample_rate / frequency;
+                let half_period = samples_per_period / 2;
+                let pos = i as u32 % samples_per_period;
+                if pos < half_period {
+                    16000i16
+                } else {
+                    -16000i16
+                }
+            })
+            .collect();
+        for (i, &sample) in mono_buffer.iter().enumerate() {
+            buffer_slice[i * 2] = sample;
+            buffer_slice[i * 2 + 1] = sample;
+        }
+    }
+
+    /// Configure codec and run stream playback
+    fn configure_and_play_stream(
+        &mut self,
+        codec_addr: u8,
+        audio_addr: u64,
+        buffer_size: u32,
+        duration_ms: u32,
+        sample_rate: u32,
+        bits: u8,
+        channels: u8,
+    ) -> HdaResult<()> {
+        self.setup_output_stream(0, sample_rate, bits, channels)?;
+        self.setup_bdl(0, audio_addr, buffer_size, 4)?;
+        let codec = self
+            .codecs
+            .iter()
+            .find(|c| c.address == codec_addr)
+            .ok_or(HdaError::NoCodec)?;
+        let caps = WidgetCaps {
+            widget_type: NodeType::AudioOutput,
+            conn_list: false,
+            out_amp: false,
+            in_amp: false,
+            format_override: false,
+            stereo: false,
+        };
+        super::codec::configure_codec_output(codec, caps)?;
+        self.start_stream(0)?;
+        Self::delay_us(duration_ms as u64 * 1000 + 100000);
+        self.stop_stream(0)?;
+        log::info!("[HDA] Square wave playback complete\n");
+        Ok(())
+    }
+
     /// Play a square wave beep using stream output
     pub fn play_square_wave(&mut self, frequency: u32, duration_ms: u32) -> HdaResult<()> {
         const SAMPLE_RATE: u32 = 48000;
@@ -344,58 +398,9 @@ impl HdaController {
         let buffer_slice =
             unsafe { core::slice::from_raw_parts_mut(audio_buffer_addr as *mut i16, samples * 2) };
 
-        // Generate mono wave, then copy to stereo
-        let mono_buffer: Vec<i16> = (0..samples)
-            .map(|i| {
-                let samples_per_period = SAMPLE_RATE / frequency;
-                let half_period = samples_per_period / 2;
-                let pos = i as u32 % samples_per_period;
-                if pos < half_period {
-                    16000i16
-                } else {
-                    -16000i16
-                }
-            })
-            .collect();
+        Self::generate_stereo_square_wave(buffer_slice, samples, frequency, SAMPLE_RATE);
 
-        // Copy to stereo buffer (L, R, L, R, ...)
-        for (i, &sample) in mono_buffer.iter().enumerate() {
-            buffer_slice[i * 2] = sample; // Left
-            buffer_slice[i * 2 + 1] = sample; // Right
-        }
-
-        // Setup output stream
-        self.setup_output_stream(0, SAMPLE_RATE, BITS, CHANNELS)?;
-
-        // Setup BDL
-        self.setup_bdl(0, audio_buffer_addr, buffer_size as u32, 4)?;
-
-        // Configure codec
-        let codec = self
-            .codecs
-            .iter()
-            .find(|c| c.address == codec_addr)
-            .ok_or(HdaError::NoCodec)?;
-        let caps = WidgetCaps {
-            widget_type: NodeType::AudioOutput,
-            conn_list: false,
-            out_amp: false,
-            in_amp: false,
-            format_override: false,
-            stereo: false,
-        };
-        super::codec::configure_codec_output(codec, caps)?;
-
-        // Start playback
-        self.start_stream(0)?;
-
-        // Wait for playback to complete
-        Self::delay_us(duration_ms as u64 * 1000 + 100000);
-
-        // Stop playback
-        self.stop_stream(0)?;
-
-        log::info!("[HDA] Square wave playback complete\n");
-        Ok(())
+        // Configure and play
+        self.configure_and_play_stream(codec_addr, audio_buffer_addr, buffer_size as u32, duration_ms, SAMPLE_RATE, BITS, CHANNELS)
     }
 }

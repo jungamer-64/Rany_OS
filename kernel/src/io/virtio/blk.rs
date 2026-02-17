@@ -845,6 +845,20 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a read request (internal)
+    fn alloc_three_descriptors(queue: &crate::io::virtio::VirtQueueGuard) -> Result<(u16, u16, u16), BlockError> {
+        let desc0 = queue.alloc_desc().ok_or(BlockError::QueueFull)?;
+        let desc1 = queue.alloc_desc().ok_or_else(|| {
+            queue.free_desc(desc0);
+            BlockError::QueueFull
+        })?;
+        let desc2 = queue.alloc_desc().ok_or_else(|| {
+            queue.free_desc(desc0);
+            queue.free_desc(desc1);
+            BlockError::QueueFull
+        })?;
+        Ok((desc0, desc1, desc2))
+    }
+
     pub(crate) fn submit_read(
         &self,
         sector: u64,
@@ -860,7 +874,6 @@ impl VirtioBlkDevice {
             return Err(BlockError::InvalidSector);
         }
 
-        // Allocate DMA-safe header + status byte
         let header = VirtioBlkReqHeader {
             req_type: VirtioBlkReqType::In as u32,
             reserved: 0,
@@ -872,17 +885,7 @@ impl VirtioBlkDevice {
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();
 
-        // Allocate 3 descriptors: header, data, status
-        let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
-        let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
-            queue_guard.free_desc(desc0);
-            BlockError::QueueFull
-        })?;
-        let desc2 = queue_guard.alloc_desc().ok_or_else(|| {
-            queue_guard.free_desc(desc0);
-            queue_guard.free_desc(desc1);
-            BlockError::QueueFull
-        })?;
+        let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
 
         unsafe {
             let desc_table = queue_guard.desc_table;
@@ -923,6 +926,26 @@ impl VirtioBlkDevice {
         Ok(desc0)
     }
 
+    /// Prepare a write request: validate state and create DMA header
+    fn prepare_write_request(&self, sector: u64) -> Result<BlkRequestDma, BlockError> {
+        if !self.is_ready() {
+            return Err(BlockError::NotReady);
+        }
+        if self.config.read_only {
+            return Err(BlockError::ReadOnly);
+        }
+        if sector >= self.config.capacity {
+            return Err(BlockError::InvalidSector);
+        }
+        let header = VirtioBlkReqHeader {
+            req_type: VirtioBlkReqType::Out as u32,
+            reserved: 0,
+            sector,
+        };
+        BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
+            .ok_or(BlockError::NotReady)
+    }
+
     /// Submit a write request (internal)
     pub(crate) fn submit_write(
         &self,
@@ -931,26 +954,7 @@ impl VirtioBlkDevice {
         len: u32,
         queue_idx: usize,
     ) -> Result<u16, BlockError> {
-        if !self.is_ready() {
-            return Err(BlockError::NotReady);
-        }
-
-        if self.config.read_only {
-            return Err(BlockError::ReadOnly);
-        }
-
-        if sector >= self.config.capacity {
-            return Err(BlockError::InvalidSector);
-        }
-
-        // Allocate DMA-safe header + status byte
-        let header = VirtioBlkReqHeader {
-            req_type: VirtioBlkReqType::Out as u32,
-            reserved: 0,
-            sector,
-        };
-        let req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
-            .ok_or(BlockError::NotReady)?;
+        let req_dma = self.prepare_write_request(sector)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();
@@ -1512,6 +1516,22 @@ pub struct ReadFuture<'a> {
     queue_idx: usize,
 }
 
+/// デスクリプタ完了をポーリングする
+fn poll_for_completion(
+    device: &VirtioBlkDevice,
+    queue_idx: usize,
+    desc_id: u16,
+) -> Option<(u16, u32)> {
+    let queue = &device.queues[queue_idx];
+    let queue_guard = queue.lock();
+    if let Some((completed_id, len)) = queue_guard.poll_completions() {
+        if completed_id == desc_id {
+            return Some((completed_id, len));
+        }
+    }
+    None
+}
+
 impl<'a> Future for ReadFuture<'a> {
     type Output = Result<usize, BlockError>;
 
@@ -1533,13 +1553,7 @@ impl<'a> Future for ReadFuture<'a> {
                 Ok(desc_id) => {
                     self.desc_id = Some(desc_id);
                     self.submitted = true;
-
-                    // Register waker
-                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                    let mut wakers = self.device.pending_wakers.lock();
-                    if let Some(slot) = wakers.get_mut(waker_idx) {
-                        *slot = Some(cx.waker().clone());
-                    }
+                    register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
                 }
                 Err(e) => return Poll::Ready(Err(e)),
             }
@@ -1547,24 +1561,10 @@ impl<'a> Future for ReadFuture<'a> {
 
         // Check for completion
         if let Some(desc_id) = self.desc_id {
-            let queue = &self.device.queues[self.queue_idx];
-            let queue_guard = queue.lock();
-
-            // Poll for our specific completion
-            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
-                if completed_id == desc_id {
-                    return Poll::Ready(Ok(self.buf.len()));
-                }
+            if poll_for_completion(self.device, self.queue_idx, desc_id).is_some() {
+                return Poll::Ready(Ok(self.buf.len()));
             }
-        }
-
-        // Re-register waker
-        if let Some(desc_id) = self.desc_id {
-            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-            let mut wakers = self.device.pending_wakers.lock();
-            if let Some(slot) = wakers.get_mut(waker_idx) {
-                *slot = Some(cx.waker().clone());
-            }
+            register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
         }
 
         Poll::Pending
@@ -1600,37 +1600,45 @@ impl<'a> Future for WriteFuture<'a> {
                 Ok(desc_id) => {
                     self.desc_id = Some(desc_id);
                     self.submitted = true;
-
-                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                    let mut wakers = self.device.pending_wakers.lock();
-                    if let Some(slot) = wakers.get_mut(waker_idx) {
-                        *slot = Some(cx.waker().clone());
-                    }
+                    register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
                 }
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }
 
         if let Some(desc_id) = self.desc_id {
-            let queue = &self.device.queues[self.queue_idx];
-            let queue_guard = queue.lock();
-
-            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
-                if completed_id == desc_id {
-                    return Poll::Ready(Ok(self.buf.len()));
-                }
+            if poll_for_completion(self.device, self.queue_idx, desc_id).is_some() {
+                return Poll::Ready(Ok(self.buf.len()));
             }
-        }
-
-        if let Some(desc_id) = self.desc_id {
-            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-            let mut wakers = self.device.pending_wakers.lock();
-            if let Some(slot) = wakers.get_mut(waker_idx) {
-                *slot = Some(cx.waker().clone());
-            }
+            register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
         }
 
         Poll::Pending
+    }
+}
+
+/// DMAバッファのサイズを検証してバイト数を返す
+fn validate_dma_buf_size(buf_len: usize) -> Result<u32, BlockError> {
+    if buf_len % 512 != 0 {
+        return Err(BlockError::InvalidBufferSize);
+    }
+    if buf_len > (u32::MAX as usize) {
+        return Err(BlockError::InvalidBufferSize);
+    }
+    Ok(buf_len as u32)
+}
+
+/// Wakerをデスクリプタに登録
+fn register_desc_waker(
+    device: &VirtioBlkDevice,
+    queue_idx: usize,
+    desc_id: u16,
+    waker: &core::task::Waker,
+) {
+    let waker_idx = queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+    let mut wakers = device.pending_wakers.lock();
+    if let Some(slot) = wakers.get_mut(waker_idx) {
+        *slot = Some(waker.clone());
     }
 }
 
@@ -1650,14 +1658,8 @@ impl<'a> Future for DmaReadFuture<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
-            if self.buf.len() % 512 != 0 {
-                return Poll::Ready(Err(BlockError::InvalidBufferSize));
-            }
-            if self.buf.len() > (u32::MAX as usize) {
-                return Poll::Ready(Err(BlockError::InvalidBufferSize));
-            }
+            let len = validate_dma_buf_size(self.buf.len())?;
 
-            let len = self.buf.len() as u32;
             match self
                 .device
                 .submit_read(self.sector, self.dma_addr, len, self.queue_idx)
@@ -1665,12 +1667,7 @@ impl<'a> Future for DmaReadFuture<'a> {
                 Ok(desc_id) => {
                     self.desc_id = Some(desc_id);
                     self.submitted = true;
-
-                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                    let mut wakers = self.device.pending_wakers.lock();
-                    if let Some(slot) = wakers.get_mut(waker_idx) {
-                        *slot = Some(cx.waker().clone());
-                    }
+                    register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
                 }
                 Err(e) => return Poll::Ready(Err(e)),
             }
@@ -1688,11 +1685,7 @@ impl<'a> Future for DmaReadFuture<'a> {
         }
 
         if let Some(desc_id) = self.desc_id {
-            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-            let mut wakers = self.device.pending_wakers.lock();
-            if let Some(slot) = wakers.get_mut(waker_idx) {
-                *slot = Some(cx.waker().clone());
-            }
+            register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
         }
 
         Poll::Pending
@@ -1715,14 +1708,8 @@ impl<'a> Future for DmaWriteFuture<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
-            if self.buf.len() % 512 != 0 {
-                return Poll::Ready(Err(BlockError::InvalidBufferSize));
-            }
-            if self.buf.len() > (u32::MAX as usize) {
-                return Poll::Ready(Err(BlockError::InvalidBufferSize));
-            }
+            let len = validate_dma_buf_size(self.buf.len())?;
 
-            let len = self.buf.len() as u32;
             match self
                 .device
                 .submit_write(self.sector, self.dma_addr, len, self.queue_idx)
@@ -1730,12 +1717,7 @@ impl<'a> Future for DmaWriteFuture<'a> {
                 Ok(desc_id) => {
                     self.desc_id = Some(desc_id);
                     self.submitted = true;
-
-                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                    let mut wakers = self.device.pending_wakers.lock();
-                    if let Some(slot) = wakers.get_mut(waker_idx) {
-                        *slot = Some(cx.waker().clone());
-                    }
+                    register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
                 }
                 Err(e) => return Poll::Ready(Err(e)),
             }
@@ -1753,11 +1735,7 @@ impl<'a> Future for DmaWriteFuture<'a> {
         }
 
         if let Some(desc_id) = self.desc_id {
-            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-            let mut wakers = self.device.pending_wakers.lock();
-            if let Some(slot) = wakers.get_mut(waker_idx) {
-                *slot = Some(cx.waker().clone());
-            }
+            register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
         }
 
         Poll::Pending
@@ -1787,13 +1765,7 @@ impl<'a> Future for FlushFuture<'a> {
                 Ok(desc_id) => {
                     self.desc_id = Some(desc_id);
                     self.submitted = true;
-
-                    // Register waker for completion notification
-                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                    let mut wakers = self.device.pending_wakers.lock();
-                    if let Some(slot) = wakers.get_mut(waker_idx) {
-                        *slot = Some(cx.waker().clone());
-                    }
+                    register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
                 }
                 Err(e) => return Poll::Ready(Err(e)),
             }
@@ -1801,24 +1773,10 @@ impl<'a> Future for FlushFuture<'a> {
 
         // Poll for completion
         if let Some(desc_id) = self.desc_id {
-            let queue = &self.device.queues[self.queue_idx];
-            let queue_guard = queue.lock();
-
-            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
-                if completed_id == desc_id {
-                    // Flush completed successfully
-                    return Poll::Ready(Ok(()));
-                }
+            if poll_for_completion(self.device, self.queue_idx, desc_id).is_some() {
+                return Poll::Ready(Ok(()));
             }
-        }
-
-        // Re-register waker for next poll
-        if let Some(desc_id) = self.desc_id {
-            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-            let mut wakers = self.device.pending_wakers.lock();
-            if let Some(slot) = wakers.get_mut(waker_idx) {
-                *slot = Some(cx.waker().clone());
-            }
+            register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
         }
 
         Poll::Pending

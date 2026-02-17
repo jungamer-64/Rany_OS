@@ -336,10 +336,8 @@ impl<'a> DerParser<'a> {
 ///
 /// `raw_tbs` には署名検証用にTBSCertificateの完全なDER
 /// （タグ+長さ+値）を保持する。
-/// TBSCertificateフィールドを解析
-fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, usize, usize, usize, usize, SubjectPublicKeyInfo<'a>)> {
-    let mut tbs = DerParser::new(tbs_content);
-
+/// TBSプリアンブル（Version, Serial, SigAlg）を解析
+fn parse_tbs_preamble(tbs: &mut DerParser<'_>) -> Option<SignatureAlgorithmId> {
     // Version [0] EXPLICIT（オプション）
     if tbs.remaining().first() == Some(&0xA0) {
         let (_tag, _version_content) = tbs.read_tlv()?;
@@ -352,7 +350,14 @@ fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, 
     let sig_alg_content = tbs.read_sequence()?;
     let mut sig_alg_parser = DerParser::new(sig_alg_content);
     let sig_oid = sig_alg_parser.read_oid()?;
-    let signature_algorithm = parse_signature_algorithm_id(sig_oid);
+    Some(parse_signature_algorithm_id(sig_oid))
+}
+
+/// TBSCertificateフィールドを解析
+fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, usize, usize, usize, usize, SubjectPublicKeyInfo<'a>)> {
+    let mut tbs = DerParser::new(tbs_content);
+
+    let signature_algorithm = parse_tbs_preamble(&mut tbs)?;
 
     // Issuer — 生DERをキャプチャ
     let issuer_start = tbs.position();
@@ -572,35 +577,36 @@ fn check_server_name_in_leaf(leaf: &X509Certificate<'_>, server_name: Option<&st
     Some(())
 }
 
+/// 証明書チェーンをパースして配列に格納
+fn parse_chain_to_array<'a>(
+    chain: &[&'a [u8]],
+    certs: &mut [Option<X509Certificate<'a>>; 8],
+) -> Option<()> {
+    for (i, &der) in chain.iter().enumerate() {
+        certs[i] = Some(parse_x509(der)?);
+    }
+    Some(())
+}
+
 pub fn validate_certificate_chain<'a>(
     chain: &[&'a [u8]],
     server_name: Option<&str>,
 ) -> Option<SubjectPublicKeyInfo<'a>> {
-    if chain.is_empty() {
+    if chain.is_empty() || chain.len() > 8 {
         return None;
     }
 
-    const MAX_CHAIN: usize = 8;
-    if chain.len() > MAX_CHAIN {
-        return None;
+    let mut certs: [Option<X509Certificate<'_>>; 8] = [None, None, None, None, None, None, None, None];
+    parse_chain_to_array(chain, &mut certs)?;
+
+    let leaf = certs[0].as_ref()?;
+    check_server_name_in_leaf(leaf, server_name)?;
+
+    if chain.len() > 1 {
+        verify_chain_links(&certs, chain.len())?;
     }
 
-    let mut certs: [Option<X509Certificate<'_>>; MAX_CHAIN] = [None, None, None, None, None, None, None, None];
-    for (i, &der) in chain.iter().enumerate() {
-        certs[i] = Some(parse_x509(der)?);
-    }
-
-    let chain_len = chain.len();
-
-    check_server_name_in_leaf(certs[0].as_ref()?, server_name)?;
-
-    if chain_len == 1 {
-        return Some(certs[0].as_ref()?.subject_public_key_info);
-    }
-
-    verify_chain_links(&certs, chain_len)?;
-
-    Some(certs[0].as_ref()?.subject_public_key_info)
+    Some(leaf.subject_public_key_info)
 }
 
 /// バイト列の中に部分列が含まれるかチェック（簡易バイト検索）

@@ -2275,44 +2275,54 @@ impl TcpProcessor {
         }
 
         // Check if this is for a listening socket
-        if let Some(listener_lock) = self.listeners.get(&local_addr) {
-            if let Ok(listener) = listener_lock.lock() {
-                if listener.state == TcpState::Listen && flags & TcpHeader::FLAG_SYN != 0 {
-                    // Create new connection for incoming SYN
-                    let mut tcb = TcpControlBlock::new(local_addr);
-                    tcb.remote_addr = Some(remote_addr);
-                    tcb.state = TcpState::SynReceived;
-                    tcb.rcv_nxt = seq_num.wrapping_add(1);
-                    tcb.snd_nxt = crate::task::timer::current_tick() as u32;
-                    tcb.snd_una = tcb.snd_nxt;
-                    tcb.snd_wnd = window;
-                    
-                    // Propagate backlog/waker from listener to child
-                    tcb.backlog = listener.backlog.clone();
-                    tcb.accept_waker = listener.accept_waker.clone();
-    
-                    // Prepare SYN-ACK
-                    let syn_ack = TcpProcessResult::SendPacket {
-                        local: local_addr,
-                        remote: remote_addr,
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
-                        window: 65535, // Default window
-                        payload: Vec::new(),
-                    };
-    
-                    self.connections.insert(
-                        (local_addr, remote_addr),
-                        Arc::new(PoisonLock::new(tcb)),
-                    );
-                    return syn_ack;
-                }
-            }
+        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window) {
+            return result;
         }
 
         // No matching connection or listener - ignore or send RST
         TcpProcessResult::None
+    }
+
+    fn handle_incoming_syn(
+        &mut self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        seq_num: u32,
+        flags: u16,
+        window: u16,
+    ) -> Option<TcpProcessResult> {
+        let listener_lock = self.listeners.get(&local_addr)?;
+        let listener = listener_lock.lock().ok()?;
+        if listener.state != TcpState::Listen || flags & TcpHeader::FLAG_SYN == 0 {
+            return None;
+        }
+
+        let mut tcb = TcpControlBlock::new(local_addr);
+        tcb.remote_addr = Some(remote_addr);
+        tcb.state = TcpState::SynReceived;
+        tcb.rcv_nxt = seq_num.wrapping_add(1);
+        tcb.snd_nxt = crate::task::timer::current_tick() as u32;
+        tcb.snd_una = tcb.snd_nxt;
+        tcb.snd_wnd = window;
+        tcb.backlog = listener.backlog.clone();
+        tcb.accept_waker = listener.accept_waker.clone();
+
+        let syn_ack = TcpProcessResult::SendPacket {
+            local: local_addr,
+            remote: remote_addr,
+            seq: tcb.snd_nxt,
+            ack: tcb.rcv_nxt,
+            flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+            window: 65535,
+            payload: Vec::new(),
+        };
+
+        drop(listener);
+        self.connections.insert(
+            (local_addr, remote_addr),
+            Arc::new(PoisonLock::new(tcb)),
+        );
+        Some(syn_ack)
     }
 
     /// Process an incoming TCP segment using a PacketRef (zero-copy path)

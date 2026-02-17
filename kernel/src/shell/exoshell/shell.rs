@@ -1906,6 +1906,20 @@ format!(
             .collect()
     }
 
+    /// パスプレフィックスからディレクトリと名前プレフィックスを分離
+    fn split_path_prefix<'a>(path_prefix: &'a str, cwd: &'a str) -> (&'a str, &'a str) {
+        if path_prefix.contains('/') {
+            let last_slash = path_prefix.rfind('/').unwrap();
+            if last_slash == 0 {
+                ("/", &path_prefix[1..])
+            } else {
+                (&path_prefix[..last_slash], &path_prefix[last_slash + 1..])
+            }
+        } else {
+            (cwd, path_prefix)
+        }
+    }
+
     /// ファイルパス補完
     fn complete_filepath(&self, input: &str) -> Option<Vec<String>> {
         let quote_pos = input.rfind(|c| c == '"' || c == '\'')?;
@@ -1919,16 +1933,7 @@ format!(
         let path_prefix = after_quote;
         let prefix_before_quote = &input[..quote_pos + 1];
 
-        let (dir_path, name_prefix) = if path_prefix.contains('/') {
-            let last_slash = path_prefix.rfind('/').unwrap();
-            if last_slash == 0 {
-                ("/", &path_prefix[1..])
-            } else {
-                (&path_prefix[..last_slash], &path_prefix[last_slash + 1..])
-            }
-        } else {
-            (self.cwd.as_str(), path_prefix)
-        };
+        let (dir_path, name_prefix) = Self::split_path_prefix(path_prefix, self.cwd.as_str());
 
         let entries = match crate::fs::list_directory(dir_path, "/") {
             Ok(e) => e,

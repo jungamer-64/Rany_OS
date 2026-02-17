@@ -129,6 +129,50 @@ fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
 ///
 /// - `Ok(())` if all required RMRR regions are successfully mapped
 /// - `Err(IommuError::RmrrMapFailed)` if any required region fails to map
+/// Try to map a single RMRR region for a device.
+fn try_map_rmrr_region(
+    domain: &IommuDomain,
+    device: DeviceId,
+    start: usize,
+    size: usize,
+) -> Result<(), IommuError> {
+    if let Err(e) = validate_rmrr_region(start, start + size) {
+        log::error!(
+            "[IOMMU][CRITICAL] RMRR validation failed for {:04x}:{:02x}:{:02x}.{}: \
+             region {:#x}-{:#x}, error: {:?}",
+            device.segment, device.bus, device.device, device.function,
+            start, start + size, e
+        );
+        return Err(IommuError::RmrrMapFailed);
+    }
+
+    match domain.map(start, start, size, true, true) {
+        Ok(()) => {
+            log::debug!(
+                "[IOMMU] RMRR mapped for {:04x}:{:02x}:{:02x}.{}: {:#x}-{:#x}",
+                device.segment, device.bus, device.device, device.function,
+                start, start + size
+            );
+            Ok(())
+        }
+        Err(IommuError::AlreadyMapped) => Ok(()),
+        Err(err) => {
+            log::error!(
+                "[IOMMU][CRITICAL] RMRR map FAILED for {:04x}:{:02x}:{:02x}.{}: \
+                 region {:#x}-{:#x}, error: {:?}",
+                device.segment, device.bus, device.device, device.function,
+                start, start + size, err
+            );
+            log::error!(
+                "[IOMMU][CRITICAL] Device {:04x}:{:02x}:{:02x}.{} should NOT be used - \
+                 RMRR failure may cause DMA faults or memory corruption!",
+                device.segment, device.bus, device.device, device.function
+            );
+            Err(IommuError::RmrrMapFailed)
+        }
+    }
+}
+
 fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), IommuError> {
     if domain.domain_type() == IommuDomainType::Passthrough {
         return Ok(());
@@ -164,43 +208,7 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
         }
         let size = end - start;
 
-        if let Err(e) = validate_rmrr_region(start, end) {
-            log::error!(
-                "[IOMMU][CRITICAL] RMRR validation failed for {:04x}:{:02x}:{:02x}.{}: \
-                 region {:#x}-{:#x}, error: {:?}",
-                device.segment, device.bus, device.device, device.function,
-                start, start + size, e
-            );
-            return Err(IommuError::RmrrMapFailed);
-        }
-
-        match domain.map(start, start, size, true, true) {
-            Ok(()) => {
-                log::debug!(
-                    "[IOMMU] RMRR mapped for {:04x}:{:02x}:{:02x}.{}: {:#x}-{:#x}",
-                    device.segment, device.bus, device.device, device.function,
-                    start, start + size
-                );
-            }
-            Err(IommuError::AlreadyMapped) => {
-                // Already mapped, that's fine
-            }
-            Err(err) => {
-                log::error!(
-                    "[IOMMU][CRITICAL] RMRR map FAILED for {:04x}:{:02x}:{:02x}.{}: \
-                     region {:#x}-{:#x}, error: {:?}",
-                    device.segment, device.bus, device.device, device.function,
-                    start, start + size, err
-                );
-                log::error!(
-                    "[IOMMU][CRITICAL] Device {:04x}:{:02x}:{:02x}.{} should NOT be used - \
-                     RMRR failure may cause DMA faults or memory corruption!",
-                    device.segment, device.bus, device.device, device.function
-                );
-                // Return error immediately - device must not be used
-                return Err(IommuError::RmrrMapFailed);
-            }
-        }
+        try_map_rmrr_region(domain, device, start, size)?;
     }
 
 
@@ -266,6 +274,37 @@ pub trait DomainManager {
 // ============================================================================
 
 impl IommuController {
+    /// スケーラブルモード用のPASIDテーブルをセットアップする
+    fn setup_scalable_pasid(
+        &self,
+        context_entry: &mut ScalableContextEntry,
+        domain_type: IommuDomainType,
+        page_table_addr: u64,
+        domain_id: u16,
+        device: DeviceId,
+    ) -> Result<(), IommuError> {
+        let mut pasid_table = PasidTable::new(6)?;
+        if domain_type == IommuDomainType::Passthrough {
+            pasid_table.setup_passthrough_entry(0, domain_id)?;
+        } else {
+            pasid_table.setup_sl_entry(0, page_table_addr, 2, domain_id)?;
+        }
+
+        context_entry.set_pasid_dir(pasid_table.phys_addr(), pasid_table.pds());
+        context_entry.set_rid2pasid(0);
+        context_entry.set_pasid_enable();
+        context_entry.set_fault_enable();
+        context_entry.set_present();
+
+        let mut device_pasid_tables = self
+            .device_pasid_tables
+            .lock()
+            .map_err(|_| IommuError::HardwareError)?;
+        device_pasid_tables.insert(device, pasid_table);
+
+        Ok(())
+    }
+
     /// Attach a device in scalable mode (context entry + PASID table).
     fn attach_device_scalable(
         &self,
@@ -292,24 +331,7 @@ impl IommuController {
             .ok_or(IommuError::InvalidAddress)?;
         *context_entry = ScalableContextEntry::new();
 
-        let mut pasid_table = PasidTable::new(6)?;
-        if domain_type == IommuDomainType::Passthrough {
-            pasid_table.setup_passthrough_entry(0, domain_id)?;
-        } else {
-            pasid_table.setup_sl_entry(0, page_table_addr, 2, domain_id)?;
-        }
-
-        context_entry.set_pasid_dir(pasid_table.phys_addr(), pasid_table.pds());
-        context_entry.set_rid2pasid(0);
-        context_entry.set_pasid_enable();
-        context_entry.set_fault_enable();
-        context_entry.set_present();
-
-        let mut device_pasid_tables = self
-            .device_pasid_tables
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?;
-        device_pasid_tables.insert(device, pasid_table);
+        self.setup_scalable_pasid(context_entry, domain_type, page_table_addr, domain_id, device)?;
 
         Ok(())
     }
@@ -607,8 +629,8 @@ impl DomainManager for IommuController {
         Ok(())
     }
 
-    fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
-        // ATS cleanup: disable ATS and invalidate Device-TLB before detaching
+    /// ATSが有効なら無効化する
+    fn check_and_clear_ats(&self, device: DeviceId) {
         let ats_was_enabled = match self.ats_enabled_devices.lock() {
             Ok(set) => set.contains(&device),
             Err(_) => false,
@@ -619,17 +641,15 @@ impl DomainManager for IommuController {
                 crate::io::iommu::security::AtsChangeReason::DeviceDetach,
             );
         }
+    }
 
-        let bus = device.bus as usize;
-        let devfn = ((device.device as usize) << 3) | (device.function as usize);
-
-        let mut device_domains = self
-            .device_domains
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?;
-        device_domains.remove(&device);
-
-        // Clear context entry in hardware using safe accessor
+    /// ハードウェアのコンテキストエントリをクリア
+    fn clear_hw_context_entry(
+        &self,
+        bus: usize,
+        devfn: usize,
+        device: DeviceId,
+    ) -> Result<(), IommuError> {
         let mut hw = self
             .hardware
             .lock()
@@ -657,8 +677,22 @@ impl DomainManager for IommuController {
                 *context_entry = ContextEntry::default();
             }
         }
-
         Ok(())
+    }
+
+    fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
+        self.check_and_clear_ats(device);
+
+        let bus = device.bus as usize;
+        let devfn = ((device.device as usize) << 3) | (device.function as usize);
+
+        let mut device_domains = self
+            .device_domains
+            .lock()
+            .map_err(|_| IommuError::HardwareError)?;
+        device_domains.remove(&device);
+
+        self.clear_hw_context_entry(bus, devfn, device)
     }
 
     fn get_domain_for_device(&self, device: DeviceId) -> Result<Option<u16>, IommuError> {

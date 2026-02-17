@@ -344,6 +344,18 @@ impl CapabilityManager {
         Ok(())
     }
 
+    fn check_caller_allowed(&self, caller_domain: u64, cap: Capability) -> bool {
+        if self.has_capability(caller_domain, CAP_SYS_ADMIN) {
+            return true;
+        }
+        let caller_caps = self.get_capabilities(caller_domain);
+        if caller_caps.is_permitted(cap) {
+            return true;
+        }
+        let grants = self.grants.lock();
+        grants.iter().any(|t| t.target == caller_domain && t.cap == cap && t.delegatable)
+    }
+
     /// Grant capability with options (expires, delegatable) and return a token id
     pub fn grant_capability_with_opts(
         &self,
@@ -356,22 +368,7 @@ impl CapabilityManager {
         // Clean up expired tokens first
         self.expire_grants();
 
-        // Check caller permissions (same policy as grant_capability) with delegation support.
-        let caller_caps = self.get_capabilities(caller_domain);
-        let mut allowed = false;
-        if self.has_capability(caller_domain, CAP_SYS_ADMIN) {
-            allowed = true;
-        } else if caller_caps.is_permitted(cap) {
-            allowed = true;
-        } else {
-            // Check if caller has a delegatable grant for this cap
-            let grants = self.grants.lock();
-            if grants.iter().any(|t| t.target == caller_domain && t.cap == cap && t.delegatable) {
-                allowed = true;
-            }
-        }
-
-        if !allowed {
+        if !self.check_caller_allowed(caller_domain, cap) {
             return Err(CapabilityError::NotPermitted);
         }
 

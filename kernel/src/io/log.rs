@@ -964,6 +964,43 @@ fn start_serial_tx() {
     }
 }
 
+fn drain_global_tx_buffer(data_port: &mut PortU8, lsr: &mut PortU8) -> usize {
+    let mut tmp = [0u8; ISR_TX_BURST];
+    let n = {
+        let guard = LOG_BUFFER.lock();
+        guard.peek_bulk(&mut tmp)
+    };
+    if n == 0 {
+        return 0;
+    }
+    let mut i = 0usize;
+    while i < n {
+        if (lsr.read() & LSR_TX_EMPTY) == 0 {
+            break;
+        }
+        data_port.write(tmp[i]);
+        i += 1;
+    }
+    if i > 0 {
+        let mut guard = LOG_BUFFER.lock();
+        guard.advance_head(i);
+    }
+    i
+}
+
+fn disable_tx_interrupt() {
+    if IN_PANIC.load(Ordering::Relaxed) {
+        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+        let current = ier.read();
+        ier.write(current & !0x02);
+    } else {
+        let _io_guard = SERIAL_IO_LOCK.lock();
+        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+        let current = ier.read();
+        ier.write(current & !0x02);
+    }
+}
+
 /// シリアル割り込みハンドラ
 pub fn handle_serial_interrupt() {
     let mut iir: PortU8 = IoPort::new(SERIAL_PORT_BASE + 2);
@@ -979,49 +1016,9 @@ pub fn handle_serial_interrupt() {
         match id & 0x0E {
             0x02 => {
                 // THRE (Transmitter Holding Register Empty)
-                // ISR now only drains the global buffer. Per-core buffers are
-                // aggregated into the global buffer by non-ISR contexts to
-                // keep interrupt handling time bounded. TODO: Move aggregation
-                // into a dedicated low-priority kernel task.
-                let mut tmp = [0u8; ISR_TX_BURST];
-                let mut total_written = 0usize;
-
-                // Drain global buffer using peek/advance to avoid push_front semantics
-                let n = {
-                    let guard = LOG_BUFFER.lock();
-                    guard.peek_bulk(&mut tmp)
-                };
-
-                if n > 0 {
-                    let mut i = 0usize;
-                    while i < n {
-                        if (lsr.read() & LSR_TX_EMPTY) == 0 {
-                            break;
-                        }
-                        data_port.write(tmp[i]);
-                        i += 1;
-                    }
-
-                    if i > 0 {
-                        let mut guard = LOG_BUFFER.lock();
-                        guard.advance_head(i);
-                    }
-
-                    total_written += i;
-                }
-
-                // If nothing was sent, disable TX interrupt (bypass lock in panic)
+                let total_written = drain_global_tx_buffer(&mut data_port, &mut lsr);
                 if total_written == 0 {
-                    if IN_PANIC.load(Ordering::Relaxed) {
-                        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-                        let current = ier.read();
-                        ier.write(current & !0x02);
-                    } else {
-                        let _io_guard = SERIAL_IO_LOCK.lock();
-                        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-                        let current = ier.read();
-                        ier.write(current & !0x02);
-                    }
+                    disable_tx_interrupt();
                 }
             }
             0x04 | 0x0C => {

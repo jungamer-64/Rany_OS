@@ -235,6 +235,25 @@ impl Zpool {
         if page_size == PAGE_SIZE_1G { stats.stored_pages_1g += 1; }
     }
 
+    fn compress_and_validate(&self, page_data: &[u8], page_size: usize) -> Result<alloc::vec::Vec<u8>, ZswapError> {
+        let config = self.config.read();
+        let compressed = self.compress(page_data, config.compressor)?;
+        let compression_ratio = compressed.len() as f64 / page_size as f64;
+        if compression_ratio > config.max_compression_ratio {
+            let mut stats = self.stats.lock();
+            stats.compress_fail += 1;
+            return Err(ZswapError::PoorCompression);
+        }
+        drop(config);
+        let new_size = self.current_size.load(Ordering::Relaxed) + compressed.len() as u64;
+        if new_size > self.max_size.load(Ordering::Relaxed) {
+            let mut stats = self.stats.lock();
+            stats.pool_full_reject += 1;
+            return Err(ZswapError::PoolFull);
+        }
+        Ok(compressed)
+    }
+
     /// ページを圧縮して格納
     pub fn store(&self, swap_offset: u64, page_data: &[u8]) -> Result<(), ZswapError> {
         if !self.is_enabled() {
@@ -252,27 +271,7 @@ impl Zpool {
             return result;
         }
 
-        // 圧縮（ページ全体を圧縮）
-        let config = self.config.read();
-        let compressed = self.compress(page_data, config.compressor)?;
-        let compression_ratio = compressed.len() as f64 / page_size as f64;
-
-        // 圧縮率チェック
-        if compression_ratio > config.max_compression_ratio {
-            let mut stats = self.stats.lock();
-            stats.compress_fail += 1;
-            return Err(ZswapError::PoorCompression);
-        }
-        
-        drop(config);
-        
-        // プールサイズチェック
-        let new_size = self.current_size.load(Ordering::Relaxed) + compressed.len() as u64;
-        if new_size > self.max_size.load(Ordering::Relaxed) {
-            let mut stats = self.stats.lock();
-            stats.pool_full_reject += 1;
-            return Err(ZswapError::PoolFull);
-        }
+        let compressed = self.compress_and_validate(page_data, page_size)?;
         
         let entry = ZswapEntry {
             data: compressed.clone(),
@@ -413,6 +412,37 @@ impl Zpool {
         }
     }
     
+    /// LZ4展開: 0xFFマーカー処理（RLEデコードまたはエスケープ）
+    fn decode_lz4_marker(
+        data: &[u8],
+        in_idx: &mut usize,
+        out: &mut [u8],
+        out_idx: &mut usize,
+    ) {
+        if *in_idx + 1 >= data.len() {
+            return;
+        }
+        let value = data[*in_idx];
+        let count = data[*in_idx + 1] as usize;
+        *in_idx += 2;
+
+        if value == 0xFF && count == 1 {
+            // エスケープされた0xFF
+            if *out_idx < out.len() {
+                out[*out_idx] = 0xFF;
+                *out_idx += 1;
+            }
+        } else {
+            // RLEデコード
+            for _ in 0..count {
+                if *out_idx < out.len() {
+                    out[*out_idx] = value;
+                    *out_idx += 1;
+                }
+            }
+        }
+    }
+
     /// LZ4展開
     fn decompress_lz4(&self, data: &[u8], out: &mut [u8]) -> Result<(), ZswapError> {
         let mut out_idx = 0;
@@ -422,26 +452,8 @@ impl Zpool {
             let byte = data[in_idx];
             in_idx += 1;
             
-            if byte == 0xFF && in_idx + 1 < data.len() {
-                let value = data[in_idx];
-                let count = data[in_idx + 1] as usize;
-                in_idx += 2;
-                
-                if value == 0xFF && count == 1 {
-                    // エスケープされた0xFF
-                    if out_idx < out.len() {
-                        out[out_idx] = 0xFF;
-                        out_idx += 1;
-                    }
-                } else {
-                    // RLEデコード
-                    for _ in 0..count {
-                        if out_idx < out.len() {
-                            out[out_idx] = value;
-                            out_idx += 1;
-                        }
-                    }
-                }
+            if byte == 0xFF {
+                Self::decode_lz4_marker(data, &mut in_idx, out, &mut out_idx);
             } else {
                 out[out_idx] = byte;
                 out_idx += 1;
@@ -449,10 +461,7 @@ impl Zpool {
         }
         
         // 残りをゼロ埋め
-        while out_idx < out.len() {
-            out[out_idx] = 0;
-            out_idx += 1;
-        }
+        out[out_idx..].fill(0);
         
         Ok(())
     }

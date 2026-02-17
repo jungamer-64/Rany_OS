@@ -1771,6 +1771,14 @@ impl IommuDomain {
         Ok(Some(pt_scope))
     }
 
+    fn commit_allocated_tables(tables: &mut [Option<PageTableScope>]) {
+        for slot in tables.iter_mut() {
+            if let Some(scope) = slot {
+                scope.commit();
+            }
+        }
+    }
+
     /// Map a 2MB super-page
     ///
     /// Uses 3-level page table walking (PML4 -> PDP -> PD) and sets super-page at PD level.
@@ -1826,13 +1834,25 @@ impl IommuDomain {
         }
         inc_ref(pd_phys);
 
-        for slot in newly_allocated.iter_mut() {
-            if let Some(scope) = slot {
-                scope.commit();
-            }
-        }
+        Self::commit_allocated_tables(&mut newly_allocated);
 
         Ok(())
+    }
+
+    unsafe fn ensure_pdp_for_super_page(
+        &self,
+        pml4_entry: *mut SlPte,
+        pml4_phys: u64,
+    ) -> Result<Option<PageTableScope>, IommuError> {
+        if !(unsafe { *pml4_entry }).is_present() {
+            let mut pdp_scope = self.allocate_page_table()?;
+            pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
+            Ok(Some(pdp_scope))
+        } else if (unsafe { *pml4_entry }).is_super_page(self.pte_format) {
+            Err(IommuError::AlreadyMapped)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Map a 1GB super-page
@@ -1863,30 +1883,8 @@ impl IommuDomain {
 
         let pml4_table = self.page_table;
         let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
-
-        // Ensure PDP exists
-        if !(unsafe { *pml4_entry }).is_present() {
-            let mut pdp_scope = match self.allocate_page_table() {
-                Ok(s) => s,
-                Err(e) => {
-                    return Err(e);
-                }
-            };
-
-            // Attach to parent (writes PML4 entry)
-            let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
-
-            // Attaching PDP (Level 3) to PML4
-            pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
-            newly_allocated_pdp = Some(pdp_scope);
-        } else if (unsafe { *pml4_entry }).is_super_page(self.pte_format) {
-            // PML4 entry cannot be a super page in 4-level paging (512GB pages not supported)
-            // But if it were, we should fail.
-            // Actually, PML4 entries point to PDP. If "is_super_page" is true, it means generic mismatch?
-            // Intel Bit 7 in PML4 entry matches 'Reserved'? Or 'Page Size'?
-            // For safety we can check.
-            return Err(IommuError::AlreadyMapped);
-        }
+        let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
+        newly_allocated_pdp = unsafe { self.ensure_pdp_for_super_page(pml4_entry, pml4_phys)? };
 
         let pdp_table = (unsafe { *pml4_entry }).phys_addr() as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
@@ -1919,6 +1917,22 @@ impl IommuDomain {
         Ok(())
     }
 
+    /// 複数シャードのガードを取得する
+    fn acquire_shard_guards(
+        &self,
+        start_shard: usize,
+        end_shard: usize,
+        first_guard: crate::sync::MutexGuard<'_, DmaShard>,
+    ) -> Result<Vec<crate::sync::MutexGuard<'_, DmaShard>>, IommuError> {
+        let mut guards = Vec::with_capacity(end_shard.saturating_sub(start_shard) + 1);
+        guards.push(first_guard);
+        for idx in (start_shard + 1)..=end_shard {
+            let guard = self.shards[idx].lock().map_err(|_| IommuError::Poisoned)?;
+            guards.push(guard);
+        }
+        Ok(guards)
+    }
+
     /// Unmap a DMA region
     pub fn unmap(&self, iova: u64) -> Result<DmaMapping, IommuError> {
         if self.poisoned.load(Ordering::Acquire) {
@@ -1936,12 +1950,7 @@ impl IommuDomain {
             .ok_or(IommuError::NotMapped)?;
         let (_, end_shard) = self.shard_range(iova, mapping.size)?;
 
-        let mut guards = Vec::with_capacity(end_shard.saturating_sub(start_shard) + 1);
-        guards.push(guard);
-        for idx in (start_shard + 1)..=end_shard {
-            let guard = self.shards[idx].lock().map_err(|_| IommuError::Poisoned)?;
-            guards.push(guard);
-        }
+        let mut guards = self.acquire_shard_guards(start_shard, end_shard, guard)?;
 
         for guard in guards.iter_mut() {
             guard.mappings.remove(iova);
@@ -2066,6 +2075,20 @@ impl IommuDomain {
         dec_ref(pml4_phys);
     }
 
+    fn verify_pt_entries_present(
+        pt_table: *mut SlPte,
+        pt_idx: usize,
+        count: usize,
+    ) -> Result<(), IommuError> {
+        for idx in 0..count {
+            let pt_entry = unsafe { pt_table.add(pt_idx + idx) };
+            if !unsafe { (*pt_entry) }.is_present() {
+                return Err(IommuError::NotMapped);
+            }
+        }
+        Ok(())
+    }
+
     /// Unmap a contiguous run of 4KB entries within a single PT.
     fn unmap_range_4k(&self, iova: u64, pages: usize) -> Result<usize, IommuError> {
         if pages == 0 {
@@ -2110,12 +2133,7 @@ impl IommuDomain {
             let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
             let pt_phys = (*pd_entry).phys_addr();
 
-            for idx in 0..pages_in_pt {
-                let pt_entry = pt_table.add(pt_idx + idx);
-                if !(*pt_entry).is_present() {
-                    return Err(IommuError::NotMapped);
-                }
-            }
+            Self::verify_pt_entries_present(pt_table, pt_idx, pages_in_pt)?;
 
             for idx in 0..pages_in_pt {
                 let pt_entry = pt_table.add(pt_idx + idx);

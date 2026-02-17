@@ -224,6 +224,32 @@ impl HierarchicalBitmap {
         None
     }
 
+    /// L1ブロック内でlimit未満の空きユニットを検索する
+    fn scan_l1_for_free_below(&self, l1_idx: usize, limit_idx: usize) -> Option<usize> {
+        let l1_word = self.summary[l1_idx].load(Ordering::Acquire);
+        if l1_word == 0 {
+            return None;
+        }
+
+        let l1_bit = l1_word.trailing_zeros() as usize;
+        let detail_idx = l1_idx * BITS_PER_WORD + l1_bit;
+
+        if detail_idx * BITS_PER_WORD >= limit_idx {
+            return None;
+        }
+
+        if detail_idx >= self.detail.len() {
+            return None;
+        }
+
+        if let Some(unit_idx) = self.try_allocate_from_word(detail_idx) {
+            if unit_idx < limit_idx {
+                return Some(unit_idx);
+            }
+        }
+        None
+    }
+
     /// Allocate a single unit below a specific limit index
     ///
     /// Searches from 0 up to limit, ensuring the allocated index is specificially < limit.
@@ -247,30 +273,8 @@ impl HierarchicalBitmap {
                     return None;
                 }
 
-                let l1_word = self.summary[l1_idx].load(Ordering::Acquire);
-                if l1_word == 0 {
-                    continue;
-                }
-
-                let l1_bit = l1_word.trailing_zeros() as usize;
-                let detail_idx = l1_idx * BITS_PER_WORD + l1_bit;
-                
-                if detail_idx * BITS_PER_WORD >= limit_idx {
-                     return None;
-                }
-                
-                if detail_idx >= self.detail.len() {
-                    continue; 
-                }
-
-                if let Some(unit_idx) = self.try_allocate_from_word(detail_idx) {
-                    if unit_idx < limit_idx {
-                        return Some(unit_idx);
-                    } else {
-                        // Found a free bit, but it's >= limit.
-                        // Since we search lowest-first, all subsequent bits are also >= limit.
-                        return None;
-                    }
+                if let Some(unit_idx) = self.scan_l1_for_free_below(l1_idx, limit_idx) {
+                    return Some(unit_idx);
                 }
             }
         }
@@ -1806,56 +1810,55 @@ impl HugePageBitmap {
         }
         
         // Update 2MB hierarchy for affected pages
-        // Calculate block and update used count
+        self.update_2m_hierarchy_on_free(word_idx, freed_count);
+        
+        Ok(freed_count)
+    }
+
+    /// Update 2MB/1GB hierarchy after freeing pages in a word
+    fn update_2m_hierarchy_on_free(&self, word_idx: usize, freed_count: usize) {
         let start_page = word_idx * BITS_PER_WORD;
         let block_2m = start_page / PAGES_PER_2MB;
         
-        if block_2m < self.total_2m_blocks {
-            // Update free word mask
-            let word_in_block = (start_page % PAGES_PER_2MB) / BITS_PER_WORD;
-            let mask_bit = 1u8 << word_in_block;
-            self.free_word_mask_2m[block_2m].fetch_or(mask_bit, Ordering::AcqRel);
+        if block_2m >= self.total_2m_blocks {
+            return;
+        }
+
+        let word_in_block = (start_page % PAGES_PER_2MB) / BITS_PER_WORD;
+        let mask_bit = 1u8 << word_in_block;
+        self.free_word_mask_2m[block_2m].fetch_or(mask_bit, Ordering::AcqRel);
+        
+        let old_used = self.used_count_2m[block_2m].fetch_sub(freed_count as u16, Ordering::AcqRel);
+        let new_used = old_used.saturating_sub(freed_count as u16);
+        
+        if new_used == 0 && old_used > 0 {
+            let bword = block_2m / BITS_PER_WORD;
+            let bbit = block_2m % BITS_PER_WORD;
+            let bmask = 1u64 << bbit;
             
-            // Update used count
-            let old_used = self.used_count_2m[block_2m].fetch_sub(freed_count as u16, Ordering::AcqRel);
-            let new_used = old_used.saturating_sub(freed_count as u16);
+            self.bitmap_2m_partial[bword].fetch_and(!bmask, Ordering::AcqRel);
+            self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
             
-            if new_used == 0 && old_used > 0 {
-                // Block is now fully free
-                let bword = block_2m / BITS_PER_WORD;
-                let bbit = block_2m % BITS_PER_WORD;
-                let bmask = 1u64 << bbit;
-                
-                // Clear partial bit
-                self.bitmap_2m_partial[bword].fetch_and(!bmask, Ordering::AcqRel);
-                self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
-                
-                // Check and clear demoted bit
-                let demoted = self.demoted_2m[bword].load(Ordering::Acquire);
-                if (demoted & bmask) != 0 {
-                    self.demoted_2m[bword].fetch_and(!bmask, Ordering::AcqRel);
-                    self.demoted_count_2m.fetch_sub(1, Ordering::Relaxed);
-                }
-                
-                // Set fully-free bit
-                self.bitmap_2m[bword].fetch_or(bmask, Ordering::AcqRel);
-                self.free_count_2m.fetch_add(1, Ordering::Relaxed);
-                
-                // Update 1GB
-                let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
-                if block_1g < self.used_count_1g.len() {
-                    let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
-                    if old_1g == 1 {
-                        let w1g = block_1g / BITS_PER_WORD;
-                        let b1g = block_1g % BITS_PER_WORD;
-                        self.bitmap_1g[w1g].fetch_or(1u64 << b1g, Ordering::AcqRel);
-                        self.free_count_1g.fetch_add(1, Ordering::Relaxed);
-                    }
+            let demoted = self.demoted_2m[bword].load(Ordering::Acquire);
+            if (demoted & bmask) != 0 {
+                self.demoted_2m[bword].fetch_and(!bmask, Ordering::AcqRel);
+                self.demoted_count_2m.fetch_sub(1, Ordering::Relaxed);
+            }
+            
+            self.bitmap_2m[bword].fetch_or(bmask, Ordering::AcqRel);
+            self.free_count_2m.fetch_add(1, Ordering::Relaxed);
+            
+            let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
+            if block_1g < self.used_count_1g.len() {
+                let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
+                if old_1g == 1 {
+                    let w1g = block_1g / BITS_PER_WORD;
+                    let b1g = block_1g % BITS_PER_WORD;
+                    self.bitmap_1g[w1g].fetch_or(1u64 << b1g, Ordering::AcqRel);
+                    self.free_count_1g.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
-        
-        Ok(freed_count)
     }
     
     // ========================================================================

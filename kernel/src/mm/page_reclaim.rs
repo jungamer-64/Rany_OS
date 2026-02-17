@@ -597,44 +597,9 @@ impl MglruList {
         // Gen2 → Gen3, Gen1 → Gen2, Gen0 → Gen1 の順で処理
         // (逆順で処理して世代間の移動を効率化)
         for gen_idx in (0..MGLRU_GENERATIONS - 1).rev() {
-            let mut current_gen = self.generations[gen_idx].lock();
-            let mut next_gen = self.generations[gen_idx + 1].lock();
-            let mut rejuvenate_list: FixedVec<MglruEntry, MAX_REJUVENATE_BATCH> = FixedVec::new();
-            
-            let mut i = 0;
-            while i < current_gen.len() {
-                if let Some(entry) = current_gen.get(i) {
-                    if entry.test_clear_referenced() {
-                        // 参照された → 若返り候補（後でGen0へ）
-                        if let Some(e) = current_gen.remove(i) {
-                            rejuvenate_list.push(e);
-                            rejuvenated += 1;
-                        }
-                        continue;
-                    }
-                }
-                // 次の世代へaging
-                if let Some(mut entry) = current_gen.remove(i) {
-                    entry.generation = entry.generation.age();
-                    next_gen.push_back(entry);
-                    aged += 1;
-                } else {
-                    i += 1;
-                }
-            }
-            
-            drop(current_gen);
-            drop(next_gen);
-            
-            // 若返りページをGen0に追加
-            if !rejuvenate_list.is_empty() {
-                let mut gen0 = self.generations[0].lock();
-                while let Some(mut e) = rejuvenate_list.pop() {
-                    e.generation = MglruGen::Gen0;
-                    e.referenced.store(false, Ordering::Relaxed);
-                    gen0.push_back(e);
-                }
-            }
+            let (gen_aged, gen_rejuvenated) = self.age_single_generation(gen_idx);
+            aged += gen_aged;
+            rejuvenated += gen_rejuvenated;
         }
         
         // サイズを再計算

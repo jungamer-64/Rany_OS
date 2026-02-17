@@ -452,15 +452,8 @@ impl KernelSymbolTable {
         }
     }
 
-    fn symbol_at(&self, offset: usize) -> Option<(&KernelSymbol, &str, usize)> {
-        let base = self.base.checked_add(offset)?;
-        let sym_end = base.checked_add(core::mem::size_of::<KernelSymbol>())?;
-        if sym_end > self.end {
-            return None;
-        }
-
-        let sym = unsafe { &*(base as *const KernelSymbol) };
-        let name_len = sym.name_len as usize;
+    /// シンボル名をアドレスから読み取る
+    fn read_symbol_name(&self, sym_end: usize, name_len: usize) -> Option<(&str, usize)> {
         let name_start = sym_end;
         let name_end = name_start.checked_add(name_len)?;
         if name_end > self.end {
@@ -475,6 +468,19 @@ impl KernelSymbolTable {
         if aligned_size == 0 {
             return None;
         }
+
+        Some((name, aligned_size))
+    }
+
+    fn symbol_at(&self, offset: usize) -> Option<(&KernelSymbol, &str, usize)> {
+        let base = self.base.checked_add(offset)?;
+        let sym_end = base.checked_add(core::mem::size_of::<KernelSymbol>())?;
+        if sym_end > self.end {
+            return None;
+        }
+
+        let sym = unsafe { &*(base as *const KernelSymbol) };
+        let (name, aligned_size) = self.read_symbol_name(sym_end, sym.name_len as usize)?;
 
         Some((sym, name, aligned_size))
     }
@@ -667,9 +673,29 @@ fn resolve_rbp(ctx: &registers::UnwindContext, cfa: u64, current_rbp: u64) -> u6
     }
 }
 
+/// DWARF命令を実行する共通ヘルパー
+fn execute_dwarf_instructions(
+    parser: &mut SafeEhFrameParser,
+    interpreter: &mut SafeCfiInterpreter,
+    data_alignment_factor: i64,
+    start: usize,
+    end: usize,
+    pc_limit: Option<u64>,
+) {
+    parser.reader.set_position(start);
+    while parser.reader.position() < end {
+        if let Some(target_pc) = pc_limit {
+            if interpreter.location() > target_pc {
+                break;
+            }
+        }
+        if let Some(instr) = parser.parse_instruction(data_alignment_factor) {
+            interpreter.execute(instr);
+        }
+    }
+}
+
 /// DWARFベースのアンワインドを実行
-///
-/// 型安全な `SafeEhFrameParser` を使用してスタックフレームを巻き戻す
 pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
     // .eh_frame データを取得
     let eh_frame = get_eh_frame_data().ok_or(UnwindError::NoEhFrame)?;
@@ -698,28 +724,17 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
     let mut interpreter = SafeCfiInterpreter::new(code_alignment_factor, data_alignment_factor);
 
     // CIEの初期命令を実行
-    let initial_end = initial_start + initial_len;
-    parser.reader.set_position(initial_start);
-
-    while parser.reader.position() < initial_end {
-        if let Some(instr) = parser.parse_instruction(data_alignment_factor) {
-            interpreter.execute(instr);
-        }
-    }
+    execute_dwarf_instructions(
+        &mut parser, &mut interpreter, data_alignment_factor,
+        initial_start, initial_start + initial_len, None,
+    );
 
     // FDEの命令を実行（PCまで）
-    parser.reader.set_position(fde.instructions_offset);
-    let fde_end = fde.instructions_offset + fde.instructions_len;
-
-    while parser.reader.position() < fde_end {
-        let pc_offset = (frame.instruction_pointer as u64).saturating_sub(fde.initial_location);
-        if interpreter.location() > pc_offset {
-            break;
-        }
-        if let Some(instr) = parser.parse_instruction(data_alignment_factor) {
-            interpreter.execute(instr);
-        }
-    }
+    let pc_offset = (frame.instruction_pointer as u64).saturating_sub(fde.initial_location);
+    execute_dwarf_instructions(
+        &mut parser, &mut interpreter, data_alignment_factor,
+        fde.instructions_offset, fde.instructions_offset + fde.instructions_len, Some(pc_offset),
+    );
 
     // CFAを計算
     let ctx = interpreter.context();
@@ -1003,20 +1018,35 @@ impl<'a> SafeEhFrameParser<'a> {
         Some(&self.reader.data()[start..end])
     }
 
-    /// エンコードされた値を読む
-    fn read_encoded_value(&mut self, encoding: u8) -> Option<u64> {
-        let format = encoding & 0x0F;
+    /// 符号なしフォーマットでエンコードされた値を読む
+    fn read_unsigned_format(&mut self, format: u8) -> Option<u64> {
         match format {
-            0x00 => Some(self.reader.read_u64().ok()?), // absptr
+            0x00 | 0x04 => Some(self.reader.read_u64().ok()?),
             0x01 => Some(self.reader.read_uleb128().ok()?),
             0x02 => Some(self.reader.read_u16().ok()? as u64),
             0x03 => Some(self.reader.read_u32().ok()? as u64),
-            0x04 => Some(self.reader.read_u64().ok()?),
+            _ => None,
+        }
+    }
+
+    /// 符号付きフォーマットでエンコードされた値を読む
+    fn read_signed_format(&mut self, format: u8) -> Option<u64> {
+        match format {
             0x09 => Some(self.reader.read_sleb128().ok()? as u64),
             0x0A => Some(self.reader.read_i16().ok()? as u64),
             0x0B => Some(self.reader.read_i32().ok()? as u64),
             0x0C => Some(self.reader.read_i64().ok()? as u64),
             _ => None,
+        }
+    }
+
+    /// エンコードされた値を読む
+    fn read_encoded_value(&mut self, encoding: u8) -> Option<u64> {
+        let format = encoding & 0x0F;
+        if format <= 0x04 {
+            self.read_unsigned_format(format)
+        } else {
+            self.read_signed_format(format)
         }
     }
 

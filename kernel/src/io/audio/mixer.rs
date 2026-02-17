@@ -771,6 +771,42 @@ impl Mixer {
         &self.output_buffer
     }
 
+    #[cfg(all(target_feature = "sse2", not(target_feature = "avx")))]
+    fn apply_master_volume_sse(buffer: &mut [f32], master_volume: f32) {
+        use core::arch::x86_64::*;
+        unsafe {
+            let master_vol = _mm_set1_ps(master_volume);
+            let chunks = buffer.len() / 4;
+            for i in 0..chunks {
+                let ptr = buffer.as_mut_ptr().add(i * 4);
+                let data = _mm_loadu_ps(ptr);
+                let result = _mm_mul_ps(data, master_vol);
+                _mm_storeu_ps(ptr, result);
+            }
+            for i in (chunks * 4)..buffer.len() {
+                buffer[i] *= master_volume;
+            }
+        }
+    }
+
+    #[cfg(target_feature = "avx")]
+    fn apply_master_volume_avx(buffer: &mut [f32], master_volume: f32) {
+        use core::arch::x86_64::*;
+        unsafe {
+            let master_vol = _mm256_set1_ps(master_volume);
+            let chunks = buffer.len() / 8;
+            for i in 0..chunks {
+                let ptr = buffer.as_mut_ptr().add(i * 8);
+                let data = _mm256_loadu_ps(ptr);
+                let result = _mm256_mul_ps(data, master_vol);
+                _mm256_storeu_ps(ptr, result);
+            }
+            for i in (chunks * 8)..buffer.len() {
+                buffer[i] *= master_volume;
+            }
+        }
+    }
+
     /// すべてのチャンネルをミックス (SSE2版)
     #[cfg(all(target_feature = "sse2", not(target_feature = "avx")))]
     pub fn mix(&mut self) -> &[f32] {
@@ -822,21 +858,7 @@ impl Mixer {
             }
         }
 
-        // Apply master volume using SIMD
-        // SAFETY: SSE2 is available.
-        unsafe {
-            let master_vol = _mm_set1_ps(self.config.master_volume);
-            let chunks = self.output_buffer.len() / 4;
-            for i in 0..chunks {
-                let ptr = self.output_buffer.as_mut_ptr().add(i * 4);
-                let data = _mm_loadu_ps(ptr);
-                let result = _mm_mul_ps(data, master_vol);
-                _mm_storeu_ps(ptr, result);
-            }
-            for i in (chunks * 4)..self.output_buffer.len() {
-                self.output_buffer[i] *= self.config.master_volume;
-            }
-        }
+        Self::apply_master_volume_sse(&mut self.output_buffer, self.config.master_volume);
 
         Self::apply_limiter_to_buffer(
             &mut self.limiter,
@@ -898,21 +920,7 @@ impl Mixer {
             }
         }
 
-        // Apply master volume using AVX
-        // SAFETY: AVX is available.
-        unsafe {
-            let master_vol = _mm256_set1_ps(self.config.master_volume);
-            let chunks = self.output_buffer.len() / 8;
-            for i in 0..chunks {
-                let ptr = self.output_buffer.as_mut_ptr().add(i * 8);
-                let data = _mm256_loadu_ps(ptr);
-                let result = _mm256_mul_ps(data, master_vol);
-                _mm256_storeu_ps(ptr, result);
-            }
-            for i in (chunks * 8)..self.output_buffer.len() {
-                self.output_buffer[i] *= self.config.master_volume;
-            }
-        }
+        Self::apply_master_volume_avx(&mut self.output_buffer, self.config.master_volume);
 
         Self::apply_limiter_simd_static(
             &mut self.limiter,

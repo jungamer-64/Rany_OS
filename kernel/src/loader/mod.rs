@@ -313,20 +313,16 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
     )
 }
 
-fn load_cell_with_flags(
+/// Validate unsafe flags and type ID dependencies
+fn validate_cell_requirements(
     name: &str,
     elf_data: &[u8],
     allow_unsafe: bool,
     contains_unsafe: bool,
-    signature_verified: bool,
-    required_caps: u64,
-) -> Result<CellId, LoadError> {
-    // unsafeが許可されていない場合のチェック
+) -> Result<(), LoadError> {
     if !allow_unsafe && contains_unsafe {
         return Err(LoadError::UnsafeNotAllowed);
     }
-
-    // 2. 【設計書 3.4】Type ID Check - ABI互換性の検証
     if let Some(deps) = type_id::extract_type_ids(elf_data) {
         if let Err(e) = type_id::verify_cell_dependencies(&deps) {
             log::info!(
@@ -342,6 +338,18 @@ fn load_cell_with_flags(
             deps.cell_version
         );
     }
+    Ok(())
+}
+
+fn load_cell_with_flags(
+    name: &str,
+    elf_data: &[u8],
+    allow_unsafe: bool,
+    contains_unsafe: bool,
+    signature_verified: bool,
+    required_caps: u64,
+) -> Result<CellId, LoadError> {
+    validate_cell_requirements(name, elf_data, allow_unsafe, contains_unsafe)?;
 
     // 3. ELFをパース
     let loader = elf::ElfLoader::new(elf_data)?;
@@ -463,6 +471,20 @@ pub fn load_driver_artifact(
     }
 }
 
+/// Record a driver handle in the cell's registry entry.
+fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
+    with_registry_mut(|r| {
+        if let Some(entry) = r.get_mut(cell_id) {
+            entry.registered_drivers.push(handle);
+            log::info!(
+                "[Loader] Driver registered: {:?} for cell {:?}\n",
+                handle,
+                cell_id.as_u64()
+            );
+        }
+    });
+}
+
 fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
     // Prefer DRIVER_EXPORTS when available
     let exports_addr = with_registry(|r| {
@@ -477,16 +499,7 @@ fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError>
         let exports_ptr = addr as *const DriverExportsV1;
         match register_exports_driver(exports_ptr) {
             Ok(handle) => {
-                with_registry_mut(|r| {
-                    if let Some(entry) = r.get_mut(cell_id) {
-                        entry.registered_drivers.push(handle);
-                        log::info!(
-                            "[Loader] Driver exports registered: {:?} for cell {:?}\n",
-                            handle,
-                            cell_id.as_u64()
-                        );
-                    }
-                });
+                record_driver_handle(cell_id, handle);
                 return Ok(handle);
             }
             Err(_) => {
@@ -529,17 +542,7 @@ fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError>
     // Register with driver registry
     match register_abi_driver(entry_fn) {
         Ok(handle) => {
-            // record driver handle in the cell entry so the cell cannot be unloaded
-            with_registry_mut(|r| {
-                if let Some(entry) = r.get_mut(cell_id) {
-                    entry.registered_drivers.push(handle);
-                    log::info!(
-                        "[Loader] Driver registered: {:?} for cell {:?}\n",
-                        handle,
-                        cell_id.as_u64()
-                    );
-                }
-            });
+            record_driver_handle(cell_id, handle);
             Ok(handle)
         }
         Err(_) => {

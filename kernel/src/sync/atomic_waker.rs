@@ -80,21 +80,22 @@ impl AtomicWaker {
     ///
     /// This method should not be called concurrently from multiple threads.
     /// Doing so may result in undefined behavior.
-    pub fn register(&self, waker: &Waker) {
-        // Try to transition from IDLE or WAITING to REGISTERING
+    /// Try to acquire the REGISTERING state, handling IDLE, WAITING,
+    /// REGISTERING (spin), and WAKING states. Returns `true` if
+    /// REGISTERING was acquired; `false` if a WAKING was consumed
+    /// (caller should return early after calling `waker.wake_by_ref()`).
+    fn try_acquire_registering(&self, waker: &Waker) -> bool {
         let mut current = self.state.load(Ordering::Acquire);
-
         loop {
             match current {
                 state::IDLE | state::WAITING => {
-                    // Try to claim the registration
                     match self.state.compare_exchange_weak(
                         current,
                         state::REGISTERING,
                         Ordering::AcqRel,
                         Ordering::Acquire,
                     ) {
-                        Ok(_) => break,
+                        Ok(_) => return true,
                         Err(actual) => {
                             current = actual;
                             continue;
@@ -102,14 +103,10 @@ impl AtomicWaker {
                     }
                 }
                 state::REGISTERING => {
-                    // Another register in progress (should not happen in single-task usage)
-                    // Spin wait
                     core::hint::spin_loop();
                     current = self.state.load(Ordering::Acquire);
                 }
                 state::WAKING => {
-                    // A wake was requested, consume it immediately
-                    // Try to transition to IDLE and then wake
                     if self
                         .state
                         .compare_exchange(
@@ -120,18 +117,23 @@ impl AtomicWaker {
                         )
                         .is_ok()
                     {
-                        // Wake immediately with provided waker
                         waker.wake_by_ref();
-                        return;
+                        return false;
                     }
                     current = self.state.load(Ordering::Acquire);
                 }
                 _ => {
-                    // Unknown state, reset to IDLE
                     self.state.store(state::IDLE, Ordering::Release);
                     current = state::IDLE;
                 }
             }
+        }
+    }
+
+    pub fn register(&self, waker: &Waker) {
+        // Try to transition from IDLE or WAITING to REGISTERING
+        if !self.try_acquire_registering(waker) {
+            return;
         }
 
         // We are now in REGISTERING state, safe to modify waker

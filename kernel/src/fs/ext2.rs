@@ -359,6 +359,33 @@ pub struct Ext2FileSystem {
 }
 
 impl Ext2FileSystem {
+    /// ブロックグループ記述子テーブルをバッファに読み込む
+    fn read_bgdt_buffer(
+        device: &Arc<dyn BlockDevice>,
+        block_size: u32,
+        bgdt_block: u32,
+        bgdt_blocks: usize,
+        bgdt_buffer: &mut [u8],
+    ) -> FsResult<()> {
+        let mut buffer = [0u8; BASE_BLOCK_SIZE];
+        let sectors_per_fs_block = block_size as u64 / BASE_BLOCK_SIZE as u64;
+        for i in 0..bgdt_blocks {
+            let start_sector =
+                bgdt_block as u64 * sectors_per_fs_block + i as u64 * sectors_per_fs_block;
+            for j in 0..sectors_per_fs_block as usize {
+                device
+                    .read_sync(start_sector + j as u64, &mut buffer)
+                    .map_err(|_| FsError::IoError)?;
+                let offset = i * block_size as usize + j * BASE_BLOCK_SIZE;
+                let end = offset + BASE_BLOCK_SIZE;
+                if end <= bgdt_buffer.len() {
+                    bgdt_buffer[offset..end].copy_from_slice(&buffer);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Ext2ファイルシステムをマウント
     pub fn mount(device: Arc<dyn BlockDevice>) -> FsResult<Arc<Self>> {
         // スーパーブロックを読み取り（オフセット1024バイト）
@@ -387,22 +414,7 @@ impl Ext2FileSystem {
         let mut block_groups = Vec::with_capacity(bg_count as usize);
         let mut bgdt_buffer = vec![0u8; bgdt_blocks * block_size as usize];
 
-        // 512バイトセクタ単位で読み取り
-        let sectors_per_fs_block = block_size as u64 / BASE_BLOCK_SIZE as u64;
-        for i in 0..bgdt_blocks {
-            let start_sector =
-                bgdt_block as u64 * sectors_per_fs_block + i as u64 * sectors_per_fs_block;
-            for j in 0..sectors_per_fs_block as usize {
-                device
-                    .read_sync(start_sector + j as u64, &mut buffer)
-                    .map_err(|_| FsError::IoError)?;
-                let offset = i * block_size as usize + j * BASE_BLOCK_SIZE;
-                let end = offset + BASE_BLOCK_SIZE;
-                if end <= bgdt_buffer.len() {
-                    bgdt_buffer[offset..end].copy_from_slice(&buffer);
-                }
-            }
-        }
+        Self::read_bgdt_buffer(&device, block_size, bgdt_block, bgdt_blocks, &mut bgdt_buffer)?;
 
         for i in 0..bg_count as usize {
             let offset = i * mem::size_of::<BlockGroupDescriptor>();
@@ -465,79 +477,46 @@ impl Ext2FileSystem {
         Ok(())
     }
 
+    fn read_block_ptr(&self, block_num: u32, index: u32) -> FsResult<u32> {
+        if block_num == 0 {
+            return Ok(0);
+        }
+        let mut buffer = vec![0u8; self.block_size as usize];
+        self.read_block(block_num, &mut buffer)?;
+        let ptr_offset = (index * 4) as usize;
+        Ok(u32::from_le_bytes([
+            buffer[ptr_offset],
+            buffer[ptr_offset + 1],
+            buffer[ptr_offset + 2],
+            buffer[ptr_offset + 3],
+        ]))
+    }
+
     /// データブロック番号を取得（論理→物理）
     fn get_block_num(&self, inode: &Ext2Inode, logical_block: u32) -> FsResult<u32> {
         let ptrs_per_block = self.block_size / 4;
 
         if logical_block < DIRECT_BLOCKS as u32 {
-            // 直接ブロック
             return Ok(inode.block[logical_block as usize]);
         }
 
         let logical_block = logical_block - DIRECT_BLOCKS as u32;
 
         if logical_block < ptrs_per_block {
-            // 間接ブロック
-            let indirect_block = inode.block[INDIRECT_BLOCK];
-            if indirect_block == 0 {
-                return Ok(0);
-            }
-
-            let mut buffer = vec![0u8; self.block_size as usize];
-            self.read_block(indirect_block, &mut buffer)?;
-
-            let ptr_offset = (logical_block * 4) as usize;
-            let block_num = u32::from_le_bytes([
-                buffer[ptr_offset],
-                buffer[ptr_offset + 1],
-                buffer[ptr_offset + 2],
-                buffer[ptr_offset + 3],
-            ]);
-
-            return Ok(block_num);
+            return self.read_block_ptr(inode.block[INDIRECT_BLOCK], logical_block);
         }
 
         let logical_block = logical_block - ptrs_per_block;
 
         if logical_block < ptrs_per_block * ptrs_per_block {
-            // 二重間接ブロック
             let double_indirect_block = inode.block[DOUBLE_INDIRECT_BLOCK];
-            if double_indirect_block == 0 {
-                return Ok(0);
-            }
-
-            let mut buffer = vec![0u8; self.block_size as usize];
-            self.read_block(double_indirect_block, &mut buffer)?;
-
             let first_index = logical_block / ptrs_per_block;
             let second_index = logical_block % ptrs_per_block;
 
-            let ptr_offset = (first_index * 4) as usize;
-            let indirect_block = u32::from_le_bytes([
-                buffer[ptr_offset],
-                buffer[ptr_offset + 1],
-                buffer[ptr_offset + 2],
-                buffer[ptr_offset + 3],
-            ]);
-
-            if indirect_block == 0 {
-                return Ok(0);
-            }
-
-            self.read_block(indirect_block, &mut buffer)?;
-
-            let ptr_offset = (second_index * 4) as usize;
-            let block_num = u32::from_le_bytes([
-                buffer[ptr_offset],
-                buffer[ptr_offset + 1],
-                buffer[ptr_offset + 2],
-                buffer[ptr_offset + 3],
-            ]);
-
-            return Ok(block_num);
+            let indirect_block = self.read_block_ptr(double_indirect_block, first_index)?;
+            return self.read_block_ptr(indirect_block, second_index);
         }
 
-        // 三重間接ブロック（非常に大きなファイル用）
         Err(FsError::NotSupported)
     }
 }

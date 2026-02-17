@@ -868,6 +868,25 @@ impl FastBitmapAllocator {
         Ok(())
     }
 
+    /// 指定範囲の連続ページを確保してマークする
+    fn try_mark_contiguous_range(&self, start_page: usize, pages_needed: usize) -> bool {
+        let base_bitmap = self.bitmap.base_bitmap();
+        if !base_bitmap.is_range_free(start_page, pages_needed) {
+            return false;
+        }
+        for i in 0..pages_needed {
+            if !base_bitmap.mark_allocated(start_page + i) {
+                // Rollback
+                for j in 0..i {
+                    base_bitmap.mark_free(start_page + j);
+                }
+                return false;
+            }
+            self.bitmap.on_page_allocated(start_page + i);
+        }
+        true
+    }
+
     /// Allocate contiguous pages
     ///
     /// Returns the start address if successful.
@@ -893,28 +912,10 @@ impl FastBitmapAllocator {
                 break;
             }
 
-            // Check if range is free
-            let base_bitmap = self.bitmap.base_bitmap();
-            if base_bitmap.is_range_free(start_page, pages_needed) {
-                // Allocate all pages
-                let mut success = true;
-                for i in 0..pages_needed {
-                    if !base_bitmap.mark_allocated(start_page + i) {
-                        success = false;
-                        // Rollback
-                        for j in 0..i {
-                            base_bitmap.mark_free(start_page + j);
-                        }
-                        break;
-                    }
-                    self.bitmap.on_page_allocated(start_page + i);
-                }
-
-                if success {
-                    let addr = self.base + (start_page as u64) * PAGE_SIZE_4K;
-                    self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-                    return Some(addr);
-                }
+            if self.try_mark_contiguous_range(start_page, pages_needed) {
+                let addr = self.base + (start_page as u64) * PAGE_SIZE_4K;
+                self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+                return Some(addr);
             }
 
             start_page += 1;

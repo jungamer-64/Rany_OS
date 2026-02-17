@@ -312,6 +312,35 @@ impl Ps2Controller {
         Some(device_type)
     }
 
+    /// ポートを有効化して設定バイトを更新する
+    fn enable_ports(&mut self, config: &mut u8, port1_ok: bool, port2_ok: bool) {
+        if port1_ok {
+            self.write_command(commands::ENABLE_PORT1);
+            *config |= 0x01; // ポート1割り込み有効
+            *config |= 0x40; // 変換有効 (Set 2 -> Set 1)
+        }
+
+        if port2_ok {
+            self.write_command(commands::ENABLE_PORT2);
+            *config |= 0x02; // ポート2割り込み有効
+        }
+
+        self.write_config(*config);
+    }
+
+    /// デバイスを初期化する
+    fn init_devices(&mut self, port1_ok: bool, port2_ok: bool) {
+        if port1_ok {
+            if self.init_keyboard() {
+                self.port1_type = Some(DeviceType::MfKeyboard);
+            }
+        }
+
+        if port2_ok {
+            self.port2_type = self.init_mouse();
+        }
+    }
+
     /// コントローラを初期化
     pub fn initialize(&mut self) -> bool {
         // 両ポートを無効化
@@ -355,30 +384,9 @@ impl Ps2Controller {
         let port1_ok = self.test_port1();
         let port2_ok = self.dual_channel && self.test_port2();
 
-        // ポートを有効化
-        if port1_ok {
-            self.write_command(commands::ENABLE_PORT1);
-            config |= 0x01; // ポート1割り込み有効
-            config |= 0x40; // 変換有効 (Set 2 -> Set 1)
-        }
-
-        if port2_ok {
-            self.write_command(commands::ENABLE_PORT2);
-            config |= 0x02; // ポート2割り込み有効
-        }
-
-        self.write_config(config);
-
-        // デバイスを初期化
-        if port1_ok {
-            if self.init_keyboard() {
-                self.port1_type = Some(DeviceType::MfKeyboard);
-            }
-        }
-
-        if port2_ok {
-            self.port2_type = self.init_mouse();
-        }
+        // ポートを有効化しデバイスを初期化
+        self.enable_ports(&mut config, port1_ok, port2_ok);
+        self.init_devices(port1_ok, port2_ok);
 
         true
     }

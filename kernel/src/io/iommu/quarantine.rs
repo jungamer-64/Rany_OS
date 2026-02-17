@@ -851,6 +851,19 @@ impl QuarantineQueue {
         }
     }
 
+    fn handle_late_commit(
+        late_free: Option<(u64, u64)>,
+        late_wake: Option<core::task::Waker>,
+        context: &dyn IommuHardwareContext,
+    ) {
+        if let Some((iova_to_free, size)) = late_free {
+            let _ = context.free_iova(iova_to_free, size);
+        }
+        if let Some(waker) = late_wake {
+            waker.wake();
+        }
+    }
+
     /// Commit an entry after PTE clear and RRef decomposition
     ///
     /// Must be called after reserve_slot() and reserve_invalidation() succeed,
@@ -918,13 +931,7 @@ impl QuarantineQueue {
             }
         } // unlock
 
-        // Round 6: Handle late commit IOVA free outside lock
-        if let Some((iova_to_free, size)) = late_free {
-            let _ = context.free_iova(iova_to_free, size);
-        }
-        if let Some(waker) = late_wake {
-            waker.wake();
-        }
+        Self::handle_late_commit(late_free, late_wake, context);
 
         Ok(())
     }

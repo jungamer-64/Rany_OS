@@ -744,6 +744,40 @@ mod test_impl {
         batch
     }
 
+    fn worker_thread_body(thread_inner: Arc<WorkerInner>) {
+        let mut reuse_buf = crate::mm::async_swapout::buffer_pool_get_4k();
+        loop {
+            let mut q_guard = thread_inner.queue.lock().unwrap();
+            while q_guard.is_empty() && !TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
+                q_guard = thread_inner.condvar.wait(q_guard).unwrap();
+            }
+
+            if q_guard.is_empty() && TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
+                break;
+            }
+
+            let batch = drain_batch(&mut q_guard);
+            drop(q_guard);
+
+            for entry in batch {
+                match entry.kind {
+                    SwapKind::File { ino, page_num } => {
+                        process_file_swap_entry(&entry, ino, page_num);
+                    }
+                    SwapKind::Anon => {
+                        process_anon_swap_entry(&entry, &mut reuse_buf);
+                    }
+                }
+                finalize_entry(&thread_inner, &entry);
+            }
+
+            refill_token_bucket();
+        }
+
+        crate::mm::async_swapout::buffer_pool_put_4k(reuse_buf);
+        TEST_WORKER_RUNNING.store(false, Ordering::Release);
+    }
+
     fn init_worker() -> Arc<WorkerInner> {
         WORKER.call_once(|| {
             Arc::new(WorkerInner {
@@ -759,37 +793,7 @@ mod test_impl {
         if TEST_WORKER_RUNNING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             let thread_inner = worker.clone();
             std::thread::spawn(move || {
-                let mut reuse_buf = crate::mm::async_swapout::buffer_pool_get_4k();
-                loop {
-                    let mut q_guard = thread_inner.queue.lock().unwrap();
-                    while q_guard.is_empty() && !TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
-                        q_guard = thread_inner.condvar.wait(q_guard).unwrap();
-                    }
-
-                    if q_guard.is_empty() && TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
-                        break;
-                    }
-
-                    let batch = drain_batch(&mut q_guard);
-                    drop(q_guard);
-
-                    for entry in batch {
-                        match entry.kind {
-                            SwapKind::File { ino, page_num } => {
-                                process_file_swap_entry(&entry, ino, page_num);
-                            }
-                            SwapKind::Anon => {
-                                process_anon_swap_entry(&entry, &mut reuse_buf);
-                            }
-                        }
-                        finalize_entry(&thread_inner, &entry);
-                    }
-
-                    refill_token_bucket();
-                }
-
-                crate::mm::async_swapout::buffer_pool_put_4k(reuse_buf);
-                TEST_WORKER_RUNNING.store(false, Ordering::Release);
+                worker_thread_body(thread_inner);
             });
         }
 
@@ -829,18 +833,7 @@ mod test_impl {
 
             // Consume a token for anon entries
             if let SwapKind::Anon = entry.kind {
-                let mut cur = TEST_TOKENS.load(Ordering::Acquire);
-                loop {
-                    if cur == 0 {
-                        // rollback pending and fail fast - use the already-held `pending` guard to avoid re-locking
-                        pending.remove(&frame.as_usize());
-                        return Err(SwapError::QueueFull);
-                    }
-                    match TEST_TOKENS.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire) {
-                        Ok(_) => break,
-                        Err(c) => cur = c,
-                    }
-                }
+                try_consume_anon_token(&frame, &mut pending)?;
             }
 
             if let SwapKind::File { .. } = entry.kind {

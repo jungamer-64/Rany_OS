@@ -396,6 +396,34 @@ impl DwarfPointerApplication {
     }
 }
 
+/// 符号なしDWARF値を読み込む
+fn read_dwarf_unsigned(
+    reader: &mut MemoryReader<'_>,
+    format: DwarfPointerEncoding,
+) -> Result<i64, UnwindError> {
+    match format {
+        DwarfPointerEncoding::Uleb128 => Ok(reader.read_uleb128()? as i64),
+        DwarfPointerEncoding::Udata2 => Ok(reader.read_u16()? as i64),
+        DwarfPointerEncoding::Udata4 => Ok(reader.read_u32()? as i64),
+        DwarfPointerEncoding::Udata8 => Ok(reader.read_u64()? as i64),
+        _ => unreachable!(),
+    }
+}
+
+/// 符号付きDWARF値を読み込む
+fn read_dwarf_signed(
+    reader: &mut MemoryReader<'_>,
+    format: DwarfPointerEncoding,
+) -> Result<i64, UnwindError> {
+    match format {
+        DwarfPointerEncoding::Sleb128 => Ok(reader.read_sleb128()?),
+        DwarfPointerEncoding::Sdata2 => Ok(reader.read_i16()? as i64),
+        DwarfPointerEncoding::Sdata4 => Ok(reader.read_i32()? as i64),
+        DwarfPointerEncoding::Sdata8 => Ok(reader.read_i64()?),
+        _ => unreachable!(),
+    }
+}
+
 /// DWARFフォーマットに従い生の値を読み込む
 fn read_dwarf_value(
     reader: &mut MemoryReader<'_>,
@@ -404,14 +432,14 @@ fn read_dwarf_value(
     match format {
         DwarfPointerEncoding::Omit => Ok(0),
         DwarfPointerEncoding::Absptr => read_dwarf_absptr(reader),
-        DwarfPointerEncoding::Uleb128 => Ok(reader.read_uleb128()? as i64),
-        DwarfPointerEncoding::Udata2 => Ok(reader.read_u16()? as i64),
-        DwarfPointerEncoding::Udata4 => Ok(reader.read_u32()? as i64),
-        DwarfPointerEncoding::Udata8 => Ok(reader.read_u64()? as i64),
-        DwarfPointerEncoding::Sleb128 => Ok(reader.read_sleb128()?),
-        DwarfPointerEncoding::Sdata2 => Ok(reader.read_i16()? as i64),
-        DwarfPointerEncoding::Sdata4 => Ok(reader.read_i32()? as i64),
-        DwarfPointerEncoding::Sdata8 => Ok(reader.read_i64()?),
+        DwarfPointerEncoding::Uleb128
+        | DwarfPointerEncoding::Udata2
+        | DwarfPointerEncoding::Udata4
+        | DwarfPointerEncoding::Udata8 => read_dwarf_unsigned(reader, format),
+        DwarfPointerEncoding::Sleb128
+        | DwarfPointerEncoding::Sdata2
+        | DwarfPointerEncoding::Sdata4
+        | DwarfPointerEncoding::Sdata8 => read_dwarf_signed(reader, format),
     }
 }
 

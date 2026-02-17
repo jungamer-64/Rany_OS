@@ -445,6 +445,27 @@ pub extern "x86-interrupt" fn page_fault_handler(
     handle_page_fault(error_code.bits());
 }
 
+/// 権限チェックを実行し、拒否された場合は結果を返す
+fn check_vma_permission(
+    error: PageFaultErrorCode,
+    vma: &VmArea,
+    fault_addr: VirtAddr,
+) -> Option<FaultResult> {
+    if error.is_write() && !vma.is_writable() {
+        if vma.flags & VmaFlags::CopyOnWrite as u32 != 0 {
+            return Some(handle_cow_fault(fault_addr, error));
+        }
+        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        return Some(FaultResult::PermissionDenied);
+    }
+
+    if error.is_instruction_fetch() && !vma.is_executable() {
+        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        return Some(FaultResult::PermissionDenied);
+    }
+    None
+}
+
 /// VMAに対するフォルト処理
 #[allow(dead_code)]
 fn handle_vma_fault(
@@ -453,18 +474,8 @@ fn handle_vma_fault(
     vma: &VmArea,
 ) -> FaultResult {
     // 権限チェック
-    if error.is_write() && !vma.is_writable() {
-        // CoWフラグがある場合はCoW処理
-        if vma.flags & VmaFlags::CopyOnWrite as u32 != 0 {
-            return handle_cow_fault(fault_addr, error);
-        }
-        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
-        return FaultResult::PermissionDenied;
-    }
-    
-    if error.is_instruction_fetch() && !vma.is_executable() {
-        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
-        return FaultResult::PermissionDenied;
+    if let Some(result) = check_vma_permission(error, vma, fault_addr) {
+        return result;
     }
     
     // Present bit なし = Demand Paging

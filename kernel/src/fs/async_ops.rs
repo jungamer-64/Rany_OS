@@ -693,6 +693,26 @@ fn sg_total_bytes(list: &TypedSgList<CpuOwned>) -> FsResult<usize> {
         })
 }
 
+/// SG DMAブロックパラメータを検証
+fn validate_sg_block_params(
+    total_bytes: usize,
+    block_size: u32,
+    block_offset: u64,
+    block_count: u64,
+) -> FsResult<()> {
+    if total_bytes % block_size as usize != 0 {
+        return Err(FsError::InvalidArgument);
+    }
+    let blocks_u64 = total_bytes as u64 / block_size as u64;
+    if blocks_u64 > u16::MAX as u64 {
+        return Err(FsError::InvalidArgument);
+    }
+    if blocks_u64 > block_count - block_offset {
+        return Err(FsError::InvalidArgument);
+    }
+    Ok(())
+}
+
 fn sg_copy_to_vec(list: &TypedSgList<CpuOwned>) -> FsResult<Vec<u8>> {
     let total = sg_total_bytes(list)?;
     let mut buf = vec![0u8; total];
@@ -1210,6 +1230,35 @@ impl<'a> AsyncReadFuture<'a> {
     }
 }
 
+impl<'a> AsyncReadFuture<'a> {
+    fn try_start_read(&mut self, cx: &mut Context<'_>) -> Option<Poll<FsResult<usize>>> {
+        let position = self.file.position.load(Ordering::Relaxed);
+        let len = self.buf.len();
+        let size = self.file.attr.lock().size;
+        if position >= size {
+            return Some(Poll::Ready(Ok(0)));
+        }
+        let available = (size - position) as usize;
+        let to_read = len.min(available);
+        if to_read == 0 {
+            return Some(Poll::Ready(Ok(0)));
+        }
+        if self.file.direct_io {
+            return Some(self.start_direct_io(cx, position, to_read));
+        }
+        let file_id = self.file.id;
+        match read_via_page_cache(file_id, position, &mut self.buf[..to_read], size) {
+            Ok(read_len) => {
+                self.file
+                    .position
+                    .fetch_add(read_len as u64, Ordering::Relaxed);
+                Some(Poll::Ready(Ok(read_len)))
+            }
+            Err(e) => Some(Poll::Ready(Err(e))),
+        }
+    }
+}
+
 impl<'a> Future for AsyncReadFuture<'a> {
     type Output = FsResult<usize>;
 
@@ -1218,37 +1267,10 @@ impl<'a> Future for AsyncReadFuture<'a> {
             return Poll::Ready(Err(FsError::PermissionDenied));
         }
 
-        // 最初のポーリングでリクエストを発行
         if !self.started {
             self.started = true;
-
-            let position = self.file.position.load(Ordering::Relaxed);
-            let len = self.buf.len();
-
-            let size = self.file.attr.lock().size;
-            if position >= size {
-                return Poll::Ready(Ok(0));
-            }
-
-            let available = (size - position) as usize;
-            let to_read = len.min(available);
-            if to_read == 0 {
-                return Poll::Ready(Ok(0));
-            }
-
-            if self.file.direct_io {
-                return self.start_direct_io(cx, position, to_read);
-            }
-
-            let file_id = self.file.id;
-            match read_via_page_cache(file_id, position, &mut self.buf[..to_read], size) {
-                Ok(read_len) => {
-                    self.file
-                        .position
-                        .fetch_add(read_len as u64, Ordering::Relaxed);
-                    return Poll::Ready(Ok(read_len));
-                }
-                Err(e) => return Poll::Ready(Err(e)),
+            if let Some(result) = self.try_start_read(cx) {
+                return result;
             }
         }
 
@@ -1757,26 +1779,46 @@ impl DirectBlockHandle {
         }
     }
 
-    /// ブロック読み取り
-    pub async fn read_blocks(&self, block_offset: u64, buf: &mut [u8]) -> FsResult<usize> {
+    /// Validate read_blocks parameters and return block count
+    fn validate_read_block_params(&self, block_offset: u64, buf_len: usize) -> FsResult<usize> {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }
-
-        if buf.len() % self.block_size as usize != 0 {
+        if buf_len % self.block_size as usize != 0 {
             return Err(FsError::InvalidArgument);
         }
-
-        let blocks_to_read = buf.len() / self.block_size as usize;
+        let blocks_to_read = buf_len / self.block_size as usize;
         let blocks_available = (self.block_count - block_offset) as usize;
         let blocks = blocks_to_read.min(blocks_available);
-
-        if blocks == 0 {
-            return Ok(0);
-        }
-
         if blocks > u16::MAX as usize {
             return Err(FsError::InvalidArgument);
+        }
+        Ok(blocks)
+    }
+
+    /// Complete a DMA read by copying data from the slot to the user buffer
+    fn complete_dma_read(slot: &Arc<Mutex<Option<(TypedDmaSlice<CpuOwned>, usize)>>>, dma_len: usize, buf: &mut [u8]) -> FsResult<usize> {
+        let mut guard = slot.lock();
+        let (data, bytes_received) = guard.take().ok_or(FsError::IoError)?;
+        let bytes_received: usize = bytes_received;
+        let copy_len = bytes_received.min(dma_len).min(buf.len());
+        if copy_len > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (data as TypedDmaSlice<CpuOwned>).as_slice().as_ptr(),
+                    buf.as_mut_ptr(),
+                    copy_len,
+                );
+            }
+        }
+        Ok(copy_len)
+    }
+
+    /// ブロック読み取り
+    pub async fn read_blocks(&self, block_offset: u64, buf: &mut [u8]) -> FsResult<usize> {
+        let blocks = self.validate_read_block_params(block_offset, buf.len())?;
+        if blocks == 0 {
+            return Ok(0);
         }
 
         let dma_len = blocks * self.block_size as usize;
@@ -1814,22 +1856,7 @@ impl DirectBlockHandle {
         let result = future.await;
         cancel_guard.disarm();
         match result {
-            Ok(_reported) => {
-                let mut guard = slot.lock();
-                let (data, bytes_received) = guard.take().ok_or(FsError::IoError)?;
-                let bytes_received: usize = bytes_received;
-                let copy_len = bytes_received.min(dma_len).min(buf.len());
-                if copy_len > 0 {
-                    unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        (data as TypedDmaSlice<CpuOwned>).as_slice().as_ptr(),
-                        buf.as_mut_ptr(),
-                        copy_len,
-                    );
-                    }
-                }
-                Ok(copy_len)
-            }
+            Ok(_reported) => Self::complete_dma_read(&slot, dma_len, buf),
             Err(_) => Err(FsError::IoError),
         }
     }
@@ -1907,22 +1934,7 @@ impl DirectBlockHandle {
         if total_bytes == 0 {
             return Ok(list);
         }
-        if total_bytes % self.block_size as usize != 0 {
-            return Err(FsError::InvalidArgument);
-        }
-
-        let blocks_u64 = total_bytes as u64 / self.block_size as u64;
-        if blocks_u64 > u16::MAX as u64 {
-            return Err(FsError::InvalidArgument);
-        }
-        if blocks_u64 > self.block_count - block_offset {
-            return Err(FsError::InvalidArgument);
-        }
-
-        // SGL path removed, falling back to bounce buffer
-        if false {
-             // ... SGL logic removed ...
-        }
+        validate_sg_block_params(total_bytes, self.block_size, block_offset, self.block_count)?;
 
         let mut bounce = vec![0u8; total_bytes];
         let read_len = self.read_blocks(block_offset, &mut bounce).await?;
@@ -1997,22 +2009,7 @@ impl DirectBlockHandle {
         if total_bytes == 0 {
             return Ok(list);
         }
-        if total_bytes % self.block_size as usize != 0 {
-            return Err(FsError::InvalidArgument);
-        }
-
-        let blocks_u64 = total_bytes as u64 / self.block_size as u64;
-        if blocks_u64 > u16::MAX as u64 {
-            return Err(FsError::InvalidArgument);
-        }
-        if blocks_u64 > self.block_count - block_offset {
-            return Err(FsError::InvalidArgument);
-        }
-
-        // SGL path removed, falling back to bounce buffer
-        if false {
-            // ... SGL logic removed ...
-        }
+        validate_sg_block_params(total_bytes, self.block_size, block_offset, self.block_count)?;
 
         let bounce = sg_copy_to_vec(&list)?;
         let _ = self.write_blocks(block_offset, &bounce).await?;
@@ -2024,24 +2021,30 @@ impl DirectBlockHandle {
         async_io_scheduler().submit_sg_request(*self, request)
     }
 
-    async fn execute_sg_request(&self, request: &SgIoRequest) -> FsResult<usize> {
+    /// SG I/Oリクエストのパラメータを検証する
+    fn validate_sg_request(&self, request: &SgIoRequest) -> Result<(usize, u64), FsError> {
         if request.entries.is_empty() {
-            return Ok(0);
+            return Ok((0, 0));
         }
-
         if request.offset % (self.block_size as u64) != 0 {
             return Err(FsError::InvalidArgument);
         }
-
         let total_bytes = request.total_bytes();
         if total_bytes == 0 {
-            return Ok(0);
+            return Ok((0, 0));
         }
         if total_bytes % self.block_size as usize != 0 {
             return Err(FsError::InvalidArgument);
         }
+        Ok((total_bytes, request.offset / (self.block_size as u64)))
+    }
 
-        let block_offset = request.offset / (self.block_size as u64);
+    async fn execute_sg_request(&self, request: &SgIoRequest) -> FsResult<usize> {
+        let (total_bytes, block_offset) = self.validate_sg_request(request)?;
+        if total_bytes == 0 {
+            return Ok(0);
+        }
+
         let list = sg_request_to_dma_list(request)?;
 
         if request.is_read {
@@ -2054,33 +2057,37 @@ impl DirectBlockHandle {
         Ok(total_bytes)
     }
 
+    /// Validate write_blocks_dma parameters and return block count
+    fn validate_write_block_params(&self, block_offset: u64, buf_size: usize) -> FsResult<usize> {
+        if block_offset >= self.block_count {
+            return Err(FsError::InvalidArgument);
+        }
+        if buf_size % self.block_size as usize != 0 {
+            return Err(FsError::InvalidArgument);
+        }
+        let blocks = buf_size / self.block_size as usize;
+        if blocks > u16::MAX as usize {
+            return Err(FsError::InvalidArgument);
+        }
+        if blocks as u64 > self.block_count - block_offset {
+            return Err(FsError::InvalidArgument);
+        }
+        Ok(blocks)
+    }
+
     /// DMAバッファからのブロック書き込み
     pub async fn write_blocks_dma(
         &self,
         block_offset: u64,
         buffer: DmaBuffer,
     ) -> FsResult<DmaBuffer> {
-        if block_offset >= self.block_count {
-            return Err(FsError::InvalidArgument);
-        }
-
         if buffer.size() == 0 {
             return Ok(buffer);
         }
 
-        if buffer.size() % self.block_size as usize != 0 {
-            return Err(FsError::InvalidArgument);
-        }
-
-        let blocks = buffer.size() / self.block_size as usize;
+        let blocks = self.validate_write_block_params(block_offset, buffer.size())?;
         if blocks == 0 {
             return Ok(buffer);
-        }
-        if blocks > u16::MAX as usize {
-            return Err(FsError::InvalidArgument);
-        }
-        if blocks as u64 > self.block_count - block_offset {
-            return Err(FsError::InvalidArgument);
         }
 
         let (ctx, prp1, _prp2) = prepare_dma_from_kapi_buffer(&buffer)?;

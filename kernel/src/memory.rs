@@ -73,6 +73,23 @@ impl BuddyHeapAllocator {
         }
     }
 
+    /// 現在のアドレスに対するアラインメント対応ブロックオーダーを計算
+    fn find_aligned_order(current: usize, end: usize) -> Option<(usize, usize)> {
+        let remaining = end - current;
+        if remaining < Self::MIN_BLOCK_SIZE {
+            return None;
+        }
+        let mut order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
+        while order > 0 {
+            let block_size = Self::order_to_size(order);
+            if current % block_size == 0 && current + block_size <= end {
+                break;
+            }
+            order -= 1;
+        }
+        Some((order, Self::order_to_size(order)))
+    }
+
     /// ヒープを初期化
     unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
         crate::io::log::early_print("[BUD] init\n");
@@ -93,27 +110,12 @@ impl BuddyHeapAllocator {
         let end = heap_start + heap_size;
 
         while current < end {
-            // 現在アドレスから、アラインメント条件を満たす最大のオーダーを見つける
-            let remaining = end - current;
-            if remaining < Self::MIN_BLOCK_SIZE {
-                break;
-            }
-
-            // このアドレスで使用可能な最大オーダーを計算
-            // アドレスは block_size でアラインされている必要がある
-            let mut order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
-
-            // アラインメント条件を満たすまでオーダーを下げる
-            while order > 0 {
-                let block_size = Self::order_to_size(order);
-                if current % block_size == 0 && current + block_size <= end {
-                    break;
-                }
-                order -= 1;
-            }
+            let (order, block_size) = match Self::find_aligned_order(current, end) {
+                Some(v) => v,
+                None => break,
+            };
 
             // Order 0のアラインメントチェック（MIN_BLOCK_SIZE=64バイト）
-            let block_size = Self::order_to_size(order);
             if current % block_size != 0 {
                 // アラインメントを満たすまで進める
                 let aligned = (current + block_size - 1) & !(block_size - 1);
@@ -411,73 +413,13 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 
                 let ptr = guard.allocate(layout);
                 if ptr.is_null() {
-                    // Manual integer printing (no heap)
-                    crate::io::log::early_print("[ALLOC] FAILED size=");
-                    let mut s = size;
-                    let mut buf = [0u8; 20];
-                    let mut i = 19;
-                    if s == 0 {
-                        buf[i] = b'0';
-                        i -= 1;
-                    } else {
-                        while s > 0 {
-                            buf[i] = b'0' + (s % 10) as u8;
-                            s /= 10;
-                            i -= 1;
-                        }
-                    }
-                    for k in (i+1)..20 {
-                        crate::io::log::early_print_char(buf[k]);
-                    }
-
-                    // Print alignment and guard state
-                    crate::io::log::early_print(" align=");
-                    crate::io::log::early_print_dec(layout.align() as u64);
-                    crate::io::log::early_print("\n");
-
-                    crate::io::log::early_print("[ALLOC] guard.initialized=");
-                    crate::io::log::early_print_dec(if guard.initialized { 1 } else { 0 });
-                    crate::io::log::early_print("\n");
-
-                    // Dump free list heads for diagnosis
-                    crate::io::log::early_print("[ALLOC] Dumping free_lists:\n");
-                    for i in 0..=BuddyHeapAllocator::MAX_ORDER {
-                        crate::io::log::early_print("[ALLOC] free_lists[");
-                        crate::io::log::early_print_dec(i as u64);
-                        crate::io::log::early_print("] = ");
-                        let head = guard.free_lists[i].unwrap_or(0);
-                        crate::io::log::early_print_hex(head as u64);
-                        crate::io::log::early_print("\n");
-                    }
-
-                    // Capture and print a backtrace to locate the allocation origin
-                    crate::io::log::early_print("[ALLOC] Backtrace:\n");
-                    let bt = crate::unwind::Backtrace::capture();
-                    for entry in bt.iter() {
-                        crate::io::log::early_print("[ALLOC][BT] IP=");
-                        crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
-                        crate::io::log::early_print("\n");
-                    }
+                    Self::dump_alloc_failure(&*guard, layout, size);
                 }
                 ptr
             }
             Err(poisoned) => {
                 crate::io::log::early_print("[ALLOC] Poisoned lock\n");
-
-                // Try to dump buddy allocator state for diagnosis (no heap allocations here).
-                crate::io::log::early_print("[ALLOC] Dumping buddy free_lists (poisoned)\n");
-                // poisoned.get_ref() returns &PoisonLockGuard which Deref-> &BuddyHeapAllocator
-                let guard_ref = poisoned.get_ref();
-                let alloc_ref: &BuddyHeapAllocator = &*guard_ref;
-                for i in 0..=BuddyHeapAllocator::MAX_ORDER {
-                    crate::io::log::early_print("[ALLOC] free_lists[");
-                    crate::io::log::early_print_dec(i as u64);
-                    crate::io::log::early_print("] = ");
-                    let head = alloc_ref.free_lists[i].unwrap_or(0);
-                    crate::io::log::early_print_hex(head as u64);
-                    crate::io::log::early_print("\n");
-                }
-
+                Self::dump_poisoned_state(poisoned.get_ref());
                 null_mut()
             }
         }
@@ -486,6 +428,67 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if let Ok(mut guard) = self.0.lock() {
             guard.deallocate(ptr, layout);
+        }
+    }
+}
+
+impl LockedHeap {
+    fn dump_alloc_failure(guard: &BuddyHeapAllocator, layout: Layout, size: usize) {
+        crate::io::log::early_print("[ALLOC] FAILED size=");
+        let mut s = size;
+        let mut buf = [0u8; 20];
+        let mut i = 19;
+        if s == 0 {
+            buf[i] = b'0';
+            i -= 1;
+        } else {
+            while s > 0 {
+                buf[i] = b'0' + (s % 10) as u8;
+                s /= 10;
+                i -= 1;
+            }
+        }
+        for k in (i+1)..20 {
+            crate::io::log::early_print_char(buf[k]);
+        }
+
+        crate::io::log::early_print(" align=");
+        crate::io::log::early_print_dec(layout.align() as u64);
+        crate::io::log::early_print("\n");
+
+        crate::io::log::early_print("[ALLOC] guard.initialized=");
+        crate::io::log::early_print_dec(if guard.initialized { 1 } else { 0 });
+        crate::io::log::early_print("\n");
+
+        crate::io::log::early_print("[ALLOC] Dumping free_lists:\n");
+        for i in 0..=BuddyHeapAllocator::MAX_ORDER {
+            crate::io::log::early_print("[ALLOC] free_lists[");
+            crate::io::log::early_print_dec(i as u64);
+            crate::io::log::early_print("] = ");
+            let head = guard.free_lists[i].unwrap_or(0);
+            crate::io::log::early_print_hex(head as u64);
+            crate::io::log::early_print("\n");
+        }
+
+        crate::io::log::early_print("[ALLOC] Backtrace:\n");
+        let bt = crate::unwind::Backtrace::capture();
+        for entry in bt.iter() {
+            crate::io::log::early_print("[ALLOC][BT] IP=");
+            crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+            crate::io::log::early_print("\n");
+        }
+    }
+
+    fn dump_poisoned_state(guard_ref: &crate::sync::PoisonLockGuard<BuddyHeapAllocator>) {
+        crate::io::log::early_print("[ALLOC] Dumping buddy free_lists (poisoned)\n");
+        let alloc_ref: &BuddyHeapAllocator = &*guard_ref;
+        for i in 0..=BuddyHeapAllocator::MAX_ORDER {
+            crate::io::log::early_print("[ALLOC] free_lists[");
+            crate::io::log::early_print_dec(i as u64);
+            crate::io::log::early_print("] = ");
+            let head = alloc_ref.free_lists[i].unwrap_or(0);
+            crate::io::log::early_print_hex(head as u64);
+            crate::io::log::early_print("\n");
         }
     }
 }

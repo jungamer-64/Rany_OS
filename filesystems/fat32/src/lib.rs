@@ -5179,6 +5179,42 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         }
     }
 
+    /// ディレクトリエントリを分類しSFN名を確認する
+    fn match_sfn_entry(
+        kind: DirectoryEntryKind,
+        lfn_parts: &mut Vec<(u8, String, u8)>,
+        name_to_find: &str,
+        cluster: Cluster,
+        offset: usize,
+    ) -> FsResult<Option<Option<(Cluster, usize)>>> {
+        match kind {
+            DirectoryEntryKind::End => Ok(Some(None)),
+            DirectoryEntryKind::Deleted => {
+                lfn_parts.clear();
+                Ok(None)
+            }
+            DirectoryEntryKind::LongName(lfn) => {
+                if lfn_parts.len() >= MAX_LFN_PARTS {
+                    return Err(FsError::FileSystemCorrupted);
+                }
+                lfn_parts.push((lfn.sequence(), lfn.get_name_part(), lfn.checksum()));
+                Ok(None)
+            }
+            DirectoryEntryKind::VolumeLabel => {
+                lfn_parts.clear();
+                Ok(None)
+            }
+            DirectoryEntryKind::Standard(raw) => {
+                let name = Self::resolve_entry_name(&raw, lfn_parts);
+                if name.eq_ignore_ascii_case(name_to_find) {
+                    Ok(Some(Some((cluster, offset))))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
     /// 指定された名前を持つSFNエントリの場所（クラスタとオフセット）を検索します。
     /// このメソッドはロングファイルネームを正しく処理します。
     fn find_sfn_location(&self, name_to_find: &str) -> FsResult<Option<(Cluster, usize)>> {
@@ -5202,29 +5238,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
                 let offset = i * DIR_ENTRY_SIZE;
                 let entry_bytes = &buffer[offset..offset + DIR_ENTRY_SIZE];
 
-                match DirectoryEntryKind::from(entry_bytes) {
-                    DirectoryEntryKind::End => return Ok(None),
-                    DirectoryEntryKind::Deleted => {
-                        lfn_parts.clear();
-                        continue;
-                    }
-                    DirectoryEntryKind::LongName(lfn) => {
-                        if lfn_parts.len() >= MAX_LFN_PARTS {
-                            return Err(FsError::FileSystemCorrupted);
-                        }
-                        lfn_parts.push((lfn.sequence(), lfn.get_name_part(), lfn.checksum()));
-                        continue;
-                    }
-                    DirectoryEntryKind::VolumeLabel => {
-                        lfn_parts.clear();
-                        continue;
-                    }
-                    DirectoryEntryKind::Standard(raw) => {
-                        let name = Self::resolve_entry_name(&raw, &mut lfn_parts);
-                        if name.eq_ignore_ascii_case(name_to_find) {
-                            return Ok(Some((cluster, offset)));
-                        }
-                    }
+                let kind = DirectoryEntryKind::from(entry_bytes);
+                match Self::match_sfn_entry(kind, &mut lfn_parts, name_to_find, cluster, offset)? {
+                    Some(result) => return Ok(result),
+                    None => continue,
                 }
             }
         }
@@ -6364,6 +6381,20 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok(entries)
     }
 
+    /// LFNパーツのシーケンスを検証する
+    fn validate_lfn_sequence(lfn_parts: &[(u8, bool, String, u8)]) -> bool {
+        let n = lfn_parts.len() as u8;
+        let mut seen = HashSet::new();
+        for &(seq, _, _, _) in lfn_parts.iter() {
+            if seq == 0 || seq > n || !seen.insert(seq) {
+                return false;
+            }
+        }
+        lfn_parts
+            .iter()
+            .any(|&(seq, is_last, _, _)| seq == n && is_last)
+    }
+
     /// LFNパーツからファイル名を解決する。LFNが無効ならショートネームにフォールバック。
     fn resolve_lfn_name(
         lfn_parts: &mut Vec<(u8, bool, String, u8)>,
@@ -6382,21 +6413,8 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         }
 
         lfn_parts.sort_by_key(|&(seq, _, _, _)| seq);
-        let n = lfn_parts.len() as u8;
-        let mut seen = HashSet::new();
-        let mut valid_seq = true;
-        for &(seq, _, _, _) in lfn_parts.iter() {
-            if seq == 0 || seq > n || !seen.insert(seq) {
-                valid_seq = false;
-                break;
-            }
-        }
 
-        if !valid_seq
-            || !lfn_parts
-                .iter()
-                .any(|&(seq, is_last, _, _)| seq == n && is_last)
-        {
+        if !Self::validate_lfn_sequence(lfn_parts) {
             lfn_parts.clear();
             return raw.short_name();
         }
@@ -7027,6 +7045,38 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok(current)
     }
 
+    /// 単一のゼロコピーセグメントを構築する
+    async fn build_zero_copy_segment(
+        &self,
+        current_cluster: Cluster,
+        current_offset: usize,
+        remaining: usize,
+    ) -> FsResult<Option<(ZeroCopySegment<B>, usize)>> {
+        let (_last, run_count) = self
+            .find_contiguous_run_async(current_cluster, remaining + current_offset)
+            .await?;
+
+        let buffer = self
+            .fs
+            .read_contiguous_clusters_zero_copy(current_cluster, run_count)
+            .await?;
+
+        let available = buffer.len().saturating_sub(current_offset);
+        let take = remaining.min(available);
+        if take == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some((
+            ZeroCopySegment {
+                buffer,
+                offset: current_offset,
+                len: take,
+            },
+            take,
+        )))
+    }
+
     /// ゼロコピーセグメントを収集する（非同期）
     async fn collect_zero_copy_segments_async(
         &self,
@@ -7040,26 +7090,17 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let mut segments: Vec<ZeroCopySegment<B>> = Vec::new();
 
         while remaining > 0 && current_cluster.is_valid() {
-            let (last, run_count) = self
-                .find_contiguous_run_async(current_cluster, remaining + current_offset)
+            let seg = self
+                .build_zero_copy_segment(current_cluster, current_offset, remaining)
                 .await?;
 
-            let buffer = self
-                .fs
-                .read_contiguous_clusters_zero_copy(current_cluster, run_count)
-                .await?;
-
-            let available = buffer.len().saturating_sub(current_offset);
-            let take = remaining.min(available);
-            if take == 0 {
-                break;
-            }
-
-            segments.push(ZeroCopySegment {
-                buffer,
-                offset: current_offset,
-                len: take,
-            });
+            let take = match seg {
+                Some((segment, taken)) => {
+                    segments.push(segment);
+                    taken
+                }
+                None => break,
+            };
 
             remaining -= take;
             current_offset = 0;
@@ -7068,6 +7109,9 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
                 break;
             }
 
+            let (last, _) = self
+                .find_contiguous_run_async(current_cluster, take + current_offset)
+                .await?;
             let next = self.fs.read_fat_entry_async(last).await?;
             if next.is_eof() || !next.is_valid() {
                 break;
@@ -7100,36 +7144,52 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok((last, run_count))
     }
 
+    /// ゼロコピー書き込みパラメータを検証
+    fn validate_zero_copy_params(&self, offset: u64, buf_len: usize) -> FsResult<()> {
+        if self.file_type != FileType::File {
+            return Err(FsError::IsADirectory);
+        }
+        let cluster_size = self.fs.cluster_size() as u64;
+        if offset % cluster_size != 0 || buf_len as u64 % cluster_size != 0 {
+            return Err(FsError::NotSupported);
+        }
+        Ok(())
+    }
+
+    /// ゼロコピー書き込み用の開始クラスタを解決
+    async fn resolve_zero_copy_start_cluster(
+        &self,
+        offset: u64,
+        needed_clusters: usize,
+    ) -> FsResult<Cluster> {
+        let current_cluster = { self.inner.lock_async().await.first_cluster };
+        if !current_cluster.is_valid() {
+            return Err(FsError::NotSupported);
+        }
+        let cluster_size = self.fs.cluster_size() as u64;
+        let start_cluster_idx = (offset / cluster_size) as usize;
+        let target = self
+            .seek_fat_chain_checked_async(current_cluster, start_cluster_idx)
+            .await?
+            .ok_or(FsError::NotSupported)?;
+        self.verify_contiguous_chain_async(target, needed_clusters)
+            .await?;
+        Ok(target)
+    }
+
     /// ゼロコピーでファイルを書き込み（所有権移動、Async）
     ///
     /// 現状は「クラスタ境界に整列した連続領域」のみ対応。
     pub async fn write_zero_copy_async(&self, offset: u64, buffer: B) -> FsResult<B> {
-        if self.file_type != FileType::File {
-            return Err(FsError::IsADirectory);
-        }
+        self.validate_zero_copy_params(offset, buffer.len())?;
 
         if buffer.len() == 0 {
             return Ok(buffer);
         }
 
-        let cluster_size = self.fs.cluster_size() as u64;
-        if offset % cluster_size != 0 || buffer.len() as u64 % cluster_size != 0 {
-            return Err(FsError::NotSupported);
-        }
-
-        let current_cluster = { self.inner.lock_async().await.first_cluster };
-        if !current_cluster.is_valid() {
-            return Err(FsError::NotSupported);
-        }
-
-        let start_cluster_idx = (offset / cluster_size) as usize;
-        let current_cluster = self
-            .seek_fat_chain_checked_async(current_cluster, start_cluster_idx)
-            .await?
-            .ok_or(FsError::NotSupported)?;
-
         let needed_clusters = buffer.len() / self.fs.cluster_size();
-        self.verify_contiguous_chain_async(current_cluster, needed_clusters)
+        let current_cluster = self
+            .resolve_zero_copy_start_cluster(offset, needed_clusters)
             .await?;
 
         let buffer = self
@@ -8121,6 +8181,40 @@ fn write_fat32_tables(
     Ok(())
 }
 
+/// FAT32フォーマット構造体をデバイスに書き込む
+fn write_format_structures(
+    device: &Arc<dyn BlockDevice>,
+    boot_sector: &[u8],
+    free_clusters: u32,
+    reserved_sectors: u16,
+    fat_size: u32,
+    num_fats: u8,
+    label: &[u8; 11],
+) -> FsResult<()> {
+    device.write_sync(0, boot_sector)?;
+    device.write_sync(6, boot_sector)?; // バックアップブートセクタ
+
+    // FSInfo セクタ
+    let fsinfo = FsInfo::new(free_clusters, 3);
+    device.write_sync(1, &fsinfo.to_bytes())?;
+    device.write_sync(7, &fsinfo.to_bytes())?;
+
+    // FAT 初期化
+    let fat_start = reserved_sectors as u64;
+    write_fat32_tables(device, fat_start, fat_size)?;
+
+    // ルートディレクトリ初期化
+    let data_start = reserved_sectors as u32 + num_fats as u32 * fat_size;
+    let mut root_dir = [0u8; 512];
+    root_dir[0..11].copy_from_slice(label);
+    root_dir[11] = 0x08;
+    device.write_sync(data_start as u64, &root_dir)?;
+
+    // フラッシュ
+    device.flush()?;
+    Ok(())
+}
+
 impl Fat32FileSystem<DefaultZeroCopyBuffer> {
     /// ブロックデバイスをFAT32でフォーマット
     ///
@@ -8169,28 +8263,17 @@ impl Fat32FileSystem<DefaultZeroCopyBuffer> {
             fat_size,
             &options.label,
         );
-        device.write_sync(0, &boot_sector)?;
-        device.write_sync(6, &boot_sector)?; // バックアップブートセクタ
 
-        // FSInfo セクタ
         let free_clusters = clusters - 1;
-        let fsinfo = FsInfo::new(free_clusters, 3);
-        device.write_sync(1, &fsinfo.to_bytes())?;
-        device.write_sync(7, &fsinfo.to_bytes())?;
-
-        // FAT 初期化
-        let fat_start = reserved_sectors as u64;
-        write_fat32_tables(&device, fat_start, fat_size)?;
-
-        // ルートディレクトリ初期化
-        let data_start = reserved_sectors as u32 + num_fats as u32 * fat_size;
-        let mut root_dir = [0u8; 512];
-        root_dir[0..11].copy_from_slice(&options.label);
-        root_dir[11] = 0x08;
-        device.write_sync(data_start as u64, &root_dir)?;
-
-        // フラッシュ
-        device.flush()?;
+        write_format_structures(
+            &device,
+            &boot_sector,
+            free_clusters,
+            reserved_sectors,
+            fat_size,
+            num_fats,
+            &options.label,
+        )?;
 
         // マウント
         Self::mount(device)

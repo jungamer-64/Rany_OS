@@ -977,6 +977,44 @@ impl<T> DmaHandle<[T]> {
             _ => self.unmap(),
         }
     }
+    /// Determine read/write permissions from DMA direction
+    fn dma_direction_to_perms(direction: DmaDirection) -> (bool, bool) {
+        match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        }
+    }
+
+    /// Identity-map an RRef slice when IOMMU is not enabled
+    fn map_rref_slice_no_iommu(
+        rref: RRef<[T]>,
+        size: u64,
+        domain_id: u16,
+        direction: DmaDirection,
+    ) -> Result<Self, MapError<[T]>> {
+        if crate::io::iommu::api::is_iommu_required()
+            || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+        {
+            return Err(MapError::new(
+                rref,
+                MapErrorKind::IommuError(IommuError::NotInitialized),
+            ));
+        }
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        Ok(Self::new_slice(
+            rref,
+            phys_addr_val.as_u64(),
+            phys_addr_val.as_u64(),
+            size,
+            domain_id,
+            direction,
+            MappingKind::Identity,
+        ))
+    }
+
     /// Map an RRef slice for DMA access via IOMMU (Safe API)
     ///
     /// This maps a contiguous slice allocated on the Exchange Heap.
@@ -997,26 +1035,7 @@ impl<T> DmaHandle<[T]> {
         };
 
         if !crate::io::iommu::api::is_iommu_enabled() {
-            if crate::io::iommu::api::is_iommu_required()
-                || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
-            {
-                return Err(MapError::new(
-                    rref,
-                    MapErrorKind::IommuError(IommuError::NotInitialized),
-                ));
-            }
-            let virt_ptr = rref.as_ptr() as u64;
-            let virt_addr = VirtAddr::new(virt_ptr);
-            let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
-            return Ok(Self::new_slice(
-                rref,
-                phys_addr_val.as_u64(),
-                phys_addr_val.as_u64(),
-                size,
-                domain_id,
-                direction,
-                MappingKind::Identity,
-            ));
+            return Self::map_rref_slice_no_iommu(rref, size, domain_id, direction);
         }
         if !crate::io::iommu::api::is_global_dma_mapping_allowed() {
             return Err(MapError::new(
@@ -1033,11 +1052,7 @@ impl<T> DmaHandle<[T]> {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
         }
 
-        let (read, write) = match direction {
-            DmaDirection::ToDevice => (true, false),
-            DmaDirection::FromDevice => (false, true),
-            DmaDirection::Bidirectional => (true, true),
-        };
+        let (read, write) = Self::dma_direction_to_perms(direction);
 
         // SAFETY: RRef slice ownership guarantees memory is safe for DMA.
         let iova = match unsafe {
@@ -1063,6 +1078,23 @@ impl<T> DmaHandle<[T]> {
         ))
     }
 
+    fn map_rref_slice_no_iommu(
+        rref: &RRef<[T]>,
+        size: u64,
+        direction: DmaDirection,
+    ) -> Option<(u64, u64, u64, MappingKind)> {
+        use x86_64::VirtAddr;
+        if crate::io::iommu::api::is_iommu_required()
+            || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+        {
+            return None;
+        }
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        Some((phys_addr_val.as_u64(), phys_addr_val.as_u64(), size, MappingKind::Identity))
+    }
+
     /// Map an RRef slice for DMA access to a specific device (Safe API)
     ///
     /// # Alignment
@@ -1081,26 +1113,17 @@ impl<T> DmaHandle<[T]> {
         };
 
         if !crate::io::iommu::api::is_iommu_enabled() {
-            if crate::io::iommu::api::is_iommu_required()
-                || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
-            {
-                return Err(MapError::new(
-                    rref,
-                    MapErrorKind::IommuError(IommuError::NotInitialized),
-                ));
+            match Self::map_rref_slice_no_iommu(&rref, size, direction) {
+                Some((iova, phys, sz, kind)) => {
+                    return Ok(Self::new_slice(rref, iova, phys, sz, 0, direction, kind));
+                }
+                None => {
+                    return Err(MapError::new(
+                        rref,
+                        MapErrorKind::IommuError(IommuError::NotInitialized),
+                    ));
+                }
             }
-            let virt_ptr = rref.as_ptr() as u64;
-            let virt_addr = VirtAddr::new(virt_ptr);
-            let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
-            return Ok(Self::new_slice(
-                rref,
-                phys_addr_val.as_u64(),
-                phys_addr_val.as_u64(),
-                size,
-                0,
-                direction,
-                MappingKind::Identity,
-            ));
         }
 
         let virt_ptr = rref.as_ptr() as u64;
