@@ -10,6 +10,8 @@ use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::security::capability::{
+mod _split_1;
+use _split_1::*;
     self, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DMA, CAP_FOWNER, CAP_INTERRUPT, CAP_IOMMU, CAP_IPC_LOCK,
     CAP_KILL, CAP_NET_ADMIN, CAP_NET_BIND, CAP_NET_RAW, CAP_SETGID, CAP_SETUID, CAP_SYS_ADMIN,
     CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PHYSMEM, CAP_SYS_PTRACE, CAP_SYS_RAWIO,
@@ -564,35 +566,3 @@ impl CapNamespace {
         Self::check(domain_id, cap)
     }
 }
-
-#[cfg(test)]
-mod tests;
-
-impl ShellNamespace for CapNamespace {
-    fn name(&self) -> &str {
-        "cap"
-    }
-
-    fn call<'a>(
-        &'a self,
-        method: &'a str,
-        args: &'a [ExoValue<'static>],
-        _caps: &'a crate::security::CapabilitySet,
-    ) -> BoxFuture<'a, ExoValue<'static>> {
-        Box::pin(async move {
-            match method {
-                "list" => Self::list(),
-                "revoke" => Self::call_revoke(args),
-                "grant" => Self::call_grant(args),
-                "revoke_all" => Self::call_revoke_all(args),
-                "tokens" => Self::call_tokens(args),
-                "check" => Self::call_check(args),
-                _ => ExoValue::Error(format!(
-                    "Unknown method 'cap.{}'\nValid methods: list, tokens, revoke, grant, check",
-                    method
-                )),
-            }
-        })
-    }
-}
-
