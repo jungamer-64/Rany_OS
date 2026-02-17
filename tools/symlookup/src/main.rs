@@ -3,7 +3,7 @@ use object::{Object, ObjectSymbol};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1); // nosemgrep: codacy.tools-configs.rust.lang.security.args.args
     let addr_str = args
         .next()
         .context("Usage: symlookup <hex-address> [path-to-binary]")?;

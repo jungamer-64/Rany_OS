@@ -1,7 +1,7 @@
 use qemu_runner::{RunConfig, run_suite};
 
 fn main() {
-    let mut args = std::env::args();
+    let mut args = std::env::args(); // nosemgrep: codacy.tools-configs.rust.lang.security.args.args
     let _bin = args.next();
     let suite = match args.next() {
         Some(v) => v,

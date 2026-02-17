@@ -227,7 +227,7 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
 fn main() {
     // If the user runs `cargo run`, accept optional argument "criterion" to run Criterion benches,
     // otherwise fall back to a small custom micro-benchmark for quick numbers.
-    let args: Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().collect(); // nosemgrep: codacy.tools-configs.rust.lang.security.args.args
     if args.iter().any(|a| a == "criterion") {
         let mut c = Criterion::default();
         bench_draw_image_with_criterion(&mut c);
