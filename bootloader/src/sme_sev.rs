@@ -48,74 +48,61 @@ const MSR_AMD_SEV_STATUS: u32 = 0xC001_0131;
 pub fn detect_memory_encryption() -> MemoryEncryptionInfo {
     let mut info = MemoryEncryptionInfo::default();
 
-    // Check if we're on AMD and have extended CPUID support
     let max_extended = cpuid(CPUID_EXTENDED_MAX).eax;
-    
     if max_extended >= CPUID_AMD_SEV_LEAF {
-        // Check AMD SEV capabilities (CPUID Fn8000_001F)
-        let sev_cpuid = cpuid(CPUID_AMD_SEV_LEAF);
-        
-        // EAX bits:
-        // Bit 0: SME supported
-        // Bit 1: SEV supported
-        // Bit 3: SEV-ES supported
-        // Bit 4: SEV-SNP supported
-        info.sme_available = (sev_cpuid.eax & (1 << 0)) != 0;
-        info.sev_available = (sev_cpuid.eax & (1 << 1)) != 0;
-        info.sev_es_available = (sev_cpuid.eax & (1 << 3)) != 0;
-        info.sev_snp_available = (sev_cpuid.eax & (1 << 4)) != 0;
-        
-        // EBX bits:
-        // Bits 5:0 - C-bit position in page table entry
-        // Bits 11:6 - Physical address width reduction
-        info.c_bit_position = (sev_cpuid.ebx & 0x3F) as u8;
-        info.phys_addr_reduction = ((sev_cpuid.ebx >> 6) & 0x3F) as u8;
-        
-        // Calculate encryption mask
-        if info.c_bit_position > 0 && info.c_bit_position < 64 {
-            info.encryption_mask = 1u64 << info.c_bit_position;
-        }
-        
-        // Check if SME/SEV is actually enabled via MSR
-        // Note: Reading MSR requires privileged access
-        if info.sme_available || info.sev_available {
-            if let Some(msr_value) = read_sev_status_msr() {
-                // Bit 0: SEV enabled
-                // Bit 1: SEV-ES enabled
-                // Bit 2: SEV-SNP enabled
-                // Bit 23: SME enabled
-                info.sev_enabled = (msr_value & (1 << 0)) != 0;
-                info.sme_enabled = (msr_value & (1 << 23)) != 0;
-            }
-        }
-        
-        if info.sme_available {
-            info!("AMD SME detected (C-bit position: {})", info.c_bit_position);
-        }
-        if info.sev_available {
-            info!("AMD SEV detected (enabled: {})", info.sev_enabled);
-        }
-        if info.sev_es_available {
-            info!("AMD SEV-ES detected");
-        }
-        if info.sev_snp_available {
-            info!("AMD SEV-SNP detected");
+        detect_amd_sev_capabilities(&mut info);
+    }
+
+    info.tdx_available = detect_intel_tdx();
+    log_detected_encryption(&info);
+    info
+}
+
+/// AMD SEV/SME 機能をCPUIDおよびMSRから検出
+fn detect_amd_sev_capabilities(info: &mut MemoryEncryptionInfo) {
+    let sev_cpuid = cpuid(CPUID_AMD_SEV_LEAF);
+
+    info.sme_available = (sev_cpuid.eax & (1 << 0)) != 0;
+    info.sev_available = (sev_cpuid.eax & (1 << 1)) != 0;
+    info.sev_es_available = (sev_cpuid.eax & (1 << 3)) != 0;
+    info.sev_snp_available = (sev_cpuid.eax & (1 << 4)) != 0;
+
+    info.c_bit_position = (sev_cpuid.ebx & 0x3F) as u8;
+    info.phys_addr_reduction = ((sev_cpuid.ebx >> 6) & 0x3F) as u8;
+
+    if info.c_bit_position > 0 && info.c_bit_position < 64 {
+        info.encryption_mask = 1u64 << info.c_bit_position;
+    }
+
+    if info.sme_available || info.sev_available {
+        if let Some(msr_value) = read_sev_status_msr() {
+            info.sev_enabled = (msr_value & (1 << 0)) != 0;
+            info.sme_enabled = (msr_value & (1 << 23)) != 0;
         }
     }
-    
-    // Intel TDX detection (simplified)
-    // TDX requires specific CPUID checks and is typically detected
-    // by the hypervisor/VMM
-    info.tdx_available = detect_intel_tdx();
+}
+
+/// 検出されたメモリ暗号化機能をログ出力
+fn log_detected_encryption(info: &MemoryEncryptionInfo) {
+    if info.sme_available {
+        info!("AMD SME detected (C-bit position: {})", info.c_bit_position);
+    }
+    if info.sev_available {
+        info!("AMD SEV detected (enabled: {})", info.sev_enabled);
+    }
+    if info.sev_es_available {
+        info!("AMD SEV-ES detected");
+    }
+    if info.sev_snp_available {
+        info!("AMD SEV-SNP detected");
+    }
     if info.tdx_available {
         info!("Intel TDX detected");
     }
-    
-    if !info.sme_available && !info.sev_available && !info.tdx_available {
+    let any = info.sme_available || info.sev_available || info.tdx_available;
+    if !any {
         info!("No hardware memory encryption detected");
     }
-    
-    info
 }
 
 /// CPUID result structure

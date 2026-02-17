@@ -1110,60 +1110,52 @@ impl HugePageBitmap {
     /// Allocate 4KB from partial/demoted blocks below limit
     fn allocate_4k_from_partial_below(&self, limit_page_idx: usize) -> Option<usize> {
         let limit_block = (limit_page_idx + PAGES_PER_2MB - 1) / PAGES_PER_2MB;
+        let limit_word = (limit_block + BITS_PER_WORD - 1) / BITS_PER_WORD;
 
         // 1. Try demoted blocks (linear scan 0..limit)
-        let limit_word = (limit_block + BITS_PER_WORD - 1) / BITS_PER_WORD;
-        let scan_end = limit_word.min(self.demoted_2m.len());
-
-        for word_idx in 0..scan_end {
-            if word_idx * BITS_PER_WORD >= limit_block { break; }
-            let word = self.demoted_2m[word_idx].load(Ordering::Acquire);
-            if word == 0 { continue; }
-
-            for bit in 0..BITS_PER_WORD {
-                let block_idx = word_idx * BITS_PER_WORD + bit;
-                if block_idx >= limit_block { return None; } // Monotonic break? Yes.
-
-                if (word & (1u64 << bit)) != 0 {
-                    if let Some(page) = self.allocate_from_block(block_idx) {
-                        if page < limit_page_idx { return Some(page); }
-                        // If page >= limit, ignore this match? 
-                        // But block_idx < limit_block suggests page *might* be < limit.
-                        // Ideally we check page < limit.
-                        // allocate_from_block returns ANY page in block.
-                        // If block starts < limit, but page is > limit (boundary case), we fail.
-                    }
-                }
-            }
+        if let Some(page) = self.scan_bitmap_below(&self.demoted_2m, limit_word, limit_block, limit_page_idx) {
+            return Some(page);
         }
 
         // 2. Try partial blocks (linear scan 0..limit)
-        // Similar logic for bitmap_2m_partial
-        let scan_end_partial = limit_word.min(self.bitmap_2m_partial.len());
-        for word_idx in 0..scan_end_partial {
-            if word_idx * BITS_PER_WORD >= limit_block { break; }
-            let word = self.bitmap_2m_partial[word_idx].load(Ordering::Acquire);
-            if word == 0 { continue; }
-
-            for bit in 0..BITS_PER_WORD {
-                 let block_idx = word_idx * BITS_PER_WORD + bit;
-                 if block_idx >= limit_block { return None; }
-                 
-                 if (word & (1u64 << bit)) != 0 {
-                     if let Some(page) = self.allocate_from_block(block_idx) {
-                         if page < limit_page_idx { return Some(page); }
-                     }
-                 }
-            }
+        if let Some(page) = self.scan_bitmap_below(&self.bitmap_2m_partial, limit_word, limit_block, limit_page_idx) {
+            return Some(page);
         }
-        
+
         // 3. Demote fully free block (linear scan 0..limit)
-        // ... requires demote logic which also searches.
-        // We can call demote_2m_block_below(limit_block)?
         if let Some(block) = self.demote_2m_block_below(limit_block) {
              return self.allocate_from_block(block);
         }
 
+        None
+    }
+
+    /// Scan a bitmap for a usable block below the given limits and allocate a page from it.
+    fn scan_bitmap_below(
+        &self,
+        bitmap: &[AtomicU64],
+        limit_word: usize,
+        limit_block: usize,
+        limit_page_idx: usize,
+    ) -> Option<usize> {
+        let scan_end = limit_word.min(bitmap.len());
+
+        for word_idx in 0..scan_end {
+            if word_idx * BITS_PER_WORD >= limit_block { break; }
+            let word = bitmap[word_idx].load(Ordering::Acquire);
+            if word == 0 { continue; }
+
+            for bit in 0..BITS_PER_WORD {
+                let block_idx = word_idx * BITS_PER_WORD + bit;
+                if block_idx >= limit_block { return None; }
+
+                if (word & (1u64 << bit)) != 0 {
+                    if let Some(page) = self.allocate_from_block(block_idx) {
+                        if page < limit_page_idx { return Some(page); }
+                    }
+                }
+            }
+        }
         None
     }
 

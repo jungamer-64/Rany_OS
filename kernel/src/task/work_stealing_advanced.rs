@@ -756,31 +756,41 @@ impl GlobalScheduler {
     /// 2. 同一NUMAノード内のコアから
     /// 3. 他のNUMAノードのコアから
     fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
-        let num_workers = self.workers.len();
-        if num_workers <= 1 {
+        if self.workers.len() <= 1 {
             return None;
         }
 
-        // NUMAトポロジ情報を取得
         let numa_info = NumaTopology::get();
 
-        // Phase 1: 同一LLCを共有するコア（Hyperthread sibling）からスチール
+        if let Some(task) = self.steal_from_llc_siblings(core_id, numa_info) {
+            return Some(task);
+        }
+        if let Some(task) = self.steal_from_same_numa(core_id, numa_info) {
+            return Some(task);
+        }
+        self.steal_from_remote_numa(core_id, numa_info)
+    }
+
+    /// Phase 1: 同一LLCを共有するコア（Hyperthread sibling）からスチール
+    fn steal_from_llc_siblings(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
         for &sibling_id in numa_info.get_llc_siblings(core_id) {
-            if sibling_id == core_id || sibling_id as usize >= num_workers {
+            if sibling_id == core_id || sibling_id as usize >= self.workers.len() {
                 continue;
             }
             if let Some(task) = self.try_steal_from_core(sibling_id, core_id) {
                 return Some(task);
             }
         }
+        None
+    }
 
-        // Phase 2: 同一NUMAノード内の他コアからスチール
+    /// Phase 2: 同一NUMAノード内の他コアからスチール（LLC sibling除く）
+    fn steal_from_same_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
         let my_numa_node = numa_info.get_numa_node(core_id);
         for &target_core in numa_info.get_cores_in_node(my_numa_node) {
-            if target_core == core_id || target_core as usize >= num_workers {
+            if target_core == core_id || target_core as usize >= self.workers.len() {
                 continue;
             }
-            // 既にPhase 1でチェック済みのLLC siblingはスキップ
             if numa_info.shares_llc(core_id, target_core) {
                 continue;
             }
@@ -788,18 +798,21 @@ impl GlobalScheduler {
                 return Some(task);
             }
         }
+        None
+    }
 
-        // Phase 3: 他のNUMAノードからスチール（最後の手段）
+    /// Phase 3: 他のNUMAノードからスチール（最後の手段）
+    fn steal_from_remote_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
+        let my_numa_node = numa_info.get_numa_node(core_id);
         for node in 0..numa_info.num_nodes() {
             if node == my_numa_node {
                 continue;
             }
             for &target_core in numa_info.get_cores_in_node(node) {
-                if target_core as usize >= num_workers {
+                if target_core as usize >= self.workers.len() {
                     continue;
                 }
                 if let Some(task) = self.try_steal_from_core(target_core, core_id) {
-                    // NUMA間スチールの統計を記録
                     self.workers[core_id as usize]
                         .stats
                         .cross_numa_steals
@@ -808,7 +821,6 @@ impl GlobalScheduler {
                 }
             }
         }
-
         None
     }
 

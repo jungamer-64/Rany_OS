@@ -380,6 +380,189 @@ impl CapNamespace {
             _ => 0,
         }
     }
+
+    // ================================================================
+    // Shell dispatch helpers (extracted to reduce CC of `call`)
+    // ================================================================
+
+    /// Parse a single operation string into a `CapOperation`.
+    fn parse_op(s: &str) -> Option<CapOperation> {
+        const OP_TABLE: &[(&str, CapOperation)] = &[
+            ("read", CapOperation::Read),
+            ("write", CapOperation::Write),
+            ("execute", CapOperation::Execute),
+            ("delete", CapOperation::Delete),
+            ("grant", CapOperation::Grant),
+            ("revoke", CapOperation::Revoke),
+            ("create", CapOperation::Create),
+            ("list", CapOperation::List),
+        ];
+        let lower = s.to_lowercase();
+        OP_TABLE
+            .iter()
+            .find(|(name, _)| *name == lower.as_str())
+            .map(|(_, op)| *op)
+    }
+
+    /// Extract `ops` from the grant arguments.
+    fn parse_grant_ops(args: &[ExoValue<'static>]) -> Vec<CapOperation> {
+        let mut ops: Vec<CapOperation> = Vec::new();
+        if let Some(v) = args.get(1) {
+            match v {
+                ExoValue::Array(arr) => {
+                    for item in arr {
+                        if let ExoValue::String(s) = item {
+                            if let Some(op) = Self::parse_op(s.as_ref()) {
+                                ops.push(op);
+                            }
+                        }
+                    }
+                }
+                ExoValue::String(s) => {
+                    if let Some(op) = Self::parse_op(s.as_ref()) {
+                        ops.push(op);
+                    }
+                }
+                _ => {}
+            }
+        }
+        ops
+    }
+
+    /// Extract target domain string from grant arguments.
+    fn parse_grant_target(args: &[ExoValue<'static>]) -> Result<String, ExoValue<'static>> {
+        let target_arg = if args.len() >= 3 {
+            args.get(2)
+        } else if args.len() == 2 {
+            match args.get(1) {
+                Some(ExoValue::String(_)) | Some(ExoValue::Int(_)) => args.get(1),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        match target_arg {
+            Some(ExoValue::Int(n)) => Ok(n.to_string()),
+            Some(ExoValue::String(s)) => Ok(s.to_string()),
+            _ => Err(ExoValue::Error(String::from(
+                "grant requires target domain id as second or third argument",
+            ))),
+        }
+    }
+
+    /// Apply a single option value to expires / delegatable.
+    fn apply_option_value(
+        v: &ExoValue<'static>,
+        expires: &mut Option<u64>,
+        delegatable: &mut bool,
+    ) {
+        match v {
+            ExoValue::Int(n) => *expires = Some(*n as u64),
+            ExoValue::Bool(b) => *delegatable = *b,
+            ExoValue::Map(map) => {
+                if let Some(ExoValue::Int(n)) = map.get("expires") {
+                    *expires = Some(*n as u64);
+                }
+                if let Some(ExoValue::Bool(b)) = map.get("delegatable") {
+                    *delegatable = *b;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Extract optional expires / delegatable from grant arguments.
+    fn parse_grant_options(args: &[ExoValue<'static>]) -> (Option<u64>, bool) {
+        let mut expires: Option<u64> = None;
+        let mut delegatable: bool = false;
+        if let Some(v) = args.get(3) {
+            Self::apply_option_value(v, &mut expires, &mut delegatable);
+        }
+        if let Some(ExoValue::Bool(b)) = args.get(4) {
+            delegatable = *b;
+        }
+        (expires, delegatable)
+    }
+
+    /// Dispatch handler for `cap.grant(...)` shell call.
+    fn call_grant(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let resource = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            })
+            .unwrap_or("");
+        if resource.is_empty() {
+            return ExoValue::Error(String::from(
+                "grant(resource, [ops], target) requires a resource string",
+            ));
+        }
+
+        let ops = Self::parse_grant_ops(args);
+        let target = match Self::parse_grant_target(args) {
+            Ok(t) => t,
+            Err(e) => return e,
+        };
+        let (expires, delegatable) = Self::parse_grant_options(args);
+        Self::grant(resource, &ops, target.as_str(), expires, delegatable)
+    }
+
+    /// Dispatch handler for `cap.revoke(...)` shell call.
+    fn call_revoke(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let id = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::Int(n) => Some(*n as u64),
+                _ => None,
+            })
+            .unwrap_or(0);
+        Self::revoke(id)
+    }
+
+    /// Dispatch handler for `cap.revoke_all(...)` shell call.
+    fn call_revoke_all(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::Int(n) => Some(*n as u64),
+                _ => None,
+            })
+            .unwrap_or(0);
+        Self::revoke_all(domain_id)
+    }
+
+    /// Dispatch handler for `cap.tokens(...)` shell call.
+    fn call_tokens(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::Int(n) => Some(*n as u64),
+                ExoValue::String(s) => s.parse().ok(),
+                _ => None,
+            });
+        Self::tokens(domain)
+    }
+
+    /// Dispatch handler for `cap.check(...)` shell call.
+    fn call_check(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let domain_id = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::Int(n) => Some(*n as u64),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let cap = args
+            .get(1)
+            .and_then(|v| match v {
+                ExoValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            })
+            .unwrap_or("");
+        Self::check(domain_id, cap)
+    }
 }
 
 #[cfg(test)]
@@ -609,165 +792,11 @@ impl ShellNamespace for CapNamespace {
         Box::pin(async move {
             match method {
                 "list" => Self::list(),
-                "revoke" => {
-                    let id = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::Int(n) => Some(*n as u64),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    Self::revoke(id)
-                }
-                "grant" => {
-                    // grant(resource: &str, ops: &[CapOperation], target: &str)
-                    // Parse args: resource (string), ops (array|string) optional, target (int|string)
-                    let resource = args
-                        .get(0)
-                        .and_then(|v| match v {
-                            ExoValue::String(s) => Some(s.as_ref()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    if resource.is_empty() {
-                        return ExoValue::Error(String::from(
-                            "grant(resource, [ops], target) requires a resource string",
-                        ));
-                    }
-
-                    // Helper to parse a single operation string
-                    fn parse_op(s: &str) -> Option<CapOperation> {
-                        match s.to_lowercase().as_str() {
-                            "read" => Some(CapOperation::Read),
-                            "write" => Some(CapOperation::Write),
-                            "execute" => Some(CapOperation::Execute),
-                            "delete" => Some(CapOperation::Delete),
-                            "grant" => Some(CapOperation::Grant),
-                            "revoke" => Some(CapOperation::Revoke),
-                            "create" => Some(CapOperation::Create),
-                            "list" => Some(CapOperation::List),
-                            _ => None,
-                        }
-                    }
-
-                    let mut ops: Vec<CapOperation> = Vec::new();
-                    // Determine if ops is provided as second arg
-                    if let Some(v) = args.get(1) {
-                        match v {
-                            ExoValue::Array(arr) => {
-                                for item in arr {
-                                    if let ExoValue::String(s) = item {
-                                        if let Some(op) = parse_op(s.as_ref()) {
-                                            ops.push(op);
-                                        }
-                                    }
-                                }
-                            }
-                            ExoValue::String(s) => {
-                                if let Some(op) = parse_op(s.as_ref()) {
-                                    ops.push(op);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Determine target: either args[2] or args[1] if ops omitted
-                    let target_arg = if args.len() >= 3 {
-                        args.get(2)
-                    } else if args.len() == 2 {
-                        // if second arg isn't ops but target
-                        match args.get(1) {
-                            Some(ExoValue::String(_)) | Some(ExoValue::Int(_)) => args.get(1),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-
-                    let target = match target_arg {
-                        Some(ExoValue::Int(n)) => n.to_string(),
-                        Some(ExoValue::String(s)) => s.to_string(),
-                        _ => {
-                            return ExoValue::Error(String::from(
-                                "grant requires target domain id as second or third argument",
-                            ));
-                        }
-                    };
-
-                    // Parse optional arguments after target: expires (int) and delegatable (bool)
-                    // Or accept a Map with keys "expires" and "delegatable"
-                    let mut expires: Option<u64> = None;
-                    let mut delegatable: bool = false;
-                    if args.len() > 3 {
-                        if let Some(v) = args.get(3) {
-                            match v {
-                                ExoValue::Int(n) => expires = Some(*n as u64),
-                                ExoValue::Bool(b) => delegatable = *b,
-                                ExoValue::Map(map) => {
-                                    if let Some(e) = map.get("expires") {
-                                        if let ExoValue::Int(n) = e {
-                                            expires = Some(*n as u64);
-                                        }
-                                    }
-                                    if let Some(d) = map.get("delegatable") {
-                                        if let ExoValue::Bool(b) = d {
-                                            delegatable = *b;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    // Also accept delegatable as 4th argument if present
-                    if args.len() > 4 {
-                        if let Some(ExoValue::Bool(b)) = args.get(4) {
-                            delegatable = *b;
-                        }
-                    }
-
-                    Self::grant(resource, &ops, target.as_str(), expires, delegatable)
-                }
-                "revoke_all" => {
-                    let domain_id = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::Int(n) => Some(*n as u64),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    Self::revoke_all(domain_id)
-                }
-                "tokens" => {
-                    // Optional domain id as first arg
-                    let domain = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::Int(n) => Some(*n as u64),
-                            ExoValue::String(s) => s.parse().ok(),
-                            _ => None,
-                        });
-                    Self::tokens(domain)
-                }
-                "check" => {
-                    let domain_id = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::Int(n) => Some(*n as u64),
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    let cap = args
-                        .get(1)
-                        .and_then(|v| match v {
-                            ExoValue::String(s) => Some(s.as_ref()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    Self::check(domain_id, cap)
-                }
+                "revoke" => Self::call_revoke(args),
+                "grant" => Self::call_grant(args),
+                "revoke_all" => Self::call_revoke_all(args),
+                "tokens" => Self::call_tokens(args),
+                "check" => Self::call_check(args),
                 _ => ExoValue::Error(format!(
                     "Unknown method 'cap.{}'\nValid methods: list, tokens, revoke, grant, check",
                     method

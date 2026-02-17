@@ -325,19 +325,16 @@ impl LiveUpdateManager {
         };
 
         if old_drivers.is_empty() {
-            return Err(LiveUpdateError::CellNotFound); // Or invalid state
+            return Err(LiveUpdateError::CellNotFound);
         }
 
         // Step 1: Load new cell
         *self.state.lock() = LiveUpdateState::Loading;
         log::info!("[LIVE_UPDATE] Loading new cell version...\n");
 
-        // Generate a name for the new cell based on old cell?
-        // For now, use "update-<epoch>"
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
         let name = alloc::format!("update-{}", epoch);
 
-        // Load the cell (unsafe allowed for updates)
         let new_cell_id = match crate::loader::load_cell(&name, new_elf_data, true) {
             Ok(id) => id,
             Err(_) => return Err(LiveUpdateError::LoadFailed),
@@ -354,112 +351,79 @@ impl LiveUpdateManager {
         // Step 3: Swap (Update Driver Registry)
         *self.state.lock() = LiveUpdateState::Switching;
 
-        let resolve_entry = |cell_id, call_init| -> Result<(DriverEntryFn, Option<extern "C" fn() -> i32>), LiveUpdateError> {
-            let exports_addr = crate::loader::with_registry(|r| {
-                let cell = r.get(cell_id)?;
-                cell.exports
-                    .iter()
-                    .find(|(n, _)| n == DRIVER_EXPORTS_SYMBOL)
-                    .map(|(_, addr)| *addr)
-            });
-
-            if let Some(addr) = exports_addr {
-                let exports_ptr = addr as *const DriverExportsV1;
-                let prepared = crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
-                    .map_err(|_| LiveUpdateError::LoadFailed)?;
-                return Ok((prepared.entry, prepared.fini));
-            }
-
-            let entry_addr = crate::loader::with_registry(|r| {
-                let cell = r.get(cell_id)?;
-                cell.exports
-                    .iter()
-                    .find(|(n, _)| n == DRIVER_ENTRY_SYMBOL)
-                    .map(|(_, addr)| *addr)
-            });
-
-            let entry_addr = match entry_addr {
-                Some(a) => a,
-                None => return Err(LiveUpdateError::LoadFailed),
-            };
-
-            let entry_fn: DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
-            Ok((entry_fn, None))
-        };
-
-        // Resolve entry symbol in NEW cell
-        let (entry_fn, entry_fini) = match resolve_entry(new_cell_id, true) {
-            Ok(v) => v,
-            Err(_) => {
-                let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
-                return Err(LiveUpdateError::LoadFailed);
-            }
-        };
-
-        // Resolve entry symbol in OLD cell (for rollback)
-        let old_entry = resolve_entry(old_cell_id, false).ok();
-
-        // Update all drivers registered to the old cell
-        let mut updated_handles = Vec::new();
-        let mut update_failed = false;
-
-        for handle in &old_drivers {
-            match crate::driver_registry::update_abi_driver_with_fini(*handle, entry_fn, entry_fini) {
-                Ok(_) => updated_handles.push(*handle),
-                Err(_) => {
-                    update_failed = true;
-                    break;
-                }
-            }
-        }
-
-        if update_failed {
-            log::error!("[LIVE_UPDATE] Update failed, rolling back {} drivers...\n", updated_handles.len());
-            // Rollback successful updates
-            if let Some((old_entry_fn, old_entry_fini)) = old_entry {
-                for handle in updated_handles {
-                    if let Err(e) =
-                        crate::driver_registry::update_abi_driver_with_fini(handle, old_entry_fn, old_entry_fini)
-                    {
-                        log::error!(
-                            "[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n",
-                            handle,
-                            e
-                        );
-                    }
-                }
-            } else {
-                 log::error!("[LIVE_UPDATE] CRITICAL: Cannot rollback, old entry point not found\n");
-            }
-
-            // Cleanup new cell
+        if let Err(e) = Self::swap_drivers(old_cell_id, new_cell_id, &old_drivers) {
             let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
-            return Err(LiveUpdateError::StateMigrationFailed);
+            return Err(e);
         }
 
         // Step 3.5: Migrate ownership in Cell Registry
+        Self::migrate_driver_ownership(old_cell_id, new_cell_id, &old_drivers);
+
+        // Step 4-5: Wait for quiescent state and finalize
+        self.finalize_update(old_cell_id, new_cell_id, old_epoch)
+    }
+
+    /// ドライバのエントリポイントをスワップし、失敗時にロールバック
+    fn swap_drivers(
+        old_cell_id: crate::loader::CellId,
+        new_cell_id: crate::loader::CellId,
+        old_drivers: &[crate::driver_registry::DriverHandle],
+    ) -> Result<(), LiveUpdateError> {
+        // Resolve entry symbol in NEW cell
+        let (entry_fn, entry_fini) = resolve_cell_entry(new_cell_id, true)?;
+
+        // Resolve entry symbol in OLD cell (for rollback)
+        let old_entry = resolve_cell_entry(old_cell_id, false).ok();
+
+        // Update all drivers registered to the old cell
+        let mut updated_handles = Vec::new();
+
+        for handle in old_drivers {
+            match crate::driver_registry::update_abi_driver_with_fini(*handle, entry_fn, entry_fini) {
+                Ok(_) => updated_handles.push(*handle),
+                Err(_) => {
+                    log::error!("[LIVE_UPDATE] Update failed, rolling back {} drivers...\n", updated_handles.len());
+                    rollback_drivers(&updated_handles, old_entry);
+                    return Err(LiveUpdateError::StateMigrationFailed);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// ドライバの所有権を旧セルから新セルへ移行
+    fn migrate_driver_ownership(
+        old_cell_id: crate::loader::CellId,
+        new_cell_id: crate::loader::CellId,
+        old_drivers: &[crate::driver_registry::DriverHandle],
+    ) {
         crate::loader::with_registry_mut(|r| {
             if let Some(old_c) = r.get_mut(old_cell_id) {
                 old_c.registered_drivers.clear();
             }
             if let Some(new_c) = r.get_mut(new_cell_id) {
-                for h in &old_drivers {
+                for h in old_drivers {
                     new_c.registered_drivers.push(*h);
                 }
             }
         });
+    }
 
-        // Step 4: Wait for Quiescent State
+    /// Quiescent state の待機と旧セルの解放
+    fn finalize_update(
+        &self,
+        old_cell_id: crate::loader::CellId,
+        new_cell_id: crate::loader::CellId,
+        old_epoch: u64,
+    ) -> Result<u64, LiveUpdateError> {
         *self.state.lock() = LiveUpdateState::WaitingQuiescent;
         log::info!("[LIVE_UPDATE] Waiting for quiescent state...\n");
         wait_for_quiescent_state(old_epoch);
         log::info!("[LIVE_UPDATE] All cores reached quiescent state\n");
 
-        // Step 5: Complete & Free Old Cell
         *self.state.lock() = LiveUpdateState::Complete;
         self.rollback_epoch.store(old_epoch + 1, Ordering::Release);
 
-        // Unload old cell
         match crate::loader::unload_cell(old_cell_id) {
             Ok(_) => log::info!("[LIVE_UPDATE] Old cell unloaded\n"),
             Err(e) => log::info!(
@@ -482,6 +446,65 @@ impl LiveUpdateManager {
 impl Default for LiveUpdateManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// セルからドライバエントリポイントを解決
+fn resolve_cell_entry(
+    cell_id: crate::loader::CellId,
+    call_init: bool,
+) -> Result<(DriverEntryFn, Option<extern "C" fn() -> i32>), LiveUpdateError> {
+    let exports_addr = crate::loader::with_registry(|r| {
+        let cell = r.get(cell_id)?;
+        cell.exports
+            .iter()
+            .find(|(n, _)| n == DRIVER_EXPORTS_SYMBOL)
+            .map(|(_, addr)| *addr)
+    });
+
+    if let Some(addr) = exports_addr {
+        let exports_ptr = addr as *const DriverExportsV1;
+        let prepared = crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
+            .map_err(|_| LiveUpdateError::LoadFailed)?;
+        return Ok((prepared.entry, prepared.fini));
+    }
+
+    let entry_addr = crate::loader::with_registry(|r| {
+        let cell = r.get(cell_id)?;
+        cell.exports
+            .iter()
+            .find(|(n, _)| n == DRIVER_ENTRY_SYMBOL)
+            .map(|(_, addr)| *addr)
+    });
+
+    let entry_addr = match entry_addr {
+        Some(a) => a,
+        None => return Err(LiveUpdateError::LoadFailed),
+    };
+
+    let entry_fn: DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
+    Ok((entry_fn, None))
+}
+
+/// 更新済みドライバをロールバック
+fn rollback_drivers(
+    handles: &[crate::driver_registry::DriverHandle],
+    old_entry: Option<(DriverEntryFn, Option<extern "C" fn() -> i32>)>,
+) {
+    if let Some((old_entry_fn, old_entry_fini)) = old_entry {
+        for handle in handles {
+            if let Err(e) =
+                crate::driver_registry::update_abi_driver_with_fini(*handle, old_entry_fn, old_entry_fini)
+            {
+                log::error!(
+                    "[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n",
+                    handle,
+                    e
+                );
+            }
+        }
+    } else {
+        log::error!("[LIVE_UPDATE] CRITICAL: Cannot rollback, old entry point not found\n");
     }
 }
 

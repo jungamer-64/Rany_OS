@@ -213,6 +213,28 @@ impl Zpool {
         self.config.read().enabled
     }
     
+    /// 同一値ページ検出を試み、成功すれば格納して結果を返す
+    fn try_store_same_filled(&self, swap_offset: u64, page_data: &[u8]) -> Option<Result<(), ZswapError>> {
+        let config = self.config.read();
+        if config.same_filled_pages_enabled {
+            if let Some(fill_value) = self.detect_same_filled(page_data) {
+                return Some(self.store_same_filled(swap_offset, fill_value, page_data.len()));
+            }
+        }
+        None
+    }
+
+    /// 格納成功後の統計更新
+    fn update_store_stats(&self, page_size: usize, compressed_len: usize) {
+        let mut stats = self.stats.lock();
+        stats.stored_pages += 1;
+        stats.orig_data_size += page_size as u64;
+        stats.compr_data_size += compressed_len as u64;
+        stats.compress_success += 1;
+        if page_size == PAGE_SIZE_2M { stats.stored_pages_2m += 1; }
+        if page_size == PAGE_SIZE_1G { stats.stored_pages_1g += 1; }
+    }
+
     /// ページを圧縮して格納
     pub fn store(&self, swap_offset: u64, page_data: &[u8]) -> Result<(), ZswapError> {
         if !self.is_enabled() {
@@ -225,16 +247,13 @@ impl Zpool {
             return Err(ZswapError::InvalidSize);
         }
 
-        let config = self.config.read();
-
-        // 同一値ページの検出（任意サイズ対応）
-        if config.same_filled_pages_enabled {
-            if let Some(fill_value) = self.detect_same_filled(page_data) {
-                return self.store_same_filled(swap_offset, fill_value, page_size);
-            }
+        // 同一値ページ検出（任意サイズ対応）
+        if let Some(result) = self.try_store_same_filled(swap_offset, page_data) {
+            return result;
         }
 
         // 圧縮（ページ全体を圧縮）
+        let config = self.config.read();
         let compressed = self.compress(page_data, config.compressor)?;
         let compression_ratio = compressed.len() as f64 / page_size as f64;
 
@@ -283,15 +302,7 @@ impl Zpool {
 
         // 統計更新
         self.current_size.fetch_add(compressed.len() as u64, Ordering::Relaxed);
-        {
-            let mut stats = self.stats.lock();
-            stats.stored_pages += 1;
-            stats.orig_data_size += page_size as u64;
-            stats.compr_data_size += compressed.len() as u64;
-            stats.compress_success += 1;
-            if page_size == PAGE_SIZE_2M { stats.stored_pages_2m += 1; }
-            if page_size == PAGE_SIZE_1G { stats.stored_pages_1g += 1; }
-        }
+        self.update_store_stats(page_size, compressed.len());
 
         Ok(())
     }

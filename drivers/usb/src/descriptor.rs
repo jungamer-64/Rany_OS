@@ -513,6 +513,60 @@ pub struct ParsedInterface {
     pub ss_companions: Vec<SsEndpointCompanionDescriptor>,
 }
 
+/// インターフェースディスクリプタを処理して前のインターフェースを保存
+fn handle_interface_descriptor(
+    data: &[u8],
+    offset: usize,
+    current_interface: &mut Option<ParsedInterface>,
+    interfaces: &mut Vec<ParsedInterface>,
+) {
+    if let Some(iface) = current_interface.take() {
+        interfaces.push(iface);
+    }
+    if let Some(interface) = InterfaceDescriptor::from_bytes(&data[offset..]) {
+        *current_interface = Some(ParsedInterface {
+            interface,
+            endpoints: Vec::new(),
+            ss_companions: Vec::new(),
+        });
+    }
+}
+
+/// オフセット位置のディスクリプタを種類に応じて処理
+fn process_descriptor_at_offset(
+    data: &[u8],
+    offset: usize,
+    current_interface: &mut Option<ParsedInterface>,
+    interfaces: &mut Vec<ParsedInterface>,
+) {
+    let desc_type = data[offset + 1];
+
+    match DescriptorType::from_u8(desc_type) {
+        Some(DescriptorType::Interface) => {
+            handle_interface_descriptor(data, offset, current_interface, interfaces);
+        }
+        Some(DescriptorType::Endpoint) => {
+            if let Some(iface) = current_interface {
+                if let Some(endpoint) = EndpointDescriptor::from_bytes(&data[offset..]) {
+                    iface.endpoints.push(endpoint);
+                }
+            }
+        }
+        Some(DescriptorType::SuperSpeedEndpointCompanion) => {
+            if let Some(iface) = current_interface {
+                if let Some(companion) =
+                    SsEndpointCompanionDescriptor::from_bytes(&data[offset..])
+                {
+                    iface.ss_companions.push(companion);
+                }
+            }
+        }
+        _ => {
+            // Skip unknown descriptors
+        }
+    }
+}
+
 /// コンフィグレーションディスクリプタをパース
 pub fn parse_configuration(data: &[u8]) -> Option<ParsedConfiguration> {
     if data.len() < 9 {
@@ -536,48 +590,12 @@ pub fn parse_configuration(data: &[u8]) -> Option<ParsedConfiguration> {
         }
 
         let length = data[offset] as usize;
-        let desc_type = data[offset + 1];
 
         if length < 2 || offset + length > total_length {
             break;
         }
 
-        match DescriptorType::from_u8(desc_type) {
-            Some(DescriptorType::Interface) => {
-                // Save previous interface
-                if let Some(iface) = current_interface.take() {
-                    interfaces.push(iface);
-                }
-
-                if let Some(interface) = InterfaceDescriptor::from_bytes(&data[offset..]) {
-                    current_interface = Some(ParsedInterface {
-                        interface,
-                        endpoints: Vec::new(),
-                        ss_companions: Vec::new(),
-                    });
-                }
-            }
-            Some(DescriptorType::Endpoint) => {
-                if let Some(ref mut iface) = current_interface {
-                    if let Some(endpoint) = EndpointDescriptor::from_bytes(&data[offset..]) {
-                        iface.endpoints.push(endpoint);
-                    }
-                }
-            }
-            Some(DescriptorType::SuperSpeedEndpointCompanion) => {
-                if let Some(ref mut iface) = current_interface {
-                    if let Some(companion) =
-                        SsEndpointCompanionDescriptor::from_bytes(&data[offset..])
-                    {
-                        iface.ss_companions.push(companion);
-                    }
-                }
-            }
-            _ => {
-                // Skip unknown descriptors
-            }
-        }
-
+        process_descriptor_at_offset(data, offset, &mut current_interface, &mut interfaces);
         offset += length;
     }
 

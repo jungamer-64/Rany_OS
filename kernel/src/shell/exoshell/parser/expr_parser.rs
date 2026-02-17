@@ -576,135 +576,13 @@ impl ExprParser {
             }
 
             // 配列リテラル: [expr, expr, ...]
-            Some(Token::LBracket) => {
-                self.advance();
-                let mut elements = Vec::new();
-
-                // 空配列チェック
-                if !self.match_token(&Token::RBracket) {
-                    // 最初の要素
-                    elements.push(self.parse_expr()?);
-
-                    // カンマ区切りで残りの要素
-                    while self.match_token(&Token::Comma) {
-                        // 末尾カンマ対応
-                        if matches!(self.peek(), Some(Token::RBracket)) {
-                            break;
-                        }
-                        elements.push(self.parse_expr()?);
-                    }
-
-                    if !self.match_token(&Token::RBracket) {
-                        return Err(ParseError::UnexpectedToken {
-                            expected: "']'".to_string(),
-                            found: format!("{:?}", self.peek()),
-                        });
-                    }
-                }
-
-                Ok(Expr::Array(elements))
-            }
+            Some(Token::LBracket) => self.parse_array_literal(),
 
             // 波括弧: マップかブロックかを判定
-            Some(Token::LBrace) => {
-                // Heuristic: look ahead for `ident`/`string` followed by `:` to detect map
-                if self.peek_next().map_or(false, |t| matches!(t, Token::Ident(_) | Token::StringLit(_)))
-                    && self.tokens.get(self.pos + 2).map_or(false, |t| matches!(t, Token::Colon))
-                {
-                    // parse as map
-                    self.advance();
-                    let mut pairs = Vec::new();
-
-                    // 空マップチェック
-                    if !self.match_token(&Token::RBrace) {
-                        loop {
-                            // キー（識別子または文字列）
-                            let key = match self.peek().cloned() {
-                                Some(Token::Ident(k)) => {
-                                    self.advance();
-                                    k
-                                }
-                                Some(Token::StringLit(k)) => {
-                                    self.advance();
-                                    k
-                                }
-                                _ => {
-                                    return Err(ParseError::UnexpectedToken {
-                                        expected: "map key (identifier or string)".to_string(),
-                                        found: format!("{:?}", self.peek()),
-                                    });
-                                }
-                            };
-
-                            // コロン
-                            if !self.match_token(&Token::Colon) {
-                                return Err(ParseError::UnexpectedToken {
-                                    expected: "':'".to_string(),
-                                    found: format!("{:?}", self.peek()),
-                                });
-                            }
-
-                            // 値
-                            let value = self.parse_expr()?;
-                            pairs.push((key, value));
-
-                            // カンマまたは閉じ波括弧
-                            if self.match_token(&Token::Comma) {
-                                // 末尾カンマ対応
-                                if matches!(self.peek(), Some(Token::RBrace)) {
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-
-                        if !self.match_token(&Token::RBrace) {
-                            return Err(ParseError::UnexpectedToken {
-                                expected: "'}'".to_string(),
-                                found: format!("{:?}", self.peek()),
-                            });
-                        }
-                    }
-
-                    Ok(Expr::Map(pairs))
-                } else {
-                    // parse as block
-                    self.parse_block_expr()
-                }
-            }
+            Some(Token::LBrace) => self.parse_brace_expr(),
 
             // クロージャ: |e| expr
-            Some(Token::Pipe) => {
-                self.advance();
-
-                // パラメータ名
-                let param = if let Some(Token::Ident(name)) = self.peek().cloned() {
-                    self.advance();
-                    name
-                } else {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "closure parameter".to_string(),
-                        found: format!("{:?}", self.peek()),
-                    });
-                };
-
-                // 閉じパイプ
-                if !self.match_token(&Token::Pipe) {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "'|'".to_string(),
-                        found: format!("{:?}", self.peek()),
-                    });
-                }
-
-                // クロージャ本体
-                let body = self.parse_expr()?;
-
-                Ok(Expr::Closure {
-                    param,
-                    body: Box::new(body),
-                })
-            }
+            Some(Token::Pipe) => self.parse_closure(),
 
             Some(token) => Err(ParseError::UnexpectedToken {
                 expected: "expression".to_string(),
@@ -713,6 +591,141 @@ impl ExprParser {
 
             None => Err(ParseError::UnexpectedEof),
         }
+    }
+
+    /// 配列リテラル: [expr, expr, ...]
+    fn parse_array_literal(&mut self) -> Result<Expr<'static>, ParseError> {
+        self.advance();
+        let mut elements = Vec::new();
+
+        // 空配列チェック
+        if !self.match_token(&Token::RBracket) {
+            // 最初の要素
+            elements.push(self.parse_expr()?);
+
+            // カンマ区切りで残りの要素
+            while self.match_token(&Token::Comma) {
+                // 末尾カンマ対応
+                if matches!(self.peek(), Some(Token::RBracket)) {
+                    break;
+                }
+                elements.push(self.parse_expr()?);
+            }
+
+            if !self.match_token(&Token::RBracket) {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "']'".to_string(),
+                    found: format!("{:?}", self.peek()),
+                });
+            }
+        }
+
+        Ok(Expr::Array(elements))
+    }
+
+    /// 波括弧式: マップリテラルまたはブロック式
+    fn parse_brace_expr(&mut self) -> Result<Expr<'static>, ParseError> {
+        // Heuristic: look ahead for `ident`/`string` followed by `:` to detect map
+        if self.peek_next().map_or(false, |t| matches!(t, Token::Ident(_) | Token::StringLit(_)))
+            && self.tokens.get(self.pos + 2).map_or(false, |t| matches!(t, Token::Colon))
+        {
+            self.parse_map_literal()
+        } else {
+            // parse as block
+            self.parse_block_expr()
+        }
+    }
+
+    /// マップリテラル: { key: value, ... }
+    fn parse_map_literal(&mut self) -> Result<Expr<'static>, ParseError> {
+        self.advance();
+        let mut pairs = Vec::new();
+
+        // 空マップチェック
+        if !self.match_token(&Token::RBrace) {
+            loop {
+                // キー（識別子または文字列）
+                let key = match self.peek().cloned() {
+                    Some(Token::Ident(k)) => {
+                        self.advance();
+                        k
+                    }
+                    Some(Token::StringLit(k)) => {
+                        self.advance();
+                        k
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "map key (identifier or string)".to_string(),
+                            found: format!("{:?}", self.peek()),
+                        });
+                    }
+                };
+
+                // コロン
+                if !self.match_token(&Token::Colon) {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "':'".to_string(),
+                        found: format!("{:?}", self.peek()),
+                    });
+                }
+
+                // 値
+                let value = self.parse_expr()?;
+                pairs.push((key, value));
+
+                // カンマまたは閉じ波括弧
+                if self.match_token(&Token::Comma) {
+                    // 末尾カンマ対応
+                    if matches!(self.peek(), Some(Token::RBrace)) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            if !self.match_token(&Token::RBrace) {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "'}'".to_string(),
+                    found: format!("{:?}", self.peek()),
+                });
+            }
+        }
+
+        Ok(Expr::Map(pairs))
+    }
+
+    /// クロージャ: |param| expr
+    fn parse_closure(&mut self) -> Result<Expr<'static>, ParseError> {
+        self.advance();
+
+        // パラメータ名
+        let param = if let Some(Token::Ident(name)) = self.peek().cloned() {
+            self.advance();
+            name
+        } else {
+            return Err(ParseError::UnexpectedToken {
+                expected: "closure parameter".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        };
+
+        // 閉じパイプ
+        if !self.match_token(&Token::Pipe) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'|'".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+
+        // クロージャ本体
+        let body = self.parse_expr()?;
+
+        Ok(Expr::Closure {
+            param,
+            body: Box::new(body),
+        })
     }
 
     /// 引数リストをパース

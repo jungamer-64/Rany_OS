@@ -109,12 +109,8 @@ pub fn chacha20_encrypt(key: &[u8; 32], nonce: &[u8; 12], counter: u32, data: &[
     result
 }
 
-/// Poly1305 MAC computation (RFC 8439 Section 2.5)
-///
-/// Computes a 16-byte authentication tag using the Poly1305 algorithm.
-/// The 32-byte key is split: r = key[0..16] (clamped), s = key[16..32].
-pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
-    // Clamp r according to RFC 8439 Section 2.5.1.
+/// Clamp r from key and return 26-bit limbs (r0..r4) and precomputed r*5 values.
+fn poly1305_clamp_r(key: &[u8; 32]) -> ([u64; 5], [u64; 4]) {
     let mut r = [0u8; 16];
     r.copy_from_slice(&key[..16]);
     r[3] &= 15;
@@ -125,7 +121,6 @@ pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
     r[8] &= 252;
     r[12] &= 252;
 
-    // Represent r as 26-bit limbs.
     let t0 = u32::from_le_bytes([r[0], r[1], r[2], r[3]]) as u64;
     let t1 = u32::from_le_bytes([r[4], r[5], r[6], r[7]]) as u64;
     let t2 = u32::from_le_bytes([r[8], r[9], r[10], r[11]]) as u64;
@@ -137,156 +132,120 @@ pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
     let r3 = ((t2 >> 14) | (t3 << 18)) & 0x3f03fff;
     let r4 = (t3 >> 8) & 0x00fffff;
 
-    let r1_5 = r1 * 5;
-    let r2_5 = r2 * 5;
-    let r3_5 = r3 * 5;
-    let r4_5 = r4 * 5;
+    (
+        [r0, r1, r2, r3, r4],
+        [r1 * 5, r2 * 5, r3 * 5, r4 * 5],
+    )
+}
 
-    // Accumulator h in 26-bit limbs.
-    let mut h0 = 0u64;
-    let mut h1 = 0u64;
-    let mut h2 = 0u64;
-    let mut h3 = 0u64;
-    let mut h4 = 0u64;
+/// Multiply h by r (mod 2^130-5) and reduce carries.
+fn poly1305_multiply_reduce(h: &mut [u64; 5], r: &[u64; 5], r5: &[u64; 4]) {
+    let d0 = (h[0] as u128 * r[0] as u128)
+        + (h[1] as u128 * r5[3] as u128)
+        + (h[2] as u128 * r5[2] as u128)
+        + (h[3] as u128 * r5[1] as u128)
+        + (h[4] as u128 * r5[0] as u128);
+    let d1 = (h[0] as u128 * r[1] as u128)
+        + (h[1] as u128 * r[0] as u128)
+        + (h[2] as u128 * r5[3] as u128)
+        + (h[3] as u128 * r5[2] as u128)
+        + (h[4] as u128 * r5[1] as u128);
+    let d2 = (h[0] as u128 * r[2] as u128)
+        + (h[1] as u128 * r[1] as u128)
+        + (h[2] as u128 * r[0] as u128)
+        + (h[3] as u128 * r5[3] as u128)
+        + (h[4] as u128 * r5[2] as u128);
+    let d3 = (h[0] as u128 * r[3] as u128)
+        + (h[1] as u128 * r[2] as u128)
+        + (h[2] as u128 * r[1] as u128)
+        + (h[3] as u128 * r[0] as u128)
+        + (h[4] as u128 * r5[3] as u128);
+    let d4 = (h[0] as u128 * r[4] as u128)
+        + (h[1] as u128 * r[3] as u128)
+        + (h[2] as u128 * r[2] as u128)
+        + (h[3] as u128 * r[1] as u128)
+        + (h[4] as u128 * r[0] as u128);
 
-    let mut offset = 0usize;
-    while offset < message.len() {
-        let block_len = (message.len() - offset).min(16);
-        let mut block = [0u8; 17];
-        block[..block_len].copy_from_slice(&message[offset..offset + block_len]);
-        block[block_len] = 1;
-        let m = poly1305_block_to_limbs(&block);
+    let mut c = (d0 >> 26) as u64;
+    h[0] = (d0 as u64) & 0x3ffffff;
 
-        h0 += m[0];
-        h1 += m[1];
-        h2 += m[2];
-        h3 += m[3];
-        h4 += m[4];
+    let d1 = d1 + c as u128;
+    c = (d1 >> 26) as u64;
+    h[1] = (d1 as u64) & 0x3ffffff;
 
-        let d0 = (h0 as u128 * r0 as u128)
-            + (h1 as u128 * r4_5 as u128)
-            + (h2 as u128 * r3_5 as u128)
-            + (h3 as u128 * r2_5 as u128)
-            + (h4 as u128 * r1_5 as u128);
-        let d1 = (h0 as u128 * r1 as u128)
-            + (h1 as u128 * r0 as u128)
-            + (h2 as u128 * r4_5 as u128)
-            + (h3 as u128 * r3_5 as u128)
-            + (h4 as u128 * r2_5 as u128);
-        let d2 = (h0 as u128 * r2 as u128)
-            + (h1 as u128 * r1 as u128)
-            + (h2 as u128 * r0 as u128)
-            + (h3 as u128 * r4_5 as u128)
-            + (h4 as u128 * r3_5 as u128);
-        let d3 = (h0 as u128 * r3 as u128)
-            + (h1 as u128 * r2 as u128)
-            + (h2 as u128 * r1 as u128)
-            + (h3 as u128 * r0 as u128)
-            + (h4 as u128 * r4_5 as u128);
-        let d4 = (h0 as u128 * r4 as u128)
-            + (h1 as u128 * r3 as u128)
-            + (h2 as u128 * r2 as u128)
-            + (h3 as u128 * r1 as u128)
-            + (h4 as u128 * r0 as u128);
+    let d2 = d2 + c as u128;
+    c = (d2 >> 26) as u64;
+    h[2] = (d2 as u64) & 0x3ffffff;
 
-        let mut c = (d0 >> 26) as u64;
-        h0 = (d0 as u64) & 0x3ffffff;
+    let d3 = d3 + c as u128;
+    c = (d3 >> 26) as u64;
+    h[3] = (d3 as u64) & 0x3ffffff;
 
-        let d1 = d1 + c as u128;
-        c = (d1 >> 26) as u64;
-        h1 = (d1 as u64) & 0x3ffffff;
+    let d4 = d4 + c as u128;
+    c = (d4 >> 26) as u64;
+    h[4] = (d4 as u64) & 0x3ffffff;
 
-        let d2 = d2 + c as u128;
-        c = (d2 >> 26) as u64;
-        h2 = (d2 as u64) & 0x3ffffff;
+    h[0] += c * 5;
+    c = h[0] >> 26;
+    h[0] &= 0x3ffffff;
+    h[1] += c;
+}
 
-        let d3 = d3 + c as u128;
-        c = (d3 >> 26) as u64;
-        h3 = (d3 as u64) & 0x3ffffff;
-
-        let d4 = d4 + c as u128;
-        c = (d4 >> 26) as u64;
-        h4 = (d4 as u64) & 0x3ffffff;
-
-        h0 += c * 5;
-        c = h0 >> 26;
-        h0 &= 0x3ffffff;
-        h1 += c;
-
-        offset += block_len;
+/// Compare h >= p (2^130 - 5) lexicographically from most significant limb.
+fn poly1305_is_gte_prime(h: &[u64; 5]) -> bool {
+    const P: [u64; 5] = [0x3fffffb, 0x3ffffff, 0x3ffffff, 0x3ffffff, 0x3ffffff];
+    for i in (0..5).rev() {
+        if h[i] > P[i] { return true; }
+        if h[i] < P[i] { return false; }
     }
+    true
+}
 
-    // Final carry propagation.
-    let mut c = h1 >> 26;
-    h1 &= 0x3ffffff;
-    h2 += c;
-    c = h2 >> 26;
-    h2 &= 0x3ffffff;
-    h3 += c;
-    c = h3 >> 26;
-    h3 &= 0x3ffffff;
-    h4 += c;
-    c = h4 >> 26;
-    h4 &= 0x3ffffff;
-    h0 += c * 5;
-    c = h0 >> 26;
-    h0 &= 0x3ffffff;
-    h1 += c;
-
-    // If h >= p (2^130 - 5), subtract p.
-    const P0: u64 = 0x3fffffb;
-    const P1: u64 = 0x3ffffff;
-    const P2: u64 = 0x3ffffff;
-    const P3: u64 = 0x3ffffff;
-    const P4: u64 = 0x3ffffff;
-
-    let ge_p = (h4 > P4)
-        || (h4 == P4
-            && ((h3 > P3)
-                || (h3 == P3
-                    && ((h2 > P2) || (h2 == P2 && ((h1 > P1) || (h1 == P1 && h0 >= P0)))))));
-
-    if ge_p {
-        let mut borrow = 0u64;
-
-        let mut t0 = h0.wrapping_sub(P0 + borrow);
-        borrow = if h0 < P0 + borrow { 1 } else { 0 };
-        if borrow != 0 {
-            t0 = t0.wrapping_add(1 << 26);
+/// Subtract p = 2^130 - 5 from h (in 26-bit limbs).
+fn poly1305_subtract_prime(h: &mut [u64; 5]) {
+    const P: [u64; 5] = [0x3fffffb, 0x3ffffff, 0x3ffffff, 0x3ffffff, 0x3ffffff];
+    let mut borrow = 0u64;
+    for i in 0..5 {
+        let sub = P[i] + borrow;
+        let new_borrow = if h[i] < sub { 1u64 } else { 0 };
+        let mut t = h[i].wrapping_sub(sub);
+        if new_borrow != 0 && i < 4 {
+            t = t.wrapping_add(1 << 26);
         }
-
-        let mut t1 = h1.wrapping_sub(P1 + borrow);
-        borrow = if h1 < P1 + borrow { 1 } else { 0 };
-        if borrow != 0 {
-            t1 = t1.wrapping_add(1 << 26);
-        }
-
-        let mut t2 = h2.wrapping_sub(P2 + borrow);
-        borrow = if h2 < P2 + borrow { 1 } else { 0 };
-        if borrow != 0 {
-            t2 = t2.wrapping_add(1 << 26);
-        }
-
-        let mut t3 = h3.wrapping_sub(P3 + borrow);
-        borrow = if h3 < P3 + borrow { 1 } else { 0 };
-        if borrow != 0 {
-            t3 = t3.wrapping_add(1 << 26);
-        }
-
-        let t4 = h4.wrapping_sub(P4 + borrow);
-
-        h0 = t0;
-        h1 = t1;
-        h2 = t2;
-        h3 = t3;
-        h4 = t4;
+        h[i] = t;
+        borrow = new_borrow;
     }
+}
 
-    // Serialize h (130 bits) into 128 bits and add s (mod 2^128).
-    let f0 = h0 | (h1 << 26);
-    let f1 = (h1 >> 6) | (h2 << 20);
-    let f2 = (h2 >> 12) | (h3 << 14);
-    let f3 = (h3 >> 18) | (h4 << 8);
+/// Final carry propagation and conditional reduction of h mod p.
+fn poly1305_final_reduce(h: &mut [u64; 5]) {
+    let mut c = h[1] >> 26;
+    h[1] &= 0x3ffffff;
+    h[2] += c;
+    c = h[2] >> 26;
+    h[2] &= 0x3ffffff;
+    h[3] += c;
+    c = h[3] >> 26;
+    h[3] &= 0x3ffffff;
+    h[4] += c;
+    c = h[4] >> 26;
+    h[4] &= 0x3ffffff;
+    h[0] += c * 5;
+    c = h[0] >> 26;
+    h[0] &= 0x3ffffff;
+    h[1] += c;
+
+    if poly1305_is_gte_prime(h) {
+        poly1305_subtract_prime(h);
+    }
+}
+
+/// Serialize 26-bit limbs h into 128 bits and add s = key[16..32] (mod 2^128).
+fn poly1305_finalize(h: [u64; 5], key: &[u8; 32]) -> [u8; 16] {
+    let f0 = h[0] | (h[1] << 26);
+    let f1 = (h[1] >> 6) | (h[2] << 20);
+    let f2 = (h[2] >> 12) | (h[3] << 14);
+    let f3 = (h[3] >> 18) | (h[4] << 8);
 
     let s0 = u32::from_le_bytes([key[16], key[17], key[18], key[19]]) as u64;
     let s1 = u32::from_le_bytes([key[20], key[21], key[22], key[23]]) as u64;
@@ -307,6 +266,34 @@ pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
     tag[8..12].copy_from_slice(&(g2 as u32).to_le_bytes());
     tag[12..16].copy_from_slice(&(g3 as u32).to_le_bytes());
     tag
+}
+
+/// Poly1305 MAC computation (RFC 8439 Section 2.5)
+///
+/// Computes a 16-byte authentication tag using the Poly1305 algorithm.
+/// The 32-byte key is split: r = key[0..16] (clamped), s = key[16..32].
+pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
+    let (r_limbs, r5_limbs) = poly1305_clamp_r(key);
+
+    let mut h = [0u64; 5];
+
+    let mut offset = 0usize;
+    while offset < message.len() {
+        let block_len = (message.len() - offset).min(16);
+        let mut block = [0u8; 17];
+        block[..block_len].copy_from_slice(&message[offset..offset + block_len]);
+        block[block_len] = 1;
+        let m = poly1305_block_to_limbs(&block);
+
+        for i in 0..5 { h[i] += m[i]; }
+
+        poly1305_multiply_reduce(&mut h, &r_limbs, &r5_limbs);
+
+        offset += block_len;
+    }
+
+    poly1305_final_reduce(&mut h);
+    poly1305_finalize(h, key)
 }
 
 /// Parse a Poly1305 block (16-byte chunk plus 0x01 pad byte) into 26-bit limbs.

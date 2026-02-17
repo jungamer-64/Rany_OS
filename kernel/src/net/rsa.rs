@@ -539,59 +539,12 @@ pub enum RsaError {
 ///
 /// # Returns
 /// 検証成功なら `Ok(())`、失敗なら対応する `RsaError`
-pub fn rsa_pkcs1_verify(
-    key: &RsaPublicKey,
-    hash_alg: HashAlgorithm,
-    digest: &[u8],
-    signature: &[u8],
-) -> Result<(), RsaError> {
-    let n = BigUint::from_be_bytes(key.modulus);
-    let e = BigUint::from_be_bytes(key.exponent);
-
-    // モジュラスのバイト長（k）
-    let k = key.modulus.len();
-
-    // DigestInfo DERプレフィックス
-    let prefix = match hash_alg {
-        HashAlgorithm::Sha256 => &DIGEST_INFO_SHA256_PREFIX[..],
-        HashAlgorithm::Sha384 => &DIGEST_INFO_SHA384_PREFIX[..],
-    };
-
-    // T = DigestInfo = prefix || digest
-    let t_len = prefix.len() + hash_alg.digest_len();
-
-    // Step 0: モジュラスがパディングを収容できるか確認
-    // 最小長: 0x00 (1) + 0x01 (1) + 0xFF...0xFF (>=8) + 0x00 (1) + T
-    if k < t_len + 11 {
-        return Err(RsaError::ModulusTooSmall);
-    }
-
-    // Step 1: 署名長の検証
-    if signature.len() != k {
-        return Err(RsaError::InvalidSignatureLength);
-    }
-
-    // Step 2: 署名を整数に変換し、s^e mod n を計算
-    let s = BigUint::from_be_bytes(signature);
-
-    // s < n を確認
-    if s >= n {
-        return Err(RsaError::InvalidSignatureValue);
-    }
-
-    let m = s.mod_exp(&e, &n);
-
-    // Step 3: 結果をk バイトのビッグエンディアンにエンコード
-    let em = m.to_be_bytes_padded(k);
-
-    // Step 4: PKCS#1 v1.5パディングの検証
-    // EM = 0x00 || 0x01 || PS || 0x00 || T
-    // PS = 0xFF repeated (>= 8 octets)
+/// PKCS#1 v1.5パディングの0x00セパレータ位置を検索し、PS長を検証
+fn find_pkcs1_separator(em: &[u8]) -> Result<usize, RsaError> {
     if em[0] != 0x00 || em[1] != 0x01 {
         return Err(RsaError::InvalidPadding);
     }
 
-    // PS の終端を探す（0x00 セパレータ）
     let mut separator_pos = None;
     for i in 2..em.len() {
         if em[i] == 0x00 {
@@ -614,20 +567,19 @@ pub fn rsa_pkcs1_verify(
         return Err(RsaError::InvalidPadding);
     }
 
-    // Step 5: T の検証
-    let t_start = sep + 1;
-    let t_data = &em[t_start..];
+    Ok(sep)
+}
 
+/// DigestInfo DERプレフィックスとダイジェスト値を検証（定時間比較）
+fn verify_digest_info(t_data: &[u8], prefix: &[u8], digest: &[u8], t_len: usize) -> Result<(), RsaError> {
     if t_data.len() != t_len {
         return Err(RsaError::DigestInfoMismatch);
     }
 
-    // DigestInfo DERプレフィックスの照合
     if &t_data[..prefix.len()] != prefix {
         return Err(RsaError::DigestInfoMismatch);
     }
 
-    // ダイジェスト値の照合（定時間比較）
     let extracted_digest = &t_data[prefix.len()..];
     if extracted_digest.len() != digest.len() {
         return Err(RsaError::DigestMismatch);
@@ -643,6 +595,56 @@ pub fn rsa_pkcs1_verify(
     }
 
     Ok(())
+}
+
+pub fn rsa_pkcs1_verify(
+    key: &RsaPublicKey,
+    hash_alg: HashAlgorithm,
+    digest: &[u8],
+    signature: &[u8],
+) -> Result<(), RsaError> {
+    let n = BigUint::from_be_bytes(key.modulus);
+    let e = BigUint::from_be_bytes(key.exponent);
+
+    // モジュラスのバイト長（k）
+    let k = key.modulus.len();
+
+    // DigestInfo DERプレフィックス
+    let prefix = match hash_alg {
+        HashAlgorithm::Sha256 => &DIGEST_INFO_SHA256_PREFIX[..],
+        HashAlgorithm::Sha384 => &DIGEST_INFO_SHA384_PREFIX[..],
+    };
+
+    // T = DigestInfo = prefix || digest
+    let t_len = prefix.len() + hash_alg.digest_len();
+
+    // Step 0: モジュラスがパディングを収容できるか確認
+    if k < t_len + 11 {
+        return Err(RsaError::ModulusTooSmall);
+    }
+
+    // Step 1: 署名長の検証
+    if signature.len() != k {
+        return Err(RsaError::InvalidSignatureLength);
+    }
+
+    // Step 2: 署名を整数に変換し、s^e mod n を計算
+    let s = BigUint::from_be_bytes(signature);
+    if s >= n {
+        return Err(RsaError::InvalidSignatureValue);
+    }
+
+    let m = s.mod_exp(&e, &n);
+
+    // Step 3: 結果をk バイトのビッグエンディアンにエンコード
+    let em = m.to_be_bytes_padded(k);
+
+    // Step 4: PKCS#1 v1.5パディングの検証
+    let sep = find_pkcs1_separator(&em)?;
+
+    // Step 5: T の検証
+    let t_data = &em[sep + 1..];
+    verify_digest_info(t_data, prefix, digest, t_len)
 }
 
 // ============================================================================
@@ -716,6 +718,59 @@ pub fn rsa_pkcs1_encrypt(
 ///
 /// # Returns
 /// 検証成功なら `Ok(())`、失敗なら `RsaError`
+/// PSS DB（maskedDBのアンマスク・ビットクリア済み）から0x01セパレータを探す
+fn find_pss_padding_separator(db: &[u8]) -> Result<usize, RsaError> {
+    let mut padding_pos = None;
+    for i in 0..db.len() {
+        if db[i] == 0x01 {
+            padding_pos = Some(i);
+            break;
+        }
+        if db[i] != 0x00 {
+            return Err(RsaError::InvalidPadding);
+        }
+    }
+
+    match padding_pos {
+        Some(pos) => Ok(pos + 1),
+        None => Err(RsaError::InvalidPadding),
+    }
+}
+
+/// maskedDBをMGF1でアンマスクし、最上位ビットをクリア
+fn unmask_db(masked_db: &[u8], h: &[u8], db_len: usize, hash_alg: HashAlgorithm, em_len: usize, k: usize) -> Vec<u8> {
+    let db_mask = mgf1(h, db_len, hash_alg);
+    let mut db = Vec::with_capacity(db_len);
+    for i in 0..db_len {
+        db.push(masked_db[i] ^ db_mask[i]);
+    }
+
+    let top_bits = 8 * em_len - (k * 8 - 1).min(8 * em_len);
+    if top_bits < 8 && !db.is_empty() {
+        db[0] &= 0xFF >> top_bits;
+    }
+
+    db
+}
+
+/// 定時間ハッシュ比較
+fn constant_time_hash_eq(a: &[u8], b: &[u8]) -> Result<(), RsaError> {
+    if a.len() != b.len() {
+        return Err(RsaError::DigestMismatch);
+    }
+
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+
+    if diff != 0 {
+        Err(RsaError::DigestMismatch)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn rsa_pss_verify(
     key: &RsaPublicKey,
     hash_alg: HashAlgorithm,
@@ -743,13 +798,9 @@ pub fn rsa_pss_verify(
 
     // Step 2: EMSA-PSS-VERIFY
     let em_len = em.len();
-
-    // 最低限: maskedDB (em_len - h_len - 1) + H (h_len) + 0xBC (1)
     if em_len < h_len + 2 {
         return Err(RsaError::InvalidPadding);
     }
-
-    // 最後のバイトが0xBCであること
     if em[em_len - 1] != 0xBC {
         return Err(RsaError::InvalidPadding);
     }
@@ -758,37 +809,9 @@ pub fn rsa_pss_verify(
     let masked_db = &em[..db_len];
     let h = &em[db_len..db_len + h_len];
 
-    // MGF1 でマスクを生成し、maskedDB をアンマスク
-    let db_mask = mgf1(h, db_len, hash_alg);
-    let mut db = Vec::with_capacity(db_len);
-    for i in 0..db_len {
-        db.push(masked_db[i] ^ db_mask[i]);
-    }
+    let db = unmask_db(masked_db, h, db_len, hash_alg, em_len, k);
 
-    // 最上位ビットをクリア (em_bits に合わせる)
-    // 8*em_len - em_bits のbit数分マスク
-    let top_bits = 8 * em_len - (k * 8 - 1).min(8 * em_len);
-    if top_bits < 8 && !db.is_empty() {
-        db[0] &= 0xFF >> top_bits;
-    }
-
-    // DB の先頭からゼロを探し、0x01 を見つける
-    let mut padding_pos = None;
-    for i in 0..db.len() {
-        if db[i] == 0x01 {
-            padding_pos = Some(i);
-            break;
-        }
-        if db[i] != 0x00 {
-            return Err(RsaError::InvalidPadding);
-        }
-    }
-
-    let salt_start = match padding_pos {
-        Some(pos) => pos + 1,
-        None => return Err(RsaError::InvalidPadding),
-    };
-
+    let salt_start = find_pss_padding_separator(&db)?;
     let salt = &db[salt_start..];
 
     // M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt
@@ -797,24 +820,9 @@ pub fn rsa_pss_verify(
     m_prime.extend_from_slice(message_hash);
     m_prime.extend_from_slice(salt);
 
-    // H' = Hash(M')
     let h_prime = hash_compute(hash_alg, &m_prime);
 
-    // H == H' の定時間比較
-    if h.len() != h_prime.len() {
-        return Err(RsaError::DigestMismatch);
-    }
-
-    let mut diff = 0u8;
-    for i in 0..h.len() {
-        diff |= h[i] ^ h_prime[i];
-    }
-
-    if diff != 0 {
-        Err(RsaError::DigestMismatch)
-    } else {
-        Ok(())
-    }
+    constant_time_hash_eq(h, &h_prime)
 }
 
 /// MGF1 マスク生成関数 (RFC 8017 Appendix B.2.1)

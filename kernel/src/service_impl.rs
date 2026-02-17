@@ -364,6 +364,31 @@ fn build_prp_list_internal(
 
     // Need PRP list for > 2 pages
     let total_entries = pages - 1;
+    let (mut list_buffers, list_iovas, list_maps) =
+        allocate_prp_list_buffers(device, total_entries)?;
+
+    fill_prp_entries(&mut list_buffers, &list_iovas, base_addr, total_entries)?;
+
+    let mut prp_pages = alloc::vec::Vec::with_capacity(list_buffers.len());
+    for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
+        let (dev, guard) = list.start_dma();
+        prp_pages.push(PrpListPage { dev, guard, map, iova });
+    }
+
+    let chain = PrpListChain { pages: prp_pages };
+    let prp2 = chain.first_iova();
+    Ok((prp2, Some(chain)))
+}
+
+/// PRP リスト用のDMAバッファを確保しIOMMUマッピングを行う
+fn allocate_prp_list_buffers(
+    device: Option<IommuDeviceId>,
+    total_entries: usize,
+) -> Result<(
+    alloc::vec::Vec<TypedDmaSlice<CpuOwned>>,
+    alloc::vec::Vec<u64>,
+    alloc::vec::Vec<Option<IommuMapping>>,
+), KapiError> {
     let mut remaining = total_entries;
     let mut list_buffers = alloc::vec::Vec::new();
 
@@ -383,7 +408,16 @@ fn build_prp_list_internal(
         list_maps.push(list_map);
     }
 
-    // Fill PRP entries
+    Ok((list_buffers, list_iovas, list_maps))
+}
+
+/// PRPエントリにページアドレスとチェインポインタを書き込む
+fn fill_prp_entries(
+    list_buffers: &mut [TypedDmaSlice<CpuOwned>],
+    list_iovas: &[u64],
+    base_addr: u64,
+    total_entries: usize,
+) -> Result<(), KapiError> {
     let mut filled = 0usize;
     for idx in 0..list_buffers.len() {
         let remaining_entries = total_entries - filled;
@@ -407,16 +441,7 @@ fn build_prp_list_internal(
 
         filled += data_capacity;
     }
-
-    let mut prp_pages = alloc::vec::Vec::with_capacity(list_buffers.len());
-    for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
-        let (dev, guard) = list.start_dma();
-        prp_pages.push(PrpListPage { dev, guard, map, iova });
-    }
-
-    let chain = PrpListChain { pages: prp_pages };
-    let prp2 = chain.first_iova();
-    Ok((prp2, Some(chain)))
+    Ok(())
 }
 
 // ============================================================================

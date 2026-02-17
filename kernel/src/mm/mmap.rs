@@ -483,73 +483,14 @@ impl MmapManager {
             return Err(MmapError::InvalidSize);
         }
 
-        let address = if let Some(a) = addr {
-            if flags.fixed && !a.is_page_aligned() {
-                return Err(MmapError::AlignmentError);
-            }
-            if flags.fixed {
-                a
-            } else {
-                self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
-            }
-        } else {
-            self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
-        };
-
+        let address = self.resolve_mmap_address(addr, size, &flags)?;
         let aligned_size = size.page_aligned();
         let page_count = aligned_size.page_count();
+        let pt_flags = Self::build_page_flags(&protection, address);
 
-        // ページテーブルフラグを設定
-        let mut pt_flags = PageFlags::new(PageFlags::PRESENT);
-        if protection.can_write() {
-            pt_flags = pt_flags.set(PageFlags::WRITABLE);
-        }
-        if !protection.can_exec() {
-            pt_flags = pt_flags.set(PageFlags::NO_EXECUTE);
-        }
-        // ユーザー空間のマッピングの場合
-        if address.as_usize() < crate::mm::higher_half::VirtAddr::KERNEL_BASE as usize {
-            pt_flags = pt_flags.set(PageFlags::USER);
-        }
+        let allocated_frames = self.map_pages(address, page_count, pt_flags, &flags)?;
+        let _ = allocated_frames; // ownership tracked by page table
 
-        // 各ページに物理フレームを割り当ててマップ
-        let mut allocated_frames = Vec::new();
-        for i in 0..page_count {
-            let frame = alloc_frame().ok_or(MmapError::OutOfMemory)?;
-            let phys_addr = PhysAddr::new(frame.start_address().as_u64());
-            let virt_addr = crate::mm::higher_half::VirtAddr::new(
-                (address.as_usize() + i * MappingSize::PAGE_SIZE) as u64,
-            );
-
-            // ページテーブルにマップ
-            let map_result = unsafe {
-                crate::mm::global_map_page(
-                    virt_addr,
-                    crate::mm::higher_half::PhysAddr::new(phys_addr.as_u64()),
-                    pt_flags,
-                )
-            };
-
-            if map_result.is_err() {
-                // 失敗した場合、これまでに割り当てたフレームを解放
-                for prev_frame in allocated_frames {
-                    crate::mm::dealloc_frame(prev_frame);
-                }
-                return Err(MmapError::NoResources);
-            }
-
-            allocated_frames.push(frame);
-
-            // ゼロ初期化（フラグが設定されている場合）
-            if flags.zero_init {
-                unsafe {
-                    let ptr = virt_addr.as_u64() as *mut u8;
-                    core::ptr::write_bytes(ptr, 0, MappingSize::PAGE_SIZE);
-                }
-            }
-        }
-
-        // 内部マッピング情報を作成（物理フレームはページテーブルで管理）
         let mapping = MemoryMapping::anonymous(address, size, protection, flags)?;
         let mapping_size = mapping.size().as_usize();
 
@@ -560,6 +501,89 @@ impl MmapManager {
 
         self.total_mapped.fetch_add(mapping_size, Ordering::Relaxed);
         Ok(address)
+    }
+
+    /// Resolve the virtual address for a new mapping.
+    fn resolve_mmap_address(
+        &self,
+        addr: Option<MappedAddress>,
+        size: MappingSize,
+        flags: &MappingFlags,
+    ) -> Result<MappedAddress, MmapError> {
+        if let Some(a) = addr {
+            if flags.fixed && !a.is_page_aligned() {
+                return Err(MmapError::AlignmentError);
+            }
+            if flags.fixed {
+                Ok(a)
+            } else {
+                self.find_free_address(size).ok_or(MmapError::OutOfMemory)
+            }
+        } else {
+            self.find_free_address(size).ok_or(MmapError::OutOfMemory)
+        }
+    }
+
+    /// Build page table flags from protection and address.
+    fn build_page_flags(protection: &Protection, address: MappedAddress) -> crate::mm::PageFlags {
+        use crate::mm::PageFlags;
+        let mut pt_flags = PageFlags::new(PageFlags::PRESENT);
+        if protection.can_write() {
+            pt_flags = pt_flags.set(PageFlags::WRITABLE);
+        }
+        if !protection.can_exec() {
+            pt_flags = pt_flags.set(PageFlags::NO_EXECUTE);
+        }
+        if address.as_usize() < crate::mm::higher_half::VirtAddr::KERNEL_BASE as usize {
+            pt_flags = pt_flags.set(PageFlags::USER);
+        }
+        pt_flags
+    }
+
+    /// Allocate physical frames and map them into the page table.
+    fn map_pages(
+        &self,
+        address: MappedAddress,
+        page_count: usize,
+        pt_flags: crate::mm::PageFlags,
+        flags: &MappingFlags,
+    ) -> Result<Vec<x86_64::structures::paging::PhysFrame>, MmapError> {
+        use crate::mm::alloc_frame;
+        use x86_64::PhysAddr;
+
+        let mut allocated_frames = Vec::new();
+        for i in 0..page_count {
+            let frame = alloc_frame().ok_or(MmapError::OutOfMemory)?;
+            let phys_addr = PhysAddr::new(frame.start_address().as_u64());
+            let virt_addr = crate::mm::higher_half::VirtAddr::new(
+                (address.as_usize() + i * MappingSize::PAGE_SIZE) as u64,
+            );
+
+            let map_result = unsafe {
+                crate::mm::global_map_page(
+                    virt_addr,
+                    crate::mm::higher_half::PhysAddr::new(phys_addr.as_u64()),
+                    pt_flags,
+                )
+            };
+
+            if map_result.is_err() {
+                for prev_frame in allocated_frames {
+                    crate::mm::dealloc_frame(prev_frame);
+                }
+                return Err(MmapError::NoResources);
+            }
+
+            allocated_frames.push(frame);
+
+            if flags.zero_init {
+                unsafe {
+                    let ptr = virt_addr.as_u64() as *mut u8;
+                    core::ptr::write_bytes(ptr, 0, MappingSize::PAGE_SIZE);
+                }
+            }
+        }
+        Ok(allocated_frames)
     }
 
     /// SASリニアマッピング領域から仮想アドレスを取得

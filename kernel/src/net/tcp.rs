@@ -2393,6 +2393,19 @@ impl TcpProcessor {
         self.process(data, src_ip, dst_ip, current_time)
     }
 
+    /// Create an ACK packet result from current TCB state
+    fn make_ack_result(tcb: &TcpControlBlock) -> TcpProcessResult {
+        TcpProcessResult::SendPacket {
+            local: tcb.local_addr,
+            remote: tcb.remote_addr.unwrap(),
+            seq: tcb.snd_nxt,
+            ack: tcb.rcv_nxt,
+            flags: TcpHeader::FLAG_ACK,
+            window: tcb.rcv_wnd,
+            payload: Vec::new(),
+        }
+    }
+
     /// Process a TCP segment for an existing connection
     fn process_segment(
         &mut self,
@@ -2412,310 +2425,360 @@ impl TcpProcessor {
         let fin = flags & TcpHeader::FLAG_FIN != 0;
         let _psh = flags & TcpHeader::FLAG_PSH != 0;
 
-        let payload_len = payload.len();
-        let mut result = TcpProcessResult::None;
-
         // Update send window
         if ack {
             tcb.snd_wnd = window;
         }
 
         match tcb.state {
-            TcpState::Closed => {
-                // Ignore packets to closed connections
+            TcpState::Closed | TcpState::Listen | TcpState::CloseWait => {
+                // Closed: ignore; Listen: handled in main process(); CloseWait: handled by close()
+                TcpProcessResult::None
             }
-
-            TcpState::Listen => {
-                // Handled in main process()
-            }
-
-            TcpState::SynSent => {
-                // Waiting for SYN-ACK
-                // Accept ACK that acknowledges the initial SYN (snd_una + 1)
-                if syn && ack && ack_num == tcb.snd_una.wrapping_add(1) {
-                    tcb.snd_una = ack_num;
-                    tcb.snd_nxt = ack_num;
-                    tcb.rcv_nxt = seq_num.wrapping_add(1);
-                    tcb.state = TcpState::Established;
-                    // Wake connect waker
-                    if let Some(waker) = tcb.connect_waker.take() {
-                        waker.wake();
-                    }
-                    // Send ACK
-                    result = TcpProcessResult::SendPacket {
-                        local: tcb.local_addr,
-                        remote: tcb.remote_addr.unwrap(),
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_ACK,
-                        window: tcb.rcv_wnd,
-                        payload: Vec::new(),
-                    };
-                } else if syn && !ack {
-                    // Simultaneous open
-                    tcb.rcv_nxt = seq_num.wrapping_add(1);
-                    tcb.state = TcpState::SynReceived;
-                    // Send SYN-ACK
-                    result = TcpProcessResult::SendPacket {
-                        local: tcb.local_addr,
-                        remote: tcb.remote_addr.unwrap(),
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
-                        window: tcb.rcv_wnd,
-                        payload: Vec::new(),
-                    };
-                }
-            }
-
-            TcpState::SynReceived => {
-                // ACK acknowledging our SYN (snd_una + 1)
-                if ack && ack_num == tcb.snd_una.wrapping_add(1) {
-                    tcb.snd_una = ack_num;
-                    tcb.snd_nxt = ack_num;
-                    tcb.state = TcpState::Established;
-                    
-                    // Push to backlog if present
-                    if let Some(backlog_lock) = &tcb.backlog {
-                        if let Ok(mut backlog) = backlog_lock.lock() {
-                            backlog.push_back(TcpStream { tcb: tcb_arc.clone() });
-                            
-                            if let Some(waker_lock) = &tcb.accept_waker {
-                                if let Ok(mut waker_opt) = waker_lock.lock() {
-                                    if let Some(waker) = waker_opt.take() {
-                                        waker.wake();
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some(waker) = tcb.connect_waker.take() {
-                        waker.wake();
-                    }
-                }
-            }
-
+            TcpState::SynSent => Self::handle_syn_sent_segment(tcb, syn, ack, seq_num, ack_num),
+            TcpState::SynReceived => Self::handle_syn_received_segment(tcb, tcb_arc, ack, ack_num),
             TcpState::Established => {
-                if ack && Self::seq_after(ack_num, tcb.snd_una) {
-                    // New ACK - calculate bytes acknowledged
-                    let bytes_acked = ack_num.wrapping_sub(tcb.snd_una);
-                    tcb.last_ack = ack_num;
-                    tcb.snd_una = ack_num;
-                    
-                    // Remove acknowledged segments from retransmit queue
-                    tcb.ack_segments(ack_num);
-                    
-                    // Congestion control: update cwnd on new ACK
-                    tcb.on_new_ack(bytes_acked);
-                    
-                    if let Some(waker) = tcb.write_waker.take() {
-                        waker.wake();
-                    }
-                } else if ack && ack_num == tcb.snd_una && tcb.outstanding_bytes > 0 {
-                    // Duplicate ACK - same ack_num but we have outstanding data
-                    let should_retransmit = tcb.on_dup_ack();
-                    if should_retransmit {
-                        // Fast retransmit: immediately resend oldest unacked segment
-                        if let Some(oldest) = tcb.unacked_segments.front() {
-                            if let Some(remote) = tcb.remote_addr {
-                                result = TcpProcessResult::SendPacket {
-                                    local: tcb.local_addr,
-                                    remote,
-                                    seq: oldest.seq,
-                                    ack: tcb.rcv_nxt,
-                                    flags: oldest.flags,
-                                    window: tcb.rcv_wnd,
-                                    payload: oldest.data.clone(),
-                                };
-                            }
+                Self::handle_established_segment(tcb, ack, ack_num, fin, seq_num, payload, header_len, packet_opt)
+            }
+            TcpState::FinWait1 => Self::handle_fin_wait1_segment(tcb, ack, ack_num, fin, current_time),
+            TcpState::FinWait2 => Self::handle_fin_wait2_segment(tcb, fin, current_time),
+            TcpState::Closing => Self::handle_closing_segment(tcb, ack, ack_num, current_time),
+            TcpState::LastAck => Self::handle_last_ack_segment(tcb, ack, ack_num),
+            TcpState::TimeWait => Self::handle_time_wait_segment(tcb, current_time),
+        }
+    }
+
+    /// Handle segment in SYN-SENT state
+    fn handle_syn_sent_segment(
+        tcb: &mut TcpControlBlock,
+        syn: bool,
+        ack: bool,
+        seq_num: u32,
+        ack_num: u32,
+    ) -> TcpProcessResult {
+        // Waiting for SYN-ACK
+        // Accept ACK that acknowledges the initial SYN (snd_una + 1)
+        if syn && ack && ack_num == tcb.snd_una.wrapping_add(1) {
+            tcb.snd_una = ack_num;
+            tcb.snd_nxt = ack_num;
+            tcb.rcv_nxt = seq_num.wrapping_add(1);
+            tcb.state = TcpState::Established;
+            // Wake connect waker
+            if let Some(waker) = tcb.connect_waker.take() {
+                waker.wake();
+            }
+            // Send ACK
+            Self::make_ack_result(tcb)
+        } else if syn && !ack {
+            // Simultaneous open
+            tcb.rcv_nxt = seq_num.wrapping_add(1);
+            tcb.state = TcpState::SynReceived;
+            // Send SYN-ACK
+            TcpProcessResult::SendPacket {
+                local: tcb.local_addr,
+                remote: tcb.remote_addr.unwrap(),
+                seq: tcb.snd_nxt,
+                ack: tcb.rcv_nxt,
+                flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+                window: tcb.rcv_wnd,
+                payload: Vec::new(),
+            }
+        } else {
+            TcpProcessResult::None
+        }
+    }
+
+    /// Handle segment in SYN-RECEIVED state
+    fn handle_syn_received_segment(
+        tcb: &mut TcpControlBlock,
+        tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
+        ack: bool,
+        ack_num: u32,
+    ) -> TcpProcessResult {
+        // ACK acknowledging our SYN (snd_una + 1)
+        if ack && ack_num == tcb.snd_una.wrapping_add(1) {
+            tcb.snd_una = ack_num;
+            tcb.snd_nxt = ack_num;
+            tcb.state = TcpState::Established;
+
+            // Push to backlog and wake accept waker
+            Self::notify_backlog(tcb, tcb_arc);
+
+            if let Some(waker) = tcb.connect_waker.take() {
+                waker.wake();
+            }
+        }
+        TcpProcessResult::None
+    }
+
+    /// Push newly established connection to listener backlog and wake accept waker
+    fn notify_backlog(
+        tcb: &TcpControlBlock,
+        tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
+    ) {
+        if let Some(backlog_lock) = &tcb.backlog {
+            if let Ok(mut backlog) = backlog_lock.lock() {
+                backlog.push_back(TcpStream { tcb: tcb_arc.clone() });
+
+                if let Some(waker_lock) = &tcb.accept_waker {
+                    if let Ok(mut waker_opt) = waker_lock.lock() {
+                        if let Some(waker) = waker_opt.take() {
+                            waker.wake();
                         }
                     }
-                }
-
-                if payload_len > 0 && seq_num == tcb.rcv_nxt {
-                    // In-order data - Update stats
-                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
-                    tcb.stats.bytes_received += payload_len as u64;
-                    tcb.stats.packets_received += 1;
-
-                    // Prefer zero-copy when a PacketRef is available
-                    if let Some(mut pkt) = packet_opt {
-                        // Ensure header_len is within packet and adjust view to payload
-                        if header_len <= pkt.len() && payload_len <= pkt.len() - header_len {
-                            pkt.advance(header_len);
-                            pkt.set_len(payload_len);
-                            tcb.recv_buffer.push_back(pkt);
-                        } else {
-                            // View doesn't match expected layout - fallback to copy
-                            if let Some(mut packet) = super::mempool::alloc_packet() {
-                                let data_slice = packet.data_mut();
-                                if payload_len <= data_slice.len() {
-                                    data_slice[..payload_len].copy_from_slice(payload);
-                                    packet.set_len(payload_len);
-                                    tcb.recv_buffer.push_back(packet);
-                                } else {
-                                    // Payload too large for packet, use Vec fallback
-                                    tcb.recv_queue.push_back(payload.to_vec());
-                                }
-                            } else {
-                                // mempool exhausted - fallback to copy
-                                tcb.recv_queue.push_back(payload.to_vec());
-                            }
-                        }
-                    } else {
-                        // No PacketRef available - copy into a new PacketRef when possible
-                        if let Some(mut packet) = super::mempool::alloc_packet() {
-                            let data_slice = packet.data_mut();
-                            if payload_len <= data_slice.len() {
-                                data_slice[..payload_len].copy_from_slice(payload);
-                                packet.set_len(payload_len);
-                                tcb.recv_buffer.push_back(packet);
-                            } else {
-                                // Payload too large for packet, use Vec fallback
-                                tcb.recv_queue.push_back(payload.to_vec());
-                            }
-                        } else {
-                            // mempool exhausted - fallback to copy
-                            tcb.recv_queue.push_back(payload.to_vec());
-                        }
-                    }
-
-                    if let Some(waker) = tcb.read_waker.take() {
-                        waker.wake();
-                    }
-                    // Send ACK
-                    result = TcpProcessResult::SendPacket {
-                        local: tcb.local_addr,
-                        remote: tcb.remote_addr.unwrap(),
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_ACK,
-                        window: tcb.rcv_wnd,
-                        payload: Vec::new(),
-                    };
-                } else if payload_len > 0 {
-                    // Out-of-order - Send ACK for expected
-                     result = TcpProcessResult::SendPacket {
-                        local: tcb.local_addr,
-                        remote: tcb.remote_addr.unwrap(),
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_ACK,
-                        window: tcb.rcv_wnd,
-                        payload: Vec::new(),
-                    };
-                }
-
-                if fin {
-                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                    tcb.state = TcpState::CloseWait;
-                    if let Some(waker) = tcb.read_waker.take() {
-                        waker.wake();
-                    }
-                    result = TcpProcessResult::SendPacket {
-                        local: tcb.local_addr,
-                        remote: tcb.remote_addr.unwrap(),
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_ACK,
-                        window: tcb.rcv_wnd,
-                        payload: Vec::new(),
-                    };
-                }
-            }
-
-            TcpState::FinWait1 => {
-                // We sent FIN, waiting for ACK
-                if ack && ack_num == tcb.snd_nxt {
-                    tcb.snd_una = ack_num;
-                    if fin {
-                        // Simultaneous close
-                        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                        tcb.state = TcpState::TimeWait;
-                        tcb.time_wait_entered = current_time;
-                        // Send ACK
-                         result = TcpProcessResult::SendPacket {
-                            local: tcb.local_addr,
-                            remote: tcb.remote_addr.unwrap(),
-                            seq: tcb.snd_nxt,
-                            ack: tcb.rcv_nxt,
-                            flags: TcpHeader::FLAG_ACK,
-                            window: tcb.rcv_wnd,
-                            payload: Vec::new(),
-                        };
-                    } else {
-                        tcb.state = TcpState::FinWait2;
-                    }
-                } else if fin {
-                    // FIN before ACK
-                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                    tcb.state = TcpState::Closing;
-                     // Send ACK
-                     result = TcpProcessResult::SendPacket {
-                        local: tcb.local_addr,
-                        remote: tcb.remote_addr.unwrap(),
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_ACK,
-                        window: tcb.rcv_wnd,
-                        payload: Vec::new(),
-                    };
-                }
-            }
-
-            TcpState::FinWait2 => {
-                // Waiting for peer's FIN
-                if fin {
-                    tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-                    tcb.state = TcpState::TimeWait;
-                    tcb.time_wait_entered = current_time;
-                    // Send ACK
-                     result = TcpProcessResult::SendPacket {
-                        local: tcb.local_addr,
-                        remote: tcb.remote_addr.unwrap(),
-                        seq: tcb.snd_nxt,
-                        ack: tcb.rcv_nxt,
-                        flags: TcpHeader::FLAG_ACK,
-                        window: tcb.rcv_wnd,
-                        payload: Vec::new(),
-                    };
-                }
-            }
-
-            TcpState::CloseWait => {
-                // Waiting for application to close
-                // (handled by close() call)
-            }
-
-            TcpState::Closing => {
-                // Waiting for ACK of our FIN
-                if ack && ack_num == tcb.snd_nxt {
-                    tcb.snd_una = ack_num;
-                    tcb.state = TcpState::TimeWait;
-                    tcb.time_wait_entered = current_time;
-                }
-            }
-
-            TcpState::LastAck => {
-                // Waiting for ACK of our FIN
-                if ack && ack_num == tcb.snd_nxt {
-                    tcb.snd_una = ack_num;
-                    tcb.state = TcpState::Closed;
-                }
-            }
-
-            TcpState::TimeWait => {
-                // RFC 793: Wait for 2*MSL (Maximum Segment Lifetime) then move to Closed
-                // MSL = 120 seconds, 2*MSL = 240 seconds = 240_000_000 microseconds
-                const TWO_MSL_US: u64 = 240_000_000;
-                if current_time.saturating_sub(tcb.time_wait_entered) >= TWO_MSL_US {
-                    tcb.state = TcpState::Closed;
                 }
             }
         }
-        
+    }
+
+    /// Handle segment in ESTABLISHED state
+    fn handle_established_segment(
+        tcb: &mut TcpControlBlock,
+        ack: bool,
+        ack_num: u32,
+        fin: bool,
+        seq_num: u32,
+        payload: &[u8],
+        header_len: usize,
+        packet_opt: Option<PacketRef>,
+    ) -> TcpProcessResult {
+        let payload_len = payload.len();
+        let mut result = Self::handle_established_ack(tcb, ack, ack_num);
+
+        if payload_len > 0 {
+            result = Self::handle_established_data(tcb, seq_num, payload, header_len, packet_opt, payload_len);
+        }
+
+        if fin {
+            result = Self::handle_established_fin(tcb);
+        }
+
         result
+    }
+
+    /// Process ACK in ESTABLISHED state (new ACK or duplicate ACK)
+    fn handle_established_ack(
+        tcb: &mut TcpControlBlock,
+        ack: bool,
+        ack_num: u32,
+    ) -> TcpProcessResult {
+        if ack && Self::seq_after(ack_num, tcb.snd_una) {
+            // New ACK - calculate bytes acknowledged
+            let bytes_acked = ack_num.wrapping_sub(tcb.snd_una);
+            tcb.last_ack = ack_num;
+            tcb.snd_una = ack_num;
+
+            // Remove acknowledged segments from retransmit queue
+            tcb.ack_segments(ack_num);
+
+            // Congestion control: update cwnd on new ACK
+            tcb.on_new_ack(bytes_acked);
+
+            if let Some(waker) = tcb.write_waker.take() {
+                waker.wake();
+            }
+            TcpProcessResult::None
+        } else if ack && ack_num == tcb.snd_una && tcb.outstanding_bytes > 0 {
+            // Duplicate ACK - same ack_num but we have outstanding data
+            Self::try_fast_retransmit(tcb)
+        } else {
+            TcpProcessResult::None
+        }
+    }
+
+    /// Attempt fast retransmit on duplicate ACK
+    fn try_fast_retransmit(tcb: &mut TcpControlBlock) -> TcpProcessResult {
+        let should_retransmit = tcb.on_dup_ack();
+        if should_retransmit {
+            // Fast retransmit: immediately resend oldest unacked segment
+            if let Some(oldest) = tcb.unacked_segments.front() {
+                if let Some(remote) = tcb.remote_addr {
+                    return TcpProcessResult::SendPacket {
+                        local: tcb.local_addr,
+                        remote,
+                        seq: oldest.seq,
+                        ack: tcb.rcv_nxt,
+                        flags: oldest.flags,
+                        window: tcb.rcv_wnd,
+                        payload: oldest.data.clone(),
+                    };
+                }
+            }
+        }
+        TcpProcessResult::None
+    }
+
+    /// Handle incoming data in ESTABLISHED state
+    fn handle_established_data(
+        tcb: &mut TcpControlBlock,
+        seq_num: u32,
+        payload: &[u8],
+        header_len: usize,
+        packet_opt: Option<PacketRef>,
+        payload_len: usize,
+    ) -> TcpProcessResult {
+        if seq_num == tcb.rcv_nxt {
+            // In-order data - Update stats
+            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+            tcb.stats.bytes_received += payload_len as u64;
+            tcb.stats.packets_received += 1;
+
+            Self::enqueue_inorder_payload(tcb, payload, header_len, packet_opt, payload_len);
+
+            if let Some(waker) = tcb.read_waker.take() {
+                waker.wake();
+            }
+        }
+        // Both in-order and out-of-order: send ACK for expected seq
+        Self::make_ack_result(tcb)
+    }
+
+    /// Enqueue in-order payload to receive buffer, preferring zero-copy
+    fn enqueue_inorder_payload(
+        tcb: &mut TcpControlBlock,
+        payload: &[u8],
+        header_len: usize,
+        packet_opt: Option<PacketRef>,
+        payload_len: usize,
+    ) {
+        if let Some(mut pkt) = packet_opt {
+            // Ensure header_len is within packet and adjust view to payload
+            if header_len <= pkt.len() && payload_len <= pkt.len() - header_len {
+                pkt.advance(header_len);
+                pkt.set_len(payload_len);
+                tcb.recv_buffer.push_back(pkt);
+            } else {
+                // View doesn't match expected layout - fallback to copy
+                Self::copy_payload_to_recv(tcb, payload, payload_len);
+            }
+        } else {
+            // No PacketRef available - copy into a new PacketRef when possible
+            Self::copy_payload_to_recv(tcb, payload, payload_len);
+        }
+    }
+
+    /// Copy payload into receive buffer (mempool PacketRef or Vec fallback)
+    fn copy_payload_to_recv(
+        tcb: &mut TcpControlBlock,
+        payload: &[u8],
+        payload_len: usize,
+    ) {
+        if let Some(mut packet) = super::mempool::alloc_packet() {
+            let data_slice = packet.data_mut();
+            if payload_len <= data_slice.len() {
+                data_slice[..payload_len].copy_from_slice(payload);
+                packet.set_len(payload_len);
+                tcb.recv_buffer.push_back(packet);
+            } else {
+                // Payload too large for packet, use Vec fallback
+                tcb.recv_queue.push_back(payload.to_vec());
+            }
+        } else {
+            // mempool exhausted - fallback to copy
+            tcb.recv_queue.push_back(payload.to_vec());
+        }
+    }
+
+    /// Handle FIN flag in ESTABLISHED state
+    fn handle_established_fin(tcb: &mut TcpControlBlock) -> TcpProcessResult {
+        tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+        tcb.state = TcpState::CloseWait;
+        if let Some(waker) = tcb.read_waker.take() {
+            waker.wake();
+        }
+        Self::make_ack_result(tcb)
+    }
+
+    /// Handle segment in FIN-WAIT-1 state
+    fn handle_fin_wait1_segment(
+        tcb: &mut TcpControlBlock,
+        ack: bool,
+        ack_num: u32,
+        fin: bool,
+        current_time: u64,
+    ) -> TcpProcessResult {
+        // We sent FIN, waiting for ACK
+        if ack && ack_num == tcb.snd_nxt {
+            tcb.snd_una = ack_num;
+            if fin {
+                // Simultaneous close
+                tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                tcb.state = TcpState::TimeWait;
+                tcb.time_wait_entered = current_time;
+                Self::make_ack_result(tcb)
+            } else {
+                tcb.state = TcpState::FinWait2;
+                TcpProcessResult::None
+            }
+        } else if fin {
+            // FIN before ACK
+            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+            tcb.state = TcpState::Closing;
+            Self::make_ack_result(tcb)
+        } else {
+            TcpProcessResult::None
+        }
+    }
+
+    /// Handle segment in FIN-WAIT-2 state
+    fn handle_fin_wait2_segment(
+        tcb: &mut TcpControlBlock,
+        fin: bool,
+        current_time: u64,
+    ) -> TcpProcessResult {
+        // Waiting for peer's FIN
+        if fin {
+            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+            tcb.state = TcpState::TimeWait;
+            tcb.time_wait_entered = current_time;
+            Self::make_ack_result(tcb)
+        } else {
+            TcpProcessResult::None
+        }
+    }
+
+    /// Handle segment in CLOSING state
+    fn handle_closing_segment(
+        tcb: &mut TcpControlBlock,
+        ack: bool,
+        ack_num: u32,
+        current_time: u64,
+    ) -> TcpProcessResult {
+        // Waiting for ACK of our FIN
+        if ack && ack_num == tcb.snd_nxt {
+            tcb.snd_una = ack_num;
+            tcb.state = TcpState::TimeWait;
+            tcb.time_wait_entered = current_time;
+        }
+        TcpProcessResult::None
+    }
+
+    /// Handle segment in LAST-ACK state
+    fn handle_last_ack_segment(
+        tcb: &mut TcpControlBlock,
+        ack: bool,
+        ack_num: u32,
+    ) -> TcpProcessResult {
+        // Waiting for ACK of our FIN
+        if ack && ack_num == tcb.snd_nxt {
+            tcb.snd_una = ack_num;
+            tcb.state = TcpState::Closed;
+        }
+        TcpProcessResult::None
+    }
+
+    /// Handle segment in TIME-WAIT state
+    fn handle_time_wait_segment(
+        tcb: &mut TcpControlBlock,
+        current_time: u64,
+    ) -> TcpProcessResult {
+        // RFC 793: Wait for 2*MSL (Maximum Segment Lifetime) then move to Closed
+        // MSL = 120 seconds, 2*MSL = 240 seconds = 240_000_000 microseconds
+        const TWO_MSL_US: u64 = 240_000_000;
+        if current_time.saturating_sub(tcb.time_wait_entered) >= TWO_MSL_US {
+            tcb.state = TcpState::Closed;
+        }
+        TcpProcessResult::None
     }
 
     /// Check if seq1 is after seq2 (handling wrap-around)

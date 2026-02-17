@@ -20,6 +20,40 @@ pub enum MenuResult {
     Cancelled,
 }
 
+/// Handle a key press in the boot menu.
+///
+/// Returns `(Option<MenuResult>, needs_redraw)`. If `MenuResult` is `Some`, the
+/// menu loop should return that result immediately.
+fn handle_menu_key(
+    key: Key,
+    selected: &mut usize,
+    entries_len: usize,
+    remaining_seconds: &mut u32,
+) -> (Option<MenuResult>, bool) {
+    match key {
+        Key::Special(ScanCode::UP) => {
+            *selected = if *selected > 0 { *selected - 1 } else { entries_len - 1 };
+            *remaining_seconds = 0;
+            (None, true)
+        }
+        Key::Special(ScanCode::DOWN) => {
+            *selected = if *selected < entries_len - 1 { *selected + 1 } else { 0 };
+            *remaining_seconds = 0;
+            (None, true)
+        }
+        Key::Printable(c) => {
+            let ch = char::from(c);
+            if ch == '\r' || ch == '\n' {
+                (Some(MenuResult::Selected(*selected)), false)
+            } else {
+                (None, false)
+            }
+        }
+        Key::Special(ScanCode::ESCAPE) => (Some(MenuResult::Cancelled), false),
+        _ => (None, false),
+    }
+}
+
 /// Display boot menu and wait for user selection
 ///
 /// # Arguments
@@ -47,36 +81,14 @@ pub fn show_boot_menu(config: &BootConfig) -> MenuResult {
     loop {
         // Check for key press (non-blocking)
         if let Some(key) = read_key_nonblocking() {
-            match key {
-                Key::Special(ScanCode::UP) => {
-                    if selected > 0 {
-                        selected -= 1;
-                    } else {
-                        selected = config.entries.len() - 1;
-                    }
-                    remaining_seconds = 0; // Cancel timer on key press
-                    draw_menu(config, selected, remaining_seconds);
-                }
-                Key::Special(ScanCode::DOWN) => {
-                    if selected < config.entries.len() - 1 {
-                        selected += 1;
-                    } else {
-                        selected = 0;
-                    }
-                    remaining_seconds = 0;
-                    draw_menu(config, selected, remaining_seconds);
-                }
-                Key::Printable(c) => {
-                    let ch = char::from(c);
-                    if ch == '\r' || ch == '\n' {
-                        // Enter pressed
-                        return MenuResult::Selected(selected);
-                    }
-                }
-                Key::Special(ScanCode::ESCAPE) => {
-                    return MenuResult::Cancelled;
-                }
-                _ => {}
+            let (result, needs_redraw) = handle_menu_key(
+                key, &mut selected, config.entries.len(), &mut remaining_seconds,
+            );
+            if let Some(r) = result {
+                return r;
+            }
+            if needs_redraw {
+                draw_menu(config, selected, remaining_seconds);
             }
         }
 

@@ -37,15 +37,13 @@ pub(super) fn align_up(value: u64, align: usize) -> u64 {
 // IVMD range mapping
 // ---------------------------------------------------------------------------
 
-pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
-    let page_size = PAGE_SIZE_4K;
+/// Collect aligned exclusion ranges from IVMD entries.
+fn collect_exclusion_ranges(ranges: &[AmdIvmdRange], page_size: usize) -> Vec<(u64, u64)> {
     let mut exclusions = Vec::new();
-
     for range in ranges {
         if !range.exclusion {
             continue;
         }
-
         let start = align_down(range.range_start, page_size);
         let end = align_up(range.range_end, page_size);
         if end <= start {
@@ -53,6 +51,59 @@ pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> 
         }
         exclusions.push((start, end));
     }
+    exclusions
+}
+
+/// Remove exclusion ranges from segments, splitting as needed.
+fn subtract_exclusions(
+    mut segments: Vec<(u64, u64)>,
+    exclusions: &[(u64, u64)],
+) -> Vec<(u64, u64)> {
+    for (ex_start, ex_end) in exclusions {
+        let mut next = Vec::new();
+        for (seg_start, seg_end) in segments {
+            if *ex_end <= seg_start || *ex_start >= seg_end {
+                next.push((seg_start, seg_end));
+                continue;
+            }
+            if *ex_start > seg_start {
+                next.push((seg_start, *ex_start));
+            }
+            if *ex_end < seg_end {
+                next.push((*ex_end, seg_end));
+            }
+        }
+        segments = next;
+        if segments.is_empty() {
+            break;
+        }
+    }
+    segments
+}
+
+/// Map a set of (start, end) segments into the domain with the given permissions.
+fn map_unity_segments(
+    domain: &DomainState,
+    segments: Vec<(u64, u64)>,
+    read: bool,
+    write: bool,
+) -> Result<(), IommuError> {
+    for (seg_start, seg_end) in segments {
+        if seg_end <= seg_start {
+            continue;
+        }
+        let size = seg_end - seg_start;
+        match domain.map(seg_start, seg_start, size, read, write) {
+            Ok(()) | Err(IommuError::AlreadyMapped) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
+    let page_size = PAGE_SIZE_4K;
+    let exclusions = collect_exclusion_ranges(ranges, page_size);
 
     for range in ranges {
         if !range.unity_map || range.exclusion {
@@ -65,40 +116,8 @@ pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> 
             continue;
         }
 
-        let mut segments = alloc::vec![(start, end)];
-        if !exclusions.is_empty() {
-            for (ex_start, ex_end) in &exclusions {
-                let mut next = Vec::new();
-                for (seg_start, seg_end) in segments {
-                    if *ex_end <= seg_start || *ex_start >= seg_end {
-                        next.push((seg_start, seg_end));
-                        continue;
-                    }
-                    if *ex_start > seg_start {
-                        next.push((seg_start, *ex_start));
-                    }
-                    if *ex_end < seg_end {
-                        next.push((*ex_end, seg_end));
-                    }
-                }
-                segments = next;
-                if segments.is_empty() {
-                    break;
-                }
-            }
-        }
-
-        for (seg_start, seg_end) in segments {
-            if seg_end <= seg_start {
-                continue;
-            }
-            let size = seg_end - seg_start;
-            match domain.map(seg_start, seg_start, size, range.read, range.write) {
-                Ok(()) => {}
-                Err(IommuError::AlreadyMapped) => {}
-                Err(err) => return Err(err),
-            }
-        }
+        let segments = subtract_exclusions(alloc::vec![(start, end)], &exclusions);
+        map_unity_segments(domain, segments, range.read, range.write)?;
     }
 
     Ok(())
@@ -107,6 +126,29 @@ pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> 
 // ---------------------------------------------------------------------------
 // Domain management methods on AmdIommuDriver
 // ---------------------------------------------------------------------------
+
+/// Check if an IVHD device entry matches a given device ID and return its flags.
+fn ivhd_entry_flags_for_devid(entry: &IvhdDeviceEntry, devid: u16) -> u8 {
+    match entry {
+        IvhdDeviceEntry::All { flags } => *flags,
+        IvhdDeviceEntry::Select { devid: e, flags }
+        | IvhdDeviceEntry::ExtSelect { devid: e, flags, .. }
+        | IvhdDeviceEntry::Special { devid: e, flags, .. }
+        | IvhdDeviceEntry::AcpiHid { devid: e, flags } => {
+            if *e == devid { *flags } else { 0 }
+        }
+        IvhdDeviceEntry::Range { start, end, flags }
+        | IvhdDeviceEntry::ExtRange { start, end, flags, .. } => {
+            if devid >= *start && devid <= *end { *flags } else { 0 }
+        }
+        IvhdDeviceEntry::Alias { devid: e, alias, flags } => {
+            if *e == devid || *alias == devid { *flags } else { 0 }
+        }
+        IvhdDeviceEntry::AliasRange { start, end, alias, flags } => {
+            if (devid >= *start && devid <= *end) || *alias == devid { *flags } else { 0 }
+        }
+    }
+}
 
 impl AmdIommuDriver {
     pub(super) fn ivhd_flags_for_device(&self, device: DeviceId) -> u8 {
@@ -118,81 +160,7 @@ impl AmdIommuDriver {
         };
 
         for entry in &unit.device_entries {
-            match entry {
-                IvhdDeviceEntry::All { flags: entry_flags } => flags |= *entry_flags,
-                IvhdDeviceEntry::Select {
-                    devid: entry_devid,
-                    flags: entry_flags,
-                } => {
-                    if *entry_devid == devid {
-                        flags |= *entry_flags;
-                    }
-                }
-                IvhdDeviceEntry::Range {
-                    start,
-                    end,
-                    flags: entry_flags,
-                } => {
-                    if devid >= *start && devid <= *end {
-                        flags |= *entry_flags;
-                    }
-                }
-                IvhdDeviceEntry::Alias {
-                    devid: entry_devid,
-                    alias,
-                    flags: entry_flags,
-                } => {
-                    if *entry_devid == devid || *alias == devid {
-                        flags |= *entry_flags;
-                    }
-                }
-                IvhdDeviceEntry::AliasRange {
-                    start,
-                    end,
-                    alias,
-                    flags: entry_flags,
-                } => {
-                    if (devid >= *start && devid <= *end) || *alias == devid {
-                        flags |= *entry_flags;
-                    }
-                }
-                IvhdDeviceEntry::ExtSelect {
-                    devid: entry_devid,
-                    flags: entry_flags,
-                    ..
-                } => {
-                    if *entry_devid == devid {
-                        flags |= *entry_flags;
-                    }
-                }
-                IvhdDeviceEntry::ExtRange {
-                    start,
-                    end,
-                    flags: entry_flags,
-                    ..
-                } => {
-                    if devid >= *start && devid <= *end {
-                        flags |= *entry_flags;
-                    }
-                }
-                IvhdDeviceEntry::Special {
-                    devid: entry_devid,
-                    flags: entry_flags,
-                    ..
-                } => {
-                    if *entry_devid == devid {
-                        flags |= *entry_flags;
-                    }
-                }
-                IvhdDeviceEntry::AcpiHid {
-                    devid: entry_devid,
-                    flags: entry_flags,
-                } => {
-                    if *entry_devid == devid {
-                        flags |= *entry_flags;
-                    }
-                }
-            }
+            flags |= ivhd_entry_flags_for_devid(entry, devid);
         }
 
         flags
@@ -417,6 +385,47 @@ impl AmdIommuDriver {
         Ok(domain_id)
     }
 
+    /// Rollback device_domains and DTE entries on attach failure.
+    fn rollback_device_attach(
+        &self,
+        device: DeviceId,
+        aliases: &[u16],
+        previous: Option<u16>,
+    ) {
+        let Ok(mut device_domains) = self
+            .device_domains
+            .lock()
+            .map_err(|_| IommuError::Poisoned)
+        else {
+            return;
+        };
+        match previous {
+            Some(prev_id) => {
+                device_domains.insert(device, prev_id);
+                let _ = self.write_device_entries_for_domain(device, aliases, Some(prev_id));
+            }
+            None => {
+                device_domains.remove(&device);
+                let _ = self.write_device_entries_for_domain(device, aliases, None);
+            }
+        }
+    }
+
+    /// Write DTE and invalidate entries; returns first error if any step fails.
+    fn apply_device_entries_and_invalidate(
+        &self,
+        device: DeviceId,
+        aliases: &[u16],
+        domain_id: u16,
+    ) -> Result<(), IommuError> {
+        self.write_device_entries_for_domain(device, aliases, Some(domain_id))?;
+        self.invalidate_device_entry(device)?;
+        for alias in aliases {
+            self.invalidate_device_entry_by_devid(device.segment, *alias)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn attach_device(
         &self,
         device: DeviceId,
@@ -428,24 +437,19 @@ impl AmdIommuDriver {
         let _domain = self.domain_for_id(domain_id)?;
         let aliases = self.alias_devids_for_device(device);
 
+        self.map_ivmd_ranges_for_device(device, domain_id)?;
+
         let existing = {
             let device_domains = self
                 .device_domains
                 .lock()
                 .map_err(|_| IommuError::Poisoned)?;
-            if let Some(existing) = device_domains.get(&device) {
-                Some(*existing)
-            } else {
-                None
-            }
+            device_domains.get(&device).copied()
         };
 
         if existing == Some(domain_id) {
-            self.map_ivmd_ranges_for_device(device, domain_id)?;
             return Ok(());
         }
-
-        self.map_ivmd_ranges_for_device(device, domain_id)?;
 
         let previous = {
             let mut device_domains = self
@@ -455,61 +459,9 @@ impl AmdIommuDriver {
             device_domains.insert(device, domain_id)
         };
 
-        if let Err(err) = self.write_device_entries_for_domain(device, &aliases, Some(domain_id)) {
-            let mut device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            match previous {
-                Some(prev_id) => {
-                    device_domains.insert(device, prev_id);
-                    let _ = self.write_device_entries_for_domain(device, &aliases, Some(prev_id));
-                }
-                None => {
-                    device_domains.remove(&device);
-                    let _ = self.write_device_entries_for_domain(device, &aliases, None);
-                }
-            }
+        if let Err(err) = self.apply_device_entries_and_invalidate(device, &aliases, domain_id) {
+            self.rollback_device_attach(device, &aliases, previous);
             return Err(err);
-        }
-
-        if let Err(err) = self.invalidate_device_entry(device) {
-            let mut device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            match previous {
-                Some(prev_id) => {
-                    device_domains.insert(device, prev_id);
-                    let _ = self.write_device_entries_for_domain(device, &aliases, Some(prev_id));
-                }
-                None => {
-                    device_domains.remove(&device);
-                    let _ = self.write_device_entries_for_domain(device, &aliases, None);
-                }
-            }
-            return Err(err);
-        }
-
-        for alias in &aliases {
-            if let Err(err) = self.invalidate_device_entry_by_devid(device.segment, *alias) {
-                let mut device_domains = self
-                    .device_domains
-                    .lock()
-                    .map_err(|_| IommuError::Poisoned)?;
-                match previous {
-                    Some(prev_id) => {
-                        device_domains.insert(device, prev_id);
-                        let _ =
-                            self.write_device_entries_for_domain(device, &aliases, Some(prev_id));
-                    }
-                    None => {
-                        device_domains.remove(&device);
-                        let _ = self.write_device_entries_for_domain(device, &aliases, None);
-                    }
-                }
-                return Err(err);
-            }
         }
 
         Ok(())

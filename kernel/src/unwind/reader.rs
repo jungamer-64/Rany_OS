@@ -396,6 +396,52 @@ impl DwarfPointerApplication {
     }
 }
 
+/// DWARFフォーマットに従い生の値を読み込む
+fn read_dwarf_value(
+    reader: &mut MemoryReader<'_>,
+    format: DwarfPointerEncoding,
+) -> Result<i64, UnwindError> {
+    match format {
+        DwarfPointerEncoding::Omit => Ok(0),
+        DwarfPointerEncoding::Absptr => read_dwarf_absptr(reader),
+        DwarfPointerEncoding::Uleb128 => Ok(reader.read_uleb128()? as i64),
+        DwarfPointerEncoding::Udata2 => Ok(reader.read_u16()? as i64),
+        DwarfPointerEncoding::Udata4 => Ok(reader.read_u32()? as i64),
+        DwarfPointerEncoding::Udata8 => Ok(reader.read_u64()? as i64),
+        DwarfPointerEncoding::Sleb128 => Ok(reader.read_sleb128()?),
+        DwarfPointerEncoding::Sdata2 => Ok(reader.read_i16()? as i64),
+        DwarfPointerEncoding::Sdata4 => Ok(reader.read_i32()? as i64),
+        DwarfPointerEncoding::Sdata8 => Ok(reader.read_i64()?),
+    }
+}
+
+/// Absptr読み取り（ポインタサイズ依存）
+fn read_dwarf_absptr(reader: &mut MemoryReader<'_>) -> Result<i64, UnwindError> {
+    if core::mem::size_of::<usize>() == 8 {
+        Ok(reader.read_u64()? as i64)
+    } else {
+        Ok(reader.read_u32()? as i64)
+    }
+}
+
+/// ベースアドレスの適用
+fn apply_dwarf_application(
+    value: i64,
+    application: DwarfPointerApplication,
+    read_position: usize,
+) -> Result<usize, UnwindError> {
+    match application {
+        DwarfPointerApplication::Absolute => Ok(value as usize),
+        DwarfPointerApplication::Pcrel => Ok((read_position as i64 + value) as usize),
+        DwarfPointerApplication::Textrel
+        | DwarfPointerApplication::Datarel
+        | DwarfPointerApplication::Funcrel
+        | DwarfPointerApplication::Aligned => {
+            Err(UnwindError::InvalidDwarf)
+        }
+    }
+}
+
 /// エンコードされたポインタを読み込む
 pub fn read_encoded_pointer(
     reader: &mut MemoryReader<'_>,
@@ -414,41 +460,9 @@ pub fn read_encoded_pointer(
     // 読み取り位置を記録（PC相対計算用）
     let read_position = base_address + reader.position();
 
-    // 値を読み込む
-    let value: i64 = match format {
-        DwarfPointerEncoding::Absptr => {
-            if core::mem::size_of::<usize>() == 8 {
-                reader.read_u64()? as i64
-            } else {
-                reader.read_u32()? as i64
-            }
-        }
-        DwarfPointerEncoding::Uleb128 => reader.read_uleb128()? as i64,
-        DwarfPointerEncoding::Udata2 => reader.read_u16()? as i64,
-        DwarfPointerEncoding::Udata4 => reader.read_u32()? as i64,
-        DwarfPointerEncoding::Udata8 => reader.read_u64()? as i64,
-        DwarfPointerEncoding::Sleb128 => reader.read_sleb128()?,
-        DwarfPointerEncoding::Sdata2 => reader.read_i16()? as i64,
-        DwarfPointerEncoding::Sdata4 => reader.read_i32()? as i64,
-        DwarfPointerEncoding::Sdata8 => reader.read_i64()?,
-        DwarfPointerEncoding::Omit => return Ok(0),
-    };
+    let value = read_dwarf_value(reader, format)?;
 
-    // ベースアドレスを適用
-    let result = match application {
-        DwarfPointerApplication::Absolute => value as usize,
-        DwarfPointerApplication::Pcrel => (read_position as i64 + value) as usize,
-        DwarfPointerApplication::Textrel
-        | DwarfPointerApplication::Datarel
-        | DwarfPointerApplication::Funcrel
-        | DwarfPointerApplication::Aligned => {
-            // これらは追加のベース情報が必要
-            // 現時点では未サポートとしてエラー
-            return Err(UnwindError::InvalidDwarf);
-        }
-    };
-
-    Ok(result)
+    apply_dwarf_application(value, application, read_position)
 }
 
 #[cfg(test)]

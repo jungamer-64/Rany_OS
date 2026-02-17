@@ -249,18 +249,25 @@ impl QrCode {
     fn place_finder_pattern(&mut self, x: usize, y: usize) {
         for dy in 0..7 {
             for dx in 0..7 {
-                let is_border = dx == 0 || dx == 6 || dy == 0 || dy == 6;
-                let is_inner = dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4;
-                let module = if is_border || is_inner {
-                    Module::FuncDark
-                } else {
-                    Module::FuncLight
-                };
-                self.set_reserved(x + dx, y + dy, module);
+                self.set_reserved(x + dx, y + dy, Self::finder_module(dx, dy));
             }
         }
+        self.place_finder_separators(x, y);
+    }
 
-        // Separators (White border around finder patterns)
+    /// Determine whether a cell in the 7×7 finder pattern is dark or light.
+    fn finder_module(dx: usize, dy: usize) -> Module {
+        let is_border = dx == 0 || dx == 6 || dy == 0 || dy == 6;
+        let is_inner = dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4;
+        if is_border || is_inner {
+            Module::FuncDark
+        } else {
+            Module::FuncLight
+        }
+    }
+
+    /// Place the white separator rows/columns around a finder pattern.
+    fn place_finder_separators(&mut self, x: usize, y: usize) {
         if x == 0 && y == 0 {
             for i in 0..8 {
                 self.set_reserved(7, i, Module::FuncLight);
@@ -387,100 +394,121 @@ impl QrCode {
         }
     }
 
-    fn calculate_penalty_score(&self) -> u32 {
+    /// Penalty helper: score for a single consecutive run length (Rule 1).
+    fn penalty_run_score(run_len: u32) -> u32 {
+        if run_len >= 5 { 3 + (run_len - 5) } else { 0 }
+    }
+
+    /// Penalty Rule 1 helper: scan one axis for consecutive same-color runs.
+    /// When `horizontal` is true, the outer loop iterates rows (y) and inner
+    /// iterates columns (x); when false the axes are swapped.
+    fn penalty_line_runs(&self, horizontal: bool) -> u32 {
         let mut score = 0;
-
-        // Rule 1: 5+ consecutive same color
-        let check_run = |run_len: u32| -> u32 {
-            if run_len >= 5 { 3 + (run_len - 5) } else { 0 }
-        };
-
-        for y in 0..QR_SIZE { // Horizontal
-            let mut run_len = 0;
+        for outer in 0..QR_SIZE {
+            let mut run_len = 0u32;
             let mut last_dark = false;
-            for x in 0..QR_SIZE {
+            for inner in 0..QR_SIZE {
+                let (y, x) = if horizontal { (outer, inner) } else { (inner, outer) };
                 let dark = self.modules[y][x].is_dark();
-                if x == 0 || dark != last_dark {
-                    score += check_run(run_len);
+                if inner == 0 || dark != last_dark {
+                    score += Self::penalty_run_score(run_len);
                     last_dark = dark;
                     run_len = 1;
                 } else {
                     run_len += 1;
                 }
             }
-            score += check_run(run_len);
+            score += Self::penalty_run_score(run_len);
         }
-        for x in 0..QR_SIZE { // Vertical
-            let mut run_len = 0;
-            let mut last_dark = false;
-            for y in 0..QR_SIZE {
-                let dark = self.modules[y][x].is_dark();
-                if y == 0 || dark != last_dark {
-                    score += check_run(run_len);
-                    last_dark = dark;
-                    run_len = 1;
-                } else {
-                    run_len += 1;
-                }
-            }
-            score += check_run(run_len);
-        }
+        score
+    }
 
-        // Rule 2: 2x2 blocks
+    /// Penalty Rule 1: 5+ consecutive same-color modules (horizontal + vertical).
+    fn penalty_rule1_runs(&self) -> u32 {
+        self.penalty_line_runs(true) + self.penalty_line_runs(false)
+    }
+
+    /// Penalty Rule 2: 2×2 blocks of same color.
+    fn penalty_rule2_blocks(&self) -> u32 {
+        let mut score = 0;
         for y in 0..QR_SIZE - 1 {
             for x in 0..QR_SIZE - 1 {
                 let d = self.modules[y][x].is_dark();
-                if self.modules[y][x+1].is_dark() == d && 
-                   self.modules[y+1][x].is_dark() == d && 
-                   self.modules[y+1][x+1].is_dark() == d {
+                if self.modules[y][x + 1].is_dark() == d
+                    && self.modules[y + 1][x].is_dark() == d
+                    && self.modules[y + 1][x + 1].is_dark() == d
+                {
                     score += 3;
                 }
             }
         }
+        score
+    }
 
-        // Rule 3: 1:1:3:1:1 pattern
-        // Helper to check 11-bit sequence with quiet zone handling
-        let check_rule3_pattern = |x_start: i32, y_start: i32, dx: i32, dy: i32| -> bool {
-            let mut pattern = 0u16;
-            for k in 0..11 {
-                let mx = x_start + k * dx;
-                let my = y_start + k * dy;
-                
-                // Outside is Light (Quiet Zone logic)
-                let is_dark = if mx >= 0 && mx < QR_SIZE as i32 && my >= 0 && my < QR_SIZE as i32 {
-                    self.modules[my as usize][mx as usize].is_dark()
-                } else {
-                    false
-                };
-                if is_dark { pattern |= 1 << (10 - k); }
+    /// Penalty Rule 3 helper: check whether an 11-module sequence starting at
+    /// (`x_start`, `y_start`) in direction (`dx`, `dy`) matches the
+    /// finder-like 1:1:3:1:1 pattern (with quiet-zone treatment).
+    fn is_rule3_pattern(&self, x_start: i32, y_start: i32, dx: i32, dy: i32) -> bool {
+        let mut pattern = 0u16;
+        for k in 0..11 {
+            let mx = x_start + k * dx;
+            let my = y_start + k * dy;
+
+            // Outside the grid is treated as Light (Quiet Zone)
+            let is_dark = if mx >= 0 && mx < QR_SIZE as i32 && my >= 0 && my < QR_SIZE as i32 {
+                self.modules[my as usize][mx as usize].is_dark()
+            } else {
+                false
+            };
+            if is_dark {
+                pattern |= 1 << (10 - k);
             }
-            pattern == 0x5D0 || pattern == 0x05D
-        };
+        }
+        pattern == 0x5D0 || pattern == 0x05D
+    }
 
+    /// Penalty Rule 3: 1:1:3:1:1 finder-like patterns (horizontal + vertical).
+    fn penalty_rule3_patterns(&self) -> u32 {
+        let mut score = 0;
         for y in 0..QR_SIZE {
-             for x in -4..=(QR_SIZE as i32 - 7) {
-                 if check_rule3_pattern(x, y as i32, 1, 0) { score += 40; }
-             }
+            for x in -4..=(QR_SIZE as i32 - 7) {
+                if self.is_rule3_pattern(x, y as i32, 1, 0) {
+                    score += 40;
+                }
+            }
         }
         for x in 0..QR_SIZE {
-             for y in -4..=(QR_SIZE as i32 - 7) {
-                 if check_rule3_pattern(x as i32, y, 0, 1) { score += 40; }
-             }
+            for y in -4..=(QR_SIZE as i32 - 7) {
+                if self.is_rule3_pattern(x as i32, y, 0, 1) {
+                    score += 40;
+                }
+            }
         }
+        score
+    }
 
-        // Rule 4: Dark module ratio
-        let mut dark_count = 0;
+    /// Penalty Rule 4: dark-module ratio deviation from 50%.
+    fn penalty_rule4_ratio(&self) -> u32 {
+        let mut dark_count = 0u32;
         let total = (QR_SIZE * QR_SIZE) as u32;
         for y in 0..QR_SIZE {
             for x in 0..QR_SIZE {
-                if self.modules[y][x].is_dark() { dark_count += 1; }
+                if self.modules[y][x].is_dark() {
+                    dark_count += 1;
+                }
             }
         }
         let percent = (dark_count * 100) / total;
         let diff = if percent > 50 { percent - 50 } else { 50 - percent };
-        score += (diff / 5) * 10;
+        (diff / 5) * 10
+    }
 
-        score
+    /// Calculate the total penalty score across all four QR masking rules.
+    fn calculate_penalty_score(&self) -> u32 {
+        self.penalty_rule1_runs()
+            + self.penalty_rule2_blocks()
+            + self.penalty_rule3_patterns()
+            + self.penalty_rule4_ratio()
     }
 
     fn set_reserved(&mut self, x: usize, y: usize, module: Module) {
@@ -649,35 +677,8 @@ fn encode_alphanumeric_v1_l(data: &[u8]) -> Option<[u8; TOTAL_CODEWORDS]> {
     if !append_bits(&mut bit_stream, &mut bit_idx, 0b0010, 4) { return None; }
     if !append_bits(&mut bit_stream, &mut bit_idx, data.len() as u32, 9) { return None; }
 
-    let mut i = 0;
-    while i < data.len() {
-        let val1 = qr_alnum_value(data[i])?;
-        if i + 1 < data.len() {
-             let val2 = qr_alnum_value(data[i+1])?;
-             i += 2;
-             if !append_bits(&mut bit_stream, &mut bit_idx, (val1 as u32) * 45 + (val2 as u32), 11) { return None; }
-        } else {
-             i += 1;
-             if !append_bits(&mut bit_stream, &mut bit_idx, val1 as u32, 6) { return None; }
-        }
-    }
-
-    if bit_idx > DATA_PAYLOAD_BITS { return None; }
-
-    let term_len = core::cmp::min(4, DATA_PAYLOAD_BITS - bit_idx);
-    if !append_bits(&mut bit_stream, &mut bit_idx, 0, term_len) { return None; }
-
-    if bit_idx % 8 != 0 {
-        let pad = 8 - (bit_idx % 8);
-        if !append_bits(&mut bit_stream, &mut bit_idx, 0, pad) { return None; }
-    }
-
-    let mut pad_val = 0xEC;
-    // Pad up to payload limit
-    while bit_idx < DATA_PAYLOAD_BITS {
-        if !append_bits(&mut bit_stream, &mut bit_idx, pad_val as u32, 8) { return None; }
-        pad_val = if pad_val == 0xEC { 0x11 } else { 0xEC };
-    }
+    encode_alnum_pairs(data, &mut bit_stream, &mut bit_idx)?;
+    pad_qr_bitstream(&mut bit_stream, &mut bit_idx)?;
 
     for i in 0..DATA_CODEWORDS { buffer[i] = bit_stream[i]; }
 
@@ -688,6 +689,43 @@ fn encode_alphanumeric_v1_l(data: &[u8]) -> Option<[u8; TOTAL_CODEWORDS]> {
     for i in 0..EC_CODEWORDS { buffer[DATA_CODEWORDS + i] = ec[i]; }
 
     Some(buffer)
+}
+
+/// Encode alphanumeric character pairs into the bit stream.
+fn encode_alnum_pairs(data: &[u8], bit_stream: &mut [u8], bit_idx: &mut usize) -> Option<()> {
+    let mut i = 0;
+    while i < data.len() {
+        let val1 = qr_alnum_value(data[i])?;
+        if i + 1 < data.len() {
+             let val2 = qr_alnum_value(data[i+1])?;
+             i += 2;
+             if !append_bits(bit_stream, bit_idx, (val1 as u32) * 45 + (val2 as u32), 11) { return None; }
+        } else {
+             i += 1;
+             if !append_bits(bit_stream, bit_idx, val1 as u32, 6) { return None; }
+        }
+    }
+    Some(())
+}
+
+/// Add terminator, byte-align, and pad the bit stream to DATA_PAYLOAD_BITS.
+fn pad_qr_bitstream(bit_stream: &mut [u8], bit_idx: &mut usize) -> Option<()> {
+    if *bit_idx > DATA_PAYLOAD_BITS { return None; }
+
+    let term_len = core::cmp::min(4, DATA_PAYLOAD_BITS - *bit_idx);
+    if !append_bits(bit_stream, bit_idx, 0, term_len) { return None; }
+
+    if *bit_idx % 8 != 0 {
+        let pad = 8 - (*bit_idx % 8);
+        if !append_bits(bit_stream, bit_idx, 0, pad) { return None; }
+    }
+
+    let mut pad_val = 0xEC;
+    while *bit_idx < DATA_PAYLOAD_BITS {
+        if !append_bits(bit_stream, bit_idx, pad_val as u32, 8) { return None; }
+        pad_val = if pad_val == 0xEC { 0x11 } else { 0xEC };
+    }
+    Some(())
 }
 
 fn append_bits(buf: &mut [u8], bit_idx: &mut usize, val: u32, len: usize) -> bool {

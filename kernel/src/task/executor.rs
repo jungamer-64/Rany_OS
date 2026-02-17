@@ -275,6 +275,85 @@ pub fn wake_task(task_id: TaskId) {
 // Executor本体
 // ============================================================================
 
+// ============================================================================
+// IOMMU command-queue helpers (extracted from Executor::run)
+// ============================================================================
+
+/// Dispatch a single IOMMU command to the given controller.
+fn dispatch_iommu_command(
+    ctrl: &crate::io::iommu::intel::controller::IommuController,
+    kind: &crate::io::iommu::cmdqueue::IommuCommandKind,
+) -> Result<i32, ()> {
+    use crate::io::iommu::cmdqueue::IommuCommandKind;
+    match kind {
+        IommuCommandKind::InvalidateIotlbDomain { domain } => {
+            ctrl.invalidate_iotlb(*domain);
+            Ok(0)
+        }
+        IommuCommandKind::InvalidateIotlbGlobal => {
+            unsafe { ctrl.invalidate_iotlb_global(); }
+            Ok(0)
+        }
+        IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
+            dispatch_map_region(ctrl, *domain, *iova, *phys, *size, *read, *write)
+        }
+        IommuCommandKind::UnmapRegion { domain, iova, size: _ } => {
+            dispatch_unmap_region(ctrl, *domain, *iova)
+        }
+        _ => ctrl.handle_command_queue_entry(kind).map_err(|_| ()),
+    }
+}
+
+fn dispatch_map_region(
+    ctrl: &crate::io::iommu::intel::controller::IommuController,
+    domain: u16,
+    iova: u64,
+    phys: u64,
+    size: u64,
+    read: bool,
+    write: bool,
+) -> Result<i32, ()> {
+    let dom_map = ctrl.domains.lock().map_err(|_| ())?;
+    let domain_arc = dom_map.get(&domain).cloned();
+    drop(dom_map);
+    let domain_arc = domain_arc.ok_or(())?;
+    domain_arc.map(iova, phys, size, read, write).map_err(|_| ())?;
+    ctrl.invalidate_iotlb(domain);
+    Ok(0)
+}
+
+fn dispatch_unmap_region(
+    ctrl: &crate::io::iommu::intel::controller::IommuController,
+    domain: u16,
+    iova: u64,
+) -> Result<i32, ()> {
+    let dom_map = ctrl.domains.lock().map_err(|_| ())?;
+    let domain_arc = dom_map.get(&domain).cloned();
+    drop(dom_map);
+    let domain_arc = domain_arc.ok_or(())?;
+    domain_arc.unmap(iova).map_err(|_| ())?;
+    ctrl.invalidate_iotlb(domain);
+    Ok(0)
+}
+
+/// Drain IOMMU command queues from all registered Intel controllers.
+fn process_iommu_command_queues() {
+    let reg = match crate::io::iommu::intel::registry::get_iommu_registry() {
+        Some(r) => r,
+        None => return,
+    };
+    for ctrl in &reg.controllers {
+        if let Some(ref cq) = ctrl.command_queue {
+            for _ in 0..4 {
+                let processed = cq.process_once(|kind| dispatch_iommu_command(ctrl, kind));
+                if processed == 0 {
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// ロックフリー Executor
 pub struct Executor {
     /// ローカルキュー（Per-CPU）
@@ -332,97 +411,14 @@ impl Executor {
     pub fn run(&mut self) -> ! {
         loop {
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
-            // Interrupt events (ISRs) enqueue InterruptSource events; handle them here.
             crate::task::interrupt_waker::process_interrupt_events();
-            // Defer I/O completions to executor context (ISR-safe queue drain).
             crate::io::io_scheduler::process_deferred_completions();
-            // Process any AtomicWaker notifications enqueued by ISRs.
             crate::sync::process_deferred_wakes();
-            // Drive IoScheduler dispatch/poll in non-ISR context.
             crate::io::io_scheduler::hybrid_coordinator().tick(|| {
                 crate::task::interrupt_waker::process_interrupt_events();
             });
-            // IOMMU command queue processing (process a few commands per loop)
-            if let Some(reg) = crate::io::iommu::intel::registry::get_iommu_registry() {
-                for ctrl in &reg.controllers {
-                    if let Some(ref cq) = ctrl.command_queue {
-                        // Process up to 4 commands per loop to bound time spent
-                        for _ in 0..4 {
-                            let processed = cq.process_once(|kind| {
-                                match kind {
-                                    crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { domain } => {
-                                        // call concrete operation directly
-                                        ctrl.invalidate_iotlb(*domain);
-                                        Ok(0)
-                                    }
-                                    crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
-                                        unsafe { ctrl.invalidate_iotlb_global(); }
-                                        Ok(0)
-                                    }
-                                    crate::io::iommu::cmdqueue::IommuCommandKind::MapRegionDevice { .. } => {
-                                        // Delegate to controller-specific device mapping handler if available.
-                                        match ctrl.handle_command_queue_entry(kind) {
-                                            Ok(rc) => Ok(rc),
-                                            Err(_) => Err(()),
-                                        }
-                                    }
-                                    crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegionDevice { .. } => {
-                                        match ctrl.handle_command_queue_entry(kind) {
-                                            Ok(rc) => Ok(rc),
-                                            Err(_) => Err(()),
-                                        }
-                                    }
-                                    crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
-                                        // Lookup domain and perform mapping; then invalidate
-                                        match ctrl.domains.lock() {
-                                            Ok(dom_map) => {
-                                                let domain_arc = dom_map.get(domain).cloned();
-                                                drop(dom_map);
-                                                if let Some(domain_arc) = domain_arc {
-                                                    match domain_arc.map(*iova, *phys, *size, *read, *write) {
-                                                        Ok(_) => {
-                                                            ctrl.invalidate_iotlb(*domain);
-                                                            Ok(0)
-                                                        }
-                                                        Err(_) => Err(()),
-                                                    }
-                                                } else {
-                                                    Err(())
-                                                }
-                                            }
-                                            Err(_) => Err(())
-                                        }
-                                    }
-                                    crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { domain, iova, size: _ } => {
-                                        match ctrl.domains.lock() {
-                                            Ok(dom_map) => {
-                                                let domain_arc = dom_map.get(domain).cloned();
-                                                drop(dom_map);
-                                                if let Some(domain_arc) = domain_arc {
-                                                    match domain_arc.unmap(*iova) {
-                                                        Ok(_) => {
-                                                            ctrl.invalidate_iotlb(*domain);
-                                                            Ok(0)
-                                                        }
-                                                        Err(_) => Err(()),
-                                                    }
-                                                } else {
-                                                    Err(())
-                                                }
-                                            }
-                                            Err(_) => Err(())
-                                        }
-                                    }
-                                }
-                            });
-
-                            if processed == 0 {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
+            // IOMMU command queue processing
+            process_iommu_command_queues();
 
             // 1. Refill fuel for this executor slice and process local tasks
             crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
@@ -598,50 +594,14 @@ impl Executor {
         let mut stolen = 0;
 
         // Phase 1: 同一LLCを共有するコア（Hyperthread sibling）からスチール
-        for &sibling_id in numa_info.get_llc_siblings(core_id) {
-            if sibling_id == core_id || sibling_id as usize >= MAX_CPUS {
-                continue;
-            }
-            let store = &PER_CORE_STORES[sibling_id as usize];
-            if !store.active.load(Ordering::Acquire) {
-                continue;
-            }
-            if store.len() > 1 {
-                if let Some((_, task)) = store.steal_one() {
-                    self.local_queue.push_back(task);
-                    stolen += 1;
-                    EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
-                    if stolen >= self.batch_size / 2 {
-                        return;
-                    }
-                }
-            }
+        if self.steal_from_llc_siblings(numa_info, core_id, &mut stolen) {
+            return;
         }
 
         // Phase 2: 同一NUMAノード内の他コアからスチール
         let my_numa_node = numa_info.get_numa_node(core_id);
-        for &target_core in numa_info.get_cores_in_node(my_numa_node) {
-            if target_core == core_id || target_core as usize >= MAX_CPUS {
-                continue;
-            }
-            // 既にPhase 1でチェック済みのLLC siblingはスキップ
-            if numa_info.shares_llc(core_id, target_core) {
-                continue;
-            }
-            let store = &PER_CORE_STORES[target_core as usize];
-            if !store.active.load(Ordering::Acquire) {
-                continue;
-            }
-            if store.len() > 1 {
-                if let Some((_, task)) = store.steal_one() {
-                    self.local_queue.push_back(task);
-                    stolen += 1;
-                    EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
-                    if stolen >= self.batch_size / 2 {
-                        return;
-                    }
-                }
-            }
+        if self.steal_from_numa_node_cores(numa_info, core_id, my_numa_node, true, &mut stolen) {
+            return;
         }
 
         // Phase 3: 他のNUMAノードからスチール（最後の手段）
@@ -649,27 +609,73 @@ impl Executor {
             if node == my_numa_node {
                 continue;
             }
-            for &target_core in numa_info.get_cores_in_node(node) {
-                if target_core as usize >= MAX_CPUS {
-                    continue;
-                }
-                let store = &PER_CORE_STORES[target_core as usize];
-                if !store.active.load(Ordering::Acquire) {
-                    continue;
-                }
-                if store.len() > 1 {
-                    if let Some((_, task)) = store.steal_one() {
-                        self.local_queue.push_back(task);
-                        stolen += 1;
-                        EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
-                        // TODO: Track cross-NUMA steals separately
-                        if stolen >= self.batch_size / 2 {
-                            return;
-                        }
-                    }
-                }
+            if self.steal_from_numa_node_cores(numa_info, core_id, node, false, &mut stolen) {
+                return;
             }
         }
+    }
+
+    /// 指定コアのストアから1タスクをスチールしてローカルキューにpush。
+    /// バッチサイズ半分に達したらtrueを返す。
+    fn try_steal_from_store(&mut self, target_core: u32, stolen: &mut usize) -> bool {
+        if target_core as usize >= MAX_CPUS {
+            return false;
+        }
+        let store = &PER_CORE_STORES[target_core as usize];
+        if !store.active.load(Ordering::Acquire) {
+            return false;
+        }
+        if store.len() <= 1 {
+            return false;
+        }
+        if let Some((_, task)) = store.steal_one() {
+            self.local_queue.push_back(task);
+            *stolen += 1;
+            EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
+            return *stolen >= self.batch_size / 2;
+        }
+        false
+    }
+
+    /// Phase 1: LLCを共有するsiblingコアからスチール
+    fn steal_from_llc_siblings(
+        &mut self,
+        numa_info: &super::work_stealing_advanced::NumaTopology,
+        core_id: u32,
+        stolen: &mut usize,
+    ) -> bool {
+        for &sibling_id in numa_info.get_llc_siblings(core_id) {
+            if sibling_id == core_id {
+                continue;
+            }
+            if self.try_steal_from_store(sibling_id, stolen) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 指定NUMAノード内のコアからスチール。skip_llc=trueならLLC共有コアはスキップ。
+    fn steal_from_numa_node_cores(
+        &mut self,
+        numa_info: &super::work_stealing_advanced::NumaTopology,
+        core_id: u32,
+        node: usize,
+        skip_llc: bool,
+        stolen: &mut usize,
+    ) -> bool {
+        for &target_core in numa_info.get_cores_in_node(node) {
+            if target_core == core_id {
+                continue;
+            }
+            if skip_llc && numa_info.shares_llc(core_id, target_core) {
+                continue;
+            }
+            if self.try_steal_from_store(target_core, stolen) {
+                return true;
+            }
+        }
+        false
     }
 }
 

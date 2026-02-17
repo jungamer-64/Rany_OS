@@ -724,6 +724,65 @@ impl<const N: usize> RemoteFreeRing<N> {
         drained
     }
     
+    /// 負荷に応じたバッチサイズを計算する
+    fn compute_adaptive_batch_size(&self, current_len: usize, capacity: usize, max_out: usize) -> usize {
+        let fill_percent = (current_len * 100) / capacity;
+        let config = &ADAPTIVE_BATCH_CONFIG;
+
+        if fill_percent >= config.urgent_threshold_percent {
+            ADAPTIVE_BATCH_STATS.urgent_drains.fetch_add(1, Ordering::Relaxed);
+            max_out.min(current_len)
+        } else if fill_percent >= config.load_threshold_percent {
+            let range = config.urgent_threshold_percent - config.load_threshold_percent;
+            let progress = fill_percent - config.load_threshold_percent;
+            let scaled = config.min_batch 
+                + ((config.max_batch - config.min_batch) * progress) / range.max(1);
+            ADAPTIVE_BATCH_STATS.high_load_drains.fetch_add(1, Ordering::Relaxed);
+            max_out.min(scaled).min(current_len)
+        } else {
+            ADAPTIVE_BATCH_STATS.low_load_drains.fetch_add(1, Ordering::Relaxed);
+            max_out.min(config.min_batch).min(current_len)
+        }
+    }
+
+    /// ソート済みエントリの連続アドレスをマージする
+    fn merge_sorted_entries(entries: &mut [RemoteFreeEntry]) -> usize {
+        if entries.len() <= 1 {
+            return entries.len();
+        }
+        let mut write_idx = 0;
+        let mut read_idx = 1;
+
+        while read_idx < entries.len() {
+            let current = &entries[write_idx];
+            let next = &entries[read_idx];
+
+            if current.size_class == next.size_class {
+                let page_size = current.page_size();
+                let current_end = current.addr.saturating_add(page_size * (current.count as u64));
+
+                if current_end == next.addr {
+                    let new_count = current.count.saturating_add(next.count);
+                    entries[write_idx] = RemoteFreeEntry {
+                        addr: current.addr,
+                        count: new_count,
+                        size_class: current.size_class,
+                    };
+                    read_idx += 1;
+                    continue;
+                }
+            }
+
+            write_idx += 1;
+            if write_idx != read_idx {
+                entries[write_idx] = entries[read_idx];
+            }
+            read_idx += 1;
+        }
+
+        write_idx + 1
+    }
+
     /// 適応的バッチドレイン + マージ
     /// 
     /// `adaptive_drain` + `drain_and_merge` の組み合わせ。
@@ -736,23 +795,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             return 0;
         }
         
-        let fill_percent = (current_len * 100) / capacity;
-        let config = &ADAPTIVE_BATCH_CONFIG;
-        
-        let batch_size = if fill_percent >= config.urgent_threshold_percent {
-            ADAPTIVE_BATCH_STATS.urgent_drains.fetch_add(1, Ordering::Relaxed);
-            out.len().min(current_len)
-        } else if fill_percent >= config.load_threshold_percent {
-            let range = config.urgent_threshold_percent - config.load_threshold_percent;
-            let progress = fill_percent - config.load_threshold_percent;
-            let scaled = config.min_batch 
-                + ((config.max_batch - config.min_batch) * progress) / range.max(1);
-            ADAPTIVE_BATCH_STATS.high_load_drains.fetch_add(1, Ordering::Relaxed);
-            out.len().min(scaled).min(current_len)
-        } else {
-            ADAPTIVE_BATCH_STATS.low_load_drains.fetch_add(1, Ordering::Relaxed);
-            out.len().min(config.min_batch).min(current_len)
-        };
+        let batch_size = self.compute_adaptive_batch_size(current_len, capacity, out.len());
         
         // ドレイン
         let drained = self.drain(&mut out[..batch_size]);
@@ -761,10 +804,8 @@ impl<const N: usize> RemoteFreeRing<N> {
             return drained;
         }
         
-        // マージ処理
-        let entries = &mut out[..drained];
-        
         // ソート（insertion sort for small arrays）
+        let entries = &mut out[..drained];
         for i in 1..entries.len() {
             let mut j = i;
             while j > 0 && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater {
@@ -773,38 +814,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             }
         }
         
-        // マージ
-        let mut write_idx = 0;
-        let mut read_idx = 1;
-        
-        while read_idx < entries.len() {
-            let current = &entries[write_idx];
-            let next = &entries[read_idx];
-            
-            if current.size_class == next.size_class {
-                let page_size = current.page_size();
-                let current_end = current.addr.saturating_add(page_size * (current.count as u64));
-                
-                if current_end == next.addr {
-                    let new_count = current.count.saturating_add(next.count);
-                    entries[write_idx] = RemoteFreeEntry {
-                        addr: current.addr,
-                        count: new_count,
-                        size_class: current.size_class,
-                    };
-                    read_idx += 1;
-                    continue;
-                }
-            }
-            
-            write_idx += 1;
-            if write_idx != read_idx {
-                entries[write_idx] = entries[read_idx];
-            }
-            read_idx += 1;
-        }
-        
-        let merged_count = write_idx + 1;
+        let merged_count = Self::merge_sorted_entries(entries);
         ADAPTIVE_BATCH_STATS.total_drained.fetch_add(merged_count as u64, Ordering::Relaxed);
         merged_count
     }

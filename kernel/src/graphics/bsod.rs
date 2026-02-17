@@ -322,6 +322,20 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
 
     y += (face_scale * 70) as i32 + 20;
 
+    y = draw_error_message_section(fb, &font, info, margin_x, y, content_width);
+    y = draw_stack_trace_section(fb, &font, info, margin_x, y, content_width, height);
+    draw_registers_section(fb, &font, info, margin_x, y, content_width);
+    draw_bsod_footer(fb, &font, info, margin_x, margin_y, width, height, content_width);
+}
+
+fn draw_error_message_section(
+    fb: &mut Framebuffer,
+    font: &BitmapFont,
+    info: &BsodInfo,
+    margin_x: i32,
+    mut y: i32,
+    content_width: u32,
+) -> i32 {
     draw_section_header(fb, margin_x, y, "[ ERROR ]", content_width);
     y += 30;
 
@@ -363,7 +377,18 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
         y += 18;
     }
 
-    y += 10;
+    y + 10
+}
+
+fn draw_stack_trace_section(
+    fb: &mut Framebuffer,
+    font: &BitmapFont,
+    info: &BsodInfo,
+    margin_x: i32,
+    mut y: i32,
+    content_width: u32,
+    height: u32,
+) -> i32 {
     draw_section_header(fb, margin_x, y, "[ STACK TRACE ]", content_width);
     y += 30;
 
@@ -389,7 +414,17 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
         y += 18;
     }
 
-    y += 10;
+    y + 10
+}
+
+fn draw_registers_section(
+    fb: &mut Framebuffer,
+    font: &BitmapFont,
+    info: &BsodInfo,
+    margin_x: i32,
+    mut y: i32,
+    content_width: u32,
+) {
     draw_section_header(fb, margin_x, y, "[ REGISTERS ]", content_width);
     y += 30;
 
@@ -417,7 +452,18 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
     } else {
         font.draw_string(fb, margin_x, y, "  (registers not captured)", colors::TEXT_SECONDARY, None);
     }
+}
 
+fn draw_bsod_footer(
+    fb: &mut Framebuffer,
+    font: &BitmapFont,
+    info: &BsodInfo,
+    margin_x: i32,
+    margin_y: i32,
+    width: u32,
+    height: u32,
+    _content_width: u32,
+) {
     let qr_total_size = (21 + 4) * 4; 
     let qr_x = (width - qr_total_size - margin_x as u32) as i32;
     let qr_y = (height - qr_total_size - margin_y as u32) as i32;

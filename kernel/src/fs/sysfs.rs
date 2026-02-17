@@ -352,72 +352,113 @@ pub fn list_directory(path: &str) -> Option<Result<Vec<DirEntry>, &'static str>>
     Some(Err("Not found"))
 }
 
+/// systemグループ(kernel/net)に属するファイル値を解決する
+fn resolve_system_group_value(group: &str, leaf: &str) -> Option<String> {
+    match group {
+        "kernel" => system_kernel_value(leaf),
+        "net" => system_net_value(leaf),
+        _ => None,
+    }
+}
+
+/// セルドメインIDを検証し、ドメインの存在を確認する
+fn validate_cell_domain(comps: &[&str]) -> Result<(), &'static str> {
+    let id = parse_domain_id(comps[2])?;
+    if get_domain_snapshot(id).is_none() {
+        return Err("Not found");
+    }
+    Ok(())
+}
+
+/// セルドメインのフィールド値を取得する
+fn lookup_cell_field_value(comps: &[&str]) -> Result<String, &'static str> {
+    let id = parse_domain_id(comps[2])?;
+    let snapshot = get_domain_snapshot(id).ok_or("Not found")?;
+    field_value(&snapshot, comps[3]).ok_or("Not found")
+}
+
+/// read_file: セルパスの読み取り処理
+fn read_cell_file(comps: &[&str]) -> Result<Vec<u8>, &'static str> {
+    if comps.len() != 4 {
+        return Err("Is a directory");
+    }
+    let value = lookup_cell_field_value(comps)?;
+    Ok(value.into_bytes())
+}
+
+/// read_file: システムパスの読み取り処理
+fn read_system_file(comps: &[&str]) -> Result<Vec<u8>, &'static str> {
+    if comps.len() == 2 {
+        return Err("Is a directory");
+    }
+    if comps.len() == 3 {
+        let leaf = comps[2];
+        if leaf == "kernel" || leaf == "net" {
+            return Err("Is a directory");
+        }
+        return system_file_value(leaf)
+            .map(|v| v.into_bytes())
+            .ok_or("Not found");
+    }
+    if comps.len() == 4 {
+        return resolve_system_group_value(comps[2], comps[3])
+            .map(|v| v.into_bytes())
+            .ok_or("Not found");
+    }
+    Err("Not found")
+}
+
+/// stat_file: セルパスのファイル属性取得
+fn stat_cell_path(path: &str, comps: &[&str]) -> Result<FileAttr, &'static str> {
+    match comps.len() {
+        2 => Ok(file_attr(path, FileType::Directory, 0)),
+        3 => {
+            validate_cell_domain(comps)?;
+            Ok(file_attr(path, FileType::Directory, 0))
+        }
+        4 => {
+            let value = lookup_cell_field_value(comps)?;
+            Ok(file_attr(path, FileType::Regular, value.len() as u64))
+        }
+        _ => Err("Not found"),
+    }
+}
+
+/// stat_file: システムパスのファイル属性取得
+fn stat_system_path(path: &str, comps: &[&str]) -> Result<FileAttr, &'static str> {
+    match comps.len() {
+        2 => Ok(file_attr(path, FileType::Directory, 0)),
+        3 => {
+            let leaf = comps[2];
+            if leaf == "kernel" || leaf == "net" {
+                return Ok(file_attr(path, FileType::Directory, 0));
+            }
+            let value = system_file_value(leaf).ok_or("Not found")?;
+            Ok(file_attr(path, FileType::Regular, value.len() as u64))
+        }
+        4 => {
+            let value = resolve_system_group_value(comps[2], comps[3])
+                .ok_or("Not found")?;
+            Ok(file_attr(path, FileType::Regular, value.len() as u64))
+        }
+        _ => Err("Not found"),
+    }
+}
+
 pub fn read_file(path: &str) -> Option<Result<Vec<u8>, &'static str>> {
     let comps = split_path(path);
     if !is_sys_path(&comps) {
         return None;
     }
-
     if comps.len() == 1 {
         return Some(Err("Is a directory"));
     }
-
     if is_cell_path(&comps) {
-        if comps.len() != 4 {
-            return Some(Err("Is a directory"));
-        }
-
-        let id = match parse_domain_id(comps[2]) {
-            Ok(id) => id,
-            Err(e) => return Some(Err(e)),
-        };
-        let snapshot = match get_domain_snapshot(id) {
-            Some(s) => s,
-            None => return Some(Err("Not found")),
-        };
-        let value = match field_value(&snapshot, comps[3]) {
-            Some(v) => v,
-            None => return Some(Err("Not found")),
-        };
-        return Some(Ok(value.into_bytes()));
+        return Some(read_cell_file(&comps));
     }
-
     if is_system_path(&comps) {
-        if comps.len() == 2 {
-            return Some(Err("Is a directory"));
-        }
-
-        if comps.len() == 3 {
-            let leaf = comps[2];
-            if leaf == "kernel" || leaf == "net" {
-                return Some(Err("Is a directory"));
-            }
-            let value = match system_file_value(leaf) {
-                Some(v) => v,
-                None => return Some(Err("Not found")),
-            };
-            return Some(Ok(value.into_bytes()));
-        }
-
-        if comps.len() == 4 {
-            let group = comps[2];
-            let leaf = comps[3];
-            let value = if group == "kernel" {
-                system_kernel_value(leaf)
-            } else if group == "net" {
-                system_net_value(leaf)
-            } else {
-                None
-            };
-            let value = match value {
-                Some(v) => v,
-                None => return Some(Err("Not found")),
-            };
-            return Some(Ok(value.into_bytes()));
-        }
-        return Some(Err("Not found"));
+        return Some(read_system_file(&comps));
     }
-
     Some(Err("Not found"))
 }
 
@@ -426,77 +467,15 @@ pub fn stat_file(path: &str) -> Option<Result<FileAttr, &'static str>> {
     if !is_sys_path(&comps) {
         return None;
     }
-
     if comps.len() == 1 {
         return Some(Ok(file_attr(path, FileType::Directory, 0)));
     }
-
     if is_cell_path(&comps) {
-        return match comps.len() {
-            2 => Some(Ok(file_attr(path, FileType::Directory, 0))),
-            3 => {
-                let id = match parse_domain_id(comps[2]) {
-                    Ok(id) => id,
-                    Err(e) => return Some(Err(e)),
-                };
-                if get_domain_snapshot(id).is_none() {
-                    return Some(Err("Not found"));
-                }
-                Some(Ok(file_attr(path, FileType::Directory, 0)))
-            }
-            4 => {
-                let id = match parse_domain_id(comps[2]) {
-                    Ok(id) => id,
-                    Err(e) => return Some(Err(e)),
-                };
-                let snapshot = match get_domain_snapshot(id) {
-                    Some(s) => s,
-                    None => return Some(Err("Not found")),
-                };
-                let value = match field_value(&snapshot, comps[3]) {
-                    Some(v) => v,
-                    None => return Some(Err("Not found")),
-                };
-                Some(Ok(file_attr(path, FileType::Regular, value.len() as u64)))
-            }
-            _ => Some(Err("Not found")),
-        };
+        return Some(stat_cell_path(path, &comps));
     }
-
     if is_system_path(&comps) {
-        return match comps.len() {
-            2 => Some(Ok(file_attr(path, FileType::Directory, 0))),
-            3 => {
-                let leaf = comps[2];
-                if leaf == "kernel" || leaf == "net" {
-                    return Some(Ok(file_attr(path, FileType::Directory, 0)));
-                }
-                let value = match system_file_value(leaf) {
-                    Some(v) => v,
-                    None => return Some(Err("Not found")),
-                };
-                Some(Ok(file_attr(path, FileType::Regular, value.len() as u64)))
-            }
-            4 => {
-                let group = comps[2];
-                let leaf = comps[3];
-                let value = if group == "kernel" {
-                    system_kernel_value(leaf)
-                } else if group == "net" {
-                    system_net_value(leaf)
-                } else {
-                    None
-                };
-                let value = match value {
-                    Some(v) => v,
-                    None => return Some(Err("Not found")),
-                };
-                Some(Ok(file_attr(path, FileType::Regular, value.len() as u64)))
-            }
-            _ => Some(Err("Not found")),
-        };
+        return Some(stat_system_path(path, &comps));
     }
-
     Some(Err("Not found"))
 }
 

@@ -50,73 +50,73 @@ pub struct SecureBootInfo {
 /// SecureBootInfo containing the current Secure Boot state
 pub fn detect_secure_boot_state() -> SecureBootInfo {
     let mut info = SecureBootInfo::default();
-    
-    // Read SecureBoot variable
-    // Value: 0 = Secure Boot disabled, 1 = Secure Boot enabled
+    read_boot_mode_variables(&mut info);
+    check_key_variables(&mut info);
+    log_secure_boot_summary(&info);
+    info
+}
+
+/// ブートモード関連のUEFI変数を読み取る
+fn read_boot_mode_variables(info: &mut SecureBootInfo) {
     if let Some(value) = read_u8_variable(cstr16!("SecureBoot")) {
         info.secure_boot_enabled = value == 1;
         info!("SecureBoot variable: {}", value);
     } else {
         info!("SecureBoot variable not found (Secure Boot not supported)");
     }
-    
-    // Read SetupMode variable
-    // Value: 0 = User Mode, 1 = Setup Mode
-    // In Setup Mode, any EFI application can modify Secure Boot databases
+
     if let Some(value) = read_u8_variable(cstr16!("SetupMode")) {
         info.setup_mode = value == 1;
         info!("SetupMode: {} ({})", value, if value == 1 { "Setup Mode" } else { "User Mode" });
     }
-    
-    // Read AuditMode variable (optional, Windows 10+)
+
     if let Some(value) = read_u8_variable(cstr16!("AuditMode")) {
         info.audit_mode = value == 1;
         if value == 1 {
             info!("AuditMode enabled");
         }
     }
-    
-    // Read DeployedMode variable (optional)
+
     if let Some(value) = read_u8_variable(cstr16!("DeployedMode")) {
         info.deployed_mode = value == 1;
         if value == 1 {
             info!("DeployedMode enabled");
         }
     }
-    
-    // Check for Platform Key (PK) presence
+}
+
+/// キーデータベース変数の存在を確認する
+fn check_key_variables(info: &mut SecureBootInfo) {
     info.pk_present = variable_exists(cstr16!("PK"));
     if info.pk_present {
         info!("Platform Key (PK) is enrolled");
     }
-    
-    // Check for Key Exchange Key (KEK) presence
+
     info.kek_present = variable_exists(cstr16!("KEK"));
     if info.kek_present {
         info!("Key Exchange Key (KEK) is enrolled");
     }
-    
-    // Check for signature database (db) presence
+
     info.db_present = variable_exists(cstr16!("db"));
     if info.db_present {
         info!("Signature database (db) is present");
     }
-    
-    // Check for forbidden signature database (dbx) presence
+
     info.dbx_present = variable_exists(cstr16!("dbx"));
     if info.dbx_present {
         info!("Forbidden signature database (dbx) is present");
     }
-    
-    // Read VendorKeys to check if vendor-specific keys are present
+
     if let Some(value) = read_u8_variable(cstr16!("VendorKeys")) {
         info.vendor_keys = value == 1;
         if value == 1 {
             info!("Vendor keys present");
         }
     }
-    
-    // Summary
+}
+
+/// Secure Boot状態のサマリーをログ出力
+fn log_secure_boot_summary(info: &SecureBootInfo) {
     if info.secure_boot_enabled {
         info!("Secure Boot: ENABLED (User Mode)");
     } else if info.setup_mode {
@@ -124,8 +124,6 @@ pub fn detect_secure_boot_state() -> SecureBootInfo {
     } else {
         info!("Secure Boot: DISABLED");
     }
-    
-    info
 }
 
 /// Read a single byte UEFI variable

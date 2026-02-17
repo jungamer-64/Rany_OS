@@ -286,6 +286,19 @@ impl<'a> MmioWriter<'a> {
     /// all streaming stores are globally visible.
     #[inline]
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    /// Emit a bench-debug log line for a streaming MMIO write.
+    #[cfg(all(feature = "std", feature = "bench"))]
+    #[inline(always)]
+    fn bench_debug_stream_write(enabled: bool, ptr: usize, val: u64, is_u64: bool) {
+        if enabled && bench_debug_print_allowed() {
+            if is_u64 {
+                eprintln!("  stream_write_u64 at 0x{:x} pair=0x{:x}", ptr, val);
+            } else {
+                eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, val);
+            }
+        }
+    }
+
     pub fn write_u32_slice_streaming(&mut self, offset: usize, data: &[u32]) {
         let byte_len = data.len() * 4;
         if offset + byte_len > self.len {
@@ -310,9 +323,7 @@ impl<'a> MmioWriter<'a> {
         // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment
         if (ptr & 7) == 4 && i < len {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if bench_debug_env && bench_debug_print_allowed() {
-                eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
-            }
+            Self::bench_debug_stream_write(bench_debug_env, ptr, data[i] as u64, false);
             mmio::stream_write_u32(ptr, data[i]);
             ptr += 4;
             i += 1;
@@ -322,9 +333,7 @@ impl<'a> MmioWriter<'a> {
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             #[cfg(all(feature = "std", feature = "bench"))]
-            if bench_debug_env && bench_debug_print_allowed() {
-                eprintln!("  stream_write_u64 at 0x{:x} pair=0x{:x}", ptr, pair);
-            }
+            Self::bench_debug_stream_write(bench_debug_env, ptr, pair, true);
             mmio::stream_write_u64(ptr, pair);
             ptr += 8;
             i += 2;
@@ -333,9 +342,7 @@ impl<'a> MmioWriter<'a> {
         // Handle odd trailing u32
         if i < len {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if bench_debug_env && bench_debug_print_allowed() {
-                eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
-            }
+            Self::bench_debug_stream_write(bench_debug_env, ptr, data[i] as u64, false);
             mmio::stream_write_u32(ptr, data[i]);
         }
     }

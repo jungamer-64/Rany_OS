@@ -8,6 +8,7 @@ use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use core::mem::MaybeUninit;
 use core::fmt::{self, Write};
+use crate::graphics::bsod::BsodInfo;
 
 /// 【設計書 8.5.1】Double Panic検出用フラグ
 /// 各CPUコアにパニック中フラグを設置（現在は単一コア想定）
@@ -102,67 +103,27 @@ impl<'a> Write for PanicBufferWriter<'a> {
     }
 }
 
-/// パニックハンドラの本体
-/// 設計書 8.1: パニック捕捉とドメイン境界での処理
-pub fn handle_panic(info: &PanicInfo) -> ! {
-    // 割り込みを無効化
-    x86_64::instructions::interrupts::disable();
-
-    // 【設計書 8.5.1】Double Panic検出
-    // パニックハンドラの入口でこのフラグをチェックし、
-    // 既にtrueであればDouble Panicと判定して即座にabort
-    if PANIC_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-        // 既にパニック処理中 → Double Panic検出
-        // 最小限のエラー情報をシリアルポートに出力
-        crate::io::log::early_print("\n!!! DOUBLE PANIC DETECTED !!!\n");
-        crate::io::log::early_print("Aborting without further processing.\n");
-
-        // 即座にHALT
-        loop {
-            x86_64::instructions::hlt();
-        }
-    }
-
-    // パニックモードに入る（ログ出力時のデッドロック回避）
-    // これにより、以降の log::info! 等はロックなしでシリアルに出力しようとする
-    crate::io::log::enter_panic_mode();
-    
-    // 【設計書 8.4】パニック状態をマーク（PoisonLockのため）
-    crate::sync::set_panicking(true);
-
-    // パニック回数をインクリメント
-    let _count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    // 現在のドメインIDを取得
-    let domain_id = get_current_domain();
-
-    // Raw output to ensure we see SOMETHING
-    crate::io::log::early_print("\n!!! KERNEL PANIC DETECTED !!!\n");
-    
-    // ロックフリーなパニックレコードの構築
-    // 最初のパニックのみがレコードを書き込む権利を持つ
+/// Capture the panic record into the static buffer (lock-free, first-writer-wins).
+/// Returns a slice to the recorded message or a default fallback.
+fn panic_capture_record(info: &PanicInfo, domain_id: u64) -> &'static [u8] {
     let mut message_slice: &[u8] = b"Unknown panic";
-    
-    // 静的バッファへの書き込み（競合に勝った場合のみ）
+
     if PANIC_RECORD_STATE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
         unsafe {
-            // Use core::ptr::addr_of_mut! to avoid creating a reference to static mut
             let record_ptr = core::ptr::addr_of_mut!(PANIC_RECORD) as *mut PanicRecord;
             let record_ref = &mut *record_ptr;
-            
-            // 1. メッセージのフォーマット
+
             let mut writer = PanicBufferWriter::new(&mut record_ref.message);
             let _ = write!(writer, "{}", info.message());
             record_ref.message_len = writer.offset;
             message_slice = &record_ref.message[..record_ref.message_len];
 
-            // 2. ロケーションの保存
             if let Some(loc) = info.location() {
                 let mut file_buf = [0u8; MAX_FILE_LEN];
                 let file_bytes = loc.file().as_bytes();
                 let copy_len = file_bytes.len().min(MAX_FILE_LEN);
                 core::ptr::copy_nonoverlapping(file_bytes.as_ptr(), file_buf.as_mut_ptr(), copy_len);
-                
+
                 record_ref.location = Some(PanicLocation {
                     file: file_buf,
                     file_len: copy_len,
@@ -173,20 +134,19 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
                 record_ref.location = None;
             }
 
-            // 3. その他情報の保存
             record_ref.domain_id = if domain_id > 0 { Some(domain_id) } else { None };
             record_ref.tick = crate::task::timer::current_tick();
 
-            // 書き込み完了マーク
             PANIC_RECORD_STATE.store(2, Ordering::Release);
         }
     } else {
-        // 他のコアが書き込み中または完了済み。
-        // ここではメッセージの取得は諦め、デフォルトメッセージを使うか、直接出力する
         crate::io::log::early_print("Concurrent panic detected, skipping record capture.\n");
     }
+    message_slice
+}
 
-    // ログ出力 (Lock-Free)
+/// Output the panic location and message to serial (lock-free).
+fn panic_output_location(info: &PanicInfo, message_slice: &[u8]) {
     if let Some(location) = info.location() {
         crate::io::log::early_print("Panic at ");
         crate::io::log::early_print(location.file());
@@ -206,13 +166,13 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         crate::io::log::early_print("(invalid utf8 message)");
     }
     crate::io::log::early_print("\n");
-    
-    // IOMMU Panic Record (Lock-Free)
+}
+
+/// Save IOMMU DMA panic record if message is valid UTF-8 (lock-free).
+fn panic_save_iommu_record(message_slice: &[u8]) {
     if let Ok(s) = core::str::from_utf8(message_slice) {
         if let Some(info) = crate::io::iommu::panic::write_panic_record(s) {
             crate::io::log::early_print("[PANIC] DMA record saved\n");
-            // 詳細なIOMMU情報はデバッグに有用だが、ここでallocを使わずにprintするのは面倒なので省略、
-            // またはearly_print_hexを使って頑張る
             crate::io::log::early_print("DMA iova=0x");
             crate::io::log::early_print_hex(info.iova);
             crate::io::log::early_print(" phys=0x");
@@ -220,32 +180,29 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
             crate::io::log::early_print("\n");
         }
     }
+}
 
-    // ドメイン処理
-    if domain_id > 0 {
-        crate::io::log::early_print("Domain ID: ");
-        crate::io::log::early_print_dec(domain_id);
-        crate::io::log::early_print("\n");
+/// Attempt domain-specific panic handling if running in a non-zero domain.
+fn panic_notify_domain(domain_id: u64, message_slice: &[u8]) {
+    if domain_id == 0 {
+        return;
+    }
+    crate::io::log::early_print("Domain ID: ");
+    crate::io::log::early_print_dec(domain_id);
+    crate::io::log::early_print("\n");
 
-        if let Ok(s) = core::str::from_utf8(message_slice) {
-            if try_handle_domain_panic(domain_id, s) {
-                 crate::io::log::early_print("Domain terminated, attempting to continue...\n");
-                 set_current_domain(0);
-                 // Note: Actual continuation requires longjmp which is not implemented here.
-            }
+    if let Ok(s) = core::str::from_utf8(message_slice) {
+        if try_handle_domain_panic(domain_id, s) {
+            crate::io::log::early_print("Domain terminated, attempting to continue...\n");
+            set_current_domain(0);
         }
     }
+}
 
-    // BSOD and Serial Dump (Lock-Free)
-    // display_bsod_on_panic handles force unlocking framebuffer internally
-    // We pass slice references constructed from the raw buffer if valid, to avoid String allocation
-    
-    // 1. Capture additional debugging info (Registers, Backtrace)
-    use crate::graphics::bsod::{BsodInfo, RegisterDump};
+/// Build a BsodInfo struct, capturing registers, backtrace, and location.
+fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo {
+    use crate::graphics::bsod::RegisterDump;
 
-    
-    // Capture registers and then a context-aware backtrace
-    // so the crashing RIP is guaranteed to be the first frame (more robust for #PFs).
     let registers = RegisterDump::capture();
     let backtrace = crate::unwind::capture_from_context(
         registers.rip as usize,
@@ -253,13 +210,12 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         registers.rbp as usize,
     );
 
-    // Try to resolve the crashing RIP to a symbol name (diagnostic helper)
     if let Some(sym_name) = crate::unwind::resolve_symbol_name(registers.rip as usize) {
         crate::io::log::early_print("[PANIC] Resolved RIP -> ");
         crate::io::log::early_print(sym_name);
         crate::io::log::early_print("\n");
     }
-    
+
     let (file_str, line, col) = unsafe {
         if PANIC_RECORD_STATE.load(Ordering::Acquire) == 2 {
             let record_ptr = core::ptr::addr_of!(PANIC_RECORD) as *const PanicRecord;
@@ -274,11 +230,10 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
             (None, None, None)
         }
     };
-    
+
     let msg_str = core::str::from_utf8(message_slice).unwrap_or("Panic error");
     let first_word = msg_str.split_whitespace().next().unwrap_or("KERNEL_PANIC");
 
-    // 2. Construct BsodInfo
     let mut bsod_info = BsodInfo::new(msg_str);
     if let (Some(f), Some(l), Some(c)) = (file_str, line, col) {
         bsod_info = bsod_info.with_location(f, l, c);
@@ -288,7 +243,6 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         .with_backtrace(backtrace)
         .with_error_code(first_word);
 
-    // If available, print the first resolved symbol (lock-free) to aid quick triage
     if let Some(first) = bsod_info.backtrace.as_ref().and_then(|bt| bt.iter().next()) {
         if let Some(sym) = &first.symbol {
             crate::io::log::early_print("[PANIC] Likely at symbol: ");
@@ -299,10 +253,42 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         }
     }
 
-    // 3. Dump to Serial (First priority)
-    crate::graphics::bsod::dump_bsod_info_to_serial(&bsod_info);
+    bsod_info
+}
 
-    // 4. Display on Screen
+/// パニックハンドラの本体
+/// 設計書 8.1: パニック捕捉とドメイン境界での処理
+pub fn handle_panic(info: &PanicInfo) -> ! {
+    // 割り込みを無効化
+    x86_64::instructions::interrupts::disable();
+
+    // 【設計書 8.5.1】Double Panic検出
+    if PANIC_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        crate::io::log::early_print("\n!!! DOUBLE PANIC DETECTED !!!\n");
+        crate::io::log::early_print("Aborting without further processing.\n");
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+
+    // パニックモードに入る（ログ出力時のデッドロック回避）
+    crate::io::log::enter_panic_mode();
+
+    // 【設計書 8.4】パニック状態をマーク（PoisonLockのため）
+    crate::sync::set_panicking(true);
+
+    let _count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);
+    let domain_id = get_current_domain();
+
+    crate::io::log::early_print("\n!!! KERNEL PANIC DETECTED !!!\n");
+
+    let message_slice = panic_capture_record(info, domain_id);
+    panic_output_location(info, message_slice);
+    panic_save_iommu_record(message_slice);
+    panic_notify_domain(domain_id, message_slice);
+
+    let bsod_info = panic_build_bsod(message_slice);
+    crate::graphics::bsod::dump_bsod_info_to_serial(&bsod_info);
     display_bsod_on_panic(&bsod_info);
 
     // システム停止

@@ -242,6 +242,69 @@ impl FsNamespace {
             }
         }
     }
+
+    fn extract_str_arg<'a>(args: &'a [ExoValue<'static>], index: usize, default: &'a str) -> &'a str {
+        args.get(index)
+            .and_then(|v| match v {
+                ExoValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            })
+            .unwrap_or(default)
+    }
+
+    fn check_write_cap(caps: &crate::security::CapabilitySet, operation: &str) -> Result<(), ExoValue<'static>> {
+        if caps.has_capability(CAP_DAC_OVERRIDE) {
+            Ok(())
+        } else {
+            Err(ExoValue::Error(format!(
+                "Permission denied: CAP_DAC_OVERRIDE required for {}", operation
+            )))
+        }
+    }
+
+    fn extract_write_data(args: &[ExoValue<'static>]) -> Vec<u8> {
+        args.get(1).map(|v| match v {
+            ExoValue::String(s) => s.as_bytes().to_vec(),
+            ExoValue::BufferRef(buf) => buf.to_vec(),
+            _ => Vec::new(),
+        }).unwrap_or_default()
+    }
+
+    async fn call_read_op(method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        match method {
+            "entries" | "ls" => Self::entries(Self::extract_str_arg(args, 0, ".")).await,
+            "read" | "cat" => Self::read(Self::extract_str_arg(args, 0, "")).await,
+            "stat" => Self::stat(Self::extract_str_arg(args, 0, "")).await,
+            _ => ExoValue::Error(format!("Unknown read method 'fs.{}'", method)),
+        }
+    }
+
+    async fn call_write_single_arg_op(method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let path = Self::extract_str_arg(args, 0, "");
+        match method {
+            "mkdir" => Self::mkdir(path).await,
+            "remove" | "rm" => Self::remove(path).await,
+            "touch" => Self::touch(path).await,
+            "write" => {
+                let data = Self::extract_write_data(args);
+                Self::write(path, &data).await
+            }
+            _ => ExoValue::Error(format!("Unknown write method 'fs.{}'", method)),
+        }
+    }
+
+    async fn call_write_two_arg_op(method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let src = Self::extract_str_arg(args, 0, "");
+        let dst = Self::extract_str_arg(args, 1, "");
+        if dst.is_empty() {
+            return ExoValue::Error(format!("Usage: fs.{}(src, dst)", method));
+        }
+        match method {
+            "copy" | "cp" => Self::copy(src, dst).await,
+            "move" | "mv" => Self::mv(src, dst).await,
+            _ => ExoValue::Error(format!("Unknown method 'fs.{}'", method)),
+        }
+    }
 }
 
 impl ShellNamespace for FsNamespace {
@@ -257,147 +320,20 @@ impl ShellNamespace for FsNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "entries" | "ls" => {
-                    let path = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::String(s) => Some(s.as_ref()),
-                            _ => None,
-                        })
-                        .unwrap_or(".");
-                    // Note: "." handling usually requires cwd from shell.
-                    // But here we only receive args. Shell should resolve relative paths BEFORE calling,
-                    // or we need to pass CWD.
-                    // For now, assume shell resolves it, OR default to root if not provided matching existing behavior logic (mostly).
-                    // Actually existing shell passed shell.cwd if arg missing.
-                    // We'll rely on shell to pass the absolute path if possible, or handle "." if we can.
-                    // But FsNamespace doesn't know CWD.
-                    // FIX: Shell.rs currently resolves path using CWD before calling or passes CWD default.
-                    // If we move logic here, we miss CWD.
-                    // We'll assume args[0] IS the path to list. If missing, it's an error or root?
-                    // Existing code: path = args.first()...unwrap_or_else(|| self.cwd.clone());
-                    // So we MUST have the path passed.
-                    Self::entries(path).await
+                "entries" | "ls" | "read" | "cat" | "stat" => {
+                    Self::call_read_op(method, args).await
                 }
-                "read" | "cat" => {
-                    let path = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::String(s) => Some(s.as_ref()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    Self::read(path).await
+                "mkdir" | "remove" | "rm" | "touch" | "write" => {
+                    if let Err(e) = Self::check_write_cap(caps, method) {
+                        return e;
+                    }
+                    Self::call_write_single_arg_op(method, args).await
                 }
-                "stat" => {
-                    let path = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::String(s) => Some(s.as_ref()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    Self::stat(path).await
-                }
-                "mkdir" => {
-                    // Requires write permission
-                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
-                        return ExoValue::Error(String::from(
-                            "Permission denied: CAP_DAC_OVERRIDE required for mkdir"
-                        ));
+                "copy" | "cp" | "move" | "mv" => {
+                    if let Err(e) = Self::check_write_cap(caps, method) {
+                        return e;
                     }
-                    let path = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::String(s) => Some(s.as_ref()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    Self::mkdir(path).await
-                }
-                "remove" | "rm" => {
-                    // Requires write permission
-                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
-                        return ExoValue::Error(String::from(
-                            "Permission denied: CAP_DAC_OVERRIDE required for remove"
-                        ));
-                    }
-                    let path = args
-                        .first()
-                        .and_then(|v| match v {
-                            ExoValue::String(s) => Some(s.as_ref()),
-                            _ => None,
-                        })
-                        .unwrap_or("");
-                    Self::remove(path).await
-                }
-                "copy" | "cp" => {
-                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
-                        return ExoValue::Error(String::from(
-                            "Permission denied: CAP_DAC_OVERRIDE required for copy"
-                        ));
-                    }
-                    let src = args.first().and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    }).unwrap_or("");
-                    let dst = args.get(1).and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    }).unwrap_or("");
-                    if dst.is_empty() {
-                        return ExoValue::Error(String::from("Usage: fs.copy(src, dst)"));
-                    }
-                    Self::copy(src, dst).await
-                }
-                "touch" => {
-                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
-                        return ExoValue::Error(String::from(
-                            "Permission denied: CAP_DAC_OVERRIDE required for touch"
-                        ));
-                    }
-                    let path = args.first().and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    }).unwrap_or("");
-                    Self::touch(path).await
-                }
-                "write" => {
-                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
-                        return ExoValue::Error(String::from(
-                            "Permission denied: CAP_DAC_OVERRIDE required for write"
-                        ));
-                    }
-                    let path = args.first().and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    }).unwrap_or("");
-                    // データは第2引数（文字列またはバッファ）
-                    let data: Vec<u8> = args.get(1).map(|v| match v {
-                        ExoValue::String(s) => s.as_bytes().to_vec(),
-                        ExoValue::BufferRef(buf) => buf.to_vec(),
-                        _ => Vec::new(),
-                    }).unwrap_or_default();
-                    Self::write(path, &data).await
-                }
-                "move" | "mv" => {
-                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
-                        return ExoValue::Error(String::from(
-                            "Permission denied: CAP_DAC_OVERRIDE required for move"
-                        ));
-                    }
-                    let src = args.first().and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    }).unwrap_or("");
-                    let dst = args.get(1).and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    }).unwrap_or("");
-                    if dst.is_empty() {
-                        return ExoValue::Error(String::from("Usage: fs.move(src, dst)"));
-                    }
-                    Self::mv(src, dst).await
+                    Self::call_write_two_arg_op(method, args).await
                 }
                 // 'cd' is handled by shell built-in logic generally, but if called here it does nothing stateful
                 "cd" => ExoValue::Error(String::from("cd is a shell built-in")),

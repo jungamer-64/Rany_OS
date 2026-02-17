@@ -219,261 +219,320 @@ impl ExoShell {
 
         match expr {
             Expr::Literal(val) => val.clone().into_owned(),
-
-            Expr::Ident(name) => {
-                // 変数参照 ($var) または予約語
-                if name.starts_with('$') {
-                    return self
-                        .env
-                        .get(&name[1..])
-                        .cloned()
-                        .unwrap_or(ExoValue::Nil);
-                }
-                match name.as_str() {
-                    "true" => ExoValue::Bool(true),
-                    "false" => ExoValue::Bool(false),
-                    "nil" => ExoValue::Nil,
-                    _ => {
-                        // binding にあるかチェック
-                        if let Some(val) = self.env.get(name.as_str()) {
-                            return val.clone();
-                        }
-                        // 名前空間の可能性（fs 等）は MethodCall で処理されるが、
-                        // 単体で `fs` と入力された場合などはここでエラーにするか、文字列にするか？
-                        // エイリアスの可能性もある
-                        self.eval_alias(&name).await
-                    }
-                }
-            }
-
-            Expr::Binary { left, op, right } => {
-                // パイプ演算子は特別扱い: 左辺の結果を右辺の関数/メソッドの第一引数として渡す
-                if *op == BinaryOp::Pipe {
-                    let left_val = Box::pin(self.evaluate_expr_inner(left, depth + 1)).await;
-
-                    // 右辺がメソッド呼び出しの場合、左辺を最初の引数として挿入
-                    match right.as_ref() {
-                        Expr::MethodCall {
-                            object,
-                            method,
-                            args,
-                        } => {
-                            // 左辺をリテラルとして、argsの先頭に挿入
-                            let mut new_args = Vec::with_capacity(args.len() + 1);
-                            new_args.push(Expr::Literal(left_val));
-                            new_args.extend(args.iter().cloned());
-
-                            // 名前空間メソッドか通常メソッドかを判定
-                            if let Expr::Ident(ns_name) = object.as_ref() {
-                                if self.is_namespace(ns_name) {
-                                    return self
-                                        .dispatch_namespace_method(ns_name, method, &new_args)
-                                        .await;
-                                }
-                            }
-
-                            let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
-                            return self.apply_method(obj, method, &new_args).await;
-                        }
-                        // 右辺が識別子の場合（関数名として扱う）
-                        Expr::Ident(func_name) => {
-                            // 配列メソッドとして呼び出し
-                            let new_args = vec![Expr::Literal(left_val.clone())];
-                            return self.apply_method(left_val, func_name, &new_args).await;
-                        }
-                        _ => {
-                            return ExoValue::Error(format!(
-                                "Pipe operator requires method call on right side"
-                            ));
-                        }
-                    }
-                }
-
-                let l = Box::pin(self.evaluate_expr_inner(left, depth + 1)).await;
-                let r = Box::pin(self.evaluate_expr_inner(right, depth + 1)).await;
-                eval::eval_binary_op(&l, *op, &r)
-            }
-
+            Expr::Ident(name) => self.eval_ident(name, depth).await,
+            Expr::Binary { left, op, right } => self.eval_binary(left, op, right, depth).await,
             Expr::Unary { op, operand } => {
                 let val = Box::pin(self.evaluate_expr_inner(operand, depth + 1)).await;
                 eval::eval_unary_op(*op, &val)
             }
-
             Expr::Group(inner) => Box::pin(self.evaluate_expr_inner(inner, depth + 1)).await,
-
-            Expr::MethodCall {
-                object,
-                method,
-                args,
-            } => {
-                // 名前空間メソッドの特別扱い
-                if let Expr::Ident(name) = object.as_ref() {
-                    if self.is_namespace(&name) {
-                        return self.dispatch_namespace_method(&name, method, args).await;
-                    }
-                }
-
-                let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
-                self.apply_method(obj, method, args).await
+            Expr::Closure { .. } => {
+                ExoValue::Error("Closures are only allowed in method arguments".to_string())
             }
+            _ => self.eval_complex_expr(expr, depth).await,
+        }
+    }
 
+    /// Evaluate composite expression types (collections, control flow, method calls).
+    async fn eval_complex_expr(&mut self, expr: &Expr<'_>, depth: usize) -> ExoValue<'static> {
+        match expr {
+            Expr::MethodCall { object, method, args } => {
+                self.eval_method_call(object, method, args, depth).await
+            }
             Expr::FieldAccess { object, field } => {
                 let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
                 eval::get_field(&obj, &field)
             }
+            Expr::Array(elements) => self.eval_array(elements, depth).await,
+            Expr::Index { object, index } => self.eval_index(object, index, depth).await,
+            Expr::Map(pairs) => self.eval_map(pairs, depth).await,
+            _ => self.eval_control_flow_expr(expr, depth).await,
+        }
+    }
 
-            Expr::Array(elements) => {
-                let mut values: Vec<ExoValue<'static>> = Vec::new();
-                for e in elements.iter() {
-                    values.push(Box::pin(self.evaluate_expr_inner(e, depth + 1)).await);
-                }
-                ExoValue::Array(values)
-            }
-
-            Expr::Index { object, index } => {
-                let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
-                let idx = Box::pin(self.evaluate_expr_inner(index, depth + 1)).await;
-
-                match (&obj, &idx) {
-                    (ExoValue::Array(arr), ExoValue::Int(i)) => {
-                        let i = *i as usize;
-                        if i < arr.len() {
-                            arr[i].clone()
-                        } else {
-                            ExoValue::Error(format!(
-                                "Index {} out of bounds (len={})",
-                                i,
-                                arr.len()
-                            ))
-                        }
-                    }
-                    (ExoValue::String(s), ExoValue::Int(i)) => {
-                        let i = *i as usize;
-                        if let Some(c) = s.chars().nth(i) {
-                            ExoValue::String(Cow::Owned(c.to_string()))
-                        } else {
-                            ExoValue::Error(format!("String index {} out of bounds", i))
-                        }
-                    }
-                    _ => ExoValue::Error(format!("Cannot index {:?} with {:?}", obj, idx)),
-                }
-            }
-
-            Expr::Map(pairs) => {
-                let mut map = BTreeMap::new();
-                for (key, value_expr) in pairs.iter() {
-                    let value = Box::pin(self.evaluate_expr_inner(value_expr, depth + 1)).await;
-                    map.insert(key.clone(), value);
-                }
-                ExoValue::Map(map)
-            }
-
-            Expr::Block(stmts) => {
-                self.env.push_scope();
-
-                let mut result = ExoValue::Nil;
-                for stmt in stmts {
-                    match Box::pin(self.eval_stmt(stmt.clone())).await {
-                        Ok(val) => match val {
-                            ExoValue::Break => {
-                                self.env.pop_scope();
-                                return ExoValue::Break;
-                            }
-                            ExoValue::Continue => {
-                                self.env.pop_scope();
-                                return ExoValue::Continue;
-                            }
-                            other => result = other,
-                        },
-                        Err(e) => {
-                            self.env.pop_scope();
-                            return ExoValue::Error(e.to_string());
-                        }
-                    }
-                }
-
-                self.env.pop_scope();
-                result
-            }
-
+    /// Evaluate control-flow expressions (block, if, for).
+    async fn eval_control_flow_expr(&mut self, expr: &Expr<'_>, depth: usize) -> ExoValue<'static> {
+        match expr {
+            Expr::Block(stmts) => self.eval_block(stmts, depth).await,
             Expr::If { cond, then_block, else_block } => {
-                let cond_val = Box::pin(self.evaluate_expr_inner(cond, depth + 1)).await;
-
-                // 真偽判定
-                let is_true = match cond_val {
-                    ExoValue::Bool(b) => b,
-                    ExoValue::Nil => false,
-                    _ => true,
-                };
-
-                if is_true {
-                    Box::pin(self.evaluate_expr_inner(then_block, depth + 1)).await
-                } else if let Some(else_expr) = else_block {
-                    Box::pin(self.evaluate_expr_inner(else_expr, depth + 1)).await
-                } else {
-                    ExoValue::Nil
-                }
+                self.eval_if_expr(cond, then_block, else_block.as_deref(), depth).await
             }
-
             Expr::For { param, iterable, body } => {
-                let iter_val = Box::pin(self.evaluate_expr_inner(iterable, depth + 1)).await;
-
-                // 配列（またはイテレータ）として取得
-                let items = match iter_val {
-                    ExoValue::Array(arr) => arr,
-                    ExoValue::Iterator(iter) => match self.materialize_iterator(iter).await {
-                        ExoValue::Array(arr) => arr,
-                        ExoValue::Error(e) => return ExoValue::Error(e),
-                        other => {
-                            return ExoValue::Error(format!(
-                                "Iterator did not produce an array (got {:?})",
-                                other
-                            ))
-                        }
-                    },
-                    _ => return ExoValue::Error("For loop requires an array or iterator".to_string()),
-                };
-
-                let mut last_result = ExoValue::Nil;
-
-                // Enter loop context
-                self.loop_depth += 1;
-
-                // ループ実行
-                for item in items {
-                    // スコープ作成
-                    self.env.push_scope();
-
-                    // ループ変数を定義
-                    self.env.define(param.clone(), item.clone());
-
-                    // 本体評価
-                    let res = Box::pin(self.evaluate_expr_inner(body, depth + 1)).await;
-
-                    self.env.pop_scope();
-
-                    match res {
-                        ExoValue::Break => { break; }
-                        ExoValue::Continue => { crate::task::yield_now().await; continue; }
-                        ExoValue::Error(_) => { self.loop_depth -= 1; return res; }
-                        other => last_result = other,
-                    }
-
-                    // 協調的マルチタスクのためのYield
-                    crate::task::yield_now().await;
-                }
-
-                // Exit loop context
-                self.loop_depth -= 1;
-
-                last_result
+                self.eval_for(param, iterable, body, depth).await
             }
+            _ => ExoValue::Error("Internal: unexpected expression type".to_string()),
+        }
+    }
 
-            // クロージャは値として評価できない（メソッド引数としてのみ有効）
-            Expr::Closure { .. } => {
-                ExoValue::Error("Closures are only allowed in method arguments".to_string())
+    /// Evaluate an identifier expression (variable reference, reserved word, alias).
+    async fn eval_ident(&mut self, name: &str, _depth: usize) -> ExoValue<'static> {
+        // 変数参照 ($var) または予約語
+        if name.starts_with('$') {
+            return self
+                .env
+                .get(&name[1..])
+                .cloned()
+                .unwrap_or(ExoValue::Nil);
+        }
+        match name {
+            "true" => ExoValue::Bool(true),
+            "false" => ExoValue::Bool(false),
+            "nil" => ExoValue::Nil,
+            _ => {
+                // binding にあるかチェック
+                if let Some(val) = self.env.get(name) {
+                    return val.clone();
+                }
+                // エイリアスの可能性もある
+                self.eval_alias(name).await
             }
         }
+    }
+
+    /// Evaluate a binary expression (including pipe operator).
+    async fn eval_binary(
+        &mut self,
+        left: &Expr<'_>,
+        op: &BinaryOp,
+        right: &Expr<'_>,
+        depth: usize,
+    ) -> ExoValue<'static> {
+        // パイプ演算子は特別扱い: 左辺の結果を右辺の関数/メソッドの第一引数として渡す
+        if *op == BinaryOp::Pipe {
+            let left_val = Box::pin(self.evaluate_expr_inner(left, depth + 1)).await;
+            return self.eval_pipe(left_val, right, depth).await;
+        }
+
+        let l = Box::pin(self.evaluate_expr_inner(left, depth + 1)).await;
+        let r = Box::pin(self.evaluate_expr_inner(right, depth + 1)).await;
+        eval::eval_binary_op(&l, *op, &r)
+    }
+
+    /// Evaluate the right-hand side of a pipe expression.
+    async fn eval_pipe(
+        &mut self,
+        left_val: ExoValue<'static>,
+        right: &Expr<'_>,
+        depth: usize,
+    ) -> ExoValue<'static> {
+        match right {
+            Expr::MethodCall { object, method, args } => {
+                let mut new_args = Vec::with_capacity(args.len() + 1);
+                new_args.push(Expr::Literal(left_val));
+                new_args.extend(args.iter().cloned());
+
+                if let Expr::Ident(ns_name) = object.as_ref() {
+                    if self.is_namespace(ns_name) {
+                        return self
+                            .dispatch_namespace_method(ns_name, method, &new_args)
+                            .await;
+                    }
+                }
+
+                let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
+                self.apply_method(obj, method, &new_args).await
+            }
+            Expr::Ident(func_name) => {
+                let new_args = vec![Expr::Literal(left_val.clone())];
+                self.apply_method(left_val, func_name, &new_args).await
+            }
+            _ => ExoValue::Error(format!(
+                "Pipe operator requires method call on right side"
+            )),
+        }
+    }
+
+    /// Evaluate a method call expression (including namespace dispatch).
+    async fn eval_method_call(
+        &mut self,
+        object: &Expr<'_>,
+        method: &str,
+        args: &[Expr<'_>],
+        depth: usize,
+    ) -> ExoValue<'static> {
+        // 名前空間メソッドの特別扱い
+        if let Expr::Ident(name) = object {
+            if self.is_namespace(&name) {
+                return self.dispatch_namespace_method(&name, method, args).await;
+            }
+        }
+
+        let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
+        self.apply_method(obj, method, args).await
+    }
+
+    /// Evaluate an array literal.
+    async fn eval_array(&mut self, elements: &[Expr<'_>], depth: usize) -> ExoValue<'static> {
+        let mut values: Vec<ExoValue<'static>> = Vec::new();
+        for e in elements.iter() {
+            values.push(Box::pin(self.evaluate_expr_inner(e, depth + 1)).await);
+        }
+        ExoValue::Array(values)
+    }
+
+    /// Evaluate an index access expression.
+    async fn eval_index(
+        &mut self,
+        object: &Expr<'_>,
+        index: &Expr<'_>,
+        depth: usize,
+    ) -> ExoValue<'static> {
+        let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
+        let idx = Box::pin(self.evaluate_expr_inner(index, depth + 1)).await;
+
+        match (&obj, &idx) {
+            (ExoValue::Array(arr), ExoValue::Int(i)) => {
+                let i = *i as usize;
+                if i < arr.len() {
+                    arr[i].clone()
+                } else {
+                    ExoValue::Error(format!(
+                        "Index {} out of bounds (len={})",
+                        i,
+                        arr.len()
+                    ))
+                }
+            }
+            (ExoValue::String(s), ExoValue::Int(i)) => {
+                let i = *i as usize;
+                if let Some(c) = s.chars().nth(i) {
+                    ExoValue::String(Cow::Owned(c.to_string()))
+                } else {
+                    ExoValue::Error(format!("String index {} out of bounds", i))
+                }
+            }
+            _ => ExoValue::Error(format!("Cannot index {:?} with {:?}", obj, idx)),
+        }
+    }
+
+    /// Evaluate a map literal.
+    async fn eval_map(
+        &mut self,
+        pairs: &[(String, Expr<'_>)],
+        depth: usize,
+    ) -> ExoValue<'static> {
+        let mut map = BTreeMap::new();
+        for (key, value_expr) in pairs.iter() {
+            let value = Box::pin(self.evaluate_expr_inner(value_expr, depth + 1)).await;
+            map.insert(key.clone(), value);
+        }
+        ExoValue::Map(map)
+    }
+
+    /// Evaluate a block expression (sequence of statements).
+    async fn eval_block(&mut self, stmts: &[Stmt<'_>], depth: usize) -> ExoValue<'static> {
+        let _ = depth; // reserved for future use
+        self.env.push_scope();
+
+        let mut result = ExoValue::Nil;
+        for stmt in stmts {
+            match Box::pin(self.eval_stmt(stmt.clone())).await {
+                Ok(val) => match val {
+                    ExoValue::Break => {
+                        self.env.pop_scope();
+                        return ExoValue::Break;
+                    }
+                    ExoValue::Continue => {
+                        self.env.pop_scope();
+                        return ExoValue::Continue;
+                    }
+                    other => result = other,
+                },
+                Err(e) => {
+                    self.env.pop_scope();
+                    return ExoValue::Error(e.to_string());
+                }
+            }
+        }
+
+        self.env.pop_scope();
+        result
+    }
+
+    /// Evaluate an if expression.
+    async fn eval_if_expr(
+        &mut self,
+        cond: &Expr<'_>,
+        then_block: &Expr<'_>,
+        else_block: Option<&Expr<'_>>,
+        depth: usize,
+    ) -> ExoValue<'static> {
+        let cond_val = Box::pin(self.evaluate_expr_inner(cond, depth + 1)).await;
+
+        // 真偽判定
+        let is_true = match cond_val {
+            ExoValue::Bool(b) => b,
+            ExoValue::Nil => false,
+            _ => true,
+        };
+
+        if is_true {
+            Box::pin(self.evaluate_expr_inner(then_block, depth + 1)).await
+        } else if let Some(else_expr) = else_block {
+            Box::pin(self.evaluate_expr_inner(else_expr, depth + 1)).await
+        } else {
+            ExoValue::Nil
+        }
+    }
+
+    /// Resolve an iterable value into a Vec for a for-loop.
+    async fn resolve_iterable(
+        &mut self,
+        iter_val: ExoValue<'static>,
+    ) -> Result<Vec<ExoValue<'static>>, ExoValue<'static>> {
+        match iter_val {
+            ExoValue::Array(arr) => Ok(arr),
+            ExoValue::Iterator(iter) => match self.materialize_iterator(iter).await {
+                ExoValue::Array(arr) => Ok(arr),
+                ExoValue::Error(e) => Err(ExoValue::Error(e)),
+                other => Err(ExoValue::Error(format!(
+                    "Iterator did not produce an array (got {:?})",
+                    other
+                ))),
+            },
+            _ => Err(ExoValue::Error(
+                "For loop requires an array or iterator".to_string(),
+            )),
+        }
+    }
+
+    /// Evaluate a for-loop expression.
+    async fn eval_for(
+        &mut self,
+        param: &str,
+        iterable: &Expr<'_>,
+        body: &Expr<'_>,
+        depth: usize,
+    ) -> ExoValue<'static> {
+        let iter_val = Box::pin(self.evaluate_expr_inner(iterable, depth + 1)).await;
+
+        let items = match self.resolve_iterable(iter_val).await {
+            Ok(items) => items,
+            Err(e) => return e,
+        };
+
+        let mut last_result = ExoValue::Nil;
+        self.loop_depth += 1;
+
+        for item in items {
+            self.env.push_scope();
+            self.env.define(param.to_string(), item.clone());
+
+            let res = Box::pin(self.evaluate_expr_inner(body, depth + 1)).await;
+            self.env.pop_scope();
+
+            match res {
+                ExoValue::Break => { break; }
+                ExoValue::Continue => { crate::task::yield_now().await; continue; }
+                ExoValue::Error(_) => { self.loop_depth -= 1; return res; }
+                other => last_result = other,
+            }
+
+            crate::task::yield_now().await;
+        }
+
+        self.loop_depth -= 1;
+        last_result
     }
 
     pub(crate) fn is_namespace(&self, name: &str) -> bool {
@@ -714,114 +773,7 @@ impl ExoShell {
                     .unwrap_or(0);
                 CapNamespace::revoke(id)
             }
-            "grant" => {
-                // grant(resource, [ops], target, [expires], [delegatable])
-                let resource = args
-                    .get(0)
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    })
-                    .unwrap_or("");
-                if resource.is_empty() {
-                    return ExoValue::Error(String::from(
-                        "grant(resource, [ops], target) requires a resource string",
-                    ));
-                }
-
-                // Helper to parse a single operation string
-                fn parse_op(s: &str) -> Option<CapOperation> {
-                    match s.to_lowercase().as_str() {
-                        "read" => Some(CapOperation::Read),
-                        "write" => Some(CapOperation::Write),
-                        "execute" => Some(CapOperation::Execute),
-                        "delete" => Some(CapOperation::Delete),
-                        "grant" => Some(CapOperation::Grant),
-                        "revoke" => Some(CapOperation::Revoke),
-                        "create" => Some(CapOperation::Create),
-                        "list" => Some(CapOperation::List),
-                        _ => None,
-                    }
-                }
-
-                let mut ops: Vec<CapOperation> = Vec::new();
-                if let Some(v) = args.get(1) {
-                    match v {
-                        ExoValue::Array(arr) => {
-                            for item in arr {
-                                if let ExoValue::String(s) = item {
-                                    if let Some(op) = parse_op(s.as_ref()) {
-                                        ops.push(op);
-                                    }
-                                }
-                            }
-                        }
-                        ExoValue::String(s) => {
-                            if let Some(op) = parse_op(s.as_ref()) {
-                                ops.push(op);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Determine target: either args[2] or args[1] if ops omitted
-                let target_arg = if args.len() >= 3 {
-                    args.get(2)
-                } else if args.len() == 2 {
-                    // if second arg isn't ops but target
-                    match args.get(1) {
-                        Some(ExoValue::String(_)) | Some(ExoValue::Int(_)) => args.get(1),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                let target = match target_arg {
-                    Some(ExoValue::Int(n)) => n.to_string(),
-                    Some(ExoValue::String(s)) => s.to_string(),
-                    _ => {
-                        return ExoValue::Error(String::from(
-                            "grant requires target domain id as second or third argument",
-                        ));
-                    }
-                };
-
-                // Parse optional arguments after target: expires (int) and delegatable (bool)
-                let mut expires: Option<u64> = None;
-                let mut delegatable: bool = false;
-                if args.len() > 3 {
-                    if let Some(v) = args.get(3) {
-                        match v {
-                            ExoValue::Int(n) => expires = Some(*n as u64),
-                            ExoValue::Bool(b) => delegatable = *b,
-                            ExoValue::Map(map) => {
-                                if let Some(e) = map.get("expires") {
-                                    if let ExoValue::Int(n) = e {
-                                        expires = Some(*n as u64);
-                                    }
-                                }
-                                if let Some(d) = map.get("delegatable") {
-                                    if let ExoValue::Bool(b) = d {
-                                        delegatable = *b;
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // Also accept delegatable as 4th argument if present
-                if args.len() > 4 {
-                    if let Some(ExoValue::Bool(b)) = args.get(4) {
-                        delegatable = *b;
-                    }
-                }
-
-                CapNamespace::grant(resource, &ops, target.as_str(), expires, delegatable)
-            },
+            "grant" => Self::eval_cap_grant(&args),
             "tokens" => {
                 // Optional domain id as first arg
                 let domain = args
@@ -842,6 +794,131 @@ impl ExoShell {
                     + "\n有効なメソッド: list, tokens, grant, revoke",
             ),
         }
+    }
+
+    /// cap.grant の引数を解析して実行する
+    fn eval_cap_grant(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        // grant(resource, [ops], target, [expires], [delegatable])
+        let resource = args
+            .get(0)
+            .and_then(|v| match v {
+                ExoValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            })
+            .unwrap_or("");
+        if resource.is_empty() {
+            return ExoValue::Error(String::from(
+                "grant(resource, [ops], target) requires a resource string",
+            ));
+        }
+
+        let ops = Self::parse_cap_ops(args.get(1));
+
+        // Determine target: either args[2] or args[1] if ops omitted
+        let target = match Self::resolve_grant_target(args) {
+            Ok(t) => t,
+            Err(e) => return e,
+        };
+
+        // Parse optional arguments after target
+        let (expires, delegatable) = Self::parse_grant_options(args);
+
+        CapNamespace::grant(resource, &ops, target.as_str(), expires, delegatable)
+    }
+
+    /// 操作文字列をCapOperationに変換する
+    fn parse_op(s: &str) -> Option<CapOperation> {
+        match s.to_lowercase().as_str() {
+            "read" => Some(CapOperation::Read),
+            "write" => Some(CapOperation::Write),
+            "execute" => Some(CapOperation::Execute),
+            "delete" => Some(CapOperation::Delete),
+            "grant" => Some(CapOperation::Grant),
+            "revoke" => Some(CapOperation::Revoke),
+            "create" => Some(CapOperation::Create),
+            "list" => Some(CapOperation::List),
+            _ => None,
+        }
+    }
+
+    /// 引数からCapOperation配列を抽出する
+    fn parse_cap_ops(arg: Option<&ExoValue<'static>>) -> Vec<CapOperation> {
+        let mut ops = Vec::new();
+        if let Some(v) = arg {
+            match v {
+                ExoValue::Array(arr) => {
+                    for item in arr {
+                        if let ExoValue::String(s) = item {
+                            if let Some(op) = Self::parse_op(s.as_ref()) {
+                                ops.push(op);
+                            }
+                        }
+                    }
+                }
+                ExoValue::String(s) => {
+                    if let Some(op) = Self::parse_op(s.as_ref()) {
+                        ops.push(op);
+                    }
+                }
+                _ => {}
+            }
+        }
+        ops
+    }
+
+    /// grant対象のターゲットを解決する
+    fn resolve_grant_target(args: &[ExoValue<'static>]) -> Result<String, ExoValue<'static>> {
+        let target_arg = if args.len() >= 3 {
+            args.get(2)
+        } else if args.len() == 2 {
+            match args.get(1) {
+                Some(ExoValue::String(_)) | Some(ExoValue::Int(_)) => args.get(1),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        match target_arg {
+            Some(ExoValue::Int(n)) => Ok(n.to_string()),
+            Some(ExoValue::String(s)) => Ok(s.to_string()),
+            _ => Err(ExoValue::Error(String::from(
+                "grant requires target domain id as second or third argument",
+            ))),
+        }
+    }
+
+    /// grantのオプション引数（expires, delegatable）を解析する
+    fn parse_grant_options(args: &[ExoValue<'static>]) -> (Option<u64>, bool) {
+        let mut expires: Option<u64> = None;
+        let mut delegatable: bool = false;
+
+        if args.len() > 3 {
+            if let Some(v) = args.get(3) {
+                match v {
+                    ExoValue::Int(n) => expires = Some(*n as u64),
+                    ExoValue::Bool(b) => delegatable = *b,
+                    ExoValue::Map(map) => {
+                        if let Some(ExoValue::Int(n)) = map.get("expires") {
+                            expires = Some(*n as u64);
+                        }
+                        if let Some(ExoValue::Bool(b)) = map.get("delegatable") {
+                            delegatable = *b;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Also accept delegatable as 4th argument if present
+        if args.len() > 4 {
+            if let Some(ExoValue::Bool(b)) = args.get(4) {
+                delegatable = *b;
+            }
+        }
+
+        (expires, delegatable)
     }
 
     /// sys.* メソッド（名前空間経由）
@@ -900,71 +977,38 @@ impl ExoShell {
             "first" | "head" => list.first().cloned().unwrap_or(ExoValue::Nil),
             "last" | "tail" => list.last().cloned().unwrap_or(ExoValue::Nil),
             "reverse" => ExoValue::Array(list.into_iter().rev().collect()),
-
-            "take" | "limit" => {
-                let args = self.evaluate_args(args).await;
-                let n = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::Int(n) => Some(*n as usize),
-                        _ => None,
-                    })
-                    .unwrap_or(10);
-                ExoValue::Array(list.into_iter().take(n).collect())
+            "sum" | "avg" | "average" | "min" | "max" => {
+                Self::apply_array_aggregate(list, method)
             }
-
-            "skip" | "offset" => {
-                let args = self.evaluate_args(args).await;
-                let n = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::Int(n) => Some(*n as usize),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                ExoValue::Array(list.into_iter().skip(n).collect())
+            "take" | "limit" | "skip" | "offset" => {
+                self.apply_array_slice(list, method, args).await
             }
-
-            "filter" | "where" => {
-                let condition_expr = match args.first() {
-                    Some(e) => e,
-                    None => {
-                        return ExoValue::Error("filter requires a condition argument".to_string());
+            "filter" | "where" | "find" | "any" | "all" => {
+                Self::apply_array_predicate(list, method, args)
+            }
+            "map" | "select" | "sort" | "order" | "join" | "contains" => {
+                self.apply_array_transform(list, method, args).await
+            }
+            "flatten" => {
+                let mut result = Vec::new();
+                for item in list {
+                    match item {
+                        ExoValue::Array(inner) => result.extend(inner),
+                        other => result.push(other),
                     }
-                };
-                self.filter_array(list, condition_expr)
+                }
+                ExoValue::Array(result)
             }
+            _ => ExoValue::Error(format!(
+                "Array does not have method '{}'\nValid methods: len, first, last, reverse, take, skip, filter, map, sort, sum, avg, min, max, join, find, any, all, contains, flatten",
+                method
+            )),
+        }
+    }
 
-            "map" | "select" => {
-                let args = self.evaluate_args(args).await;
-                let field = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| String::from("name"));
-                self.map_array(list, &field)
-            }
-
-            "sort" | "order" => {
-                let args = self.evaluate_args(args).await;
-                let field = args.first().and_then(|v| match v {
-                    ExoValue::String(s) => Some(s.as_ref().to_string()),
-                    _ => None,
-                });
-                let desc = args
-                    .get(1)
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref() == "desc"),
-                        _ => None,
-                    })
-                    .unwrap_or(false);
-
-                self.sort_array(list, field.as_deref(), desc)
-            }
-
-            // 集約メソッド
+    /// 配列の集約メソッド（sum, avg, min, max）
+    fn apply_array_aggregate(list: Vec<ExoValue<'static>>, method: &str) -> ExoValue<'static> {
+        match method {
             "sum" => {
                 let sum: i64 = list
                     .iter()
@@ -976,7 +1020,6 @@ impl ExoShell {
                     .sum();
                 ExoValue::Int(sum)
             }
-
             "avg" | "average" => {
                 let nums: Vec<f64> = list
                     .iter()
@@ -992,7 +1035,6 @@ impl ExoShell {
                     ExoValue::Float(nums.iter().sum::<f64>() / nums.len() as f64)
                 }
             }
-
             "min" => list
                 .iter()
                 .filter_map(|v| match v {
@@ -1002,7 +1044,6 @@ impl ExoShell {
                 .min()
                 .map(ExoValue::Int)
                 .unwrap_or(ExoValue::Nil),
-
             "max" => list
                 .iter()
                 .filter_map(|v| match v {
@@ -1012,10 +1053,106 @@ impl ExoShell {
                 .max()
                 .map(ExoValue::Int)
                 .unwrap_or(ExoValue::Nil),
+            _ => ExoValue::Nil,
+        }
+    }
 
+    /// 配列のスライスメソッド（take, skip）
+    async fn apply_array_slice(
+        &mut self,
+        list: Vec<ExoValue<'static>>,
+        method: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
+        let args = self.evaluate_args(args).await;
+        let n = args
+            .first()
+            .and_then(|v| match v {
+                ExoValue::Int(n) => Some(*n as usize),
+                _ => None,
+            });
+        match method {
+            "take" | "limit" => {
+                ExoValue::Array(list.into_iter().take(n.unwrap_or(10)).collect())
+            }
+            "skip" | "offset" => {
+                ExoValue::Array(list.into_iter().skip(n.unwrap_or(0)).collect())
+            }
+            _ => ExoValue::Nil,
+        }
+    }
+
+    /// 配列の述語メソッド（filter, find, any, all）
+    fn apply_array_predicate(
+        list: Vec<ExoValue<'static>>,
+        method: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
+        let condition_expr = match args.first() {
+            Some(e) => e,
+            None => {
+                return ExoValue::Error(format!("{} requires a condition argument", method));
+            }
+        };
+        match method {
+            "filter" | "where" => {
+                let filtered: Vec<_> = list
+                    .into_iter()
+                    .filter(|item| eval_closure_as_bool(condition_expr, item))
+                    .collect();
+                ExoValue::Array(filtered)
+            }
+            "find" => list
+                .into_iter()
+                .find(|item| eval_closure_as_bool(condition_expr, item))
+                .unwrap_or(ExoValue::Nil),
+            "any" => ExoValue::Bool(
+                list.iter()
+                    .any(|item| eval_closure_as_bool(condition_expr, item)),
+            ),
+            "all" => ExoValue::Bool(
+                list.iter()
+                    .all(|item| eval_closure_as_bool(condition_expr, item)),
+            ),
+            _ => ExoValue::Nil,
+        }
+    }
+
+    /// 配列の変換メソッド（map, sort, join, contains）
+    async fn apply_array_transform(
+        &mut self,
+        list: Vec<ExoValue<'static>>,
+        method: &str,
+        args: &[Expr<'_>],
+    ) -> ExoValue<'static> {
+        let evaluated_args = self.evaluate_args(args).await;
+        match method {
+            "map" | "select" => {
+                let field = evaluated_args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| String::from("name"));
+                self.map_array(list, &field)
+            }
+            "sort" | "order" => {
+                let field = evaluated_args.first().and_then(|v| match v {
+                    ExoValue::String(s) => Some(s.as_ref().to_string()),
+                    _ => None,
+                });
+                let desc = evaluated_args
+                    .get(1)
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref() == "desc"),
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                self.sort_array(list, field.as_deref(), desc)
+            }
             "join" => {
-                let args = self.evaluate_args(args).await;
-                let sep = args
+                let sep = evaluated_args
                     .first()
                     .and_then(|v| match v {
                         ExoValue::String(s) => Some(s.as_ref().to_string()),
@@ -1029,70 +1166,15 @@ impl ExoShell {
                     .join(&sep);
                 ExoValue::String(Cow::Owned(joined))
             }
-
-            "find" => {
-                let condition_expr = match args.first() {
-                    Some(e) => e,
-                    None => {
-                        return ExoValue::Error("find requires a condition argument".to_string());
-                    }
-                };
-                list.into_iter()
-                    .find(|item| eval_closure_as_bool(condition_expr, item))
-                    .unwrap_or(ExoValue::Nil)
-            }
-
-            "any" => {
-                let condition_expr = match args.first() {
-                    Some(e) => e,
-                    None => {
-                        return ExoValue::Error("any requires a condition argument".to_string());
-                    }
-                };
-                ExoValue::Bool(
-                    list.iter()
-                        .any(|item| eval_closure_as_bool(condition_expr, item)),
-                )
-            }
-
-            "all" => {
-                let condition_expr = match args.first() {
-                    Some(e) => e,
-                    None => {
-                        return ExoValue::Error("all requires a condition argument".to_string());
-                    }
-                };
-                ExoValue::Bool(
-                    list.iter()
-                        .all(|item| eval_closure_as_bool(condition_expr, item)),
-                )
-            }
-
             "contains" => {
-                let args = self.evaluate_args(args).await;
-                let target = args.first();
+                let target = evaluated_args.first();
                 let found = match target {
                     Some(v) => list.iter().any(|item| item == v),
                     None => false,
                 };
                 ExoValue::Bool(found)
             }
-
-            "flatten" => {
-                let mut result = Vec::new();
-                for item in list {
-                    match item {
-                        ExoValue::Array(inner) => result.extend(inner),
-                        other => result.push(other),
-                    }
-                }
-                ExoValue::Array(result)
-            }
-
-            _ => ExoValue::Error(format!(
-                "Array does not have method '{}'\nValid methods: len, first, last, reverse, take, skip, filter, map, sort, sum, avg, min, max, join, find, any, all, contains, flatten",
-                method
-            )),
+            _ => ExoValue::Nil,
         }
     }
 
@@ -1596,29 +1678,7 @@ impl ExoShell {
                 };
                 FsNamespace::entries(&p).await
             }
-            "cd" => {
-                if let Some(path) = parts.get(1) {
-                    self.cwd = if path.starts_with('/') {
-                        path.to_string()
-                    } else if *path == ".." {
-                        let mut segs: Vec<&str> =
-                            self.cwd.split('/').filter(|s| !s.is_empty()).collect();
-                        segs.pop();
-                        if segs.is_empty() {
-                            String::from("/")
-                        } else {
-                            format!("/{}", segs.join("/"))
-                        }
-                    } else {
-                        if self.cwd == "/" {
-                            format!("/{}", path)
-                        } else {
-                            format!("{}/{}", self.cwd, path)
-                        }
-                    };
-                }
-                ExoValue::String(Cow::Owned(self.cwd.clone()))
-            }
+            "cd" => self.eval_cd(&parts),
             "pwd" => ExoValue::String(Cow::Owned(self.cwd.clone())),
             "cat" => {
                 if let Some(path) = parts.get(1) {
@@ -1644,56 +1704,80 @@ impl ExoShell {
             "ps" => ProcNamespace::list(),
             "ifconfig" => NetNamespace::config(),
             "arp" => NetNamespace::arp_cache(),
-            "ping" => {
-                if let Some(host) = parts.get(1) {
-                    let ip_parts: Vec<&str> = host.split('.').collect();
-                    if ip_parts.len() == 4 {
-                        let ip: Result<Vec<u8>, _> =
-                            ip_parts.iter().map(|p| p.parse::<u8>()).collect();
-                        if let Ok(octets) = ip {
-                            if octets.len() == 4 {
-                                return NetNamespace::ping(
-                                    [octets[0], octets[1], octets[2], octets[3]],
-                                    4,
-                                )
-                                .await;
-                            }
-                        }
-                    }
-                    ExoValue::Error(format!("Invalid IP: {}", host))
-                } else {
-                    ExoValue::Error(String::from("Usage: ping <ip>"))
-                }
-            }
+            "ping" => self.eval_ping(&parts).await,
             "uname" => SysNamespace::info(),
             "free" => SysNamespace::memory(),
-            // Dispatch to namespaces
-            "net" => {
-                 if let Some(method) = parts.get(1) {
-                     let args: Vec<ExoValue> = parts.iter().skip(2)
-                        .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
-                        .collect();
-                     super::namespaces::net::NetNamespace::dispatch(method, &args)
-                 } else {
-                     ExoValue::String(Cow::Borrowed("Usage: net <method> [args...]"))
-                 }
-            }
-            "cell" => {
-                 if let Some(method) = parts.get(1) {
-                     let args: Vec<ExoValue> = parts.iter().skip(2)
-                        .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
-                        .collect();
-                     super::namespaces::cell::CellNamespace::dispatch(method, &args)
-                 } else {
-                     ExoValue::String(Cow::Borrowed("Usage: cell <method> [args...]"))
-                 }
-            }
+            "net" | "cell" => Self::dispatch_namespace_command(&parts, parts[0]),
             "uptime" => SysNamespace::time(),
             _ => ExoValue::Error(
 format!(
                 "Unknown: '{}'\nTry 'help' or use ExoShell syntax: fs.entries(), net.config(), etc.",
                 cmd
             )),
+        }
+    }
+
+    /// Evaluate `cd` path argument and update working directory.
+    fn eval_cd(&mut self, parts: &[&str]) -> ExoValue<'static> {
+        if let Some(path) = parts.get(1) {
+            self.cwd = if path.starts_with('/') {
+                path.to_string()
+            } else if *path == ".." {
+                let mut segs: Vec<&str> =
+                    self.cwd.split('/').filter(|s| !s.is_empty()).collect();
+                segs.pop();
+                if segs.is_empty() {
+                    String::from("/")
+                } else {
+                    format!("/{}", segs.join("/"))
+                }
+            } else {
+                if self.cwd == "/" {
+                    format!("/{}", path)
+                } else {
+                    format!("{}/{}", self.cwd, path)
+                }
+            };
+        }
+        ExoValue::String(Cow::Owned(self.cwd.clone()))
+    }
+
+    /// Evaluate `ping <ip>` command.
+    async fn eval_ping(&self, parts: &[&str]) -> ExoValue<'static> {
+        if let Some(host) = parts.get(1) {
+            let ip_parts: Vec<&str> = host.split('.').collect();
+            if ip_parts.len() == 4 {
+                let ip: Result<Vec<u8>, _> =
+                    ip_parts.iter().map(|p| p.parse::<u8>()).collect();
+                if let Ok(octets) = ip {
+                    if octets.len() == 4 {
+                        return NetNamespace::ping(
+                            [octets[0], octets[1], octets[2], octets[3]],
+                            4,
+                        )
+                        .await;
+                    }
+                }
+            }
+            ExoValue::Error(format!("Invalid IP: {}", host))
+        } else {
+            ExoValue::Error(String::from("Usage: ping <ip>"))
+        }
+    }
+
+    /// Dispatch a `net` or `cell` namespace sub-command.
+    fn dispatch_namespace_command(parts: &[&str], namespace: &str) -> ExoValue<'static> {
+        if let Some(method) = parts.get(1) {
+            let args: Vec<ExoValue> = parts.iter().skip(2)
+                .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
+                .collect();
+            match namespace {
+                "net" => super::namespaces::net::NetNamespace::dispatch(method, &args),
+                "cell" => super::namespaces::cell::CellNamespace::dispatch(method, &args),
+                _ => ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace))),
+            }
+        } else {
+            ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace)))
         }
     }
 

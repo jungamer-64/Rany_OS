@@ -797,74 +797,15 @@ impl Log for KernelLogger {
         let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed) && !IN_PANIC.load(Ordering::Relaxed);
 
         if use_async {
-            // Prefer per-core buffer when possible (reduces global contention)
-            let mut wrote_async = false;
-
-            if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
-                if cpu_id < PER_CPU_COUNT {
-                    if let Some(mut guard) = PER_CORE_LOG_BUFFERS[cpu_id].try_lock() {
-                        self.write_into_async_buffer::<{ PER_CORE_BUFFER_CAPACITY }>(
-                            &mut guard, record,
-                        );
-                        drop(guard);
-                        wrote_async = true;
-                    }
-                }
-            }
-
-            // Global fallback if per-core wasn't available or no CPU id
-            if !wrote_async {
-                if let Some(mut guard) = LOG_BUFFER.try_lock() {
-                    self.write_into_async_buffer::<{ LOG_BUFFER_CAPACITY }>(&mut guard, record);
-                    drop(guard);
-                    wrote_async = true;
-                }
-            }
-
-            if wrote_async {
+            if self.try_log_async(record) {
                 start_serial_tx();
             } else {
-                // Can't do async (contended) -> fall back to sync try_lock or direct write to avoid blocking
-                let guard = if IN_PANIC.load(Ordering::Relaxed) {
-                    None
-                } else {
-                    SERIAL_LOCK.try_lock()
-                };
-
-                if guard.is_some() {
-                    let mut tracker = LastCharTracker::new(SyncLogWriter);
-                    self.print_header(&mut tracker, record);
-                    let _ = write!(tracker, "{}", record.args());
-                    if tracker.last_char != b'\n' {
-                        let _ = tracker.inner.write_str("\r\n");
-                    }
-                } else {
-                    // As a last resort, write raw without locks (used for panic or high contention)
-                    let mut tracker = LastCharTracker::new(SyncLogWriter);
-                    self.print_header(&mut tracker, record);
-                    let _ = write!(tracker, "{}", record.args());
-                    if tracker.last_char != b'\n' {
-                        let _ = tracker.inner.write_str("\r\n");
-                    }
-                }
+                self.log_sync_fallback(record);
             }
         } else {
-            // 同期出力
-            let _guard = if IN_PANIC.load(Ordering::Relaxed) {
-                None
-            } else {
-                Some(SERIAL_LOCK.lock())
-            };
-            let mut tracker = LastCharTracker::new(SyncLogWriter);
-            self.print_header(&mut tracker, record);
-            let _ = write!(tracker, "{}", record.args());
-            if tracker.last_char != b'\n' {
-                let _ = tracker.inner.write_str("\r\n");
-            }
+            self.log_sync(record);
         }
 
-        // 画面への出力（統合実装）
-        // パニック中以外、かつロックが取得できた場合のみ出力してデッドロックを回避する
         // 画面への出力（統合実装）
         // パニック中以外、かつロックが取得できた場合のみ出力してデッドロックを回避する
         #[cfg(not(feature = "bench"))]
@@ -885,6 +826,60 @@ impl Log for KernelLogger {
 
     fn flush(&self) {
         // シリアル出力はバッファリングしないため何もしない
+    }
+}
+
+impl KernelLogger {
+    /// 非同期バッファへの書き込みを試行。成功した場合trueを返す。
+    fn try_log_async(&self, record: &Record) -> bool {
+        if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+            if cpu_id < PER_CPU_COUNT {
+                if let Some(mut guard) = PER_CORE_LOG_BUFFERS[cpu_id].try_lock() {
+                    self.write_into_async_buffer::<{ PER_CORE_BUFFER_CAPACITY }>(
+                        &mut guard, record,
+                    );
+                    return true;
+                }
+            }
+        }
+
+        if let Some(mut guard) = LOG_BUFFER.try_lock() {
+            self.write_into_async_buffer::<{ LOG_BUFFER_CAPACITY }>(&mut guard, record);
+            return true;
+        }
+
+        false
+    }
+
+    /// 非同期書き込みが競合した場合の同期フォールバック
+    fn log_sync_fallback(&self, record: &Record) {
+        let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+            None
+        } else {
+            SERIAL_LOCK.try_lock()
+        };
+
+        let mut tracker = LastCharTracker::new(SyncLogWriter);
+        self.print_header(&mut tracker, record);
+        let _ = write!(tracker, "{}", record.args());
+        if tracker.last_char != b'\n' {
+            let _ = tracker.inner.write_str("\r\n");
+        }
+    }
+
+    /// 同期出力パス（ヒープ未初期化またはパニック時）
+    fn log_sync(&self, record: &Record) {
+        let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+            None
+        } else {
+            Some(SERIAL_LOCK.lock())
+        };
+        let mut tracker = LastCharTracker::new(SyncLogWriter);
+        self.print_header(&mut tracker, record);
+        let _ = write!(tracker, "{}", record.args());
+        if tracker.last_char != b'\n' {
+            let _ = tracker.inner.write_str("\r\n");
+        }
     }
 }
 

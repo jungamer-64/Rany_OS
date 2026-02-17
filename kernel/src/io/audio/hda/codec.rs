@@ -170,6 +170,39 @@ fn enumerate_afg(controller: &mut HdaController, codec_addr: u8, afg_node: u8) -
 // Codec Output Configuration
 // ============================================================================
 
+/// DAC ノードを設定する: 電源投入 + ストリーム/チャネル + フォーマット + アンプアンミュート
+fn configure_dac_node(
+    controller: &HdaController,
+    codec_addr: u8,
+    dac_node: u16,
+    stream_num: u8,
+) -> HdaResult<()> {
+    controller.send_command(codec_addr, dac_node, VERB_SET_POWER | POWER_D0 as u32)?;
+    HdaController::delay_us(1000);
+    let stream_chan = ((stream_num as u32) << 4) | 0;
+    controller.send_command(codec_addr, dac_node, VERB_SET_CONV_STREAM | stream_chan)?;
+    let format = 0x0011; // 48kHz, 16-bit, 2 channels
+    controller.send_command(codec_addr, dac_node, VERB_SET_CONV_FMT | format)?;
+    let amp_val = AMP_SET_OUTPUT | AMP_SET_LEFT | AMP_SET_RIGHT | 0x7F;
+    controller.send_command(codec_addr, dac_node, VERB_SET_AMP_GAIN | amp_val as u32)?;
+    Ok(())
+}
+
+/// Pin ノードを設定する: 電源投入 + 出力有効化 + EAPD + アンプアンミュート
+fn configure_pin_node(
+    controller: &HdaController,
+    codec_addr: u8,
+    pin_node: u16,
+) -> HdaResult<()> {
+    controller.send_command(codec_addr, pin_node, VERB_SET_POWER | POWER_D0 as u32)?;
+    HdaController::delay_us(1000);
+    controller.send_command(codec_addr, pin_node, VERB_SET_PIN_CTL | PIN_CTL_OUT_EN as u32)?;
+    controller.send_command(codec_addr, pin_node, VERB_SET_EAPD | EAPD_EAPD as u32)?;
+    let amp_val = AMP_SET_OUTPUT | AMP_SET_LEFT | AMP_SET_RIGHT | 0x7F;
+    controller.send_command(codec_addr, pin_node, VERB_SET_AMP_GAIN | amp_val as u32)?;
+    Ok(())
+}
+
 /// Configure codec for audio output
 pub fn configure_codec_output(
     controller: &HdaController,
@@ -182,14 +215,12 @@ pub fn configure_codec_output(
         .find(|c| c.address == codec_addr)
         .ok_or(HdaError::NoCodec)?;
 
-    // Find an output DAC
     let dac_node = codec
         .output_nodes
         .first()
         .copied()
         .ok_or_else(|| HdaError::InitFailed("No DAC found".into()))?;
 
-    // Find an output pin
     let pin_node = codec
         .pin_nodes
         .first()
@@ -198,44 +229,11 @@ pub fn configure_codec_output(
 
     log::info!(
         "[HDA] Configuring DAC {} -> Pin {} for stream {}\n",
-        dac_node,
-        pin_node,
-        stream_num
+        dac_node, pin_node, stream_num
     );
 
-    // Power up DAC
-    controller.send_command(codec_addr, dac_node, VERB_SET_POWER | POWER_D0 as u32)?;
-    HdaController::delay_us(1000);
-
-    // Set stream/channel assignment
-    // Stream number in upper 4 bits, channel in lower 4 bits
-    let stream_chan = ((stream_num as u32) << 4) | 0; // Stream N, Channel 0
-    controller.send_command(codec_addr, dac_node, VERB_SET_CONV_STREAM | stream_chan)?;
-
-    // Set converter format (48kHz, 16-bit, stereo)
-    let format = 0x0011; // 48kHz, 16-bit, 2 channels
-    controller.send_command(codec_addr, dac_node, VERB_SET_CONV_FMT | format)?;
-
-    // Unmute DAC output amplifier
-    let amp_val = AMP_SET_OUTPUT | AMP_SET_LEFT | AMP_SET_RIGHT | 0x7F; // Max gain
-    controller.send_command(codec_addr, dac_node, VERB_SET_AMP_GAIN | amp_val as u32)?;
-
-    // Power up pin
-    controller.send_command(codec_addr, pin_node, VERB_SET_POWER | POWER_D0 as u32)?;
-    HdaController::delay_us(1000);
-
-    // Enable pin output
-    controller.send_command(
-        codec_addr,
-        pin_node,
-        VERB_SET_PIN_CTL | PIN_CTL_OUT_EN as u32,
-    )?;
-
-    // Enable EAPD if available (for external amplifier)
-    controller.send_command(codec_addr, pin_node, VERB_SET_EAPD | EAPD_EAPD as u32)?;
-
-    // Unmute pin output amplifier
-    controller.send_command(codec_addr, pin_node, VERB_SET_AMP_GAIN | amp_val as u32)?;
+    configure_dac_node(controller, codec_addr, dac_node, stream_num)?;
+    configure_pin_node(controller, codec_addr, pin_node)?;
 
     log::info!("[HDA] Codec output configured\n");
     Ok(())

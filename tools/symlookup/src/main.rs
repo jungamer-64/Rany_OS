@@ -2,25 +2,17 @@ use anyhow::{bail, Context, Result};
 use object::{Object, ObjectSymbol};
 use std::path::PathBuf;
 
-fn main() -> Result<()> {
-    let mut args = std::env::args().skip(1); // nosemgrep: codacy.tools-configs.rust.lang.security.args.args
-    let addr_str = args
-        .next()
-        .context("Usage: symlookup <hex-address> [path-to-binary]")?;
-    let addr = if addr_str.starts_with("0x") || addr_str.starts_with("0X") {
-        usize::from_str_radix(&addr_str[2..], 16)?
+/// Parse a hex address string, with or without "0x"/"0X" prefix
+fn parse_hex_address(s: &str) -> Result<usize> {
+    if s.starts_with("0x") || s.starts_with("0X") {
+        Ok(usize::from_str_radix(&s[2..], 16)?)
     } else {
-        usize::from_str_radix(&addr_str, 16)?
-    };
+        Ok(usize::from_str_radix(s, 16)?)
+    }
+}
 
-    let bin = args
-        .next()
-        .unwrap_or_else(|| "target/x86_64-exorust/debug/exorust_kernel".to_string());
-
-    let data = std::fs::read(&bin).with_context(|| format!("failed to read {}", bin))?;
-    let obj = object::File::parse(&*data)?;
-
-    // Find the best symbol whose address <= addr
+/// Find the symbol whose address is closest to (and <=) the given address
+fn find_nearest_symbol(obj: &object::File, addr: usize) -> Option<(usize, String)> {
     let mut best: Option<(usize, String)> = None;
 
     for symbol in obj.symbols() {
@@ -35,7 +27,24 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some((dist, name)) = best {
+    best
+}
+
+fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1); // nosemgrep: codacy.tools-configs.rust.lang.security.args.args
+    let addr_str = args
+        .next()
+        .context("Usage: symlookup <hex-address> [path-to-binary]")?;
+    let addr = parse_hex_address(&addr_str)?;
+
+    let bin = args
+        .next()
+        .unwrap_or_else(|| "target/x86_64-exorust/debug/exorust_kernel".to_string());
+
+    let data = std::fs::read(&bin).with_context(|| format!("failed to read {}", bin))?;
+    let obj = object::File::parse(&*data)?;
+
+    if let Some((dist, name)) = find_nearest_symbol(&obj, addr) {
         println!("Closest symbol: {} + {:#x} (distance {:#x})", name, dist, dist);
     } else {
         bail!("No symbol found in binary")

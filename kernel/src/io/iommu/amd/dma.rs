@@ -105,6 +105,24 @@ impl AmdIommuDriver {
         unsafe { self.map_for_device_with_perms(device, phys_addr, size, true, true) }
     }
 
+    /// 共通: アライメント検証 + IVMDチェック + IOVA 割り当て
+    fn validate_and_allocate_device_iova(
+        &self,
+        device: &DeviceId,
+        phys_addr: PhysAddr,
+        size: u64,
+    ) -> Result<(u16, u64), IommuError> {
+        let align = crate::mm::PAGE_SIZE_4K as u64;
+        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
+            return Err(IommuError::InvalidAlignment);
+        }
+        let domain_id = self.domain_id_for_device(*device)?;
+        self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
+        let mask = crate::io::iommu::api::get_device_dma_mask(device);
+        let iova = self.allocate_iova_fast(size, mask)?;
+        Ok((domain_id, iova))
+    }
+
     pub(crate) unsafe fn map_for_device_with_perms(
         &self,
         device: &DeviceId,
@@ -113,23 +131,10 @@ impl AmdIommuDriver {
         read: bool,
         write: bool,
     ) -> Result<u64, IommuError> {
-        let align = crate::mm::PAGE_SIZE_4K as u64;
-        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
-            return Err(IommuError::InvalidAlignment);
-        }
-
-        let domain_id = self.domain_id_for_device(*device)?;
-        self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
-        let mask = crate::io::iommu::api::get_device_dma_mask(device);
-        let iova = self.allocate_iova_fast(size, mask)?;
+        let (domain_id, iova) = self.validate_and_allocate_device_iova(device, phys_addr, size)?;
         if let Some(ref cq) = self.command_queue {
             let cmd = IommuCommandKind::MapRegionDevice {
-                device: *device,
-                iova,
-                phys: phys_addr.as_u64(),
-                size,
-                read,
-                write,
+                device: *device, iova, phys: phys_addr.as_u64(), size, read, write,
             };
             let comp = match cq.submit(cmd) {
                 Ok(comp) => comp,
@@ -139,19 +144,28 @@ impl AmdIommuDriver {
                 }
             };
             let rc = comp.wait_blocking();
-            if rc == 0 {
-                return Ok(iova);
-            }
+            if rc == 0 { return Ok(iova); }
             return Err(IommuError::HardwareError);
         }
+        self.direct_map_device(domain_id, device, iova, phys_addr.as_u64(), size, read, write)
+    }
 
+    /// コマンドキューなしでの直接 DMA マッピング (同期)
+    fn direct_map_device(
+        &self,
+        domain_id: u16,
+        device: &DeviceId,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
         let domain = self.domain_for_id(domain_id)?;
-
-        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, read, write) {
+        if let Err(err) = domain.map(iova, phys, size, read, write) {
             let _ = self.free_iova_fast(iova, size);
             return Err(err);
         }
-
         self.invalidate_iommu_pages(*device, domain_id, iova, size)?;
         self.invalidate_iotlb_pages(*device, iova, size)?;
         Ok(iova)
@@ -165,23 +179,10 @@ impl AmdIommuDriver {
         read: bool,
         write: bool,
     ) -> Result<u64, IommuError> {
-        let align = crate::mm::PAGE_SIZE_4K as u64;
-        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
-            return Err(IommuError::InvalidAlignment);
-        }
-
-        let domain_id = self.domain_id_for_device(*device)?;
-        self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
-        let mask = crate::io::iommu::api::get_device_dma_mask(device);
-        let iova = self.allocate_iova_fast(size, mask)?;
+        let (domain_id, iova) = self.validate_and_allocate_device_iova(device, phys_addr, size)?;
         if let Some(ref cq) = self.command_queue {
             let cmd = IommuCommandKind::MapRegionDevice {
-                device: *device,
-                iova,
-                phys: phys_addr.as_u64(),
-                size,
-                read,
-                write,
+                device: *device, iova, phys: phys_addr.as_u64(), size, read, write,
             };
             let comp = match cq.submit_async(cmd).await {
                 Ok(comp) => comp,
@@ -191,21 +192,29 @@ impl AmdIommuDriver {
                 }
             };
             let rc = comp.await;
-            if rc == 0 {
-                return Ok(iova);
-            }
+            if rc == 0 { return Ok(iova); }
             return Err(IommuError::HardwareError);
         }
+        self.direct_map_device_async(domain_id, device, iova, phys_addr.as_u64(), size, read, write).await
+    }
 
+    /// コマンドキューなしでの直接 DMA マッピング (非同期)
+    async fn direct_map_device_async(
+        &self,
+        domain_id: u16,
+        device: &DeviceId,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
         let domain = self.domain_for_id(domain_id)?;
-
-        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, read, write) {
+        if let Err(err) = domain.map(iova, phys, size, read, write) {
             let _ = self.free_iova_fast(iova, size);
             return Err(err);
         }
-
-        self.invalidate_iommu_pages_async(*device, domain_id, iova, size)
-            .await?;
+        self.invalidate_iommu_pages_async(*device, domain_id, iova, size).await?;
         self.invalidate_iotlb_pages_async(*device, iova, size).await?;
         Ok(iova)
     }
@@ -295,94 +304,9 @@ impl AmdIommuDriver {
                 size,
                 read,
                 write,
-            } => {
-                let size = *size;
-                if size == 0 {
-                    return Err(());
-                }
-                let align = crate::mm::PAGE_SIZE_4K as u64;
-                if (iova & (align - 1) != 0)
-                    || (phys & (align - 1) != 0)
-                    || (size & (align - 1) != 0)
-                {
-                    let _ = self.free_iova_fast(*iova, size);
-                    return Err(());
-                }
-
-                if self
-                    .reject_excluded_ivmd_range(*device, *phys, size)
-                    .is_err()
-                {
-                    let _ = self.free_iova_fast(*iova, size);
-                    return Err(());
-                }
-
-                let domain_id = match self.domain_id_for_device(*device) {
-                    Ok(domain_id) => domain_id,
-                    Err(_) => {
-                        let _ = self.free_iova_fast(*iova, size);
-                        return Err(());
-                    }
-                };
-
-                let domain = match self.domain_for_id(domain_id) {
-                    Ok(domain) => domain,
-                    Err(_) => {
-                        let _ = self.free_iova_fast(*iova, size);
-                        return Err(());
-                    }
-                };
-
-                match domain.map(*iova, *phys, size, *read, *write) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        if err != IommuError::AlreadyMapped && err != IommuError::Poisoned {
-                            let _ = self.free_iova_fast(*iova, size);
-                        }
-                        return Err(());
-                    }
-                }
-
-                if self
-                    .invalidate_iommu_pages(*device, domain_id, *iova, size)
-                    .is_err()
-                {
-                    return Err(());
-                }
-                if self.invalidate_iotlb_pages(*device, *iova, size).is_err() {
-                    return Err(());
-                }
-
-                Ok(0)
-            }
+            } => self.handle_map_region_device(*device, *iova, *phys, *size, *read, *write),
             IommuCommandKind::UnmapRegionDevice { device, iova, size: _ } => {
-                let domain_id = match self.domain_id_for_device(*device) {
-                    Ok(domain_id) => domain_id,
-                    Err(_) => return Err(()),
-                };
-                let domain = match self.domain_for_id(domain_id) {
-                    Ok(domain) => domain,
-                    Err(_) => return Err(()),
-                };
-                let mapping = match domain.unmap(*iova) {
-                    Ok(mapping) => mapping,
-                    Err(_) => return Err(()),
-                };
-
-                if self
-                    .invalidate_iommu_pages(*device, domain_id, *iova, mapping.size)
-                    .is_err()
-                {
-                    return Err(());
-                }
-                if self
-                    .invalidate_iotlb_pages(*device, *iova, mapping.size)
-                    .is_err()
-                {
-                    return Err(());
-                }
-                let _ = self.free_iova_fast(*iova, mapping.size);
-                Ok(0)
+                self.handle_unmap_region_device(*device, *iova)
             }
             IommuCommandKind::InvalidateIotlbGlobal => {
                 if self.invalidate_all_entries().is_ok() {
@@ -395,5 +319,69 @@ impl AmdIommuDriver {
             IommuCommandKind::MapRegion { .. } => Err(()),
             IommuCommandKind::UnmapRegion { .. } => Err(()),
         }
+    }
+
+    /// Handle MapRegionDevice: validate, map, and invalidate.
+    fn handle_map_region_device(
+        &self,
+        device: DeviceId,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<i32, ()> {
+        if size == 0 {
+            return Err(());
+        }
+        let align = crate::mm::PAGE_SIZE_4K as u64;
+        if (iova & (align - 1) != 0)
+            || (phys & (align - 1) != 0)
+            || (size & (align - 1) != 0)
+        {
+            let _ = self.free_iova_fast(iova, size);
+            return Err(());
+        }
+
+        if self.reject_excluded_ivmd_range(device, phys, size).is_err() {
+            let _ = self.free_iova_fast(iova, size);
+            return Err(());
+        }
+
+        let domain_id = self.domain_id_for_device(device).map_err(|_| {
+            let _ = self.free_iova_fast(iova, size);
+        })?;
+
+        let domain = self.domain_for_id(domain_id).map_err(|_| {
+            let _ = self.free_iova_fast(iova, size);
+        })?;
+
+        if let Err(err) = domain.map(iova, phys, size, read, write) {
+            if err != IommuError::AlreadyMapped && err != IommuError::Poisoned {
+                let _ = self.free_iova_fast(iova, size);
+            }
+            return Err(());
+        }
+
+        self.invalidate_iommu_pages(device, domain_id, iova, size).map_err(|_| ())?;
+        self.invalidate_iotlb_pages(device, iova, size).map_err(|_| ())?;
+
+        Ok(0)
+    }
+
+    /// Handle UnmapRegionDevice: unmap, invalidate, and free IOVA.
+    fn handle_unmap_region_device(
+        &self,
+        device: DeviceId,
+        iova: u64,
+    ) -> Result<i32, ()> {
+        let domain_id = self.domain_id_for_device(device).map_err(|_| ())?;
+        let domain = self.domain_for_id(domain_id).map_err(|_| ())?;
+        let mapping = domain.unmap(iova).map_err(|_| ())?;
+
+        self.invalidate_iommu_pages(device, domain_id, iova, mapping.size).map_err(|_| ())?;
+        self.invalidate_iotlb_pages(device, iova, mapping.size).map_err(|_| ())?;
+        let _ = self.free_iova_fast(iova, mapping.size);
+        Ok(0)
     }
 }

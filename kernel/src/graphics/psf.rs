@@ -81,7 +81,82 @@ pub struct PsfFont<T: AsRef<[u8]>> {
     unicode_map: Option<BTreeMap<char, u32>>,
 }
 
+/// PSF1ヘッダから解析したフォント情報
+struct PsfParsed {
+    version: PsfVersion,
+    width: u32,
+    height: u32,
+    num_glyphs: u32,
+    bytes_per_glyph: u32,
+    header_size: usize,
+    unicode_map: Option<BTreeMap<char, u32>>,
+}
+
 impl<T: AsRef<[u8]>> PsfFont<T> {
+    /// PSF1フォーマットを解析（所有権不要の検証フェーズ）
+    fn parse_psf1_fields(slice: &[u8]) -> Option<PsfParsed> {
+        if slice[0] != PSF1_MAGIC0 || slice[1] != PSF1_MAGIC1 {
+            return None;
+        }
+        let header: &Psf1Header = unsafe { &*(slice.as_ptr() as *const Psf1Header) };
+        let mode = header.mode;
+        let num_glyphs = if (mode & PSF1_MODE512) != 0 { 512 } else { 256 };
+        let header_size = 4;
+        let bytes_per_glyph = header.charsize as u32;
+
+        let mut unicode_map = None;
+        if (mode & PSF1_MODEHASTAB) != 0 {
+            let table_offset = header_size + (num_glyphs as usize * bytes_per_glyph as usize);
+            if table_offset < slice.len() {
+                unicode_map = Some(Self::parse_psf1_table(&slice[table_offset..], num_glyphs));
+            }
+        }
+
+        Some(PsfParsed {
+            version: PsfVersion::Psf1,
+            width: 8,
+            height: header.charsize as u32,
+            num_glyphs,
+            bytes_per_glyph,
+            header_size,
+            unicode_map,
+        })
+    }
+
+    /// PSF2フォーマットを解析（所有権不要の検証フェーズ）
+    fn parse_psf2_fields(slice: &[u8]) -> Option<PsfParsed> {
+        if slice[0] != PSF2_MAGIC0 || slice[1] != PSF2_MAGIC1
+            || slice[2] != PSF2_MAGIC2 || slice[3] != PSF2_MAGIC3
+        {
+            return None;
+        }
+        if slice.len() < core::mem::size_of::<Psf2Header>() {
+            return None;
+        }
+        let header: &Psf2Header = unsafe { &*(slice.as_ptr() as *const Psf2Header) };
+        let num_glyphs = header.length;
+        let bytes_per_glyph = header.charsize;
+        let header_size = header.headersize as usize;
+
+        let mut unicode_map = None;
+        if (header.flags & PSF2_HAS_UNICODE_TABLE) != 0 {
+            let table_offset = header_size + (num_glyphs as usize * bytes_per_glyph as usize);
+            if table_offset < slice.len() {
+                unicode_map = Some(Self::parse_psf2_table(&slice[table_offset..], num_glyphs));
+            }
+        }
+
+        Some(PsfParsed {
+            version: PsfVersion::Psf2,
+            width: header.width,
+            height: header.height,
+            num_glyphs,
+            bytes_per_glyph,
+            header_size,
+            unicode_map,
+        })
+    }
+
     /// Create a new PsfFont from a byte slice or owned Vec.
     pub fn new(data: T) -> Option<Self> {
         let slice = data.as_ref();
@@ -89,69 +164,19 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
             return None;
         }
 
-        // Check PSF1
-        if slice[0] == PSF1_MAGIC0 && slice[1] == PSF1_MAGIC1 {
-            let header: &Psf1Header = unsafe { &*(slice.as_ptr() as *const Psf1Header) };
-            let mode = header.mode;
-            let num_glyphs = if (mode & PSF1_MODE512) != 0 { 512 } else { 256 };
-            let header_size = 4;
-            let bytes_per_glyph = header.charsize as u32;
+        let parsed = Self::parse_psf1_fields(slice)
+            .or_else(|| Self::parse_psf2_fields(slice))?;
 
-            let mut unicode_map = None;
-            if (mode & PSF1_MODEHASTAB) != 0 {
-                let table_offset = header_size + (num_glyphs as usize * bytes_per_glyph as usize);
-                if table_offset < slice.len() {
-                    unicode_map = Some(Self::parse_psf1_table(&slice[table_offset..], num_glyphs));
-                }
-            }
-
-            return Some(Self {
-                data,
-                version: PsfVersion::Psf1,
-                width: 8,
-                height: header.charsize as u32,
-                num_glyphs,
-                bytes_per_glyph,
-                header_size,
-                unicode_map,
-            });
-        }
-
-        // Check PSF2
-        if slice[0] == PSF2_MAGIC0
-            && slice[1] == PSF2_MAGIC1
-            && slice[2] == PSF2_MAGIC2
-            && slice[3] == PSF2_MAGIC3
-        {
-            if slice.len() < core::mem::size_of::<Psf2Header>() {
-                return None;
-            }
-            let header: &Psf2Header = unsafe { &*(slice.as_ptr() as *const Psf2Header) };
-            let num_glyphs = header.length;
-            let bytes_per_glyph = header.charsize;
-            let header_size = header.headersize as usize;
-
-            let mut unicode_map = None;
-            if (header.flags & PSF2_HAS_UNICODE_TABLE) != 0 {
-                let table_offset = header_size + (num_glyphs as usize * bytes_per_glyph as usize);
-                if table_offset < slice.len() {
-                    unicode_map = Some(Self::parse_psf2_table(&slice[table_offset..], num_glyphs));
-                }
-            }
-
-            return Some(Self {
-                data,
-                version: PsfVersion::Psf2,
-                width: header.width,
-                height: header.height,
-                num_glyphs,
-                bytes_per_glyph,
-                header_size,
-                unicode_map,
-            });
-        }
-
-        None
+        Some(Self {
+            data,
+            version: parsed.version,
+            width: parsed.width,
+            height: parsed.height,
+            num_glyphs: parsed.num_glyphs,
+            bytes_per_glyph: parsed.bytes_per_glyph,
+            header_size: parsed.header_size,
+            unicode_map: parsed.unicode_map,
+        })
     }
 
     /// Parse PSF2 Unicode Table
@@ -170,31 +195,12 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
             }
 
             if b == PSF2_STARTSEQ {
-                // Composite sequences not fully supported, skip to separator
-                // (We could support mapping the first char of sequence to this glyph)
                 i += 1;
-                while i < table_data.len()
-                    && table_data[i] != PSF2_SEPARATOR
-                    && table_data[i] != PSF2_STARTSEQ
-                {
-                    i += 1;
-                }
+                i = Self::skip_composite_sequence(table_data, i);
                 continue;
             }
 
-            // Parse UTF-8 character
-            // Check byte length based on first byte
-            let char_len = if b & 0x80 == 0 {
-                1
-            } else if b & 0xE0 == 0xC0 {
-                2
-            } else if b & 0xF0 == 0xE0 {
-                3
-            } else if b & 0xF8 == 0xF0 {
-                4
-            } else {
-                1
-            }; // Invalid or fallback
+            let char_len = Self::utf8_byte_length(b);
 
             if i + char_len > table_data.len() {
                 break;
@@ -210,6 +216,33 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
         }
 
         map
+    }
+
+    /// UTF-8の先頭バイトからバイト長を返す
+    fn utf8_byte_length(b: u8) -> usize {
+        if b & 0x80 == 0 {
+            1
+        } else if b & 0xE0 == 0xC0 {
+            2
+        } else if b & 0xF0 == 0xE0 {
+            3
+        } else if b & 0xF8 == 0xF0 {
+            4
+        } else {
+            1
+        }
+    }
+
+    /// 合成シーケンスをスキップしてセパレータ位置を返す
+    fn skip_composite_sequence(table_data: &[u8], start: usize) -> usize {
+        let mut i = start;
+        while i < table_data.len()
+            && table_data[i] != PSF2_SEPARATOR
+            && table_data[i] != PSF2_STARTSEQ
+        {
+            i += 1;
+        }
+        i
     }
 
     /// Parse PSF1 Unicode Table (UCS-2)

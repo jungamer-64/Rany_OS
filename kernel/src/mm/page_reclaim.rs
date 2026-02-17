@@ -1338,130 +1338,125 @@ impl PageReclaimController {
     
     /// ページを実際に回収
     fn reclaim_page(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
-        // Reclaim action policy table:
-        // - unsafe_eviction=false:
-        //   * Anonymous(clean/dirty): BlockedUnsafe
-        //   * FileBacked(clean): FreedNow
-        //   * FileBacked(dirty):
-        //     - with backing: async enqueue or sync writeback success => FreedNow, otherwise Requeued
-        //     - without backing: Requeued (no free)
-        // - Slab/Kernel: Requeued
-        // Each victim yields exactly one terminal outcome:
-        // DeferredAsync / Requeued / FreedNow (or BlockedUnsafe at safety gate).
         let unsafe_eviction = self.unsafe_eviction_enabled();
         if !unsafe_eviction && matches!(entry.page_type, PageType::Anonymous) {
             self.blocked_unsafe.fetch_add(1, Ordering::Relaxed);
             return ReclaimOutcome::BlockedUnsafe;
         }
 
+        match entry.page_type {
+            PageType::Anonymous => self.reclaim_anonymous(entry, node_idx),
+            PageType::FileBacked => self.reclaim_file_backed(entry, node_idx, unsafe_eviction),
+            PageType::Slab | PageType::Kernel => ReclaimOutcome::Requeued,
+        }
+    }
+
+    /// 匿名ページの回収
+    fn reclaim_anonymous(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
         let order = crate::mm::page_flags::get_order(entry.frame);
         let count = 1u64 << order;
 
-        match entry.page_type {
-            PageType::Anonymous => {
-                if entry.flags.contains(LruFlags::DIRTY) {
-                    match crate::mm::async_swapout::try_enqueue_swapout(
-                        entry.frame,
-                        crate::mm::async_swapout::SwapKind::Anon,
-                    ) {
-                        Ok(_handle) => {
-                            self.enqueue_pending_async(entry, node_idx);
-                            self.async_enqueued.fetch_add(1, Ordering::Relaxed);
-                            ReclaimOutcome::DeferredAsync
-                        }
-                        Err(crate::mm::async_swapout::SwapError::AlreadyPending) => {
-                            if self.has_pending_async(entry.frame) {
-                                ReclaimOutcome::DeferredAsync
-                            } else {
-                                ReclaimOutcome::Requeued
-                            }
-                        }
-                        Err(crate::mm::async_swapout::SwapError::QueueFull)
-                        | Err(crate::mm::async_swapout::SwapError::NotSupported) => {
-                            ReclaimOutcome::Requeued
-                        }
-                    }
+        if entry.flags.contains(LruFlags::DIRTY) {
+            self.try_async_swapout(entry, node_idx, crate::mm::async_swapout::SwapKind::Anon)
+        } else {
+            super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
+            self.free_frame(entry.frame);
+            ReclaimOutcome::FreedNow
+        }
+    }
+
+    /// ファイルバックページの回収
+    fn reclaim_file_backed(&self, entry: &MglruEntry, node_idx: usize, unsafe_eviction: bool) -> ReclaimOutcome {
+        let order = crate::mm::page_flags::get_order(entry.frame);
+        let count = 1u64 << order;
+
+        if !entry.flags.contains(LruFlags::DIRTY) {
+            super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
+            self.free_frame(entry.frame);
+            return ReclaimOutcome::FreedNow;
+        }
+
+        if let Some(backing) = super::frame_backing::get_frame_backing(entry.frame) {
+            self.reclaim_dirty_file_with_backing(entry, node_idx, &backing, count)
+        } else if unsafe_eviction {
+            self.try_async_swapout(entry, node_idx, crate::mm::async_swapout::SwapKind::Anon)
+        } else {
+            ReclaimOutcome::Requeued
+        }
+    }
+
+    /// ダーティなファイルバックページをバッキング情報ありで回収
+    fn reclaim_dirty_file_with_backing(
+        &self,
+        entry: &MglruEntry,
+        node_idx: usize,
+        backing: &super::frame_backing::FrameBackingInfo,
+        count: u64,
+    ) -> ReclaimOutcome {
+        let kind = crate::mm::async_swapout::SwapKind::File { ino: backing.ino, page_num: backing.page_num };
+        match crate::mm::async_swapout::try_enqueue_swapout(entry.frame, kind) {
+            Ok(_handle) => {
+                self.enqueue_pending_async(entry, node_idx);
+                self.async_enqueued.fetch_add(1, Ordering::Relaxed);
+                ReclaimOutcome::DeferredAsync
+            }
+            Err(crate::mm::async_swapout::SwapError::AlreadyPending) => {
+                if self.has_pending_async(entry.frame) {
+                    ReclaimOutcome::DeferredAsync
                 } else {
+                    ReclaimOutcome::Requeued
+                }
+            }
+            Err(crate::mm::async_swapout::SwapError::QueueFull)
+            | Err(crate::mm::async_swapout::SwapError::NotSupported) => {
+                if self.attempt_writeback_page(backing.ino, backing.page_num)
+                    || self.attempt_writeback_all()
+                {
+                    super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
+                    let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                    self.free_frame(entry.frame);
+                    ReclaimOutcome::FreedNow
+                } else {
+                    self.account_writeback_skipped();
+                    ReclaimOutcome::Requeued
+                }
+            }
+        }
+    }
+
+    /// 非同期スワップアウトを試みる共通ヘルパー
+    fn try_async_swapout(
+        &self,
+        entry: &MglruEntry,
+        node_idx: usize,
+        kind: crate::mm::async_swapout::SwapKind,
+    ) -> ReclaimOutcome {
+        match crate::mm::async_swapout::try_enqueue_swapout(entry.frame, kind) {
+            Ok(_handle) => {
+                self.enqueue_pending_async(entry, node_idx);
+                self.async_enqueued.fetch_add(1, Ordering::Relaxed);
+                ReclaimOutcome::DeferredAsync
+            }
+            Err(crate::mm::async_swapout::SwapError::AlreadyPending) => {
+                if self.has_pending_async(entry.frame) {
+                    ReclaimOutcome::DeferredAsync
+                } else {
+                    ReclaimOutcome::Requeued
+                }
+            }
+            Err(crate::mm::async_swapout::SwapError::QueueFull)
+            | Err(crate::mm::async_swapout::SwapError::NotSupported) => {
+                if matches!(kind, crate::mm::async_swapout::SwapKind::Anon) && self.attempt_writeback_all() {
+                    let order = crate::mm::page_flags::get_order(entry.frame);
+                    let count = 1u64 << order;
                     super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
                     self.free_frame(entry.frame);
                     ReclaimOutcome::FreedNow
-                }
-            }
-            PageType::FileBacked => {
-                if entry.flags.contains(LruFlags::DIRTY) {
-                    if let Some(backing) = super::frame_backing::get_frame_backing(entry.frame) {
-                        match crate::mm::async_swapout::try_enqueue_swapout(
-                            entry.frame,
-                            crate::mm::async_swapout::SwapKind::File { ino: backing.ino, page_num: backing.page_num },
-                        ) {
-                            Ok(_handle) => {
-                                self.enqueue_pending_async(entry, node_idx);
-                                self.async_enqueued.fetch_add(1, Ordering::Relaxed);
-                                ReclaimOutcome::DeferredAsync
-                            }
-                            Err(crate::mm::async_swapout::SwapError::AlreadyPending) => {
-                                if self.has_pending_async(entry.frame) {
-                                    ReclaimOutcome::DeferredAsync
-                                } else {
-                                    ReclaimOutcome::Requeued
-                                }
-                            }
-                            Err(crate::mm::async_swapout::SwapError::QueueFull)
-                            | Err(crate::mm::async_swapout::SwapError::NotSupported) => {
-                                if self.attempt_writeback_page(backing.ino, backing.page_num)
-                                    || self.attempt_writeback_all()
-                                {
-                                    super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
-                                    let _ = super::frame_backing::untrack_frame_backing(entry.frame);
-                                    self.free_frame(entry.frame);
-                                    ReclaimOutcome::FreedNow
-                                } else {
-                                    self.account_writeback_skipped();
-                                    ReclaimOutcome::Requeued
-                                }
-                            }
-                        }
-                    } else {
-                        if unsafe_eviction {
-                            match crate::mm::async_swapout::try_enqueue_swapout(
-                                entry.frame,
-                                crate::mm::async_swapout::SwapKind::Anon,
-                            ) {
-                                Ok(_handle) => {
-                                    self.enqueue_pending_async(entry, node_idx);
-                                    self.async_enqueued.fetch_add(1, Ordering::Relaxed);
-                                    ReclaimOutcome::DeferredAsync
-                                }
-                                Err(crate::mm::async_swapout::SwapError::AlreadyPending) => {
-                                    if self.has_pending_async(entry.frame) {
-                                        ReclaimOutcome::DeferredAsync
-                                    } else {
-                                        ReclaimOutcome::Requeued
-                                    }
-                                }
-                                Err(crate::mm::async_swapout::SwapError::QueueFull)
-                                | Err(crate::mm::async_swapout::SwapError::NotSupported) => {
-                                    if self.attempt_writeback_all() {
-                                        super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
-                                        self.free_frame(entry.frame);
-                                        ReclaimOutcome::FreedNow
-                                    } else {
-                                        self.account_writeback_skipped();
-                                        ReclaimOutcome::Requeued
-                                    }
-                                }
-                            }
-                        } else {
-                            ReclaimOutcome::Requeued
-                        }
-                    }
                 } else {
-                    super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
-                    self.free_frame(entry.frame);
-                    ReclaimOutcome::FreedNow
+                    self.account_writeback_skipped();
+                    ReclaimOutcome::Requeued
                 }
             }
-            PageType::Slab | PageType::Kernel => ReclaimOutcome::Requeued,
         }
     }
     

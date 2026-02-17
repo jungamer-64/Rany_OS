@@ -876,66 +876,81 @@ pub fn mount_table() -> &'static MountTable {
     &MOUNT_TABLE
 }
 
+/// BFS: ディレクトリの子をキューに追加する
+fn bfs_enqueue_child(
+    parent: &Arc<dyn Inode>,
+    name: &str,
+    visited: &mut hashbrown::HashSet<u64>,
+    queue: &mut alloc::collections::VecDeque<Arc<dyn Inode>>,
+) {
+    if let Ok(child) = parent.lookup(name) {
+        if let Ok(attr) = child.getattr() {
+            if !visited.contains(&attr.ino) {
+                visited.insert(attr.ino);
+                queue.push_back(child);
+            }
+        }
+    }
+}
+
+/// BFS: ディレクトリエントリを検索し、対象inodeを見つけたら返す
+fn bfs_search_directory(
+    node: &Arc<dyn Inode>,
+    ino: InodeNum,
+    visited: &mut hashbrown::HashSet<u64>,
+    queue: &mut alloc::collections::VecDeque<Arc<dyn Inode>>,
+) -> Option<Arc<dyn Inode>> {
+    let attr = node.getattr().ok()?;
+    if attr.file_type != FileType::Directory {
+        return None;
+    }
+    let entries = node.readdir(0).ok()?;
+    for d in entries {
+        if d.ino == ino {
+            if let Ok(child) = node.lookup(&d.name) {
+                return Some(child);
+            }
+        } else if d.file_type == FileType::Directory {
+            bfs_enqueue_child(node, &d.name, visited, queue);
+        }
+    }
+    None
+}
+
+/// マウントされた全ファイルシステムからinode番号でinodeを検索する
+fn find_inode_by_number(ino: InodeNum) -> Option<Arc<dyn Inode>> {
+    use alloc::collections::VecDeque;
+    use hashbrown::HashSet;
+
+    let mounts = MOUNT_TABLE.mounts.read();
+    for entry in mounts.iter() {
+        if let Ok(root) = entry.fs.root() {
+            let mut queue: VecDeque<Arc<dyn Inode>> = VecDeque::new();
+            let mut visited: HashSet<u64> = HashSet::new();
+            if let Ok(attr) = root.getattr() {
+                if attr.ino == ino {
+                    return Some(root);
+                }
+                visited.insert(attr.ino);
+                queue.push_back(root);
+            }
+            while let Some(node) = queue.pop_front() {
+                if let Some(found) = bfs_search_directory(&node, ino, &mut visited, &mut queue) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Attempt to read data from the inode identified by `ino`.
 /// This is a best-effort helper that traverses mounted filesystems and
 /// attempts to locate the inode by number, then calls `Inode::read`.
 /// Returns `Ok(bytes_read)` if read succeeds, `Err(())` otherwise.
 pub fn read_inode_by_number(ino: InodeNum, offset: u64, buf: &mut [u8]) -> Result<usize, ()> {
-    use alloc::collections::VecDeque;
-    use hashbrown::HashSet;
-
-    let mounts = MOUNT_TABLE.mounts.read();
-
-    for entry in mounts.iter() {
-        if let Ok(root) = entry.fs.root() {
-            // Breadth-first search for inode with matching number
-            let mut queue: VecDeque<Arc<dyn Inode>> = VecDeque::new();
-            let mut visited: HashSet<u64> = HashSet::new();
-
-            if let Ok(attr) = root.getattr() {
-                if attr.ino == ino {
-                    if let Ok(n) = root.read(offset, buf) {
-                        return Ok(n);
-                    } else {
-                        return Err(());
-                    }
-                }
-                visited.insert(attr.ino);
-                queue.push_back(root);
-            }
-
-            while let Some(node) = queue.pop_front() {
-                if let Ok(attr) = node.getattr() {
-                    if attr.file_type == FileType::Directory {
-                        if let Ok(entries) = node.readdir(0) {
-                            for d in entries {
-                                if d.ino == ino {
-                                    if let Ok(child) = node.lookup(&d.name) {
-                                        if let Ok(n) = child.read(offset, buf) {
-                                            return Ok(n);
-                                        } else {
-                                            return Err(());
-                                        }
-                                    }
-                                } else if d.file_type == FileType::Directory {
-                                    if let Ok(child) = node.lookup(&d.name) {
-                                        if let Ok(child_attr) = child.getattr() {
-                                            if !visited.contains(&child_attr.ino) {
-                                                visited.insert(child_attr.ino);
-                                                queue.push_back(child);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Err(())
+    let inode = find_inode_by_number(ino).ok_or(())?;
+    inode.read(offset, buf).map_err(|_| ())
 }
 
 /// Attempt to write data to the inode identified by `ino`.
@@ -943,61 +958,8 @@ pub fn read_inode_by_number(ino: InodeNum, offset: u64, buf: &mut [u8]) -> Resul
 /// attempts to locate the inode by number, then calls `Inode::write`.
 /// Returns `Ok(())` if write succeeds, `Err(())` otherwise.
 pub fn write_inode_by_number(ino: InodeNum, offset: u64, data: &[u8]) -> Result<(), ()> {
-    use alloc::collections::VecDeque;
-    use hashbrown::HashSet;
-
-    let mounts = MOUNT_TABLE.mounts.read();
-
-    for entry in mounts.iter() {
-        if let Ok(root) = entry.fs.root() {
-            // Breadth-first search for inode with matching number
-            let mut queue: VecDeque<Arc<dyn Inode>> = VecDeque::new();
-            let mut visited: HashSet<u64> = HashSet::new();
-
-            if let Ok(attr) = root.getattr() {
-                if attr.ino == ino {
-                    if root.write(offset, data).is_ok() {
-                        return Ok(());
-                    } else {
-                        return Err(());
-                    }
-                }
-                visited.insert(attr.ino);
-                queue.push_back(root);
-            }
-
-            while let Some(node) = queue.pop_front() {
-                if let Ok(attr) = node.getattr() {
-                    if attr.file_type == FileType::Directory {
-                        if let Ok(entries) = node.readdir(0) {
-                            for d in entries {
-                                if d.ino == ino {
-                                    if let Ok(child) = node.lookup(&d.name) {
-                                        if child.write(offset, data).is_ok() {
-                                            return Ok(());
-                                        } else {
-                                            return Err(());
-                                        }
-                                    }
-                                } else if d.file_type == FileType::Directory {
-                                    if let Ok(child) = node.lookup(&d.name) {
-                                        if let Ok(child_attr) = child.getattr() {
-                                            if !visited.contains(&child_attr.ino) {
-                                                visited.insert(child_attr.ino);
-                                                queue.push_back(child);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Err(())
+    let inode = find_inode_by_number(ino).ok_or(())?;
+    inode.write(offset, data).map(|_| ()).map_err(|_| ())
 }
 
 // ============================================================================

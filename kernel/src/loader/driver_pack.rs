@@ -105,6 +105,21 @@ pub fn is_driver_pack(data: &[u8]) -> bool {
 }
 
 pub fn parse_driver_pack(data: &[u8]) -> Result<DriverPack<'_>, LoadError> {
+    let header = validate_driver_pack_header(data)?;
+    let (manifest, manifest_bytes) = parse_manifest_section(data, &header)?;
+    let elf = parse_elf_section(data, &header)?;
+    let signature = parse_signature_section(data, &header)?;
+
+    Ok(DriverPack {
+        header,
+        manifest,
+        manifest_bytes,
+        elf,
+        signature,
+    })
+}
+
+fn validate_driver_pack_header(data: &[u8]) -> Result<DriverPackHeader, LoadError> {
     let header: DriverPackHeader = read_struct(data, 0)
         .ok_or_else(|| LoadError::InvalidFormat("Driver pack header missing".into()))?;
 
@@ -120,6 +135,10 @@ pub fn parse_driver_pack(data: &[u8]) -> Result<DriverPack<'_>, LoadError> {
         return Err(LoadError::InvalidFormat("Driver pack header too small".into()));
     }
 
+    Ok(header)
+}
+
+fn parse_manifest_section<'a>(data: &'a [u8], header: &DriverPackHeader) -> Result<(DriverManifestV1, &'a [u8]), LoadError> {
     let manifest_bytes = get_slice(
         data,
         header.manifest_offset as usize,
@@ -143,39 +162,37 @@ pub fn parse_driver_pack(data: &[u8]) -> Result<DriverPack<'_>, LoadError> {
         return Err(LoadError::InvalidFormat("Driver manifest size too small".into()));
     }
 
-    let elf = get_slice(
+    Ok((manifest, manifest_bytes))
+}
+
+fn parse_elf_section<'a>(data: &'a [u8], header: &DriverPackHeader) -> Result<&'a [u8], LoadError> {
+    get_slice(
         data,
         header.elf_offset as usize,
         header.elf_size as usize,
     )
-    .ok_or_else(|| LoadError::InvalidFormat("Driver pack ELF out of range".into()))?;
+    .ok_or_else(|| LoadError::InvalidFormat("Driver pack ELF out of range".into()))
+}
 
-    let signature = if header.signature_size == 0 {
-        None
-    } else {
-        let sig_bytes = get_slice(
-            data,
-            header.signature_offset as usize,
-            header.signature_size as usize,
-        )
-        .ok_or_else(|| LoadError::InvalidFormat("Driver pack signature out of range".into()))?;
+fn parse_signature_section(data: &[u8], header: &DriverPackHeader) -> Result<Option<DriverPackSignature>, LoadError> {
+    if header.signature_size == 0 {
+        return Ok(None);
+    }
 
-        if sig_bytes.len() < core::mem::size_of::<DriverPackSignature>() {
-            return Err(LoadError::InvalidFormat("Driver pack signature too small".into()));
-        }
+    let sig_bytes = get_slice(
+        data,
+        header.signature_offset as usize,
+        header.signature_size as usize,
+    )
+    .ok_or_else(|| LoadError::InvalidFormat("Driver pack signature out of range".into()))?;
 
-        let sig: DriverPackSignature = read_struct(sig_bytes, 0)
-            .ok_or_else(|| LoadError::InvalidFormat("Driver pack signature parse failed".into()))?;
-        Some(sig)
-    };
+    if sig_bytes.len() < core::mem::size_of::<DriverPackSignature>() {
+        return Err(LoadError::InvalidFormat("Driver pack signature too small".into()));
+    }
 
-    Ok(DriverPack {
-        header,
-        manifest,
-        manifest_bytes,
-        elf,
-        signature,
-    })
+    let sig: DriverPackSignature = read_struct(sig_bytes, 0)
+        .ok_or_else(|| LoadError::InvalidFormat("Driver pack signature parse failed".into()))?;
+    Ok(Some(sig))
 }
 
 pub fn verify_driver_pack(pack: &DriverPack<'_>) -> Result<bool, LoadError> {

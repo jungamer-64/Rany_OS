@@ -52,6 +52,64 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     }
 }
 
+/// SYN-SENT状態でのセグメント処理
+fn handle_syn_sent_segment(tcb: TcpControlBlockEntry, flags: u8, seq_num: u32, ack_num: u32) {
+    let is_syn = (flags & tcp_flags::SYN) != 0;
+    let is_ack = (flags & tcp_flags::ACK) != 0;
+    let is_rst = (flags & tcp_flags::RST) != 0;
+
+    if is_syn && is_ack {
+        handle_syn_ack_received(tcb, seq_num, ack_num);
+    } else if is_rst {
+        handle_rst_received(tcb);
+    }
+}
+
+/// ESTABLISHED状態でのセグメント処理
+fn handle_established_segment(
+    tcb: TcpControlBlockEntry,
+    flags: u8,
+    seq_num: u32,
+    ack_num: u32,
+    urgent_ptr: u16,
+    segment: &[u8],
+    data_offset: usize,
+) {
+    let is_fin = (flags & tcp_flags::FIN) != 0;
+    let is_rst = (flags & tcp_flags::RST) != 0;
+    let is_urg = (flags & tcp_flags::URG) != 0;
+    let is_ack = (flags & tcp_flags::ACK) != 0;
+
+    if is_fin {
+        handle_fin_received(tcb, seq_num);
+    } else if is_rst {
+        handle_rst_received(tcb);
+    } else {
+        if is_urg && urgent_ptr > 0 {
+            handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
+        }
+        let data_start = data_offset;
+        if data_start < segment.len() {
+            let data = &segment[data_start..];
+            handle_data_received(tcb, seq_num, data);
+        } else if is_ack {
+            handle_ack_received(tcb, ack_num);
+        }
+    }
+}
+
+/// FIN-WAIT-1状態でのセグメント処理
+fn handle_fin_wait1_segment(tcb: TcpControlBlockEntry, flags: u8, seq_num: u32, ack_num: u32) {
+    let is_fin = (flags & tcp_flags::FIN) != 0;
+    let is_ack = (flags & tcp_flags::ACK) != 0;
+
+    if is_fin && is_ack {
+        handle_fin_ack_received(tcb, seq_num, ack_num);
+    } else if is_ack {
+        handle_ack_for_fin(tcb, ack_num);
+    }
+}
+
 /// 既存TCBに対するTCPセグメント処理
 fn process_tcp_with_tcb(
     tcb: TcpControlBlockEntry,
@@ -62,66 +120,28 @@ fn process_tcp_with_tcb(
     segment: &[u8],
     data_offset: usize,
 ) {
-    let is_syn = (flags & tcp_flags::SYN) != 0;
-    let is_ack = (flags & tcp_flags::ACK) != 0;
-    let is_fin = (flags & tcp_flags::FIN) != 0;
-    let is_rst = (flags & tcp_flags::RST) != 0;
-    let is_urg = (flags & tcp_flags::URG) != 0;
-
     match tcb.state {
         TcpConnectionState::SynSent => {
-            // SYN-ACK待ち
-            if is_syn && is_ack {
-                // SYN-ACK受信 → ACK送信して接続確立
-                handle_syn_ack_received(tcb, seq_num, ack_num);
-            } else if is_rst {
-                // RST受信 → 接続失敗
-                handle_rst_received(tcb);
-            }
+            handle_syn_sent_segment(tcb, flags, seq_num, ack_num);
         }
         TcpConnectionState::SynReceived => {
-            // ACK待ち（サーバー側）
-            if is_ack {
+            if (flags & tcp_flags::ACK) != 0 {
                 handle_ack_for_syn(tcb, ack_num);
             }
         }
         TcpConnectionState::Established => {
-            // データ受信または終了処理
-            if is_fin {
-                handle_fin_received(tcb, seq_num);
-            } else if is_rst {
-                handle_rst_received(tcb);
-            } else {
-                // URGフラグ処理（RFC 793/6093）
-                if is_urg && urgent_ptr > 0 {
-                    handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
-                }
-                
-                // データ受信
-                let data_start = data_offset;
-                if data_start < segment.len() {
-                    let data = &segment[data_start..];
-                    handle_data_received(tcb, seq_num, data);
-                } else if is_ack {
-                    // ACKのみ（データなし）
-                    handle_ack_received(tcb, ack_num);
-                }
-            }
+            handle_established_segment(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
         }
         TcpConnectionState::FinWait1 => {
-            if is_fin && is_ack {
-                handle_fin_ack_received(tcb, seq_num, ack_num);
-            } else if is_ack {
-                handle_ack_for_fin(tcb, ack_num);
-            }
+            handle_fin_wait1_segment(tcb, flags, seq_num, ack_num);
         }
         TcpConnectionState::FinWait2 => {
-            if is_fin {
+            if (flags & tcp_flags::FIN) != 0 {
                 handle_fin_received(tcb, seq_num);
             }
         }
         TcpConnectionState::CloseWait | TcpConnectionState::LastAck => {
-            if is_ack {
+            if (flags & tcp_flags::ACK) != 0 {
                 handle_final_ack(tcb, ack_num);
             }
         }

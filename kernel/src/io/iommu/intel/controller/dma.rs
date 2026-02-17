@@ -12,11 +12,12 @@ use core::sync::atomic::Ordering;
 use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits;
-use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
+use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
+use crate::io::iommu::tables::HardwareTable;
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 use x86_64::PhysAddr;
 
-use super::IommuController;
+use super::{HardwareContext, IommuController};
 
 // Import Invalidation traits (if/when moved)
 use super::init::CapabilityManager;
@@ -260,6 +261,232 @@ pub trait DomainManager {
     ) -> Result<i32, ()>;
 }
 
+// ============================================================================
+// attach_device helpers (scalable / legacy)
+// ============================================================================
+
+impl IommuController {
+    /// Attach a device in scalable mode (context entry + PASID table).
+    fn attach_device_scalable(
+        &self,
+        hw: &mut HardwareContext,
+        bus: usize,
+        devfn: usize,
+        domain_type: IommuDomainType,
+        page_table_addr: u64,
+        domain_id: u16,
+        device: DeviceId,
+    ) -> Result<(), IommuError> {
+        let root_table = hw.root_table.as_mut().ok_or(IommuError::HardwareError)?;
+        let context_table = hw
+            .scalable_context_tables
+            .get_mut(bus)
+            .ok_or(IommuError::InvalidAddress)?;
+        let ctx_phys = context_table.phys_addr();
+
+        let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
+        root_entry.set_context_table_pair(ctx_phys, ctx_phys + 0x1000);
+
+        let context_entry = context_table
+            .get_mut(devfn)
+            .ok_or(IommuError::InvalidAddress)?;
+        *context_entry = ScalableContextEntry::new();
+
+        let mut pasid_table = PasidTable::new(6)?;
+        if domain_type == IommuDomainType::Passthrough {
+            pasid_table.setup_passthrough_entry(0, domain_id)?;
+        } else {
+            pasid_table.setup_sl_entry(0, page_table_addr, 2, domain_id)?;
+        }
+
+        context_entry.set_pasid_dir(pasid_table.phys_addr(), pasid_table.pds());
+        context_entry.set_rid2pasid(0);
+        context_entry.set_pasid_enable();
+        context_entry.set_fault_enable();
+        context_entry.set_present();
+
+        let mut device_pasid_tables = self
+            .device_pasid_tables
+            .lock()
+            .map_err(|_| IommuError::HardwareError)?;
+        device_pasid_tables.insert(device, pasid_table);
+
+        Ok(())
+    }
+
+    /// Attach a device in legacy mode (context entry only, no PASID).
+    fn attach_device_legacy(
+        hw: &mut HardwareContext,
+        bus: usize,
+        devfn: usize,
+        domain_type: IommuDomainType,
+        page_table_addr: u64,
+        domain_id: u16,
+    ) -> Result<(), IommuError> {
+        let root_table = hw.root_table.as_mut().ok_or(IommuError::HardwareError)?;
+        let context_table = hw
+            .legacy_context_tables
+            .get_mut(bus)
+            .ok_or(IommuError::InvalidAddress)?;
+        let ctx_phys = context_table.phys_addr();
+
+        let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
+        if !root_entry.is_present() {
+            root_entry.set_context_table(ctx_phys);
+        }
+
+        let context_entry = context_table
+            .get_mut(devfn)
+            .ok_or(IommuError::InvalidAddress)?;
+
+        if domain_type == IommuDomainType::Passthrough {
+            context_entry.set_passthrough(domain_id);
+        } else {
+            context_entry.set_sl_pt(page_table_addr, domain_id, 2);
+        }
+
+        Ok(())
+    }
+
+    /// Check whether Device-TLB invalidation should be performed for a device.
+    fn should_invalidate_device_tlb(&self, device: &DeviceId) -> bool {
+        (self.ecap & ecap_bits::ECAP_DT) != 0
+            && match self.ats_enabled_devices.lock() {
+                Ok(set) => set.contains(device),
+                Err(_) => true,
+            }
+    }
+
+    /// Invalidate IOTLB entries for a range (domain-wide or per-page).
+    fn qi_invalidate_iotlb_range(
+        &self,
+        domain_id: u16,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        if size >= 2 * 1024 * 1024 {
+            self.qi_invalidate_iotlb_domain(domain_id, true)
+        } else {
+            let num_pages = size / 4096;
+            for i in 0..num_pages {
+                self.qi_invalidate_iotlb_page(domain_id, iova + i * 4096, true)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Invalidate Device-TLB entries for a range (domain-wide or per-page).
+    fn qi_invalidate_device_tlb_range(
+        &self,
+        rid: u16,
+        domain_id: u16,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        if size >= 2 * 1024 * 1024 {
+            self.qi_invalidate_device_tlb(rid, domain_id)
+        } else {
+            let num_pages = size / 4096;
+            for i in 0..num_pages {
+                self.qi_invalidate_device_tlb_page(rid, domain_id, iova + i * 4096, 0)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Issue QI IOTLB and (optional) Device-TLB invalidations for an unmap.
+    fn qi_invalidate_unmap(
+        &self,
+        domain_id: u16,
+        device: &DeviceId,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        self.qi_invalidate_iotlb_range(domain_id, iova, size)?;
+
+        if self.should_invalidate_device_tlb(device) {
+            self.qi_invalidate_device_tlb_range(
+                device.requester_id(),
+                domain_id,
+                iova,
+                size,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Resolve a device to its (domain_id, domain_arc) pair.
+    fn resolve_device_domain(
+        &self,
+        device: &DeviceId,
+    ) -> Result<(u16, Arc<IommuDomain>), IommuError> {
+        let domain_id = {
+            let guard = self
+                .device_domains
+                .lock()
+                .map_err(|_| IommuError::HardwareError)?;
+            guard
+                .get(device)
+                .copied()
+                .ok_or(IommuError::DeviceNotFound)?
+        };
+        let domain_arc = {
+            let domains_guard = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
+            domains_guard
+                .get(&domain_id)
+                .cloned()
+                .ok_or(IommuError::DomainNotFound)?
+        };
+        Ok((domain_id, domain_arc))
+    }
+
+    /// IOTLB 無効化 (同期 unmap 用): 大ページは直接無効化、小ページは QI or 直接
+    fn invalidate_iotlb_for_sync_unmap(&self, domain_id: u16, iova: u64, size: usize) {
+        if size >= 2 * 1024 * 1024 {
+            unsafe { self.invalidate_iotlb_direct(domain_id) };
+        } else if self.is_queued_invalidation_enabled() {
+            let num_pages = (size / 4096) as u64;
+            for i in 0..num_pages {
+                let _ = self.qi_invalidate_iotlb_page(domain_id, iova + i * 4096, true);
+            }
+            let _ = self.qi_wait_sync();
+        } else {
+            unsafe { self.invalidate_iotlb_direct(domain_id) };
+        }
+    }
+
+    /// Device-TLB 無効化 (同期 unmap 用): ATS 有効デバイスのみ
+    fn invalidate_device_tlb_for_sync_unmap(
+        &self,
+        device: &DeviceId,
+        domain_id: u16,
+        iova: u64,
+        size: usize,
+    ) {
+        let use_ats = (self.ecap & ecap_bits::ECAP_DT) != 0
+            && self.is_queued_invalidation_enabled()
+            && match self.ats_enabled_devices.lock() {
+                Ok(set) => set.contains(device),
+                Err(_) => true,
+            };
+        if !use_ats {
+            return;
+        }
+        if size >= 2 * 1024 * 1024 {
+            let _ = self.qi_invalidate_device_tlb(device.requester_id(), domain_id);
+        } else {
+            let num_pages = (size / 4096) as u64;
+            for i in 0..num_pages {
+                let _ = self.qi_invalidate_device_tlb_page(
+                    device.requester_id(), domain_id, iova + i * 4096, 0,
+                );
+            }
+        }
+        let _ = self.qi_wait_sync();
+    }
+}
+
 impl DomainManager for IommuController {
     fn create_domain(
         &self,
@@ -365,68 +592,10 @@ impl DomainManager for IommuController {
             .map_err(|_| IommuError::HardwareError)?;
         let hw = &mut *hw_guard;
 
-        // Get root table (must be initialized)
-        let root_table = hw.root_table.as_mut().ok_or(IommuError::HardwareError)?;
-
         if self.is_scalable_mode_enabled() {
-            let context_table = hw
-                .scalable_context_tables
-                .get_mut(bus)
-                .ok_or(IommuError::InvalidAddress)?;
-            let ctx_phys = context_table.phys_addr();
-
-            // Setup root entry using scalable layout (two 4KB halves)
-            let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
-            root_entry.set_context_table_pair(ctx_phys, ctx_phys + 0x1000);
-
-            // Setup scalable context entry
-            let context_entry = context_table
-                .get_mut(devfn)
-                .ok_or(IommuError::InvalidAddress)?;
-            *context_entry = ScalableContextEntry::new();
-
-            let mut pasid_table = PasidTable::new(6)?;
-            if domain_type == IommuDomainType::Passthrough {
-                pasid_table.setup_passthrough_entry(0, domain_id)?;
-            } else {
-                pasid_table.setup_sl_entry(0, page_table_addr, 2, domain_id)?;
-            }
-
-            context_entry.set_pasid_dir(pasid_table.phys_addr(), pasid_table.pds());
-            context_entry.set_rid2pasid(0);
-            context_entry.set_pasid_enable();
-            context_entry.set_fault_enable();
-            context_entry.set_present();
-
-            let mut device_pasid_tables = self
-                .device_pasid_tables
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            device_pasid_tables.insert(device, pasid_table);
+            self.attach_device_scalable(hw, bus, devfn, domain_type, page_table_addr, domain_id, device)?;
         } else {
-            let context_table = hw
-                .legacy_context_tables
-                .get_mut(bus)
-                .ok_or(IommuError::InvalidAddress)?;
-            let ctx_phys = context_table.phys_addr();
-
-            // Setup root entry using legacy layout
-            let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
-            if !root_entry.is_present() {
-                root_entry.set_context_table(ctx_phys);
-            }
-
-            // Setup context entry using safe accessor
-            let context_entry = context_table
-                .get_mut(devfn)
-                .ok_or(IommuError::InvalidAddress)?;
-
-            // 48-bit address width (AGAW = 2)
-            if domain_type == IommuDomainType::Passthrough {
-                context_entry.set_passthrough(domain_id);
-            } else {
-                context_entry.set_sl_pt(page_table_addr, domain_id, 2);
-            }
+            Self::attach_device_legacy(hw, bus, devfn, domain_type, page_table_addr, domain_id)?;
         }
 
         let mut device_domains = self
@@ -536,65 +705,10 @@ impl DomainManager for IommuController {
     }
 
     fn unmap_dma(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
-        let domain_id = {
-            let guard = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            guard
-                .get(device)
-                .copied()
-                .ok_or(IommuError::DeviceNotFound)?
-        };
-
-        let domain_arc = {
-            let domains_guard = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
-            domains_guard
-                .get(&domain_id)
-                .cloned()
-                .ok_or(IommuError::DomainNotFound)?
-        };
+        let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
         domain_arc.unmap(iova).map(|mapping| {
-            if mapping.size >= 2 * 1024 * 1024 {
-                unsafe { self.invalidate_iotlb_direct(domain_id) };
-            } else {
-                if self.is_queued_invalidation_enabled() {
-                    let num_pages = (mapping.size / 4096) as u64;
-                    for i in 0..num_pages {
-                        let page_addr = iova + i * 4096;
-                        let _ = self.qi_invalidate_iotlb_page(domain_id, page_addr, true);
-                    }
-                    let _ = self.qi_wait_sync();
-                } else {
-                    unsafe { self.invalidate_iotlb_direct(domain_id) };
-                }
-            }
-
-            // Invalidate Device-TLB (ATS)
-            let use_ats = (self.ecap & ecap_bits::ECAP_DT) != 0
-                && self.is_queued_invalidation_enabled()
-                && match self.ats_enabled_devices.lock() {
-                    Ok(set) => set.contains(device),
-                    Err(_) => true, // Conservative
-                };
-            if use_ats {
-                if mapping.size >= 2 * 1024 * 1024 {
-                    let _ = self.qi_invalidate_device_tlb(device.requester_id(), domain_id);
-                } else {
-                    let num_pages = (mapping.size / 4096) as u64;
-                    for i in 0..num_pages {
-                        let page_addr = iova + i * 4096;
-                        let _ = self.qi_invalidate_device_tlb_page(
-                            device.requester_id(),
-                            domain_id,
-                            page_addr,
-                            0,
-                        );
-                    }
-                }
-                let _ = self.qi_wait_sync();
-            }
-
+            self.invalidate_iotlb_for_sync_unmap(domain_id, iova, mapping.size as usize);
+            self.invalidate_device_tlb_for_sync_unmap(device, domain_id, iova, mapping.size as usize);
             mapping
         })
     }
@@ -604,59 +718,11 @@ impl DomainManager for IommuController {
         device: &DeviceId,
         iova: u64,
     ) -> Result<DmaMapping, IommuError> {
-        let domain_id = {
-            let guard = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            guard
-                .get(device)
-                .copied()
-                .ok_or(IommuError::DeviceNotFound)?
-        };
-
-        let domain_arc = {
-            let domains_guard = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
-            domains_guard
-                .get(&domain_id)
-                .cloned()
-                .ok_or(IommuError::DomainNotFound)?
-        };
+        let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
         let mapping = domain_arc.unmap(iova)?;
 
         if self.is_queued_invalidation_enabled() {
-            let num_pages = (mapping.size / 4096) as u64;
-            if mapping.size >= 2 * 1024 * 1024 {
-                self.qi_invalidate_iotlb_domain(domain_id, true)?;
-            } else {
-                for i in 0..num_pages {
-                    let page_addr = iova + i * 4096;
-                    self.qi_invalidate_iotlb_page(domain_id, page_addr, true)?;
-                }
-            }
-
-            let use_ats = (self.ecap & ecap_bits::ECAP_DT) != 0
-                && match self.ats_enabled_devices.lock() {
-                    Ok(set) => set.contains(device),
-                    Err(_) => true,
-                };
-
-            if use_ats {
-                if mapping.size >= 2 * 1024 * 1024 {
-                    self.qi_invalidate_device_tlb(device.requester_id(), domain_id)?;
-                } else {
-                    for i in 0..num_pages {
-                        let page_addr = iova + i * 4096;
-                        self.qi_invalidate_device_tlb_page(
-                            device.requester_id(),
-                            domain_id,
-                            page_addr,
-                            0,
-                        )?;
-                    }
-                }
-            }
-
+            self.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
             self.qi_wait_async().await?;
         } else {
             unsafe { self.invalidate_iotlb_direct(domain_id) };

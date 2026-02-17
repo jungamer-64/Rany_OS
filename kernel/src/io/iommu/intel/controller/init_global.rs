@@ -88,12 +88,55 @@ pub unsafe fn init_iommu_from_acpi(
         }
     };
 
-    // Prepare controllers list
+    // Initialize controllers from DRHD units
+    let (controllers, default_idx) = unsafe { init_controllers_from_drhd(&dmar_info, &config) }?;
+
+    let default_iommu_idx = default_idx.or(Some(0));
+
+    // Build reserved region list from RMRR
+    let reserved_regions = build_rmrr_regions(&dmar_info);
+
+    let registry = IommuRegistry {
+        controllers,
+        default_iommu_idx,
+        reserved_regions,
+        config,
+    };
+
+    #[cfg(not(test))]
+    {
+        crate::io::log::early_print("[IOMMU] Loop start.\n");
+        for (_i, controller) in registry.controllers.iter().enumerate() {
+            if controller.command_queue.is_some() {
+                spawn_command_queue_worker(Arc::clone(controller));
+            }
+        }
+        crate::io::log::early_print("[IOMMU] Loop end.\n");
+    }
+    crate::io::log::early_print("[IOMMU] Block end.\n");
+
+    // Apply Reserved Regions (RMRR) before publishing registry
+    apply_rmrr_reservations(&registry);
+
+    crate::io::log::early_print("[IOMMU] Init registry...\n");
+    init_registry(registry);
+    crate::io::log::early_print("[IOMMU] Registry done.\n");
+
+    #[cfg(not(test))]
+    finalize_iommu_setup(&config);
+
+    Ok(())
+}
+
+/// Initialize IOMMU controllers from DRHD units parsed from the DMAR table.
+unsafe fn init_controllers_from_drhd(
+    dmar_info: &crate::io::acpi::dmar::DmarInfo,
+    config: &IommuConfig,
+) -> Result<(Vec<Arc<IommuController>>, Option<usize>), IommuError> {
     let mut controllers = Vec::new();
     let mut default_idx = None;
 
-    // 3. Initialize Controllers (DRHD)
-    for unit in dmar_info.drhd_units {
+    for unit in &dmar_info.drhd_units {
         log::info!(
             "Initializing IOMMU Controller at {:#x} (Segment: {}, All: {})",
             unit.register_base,
@@ -116,34 +159,9 @@ pub unsafe fn init_iommu_from_acpi(
                 continue;
             }
 
-            // Cap IOVA space to 36 bits (64GB) to prevent OOM with flat bitmap allocator.
-            // 64GB needs ~2MB bitmap, which fits in our 32MB global heap.
-            // 48 bits (256TB) would need 8GB bitmap.
-            let iova_bits = controller.max_guest_address_width().min(36).max(12);
-            let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
-            let iova_limit = 1u64 << iova_bits;
-            let iova_size = iova_limit.saturating_sub(iova_base);
-            if iova_size == 0 {
-                log::warn!("[IOMMU] Skipping IOVA allocator init: invalid size");
-            } else if let Err(e) = controller.init_iova(iova_base, iova_size) {
-                log::warn!("[IOMMU] Failed to init IOVA allocator: {:?}", e);
-            }
-
-            // Enable Fault Interrupts (Vector 0x50 - IommuFault)
+            init_controller_iova(&mut controller);
             controller.enable_fault_interrupt(0x50);
-
-            // Setup Queued Invalidation if supported
-            if controller.supports_queued_invalidation() {
-                if let Err(e) = controller.init_queued_invalidation(8) {
-                    log::warn!("Failed to init Queued Invalidation: {:?}", e);
-                } else {
-                    if let Err(e) = controller.enable_queued_invalidation() {
-                        log::warn!("Failed to enable Queued Invalidation: {:?}", e);
-                    } else {
-                        log::info!("Queued Invalidation enabled for controller");
-                    }
-                }
-            }
+            init_controller_qi(&mut controller);
         }
 
         controller.command_queue =
@@ -163,18 +181,43 @@ pub unsafe fn init_iommu_from_acpi(
         controller.set_controller_idx(idx);
     }
 
-    // Set default controller (or first one)
-    let default_iommu_idx = default_idx.or(Some(0));
+    Ok((controllers, default_idx))
+}
 
-    // 4. Register RMRR regions
-    let dmar_rmrr_regions = dmar_info.rmrr_regions.clone();
+/// Initialize IOVA allocator for a single controller (cap at 36 bits).
+unsafe fn init_controller_iova(controller: &mut IommuController) {
+    let iova_bits = controller.max_guest_address_width().min(36).max(12);
+    let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
+    let iova_limit = 1u64 << iova_bits;
+    let iova_size = iova_limit.saturating_sub(iova_base);
+    if iova_size == 0 {
+        log::warn!("[IOMMU] Skipping IOVA allocator init: invalid size");
+    } else if let Err(e) = controller.init_iova(iova_base, iova_size) {
+        log::warn!("[IOMMU] Failed to init IOVA allocator: {:?}", e);
+    }
+}
+
+/// Setup Queued Invalidation if the controller supports it.
+unsafe fn init_controller_qi(controller: &mut IommuController) {
+    if controller.supports_queued_invalidation() {
+        if let Err(e) = controller.init_queued_invalidation(8) {
+            log::warn!("Failed to init Queued Invalidation: {:?}", e);
+        } else if let Err(e) = controller.enable_queued_invalidation() {
+            log::warn!("Failed to enable Queued Invalidation: {:?}", e);
+        } else {
+            log::info!("Queued Invalidation enabled for controller");
+        }
+    }
+}
+
+/// Build reserved memory regions from the DMAR RMRR entries.
+fn build_rmrr_regions(dmar_info: &crate::io::acpi::dmar::DmarInfo) -> Vec<ReservedMemoryRegion> {
     let mut reserved_regions = Vec::new();
 
-    for region in &dmar_rmrr_regions {
+    for region in &dmar_info.rmrr_regions {
         let mut devices = Vec::new();
         for scope in &region.devices {
             let bus = scope.start_bus;
-            // Simplification: Assume flat bus or simple path for now
             if let Some(last_path) = scope.path.last() {
                 let device_id =
                     DeviceId::new(region.segment, bus, last_path.device, last_path.function);
@@ -190,31 +233,15 @@ pub unsafe fn init_iommu_from_acpi(
         });
     }
 
-    // Build the registry
-    let registry = IommuRegistry {
-        controllers,
-        default_iommu_idx,
-        reserved_regions,
-        config,
-    };
+    reserved_regions
+}
 
-    #[cfg(not(test))]
-    {
-        crate::io::log::early_print("[IOMMU] Loop start.\n");
-        for (_i, controller) in registry.controllers.iter().enumerate() {
-            if controller.command_queue.is_some() {
-                spawn_command_queue_worker(Arc::clone(controller));
-            }
-        }
-        crate::io::log::early_print("[IOMMU] Loop end.\n");
-    }
-    crate::io::log::early_print("[IOMMU] Block end.\n");
-
-    // Apply Reserved Regions (RMRR)
-    // Need to do this before publishing registry because we need mutable access to controllers
+/// Apply RMRR reservations to IOVA allocators on all controllers.
+fn apply_rmrr_reservations(registry: &IommuRegistry) {
     crate::io::log::early_print("[IOMMU] Processing RMRR...\n");
+    let page_size = crate::io::iommu::PAGE_SIZE_4K;
+
     for region in &registry.reserved_regions {
-        let page_size = crate::io::iommu::PAGE_SIZE_4K;
         let start = align_down(region.base, page_size);
         let end = align_up(region.limit.saturating_add(1), page_size);
         if end <= start {
@@ -225,87 +252,84 @@ pub unsafe fn init_iommu_from_acpi(
             if controller.segment != region.segment {
                 continue;
             }
-
-            let guard = match controller.iova_allocator.lock() {
-                Ok(guard) => guard,
-                Err(_) => {
-                    log::warn!(
-                        "[IOMMU] iova_allocator lock poisoned while reserving RMRR: seg={}",
-                        region.segment
-                    );
-                    continue;
-                }
-            };
-
-            let alloc = match guard.as_ref() {
-                Some(alloc) => alloc,
-                None => {
-                    log::warn!(
-                        "[IOMMU] iova_allocator not initialized while reserving RMRR: seg={}",
-                        region.segment
-                    );
-                    continue;
-                }
-            };
-
-            let alloc_base = alloc.base();
-            let alloc_end = alloc_base.saturating_add(alloc.size());
-            let clamped_start = start.max(alloc_base);
-            let clamped_end = end.min(alloc_end);
-            if clamped_end <= clamped_start {
-                continue;
-            }
-
-            let reserve_size = clamped_end - clamped_start;
-            match alloc.reserve(clamped_start, reserve_size) {
-                Ok(()) | Err(IommuError::AlreadyMapped) => {}
-                Err(IommuError::InvalidAddress) => {
-                    log::warn!(
-                        "[IOMMU] RMRR reservation outside IOVA window: seg={}, range={:#x}-{:#x}",
-                        region.segment,
-                        clamped_start,
-                        clamped_end
-                    );
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[IOMMU] Failed to reserve RMRR IOVA: seg={}, err={:?}",
-                        region.segment,
-                        err
-                    );
-                }
-            }
+            reserve_rmrr_on_controller(controller, region.segment, start, end);
         }
     }
+
     crate::io::log::early_print("[IOMMU] RMRR done.\n");
+}
 
-    crate::io::log::early_print("[IOMMU] Init registry...\n");
-    init_registry(registry);
-    crate::io::log::early_print("[IOMMU] Registry done.\n");
-
-    #[cfg(not(test))]
-    {
-        // Register Intel VT-d driver backend (Phase 1 abstraction hook).
-        crate::io::log::early_print("[IOMMU] Registering driver...\n");
-        super::super::IntelIommuDriver::register_driver();
-        crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
-
-        // Create default domain 0 for generic DMA mappings (used by panic DMA pool, etc.)
-        crate::io::log::early_print("[IOMMU] Creating default domain...\n");
-        if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
-            match driver.create_domain(None, IommuDomainType::Translated) {
-                Ok(id) => log::info!("IOMMU default domain created: ID={}", id),
-                Err(e) => log::warn!("Failed to create default IOMMU domain: {:?}", e),
-            }
+/// Reserve a single RMRR range on a controller's IOVA allocator.
+fn reserve_rmrr_on_controller(controller: &Arc<IommuController>, segment: u16, start: u64, end: u64) {
+    let guard = match controller.iova_allocator.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            log::warn!(
+                "[IOMMU] iova_allocator lock poisoned while reserving RMRR: seg={}",
+                segment
+            );
+            return;
         }
-        crate::io::log::early_print("[IOMMU] Default domain done.\n");
+    };
 
-        // Initialize IOMMU Group Manager
-        crate::io::log::early_print("[IOMMU] Init Group Manager...\n");
-        IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
+    let alloc = match guard.as_ref() {
+        Some(alloc) => alloc,
+        None => {
+            log::warn!(
+                "[IOMMU] iova_allocator not initialized while reserving RMRR: seg={}",
+                segment
+            );
+            return;
+        }
+    };
+
+    let alloc_base = alloc.base();
+    let alloc_end = alloc_base.saturating_add(alloc.size());
+    let clamped_start = start.max(alloc_base);
+    let clamped_end = end.min(alloc_end);
+    if clamped_end <= clamped_start {
+        return;
     }
 
-    Ok(())
+    let reserve_size = clamped_end - clamped_start;
+    match alloc.reserve(clamped_start, reserve_size) {
+        Ok(()) | Err(IommuError::AlreadyMapped) => {}
+        Err(IommuError::InvalidAddress) => {
+            log::warn!(
+                "[IOMMU] RMRR reservation outside IOVA window: seg={}, range={:#x}-{:#x}",
+                segment,
+                clamped_start,
+                clamped_end
+            );
+        }
+        Err(err) => {
+            log::warn!(
+                "[IOMMU] Failed to reserve RMRR IOVA: seg={}, err={:?}",
+                segment,
+                err
+            );
+        }
+    }
+}
+
+/// Final setup: register driver, create default domain, initialize group manager.
+#[cfg(not(test))]
+fn finalize_iommu_setup(config: &IommuConfig) {
+    crate::io::log::early_print("[IOMMU] Registering driver...\n");
+    super::super::IntelIommuDriver::register_driver();
+    crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
+
+    crate::io::log::early_print("[IOMMU] Creating default domain...\n");
+    if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
+        match driver.create_domain(None, IommuDomainType::Translated) {
+            Ok(id) => log::info!("IOMMU default domain created: ID={}", id),
+            Err(e) => log::warn!("Failed to create default IOMMU domain: {:?}", e),
+        }
+    }
+    crate::io::log::early_print("[IOMMU] Default domain done.\n");
+
+    crate::io::log::early_print("[IOMMU] Init Group Manager...\n");
+    IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
 }
 
 /// Initialize the global IOMMU (legacy wrapper)
