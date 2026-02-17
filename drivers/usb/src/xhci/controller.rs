@@ -17,6 +17,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Waker;
+use kernel_api::types::DmaBuffer;
 use spin::Mutex;
 
 use super::context::DeviceContext;
@@ -44,6 +45,31 @@ const DBOFF: usize = 0x14;
 const RTSOFF: usize = 0x18;
 
 // ============================================================================
+// DMA-backed Device Context
+// ============================================================================
+
+/// DMAバッファで裏付けされたデバイスコンテキスト
+struct DmaDeviceContext {
+    /// CPUアクセス用ポインタ
+    ptr: *mut DeviceContext,
+    /// デバイス可視アドレス (IOVA or physical)
+    #[allow(dead_code)]
+    device_addr: u64,
+    /// DMAバッファ (所有権保持)
+    _dma_buf: DmaBuffer,
+}
+
+// Safety: DmaBufferのSend性を保証
+unsafe impl Send for DmaDeviceContext {}
+
+impl DmaDeviceContext {
+    /// CPU側からDeviceContextにアクセス
+    fn context(&self) -> &DeviceContext {
+        unsafe { &*self.ptr }
+    }
+}
+
+// ============================================================================
 // xHCI Controller
 // ============================================================================
 
@@ -69,12 +95,20 @@ pub struct XhciController {
     command_ring: Mutex<TrbRing>,
     /// イベントリング
     event_ring: Mutex<TrbRing>,
-    /// イベントリングセグメントテーブル
-    erst: Box<[ErstEntry]>,
-    /// DCBAA
-    dcbaa: Box<[u64]>,
-    /// デバイスコンテキスト
-    device_contexts: Mutex<Vec<Option<Box<DeviceContext>>>>,
+    /// ERST (CPU access pointer)
+    erst_ptr: *mut ErstEntry,
+    /// ERST device-visible address
+    erst_device_addr: u64,
+    /// ERST DMAバッファ (所有権保持)
+    _erst_buf: Option<DmaBuffer>,
+    /// DCBAA (CPU access pointer)
+    dcbaa_ptr: *mut u64,
+    /// DCBAA device-visible address
+    dcbaa_device_addr: u64,
+    /// DCBAA DMAバッファ (所有権保持)
+    _dcbaa_buf: Option<DmaBuffer>,
+    /// デバイスコンテキスト (DMA-backed)
+    device_contexts: Mutex<Vec<Option<DmaDeviceContext>>>,
     /// 転送リング（スロット×エンドポイント）
     pub(crate) transfer_rings: Mutex<Vec<Vec<Option<Box<TrbRing>>>>>,
     /// コマンド完了待ち
@@ -86,6 +120,11 @@ pub struct XhciController {
     /// 実行中フラグ
     running: AtomicBool,
 }
+
+// Safety: XhciControllerの生ポインタ(erst_ptr, dcbaa_ptr)はDMAバッファの寿命内で有効。
+//         全ての可変状態はMutexで保護されている。
+unsafe impl Send for XhciController {}
+unsafe impl Sync for XhciController {}
 
 /// コマンド完了情報
 pub(crate) struct CommandCompletion {
@@ -153,16 +192,56 @@ impl XhciController {
         // イベントリングを作成
         let event_ring = TrbRing::new(EVENT_RING_SIZE);
 
-        // ERSTを作成
-        let mut erst = vec![ErstEntry::default(); 1].into_boxed_slice();
-        erst[0].ring_segment_base = event_ring.physical_address();
-        erst[0].ring_segment_size = EVENT_RING_SIZE as u16;
+        // ERSTをDMAバッファで作成
+        let erst_byte_size = core::mem::size_of::<ErstEntry>();
+        let (erst_ptr, erst_device_addr, erst_buf) =
+            match kernel_api::services::kernel().alloc_dma(erst_byte_size) {
+                Ok(dma_buf) => {
+                    let ptr = dma_buf.as_ptr() as *mut ErstEntry;
+                    let dev_addr = dma_buf.device_address();
+                    unsafe {
+                        let entry = &mut *ptr;
+                        entry.ring_segment_base = event_ring.physical_address();
+                        entry.ring_segment_size = EVENT_RING_SIZE as u16;
+                        entry.reserved = [0u8; 6];
+                    }
+                    (ptr, dev_addr, Some(dma_buf))
+                }
+                Err(_) => {
+                    // Fallback: ヒープ割り当て
+                    let mut erst = vec![ErstEntry::default(); 1].into_boxed_slice();
+                    erst[0].ring_segment_base = event_ring.physical_address();
+                    erst[0].ring_segment_size = EVENT_RING_SIZE as u16;
+                    let ptr = erst.as_mut_ptr();
+                    let addr = ptr as u64;
+                    core::mem::forget(erst);
+                    (ptr, addr, None)
+                }
+            };
 
-        // DCBAAを作成
-        let dcbaa = vec![0u64; max_slots as usize + 1].into_boxed_slice();
+        // DCBAAをDMAバッファで作成
+        let dcbaa_entries = max_slots as usize + 1;
+        let dcbaa_byte_size = dcbaa_entries * core::mem::size_of::<u64>();
+        let (dcbaa_ptr, dcbaa_device_addr, dcbaa_buf) =
+            match kernel_api::services::kernel().alloc_dma(dcbaa_byte_size) {
+                Ok(dma_buf) => {
+                    let ptr = dma_buf.as_ptr() as *mut u64;
+                    let dev_addr = dma_buf.device_address();
+                    unsafe { core::ptr::write_bytes(ptr, 0, dcbaa_entries); }
+                    (ptr, dev_addr, Some(dma_buf))
+                }
+                Err(_) => {
+                    // Fallback: ヒープ割り当て
+                    let dcbaa = vec![0u64; dcbaa_entries].into_boxed_slice();
+                    let ptr = dcbaa.as_ptr() as *mut u64;
+                    let addr = ptr as u64;
+                    core::mem::forget(dcbaa);
+                    (ptr, addr, None)
+                }
+            };
 
         // Device contextsの初期化
-        let device_contexts: Vec<Option<Box<DeviceContext>>> =
+        let device_contexts: Vec<Option<DmaDeviceContext>> =
             (0..MAX_SLOTS).map(|_| None).collect();
         // Transfer ringsの初期化
         let transfer_rings: Vec<Vec<Option<Box<TrbRing>>>> = (0..MAX_SLOTS)
@@ -180,8 +259,12 @@ impl XhciController {
             page_size: 4096,
             command_ring: Mutex::new(command_ring),
             event_ring: Mutex::new(event_ring),
-            erst,
-            dcbaa,
+            erst_ptr,
+            erst_device_addr,
+            _erst_buf: erst_buf,
+            dcbaa_ptr,
+            dcbaa_device_addr,
+            _dcbaa_buf: dcbaa_buf,
             device_contexts: Mutex::new(device_contexts),
             transfer_rings: Mutex::new(transfer_rings),
             command_completions: Mutex::new(Vec::new()),
@@ -204,9 +287,8 @@ impl XhciController {
         // 最大スロット数を設定
         self.write_op(CONFIG, self.max_slots as u32);
 
-        // DCBAAを設定
-        let dcbaa_addr = self.dcbaa.as_ptr() as u64;
-        self.write_op_64(DCBAAP, dcbaa_addr);
+        // DCBAAを設定 (デバイス可視アドレスで)
+        self.write_op_64(DCBAAP, self.dcbaa_device_addr);
 
         // コマンドリングを設定
         let cmd_ring = self.command_ring.lock();
@@ -223,9 +305,8 @@ impl XhciController {
         // ERDP
         self.write_runtime_64(ERDP, event_ring.physical_address());
 
-        // ERSTBA
-        let erst_addr = self.erst.as_ptr() as u64;
-        self.write_runtime_64(ERSTBA, erst_addr);
+        // ERSTBA (デバイス可視アドレスで)
+        self.write_runtime_64(ERSTBA, self.erst_device_addr);
         drop(event_ring);
 
         // 割り込みを有効化
@@ -407,7 +488,7 @@ impl XhciController {
             .and_then(|opt| opt.as_ref())
         {
             // latency_and_ports: Bits 16-23 is Root Hub Port Number
-            let root_port_num = ((ctx.slot.latency_and_ports >> 16) & 0xFF) as u8;
+            let root_port_num = ((ctx.context().slot.latency_and_ports >> 16) & 0xFF) as u8;
             drop(device_contexts);
 
             if root_port_num == 0 {
@@ -482,7 +563,7 @@ impl XhciController {
 
         loop {
             let idx = event_ring.dequeue_index;
-            let trb = hal::mmio::volatile_read::<Trb>(&event_ring.trbs[idx] as *const Trb as usize);
+            let trb = hal::mmio::volatile_read::<Trb>(&event_ring.trbs()[idx] as *const Trb as usize);
 
             if trb.cycle_bit() != expected_cycle {
                 break;
@@ -492,7 +573,7 @@ impl XhciController {
             let event = EventHandler::parse_event(&trb);
             event_handler.handle_event(event);
 
-            event_ring.dequeue_index = (idx + 1) % event_ring.trbs.len();
+            event_ring.dequeue_index = (idx + 1) % event_ring.len();
             if event_ring.dequeue_index == 0 {
                 // サイクルビットを反転
                 event_ring.cycle_bit = !event_ring.cycle_bit;
@@ -694,21 +775,32 @@ impl XhciController {
             return Err(UsbError::InvalidDevice);
         }
 
-        // デバイスコンテキストを作成
-        let device_context = Box::new(DeviceContext::default());
-        let context_ptr = device_context.as_ref() as *const DeviceContext as u64;
+        // デバイスコンテキストをDMAバッファで作成
+        let ctx_size = core::mem::size_of::<DeviceContext>();
+        let dma_buf = kernel_api::services::kernel()
+            .alloc_dma(ctx_size)
+            .map_err(|_| UsbError::Other("Failed to allocate DMA for DeviceContext".into()))?;
+        let ctx_ptr = dma_buf.as_ptr() as *mut DeviceContext;
+        let ctx_device_addr = dma_buf.device_address();
 
-        // DCBAAに登録
+        // ゼロ初期化
+        unsafe { core::ptr::write_bytes(ctx_ptr, 0, 1); }
+
+        // DCBAAに登録 (デバイス可視アドレスで)
         // SAFETY: slot_id は max_slots 以下であることを確認済み
-        let dcbaa_ptr = self.dcbaa.as_ptr() as *mut u64;
         unsafe {
-            core::ptr::write_volatile(dcbaa_ptr.add(slot_id.as_usize()), context_ptr);
+            core::ptr::write_volatile(self.dcbaa_ptr.add(slot_id.as_usize()), ctx_device_addr);
         }
 
-        // デバイスコンテキストを保存
+        // DMA-backedデバイスコンテキストを保存
+        let dma_ctx = DmaDeviceContext {
+            ptr: ctx_ptr,
+            device_addr: ctx_device_addr,
+            _dma_buf: dma_buf,
+        };
         let mut device_contexts = self.device_contexts.lock();
         if slot_id.as_usize() < device_contexts.len() {
-            device_contexts[slot_id.as_usize()] = Some(device_context);
+            device_contexts[slot_id.as_usize()] = Some(dma_ctx);
         }
 
         Ok(())
@@ -754,14 +846,24 @@ impl XhciController {
         let max_packet_size = speed.default_max_packet_size();
 
         // 入力コンテキストを作成
-        let input_context = Box::new(InputContext::for_address_device(
+        let input_context = InputContext::for_address_device(
             speed,
             0, // route_string (直接接続)
             port.one_indexed() as u8,
             max_packet_size,
             tr_dequeue_ptr,
-        ));
-        let input_context_ptr = input_context.physical_address();
+        );
+
+        // InputContextをDMAバッファにコピー
+        let input_ctx_size = core::mem::size_of::<InputContext>();
+        let input_dma_buf = kernel_api::services::kernel()
+            .alloc_dma(input_ctx_size)
+            .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
+        let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;
+        unsafe {
+            core::ptr::copy_nonoverlapping(&input_context as *const InputContext, input_dma_ptr, 1);
+        }
+        let input_context_ptr = input_dma_buf.device_address();
 
         // Address Device TRB を作成
         let cycle = self.command_ring.lock().cycle_bit();
@@ -774,8 +876,8 @@ impl XhciController {
         let completion = self.wait_command_completion(trb_addr).await?;
 
         if completion.completion_code == CompletionCode::Success {
-            // 入力コンテキストを保持（ドロップ防止）
-            core::mem::forget(input_context);
+            // DMAバッファを保持（ドロップ防止）
+            core::mem::forget(input_dma_buf);
             Ok(())
         } else {
             Err(UsbError::XhciError(alloc::format!(
@@ -834,16 +936,26 @@ impl XhciController {
         let slot_context = device_contexts
             .get(slot_id.as_usize())
             .and_then(|opt| opt.as_ref())
-            .map(|ctx| ctx.slot)
+            .map(|ctx| ctx.context().slot)
             .ok_or(UsbError::InvalidDevice)?;
         drop(device_contexts);
 
         // 入力コンテキストを作成
-        let input_context = Box::new(InputContext::for_configure_endpoint(
+        let input_context = InputContext::for_configure_endpoint(
             &slot_context,
             endpoints,
-        ));
-        let input_context_ptr = input_context.physical_address();
+        );
+
+        // InputContextをDMAバッファにコピー
+        let input_ctx_size = core::mem::size_of::<InputContext>();
+        let input_dma_buf = kernel_api::services::kernel()
+            .alloc_dma(input_ctx_size)
+            .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
+        let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;
+        unsafe {
+            core::ptr::copy_nonoverlapping(&input_context as *const InputContext, input_dma_ptr, 1);
+        }
+        let input_context_ptr = input_dma_buf.device_address();
 
         // 各エンドポイント用の転送リングを割り当て
         for (dci, _) in endpoints {
@@ -864,7 +976,8 @@ impl XhciController {
         let completion = self.wait_command_completion(trb_addr).await?;
 
         if completion.completion_code == CompletionCode::Success {
-            core::mem::forget(input_context);
+            // DMAバッファを保持 (ドロップ防止)
+            core::mem::forget(input_dma_buf);
             Ok(())
         } else {
             Err(UsbError::XhciError(alloc::format!(
