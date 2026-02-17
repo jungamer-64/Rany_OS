@@ -99,7 +99,9 @@ fn log_detected_encryption(info: &MemoryEncryptionInfo) {
     if info.tdx_available {
         info!("Intel TDX detected");
     }
-    let any = info.sme_available || info.sev_available || info.tdx_available;
+    let any = [info.sme_available, info.sev_available, info.tdx_available]
+        .iter()
+        .any(|&x| x);
     if !any {
         info!("No hardware memory encryption detected");
     }

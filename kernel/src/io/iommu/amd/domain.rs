@@ -363,6 +363,14 @@ impl AmdIommuDriver {
             .ok_or(IommuError::DomainNotFound)
     }
 
+    /// Invalidate all entries, treating NotSupported as success.
+    fn invalidate_ignoring_unsupported(&self) -> Result<(), IommuError> {
+        match self.invalidate_all_entries() {
+            Ok(()) | Err(IommuError::NotSupported) => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
     pub(super) fn populate_default_entries(&self) -> Result<(), IommuError> {
         let default_domain = self.domain_for_id(0)?;
         map_ivmd_ranges(default_domain.as_ref(), &self.ivmd_ranges)?;
@@ -374,11 +382,7 @@ impl AmdIommuDriver {
             table.fill(entry)?;
         }
 
-        if let Err(err) = self.invalidate_all_entries() {
-            if err != IommuError::NotSupported {
-                return Err(err);
-            }
-        }
+        self.invalidate_ignoring_unsupported()?;
         Ok(())
     }
 

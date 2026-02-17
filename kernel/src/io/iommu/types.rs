@@ -232,17 +232,15 @@ impl IommuDeviceScope {
             DeviceScopeType::PciEndpoint => {
                 // Endpoint: exact match required
                 let (target_dev, target_func) = self.path[self.path.len() - 1];
-                // For simplicity, assume start_bus is the actual bus for endpoint
-                bus == self.start_bus && device == target_dev && function == target_func
+                [bus, device, function] == [self.start_bus, target_dev, target_func]
             }
             DeviceScopeType::PciSubHierarchy => {
                 // Sub-hierarchy: matches if bus >= start_bus
-                // and first path element matches the bridge
                 if bus < self.start_bus {
                     return false;
                 }
                 // If device is directly on start_bus, check path
-                if bus == self.start_bus && !self.path.is_empty() {
+                if bus == self.start_bus {
                     let (bridge_dev, bridge_func) = self.path[0];
                     return device == bridge_dev && function == bridge_func;
                 }

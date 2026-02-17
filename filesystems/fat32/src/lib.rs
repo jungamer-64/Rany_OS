@@ -5279,12 +5279,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
         let mut lfn_parts: Vec<(u8, String, u8)> = Vec::new();
         let mut current = start;
-        let mut count = 0usize;
 
-        while current.is_valid() {
-            count += 1;
-            if count > MAX_CLUSTER_CHAIN {
-                return Err(FsError::FileSystemCorrupted);
+        for _ in 0..MAX_CLUSTER_CHAIN {
+            if !current.is_valid() {
+                return Ok(None);
             }
 
             self.fs
@@ -5295,13 +5293,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
                 return Ok(result);
             }
 
-            current = match self.read_next_cluster_async(current).await? {
-                Some(c) => c,
-                None => break,
-            };
+            current = self.read_next_cluster_async(current).await?.unwrap_or(Cluster(0));
         }
 
-        Ok(None)
+        Err(FsError::FileSystemCorrupted)
     }
 
     /// 非同期で指定された名前を持つSFNエントリの場所を検索します。
@@ -6620,20 +6615,23 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok(())
     }
 
-    pub fn rmdir(&self, name: &str) -> FsResult<()> {
-        // まず対象ディレクトリを検索
+    /// Verify that the named entry is a directory and that it is empty (sync).
+    fn verify_empty_directory_sync(&self, name: &str) -> FsResult<()> {
         let target = self.lookup(name)?;
         let attr = target.getattr()?;
-
         if attr.file_type != Some(FileType::Directory) {
             return Err(FsError::NotADirectory);
         }
-
-        // ディレクトリが空かどうか確認
         let entries = target.readdir(0)?;
         if !entries.is_empty() {
             return Err(FsError::DirectoryNotEmpty);
         }
+        Ok(())
+    }
+
+    pub fn rmdir(&self, name: &str) -> FsResult<()> {
+        // まず対象ディレクトリを検索・検証
+        self.verify_empty_directory_sync(name)?;
 
         // エントリを削除
         let entry = self.remove_dir_entry(name)?;
@@ -6688,18 +6686,22 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok(())
     }
 
-    /// 非同期でディレクトリを削除
-    pub async fn rmdir_async(&self, name: &str) -> FsResult<()> {
+    /// Verify that the named entry is an empty directory (async).
+    async fn verify_empty_directory_async(&self, name: &str) -> FsResult<()> {
         let target = self.lookup_async(name).await?;
         let attr = target.getattr()?;
-
         if attr.file_type != Some(FileType::Directory) {
             return Err(FsError::NotADirectory);
         }
-
         if !target.is_directory_empty_async().await? {
             return Err(FsError::DirectoryNotEmpty);
         }
+        Ok(())
+    }
+
+    /// 非同期でディレクトリを削除
+    pub async fn rmdir_async(&self, name: &str) -> FsResult<()> {
+        self.verify_empty_directory_async(name).await?;
 
         let entry = self.remove_dir_entry_async(name).await?;
 
@@ -6904,14 +6906,16 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         let attr = raw_entry.attributes();
         let size = raw_entry.file_size();
 
-        if attr.is_directory() {
+        let is_dir = attr.is_directory();
+
+        if is_dir {
             self.check_rename_directory_loop(cluster, other_inode)?;
         }
 
         other_inode.add_dir_entry(new_name, cluster, attr, size)?;
         self.remove_dir_entry(old_name)?;
 
-        if attr.is_directory() && cluster.is_valid() {
+        if is_dir && cluster.is_valid() {
             let new_parent = other_inode.inner.lock().first_cluster;
             self.update_dotdot_entry(cluster, new_parent)?;
         }

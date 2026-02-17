@@ -221,14 +221,20 @@ impl AccessControlManager {
     ) -> Result<(), SecurityViolation> {
         let actual = self.get_capabilities(domain_id);
 
-        self.check_capability_field(domain_id, required.can_call_kernel_api, actual.can_call_kernel_api, "kernel API call")?;
-        self.check_capability_field(domain_id, required.can_map_memory, actual.can_map_memory, "memory mapping")?;
-        self.check_capability_field(domain_id, required.can_access_io, actual.can_access_io, "I/O access")?;
-        self.check_capability_field(domain_id, required.can_register_interrupts, actual.can_register_interrupts, "interrupt registration")?;
-        self.check_capability_field(domain_id, required.can_ipc, actual.can_ipc, "IPC")?;
-        self.check_capability_field(domain_id, required.allows_unsafe, actual.allows_unsafe, "unsafe code")?;
-        self.check_capability_field(domain_id, required.can_network, actual.can_network, "network access")?;
-        self.check_capability_field(domain_id, required.can_filesystem, actual.can_filesystem, "filesystem access")?;
+        let checks: [(&str, bool, bool); 8] = [
+            ("kernel API call", required.can_call_kernel_api, actual.can_call_kernel_api),
+            ("memory mapping", required.can_map_memory, actual.can_map_memory),
+            ("I/O access", required.can_access_io, actual.can_access_io),
+            ("interrupt registration", required.can_register_interrupts, actual.can_register_interrupts),
+            ("IPC", required.can_ipc, actual.can_ipc),
+            ("unsafe code", required.allows_unsafe, actual.allows_unsafe),
+            ("network access", required.can_network, actual.can_network),
+            ("filesystem access", required.can_filesystem, actual.can_filesystem),
+        ];
+
+        for (op, req, act) in checks {
+            self.check_capability_field(domain_id, req, act, op)?;
+        }
 
         Ok(())
     }
