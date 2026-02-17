@@ -722,6 +722,55 @@ impl Framebuffer {
         self.write_u32_run(addr, count, value);
     }
 
+    #[inline(always)]
+    fn color_to_rgb565(color: Color) -> u16 {
+        let r = (color.red as u16 >> 3) & 0x1F;
+        let g = (color.green as u16 >> 2) & 0x3F;
+        let b = (color.blue as u16 >> 3) & 0x1F;
+        (r << 11) | (g << 5) | b
+    }
+
+    /// Write a run of u16 pixels (RGB565) to MMIO using streaming u32 pairs when possible.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn write_u16_run_streaming_nofence(&self, addr: usize, count: usize, value: u16) {
+        let mut ptr = addr;
+        let mut remaining = count;
+
+        // Align to 4-byte boundary.
+        if (ptr & 3) == 2 && remaining > 0 {
+            mmio::mmio_write_u16(ptr, value);
+            ptr += 2;
+            remaining -= 1;
+        }
+
+        let pair = (value as u32) | ((value as u32) << 16);
+        while remaining >= 2 {
+            mmio::stream_write_u32(ptr, pair);
+            ptr += 4;
+            remaining -= 2;
+        }
+
+        if remaining == 1 {
+            mmio::mmio_write_u16(ptr, value);
+        }
+    }
+
+    /// Non-x86 fallback for u16 run writer.
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    fn write_u16_run_streaming_nofence(&self, addr: usize, count: usize, value: u16) {
+        let mut ptr = addr;
+        for _ in 0..count {
+            mmio::mmio_write_u16(ptr, value);
+            ptr += 2;
+        }
+    }
+
+    /// u16 run writer with fence.
+    fn write_u16_run_streaming(&self, addr: usize, count: usize, value: u16) {
+        self.write_u16_run_streaming_nofence(addr, count, value);
+        self.counted_sfence();
+    }
+
     /// Stream-pack RGBA bytes into BGRA bytes and write them to MMIO in
     /// moderate-size chunks. This avoids allocating a large `scratch_u32`
     /// buffer for very long runs and allows SIMD packers to operate on
@@ -2126,18 +2175,12 @@ impl Framebuffer {
             }
             2 => {
                 // rgb565 per-pixel write. Branch once on presence of back buffer
-                let r = (color.red as u16 >> 3) & 0x1F;
-                let g = (color.green as u16 >> 2) & 0x3F;
-                let b = (color.blue as u16 >> 3) & 0x1F;
-                let pixel = (r << 11) | (g << 5) | b;
+                let pixel = Self::color_to_rgb565(color);
                 if let Some(_) = self.back_buffer {
                     debug_assert!(false, "16bpp hline called on u32 backbuffer");
                 } else {
-                    let base_addr = self.draw_buffer() as usize;
-                    for i in 0..run_len {
-                        let off = base_addr + offset + i * 2;
-                        mmio::mmio_write_u16(off, pixel);
-                    }
+                    let addr = self.draw_buffer() as usize + offset;
+                    self.write_u16_run_streaming(addr, run_len, pixel);
                 }
             }
             _ => {
@@ -2779,6 +2822,20 @@ impl Framebuffer {
         mmio::sfence();
     }
 
+    /// 16bpp MMIO streaming fill (Rgb565).
+    fn fill_rect_16bpp_mmio(&mut self, r: Rect, color: Color) {
+        let stride = self.info.stride as usize;
+        let pixel = Self::color_to_rgb565(color);
+        let width = r.width as usize;
+
+        for y in r.y..r.bottom() {
+            let offset = y as usize * stride + r.x as usize * 2;
+            let addr = self.buffer as usize + offset;
+            self.write_u16_run_streaming_nofence(addr, width, pixel);
+        }
+        mmio::sfence();
+    }
+
     /// Per-pixel fallback fill for other pixel formats.
     fn fill_rect_pixel_fallback(&mut self, r: Rect, color: Color) {
         for y in r.y..r.bottom() {
@@ -2829,6 +2886,9 @@ impl Framebuffer {
             }
             PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
                 self.fill_rect_24bpp_mmio(r, color);
+            }
+            PixelFormat::Rgb565 => {
+                self.fill_rect_16bpp_mmio(r, color);
             }
             _ => {
                 self.fill_rect_pixel_fallback(r, color);
@@ -2979,24 +3039,13 @@ impl Framebuffer {
         if dst_end_x >= dst_start_x {
             let clipped_len = (dst_end_x - dst_start_x + 1) as usize;
             let start_offset = (dst_y as usize * stride) + (dst_start_x as usize * 2);
-
-            let r16 = (color.red as u16 >> 3) & 0x1F;
-            let g16 = (color.green as u16 >> 2) & 0x3F;
-            let b16 = (color.blue as u16 >> 3) & 0x1F;
-            let pixel = (r16 << 11) | (g16 << 5) | b16;
-
-            self.ensure_scratch_u8(clipped_len * 2);
-            for i in 0..clipped_len {
-                self.scratch_u8[i * 2] = (pixel & 0xFF) as u8;
-                self.scratch_u8[i * 2 + 1] = (pixel >> 8) as u8;
-            }
+            let pixel = Self::color_to_rgb565(color);
 
             if self.back_buffer.is_some() {
                 debug_assert!(false, "16bpp draw called on u32 backbuffer");
             } else {
                 let addr = self.buffer as usize + start_offset;
-                self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..clipped_len * 2]);
-                mmio::sfence();
+                self.write_u16_run_streaming(addr, clipped_len, pixel);
             }
         }
     }

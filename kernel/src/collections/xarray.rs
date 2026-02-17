@@ -373,21 +373,15 @@ impl<T> XArray<T> {
         }
     }
 
-    /// 指定インデックスを取得
-    fn get_at(&self, index: usize) -> Option<&T> {
+    /// ツリーウォーキングでリーフスロットを取得
+    fn traverse_to_leaf(&self, index: usize) -> Option<&XASlot<T>> {
         if self.height == 0 {
-            return match &self.root {
-                Some(XASlot::Entry { value: e, .. }) if index == 0 => Some(e.as_ref()),
-                _ => None,
-            };
+            return self.root.as_ref();
         }
-
         let mut current = self.root.as_ref()?;
-        
         for level in (1..self.height).rev() {
             let shift = level as usize * XA_CHUNK_SHIFT;
             let slot_idx = (index >> shift) & XA_CHUNK_MASK;
-            
             match current {
                 XASlot::Node(node) => {
                     current = node.slots[slot_idx].as_ref()?;
@@ -395,11 +389,32 @@ impl<T> XArray<T> {
                 XASlot::Entry { .. } => return None,
             }
         }
+        Some(current)
+    }
 
-        // 最下位レベル
+    /// ツリーウォーキングでリーフスロットを可変で取得
+    fn traverse_to_leaf_mut(&mut self, index: usize) -> Option<&mut XASlot<T>> {
+        if self.height == 0 {
+            return self.root.as_mut();
+        }
+        let mut current = self.root.as_mut()?;
+        for level in (1..self.height).rev() {
+            let shift = level as usize * XA_CHUNK_SHIFT;
+            let slot_idx = (index >> shift) & XA_CHUNK_MASK;
+            match current {
+                XASlot::Node(node) => {
+                    current = node.slots[slot_idx].as_mut()?;
+                }
+                XASlot::Entry { .. } => return None,
+            }
+        }
+        Some(current)
+    }
+
+    /// リーフスロットからエントリを抽出
+    fn extract_entry_at(slot: &XASlot<T>, index: usize) -> Option<&T> {
         let slot_idx = index & XA_CHUNK_MASK;
-        
-        match current {
+        match slot {
             XASlot::Node(node) => {
                 match node.slots[slot_idx].as_ref()? {
                     XASlot::Entry { value: e, .. } => Some(e.as_ref()),
@@ -411,32 +426,10 @@ impl<T> XArray<T> {
         }
     }
 
-    /// 指定インデックスを可変で取得
-    fn get_at_mut(&mut self, index: usize) -> Option<&mut T> {
-        if self.height == 0 {
-            return match &mut self.root {
-                Some(XASlot::Entry { value: e, .. }) if index == 0 => Some(e.as_mut()),
-                _ => None,
-            };
-        }
-
-        let mut current = self.root.as_mut()?;
-        
-        for level in (1..self.height).rev() {
-            let shift = level as usize * XA_CHUNK_SHIFT;
-            let slot_idx = (index >> shift) & XA_CHUNK_MASK;
-            
-            match current {
-                XASlot::Node(node) => {
-                    current = node.slots[slot_idx].as_mut()?;
-                }
-                XASlot::Entry { .. } => return None,
-            }
-        }
-
+    /// リーフスロットからエントリを可変で抽出
+    fn extract_entry_at_mut(slot: &mut XASlot<T>, index: usize) -> Option<&mut T> {
         let slot_idx = index & XA_CHUNK_MASK;
-        
-        match current {
+        match slot {
             XASlot::Node(node) => {
                 match node.slots[slot_idx].as_mut()? {
                     XASlot::Entry { value: e, .. } => Some(e.as_mut()),
@@ -446,6 +439,18 @@ impl<T> XArray<T> {
             XASlot::Entry { value: e, .. } if index == 0 => Some(e.as_mut()),
             _ => None,
         }
+    }
+
+    /// 指定インデックスを取得
+    fn get_at(&self, index: usize) -> Option<&T> {
+        let slot = self.traverse_to_leaf(index)?;
+        Self::extract_entry_at(slot, index)
+    }
+
+    /// 指定インデックスを可変で取得
+    fn get_at_mut(&mut self, index: usize) -> Option<&mut T> {
+        let slot = self.traverse_to_leaf_mut(index)?;
+        Self::extract_entry_at_mut(slot, index)
     }
 
     /// 指定インデックスを削除
