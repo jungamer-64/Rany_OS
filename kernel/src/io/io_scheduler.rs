@@ -1751,65 +1751,31 @@ impl HybridIoCoordinator {
         IoFuture::new(self.scheduler.clone(), id)
     }
 
-    /// 定期的なメンテナンス（タイマー割り込み等から呼ぶ）
-    pub fn tick<F>(&self, process_interrupts: F)
-    where
-        F: FnOnce(),
-    {
-        // 1. 割り込み処理（外部注入）
-        process_interrupts();
-
-        // 2. ローカルキューの遅延完了を処理
-        // memo: ここで全CPU分を回す必要はない。自CPU分のみ処理し、
-        // 必要ならIPIで他CPUを起こす設計だが、現状はポーリング主体。
-        //
-        // 注意: process_deferred_completions_local は再入不可ロックを取るため、
-        // 割り込みコンテキストでの呼び出しには注意が必要。
-        // 現在は tick() 呼び出し元が安全なコンテキスト（メインループ等）であることを想定。
-        // 注意: process_deferred_completions_local は再入不可ロックを取るため、
-        // 割り込みコンテキストでの呼び出しには注意が必要。
-        // 現在は tick() 呼び出し元が安全なコンテキスト（メインループ等）であることを想定。
-        let cpu_idx = crate::smp::cpu_index();
-        while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
-            self.scheduler.complete_request(id, result);
-            self.interrupt_bridge.complete_pending(device, id);
+    /// オーバーフロー時の強制ポーリング回収
+    fn recover_overflow(&self) {
+        let was_active = self.polling_executor.is_active();
+        if !was_active {
+            self.polling_executor.start();
         }
-
-        // 1.5. オーバーフロー時は強制ポーリングで回収
-        // ISRでキュー満杯により積めなかった完了をCQから直接回収
-        // 1.5. オーバーフロー時は強制ポーリングで回収
-        // ISRでキュー満杯により積めなかった完了をCQから直接回収
-        if self.interrupt_bridge.check_and_clear_overflow() {
-            let was_active = self.polling_executor.is_active();
-            if !was_active {
-                self.polling_executor.start();
-            }
-            
-            // poll_batch 相当を callback 付きで回す
-            // これにより、回収された完了に対して pending_requests の掃除が行われる
-            for _ in 0..self.polling_executor.max_poll_iterations {
-                let n = self.polling_executor.poll_once_with(|device, id, _res| {
-                    // 同一モジュール内なので private method も呼べる前提
-                    // (IoInterruptBridge::complete_pending は pub(super) または pub)
-                    self.interrupt_bridge.complete_pending(device, id);
-                });
-                if n == 0 {
-                    break;
-                }
-            }
-
-            if !was_active && matches!(self.global_mode(), IoMode::Interrupt) {
-                self.polling_executor.stop();
+        
+        // poll_batch 相当を callback 付きで回す
+        // これにより、回収された完了に対して pending_requests の掃除が行われる
+        for _ in 0..self.polling_executor.max_poll_iterations {
+            let n = self.polling_executor.poll_once_with(|device, id, _res| {
+                self.interrupt_bridge.complete_pending(device, id);
+            });
+            if n == 0 {
+                break;
             }
         }
 
-        // 2. モード評価
-        self.scheduler.evaluate_modes(current_tick());
+        if !was_active && matches!(self.global_mode(), IoMode::Interrupt) {
+            self.polling_executor.stop();
+        }
+    }
 
-        // 3. ペンディングI/Oをディスパッチ
-        self.dispatch_pending();
-
-        // 4. ポーリングモードならポーリング実行
+    /// グローバルモードに応じたポーリング実行
+    fn poll_by_global_mode(&self) {
         let global_mode = match self.global_mode.load(Ordering::Acquire) {
             0 => IoMode::Interrupt,
             1 => IoMode::Polling,
@@ -1828,6 +1794,36 @@ impl HybridIoCoordinator {
                 // 割り込み待ち
             }
         }
+    }
+
+    /// 定期的なメンテナンス（タイマー割り込み等から呼ぶ）
+    pub fn tick<F>(&self, process_interrupts: F)
+    where
+        F: FnOnce(),
+    {
+        // 1. 割り込み処理（外部注入）
+        process_interrupts();
+
+        // 2. ローカルキューの遅延完了を処理
+        let cpu_idx = crate::smp::cpu_index();
+        while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
+            self.scheduler.complete_request(id, result);
+            self.interrupt_bridge.complete_pending(device, id);
+        }
+
+        // 1.5. オーバーフロー時は強制ポーリングで回収
+        if self.interrupt_bridge.check_and_clear_overflow() {
+            self.recover_overflow();
+        }
+
+        // 2. モード評価
+        self.scheduler.evaluate_modes(current_tick());
+
+        // 3. ペンディングI/Oをディスパッチ
+        self.dispatch_pending();
+
+        // 4. ポーリングモードならポーリング実行
+        self.poll_by_global_mode();
     }
 
     fn dispatch_pending(&self) {

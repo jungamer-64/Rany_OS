@@ -279,53 +279,64 @@ impl IovaAllocator {
                 }
             }
         } else {
-            // No per-CPU quarantine available (early boot / OOM) - try global fallback quarantine first
-            {
-                let mut fb = FALLBACK_QUARANTINE.lock();
-                // Try to push into fallback ring
-                if fb.push(entry.addr, entry.size_class, entry.epoch) {
-                    self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-                    crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE\n");
-                    return Ok(());
-                }
+            self.free_via_fallback_quarantine(entry, addr, granularity)
+        }
+    }
 
-                // Fallback ring full: force drain to make space
-                crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE full, forcing drain\n");
-                let mut batch = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
-                let drained = fb.drain_all(&mut batch);
-                if drained > 0 {
-                    for i in 0..drained {
-                        let e = batch[i];
-                        let g = match e.size_class {
-                            0 => PageGranularity::Page4K,
-                            1 => PageGranularity::Page2M,
-                            2 => PageGranularity::Page1G,
-                            _ => PageGranularity::Page4K,
-                        };
-                        let _ = self.inner.free_immediate(e.addr, g);
-                    }
-                    self.stats.quarantine_forced_drains.fetch_add(drained as u64, Ordering::Relaxed);
-                }
-
-                // Try push again
-                if fb.push(entry.addr, entry.size_class, entry.epoch) {
-                    self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-                    crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE after drain\n");
-                    return Ok(());
-                } else {
-                    crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE still full, will immediate free\n");
-                }
+    /// Fallback quarantine path when per-CPU quarantine is unavailable
+    fn free_via_fallback_quarantine(&self, entry: QuarantineEntry, addr: u64, granularity: PageGranularity) -> Result<(), IommuError> {
+        {
+            let mut fb = FALLBACK_QUARANTINE.lock();
+            if fb.push(entry.addr, entry.size_class, entry.epoch) {
+                self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE\n");
+                return Ok(());
             }
 
-            // Last resort: immediate free
-            self.inner.free_immediate(addr, granularity)
-                .map_err(|_| IommuError::NotMapped)
+            crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE full, forcing drain\n");
+            let mut batch = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
+            let drained = fb.drain_all(&mut batch);
+            if drained > 0 {
+                for i in 0..drained {
+                    let e = batch[i];
+                    let g = match e.size_class {
+                        0 => PageGranularity::Page4K,
+                        1 => PageGranularity::Page2M,
+                        2 => PageGranularity::Page1G,
+                        _ => PageGranularity::Page4K,
+                    };
+                    let _ = self.inner.free_immediate(e.addr, g);
+                }
+                self.stats.quarantine_forced_drains.fetch_add(drained as u64, Ordering::Relaxed);
+            }
+
+            if fb.push(entry.addr, entry.size_class, entry.epoch) {
+                self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE after drain\n");
+                return Ok(());
+            }
+            crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE still full, will immediate free\n");
+        }
+
+        self.inner.free_immediate(addr, granularity)
+            .map_err(|_| IommuError::NotMapped)
+    }
+
+    /// アドレスとサイズから最適な解放粒度とステップサイズを選択
+    fn select_free_granularity(addr: u64, size: u64) -> (PageGranularity, u64) {
+        use crate::mm::fast_allocator::{PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+        if size >= PAGE_SIZE_1G && addr % PAGE_SIZE_1G == 0 {
+            (PageGranularity::Page1G, PAGE_SIZE_1G)
+        } else if size >= PAGE_SIZE_2M && addr % PAGE_SIZE_2M == 0 {
+            (PageGranularity::Page2M, PAGE_SIZE_2M)
+        } else {
+            (PageGranularity::Page4K, PAGE_SIZE_4K)
         }
     }
 
     /// Free an IOVA range (splits into granularity blocks)
     pub fn free(&self, mut addr: u64, mut size: u64) -> Result<(), IommuError> {
-        use crate::mm::fast_allocator::{PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+        use crate::mm::fast_allocator::PAGE_SIZE_4K;
         
         // Ensure alignment
         if addr % PAGE_SIZE_4K != 0 || size % PAGE_SIZE_4K != 0 {
@@ -333,19 +344,10 @@ impl IovaAllocator {
         }
 
         while size > 0 {
-            if size >= PAGE_SIZE_1G && addr % PAGE_SIZE_1G == 0 {
-                self.free_with_granularity(addr, PageGranularity::Page1G)?;
-                addr += PAGE_SIZE_1G;
-                size -= PAGE_SIZE_1G;
-            } else if size >= PAGE_SIZE_2M && addr % PAGE_SIZE_2M == 0 {
-                self.free_with_granularity(addr, PageGranularity::Page2M)?;
-                addr += PAGE_SIZE_2M;
-                size -= PAGE_SIZE_2M;
-            } else {
-                self.free_with_granularity(addr, PageGranularity::Page4K)?;
-                addr += PAGE_SIZE_4K;
-                size -= PAGE_SIZE_4K;
-            }
+            let (granularity, step) = Self::select_free_granularity(addr, size);
+            self.free_with_granularity(addr, granularity)?;
+            addr += step;
+            size -= step;
         }
         Ok(())
     }

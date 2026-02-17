@@ -506,11 +506,9 @@ impl MemoryPressureMonitor {
         }
     }
     
-    /// メモリ状態を更新（定期的に呼び出し）
-    pub fn update(&self, free_pages: u64, available_pages: u64) {
+    fn compute_pressure_level(&self, free_pages: u64) -> MemoryPressureLevel {
         let thresholds = self.thresholds.read();
-        
-        let new_level = if free_pages <= thresholds.critical_threshold {
+        if free_pages <= thresholds.critical_threshold {
             MemoryPressureLevel::Critical
         } else if free_pages <= thresholds.high_threshold {
             MemoryPressureLevel::High
@@ -520,9 +518,27 @@ impl MemoryPressureMonitor {
             MemoryPressureLevel::Low
         } else {
             MemoryPressureLevel::None
-        };
-        
-        drop(thresholds);
+        }
+    }
+
+    fn auto_shrink_if_needed(level: MemoryPressureLevel) {
+        if level >= MemoryPressureLevel::Medium {
+            let mut sc = ShrinkControl::default();
+            sc.urgent = level >= MemoryPressureLevel::High;
+            sc.nr_to_scan = match level {
+                MemoryPressureLevel::Medium => 256,
+                MemoryPressureLevel::High => 512,
+                MemoryPressureLevel::Critical => 1024,
+                _ => 128,
+            };
+            let freed = shrinker_shrink(&sc);
+            log::debug!("[MemPressure] Auto-shrink freed {} objects", freed);
+        }
+    }
+
+    /// メモリ状態を更新（定期的に呼び出し）
+    pub fn update(&self, free_pages: u64, available_pages: u64) {
+        let new_level = self.compute_pressure_level(free_pages);
         
         let old_level = self.current_level();
         
@@ -549,20 +565,7 @@ impl MemoryPressureMonitor {
                 old_level, new_level, free_pages
             );
             
-            // 圧力が高い場合は自動的にshrinkerを呼び出し
-            if new_level >= MemoryPressureLevel::Medium {
-                let mut sc = ShrinkControl::default();
-                sc.urgent = new_level >= MemoryPressureLevel::High;
-                sc.nr_to_scan = match new_level {
-                    MemoryPressureLevel::Medium => 256,
-                    MemoryPressureLevel::High => 512,
-                    MemoryPressureLevel::Critical => 1024,
-                    _ => 128,
-                };
-                
-                let freed = shrinker_shrink(&sc);
-                log::debug!("[MemPressure] Auto-shrink freed {} objects", freed);
-            }
+            Self::auto_shrink_if_needed(new_level);
         }
         
         self.last_check_tsc.store(read_tsc(), Ordering::Release);

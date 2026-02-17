@@ -462,6 +462,44 @@ fn populate_anonymous_page(
     }
 }
 
+/// ファイル読み込みとmemcgチャージを実行
+fn prepare_file_page_data(
+    frame_phys: PhysAddr,
+    file_info: &FileBackingInfo,
+    file_offset: u64,
+) -> Result<(bool, MemcgId), DemandResult> {
+    zero_page(frame_phys);
+    let remaining = file_info.file_size.saturating_sub(file_offset);
+    let to_read = remaining.min(super::PAGE_SIZE_4K as u64) as usize;
+    if to_read > 0 {
+        let virt = super::mapping::phys_to_virt(x86_64::PhysAddr::new(frame_phys.as_u64()));
+        let buf = unsafe { core::slice::from_raw_parts_mut(virt.as_u64() as *mut u8, to_read) };
+        if crate::fs::fs_abstraction::read_inode_by_number(
+            file_info.inode as crate::fs::InodeNum,
+            file_offset,
+            buf,
+        )
+        .is_err()
+        {
+            return Err(DemandResult::IoError);
+        }
+    }
+    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
+    let page_num = (file_offset / super::PAGE_SIZE_4K as u64) as u64;
+    crate::mm::frame_backing::track_frame_backing(frame_idx, file_info.inode as crate::fs::InodeNum, page_num);
+    
+    let mut memcg_charged = false;
+    let mut memcg_id = MemcgId::ROOT;
+    if CONFIG.read().memcg_enabled {
+        memcg_id = crate::task::process::get_current_process_memcg_id();
+        if memcg_charge(memcg_id, 1, ChargeType::Cache).is_err() {
+            return Err(DemandResult::OutOfMemory);
+        }
+        memcg_charged = true;
+    }
+    Ok((memcg_charged, memcg_id))
+}
+
 /// ファイルバックページの割り当て
 fn populate_file_page(page_addr: VirtAddr, region: &VmRegion) -> DemandResult {
     let _file_info = match &region.file_info {
@@ -476,45 +514,15 @@ fn populate_file_page(page_addr: VirtAddr, region: &VmRegion) -> DemandResult {
     };
     
     let frame_phys = PhysAddr::new(frame.start_address().as_u64());
-    
-    // ファイルオフセットを計算
     let file_offset = _file_info.offset + (page_addr.as_u64() - region.start.as_u64());
-    
-    // ファイルシステムからページを読み込む（不足分はゼロ埋め）
-    zero_page(frame_phys);
-    let remaining = _file_info.file_size.saturating_sub(file_offset);
-    let to_read = remaining.min(super::PAGE_SIZE_4K as u64) as usize;
-    if to_read > 0 {
-        let virt = super::mapping::phys_to_virt(x86_64::PhysAddr::new(frame_phys.as_u64()));
-        let buf = unsafe { core::slice::from_raw_parts_mut(virt.as_u64() as *mut u8, to_read) };
-        if crate::fs::fs_abstraction::read_inode_by_number(
-            _file_info.inode as crate::fs::InodeNum,
-            file_offset,
-            buf,
-        )
-        .is_err()
-        {
+
+    let (memcg_charged, memcg_id) = match prepare_file_page_data(frame_phys, _file_info, file_offset) {
+        Ok(v) => v,
+        Err(result) => {
             super::frame_allocator::dealloc_frame(frame);
-            return DemandResult::IoError;
+            return result;
         }
-    }
-    
-    // Track frame -> file backing mapping (for targeted writeback)
-    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
-    let page_num = (file_offset / super::PAGE_SIZE_4K as u64) as u64;
-    crate::mm::frame_backing::track_frame_backing(frame_idx, _file_info.inode as crate::fs::InodeNum, page_num);
-    
-    // Memcgチャージ (file cache)
-    let mut memcg_id = MemcgId::ROOT;
-    let mut memcg_charged = false;
-    if CONFIG.read().memcg_enabled {
-        memcg_id = crate::task::process::get_current_process_memcg_id();
-        if memcg_charge(memcg_id, 1, ChargeType::Cache).is_err() {
-            super::frame_allocator::dealloc_frame(frame);
-            return DemandResult::OutOfMemory;
-        }
-        memcg_charged = true;
-    }
+    };
     
     // ページマッピング
     let flags = region.prot.to_page_flags();

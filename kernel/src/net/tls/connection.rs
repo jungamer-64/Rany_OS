@@ -754,6 +754,22 @@ impl TlsConnection {
         Ok(())
     }
 
+    /// 確立済みセッションでレコードを復号する
+    fn decrypt_established_data(
+        &mut self,
+        payload: &[u8],
+        plaintext: &mut Vec<u8>,
+    ) -> TlsResult<()> {
+        if self.is_tls13 {
+            let decrypted = self.tls13_decrypt_record(payload, false)?;
+            self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
+        } else {
+            let decrypted = self.decrypt_record(payload)?;
+            plaintext.extend_from_slice(&decrypted);
+        }
+        Ok(())
+    }
+
     /// ApplicationDataレコードを処理する
     fn process_app_data(
         &mut self,
@@ -768,14 +784,7 @@ impl TlsConnection {
                 plaintext.extend_from_slice(&app_data);
             }
         } else if self.state == TlsState::Established {
-            // 復号（TLS 1.2 or TLS 1.3 確立済み）
-            if self.is_tls13 {
-                let decrypted = self.tls13_decrypt_record(payload, false)?;
-                self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
-            } else {
-                let decrypted = self.decrypt_record(payload)?;
-                plaintext.extend_from_slice(&decrypted);
-            }
+            self.decrypt_established_data(payload, plaintext)?;
         }
         Ok(())
     }
@@ -1121,12 +1130,41 @@ impl TlsConnection {
     ///
     /// 証明書チェーンの最初の証明書をX.509としてパースし、
     /// サーバー公開鍵を抽出して保存する。
+    fn extract_server_public_key(
+        &mut self,
+        cert: &crate::net::x509::X509Certificate,
+    ) -> TlsResult<()> {
+        match &cert.subject_public_key_info {
+            crate::net::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
+                self.server_public_key = Some(ServerPublicKey::Rsa {
+                    modulus: modulus.to_vec(),
+                    exponent: exponent.to_vec(),
+                });
+            }
+            crate::net::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
+                self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
+                    point: public_key.to_vec(),
+                });
+            }
+            crate::net::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
+                self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
+                    point: public_key.to_vec(),
+                });
+            }
+            _ => {
+                if !self.config.skip_verify {
+                    return Err(TlsError::CertificateError);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.len() < 3 {
             return Err(TlsError::DecodeError);
         }
 
-        // 証明書チェーン長（3バイト）
         let certs_len =
             ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | (data[2] as usize);
 
@@ -1134,7 +1172,6 @@ impl TlsConnection {
             return Err(TlsError::CertificateError);
         }
 
-        // 最初の証明書を取り出す（3バイト長プレフィックス）
         let cert_chain = &data[3..3 + certs_len];
         if cert_chain.len() < 3 {
             return Err(TlsError::DecodeError);
@@ -1150,32 +1187,8 @@ impl TlsConnection {
 
         let first_cert_der = &cert_chain[3..3 + first_cert_len];
 
-        // X.509 DERをパースしてサーバー公開鍵を抽出
         if let Some(cert) = crate::net::x509::parse_x509(first_cert_der) {
-            match cert.subject_public_key_info {
-                crate::net::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
-                    self.server_public_key = Some(ServerPublicKey::Rsa {
-                        modulus: modulus.to_vec(),
-                        exponent: exponent.to_vec(),
-                    });
-                }
-                crate::net::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
-                    self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
-                        point: public_key.to_vec(),
-                    });
-                }
-                crate::net::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
-                    self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
-                        point: public_key.to_vec(),
-                    });
-                }
-                _ => {
-                    // 未知の公開鍵タイプ
-                    if !self.config.skip_verify {
-                        return Err(TlsError::CertificateError);
-                    }
-                }
-            }
+            self.extract_server_public_key(&cert)?;
         } else if !self.config.skip_verify {
             return Err(TlsError::CertificateError);
         }
@@ -2913,6 +2926,39 @@ impl TlsConnection {
     // TLS 1.3 Record Layer
     // ========================================================================
 
+    fn build_tls13_nonce_and_aad(iv: &[u8], seq: u64, data_len: usize) -> ([u8; 12], Vec<u8>) {
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&iv[..12]);
+        let seq_bytes = seq.to_be_bytes();
+        for i in 0..8 {
+            nonce[4 + i] ^= seq_bytes[i];
+        }
+        let mut aad = Vec::with_capacity(5);
+        aad.push(ContentType::ApplicationData as u8);
+        aad.extend_from_slice(&[0x03, 0x03]);
+        aad.extend_from_slice(&(data_len as u16).to_be_bytes());
+        (nonce, aad)
+    }
+
+    fn decrypt_aead(
+        cipher: CipherSuite,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ciphertext: &[u8],
+        tag: &[u8; 16],
+    ) -> TlsResult<Vec<u8>> {
+        if cipher.is_chacha20_poly1305() {
+            let mut key_arr = [0u8; 32];
+            key_arr.copy_from_slice(&key[..32]);
+            chacha20_poly1305_decrypt(&key_arr, nonce, aad, ciphertext, tag)
+                .ok_or(TlsError::DecryptError)
+        } else {
+            aes_gcm_decrypt(key, nonce, aad, ciphertext, tag)
+                .ok_or(TlsError::DecryptError)
+        }
+    }
+
     /// TLS 1.3: レコード復号
     ///
     /// TLS 1.3のAEAD nonce = IV XOR seq_num
@@ -2935,22 +2981,7 @@ impl TlsConnection {
             return Err(TlsError::DecryptError);
         }
 
-        // TLS 1.3 nonce: IV XOR (zero-padded 64-bit sequence number)
-        let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&iv[..12]);
-        let seq_bytes = seq.to_be_bytes();
-        for i in 0..8 {
-            nonce[4 + i] ^= seq_bytes[i];
-        }
-
-        // AAD: TLS record header
-        // content_type(1) = 0x17 (ApplicationData)
-        // legacy_version(2) = 0x0303
-        // length(2) = data.len()
-        let mut aad = Vec::with_capacity(5);
-        aad.push(ContentType::ApplicationData as u8);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv, seq, data.len());
 
         if data.len() < 16 {
             return Err(TlsError::DecryptError);
@@ -2961,15 +2992,7 @@ impl TlsConnection {
         let mut tag = [0u8; 16];
         tag.copy_from_slice(&data[ciphertext_len..]);
 
-        let plaintext = if cipher.is_chacha20_poly1305() {
-            let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&key[..32]);
-            chacha20_poly1305_decrypt(&key_arr, &nonce, &aad, ciphertext, &tag)
-                .ok_or(TlsError::DecryptError)?
-        } else {
-            aes_gcm_decrypt(key, &nonce, &aad, ciphertext, &tag)
-                .ok_or(TlsError::DecryptError)?
-        };
+        let plaintext = Self::decrypt_aead(cipher, key, &nonce, &aad, ciphertext, &tag)?;
 
         // シーケンス番号をインクリメント
         if is_handshake {

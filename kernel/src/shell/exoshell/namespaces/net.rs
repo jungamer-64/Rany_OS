@@ -18,6 +18,47 @@ use alloc::boxed::Box;
 pub struct NetNamespace;
 
 impl NetNamespace {
+    fn dispatch_bind(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let port = match args.get(0) {
+            Some(ExoValue::Int(n)) => *n as u16,
+            Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
+            _ => return ExoValue::Error(String::from("bind(port[, token]) requires a port integer")),
+        };
+
+        if port == 0 {
+            return ExoValue::Error(String::from("Invalid port"));
+        }
+
+        let mut token_opt: Option<u64> = None;
+        if let Some(arg2) = args.get(1) {
+            match arg2 {
+                ExoValue::Int(n) => token_opt = Some(*n as u64),
+                ExoValue::Capability(cap) => token_opt = Some(cap.id),
+                _ => {}
+            }
+        }
+
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+
+        if let Some(t) = token_opt {
+             match bind_udp_with_token(port, Some(t)) {
+                Some(_) => ExoValue::Bool(true),
+                None => ExoValue::Error(String::from("bind failed")),
+            }
+        } else {
+            if !manager().has_capability(domain_id, CAP_NET_BIND) {
+                return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
+            }
+            match crate::net::stack::bind_udp(port) {
+                Some(_) => ExoValue::Bool(true),
+                None => ExoValue::Error(String::from("bind failed")),
+            }
+        }
+    }
+
     /// Dispatch methods for 'net' namespace
     pub fn dispatch(
         method: &str,
@@ -27,50 +68,7 @@ impl NetNamespace {
             "config" => Self::config(),
             "stats" => Self::stats(),
             "arp" => Self::arp_cache(),
-            "bind" => {
-                // bind(port[, token]) -> bool
-                let port = match args.get(0) {
-                    Some(ExoValue::Int(n)) => *n as u16,
-                    Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
-                    _ => return ExoValue::Error(String::from("bind(port[, token]) requires a port integer")),
-                };
-
-                if port == 0 {
-                    return ExoValue::Error(String::from("Invalid port"));
-                }
-
-                // Optional token argument
-                let mut token_opt: Option<u64> = None;
-                if let Some(arg2) = args.get(1) {
-                    match arg2 {
-                        ExoValue::Int(n) => token_opt = Some(*n as u64),
-                        ExoValue::Capability(cap) => token_opt = Some(cap.id),
-                        _ => {}
-                    }
-                }
-
-                let domain_id = kernel_api::services::kernel()
-                    .shell()
-                    .map(|s| s.current_domain())
-                    .unwrap_or(0);
-
-                if let Some(t) = token_opt {
-                    // Verify token ownership
-                    // (Simplified check as in ShellNamespace::call impl)
-                     match bind_udp_with_token(port, Some(t)) {
-                        Some(_) => ExoValue::Bool(true),
-                        None => ExoValue::Error(String::from("bind failed")),
-                    }
-                } else {
-                    if !manager().has_capability(domain_id, CAP_NET_BIND) {
-                        return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
-                    }
-                    match crate::net::stack::bind_udp(port) {
-                        Some(_) => ExoValue::Bool(true),
-                        None => ExoValue::Error(String::from("bind failed")),
-                    }
-                }
-            }
+            "bind" => Self::dispatch_bind(args),
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
         }
     }
@@ -218,6 +216,47 @@ impl ShellNamespace for NetNamespace {
         "net"
     }
 
+    fn handle_bind(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let port = match _args.get(0) {
+            Some(ExoValue::Int(n)) => *n as u16,
+            Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
+            _ => { return ExoValue::Error(String::from("bind(port[, token]) requires a port integer")); }
+        };
+        if port == 0 {
+            return ExoValue::Error(String::from("Invalid port"));
+        }
+        let mut token_opt: Option<u64> = None;
+        if let Some(arg2) = _args.get(1) {
+            match arg2 {
+                ExoValue::Int(n) => token_opt = Some(*n as u64),
+                ExoValue::Capability(cap) => token_opt = Some(cap.id),
+                _ => {}
+            }
+        }
+        let domain_id = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_domain())
+            .unwrap_or(0);
+        if let Some(t) = token_opt {
+            let grants = manager().list_grants(domain_id);
+            if !grants.iter().any(|g| g.id == t) {
+                return ExoValue::Error(String::from("Permission denied: token not owned"));
+            }
+            match bind_udp_with_token(port, Some(t)) {
+                Some(_) => ExoValue::Bool(true),
+                None => ExoValue::Error(String::from("bind failed")),
+            }
+        } else {
+            if !manager().has_capability(domain_id, CAP_NET_BIND) {
+                return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
+            }
+            match crate::net::bind_udp(port) {
+                Some(_) => ExoValue::Bool(true),
+                None => ExoValue::Error(String::from("bind failed")),
+            }
+        }
+    }
+
     fn call<'a>(
         &'a self,
         method: &'a str,
@@ -229,54 +268,7 @@ impl ShellNamespace for NetNamespace {
                 "config" => Self::config(),
                 "stats" => Self::stats(),
                 "arp" => Self::arp_cache(),
-                "bind" => {
-                    // bind(port[, token]) -> bool
-                    // Parse port
-                    let port = match _args.get(0) {
-                        Some(ExoValue::Int(n)) => *n as u16,
-                        Some(ExoValue::String(s)) => s.parse::<u16>().unwrap_or(0),
-                        _ => { return ExoValue::Error(String::from("bind(port[, token]) requires a port integer")); }
-                    };
-
-                    if port == 0 {
-                        return ExoValue::Error(String::from("Invalid port"));
-                    }
-
-                    // Optional token argument
-                    let mut token_opt: Option<u64> = None;
-                    if let Some(arg2) = _args.get(1) {
-                        match arg2 {
-                            ExoValue::Int(n) => token_opt = Some(*n as u64),
-                            ExoValue::Capability(cap) => token_opt = Some(cap.id),
-                            _ => {}
-                        }
-                    }
-
-                    let domain_id = kernel_api::services::kernel()
-                        .shell()
-                        .map(|s| s.current_domain())
-                        .unwrap_or(0);
-
-                    if let Some(t) = token_opt {
-                        // Verify token ownership
-                        let grants = manager().list_grants(domain_id);
-                        if !grants.iter().any(|g| g.id == t) {
-                            return ExoValue::Error(String::from("Permission denied: token not owned"));
-                        }
-                        match bind_udp_with_token(port, Some(t)) {
-                            Some(_) => ExoValue::Bool(true),
-                            None => ExoValue::Error(String::from("bind failed")),
-                        }
-                    } else {
-                        if !manager().has_capability(domain_id, CAP_NET_BIND) {
-                            return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
-                        }
-                        match crate::net::bind_udp(port) {
-                            Some(_) => ExoValue::Bool(true),
-                            None => ExoValue::Error(String::from("bind failed")),
-                        }
-                    }
-                }
+                "bind" => Self::handle_bind(_args),
                 _ => ExoValue::Error(format!(
                     "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, bind",
                     method

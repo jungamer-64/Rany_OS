@@ -82,6 +82,43 @@ impl<'a> MmioWriter<'a> {
         unsafe { Self::new(slice.as_mut_ptr() as usize, slice.len()) }
     }
 
+    /// Write remaining u32 and u8 tail bytes after bulk u64 writes
+    #[inline]
+    fn write_bytes_tail(data: &[u8], mut ptr: usize, mut i: usize) {
+        let len = data.len();
+        // Remaining u32-aligned writes; unroll 4 at a time
+        while i + 16 <= len {
+            unsafe {
+                let v0 = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
+                let v1 = core::ptr::read_unaligned(data.as_ptr().add(i + 4) as *const u32);
+                let v2 = core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u32);
+                let v3 = core::ptr::read_unaligned(data.as_ptr().add(i + 12) as *const u32);
+                mmio::mmio_write_u32(ptr, v0);
+                mmio::mmio_write_u32(ptr + 4, v1);
+                mmio::mmio_write_u32(ptr + 8, v2);
+                mmio::mmio_write_u32(ptr + 12, v3);
+            }
+            ptr += 16;
+            i += 16;
+        }
+
+        while i + 4 <= len {
+            unsafe {
+                let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
+                mmio::mmio_write_u32(ptr, v);
+            }
+            ptr += 4;
+            i += 4;
+        }
+
+        // Remaining tail bytes
+        while i < len {
+            mmio::volatile_write::<u8>(ptr, data[i]);
+            ptr += 1;
+            i += 1;
+        }
+    }
+
     /// Write a slice of bytes to the MMIO region efficiently.
     ///
     /// This will attempt to perform aligned 32-bit/64-bit writes when possible to
@@ -171,37 +208,8 @@ impl<'a> MmioWriter<'a> {
             i += 8;
         }
 
-        // Remaining u32-aligned writes; unroll 4 at a time
-        while i + 16 <= len {
-            unsafe {
-                let v0 = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
-                let v1 = core::ptr::read_unaligned(data.as_ptr().add(i + 4) as *const u32);
-                let v2 = core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u32);
-                let v3 = core::ptr::read_unaligned(data.as_ptr().add(i + 12) as *const u32);
-                mmio::mmio_write_u32(ptr, v0);
-                mmio::mmio_write_u32(ptr + 4, v1);
-                mmio::mmio_write_u32(ptr + 8, v2);
-                mmio::mmio_write_u32(ptr + 12, v3);
-            }
-            ptr += 16;
-            i += 16;
-        }
-
-        while i + 4 <= len {
-            unsafe {
-                let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
-                mmio::mmio_write_u32(ptr, v);
-            }
-            ptr += 4;
-            i += 4;
-        }
-
-        // Remaining tail bytes
-        while i < len {
-            mmio::volatile_write::<u8>(ptr, data[i]);
-            ptr += 1;
-            i += 1;
-        }
+        // Write remaining u32 and u8 tail
+        Self::write_bytes_tail(data, ptr, i);
     }
 
     /// Write a slice of u32 pixels to an MMIO destination, using u64 pair writes

@@ -189,7 +189,52 @@ fn find_table_in_rsdt(rsdt_addr: u64) -> u64 {
     0
 }
 
-/// Parse SRAT table and extract NUMA information
+/// Handle SRAT Processor Affinity entry
+fn handle_srat_processor(offset: u64, numa_info: &mut NumaInfo, node_map: &mut [Option<usize>; 256]) {
+    let entry_ptr = offset as *const SratProcessorAffinity;
+    let flags = unsafe { core::ptr::addr_of!((*entry_ptr).flags).read_unaligned() };
+    if flags & 1 == 0 { return; }
+    let proximity_domain_low = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain_low).read_unaligned() };
+    let proximity_domain_high = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain_high).read_unaligned() };
+    let apic_id = unsafe { core::ptr::addr_of!((*entry_ptr).apic_id).read_unaligned() };
+    let proximity_domain = proximity_domain_low as u32
+        | ((proximity_domain_high[0] as u32) << 8)
+        | ((proximity_domain_high[1] as u32) << 16)
+        | ((proximity_domain_high[2] as u32) << 24);
+    if let Some(idx) = get_or_create_node(numa_info, node_map, proximity_domain) {
+        add_cpu_to_node(&mut numa_info.nodes[idx], apic_id as u32);
+    }
+}
+
+/// Handle SRAT Memory Affinity entry
+fn handle_srat_memory(offset: u64, numa_info: &mut NumaInfo, node_map: &mut [Option<usize>; 256]) {
+    let entry_ptr = offset as *const SratMemoryAffinity;
+    let flags = unsafe { core::ptr::addr_of!((*entry_ptr).flags).read_unaligned() };
+    if flags & 1 == 0 { return; }
+    let base_low = unsafe { core::ptr::addr_of!((*entry_ptr).base_address_low).read_unaligned() };
+    let base_high = unsafe { core::ptr::addr_of!((*entry_ptr).base_address_high).read_unaligned() };
+    let length_low = unsafe { core::ptr::addr_of!((*entry_ptr).length_low).read_unaligned() };
+    let length_high = unsafe { core::ptr::addr_of!((*entry_ptr).length_high).read_unaligned() };
+    let proximity_domain = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain).read_unaligned() };
+    let base = (base_low as u64) | ((base_high as u64) << 32);
+    let length = (length_low as u64) | ((length_high as u64) << 32);
+    if let Some(idx) = get_or_create_node(numa_info, node_map, proximity_domain) {
+        add_memory_to_node(&mut numa_info.nodes[idx], base, length);
+    }
+}
+
+/// Handle SRAT X2APIC Affinity entry
+fn handle_srat_x2apic(offset: u64, numa_info: &mut NumaInfo, node_map: &mut [Option<usize>; 256]) {
+    let entry_ptr = offset as *const SratX2ApicAffinity;
+    let flags = unsafe { core::ptr::addr_of!((*entry_ptr).flags).read_unaligned() };
+    if flags & 1 == 0 { return; }
+    let proximity_domain = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain).read_unaligned() };
+    let x2apic_id = unsafe { core::ptr::addr_of!((*entry_ptr).x2apic_id).read_unaligned() };
+    if let Some(idx) = get_or_create_node(numa_info, node_map, proximity_domain) {
+        add_cpu_to_node(&mut numa_info.nodes[idx], x2apic_id);
+    }
+}
+
 /// Parse SRAT table and extract NUMA information
 fn parse_srat(srat_phys: u64) -> NumaInfo {
     let srat_ptr = srat_phys as *const SdtHeader;
@@ -220,65 +265,15 @@ fn parse_srat(srat_phys: u64) -> NumaInfo {
 
         match entry_type {
             SRAT_TYPE_PROCESSOR_AFFINITY => {
-                let entry_ptr = offset as *const SratProcessorAffinity;
-                // Read packed fields via read_unaligned
-                let flags = unsafe { core::ptr::addr_of!((*entry_ptr).flags).read_unaligned() };
-                if flags & 1 != 0 {
-                    // Enabled flag
-                    let proximity_domain_low = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain_low).read_unaligned() };
-                    let proximity_domain_high = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain_high).read_unaligned() };
-                    let apic_id = unsafe { core::ptr::addr_of!((*entry_ptr).apic_id).read_unaligned() };
-                    
-                    let proximity_domain = proximity_domain_low as u32
-                        | ((proximity_domain_high[0] as u32) << 8)
-                        | ((proximity_domain_high[1] as u32) << 16)
-                        | ((proximity_domain_high[2] as u32) << 24);
-
-                    let node_idx = get_or_create_node(&mut numa_info, &mut node_map, proximity_domain);
-                    if let Some(idx) = node_idx {
-                        add_cpu_to_node(&mut numa_info.nodes[idx], apic_id as u32);
-                    }
-                }
+                handle_srat_processor(offset, &mut numa_info, &mut node_map);
             }
             SRAT_TYPE_MEMORY_AFFINITY => {
-                let entry_ptr = offset as *const SratMemoryAffinity;
-                // Read packed fields via read_unaligned
-                let flags = unsafe { core::ptr::addr_of!((*entry_ptr).flags).read_unaligned() };
-                if flags & 1 != 0 {
-                    // Enabled flag
-                    let base_low = unsafe { core::ptr::addr_of!((*entry_ptr).base_address_low).read_unaligned() };
-                    let base_high = unsafe { core::ptr::addr_of!((*entry_ptr).base_address_high).read_unaligned() };
-                    let length_low = unsafe { core::ptr::addr_of!((*entry_ptr).length_low).read_unaligned() };
-                    let length_high = unsafe { core::ptr::addr_of!((*entry_ptr).length_high).read_unaligned() };
-                    let proximity_domain = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain).read_unaligned() };
-                    
-                    let base = (base_low as u64) | ((base_high as u64) << 32);
-                    let length = (length_low as u64) | ((length_high as u64) << 32);
-
-                    let node_idx = get_or_create_node(&mut numa_info, &mut node_map, proximity_domain);
-                    if let Some(idx) = node_idx {
-                        add_memory_to_node(&mut numa_info.nodes[idx], base, length);
-                    }
-                }
+                handle_srat_memory(offset, &mut numa_info, &mut node_map);
             }
             SRAT_TYPE_X2APIC_AFFINITY => {
-                let entry_ptr = offset as *const SratX2ApicAffinity;
-                // Read packed fields via read_unaligned
-                let flags = unsafe { core::ptr::addr_of!((*entry_ptr).flags).read_unaligned() };
-                if flags & 1 != 0 {
-                    // Enabled flag
-                    let proximity_domain = unsafe { core::ptr::addr_of!((*entry_ptr).proximity_domain).read_unaligned() };
-                    let x2apic_id = unsafe { core::ptr::addr_of!((*entry_ptr).x2apic_id).read_unaligned() };
-                    
-                    let node_idx = get_or_create_node(&mut numa_info, &mut node_map, proximity_domain);
-                    if let Some(idx) = node_idx {
-                        add_cpu_to_node(&mut numa_info.nodes[idx], x2apic_id);
-                    }
-                }
+                handle_srat_x2apic(offset, &mut numa_info, &mut node_map);
             }
-            _ => {
-                // Unknown entry type, skip
-            }
+            _ => {}
         }
 
         offset += entry_length as u64;

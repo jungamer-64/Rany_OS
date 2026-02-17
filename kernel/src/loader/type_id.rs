@@ -332,14 +332,17 @@ fn get_shstrtab_range(elf_data: &[u8], sh_offset: usize, sh_entsize: usize, shst
     Some((start, size))
 }
 
-/// ELFバイナリからType ID情報を抽出
-///
-/// セルのメタデータセクション（.rany_type_id）からハッシュ情報を読み取ります。
-pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
+/// shstrtabから名前付きセクションデータを検索
+fn find_named_section_data<'a>(
+    elf_data: &'a [u8],
+    sh_offset: usize,
+    sh_entsize: usize,
+    sh_num: usize,
+    shstrtab_start: usize,
+    shstrtab_size: usize,
+    target_name: &str,
+) -> Option<&'a [u8]> {
     use crate::loader::elf::Elf64SectionHeader;
-
-    let (sh_offset, sh_entsize, sh_num, shstrtab_idx) = validate_elf_sections(elf_data)?;
-    let (shstrtab_start, shstrtab_size) = get_shstrtab_range(elf_data, sh_offset, sh_entsize, shstrtab_idx)?;
 
     for i in 0..sh_num {
         let sh_header_offset = sh_offset + i * sh_entsize;
@@ -359,7 +362,7 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
 
         let section_name = core::str::from_utf8(&elf_data[name_start..name_end]).ok()?;
 
-        if section_name == ".rany_type_id" {
+        if section_name == target_name {
             let data_start = section_header.sh_offset as usize;
             let data_size = section_header.sh_size as usize;
 
@@ -367,12 +370,27 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
                 return None;
             }
 
-            let section_data = &elf_data[data_start..data_start + data_size];
-            return parse_type_id_section(section_data);
+            return Some(&elf_data[data_start..data_start + data_size]);
         }
     }
 
     None
+}
+
+/// ELFバイナリからType ID情報を抽出
+///
+/// セルのメタデータセクション（.rany_type_id）からハッシュ情報を読み取ります。
+pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
+    let (sh_offset, sh_entsize, sh_num, shstrtab_idx) = validate_elf_sections(elf_data)?;
+    let (shstrtab_start, shstrtab_size) = get_shstrtab_range(elf_data, sh_offset, sh_entsize, shstrtab_idx)?;
+
+    let section_data = find_named_section_data(
+        elf_data, sh_offset, sh_entsize, sh_num,
+        shstrtab_start, shstrtab_size,
+        ".rany_type_id",
+    )?;
+
+    parse_type_id_section(section_data)
 }
 
 /// .rany_type_id セクションの内容を解析

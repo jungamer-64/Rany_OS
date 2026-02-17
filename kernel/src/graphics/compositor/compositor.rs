@@ -383,25 +383,7 @@ impl Compositor {
 
         // 境界線
         if style.border {
-            // 外枠
-            for x in rect.x..(rect.x + rect.width as i32) {
-                self.back_buffer
-                    .set_pixel(x as u32, rect.y as u32, border_color);
-                self.back_buffer.set_pixel(
-                    x as u32,
-                    (rect.y + rect.height as i32 - 1) as u32,
-                    border_color,
-                );
-            }
-            for y in rect.y..(rect.y + rect.height as i32) {
-                self.back_buffer
-                    .set_pixel(rect.x as u32, y as u32, border_color);
-                self.back_buffer.set_pixel(
-                    (rect.x + rect.width as i32 - 1) as u32,
-                    y as u32,
-                    border_color,
-                );
-            }
+            self.draw_border_lines(rect, border_color);
         }
 
         // タイトルバー
@@ -416,24 +398,7 @@ impl Compositor {
 
             // 閉じるボタン
             if style.close_button {
-                let btn_x = rect.x + rect.width as i32 - BORDER_WIDTH as i32 - 32;
-                let btn_y = rect.y + BORDER_WIDTH as i32 + 2;
-                let btn_rect = Rect::new(btn_x, btn_y, 28, 24);
-
-                // ボタン背景（ホバー時は赤）
-                self.back_buffer
-                    .fill_rect(btn_rect, Color::new(196, 43, 28));
-
-                // X マーク
-                let cx = btn_x + 14;
-                let cy = btn_y + 12;
-                let white = Color::WHITE;
-                for i in -5..=5 {
-                    self.back_buffer
-                        .set_pixel((cx + i) as u32, (cy + i) as u32, white);
-                    self.back_buffer
-                        .set_pixel((cx + i) as u32, (cy - i) as u32, white);
-                }
+                self.draw_close_button(rect);
             }
         }
 
@@ -453,6 +418,48 @@ impl Compositor {
         // アクリル効果がない場合のみ背景を描画
         if !style.acrylic {
             self.back_buffer.fill_rect(client_bg_rect, bg_color);
+        }
+    }
+
+    /// 境界線を描画
+    fn draw_border_lines(&mut self, rect: Rect, border_color: Color) {
+        for x in rect.x..(rect.x + rect.width as i32) {
+            self.back_buffer
+                .set_pixel(x as u32, rect.y as u32, border_color);
+            self.back_buffer.set_pixel(
+                x as u32,
+                (rect.y + rect.height as i32 - 1) as u32,
+                border_color,
+            );
+        }
+        for y in rect.y..(rect.y + rect.height as i32) {
+            self.back_buffer
+                .set_pixel(rect.x as u32, y as u32, border_color);
+            self.back_buffer.set_pixel(
+                (rect.x + rect.width as i32 - 1) as u32,
+                y as u32,
+                border_color,
+            );
+        }
+    }
+
+    /// 閉じるボタンを描画
+    fn draw_close_button(&mut self, rect: Rect) {
+        let btn_x = rect.x + rect.width as i32 - BORDER_WIDTH as i32 - 32;
+        let btn_y = rect.y + BORDER_WIDTH as i32 + 2;
+        let btn_rect = Rect::new(btn_x, btn_y, 28, 24);
+
+        self.back_buffer
+            .fill_rect(btn_rect, Color::new(196, 43, 28));
+
+        let cx = btn_x + 14;
+        let cy = btn_y + 12;
+        let white = Color::WHITE;
+        for i in -5..=5 {
+            self.back_buffer
+                .set_pixel((cx + i) as u32, (cy + i) as u32, white);
+            self.back_buffer
+                .set_pixel((cx + i) as u32, (cy - i) as u32, white);
         }
     }
 

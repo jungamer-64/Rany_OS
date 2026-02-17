@@ -669,39 +669,7 @@ impl<'a> ElfLoader<'a> {
         let pkey = 0u8; // ダミー値（テスト/ベンチではフラグ更新を行わないため使用されない）
 
         // 各セグメントをロード
-        for segment in &info.segments {
-            let dest = base_address + segment.vaddr;
-            let src_start = segment.file_offset;
-            let src_end = src_start + segment.file_size;
-
-            if src_end > self.data.len() {
-                return Err(LoadError::InvalidFormat(
-                    "Segment data out of bounds".into(),
-                ));
-            }
-
-            // データをコピー
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.data.as_ptr().add(src_start),
-                    dest as *mut u8,
-                    segment.file_size,
-                );
-
-                // BSS領域をゼロで初期化
-                if segment.mem_size > segment.file_size {
-                    let bss_start = dest + segment.file_size;
-                    let bss_size = segment.mem_size - segment.file_size;
-                    core::ptr::write_bytes(bss_start as *mut u8, 0, bss_size);
-                }
-            }
-
-            // Compute PKEY-aware flags and (when mm is available) apply them to
-            // each mapped page covering this segment. If `mm` is not available
-            // (test builds) this block is skipped.
-            // Apply page flags (may be a no-op in test builds)
-            self.apply_page_flags(dest, segment.mem_size, segment.flags, pkey)?;
-        }
+        self.load_segments(info, base_address, pkey)?;
 
         let entry_point = if info.entry_offset != 0 {
             Some(base_address + info.entry_offset as usize)
@@ -924,6 +892,39 @@ impl<'a> ElfLoader<'a> {
         Ok(())
     }
 
+    /// シンボルを読み取って解決する
+    fn read_and_resolve_symbol<F>(
+        &self,
+        sym_idx: usize,
+        symtab_sh: &Elf64SectionHeader,
+        strtab: &[u8],
+        loaded: &LoadedCell,
+        resolve: &F,
+    ) -> Result<usize, LoadError>
+    where
+        F: Fn(&str) -> Option<usize>,
+    {
+        let sym_offset =
+            symtab_sh.sh_offset as usize + sym_idx * mem::size_of::<Elf64Symbol>();
+
+        if sym_offset + mem::size_of::<Elf64Symbol>() > self.data.len() {
+            return Err(LoadError::InvalidFormat("Symbol offset out of range".into()));
+        }
+
+        let sym: Elf64Symbol = crate::util::read_struct(self.data, sym_offset)
+            .ok_or_else(|| LoadError::InvalidFormat("Failed to read symbol".into()))?;
+
+        if sym.st_shndx == 0 {
+            let name = self
+                .get_string(strtab, sym.st_name as usize)
+                .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol name".into()))?;
+            resolve(name)
+                .ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))
+        } else {
+            Ok(loaded.base_address + sym.st_value as usize)
+        }
+    }
+
     /// Resolve a symbol by index, caching the result for reuse.
     fn resolve_symbol_cached<F>(
         &self,
@@ -941,25 +942,7 @@ impl<'a> ElfLoader<'a> {
             return Ok(val);
         }
 
-        let sym_offset =
-            symtab_sh.sh_offset as usize + sym_idx * mem::size_of::<Elf64Symbol>();
-
-        if sym_offset + mem::size_of::<Elf64Symbol>() > self.data.len() {
-            return Err(LoadError::InvalidFormat("Symbol offset out of range".into()));
-        }
-
-        let sym: Elf64Symbol = crate::util::read_struct(self.data, sym_offset)
-            .ok_or_else(|| LoadError::InvalidFormat("Failed to read symbol".into()))?;
-
-        let resolved = if sym.st_shndx == 0 {
-            let name = self
-                .get_string(strtab, sym.st_name as usize)
-                .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol name".into()))?;
-            resolve(name)
-                .ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))?
-        } else {
-            loaded.base_address + sym.st_value as usize
-        };
+        let resolved = self.read_and_resolve_symbol(sym_idx, symtab_sh, strtab, loaded, resolve)?;
 
         cache[sym_idx] = Some(resolved);
         Ok(resolved)

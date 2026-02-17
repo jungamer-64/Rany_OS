@@ -1607,6 +1607,41 @@ impl NetworkStack {
             .insert_test_connection(local_addr, remote_addr, tcb);
     }
 
+    fn send_tcp_fallback(
+        &mut self,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+        dst_mac: MacAddress,
+        src_mac: MacAddress,
+    ) -> bool {
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(src_mac)
+                .set_ether_type(EtherType::Ipv4);
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet
+                    .init_header()
+                    .set_source(src_ip)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Tcp)
+                    .set_ttl(64);
+                let ip_payload = ip_packet.payload_mut();
+                if ip_payload.len() >= tcp_segment.len() {
+                    ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
+                    ip_packet.finalize(tcp_segment.len());
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+                    return self.transmit(frame.as_bytes());
+                }
+            }
+        }
+        false
+    }
+
     /// Send a raw TCP segment
     /// tcp_segment should already have the TCP header and data, with checksum calculated
     pub fn send_tcp(
@@ -1676,84 +1711,54 @@ impl NetworkStack {
             }
         }
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-
-        // Build Ethernet frame (copy-based fallback)
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv4);
-
-            let eth_payload = frame.payload_mut();
-
-            // Build IP packet
-            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet
-                    .init_header()
-                    .set_source(src_ip)
-                    .set_destination(dst_ip)
-                    .set_protocol(IpProtocol::Tcp)
-                    .set_ttl(64);
-
-                let ip_payload = ip_packet.payload_mut();
-
-                // Copy TCP segment
-                if ip_payload.len() >= tcp_segment.len() {
-                    ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
-                    ip_packet.finalize(tcp_segment.len());
-
-                    let ip_len = ip_packet.total_len();
-                    frame.set_payload_len(ip_len);
-
-                    return self.transmit(frame.as_bytes());
-                }
-            }
-        }
-
-        false
+        self.send_tcp_fallback(src_ip, dst_ip, tcp_segment, dst_mac, config.mac)
     }
 
     /// Process retransmission timeouts and attempt to resend timed-out segments.
     /// Also processes TCP keepalive timers.
     /// Call periodically with current time (ticks) to allow TCP retransmits.
+    /// Build a raw TCP packet from TcpProcessResult fields and return the
+    /// buffer and total length, or None if the result is not a SendPacket.
+    fn build_tcp_packet_from_result(
+        res: &TcpProcessResult,
+        buffer: &mut [u8; MAX_PACKET_SIZE],
+    ) -> Option<(super::net_types::SocketAddr, super::net_types::SocketAddr, u32, usize)> {
+        if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, ref payload } = *res {
+            let header_len = 20usize;
+            let total_len = header_len + payload.len();
+            if total_len > buffer.len() {
+                return None;
+            }
+            buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
+            buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+            buffer[4..8].copy_from_slice(&seq.to_be_bytes());
+            buffer[8..12].copy_from_slice(&ack.to_be_bytes());
+            let offset_flags = ((5u16 << 12) | (flags & 0x1FF)) as u16;
+            buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+            buffer[14..16].copy_from_slice(&window.to_be_bytes());
+            buffer[16..18].fill(0);
+            buffer[18..20].fill(0);
+            if !payload.is_empty() {
+                buffer[20..total_len].copy_from_slice(payload);
+            }
+            super::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
+            Some((local, remote, seq, total_len))
+        } else {
+            None
+        }
+    }
+
     pub fn process_timeouts(&mut self, current_time: u64) {
         let results = self.tcp.check_retransmissions(current_time);
 
         for res in results {
-            if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } = res {
-                let mut buffer = [0u8; MAX_PACKET_SIZE];
-                let header_len = 20usize;
-                let total_len = header_len + payload.len();
-
-                if total_len > buffer.len() {
-                    continue;
-                }
-
-                // Construct TCP header
-                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
-                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
-                buffer[4..8].copy_from_slice(&seq.to_be_bytes());
-                buffer[8..12].copy_from_slice(&ack.to_be_bytes());
-                let offset_flags = ((5u16 << 12) | (flags & 0x1FF)) as u16;
-                buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
-                buffer[14..16].copy_from_slice(&window.to_be_bytes());
-                buffer[16..18].fill(0);
-                buffer[18..20].fill(0);
-
-                if !payload.is_empty() {
-                    buffer[20..total_len].copy_from_slice(&payload);
-                }
-
-                super::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
-
+            let mut buffer = [0u8; MAX_PACKET_SIZE];
+            if let Some((local, remote, seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
                 let src_ip_out = Ipv4Address::new(local.ip.octets());
                 let dst_ip_out = Ipv4Address::new(remote.ip.octets());
-
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
-                    // Mark retransmit as sent in the processor (updates RTO and counters)
                     self.tcp.mark_retransmit_sent(local, remote, seq, now);
                 } else {
                     log::info!("[NET] retransmit send failed for {} -> {}", local, remote);
@@ -1764,30 +1769,10 @@ impl NetworkStack {
         // Process TCP keepalive probes
         let keepalive_results = self.tcp.process_keepalives(current_time);
         for res in keepalive_results {
-            if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } = res {
-                let mut buffer = [0u8; MAX_PACKET_SIZE];
-                let header_len = 20usize;
-                let total_len = header_len + payload.len();
-
-                if total_len > buffer.len() {
-                    continue;
-                }
-
-                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
-                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
-                buffer[4..8].copy_from_slice(&seq.to_be_bytes());
-                buffer[8..12].copy_from_slice(&ack.to_be_bytes());
-                let offset_flags = ((5u16 << 12) | (flags & 0x1FF)) as u16;
-                buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
-                buffer[14..16].copy_from_slice(&window.to_be_bytes());
-                buffer[16..18].fill(0);
-                buffer[18..20].fill(0);
-
-                super::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
-
+            let mut buffer = [0u8; MAX_PACKET_SIZE];
+            if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
                 let src_ip_out = Ipv4Address::new(local.ip.octets());
                 let dst_ip_out = Ipv4Address::new(remote.ip.octets());
-
                 self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
             }
         }
@@ -2042,6 +2027,74 @@ impl NetworkStack {
         self.arp.set_local(self.config.mac, ip);
     }
 
+    fn send_icmp_echo_fallback(
+        &mut self,
+        target: Ipv4Address,
+        dst_mac: MacAddress,
+        local_ip: Ipv4Address,
+        identifier: u16,
+        sequence: u16,
+    ) -> Result<u64, ()> {
+        let mut buffer = self.tx_pool.alloc().ok_or(())?;
+        let buf = buffer.as_mut_slice();
+
+        let eth_hdr_len = 14;
+        let ip_hdr_len = 20;
+        let icmp_hdr_len = 8;
+        let total_len = eth_hdr_len + ip_hdr_len + icmp_hdr_len;
+
+        if buf.len() < total_len {
+            return Err(());
+        }
+
+        let src_mac = self.mac_address();
+        buf[0..6].copy_from_slice(dst_mac.as_bytes());
+        buf[6..12].copy_from_slice(src_mac.as_bytes());
+        buf[12] = 0x08;
+        buf[13] = 0x00;
+
+        let ip_start = eth_hdr_len;
+        buf[ip_start] = 0x45;
+        buf[ip_start + 1] = 0x00;
+        let total_ip_len = (ip_hdr_len + icmp_hdr_len) as u16;
+        buf[ip_start + 2] = (total_ip_len >> 8) as u8;
+        buf[ip_start + 3] = total_ip_len as u8;
+        buf[ip_start + 4..ip_start + 6].copy_from_slice(&[0x00, 0x00]);
+        buf[ip_start + 6..ip_start + 8].copy_from_slice(&[0x40, 0x00]);
+        buf[ip_start + 8] = 64;
+        buf[ip_start + 9] = 1;
+        buf[ip_start + 10..ip_start + 12].copy_from_slice(&[0x00, 0x00]);
+        buf[ip_start + 12..ip_start + 16].copy_from_slice(local_ip.as_bytes());
+        buf[ip_start + 16..ip_start + 20].copy_from_slice(target.as_bytes());
+
+        let ip_checksum = Self::checksum(&buf[ip_start..ip_start + ip_hdr_len]);
+        buf[ip_start + 10] = (ip_checksum >> 8) as u8;
+        buf[ip_start + 11] = ip_checksum as u8;
+
+        let icmp_start = ip_start + ip_hdr_len;
+        buf[icmp_start] = 8;
+        buf[icmp_start + 1] = 0;
+        buf[icmp_start + 2..icmp_start + 4].copy_from_slice(&[0, 0]);
+        buf[icmp_start + 4..icmp_start + 6].copy_from_slice(&identifier.to_be_bytes());
+        buf[icmp_start + 6..icmp_start + 8].copy_from_slice(&sequence.to_be_bytes());
+
+        let icmp_checksum = Self::checksum(&buf[icmp_start..icmp_start + icmp_hdr_len]);
+        buf[icmp_start + 2] = (icmp_checksum >> 8) as u8;
+        buf[icmp_start + 3] = icmp_checksum as u8;
+
+        let send_time = self.current_time();
+
+        if self.transmit(&buf[..total_len]) {
+            log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
+                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+            Ok(send_time)
+        } else {
+            log::warn!("[NET-PING] Failed to transmit ICMP echo to {}.{}.{}.{} seq={}", 
+                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
+            Err(())
+        }
+    }
+
     /// Send ICMP echo request (ping)
     pub fn send_icmp_echo_request(
         &mut self,
@@ -2106,75 +2159,8 @@ impl NetworkStack {
             }
         }
 
-        // Allocate packet buffer (fallback)
-        let mut buffer = self.tx_pool.alloc().ok_or(())?;
-        let buf = buffer.as_mut_slice();
-
-        // Build packet: Ethernet + IPv4 + ICMP
-        let eth_hdr_len = 14;
-        let ip_hdr_len = 20;
-        let icmp_hdr_len = 8; // ICMP echo header
-        let total_len = eth_hdr_len + ip_hdr_len + icmp_hdr_len;
-
-        if buf.len() < total_len {
-            return Err(());
-        }
-
-        // Build Ethernet header
-        let src_mac = self.mac_address();
-        buf[0..6].copy_from_slice(dst_mac.as_bytes());
-        buf[6..12].copy_from_slice(src_mac.as_bytes());
-        buf[12] = 0x08; // EtherType IPv4
-        buf[13] = 0x00;
-
-        // Build IPv4 header
-        let ip_start = eth_hdr_len;
-        buf[ip_start] = 0x45; // Version 4, IHL 5
-        buf[ip_start + 1] = 0x00; // DSCP/ECN
-        let total_ip_len = (ip_hdr_len + icmp_hdr_len) as u16;
-        buf[ip_start + 2] = (total_ip_len >> 8) as u8;
-        buf[ip_start + 3] = total_ip_len as u8;
-        buf[ip_start + 4..ip_start + 6].copy_from_slice(&[0x00, 0x00]); // ID
-        buf[ip_start + 6..ip_start + 8].copy_from_slice(&[0x40, 0x00]); // Flags + Fragment
-        buf[ip_start + 8] = 64; // TTL
-        buf[ip_start + 9] = 1; // Protocol: ICMP
-        buf[ip_start + 10..ip_start + 12].copy_from_slice(&[0x00, 0x00]); // Checksum placeholder
-        buf[ip_start + 12..ip_start + 16].copy_from_slice(local_ip.as_bytes());
-        buf[ip_start + 16..ip_start + 20].copy_from_slice(target.as_bytes());
-
-        // Calculate IP checksum
-        let ip_checksum = Self::checksum(&buf[ip_start..ip_start + ip_hdr_len]);
-        buf[ip_start + 10] = (ip_checksum >> 8) as u8;
-        buf[ip_start + 11] = ip_checksum as u8;
-
-        // Build ICMP echo request manually
-        let icmp_start = ip_start + ip_hdr_len;
-        buf[icmp_start] = 8; // Type: Echo Request
-        buf[icmp_start + 1] = 0; // Code: 0
-        buf[icmp_start + 2..icmp_start + 4].copy_from_slice(&[0, 0]); // Checksum placeholder
-        buf[icmp_start + 4..icmp_start + 6].copy_from_slice(&identifier.to_be_bytes());
-        buf[icmp_start + 6..icmp_start + 8].copy_from_slice(&sequence.to_be_bytes());
-
-        // Calculate ICMP checksum
-        let icmp_checksum = Self::checksum(&buf[icmp_start..icmp_start + icmp_hdr_len]);
-        buf[icmp_start + 2] = (icmp_checksum >> 8) as u8;
-        buf[icmp_start + 3] = icmp_checksum as u8;
-
-        // Record send time
-        let send_time = self.current_time();
-
-        // Transmit
-        if self.transmit(&buf[..total_len]) {
-            log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
-                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
-            // In a real implementation, we'd wait for echo reply
-            // For now, return estimated RTT
-            Ok(send_time)
-        } else {
-            log::warn!("[NET-PING] Failed to transmit ICMP echo to {}.{}.{}.{} seq={}", 
-                target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
-            Err(())
-        }
+        // Fallback to copy-based path
+        self.send_icmp_echo_fallback(target, dst_mac, local_ip, identifier, sequence)
     }
 
     /// Calculate IP/ICMP checksum

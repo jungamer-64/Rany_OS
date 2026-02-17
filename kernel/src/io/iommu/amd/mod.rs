@@ -388,6 +388,56 @@ impl AmdIommuDriver {
         self.enabled.load(Ordering::Acquire)
     }
 
+    /// Configure event log and IRT control bits for a single unit.
+    fn configure_event_and_irt(
+        &self,
+        idx: usize,
+        unit: &super::ivrs::IvhdUnit,
+        mmio_base: usize,
+        control: &mut u64,
+    ) {
+        if self
+            .event_logs
+            .get(idx)
+            .and_then(|log| log.as_ref())
+            .is_some()
+        {
+            if let Err(err) = self.program_event_log_interrupt(unit) {
+                log::warn!(
+                    "AMD-Vi event log interrupt init failed for unit @ {:#x}: {:?}",
+                    unit.base_addr,
+                    err
+                );
+                *control &= !CONTROL_EVT_INT_EN;
+            } else {
+                *control |= CONTROL_EVT_INT_EN;
+            }
+            *control |= CONTROL_EVT_LOG_EN;
+        } else {
+            *control &= !CONTROL_EVT_LOG_EN;
+            *control &= !CONTROL_EVT_INT_EN;
+        }
+        // Program IRT if available for this unit
+        if let Some(Some(irt_lock)) = self.interrupt_remap_tables.get(idx) {
+            match irt_lock.lock() {
+                Ok(irt) => {
+                    let base_reg = irt.table.base_register_value(irt.size_log2);
+                    mmio_write_u64(mmio_base + MMIO_IRT_BASE_OFFSET as usize, base_reg);
+                    *control |= CONTROL_INT_MAP_EN;
+                }
+                Err(_) => {
+                    log::warn!(
+                        "AMD-Vi IRT lock poisoned for unit @ {:#x}, skipping IR enable",
+                        unit.base_addr
+                    );
+                    *control &= !CONTROL_INT_MAP_EN;
+                }
+            }
+        } else {
+            *control &= !CONTROL_INT_MAP_EN;
+        }
+    }
+
     pub(crate) fn enable(&self) -> Result<(), IommuError> {
         for (idx, unit) in self.units.iter().enumerate() {
             let table = self
@@ -409,46 +459,7 @@ impl AmdIommuDriver {
             } else {
                 control &= !CONTROL_CMDBUF_EN;
             }
-            if self
-                .event_logs
-                .get(idx)
-                .and_then(|log| log.as_ref())
-                .is_some()
-            {
-                if let Err(err) = self.program_event_log_interrupt(unit) {
-                    log::warn!(
-                        "AMD-Vi event log interrupt init failed for unit @ {:#x}: {:?}",
-                        unit.base_addr,
-                        err
-                    );
-                    control &= !CONTROL_EVT_INT_EN;
-                } else {
-                    control |= CONTROL_EVT_INT_EN;
-                }
-                control |= CONTROL_EVT_LOG_EN;
-            } else {
-                control &= !CONTROL_EVT_LOG_EN;
-                control &= !CONTROL_EVT_INT_EN;
-            }
-            // Program IRT if available for this unit
-            if let Some(Some(irt_lock)) = self.interrupt_remap_tables.get(idx) {
-                match irt_lock.lock() {
-                    Ok(irt) => {
-                        let base_reg = irt.table.base_register_value(irt.size_log2);
-                        mmio_write_u64(mmio_base + MMIO_IRT_BASE_OFFSET as usize, base_reg);
-                        control |= CONTROL_INT_MAP_EN;
-                    }
-                    Err(_) => {
-                        log::warn!(
-                            "AMD-Vi IRT lock poisoned for unit @ {:#x}, skipping IR enable",
-                            unit.base_addr
-                        );
-                        control &= !CONTROL_INT_MAP_EN;
-                    }
-                }
-            } else {
-                control &= !CONTROL_INT_MAP_EN;
-            }
+            self.configure_event_and_irt(idx, unit, mmio_base, &mut control);
             mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
         }
         self.enabled.store(true, Ordering::Release);

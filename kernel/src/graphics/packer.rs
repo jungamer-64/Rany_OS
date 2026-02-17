@@ -73,6 +73,18 @@ pub(crate) fn qemu_test_get_packer_mode_override() -> u8 {
 // Runtime Detection & Dispatch
 // ============================================================================
 
+/// パッカーモード名を数値に変換する
+fn parse_packer_mode_name(name: &str) -> Option<u8> {
+    let low = name.to_ascii_lowercase();
+    match low.as_str() {
+        "scalar" => Some(1u8),
+        "ssse3" => Some(2u8),
+        "avx2" => Some(3u8),
+        "neon" => Some(4u8),
+        s => s.parse::<u8>().ok(),
+    }
+}
+
 /// Detect and cache the best available SIMD level
 fn detect_simd_mode() -> u8 {
     let mut mode = 1u8; // Default scalar
@@ -100,15 +112,7 @@ fn detect_simd_mode() -> u8 {
     // Environment override (std only) with clamp
     #[cfg(feature = "std")]
     if let Ok(val) = std::env::var("RANY_PACKER") {
-        let low = val.to_ascii_lowercase();
-        let forced: Option<u8> = match low.as_str() {
-            "scalar" => Some(1u8),
-            "ssse3" => Some(2u8),
-            "avx2" => Some(3u8),
-            "neon" => Some(4u8),
-            s => s.parse::<u8>().ok(),
-        };
-        if let Some(f) = forced {
+        if let Some(f) = parse_packer_mode_name(&val) {
             mode = clamp_forced_mode(mode, f);
         }
     }

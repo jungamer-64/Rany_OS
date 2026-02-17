@@ -703,6 +703,45 @@ impl Pit {
     }
 }
 
+/// PIT Channel 2 で 50ms の単一計測を行い TSC tick 数 × 20 (1秒換算) を返す
+fn perform_single_pit_measurement(
+    cmd_port: &mut PortU8,
+    data_port: &mut PortU8,
+    speaker_port: &mut PortU8,
+    old_speaker: u8,
+    pit_ticks: u16,
+) -> Option<u64> {
+    speaker_port.write(old_speaker & 0xFC);
+    let mut timeout = 100_000;
+    while (speaker_port.read() & 0x20) != 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+        if timeout == 0 { return None; }
+    }
+    cmd_port.write(pit::CH2_MODE_ONE_SHOT);
+    speaker_port.write((old_speaker & 0xFC) | 0x01);
+    let start_tsc = unsafe {
+        core::arch::x86_64::_mm_lfence();
+        core::arch::x86_64::_rdtsc()
+    };
+    data_port.write((pit_ticks & 0xFF) as u8);
+    data_port.write((pit_ticks >> 8) as u8);
+    let mut timeout = 100_000_000;
+    loop {
+        if (speaker_port.read() & 0x20) != 0 {
+            break;
+        }
+        core::hint::spin_loop();
+        timeout -= 1;
+        if timeout == 0 { return None; }
+    }
+    let end_tsc = unsafe {
+        core::arch::x86_64::_mm_lfence();
+        core::arch::x86_64::_rdtsc()
+    };
+    Some(end_tsc.saturating_sub(start_tsc) * 20)
+}
+
 /// TSC周波数をキャリブレーション (Channel 2 使用 - Channel 0 を壊さない)
 ///
 /// PIT Channel 2 (speaker timer) を使用して TSC 周波数を測定。
@@ -740,53 +779,11 @@ pub fn calibrate_tsc() -> Option<TscInfo> {
         let old_speaker = speaker_port.read();
 
         for i in 0..TRIALS {
-            // OUT2 を確実に Low にする: Gate=0 (bit0=0) にして待機
-                speaker_port.write(old_speaker & 0xFC);
-                
-                // タイムアウト付き待機 (OUT2 Low)
-                let mut timeout = 100_000;
-                while (speaker_port.read() & 0x20) != 0 {
-                    core::hint::spin_loop();
-                    timeout -= 1;
-                    if timeout == 0 { return None; } // 失敗時は None
-                }
-
-                // Channel 2, Mode 0 (One-shot)
-                cmd_port.write(pit::CH2_MODE_ONE_SHOT);
-                
-                // Gate=1 (enable)
-                speaker_port.write((old_speaker & 0xFC) | 0x01);
-
-                // LFENCE
-                let start_tsc = unsafe {
-                    core::arch::x86_64::_mm_lfence();
-                    core::arch::x86_64::_rdtsc()
-                };
-                
-                // カウント値設定 (High byte write で開始)
-                data_port.write((pit_ticks & 0xFF) as u8);
-                data_port.write((pit_ticks >> 8) as u8);
-                
-                // OUT2 が High になるまで待機 (50ms)
-                // タイムアウト: 余裕を持って
-                let mut timeout = 100_000_000; 
-                loop {
-                    if (speaker_port.read() & 0x20) != 0 {
-                        break;
-                    }
-                    core::hint::spin_loop();
-                    timeout -= 1;
-                    if timeout == 0 { return None; }
-                }
-                
-                let end_tsc = unsafe {
-                    core::arch::x86_64::_mm_lfence();
-                    core::arch::x86_64::_rdtsc()
-                };
-
-                let diff = end_tsc.saturating_sub(start_tsc);
-                measurements[i] = diff * 20; // 50ms * 20 = 1s
-            }
+            measurements[i] = perform_single_pit_measurement(
+                &mut cmd_port, &mut data_port, &mut speaker_port,
+                old_speaker, pit_ticks,
+            )?;
+        }
         
         // スピーカーポート復元
         speaker_port.write(old_speaker);

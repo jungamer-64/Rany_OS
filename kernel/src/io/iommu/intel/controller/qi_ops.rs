@@ -410,6 +410,67 @@ impl IommuInvalidator for IommuController {
         Ok(())
     }
 
+    /// Dispatch a single invalidation command based on its kind
+    fn dispatch_invalidation_kind(&self, request: &InvalidateRequest, drain: bool) -> Result<(), IommuError> {
+        match request.kind {
+            InvalidateKind::Pages {
+                start_iova,
+                bytes: _,
+            } => {
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_iotlb_page(request.domain_id, start_iova, drain)
+                } else {
+                    unsafe { self.invalidate_iotlb_direct(request.domain_id) };
+                    Ok(())
+                }
+            }
+            InvalidateKind::Domain => {
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_iotlb_domain(request.domain_id, drain)
+                } else {
+                    unsafe { self.invalidate_iotlb_direct(request.domain_id) };
+                    Ok(())
+                }
+            }
+            InvalidateKind::Global => {
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_iotlb_global(drain)
+                } else {
+                    unsafe { self.invalidate_iotlb_global() };
+                    Ok(())
+                }
+            }
+            InvalidateKind::Context { source_id: _ } => {
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_context_global()
+                } else {
+                    Ok(())
+                }
+            }
+            InvalidateKind::Iec {
+                global: _,
+                index: _,
+            } => self.qi_invalidate_iec_global(),
+            InvalidateKind::PasidIotlb { pasid } => {
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_pasid_iotlb(request.domain_id, pasid, drain)
+                } else {
+                    Ok(())
+                }
+            }
+            InvalidateKind::PasidCache { pasid } => {
+                if self.is_queued_invalidation_enabled() {
+                    match pasid {
+                        Some(_) => self.qi_invalidate_pasid_cache_domain(request.domain_id),
+                        None => self.qi_invalidate_pasid_cache_domain(request.domain_id),
+                    }
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     /// Optimized async invalidation using QI wait
     fn invalidate_async(&self, request: InvalidateRequest) -> impl Future<Output = Result<(), IommuError>> + Send {
         async move {
@@ -418,63 +479,7 @@ impl IommuInvalidator for IommuController {
                 .flags
                 .intersects(InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE);
 
-            let submit_result: Result<(), IommuError> = match request.kind {
-                InvalidateKind::Pages {
-                    start_iova,
-                    bytes: _,
-                } => {
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_iotlb_page(request.domain_id, start_iova, drain)
-                    } else {
-                        unsafe { self.invalidate_iotlb_direct(request.domain_id) };
-                        Ok(())
-                    }
-                }
-                InvalidateKind::Domain => {
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_iotlb_domain(request.domain_id, drain)
-                    } else {
-                        unsafe { self.invalidate_iotlb_direct(request.domain_id) };
-                        Ok(())
-                    }
-                }
-                InvalidateKind::Global => {
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_iotlb_global(drain)
-                    } else {
-                        unsafe { self.invalidate_iotlb_global() };
-                        Ok(())
-                    }
-                }
-                InvalidateKind::Context { source_id: _ } => {
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_context_global()
-                    } else {
-                        Ok(()) // No non-QI context invalidation
-                    }
-                }
-                InvalidateKind::Iec {
-                    global: _,
-                    index: _,
-                } => self.qi_invalidate_iec_global(),
-                InvalidateKind::PasidIotlb { pasid } => {
-                    if self.is_queued_invalidation_enabled() {
-                        self.qi_invalidate_pasid_iotlb(request.domain_id, pasid, drain)
-                    } else {
-                        Ok(())
-                    }
-                }
-                InvalidateKind::PasidCache { pasid } => {
-                    if self.is_queued_invalidation_enabled() {
-                        match pasid {
-                            Some(_) => self.qi_invalidate_pasid_cache_domain(request.domain_id),
-                            None => self.qi_invalidate_pasid_cache_domain(request.domain_id),
-                        }
-                    } else {
-                        Ok(())
-                    }
-                }
-            };
+            let submit_result = self.dispatch_invalidation_kind(&request, drain);
 
             submit_result?;
 

@@ -266,21 +266,39 @@ impl QrCode {
         }
     }
 
+    /// データビットを1モジュールに配置する
+    fn place_data_bit(&mut self, data: &[u8], placed_bits: &mut usize, y: usize, x: usize) {
+        let bi = *placed_bits;
+        if bi < data.len() * 8 {
+            let byte = data[bi >> 3];
+            let bit  = (byte >> (7 - (bi & 7))) & 1;
+            self.modules[y][x] = if bit != 0 { Module::DataDark } else { Module::DataLight };
+        } else {
+            self.modules[y][x] = Module::DataLight;
+        }
+        *placed_bits += 1;
+    }
+
     /// Place the white separator rows/columns around a finder pattern.
     fn place_finder_separators(&mut self, x: usize, y: usize) {
-        if x == 0 && y == 0 {
+        self.place_separator_at(x, y);
+    }
+
+    /// ファインダーパターン位置に基づきセパレータを配置
+    fn place_separator_at(&mut self, fx: usize, fy: usize) {
+        if fx == 0 && fy == 0 {
             for i in 0..8 {
                 self.set_reserved(7, i, Module::FuncLight);
                 self.set_reserved(i, 7, Module::FuncLight);
             }
         }
-        if x > 0 && y == 0 {
+        if fx > 0 && fy == 0 {
              for i in 0..8 {
                  self.set_reserved(QR_SIZE - 8, i, Module::FuncLight);
                  self.set_reserved(QR_SIZE - 8 + i, 7, Module::FuncLight);
              }
         }
-        if x == 0 && y > 0 {
+        if fx == 0 && fy > 0 {
              for i in 0..8 {
                  self.set_reserved(i, QR_SIZE - 8, Module::FuncLight);
                  self.set_reserved(7, QR_SIZE - 8 + i, Module::FuncLight);
@@ -341,18 +359,7 @@ impl QrCode {
                 let y = if upward { QR_SIZE - 1 - i } else { i };
                 for x in [right, left] {
                     if self.modules[y][x].is_reserved() { continue; }
-
-                    let bi = placed_bits;
-                    if bi < data.len() * 8 {
-                        let byte = data[bi >> 3];
-                        let bit  = (byte >> (7 - (bi & 7))) & 1;
-                        self.modules[y][x] = if bit != 0 { Module::DataDark } else { Module::DataLight };
-                    } else {
-                        // Should not happen if data invariants hold
-                        self.modules[y][x] = Module::DataLight;
-                    }
-
-                    placed_bits += 1;
+                    self.place_data_bit(data, &mut placed_bits, y, x);
                 }
             }
             if right < 2 { break; }

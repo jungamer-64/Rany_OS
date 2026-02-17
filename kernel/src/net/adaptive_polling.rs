@@ -536,6 +536,27 @@ impl PerCorePolling {
         self.napi_list.push(napi);
     }
 
+    /// NAPIリストをポーリングし、処理量を返す
+    fn poll_napi_list<F>(&mut self, driver_poll: &mut F) -> usize
+    where
+        F: FnMut(usize) -> usize,
+    {
+        let mut work_done = 0;
+        for napi in &mut self.napi_list {
+            if napi.is_scheduled() {
+                let processed = napi.poller_mut().poll(|| {
+                    let bytes = driver_poll(1);
+                    if bytes > 0 { Some(bytes) } else { None }
+                });
+                work_done += processed;
+                if processed < POLL_BUDGET {
+                    napi.complete();
+                }
+            }
+        }
+        work_done
+    }
+
     /// ポーリングループを実行
     pub fn poll_loop<F>(&mut self, mut driver_poll: F)
     where
@@ -546,22 +567,7 @@ impl PerCorePolling {
         }
 
         while self.active.load(Ordering::Acquire) {
-            let mut work_done = 0;
-
-            for napi in &mut self.napi_list {
-                if napi.is_scheduled() {
-                    let processed = napi.poller_mut().poll(|| {
-                        let bytes = driver_poll(1);
-                        if bytes > 0 { Some(bytes) } else { None }
-                    });
-                    work_done += processed;
-
-                    // バジェットを使い切らなかったら完了
-                    if processed < POLL_BUDGET {
-                        napi.complete();
-                    }
-                }
-            }
+            let work_done = self.poll_napi_list(&mut driver_poll);
 
             // 何も処理しなかった場合はCPUを譲る
             if work_done == 0 {

@@ -1781,40 +1781,13 @@ impl DmaAllocator for GlobalDmaAllocator {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
-        // device_id があればデバイス固有ドメインにマップ
-        let (device_addr, iova_mapped) = if crate::io::iommu::api::is_iommu_enabled() {
-            // SAFETY: Just allocated DMA-capable memory that we own
-            let map_result = if let Some(ref dev) = self.device_id {
-                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, size as u64) }
-            } else {
-                unsafe { crate::io::iommu::api::map_for_dma(phys_addr, size as u64) }
-            };
-            match map_result {
-                Ok(iova) => (iova, true),
-                Err(_) => {
-                    unsafe {
-                        dealloc(ptr, layout);
-                    }
-                    return Err(DmaError::IommuMappingFailed);
-                }
+        // Resolve device address via IOMMU or identity mapping
+        let (device_addr, iova_mapped) = match self.resolve_iommu_device_addr(phys_addr, size) {
+            Ok(result) => result,
+            Err(e) => {
+                unsafe { dealloc(ptr, layout); }
+                return Err(e);
             }
-        } else if crate::io::iommu::api::is_iommu_required() {
-            // IOMMUが必須と設定されているが無効 -> エラー
-            unsafe {
-                dealloc(ptr, layout);
-            }
-            return Err(DmaError::IommuRequired);
-        } else {
-            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
-                unsafe {
-                    dealloc(ptr, layout);
-                }
-                return Err(DmaError::IommuRequired);
-            }
-            // IOMMUが無効だが必須ではない: 警告を出してフォールバック（開発用）
-            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
-            (phys_addr.as_u64(), false)
         };
 
         Ok(DmaAllocation {

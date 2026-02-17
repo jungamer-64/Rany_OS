@@ -24,6 +24,25 @@ pub trait QIManager {
     unsafe fn disable_queued_invalidation(&self) -> Result<(), IommuError>;
 }
 
+impl IommuController {
+    /// Write a register value, or submit an IOTLB global invalidation if a
+    /// command queue is present.
+    fn write_reg_or_submit_invalidation(&self, reg: u64, value: u64) {
+        if let Some(ref cq) = self.command_queue {
+            let _ =
+                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+        } else {
+            self.write64(reg, value);
+        }
+    }
+
+    fn process_command_queue_once(&self) {
+        if let Some(ref cq) = self.command_queue {
+            let _ = cq.process_once(|_k| Ok(0));
+        }
+    }
+}
+
 impl QIManager for IommuController {
     fn init_queued_invalidation(&mut self, size_log2: u8) -> Result<(), IommuError> {
         #[cfg(test)]
@@ -89,36 +108,21 @@ impl QIManager for IommuController {
         #[cfg(test)]
         log::info!("[test][IOMMU] writing IQA=0x{:x}", iqa_value);
 
-        if let Some(ref cq) = self.command_queue {
-            let _ =
-                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
-        } else {
-            self.write64(regs::IQA, iqa_value);
-        }
+        self.write_reg_or_submit_invalidation(regs::IQA, iqa_value);
         #[cfg(test)]
         log::info!("[test][IOMMU] wrote IQA");
 
         // Set queue head to 0
         #[cfg(test)]
         log::info!("[test][IOMMU] writing IQH=0");
-        if let Some(ref cq) = self.command_queue {
-            let _ =
-                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
-        } else {
-            self.write64(regs::IQH, 0);
-        }
+        self.write_reg_or_submit_invalidation(regs::IQH, 0);
         #[cfg(test)]
         log::info!("[test][IOMMU] wrote IQH=0");
 
         // Set queue tail to 0
         #[cfg(test)]
         log::info!("[test][IOMMU] writing IQT=0");
-        if let Some(ref cq) = self.command_queue {
-            let _ =
-                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
-        } else {
-            self.write64(regs::IQT, 0);
-        }
+        self.write_reg_or_submit_invalidation(regs::IQT, 0);
         #[cfg(test)]
         log::info!("[test][IOMMU] wrote IQT=0");
 
@@ -138,9 +142,7 @@ impl QIManager for IommuController {
         #[cfg(test)]
         log::info!("[test][IOMMU] init_queued_invalidation completed");
 
-        if let Some(ref cq) = self.command_queue {
-            let _ = cq.process_once(|_k| Ok(0));
-        }
+        self.process_command_queue_once();
 
         Ok(())
     }

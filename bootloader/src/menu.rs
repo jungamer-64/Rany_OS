@@ -61,6 +61,28 @@ fn handle_menu_key(
 ///
 /// # Returns
 /// MenuResult indicating user selection or timeout
+/// タイムアウトティックを処理し、メニュー再描画が必要かを返す
+fn handle_timeout_tick(
+    remaining_seconds: &mut u32,
+    config: &BootConfig,
+    selected: usize,
+) -> Option<MenuResult> {
+    if *remaining_seconds > 0 {
+        boot::stall(Duration::from_micros(1_000_000));
+        *remaining_seconds -= 1;
+
+        if *remaining_seconds == 0 && config.timeout > 0 {
+            info!("Boot menu timeout, selecting default entry {}", config.default_entry);
+            return Some(MenuResult::Timeout);
+        }
+
+        draw_menu(config, selected, *remaining_seconds);
+    } else {
+        boot::stall(Duration::from_micros(50_000));
+    }
+    None
+}
+
 pub fn show_boot_menu(config: &BootConfig) -> MenuResult {
     // If no entries or only one entry with 0 timeout, skip menu
     if config.entries.is_empty() {
@@ -93,22 +115,8 @@ pub fn show_boot_menu(config: &BootConfig) -> MenuResult {
         }
 
         // Handle timeout
-        if remaining_seconds > 0 {
-            // Wait 1 second
-            boot::stall(Duration::from_micros(1_000_000)); // 1 second in microseconds
-            remaining_seconds -= 1;
-
-            if remaining_seconds == 0 && config.timeout > 0 {
-                // Timeout reached
-                info!("Boot menu timeout, selecting default entry {}", config.default_entry);
-                return MenuResult::Timeout;
-            }
-
-            // Redraw to update timer
-            draw_menu(config, selected, remaining_seconds);
-        } else {
-            // No timer, just poll occasionally
-            boot::stall(Duration::from_micros(50_000)); // 50ms
+        if let Some(result) = handle_timeout_tick(&mut remaining_seconds, config, selected) {
+            return result;
         }
     }
 }

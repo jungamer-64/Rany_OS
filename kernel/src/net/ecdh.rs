@@ -868,6 +868,43 @@ pub mod p256 {
     // ECDSA P-256 署名検証 (FIPS 186-4 Section 4.1.4)
     // ========================================================================
 
+    /// 検証ポイントのx座標をrと比較
+    fn verify_r_equals_x(
+        r_bytes: &[u8; 32],
+        r_point: &P256Point,
+    ) -> Result<(), EcdsaError> {
+        if r_point.is_identity() {
+            return Err(EcdsaError::InvalidSignature);
+        }
+
+        // x座標を取得
+        let (rx, _ry) = r_point.to_affine()
+            .ok_or(EcdsaError::InvalidSignature)?;
+
+        let rx_bytes = rx.to_be_bytes();
+
+        // r' = x mod n
+        // (P-256では p > n なので x mod n が必要)
+        let n_fe = P256FieldElement::from_limbs(N);
+        let n_bytes = n_fe.to_be_bytes();
+        let rx_big = crate::net::rsa::BigUint::from_be_bytes(&rx_bytes);
+        let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
+        let rx_mod_n = rx_big.rem(&n_big);
+        let rx_mod_n_bytes = rx_mod_n.to_be_bytes_padded(32);
+
+        // r == r' ?
+        let mut diff = 0u8;
+        for i in 0..32 {
+            diff |= r_bytes[i] ^ rx_mod_n_bytes[i];
+        }
+
+        if diff != 0 {
+            return Err(EcdsaError::VerificationFailed);
+        }
+
+        Ok(())
+    }
+
     /// ECDSA P-256 署名検証
     ///
     /// # Arguments
@@ -912,36 +949,7 @@ pub mod p256 {
         let u2q = q.scalar_mul(&u2);
         let r_point = u1g.add(&u2q);
 
-        if r_point.is_identity() {
-            return Err(EcdsaError::InvalidSignature);
-        }
-
-        // x座標を取得
-        let (rx, _ry) = r_point.to_affine()
-            .ok_or(EcdsaError::InvalidSignature)?;
-
-        let rx_bytes = rx.to_be_bytes();
-
-        // r' = x mod n
-        // (P-256では p > n なので x mod n が必要)
-        let n_fe = P256FieldElement::from_limbs(N);
-        let n_bytes = n_fe.to_be_bytes();
-        let rx_big = crate::net::rsa::BigUint::from_be_bytes(&rx_bytes);
-        let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
-        let rx_mod_n = rx_big.rem(&n_big);
-        let rx_mod_n_bytes = rx_mod_n.to_be_bytes_padded(32);
-
-        // r == r' ?
-        let mut diff = 0u8;
-        for i in 0..32 {
-            diff |= r_bytes[i] ^ rx_mod_n_bytes[i];
-        }
-
-        if diff != 0 {
-            return Err(EcdsaError::VerificationFailed);
-        }
-
-        Ok(())
+        verify_r_equals_x(&r_bytes, &r_point)
     }
 
     /// DER INTEGER フィールドを1つパースし、位置を進める

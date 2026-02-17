@@ -228,16 +228,8 @@ impl<T> RRef<[T]> {
         Some(Self { ptr: slice_ptr, owner })
     }
 
-    /// Create a new slice-backed RRef with a custom alignment.
-    pub fn new_slice_with_aligned<F>(
-        owner: DomainId,
-        len: usize,
-        align: usize,
-        mut init: F,
-    ) -> Option<Self>
-    where
-        F: FnMut(usize) -> T,
-    {
+    /// アラインメント付きレイアウトを計算し、メモリを割り当てる
+    fn allocate_aligned_layout(len: usize, align: usize) -> Option<(NonNull<u8>, Layout)> {
         if len == 0 || !align.is_power_of_two() {
             return None;
         }
@@ -248,6 +240,20 @@ impl<T> RRef<[T]> {
         }
 
         let ptr = crate::mm::exchange_heap::allocate_raw(layout)?;
+        Some((ptr, layout))
+    }
+
+    /// Create a new slice-backed RRef with a custom alignment.
+    pub fn new_slice_with_aligned<F>(
+        owner: DomainId,
+        len: usize,
+        align: usize,
+        mut init: F,
+    ) -> Option<Self>
+    where
+        F: FnMut(usize) -> T,
+    {
+        let (ptr, layout) = Self::allocate_aligned_layout(len, align)?;
         let typed_ptr = ptr.as_ptr() as *mut T;
 
         unsafe {

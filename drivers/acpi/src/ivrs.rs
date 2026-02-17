@@ -247,6 +247,32 @@ struct PendingRange {
     alias: Option<u16>,
 }
 
+fn close_pending_range(pending: Option<PendingRange>, end_devid: u16) -> Option<IvhdDeviceEntry> {
+    let pending = pending?;
+    Some(match pending.kind {
+        PendingRangeKind::Normal => IvhdDeviceEntry::Range {
+            start: pending.start,
+            end: end_devid,
+            flags: pending.flags,
+        },
+        PendingRangeKind::Alias => {
+            let alias = pending.alias?;
+            IvhdDeviceEntry::AliasRange {
+                start: pending.start,
+                end: end_devid,
+                alias,
+                flags: pending.flags,
+            }
+        }
+        PendingRangeKind::Extended => IvhdDeviceEntry::ExtRange {
+            start: pending.start,
+            end: end_devid,
+            flags: pending.flags,
+            ext_flags: pending.ext_flags,
+        },
+    })
+}
+
 unsafe fn parse_ivhd_device_entries(ptr: *const u8, len: usize) -> Vec<IvhdDeviceEntry> {
     let mut entries = Vec::new();
     let end = unsafe { ptr.add(len) };
@@ -286,34 +312,8 @@ unsafe fn parse_ivhd_device_entries(ptr: *const u8, len: usize) -> Vec<IvhdDevic
                 });
             }
             IVHD_DEV_RANGE_END => {
-                if let Some(pending) = pending_range.take() {
-                    match pending.kind {
-                        PendingRangeKind::Normal => {
-                            entries.push(IvhdDeviceEntry::Range {
-                                start: pending.start,
-                                end: devid,
-                                flags: pending.flags,
-                            });
-                        }
-                        PendingRangeKind::Alias => {
-                            if let Some(alias) = pending.alias {
-                                entries.push(IvhdDeviceEntry::AliasRange {
-                                    start: pending.start,
-                                    end: devid,
-                                    alias,
-                                    flags: pending.flags,
-                                });
-                            }
-                        }
-                        PendingRangeKind::Extended => {
-                            entries.push(IvhdDeviceEntry::ExtRange {
-                                start: pending.start,
-                                end: devid,
-                                flags: pending.flags,
-                                ext_flags: pending.ext_flags,
-                            });
-                        }
-                    }
+                if let Some(entry) = close_pending_range(pending_range.take(), devid) {
+                    entries.push(entry);
                 }
             }
             IVHD_DEV_ALIAS => {
@@ -400,55 +400,8 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
             break;
         }
 
-        if is_ivhd(entry_type) {
-            let header_size = match ivhd_header_size(entry_type) {
-                Some(size) => size,
-                None => {
-                    offset += entry_len;
-                    continue;
-                }
-            };
-            if entry_len < header_size {
-                offset += entry_len;
-                continue;
-            }
-
-            let ivhd = unsafe { &*(entry_ptr as *const IvhdHeader) };
-            let devices = unsafe {
-                parse_ivhd_device_entries(
-                    (entry_ptr as *const u8).add(header_size),
-                    entry_len - header_size,
-                )
-            };
-            ivhds.push(IvhdInfo {
-                block_type: ivhd.header.block_type,
-                flags: ivhd.header.flags,
-                length: ivhd.header.length,
-                device_id: ivhd.device_id,
-                capability_offset: ivhd.capability_offset,
-                iommu_base: ivhd.iommu_base,
-                pci_segment: ivhd.pci_segment,
-                iommu_info: ivhd.iommu_info,
-                iommu_feature: ivhd.iommu_feature,
-                device_entries: devices,
-            });
-        } else if is_ivmd(entry_type) {
-            if entry_len < mem::size_of::<IvmdHeader>() {
-                offset += entry_len;
-                continue;
-            }
-            let ivmd = unsafe { &*(entry_ptr as *const IvmdHeader) };
-            ivmds.push(IvmdInfo {
-                block_type: ivmd.header.block_type,
-                flags: ivmd.header.flags,
-                length: ivmd.header.length,
-                device_id: ivmd.device_id,
-                aux: ivmd.aux,
-                pci_segment: ivmd.pci_segment,
-                range_start: ivmd.range_start,
-                range_length: ivmd.range_length,
-            });
-        }
+        // SAFETY: entry_ptr is validated above
+        unsafe { process_ivrs_block(entry_ptr, entry_type, entry_len, &mut ivhds, &mut ivmds) };
 
         offset += entry_len;
     }
@@ -458,4 +411,56 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
         ivhds,
         ivmds,
     })
+}
+
+/// Parse a single IVRS block (IVHD or IVMD) and push to the appropriate list
+unsafe fn process_ivrs_block(
+    entry_ptr: *const IvrsBlockHeader,
+    entry_type: u8,
+    entry_len: usize,
+    ivhds: &mut Vec<IvhdInfo>,
+    ivmds: &mut Vec<IvmdInfo>,
+) {
+    if is_ivhd(entry_type) {
+        let header_size = match ivhd_header_size(entry_type) {
+            Some(size) => size,
+            None => return,
+        };
+        if entry_len < header_size {
+            return;
+        }
+
+        let ivhd = &*(entry_ptr as *const IvhdHeader);
+        let devices = parse_ivhd_device_entries(
+            (entry_ptr as *const u8).add(header_size),
+            entry_len - header_size,
+        );
+        ivhds.push(IvhdInfo {
+            block_type: ivhd.header.block_type,
+            flags: ivhd.header.flags,
+            length: ivhd.header.length,
+            device_id: ivhd.device_id,
+            capability_offset: ivhd.capability_offset,
+            iommu_base: ivhd.iommu_base,
+            pci_segment: ivhd.pci_segment,
+            iommu_info: ivhd.iommu_info,
+            iommu_feature: ivhd.iommu_feature,
+            device_entries: devices,
+        });
+    } else if is_ivmd(entry_type) {
+        if entry_len < mem::size_of::<IvmdHeader>() {
+            return;
+        }
+        let ivmd = &*(entry_ptr as *const IvmdHeader);
+        ivmds.push(IvmdInfo {
+            block_type: ivmd.header.block_type,
+            flags: ivmd.header.flags,
+            length: ivmd.header.length,
+            device_id: ivmd.device_id,
+            aux: ivmd.aux,
+            pci_segment: ivmd.pci_segment,
+            range_start: ivmd.range_start,
+            range_length: ivmd.range_length,
+        });
+    }
 }

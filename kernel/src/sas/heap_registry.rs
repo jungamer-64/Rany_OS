@@ -188,6 +188,40 @@ impl HeapRegistry {
         shards
     }
 
+    fn lock_shards(
+        &self,
+        idxs: &[usize],
+    ) -> Result<alloc::vec::Vec<crate::sync::PoisonLockGuard<'_, RegistryShard>>, RegistryError> {
+        let mut guards = alloc::vec::Vec::new();
+        for idx in idxs {
+            match self.shards[*idx].lock() {
+                Ok(g) => guards.push(g),
+                Err(_) => {
+                    log::error!("[HEAP] Registry shard lock poisoned - register failed");
+                    return Err(RegistryError::PermissionDenied);
+                }
+            }
+        }
+        Ok(guards)
+    }
+
+    fn validate_no_overlap(
+        &self,
+        guards: &[crate::sync::PoisonLockGuard<'_, RegistryShard>],
+        address: usize,
+        size: usize,
+    ) -> Result<(), RegistryError> {
+        for g in guards {
+            if g.objects.contains_key(&address) {
+                return Err(RegistryError::AlreadyRegistered);
+            }
+            if self.check_overlap_internal(&*g, address, size) {
+                return Err(RegistryError::Overlapping);
+            }
+        }
+        Ok(())
+    }
+
     /// オブジェクトを登録
     pub fn register(
         &self,
@@ -196,14 +230,10 @@ impl HeapRegistry {
         owner: DomainId,
         type_id: u64,
     ) -> Result<u64, RegistryError> {
-        // Determine shards covering the object's address range and lock them
         let mut idxs = self.shards_for_range(address, size);
         idxs.sort_unstable();
         idxs.dedup();
 
-        // If possible, prefer shards local to the owner's NUMA node when deciding
-        // lock acquisition ordering (to slightly bias locality). This does NOT
-        // change correctness but can help on NUMA systems.
         #[cfg(not(any(test, feature = "bench")))]
         {
             if let Some(owner_node) = crate::domain_system::get_domain_numa(owner) {
@@ -218,32 +248,10 @@ impl HeapRegistry {
         }
         #[cfg(any(test, feature = "bench"))]
         {
-            // In test builds the global `domain_system` may not be available via
-            // `crate::domain_system` (lib vs. binary build differences). Skip the
-            // NUMA-aware reordering in this case to keep tests deterministic.
         }
 
-        // Acquire guards for all involved shards in ascending order to avoid deadlocks
-        let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
-        for idx in &idxs {
-            match self.shards[*idx].lock() {
-                Ok(g) => guards.push(g),
-                Err(_) => {
-                    log::error!("[HEAP] Registry shard lock poisoned - register failed");
-                    return Err(RegistryError::PermissionDenied);
-                }
-            }
-        }
-
-        // Check duplicate registration across all involved shards
-        for g in &guards {
-            if g.objects.contains_key(&address) {
-                return Err(RegistryError::AlreadyRegistered);
-            }
-            if self.check_overlap_internal(&*g, address, size) {
-                return Err(RegistryError::Overlapping);
-            }
-        }
+        let mut guards = self.lock_shards(&idxs)?;
+        self.validate_no_overlap(&guards, address, size)?;
 
         let generation = self.next_generation.fetch_add(1, Ordering::SeqCst);
         let object = HeapObject {

@@ -358,37 +358,37 @@ impl SlabCache {
         Some(ptr)
     }
 
+    /// ページからオブジェクトを割り当て、フル状態を追跡する
+    ///
+    /// # Safety
+    /// `page` は有効で、このSlabCacheに所有されていること
+    unsafe fn alloc_from_page_tracked(&mut self, mut page: NonNull<SlabPageHeader>) -> Option<NonNull<u8>> {
+        let ptr = page.as_mut().allocate(self.object_size)?;
+        if page.as_ref().is_full() {
+            self.full_page_count += 1;
+            self.partial_page_count = self.partial_page_count.saturating_sub(1);
+            self.current_page = None;
+        }
+        self.maybe_adjust_refill_pages();
+        Some(ptr)
+    }
+
     // Inner allocate to separate accounting from logic
     fn allocate_inner(&mut self) -> Option<NonNull<u8>> {
         // 1. Current Page
-        if let Some(mut page) = self.current_page {
-            // SAFETY: page is valid and owned by this SlabCache
-            unsafe {
-                if let Some(ptr) = page.as_mut().allocate(self.object_size) {
-                    if page.as_ref().is_full() {
-                        self.full_page_count += 1;
-                        self.partial_page_count = self.partial_page_count.saturating_sub(1);
-                        self.current_page = None;
-                    }
-                    self.maybe_adjust_refill_pages();
-                    return Some(ptr);
-                }
+        if let Some(page) = self.current_page {
+            let result = unsafe { self.alloc_from_page_tracked(page) };
+            if result.is_some() {
+                return result;
             }
         }
         
         // 2. Partial List
-        if let Some(mut page) = self.pop_partial() {
+        if let Some(page) = self.pop_partial() {
             self.current_page = Some(page);
-            unsafe {
-                if let Some(ptr) = page.as_mut().allocate(self.object_size) {
-                    if page.as_ref().is_full() {
-                        self.full_page_count += 1;
-                        self.partial_page_count = self.partial_page_count.saturating_sub(1);
-                        self.current_page = None;
-                    }
-                    self.maybe_adjust_refill_pages();
-                    return Some(ptr);
-                }
+            let result = unsafe { self.alloc_from_page_tracked(page) };
+            if result.is_some() {
+                return result;
             }
         }
 
@@ -396,19 +396,8 @@ impl SlabCache {
         self.grow()?;
         
         // Retry allocation from new current_page
-        if let Some(mut page) = self.current_page {
-            unsafe {
-                let ptr = page.as_mut().allocate(self.object_size).expect("New page should have space");
-                 if page.as_ref().is_full() {
-                        self.full_page_count += 1;
-                         self.partial_page_count = self.partial_page_count.saturating_sub(1);
-                        self.current_page = None;
-                    }
-                Some(ptr)
-            }
-        } else {
-            None
-        }
+        let page = self.current_page?;
+        unsafe { self.alloc_from_page_tracked(page) }
     }
     
     /// Pop a page from the partial list

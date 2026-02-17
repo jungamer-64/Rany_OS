@@ -1501,3 +1501,45 @@ pub fn iommu_amd_wave5_map_interrupt_returns_handle_smoke() -> bool {
 pub fn iommu_amd_wave5_get_remap_msi_message_format_smoke() -> bool {
     crate::io::iommu::qemu_tests::amd_wave5_get_remap_msi_message_format_smoke()
 }
+
+// ── Wave 9: session-3 graphics optimisation regression ──────────────
+
+pub fn graphics_wave9_draw_circle_symmetric_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_circle_symmetric_smoke()
+}
+
+pub fn graphics_wave9_fill_circle_no_gaps_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_fill_circle_no_gaps_smoke()
+}
+
+pub fn graphics_wave9_draw_rect_outline_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_rect_outline_smoke()
+}
+
+pub fn graphics_wave9_draw_line_steep_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_line_steep_smoke()
+}
+
+pub fn graphics_wave9_draw_text_24bit_single_pass_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_text_24bit_single_pass_smoke()
+}
+
+pub fn graphics_wave9_draw_char_8x16_24bit_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_char_8x16_24bit_smoke()
+}
+
+pub fn graphics_wave9_draw_image_rgb565_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_image_rgb565_mmio_smoke()
+}
+
+pub fn graphics_wave9_write_opaque_run_32bit_simd_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_write_opaque_run_32bit_simd_smoke()
+}
+
+pub fn graphics_wave9_draw_text_rgb565_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_text_rgb565_mmio_smoke()
+}
+
+pub fn graphics_wave9_draw_char_8x16_rgb565_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave9_draw_char_8x16_rgb565_smoke()
+}

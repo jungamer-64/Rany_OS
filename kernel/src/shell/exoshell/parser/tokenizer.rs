@@ -129,23 +129,7 @@ impl<'a> Tokenizer<'a> {
                     self.advance();
                     tokens.push(Token::Colon);
                 }
-                '|' => {
-                    self.advance();
-                    match self.peek() {
-                        // || (logical OR)
-                        Some('|') => {
-                            self.advance();
-                            tokens.push(Token::Operator("||".into()));
-                        }
-                        // |> (pipe operator)
-                        Some('>') => {
-                            self.advance();
-                            tokens.push(Token::Operator("|>".into()));
-                        }
-                        // | (closure delimiter)
-                        _ => tokens.push(Token::Pipe),
-                    }
-                }
+                '|' => self.tokenize_pipe(&mut tokens),
                 '&' => {
                     self.advance();
                     // Check for && (logical AND)
@@ -171,25 +155,7 @@ impl<'a> Tokenizer<'a> {
                     self.advance();
                     tokens.push(Token::Semicolon);
                 }
-                '-' => {
-                    // Minus: could be negative number or subtraction operator
-                    // If previous token is a value (Number, Float, Ident, RParen), treat as operator
-                    let is_operator = matches!(
-                        tokens.last(),
-                        Some(Token::Number(_))
-                            | Some(Token::Float(_))
-                            | Some(Token::Ident(_))
-                            | Some(Token::RParen)
-                            | Some(Token::StringLit(_))
-                    );
-
-                    if is_operator {
-                        self.advance();
-                        tokens.push(Token::Operator("-".into()));
-                    } else {
-                        tokens.push(self.read_number());
-                    }
-                }
+                '-' => self.tokenize_minus(&mut tokens),
                 c if c.is_ascii_digit() => {
                     tokens.push(self.read_number());
                 }
@@ -204,6 +170,38 @@ impl<'a> Tokenizer<'a> {
         }
 
         tokens
+    }
+
+    fn tokenize_pipe(&mut self, tokens: &mut Vec<Token>) {
+        self.advance();
+        match self.peek() {
+            Some('|') => {
+                self.advance();
+                tokens.push(Token::Operator("||".into()));
+            }
+            Some('>') => {
+                self.advance();
+                tokens.push(Token::Operator("|>".into()));
+            }
+            _ => tokens.push(Token::Pipe),
+        }
+    }
+
+    fn tokenize_minus(&mut self, tokens: &mut Vec<Token>) {
+        let is_operator = matches!(
+            tokens.last(),
+            Some(Token::Number(_))
+                | Some(Token::Float(_))
+                | Some(Token::Ident(_))
+                | Some(Token::RParen)
+                | Some(Token::StringLit(_))
+        );
+        if is_operator {
+            self.advance();
+            tokens.push(Token::Operator("-".into()));
+        } else {
+            tokens.push(self.read_number());
+        }
     }
 
     fn read_string(&mut self, quote: char) -> Token {

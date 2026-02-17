@@ -482,26 +482,36 @@ impl Browser {
         }
     }
 
-    fn draw_rect_border(&self, image: &mut Image, x: u32, y: u32, w: u32, h: u32, color: Color) {
+    fn draw_horizontal_border(&self, image: &mut Image, x: u32, y_pos: u32, w: u32, color: Color) {
+        if y_pos >= image.height() {
+            return;
+        }
         for dx in 0..w {
             if x + dx < image.width() {
-                if y < image.height() {
-                    image.set_pixel(x + dx, y, color);
-                }
-                if y + h > 0 && y + h - 1 < image.height() {
-                    image.set_pixel(x + dx, y + h - 1, color);
-                }
+                image.set_pixel(x + dx, y_pos, color);
             }
+        }
+    }
+
+    fn draw_vertical_border(&self, image: &mut Image, x_pos: u32, y: u32, h: u32, color: Color) {
+        if x_pos >= image.width() {
+            return;
         }
         for dy in 0..h {
             if y + dy < image.height() {
-                if x < image.width() {
-                    image.set_pixel(x, y + dy, color);
-                }
-                if x + w > 0 && x + w - 1 < image.width() {
-                    image.set_pixel(x + w - 1, y + dy, color);
-                }
+                image.set_pixel(x_pos, y + dy, color);
             }
+        }
+    }
+
+    fn draw_rect_border(&self, image: &mut Image, x: u32, y: u32, w: u32, h: u32, color: Color) {
+        self.draw_horizontal_border(image, x, y, w, color);
+        if h > 0 {
+            self.draw_horizontal_border(image, x, y + h - 1, w, color);
+        }
+        self.draw_vertical_border(image, x, y, h, color);
+        if w > 0 {
+            self.draw_vertical_border(image, x + w - 1, y, h, color);
         }
     }
 

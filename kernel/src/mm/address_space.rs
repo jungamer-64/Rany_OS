@@ -1051,22 +1051,7 @@ impl ProcessAddressSpace {
         
         let huge_base_virt = super::mapping::phys_to_virt(huge_phys_x64);
         
-        let mut frames_to_free = Vec::new();
-        
-        for i in 0..512 {
-            let pte = pt.entry(i);
-            if pte.is_present() {
-                let src_phys_hh = pte.phys_addr(); // higher_half::PhysAddr
-                let src_phys_x64 = X64PhysAddr::new(src_phys_hh.as_u64());
-                let src_virt = super::mapping::phys_to_virt(src_phys_x64);
-                let dst_virt = huge_base_virt + (i as u64 * 4096);
-                
-                // Copy 4KB
-                core::ptr::copy_nonoverlapping(src_virt.as_ptr::<u8>(), dst_virt.as_mut_ptr::<u8>(), 4096);
-                
-                frames_to_free.push(src_phys_hh);
-            }
-        }
+        let frames_to_free = Self::copy_pt_entries_to_huge(pt, huge_base_virt);
         
         // Update PDE to point to Huge Page
         let mut flags = protection.to_page_flags();
@@ -1077,24 +1062,49 @@ impl ProcessAddressSpace {
         
         *pde = new_pde;
         
-        // TLB Flush
+        // TLB Flush and free old frames
+        Self::finalize_promotion_cleanup(&indices, frames_to_free, pt_phys);
+        
+        true
+    }
+
+    /// Copy all present PT entries to a huge page frame, returning frames to free
+    unsafe fn copy_pt_entries_to_huge(
+        pt: &super::higher_half::PageTable,
+        huge_base_virt: x86_64::VirtAddr,
+    ) -> Vec<super::higher_half::PhysAddr> {
+        let mut frames_to_free = Vec::new();
+        for i in 0..512 {
+            let pte = pt.entry(i);
+            if pte.is_present() {
+                let src_phys_hh = pte.phys_addr();
+                let src_phys_x64 = X64PhysAddr::new(src_phys_hh.as_u64());
+                let src_virt = super::mapping::phys_to_virt(src_phys_x64);
+                let dst_virt = huge_base_virt + (i as u64 * 4096);
+                core::ptr::copy_nonoverlapping(src_virt.as_ptr::<u8>(), dst_virt.as_mut_ptr::<u8>(), 4096);
+                frames_to_free.push(src_phys_hh);
+            }
+        }
+        frames_to_free
+    }
+
+    /// TLB flush and free old 4K frames + PT frame
+    unsafe fn finalize_promotion_cleanup(
+        indices: &[usize; 4],
+        frames_to_free: Vec<super::higher_half::PhysAddr>,
+        pt_phys: super::higher_half::PhysAddr,
+    ) {
         let vaddr = (indices[0] as u64) << 39 | (indices[1] as u64) << 30 | (indices[2] as u64) << 21;
         let _vaddr_canon = if vaddr & (1 << 47) != 0 { vaddr | 0xFFFF000000000000 } else { vaddr };
         core::arch::asm!("invlpg [{}]", in(reg) _vaddr_canon);
-
-        // Free old frames using x86_64 PhysFrame
         for frame in frames_to_free {
             let frame_addr = X64PhysAddr::new(frame.as_u64());
             let phys_frame: PhysFrame<Size4KiB> = PhysFrame::from_start_address(frame_addr).unwrap();
             buddy_dealloc_frame(phys_frame);
         }
-        
-        // Free the PT frame
         let pt_frame_addr = X64PhysAddr::new(pt_phys.as_u64());
         let pt_frame: PhysFrame<Size4KiB> = PhysFrame::from_start_address(pt_frame_addr).unwrap();
         buddy_dealloc_frame(pt_frame);
-        
-        true
     }
 }
 

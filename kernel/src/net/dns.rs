@@ -495,6 +495,20 @@ impl DnsClient {
         Ok(offset)
     }
 
+    /// DNSレコードをキャッシュに追加する
+    fn cache_dns_records(&self, records: &[DnsRecord], current_tick: u64) {
+        if !records.is_empty() {
+            if let Some(first) = records.first() {
+                match self.cache.lock() {
+                    Ok(mut cache) => {
+                        cache.insert(first.name.clone(), records.to_vec(), current_tick);
+                    }
+                    Err(_) => log::error!("[NET] DNS Cache lock poisoned (parse_response) - skipping cache insert"),
+                }
+            }
+        }
+    }
+
     /// DNS応答を解析
     pub fn parse_response(
         &self,
@@ -536,16 +550,7 @@ impl DnsClient {
             .fetch_add(1, Ordering::Relaxed);
 
         // キャッシュに追加
-        if !records.is_empty() {
-            if let Some(first) = records.first() {
-                match self.cache.lock() {
-                    Ok(mut cache) => {
-                        cache.insert(first.name.clone(), records.clone(), current_tick);
-                    }
-                    Err(_) => log::error!("[NET] DNS Cache lock poisoned (parse_response) - skipping cache insert"),
-                }
-            }
-        }
+        self.cache_dns_records(&records, current_tick);
 
         Ok(records)
     }
@@ -680,6 +685,29 @@ impl DnsClient {
         }
     }
 
+    fn follow_compression_pointer(
+        &self,
+        data: &[u8],
+        offset: usize,
+        len: u8,
+        original_offset: usize,
+        jumped: &mut bool,
+        final_offset: &mut usize,
+    ) -> Result<usize, DnsResponseCode> {
+        if offset + 1 >= data.len() {
+            return Err(DnsResponseCode::FormatError);
+        }
+        if !*jumped {
+            *final_offset = offset + 2;
+        }
+        let pointer = ((len as usize & 0x3F) << 8) | data[offset + 1] as usize;
+        if pointer >= original_offset {
+            return Err(DnsResponseCode::FormatError);
+        }
+        *jumped = true;
+        Ok(pointer)
+    }
+
     /// ドメイン名を解析 (圧縮対応)
     fn parse_name(
         &self,
@@ -706,22 +734,9 @@ impl DnsClient {
             }
 
             if len & 0xC0 == 0xC0 {
-                // 圧縮ポインター
-                if offset + 1 >= data.len() {
-                    return Err(DnsResponseCode::FormatError);
-                }
-
-                if !jumped {
-                    final_offset = offset + 2;
-                }
-
-                let pointer = ((len as usize & 0x3F) << 8) | data[offset + 1] as usize;
-                if pointer >= original_offset {
-                    return Err(DnsResponseCode::FormatError);
-                }
-
-                offset = pointer;
-                jumped = true;
+                offset = self.follow_compression_pointer(
+                    data, offset, len, original_offset, &mut jumped, &mut final_offset,
+                )?;
                 continue;
             }
 

@@ -967,14 +967,7 @@ impl BuddyFrameAllocator {
         }
     }
 
-    /// メモリマップに基づいてアロケータを初期化
-    ///
-    /// # Safety
-    /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
-    pub unsafe fn init(&mut self, usable_regions: &[(PhysAddr, u64)]) {
-        self.init_layout();
-
-        // 初期化: 全て使用中（free bit = 0）
+    fn clear_state(&mut self) {
         for word in self.free_bits.iter_mut() {
             *word = 0;
         }
@@ -989,11 +982,9 @@ impl BuddyFrameAllocator {
         self.coalesce_count = 0;
         self.deferred_dealloc_count = 0;
         self.deferred_coalesce_skipped = 0;
-        // 探索カーソルを0に初期化
         for cursor in self.search_cursor.iter_mut() {
             *cursor = 0;
         }
-        // ゼロクリア済みビットを初期化
         for word in self.zeroed_bits.iter_mut() {
             *word = 0;
         }
@@ -1002,6 +993,15 @@ impl BuddyFrameAllocator {
         }
         self.zeroed_allocs = 0;
         self.scrub_count = 0;
+    }
+
+    /// メモリマップに基づいてアロケータを初期化
+    ///
+    /// # Safety
+    /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
+    pub unsafe fn init(&mut self, usable_regions: &[(PhysAddr, u64)]) {
+        self.init_layout();
+        self.clear_state();
 
         let mut total = 0usize;
 
@@ -1178,56 +1178,69 @@ impl BuddyFrameAllocator {
         self.set_free_block(order, block_idx);
     }
 
+    /// サマリーワード範囲をスキャンして空きブロックを検索
+    fn scan_summary_range(
+        &mut self,
+        order: usize,
+        begin: usize,
+        end: usize,
+    ) -> Option<usize> {
+        let summary_start = self.order_summary_word_start[order];
+        let detail_start = self.order_detail_word_start[order];
+        let detail_len = self.order_detail_word_len[order];
+        let summary_len = self.order_summary_word_len[order];
+        let max_blocks = self.order_block_counts[order];
+
+        for summary_idx in begin..end {
+            let mut summary_word = self.free_summary[summary_start + summary_idx];
+            while summary_word != 0 {
+                let bit = fast_tzcnt_u64(summary_word) as usize;
+                let detail_idx = summary_idx * 64 + bit;
+                if detail_idx >= detail_len {
+                    break;
+                }
+                let detail_word = self.free_bits[detail_start + detail_idx];
+                if detail_word == 0 {
+                    self.clear_summary_bit(order, detail_idx);
+                } else {
+                    let block_bit = fast_tzcnt_u64(detail_word) as usize;
+                    let block_idx = detail_idx * 64 + block_bit;
+                    if block_idx < max_blocks {
+                        self.search_cursor[order] = (summary_idx + 1) % summary_len.max(1);
+                        return Some(block_idx);
+                    }
+                }
+                summary_word &= summary_word - 1;
+            }
+        }
+        None
+    }
+
     fn find_free_block(&mut self, order: usize) -> Option<usize> {
         if self.order_free_counts[order] == 0 || self.order_block_counts[order] == 0 {
             return None;
         }
 
-        let summary_start = self.order_summary_word_start[order];
         let summary_len = self.order_summary_word_len[order];
-        let detail_start = self.order_detail_word_start[order];
-        let detail_len = self.order_detail_word_len[order];
-        let max_blocks = self.order_block_counts[order];
-
-        // Round-Robin: 前回のカーソル位置から探索開始
         let start_summary = self.search_cursor[order] % summary_len.max(1);
 
-        // 2パス: start_summary -> end, then 0 -> start_summary
-        for pass in 0..2 {
-            let (begin, end) = if pass == 0 {
-                (start_summary, summary_len)
-            } else {
-                (0, start_summary)
-            };
+        self.scan_summary_range(order, start_summary, summary_len)
+            .or_else(|| self.scan_summary_range(order, 0, start_summary))
+    }
 
-            for summary_idx in begin..end {
-                let mut summary_word = self.free_summary[summary_start + summary_idx];
-                while summary_word != 0 {
-                    // TZCNT命令活用: O(64) -> O(1) に高速化
-                    let bit = fast_tzcnt_u64(summary_word) as usize;
-                    let detail_idx = summary_idx * 64 + bit;
-                    if detail_idx >= detail_len {
-                        break;
-                    }
-                    let detail_word = self.free_bits[detail_start + detail_idx];
-                    if detail_word == 0 {
-                        self.clear_summary_bit(order, detail_idx);
-                    } else {
-                        // TZCNT命令活用
-                        let block_bit = fast_tzcnt_u64(detail_word) as usize;
-                        let block_idx = detail_idx * 64 + block_bit;
-                        if block_idx < max_blocks {
-                            // カーソルを次のサマリーワードに進める
-                            self.search_cursor[order] = (summary_idx + 1) % summary_len.max(1);
-                            return Some(block_idx);
-                        }
-                    }
-                    summary_word &= summary_word - 1;
-                }
+    /// ワード内のビットマスクを範囲制限付きで計算
+    fn compute_word_mask(word_base: usize, start_block: usize, end_block: usize) -> u64 {
+        let mut mask = u64::MAX;
+        if word_base < start_block {
+            mask &= !((1u64 << (start_block - word_base)) - 1);
+        }
+        if word_base + 64 > end_block {
+            let tail = end_block - word_base;
+            if tail < 64 {
+                mask &= (1u64 << tail) - 1;
             }
         }
-
-        None
+        mask
     }
 
     fn find_free_block_in_range(
@@ -1252,28 +1265,17 @@ impl BuddyFrameAllocator {
         let end_word = (end_block + 63) / 64;
 
         for word_idx in start_word..end_word.min(detail_len) {
-            let mut word = self.free_bits[detail_start + word_idx];
+            let word = self.free_bits[detail_start + word_idx];
             if word == 0 {
                 continue;
             }
 
             let word_base = word_idx * 64;
-            let mut mask = u64::MAX;
-            if word_base < start_block {
-                mask &= !((1u64 << (start_block - word_base)) - 1);
-            }
-            if word_base + 64 > end_block {
-                let tail = end_block - word_base;
-                if tail < 64 {
-                    mask &= (1u64 << tail) - 1;
-                }
-            }
-
-            word &= mask;
-            if word == 0 {
+            let masked = word & Self::compute_word_mask(word_base, start_block, end_block);
+            if masked == 0 {
                 continue;
             }
-            let bit = word.trailing_zeros() as usize;
+            let bit = masked.trailing_zeros() as usize;
             let block_idx = word_base + bit;
             if block_idx < end_block {
                 return Some(block_idx);

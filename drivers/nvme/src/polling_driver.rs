@@ -241,41 +241,26 @@ impl NvmePollingDriver {
     // Initialization
     // ========================================================================
 
-    /// コントローラを初期化
-    pub fn init(&mut self) -> Result<(), &'static str> {
-        // CAP レジスタを読む
-        let cap_raw = self.read_reg64(0x00);
-        self.cap = NvmeCapabilities::new(cap_raw);
-
-        // ドアベルストライドを計算
-        self.doorbell_stride = self.cap.doorbell_stride_bytes();
-        self.max_queue_depth = self.cap.max_queue_depth().min(MAX_QUEUE_DEPTH as u32) as u16;
-
-        // CMB情報を取得
-        if self.use_cmb {
-            let cmbloc = self.read_reg32(0x38);
-            let cmbsz = self.read_reg32(0x3C);
-            let cmb_info = CmbInfo::from_registers(self.bar0, cmbloc, cmbsz, &self.cap);
-
-            if cmb_info.supported {
-                if cmb_info.base_addr != 0 {
-                    let cmbmsc = self.read_reg64(0x50);
-                    self.write_reg64(0x50, cmbmsc | 1);
-                }
-                self.cmb_info = Some(cmb_info);
-            }
+    /// CMB（Controller Memory Buffer）を初期化
+    fn init_cmb(&mut self) {
+        if !self.use_cmb {
+            return;
         }
+        let cmbloc = self.read_reg32(0x38);
+        let cmbsz = self.read_reg32(0x3C);
+        let cmb_info = CmbInfo::from_registers(self.bar0, cmbloc, cmbsz, &self.cap);
 
-        // コントローラを無効化
-        self.disable_controller()?;
+        if cmb_info.supported {
+            if cmb_info.base_addr != 0 {
+                let cmbmsc = self.read_reg64(0x50);
+                self.write_reg64(0x50, cmbmsc | 1);
+            }
+            self.cmb_info = Some(cmb_info);
+        }
+    }
 
-        // Admin Queueのセットアップ
-        let admin_depth = (DEFAULT_QUEUE_DEPTH as u32).min(self.cap.max_queue_depth()) as u16;
-        self.init_admin_queue(admin_depth)?;
-
-        // コントローラを有効化
-        self.enable_controller()?;
-
+    /// ネームスペース情報を取得しブロックサイズを設定
+    fn identify_and_configure_namespace(&mut self) {
         if let Err(err) = self.identify_controller() {
             log::warn!("[NVME] Identify Controller failed: {}", err);
         }
@@ -287,6 +272,32 @@ impl NvmePollingDriver {
                 self.namespace_block_size = block_size;
             }
         }
+    }
+
+    /// コントローラを初期化
+    pub fn init(&mut self) -> Result<(), &'static str> {
+        // CAP レジスタを読む
+        let cap_raw = self.read_reg64(0x00);
+        self.cap = NvmeCapabilities::new(cap_raw);
+
+        // ドアベルストライドを計算
+        self.doorbell_stride = self.cap.doorbell_stride_bytes();
+        self.max_queue_depth = self.cap.max_queue_depth().min(MAX_QUEUE_DEPTH as u32) as u16;
+
+        // CMB情報を取得
+        self.init_cmb();
+
+        // コントローラを無効化
+        self.disable_controller()?;
+
+        // Admin Queueのセットアップ
+        let admin_depth = (DEFAULT_QUEUE_DEPTH as u32).min(self.cap.max_queue_depth()) as u16;
+        self.init_admin_queue(admin_depth)?;
+
+        // コントローラを有効化
+        self.enable_controller()?;
+
+        self.identify_and_configure_namespace();
 
         // I/Oキューを初期化
         let num_cores = self.io_queues.len() as u32;

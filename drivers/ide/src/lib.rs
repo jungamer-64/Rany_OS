@@ -357,6 +357,28 @@ impl IdeChannel {
         }
     }
 
+    /// ATAPIかATAかを判定
+    unsafe fn detect_device_type(&self) -> Option<DeviceType> {
+        let lba_mid = self.read_reg(regs::LBA_MID);
+        let lba_high = self.read_reg(regs::LBA_HIGH);
+        if lba_mid == 0x14 && lba_high == 0xEB {
+            unsafe {
+                self.write_reg(regs::COMMAND, commands::IDENTIFY_PACKET);
+            }
+            if unsafe { self.wait_drq() }.is_err() {
+                return None;
+            }
+            Some(DeviceType::Atapi)
+        } else if lba_mid == 0 && lba_high == 0 {
+            if unsafe { self.wait_drq() }.is_err() {
+                return None;
+            }
+            Some(DeviceType::Ata)
+        } else {
+            None
+        }
+    }
+
     /// デバイスを識別
     unsafe fn identify_device(&self, drive: DriveSel) -> Option<IdentifyData> {
         unsafe {
@@ -402,25 +424,9 @@ impl IdeChannel {
         }
 
         // ATAPIデバイスチェック
-        let lba_mid = self.read_reg(regs::LBA_MID);
-        let lba_high = self.read_reg(regs::LBA_HIGH);
-        let device_type = if lba_mid == 0x14 && lba_high == 0xEB {
-            // ATAPI
-            unsafe {
-                self.write_reg(regs::COMMAND, commands::IDENTIFY_PACKET);
-            }
-            if unsafe { self.wait_drq() }.is_err() {
-                return None;
-            }
-            DeviceType::Atapi
-        } else if lba_mid == 0 && lba_high == 0 {
-            // ATA
-            if unsafe { self.wait_drq() }.is_err() {
-                return None;
-            }
-            DeviceType::Ata
-        } else {
-            return None;
+        let device_type = match unsafe { self.detect_device_type() } {
+            Some(dt) => dt,
+            None => return None,
         };
 
         // IDENTIFYデータを読み取り

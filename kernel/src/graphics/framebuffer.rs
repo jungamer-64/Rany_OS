@@ -341,40 +341,40 @@ impl Framebuffer {
     /// reduce the number of volatile writes. It never performs unaligned
     /// u32 writes: any leading bytes to reach 4-byte alignment are emitted
     /// as u8 writes.
+    fn write_bytes_align_to_8(ptr: &mut usize, data: &[u8], i: &mut usize, len: usize) {
+        let align8 = *ptr & 7;
+        if align8 != 0 {
+            if align8 == 4 && *i + 4 <= len {
+                #[cfg(target_endian = "little")]
+                {
+                    let v =
+                        unsafe { core::ptr::read_unaligned(data.as_ptr().add(*i) as *const u32) };
+                    mmio::mmio_write_u32(*ptr, v);
+                }
+                #[cfg(not(target_endian = "little"))]
+                {
+                    let v = u32::from_le_bytes([data[*i], data[*i + 1], data[*i + 2], data[*i + 3]]);
+                    mmio::mmio_write_u32(*ptr, v);
+                }
+                *ptr += 4;
+                *i += 4;
+            } else {
+                let to_align = core::cmp::min(8 - align8, len - *i);
+                for _ in 0..to_align {
+                    mmio::volatile_write::<u8>(*ptr, data[*i]);
+                    *ptr += 1;
+                    *i += 1;
+                }
+            }
+        }
+    }
+
     fn write_bytes_mmio(&self, addr: usize, data: &[u8]) {
         let mut ptr = addr;
         let mut i = 0usize;
         let len = data.len();
 
-        // Align to 8-bytes boundary. If pointer is 4 mod 8 and at least
-        // 4 bytes remain, write a single u32 to reach 8-byte alignment
-        // (faster than 4 u8 volatile writes). Otherwise emit up to 7 u8
-        // writes to reach the 8-byte boundary.
-        let align8 = ptr & 7;
-        if align8 != 0 {
-            if align8 == 4 && i + 4 <= len {
-                #[cfg(target_endian = "little")]
-                {
-                    let v =
-                        unsafe { core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32) };
-                    mmio::mmio_write_u32(ptr, v);
-                }
-                #[cfg(not(target_endian = "little"))]
-                {
-                    let v = u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
-                    mmio::mmio_write_u32(ptr, v);
-                }
-                ptr += 4;
-                i += 4;
-            } else {
-                let to_align = core::cmp::min(8 - align8, len - i);
-                for _ in 0..to_align {
-                    mmio::volatile_write::<u8>(ptr, data[i]);
-                    ptr += 1;
-                    i += 1;
-                }
-            }
-        }
+        Self::write_bytes_align_to_8(&mut ptr, data, &mut i, len);
 
         // Bulk write u64 when possible. Unroll 4 u64 writes per iteration.
         while i + 32 <= len {
@@ -920,50 +920,54 @@ impl Framebuffer {
                 }
             }
         } else {
-            // MMIO path: use streaming stores for better VRAM throughput
-            if self.buffer.is_null() {
-                return;
-            }
-            let mut addr = self.buffer as usize + dst_offset_bytes;
-            let mut remaining = run_len_pixels;
-
-            // If addr is 4 mod 8, write a single u32 first to reach 8-byte alignment
-            if (addr & 7) == 4 && remaining >= 1 {
-                mmio::stream_write_u32(addr, color_u32);
-                addr += 4;
-                remaining -= 1;
-            }
-
-            if remaining >= 2 {
-                let mut pair_count = remaining / 2;
-                let pair_val = (color_u32 as u64) | ((color_u32 as u64) << 32);
-
-                // Unroll 4 writes at a time to reduce loop overhead
-                while pair_count >= 4 {
-                    mmio::stream_write_u64(addr, pair_val);
-                    mmio::stream_write_u64(addr + 8, pair_val);
-                    mmio::stream_write_u64(addr + 16, pair_val);
-                    mmio::stream_write_u64(addr + 24, pair_val);
-                    addr += 32;
-                    pair_count -= 4;
-                }
-
-                while pair_count > 0 {
-                    mmio::stream_write_u64(addr, pair_val);
-                    addr += 8;
-                    pair_count -= 1;
-                }
-
-                remaining -= (remaining / 2) * 2;
-            }
-
-            if remaining == 1 {
-                mmio::stream_write_u32(addr, color_u32);
-            }
-
-            // Ensure streaming stores are globally visible
-            self.counted_sfence();
+            self.write_u32_run_mmio(dst_offset_bytes, run_len_pixels, color_u32);
         }
+    }
+
+    /// MMIO path for write_u32_run: streaming stores for VRAM throughput
+    fn write_u32_run_mmio(&mut self, dst_offset_bytes: usize, run_len_pixels: usize, color_u32: u32) {
+        if self.buffer.is_null() {
+            return;
+        }
+        let mut addr = self.buffer as usize + dst_offset_bytes;
+        let mut remaining = run_len_pixels;
+
+        // If addr is 4 mod 8, write a single u32 first to reach 8-byte alignment
+        if (addr & 7) == 4 && remaining >= 1 {
+            mmio::stream_write_u32(addr, color_u32);
+            addr += 4;
+            remaining -= 1;
+        }
+
+        if remaining >= 2 {
+            let mut pair_count = remaining / 2;
+            let pair_val = (color_u32 as u64) | ((color_u32 as u64) << 32);
+
+            // Unroll 4 writes at a time to reduce loop overhead
+            while pair_count >= 4 {
+                mmio::stream_write_u64(addr, pair_val);
+                mmio::stream_write_u64(addr + 8, pair_val);
+                mmio::stream_write_u64(addr + 16, pair_val);
+                mmio::stream_write_u64(addr + 24, pair_val);
+                addr += 32;
+                pair_count -= 4;
+            }
+
+            while pair_count > 0 {
+                mmio::stream_write_u64(addr, pair_val);
+                addr += 8;
+                pair_count -= 1;
+            }
+
+            remaining -= (remaining / 2) * 2;
+        }
+
+        if remaining == 1 {
+            mmio::stream_write_u32(addr, color_u32);
+        }
+
+        // Ensure streaming stores are globally visible
+        self.counted_sfence();
     }
 
     /// Determine the byte ordering for 24-bit pixel writes.
@@ -1757,6 +1761,50 @@ impl Framebuffer {
         }
     }
 
+    fn blit_rect_32bpp(&mut self, back_ptr: *const u32, x: usize, y: usize, w: usize, h: usize, stride_mmio: usize) {
+        for row in 0..h {
+            let src_y = y + row;
+            let src_idx = src_y * self.info.width as usize + x;
+            let src_slice = unsafe { core::slice::from_raw_parts(back_ptr.add(src_idx), w) };
+            let dst_offset = (y + row) * stride_mmio + x * 4;
+            let dst_addr = self.buffer as usize + dst_offset;
+            self.write_u32_slice_mmio_streaming(dst_addr, src_slice);
+        }
+    }
+
+    fn blit_rect_24bpp(&mut self, back_ptr: *const u32, x: usize, y: usize, w: usize, h: usize, stride_mmio: usize) {
+        let row_bytes = w * 3;
+        self.ensure_scratch_u8(row_bytes);
+        let is_bgr_24 = matches!(self.info.format, PixelFormat::Bgr888);
+        for row in 0..h {
+            let src_y = y + row;
+            let src_idx = src_y * self.info.width as usize + x;
+            let src_slice = unsafe { core::slice::from_raw_parts(back_ptr.add(src_idx), w) };
+            let dst_offset = (y + row) * stride_mmio + x * 3;
+            let dst_addr = self.buffer as usize + dst_offset;
+            if is_bgr_24 {
+                Self::pack_bgra_u32_to_bgr24_row(src_slice, &mut self.scratch_u8[..row_bytes]);
+            } else {
+                Self::pack_bgra_u32_to_rgb24_row(src_slice, &mut self.scratch_u8[..row_bytes]);
+            }
+            self.write_bytes_mmio_streaming(dst_addr, &self.scratch_u8[..row_bytes]);
+        }
+    }
+
+    fn blit_rect_16bpp(&mut self, back_ptr: *const u32, x: usize, y: usize, w: usize, h: usize, stride_mmio: usize) {
+        let row_bytes = w * 2;
+        self.ensure_scratch_u8(row_bytes);
+        for row in 0..h {
+            let src_y = y + row;
+            let src_idx = src_y * self.info.width as usize + x;
+            let src_slice = unsafe { core::slice::from_raw_parts(back_ptr.add(src_idx), w) };
+            let dst_offset = (y + row) * stride_mmio + x * 2;
+            let dst_addr = self.buffer as usize + dst_offset;
+            Self::pack_bgra_u32_to_rgb565le_row(src_slice, &mut self.scratch_u8[..row_bytes]);
+            self.write_bytes_mmio_streaming(dst_addr, &self.scratch_u8[..row_bytes]);
+        }
+    }
+
     pub fn blit_rect(&mut self, rect: Rect) {
         let back_ptr = match self.back_buffer.as_ref() {
             Some(back) => back.as_ptr(),
@@ -1777,52 +1825,9 @@ impl Framebuffer {
         }
 
         match bytes_per_pixel {
-            4 => {
-                // 32-bit to 32-bit: stream u32 words directly
-                for row in 0..h {
-                    let src_y = y + row;
-                    let src_idx = src_y * self.info.width as usize + x;
-                    // SAFETY: back_ptr points to back_buffer allocation. src_idx..src_idx+w
-                    // is in-bounds due to clipping above.
-                    let src_slice = unsafe { core::slice::from_raw_parts(back_ptr.add(src_idx), w) };
-                    let dst_offset = (y + row) * stride_mmio + x * 4;
-                    let dst_addr = self.buffer as usize + dst_offset;
-                    self.write_u32_slice_mmio_streaming(dst_addr, src_slice);
-                }
-            }
-            3 => {
-                // 32-bit BGRA backbuffer -> 24-bit BGR/RGB (format-aware)
-                let row_bytes = w * 3;
-                self.ensure_scratch_u8(row_bytes);
-                let is_bgr_24 = matches!(self.info.format, PixelFormat::Bgr888);
-                for row in 0..h {
-                    let src_y = y + row;
-                    let src_idx = src_y * self.info.width as usize + x;
-                    let src_slice = unsafe { core::slice::from_raw_parts(back_ptr.add(src_idx), w) };
-                    let dst_offset = (y + row) * stride_mmio + x * 3;
-                    let dst_addr = self.buffer as usize + dst_offset;
-                    if is_bgr_24 {
-                        Self::pack_bgra_u32_to_bgr24_row(src_slice, &mut self.scratch_u8[..row_bytes]);
-                    } else {
-                        Self::pack_bgra_u32_to_rgb24_row(src_slice, &mut self.scratch_u8[..row_bytes]);
-                    }
-                    self.write_bytes_mmio_streaming(dst_addr, &self.scratch_u8[..row_bytes]);
-                }
-            }
-            2 => {
-                // 32-bit BGRA backbuffer -> 16-bit RGB565
-                let row_bytes = w * 2;
-                self.ensure_scratch_u8(row_bytes);
-                for row in 0..h {
-                    let src_y = y + row;
-                    let src_idx = src_y * self.info.width as usize + x;
-                    let src_slice = unsafe { core::slice::from_raw_parts(back_ptr.add(src_idx), w) };
-                    let dst_offset = (y + row) * stride_mmio + x * 2;
-                    let dst_addr = self.buffer as usize + dst_offset;
-                    Self::pack_bgra_u32_to_rgb565le_row(src_slice, &mut self.scratch_u8[..row_bytes]);
-                    self.write_bytes_mmio_streaming(dst_addr, &self.scratch_u8[..row_bytes]);
-                }
-            }
+            4 => self.blit_rect_32bpp(back_ptr, x, y, w, h, stride_mmio),
+            3 => self.blit_rect_24bpp(back_ptr, x, y, w, h, stride_mmio),
+            2 => self.blit_rect_16bpp(back_ptr, x, y, w, h, stride_mmio),
             _ => return,
         }
         mmio::sfence();
@@ -2022,25 +2027,17 @@ impl Framebuffer {
     }
 
     /// Clear screen with 32-bit pixel format (Bgra8888 / Rgba8888).
-    fn clear_32bpp(&mut self, draw_buf: *mut u8, color: Color) {
+    fn clear_32bpp(&mut self, _draw_buf: *mut u8, color: Color) {
+        // Note: backbuffer case is handled by clear() early-return, this is MMIO-only.
         let width = self.info.width as usize;
         let stride = self.info.stride as usize;
         let color_u32 = color.to_u32();
-        if self.back_buffer.is_some() {
-            for y in 0..self.info.height as usize {
-                let offset = y * stride;
-                let row_ptr = unsafe { draw_buf.add(offset) as *mut u32 };
-                let row_slice = unsafe { core::slice::from_raw_parts_mut(row_ptr, width) };
-                row_slice.fill(color_u32);
-            }
-        } else {
-            for y in 0..self.info.height as usize {
-                let offset = y * stride;
-                let addr = self.buffer as usize + offset;
-                self.write_u32_run_streaming_nofence(addr, width, color_u32);
-            }
-            mmio::sfence();
+        for y in 0..self.info.height as usize {
+            let offset = y * stride;
+            let addr = self.buffer as usize + offset;
+            self.write_u32_run_streaming_nofence(addr, width, color_u32);
         }
+        mmio::sfence();
     }
 
     /// Fill the scratch buffer with one 24bpp row of the given colour.
@@ -2201,7 +2198,7 @@ impl Framebuffer {
             let base = self.draw_buffer();
             for i in 0..run_len {
                 unsafe {
-                    ptr::write_unaligned(base.add(off) as *mut u32, color_u32);
+                    ptr::write(base.add(off) as *mut u32, color_u32);
                 }
                 if i + 1 < run_len {
                     off += stride;
@@ -2214,6 +2211,9 @@ impl Framebuffer {
                 if i + 1 < run_len {
                     off += stride;
                 }
+            }
+            if run_len > 0 {
+                mmio::sfence();
             }
         }
     }
@@ -2240,6 +2240,9 @@ impl Framebuffer {
                     off += stride;
                 }
             }
+            if run_len > 0 {
+                mmio::sfence();
+            }
         }
     }
 
@@ -2256,6 +2259,9 @@ impl Framebuffer {
                 if i + 1 < run_len {
                     off += stride;
                 }
+            }
+            if run_len > 0 {
+                mmio::sfence();
             }
         }
     }
@@ -2311,7 +2317,7 @@ impl Framebuffer {
         }
     }
 
-    /// Steep Bresenham: per-pixel walk (|dy| > |dx|).
+    /// Steep Bresenham: coalesce vertical runs (|dy| > |dx|).
     fn draw_line_steep(&mut self, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
         let dx = (x2 - x1).abs();
         let dy = -(y2 - y1).abs();
@@ -2321,22 +2327,58 @@ impl Framebuffer {
         let mut x = x1;
         let mut y = y1;
 
+        // Track current vertical run for coalescing
+        let mut run_x = x;
+        let mut run_start = y;
+        let mut run_end = y;
+
         loop {
-            if self.clip_contains_point(x, y) {
-                self.set_pixel_raw(x, y, color);
-            }
             if x == x2 && y == y2 {
+                self.flush_steep_run(run_x, run_start, run_end, color);
                 return;
             }
+
+            let mut next_x = x;
+            let mut next_y = y;
             let e2 = 2 * err;
             if e2 >= dy {
                 err += dy;
-                x += sx;
+                next_x += sx;
             }
             if e2 <= dx {
                 err += dx;
-                y += sy;
+                next_y += sy;
             }
+
+            if next_x == run_x {
+                // Same column — extend current vertical run
+                run_end = next_y;
+            } else {
+                // Column changed — flush current run and start new one
+                self.flush_steep_run(run_x, run_start, run_end, color);
+                run_x = next_x;
+                run_start = next_y;
+                run_end = next_y;
+            }
+            x = next_x;
+            y = next_y;
+        }
+    }
+
+    /// Flush one vertical run collected by steep Bresenham.
+    #[inline]
+    fn flush_steep_run(&mut self, run_x: i32, run_start: i32, run_end: i32, color: Color) {
+        if run_x < self.clip.x || run_x >= self.clip.right() {
+            return;
+        }
+
+        let mut start = run_start.min(run_end);
+        let mut end = run_start.max(run_end);
+        start = start.max(self.clip.y);
+        end = end.min(self.clip.bottom() - 1);
+
+        if start <= end {
+            self.draw_vline_raw(run_x, start, end, color);
         }
     }
 
@@ -2446,10 +2488,42 @@ impl Framebuffer {
 
     /// 矩形を描画（枠のみ）
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
-        self.draw_hline(rect.x, rect.right() - 1, rect.y, color);
-        self.draw_hline(rect.x, rect.right() - 1, rect.bottom() - 1, color);
-        self.draw_vline(rect.x, rect.y, rect.bottom() - 1, color);
-        self.draw_vline(rect.right() - 1, rect.y, rect.bottom() - 1, color);
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+        // Pre-mark entire bounding box dirty once instead of 4 separate mark_dirty calls
+        self.mark_dirty(rect);
+
+        let x0 = rect.x;
+        let x1 = rect.right() - 1;
+        let y0 = rect.y;
+        let y1 = rect.bottom() - 1;
+
+        // Clip and use raw variants (skip per-call mark_dirty)
+        // Top hline
+        if y0 >= self.clip.y && y0 < self.clip.bottom() {
+            let s = x0.max(self.clip.x);
+            let e = x1.min(self.clip.right() - 1);
+            if s <= e { self.draw_hline_raw(s, e, y0, color); }
+        }
+        // Bottom hline
+        if y1 >= self.clip.y && y1 < self.clip.bottom() && y1 != y0 {
+            let s = x0.max(self.clip.x);
+            let e = x1.min(self.clip.right() - 1);
+            if s <= e { self.draw_hline_raw(s, e, y1, color); }
+        }
+        // Left vline (exclude corners already drawn by hlines)
+        if x0 >= self.clip.x && x0 < self.clip.right() {
+            let vs = (y0 + 1).max(self.clip.y);
+            let ve = (y1 - 1).min(self.clip.bottom() - 1);
+            if vs <= ve { self.draw_vline_raw(x0, vs, ve, color); }
+        }
+        // Right vline (exclude corners)
+        if x1 >= self.clip.x && x1 < self.clip.right() && x1 != x0 {
+            let vs = (y0 + 1).max(self.clip.y);
+            let ve = (y1 - 1).min(self.clip.bottom() - 1);
+            if vs <= ve { self.draw_vline_raw(x1, vs, ve, color); }
+        }
     }
 
     /// 矩形領域をコピー（スクロール等に使用）
@@ -2575,6 +2649,8 @@ impl Framebuffer {
                     }
                 }
             }
+            // Ensure writes to WC-mapped VRAM are globally visible
+            mmio::sfence();
         }
     }
 
@@ -2727,6 +2803,31 @@ impl Framebuffer {
                     core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 3)
                 };
                 crate::graphics::packer::pack_rgba_to_bgr24(src_row, dst_slice, needs_swizzle);
+            }
+            2 => {
+                // RGB565 direct path: convert RGBA pixels to RGB565 and stream-write
+                let pixel_count = r_w as usize;
+                self.ensure_scratch_u8(pixel_count * 2);
+                let src_pixels = unsafe {
+                    core::slice::from_raw_parts(src_row.as_ptr() as *const u32, pixel_count)
+                };
+                // Convert RGBA u32 -> RGB565 u16 into scratch buffer
+                {
+                    let dst_u16 = unsafe {
+                        core::slice::from_raw_parts_mut(
+                            self.scratch_u8.as_mut_ptr() as *mut u16,
+                            pixel_count,
+                        )
+                    };
+                    for (i, &rgba) in src_pixels.iter().enumerate() {
+                        let r = (rgba & 0xFF) as u16;
+                        let g = ((rgba >> 8) & 0xFF) as u16;
+                        let b = ((rgba >> 16) & 0xFF) as u16;
+                        dst_u16[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+                    }
+                }
+                let addr = dst_ptr as usize;
+                self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..pixel_count * 2]);
             }
             _ => {}
         }
@@ -2885,19 +2986,33 @@ impl Framebuffer {
 
     /// 円を描画（Midpointアルゴリズム）
     pub fn draw_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color) {
+        if radius <= 0 {
+            self.set_pixel(cx, cy, color);
+            return;
+        }
+        // Pre-mark bounding box dirty once instead of per-pixel
+        self.mark_dirty(Rect::new(
+            cx - radius, cy - radius,
+            (radius * 2 + 1) as u32, (radius * 2 + 1) as u32,
+        ));
         let mut x = radius;
         let mut y = 0;
         let mut err = 0;
 
         while x >= y {
-            self.set_pixel(cx + x, cy + y, color);
-            self.set_pixel(cx + y, cy + x, color);
-            self.set_pixel(cx - y, cy + x, color);
-            self.set_pixel(cx - x, cy + y, color);
-            self.set_pixel(cx - x, cy - y, color);
-            self.set_pixel(cx - y, cy - x, color);
-            self.set_pixel(cx + y, cy - x, color);
-            self.set_pixel(cx + x, cy - y, color);
+            // Use set_pixel_raw (skip per-pixel dirty mark + clip re-check)
+            // Only draw if within clip bounds
+            let pts = [
+                (cx + x, cy + y), (cx + y, cy + x),
+                (cx - y, cy + x), (cx - x, cy + y),
+                (cx - x, cy - y), (cx - y, cy - x),
+                (cx + y, cy - x), (cx + x, cy - y),
+            ];
+            for &(px, py) in &pts {
+                if self.clip_contains_point(px, py) {
+                    self.set_pixel_raw(px, py, color);
+                }
+            }
 
             y += 1;
             if err <= 0 {
@@ -2912,15 +3027,48 @@ impl Framebuffer {
 
     /// 塗りつぶし円を描画
     pub fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color) {
+        if radius <= 0 {
+            self.set_pixel(cx, cy, color);
+            return;
+        }
+        // Pre-mark bounding box dirty once
+        self.mark_dirty(Rect::new(
+            cx - radius, cy - radius,
+            (radius * 2 + 1) as u32, (radius * 2 + 1) as u32,
+        ));
+
         let mut x = radius;
         let mut y = 0;
         let mut err = 0;
+        // Track last drawn y-coordinates to eliminate duplicate hlines
+        let mut last_y1: i32 = i32::MIN;
+        let mut last_y2: i32 = i32::MIN;
+        let mut last_y3: i32 = i32::MIN;
+        let mut last_y4: i32 = i32::MIN;
 
         while x >= y {
-            self.draw_hline(cx - x, cx + x, cy + y, color);
-            self.draw_hline(cx - y, cx + y, cy + x, color);
-            self.draw_hline(cx - x, cx + x, cy - y, color);
-            self.draw_hline(cx - y, cx + y, cy - x, color);
+            // Use draw_hline_raw (skip per-hline dirty mark — already pre-marked)
+            let rows = [
+                (cx - x, cx + x, cy + y),
+                (cx - y, cx + y, cy + x),
+                (cx - x, cx + x, cy - y),
+                (cx - y, cx + y, cy - x),
+            ];
+            let last = [&mut last_y1, &mut last_y2, &mut last_y3, &mut last_y4];
+            for (i, &(x0, x1, ry)) in rows.iter().enumerate() {
+                if ry != *last[i] {
+                    *last[i] = ry;
+                    // Clip and draw raw
+                    let sy = ry;
+                    if sy >= self.clip.y && sy < self.clip.bottom() {
+                        let start = x0.max(self.clip.x);
+                        let end = x1.min(self.clip.right() - 1);
+                        if start <= end {
+                            self.draw_hline_raw(start, end, sy, color);
+                        }
+                    }
+                }
+            }
 
             y += 1;
             if err <= 0 {
@@ -3223,6 +3371,61 @@ impl Framebuffer {
         wrote
     }
 
+    /// Draw a single character using the 16bpp fg+bg single-pass fast path.
+    /// Writes all 8 pixels per row using branchless selection — no prefill needed.
+    fn draw_text_char_16bpp_fast(
+        &mut self,
+        cx: i32,
+        y: i32,
+        c: char,
+        font: &BitmapFont,
+        stride: usize,
+        color: Color,
+        bg_color: Color,
+    ) -> bool {
+        let char_w = font.width() as i32;
+        let char_h = font.height() as i32;
+        self.mark_dirty(Rect::new(cx, y, char_w as u32, char_h as u32));
+
+        let fg_u16 = Self::color_to_rgb565(color);
+        let bg_u16 = Self::color_to_rgb565(bg_color);
+
+        let data = font.glyph(c).unwrap_or(&[0u8; 16]);
+        let mut wrote = false;
+        for (row, &byte) in data.iter().enumerate() {
+            let offset = ((y + row as i32) as usize * stride) + (cx as usize * 2);
+            wrote |= self.write_glyph_row_16bit_nofence(byte, offset, fg_u16, bg_u16);
+        }
+        wrote
+    }
+
+    /// Draw a single character using the 24bpp fg+bg single-pass fast path.
+    fn draw_text_char_24bpp_fast(
+        &mut self,
+        cx: i32,
+        y: i32,
+        c: char,
+        font: &BitmapFont,
+        stride: usize,
+        color: Color,
+        bg_color: Color,
+    ) -> bool {
+        let char_w = font.width() as i32;
+        let char_h = font.height() as i32;
+        self.mark_dirty(Rect::new(cx, y, char_w as u32, char_h as u32));
+
+        let fg_bytes = self.bgr_color_order(color);
+        let bg_bytes = self.bgr_color_order(bg_color);
+
+        let data = font.glyph(c).unwrap_or(&[0u8; 16]);
+        let mut wrote = false;
+        for (row, &byte) in data.iter().enumerate() {
+            let offset = ((y + row as i32) as usize * stride) + (cx as usize * 3);
+            wrote |= self.write_glyph_row_24bit_nofence(byte, offset, fg_bytes, bg_bytes);
+        }
+        wrote
+    }
+
     /// Draw one glyph row (non-32bpp path) with run detection and bpp dispatch.
     fn draw_text_glyph_row(
         &mut self,
@@ -3361,12 +3564,15 @@ impl Framebuffer {
         let font = BitmapFont::default_8x16();
         let (stride, format, bpp) = self.draw_text_setup();
         
-        // --- Single-Pass Background Fill Optimization ---
         let char_count = text.chars().filter(|&c| c != '\n').count() as i32;
         let total_w = char_count * font.width() as i32;
         let char_h = font.height() as u32;
 
-        if total_w > 0 {
+        // Determine if we can use single-pass fg+bg rendering (no prefill needed)
+        let use_single_pass = (bpp == 4 || bpp == 2 || bpp == 3) && self.back_buffer.is_none();
+
+        // Only pre-fill background for paths that don't do single-pass fg+bg
+        if total_w > 0 && !use_single_pass {
             self.fill_rect(Rect::new(x, y, total_w as u32, char_h), bg_color);
         }
 
@@ -3379,12 +3585,33 @@ impl Framebuffer {
 
             let char_w = font.width() as i32;
             let char_h = font.height() as i32;
+            let fully_visible = self.clip_contains_rect(cx, y, char_w, char_h);
 
-            // 32-bit Fast Path: fully clipped & opaque
-            if bpp == 4 && self.clip_contains_rect(cx, y, char_w, char_h) {
-                need_fence |= self.draw_text_char_32bpp_fast(cx, y, c, &font, stride, format, color, bg_color);
-                cx += char_w;
-                continue;
+            // Single-pass fast paths: write fg+bg together, no prefill needed
+            if fully_visible && use_single_pass {
+                match bpp {
+                    4 => {
+                        need_fence |= self.draw_text_char_32bpp_fast(cx, y, c, &font, stride, format, color, bg_color);
+                        cx += char_w;
+                        continue;
+                    }
+                    2 => {
+                        need_fence |= self.draw_text_char_16bpp_fast(cx, y, c, &font, stride, color, bg_color);
+                        cx += char_w;
+                        continue;
+                    }
+                    3 => {
+                        need_fence |= self.draw_text_char_24bpp_fast(cx, y, c, &font, stride, color, bg_color);
+                        cx += char_w;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+
+            // For 16/24bpp single-pass not fully visible: fill bg for this char, then draw fg only
+            if use_single_pass && !fully_visible && (bpp == 2 || bpp == 3) {
+                self.fill_rect(Rect::new(cx, y, char_w as u32, char_h as u32), bg_color);
             }
 
             need_fence |= self.draw_text_char_generic(cx, y, c, &font, stride, bpp, color);
@@ -3427,18 +3654,7 @@ impl Framebuffer {
         let bytes_per_row = ((width + 7) / 8) as usize;
 
         // Pre-encode colors for 32-bit optimization
-        let (fg_u32, bg_u32) = if bpp == 4 {
-            if self.back_buffer.is_some() {
-                (color.to_u32(), bg.map(|c| c.to_u32()).unwrap_or(0))
-            } else {
-                (
-                    self.info.format.encode_u32(color).unwrap_or(color.to_u32()),
-                    bg.map(|c| self.info.format.encode_u32(c).unwrap_or(c.to_u32())).unwrap_or(0),
-                )
-            }
-        } else {
-            (0, 0)
-        };
+        let (fg_u32, bg_u32) = self.preencode_glyph_fg_bg(bpp, color, bg);
 
         let mut mmio_wrote = false;
         for row in 0..height {
@@ -3467,11 +3683,115 @@ impl Framebuffer {
         }
     }
 
+    fn preencode_glyph_fg_bg(&self, bpp: usize, color: Color, bg: Option<Color>) -> (u32, u32) {
+        if bpp == 4 {
+            if self.back_buffer.is_some() {
+                (color.to_u32(), bg.map(|c| c.to_u32()).unwrap_or(0))
+            } else {
+                (
+                    self.info.format.encode_u32(color).unwrap_or(color.to_u32()),
+                    bg.map(|c| self.info.format.encode_u32(c).unwrap_or(c.to_u32())).unwrap_or(0),
+                )
+            }
+        } else {
+            (0, 0)
+        }
+    }
+
     /// Pre-encode foreground/background colors for the 32bpp MMIO path.
     fn preencode_colors_32(&self, color: Color, bg_color: Color) -> (u32, u32) {
         let fg = self.info.format.encode_u32(color).unwrap_or(color.to_u32());
         let bg_v = self.info.format.encode_u32(bg_color).unwrap_or(bg_color.to_u32());
         (fg, bg_v)
+    }
+
+    /// Write one glyph row at 16bpp (RGB565) with branchless fg/bg selection.
+    /// Writes all 8 pixels in one pass using streaming u64 writes (16 bytes total).
+    /// Returns `true` if MMIO writes occurred.
+    fn write_glyph_row_16bit_nofence(
+        &self,
+        bits: u8,
+        dst_offset_bytes: usize,
+        fg_u16: u16,
+        bg_u16: u16,
+    ) -> bool {
+        if self.buffer.is_null() {
+            return false;
+        }
+        let addr = self.buffer as usize + dst_offset_bytes;
+
+        // Branchless pixel selection: for each bit, mask selects fg or bg
+        #[inline(always)]
+        fn sel16(mask: u16, fg: u16, bg: u16) -> u16 {
+            bg ^ ((bg ^ fg) & mask)
+        }
+
+        let b = bits as i32;
+        let m0 = ((b << 24) >> 31) as u16;
+        let m1 = ((b << 25) >> 31) as u16;
+        let m2 = ((b << 26) >> 31) as u16;
+        let m3 = ((b << 27) >> 31) as u16;
+        let m4 = ((b << 28) >> 31) as u16;
+        let m5 = ((b << 29) >> 31) as u16;
+        let m6 = ((b << 30) >> 31) as u16;
+        let m7 = ((b << 31) >> 31) as u16;
+
+        // Pack 4 pixels into one u64 (LE: pixel0 at low bits)
+        let p0 = sel16(m0, fg_u16, bg_u16) as u64;
+        let p1 = sel16(m1, fg_u16, bg_u16) as u64;
+        let p2 = sel16(m2, fg_u16, bg_u16) as u64;
+        let p3 = sel16(m3, fg_u16, bg_u16) as u64;
+        let v0 = p0 | (p1 << 16) | (p2 << 32) | (p3 << 48);
+
+        let p4 = sel16(m4, fg_u16, bg_u16) as u64;
+        let p5 = sel16(m5, fg_u16, bg_u16) as u64;
+        let p6 = sel16(m6, fg_u16, bg_u16) as u64;
+        let p7 = sel16(m7, fg_u16, bg_u16) as u64;
+        let v1 = p4 | (p5 << 16) | (p6 << 32) | (p7 << 48);
+
+        mmio::stream_write_u64(addr, v0);
+        mmio::stream_write_u64(addr + 8, v1);
+        true
+    }
+
+    /// Write one glyph row at 24bpp (BGR888/RGB888) with branchless fg/bg selection.
+    /// Writes all 8 pixels (24 bytes) via streaming store.
+    /// Returns `true` if MMIO writes occurred.
+    fn write_glyph_row_24bit_nofence(
+        &mut self,
+        bits: u8,
+        dst_offset_bytes: usize,
+        fg_bytes: (u8, u8, u8),
+        bg_bytes: (u8, u8, u8),
+    ) -> bool {
+        if self.buffer.is_null() {
+            return false;
+        }
+        let addr = self.buffer as usize + dst_offset_bytes;
+
+        // Build 24 bytes in a stack buffer, then streaming write
+        let mut buf = [0u8; 24];
+        let b = bits as i32;
+        for bit in 0..8u32 {
+            let mask = ((b << (24 + bit)) >> 31) as u8;
+            // mask is 0xFF for fg, 0x00 for bg
+            let c0 = bg_bytes.0 ^ ((bg_bytes.0 ^ fg_bytes.0) & mask);
+            let c1 = bg_bytes.1 ^ ((bg_bytes.1 ^ fg_bytes.1) & mask);
+            let c2 = bg_bytes.2 ^ ((bg_bytes.2 ^ fg_bytes.2) & mask);
+            let off = bit as usize * 3;
+            buf[off] = c0;
+            buf[off + 1] = c1;
+            buf[off + 2] = c2;
+        }
+
+        // Stream 24 bytes: 3 u64 writes (covers 24 bytes exactly)
+        let v0 = u64::from_le_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
+        let v1 = u64::from_le_bytes([buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15]]);
+        let v2 = u64::from_le_bytes([buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23]]);
+        mmio::stream_write_u64(addr, v0);
+        mmio::stream_write_u64(addr + 8, v1);
+        mmio::stream_write_u64(addr + 16, v2);
+        true
     }
 
     /// Render glyph rows dispatching between fast-32bpp and generic paths.
@@ -3524,21 +3844,60 @@ impl Framebuffer {
         self.mark_dirty(Rect::new(x, y, char_w, char_h));
 
         let is_fully_visible = x >= self.clip.x && (x + char_w_i32) <= self.clip.right();
-        let use_fast_path_32 = bpp == 4 && bg.is_some() && is_fully_visible;
+        let no_backbuf = self.back_buffer.is_none();
 
+        // Determine fast path mode: 0 = none, 4 = 32bpp, 2 = 16bpp, 3 = 24bpp
+        let fast_mode = if bg.is_some() && is_fully_visible && no_backbuf {
+            match bpp {
+                4 | 2 | 3 => bpp,
+                _ => 0,
+            }
+        } else if bg.is_some() && is_fully_visible && bpp == 4 {
+            4 // 32bpp works with or without backbuffer
+        } else {
+            0
+        };
+
+        // Pre-fill background only when not using single-pass fast path
         if let Some(bg_color) = bg {
-            if !use_fast_path_32 {
+            if fast_mode == 0 {
                 self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
             }
         }
 
-        let (fg_u32, bg_u32) = if use_fast_path_32 {
-            self.preencode_colors_32(color, bg.unwrap())
-        } else {
-            (0, 0)
+        let mmio_written = match fast_mode {
+            4 => {
+                let (fg_u32, bg_u32) = self.preencode_colors_32(color, bg.unwrap());
+                self.render_char_rows(glyph, x, y, true, fg_u32, bg_u32, bpp, stride, color)
+            }
+            2 => {
+                let fg_u16 = Self::color_to_rgb565(color);
+                let bg_u16 = Self::color_to_rgb565(bg.unwrap());
+                let mut wrote = false;
+                for (row, &byte) in glyph.iter().enumerate() {
+                    let dst_y = y + row as i32;
+                    if !self.clip_y_visible(dst_y) { continue; }
+                    let offset = (dst_y as usize * stride) + (x as usize * 2);
+                    wrote |= self.write_glyph_row_16bit_nofence(byte, offset, fg_u16, bg_u16);
+                }
+                wrote
+            }
+            3 => {
+                let fg_bytes = self.bgr_color_order(color);
+                let bg_bytes = self.bgr_color_order(bg.unwrap());
+                let mut wrote = false;
+                for (row, &byte) in glyph.iter().enumerate() {
+                    let dst_y = y + row as i32;
+                    if !self.clip_y_visible(dst_y) { continue; }
+                    let offset = (dst_y as usize * stride) + (x as usize * 3);
+                    wrote |= self.write_glyph_row_24bit_nofence(byte, offset, fg_bytes, bg_bytes);
+                }
+                wrote
+            }
+            _ => {
+                self.render_char_rows(glyph, x, y, false, 0, 0, bpp, stride, color)
+            }
         };
-
-        let mmio_written = self.render_char_rows(glyph, x, y, use_fast_path_32, fg_u32, bg_u32, bpp, stride, color);
 
         if mmio_written {
             self.counted_sfence();
@@ -3650,27 +4009,21 @@ impl Framebuffer {
         let imgdata = image.data();
         let mut mmio_written = false;
 
-        // If backbuffer (fixed u32/BGRA) is active, write to it directly performing RGBA->BGRA swizzle
+        // If backbuffer (fixed u32/BGRA) is active, use SIMD packer for RGBA->BGRA swizzle
         if let Some(ref mut back) = self.back_buffer {
              let src_offset = src_base * 4;
+             let byte_len = run_len * 4;
              // Ensure bounds
-             if src_offset + run_len * 4 <= imgdata.len() {
-                 let dst_ptr = unsafe { (back.as_mut_ptr() as *mut u8).add(dst_byte_offset) };
-                 // Image is RGBA [R, G, B, A]. Backbuffer is u32/BGRA (on LE) [B, G, R, A].
-                 // Perform R/B swap swizzle.
-                 for i in 0..run_len {
-                     let off = i * 4;
-                     let r = imgdata[src_offset + off];
-                     let g = imgdata[src_offset + off + 1];
-                     let b = imgdata[src_offset + off + 2];
-                     let a = imgdata[src_offset + off + 3];
-                     unsafe {
-                         *dst_ptr.add(off) = b;
-                         *dst_ptr.add(off + 1) = g;
-                         *dst_ptr.add(off + 2) = r;
-                         *dst_ptr.add(off + 3) = a;
-                     }
-                 }
+             if src_offset + byte_len <= imgdata.len() {
+                 let src_slice = &imgdata[src_offset..src_offset + byte_len];
+                 let dst_slice = unsafe {
+                     core::slice::from_raw_parts_mut(
+                         (back.as_mut_ptr() as *mut u8).add(dst_byte_offset),
+                         byte_len,
+                     )
+                 };
+                 // SIMD-accelerated RGBA→BGRA (AVX2/SSSE3/scalar auto-dispatch)
+                 crate::graphics::packer::pack_rgba_to_bgra(src_slice, dst_slice);
              }
              return false;
         }
@@ -3764,6 +4117,51 @@ impl Framebuffer {
             }
             processed += chunk;
         }
+    }
+
+    /// 16-bit (RGB565) 不透明ランの描画
+    fn write_opaque_run_16bit(
+        &mut self,
+        image: &super::image::Image,
+        src_row: u32,
+        run_start: u32,
+        run_len: usize,
+        dst_byte_offset: usize,
+        _x: i32,
+        _dst_row: i32,
+    ) -> bool {
+        let src_base = (src_row * image.width() + run_start) as usize;
+        let imgdata = image.data();
+
+        // Backbuffer is always u32/BGRA — 16bpp write_run should not reach here
+        // with backbuffer active; handled by the 4bpp (backbuffer) path.
+        if self.back_buffer.is_some() {
+            debug_assert!(false, "16bpp write_run called on u32 backbuffer");
+            return false;
+        }
+
+        // Convert RGBA pixels to RGB565 and stream-write
+        let addr = self.buffer as usize + dst_byte_offset;
+        // Use scratch_u8 as u16 buffer to batch the conversion
+        let byte_len = run_len * 2;
+        self.ensure_scratch_u8(byte_len);
+        {
+            let dst_u16 = unsafe {
+                core::slice::from_raw_parts_mut(
+                    self.scratch_u8.as_mut_ptr() as *mut u16,
+                    run_len,
+                )
+            };
+            for i in 0..run_len {
+                let idx = (src_base + i) * 4;
+                let r = imgdata[idx] as u16;
+                let g = imgdata[idx + 1] as u16;
+                let b = imgdata[idx + 2] as u16;
+                dst_u16[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+            }
+        }
+        self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..byte_len]);
+        true
     }
 
     /// 24-bit不透明ランの描画
@@ -3917,6 +4315,9 @@ impl Framebuffer {
             ),
             3 => self.write_opaque_run_24bit(
                 image, src_row, run_start, run_len, dst_byte_offset, x, dst_row, avx2_available,
+            ),
+            2 => self.write_opaque_run_16bit(
+                image, src_row, run_start, run_len, dst_byte_offset, x, dst_row,
             ),
             _ => {
                 for i in 0..run_len {

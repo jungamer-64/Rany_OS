@@ -575,6 +575,28 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
 /// RCU読み取りガードを取らずに歩行を試み、
 /// 途中でエントリが変更された場合は失敗を返す。
 /// 成功率が高い場合（ホットパス）に有効。
+fn verify_speculative_result(
+    pml4: &PageTable,
+    pml4_idx: usize,
+    pml4e_val: u64,
+    entry: PageTableEntry,
+    addr: u64,
+    page_size: PageSize,
+    offset_mask: u64,
+    pte_values: [u64; 4],
+) -> Option<PageWalkResult> {
+    core::sync::atomic::fence(Ordering::Acquire);
+    if pml4.entry(pml4_idx).entry.load(Ordering::Relaxed) != pml4e_val {
+        return None;
+    }
+    Some(PageWalkResult {
+        phys_addr: entry.addr() + (addr & offset_mask),
+        page_size,
+        flags: entry.flags(),
+        pte_values,
+    })
+}
+
 pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResult> {
     let addr = virt_addr.as_u64();
     
@@ -606,19 +628,7 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
     }
     
     if pdpte.is_huge() {
-        // 検証: PML4エントリが変わっていないか
-        core::sync::atomic::fence(Ordering::Acquire);
-        if pml4.entry(pml4_idx).entry.load(Ordering::Relaxed) != pml4e_val {
-            return None; // 投機失敗
-        }
-        
-        let offset_1gb = (addr & 0x3FFF_FFFF) as u64;
-        return Some(PageWalkResult {
-            phys_addr: pdpte.addr() + offset_1gb,
-            page_size: PageSize::Size1GB,
-            flags: pdpte.flags(),
-            pte_values,
-        });
+        return verify_speculative_result(pml4, pml4_idx, pml4e_val, pdpte, addr, PageSize::Size1GB, 0x3FFF_FFFF, pte_values);
     }
     
     let pd = unsafe { &*(pdpte.addr() as *const PageTable) };
@@ -631,18 +641,7 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
     }
     
     if pde.is_huge() {
-        core::sync::atomic::fence(Ordering::Acquire);
-        if pml4.entry(pml4_idx).entry.load(Ordering::Relaxed) != pml4e_val {
-            return None;
-        }
-        
-        let offset_2mb = (addr & 0x1F_FFFF) as u64;
-        return Some(PageWalkResult {
-            phys_addr: pde.addr() + offset_2mb,
-            page_size: PageSize::Size2MB,
-            flags: pde.flags(),
-            pte_values,
-        });
+        return verify_speculative_result(pml4, pml4_idx, pml4e_val, pde, addr, PageSize::Size2MB, 0x1F_FFFF, pte_values);
     }
     
     let pt = unsafe { &*(pde.addr() as *const PageTable) };
@@ -655,17 +654,7 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
     }
     
     // 最終検証
-    core::sync::atomic::fence(Ordering::Acquire);
-    if pml4.entry(pml4_idx).entry.load(Ordering::Relaxed) != pml4e_val {
-        return None;
-    }
-    
-    Some(PageWalkResult {
-        phys_addr: pte.addr() + offset_4kb,
-        page_size: PageSize::Size4KB,
-        flags: pte.flags(),
-        pte_values,
-    })
+    verify_speculative_result(pml4, pml4_idx, pml4e_val, pte, addr, PageSize::Size4KB, 0xFFF, pte_values)
 }
 
 // ============================================================================

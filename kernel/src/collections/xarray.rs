@@ -316,6 +316,19 @@ impl<T> XArray<T> {
         }
     }
 
+    /// リーフノードのスロットにエントリを挿入し、旧エントリを返す
+    fn insert_into_leaf_slot(node: &mut XANode<T>, slot_idx: usize, value: T) -> Option<T> {
+        let old = node.slots[slot_idx].take();
+        node.slots[slot_idx] = Some(XASlot::Entry { value: Box::new(value), marks: 0 });
+        if old.is_none() {
+            node.count += 1;
+        }
+        match old {
+            Some(XASlot::Entry { value: e, .. }) => Some(*e),
+            _ => None,
+        }
+    }
+
     /// 指定インデックスに格納
     fn store_at(&mut self, index: usize, value: T) -> Option<T> {
         if self.height == 0 {
@@ -358,17 +371,7 @@ impl<T> XArray<T> {
         let slot_idx = index & XA_CHUNK_MASK;
         
         match current {
-            Some(XASlot::Node(node)) => {
-                let old = node.slots[slot_idx].take();
-                node.slots[slot_idx] = Some(XASlot::Entry { value: Box::new(value), marks: 0 });
-                if old.is_none() {
-                    node.count += 1;
-                }
-                match old {
-                    Some(XASlot::Entry { value: e, .. }) => Some(*e),
-                    _ => None,
-                }
-            }
+            Some(XASlot::Node(node)) => Self::insert_into_leaf_slot(node, slot_idx, value),
             _ => unreachable!("Expected node at leaf level"),
         }
     }
@@ -453,6 +456,20 @@ impl<T> XArray<T> {
         Self::extract_entry_at_mut(slot, index)
     }
 
+    /// リーフノードのスロットからエントリを削除
+    fn remove_from_leaf_slot(node: &mut XANode<T>, slot_idx: usize) -> Option<T> {
+        match node.slots[slot_idx].take() {
+            Some(XASlot::Entry { value: e, .. }) => {
+                node.count = node.count.saturating_sub(1);
+                Some(*e)
+            }
+            other => {
+                node.slots[slot_idx] = other;
+                None
+            }
+        }
+    }
+
     /// 指定インデックスを削除
     fn remove_at(&mut self, index: usize) -> Option<T> {
         if self.height == 0 {
@@ -482,18 +499,7 @@ impl<T> XArray<T> {
         let slot_idx = index & XA_CHUNK_MASK;
         
         match current {
-            XASlot::Node(node) => {
-                match node.slots[slot_idx].take() {
-                    Some(XASlot::Entry { value: e, .. }) => {
-                        node.count = node.count.saturating_sub(1);
-                        Some(*e)
-                    }
-                    other => {
-                        node.slots[slot_idx] = other;
-                        None
-                    }
-                }
-            }
+            XASlot::Node(node) => Self::remove_from_leaf_slot(node, slot_idx),
             _ => None,
         }
     }
