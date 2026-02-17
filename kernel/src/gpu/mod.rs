@@ -475,6 +475,30 @@ impl Framebuffer {
         })
     }
 
+    /// IOMMU デバイス向けフレームバッファを作成する。
+    pub fn new_for_device(
+        resource_id: u32,
+        width: u32,
+        height: u32,
+        format: PixelFormat,
+        device_id: &IommuDeviceId,
+    ) -> Option<Self> {
+        let bpp = 4u32;
+        let stride = width * bpp;
+        let size = (stride * height) as usize;
+
+        let buffer = CoherentDmaBuffer::new_for_device(size, DmaMemoryAttributes::MMIO, device_id)?;
+
+        Some(Self {
+            resource_id,
+            width,
+            height,
+            format,
+            buffer,
+            stride,
+        })
+    }
+
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
         if x >= self.width || y >= self.height {
             return;
@@ -506,6 +530,12 @@ impl Framebuffer {
 
     pub fn phys_addr(&self) -> x86_64::PhysAddr {
         self.buffer.phys_addr()
+    }
+
+    /// ハードウェアに渡すバッファアドレスを返す。
+    /// IOMMU マッピングが有効な場合は IOVA、そうでなければ物理アドレスを返す。
+    pub fn device_addr(&self) -> u64 {
+        self.buffer.device_addr()
     }
 
     pub fn size(&self) -> usize {
@@ -561,6 +591,22 @@ impl VirtioGpu {
             initialized: AtomicBool::new(false),
             has_3d: false,
             iommu_device_id,
+        }
+    }
+
+    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
+    ///
+    /// `iommu_device_id` が設定されている場合は `CoherentDmaBuffer::new_for_device()` を
+    /// 使い、IOMMU マッピングを自動登録する。設定されていない場合は従来の `new()` に
+    /// フォールバックする。
+    fn alloc_coherent(
+        &self,
+        size: usize,
+        attrs: DmaMemoryAttributes,
+    ) -> Option<CoherentDmaBuffer> {
+        match &self.iommu_device_id {
+            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
+            None => CoherentDmaBuffer::new(size, attrs),
         }
     }
 
@@ -637,10 +683,10 @@ impl VirtioGpu {
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
-        let buffer = CoherentDmaBuffer::new(total_size, DmaMemoryAttributes::MMIO)
+        let buffer = self.alloc_coherent(total_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
 
-        let phys_base = buffer.phys_addr().as_u64();
+        let dev_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
@@ -648,11 +694,11 @@ impl VirtioGpu {
         let used_ring = unsafe { ptr.add(used_offset) as *mut VringUsed };
 
         self.transport.set_queue_size(queue_size);
-        self.transport.set_queue_desc_addr(phys_base);
+        self.transport.set_queue_desc_addr(dev_base);
         self.transport
-            .set_queue_avail_addr(phys_base + desc_size as u64);
+            .set_queue_avail_addr(dev_base + desc_size as u64);
         self.transport
-            .set_queue_used_addr(phys_base + used_offset as u64);
+            .set_queue_used_addr(dev_base + used_offset as u64);
 
         self.transport.enable_queue();
 
@@ -693,9 +739,9 @@ impl VirtioGpu {
         let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
         let queue_guard = queue.lock();
 
-        let mut req_buf = CoherentDmaBuffer::new(req_bytes.len(), DmaMemoryAttributes::MMIO)
+        let mut req_buf = self.alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
-        let resp_buf = CoherentDmaBuffer::new(resp_size, DmaMemoryAttributes::MMIO)
+        let resp_buf = self.alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
 
         unsafe {
@@ -710,13 +756,13 @@ impl VirtioGpu {
 
         unsafe {
             (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
-                addr: req_buf.phys_addr().as_u64(),
+                addr: req_buf.device_addr(),
                 len: req_bytes.len() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc1,
             };
             (*queue_guard.desc_table.add(desc1 as usize)) = VringDesc {
-                addr: resp_buf.phys_addr().as_u64(),
+                addr: resp_buf.device_addr(),
                 len: resp_size as u32,
                 flags: vring_flags::VRING_DESC_F_WRITE,
                 next: 0,
@@ -764,7 +810,7 @@ impl VirtioGpu {
         let queue_guard = queue.lock();
 
         let req_size = core::mem::size_of::<Req>();
-        let mut req_buf = CoherentDmaBuffer::new(req_size, DmaMemoryAttributes::MMIO)
+        let mut req_buf = self.alloc_coherent(req_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
 
         unsafe {
@@ -776,7 +822,7 @@ impl VirtioGpu {
 
         unsafe {
             (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
-                addr: req_buf.phys_addr().as_u64(),
+                addr: req_buf.device_addr(),
                 len: req_size as u32,
                 flags: 0,
                 next: 0,
@@ -809,11 +855,11 @@ impl VirtioGpu {
         let queue = self.ctrl_queue.as_ref().ok_or(GpuError::InitFailed)?;
         let queue_guard = queue.lock();
 
-        let mut req_buf = CoherentDmaBuffer::new(req_bytes.len(), DmaMemoryAttributes::MMIO)
+        let mut req_buf = self.alloc_coherent(req_bytes.len(), DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
-        let mut data_buf = CoherentDmaBuffer::new(data_bytes.len(), DmaMemoryAttributes::MMIO)
+        let mut data_buf = self.alloc_coherent(data_bytes.len(), DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
-        let resp_buf = CoherentDmaBuffer::new(resp_size, DmaMemoryAttributes::MMIO)
+        let resp_buf = self.alloc_coherent(resp_size, DmaMemoryAttributes::MMIO)
             .ok_or(GpuError::OutOfMemory)?;
 
         unsafe {
@@ -834,19 +880,19 @@ impl VirtioGpu {
 
         unsafe {
             (*queue_guard.desc_table.add(desc0 as usize)) = VringDesc {
-                addr: req_buf.phys_addr().as_u64(),
+                addr: req_buf.device_addr(),
                 len: req_bytes.len() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc1,
             };
             (*queue_guard.desc_table.add(desc1 as usize)) = VringDesc {
-                addr: data_buf.phys_addr().as_u64(),
+                addr: data_buf.device_addr(),
                 len: data_bytes.len() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
                 next: desc2,
             };
             (*queue_guard.desc_table.add(desc2 as usize)) = VringDesc {
-                addr: resp_buf.phys_addr().as_u64(),
+                addr: resp_buf.device_addr(),
                 len: resp_size as u32,
                 flags: vring_flags::VRING_DESC_F_WRITE,
                 next: 0,
@@ -1043,11 +1089,14 @@ impl VirtioGpu {
         let format = PixelFormat::B8G8R8A8Unorm;
         let resource_id = self.create_resource_2d(width, height, format)?;
 
-        let fb = Framebuffer::new(resource_id, width, height, format)
-            .ok_or(GpuError::OutOfMemory)?;
+        let fb = match &self.iommu_device_id {
+            Some(dev_id) => Framebuffer::new_for_device(resource_id, width, height, format, dev_id),
+            None => Framebuffer::new(resource_id, width, height, format),
+        }
+        .ok_or(GpuError::OutOfMemory)?;
 
         // Attach the DMA buffer as backing memory
-        self.attach_backing(resource_id, fb.phys_addr().as_u64(), fb.size() as u32)?;
+        self.attach_backing(resource_id, fb.device_addr(), fb.size() as u32)?;
 
         self.framebuffers.write().push(fb);
         Ok(resource_id)

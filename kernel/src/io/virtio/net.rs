@@ -25,7 +25,7 @@ use crate::io::dma::{
 };
 use crate::io::iommu::api::{
     get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
-    unmap_dma, unmap_for_device, DmaDirection, DmaHandle,
+    unmap_dma, unmap_for_device, DmaDirection, DmaHandle, map_for_device_with_perms,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
@@ -746,6 +746,24 @@ struct TxPacketInflight {
     dma_len: usize,
 }
 
+/// In-flight entry for a zero-copy RX PacketRef. Holds IOMMU mapping for cleanup on completion.
+struct RxPacketInflight {
+    packet: crate::net::PacketRef,
+    /// IOVA mapped through IOMMU for this buffer (None when IOMMU is inactive)
+    iommu_iova: Option<u64>,
+    /// Size of the IOMMU mapping
+    iommu_map_len: u64,
+}
+
+/// In-flight entry for a VirtioNetRxDmaBuffer. Holds IOMMU mapping for cleanup on completion.
+struct RxVbufInflight {
+    vbuf: VirtioNetRxDmaBuffer,
+    /// IOVA mapped through IOMMU for this buffer (None when IOMMU is inactive)
+    iommu_iova: Option<u64>,
+    /// Size of the IOMMU mapping
+    iommu_map_len: u64,
+}
+
 /// VirtIO ネットワークデバイス
 pub struct VirtioNetDevice {
     /// トランスポート層（MMIO/PCI共通インターフェース）
@@ -768,10 +786,10 @@ pub struct VirtioNetDevice {
     tx_bytes: AtomicU32,
     /// 統計: 受信バイト数
     rx_bytes: AtomicU32,
-    /// 受信用バッファマップ (desc_idx -> VirtioNetRxDmaBuffer)
-    rx_buffers: Mutex<BTreeMap<u16, VirtioNetRxDmaBuffer>>,
-    /// 受信用バッファマップ (desc_idx -> PacketRef) - zero-copy posted buffers from mempool
-    rx_packetrefs: Mutex<BTreeMap<u16, crate::net::PacketRef>>,
+    /// 受信用バッファマップ (desc_idx -> RxVbufInflight)
+    rx_buffers: Mutex<BTreeMap<u16, RxVbufInflight>>,
+    /// 受信用バッファマップ (desc_idx -> RxPacketInflight) - zero-copy posted buffers from mempool
+    rx_packetrefs: Mutex<BTreeMap<u16, RxPacketInflight>>,
     /// 送信用 PacketRef インフライトマップ (desc_idx -> TxPacketInflight)
     tx_packetrefs: Mutex<BTreeMap<u16, TxPacketInflight>>,
     /// 送信用インフライトバッファ (desc_idx -> CoherentDmaBuffer)
@@ -1067,19 +1085,54 @@ impl VirtioNetDevice {
                     if let Some(packet) = crate::net::mempool::alloc_packet() {
                         let phys = packet.phys_addr().as_u64();
                         let buf_len = packet.capacity();
-                        match rxq.add_rx_buffer_zero_copy(phys, buf_len) {
+
+                        // Map through IOMMU if active
+                        let (dma_addr, iommu_iova, iommu_map_len) = if is_iommu_enabled() {
+                            if let Some(ref device_id) = self.iommu_device_id {
+                                let map_size = iommu_align_len(buf_len).unwrap_or(buf_len) as u64;
+                                match unsafe {
+                                    map_for_device_with_perms(
+                                        device_id,
+                                        PhysAddr::new(phys),
+                                        map_size,
+                                        false, // device does not read RX buffer
+                                        true,  // device writes received data
+                                    )
+                                } {
+                                    Ok(iova) => (iova, Some(iova), map_size),
+                                    Err(e) => {
+                                        log::warn!("[VIRTIO-NET] IOMMU map failed for RX PacketRef: {:?}", e);
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                (phys, None, 0)
+                            }
+                        } else {
+                            (phys, None, 0)
+                        };
+
+                        match rxq.add_rx_buffer_zero_copy(dma_addr, buf_len) {
                             Ok(desc_idx) => {
                                 log::info!(
-                                    "[VIRTIO-NET] posted RX PacketRef desc={} phys=0x{:x} len={}",
+                                    "[VIRTIO-NET] posted RX PacketRef desc={} dma=0x{:x} len={}",
                                     desc_idx,
-                                    phys,
+                                    dma_addr,
                                     buf_len
                                 );
-                                self.rx_packetrefs.lock().insert(desc_idx, packet);
+                                self.rx_packetrefs.lock().insert(desc_idx, RxPacketInflight {
+                                    packet,
+                                    iommu_iova,
+                                    iommu_map_len,
+                                });
                                 added += 1;
                                 continue;
                             }
                             Err(e) => {
+                                // Unmap IOMMU if we mapped
+                                if let (Some(iova), Some(ref device_id)) = (iommu_iova, &self.iommu_device_id) {
+                                    let _ = unmap_for_device(device_id, iova, iommu_map_len);
+                                }
                                 log::warn!("[VIRTIO-NET] failed to post PacketRef rx buffer: {:?}", e);
                                 // Fall through to allocate a VirtioNetRxDmaBuffer
                             }
@@ -1091,20 +1144,53 @@ impl VirtioNetDevice {
                         match vbuf.start_receive() {
                             Ok(phys) => {
                                 let buf_len = vbuf.alloc_size;
-                                match rxq.add_rx_buffer_zero_copy(phys, buf_len) {
+
+                                // Map through IOMMU if active
+                                let (dma_addr, iommu_iova, iommu_map_len) = if is_iommu_enabled() {
+                                    if let Some(ref device_id) = self.iommu_device_id {
+                                        let map_size = iommu_align_len(buf_len).unwrap_or(buf_len) as u64;
+                                        match unsafe {
+                                            map_for_device_with_perms(
+                                                device_id,
+                                                PhysAddr::new(phys),
+                                                map_size,
+                                                false,
+                                                true,
+                                            )
+                                        } {
+                                            Ok(iova) => (iova, Some(iova), map_size),
+                                            Err(e) => {
+                                                log::warn!("[VIRTIO-NET] IOMMU map failed for RX vbuf: {:?}", e);
+                                                continue;
+                                            }
+                                        }
+                                    } else {
+                                        (phys, None, 0)
+                                    }
+                                } else {
+                                    (phys, None, 0)
+                                };
+
+                                match rxq.add_rx_buffer_zero_copy(dma_addr, buf_len) {
                                     Ok(desc_idx) => {
                                         log::info!(
-                                            "[VIRTIO-NET] posted RX desc={} phys=0x{:x} len={}",
+                                            "[VIRTIO-NET] posted RX desc={} dma=0x{:x} len={}",
                                             desc_idx,
-                                            phys,
+                                            dma_addr,
                                             buf_len
                                         );
-                                        self.rx_buffers.lock().insert(desc_idx, vbuf);
+                                        self.rx_buffers.lock().insert(desc_idx, RxVbufInflight {
+                                            vbuf,
+                                            iommu_iova,
+                                            iommu_map_len,
+                                        });
                                         added += 1;
                                     }
                                     Err(e) => {
+                                        if let (Some(iova), Some(ref device_id)) = (iommu_iova, &self.iommu_device_id) {
+                                            let _ = unmap_for_device(device_id, iova, iommu_map_len);
+                                        }
                                         log::warn!("[VIRTIO-NET] failed to add rx buffer: {:?}", e);
-                                        // Drop vbuf and continue
                                     }
                                 }
                             }
@@ -1406,25 +1492,64 @@ impl VirtioNetDevice {
                     self.rx_packets.fetch_add(1, Ordering::Relaxed);
 
                     // First, check for a PacketRef posted by the driver_bridge (zero-copy)
-                    if let Some(packet) = self.rx_packetrefs.lock().remove(&desc_idx) {
+                    if let Some(inflight) = self.rx_packetrefs.lock().remove(&desc_idx) {
+                        // Unmap IOMMU mapping if it was active
+                        if let (Some(iova), Some(ref device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
+                            let _ = unmap_for_device(device_id, iova, inflight.iommu_map_len);
+                        }
+
                         // This was a PacketRef we posted earlier. Hand it to the bridge without copying.
                         let header_size = core::mem::size_of::<VirtioNetHeader>();
                         let payload_len = (len as usize).saturating_sub(header_size);
                         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET][RX-COMP] desc={} len={} payload_len={} (packetref)\n", desc_idx, len, payload_len));
 
                         // Pass PacketRef to bridge for zero-copy processing
-                        crate::net::driver_bridge::process_received_packet_zero_copy(packet, header_size, payload_len);
+                        crate::net::driver_bridge::process_received_packet_zero_copy(inflight.packet, header_size, payload_len);
 
                         // Re-post a new PacketRef buffer to the queue so we keep a steady supply
                         if let Some(new_pkt) = crate::net::mempool::alloc_packet() {
                             let phys = new_pkt.phys_addr().as_u64();
                             let buf_len = new_pkt.capacity();
-                            match rx_queue.add_rx_buffer_zero_copy(phys, buf_len) {
+
+                            // Map through IOMMU if active
+                            let (dma_addr, new_iommu_iova, new_iommu_map_len) = if is_iommu_enabled() {
+                                if let Some(ref device_id) = self.iommu_device_id {
+                                    let map_size = iommu_align_len(buf_len).unwrap_or(buf_len) as u64;
+                                    match unsafe {
+                                        map_for_device_with_perms(
+                                            device_id,
+                                            PhysAddr::new(phys),
+                                            map_size,
+                                            false,
+                                            true,
+                                        )
+                                    } {
+                                        Ok(iova) => (iova, Some(iova), map_size),
+                                        Err(e) => {
+                                            log::warn!("[VIRTIO-NET] IOMMU map failed for re-post RX PacketRef: {:?}", e);
+                                            continue;
+                                        }
+                                    }
+                                } else {
+                                    (phys, None, 0)
+                                }
+                            } else {
+                                (phys, None, 0)
+                            };
+
+                            match rx_queue.add_rx_buffer_zero_copy(dma_addr, buf_len) {
                                 Ok(new_desc_idx) => {
-                                    log::info!("[VIRTIO-NET] re-queued RX PacketRef desc={} phys=0x{:x} len={}", new_desc_idx, phys, buf_len);
-                                    self.rx_packetrefs.lock().insert(new_desc_idx, new_pkt);
+                                    log::info!("[VIRTIO-NET] re-queued RX PacketRef desc={} dma=0x{:x} len={}", new_desc_idx, dma_addr, buf_len);
+                                    self.rx_packetrefs.lock().insert(new_desc_idx, RxPacketInflight {
+                                        packet: new_pkt,
+                                        iommu_iova: new_iommu_iova,
+                                        iommu_map_len: new_iommu_map_len,
+                                    });
                                 }
                                 Err(e) => {
+                                    if let (Some(iova), Some(ref device_id)) = (new_iommu_iova, &self.iommu_device_id) {
+                                        let _ = unmap_for_device(device_id, iova, new_iommu_map_len);
+                                    }
                                     log::warn!("[VIRTIO-NET] failed to re-add rx PacketRef: {:?}", e);
                                     // Drop new_pkt and try to fall back to vbuf
                                 }
@@ -1437,14 +1562,19 @@ impl VirtioNetDevice {
                     }
 
                     // Find the RX buffer we queued earlier and complete it
-                    if let Some(mut vbuf) = self.rx_buffers.lock().remove(&desc_idx) {
-                        if let Err(e) = vbuf.complete_receive() {
+                    if let Some(mut inflight) = self.rx_buffers.lock().remove(&desc_idx) {
+                        // Unmap IOMMU mapping if it was active
+                        if let (Some(iova), Some(ref device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
+                            let _ = unmap_for_device(device_id, iova, inflight.iommu_map_len);
+                        }
+
+                        if let Err(e) = inflight.vbuf.complete_receive() {
                             log::warn!("[VIRTIO-NET] failed to complete rx buffer {}: {}", desc_idx, e);
                         } else {
                             // Compute payload length and hand to network stack
                             let header_size = core::mem::size_of::<VirtioNetHeader>();
                             let payload_len = (len as usize).saturating_sub(header_size);
-                            if let Some(data) = vbuf.received_data() {
+                            if let Some(data) = inflight.vbuf.received_data() {
                                 let payload_cap = data.len();
                                 let actual_len = core::cmp::min(payload_len, payload_cap);
                                 let payload_slice = &data[..actual_len];

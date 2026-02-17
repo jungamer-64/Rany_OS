@@ -392,10 +392,21 @@ pub(crate) struct BlkRequestDma {
 impl BlkRequestDma {
     /// Allocate DMA memory and copy the header into it.
     fn new(header: &VirtioBlkReqHeader) -> Option<Self> {
+        Self::new_with_device(header, None)
+    }
+
+    /// Allocate IOMMU-aware DMA memory and copy the header into it.
+    fn new_with_device(
+        header: &VirtioBlkReqHeader,
+        device_id: Option<&IommuDeviceId>,
+    ) -> Option<Self> {
         let header_size = core::mem::size_of::<VirtioBlkReqHeader>();
         let total = header_size + 1; // header + 1 status byte
-        let mut buffer = CoherentDmaBuffer::new(total, DmaMemoryAttributes::MMIO)?;
-        let base_phys = buffer.phys_addr().as_u64();
+        let mut buffer = match device_id {
+            Some(dev_id) => CoherentDmaBuffer::new_for_device(total, DmaMemoryAttributes::MMIO, dev_id)?,
+            None => CoherentDmaBuffer::new(total, DmaMemoryAttributes::MMIO)?,
+        };
+        let base_dev = buffer.device_addr();
 
         unsafe {
             let slice = buffer.as_mut_slice();
@@ -407,8 +418,8 @@ impl BlkRequestDma {
 
         Some(Self {
             buffer,
-            header_phys: base_phys,
-            status_phys: base_phys + header_size as u64,
+            header_phys: base_dev,
+            status_phys: base_dev + header_size as u64,
         })
     }
 
@@ -513,6 +524,18 @@ impl VirtioBlkDevice {
             transport,
             features: 0,
             inflight_dma: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
+    fn alloc_coherent(
+        &self,
+        size: usize,
+        attrs: DmaMemoryAttributes,
+    ) -> Option<CoherentDmaBuffer> {
+        match &self.iommu_device_id {
+            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
+            None => CoherentDmaBuffer::new(size, attrs),
         }
     }
 
@@ -663,25 +686,15 @@ impl VirtioBlkDevice {
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
-        // Use CoherentDmaBuffer for shared queue memory
+        // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         // We use Bidirectional as default, allowing device to read/write rings
-        let buffer = crate::io::dma::CoherentDmaBuffer::new(
+        let buffer = self.alloc_coherent(
             total_size,
-            crate::io::dma::DmaMemoryAttributes::MMIO, // Use MMIO/Uncacheable for rings to ensure visibility? Or Bidirectional?
-                                                       // Usually rings are Coherent/Consistent. DmaMemoryAttributes::TO_DEVICE says WriteBack.
-                                                       // MMIO says Uncacheable.
-                                                       // VirtIO legacy often requires legacy access, but modern requires correct flags.
-                                                       // Let's use DmaMemoryAttributes::MMIO which gives Uncacheable + Bidirectional, ensuring changes are visible immediately.
-                                                       // Wait, standard RAM for rings should be cacheable if snooped.
-                                                       // But to be safe and consistent with "Coherent", Uncacheable is often used if no hardware snooping.
-                                                       // Let's stick to DmaMemoryAttributes::MMIO for safety as per user guideline "wrap unsafe MMIO".
-                                                       // Actually, `alloc_dma_buffer` usually returns coherent memory.
-                                                       // Let's use `DmaMemoryAttributes { cache_mode: CacheMode::Uncacheable, contiguous: true, direction: DmaDirection::Bidirectional }`.
-                                                       // Which is `DmaMemoryAttributes::MMIO`.
+            crate::io::dma::DmaMemoryAttributes::MMIO,
         )
         .ok_or(BlockError::NotReady)?;
 
-        let phys_base = buffer.phys_addr().as_u64();
+        let dev_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
@@ -690,11 +703,11 @@ impl VirtioBlkDevice {
 
         // Write queue configuration
         self.transport.set_queue_size(queue_size);
-        self.transport.set_queue_desc_addr(phys_base);
+        self.transport.set_queue_desc_addr(dev_base);
         self.transport
-            .set_queue_avail_addr(phys_base + desc_size as u64);
+            .set_queue_avail_addr(dev_base + desc_size as u64);
         self.transport
-            .set_queue_used_addr(phys_base + used_offset as u64);
+            .set_queue_used_addr(dev_base + used_offset as u64);
 
         // Activate queue
         self.transport.enable_queue();
@@ -853,7 +866,8 @@ impl VirtioBlkDevice {
             reserved: 0,
             sector,
         };
-        let req_dma = BlkRequestDma::new(&header).ok_or(BlockError::NotReady)?;
+        let req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
+            .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();
@@ -935,7 +949,8 @@ impl VirtioBlkDevice {
             reserved: 0,
             sector,
         };
-        let req_dma = BlkRequestDma::new(&header).ok_or(BlockError::NotReady)?;
+        let req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
+            .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();
@@ -1007,7 +1022,8 @@ impl VirtioBlkDevice {
             reserved: 0,
             sector: 0, // sector is ignored for flush
         };
-        let req_dma = BlkRequestDma::new(&header).ok_or(BlockError::NotReady)?;
+        let req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
+            .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let queue_guard = queue.lock();

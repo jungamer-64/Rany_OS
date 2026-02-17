@@ -35,14 +35,18 @@ pub struct HdaController {
     pub(crate) pci_device: PciDeviceInfo,
     /// Memory-mapped register base address
     pub(crate) mmio_base: u64,
-    /// CORB buffer (physical address)
+    /// CORB buffer (virtual address for CPU access)
     pub(crate) corb_addr: u64,
+    /// CORB buffer device address (IOVA or physical, for hardware register writes)
+    pub(crate) corb_device_addr: u64,
     /// CORB buffer size
     pub(crate) corb_size: usize,
     /// CORB write pointer
     pub(crate) corb_wp: AtomicU16,
-    /// RIRB buffer (physical address)
+    /// RIRB buffer (virtual address for CPU access)
     pub(crate) rirb_addr: u64,
+    /// RIRB buffer device address (IOVA or physical, for hardware register writes)
+    pub(crate) rirb_device_addr: u64,
     /// RIRB buffer size
     pub(crate) rirb_size: usize,
     /// RIRB read pointer
@@ -59,10 +63,14 @@ pub struct HdaController {
     pub(crate) initialized: AtomicBool,
     /// DMA position buffer address
     pub(crate) dma_pos_addr: u64,
-    /// Stream BDL addresses
+    /// Stream BDL virtual addresses (for CPU access)
     pub(crate) stream_bdl_addrs: [u64; 8],
-    /// Audio data buffers
+    /// Stream BDL device addresses (for hardware register writes)
+    pub(crate) stream_bdl_device_addrs: [u64; 8],
+    /// Audio data buffer virtual addresses (for CPU access)
     pub(crate) audio_buffers: [u64; 8],
+    /// Audio data buffer device addresses (for hardware/BDL)
+    pub(crate) audio_buffer_device_addrs: [u64; 8],
 }
 
 // ============================================================================
@@ -97,9 +105,11 @@ impl HdaController {
             pci_device,
             mmio_base,
             corb_addr: 0,
+            corb_device_addr: 0,
             corb_size: 0,
             corb_wp: AtomicU16::new(0),
             rirb_addr: 0,
+            rirb_device_addr: 0,
             rirb_size: 0,
             rirb_rp: AtomicU16::new(0),
             codecs: Vec::new(),
@@ -109,7 +119,9 @@ impl HdaController {
             initialized: AtomicBool::new(false),
             dma_pos_addr: 0,
             stream_bdl_addrs: [0; 8],
+            stream_bdl_device_addrs: [0; 8],
             audio_buffers: [0; 8],
+            audio_buffer_device_addrs: [0; 8],
         }
     }
 
@@ -303,24 +315,25 @@ impl HdaController {
     ///
     /// HDA specification requires CORB/RIRB and BDL buffers to be aligned
     /// to 128 bytes for proper DMA operation.
-    pub fn alloc_dma_buffer(size: usize) -> HdaResult<u64> {
-        // Allocate memory aligned to 128 bytes as required by HDA spec
-        let layout =
-            core::alloc::Layout::from_size_align(size, 128).map_err(|_| HdaError::AllocFailed)?;
-
-        // SAFETY: Layout is valid (size > 0, align is 128 which is a power of 2).
-        // The allocated buffer will be used for DMA with the HDA controller.
-        // alloc_zeroed returns a valid pointer or null, which we check below.
-        // Safety: Layout is valid.
-        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        if ptr.is_null() {
-            return Err(HdaError::AllocFailed);
+    ///
+    /// Returns `(virt_addr, device_addr)` tuple where:
+    /// - `virt_addr` is the CPU-accessible virtual address
+    /// - `device_addr` is the hardware-visible address (IOVA or physical)
+    pub fn alloc_dma_buffer(size: usize) -> HdaResult<(u64, u64)> {
+        // Use kernel API for proper DMA allocation with IOMMU support
+        match kernel_api::services::kernel().alloc_dma(size) {
+            Ok(buf) => {
+                let virt = buf.as_ptr() as u64;
+                let dev = buf.device_address();
+                // Note: The buffer is managed by the kernel's DMA registry
+                // and will be freed when free_dma is called.
+                // We intentionally forget the buffer to prevent Drop from running,
+                // as the kernel registry holds the actual allocation.
+                core::mem::forget(buf);
+                Ok((virt, dev))
+            }
+            Err(_) => Err(HdaError::AllocFailed),
         }
-        let _nn = core::ptr::NonNull::new(ptr).ok_or(HdaError::AllocFailed)?;
-
-        // Note: On x86_64 with PCIe, hardware cache coherency is maintained.
-        // For other architectures, consider cache flush here.
-        Ok(ptr as u64)
     }
 
     /// Initialize CORB (Command Output Ring Buffer)
@@ -348,17 +361,20 @@ impl HdaController {
 
         // Allocate CORB buffer
         let buffer_size = size_entries * CORB_ENTRY_SIZE;
-        self.corb_addr = Self::alloc_dma_buffer(buffer_size)?;
+        let (virt, dev) = Self::alloc_dma_buffer(buffer_size)?;
+        self.corb_addr = virt;
+        self.corb_device_addr = dev;
 
         log::info!(
-            "[HDA] CORB: {} entries at 0x{:016x}\n",
+            "[HDA] CORB: {} entries at virt=0x{:016x} dev=0x{:016x}\n",
             size_entries,
-            self.corb_addr
+            self.corb_addr,
+            self.corb_device_addr
         );
 
-        // Set CORB base address
-        self.write32(REG_CORBLBASE, self.corb_addr as u32);
-        self.write32(REG_CORBUBASE, (self.corb_addr >> 32) as u32);
+        // Set CORB base address (hardware-visible device address)
+        self.write32(REG_CORBLBASE, self.corb_device_addr as u32);
+        self.write32(REG_CORBUBASE, (self.corb_device_addr >> 32) as u32);
 
         // Set CORB size
         self.write8(REG_CORBSIZE, size_reg);
@@ -420,17 +436,20 @@ impl HdaController {
 
         // Allocate RIRB buffer
         let buffer_size = size_entries * RIRB_ENTRY_SIZE;
-        self.rirb_addr = Self::alloc_dma_buffer(buffer_size)?;
+        let (virt, dev) = Self::alloc_dma_buffer(buffer_size)?;
+        self.rirb_addr = virt;
+        self.rirb_device_addr = dev;
 
         log::info!(
-            "[HDA] RIRB: {} entries at 0x{:016x}\n",
+            "[HDA] RIRB: {} entries at virt=0x{:016x} dev=0x{:016x}\n",
             size_entries,
-            self.rirb_addr
+            self.rirb_addr,
+            self.rirb_device_addr
         );
 
-        // Set RIRB base address
-        self.write32(REG_RIRBLBASE, self.rirb_addr as u32);
-        self.write32(REG_RIRBUBASE, (self.rirb_addr >> 32) as u32);
+        // Set RIRB base address (hardware-visible device address)
+        self.write32(REG_RIRBLBASE, self.rirb_device_addr as u32);
+        self.write32(REG_RIRBUBASE, (self.rirb_device_addr >> 32) as u32);
 
         // Set RIRB size
         self.write8(REG_RIRBSIZE, size_reg);

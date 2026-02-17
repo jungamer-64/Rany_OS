@@ -500,6 +500,7 @@ extern "C" fn kapi_alloc_dma(size: usize, _align: usize, out: *mut AbiDmaBuffer)
             unsafe {
                 *out = AbiDmaBuffer {
                     phys_addr: buffer.physical_address(),
+                    device_addr: buffer.device_address(),
                     virt_addr: buffer.as_ptr() as usize as u64,
                     size: buffer.size(),
                 };

@@ -30,6 +30,8 @@ impl TaskHandle {
 /// DMA buffer - represents a region of DMA-capable memory
 pub struct DmaBuffer {
     phys_addr: u64,
+    /// Hardware-visible address (IOVA when IOMMU active, else phys_addr)
+    device_addr: u64,
     virt_addr: *mut u8,
     size: usize,
 }
@@ -42,6 +44,22 @@ impl DmaBuffer {
     pub const fn new(phys_addr: u64, virt_addr: *mut u8, size: usize) -> Self {
         Self {
             phys_addr,
+            device_addr: phys_addr,
+            virt_addr,
+            size,
+        }
+    }
+
+    /// Create a new DMA buffer with explicit device address (IOMMU-aware)
+    pub const fn new_with_device_addr(
+        phys_addr: u64,
+        device_addr: u64,
+        virt_addr: *mut u8,
+        size: usize,
+    ) -> Self {
+        Self {
+            phys_addr,
+            device_addr,
             virt_addr,
             size,
         }
@@ -50,6 +68,11 @@ impl DmaBuffer {
     /// Physical address of the buffer
     pub fn physical_address(&self) -> u64 {
         self.phys_addr
+    }
+
+    /// Device-visible address (IOVA when IOMMU is active, physical otherwise)
+    pub fn device_address(&self) -> u64 {
+        self.device_addr
     }
 
     /// Virtual address pointer

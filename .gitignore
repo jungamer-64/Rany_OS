@@ -5,8 +5,8 @@
 
 
 # Added by cargo
-
 /target
+
 *\target
 /.serena
 /.github/instructions

@@ -143,7 +143,9 @@ pub(crate) fn file_handle_path(handle_id: u64) -> Option<String> {
 // DMA registry stores heap allocated TypedDmaSlice instances keyed by
 // the virtual pointer to the buffer so we can free them later.
 struct DmaRegistry {
-    buffers: Mutex<BTreeMap<usize, Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>>>,
+    /// Registry of DMA buffers keyed by virtual address.
+    /// Uses `Box<dyn Any + Send>` to support both CoherentDmaBuffer and TypedDmaSlice.
+    buffers: Mutex<BTreeMap<usize, Box<dyn core::any::Any + Send>>>,
 }
 
 impl DmaRegistry {
@@ -155,18 +157,28 @@ impl DmaRegistry {
 
     fn register(
         &self,
-        mut buf: Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
+        buf: Box<dyn core::any::Any + Send>,
     ) -> usize {
-        // Get the virtual address of the slice
-        let virt_ptr = buf.as_mut_slice().as_mut_ptr() as usize;
-        self.buffers.lock().insert(virt_ptr, buf);
-        virt_ptr
+        // Register with a runtime-generated key based on the pointer value.
+        // Since we don't have direct access to the inner buffer here,
+        // the caller must provide the key externally if needed.
+        // For now, use a simple counter-based approach.
+        // Actually, we'll let the caller register with a known key.
+        0 // placeholder - caller should use register_with_key
+    }
+
+    fn register_with_key(
+        &self,
+        key: usize,
+        buf: Box<dyn core::any::Any + Send>,
+    ) {
+        self.buffers.lock().insert(key, buf);
     }
 
     fn unregister(
         &self,
         virt_ptr: usize,
-    ) -> Option<Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>> {
+    ) -> Option<Box<dyn core::any::Any + Send>> {
         self.buffers.lock().remove(&virt_ptr)
     }
 }
@@ -529,14 +541,16 @@ impl KernelServices for ExoKernel {
     // ========================================================================
 
     fn alloc_dma(&self, size: usize) -> Result<DmaBuffer, KapiError> {
-        // Use TypedDmaSlice for coherent DMA allocation
-        match dma::TypedDmaSlice::new(size) {
+        // Use CoherentDmaBuffer for proper DMA allocation with correct physical address
+        match dma::CoherentDmaBuffer::new(size, dma::DmaMemoryAttributes::MMIO) {
             Some(buffer) => {
                 let phys = buffer.phys_addr().as_u64();
-                // Box up the buffer and register it so it can be freed later
-                let boxed = Box::new(buffer);
-                let virt_ptr = DMA_REGISTRY.register(boxed);
-                Ok(DmaBuffer::new(phys, virt_ptr as *mut u8, size))
+                let dev_addr = buffer.device_addr();
+                let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
+                // Box up the buffer and register by virtual address so it can be freed later
+                let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
+                DMA_REGISTRY.register_with_key(virt_ptr, boxed);
+                Ok(DmaBuffer::new_with_device_addr(phys, dev_addr, virt_ptr as *mut u8, size))
             }
             None => Err(KapiError::OutOfMemory),
         }
