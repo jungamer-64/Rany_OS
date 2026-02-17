@@ -25,18 +25,18 @@ if (-not (Test-Path $TargetDir)) {
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
 }
 
-Write-Host "=== Building Standalone Driver: $Driver ===" -ForegroundColor Cyan
+Write-Output "=== Building Standalone Driver: $Driver ==="
 
 # Set up rustflags for custom linker script
 $env:RUSTFLAGS = "-C link-arg=-T$LinkerScript -C link-arg=--gc-sections"
 
 # Build the driver with standalone feature
-Write-Host "Building with standalone feature..." -ForegroundColor Yellow
+Write-Output "Building with standalone feature..."
 $DriverPath = Join-Path $DriversDir $Driver
 
 try {
     Push-Location $DriverPath
-    cargo build --release --features standalone --target x86_64-unknown-none 2>&1 | Write-Host
+    cargo build --release --features standalone --target x86_64-unknown-none 2>&1 | Write-Output
     if ($LASTEXITCODE -ne 0) {
         throw "Cargo build failed"
     }
@@ -51,9 +51,9 @@ $DriverLib = Get-ChildItem -Path $ArtifactDir -Filter "lib*.a" | Select-Object -
 if ($DriverLib) {
     $OutputPath = Join-Path $TargetDir "$Driver.elf"
     Copy-Item $DriverLib.FullName $OutputPath -Force
-    Write-Host "Driver built: $OutputPath" -ForegroundColor Green
+    Write-Output "Driver built: $OutputPath"
 } else {
-    Write-Host "Warning: No .a artifact found, checking for .o files..." -ForegroundColor Yellow
+    Write-Output "Warning: No .a artifact found, checking for .o files..."
 }
 
-Write-Host "=== Build Complete ===" -ForegroundColor Cyan
+Write-Output "=== Build Complete ==="

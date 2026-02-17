@@ -129,23 +129,23 @@ for suite_group in \
   "net_tls_wave8_phase_f_exports"
 do
   if ! rg -q "${suite_group}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_tls_wave8_required] missing ${suite_group} in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_net_tls_wave8_required] missing ${suite_group} in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
 
 if ! rg -q "pub mod qemu_tests" "$TLS_EXPORT_FILE"; then
-  echo "[verify_net_tls_wave8_required] missing qemu_tests module in ${TLS_EXPORT_FILE#$ROOT_DIR/}"
+  echo "[verify_net_tls_wave8_required] missing qemu_tests module in ${TLS_EXPORT_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "pub fn qemu_test_set_random_override_seed\(" "$TLS_EXPORT_FILE"; then
-  echo "[verify_net_tls_wave8_required] missing qemu random override setter in ${TLS_EXPORT_FILE#$ROOT_DIR/}"
+  echo "[verify_net_tls_wave8_required] missing qemu random override setter in ${TLS_EXPORT_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "pub fn qemu_test_clear_random_override\(" "$TLS_EXPORT_FILE"; then
-  echo "[verify_net_tls_wave8_required] missing qemu random override clearer in ${TLS_EXPORT_FILE#$ROOT_DIR/}"
+  echo "[verify_net_tls_wave8_required] missing qemu random override clearer in ${TLS_EXPORT_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -155,22 +155,22 @@ verify_case() {
   local wrapper_fn="$3"
 
   if ! rg -q "pub fn ${export_fn}\\(" "$TLS_EXPORT_FILE"; then
-    echo "[verify_net_tls_wave8_required] missing TLS export '${export_fn}' in ${TLS_EXPORT_FILE#$ROOT_DIR/}"
+    echo "[verify_net_tls_wave8_required] missing TLS export '${export_fn}' in ${TLS_EXPORT_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_net_tls_wave8_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_net_tls_wave8_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_tls_wave8_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_net_tls_wave8_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if rg -q "${case_name}" "$PENDING_FILE"; then
-    echo "[verify_net_tls_wave8_required] promoted case '${case_name}' still listed in ${PENDING_FILE#$ROOT_DIR/}"
+    echo "[verify_net_tls_wave8_required] promoted case '${case_name}' still listed in ${PENDING_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 }
@@ -213,13 +213,13 @@ for marker in \
   "NET TLS Wave8 Phase F deterministic set is promoted to required suite_kernel"
 do
   if ! rg -q "${marker}" "$PENDING_FILE"; then
-    echo "[verify_net_tls_wave8_required] missing marker '${marker}' in ${PENDING_FILE#$ROOT_DIR/}"
+    echo "[verify_net_tls_wave8_required] missing marker '${marker}' in ${PENDING_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
 
 if ! rg -q "NET TLS Wave8 residual monitored cases \(post-Phase F\): none" "$PENDING_FILE"; then
-  echo "[verify_net_tls_wave8_required] missing post-Phase F residual marker in ${PENDING_FILE#$ROOT_DIR/}"
+  echo "[verify_net_tls_wave8_required] missing post-Phase F residual marker in ${PENDING_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 

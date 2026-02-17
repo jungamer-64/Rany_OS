@@ -28,7 +28,7 @@ This document establishes the baseline usage of legacy POSIX features (`ProcessI
     *   *Finding:* Does **not** import `Signal` types. It parsing standard DWARF `S` flag. Safe to keep as "Async Frame" concept.
 *   **`kernel/src/task/mod.rs`**: Re-exports `Signal` types.
 
-### Replacements Available
+### Replacements Available (Signal)
 *   `kernel/src/ipc/pipe.rs`: `ZeroCopyChannel` for event notification.
 *   `kernel/src/domain_system.rs`: `DomainState` (Active/Suspended) handles Stop/Resume signals.
     *   *Strategy:* Stop/Cont -> `Domain::suspend()`, `Domain::resume()`.

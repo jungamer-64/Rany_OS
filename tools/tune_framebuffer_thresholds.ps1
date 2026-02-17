@@ -10,7 +10,7 @@ $features = "bench,std"
 
 foreach ($chunk in $ChunkSizes) {
     foreach ($stream in $StreamThresholds) {
-        Write-Host "Running benches: CHUNK_24=$chunk STREAM_THRESHOLD=$stream";
+        Write-Output "Running benches: CHUNK_24=$chunk STREAM_THRESHOLD=$stream";
         $env:RANY_CHUNK_24_PIXELS = $chunk.ToString()
         $env:RANY_STREAM_THRESHOLD_PIXELS = $stream.ToString()
         $env:RANY_BENCH_TARGET_PIXELS_PER_ITER = $TargetPixelsPerIter.ToString()
@@ -18,7 +18,7 @@ foreach ($chunk in $ChunkSizes) {
         # Run bench multiple times to reduce noise and take median-of-medians
         $medians = @()
         for ($run = 0; $run -lt $Runs; $run++) {
-            Write-Host "  Run $($run + 1)/$Runs"
+            Write-Output "  Run $($run + 1)/$Runs"
             $output = cargo bench --manifest-path kernel/Cargo.toml --bench framebuffer_bench --features $features -- draw_image_bgr24 2>&1
             $outStr = $output -join "`n"
 
@@ -76,4 +76,4 @@ foreach ($chunk in $ChunkSizes) {
 
 $results | Format-Table -AutoSize
 $results | ConvertTo-Csv -NoTypeInformation | Out-File tune_results.csv
-Write-Host "Results written to tune_results.csv"
+Write-Output "Results written to tune_results.csv"

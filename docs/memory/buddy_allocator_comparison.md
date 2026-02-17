@@ -1047,7 +1047,7 @@ Total: 264 KB
 
 ### 7.2 buddy_allocator Strengths and Weaknesses
 
-#### Strengths ✓
+#### Strengths ✓ (buddy_allocator)
 
 1. **Minimal Memory Overhead (0.0062%)**
    - 260 KB for 4GB system (250× less than buddy_freelist)
@@ -1082,7 +1082,7 @@ Total: 264 KB
    - 2,830 lines with extensive statistics
    - Proven in production workloads
 
-#### Weaknesses ✗
+#### Weaknesses ✗ (buddy_allocator)
 
 1. **O(log n) Complexity**
    - Worst-case bitmap scan can be slow (10 μs for full scan)

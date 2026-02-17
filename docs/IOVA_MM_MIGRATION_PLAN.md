@@ -105,7 +105,7 @@ impl NumaNodeId {
 
 ### 0.2 Atomicユーティリティ (`mm/atomic_utils.rs`)
 
-#### 現状の問題
+#### 現状の問題（Atomicユーティリティ）
 
 `iova_bitmap.rs`に`AtomicU8`と`AtomicU16Wrapper`が定義されており、`RemoteFreeRing`が依存:
 
@@ -119,7 +119,7 @@ pub struct AtomicU8(AtomicUsize);
 pub struct AtomicU16Wrapper(AtomicUsize);
 ```
 
-#### 移行後の設計
+#### 移行後の設計（Atomicユーティリティ）
 
 ```rust
 // mm/atomic_utils.rs (新規作成)
@@ -147,7 +147,7 @@ impl AtomicU16Wrapper {
 }
 ```
 
-#### 移行手順
+#### 移行手順（Atomicユーティリティ）
 
 1. `mm/atomic_utils.rs` を作成
 2. `iova_bitmap.rs`から`AtomicU8`, `AtomicU16Wrapper`を移動
@@ -312,7 +312,7 @@ pub type FrameSubMagazine = SubMagazine<FrameIndex>;
 
 ### 1.2 Hierarchical Bitmap 統合
 
-#### 現状の実装
+#### 現状の実装（Hierarchical Bitmap）
 
 | ファイル | 構造体 | 特徴 |
 |----------|--------|------|
@@ -423,7 +423,7 @@ impl HugePageBitmap {
 8. ベンチマーク比較
 9. 旧実装を削除
 
-#### メリット
+#### メリット（Hierarchical Bitmap）
 
 - IOVA/物理フレームの両方で同じ高速検索アルゴリズム
 - `on_page_allocated`/`on_page_freed`のHugePage階層更新ロジックを共有
@@ -1098,7 +1098,7 @@ pub trait NumaAware {
 
 ## 5. 工数見積もり修正
 
-### 修正後の見積もり
+### 修正後の見積もり（工数見積もり修正）
 
 | Phase | 元見積もり | 修正見積もり | 理由 |
 |-------|-----------|-------------|------|
@@ -2131,7 +2131,7 @@ pub struct OldMagazine { /* ... */ }
 | 定数重複の回避 | ✅ 完了 |
 | ビルド確認 | ✅ 完了 |
 
-#### 実装詳細
+#### 実装詳細（インポート準備）
 
 - **変更ファイル**: `kernel/src/io/iommu/iova_bitmap.rs`
 - **追加import**:
@@ -2246,7 +2246,7 @@ Phase 3.2までの実装により、以下が達成されました：
 - ビルド成功（0 errors）
 - `IovaBitmap`と並行して使用可能
 
-### 3.4 現在の状態
+### 3.4 現在の状態（Phase 3.3完了後）
 
 Phase 3.3までの実装により、以下が達成されました：
 
@@ -2285,7 +2285,7 @@ Phase 3.3までの実装により、以下が達成されました：
 - `test_iova_bitmap_accessors`: summary(), summary_l2(), used_count_2m()
 - `test_iova_bitmap_hint_operations`: hint_4k(), set_hint_4k()
 
-#### 結果
+#### 結果（ユニットテスト）
 - ビルド成功（0 errors）
 - テストコードがコンパイル可能
 
@@ -2545,7 +2545,7 @@ test_2mb_allocation_comparison()
   - 両バックエンドで同数のブロック取得を確認
 ```
 
-### 結果
+### 結果（Phase 5b）
 
 - ビルド成功（0 errors）
 - Legacy/V2両方で同等の動作を確認
@@ -2616,7 +2616,7 @@ cargo test -p qemu-tests -- --nocapture suite_kernel
 
 ## Phase 6: 実ドライバ統合テスト（次ステップ）
 
-### 目標
+### 目標（Phase 6）
 
 新しい`IovaBitmapV2`を実際のドライバで使用し、動作確認を行う。
 

@@ -7,7 +7,7 @@ param(
     [int]$TimeoutSeconds = 60
 )
 
-Write-Host "Building kernel with integration tests feature..."
+Write-Output "Building kernel with integration tests feature..."
 # Use the same target as CI. Adjust if your environment differs.
 cargo build --target x86_64-exorust.json --features run-integration-tests
 if ($LASTEXITCODE -ne 0) {
@@ -16,11 +16,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if (-not (Test-Path $DiskImage)) {
-    Write-Host "Disk image $DiskImage not found. Creating..."
+    Write-Output "Disk image $DiskImage not found. Creating..."
     & "$PSScriptRoot\create_test_disk.ps1"
 }
 
-Write-Host "Launching QEMU..."
+Write-Output "Launching QEMU..."
 $KERNEL = $KernelPath
 $qemuArgs = @(
     "-machine", "q35,accel=tcg",
@@ -43,9 +43,9 @@ if ($proc -eq $null) {
     exit 1
 }
 
-Write-Host "QEMU exited with code $($proc.ExitCode)"
+Write-Output "QEMU exited with code $($proc.ExitCode)"
 if ($proc.ExitCode -eq 0) {
-    Write-Host "QEMU exited normally"
+    Write-Output "QEMU exited normally"
 } else {
-    Write-Host "Check storage_test.log or serial output for failures"
+    Write-Output "Check storage_test.log or serial output for failures"
 }

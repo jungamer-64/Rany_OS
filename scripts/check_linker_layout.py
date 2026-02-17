@@ -13,15 +13,15 @@ import os
 import sys
 from typing import Tuple
 
-import subprocess
+import subprocess  # nosemgrep  # noqa: S404  # nosec B404
 try:
     from elftools.elf.elffile import ELFFile
 except ImportError:
     print("pyelftools not found, attempting to install via pip...")
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyelftools"])  # noqa: S603
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyelftools"])  # noqa: S603  # nosemgrep  # nosec B603
         from elftools.elf.elffile import ELFFile
-    except (subprocess.CalledProcessError, ImportError) as e:
+    except (subprocess.CalledProcessError, ImportError):
         print("Error: pyelftools not installed and automatic install failed. Please run 'pip install pyelftools' and try again.")
         sys.exit(2)
 
@@ -31,7 +31,7 @@ def _is_elf_file(path: str) -> bool:
     try:
         with open(path, 'rb') as fh:
             return fh.read(4) == b'\x7fELF'
-    except Exception:
+    except (OSError, IOError):
         return False
 
 
@@ -160,7 +160,7 @@ def _analyse_elf(path: str) -> int:
     with open(path, 'rb') as fh:
         try:
             elf = ELFFile(fh)
-        except Exception as e:
+        except (OSError, ValueError, KeyError) as e:
             print('Error: failed to parse ELF file:', e)
             sys.exit(2)
 

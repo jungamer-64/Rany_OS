@@ -44,7 +44,7 @@ wave5_cases=(
 violations=0
 
 if ! rg -q "fn test_iommu_wave5_amd_exports\\(" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_iommu_amd_wave5_required] missing test_iommu_wave5_amd_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+  echo "[verify_iommu_amd_wave5_required] missing test_iommu_wave5_amd_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -54,22 +54,22 @@ for case_name in "${wave1_cases[@]}"; do
   kernel_wrapper="iommu_amd_wave1_${case_name}_smoke"
 
   if ! rg -q "pub fn ${amd_export}\\(" "$AMD_EXPORT_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing AMD export '${amd_export}' in ${AMD_EXPORT_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing AMD export '${amd_export}' in ${AMD_EXPORT_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${iommu_wrapper}\\(" "$IOMMU_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${kernel_wrapper}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "${kernel_wrapper}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
@@ -80,33 +80,33 @@ for case_name in "${wave5_cases[@]}"; do
   kernel_wrapper="iommu_amd_wave5_${case_name}_smoke"
 
   if ! rg -q "pub fn ${amd_export}\\(" "$AMD_EXPORT_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing AMD export '${amd_export}' in ${AMD_EXPORT_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing AMD export '${amd_export}' in ${AMD_EXPORT_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${iommu_wrapper}\\(" "$IOMMU_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${kernel_wrapper}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "${kernel_wrapper}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
 
 if rg -q "amd_wave1_|amd_wave5_" "$PENDING_FILE"; then
-  echo "[verify_iommu_amd_wave5_required] stale AMD pending markers detected in ${PENDING_FILE#$ROOT_DIR/}"
+  echo "[verify_iommu_amd_wave5_required] stale AMD pending markers detected in ${PENDING_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "iommu-wave5\\(" "$PENDING_FILE"; then
-  echo "[verify_iommu_amd_wave5_required] missing wave5 marker in ${PENDING_FILE#$ROOT_DIR/}"
+  echo "[verify_iommu_amd_wave5_required] missing wave5 marker in ${PENDING_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 

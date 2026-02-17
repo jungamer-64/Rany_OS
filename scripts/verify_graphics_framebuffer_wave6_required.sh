@@ -54,27 +54,27 @@ cases=(
 violations=0
 
 if ! rg -q "graphics_framebuffer_wave6_phase_a_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase A suite entry in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase A suite entry in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "graphics_framebuffer_wave6_phase_b_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase B suite entry in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase B suite entry in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "pub fn qemu_test_set_packer_mode_override\\(" "$PACKER_FILE"; then
-  echo "[verify_graphics_framebuffer_wave6_required] missing qemu hook 'qemu_test_set_packer_mode_override' in ${PACKER_FILE#$ROOT_DIR/}"
+  echo "[verify_graphics_framebuffer_wave6_required] missing qemu hook 'qemu_test_set_packer_mode_override' in ${PACKER_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "pub fn qemu_test_clear_packer_mode_override\\(" "$PACKER_FILE"; then
-  echo "[verify_graphics_framebuffer_wave6_required] missing qemu hook 'qemu_test_clear_packer_mode_override' in ${PACKER_FILE#$ROOT_DIR/}"
+  echo "[verify_graphics_framebuffer_wave6_required] missing qemu hook 'qemu_test_clear_packer_mode_override' in ${PACKER_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
 if rg -q "test_packer_env_override" "$PENDING_FILE"; then
-  echo "[verify_graphics_framebuffer_wave6_required] env override legacy case still listed in ${PENDING_FILE#$ROOT_DIR/}"
+  echo "[verify_graphics_framebuffer_wave6_required] env override legacy case still listed in ${PENDING_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -83,22 +83,22 @@ for case_name in "${cases[@]}"; do
   wrapper_fn="graphics_wave6_${case_name}_smoke"
 
   if ! rg -q "pub fn ${export_fn}\\(" "$FB_EXPORT_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' in ${FB_EXPORT_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' in ${FB_EXPORT_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if rg -q "${case_name}" "$PENDING_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] promoted case '${case_name}' still listed in ${PENDING_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] promoted case '${case_name}' still listed in ${PENDING_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
@@ -123,22 +123,22 @@ for case_name in "${phase_b_cases[@]}"; do
   wrapper_fn="graphics_wave6_${case_name}_smoke"
 
   if ! rg -q "pub fn ${export_fn}\\(" "$FB_EXPORT_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' in ${FB_EXPORT_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' in ${FB_EXPORT_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if rg -q "${case_name}" "$PENDING_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] promoted case '${case_name}' still listed in ${PENDING_FILE#$ROOT_DIR/}"
+    echo "[verify_graphics_framebuffer_wave6_required] promoted case '${case_name}' still listed in ${PENDING_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done

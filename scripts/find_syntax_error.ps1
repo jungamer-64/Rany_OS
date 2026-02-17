@@ -17,18 +17,18 @@ while ($low -lt $high) {
         $high = $mid
     }
 }
-Write-Host "Suspected bad line index (0-based): $low"
+Write-Output "Suspected bad line index (0-based): $low"
 $contextStart = [math]::Max($start, $low - 5)
 $contextEnd = [math]::Min($allLines.Length - 1, $low + 5)
 for ($i = $contextStart; $i -le $contextEnd; $i++) {
     $ln = $allLines[$i]
     $num = $i + 1
-    Write-Host ("{0,4}: {1}" -f $num, $ln)
+    Write-Output ("{0,4}: {1}" -f $num, $ln)
 }
 $frag2 = ($allLines[$start..$low] -join "`n")
 $tokens2 = [System.Management.Automation.Language.Token[]]::new(0)
 $errors2 = [System.Collections.ObjectModel.Collection[System.Management.Automation.Language.ParseError]]::new()
 [System.Management.Automation.Language.Parser]::ParseInput($frag2, [ref]$tokens2, [ref]$errors2)
-Write-Host "Errors when parsing up to suspected line: $($errors2.Count)"
-if ($errors2.Count -gt 0) { $errors2 | ForEach-Object { Write-Host $_.Message } }
+Write-Output "Errors when parsing up to suspected line: $($errors2.Count)"
+if ($errors2.Count -gt 0) { $errors2 | ForEach-Object { Write-Output $_.Message } }
 

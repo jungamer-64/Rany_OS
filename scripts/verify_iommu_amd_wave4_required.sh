@@ -36,7 +36,7 @@ cases=(
 violations=0
 
 if ! rg -q "fn test_iommu_wave4_amd_exports\\(" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_iommu_amd_wave4_required] missing test_iommu_wave4_amd_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+  echo "[verify_iommu_amd_wave4_required] missing test_iommu_wave4_amd_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -46,33 +46,33 @@ for case_name in "${cases[@]}"; do
   kernel_wrapper="iommu_amd_wave0_${case_name}_smoke"
 
   if ! rg -q "pub fn ${amd_export}\\(" "$AMD_EXPORT_FILE"; then
-    echo "[verify_iommu_amd_wave4_required] missing AMD export '${amd_export}' in ${AMD_EXPORT_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave4_required] missing AMD export '${amd_export}' in ${AMD_EXPORT_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${iommu_wrapper}\\(" "$IOMMU_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave4_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave4_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "pub fn ${kernel_wrapper}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave4_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave4_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   if ! rg -q "${kernel_wrapper}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_iommu_amd_wave4_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    echo "[verify_iommu_amd_wave4_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
 
 if rg -q "AMD-Vi Wave0 runtime pending" "$PENDING_FILE"; then
-  echo "[verify_iommu_amd_wave4_required] stale pending entry detected in ${PENDING_FILE#$ROOT_DIR/}: AMD-Vi Wave0 runtime pending"
+  echo "[verify_iommu_amd_wave4_required] stale pending entry detected in ${PENDING_FILE#"$ROOT_DIR"/}: AMD-Vi Wave0 runtime pending"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "iommu-wave4\\(amd-wave0\\)" "$PENDING_FILE"; then
-  echo "[verify_iommu_amd_wave4_required] missing wave4 marker in ${PENDING_FILE#$ROOT_DIR/}"
+  echo "[verify_iommu_amd_wave4_required] missing wave4 marker in ${PENDING_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 

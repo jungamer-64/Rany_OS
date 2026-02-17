@@ -156,10 +156,10 @@ $SIGNER_TOOL_BIN = Join-Path $SIGNER_TOOL_DIR "target/x86_64-pc-windows-msvc/rel
 
 # --- Helper Functions ---
 
-function Write-Step($icon, $msg) { Write-Host "$icon $msg" -ForegroundColor Cyan }
-function Write-Done($msg) { Write-Host "   -> $msg" -ForegroundColor Green }
-function Write-Warn($msg) { Write-Host "   -> [WARN] $msg" -ForegroundColor Yellow }
-function Write-Fail($msg) { Write-Host "   -> [ERROR] $msg" -ForegroundColor Red }
+function Write-Step($icon, $msg) { Write-Output "$icon $msg" }
+function Write-Done($msg) { Write-Output "   -> $msg" }
+function Write-Warn($msg) { Write-Output "   -> [WARN] $msg" }
+function Write-Fail($msg) { Write-Output "   -> [ERROR] $msg" }
 
 # QEMU path/value safety helpers
 # QEMU parses -drive value internally with comma as separator, so paths with

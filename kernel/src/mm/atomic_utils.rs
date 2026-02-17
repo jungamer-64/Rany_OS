@@ -328,6 +328,75 @@ impl core::fmt::Debug for AtomicU16 {
 
 
 // ============================================================================
+// QEMU Smoke Tests (wave10)
+// ============================================================================
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+    use core::sync::atomic::Ordering;
+
+    pub fn atomic_u8_basic_smoke() -> bool {
+        let a = AtomicU8::new(42);
+        let ok1 = a.load(Ordering::SeqCst) == 42;
+        a.store(100, Ordering::SeqCst);
+        ok1 && a.load(Ordering::SeqCst) == 100
+    }
+
+    pub fn atomic_u8_fetch_and_smoke() -> bool {
+        let a = AtomicU8::new(0b11110000);
+        let prev = a.fetch_and(0b10101010, Ordering::SeqCst);
+        prev == 0b11110000 && a.load(Ordering::SeqCst) == 0b10100000
+    }
+
+    pub fn atomic_u8_fetch_or_smoke() -> bool {
+        let a = AtomicU8::new(0b11110000);
+        let prev = a.fetch_or(0b00001111, Ordering::SeqCst);
+        prev == 0b11110000 && a.load(Ordering::SeqCst) == 0b11111111
+    }
+
+    pub fn atomic_u8_fetch_add_smoke() -> bool {
+        let a = AtomicU8::new(100);
+        let prev = a.fetch_add(50, Ordering::SeqCst);
+        prev == 100 && a.load(Ordering::SeqCst) == 150
+    }
+
+    pub fn atomic_u8_wrapping_smoke() -> bool {
+        let a = AtomicU8::new(250);
+        let prev = a.fetch_add(10, Ordering::SeqCst);
+        prev == 250 && a.load(Ordering::SeqCst) == 4
+    }
+
+    pub fn atomic_u16_basic_smoke() -> bool {
+        let a = AtomicU16::new(1000);
+        let ok1 = a.load(Ordering::SeqCst) == 1000;
+        a.store(50000, Ordering::SeqCst);
+        ok1 && a.load(Ordering::SeqCst) == 50000
+    }
+
+    pub fn atomic_u16_fetch_add_smoke() -> bool {
+        let a = AtomicU16::new(10000);
+        let prev = a.fetch_add(5000, Ordering::SeqCst);
+        prev == 10000 && a.load(Ordering::SeqCst) == 15000
+    }
+
+    pub fn atomic_u16_wrapping_smoke() -> bool {
+        let a = AtomicU16::new(65530);
+        let prev = a.fetch_add(10, Ordering::SeqCst);
+        prev == 65530 && a.load(Ordering::SeqCst) == 4
+    }
+
+    pub fn compare_exchange_smoke() -> bool {
+        let a = AtomicU8::new(10);
+        let ok1 = a.compare_exchange(10, 20, Ordering::SeqCst, Ordering::SeqCst) == Ok(10);
+        let ok2 = a.load(Ordering::SeqCst) == 20;
+        let ok3 = a.compare_exchange(10, 30, Ordering::SeqCst, Ordering::SeqCst) == Err(20);
+        let ok4 = a.load(Ordering::SeqCst) == 20;
+        ok1 && ok2 && ok3 && ok4
+    }
+}
+
+// ============================================================================
 // テスト
 // ============================================================================
 

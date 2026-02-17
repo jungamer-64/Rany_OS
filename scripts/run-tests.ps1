@@ -18,7 +18,7 @@ Set-StrictMode -Version Latest
 $root = Join-Path $PSScriptRoot ".."
 Push-Location $root
 try {
-    Write-Host "Running QEMU-first test suites via cargo test..." -ForegroundColor Cyan
+    Write-Output "Running QEMU-first test suites via cargo test..."
     $args = @("test") + $CargoArgs
     & cargo @args
     exit $LASTEXITCODE

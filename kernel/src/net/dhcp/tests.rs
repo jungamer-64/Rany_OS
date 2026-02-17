@@ -1,0 +1,575 @@
+use super::*;
+use crate::sync::set_panicking;
+use core::sync::atomic::Ordering;
+
+#[test_case]
+fn test_check_timeout_poisoned_state_reset_skips() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Selecting;
+    }
+    client.state_time.store(0, Ordering::SeqCst);
+    client.retry_count.store(DhcpClient::MAX_RETRIES - 1, Ordering::SeqCst);
+
+    set_panicking(true);
+    // Should not panic even if state lock is poisoned
+    let _ = client.check_timeout(10, 1);
+    set_panicking(false);
+}
+
+#[test_case]
+fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+
+    let lease = DhcpLease {
+        ip_address: Ipv4Address::new([192, 168, 0, 42]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Some(Ipv4Address::new([192, 168, 0, 1])),
+        dns_servers: Vec::new(),
+        server_ip: Ipv4Address::new([192, 168, 0, 1]),
+        lease_time: 3600,
+        t1: 1800,
+        t2: 3150,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+
+    {
+        let mut l = client.lease.lock().unwrap();
+        *l = Some(lease.clone());
+    }
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Renewing;
+    }
+
+    let mut buf = vec![0u8; 512];
+    let len = client.build_request(&mut buf, 123).expect("build_request failed");
+
+    // ciaddr should be set to the current IP
+    assert_eq!(&buf[12..16], lease.ip_address.as_bytes());
+
+    // Options area should NOT include Server Identifier or Requested IP for renewal
+    let opts = &buf[DhcpHeader::SIZE..len];
+    assert!(!opts.iter().any(|b| *b == DhcpOption::ServerIdentifier as u8));
+    assert!(!opts.iter().any(|b| *b == DhcpOption::RequestedIp as u8));
+}
+
+#[test_case]
+fn test_build_request_requesting_includes_serverid_and_requestedip() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+
+    let offered = DhcpLease {
+        ip_address: Ipv4Address::new([10, 0, 0, 5]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
+        dns_servers: Vec::new(),
+        server_ip: Ipv4Address::new([10, 0, 0, 1]),
+        lease_time: 3600,
+        t1: 1800,
+        t2: 3150,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+
+    {
+        let mut o = client.offered_lease.lock().unwrap();
+        *o = Some(offered.clone());
+    }
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Requesting;
+    }
+
+    let mut buf = vec![0u8; 512];
+    let len = client.build_request(&mut buf, 42).expect("build_request failed");
+    let opts = &buf[DhcpHeader::SIZE..len];
+    assert!(opts.iter().any(|b| *b == DhcpOption::ServerIdentifier as u8));
+    assert!(opts.iter().any(|b| *b == DhcpOption::RequestedIp as u8));
+}
+
+#[test_case]
+fn test_build_discover_reuse_xid_on_retransmit() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+
+    // Pre-set XID and state to Selecting (retransmit scenario)
+    client.xid.store(0x1234_5678, Ordering::SeqCst);
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Selecting;
+    }
+
+    let mut buf1 = vec![0u8; 512];
+    let _ = client.build_discover(&mut buf1, 10).expect("build_discover failed");
+    let xid1 = u32::from_be_bytes(buf1[4..8].try_into().unwrap());
+    assert_eq!(xid1, 0x1234_5678);
+
+    let mut buf2 = vec![0u8; 512];
+    let _ = client.build_discover(&mut buf2, 20).expect("build_discover failed");
+    let xid2 = u32::from_be_bytes(buf2[4..8].try_into().unwrap());
+    assert_eq!(xid2, 0x1234_5678);
+}
+
+#[test_case]
+fn test_build_discover_state_lock_poison_returns_err() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+
+    // Poison the state lock by dropping a guard while marked as panicking
+    {
+        let g = client.state.lock().unwrap();
+        set_panicking(true);
+        drop(g); // dropping while panicking should poison
+        set_panicking(false);
+    }
+
+    let mut buf = vec![0u8; 512];
+    assert!(client.build_discover(&mut buf, 100).is_err());
+}
+
+#[test_case]
+fn test_process_response_chaddr_mismatch() {
+    use crate::net::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
+    client.xid.store(0x1234_5678, Ordering::SeqCst);
+
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+    buf[16..20].copy_from_slice(&[10, 0, 0, 5]); // yiaddr
+    buf[20..24].copy_from_slice(&[192, 168, 0, 1]); // siaddr
+    // CHADDR does not match client MAC
+    buf[28..34].copy_from_slice(&[7, 7, 7, 7, 7, 7]);
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Offer as u8;
+    offset += 3;
+
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&[192, 168, 0, 1]);
+    offset += 6;
+
+    buf[offset] = DhcpOption::End as u8;
+    offset += 1;
+
+    assert!(client.process_response(&buf, 100).is_err());
+}
+
+#[test_case]
+fn test_process_response_offer_missing_serverid_returns_err() {
+    use crate::net::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
+    client.xid.store(0x2222_3333, Ordering::SeqCst);
+
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x2222_3333u32.to_be_bytes());
+    buf[16..20].copy_from_slice(&[10, 0, 0, 5]); // yiaddr
+    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Offer as u8;
+    offset += 3;
+
+    // No Server Identifier option
+
+    buf[offset] = DhcpOption::End as u8;
+    offset += 1;
+
+    assert!(client.process_response(&buf, 200).is_err());
+}
+
+#[test_case]
+fn test_process_response_siaddr_serverid_mismatch() {
+    use crate::net::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
+    client.xid.store(0x4444_5555, Ordering::SeqCst);
+
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x4444_5555u32.to_be_bytes());
+    buf[16..20].copy_from_slice(&[10, 0, 0, 5]); // yiaddr
+    buf[20..24].copy_from_slice(&[192, 168, 0, 5]); // siaddr
+    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Offer as u8;
+    offset += 3;
+
+    // Server Identifier different from siaddr
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&[192, 168, 0, 1]);
+    offset += 6;
+
+    buf[offset] = DhcpOption::End as u8;
+    offset += 1;
+
+    assert!(client.process_response(&buf, 300).is_err());
+}
+
+#[test_case]
+fn test_process_response_ack_requesting_mismatch() {
+    use crate::net::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([8, 8, 8, 8, 8, 8]));
+    client.xid.store(0x6666_7777, Ordering::SeqCst);
+
+    // Offered lease does not match incoming ACK server identifier
+    let offered = DhcpLease {
+        ip_address: Ipv4Address::new([10, 0, 0, 5]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
+        dns_servers: Vec::new(),
+        server_ip: Ipv4Address::new([10, 0, 0, 1]),
+        lease_time: 3600,
+        t1: 1800,
+        t2: 3150,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+
+    {
+        let mut o = client.offered_lease.lock().unwrap();
+        *o = Some(offered.clone());
+    }
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Requesting;
+    }
+
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x6666_7777u32.to_be_bytes());
+    buf[16..20].copy_from_slice(&[10, 0, 0, 5]); // yiaddr matches offered
+    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Ack as u8; // ACK comes from different server
+    offset += 3;
+
+    // Server Identifier that does NOT match offered.server_ip
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&[10, 0, 0, 2]);
+    offset += 6;
+
+    buf[offset] = DhcpOption::End as u8;
+    offset += 1;
+
+    assert!(client.process_response(&buf, 400).is_err());
+}
+
+#[test_case]
+fn test_process_response_ack_renewal_success() {
+    use crate::net::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([9, 9, 9, 9, 9, 9]));
+    client.xid.store(0x9999_aaaa, Ordering::SeqCst);
+
+    let lease = DhcpLease {
+        ip_address: Ipv4Address::new([192, 168, 0, 42]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Some(Ipv4Address::new([192, 168, 0, 1])),
+        dns_servers: Vec::new(),
+        server_ip: Ipv4Address::new([192, 168, 0, 1]),
+        lease_time: 3600,
+        t1: 1800,
+        t2: 3150,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+
+    {
+        let mut l = client.lease.lock().unwrap();
+        *l = Some(lease.clone());
+    }
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Renewing;
+    }
+
+    // Build ACK matching current lease
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x9999_aaaau32.to_be_bytes());
+    buf[16..20].copy_from_slice(lease.ip_address.as_bytes()); // yiaddr
+    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Ack as u8;
+    offset += 3;
+
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(lease.server_ip.as_bytes());
+    offset += 6;
+
+    buf[offset] = DhcpOption::End as u8;
+    offset += 1;
+
+    let res = client.process_response(&buf, 500).expect("ACK should be accepted");
+    match res {
+        DhcpResponseResult::Ack(l) => {
+            assert_eq!(l.ip_address, lease.ip_address);
+        }
+        _ => panic!("expected Ack"),
+    }
+}
+
+#[test_case]
+fn test_build_decline_and_build_release_contents() {
+    use crate::net::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([1,2,3,4,5,6]));
+    client.xid.store(0xabab_cdef, Ordering::SeqCst);
+
+    // build_decline
+    let mut dbuf = [0u8; 256];
+    let declined_ip = Ipv4Address::new([10,0,0,99]);
+    let server_ip = Some(Ipv4Address::new([10,0,0,1]));
+    let len = client.build_decline(&mut dbuf, declined_ip, server_ip, 0).expect("build_decline failed");
+    let opts = &dbuf[DhcpHeader::SIZE..len];
+    // check MessageType Decline present
+    assert!(opts.windows(3).any(|w| w[0] == DhcpOption::MessageType as u8 && w[1] == 1 && w[2] == DhcpMessageType::Decline as u8));
+    // check Requested IP option present
+    assert!(opts.windows(6).any(|w| w[0] == DhcpOption::RequestedIp as u8 && w[1] == 4 && &w[2..6] == declined_ip.as_bytes()));
+    // check Server Identifier present
+    assert!(opts.windows(6).any(|w| w[0] == DhcpOption::ServerIdentifier as u8 && w[1] == 4 && &w[2..6] == server_ip.unwrap().as_bytes()));
+
+    // build_release
+    let lease = DhcpLease {
+        ip_address: Ipv4Address::new([172,16,0,5]),
+        subnet_mask: Ipv4Address::new([255,255,0,0]),
+        gateway: None,
+        dns_servers: Vec::new(),
+        server_ip: Ipv4Address::new([10,0,0,1]),
+        lease_time: 1200,
+        t1: 600,
+        t2: 900,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+    {
+        let mut l = client.lease.lock().unwrap();
+        *l = Some(lease.clone());
+    }
+
+    let mut rbuf = [0u8; 256];
+    let rlen = client.build_release(&mut rbuf, 0).expect("build_release failed");
+    // ciaddr should be set
+    assert_eq!(&rbuf[12..16], lease.ip_address.as_bytes());
+    let ropts = &rbuf[DhcpHeader::SIZE..rlen];
+    assert!(ropts.windows(3).any(|w| w[0] == DhcpOption::MessageType as u8 && w[1] == 1 && w[2] == DhcpMessageType::Release as u8));
+    assert!(ropts.windows(6).any(|w| w[0] == DhcpOption::ServerIdentifier as u8 && w[1] == 4 && &w[2..6] == lease.server_ip.as_bytes()));
+}
+
+#[test_case]
+fn test_release_clears_lease_and_sets_last_released() {
+    use crate::net::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([5,5,5,5,5,5]));
+    let lease = DhcpLease {
+        ip_address: Ipv4Address::new([192,168,10,10]),
+        subnet_mask: Ipv4Address::new([255,255,255,0]),
+        gateway: None,
+        dns_servers: Vec::new(),
+        server_ip: Ipv4Address::new([10,0,0,1]),
+        lease_time: 3600,
+        t1: 1800,
+        t2: 3150,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+    {
+        let mut l = client.lease.lock().unwrap();
+        *l = Some(lease.clone());
+    }
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Bound;
+    }
+
+    // Call release (best-effort send) - should clear lease and set last_released
+    client.release();
+    assert!(client.lease.lock().unwrap().is_none());
+    assert_eq!(client.last_released_ip(), Some(lease.ip_address));
+}
+
+#[test_case]
+fn test_parse_t1_t2_and_timeout_transitions() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+    client.xid.store(0x1111_2222, Ordering::SeqCst);
+
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x1111_2222u32.to_be_bytes());
+    buf[16..20].copy_from_slice(&[10, 0, 0, 8]); // yiaddr
+    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    // Message Type: ACK
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Ack as u8;
+    offset += 3;
+
+    // Server Identifier
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&[10, 0, 0, 1]);
+    offset += 6;
+
+    // Lease Time
+    buf[offset] = DhcpOption::LeaseTime as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&100u32.to_be_bytes());
+    offset += 6;
+
+    // Renewal (T1)
+    buf[offset] = 58u8; // RenewalTime
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&30u32.to_be_bytes());
+    offset += 6;
+
+    // Rebinding (T2)
+    buf[offset] = 59u8; // RebindingTime
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&60u32.to_be_bytes());
+    offset += 6;
+
+    buf[offset] = DhcpOption::End as u8;
+    offset += 1;
+
+    let res = client.process_response(&buf, 0).expect("ACK should be accepted");
+    match res {
+        DhcpResponseResult::Ack(lease) => {
+            assert_eq!(lease.lease_time, 100);
+            assert_eq!(lease.t1, 30);
+            assert_eq!(lease.t2, 60);
+
+            // Verify T1 transition to Renewing
+            {
+                let mut s = client.state.lock().unwrap();
+                *s = DhcpState::Bound;
+            }
+            client.lease.lock().unwrap().as_mut().unwrap().obtained_at = 0;
+            // current_tick passes T1
+            assert!(client.check_timeout(31, 1));
+            assert_eq!(client.state(), DhcpState::Renewing);
+
+            // advance past T2 -> Rebinding
+            assert!(client.check_timeout(61, 1));
+            assert_eq!(client.state(), DhcpState::Rebinding);
+        }
+        _ => panic!("expected Ack"),
+    }
+}
+
+#[test_case]
+fn test_offer_probe_and_decline_flow() {
+    use crate::net::stack;
+    use crate::net::ethernet::MacAddress;
+
+    // Initialize global stack for ARP facilities (best-effort)
+    stack::init_default();
+
+    let client = DhcpClient::new(MacAddress::new([7, 7, 7, 7, 7, 7]));
+    client.xid.store(0x3333_4444, Ordering::SeqCst);
+
+    // Build an OFFER packet
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x3333_4444u32.to_be_bytes());
+    buf[16..20].copy_from_slice(&[10, 0, 0, 9]); // yiaddr
+    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Offer as u8;
+    offset += 3;
+
+    // Server Identifier
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&[10, 0, 0, 1]);
+    offset += 6;
+
+    buf[offset] = DhcpOption::End as u8;
+    offset += 1;
+
+    // Process offer (should send ARP probe and set probe timestamp)
+    let _ = client.process_response(&buf, 100).expect("Offer should be processed");
+    assert!(client.offered_lease.lock().unwrap().is_some());
+    assert!(client.offered_probe_at.load(Ordering::SeqCst) != 0);
+
+    // Simulate ARP reply from another host for the offered IP
+    if let Ok(mut s) = stack::stack().lock() {
+        if let Some(ref mut st) = s.as_mut() {
+            st.arp_cache_insert(Ipv4Address::new([10, 0, 0, 9]), MacAddress::from_octets(0xaa,0xbb,0xcc,0xdd,0xee,0xff), 200);
+        }
+    }
+
+    // Advance time beyond PROBE_WAIT_SECS
+    assert!(client.check_timeout(200, 1));
+    // Offer should have been cleared due to conflict
+    assert!(client.offered_lease.lock().unwrap().is_none());
+    // Decline should have been recorded
+    assert_eq!(client.last_declined_ip(), Some(Ipv4Address::new([10, 0, 0, 9])));
+}
