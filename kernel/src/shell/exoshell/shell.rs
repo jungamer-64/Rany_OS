@@ -581,68 +581,42 @@ impl ExoShell {
         values
     }
 
+    /// 引数リストからString値を抽出するヘルパー
+    fn extract_string_arg(args: &[ExoValue<'static>]) -> Option<String> {
+        args.first().and_then(|v| match v {
+            ExoValue::String(s) => Some(s.as_ref().to_string()),
+            _ => None,
+        })
+    }
+
     /// fs.* メソッド（構造化版）- async版
     async fn eval_fs_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
             "entries" => {
-                let path = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
+                let path = Self::extract_string_arg(&args)
                     .unwrap_or_else(|| self.cwd.clone());
                 FsNamespace::entries(&path).await
             }
             "read" => {
-                let path = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let path = Self::extract_string_arg(&args).unwrap_or_default();
                 FsNamespace::read(&path).await
             }
             "stat" => {
-                let path = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let path = Self::extract_string_arg(&args).unwrap_or_default();
                 FsNamespace::stat(&path).await
             }
             "mkdir" => {
-                let path = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let path = Self::extract_string_arg(&args).unwrap_or_default();
                 FsNamespace::mkdir(&path).await
             }
             "remove" | "rm" => {
-                let path = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let path = Self::extract_string_arg(&args).unwrap_or_default();
                 FsNamespace::remove(&path).await
             }
             "cd" => {
-                let path = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref().to_string()),
-                        _ => None,
-                    })
+                let path = Self::extract_string_arg(&args)
                     .unwrap_or_else(|| String::from("/"));
                 self.cwd = if path.starts_with('/') {
                     path

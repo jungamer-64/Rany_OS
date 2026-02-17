@@ -1976,3 +1976,67 @@ fn test_draw_text_rgb565_mmio_run_write() {
     assert_eq!(&vram[off(5)..off(5) + 2], &[0x00, 0x00]);
 }
 
+#[test_case]
+fn test_clear_rgb565_mmio() {
+    let width = 6u32;
+    let height = 3u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 2,
+        format: PixelFormat::Rgb565,
+        bpp: 16,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+    let mut fb = unsafe { Framebuffer::new(info2) };
+
+    fb.clear(Color::BLUE);
+
+    // BLUE in RGB565 little-endian: 0x001F -> [0x1F, 0x00]
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let off = y * info.stride as usize + x * 2;
+            assert_eq!(vram[off], 0x1F, "x={}, y={}", x, y);
+            assert_eq!(vram[off + 1], 0x00, "x={}, y={}", x, y);
+        }
+    }
+}
+
+#[test_case]
+fn test_draw_char_8x16_rgb565_mmio() {
+    let width = 8u32;
+    let height = 16u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 2,
+        format: PixelFormat::Rgb565,
+        bpp: 16,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let mut info2 = info.clone();
+    info2.address = vram.as_mut_ptr() as u64;
+    let mut fb = unsafe { Framebuffer::new(info2) };
+
+    let fg = Color::RED;
+    let bg = Color::BLACK;
+    fb.draw_char_8x16(0, 0, '!', fg, Some(bg));
+
+    // Row 2 of '!' has ON bits at columns 3,4.
+    let row = 2usize;
+    let off = |x: usize| row * info.stride as usize + x * 2;
+
+    // red   = 0xF800 -> [0x00, 0xF8]
+    // black = 0x0000 -> [0x00, 0x00]
+    assert_eq!(&vram[off(2)..off(2) + 2], &[0x00, 0x00]);
+    assert_eq!(&vram[off(3)..off(3) + 2], &[0x00, 0xF8]);
+    assert_eq!(&vram[off(4)..off(4) + 2], &[0x00, 0xF8]);
+    assert_eq!(&vram[off(5)..off(5) + 2], &[0x00, 0x00]);
+}
+

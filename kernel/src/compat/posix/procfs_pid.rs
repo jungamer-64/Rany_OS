@@ -60,25 +60,7 @@ impl ProcFs {
         // /proc/[pid]/exe (permission-checked entry)
         let pid_copy = pid;
         proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "exe", move || {
-            let proc_id = ProcessId::new(pid_copy.as_u32() as u64);
-            let caller = crate::task::context::current_subject().domain;
-            let proc_domain: DomainId = proc_id.into();
-            if let Some(_process) = process_manager().get(proc_id) {
-                if caller == proc_domain
-                    || crate::security::capability::manager()
-                        .has_capability(caller.as_u64(), crate::security::capability::CAP_FOWNER)
-                    || crate::security::capability::manager()
-                        .has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
-                    || crate::security::capability::manager()
-                        .has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
-                {
-                    Ok(String::from("/bin/process"))
-                } else {
-                    Err(ProcError::PermissionDenied)
-                }
-            } else {
-                Err(ProcError::NotFound)
-            }
+            Self::check_exe_access(pid_copy)
         }));
 
         // /proc/[pid]/cwd (symlink)
@@ -110,6 +92,29 @@ impl ProcFs {
         let pid_str = alloc::format!("{}", pid.as_u32());
         let mut root = self.root.write();
         root.children.remove(&pid_str);
+    }
+
+    /// /proc/[pid]/exe パーミッションチェック
+    fn check_exe_access(pid: Pid) -> Result<String, ProcError> {
+        let proc_id = ProcessId::new(pid.as_u32() as u64);
+        let caller = crate::task::context::current_subject().domain;
+        let proc_domain: DomainId = proc_id.into();
+        if let Some(_process) = process_manager().get(proc_id) {
+            if caller == proc_domain
+                || crate::security::capability::manager()
+                    .has_capability(caller.as_u64(), crate::security::capability::CAP_FOWNER)
+                || crate::security::capability::manager()
+                    .has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_PTRACE)
+                || crate::security::capability::manager()
+                    .has_capability(caller.as_u64(), crate::security::capability::CAP_SYS_ADMIN)
+            {
+                Ok(String::from("/bin/process"))
+            } else {
+                Err(ProcError::PermissionDenied)
+            }
+        } else {
+            Err(ProcError::NotFound)
+        }
     }
 
     fn generate_process_status(pid: Pid) -> String {

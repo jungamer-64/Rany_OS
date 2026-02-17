@@ -1389,26 +1389,12 @@ impl GuiServices for ExoKernel {
                 crate::io::hid::KeyState::Released => KapiKeyState::Released,
             };
 
-            // Encode modifiers as bitfield
-            let mod_bits = {
-                let mut bits = 0u8;
-                if hid_event.modifiers.shift {
-                    bits |= 0x01;
-                }
-                if hid_event.modifiers.ctrl {
-                    bits |= 0x02;
-                }
-                if hid_event.modifiers.alt {
-                    bits |= 0x04;
-                }
-                if hid_event.modifiers.alt_gr {
-                    bits |= 0x08;
-                }
-                if hid_event.modifiers.caps_lock {
-                    bits |= 0x10;
-                }
-                bits
-            };
+            // Encode modifiers as bitfield (branchless)
+            let mod_bits = (hid_event.modifiers.shift as u8)
+                | ((hid_event.modifiers.ctrl as u8) << 1)
+                | ((hid_event.modifiers.alt as u8) << 2)
+                | ((hid_event.modifiers.alt_gr as u8) << 3)
+                | ((hid_event.modifiers.caps_lock as u8) << 4);
 
             // `to_char()` returns an `Option<char>`. Convert to an ASCII
             // `u8` (0 if not printable) to match the `char_value` field in
