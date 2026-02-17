@@ -334,6 +334,56 @@ impl HotplugManager {
     }
     
     /// メモリブロックを削除（オフライン化）
+    fn handle_offline_success(&self, block_id: u64) {
+        let size = {
+            let mut blocks = self.blocks.write();
+            blocks.remove(&block_id).map(|b| b.size).unwrap_or(0)
+        };
+
+        {
+            let mut stats = self.stats.write();
+            stats.online_blocks = stats.online_blocks.saturating_sub(1);
+            stats.offline_blocks += 1;
+            stats.total_online_memory = stats.total_online_memory.saturating_sub(size as u64);
+            stats.remove_success_count += 1;
+            stats.pending_operations = stats.pending_operations.saturating_sub(1);
+        }
+
+        let callbacks = self.callbacks.read();
+        for cb in callbacks.iter() {
+            cb.on_hotplug_event(HotplugEvent::MemoryRemoved { block_id });
+        }
+
+        log::info!("[Hotplug] Memory block {} removed", block_id);
+    }
+
+    fn handle_offline_failure(&self, block_id: u64, e: &HotplugError) {
+        {
+            let blocks = self.blocks.read();
+            if let Some(block) = blocks.get(&block_id) {
+                block.set_state(MemoryBlockState::OfflineFailed);
+            }
+        }
+
+        {
+            let mut stats = self.stats.write();
+            stats.remove_fail_count += 1;
+            stats.pending_operations = stats.pending_operations.saturating_sub(1);
+        }
+
+        let callbacks = self.callbacks.read();
+        let reason = match e {
+            HotplugError::PinnedPages => OfflineFailReason::PinnedMemory,
+            HotplugError::MigrationFailed => OfflineFailReason::MigrationFailed,
+            _ => OfflineFailReason::KernelReserved,
+        };
+        for cb in callbacks.iter() {
+            cb.on_hotplug_event(HotplugEvent::OfflineFailed { block_id, reason });
+        }
+
+        log::warn!("[Hotplug] Memory block {} offline failed: {:?}", block_id, e);
+    }
+
     pub fn remove_memory_block(&self, block_id: u64) -> Result<(), HotplugError> {
         // ブロック存在チェック
         {
@@ -380,59 +430,11 @@ impl HotplugManager {
         // オフライン処理を実行
         match self.offline_block_internal(block_id) {
             Ok(()) => {
-                // 成功: ブロック削除
-                let size = {
-                    let mut blocks = self.blocks.write();
-                    blocks.remove(&block_id).map(|b| b.size).unwrap_or(0)
-                };
-                
-                // 統計更新
-                {
-                    let mut stats = self.stats.write();
-                    stats.online_blocks = stats.online_blocks.saturating_sub(1);
-                    stats.offline_blocks += 1;
-                    stats.total_online_memory = stats.total_online_memory.saturating_sub(size as u64);
-                    stats.remove_success_count += 1;
-                    stats.pending_operations = stats.pending_operations.saturating_sub(1);
-                }
-                
-                // コールバック通知
-                let callbacks = self.callbacks.read();
-                for cb in callbacks.iter() {
-                    cb.on_hotplug_event(HotplugEvent::MemoryRemoved { block_id });
-                }
-                
-                log::info!("[Hotplug] Memory block {} removed", block_id);
+                self.handle_offline_success(block_id);
                 Ok(())
             }
             Err(e) => {
-                // 失敗: 状態をOFFLINE_FAILEDに変更
-                {
-                    let blocks = self.blocks.read();
-                    if let Some(block) = blocks.get(&block_id) {
-                        block.set_state(MemoryBlockState::OfflineFailed);
-                    }
-                }
-                
-                // 統計更新
-                {
-                    let mut stats = self.stats.write();
-                    stats.remove_fail_count += 1;
-                    stats.pending_operations = stats.pending_operations.saturating_sub(1);
-                }
-                
-                // コールバック通知
-                let callbacks = self.callbacks.read();
-                let reason = match e {
-                    HotplugError::PinnedPages => OfflineFailReason::PinnedMemory,
-                    HotplugError::MigrationFailed => OfflineFailReason::MigrationFailed,
-                    _ => OfflineFailReason::KernelReserved,
-                };
-                for cb in callbacks.iter() {
-                    cb.on_hotplug_event(HotplugEvent::OfflineFailed { block_id, reason });
-                }
-                
-                log::warn!("[Hotplug] Memory block {} offline failed: {:?}", block_id, e);
+                self.handle_offline_failure(block_id, &e);
                 Err(e)
             }
         }

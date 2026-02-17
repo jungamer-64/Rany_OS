@@ -3881,6 +3881,54 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         Ok(())
     }
 
+    /// FATセクタバッファをパースしてClusterベクタを生成する
+    fn parse_fat_sector_buffer(buffer: &[u8]) -> FsResult<alloc::vec::Vec<Cluster>> {
+        let mut sector_data = try_alloc_vec(FAT_ENTRIES_PER_SECTOR, Cluster::FREE)?;
+        for i in 0..FAT_ENTRIES_PER_SECTOR {
+            let off = i * 4;
+            let val = u32::from_le_bytes([
+                buffer[off],
+                buffer[off + 1],
+                buffer[off + 2],
+                buffer[off + 3],
+            ]) & 0x0FFFFFFF;
+            sector_data[i] = Cluster(val);
+        }
+        Ok(sector_data)
+    }
+
+    /// FATセクタバッファから1エントリを読み取る
+    fn read_fat_entry_from_buffer(buffer: &[u8], offset_in_sector: usize) -> u32 {
+        u32::from_le_bytes([
+            buffer[offset_in_sector * 4],
+            buffer[offset_in_sector * 4 + 1],
+            buffer[offset_in_sector * 4 + 2],
+            buffer[offset_in_sector * 4 + 3],
+        ]) & 0x0FFFFFFF
+    }
+
+    /// 空きクラスタ数を調整する（同期版）
+    fn adjust_free_clusters_sync(&self, old_val: u32, new_val: u32) {
+        if old_val == 0 && new_val != 0 {
+            let mut free = self.free_clusters.blocking_lock();
+            *free = free.saturating_sub(1);
+        } else if old_val != 0 && new_val == 0 {
+            let mut free = self.free_clusters.blocking_lock();
+            *free = free.saturating_add(1);
+        }
+    }
+
+    /// 空きクラスタ数を調整する（非同期版）
+    async fn adjust_free_clusters_async(&self, old_val: u32, new_val: u32) {
+        if old_val == 0 && new_val != 0 {
+            let mut free = self.free_clusters.lock_async().await;
+            *free = free.saturating_sub(1);
+        } else if old_val != 0 && new_val == 0 {
+            let mut free = self.free_clusters.lock_async().await;
+            *free = free.saturating_add(1);
+        }
+    }
+
     fn write_fat_entry(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
         trace_fat_operation!("write", cluster, "value={}", value.0);
         let idx = cluster.0 as usize;
@@ -3905,24 +3953,8 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         let mut buffer = [0u8; BLOCK_SIZE];
         self.read_sector_cached(sector.as_u64(), &mut buffer)?;
 
-        let old_val = u32::from_le_bytes([
-            buffer[offset_in_sector * 4],
-            buffer[offset_in_sector * 4 + 1],
-            buffer[offset_in_sector * 4 + 2],
-            buffer[offset_in_sector * 4 + 3],
-        ]) & 0x0FFFFFFF;
-
-        let mut sector_data = try_alloc_vec(FAT_ENTRIES_PER_SECTOR, Cluster::FREE)?;
-        for i in 0..FAT_ENTRIES_PER_SECTOR {
-            let off = i * 4;
-            let val = u32::from_le_bytes([
-                buffer[off],
-                buffer[off + 1],
-                buffer[off + 2],
-                buffer[off + 3],
-            ]) & 0x0FFFFFFF;
-            sector_data[i] = Cluster(val);
-        }
+        let old_val = Self::read_fat_entry_from_buffer(&buffer, offset_in_sector);
+        let mut sector_data = Self::parse_fat_sector_buffer(&buffer)?;
 
         sector_data[offset_in_sector] = value;
 
@@ -3935,14 +3967,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         }
 
         self.fat_sector_cache.mark_dirty(sector_offset);
-
-        if old_val == 0 && value.0 != 0 {
-            let mut free = self.free_clusters.blocking_lock();
-            *free = free.saturating_sub(1);
-        } else if old_val != 0 && value.0 == 0 {
-            let mut free = self.free_clusters.blocking_lock();
-            *free = free.saturating_add(1);
-        }
+        self.adjust_free_clusters_sync(old_val, value.0);
 
         Ok(())
     }
@@ -3973,24 +3998,8 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         self.read_sector_cached_async(sector.as_u64(), &mut buffer)
             .await?;
 
-        let old_val = u32::from_le_bytes([
-            buffer[offset_in_sector * 4],
-            buffer[offset_in_sector * 4 + 1],
-            buffer[offset_in_sector * 4 + 2],
-            buffer[offset_in_sector * 4 + 3],
-        ]) & 0x0FFFFFFF;
-
-        let mut sector_data = try_alloc_vec(FAT_ENTRIES_PER_SECTOR, Cluster::FREE)?;
-        for i in 0..FAT_ENTRIES_PER_SECTOR {
-            let off = i * 4;
-            let val = u32::from_le_bytes([
-                buffer[off],
-                buffer[off + 1],
-                buffer[off + 2],
-                buffer[off + 3],
-            ]) & 0x0FFFFFFF;
-            sector_data[i] = Cluster(val);
-        }
+        let old_val = Self::read_fat_entry_from_buffer(&buffer, offset_in_sector);
+        let mut sector_data = Self::parse_fat_sector_buffer(&buffer)?;
 
         sector_data[offset_in_sector] = value;
 
@@ -4004,14 +4013,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         }
 
         self.fat_sector_cache.mark_dirty(sector_offset);
-
-        if old_val == 0 && value.0 != 0 {
-            let mut free = self.free_clusters.lock_async().await;
-            *free = free.saturating_sub(1);
-        } else if old_val != 0 && value.0 == 0 {
-            let mut free = self.free_clusters.lock_async().await;
-            *free = free.saturating_add(1);
-        }
+        self.adjust_free_clusters_async(old_val, value.0).await;
 
         Ok(())
     }
@@ -6844,6 +6846,34 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     // rename 本体
     // ========================================================================
 
+    /// rename の共通ロジック: エントリを新ディレクトリに追加し、旧エントリを削除する。
+    /// ディレクトリの場合はループ検出と ".." エントリ更新を行う。
+    fn perform_rename_sync(
+        &self,
+        old_name: &str,
+        other_inode: &Fat32Inode<B>,
+        new_name: &str,
+    ) -> FsResult<()> {
+        let raw_entry = self.find_raw_entry_by_short_name(old_name)?;
+        let cluster = raw_entry.first_cluster();
+        let attr = raw_entry.attributes();
+        let size = raw_entry.file_size();
+
+        if attr.is_directory() {
+            self.check_rename_directory_loop(cluster, other_inode)?;
+        }
+
+        other_inode.add_dir_entry(new_name, cluster, attr, size)?;
+        self.remove_dir_entry(old_name)?;
+
+        if attr.is_directory() && cluster.is_valid() {
+            let new_parent = other_inode.inner.lock().first_cluster;
+            self.update_dotdot_entry(cluster, new_parent)?;
+        }
+
+        Ok(())
+    }
+
     /// 非同期でリネーム/移動
     pub async fn rename_async(
         &self,
@@ -6894,25 +6924,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
             return Err(FsError::AlreadyExists);
         }
 
-        let raw_entry = self.find_raw_entry_by_short_name(old_name)?;
-        let cluster = raw_entry.first_cluster();
-        let attr = raw_entry.attributes();
-        let size = raw_entry.file_size();
-
-        if attr.is_directory() {
-            self.check_rename_directory_loop(cluster, other_inode)?;
-        }
-
-        other_inode.add_dir_entry(new_name, cluster, attr, size)?;
-
-        self.remove_dir_entry(old_name)?;
-
-        if attr.is_directory() && cluster.is_valid() {
-            let new_parent = other_inode.inner.lock().first_cluster;
-            self.update_dotdot_entry(cluster, new_parent)?;
-        }
-
-        Ok(())
+        self.perform_rename_sync(old_name, other_inode, new_name)
     }
 
     fn link(&self, _name: &str, _inode: &Arc<dyn Inode>) -> FsResult<()> {

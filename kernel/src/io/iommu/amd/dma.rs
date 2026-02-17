@@ -321,19 +321,15 @@ impl AmdIommuDriver {
         }
     }
 
-    /// Handle MapRegionDevice: validate, map, and invalidate.
-    fn handle_map_region_device(
+    /// Validate alignment and excluded ranges for a map region request.
+    /// On failure, frees the IOVA and returns Err.
+    fn validate_map_region_params(
         &self,
         device: DeviceId,
         iova: u64,
         phys: u64,
         size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<i32, ()> {
-        if size == 0 {
-            return Err(());
-        }
+    ) -> Result<(), ()> {
         let align = crate::mm::PAGE_SIZE_4K as u64;
         if (iova & (align - 1) != 0)
             || (phys & (align - 1) != 0)
@@ -347,6 +343,23 @@ impl AmdIommuDriver {
             let _ = self.free_iova_fast(iova, size);
             return Err(());
         }
+        Ok(())
+    }
+
+    /// Handle MapRegionDevice: validate, map, and invalidate.
+    fn handle_map_region_device(
+        &self,
+        device: DeviceId,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<i32, ()> {
+        if size == 0 {
+            return Err(());
+        }
+        self.validate_map_region_params(device, iova, phys, size)?;
 
         let domain_id = self.domain_id_for_device(device).map_err(|_| {
             let _ = self.free_iova_fast(iova, size);

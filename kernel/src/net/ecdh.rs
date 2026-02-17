@@ -263,6 +263,52 @@ pub mod p256 {
         }
     }
 
+    /// i64アキュムレータから4個のu64リムへ変換（キャリー伝搬付き）
+    fn carry_propagate_to_limbs(acc: &mut [i64; 8]) -> (P256FieldElement, i64) {
+        let mut carry: i64 = 0;
+        let mut words = [0u32; 8];
+        for i in 0..8 {
+            acc[i] += carry;
+            carry = acc[i] >> 32;
+            words[i] = (acc[i] & 0xFFFFFFFF) as u32;
+        }
+
+        let mut limbs = [0u64; 4];
+        for i in 0..4 {
+            limbs[i] = (words[2 * i] as u64) | ((words[2 * i + 1] as u64) << 32);
+        }
+
+        (P256FieldElement { limbs }, carry)
+    }
+
+    /// キャリーと最終正規化を適用して result mod p を返す
+    fn normalize_mod_p(mut result: P256FieldElement, carry: i64) -> P256FieldElement {
+        if carry > 0 {
+            for _ in 0..carry {
+                result = result.sub(&P256FieldElement { limbs: P });
+            }
+        } else if carry < 0 {
+            for _ in 0..(-carry) {
+                result = result.add(&P256FieldElement { limbs: P });
+            }
+        }
+
+        let mut borrow: u64 = 0;
+        let mut sub = [0u64; 4];
+        for i in 0..4 {
+            let diff = (result.limbs[i] as u128)
+                .wrapping_sub(P[i] as u128)
+                .wrapping_sub(borrow as u128);
+            sub[i] = diff as u64;
+            borrow = if diff >> 127 != 0 { 1 } else { 0 };
+        }
+        if borrow == 0 {
+            result = P256FieldElement { limbs: sub };
+        }
+
+        result
+    }
+
     /// NIST P-256高速リダクション (FIPS 186-4 Section D.2.3)
     ///
     /// 512ビット積を16個のu32ワードに分解し、NISTの公式に従って
@@ -346,49 +392,11 @@ pub mod p256 {
         acc[5] -= c[11] as i64;
         acc[7] -= c[13] as i64;
 
-        // キャリー伝播
-        let mut carry: i64 = 0;
-        let mut words = [0u32; 8];
-        for i in 0..8 {
-            acc[i] += carry;
-            carry = acc[i] >> 32;
-            words[i] = (acc[i] & 0xFFFFFFFF) as u32;
-        }
-
-        // 8個のu32ワードから4個のu64リムへ変換
-        let mut limbs = [0u64; 4];
-        for i in 0..4 {
-            limbs[i] = (words[2 * i] as u64) | ((words[2 * i + 1] as u64) << 32);
-        }
+        // キャリー伝播と4個のu64リムへ変換
+        let (result, carry) = Self::carry_propagate_to_limbs(&mut acc);
 
         // 残りのキャリーとpによる正規化
-        // carry > 0の場合はpを減算、carry < 0の場合はpを加算
-        let mut result = P256FieldElement { limbs };
-        if carry > 0 {
-            for _ in 0..carry {
-                result = result.sub(&P256FieldElement { limbs: P });
-            }
-        } else if carry < 0 {
-            for _ in 0..(-carry) {
-                result = result.add(&P256FieldElement { limbs: P });
-            }
-        }
-
-        // 最終正規化：result >= p の場合は p を減算
-        let mut borrow: u64 = 0;
-        let mut sub = [0u64; 4];
-        for i in 0..4 {
-            let diff = (result.limbs[i] as u128)
-                .wrapping_sub(P[i] as u128)
-                .wrapping_sub(borrow as u128);
-            sub[i] = diff as u64;
-            borrow = if diff >> 127 != 0 { 1 } else { 0 };
-        }
-        if borrow == 0 {
-            result = P256FieldElement { limbs: sub };
-        }
-
-        result
+        Self::normalize_mod_p(result, carry)
     }
 
     // ========================================================================

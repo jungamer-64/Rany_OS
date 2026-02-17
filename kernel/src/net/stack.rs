@@ -1860,6 +1860,61 @@ impl NetworkStack {
     }
 
     /// Send a UDP datagram (UdpAddr-based variant)
+    /// ゼロコピーUDP送信を試行する
+    fn try_send_udp_zero_copy(
+        &mut self,
+        config: &super::config::NetworkConfig,
+        src_ip: super::Ipv4Addr,
+        src_port: u16,
+        dst_ip: super::Ipv4Addr,
+        dst_mac: super::MacAddress,
+        dst_port: u16,
+        data: &[u8],
+    ) -> Option<Result<(), super::NetworkError>> {
+        let mut packet = crate::net::mempool::alloc_packet()?;
+        let mut frame = EthernetFrameMut::new(packet.data_mut())?;
+        frame
+            .set_destination(dst_mac)
+            .set_source(config.mac)
+            .set_ether_type(EtherType::Ipv4);
+
+        let eth_payload = frame.payload_mut();
+
+        let mut ip_packet = Ipv4PacketMut::new(eth_payload)?;
+        ip_packet
+            .init_header()
+            .set_source(src_ip)
+            .set_destination(dst_ip)
+            .set_protocol(IpProtocol::Udp)
+            .set_ttl(64);
+
+        let ip_payload = ip_packet.payload_mut();
+
+        let udp_len = super::udp::UdpProcessor::build_packet(
+            ip_payload,
+            config.ipv4.address,
+            src_port,
+            dst_ip,
+            dst_port,
+            data,
+        )?;
+
+        ip_packet.finalize(udp_len);
+        let ip_len = ip_packet.total_len();
+        frame.set_payload_len(ip_len);
+
+        let total_len = frame.as_bytes().len();
+        drop(frame);
+        packet.set_len(total_len);
+
+        if let Ok(()) = crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
+            self.stats.record_tx(total_len);
+            return Some(Ok(()));
+        }
+        // Fall back to copy-based path on failure
+        None
+    }
+
     pub fn send_udp_addr(
         &mut self,
         src: super::udp::UdpAddr,
@@ -1881,52 +1936,11 @@ impl NetworkStack {
         let dst_mac = self.resolve_mac(dst_ip, &config, current_time)
             .ok_or(super::NetworkError::ArpResolutionPending)?;
 
-        // Try zero-copy first: build packet directly into a PacketRef and enqueue
-        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
-            if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-                frame
-                    .set_destination(dst_mac)
-                    .set_source(config.mac)
-                    .set_ether_type(EtherType::Ipv4);
-
-                let eth_payload = frame.payload_mut();
-
-                if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                    ip_packet
-                        .init_header()
-                        .set_source(src_ip)
-                        .set_destination(dst_ip)
-                        .set_protocol(IpProtocol::Udp)
-                        .set_ttl(64);
-
-                    let ip_payload = ip_packet.payload_mut();
-
-                    // Build UDP datagram
-                    if let Some(udp_len) = super::udp::UdpProcessor::build_packet(
-                        ip_payload,
-                        config.ipv4.address,
-                        src.port,
-                        dst_ip,
-                        dst.port,
-                        data,
-                    ) {
-                        ip_packet.finalize(udp_len);
-                        let ip_len = ip_packet.total_len();
-                        frame.set_payload_len(ip_len);
-
-                        let total_len = frame.as_bytes().len();
-                        // Release mutable borrow before moving packet
-                        drop(frame);
-                        packet.set_len(total_len);
-
-                        if let Ok(()) = crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
-                            self.stats.record_tx(total_len);
-                            return Ok(());
-                        }
-                        // Fall back to copy-based path on failure
-                    }
-                }
-            }
+        // Try zero-copy first
+        if let Some(result) = self.try_send_udp_zero_copy(
+            &config, src_ip, src.port, dst_ip, dst_mac, dst.port, data,
+        ) {
+            return result;
         }
 
         let mut buffer = [0u8; MAX_PACKET_SIZE];

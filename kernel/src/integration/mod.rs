@@ -498,6 +498,20 @@ impl SystemIntegration {
         }
     }
 
+    fn register_and_start_virtio_net_driver(&mut self, drv: Box<VirtioNetDriver>) {
+        use crate::driver_registry::{register_driver, driver_registry};
+        match register_driver(drv) {
+            Ok(handle) => {
+                if let Err(e) = driver_registry().probe_and_start(handle) {
+                    self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
+                } else {
+                    self.log("    VirtIO-net driver initialized via DriverRegistry");
+                }
+            }
+            Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
+        }
+    }
+
     fn init_virtio_net_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Net at {:02x}:{:02x}.{}",
@@ -556,33 +570,14 @@ impl SystemIntegration {
 
             // Register Driver via DriverRegistry
             use alloc::boxed::Box;
-            use crate::driver_registry::{register_driver, driver_registry};
             use crate::net::driver::VirtioNetDriver;
 
             if initialized_via_pci {
                 let drv = Box::new(VirtioNetDriver::new());
-                match register_driver(drv) {
-                    Ok(handle) => {
-                        if let Err(e) = driver_registry().probe_and_start(handle) {
-                            self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
-                        } else {
-                            self.log("    VirtIO-net driver initialized via DriverRegistry");
-                        }
-                    }
-                    Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
-                }
+                self.register_and_start_virtio_net_driver(drv);
             } else {
                 let drv = Box::new(VirtioNetDriver::new_with_device(bar0_virt as u64, iommu_device));
-                match register_driver(drv) {
-                    Ok(handle) => {
-                        if let Err(e) = driver_registry().probe_and_start(handle) {
-                            self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
-                        } else {
-                            self.log("    VirtIO-net driver initialized via DriverRegistry");
-                        }
-                    }
-                    Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
-                }
+                self.register_and_start_virtio_net_driver(drv);
             }
         } else {
             self.log("    VirtIO-net found but BAR0 is missing, skipping init");

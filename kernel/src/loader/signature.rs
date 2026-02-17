@@ -337,23 +337,14 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
     }
 }
 
-/// 署名セクションを検索
-fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
-    use super::elf::{Elf64Header, Elf64SectionHeader};
+/// ELFヘッダーからセクション名文字列テーブルを取得する
+fn get_shstrtab<'a>(
+    elf_data: &'a [u8],
+    header: &super::elf::Elf64Header,
+) -> Option<&'a [u8]> {
+    use super::elf::Elf64SectionHeader;
     use core::mem;
 
-    if elf_data.len() < mem::size_of::<Elf64Header>() {
-        return None;
-    }
-
-    let header: Elf64Header = crate::util::read_struct(elf_data, 0)?;
-
-    // ELFマジック検証
-    if &header.e_ident[0..4] != b"\x7FELF" {
-        return None;
-    }
-
-    // 文字列テーブルセクションを取得
     let shstrtab_offset =
         header.e_shoff as usize + (header.e_shstrndx as usize * header.e_shentsize as usize);
 
@@ -370,7 +361,39 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
         return None;
     }
 
-    let shstrtab = &elf_data[shstrtab_start..shstrtab_end];
+    Some(&elf_data[shstrtab_start..shstrtab_end])
+}
+
+/// セクション名文字列テーブルからセクション名を取得する
+fn get_section_name<'a>(shstrtab: &'a [u8], name_offset: usize) -> Option<&'a [u8]> {
+    if name_offset >= shstrtab.len() {
+        return None;
+    }
+    let name_end = shstrtab[name_offset..]
+        .iter()
+        .position(|&c| c == 0)
+        .map(|p| name_offset + p)
+        .unwrap_or(shstrtab.len());
+    Some(&shstrtab[name_offset..name_end])
+}
+
+/// 署名セクションを検索
+fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
+    use super::elf::{Elf64Header, Elf64SectionHeader};
+    use core::mem;
+
+    if elf_data.len() < mem::size_of::<Elf64Header>() {
+        return None;
+    }
+
+    let header: Elf64Header = crate::util::read_struct(elf_data, 0)?;
+
+    // ELFマジック検証
+    if &header.e_ident[0..4] != b"\x7FELF" {
+        return None;
+    }
+
+    let shstrtab = get_shstrtab(elf_data, &header)?;
 
     // 全セクションを走査して署名セクションを探す
     for i in 0..header.e_shnum {
@@ -382,20 +405,7 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
 
         let sh: Elf64SectionHeader = crate::util::read_struct(elf_data, sh_offset)?;
 
-        // セクション名を取得
-        let name_offset = sh.sh_name as usize;
-        if name_offset >= shstrtab.len() {
-            continue;
-        }
-
-        // 名前を比較
-        let name_end = shstrtab[name_offset..]
-            .iter()
-            .position(|&c| c == 0)
-            .map(|p| name_offset + p)
-            .unwrap_or(shstrtab.len());
-
-        let section_name = &shstrtab[name_offset..name_end];
+        let section_name = get_section_name(shstrtab, sh.sh_name as usize)?;
 
         if section_name == SIGNATURE_SECTION_NAME {
             let data_start = sh.sh_offset as usize;

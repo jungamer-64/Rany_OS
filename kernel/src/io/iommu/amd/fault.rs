@@ -288,6 +288,26 @@ impl AmdIommuDriver {
         AMD_CMD_WAITERS.wake_all_from_isr();
     }
 
+    /// Handle event log status bits: clear interrupts, restart/enable if needed.
+    /// Returns `true` if the log is running and entries should be processed.
+    fn handle_event_log_status(&self, mmio_base: usize, status: u32) -> bool {
+        let clear_mask = status & (MMIO_STATUS_EVT_INT_MASK | MMIO_STATUS_EVT_OVERFLOW_MASK);
+        if clear_mask != 0 {
+            mmio_write_u32(mmio_base + MMIO_STATUS_OFFSET as usize, clear_mask);
+        }
+
+        if status & MMIO_STATUS_EVT_RUN_MASK != 0 {
+            return true;
+        }
+
+        if status & MMIO_STATUS_EVT_OVERFLOW_MASK != 0 {
+            self.restart_event_log(mmio_base);
+        } else {
+            self.enable_event_log(mmio_base);
+        }
+        false
+    }
+
     pub(super) fn poll_event_log(&self, unit_idx: usize, unit: &AmdIommuUnit) {
         let log = match self.event_logs.get(unit_idx).and_then(|log| log.as_ref()) {
             Some(log) => log,
@@ -301,17 +321,10 @@ impl AmdIommuDriver {
 
         let mmio_base = phys_to_virt_usize(unit.base_addr);
         let status = mmio_read_u32(mmio_base + MMIO_STATUS_OFFSET as usize);
-        let clear_mask = status & (MMIO_STATUS_EVT_INT_MASK | MMIO_STATUS_EVT_OVERFLOW_MASK);
-        if clear_mask != 0 {
-            mmio_write_u32(mmio_base + MMIO_STATUS_OFFSET as usize, clear_mask);
-        }
 
-        if status & MMIO_STATUS_EVT_RUN_MASK == 0 {
+        if !self.handle_event_log_status(mmio_base, status) {
             if status & MMIO_STATUS_EVT_OVERFLOW_MASK != 0 {
-                self.restart_event_log(mmio_base);
                 AMD_DEFERRED_FAULT_QUEUE.push(AmdFaultEvent::overflow(unit.segment));
-            } else {
-                self.enable_event_log(mmio_base);
             }
             return;
         }
