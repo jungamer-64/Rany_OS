@@ -992,7 +992,7 @@ pub mod p256 {
     }
 
     fn parse_ecdsa_signature_der(der: &[u8]) -> Result<([u8; 32], [u8; 32]), EcdsaError> {
-        let _seq_len = Self::validate_der_sequence_header(der)?;
+        let _seq_len = validate_der_sequence_header(der)?;
 
         let mut pos = 2;
         let r_data = parse_der_integer(der, &mut pos)?;
