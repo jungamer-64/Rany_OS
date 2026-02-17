@@ -27,13 +27,13 @@ do
 done
 
 canonical_cases=(
+  "cmdqueue_map_unmap_with_domain_canonical"
   "map_for_device_respects_dma_mask_canonical"
   "api_security_notifier_registration_canonical"
   "qi_metrics_pressure_canonical"
 )
 
 residual_cases=(
-  "cmdqueue_map_unmap_with_domain_residual"
   "map_for_device_async_and_unmap_residual"
 )
 
@@ -46,13 +46,13 @@ legacy_wave2_compat=(
 )
 
 promoted_canonical_originals=(
+  "test_cmdqueue_map_unmap_with_domain"
   "test_map_for_device_respects_dma_mask"
   "test_api_security_notifier_registration"
   "test_qi_metrics_pressure"
 )
 
 residual_originals=(
-  "test_cmdqueue_map_unmap_with_domain"
   "test_map_for_device_async_and_unmap"
 )
 
