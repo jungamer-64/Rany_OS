@@ -646,6 +646,238 @@ pub fn rsa_pkcs1_verify(
 }
 
 // ============================================================================
+// RSA PKCS#1 v1.5 Encryption (RFC 8017 Section 7.2.1)
+// TLS_RSA_WITH_* 暗号スイートのClientKeyExchangeに使用
+// ============================================================================
+
+/// RSA PKCS#1 v1.5 暗号化 (Type 2 パディング)
+///
+/// # PKCS#1 v1.5 暗号化パディング構造:
+/// EM = 0x00 || 0x02 || PS(非ゼロランダム, >= 8バイト) || 0x00 || M
+///
+/// # Arguments
+/// * `key` - RSA公開鍵（モジュラスと指数）
+/// * `message` - 暗号化するメッセージ（TLSの場合48バイトのPMS）
+///
+/// # Returns
+/// 暗号化されたバイト列（モジュラス長に等しい）
+pub fn rsa_pkcs1_encrypt(
+    key: &RsaPublicKey,
+    message: &[u8],
+) -> Result<Vec<u8>, RsaError> {
+    let k = key.modulus.len();
+
+    // メッセージ長チェック: mLen <= k - 11
+    if message.len() > k.saturating_sub(11) {
+        return Err(RsaError::ModulusTooSmall);
+    }
+
+    let ps_len = k - 3 - message.len();
+
+    // EM = 0x00 || 0x02 || PS || 0x00 || M
+    let mut em = Vec::with_capacity(k);
+    em.push(0x00);
+    em.push(0x02);
+
+    // PS: 非ゼロランダムバイト列 (>= 8バイト)
+    // カーネル環境では簡易PRNG (TSCベース) を使用
+    for i in 0..ps_len {
+        // 非ゼロのランダムバイトを生成
+        let mut byte = pseudo_random_byte(i as u64);
+        if byte == 0 {
+            byte = 0x42; // 非ゼロに補正
+        }
+        em.push(byte);
+    }
+
+    em.push(0x00);
+    em.extend_from_slice(message);
+
+    // 整数に変換して RSA 暗号化: c = m^e mod n
+    let n = BigUint::from_be_bytes(key.modulus);
+    let e = BigUint::from_be_bytes(key.exponent);
+    let m = BigUint::from_be_bytes(&em);
+
+    if m >= n {
+        return Err(RsaError::InvalidSignatureValue);
+    }
+
+    let c = m.mod_exp(&e, &n);
+    Ok(c.to_be_bytes_padded(k))
+}
+
+/// RSA-PSS 署名検証 (RFC 8017 Section 8.1.2)
+///
+/// # Arguments
+/// * `key` - RSA公開鍵
+/// * `hash_alg` - ハッシュアルゴリズム
+/// * `message_hash` - メッセージのハッシュ値
+/// * `signature` - 署名バイト列
+///
+/// # Returns
+/// 検証成功なら `Ok(())`、失敗なら `RsaError`
+pub fn rsa_pss_verify(
+    key: &RsaPublicKey,
+    hash_alg: HashAlgorithm,
+    message_hash: &[u8],
+    signature: &[u8],
+) -> Result<(), RsaError> {
+    let k = key.modulus.len();
+    let h_len = hash_alg.digest_len();
+
+    if signature.len() != k {
+        return Err(RsaError::InvalidSignatureLength);
+    }
+
+    // Step 1: RSAVP1 (s^e mod n)
+    let n = BigUint::from_be_bytes(key.modulus);
+    let e = BigUint::from_be_bytes(key.exponent);
+    let s = BigUint::from_be_bytes(signature);
+
+    if s >= n {
+        return Err(RsaError::InvalidSignatureValue);
+    }
+
+    let m = s.mod_exp(&e, &n);
+    let em = m.to_be_bytes_padded(k);
+
+    // Step 2: EMSA-PSS-VERIFY
+    let em_len = em.len();
+
+    // 最低限: maskedDB (em_len - h_len - 1) + H (h_len) + 0xBC (1)
+    if em_len < h_len + 2 {
+        return Err(RsaError::InvalidPadding);
+    }
+
+    // 最後のバイトが0xBCであること
+    if em[em_len - 1] != 0xBC {
+        return Err(RsaError::InvalidPadding);
+    }
+
+    let db_len = em_len - h_len - 1;
+    let masked_db = &em[..db_len];
+    let h = &em[db_len..db_len + h_len];
+
+    // MGF1 でマスクを生成し、maskedDB をアンマスク
+    let db_mask = mgf1(h, db_len, hash_alg);
+    let mut db = Vec::with_capacity(db_len);
+    for i in 0..db_len {
+        db.push(masked_db[i] ^ db_mask[i]);
+    }
+
+    // 最上位ビットをクリア (em_bits に合わせる)
+    // 8*em_len - em_bits のbit数分マスク
+    let top_bits = 8 * em_len - (k * 8 - 1).min(8 * em_len);
+    if top_bits < 8 && !db.is_empty() {
+        db[0] &= 0xFF >> top_bits;
+    }
+
+    // DB の先頭からゼロを探し、0x01 を見つける
+    let mut padding_pos = None;
+    for i in 0..db.len() {
+        if db[i] == 0x01 {
+            padding_pos = Some(i);
+            break;
+        }
+        if db[i] != 0x00 {
+            return Err(RsaError::InvalidPadding);
+        }
+    }
+
+    let salt_start = match padding_pos {
+        Some(pos) => pos + 1,
+        None => return Err(RsaError::InvalidPadding),
+    };
+
+    let salt = &db[salt_start..];
+
+    // M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt
+    let mut m_prime = Vec::with_capacity(8 + h_len + salt.len());
+    m_prime.extend_from_slice(&[0u8; 8]);
+    m_prime.extend_from_slice(message_hash);
+    m_prime.extend_from_slice(salt);
+
+    // H' = Hash(M')
+    let h_prime = hash_compute(hash_alg, &m_prime);
+
+    // H == H' の定時間比較
+    if h.len() != h_prime.len() {
+        return Err(RsaError::DigestMismatch);
+    }
+
+    let mut diff = 0u8;
+    for i in 0..h.len() {
+        diff |= h[i] ^ h_prime[i];
+    }
+
+    if diff != 0 {
+        Err(RsaError::DigestMismatch)
+    } else {
+        Ok(())
+    }
+}
+
+/// MGF1 マスク生成関数 (RFC 8017 Appendix B.2.1)
+fn mgf1(seed: &[u8], length: usize, hash_alg: HashAlgorithm) -> Vec<u8> {
+    let h_len = hash_alg.digest_len();
+    let mut output = Vec::with_capacity(length + h_len);
+    let mut counter: u32 = 0;
+
+    while output.len() < length {
+        let mut input = Vec::with_capacity(seed.len() + 4);
+        input.extend_from_slice(seed);
+        input.extend_from_slice(&counter.to_be_bytes());
+
+        let hash = hash_compute(hash_alg, &input);
+        output.extend_from_slice(&hash);
+        counter += 1;
+    }
+
+    output.truncate(length);
+    output
+}
+
+/// ハッシュ計算ヘルパー
+fn hash_compute(hash_alg: HashAlgorithm, data: &[u8]) -> Vec<u8> {
+    match hash_alg {
+        HashAlgorithm::Sha256 => crate::loader::sha256::compute(data).to_vec(),
+        HashAlgorithm::Sha384 => crate::loader::sha384::compute(data).to_vec(),
+    }
+}
+
+/// カーネル環境用 擬似ランダムバイト生成
+///
+/// TSC (Time Stamp Counter) をベースに簡易ランダム値を生成。
+/// 暗号学的に安全ではないが、カーネル初期段階で使用可能。
+fn pseudo_random_byte(extra_entropy: u64) -> u8 {
+    // TSC (or fallback) で基本エントロピーを取得
+    let tsc = read_tsc();
+    let mixed = tsc
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)
+        .wrapping_add(extra_entropy.wrapping_mul(2862933555777941757));
+    (mixed >> 33) as u8
+}
+
+/// TSCを読み取る（x86_64 RDTSC命令）
+fn read_tsc() -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let lo: u32;
+        let hi: u32;
+        unsafe {
+            core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem));
+        }
+        ((hi as u64) << 32) | lo as u64
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // フォールバック: 定数ベース
+        0x123456789ABCDEF0u64.wrapping_add(extra_entropy)
+    }
+}
+
+// ============================================================================
 // QEMU Test Module
 // ============================================================================
 

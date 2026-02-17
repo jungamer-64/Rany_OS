@@ -1613,6 +1613,13 @@ pub fn set_security_notifier(notifier: Arc<dyn SecurityNotifier>) -> Result<bool
     Ok(true)
 }
 
+/// Clear the global security notifier for qemu-test-export deterministic runs.
+#[cfg(feature = "qemu-test-export")]
+pub fn qemu_test_clear_security_notifier() {
+    let mut lock = SECURITY_NOTIFIER.write();
+    *lock = None;
+}
+
 /// Notify the registered security listener (if any)
 pub(crate) fn notify_security_listener(event: SecurityEvent) {
     if let Some(notifier) = SECURITY_NOTIFIER.read().as_ref() {

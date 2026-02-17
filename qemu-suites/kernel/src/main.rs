@@ -154,8 +154,12 @@ fn run_suite() -> bool {
             test_mm_wave7_page_reclaim_phase_c_exports,
         )
         && run_check(
-            "iommu_wave2_residual_exports",
-            test_iommu_wave2_residual_exports,
+            "iommu_wave5_canonical_exports",
+            test_iommu_wave5_canonical_exports,
+        )
+        && run_check(
+            "iommu_wave5_residual_exports",
+            test_iommu_wave5_residual_exports,
         )
         && run_check(
             "net_tls_wave8_phase_a_exports",
@@ -1082,22 +1086,26 @@ fn test_net_ecdh_phase_b_exports() -> bool {
     )
 }
 
-fn test_iommu_wave2_residual_exports() -> bool {
+fn test_iommu_wave5_canonical_exports() -> bool {
     run_check(
-        "iommu_wave2_cmdqueue_map_unmap_with_domain_smoke",
-        rany_os::qemu_tests::iommu_wave2_cmdqueue_map_unmap_with_domain_smoke,
+        "iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke,
     ) && run_check(
-        "iommu_wave2_cmdqueue_map_device_nonblocking_smoke",
-        rany_os::qemu_tests::iommu_wave2_cmdqueue_map_device_nonblocking_smoke,
+        "iommu_wave5_api_security_notifier_registration_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_api_security_notifier_registration_canonical_smoke,
     ) && run_check(
-        "iommu_wave2_dma_mask_respects_32bit_limit_smoke",
-        rany_os::qemu_tests::iommu_wave2_dma_mask_respects_32bit_limit_smoke,
+        "iommu_wave5_qi_metrics_pressure_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_qi_metrics_pressure_canonical_smoke,
+    )
+}
+
+fn test_iommu_wave5_residual_exports() -> bool {
+    run_check(
+        "iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke",
+        rany_os::qemu_tests::iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke,
     ) && run_check(
-        "iommu_wave2_controller_security_notifier_dispatch_smoke",
-        rany_os::qemu_tests::iommu_wave2_controller_security_notifier_dispatch_smoke,
-    ) && run_check(
-        "iommu_wave2_qi_metrics_pressure_smoke",
-        rany_os::qemu_tests::iommu_wave2_qi_metrics_pressure_smoke,
+        "iommu_wave5_map_for_device_async_and_unmap_residual_smoke",
+        rany_os::qemu_tests::iommu_wave5_map_for_device_async_and_unmap_residual_smoke,
     )
 }
 

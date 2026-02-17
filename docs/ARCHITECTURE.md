@@ -397,6 +397,7 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - parity の整合チェックは `bash scripts/verify_iommu_residual_parity.sh` で実行する。
 - AMD Wave4 required 配線の整合チェックは `bash scripts/verify_iommu_amd_wave4_required.sh` で実行する。
 - AMD Wave5 required 配線の整合チェックは `bash scripts/verify_iommu_amd_wave5_required.sh` で実行する。
+- IOMMU Wave5 canonical/residual required 配線の整合チェックは `bash scripts/verify_iommu_wave5_residual_canonical_required.sh` で実行する。
 - Graphics/Framebuffer Wave6 required 配線の整合チェックは `bash scripts/verify_graphics_framebuffer_wave6_required.sh` で実行する。
 - MM Wave7 required 配線の整合チェック（Phase A+B+C+D）は `bash scripts/verify_mm_wave7_required.sh` で実行する。
 - NET/TLS Wave8 required 配線の整合チェック（Phase A+B1+B2+C+D+E+F）は `bash scripts/verify_net_tls_wave8_required.sh` で実行する。
@@ -407,9 +408,11 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - runtime pending は runtime依存2件（`kernel_net_bridge_zero_copy_integration` / `kernel_bench_framebuffer`）専用の non-blocking 監視として運用する。
 - `kernel-runtime-pending-summary` は `suite`, `passed_count`, `failed_count`, `blocked_count`, `suite_log_path`, `generated_at_utc` を出力する。
 - CI pending ジョブは `suite_kernel_runtime_pending` と `suite_pending` を実行し、required 判定には影響させない（non-blocking）。
-- `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri + residual）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）に加えて wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）および wave5 deterministic（AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行する。
+- `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）に加えて wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）および wave5 deterministic（canonical 3件 + residual 2件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行する。
 - IOMMU residual は二層管理（required no_std smoke + pending canonical 名監視）で運用する。
-- IOMMU residual canonical pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
+- IOMMU residual canonical pending: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_async_and_unmap`
+- IOMMU Wave5 canonical required（3件）: `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
+- IOMMU wave2 residual 名は compat alias（非正規導線）として維持し、required は Wave5 名へ統一する。
 - IOMMU wave3 pending monitored smoke（required 未投入）: `none`
 - AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
 - AMD-Vi Wave1 required 実行対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`
@@ -431,6 +434,7 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - NET/ECDH Phase B required 実行対象（P-256, 6件）: `p256_key_exchange_symmetry`, `p256_public_key_length`, `p256_reject_invalid_peer_key`, `group_from_named_group_p256`, `p256_point_on_curve`, `p256_scalar_mul_base`
 - MM Wave7 residual（pending監視）: `test_memcg_concurrent_swapout`, `test_async_swapout_concurrent_dedup`, `test_async_swapout_stress_concurrency`, `test_async_swapout_heavy_stress`, `bench_enqueue_throughput_pool_vs_nopool`, `bench_buffer_pool_2m_throughput`, `bench_buffer_pool_1g_throughput`
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
+- IOMMU Wave5 運用方針: fix-forward（揺らぎ発生時も即時 rollback せず、required 境界を維持して修正）。
 - `scripts/qemu_legacy_test_allowlist.lst` は `#[test]` 例外検出の実装ガード専用。
 - `scripts/qemu_pending_cases.lst` は移行監視の運用可視化リスト専用。
 - `scripts/qemu_iommu_residual_parity.lst` は residual canonical↔required smoke 対応表専用。

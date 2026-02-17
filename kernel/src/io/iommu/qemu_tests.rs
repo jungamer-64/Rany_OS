@@ -1897,7 +1897,7 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
 
 /// CQ map/unmap with domain: single-thread sequential submit → process → verify.
 /// Migrated from test_cmdqueue_map_unmap_with_domain (removed std::thread).
-pub fn wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
+fn wave5_cmdqueue_map_unmap_with_domain_residual_impl() -> bool {
     use super::cmdqueue::{CommandQueue, IommuCommandKind};
     use super::intel::controller::dma::DomainManager;
 
@@ -1967,7 +1967,7 @@ pub fn wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
 
 /// CQ map-device non-blocking: submit MapRegion + UnmapRegion via handle_command_queue_entry.
 /// Migrated from test_map_for_device_async_and_unmap (removed std::thread + global singleton).
-pub fn wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
+fn wave5_map_for_device_async_and_unmap_residual_impl() -> bool {
     use super::cmdqueue::{CommandQueue, IommuCommandKind};
     use super::intel::controller::dma::DomainManager;
     use super::intel::controller::iova::IovaManager;
@@ -2053,7 +2053,7 @@ pub fn wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
 
 /// DMA mask validation: register 32-bit mask → allocate IOVA → verify within mask bounds.
 /// Migrated from test_map_for_device_respects_dma_mask (removed global singleton dependency).
-pub fn wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
+fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
     use super::intel::controller::iova::IovaManager;
     use super::registry::{register_device_dma_mask, clear_device_dma_mask};
 
@@ -2066,8 +2066,16 @@ pub fn wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
     let device = DeviceId::new(0, 0, 2, 0);
     let mask_32bit: u64 = 0xFFFF_FFFF;
 
+    struct DmaMaskGuard(DeviceId);
+    impl Drop for DmaMaskGuard {
+        fn drop(&mut self) {
+            clear_device_dma_mask(self.0);
+        }
+    }
+
     // Register 32-bit DMA mask
     register_device_dma_mask(device, mask_32bit);
+    let _mask_guard = DmaMaskGuard(device);
 
     // Validate mask pre-allocation
     let mask_check = super::registry::validate_dma_mask_pre_allocation(&device, 0x1000);
@@ -2076,7 +2084,6 @@ pub fn wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
         _ => false,
     };
     if !mask_ok {
-        clear_device_dma_mask(device);
         return false;
     }
 
@@ -2096,49 +2103,44 @@ pub fn wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
         }
     };
 
-    // Cleanup
-    clear_device_dma_mask(device);
     result
 }
 
-/// Security notifier controller-level registration: set once → reject second.
-/// Migrated from test_api_security_notifier_registration (removed global singleton dependency).
-/// Uses controller-level set_security_notifier instead of api-level (which requires global registry).
-pub fn wave2_controller_security_notifier_dispatch_smoke() -> bool {
-    let ctrl = IommuController::new(0x0, 0);
-    let notifier1 = Arc::new(MockSecurityNotifier::new());
+/// Security notifier API-level registration: set once -> reject second.
+/// Canonical parity path for test_api_security_notifier_registration.
+fn wave5_api_security_notifier_registration_canonical_impl() -> bool {
+    // Canonical API parity path: clear global notifier state before/after each run.
+    super::security::qemu_test_clear_security_notifier();
 
-    // First registration should succeed
-    let first = ctrl.set_security_notifier(notifier1.clone());
+    struct SecurityNotifierGuard;
+    impl Drop for SecurityNotifierGuard {
+        fn drop(&mut self) {
+            super::security::qemu_test_clear_security_notifier();
+        }
+    }
+    let _guard = SecurityNotifierGuard;
+
+    let notifier1 = Arc::new(MockSecurityNotifier::new());
+    let first = match super::api::set_security_notifier(notifier1) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
     if !first {
         return false;
     }
 
-    // Second registration should be rejected (already set)
     let notifier2 = Arc::new(MockSecurityNotifier::new());
-    let second = ctrl.set_security_notifier(notifier2);
-    if second {
-        return false;
-    }
-
-    // Verify the notifier is functional via a domain
-    let domain_id = match ctrl.create_domain(None, IommuDomainType::Translated) {
-        Ok(id) => id,
+    let second = match super::api::set_security_notifier(notifier2) {
+        Ok(v) => v,
         Err(_) => return false,
     };
-    let domain_arc = match ctrl.domain(domain_id) {
-        Some(d) => d,
-        None => return false,
-    };
 
-    // Domain should have inherited the controller's security notifier
-    // (set_security_notifier is called in create_domain if notifier is present)
-    domain_arc.id() == domain_id
+    !second
 }
 
 /// QI metrics under pressure: fill ring → verify stats (submits, full_checks, timeouts).
 /// Migrated from test_qi_metrics_pressure (no actual std dependency).
-pub fn wave2_qi_metrics_pressure_smoke() -> bool {
+fn wave5_qi_metrics_pressure_canonical_impl() -> bool {
     use super::intel::controller::qi_init::QIManager;
     use super::intel::controller::qi_ops::InvalidationOps;
     use super::intel::qi::InvalidationQueueEntry;
@@ -2196,6 +2198,61 @@ pub fn wave2_qi_metrics_pressure_smoke() -> bool {
     };
     stats.full_checks > 0 && stats.waits > 0 && stats.wait_timeouts > 0
         && stats.submits == safe_submissions as u64
+}
+
+/// Wave5 canonical required export: map_for_device_respects_dma_mask parity.
+pub fn wave5_map_for_device_respects_dma_mask_canonical_smoke() -> bool {
+    wave5_map_for_device_respects_dma_mask_canonical_impl()
+}
+
+/// Wave5 canonical required export: API security notifier registration parity.
+pub fn wave5_api_security_notifier_registration_canonical_smoke() -> bool {
+    wave5_api_security_notifier_registration_canonical_impl()
+}
+
+/// Wave5 canonical required export: QI pressure metrics parity.
+pub fn wave5_qi_metrics_pressure_canonical_smoke() -> bool {
+    wave5_qi_metrics_pressure_canonical_impl()
+}
+
+/// Wave5 residual export retained in required suite for staged migration.
+pub fn wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {
+    wave5_cmdqueue_map_unmap_with_domain_residual_impl()
+}
+
+/// Wave5 residual export retained in required suite for staged migration.
+pub fn wave5_map_for_device_async_and_unmap_residual_smoke() -> bool {
+    wave5_map_for_device_async_and_unmap_residual_impl()
+}
+
+// Compat alias: legacy wave2 residual name.
+// Required suite does not use this entrypoint; it forwards to the Wave5 residual export.
+pub fn wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
+    wave5_cmdqueue_map_unmap_with_domain_residual_smoke()
+}
+
+// Compat alias: legacy wave2 residual name.
+// Required suite does not use this entrypoint; it forwards to the Wave5 residual export.
+pub fn wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
+    wave5_map_for_device_async_and_unmap_residual_smoke()
+}
+
+// Compat alias: legacy wave2 residual name.
+// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
+pub fn wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
+    wave5_map_for_device_respects_dma_mask_canonical_smoke()
+}
+
+// Compat alias: legacy wave2 residual name.
+// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
+pub fn wave2_controller_security_notifier_dispatch_smoke() -> bool {
+    wave5_api_security_notifier_registration_canonical_smoke()
+}
+
+// Compat alias: legacy wave2 residual name.
+// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
+pub fn wave2_qi_metrics_pressure_smoke() -> bool {
+    wave5_qi_metrics_pressure_canonical_smoke()
 }
 
 pub fn amd_wave0_alias_devids_for_device_dedup_smoke() -> bool {

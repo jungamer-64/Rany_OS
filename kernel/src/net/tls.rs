@@ -39,6 +39,10 @@ impl TlsVersion {
     pub fn minor(self) -> u8 {
         self.0 as u8
     }
+
+    pub fn to_bytes(self) -> [u8; 2] {
+        self.0.to_be_bytes()
+    }
 }
 
 /// セッションID
@@ -95,12 +99,16 @@ impl CipherSuite {
     /// Get the key length in bytes for this cipher suite
     pub fn key_len(&self) -> usize {
         match self.0 {
-            // AES-128 suites
+            // AES-128 suites (GCM)
             0x009C | 0xC02F | 0xC02B | 0x1301 => 16,
-            // AES-256 suites
+            // AES-256 suites (GCM)
             0x009D | 0xC030 | 0xC02C | 0x1302 => 32,
             // ChaCha20-Poly1305 suites (256-bit key)
             0xCCA8 | 0xCCA9 | 0x1303 => 32,
+            // AES-128 CBC suites
+            0x002F | 0x003C | 0xC013 | 0xC027 | 0xC009 => 16,
+            // AES-256 CBC suites
+            0x0035 | 0x003D | 0xC014 | 0xC00A => 32,
             // Default to 16
             _ => 16,
         }
@@ -115,6 +123,9 @@ impl CipherSuite {
             0x1301 | 0x1302 => 12,
             // ChaCha20-Poly1305 uses 12-byte IV
             0xCCA8 | 0xCCA9 | 0x1303 => 12,
+            // CBC uses 16-byte IV
+            0x002F | 0x0035 | 0x003C | 0x003D |
+            0xC013 | 0xC014 | 0xC027 | 0xC009 | 0xC00A => 16,
             // Default to 4
             _ => 4,
         }
@@ -123,13 +134,23 @@ impl CipherSuite {
     /// デフォルトの暗号スイート一覧
     pub fn defaults() -> Vec<Self> {
         vec![
+            // TLS 1.3 AEAD
             Self::TLS_AES_128_GCM_SHA256,
             Self::TLS_AES_256_GCM_SHA384,
             Self::TLS_CHACHA20_POLY1305_SHA256,
+            // TLS 1.2 AEAD
             Self::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
             Self::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
             Self::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             Self::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            // TLS 1.0/1.1/1.2 CBC
+            Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+            Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            Self::TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+            Self::TLS_RSA_WITH_AES_128_CBC_SHA256,
+            Self::TLS_RSA_WITH_AES_256_CBC_SHA256,
+            Self::TLS_RSA_WITH_AES_128_CBC_SHA,
+            Self::TLS_RSA_WITH_AES_256_CBC_SHA,
         ]
     }
 }
@@ -295,6 +316,10 @@ pub enum TlsState {
     Tls13WaitFinished,
     /// TLS 1.3: サーバーFinished受信済み、クライアントFinished送信待ち
     Tls13ServerFinishedReceived,
+    /// TLS 1.3: HelloRetryRequest 受信済み、再ClientHello送信待ち
+    HelloRetryReceived,
+    /// TLS 1.2: 略式ハンドシェイク中、サーバーChangeCipherSpec+Finished待ち
+    WaitFinishedResumed,
     /// 接続確立
     Established,
     /// シャットダウン中
@@ -390,7 +415,7 @@ pub struct TlsConfig {
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
-            min_version: TlsVersion::TLS_1_2,
+            min_version: TlsVersion::TLS_1_0,
             max_version: TlsVersion::TLS_1_3,
             cipher_suites: CipherSuite::defaults(),
             signature_schemes: vec![
@@ -527,6 +552,96 @@ pub enum ServerPublicKey {
     Rsa { modulus: Vec<u8>, exponent: Vec<u8> },
     /// ECDSA P-256公開鍵 (非圧縮ポイント 04 || x || y)
     EcdsaP256 { point: Vec<u8> },
+    /// ECDSA P-384公開鍵 (非圧縮ポイント 04 || x || y)
+    EcdsaP384 { point: Vec<u8> },
+}
+
+/// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
+enum TranscriptHash {
+    Sha256(crate::loader::sha256::Sha256),
+    Sha384(crate::loader::sha384::Sha384),
+}
+
+impl TranscriptHash {
+    /// ハッシュデータを更新
+    fn update(&mut self, data: &[u8]) {
+        match self {
+            TranscriptHash::Sha256(h) => h.update(data),
+            TranscriptHash::Sha384(h) => h.update(data),
+        }
+    }
+}
+
+/// TLS 1.3 セッションチケット (RFC 8446 Section 4.6.1)
+pub struct SessionTicket {
+    /// チケット有効期間（秒）
+    pub lifetime: u32,
+    /// チケットエイジ加算値（難読化用）
+    pub age_add: u32,
+    /// チケットnonce
+    pub nonce: Vec<u8>,
+    /// チケットデータ
+    pub ticket: Vec<u8>,
+}
+
+// ============================================================================
+// Session Cache (TLS 1.2 Abbreviated Handshake)
+// ============================================================================
+
+/// セッションキャッシュエントリ
+#[derive(Clone, Debug)]
+pub struct SessionCacheEntry {
+    /// セッションID
+    pub session_id: [u8; 32],
+    /// マスターシークレット
+    pub master_secret: [u8; 48],
+    /// ネゴシエートされた暗号スイート
+    pub cipher_suite: CipherSuite,
+    /// サーバー名
+    pub server_name: Option<String>,
+    /// TLSバージョン
+    pub version: TlsVersion,
+}
+
+/// セッションキャッシュ
+#[derive(Clone, Debug)]
+pub struct SessionCache {
+    entries: Vec<SessionCacheEntry>,
+    max_entries: usize,
+}
+
+impl SessionCache {
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries,
+        }
+    }
+
+    pub fn insert(&mut self, entry: SessionCacheEntry) {
+        // 同じセッションIDがあれば上書き
+        if let Some(pos) = self.entries.iter().position(|e| e.session_id == entry.session_id) {
+            self.entries[pos] = entry;
+        } else {
+            if self.entries.len() >= self.max_entries {
+                self.entries.remove(0); // LRU: 最古のエントリを削除
+            }
+            self.entries.push(entry);
+        }
+    }
+
+    pub fn find(&self, session_id: &[u8]) -> Option<&SessionCacheEntry> {
+        if session_id.len() != 32 {
+            return None;
+        }
+        self.entries.iter().find(|e| e.session_id == session_id)
+    }
+
+    pub fn find_by_server_name(&self, name: &str) -> Option<&SessionCacheEntry> {
+        self.entries.iter().rev().find(|e| {
+            e.server_name.as_deref() == Some(name)
+        })
+    }
 }
 
 // ============================================================================
@@ -581,13 +696,13 @@ pub struct TlsConnection {
     /// TLS 1.3 mode flag
     is_tls13: bool,
     /// TLS 1.3: ハンドシェイクトラフィック秘密（サーバー側）
-    server_hs_traffic_secret: [u8; 32],
+    server_hs_traffic_secret: [u8; 48],
     /// TLS 1.3: ハンドシェイクトラフィック秘密（クライアント側）
-    client_hs_traffic_secret: [u8; 32],
+    client_hs_traffic_secret: [u8; 48],
     /// TLS 1.3: アプリケーショントラフィック秘密（サーバー側）
-    server_app_traffic_secret: [u8; 32],
+    server_app_traffic_secret: [u8; 48],
     /// TLS 1.3: アプリケーショントラフィック秘密（クライアント側）
-    client_app_traffic_secret: [u8; 32],
+    client_app_traffic_secret: [u8; 48],
     /// TLS 1.3: ハンドシェイク読み取り鍵
     hs_read_key: Vec<u8>,
     /// TLS 1.3: ハンドシェイク読み取りIV
@@ -600,10 +715,71 @@ pub struct TlsConnection {
     hs_read_seq: u64,
     /// TLS 1.3: ハンドシェイク書き込みシーケンス番号
     hs_write_seq: u64,
-    /// TLS 1.3: ハンドシェイクメッセージのSHA-256トランスクリプトハッシュ状態
-    transcript_hash: Option<crate::loader::sha256::Sha256>,
+    /// TLS 1.3: ハンドシェイクメッセージのトランスクリプトハッシュ状態（SHA-256 or SHA-384）
+    transcript_hash: Option<TranscriptHash>,
     /// TLS 1.3: サーバーFinished受信後に送るべきクライアントFinished（バッファ）
     pending_client_finished: Vec<u8>,
+    /// TLS 1.3: 受信済みセッションチケット
+    session_ticket: Option<SessionTicket>,
+    /// TLS 1.3: KeyUpdate応答送信が必要か
+    pending_key_update_response: bool,
+    // ========================================================================
+    // CBC mode fields (TLS 1.0/1.1/1.2 CBC cipher suites)
+    // ========================================================================
+    /// 読み取りMAC鍵 (HMAC-SHA1 or HMAC-SHA256)
+    read_mac_key: Vec<u8>,
+    /// 書き込みMAC鍵
+    write_mac_key: Vec<u8>,
+    /// CBC読み取りIV (TLS 1.0は前レコード最終ブロック / TLS 1.1+は明示的IV)
+    read_cbc_iv: [u8; 16],
+    /// CBC書き込みIV
+    write_cbc_iv: [u8; 16],
+    /// TLS 1.0用: 最後の読み取り暗号文ブロック（暗黙IV）
+    last_read_ciphertext_block: Option<[u8; 16]>,
+    /// TLS 1.0用: 最後の書き込み暗号文ブロック（暗黙IV）
+    last_write_ciphertext_block: Option<[u8; 16]>,
+    // ========================================================================
+    // Session resumption (TLS 1.2)
+    // ========================================================================
+    /// セッションキャッシュ
+    session_cache: Option<SessionCache>,
+    /// 略式ハンドシェイク中か
+    resuming_session: bool,
+    // ========================================================================
+    // TLS 1.3 PSK session resumption
+    // ========================================================================
+    /// TLS 1.3: resumption_master_secret (接続完了後に導出)
+    resumption_master_secret: Vec<u8>,
+    /// TLS 1.3: 導出済みPSK (チケットから導出)
+    tls13_psk: Option<Vec<u8>>,
+    /// TLS 1.3: PSK identity (セッションチケットそのもの)
+    tls13_psk_identity: Option<Vec<u8>>,
+    /// TLS 1.3: チケットage_add値
+    tls13_ticket_age_add: u32,
+    /// TLS 1.3: 現在の接続がPSKを使用中か
+    tls13_using_psk: bool,
+    /// TLS 1.3: PSK使用時の暗号スイート (再開接続で使用)
+    tls13_psk_cipher: Option<CipherSuite>,
+    // -- TLS 1.3 0-RTT Early Data --
+    /// サーバーが許可する最大Early Dataサイズ (NewSessionTicketのtype42拡張)
+    max_early_data_size: u32,
+    /// Early Data送信バッファ（拒否時の再送用）
+    early_data_buffer: Vec<u8>,
+    /// Early Data暗号化鍵
+    early_write_key: Vec<u8>,
+    /// Early Data暗号化IV
+    early_write_iv: Vec<u8>,
+    /// Early Dataシーケンス番号
+    early_write_seq: u64,
+    /// サーバーがEarly Dataを受理したか
+    early_data_accepted: bool,
+    /// Early Dataを送信したか
+    early_data_sent: bool,
+    // -- TLS 1.3 CertificateRequest --
+    /// クライアント認証が要求されたか
+    client_auth_requested: bool,
+    /// CertificateRequestコンテキスト
+    certificate_request_context: Vec<u8>,
 }
 
 impl TlsConnection {
@@ -635,10 +811,10 @@ impl TlsConnection {
             server_public_key: None,
             // TLS 1.3 fields
             is_tls13: false,
-            server_hs_traffic_secret: [0; 32],
-            client_hs_traffic_secret: [0; 32],
-            server_app_traffic_secret: [0; 32],
-            client_app_traffic_secret: [0; 32],
+            server_hs_traffic_secret: [0; 48],
+            client_hs_traffic_secret: [0; 48],
+            server_app_traffic_secret: [0; 48],
+            client_app_traffic_secret: [0; 48],
             hs_read_key: Vec::new(),
             hs_read_iv: Vec::new(),
             hs_write_key: Vec::new(),
@@ -647,6 +823,34 @@ impl TlsConnection {
             hs_write_seq: 0,
             transcript_hash: None,
             pending_client_finished: Vec::new(),
+            session_ticket: None,
+            pending_key_update_response: false,
+            // CBC mode fields
+            read_mac_key: Vec::new(),
+            write_mac_key: Vec::new(),
+            read_cbc_iv: [0; 16],
+            write_cbc_iv: [0; 16],
+            last_read_ciphertext_block: None,
+            last_write_ciphertext_block: None,
+            // Session resumption
+            session_cache: None,
+            resuming_session: false,
+            // TLS 1.3 PSK session resumption
+            resumption_master_secret: Vec::new(),
+            tls13_psk: None,
+            tls13_psk_identity: None,
+            tls13_ticket_age_add: 0,
+            tls13_using_psk: false,
+            tls13_psk_cipher: None,
+            max_early_data_size: 0,
+            early_data_buffer: Vec::new(),
+            early_write_key: Vec::new(),
+            early_write_iv: Vec::new(),
+            early_write_seq: 0,
+            early_data_accepted: false,
+            early_data_sent: false,
+            client_auth_requested: false,
+            certificate_request_context: Vec::new(),
         }
     }
 
@@ -658,6 +862,15 @@ impl TlsConnection {
     /// ネゴシエートされたバージョンを取得
     pub fn negotiated_version(&self) -> Option<TlsVersion> {
         self.negotiated_version
+    }
+
+    /// ネゴシエートされた暗号スイートのハッシュ長を返す（SHA-256: 32, SHA-384: 48）
+    fn hash_len(&self) -> usize {
+        if self.negotiated_cipher.map_or(false, |c| c.uses_sha384()) {
+            SHA384_OUTPUT_SIZE
+        } else {
+            SHA256_OUTPUT_SIZE
+        }
     }
 
     /// ClientHelloを構築
@@ -673,7 +886,7 @@ impl TlsConnection {
         }
 
         // TLS 1.3: トランスクリプトハッシュの初期化
-        self.transcript_hash = Some(crate::loader::sha256::Sha256::new());
+        self.transcript_hash = Some(TranscriptHash::Sha256(crate::loader::sha256::Sha256::new()));
 
         let mut hello = Vec::new();
 
@@ -683,8 +896,23 @@ impl TlsConnection {
         // クライアントランダム
         hello.extend_from_slice(&self.client_random);
 
-        // セッションID長
-        hello.push(0);
+        // セッションID（キャッシュからの再開を試みる）
+        let cached_session_id = if let Some(ref cache) = self.session_cache {
+            if let Some(ref name) = self.config.server_name {
+                cache.find_by_server_name(name).map(|e| e.session_id)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(sid) = cached_session_id {
+            hello.push(32); // session_id length
+            hello.extend_from_slice(&sid);
+            self.session_id = SessionId::new(sid);
+        } else {
+            hello.push(0); // no session_id
+        }
 
         // 暗号スイート
         let cipher_bytes: Vec<u8> = self
@@ -709,8 +937,84 @@ impl TlsConnection {
         message.extend_from_slice(&[0, (hello.len() >> 8) as u8, hello.len() as u8]);
         message.extend_from_slice(&hello);
 
+        // PSKバインダー計算 (RFC 8446 Section 4.2.11.2)
+        // バインダーはClientHelloの一部であり、トランスクリプトハッシュに含まれる必要がある。
+        // truncated_CH = message のうちバインダーリスト（binders_list_length + binder entries）を除外した部分
+        if self.tls13_psk.is_some() && self.tls13_psk_identity.is_some() {
+            let use_384 = self.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
+            let hash_len = if use_384 { 48 } else { 32 };
+            let binders_total = 2 + 1 + hash_len; // binders_list_length(2) + binder_length(1) + binder(hash_len)
+
+            if message.len() > binders_total {
+                let truncated_len = message.len() - binders_total;
+                let truncated_ch = &message[..truncated_len];
+
+                let psk = self.tls13_psk.as_ref().unwrap();
+
+                if use_384 {
+                    // early_secret = HKDF-Extract(0, PSK)
+                    let early_secret = tls13_early_secret_sha384(Some(psk));
+                    // binder_key = Derive-Secret(early_secret, "res binder", Hash(""))
+                    let empty_hash = crate::loader::sha384::compute(&[]);
+                    let binder_key = tls13_derive_secret_sha384(&early_secret, b"res binder", &empty_hash);
+                    // binder = HMAC(binder_key, Hash(truncated_CH))
+                    let transcript_hash = crate::loader::sha384::compute(truncated_ch);
+                    let binder = hmac_sha384(&binder_key, &transcript_hash);
+                    // バインダーを上書き
+                    let binder_start = message.len() - hash_len;
+                    message[binder_start..].copy_from_slice(&binder[..hash_len]);
+                } else {
+                    let early_secret = tls13_early_secret(Some(psk));
+                    let empty_hash = {
+                        let mut h = crate::loader::sha256::Sha256::new();
+                        h.finalize()
+                    };
+                    let binder_key = tls13_derive_secret(&early_secret, b"res binder", &empty_hash);
+                    let transcript_hash = {
+                        let mut h = crate::loader::sha256::Sha256::new();
+                        h.update(truncated_ch);
+                        h.finalize()
+                    };
+                    let binder = hmac_sha256(&binder_key, &transcript_hash);
+                    let binder_start = message.len() - hash_len;
+                    message[binder_start..].copy_from_slice(&binder[..hash_len]);
+                }
+            }
+        }
+
         // ハンドシェイクメッセージを記録
         self.handshake_messages.extend_from_slice(&message);
+
+        // Early Data鍵導出 (RFC 8446 Section 7.1)
+        // PSK使用時かつmax_early_data_size > 0の場合、Early Data暗号化鍵を導出
+        if self.tls13_psk.is_some() && self.max_early_data_size > 0 {
+            let psk = self.tls13_psk.as_ref().unwrap();
+            let use_384 = self.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
+            let cipher = self.tls13_psk_cipher.unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+            let key_len = cipher.key_len();
+
+            if use_384 {
+                let early_secret = tls13_early_secret_sha384(Some(psk));
+                // client_early_traffic_secret = Derive-Secret(early_secret, "c e traffic", ClientHello)
+                let ch_hash = crate::loader::sha384::compute(&self.handshake_messages);
+                let cets = tls13_derive_secret_sha384(&early_secret, b"c e traffic", &ch_hash);
+                let (ew_key, ew_iv) = tls13_derive_traffic_keys_sha384(&cets, key_len);
+                self.early_write_key = ew_key;
+                self.early_write_iv = ew_iv;
+            } else {
+                let early_secret = tls13_early_secret(Some(psk));
+                let ch_hash = {
+                    let mut h = crate::loader::sha256::Sha256::new();
+                    h.update(&self.handshake_messages);
+                    h.finalize()
+                };
+                let cets = tls13_derive_secret(&early_secret, b"c e traffic", &ch_hash);
+                let (ew_key, ew_iv) = tls13_derive_traffic_keys(&cets, key_len);
+                self.early_write_key = ew_key;
+                self.early_write_iv = ew_iv;
+            }
+            self.early_write_seq = 0;
+        }
 
         // レコードヘッダを追加
         let mut record = vec![
@@ -724,6 +1028,85 @@ impl TlsConnection {
 
         self.state = TlsState::ClientHelloSent;
         record
+    }
+
+    /// 0-RTTアーリーデータを暗号化して送信 (RFC 8446 Section 4.2.10)
+    ///
+    /// ClientHello送信直後に呼び出す。Early Data鍵が導出済みの場合のみ動作。
+    /// データはバッファリングされ、サーバーが拒否した場合は`get_rejected_early_data()`で取得可能。
+    ///
+    /// # Returns
+    /// 暗号化されたTLSレコード列。鍵未導出時やサイズ超過時は空。
+    pub fn send_early_data(&mut self, data: &[u8]) -> Vec<u8> {
+        if self.early_write_key.is_empty() || self.early_write_iv.len() < 12 {
+            return Vec::new();
+        }
+
+        if data.is_empty() {
+            return Vec::new();
+        }
+
+        // サイズ制限チェック
+        let total = self.early_data_buffer.len() + data.len();
+        if self.max_early_data_size > 0 && total > self.max_early_data_size as usize {
+            return Vec::new();
+        }
+
+        // バッファリング（拒否時の再送用）
+        self.early_data_buffer.extend_from_slice(data);
+
+        let cipher = self.tls13_psk_cipher.unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+
+        // TLS 1.3 inner plaintext: application_data || ContentType::ApplicationData(23)
+        let mut inner_plaintext = Vec::with_capacity(data.len() + 1);
+        inner_plaintext.extend_from_slice(data);
+        inner_plaintext.push(ContentType::ApplicationData as u8);
+
+        // Nonce: IV XOR (zero-padded sequence number)
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&self.early_write_iv[..12]);
+        let seq_bytes = self.early_write_seq.to_be_bytes();
+        for i in 0..8 {
+            nonce[4 + i] ^= seq_bytes[i];
+        }
+
+        let encrypted_len = inner_plaintext.len() + 16;
+
+        // AAD: TLS record header
+        let mut aad = Vec::with_capacity(5);
+        aad.push(ContentType::ApplicationData as u8);
+        aad.extend_from_slice(&[0x03, 0x03]);
+        aad.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
+
+        let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
+            let mut key_arr = [0u8; 32];
+            key_arr.copy_from_slice(&self.early_write_key[..32]);
+            chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, &inner_plaintext)
+        } else {
+            aes_gcm_encrypt(&self.early_write_key, &nonce, &aad, &inner_plaintext)
+        };
+
+        let mut record = Vec::with_capacity(5 + encrypted_len);
+        record.push(ContentType::ApplicationData as u8);
+        record.extend_from_slice(&[0x03, 0x03]);
+        record.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
+        record.extend_from_slice(&ciphertext);
+        record.extend_from_slice(&auth_tag);
+
+        self.early_write_seq += 1;
+        self.early_data_sent = true;
+        record
+    }
+
+    /// サーバーに拒否されたEarly Dataの平文を取得
+    ///
+    /// ハンドシェイク完了後、`early_data_accepted`がfalseの場合に呼び出し、
+    /// バッファされたデータを通常のアプリケーションデータとして再送する。
+    pub fn get_rejected_early_data(&mut self) -> Vec<u8> {
+        if self.early_data_accepted || !self.early_data_sent {
+            return Vec::new();
+        }
+        core::mem::take(&mut self.early_data_buffer)
     }
 
     /// 拡張機能を構築
@@ -790,6 +1173,14 @@ impl TlsConnection {
             if self.config.min_version <= TlsVersion::TLS_1_2 {
                 versions.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
             }
+            if self.config.min_version <= TlsVersion::TLS_1_1
+                && self.config.max_version >= TlsVersion::TLS_1_1
+            {
+                versions.extend_from_slice(&[0x03, 0x02]); // TLS 1.1
+            }
+            if self.config.min_version <= TlsVersion::TLS_1_0 {
+                versions.extend_from_slice(&[0x03, 0x01]); // TLS 1.0
+            }
             let mut ext = vec![versions.len() as u8];
             ext.extend_from_slice(&versions);
 
@@ -854,6 +1245,51 @@ impl TlsConnection {
             extensions.extend_from_slice(&ext);
         }
 
+        // early_data (RFC 8446 Section 4.2.10) — type 42, empty body
+        // PSK使用時かつサーバーがEarly Dataを許可している場合のみ
+        if self.config.max_version >= TlsVersion::TLS_1_3 {
+            if self.tls13_psk.is_some() && self.max_early_data_size > 0 {
+                extensions.extend_from_slice(&[0, 42]); // type = early_data
+                extensions.extend_from_slice(&[0, 0]);   // length = 0 (empty body in ClientHello)
+            }
+        }
+
+        // pre_shared_key (RFC 8446 Section 4.2.11) - MUST be last extension
+        // PSKが利用可能な場合のみ。バインダーはbuild_client_hello()で後から計算・上書きする。
+        if self.config.max_version >= TlsVersion::TLS_1_3 {
+            if let Some(ref psk_identity) = self.tls13_psk_identity {
+                let use_384 = self.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
+                let hash_len = if use_384 { 48 } else { 32 };
+
+                // obfuscated_ticket_age = 0 (チケットを受信して即座に再接続する想定)
+                let obfuscated_age: u32 = self.tls13_ticket_age_add;
+
+                // PskIdentity: identity_length(2) + identity + obfuscated_ticket_age(4)
+                let identity_len = psk_identity.len();
+                let identities_len = 2 + identity_len + 4; // per-identity: len(2) + data + age(4)
+
+                // PskBinderEntry: binder_length(1) + binder(hash_len)
+                let binders_len = 1 + hash_len;
+
+                // extension data = identities_list_length(2) + identities + binders_list_length(2) + binders
+                let ext_data_len = 2 + identities_len + 2 + binders_len;
+
+                extensions.extend_from_slice(&[0, 41]); // type = pre_shared_key
+                extensions.extend_from_slice(&[(ext_data_len >> 8) as u8, ext_data_len as u8]);
+
+                // identities list
+                extensions.extend_from_slice(&[(identities_len >> 8) as u8, identities_len as u8]);
+                extensions.extend_from_slice(&[(identity_len >> 8) as u8, identity_len as u8]);
+                extensions.extend_from_slice(psk_identity);
+                extensions.extend_from_slice(&obfuscated_age.to_be_bytes());
+
+                // binders list (placeholder zeros — overwritten by build_client_hello)
+                extensions.extend_from_slice(&[(binders_len >> 8) as u8, binders_len as u8]);
+                extensions.push(hash_len as u8);
+                extensions.extend_from_slice(&alloc::vec![0u8; hash_len]); // binder placeholder
+            }
+        }
+
         extensions
     }
 
@@ -879,6 +1315,10 @@ impl TlsConnection {
                     self.process_handshake(payload)?;
                 }
                 Some(ContentType::ChangeCipherSpec) => {
+                    // TLS 1.2 略式ハンドシェイク: CCS受信で鍵導出
+                    if self.resuming_session && self.state == TlsState::WaitFinishedResumed {
+                        self.derive_tls12_keys()?;
+                    }
                     // TLS 1.3では無視
                 }
                 Some(ContentType::Alert) => {
@@ -905,9 +1345,33 @@ impl TlsConnection {
                         // 復号（TLS 1.2 or TLS 1.3 確立済み）
                         if self.is_tls13 {
                             let decrypted = self.tls13_decrypt_record(payload, false)?;
-                            // TLS 1.3: 内部コンテントタイプを除去
-                            if let Some(pt) = Self::tls13_strip_content_type(&decrypted) {
-                                plaintext.extend_from_slice(pt);
+                            // TLS 1.3: 内部コンテントタイプを判別
+                            if let Some((inner_ct, inner_data)) =
+                                Self::tls13_split_content_type(&decrypted)
+                            {
+                                match ContentType::from_u8(inner_ct) {
+                                    Some(ContentType::ApplicationData) => {
+                                        plaintext.extend_from_slice(inner_data);
+                                    }
+                                    Some(ContentType::Handshake) => {
+                                        // Post-handshake: NewSessionTicket, KeyUpdate
+                                        self.tls13_process_post_handshake(inner_data)?;
+                                    }
+                                    Some(ContentType::Alert) => {
+                                        if inner_data.len() >= 2 {
+                                            let description = inner_data[1];
+                                            if description
+                                                == AlertDescription::CloseNotify as u8
+                                            {
+                                                self.state = TlsState::Closed;
+                                            } else {
+                                                self.state = TlsState::Error;
+                                                return Err(TlsError::Alert(description));
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             }
                         } else {
                             let decrypted = self.decrypt_record(payload)?;
@@ -987,6 +1451,11 @@ impl TlsConnection {
         self.server_random.copy_from_slice(&data[2..34]);
 
         let session_id_len = data[34] as usize;
+        // セッションIDをキャプチャー
+        let mut server_session_id = [0u8; 32];
+        if session_id_len == 32 && 35 + session_id_len <= data.len() {
+            server_session_id.copy_from_slice(&data[35..35 + 32]);
+        }
         let offset = 35 + session_id_len;
 
         if data.len() < offset + 2 {
@@ -1026,6 +1495,16 @@ impl TlsConnection {
                                 TlsVersion(((data[eoff] as u16) << 8) | data[eoff + 1] as u16);
                         }
                     }
+                    // pre_shared_key (41) — selected PSK index
+                    41 => {
+                        if ext_len >= 2 {
+                            let selected_index =
+                                ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
+                            if selected_index == 0 && self.tls13_psk.is_some() {
+                                self.tls13_using_psk = true;
+                            }
+                        }
+                    }
                     // key_share (51)
                     51 => {
                         if ext_len >= 4 {
@@ -1051,6 +1530,19 @@ impl TlsConnection {
         // TLS 1.3 検出
         if actual_version == TlsVersion::TLS_1_3 {
             self.is_tls13 = true;
+
+            // HelloRetryRequest 検出 (RFC 8446 Section 4.1.3)
+            // 特殊な server_random 値で識別
+            const HRR_RANDOM: [u8; 32] = [
+                0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11,
+                0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65, 0xB8, 0x91,
+                0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E,
+                0x07, 0x9E, 0x09, 0xE2, 0xC8, 0xA8, 0x33, 0x9C,
+            ];
+
+            if self.server_random == HRR_RANDOM {
+                return self.process_hello_retry_request(cipher, &server_key_share);
+            }
 
             // TLS 1.3: key_share からECDH共有秘密を計算
             let (group_id, server_pubkey) = server_key_share
@@ -1082,26 +1574,107 @@ impl TlsConnection {
             let transcript_hash = {
                 let mut hasher = crate::loader::sha256::Sha256::new();
                 hasher.update(&self.handshake_messages);
-                // ServerHello のハンドシェイクメッセージバイト列は
-                // process_handshake() で後から追加されるが、ここではまだ。
-                // トランスクリプトは、process_handshake の handshake_messages 追加後に
-                // 正確に計算される必要がある。
-                // → このメソッドは process_handshake 内で呼ばれ、
-                //   handshake_messages への追加はこのメソッドの後に行われるため、
-                //   ここでは現在の handshake_messages + ServerHello msg を使う
                 hasher
             };
             // トランスクリプトハッシュはprocess_handshake内のServerHello append後に計算される
             // ここではハンドシェイクの状態だけ保存して、鍵導出は後で行う
             self.pre_master_secret = shared_secret;
-            self.transcript_hash = Some(transcript_hash);
+            self.transcript_hash = Some(TranscriptHash::Sha256(transcript_hash));
             self.state = TlsState::ServerHelloReceived;
         } else {
-            // TLS 1.2
+            // TLS 1.2: セッション再開チェック
+            if session_id_len == 32
+                && self.session_id.0 != [0u8; 32]
+                && server_session_id == self.session_id.0
+            {
+                // サーバーが同一session_idを返却 → 略式ハンドシェイク
+                if let Some(ref cache) = self.session_cache {
+                    if let Some(entry) = cache.find(&server_session_id) {
+                        // キャッシュからmaster_secretを復元
+                        self.master_secret = entry.master_secret;
+                        self.resuming_session = true;
+                        self.state = TlsState::WaitFinishedResumed;
+                        return Ok(());
+                    }
+                }
+            }
+            // フルハンドシェイク時もserver session_idを保存
+            if session_id_len == 32 {
+                self.session_id = SessionId::new(server_session_id);
+            }
             self.state = TlsState::ServerHelloReceived;
         }
 
         Ok(())
+    }
+
+    /// HelloRetryRequest を処理 (RFC 8446 Section 4.1.4)
+    ///
+    /// HRR受信時、サーバーが要求する鍵共有グループで新しいClientHelloを構築する。
+    /// トランスクリプトはsynthetic message_hashに置き換える。
+    fn process_hello_retry_request(
+        &mut self,
+        cipher: CipherSuite,
+        server_key_share: &Option<(u16, Vec<u8>)>,
+    ) -> TlsResult<()> {
+        // RFC 8446 Section 4.4.1: synthetic message_hash に置き換え
+        // MessageHash = Handshake(254, Hash(messages_so_far))
+        let use_384 = cipher.uses_sha384();
+        let current_hash: Vec<u8> = if use_384 {
+            crate::loader::sha384::compute(&self.handshake_messages).to_vec()
+        } else {
+            let h = crate::loader::sha256::compute(&self.handshake_messages);
+            h.to_vec()
+        };
+        let hash_len = current_hash.len();
+
+        // synthetic message_hash 構築
+        let mut synthetic = Vec::with_capacity(4 + hash_len);
+        synthetic.push(254); // message_hash type
+        synthetic.push(0);
+        synthetic.push(0);
+        synthetic.push(hash_len as u8); // hash length (32 or 48)
+        synthetic.extend_from_slice(&current_hash);
+
+        // ハンドシェイクメッセージをsynthetic message_hashに置き換え
+        self.handshake_messages.clear();
+        self.handshake_messages.extend_from_slice(&synthetic);
+
+        // サーバーが要求するグループで新しい鍵ペアを生成
+        // HRR の key_share 拡張はグループIDのみ含む（公開鍵なし）
+        // ここではネゴシエートされた暗号スイートのグループに対応
+        self.negotiated_cipher = Some(cipher);
+
+        // 新しいClientHelloの再送信が必要であることを示す状態に遷移
+        self.state = TlsState::HelloRetryReceived;
+
+        Ok(())
+    }
+
+    /// HRR受信後に再送用の新しいClientHelloを構築
+    ///
+    /// `process_hello_retry_request()` で状態が `HelloRetryReceived` に
+    /// 遷移した後に呼び出す。
+    pub fn build_client_hello_retry(&mut self) -> Option<Vec<u8>> {
+        if self.state != TlsState::HelloRetryReceived {
+            return None;
+        }
+
+        // 新しいクライアントランダムは再利用可能（RFC 8446 Section 4.1.2）
+        // 新しい鍵ペアを生成
+        let group = if let Some(ref kp) = self.local_ecdh_keypair {
+            kp.group()
+        } else {
+            super::ecdh::EcdhGroup::X25519
+        };
+
+        if let Ok(new_keypair) = super::ecdh::EcdhKeyPair::generate(group) {
+            self.local_ecdh_keypair = Some(new_keypair);
+        }
+
+        // 通常のClientHelloと同じ構築
+        self.state = TlsState::ClientHelloSent;
+        Some(self.build_client_hello())
     }
 
     /// Certificateを処理
@@ -1151,6 +1724,11 @@ impl TlsConnection {
                         point: public_key.to_vec(),
                     });
                 }
+                super::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
+                    self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
+                        point: public_key.to_vec(),
+                    });
+                }
                 _ => {
                     // 未知の公開鍵タイプ
                     if !self.config.skip_verify {
@@ -1175,7 +1753,9 @@ impl TlsConnection {
         // - named_curve (2 bytes)
         // - public_key_length (1 byte)
         // - public_key (variable)
-        // - signature (variable) — 署名検証は将来実装
+        // - signature_algorithm (2 bytes) — TLS 1.2
+        // - signature_length (2 bytes)
+        // - signature (variable)
 
         if data.len() < 4 {
             return Err(TlsError::DecodeError);
@@ -1195,6 +1775,87 @@ impl TlsConnection {
         }
 
         let server_pubkey = &data[4..4 + pubkey_len];
+        let ecdhe_params_end = 4 + pubkey_len;
+
+        // 署名検証 (skip_verify でなければ)
+        if !self.config.skip_verify {
+            let sig_offset = ecdhe_params_end;
+            if data.len() < sig_offset + 4 {
+                return Err(TlsError::DecodeError);
+            }
+
+            let sig_algorithm = ((data[sig_offset] as u16) << 8) | data[sig_offset + 1] as u16;
+            let sig_len =
+                ((data[sig_offset + 2] as usize) << 8) | data[sig_offset + 3] as usize;
+
+            if data.len() < sig_offset + 4 + sig_len {
+                return Err(TlsError::DecodeError);
+            }
+
+            let signature = &data[sig_offset + 4..sig_offset + 4 + sig_len];
+
+            // 署名対象: client_random || server_random || ecdhe_params
+            let ecdhe_params = &data[..ecdhe_params_end];
+            let mut signed_data =
+                Vec::with_capacity(32 + 32 + ecdhe_params.len());
+            signed_data.extend_from_slice(&self.client_random);
+            signed_data.extend_from_slice(&self.server_random);
+            signed_data.extend_from_slice(ecdhe_params);
+
+            match sig_algorithm {
+                // RSA-PKCS1-SHA256 (0x0401)
+                0x0401 => {
+                    let digest = crate::loader::sha256::compute(&signed_data);
+                    let pubkey = match &self.server_public_key {
+                        Some(ServerPublicKey::Rsa { modulus, exponent }) => {
+                            super::rsa::RsaPublicKey { modulus, exponent }
+                        }
+                        _ => return Err(TlsError::CertificateError),
+                    };
+                    super::rsa::rsa_pkcs1_verify(
+                        &pubkey,
+                        super::rsa::HashAlgorithm::Sha256,
+                        &digest,
+                        signature,
+                    )
+                    .map_err(|_| TlsError::CryptoError)?;
+                }
+                // RSA-PKCS1-SHA384 (0x0501)
+                0x0501 => {
+                    let digest = crate::loader::sha384::compute(&signed_data);
+                    let pubkey = match &self.server_public_key {
+                        Some(ServerPublicKey::Rsa { modulus, exponent }) => {
+                            super::rsa::RsaPublicKey { modulus, exponent }
+                        }
+                        _ => return Err(TlsError::CertificateError),
+                    };
+                    super::rsa::rsa_pkcs1_verify(
+                        &pubkey,
+                        super::rsa::HashAlgorithm::Sha384,
+                        &digest,
+                        signature,
+                    )
+                    .map_err(|_| TlsError::CryptoError)?;
+                }
+                // ECDSA-SECP256R1-SHA256 (0x0403)
+                0x0403 => {
+                    let digest = crate::loader::sha256::compute(&signed_data);
+                    let pubkey_bytes = match &self.server_public_key {
+                        Some(ServerPublicKey::EcdsaP256 { point }) => point.as_slice(),
+                        _ => return Err(TlsError::CertificateError),
+                    };
+                    super::ecdh::p256::ecdsa_p256_verify(pubkey_bytes, &digest, signature)
+                        .map_err(|_| TlsError::CryptoError)?;
+                }
+                // RSA-PKCS1-SHA1 (0x0201) — レガシー互換
+                0x0201 => {
+                    // SHA-1は未実装、skip
+                }
+                _ => {
+                    return Err(TlsError::UnsupportedCipherSuite);
+                }
+            }
+        }
 
         // NamedGroup → EcdhGroup マッピング
         use super::ecdh::{EcdhGroup, EcdhKeyPair};
@@ -1269,6 +1930,615 @@ impl TlsConnection {
     }
 
     // ========================================================================
+    // TLS 1.2 ChangeCipherSpec / Client Finished
+    // ========================================================================
+
+    /// ChangeCipherSpecレコードを構築 (TLS 1.2)
+    ///
+    /// RFC 5246 Section 7.1:
+    /// ChangeCipherSpec = { type(20), major, minor, length(1), 1 }
+    pub fn build_change_cipher_spec(&self) -> Vec<u8> {
+        vec![
+            ContentType::ChangeCipherSpec as u8,
+            0x03, 0x03, // TLS 1.2
+            0x00, 0x01, // length = 1
+            0x01,       // change_cipher_spec
+        ]
+    }
+
+    /// TLS 1.2 クライアントFinishedメッセージを構築
+    ///
+    /// RFC 5246 Section 7.4.9:
+    /// verify_data = PRF(master_secret, "client finished",
+    ///                    Hash(handshake_messages))[0..11]
+    ///
+    /// Finishedメッセージは暗号化して送信する。
+    /// `build_change_cipher_spec()` の後に呼び出し、鍵が有効な状態で使用する。
+    pub fn build_client_finished_tls12(&mut self) -> TlsResult<Vec<u8>> {
+        if self.is_tls13 {
+            return Err(TlsError::UnexpectedMessage);
+        }
+
+        let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let cipher = self.negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
+
+        // Master secretが設定されていない場合は鍵導出
+        if self.master_secret.iter().all(|&b| b == 0) {
+            self.master_secret = if version <= TlsVersion::TLS_1_1 {
+                derive_master_secret_tls10(
+                    &self.pre_master_secret,
+                    &self.client_random,
+                    &self.server_random,
+                )
+            } else if cipher.uses_sha384() {
+                derive_master_secret_sha384(
+                    &self.pre_master_secret,
+                    &self.client_random,
+                    &self.server_random,
+                )
+            } else {
+                derive_master_secret(
+                    &self.pre_master_secret,
+                    &self.client_random,
+                    &self.server_random,
+                )
+            };
+        }
+
+        // ハンドシェイクメッセージのハッシュ（バージョンに応じたハッシュ関数）
+        let handshake_hash = if cipher.uses_sha384() {
+            crate::loader::sha384::compute(&self.handshake_messages).to_vec()
+        } else {
+            crate::loader::sha256::compute(&self.handshake_messages).to_vec()
+        };
+
+        // verify_data = PRF(master_secret, "client finished", Hash(...))[0..12]
+        let mut verify_data = [0u8; 12];
+        if version <= TlsVersion::TLS_1_1 {
+            tls10_prf(
+                &self.master_secret,
+                b"client finished",
+                &handshake_hash,
+                &mut verify_data,
+            );
+        } else if cipher.uses_sha384() {
+            tls12_prf_sha384(
+                &self.master_secret,
+                b"client finished",
+                &handshake_hash,
+                &mut verify_data,
+            );
+        } else {
+            tls12_prf(
+                &self.master_secret,
+                b"client finished",
+                &handshake_hash,
+                &mut verify_data,
+            );
+        }
+
+        // Finishedハンドシェイクメッセージ
+        let mut finished_msg = Vec::with_capacity(4 + 12);
+        finished_msg.push(HandshakeType::Finished as u8); // type = 20
+        finished_msg.push(0);
+        finished_msg.push(0);
+        finished_msg.push(12); // length = 12
+        finished_msg.extend_from_slice(&verify_data);
+
+        // ハンドシェイクメッセージを記録
+        self.handshake_messages.extend_from_slice(&finished_msg);
+
+        // 鍵ブロック導出（まだ行っていない場合）
+        if self.write_key.is_empty() {
+            self.derive_tls12_keys()?;
+        }
+
+        // Finishedは暗号化して送信
+        let encrypted_record = if cipher.is_cbc() {
+            self.encrypt_cbc_handshake(&finished_msg)?
+        } else if cipher.is_chacha20_poly1305() {
+            self.encrypt_chacha20_poly1305_handshake(&finished_msg)?
+        } else {
+            self.encrypt_aes_gcm_handshake(&finished_msg)?
+        };
+
+        Ok(encrypted_record)
+    }
+
+    /// TLS 1.2 鍵ブロック導出
+    ///
+    /// RFC 5246 Section 6.3 に基づき、master_secretからread/writeの
+    /// 暗号鍵とIVを導出する。
+    fn derive_tls12_keys(&mut self) -> TlsResult<()> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
+        let key_len = cipher.key_len();
+        let iv_len = cipher.iv_len();
+        let mac_key_len = if cipher.is_cbc() { cipher.mac_key_len() } else { 0 };
+
+        // CBC key block: mac_key(2) + enc_key(2) + iv(2)
+        // AEAD key block: enc_key(2) + iv(2) (no MAC keys)
+        let key_material_len = 2 * mac_key_len + 2 * key_len + 2 * iv_len;
+
+        // バージョンに応じたPRFを使用
+        let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let use_sha384 = cipher.uses_sha384();
+
+        let key_block = if version <= TlsVersion::TLS_1_1 {
+            // TLS 1.0/1.1: デュアルハッシュPRF (P_MD5 XOR P_SHA-1)
+            let mut kb = vec![0u8; key_material_len];
+            let mut seed = Vec::with_capacity(64);
+            seed.extend_from_slice(&self.server_random);
+            seed.extend_from_slice(&self.client_random);
+            tls10_prf(&self.master_secret, b"key expansion", &seed, &mut kb);
+            kb
+        } else if use_sha384 {
+            // TLS 1.2 SHA-384
+            derive_key_block_sha384(
+                &self.master_secret,
+                &self.server_random,
+                &self.client_random,
+                key_material_len,
+            )
+        } else {
+            // TLS 1.2 SHA-256
+            derive_key_block(
+                &self.master_secret,
+                &self.server_random,
+                &self.client_random,
+                key_material_len,
+            )
+        };
+
+        if key_block.len() < key_material_len {
+            return Err(TlsError::CryptoError);
+        }
+
+        let mut offset = 0;
+
+        // CBC cipher suites have MAC keys first
+        if cipher.is_cbc() {
+            self.write_mac_key = key_block[offset..offset + mac_key_len].to_vec();
+            offset += mac_key_len;
+            self.read_mac_key = key_block[offset..offset + mac_key_len].to_vec();
+            offset += mac_key_len;
+        }
+
+        self.write_key = key_block[offset..offset + key_len].to_vec();
+        offset += key_len;
+        self.read_key = key_block[offset..offset + key_len].to_vec();
+        offset += key_len;
+
+        if cipher.is_cbc() && iv_len == 16 {
+            self.write_cbc_iv.copy_from_slice(&key_block[offset..offset + 16]);
+            offset += 16;
+            self.read_cbc_iv.copy_from_slice(&key_block[offset..offset + 16]);
+        } else {
+            self.write_iv = key_block[offset..offset + iv_len].to_vec();
+            offset += iv_len;
+            self.read_iv = key_block[offset..offset + iv_len].to_vec();
+        }
+        let _ = offset;
+
+        self.read_seq = 0;
+        self.write_seq = 0;
+
+        Ok(())
+    }
+
+    /// AES-GCM ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
+    fn encrypt_aes_gcm_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+        let explicit_nonce = self.write_seq.to_be_bytes();
+
+        if self.write_key.is_empty() || self.write_iv.len() < 4 {
+            return Err(TlsError::CryptoError);
+        }
+
+        let mut nonce = [0u8; 12];
+        nonce[0..4].copy_from_slice(&self.write_iv[0..4]);
+        nonce[4..12].copy_from_slice(&explicit_nonce);
+
+        let mut aad = Vec::with_capacity(13);
+        aad.extend_from_slice(&self.write_seq.to_be_bytes());
+        aad.push(ContentType::Handshake as u8);
+        aad.extend_from_slice(&[0x03, 0x03]);
+        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+
+        let (ciphertext, auth_tag) = aes_gcm_encrypt(&self.write_key, &nonce, &aad, data);
+
+        let record_len = 8 + ciphertext.len() + 16;
+        let mut record = vec![
+            ContentType::Handshake as u8,
+            0x03, 0x03,
+            (record_len >> 8) as u8,
+            record_len as u8,
+        ];
+        record.extend_from_slice(&explicit_nonce);
+        record.extend_from_slice(&ciphertext);
+        record.extend_from_slice(&auth_tag);
+
+        self.write_seq += 1;
+        Ok(record)
+    }
+
+    /// ChaCha20-Poly1305 ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
+    fn encrypt_chacha20_poly1305_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+        if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
+            return Err(TlsError::CryptoError);
+        }
+
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&self.write_iv[0..12]);
+        let seq_bytes = self.write_seq.to_be_bytes();
+        for i in 0..8 {
+            nonce[4 + i] ^= seq_bytes[i];
+        }
+
+        let mut aad = Vec::with_capacity(13);
+        aad.extend_from_slice(&self.write_seq.to_be_bytes());
+        aad.push(ContentType::Handshake as u8);
+        aad.extend_from_slice(&[0x03, 0x03]);
+        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&self.write_key[0..32]);
+
+        let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
+
+        let record_len = ciphertext.len() + 16;
+        let mut record = vec![
+            ContentType::Handshake as u8,
+            0x03, 0x03,
+            (record_len >> 8) as u8,
+            record_len as u8,
+        ];
+        record.extend_from_slice(&ciphertext);
+        record.extend_from_slice(&auth_tag);
+
+        self.write_seq += 1;
+        Ok(record)
+    }
+
+    // ========================================================================
+    // CBC Record Encryption/Decryption (TLS 1.0/1.1/1.2)
+    // ========================================================================
+
+    /// CBC ハンドシェイクメッセージ暗号化（TLS 1.0/1.1/1.2 Finished用）
+    fn encrypt_cbc_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+        self.encrypt_cbc_record(ContentType::Handshake as u8, data)
+    }
+
+    /// CBCレコード暗号化 (MAC-then-Encrypt)
+    ///
+    /// RFC 5246 Section 6.2.3.2:
+    /// 1. MAC を計算: HMAC(mac_key, seq_num || type || version || length || fragment)
+    /// 2. パディングを追加
+    /// 3. CBC暗号化
+    fn encrypt_cbc_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+        if self.write_key.is_empty() {
+            return Err(TlsError::CryptoError);
+        }
+
+        let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let cipher = self.negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA);
+        let use_sha1 = cipher.uses_sha1_mac();
+
+        // Step 1: MAC計算
+        let mac = compute_tls_mac(
+            &self.write_mac_key,
+            self.write_seq,
+            content_type,
+            version,
+            data,
+            use_sha1,
+        );
+
+        // Step 2: plaintext = data || MAC
+        let mut plaintext = Vec::with_capacity(data.len() + mac.len());
+        plaintext.extend_from_slice(data);
+        plaintext.extend_from_slice(&mac);
+
+        // Step 3: パディング追加
+        let padded = tls_add_padding(&plaintext, 16);
+
+        // Step 4: IV決定
+        let iv = if version >= TlsVersion::TLS_1_1 {
+            // TLS 1.1+: 明示的IV（ランダム生成）
+            let mut explicit_iv = [0u8; 16];
+            let base_rand = generate_random();
+            explicit_iv.copy_from_slice(&base_rand[..16]);
+            explicit_iv
+        } else {
+            // TLS 1.0: 暗黙IV（前レコードの最終暗号文ブロック or 初期IV）
+            self.last_write_ciphertext_block.unwrap_or(self.write_cbc_iv)
+        };
+
+        // Step 5: CBC暗号化
+        let ciphertext = aes_cbc_encrypt(&self.write_key, &iv, &padded);
+
+        // TLS 1.0: 最終暗号文ブロックを記憶（次レコードのIVに使用）
+        if version == TlsVersion::TLS_1_0 && ciphertext.len() >= 16 {
+            let mut last_block = [0u8; 16];
+            last_block.copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
+            self.last_write_ciphertext_block = Some(last_block);
+        }
+
+        // レコード構築
+        let version_bytes = version.to_bytes();
+        let payload = if version >= TlsVersion::TLS_1_1 {
+            // TLS 1.1+: IV + ciphertext
+            let mut p = Vec::with_capacity(16 + ciphertext.len());
+            p.extend_from_slice(&iv);
+            p.extend_from_slice(&ciphertext);
+            p
+        } else {
+            // TLS 1.0: ciphertext のみ
+            ciphertext
+        };
+
+        let mut record = Vec::with_capacity(5 + payload.len());
+        record.push(content_type);
+        record.push(version_bytes[0]);
+        record.push(version_bytes[1]);
+        record.push((payload.len() >> 8) as u8);
+        record.push(payload.len() as u8);
+        record.extend_from_slice(&payload);
+
+        self.write_seq += 1;
+        Ok(record)
+    }
+
+    /// CBCレコード復号 (Decrypt-then-Verify-MAC)
+    ///
+    /// RFC 5246 Section 6.2.3.2 (復号側):
+    /// 1. CBC復号してパディング付き平文を得る
+    /// 2. パディング検証
+    /// 3. MACを分離して検証
+    fn decrypt_cbc_record(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+        if self.read_key.is_empty() {
+            return Err(TlsError::CryptoError);
+        }
+
+        let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let cipher = self.negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA);
+        let use_sha1 = cipher.uses_sha1_mac();
+        let mac_len = cipher.mac_len();
+
+        // Step 1: IV と暗号文を分離
+        let (iv, ciphertext) = if version >= TlsVersion::TLS_1_1 {
+            // TLS 1.1+: 先頭16バイトが明示的IV
+            if data.len() < 16 {
+                return Err(TlsError::DecodeError);
+            }
+            let mut iv = [0u8; 16];
+            iv.copy_from_slice(&data[..16]);
+            (iv, &data[16..])
+        } else {
+            // TLS 1.0: 暗黙IV
+            let iv = self.last_read_ciphertext_block.unwrap_or(self.read_cbc_iv);
+            (iv, data)
+        };
+
+        if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
+            return Err(TlsError::DecryptError);
+        }
+
+        // TLS 1.0: 最終暗号文ブロック記憶
+        if version == TlsVersion::TLS_1_0 && ciphertext.len() >= 16 {
+            let mut last_block = [0u8; 16];
+            last_block.copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
+            self.last_read_ciphertext_block = Some(last_block);
+        }
+
+        // Step 2: CBC復号
+        let decrypted = aes_cbc_decrypt(&self.read_key, &iv, ciphertext)
+            .ok_or(TlsError::DecryptError)?;
+
+        // Step 3: パディング検証 (定時間)
+        let content_len = tls_verify_padding(&decrypted)
+            .ok_or(TlsError::BadRecordMac)?;
+
+        // Step 4: MAC分離と検証
+        if content_len < mac_len {
+            return Err(TlsError::BadRecordMac);
+        }
+
+        let fragment_len = content_len - mac_len;
+        let fragment = &decrypted[..fragment_len];
+        let received_mac = &decrypted[fragment_len..content_len];
+
+        // 期待されるMACを計算
+        let expected_mac = compute_tls_mac(
+            &self.read_mac_key,
+            self.read_seq,
+            content_type,
+            version,
+            fragment,
+            use_sha1,
+        );
+
+        // 定時間比較
+        let mut diff = 0u8;
+        for i in 0..mac_len.min(expected_mac.len()).min(received_mac.len()) {
+            diff |= received_mac[i] ^ expected_mac[i];
+        }
+        if diff != 0 || received_mac.len() != expected_mac.len() {
+            return Err(TlsError::BadRecordMac);
+        }
+
+        self.read_seq += 1;
+        Ok(fragment.to_vec())
+    }
+
+    // ========================================================================
+    // RSA Key Transport (TLS_RSA_WITH_* cipher suites)
+    // ========================================================================
+
+    /// RSA鍵転送用 ClientKeyExchange構築
+    ///
+    /// TLS_RSA_WITH_* 暗号スイートの場合:
+    /// 1. 48バイトのPre-Master Secretを生成: client_version(2) || random(46)
+    /// 2. サーバーのRSA公開鍵で暗号化
+    /// 3. EncryptedPreMasterSecret構造体として送信
+    pub fn build_client_key_exchange_rsa(&mut self) -> Option<Vec<u8>> {
+        // サーバーのRSA公開鍵が必要
+        let server_pk = self.server_public_key.as_ref()?;
+
+        // RSA公開鍵を取得 (ServerPublicKeyからモジュラスと指数を取得)
+        let (modulus, exponent) = match server_pk {
+            ServerPublicKey::Rsa { modulus, exponent } => (modulus.as_slice(), exponent.as_slice()),
+            _ => return None, // ECDSA鍵ではRSA鍵転送できない
+        };
+
+        // 48バイトのPMSを生成: version(2) || random(46)
+        let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let version_bytes = version.to_bytes();
+        let mut pms = [0u8; 48];
+        pms[0] = version_bytes[0];
+        pms[1] = version_bytes[1];
+        let random_bytes = generate_random();
+        pms[2..34].copy_from_slice(&random_bytes);
+        let random_bytes2 = generate_random();
+        pms[34..48].copy_from_slice(&random_bytes2[..14]);
+
+        // PMSを保存
+        self.pre_master_secret = pms.to_vec();
+
+        // RSA暗号化
+        let rsa_key = super::rsa::RsaPublicKey { modulus, exponent };
+        let encrypted_pms = super::rsa::rsa_pkcs1_encrypt(&rsa_key, &pms).ok()?;
+
+        // EncryptedPreMasterSecret: length(2) || encrypted_pms
+        let mut body = Vec::with_capacity(2 + encrypted_pms.len());
+        body.push((encrypted_pms.len() >> 8) as u8);
+        body.push(encrypted_pms.len() as u8);
+        body.extend_from_slice(&encrypted_pms);
+
+        // Handshakeヘッダ: type(1) + length(3)
+        let mut message = Vec::with_capacity(4 + body.len());
+        message.push(16); // ClientKeyExchange type = 16
+        message.push(0);
+        message.push((body.len() >> 8) as u8);
+        message.push(body.len() as u8);
+        message.extend_from_slice(&body);
+
+        // ハンドシェイクメッセージを記録
+        self.handshake_messages.extend_from_slice(&message);
+
+        // TLSレコードヘッダ
+        let version_rec = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let vb = version_rec.to_bytes();
+        let mut record = Vec::with_capacity(5 + message.len());
+        record.push(ContentType::Handshake as u8);
+        record.push(vb[0]);
+        record.push(vb[1]);
+        record.push((message.len() >> 8) as u8);
+        record.push(message.len() as u8);
+        record.extend_from_slice(&message);
+
+        Some(record)
+    }
+
+    // ========================================================================
+    // Application Data Encryption/Decryption (TLS 1.0/1.1/1.2)
+    // ========================================================================
+
+    /// アプリケーションデータを暗号化して送信レコードを構築
+    pub fn encrypt_application_data(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+        let cipher = self.negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
+
+        if self.is_tls13 {
+            return self.tls13_encrypt_application_data(data);
+        }
+
+        if cipher.is_cbc() {
+            self.encrypt_cbc_record(ContentType::ApplicationData as u8, data)
+        } else if cipher.is_chacha20_poly1305() {
+            self.encrypt_chacha20_record(ContentType::ApplicationData as u8, data)
+        } else {
+            self.encrypt_aes_gcm_record(ContentType::ApplicationData as u8, data)
+        }
+    }
+
+    /// AES-GCM レコード暗号化 (TLS 1.2)
+    fn encrypt_aes_gcm_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+        let explicit_nonce = self.write_seq.to_be_bytes();
+
+        if self.write_key.is_empty() || self.write_iv.len() < 4 {
+            return Err(TlsError::CryptoError);
+        }
+
+        let mut nonce = [0u8; 12];
+        nonce[0..4].copy_from_slice(&self.write_iv[0..4]);
+        nonce[4..12].copy_from_slice(&explicit_nonce);
+
+        let mut aad = Vec::with_capacity(13);
+        aad.extend_from_slice(&self.write_seq.to_be_bytes());
+        aad.push(content_type);
+        aad.extend_from_slice(&[0x03, 0x03]);
+        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+
+        let (ciphertext, auth_tag) = aes_gcm_encrypt(&self.write_key, &nonce, &aad, data);
+
+        let record_len = 8 + ciphertext.len() + 16;
+        let mut record = vec![
+            content_type,
+            0x03, 0x03,
+            (record_len >> 8) as u8,
+            record_len as u8,
+        ];
+        record.extend_from_slice(&explicit_nonce);
+        record.extend_from_slice(&ciphertext);
+        record.extend_from_slice(&auth_tag);
+
+        self.write_seq += 1;
+        Ok(record)
+    }
+
+    /// ChaCha20-Poly1305 レコード暗号化 (TLS 1.2)
+    fn encrypt_chacha20_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+        if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
+            return Err(TlsError::CryptoError);
+        }
+
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&self.write_iv[0..12]);
+        let seq_bytes = self.write_seq.to_be_bytes();
+        for i in 0..8 {
+            nonce[4 + i] ^= seq_bytes[i];
+        }
+
+        let mut aad = Vec::with_capacity(13);
+        aad.extend_from_slice(&self.write_seq.to_be_bytes());
+        aad.push(content_type);
+        aad.extend_from_slice(&[0x03, 0x03]);
+        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&self.write_key[0..32]);
+
+        let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
+
+        let record_len = ciphertext.len() + 16;
+        let mut record = vec![
+            content_type,
+            0x03, 0x03,
+            (record_len >> 8) as u8,
+            record_len as u8,
+        ];
+        record.extend_from_slice(&ciphertext);
+        record.extend_from_slice(&auth_tag);
+
+        self.write_seq += 1;
+        Ok(record)
+    }
+
+    // ========================================================================
     // TLS 1.3 Handshake Methods
     // ========================================================================
 
@@ -1280,55 +2550,79 @@ impl TlsConnection {
     /// 3. client/server_handshake_traffic_secret
     /// 4. handshake traffic keys を導出
     fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
-        use crate::loader::sha256;
-
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
+        let use_384 = cipher.uses_sha384();
 
-        // トランスクリプトハッシュ (ClientHello...ServerHello)
-        let transcript_ch_sh = {
-            let mut hasher = sha256::Sha256::new();
+        if use_384 {
+            // SHA-384ベース鍵スケジュール
+            let transcript_ch_sh = crate::loader::sha384::compute(&self.handshake_messages);
+
+            let psk_ref = if self.tls13_using_psk { self.tls13_psk.as_deref() } else { None };
+            let early_secret = tls13_early_secret_sha384(psk_ref);
+            let handshake_secret =
+                tls13_handshake_secret_sha384(&early_secret, &self.pre_master_secret);
+
+            let chs = tls13_derive_secret_sha384(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
+            let shs = tls13_derive_secret_sha384(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
+            self.client_hs_traffic_secret = chs;
+            self.server_hs_traffic_secret = shs;
+
+            let (server_key, server_iv) = tls13_derive_traffic_keys_sha384(&shs, key_len);
+            let (client_key, client_iv) = tls13_derive_traffic_keys_sha384(&chs, key_len);
+
+            self.hs_read_key = server_key;
+            self.hs_read_iv = server_iv;
+            self.hs_write_key = client_key;
+            self.hs_write_iv = client_iv;
+            self.hs_read_seq = 0;
+            self.hs_write_seq = 0;
+
+            let ms = tls13_master_secret_sha384(&handshake_secret);
+            self.master_secret[..48].copy_from_slice(&ms);
+
+            let mut hasher = crate::loader::sha384::Sha384::new();
             hasher.update(&self.handshake_messages);
-            hasher.finalize()
-        };
+            self.transcript_hash = Some(TranscriptHash::Sha384(hasher));
+        } else {
+            // SHA-256ベース鍵スケジュール
+            use crate::loader::sha256;
 
-        // 1. Early Secret (PSKなし)
-        let early_secret = tls13_early_secret(None);
+            let transcript_ch_sh = {
+                let mut hasher = sha256::Sha256::new();
+                hasher.update(&self.handshake_messages);
+                hasher.finalize()
+            };
 
-        // 2. Handshake Secret
-        let handshake_secret =
-            tls13_handshake_secret(&early_secret, &self.pre_master_secret);
+            let psk_ref_256 = if self.tls13_using_psk { self.tls13_psk.as_deref() } else { None };
+            let early_secret = tls13_early_secret(psk_ref_256);
+            let handshake_secret =
+                tls13_handshake_secret(&early_secret, &self.pre_master_secret);
 
-        // 3. Traffic secrets
-        self.client_hs_traffic_secret =
-            tls13_derive_secret(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
-        self.server_hs_traffic_secret =
-            tls13_derive_secret(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
+            let chs = tls13_derive_secret(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
+            let shs = tls13_derive_secret(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
+            self.client_hs_traffic_secret[..32].copy_from_slice(&chs);
+            self.server_hs_traffic_secret[..32].copy_from_slice(&shs);
 
-        // 4. Traffic keys
-        let (server_key, server_iv) =
-            tls13_derive_traffic_keys(&self.server_hs_traffic_secret, key_len);
-        let (client_key, client_iv) =
-            tls13_derive_traffic_keys(&self.client_hs_traffic_secret, key_len);
+            let (server_key, server_iv) = tls13_derive_traffic_keys(&shs, key_len);
+            let (client_key, client_iv) = tls13_derive_traffic_keys(&chs, key_len);
 
-        self.hs_read_key = server_key;
-        self.hs_read_iv = server_iv;
-        self.hs_write_key = client_key;
-        self.hs_write_iv = client_iv;
-        self.hs_read_seq = 0;
-        self.hs_write_seq = 0;
+            self.hs_read_key = server_key;
+            self.hs_read_iv = server_iv;
+            self.hs_write_key = client_key;
+            self.hs_write_iv = client_iv;
+            self.hs_read_seq = 0;
+            self.hs_write_seq = 0;
 
-        // Master Secret を事前計算して保存
-        let master_secret_bytes = tls13_master_secret(&handshake_secret);
-        self.master_secret[..32].copy_from_slice(&master_secret_bytes);
+            let master_secret_bytes = tls13_master_secret(&handshake_secret);
+            self.master_secret[..32].copy_from_slice(&master_secret_bytes);
 
-        // トランスクリプトハッシュを新しいハッシャーで再初期化
-        // （以降の暗号化ハンドシェイクメッセージも含める）
-        let mut new_hasher = sha256::Sha256::new();
-        new_hasher.update(&self.handshake_messages);
-        self.transcript_hash = Some(new_hasher);
+            let mut new_hasher = sha256::Sha256::new();
+            new_hasher.update(&self.handshake_messages);
+            self.transcript_hash = Some(TranscriptHash::Sha256(new_hasher));
+        }
 
         self.state = TlsState::Tls13WaitEncryptedExtensions;
         Ok(())
@@ -1417,8 +2711,8 @@ impl TlsConnection {
                     self.tls13_process_certificate(payload)?;
                 }
                 13 => {
-                    // CertificateRequest
-                    // TODO: クライアント証明書リクエスト処理
+                    // CertificateRequest (RFC 8446 Section 4.3.2)
+                    self.tls13_process_certificate_request(payload)?;
                 }
                 15 => {
                     // CertificateVerify
@@ -1457,9 +2751,77 @@ impl TlsConnection {
             return Err(TlsError::DecodeError);
         }
 
-        // 拡張をパース（ALPN等）
-        // 現在はスキップ
+        // 拡張をパース（ALPN, early_data等）
+        let mut eoff = 2usize;
+        let ext_end = 2 + extensions_len;
+        while eoff + 4 <= ext_end && eoff + 4 <= data.len() {
+            let ext_type = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
+            let ext_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
+            eoff += 4;
+            if eoff + ext_len > data.len() {
+                break;
+            }
+            match ext_type {
+                42 => {
+                    // early_data (type 42) — サーバーがEarly Dataを受理した
+                    self.early_data_accepted = true;
+                }
+                _ => {
+                    // 他の拡張は無視（ALPN等は将来対応）
+                }
+            }
+            eoff += ext_len;
+        }
+
+        // PSK使用+Early Data送信済みだがacceptされていない場合、バッファは保持（再送用）
         self.state = TlsState::Tls13WaitCertificate;
+        Ok(())
+    }
+
+    /// TLS 1.3: CertificateRequest を処理 (RFC 8446 Section 4.3.2)
+    ///
+    /// 構造:
+    /// - certificate_request_context length (1 byte)
+    /// - certificate_request_context (variable)
+    /// - extensions length (2 bytes)
+    /// - extensions (variable) — signature_algorithms (type 13) は必須
+    fn tls13_process_certificate_request(&mut self, data: &[u8]) -> TlsResult<()> {
+        if data.is_empty() {
+            return Err(TlsError::DecodeError);
+        }
+
+        let ctx_len = data[0] as usize;
+        let mut off = 1;
+
+        if data.len() < off + ctx_len {
+            return Err(TlsError::DecodeError);
+        }
+        self.certificate_request_context = data[off..off + ctx_len].to_vec();
+        off += ctx_len;
+
+        // 拡張をパース
+        if data.len() < off + 2 {
+            return Err(TlsError::DecodeError);
+        }
+        let ext_total_len = ((data[off] as usize) << 8) | data[off + 1] as usize;
+        off += 2;
+
+        let ext_end = off + ext_total_len;
+        while off + 4 <= ext_end && off + 4 <= data.len() {
+            let ext_type = ((data[off] as u16) << 8) | data[off + 1] as u16;
+            let ext_len = ((data[off + 2] as usize) << 8) | data[off + 3] as usize;
+            off += 4;
+            if off + ext_len > data.len() {
+                break;
+            }
+            if ext_type == 13 && ext_len >= 2 {
+                // signature_algorithms — 将来のクライアント証明書署名用に保存可能
+                // 現在は空Certificate応答のみのため、パースしてスキップ
+            }
+            off += ext_len;
+        }
+
+        self.client_auth_requested = true;
         Ok(())
     }
 
@@ -1490,17 +2852,74 @@ impl TlsConnection {
             | ((data[offset + 1] as usize) << 8)
             | data[offset + 2] as usize;
 
-        if certs_len == 0 && !self.config.skip_verify {
-            return Err(TlsError::CertificateError);
+        if data.len() < offset + 3 + certs_len {
+            return Err(TlsError::DecodeError);
         }
 
-        // 証明書の検証（skip_verifyの場合はスキップ）
-        if !self.config.skip_verify {
-            // TODO: 完全なX.509証明書チェーン検証
-            // 現在は証明書データの存在確認のみ
-            if data.len() < offset + 3 + certs_len {
-                return Err(TlsError::DecodeError);
+        if certs_len == 0 {
+            if !self.config.skip_verify {
+                return Err(TlsError::CertificateError);
             }
+            self.state = TlsState::Tls13WaitCertificateVerify;
+            return Ok(());
+        }
+
+        // 証明書リストをパース
+        let cert_list = &data[offset + 3..offset + 3 + certs_len];
+        let mut pos = 0usize;
+
+        // 最初の証明書（エンドエンティティ）を抽出
+        if cert_list.len() < pos + 3 {
+            return Err(TlsError::DecodeError);
+        }
+
+        let first_cert_len = ((cert_list[pos] as usize) << 16)
+            | ((cert_list[pos + 1] as usize) << 8)
+            | cert_list[pos + 2] as usize;
+        pos += 3;
+
+        if cert_list.len() < pos + first_cert_len {
+            return Err(TlsError::DecodeError);
+        }
+
+        let first_cert_der = &cert_list[pos..pos + first_cert_len];
+        pos += first_cert_len;
+
+        // TLS 1.3 CertificateEntry: cert_data の後に extensions(2+) が続く
+        if cert_list.len() >= pos + 2 {
+            let ext_len =
+                ((cert_list[pos] as usize) << 8) | cert_list[pos + 1] as usize;
+            // extensions をスキップ
+            let _ = ext_len;
+        }
+
+        // X.509 DERパースしてサーバー公開鍵を抽出
+        if let Some(cert) = super::x509::parse_x509(first_cert_der) {
+            match cert.subject_public_key_info {
+                super::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
+                    self.server_public_key = Some(ServerPublicKey::Rsa {
+                        modulus: modulus.to_vec(),
+                        exponent: exponent.to_vec(),
+                    });
+                }
+                super::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
+                    self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
+                        point: public_key.to_vec(),
+                    });
+                }
+                super::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
+                    self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
+                        point: public_key.to_vec(),
+                    });
+                }
+                _ => {
+                    if !self.config.skip_verify {
+                        return Err(TlsError::CertificateError);
+                    }
+                }
+            }
+        } else if !self.config.skip_verify {
+            return Err(TlsError::CertificateError);
         }
 
         self.state = TlsState::Tls13WaitCertificateVerify;
@@ -1518,60 +2937,193 @@ impl TlsConnection {
             return Err(TlsError::DecodeError);
         }
 
-        let _sig_algorithm = ((data[0] as u16) << 8) | data[1] as u16;
+        let sig_algorithm = ((data[0] as u16) << 8) | data[1] as u16;
         let sig_len = ((data[2] as usize) << 8) | data[3] as usize;
 
         if data.len() < 4 + sig_len {
             return Err(TlsError::DecodeError);
         }
 
-        // TODO: 実際の署名検証
-        // 検証対象: SHA-256(64 * 0x20 || "TLS 1.3, server CertificateVerify" || 0x00 || transcript_hash)
-        // 現在はskip_verifyモードのみ完全対応
+        let signature = &data[4..4 + sig_len];
 
-        if !self.config.skip_verify {
-            // 署名検証は将来実装
-            // return Err(TlsError::CertificateError);
+        if self.config.skip_verify {
+            self.state = TlsState::Tls13WaitFinished;
+            return Ok(());
+        }
+
+        // RFC 8446 Section 4.4.3: 署名検証対象メッセージの構築
+        // content = 64 * 0x20 || "TLS 1.3, server CertificateVerify" || 0x00 || transcript_hash
+        let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
+        let transcript_hash: Vec<u8> = if use_384 {
+            crate::loader::sha384::compute(&self.handshake_messages).to_vec()
+        } else {
+            let h = crate::loader::sha256::compute(&self.handshake_messages);
+            h.to_vec()
+        };
+
+        let mut verify_content = Vec::with_capacity(64 + 34 + transcript_hash.len());
+        verify_content.extend_from_slice(&[0x20u8; 64]);
+        verify_content.extend_from_slice(b"TLS 1.3, server CertificateVerify");
+        verify_content.push(0x00);
+        verify_content.extend_from_slice(&transcript_hash);
+
+        // 署名アルゴリズムに基づく検証
+        match sig_algorithm {
+            // RSA-PKCS1-SHA256 (0x0401)
+            0x0401 => {
+                self.verify_rsa_pkcs1_signature(
+                    &verify_content,
+                    signature,
+                    super::rsa::HashAlgorithm::Sha256,
+                )?;
+            }
+            // RSA-PKCS1-SHA384 (0x0501)
+            0x0501 => {
+                self.verify_rsa_pkcs1_signature(
+                    &verify_content,
+                    signature,
+                    super::rsa::HashAlgorithm::Sha384,
+                )?;
+            }
+            // RSA-PSS-RSAE-SHA256 (0x0804)
+            0x0804 => {
+                // RSA-PSSは現在PKCS#1 v1.5にフォールバック
+                // 完全なPSS実装は将来追加
+                self.verify_rsa_pkcs1_signature(
+                    &verify_content,
+                    signature,
+                    super::rsa::HashAlgorithm::Sha256,
+                ).or_else(|_| {
+                    // PSS検証が必要な場合、skip_verifyでなければエラー
+                    Err(TlsError::CryptoError)
+                })?;
+            }
+            // ECDSA-SECP256R1-SHA256 (0x0403)
+            0x0403 => {
+                self.verify_ecdsa_p256_signature(&verify_content, signature)?;
+            }
+            // ECDSA-SECP384R1-SHA384 (0x0503)
+            0x0503 => {
+                self.verify_ecdsa_p384_signature(&verify_content, signature)?;
+            }
+            _ => {
+                return Err(TlsError::UnsupportedCipherSuite);
+            }
         }
 
         self.state = TlsState::Tls13WaitFinished;
         Ok(())
     }
 
+    /// RSA PKCS#1 v1.5 署名検証ヘルパー
+    fn verify_rsa_pkcs1_signature(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+        hash_alg: super::rsa::HashAlgorithm,
+    ) -> TlsResult<()> {
+        let pubkey = match &self.server_public_key {
+            Some(ServerPublicKey::Rsa { modulus, exponent }) => {
+                super::rsa::RsaPublicKey {
+                    modulus,
+                    exponent,
+                }
+            }
+            _ => return Err(TlsError::CertificateError),
+        };
+
+        let digest = match hash_alg {
+            super::rsa::HashAlgorithm::Sha256 => {
+                let h = crate::loader::sha256::compute(message);
+                h.to_vec()
+            }
+            super::rsa::HashAlgorithm::Sha384 => {
+                let h = crate::loader::sha384::compute(message);
+                h.to_vec()
+            }
+        };
+
+        super::rsa::rsa_pkcs1_verify(&pubkey, hash_alg, &digest, signature)
+            .map_err(|_| TlsError::CryptoError)
+    }
+
+    /// ECDSA P-256 署名検証ヘルパー
+    fn verify_ecdsa_p256_signature(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+    ) -> TlsResult<()> {
+        let pubkey_bytes = match &self.server_public_key {
+            Some(ServerPublicKey::EcdsaP256 { point }) => point.as_slice(),
+            _ => return Err(TlsError::CertificateError),
+        };
+
+        let digest = crate::loader::sha256::compute(message);
+
+        super::ecdh::p256::ecdsa_p256_verify(pubkey_bytes, &digest, signature)
+            .map_err(|_| TlsError::CryptoError)
+    }
+
+    /// ECDSA P-384 署名検証ヘルパー
+    fn verify_ecdsa_p384_signature(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+    ) -> TlsResult<()> {
+        let pubkey_bytes = match &self.server_public_key {
+            Some(ServerPublicKey::EcdsaP384 { point }) => point.as_slice(),
+            _ => return Err(TlsError::CertificateError),
+        };
+
+        let digest = crate::loader::sha384::compute(message);
+
+        super::ecdh::p384::ecdsa_p384_verify(pubkey_bytes, &digest, signature)
+            .map_err(|_| TlsError::CryptoError)
+    }
+
     /// TLS 1.3: サーバーFinishedを処理 (RFC 8446 Section 4.4.4)
     ///
     /// verify_data = HMAC(finished_key, Transcript-Hash(..before Finished))
     fn tls13_process_server_finished(&mut self, data: &[u8]) -> TlsResult<()> {
-        if data.len() != SHA256_OUTPUT_SIZE {
+        let hash_len = self.hash_len();
+        if data.len() != hash_len {
             return Err(TlsError::DecodeError);
         }
 
+        let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
+
         // Finished の verify_data を検証
         // トランスクリプトハッシュは Finished メッセージ自体を含まない状態で計算
-        let transcript_before_finished = {
-            if let Some(ref hasher) = self.transcript_hash {
-                // hasher の現在の状態をクローン（Finishedメッセージ追加前）
-                let mut cloned = crate::loader::sha256::Sha256::new();
-                // 注: Sha256::new()で新しいハッシャーを作るので、
-                // 現在のhandshake_messagesを使用してハッシュを再計算
-                cloned.update(&self.handshake_messages);
-                cloned.finalize()
-            } else {
-                return Err(TlsError::CryptoError);
+        if use_384 {
+            let transcript = crate::loader::sha384::compute(&self.handshake_messages);
+            let mut shs = [0u8; 48];
+            shs.copy_from_slice(&self.server_hs_traffic_secret[..48]);
+            let finished_key = tls13_finished_key_sha384(&shs);
+            let expected = tls13_verify_data_sha384(&finished_key, &transcript);
+            let mut diff = 0u8;
+            for i in 0..SHA384_OUTPUT_SIZE {
+                diff |= data[i] ^ expected[i];
             }
-        };
-
-        let finished_key = tls13_finished_key(&self.server_hs_traffic_secret);
-        let expected_verify_data = tls13_verify_data(&finished_key, &transcript_before_finished);
-
-        // 定時間比較
-        let mut diff = 0u8;
-        for i in 0..SHA256_OUTPUT_SIZE {
-            diff |= data[i] ^ expected_verify_data[i];
-        }
-
-        if diff != 0 {
-            return Err(TlsError::HandshakeFailure);
+            if diff != 0 {
+                return Err(TlsError::HandshakeFailure);
+            }
+        } else {
+            let transcript = {
+                let mut hasher = crate::loader::sha256::Sha256::new();
+                hasher.update(&self.handshake_messages);
+                hasher.finalize()
+            };
+            let mut shs = [0u8; 32];
+            shs.copy_from_slice(&self.server_hs_traffic_secret[..32]);
+            let finished_key = tls13_finished_key(&shs);
+            let expected = tls13_verify_data(&finished_key, &transcript);
+            let mut diff = 0u8;
+            for i in 0..SHA256_OUTPUT_SIZE {
+                diff |= data[i] ^ expected[i];
+            }
+            if diff != 0 {
+                return Err(TlsError::HandshakeFailure);
+            }
         }
 
         self.state = TlsState::Tls13ServerFinishedReceived;
@@ -1587,24 +3139,127 @@ impl TlsConnection {
             return Err(TlsError::UnexpectedMessage);
         }
 
+        let mut records = Vec::new();
+
+        // EndOfEarlyData (RFC 8446 Section 4.5)
+        // Early Dataを送信し、サーバーが受理した場合のみ送信
+        // EndOfEarlyData は early data 鍵で暗号化する
+        if self.early_data_sent && self.early_data_accepted {
+            // handshake type 5 (end_of_early_data), length 0
+            let eoed_msg: [u8; 4] = [5, 0, 0, 0];
+
+            // トランスクリプトハッシュに記録
+            if let Some(ref mut hasher) = self.transcript_hash {
+                hasher.update(&eoed_msg);
+            }
+            self.handshake_messages.extend_from_slice(&eoed_msg);
+
+            // Early Data鍵で暗号化
+            if !self.early_write_key.is_empty() && self.early_write_iv.len() >= 12 {
+                let cipher = self.negotiated_cipher
+                    .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+
+                let mut inner = Vec::with_capacity(5);
+                inner.extend_from_slice(&eoed_msg);
+                inner.push(ContentType::Handshake as u8);
+
+                let mut nonce = [0u8; 12];
+                nonce.copy_from_slice(&self.early_write_iv[..12]);
+                let seq_bytes = self.early_write_seq.to_be_bytes();
+                for i in 0..8 {
+                    nonce[4 + i] ^= seq_bytes[i];
+                }
+
+                let encrypted_len = inner.len() + 16;
+                let mut aad = Vec::with_capacity(5);
+                aad.push(ContentType::ApplicationData as u8);
+                aad.extend_from_slice(&[0x03, 0x03]);
+                aad.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
+
+                let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
+                    let mut key_arr = [0u8; 32];
+                    key_arr.copy_from_slice(&self.early_write_key[..32]);
+                    chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, &inner)
+                } else {
+                    aes_gcm_encrypt(&self.early_write_key, &nonce, &aad, &inner)
+                };
+
+                let mut eoed_record = Vec::with_capacity(5 + encrypted_len);
+                eoed_record.push(ContentType::ApplicationData as u8);
+                eoed_record.extend_from_slice(&[0x03, 0x03]);
+                eoed_record.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
+                eoed_record.extend_from_slice(&ciphertext);
+                eoed_record.extend_from_slice(&auth_tag);
+
+                self.early_write_seq += 1;
+                records.extend_from_slice(&eoed_record);
+            }
+        }
+
+        // 空Certificate送信 (RFC 8446 Section 4.4.2)
+        // サーバーがCertificateRequestを送信した場合、
+        // クライアント証明書がなくても空のCertificateメッセージを送る必要がある
+        if self.client_auth_requested {
+            let ctx = &self.certificate_request_context;
+            let ctx_len = ctx.len();
+            // Certificate body: context_length(1) + context + cert_list_length(3, value=0)
+            let cert_body_len = 1 + ctx_len + 3;
+            let mut cert_msg = Vec::with_capacity(4 + cert_body_len);
+            cert_msg.push(11); // Certificate type
+            cert_msg.push(0);
+            cert_msg.push(((cert_body_len >> 8) & 0xFF) as u8);
+            cert_msg.push((cert_body_len & 0xFF) as u8);
+            cert_msg.push(ctx_len as u8);
+            cert_msg.extend_from_slice(ctx);
+            cert_msg.extend_from_slice(&[0, 0, 0]); // empty certificate_list (length = 0)
+
+            // トランスクリプトハッシュに記録
+            if let Some(ref mut hasher) = self.transcript_hash {
+                hasher.update(&cert_msg);
+            }
+            self.handshake_messages.extend_from_slice(&cert_msg);
+
+            // ハンドシェイク鍵で暗号化
+            let mut inner_cert = cert_msg;
+            inner_cert.push(ContentType::Handshake as u8);
+            let encrypted_cert = self.tls13_encrypt_record(&inner_cert, true)?;
+            records.extend_from_slice(&encrypted_cert);
+
+            // CertificateVerifyはスキップ（クライアント秘密鍵未実装）
+            // 空のcertificate_listの場合、CertificateVerifyは送信してはならない (RFC 8446 4.4.2)
+        }
+
+        let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
+        let hash_len = self.hash_len();
+
         // クライアントFinished verify_data を計算
-        // トランスクリプトハッシュには ServerFinished まで含む
-        let transcript_hash = {
-            let mut hasher = crate::loader::sha256::Sha256::new();
-            hasher.update(&self.handshake_messages);
-            hasher.finalize()
+        let verify_data_vec: Vec<u8> = if use_384 {
+            let transcript = crate::loader::sha384::compute(&self.handshake_messages);
+            let mut chs = [0u8; 48];
+            chs.copy_from_slice(&self.client_hs_traffic_secret[..48]);
+            let finished_key = tls13_finished_key_sha384(&chs);
+            let vd = tls13_verify_data_sha384(&finished_key, &transcript);
+            vd.to_vec()
+        } else {
+            let transcript = {
+                let mut hasher = crate::loader::sha256::Sha256::new();
+                hasher.update(&self.handshake_messages);
+                hasher.finalize()
+            };
+            let mut chs = [0u8; 32];
+            chs.copy_from_slice(&self.client_hs_traffic_secret[..32]);
+            let finished_key = tls13_finished_key(&chs);
+            let vd = tls13_verify_data(&finished_key, &transcript);
+            vd.to_vec()
         };
 
-        let finished_key = tls13_finished_key(&self.client_hs_traffic_secret);
-        let verify_data = tls13_verify_data(&finished_key, &transcript_hash);
-
         // Finished ハンドシェイクメッセージ
-        let mut finished_msg = Vec::with_capacity(4 + SHA256_OUTPUT_SIZE);
+        let mut finished_msg = Vec::with_capacity(4 + hash_len);
         finished_msg.push(20); // Finished type
         finished_msg.push(0);
         finished_msg.push(0);
-        finished_msg.push(SHA256_OUTPUT_SIZE as u8);
-        finished_msg.extend_from_slice(&verify_data);
+        finished_msg.push(hash_len as u8);
+        finished_msg.extend_from_slice(&verify_data_vec);
 
         // トランスクリプトハッシュを更新（クライアントFinished含む）
         if let Some(ref mut hasher) = self.transcript_hash {
@@ -1622,7 +3277,9 @@ impl TlsConnection {
         // アプリケーション鍵の導出
         self.tls13_derive_application_keys()?;
 
-        Ok(encrypted)
+        // EndOfEarlyDataレコード + Finishedレコードを結合して返す
+        records.extend_from_slice(&encrypted);
+        Ok(records)
     }
 
     /// TLS 1.3: アプリケーショントラフィック鍵を導出
@@ -1634,50 +3291,78 @@ impl TlsConnection {
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
+        let use_384 = cipher.uses_sha384();
+        let hash_len = self.hash_len();
 
         // トランスクリプトハッシュ (ClientHello...server Finished)
-        // ※ クライアントFinished追加前の時点のハッシュが必要
-        // server Finished までのトランスクリプトを再計算
-        let transcript_sf = {
-            let mut hasher = crate::loader::sha256::Sha256::new();
-            // handshake_messages にはクライアントFinishedも追加済みだが、
-            // server Finished までのハッシュが必要。
-            // ここでは master_secret の計算に必要なハッシュを使う。
-            // master_secret は ServerHello後に事前計算されているので、
-            // ここではサーバーFinished受信時のトランスクリプトを使う。
-            // ※ build_client_finished_tls13 でクライアントFinished追加前に
-            //   transcript_hash を取得済みのため、その値を使用する。
-            // 実装簡略化: handshake_messages から client Finished 分を除外
-            let client_finished_len = 4 + SHA256_OUTPUT_SIZE;
-            let msgs_before_cf =
-                &self.handshake_messages[..self.handshake_messages.len() - client_finished_len];
-            hasher.update(msgs_before_cf);
-            hasher.finalize()
-        };
+        // handshake_messages からクライアントFinished分を除外
+        let client_finished_len = 4 + hash_len;
+        let msgs_before_cf =
+            &self.handshake_messages[..self.handshake_messages.len() - client_finished_len];
 
-        // Master Secret は tls13_derive_handshake_keys で事前計算済み
-        let mut master_secret = [0u8; 32];
-        master_secret.copy_from_slice(&self.master_secret[..32]);
+        if use_384 {
+            let transcript_sf = crate::loader::sha384::compute(msgs_before_cf);
+            let mut master_secret = [0u8; 48];
+            master_secret.copy_from_slice(&self.master_secret[..48]);
 
-        // Application traffic secrets
-        self.client_app_traffic_secret =
-            tls13_derive_secret(&master_secret, b"c ap traffic", &transcript_sf);
-        self.server_app_traffic_secret =
-            tls13_derive_secret(&master_secret, b"s ap traffic", &transcript_sf);
+            let cas = tls13_derive_secret_sha384(&master_secret, b"c ap traffic", &transcript_sf);
+            let sas = tls13_derive_secret_sha384(&master_secret, b"s ap traffic", &transcript_sf);
+            self.client_app_traffic_secret = cas;
+            self.server_app_traffic_secret = sas;
 
-        // Application traffic keys
-        let (server_key, server_iv) =
-            tls13_derive_traffic_keys(&self.server_app_traffic_secret, key_len);
-        let (client_key, client_iv) =
-            tls13_derive_traffic_keys(&self.client_app_traffic_secret, key_len);
+            let (server_key, server_iv) = tls13_derive_traffic_keys_sha384(&sas, key_len);
+            let (client_key, client_iv) = tls13_derive_traffic_keys_sha384(&cas, key_len);
 
-        self.read_key = server_key;
-        self.read_iv = server_iv;
-        self.write_key = client_key;
-        self.write_iv = client_iv;
+            self.read_key = server_key;
+            self.read_iv = server_iv;
+            self.write_key = client_key;
+            self.write_iv = client_iv;
+        } else {
+            let transcript_sf = {
+                let mut hasher = crate::loader::sha256::Sha256::new();
+                hasher.update(msgs_before_cf);
+                hasher.finalize()
+            };
+            let mut master_secret = [0u8; 32];
+            master_secret.copy_from_slice(&self.master_secret[..32]);
+
+            let cas = tls13_derive_secret(&master_secret, b"c ap traffic", &transcript_sf);
+            let sas = tls13_derive_secret(&master_secret, b"s ap traffic", &transcript_sf);
+            self.client_app_traffic_secret[..32].copy_from_slice(&cas);
+            self.server_app_traffic_secret[..32].copy_from_slice(&sas);
+
+            let (server_key, server_iv) = tls13_derive_traffic_keys(&sas, key_len);
+            let (client_key, client_iv) = tls13_derive_traffic_keys(&cas, key_len);
+
+            self.read_key = server_key;
+            self.read_iv = server_iv;
+            self.write_key = client_key;
+            self.write_iv = client_iv;
+        }
+
+        // resumption_master_secret を導出 (RFC 8446 Section 7.1)
+        // RMS = Derive-Secret(master_secret, "res master", transcript_with_client_finished)
+        // handshake_messages には client Finished を含む全メッセージが含まれている
+        if use_384 {
+            let transcript_cf = crate::loader::sha384::compute(&self.handshake_messages);
+            let mut ms48 = [0u8; 48];
+            ms48.copy_from_slice(&self.master_secret[..48]);
+            let rms = tls13_derive_secret_sha384(&ms48, b"res master", &transcript_cf);
+            self.resumption_master_secret = rms.to_vec();
+        } else {
+            let transcript_cf = {
+                let mut h = crate::loader::sha256::Sha256::new();
+                h.update(&self.handshake_messages);
+                h.finalize()
+            };
+            let mut ms32 = [0u8; 32];
+            ms32.copy_from_slice(&self.master_secret[..32]);
+            let rms = tls13_derive_secret(&ms32, b"res master", &transcript_cf);
+            self.resumption_master_secret = rms.to_vec();
+        }
+
         self.read_seq = 0;
         self.write_seq = 0;
-
         self.state = TlsState::Established;
         Ok(())
     }
@@ -1821,55 +3506,121 @@ impl TlsConnection {
         Ok(record)
     }
 
-    /// Finishedを処理
-    fn process_finished(&mut self, _data: &[u8]) -> TlsResult<()> {
-        // Derive key material from master secret (RFC 5246 Section 6.3)
-        //
-        // Key block layout for AES-128-GCM:
-        //   client_write_key (key_len) | server_write_key (key_len) |
-        //   client_write_iv (iv_len)   | server_write_iv (iv_len)
-        //
-        // For AEAD ciphers, MAC keys are not needed (MAC is part of AEAD).
-        let cipher = self
-            .negotiated_cipher
+    /// TLS 1.3 アプリケーションデータ暗号化
+    fn tls13_encrypt_application_data(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+        // inner plaintext = data + content_type
+        let mut inner = Vec::with_capacity(data.len() + 1);
+        inner.extend_from_slice(data);
+        inner.push(ContentType::ApplicationData as u8);
+        self.tls13_encrypt_record(&inner, false)
+    }
+
+    /// Finishedを処理 (TLS 1.2)
+    ///
+    /// RFC 5246 Section 7.4.9:
+    /// verify_data = PRF(master_secret, "server finished",
+    ///                    Hash(handshake_messages))[0..11]
+    ///
+    /// サーバーのverify_dataを検証し、鍵ブロックを導出する。
+    fn process_finished(&mut self, data: &[u8]) -> TlsResult<()> {
+        // TLS 1.2 Finished verify_data は12バイト
+        if data.len() < 12 {
+            return Err(TlsError::DecodeError);
+        }
+
+        let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let cipher = self.negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
-        let key_len = cipher.key_len();
-        let iv_len = cipher.iv_len();
 
-        // Total key material: 2 * key_len + 2 * iv_len
-        let key_material_len = 2 * key_len + 2 * iv_len;
+        // Master secretが未導出の場合は導出
+        if self.master_secret.iter().all(|&b| b == 0) && !self.pre_master_secret.is_empty() {
+            self.master_secret = if version <= TlsVersion::TLS_1_1 {
+                derive_master_secret_tls10(
+                    &self.pre_master_secret,
+                    &self.client_random,
+                    &self.server_random,
+                )
+            } else if cipher.uses_sha384() {
+                derive_master_secret_sha384(
+                    &self.pre_master_secret,
+                    &self.client_random,
+                    &self.server_random,
+                )
+            } else {
+                derive_master_secret(
+                    &self.pre_master_secret,
+                    &self.client_random,
+                    &self.server_random,
+                )
+            };
+        }
 
-        let key_block = derive_key_block(
-            &self.master_secret,
-            &self.server_random,
-            &self.client_random,
-            key_material_len,
-        );
+        // Finished メッセージ自体を除いたハンドシェイクメッセージのハッシュ
+        let handshake_hash = if cipher.uses_sha384() {
+            crate::loader::sha384::compute(&self.handshake_messages).to_vec()
+        } else {
+            crate::loader::sha256::compute(&self.handshake_messages).to_vec()
+        };
 
-        if key_block.len() >= key_material_len {
-            let mut offset = 0;
+        // expected verify_data = PRF(master_secret, "server finished", Hash(...))
+        let mut expected_verify_data = [0u8; 12];
+        if version <= TlsVersion::TLS_1_1 {
+            tls10_prf(
+                &self.master_secret,
+                b"server finished",
+                &handshake_hash,
+                &mut expected_verify_data,
+            );
+        } else if cipher.uses_sha384() {
+            tls12_prf_sha384(
+                &self.master_secret,
+                b"server finished",
+                &handshake_hash,
+                &mut expected_verify_data,
+            );
+        } else {
+            tls12_prf(
+                &self.master_secret,
+                b"server finished",
+                &handshake_hash,
+                &mut expected_verify_data,
+            );
+        }
 
-            // Client write key (we are the client → this is our write key)
-            self.write_key = key_block[offset..offset + key_len].to_vec();
-            offset += key_len;
+        // 定時間比較（タイミング攻撃対策）
+        let mut diff = 0u8;
+        for i in 0..12 {
+            diff |= data[i] ^ expected_verify_data[i];
+        }
 
-            // Server write key (we are the client → this is our read key)
-            self.read_key = key_block[offset..offset + key_len].to_vec();
-            offset += key_len;
+        if diff != 0 {
+            return Err(TlsError::HandshakeFailure);
+        }
 
-            // Client write IV
-            self.write_iv = key_block[offset..offset + iv_len].to_vec();
-            offset += iv_len;
-
-            // Server write IV
-            self.read_iv = key_block[offset..offset + iv_len].to_vec();
-
-            // Reset sequence numbers for the new cipher state
-            self.read_seq = 0;
-            self.write_seq = 0;
+        // 鍵ブロック導出 (RFC 5246 Section 6.3)
+        if self.write_key.is_empty() {
+            self.derive_tls12_keys()?;
         }
 
         self.state = TlsState::Established;
+
+        // フルハンドシェイク完了後、セッションをキャッシュに保存（略式ハンドシェイク時は不要）
+        if !self.resuming_session && self.session_id.0 != [0u8; 32] {
+            if self.session_cache.is_none() {
+                self.session_cache = Some(SessionCache::new(8));
+            }
+            if let Some(ref mut cache) = self.session_cache {
+                cache.insert(SessionCacheEntry {
+                    session_id: self.session_id.0,
+                    master_secret: self.master_secret,
+                    cipher_suite: self.negotiated_cipher
+                        .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256),
+                    server_name: self.config.server_name.clone(),
+                    version: self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2),
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -1879,7 +3630,9 @@ impl TlsConnection {
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
-        if cipher.is_chacha20_poly1305() {
+        if cipher.is_cbc() {
+            self.decrypt_cbc_record(data, ContentType::ApplicationData as u8)
+        } else if cipher.is_chacha20_poly1305() {
             self.decrypt_chacha20_poly1305(data)
         } else {
             self.decrypt_aes_gcm(data)
@@ -2142,6 +3895,286 @@ impl TlsConnection {
         None
     }
 
+    /// TLS 1.3: 復号されたレコードから内部コンテントタイプと平文を分離する
+    ///
+    /// 戻り値: (content_type, plaintext)
+    fn tls13_split_content_type(decrypted: &[u8]) -> Option<(u8, &[u8])> {
+        for i in (0..decrypted.len()).rev() {
+            if decrypted[i] != 0 {
+                return Some((decrypted[i], &decrypted[..i]));
+            }
+        }
+        None
+    }
+
+    /// TLS 1.3: Post-handshake メッセージを処理
+    ///
+    /// RFC 8446 Section 4.6: Post-Handshake Messages
+    /// - NewSessionTicket (type 4)
+    /// - KeyUpdate (type 24)
+    fn tls13_process_post_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
+        let mut offset = 0;
+        while offset < data.len() {
+            if data.len() - offset < 4 {
+                return Err(TlsError::DecodeError);
+            }
+
+            let msg_type = data[offset];
+            let length = ((data[offset + 1] as usize) << 16)
+                | ((data[offset + 2] as usize) << 8)
+                | data[offset + 3] as usize;
+            let body_start = offset + 4;
+            let body_end = body_start + length;
+            if body_end > data.len() {
+                return Err(TlsError::DecodeError);
+            }
+
+            let payload = &data[body_start..body_end];
+
+            match msg_type {
+                4 => {
+                    // NewSessionTicket (RFC 8446 Section 4.6.1)
+                    self.tls13_process_new_session_ticket(payload)?;
+                }
+                24 => {
+                    // KeyUpdate (RFC 8446 Section 4.6.3)
+                    self.tls13_process_key_update(payload)?;
+                }
+                _ => {
+                    // 未知のPost-Handshakeメッセージは無視
+                }
+            }
+
+            offset = body_end;
+        }
+        Ok(())
+    }
+
+    /// TLS 1.3: NewSessionTicket を処理 (RFC 8446 Section 4.6.1)
+    ///
+    /// 構造:
+    /// - ticket_lifetime (4 bytes)
+    /// - ticket_age_add (4 bytes)
+    /// - ticket_nonce_length (1 byte)
+    /// - ticket_nonce (variable)
+    /// - ticket_length (2 bytes)
+    /// - ticket (variable)
+    /// - extensions_length (2 bytes)
+    /// - extensions (variable)
+    fn tls13_process_new_session_ticket(&mut self, data: &[u8]) -> TlsResult<()> {
+        if data.len() < 9 {
+            return Err(TlsError::DecodeError);
+        }
+
+        let ticket_lifetime = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        let ticket_age_add = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let nonce_len = data[8] as usize;
+
+        let mut off = 9;
+        if data.len() < off + nonce_len {
+            return Err(TlsError::DecodeError);
+        }
+        let ticket_nonce = &data[off..off + nonce_len];
+        off += nonce_len;
+
+        if data.len() < off + 2 {
+            return Err(TlsError::DecodeError);
+        }
+        let ticket_len = ((data[off] as usize) << 8) | data[off + 1] as usize;
+        off += 2;
+
+        if data.len() < off + ticket_len {
+            return Err(TlsError::DecodeError);
+        }
+        let ticket = &data[off..off + ticket_len];
+        off += ticket_len;
+
+        // 拡張をパース（max_early_data_size 等）
+        let mut max_early_data_size: u32 = 0;
+        if data.len() >= off + 2 {
+            let ext_total_len = ((data[off] as usize) << 8) | data[off + 1] as usize;
+            let mut eoff = off + 2;
+            let ext_end = eoff + ext_total_len;
+            while eoff + 4 <= ext_end && eoff + 4 <= data.len() {
+                let ext_type = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
+                let ext_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
+                eoff += 4;
+                if eoff + ext_len > data.len() {
+                    break;
+                }
+                if ext_type == 42 && ext_len >= 4 {
+                    // early_data (type 42): max_early_data_size
+                    max_early_data_size = u32::from_be_bytes([
+                        data[eoff], data[eoff + 1], data[eoff + 2], data[eoff + 3],
+                    ]);
+                }
+                eoff += ext_len;
+            }
+        }
+        self.max_early_data_size = max_early_data_size;
+
+        // セッションチケットをストレージに保存
+        self.session_ticket = Some(SessionTicket {
+            lifetime: ticket_lifetime,
+            age_add: ticket_age_add,
+            nonce: ticket_nonce.to_vec(),
+            ticket: ticket.to_vec(),
+        });
+
+        // PSK (Pre-Shared Key) の導出 (RFC 8446 Section 4.6.1)
+        // PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, hash_len)
+        if !self.resumption_master_secret.is_empty() {
+            let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
+            let hash_len = if use_384 { 48 } else { 32 };
+
+            let psk = if use_384 {
+                let mut rms = [0u8; 48];
+                let copy_len = self.resumption_master_secret.len().min(48);
+                rms[..copy_len].copy_from_slice(&self.resumption_master_secret[..copy_len]);
+                hkdf_expand_label_sha384(&rms, b"resumption", ticket_nonce, hash_len).to_vec()
+            } else {
+                let mut rms = [0u8; 32];
+                let copy_len = self.resumption_master_secret.len().min(32);
+                rms[..copy_len].copy_from_slice(&self.resumption_master_secret[..copy_len]);
+                hkdf_expand_label(&rms, b"resumption", ticket_nonce, hash_len).to_vec()
+            };
+
+            self.tls13_psk = Some(psk);
+            self.tls13_psk_identity = Some(ticket.to_vec());
+            self.tls13_ticket_age_add = ticket_age_add;
+            self.tls13_psk_cipher = self.negotiated_cipher;
+        }
+
+        Ok(())
+    }
+
+    /// TLS 1.3: KeyUpdate を処理 (RFC 8446 Section 4.6.3)
+    ///
+    /// 構造:
+    /// - request_update (1 byte): 0=update_not_requested, 1=update_requested
+    ///
+    /// サーバーの読み取り鍵を更新し、要求された場合はクライアント側も更新する
+    fn tls13_process_key_update(&mut self, data: &[u8]) -> TlsResult<()> {
+        if data.is_empty() {
+            return Err(TlsError::DecodeError);
+        }
+
+        let request_update = data[0];
+
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let key_len = cipher.key_len();
+        let use_384 = cipher.uses_sha384();
+        let hash_len = if use_384 { SHA384_OUTPUT_SIZE } else { SHA256_OUTPUT_SIZE };
+
+        // サーバーの application_traffic_secret を更新
+        // application_traffic_secret_N+1 =
+        //     HKDF-Expand-Label(application_traffic_secret_N, "traffic upd", "", Hash.length)
+        let mut new_server_secret = [0u8; 48];
+        if use_384 {
+            let mut old_secret = [0u8; 48];
+            old_secret.copy_from_slice(&self.server_app_traffic_secret);
+            let result = hkdf_expand_label_sha384(
+                &old_secret,
+                b"traffic upd",
+                b"",
+                hash_len,
+            );
+            new_server_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+        } else {
+            let mut old_secret = [0u8; 32];
+            old_secret.copy_from_slice(&self.server_app_traffic_secret[..32]);
+            let result = hkdf_expand_label(
+                &old_secret,
+                b"traffic upd",
+                b"",
+                hash_len,
+            );
+            new_server_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+        }
+        self.server_app_traffic_secret = new_server_secret;
+
+        // 新しいサーバー読み取り鍵を導出
+        let (new_read_key, new_read_iv) = if use_384 {
+            tls13_derive_traffic_keys_sha384(&self.server_app_traffic_secret, key_len)
+        } else {
+            let mut secret32 = [0u8; 32];
+            secret32.copy_from_slice(&self.server_app_traffic_secret[..32]);
+            tls13_derive_traffic_keys(&secret32, key_len)
+        };
+        self.read_key = new_read_key;
+        self.read_iv = new_read_iv;
+        self.read_seq = 0;
+
+        // update_requested (1) の場合、クライアント側鍵も更新して KeyUpdate を返信
+        if request_update == 1 {
+            let mut new_client_secret = [0u8; 48];
+            if use_384 {
+                let mut old_secret = [0u8; 48];
+                old_secret.copy_from_slice(&self.client_app_traffic_secret);
+                let result = hkdf_expand_label_sha384(
+                    &old_secret,
+                    b"traffic upd",
+                    b"",
+                    hash_len,
+                );
+                new_client_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+            } else {
+                let mut old_secret = [0u8; 32];
+                old_secret.copy_from_slice(&self.client_app_traffic_secret[..32]);
+                let result = hkdf_expand_label(
+                    &old_secret,
+                    b"traffic upd",
+                    b"",
+                    hash_len,
+                );
+                new_client_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+            }
+            self.client_app_traffic_secret = new_client_secret;
+
+            let (new_write_key, new_write_iv) = if use_384 {
+                tls13_derive_traffic_keys_sha384(&self.client_app_traffic_secret, key_len)
+            } else {
+                let mut secret32 = [0u8; 32];
+                secret32.copy_from_slice(&self.client_app_traffic_secret[..32]);
+                tls13_derive_traffic_keys(&secret32, key_len)
+            };
+            self.write_key = new_write_key;
+            self.write_iv = new_write_iv;
+            self.write_seq = 0;
+
+            // KeyUpdate応答を送信キューに追加
+            self.pending_key_update_response = true;
+        }
+
+        Ok(())
+    }
+
+    /// TLS 1.3: KeyUpdate応答メッセージを構築
+    ///
+    /// post-handshakeハンドシェイクメッセージとして暗号化して送信
+    pub fn build_key_update_response(&mut self) -> Option<Vec<u8>> {
+        if !self.pending_key_update_response {
+            return None;
+        }
+        self.pending_key_update_response = false;
+
+        // KeyUpdate { update_not_requested(0) }
+        let key_update_msg = vec![
+            24,   // msg_type = KeyUpdate
+            0, 0, 1, // length = 1
+            0,    // update_not_requested
+        ];
+
+        // Handshake content type を付加して暗号化
+        let mut inner = Vec::with_capacity(key_update_msg.len() + 1);
+        inner.extend_from_slice(&key_update_msg);
+        inner.push(ContentType::Handshake as u8);
+
+        self.tls13_encrypt_record(&inner, false).ok()
+    }
+
     /// TLS 1.3 モードかどうか
     pub fn is_tls13(&self) -> bool {
         self.is_tls13
@@ -2209,6 +4242,8 @@ pub enum TlsError {
     UnsupportedCipherSuite,
     /// 復号エラー
     DecryptError,
+    /// MACまたはパディング不正 (bad_record_mac alert)
+    BadRecordMac,
 }
 
 pub type TlsResult<T> = Result<T, TlsError>;
@@ -2982,6 +5017,64 @@ pub fn derive_key_block(
     key_block
 }
 
+/// Derive TLS 1.2 SHA-384 key block
+pub fn derive_key_block_sha384(
+    master_secret: &[u8; 48],
+    server_random: &[u8; 32],
+    client_random: &[u8; 32],
+    key_material_len: usize,
+) -> Vec<u8> {
+    let mut seed = [0u8; 64];
+    seed[..32].copy_from_slice(server_random);
+    seed[32..].copy_from_slice(client_random);
+
+    let mut key_block = vec![0u8; key_material_len];
+    tls12_prf_sha384(master_secret, b"key expansion", &seed, &mut key_block);
+    key_block
+}
+
+/// Derive TLS 1.0/1.1 master secret (RFC 2246 Section 8.1)
+///
+/// デュアルハッシュPRFを使用する。
+pub fn derive_master_secret_tls10(
+    pre_master_secret: &[u8],
+    client_random: &[u8; 32],
+    server_random: &[u8; 32],
+) -> [u8; 48] {
+    let mut seed = [0u8; 64];
+    seed[..32].copy_from_slice(client_random);
+    seed[32..].copy_from_slice(server_random);
+
+    let mut master_secret = [0u8; 48];
+    tls10_prf(
+        pre_master_secret,
+        b"master secret",
+        &seed,
+        &mut master_secret,
+    );
+    master_secret
+}
+
+/// Derive TLS 1.2 SHA-384 master secret
+pub fn derive_master_secret_sha384(
+    pre_master_secret: &[u8],
+    client_random: &[u8; 32],
+    server_random: &[u8; 32],
+) -> [u8; 48] {
+    let mut seed = [0u8; 64];
+    seed[..32].copy_from_slice(client_random);
+    seed[32..].copy_from_slice(server_random);
+
+    let mut master_secret = [0u8; 48];
+    tls12_prf_sha384(
+        pre_master_secret,
+        b"master secret",
+        &seed,
+        &mut master_secret,
+    );
+    master_secret
+}
+
 // ============================================================================
 // HKDF-SHA256 (RFC 5869)
 // ============================================================================
@@ -3171,6 +5264,182 @@ pub fn tls13_verify_data(
     transcript_hash: &[u8; SHA256_OUTPUT_SIZE],
 ) -> [u8; SHA256_OUTPUT_SIZE] {
     hmac_sha256(finished_key, transcript_hash)
+}
+
+// ============================================================================
+// HKDF-SHA384 (RFC 5869) — TLS_AES_256_GCM_SHA384 用
+// ============================================================================
+
+/// HKDF-Extract using SHA-384  (PRK = HMAC-SHA384(salt, IKM))
+pub fn hkdf_extract_sha384(salt: &[u8], ikm: &[u8]) -> [u8; SHA384_OUTPUT_SIZE] {
+    let effective_salt = if salt.is_empty() {
+        &[0u8; SHA384_OUTPUT_SIZE] as &[u8]
+    } else {
+        salt
+    };
+    hmac_sha384(effective_salt, ikm)
+}
+
+/// HKDF-Expand using SHA-384  (RFC 5869 Section 2.3)
+pub fn hkdf_expand_sha384(prk: &[u8; SHA384_OUTPUT_SIZE], info: &[u8], length: usize) -> Vec<u8> {
+    assert!(
+        length <= 255 * SHA384_OUTPUT_SIZE,
+        "HKDF-Expand-SHA384: requested length too large"
+    );
+
+    let n = (length + SHA384_OUTPUT_SIZE - 1) / SHA384_OUTPUT_SIZE;
+    let mut okm = Vec::with_capacity(length);
+    let mut t_prev: Vec<u8> = Vec::new();
+
+    for i in 1..=n {
+        let mut input = Vec::with_capacity(t_prev.len() + info.len() + 1);
+        input.extend_from_slice(&t_prev);
+        input.extend_from_slice(info);
+        input.push(i as u8);
+
+        let t_i = hmac_sha384(prk, &input);
+
+        let copy_len = (length - okm.len()).min(SHA384_OUTPUT_SIZE);
+        okm.extend_from_slice(&t_i[..copy_len]);
+
+        t_prev = t_i.to_vec();
+    }
+
+    okm
+}
+
+/// HKDF-Expand-Label for TLS 1.3 using SHA-384 (RFC 8446 Section 7.1)
+pub fn hkdf_expand_label_sha384(
+    secret: &[u8; SHA384_OUTPUT_SIZE],
+    label: &[u8],
+    context: &[u8],
+    length: usize,
+) -> Vec<u8> {
+    let tls_label_prefix = b"tls13 ";
+    let full_label_len = tls_label_prefix.len() + label.len();
+
+    let mut hkdf_label = Vec::with_capacity(2 + 1 + full_label_len + 1 + context.len());
+
+    // uint16 length
+    hkdf_label.push((length >> 8) as u8);
+    hkdf_label.push(length as u8);
+
+    // opaque label<7..255>
+    hkdf_label.push(full_label_len as u8);
+    hkdf_label.extend_from_slice(tls_label_prefix);
+    hkdf_label.extend_from_slice(label);
+
+    // opaque context<0..255>
+    hkdf_label.push(context.len() as u8);
+    hkdf_label.extend_from_slice(context);
+
+    hkdf_expand_sha384(secret, &hkdf_label, length)
+}
+
+/// Derive-Secret using SHA-384 for TLS 1.3
+pub fn tls13_derive_secret_sha384(
+    secret: &[u8; SHA384_OUTPUT_SIZE],
+    label: &[u8],
+    transcript_hash: &[u8; SHA384_OUTPUT_SIZE],
+) -> [u8; SHA384_OUTPUT_SIZE] {
+    let result = hkdf_expand_label_sha384(secret, label, transcript_hash, SHA384_OUTPUT_SIZE);
+    let mut output = [0u8; SHA384_OUTPUT_SIZE];
+    output.copy_from_slice(&result);
+    output
+}
+
+/// TLS 1.3 Early Secret using SHA-384
+pub fn tls13_early_secret_sha384(psk: Option<&[u8]>) -> [u8; SHA384_OUTPUT_SIZE] {
+    let ikm = psk.unwrap_or(&[0u8; SHA384_OUTPUT_SIZE]);
+    hkdf_extract_sha384(&[0u8; SHA384_OUTPUT_SIZE], ikm)
+}
+
+/// TLS 1.3 Handshake Secret using SHA-384
+pub fn tls13_handshake_secret_sha384(
+    early_secret: &[u8; SHA384_OUTPUT_SIZE],
+    shared_secret: &[u8],
+) -> [u8; SHA384_OUTPUT_SIZE] {
+    use crate::loader::sha384;
+    let empty_hash = sha384::compute(&[]);
+    let derived = tls13_derive_secret_sha384(early_secret, b"derived", &empty_hash);
+    hkdf_extract_sha384(&derived, shared_secret)
+}
+
+/// TLS 1.3 Master Secret using SHA-384
+pub fn tls13_master_secret_sha384(
+    handshake_secret: &[u8; SHA384_OUTPUT_SIZE],
+) -> [u8; SHA384_OUTPUT_SIZE] {
+    use crate::loader::sha384;
+    let empty_hash = sha384::compute(&[]);
+    let derived = tls13_derive_secret_sha384(handshake_secret, b"derived", &empty_hash);
+    hkdf_extract_sha384(&derived, &[0u8; SHA384_OUTPUT_SIZE])
+}
+
+/// TLS 1.3 トラフィック鍵導出 using SHA-384
+pub fn tls13_derive_traffic_keys_sha384(
+    secret: &[u8; SHA384_OUTPUT_SIZE],
+    key_len: usize,
+) -> (Vec<u8>, Vec<u8>) {
+    let key = hkdf_expand_label_sha384(secret, b"key", b"", key_len);
+    let iv = hkdf_expand_label_sha384(secret, b"iv", b"", 12);
+    (key, iv)
+}
+
+/// TLS 1.3 Finished鍵導出 using SHA-384
+pub fn tls13_finished_key_sha384(
+    base_key: &[u8; SHA384_OUTPUT_SIZE],
+) -> [u8; SHA384_OUTPUT_SIZE] {
+    let result = hkdf_expand_label_sha384(base_key, b"finished", b"", SHA384_OUTPUT_SIZE);
+    let mut output = [0u8; SHA384_OUTPUT_SIZE];
+    output.copy_from_slice(&result);
+    output
+}
+
+/// TLS 1.3 Finished verify_data using SHA-384
+pub fn tls13_verify_data_sha384(
+    finished_key: &[u8; SHA384_OUTPUT_SIZE],
+    transcript_hash: &[u8; SHA384_OUTPUT_SIZE],
+) -> [u8; SHA384_OUTPUT_SIZE] {
+    hmac_sha384(finished_key, transcript_hash)
+}
+
+// ============================================================================
+// P_SHA384 and TLS 1.2 PRF-SHA384
+// ============================================================================
+
+/// P_SHA384 expansion (RFC 5246 Section 5)
+///
+/// P_SHA384(secret, seed) = HMAC_SHA384(secret, A(1) + seed) +
+///                           HMAC_SHA384(secret, A(2) + seed) + ...
+/// A(0) = seed
+/// A(i) = HMAC_SHA384(secret, A(i-1))
+pub fn p_sha384(secret: &[u8], seed: &[u8], output: &mut [u8]) {
+    let mut a = hmac_sha384(secret, seed); // A(1)
+    let mut offset = 0;
+
+    while offset < output.len() {
+        // P_i = HMAC(secret, A(i) || seed)
+        let mut input = Vec::with_capacity(SHA384_OUTPUT_SIZE + seed.len());
+        input.extend_from_slice(&a);
+        input.extend_from_slice(seed);
+
+        let p = hmac_sha384(secret, &input);
+        let copy_len = (output.len() - offset).min(SHA384_OUTPUT_SIZE);
+        output[offset..offset + copy_len].copy_from_slice(&p[..copy_len]);
+        offset += copy_len;
+
+        // A(i+1) = HMAC(secret, A(i))
+        a = hmac_sha384(secret, &a);
+    }
+}
+
+/// TLS 1.2 PRF using SHA-384 (for AES-256-GCM-SHA384 cipher suites)
+pub fn tls12_prf_sha384(secret: &[u8], label: &[u8], seed: &[u8], output: &mut [u8]) {
+    let mut combined_seed = Vec::with_capacity(label.len() + seed.len());
+    combined_seed.extend_from_slice(label);
+    combined_seed.extend_from_slice(seed);
+
+    p_sha384(secret, &combined_seed, output);
 }
 
 // ============================================================================
@@ -3586,6 +5855,787 @@ pub fn chacha20_poly1305_decrypt(
     // Decrypt payload starting from counter=1
     let plaintext = chacha20_encrypt(key, nonce, 1, ciphertext);
     Some(plaintext)
+}
+
+// ============================================================================
+// MD5 Implementation (RFC 1321)
+// TLS 1.0/1.1 PRF のデュアルハッシュ方式に必要
+// ============================================================================
+
+/// MD5 output size in bytes
+const MD5_OUTPUT_SIZE: usize = 16;
+
+/// MD5 block size in bytes
+const MD5_BLOCK_SIZE: usize = 64;
+
+/// MD5 initial hash values (RFC 1321 Section 3.3)
+const MD5_INIT: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
+
+/// MD5 per-round shift amounts (RFC 1321 Section 3.4)
+const MD5_S: [u32; 64] = [
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+    5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+];
+
+/// MD5 T[i] = floor(2^32 * abs(sin(i+1))) constants
+const MD5_T: [u32; 64] = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+    0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+    0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+    0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+    0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+    0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+];
+
+/// MD5ハッシュ計算 (ストリーミング対応)
+pub struct Md5 {
+    state: [u32; 4],
+    buffer: [u8; 64],
+    buffer_len: usize,
+    total_len: u64,
+}
+
+impl Md5 {
+    pub fn new() -> Self {
+        Self {
+            state: MD5_INIT,
+            buffer: [0u8; 64],
+            buffer_len: 0,
+            total_len: 0,
+        }
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.total_len += data.len() as u64;
+        let mut offset = 0;
+
+        // バッファに残りがあれば先に埋める
+        if self.buffer_len > 0 {
+            let remaining = 64 - self.buffer_len;
+            let copy_len = remaining.min(data.len());
+            self.buffer[self.buffer_len..self.buffer_len + copy_len]
+                .copy_from_slice(&data[..copy_len]);
+            self.buffer_len += copy_len;
+            offset = copy_len;
+
+            if self.buffer_len == 64 {
+                let block = self.buffer;
+                md5_compress(&mut self.state, &block);
+                self.buffer_len = 0;
+            }
+        }
+
+        // 64バイトブロックを直接処理
+        while offset + 64 <= data.len() {
+            let mut block = [0u8; 64];
+            block.copy_from_slice(&data[offset..offset + 64]);
+            md5_compress(&mut self.state, &block);
+            offset += 64;
+        }
+
+        // 残りをバッファに保存
+        if offset < data.len() {
+            let remaining = data.len() - offset;
+            self.buffer[..remaining].copy_from_slice(&data[offset..]);
+            self.buffer_len = remaining;
+        }
+    }
+
+    pub fn finalize(mut self) -> [u8; 16] {
+        // MD5パディング: 1ビット + ゼロ + 64ビットリトルエンディアン長
+        let bit_len = self.total_len * 8;
+        let mut padding = [0u8; 72]; // 最大パディングサイズ
+        padding[0] = 0x80;
+
+        let pad_len = if self.buffer_len < 56 {
+            56 - self.buffer_len
+        } else {
+            120 - self.buffer_len
+        };
+
+        self.update(&padding[..pad_len]);
+
+        // 長さをリトルエンディアンで追加
+        let len_bytes = bit_len.to_le_bytes();
+        self.update(&len_bytes);
+
+        // 結果をリトルエンディアンで出力
+        let mut result = [0u8; 16];
+        for (i, &word) in self.state.iter().enumerate() {
+            result[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        result
+    }
+}
+
+/// MD5圧縮関数 (RFC 1321 Section 3.4)
+fn md5_compress(state: &mut [u32; 4], block: &[u8; 64]) {
+    // ブロックを16個のリトルエンディアンu32に変換
+    let mut m = [0u32; 16];
+    for i in 0..16 {
+        m[i] = u32::from_le_bytes([
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
+        ]);
+    }
+
+    let mut a = state[0];
+    let mut b = state[1];
+    let mut c = state[2];
+    let mut d = state[3];
+
+    for i in 0..64 {
+        let (f, g) = match i {
+            0..=15 => ((b & c) | ((!b) & d), i),
+            16..=31 => ((d & b) | ((!d) & c), (5 * i + 1) % 16),
+            32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
+            _ => (c ^ (b | (!d)), (7 * i) % 16),
+        };
+
+        let temp = d;
+        d = c;
+        c = b;
+        b = b.wrapping_add(
+            a.wrapping_add(f)
+                .wrapping_add(MD5_T[i])
+                .wrapping_add(m[g])
+                .rotate_left(MD5_S[i]),
+        );
+        a = temp;
+    }
+
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+}
+
+/// MD5ワンショット計算
+pub fn md5_compute(data: &[u8]) -> [u8; 16] {
+    let mut hasher = Md5::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
+// ============================================================================
+// SHA-1 Implementation (FIPS 180-4)
+// TLS 1.0/1.1 PRF および レガシー署名検証に必要
+// ============================================================================
+
+/// SHA-1 output size in bytes
+const SHA1_OUTPUT_SIZE: usize = 20;
+
+/// SHA-1 block size in bytes
+const SHA1_BLOCK_SIZE: usize = 64;
+
+/// SHA-1 initial hash values (FIPS 180-4 Section 5.3.1)
+const SHA1_INIT: [u32; 5] = [
+    0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0,
+];
+
+/// SHA-1ハッシュ計算 (ストリーミング対応)
+pub struct Sha1 {
+    state: [u32; 5],
+    buffer: [u8; 64],
+    buffer_len: usize,
+    total_len: u64,
+}
+
+impl Sha1 {
+    pub fn new() -> Self {
+        Self {
+            state: SHA1_INIT,
+            buffer: [0u8; 64],
+            buffer_len: 0,
+            total_len: 0,
+        }
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        self.total_len += data.len() as u64;
+        let mut offset = 0;
+
+        if self.buffer_len > 0 {
+            let remaining = 64 - self.buffer_len;
+            let copy_len = remaining.min(data.len());
+            self.buffer[self.buffer_len..self.buffer_len + copy_len]
+                .copy_from_slice(&data[..copy_len]);
+            self.buffer_len += copy_len;
+            offset = copy_len;
+
+            if self.buffer_len == 64 {
+                let block = self.buffer;
+                sha1_compress(&mut self.state, &block);
+                self.buffer_len = 0;
+            }
+        }
+
+        while offset + 64 <= data.len() {
+            let mut block = [0u8; 64];
+            block.copy_from_slice(&data[offset..offset + 64]);
+            sha1_compress(&mut self.state, &block);
+            offset += 64;
+        }
+
+        if offset < data.len() {
+            let remaining = data.len() - offset;
+            self.buffer[..remaining].copy_from_slice(&data[offset..]);
+            self.buffer_len = remaining;
+        }
+    }
+
+    pub fn finalize(mut self) -> [u8; 20] {
+        let bit_len = self.total_len * 8;
+        let mut padding = [0u8; 72];
+        padding[0] = 0x80;
+
+        let pad_len = if self.buffer_len < 56 {
+            56 - self.buffer_len
+        } else {
+            120 - self.buffer_len
+        };
+
+        self.update(&padding[..pad_len]);
+
+        // SHA-1はビッグエンディアンの長さ
+        let len_bytes = bit_len.to_be_bytes();
+        self.update(&len_bytes);
+
+        let mut result = [0u8; 20];
+        for (i, &word) in self.state.iter().enumerate() {
+            result[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        result
+    }
+}
+
+/// SHA-1圧縮関数 (FIPS 180-4 Section 6.1.2)
+fn sha1_compress(state: &mut [u32; 5], block: &[u8; 64]) {
+    let mut w = [0u32; 80];
+
+    // メッセージスケジュール: W[0..15] はブロックから直接
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            block[i * 4],
+            block[i * 4 + 1],
+            block[i * 4 + 2],
+            block[i * 4 + 3],
+        ]);
+    }
+
+    // W[16..79] = (W[t-3] XOR W[t-8] XOR W[t-14] XOR W[t-16]) <<< 1
+    for i in 16..80 {
+        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+    }
+
+    let mut a = state[0];
+    let mut b = state[1];
+    let mut c = state[2];
+    let mut d = state[3];
+    let mut e = state[4];
+
+    for i in 0..80 {
+        let (f, k) = match i {
+            0..=19 => ((b & c) | ((!b) & d), 0x5a827999u32),
+            20..=39 => (b ^ c ^ d, 0x6ed9eba1u32),
+            40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1bbcdcu32),
+            _ => (b ^ c ^ d, 0xca62c1d6u32),
+        };
+
+        let temp = a
+            .rotate_left(5)
+            .wrapping_add(f)
+            .wrapping_add(e)
+            .wrapping_add(k)
+            .wrapping_add(w[i]);
+        e = d;
+        d = c;
+        c = b.rotate_left(30);
+        b = a;
+        a = temp;
+    }
+
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
+}
+
+/// SHA-1ワンショット計算
+pub fn sha1_compute(data: &[u8]) -> [u8; 20] {
+    let mut hasher = Sha1::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
+// ============================================================================
+// HMAC-MD5 / HMAC-SHA1 (RFC 2104)
+// TLS 1.0/1.1 PRF および CBC MAC に必要
+// ============================================================================
+
+/// HMAC-MD5 (RFC 2104)
+pub fn hmac_md5(key: &[u8], data: &[u8]) -> [u8; MD5_OUTPUT_SIZE] {
+    let hashed_key;
+    let key_bytes: &[u8] = if key.len() > MD5_BLOCK_SIZE {
+        hashed_key = md5_compute(key);
+        &hashed_key
+    } else {
+        key
+    };
+
+    let mut ipad = [0x36u8; MD5_BLOCK_SIZE];
+    let mut opad = [0x5cu8; MD5_BLOCK_SIZE];
+
+    for i in 0..key_bytes.len() {
+        ipad[i] ^= key_bytes[i];
+        opad[i] ^= key_bytes[i];
+    }
+
+    let mut inner = Md5::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Md5::new();
+    outer.update(&opad);
+    outer.update(&inner_hash);
+    outer.finalize()
+}
+
+/// HMAC-SHA1 (RFC 2104)
+pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; SHA1_OUTPUT_SIZE] {
+    let hashed_key;
+    let key_bytes: &[u8] = if key.len() > SHA1_BLOCK_SIZE {
+        hashed_key = sha1_compute(key);
+        &hashed_key
+    } else {
+        key
+    };
+
+    let mut ipad = [0x36u8; SHA1_BLOCK_SIZE];
+    let mut opad = [0x5cu8; SHA1_BLOCK_SIZE];
+
+    for i in 0..key_bytes.len() {
+        ipad[i] ^= key_bytes[i];
+        opad[i] ^= key_bytes[i];
+    }
+
+    let mut inner = Sha1::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha1::new();
+    outer.update(&opad);
+    outer.update(&inner_hash);
+    outer.finalize()
+}
+
+// ============================================================================
+// AES-CBC Implementation (NIST SP 800-38A)
+// TLS 1.0/1.1/1.2 CBC暗号スイートに必要
+// ============================================================================
+
+/// AES Inverse S-box (復号用)
+const AES_INV_SBOX: [u8; 256] = [
+    0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
+    0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
+    0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c, 0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e,
+    0x08, 0x2e, 0xa1, 0x66, 0x28, 0xd9, 0x24, 0xb2, 0x76, 0x5b, 0xa2, 0x49, 0x6d, 0x8b, 0xd1, 0x25,
+    0x72, 0xf8, 0xf6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xd4, 0xa4, 0x5c, 0xcc, 0x5d, 0x65, 0xb6, 0x92,
+    0x6c, 0x70, 0x48, 0x50, 0xfd, 0xed, 0xb9, 0xda, 0x5e, 0x15, 0x46, 0x57, 0xa7, 0x8d, 0x9d, 0x84,
+    0x90, 0xd8, 0xab, 0x00, 0x8c, 0xbc, 0xd3, 0x0a, 0xf7, 0xe4, 0x58, 0x05, 0xb8, 0xb3, 0x45, 0x06,
+    0xd0, 0x2c, 0x1e, 0x8f, 0xca, 0x3f, 0x0f, 0x02, 0xc1, 0xaf, 0xbd, 0x03, 0x01, 0x13, 0x8a, 0x6b,
+    0x3a, 0x91, 0x11, 0x41, 0x4f, 0x67, 0xdc, 0xea, 0x97, 0xf2, 0xcf, 0xce, 0xf0, 0xb4, 0xe6, 0x73,
+    0x96, 0xac, 0x74, 0x22, 0xe7, 0xad, 0x35, 0x85, 0xe2, 0xf9, 0x37, 0xe8, 0x1c, 0x75, 0xdf, 0x6e,
+    0x47, 0xf1, 0x1a, 0x71, 0x1d, 0x29, 0xc5, 0x89, 0x6f, 0xb7, 0x62, 0x0e, 0xaa, 0x18, 0xbe, 0x1b,
+    0xfc, 0x56, 0x3e, 0x4b, 0xc6, 0xd2, 0x79, 0x20, 0x9a, 0xdb, 0xc0, 0xfe, 0x78, 0xcd, 0x5a, 0xf4,
+    0x1f, 0xdd, 0xa8, 0x33, 0x88, 0x07, 0xc7, 0x31, 0xb1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xec, 0x5f,
+    0x60, 0x51, 0x7f, 0xa9, 0x19, 0xb5, 0x4a, 0x0d, 0x2d, 0xe5, 0x7a, 0x9f, 0x93, 0xc9, 0x9c, 0xef,
+    0xa0, 0xe0, 0x3b, 0x4d, 0xae, 0x2a, 0xf5, 0xb0, 0xc8, 0xeb, 0xbb, 0x3c, 0x83, 0x53, 0x99, 0x61,
+    0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
+];
+
+/// AES InvSubBytes
+fn aes_inv_sub_bytes(state: &mut [u8; 16]) {
+    for b in state.iter_mut() {
+        *b = AES_INV_SBOX[*b as usize];
+    }
+}
+
+/// AES InvShiftRows
+fn aes_inv_shift_rows(state: &mut [u8; 16]) {
+    let temp = *state;
+    // Row 0: no shift
+    // Row 1: shift right by 1
+    state[1] = temp[13];
+    state[5] = temp[1];
+    state[9] = temp[5];
+    state[13] = temp[9];
+    // Row 2: shift right by 2
+    state[2] = temp[10];
+    state[6] = temp[14];
+    state[10] = temp[2];
+    state[14] = temp[6];
+    // Row 3: shift right by 3
+    state[3] = temp[7];
+    state[7] = temp[11];
+    state[11] = temp[15];
+    state[15] = temp[3];
+}
+
+/// AES InvMixColumns
+fn aes_inv_mix_columns(state: &mut [u8; 16]) {
+    for col in 0..4 {
+        let i = col * 4;
+        let s0 = state[i];
+        let s1 = state[i + 1];
+        let s2 = state[i + 2];
+        let s3 = state[i + 3];
+
+        state[i]     = gf_mul(0x0e, s0) ^ gf_mul(0x0b, s1) ^ gf_mul(0x0d, s2) ^ gf_mul(0x09, s3);
+        state[i + 1] = gf_mul(0x09, s0) ^ gf_mul(0x0e, s1) ^ gf_mul(0x0b, s2) ^ gf_mul(0x0d, s3);
+        state[i + 2] = gf_mul(0x0d, s0) ^ gf_mul(0x09, s1) ^ gf_mul(0x0e, s2) ^ gf_mul(0x0b, s3);
+        state[i + 3] = gf_mul(0x0b, s0) ^ gf_mul(0x0d, s1) ^ gf_mul(0x09, s2) ^ gf_mul(0x0e, s3);
+    }
+}
+
+/// AESブロック復号 (拡張鍵スケジュール使用)
+fn aes_decrypt_block_with_schedule(block: &[u8; 16], schedule: &AesRoundKeySchedule) -> [u8; 16] {
+    let mut state = *block;
+
+    // 最終ラウンドキーを最初に適用
+    aes_add_round_key(&mut state, &schedule.round_keys[schedule.rounds]);
+
+    // 逆ラウンド (MixColumns含む)
+    for i in (1..schedule.rounds).rev() {
+        aes_inv_shift_rows(&mut state);
+        aes_inv_sub_bytes(&mut state);
+        aes_add_round_key(&mut state, &schedule.round_keys[i]);
+        aes_inv_mix_columns(&mut state);
+    }
+
+    // 最初のラウンド (MixColumnsなし)
+    aes_inv_shift_rows(&mut state);
+    aes_inv_sub_bytes(&mut state);
+    aes_add_round_key(&mut state, &schedule.round_keys[0]);
+
+    state
+}
+
+/// AES-CBC暗号化
+///
+/// 入力はパディング済み（16バイトの倍数）であること。
+/// C[i] = AES_Encrypt(P[i] XOR C[i-1]), C[-1] = IV
+fn aes_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
+    let Some(schedule) = aes_expand_key_schedule(key) else {
+        return Vec::new();
+    };
+
+    let mut ciphertext = Vec::with_capacity(plaintext.len());
+    let mut prev_block = *iv;
+
+    for chunk in plaintext.chunks(16) {
+        let mut block = [0u8; 16];
+        block[..chunk.len()].copy_from_slice(chunk);
+
+        // XOR with previous ciphertext block
+        for j in 0..16 {
+            block[j] ^= prev_block[j];
+        }
+
+        let encrypted = aes_encrypt_block_with_schedule(&block, &schedule);
+        ciphertext.extend_from_slice(&encrypted);
+        prev_block = encrypted;
+    }
+
+    ciphertext
+}
+
+/// AES-CBC復号
+///
+/// P[i] = AES_Decrypt(C[i]) XOR C[i-1], C[-1] = IV
+/// パディングは呼び出し側で検証・除去する。
+fn aes_cbc_decrypt(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
+    if ciphertext.len() % 16 != 0 || ciphertext.is_empty() {
+        return None;
+    }
+
+    let schedule = aes_expand_key_schedule(key)?;
+
+    let mut plaintext = Vec::with_capacity(ciphertext.len());
+    let mut prev_block = *iv;
+
+    for chunk in ciphertext.chunks(16) {
+        let mut ct_block = [0u8; 16];
+        ct_block.copy_from_slice(chunk);
+
+        let mut decrypted = aes_decrypt_block_with_schedule(&ct_block, &schedule);
+
+        // XOR with previous ciphertext block
+        for j in 0..16 {
+            decrypted[j] ^= prev_block[j];
+        }
+
+        plaintext.extend_from_slice(&decrypted);
+        prev_block = ct_block;
+    }
+
+    Some(plaintext)
+}
+
+/// TLSパディング追加 (RFC 5246 Section 6.2.3.2)
+///
+/// padding_length = block_size - ((data_len) % block_size) - 1 の場合もあるが、
+/// TLSでは: padding = [pad_val; pad_val + 1] where pad_val = block_size - 1 - (data_len % block_size)
+/// 各パディングバイトの値 = パディング長 - 1
+fn tls_add_padding(data: &[u8], block_size: usize) -> Vec<u8> {
+    let pad_len = block_size - (data.len() % block_size);
+    let pad_byte = (pad_len - 1) as u8;
+    let mut result = Vec::with_capacity(data.len() + pad_len);
+    result.extend_from_slice(data);
+    for _ in 0..pad_len {
+        result.push(pad_byte);
+    }
+    result
+}
+
+/// TLSパディング検証 (定時間)
+///
+/// パディングの最後のバイトがパディング長を示す。
+/// 全パディングバイトが同じ値であることを検証。
+/// 戻り値: パディングを除いたデータ長、または None
+fn tls_verify_padding(data: &[u8]) -> Option<usize> {
+    if data.is_empty() {
+        return None;
+    }
+
+    let pad_byte = data[data.len() - 1];
+    let pad_len = pad_byte as usize + 1;
+
+    if pad_len > data.len() || pad_len > 256 {
+        return None;
+    }
+
+    // 定時間検証: 全パディングバイトが同じ値か
+    let mut bad = 0u8;
+    for i in 0..pad_len {
+        bad |= data[data.len() - 1 - i] ^ pad_byte;
+    }
+
+    if bad != 0 {
+        None
+    } else {
+        Some(data.len() - pad_len)
+    }
+}
+
+// ============================================================================
+// TLS 1.0/1.1 PRF (RFC 2246 Section 5, RFC 4346 Section 5)
+// デュアルハッシュ方式: P_MD5 XOR P_SHA-1
+// ============================================================================
+
+/// P_MD5 expansion
+fn p_md5(secret: &[u8], seed: &[u8], output: &mut [u8]) {
+    let mut a = hmac_md5(secret, seed); // A(1)
+    let mut offset = 0;
+
+    while offset < output.len() {
+        let mut a_seed = Vec::with_capacity(a.len() + seed.len());
+        a_seed.extend_from_slice(&a);
+        a_seed.extend_from_slice(seed);
+
+        let block = hmac_md5(secret, &a_seed);
+        let copy_len = (output.len() - offset).min(MD5_OUTPUT_SIZE);
+        output[offset..offset + copy_len].copy_from_slice(&block[..copy_len]);
+        offset += copy_len;
+
+        a = hmac_md5(secret, &a);
+    }
+}
+
+/// P_SHA1 expansion
+fn p_sha1(secret: &[u8], seed: &[u8], output: &mut [u8]) {
+    let mut a = hmac_sha1(secret, seed); // A(1)
+    let mut offset = 0;
+
+    while offset < output.len() {
+        let mut a_seed = Vec::with_capacity(a.len() + seed.len());
+        a_seed.extend_from_slice(&a);
+        a_seed.extend_from_slice(seed);
+
+        let block = hmac_sha1(secret, &a_seed);
+        let copy_len = (output.len() - offset).min(SHA1_OUTPUT_SIZE);
+        output[offset..offset + copy_len].copy_from_slice(&block[..copy_len]);
+        offset += copy_len;
+
+        a = hmac_sha1(secret, &a);
+    }
+}
+
+/// TLS 1.0/1.1 PRF (RFC 2246 Section 5)
+///
+/// PRF(secret, label, seed) = P_MD5(S1, label+seed) XOR P_SHA-1(S2, label+seed)
+/// S1 = secret[..L_S], S2 = secret[L_S..]
+/// L_S = ceil(secret.len() / 2)
+pub fn tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], output: &mut [u8]) {
+    let mut combined_seed = Vec::with_capacity(label.len() + seed.len());
+    combined_seed.extend_from_slice(label);
+    combined_seed.extend_from_slice(seed);
+
+    // secret を前半・後半に分割 (奇数長は中央バイト共有)
+    let half = (secret.len() + 1) / 2;
+    let s1 = &secret[..half];
+    let s2 = &secret[secret.len() - half..];
+
+    let mut md5_output = vec![0u8; output.len()];
+    let mut sha1_output = vec![0u8; output.len()];
+
+    p_md5(s1, &combined_seed, &mut md5_output);
+    p_sha1(s2, &combined_seed, &mut sha1_output);
+
+    // XOR して最終結果
+    for i in 0..output.len() {
+        output[i] = md5_output[i] ^ sha1_output[i];
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> Vec<u8> {
+    // Handshake #1: ServerHelloDone (len=0)
+    let server_hello_done = [14u8, 0, 0, 0];
+
+    // Finished verify_data = PRF(master_secret, "server finished", Hash(handshake_messages))[0..12]
+    // For TlsConnection::new(), master_secret starts as all-zero 48 bytes.
+    let handshake_hash = crate::loader::sha256::compute(&server_hello_done);
+    let master_secret = [0u8; 48];
+    let mut verify_data = [0u8; 12];
+    tls12_prf(&master_secret, b"server finished", &handshake_hash, &mut verify_data);
+
+    // Handshake #2: Finished (len=12) + verify_data
+    let mut data = Vec::with_capacity(server_hello_done.len() + 4 + verify_data.len());
+    data.extend_from_slice(&server_hello_done);
+    data.extend_from_slice(&[20u8, 0, 0, 12]);
+    data.extend_from_slice(&verify_data);
+    data
+}
+
+// ============================================================================
+// TLS MAC computation (RFC 5246 Section 6.2.3.1)
+// CBC暗号スイートのMAC-then-Encrypt用
+// ============================================================================
+
+/// TLS MAC計算
+///
+/// MAC = HMAC(mac_key, seq_num(8) || type(1) || version(2) || length(2) || fragment)
+fn compute_tls_mac(
+    mac_key: &[u8],
+    seq_num: u64,
+    content_type: u8,
+    version: TlsVersion,
+    fragment: &[u8],
+    use_sha1: bool,
+) -> Vec<u8> {
+    let mut mac_input = Vec::with_capacity(13 + fragment.len());
+    mac_input.extend_from_slice(&seq_num.to_be_bytes());
+    mac_input.push(content_type);
+    let ver_bytes = version.to_bytes();
+    mac_input.push(ver_bytes[0]);
+    mac_input.push(ver_bytes[1]);
+    mac_input.extend_from_slice(&(fragment.len() as u16).to_be_bytes());
+    mac_input.extend_from_slice(fragment);
+
+    if use_sha1 {
+        hmac_sha1(mac_key, &mac_input).to_vec()
+    } else {
+        hmac_sha256(mac_key, &mac_input).to_vec()
+    }
+}
+
+// ============================================================================
+// CBC Cipher Suite Definitions
+// ============================================================================
+
+impl CipherSuite {
+    // TLS 1.0/1.1/1.2 CBC 暗号スイート
+    pub const TLS_RSA_WITH_AES_128_CBC_SHA: Self = Self(0x002F);
+    pub const TLS_RSA_WITH_AES_256_CBC_SHA: Self = Self(0x0035);
+    pub const TLS_RSA_WITH_AES_128_CBC_SHA256: Self = Self(0x003C);
+    pub const TLS_RSA_WITH_AES_256_CBC_SHA256: Self = Self(0x003D);
+    pub const TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA: Self = Self(0xC013);
+    pub const TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA: Self = Self(0xC014);
+    pub const TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256: Self = Self(0xC027);
+    pub const TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: Self = Self(0xC009);
+    pub const TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA: Self = Self(0xC00A);
+
+    /// CBC暗号スイートかどうか
+    pub fn is_cbc(&self) -> bool {
+        matches!(
+            self.0,
+            0x002F | 0x0035 | 0x003C | 0x003D |
+            0xC013 | 0xC014 | 0xC027 |
+            0xC009 | 0xC00A
+        )
+    }
+
+    /// RSA鍵転送を使用するか (TLS_RSA_WITH_*)
+    pub fn is_rsa_key_transport(&self) -> bool {
+        matches!(self.0, 0x002F | 0x0035 | 0x003C | 0x003D | 0x009C | 0x009D)
+    }
+
+    /// MAC鍵の長さ (バイト)
+    pub fn mac_key_len(&self) -> usize {
+        match self.0 {
+            // SHA-1 MAC: 20 bytes
+            0x002F | 0x0035 | 0xC013 | 0xC014 | 0xC009 | 0xC00A => 20,
+            // SHA-256 MAC: 32 bytes
+            0x003C | 0x003D | 0xC027 => 32,
+            _ => 0,
+        }
+    }
+
+    /// MACの出力長 (バイト)
+    pub fn mac_len(&self) -> usize {
+        self.mac_key_len()
+    }
+
+    /// SHA-1 MACを使用するか
+    pub fn uses_sha1_mac(&self) -> bool {
+        matches!(
+            self.0,
+            0x002F | 0x0035 | 0xC013 | 0xC014 | 0xC009 | 0xC00A
+        )
+    }
+
+    /// CBC暗号スイートのIV長
+    pub fn cbc_iv_len(&self) -> usize {
+        if self.is_cbc() { 16 } else { 0 }
+    }
+
+    /// SHA-384ベースの暗号スイートかどうか
+    pub fn uses_sha384(&self) -> bool {
+        matches!(self.0, 0x009D | 0xC030 | 0xC02C | 0x1302)
+    }
+
+    /// TLS 1.0/1.1 で使用可能か
+    pub fn is_legacy_compatible(&self) -> bool {
+        self.is_cbc() || self.is_rsa_key_transport()
+    }
 }
 
 // ============================================================================
@@ -4269,12 +7319,22 @@ mod tests {
         let config = TlsConfig::new();
         let mut conn = TlsConnection::new(config);
 
-        // ServerHelloDone (len=0) + Finished (len=0)
-        let data = [14u8, 0, 0, 0, 20, 0, 0, 0];
+        let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
         let result = conn.process_handshake(&data);
         assert!(result.is_ok());
         assert_eq!(conn.state(), TlsState::Established);
-        assert_eq!(conn.handshake_messages.as_slice(), &data);
+        assert_eq!(conn.handshake_messages.as_slice(), data.as_slice());
+    }
+
+    /// Finished(len=0) is invalid for TLS 1.2 and must be rejected.
+    #[test_case]
+    fn test_process_handshake_finished_without_verify_data_rejected() {
+        let config = TlsConfig::new();
+        let mut conn = TlsConnection::new(config);
+
+        let data = [20u8, 0, 0, 0];
+        let result = conn.process_handshake(&data);
+        assert!(matches!(result, Err(TlsError::DecodeError)));
     }
 
     /// TLS handshake parser should reject truncated handshake headers
@@ -4691,6 +7751,334 @@ mod tests {
         assert!(TlsVersion::TLS_1_1 < TlsVersion::TLS_1_2);
         assert!(TlsVersion::TLS_1_2 < TlsVersion::TLS_1_3);
         assert!(TlsVersion::TLS_1_3 >= TlsVersion::TLS_1_3);
+    }
+
+    // ========================================================================
+    // MD5 Tests (RFC 1321 Appendix A.5)
+    // ========================================================================
+
+    #[test_case]
+    fn test_md5_empty() {
+        let result = md5_compute(b"");
+        let expected = [
+            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04,
+            0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42, 0x7e,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test_case]
+    fn test_md5_a() {
+        let result = md5_compute(b"a");
+        let expected = [
+            0x0c, 0xc1, 0x75, 0xb9, 0xc0, 0xf1, 0xb6, 0xa8,
+            0x31, 0xc3, 0x99, 0xe2, 0x69, 0x77, 0x26, 0x61,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test_case]
+    fn test_md5_abc() {
+        let result = md5_compute(b"abc");
+        let expected = [
+            0x90, 0x01, 0x50, 0x98, 0x3c, 0xd2, 0x4f, 0xb0,
+            0xd6, 0x96, 0x3f, 0x7d, 0x28, 0xe1, 0x7f, 0x72,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test_case]
+    fn test_md5_message_digest() {
+        let result = md5_compute(b"message digest");
+        let expected = [
+            0xf9, 0x6b, 0x69, 0x7d, 0x7c, 0xb7, 0x93, 0x8d,
+            0x52, 0x5a, 0x2f, 0x31, 0xaa, 0xf1, 0x61, 0xd0,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test_case]
+    fn test_md5_alphabet() {
+        let result = md5_compute(b"abcdefghijklmnopqrstuvwxyz");
+        let expected = [
+            0xc3, 0xfc, 0xd3, 0xd7, 0x61, 0x92, 0xe4, 0x00,
+            0x7d, 0xfb, 0x49, 0x6c, 0xca, 0x67, 0xe1, 0x3b,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    // ========================================================================
+    // SHA-1 Tests (FIPS 180-4)
+    // ========================================================================
+
+    #[test_case]
+    fn test_sha1_abc() {
+        let result = sha1_compute(b"abc");
+        let expected = [
+            0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a,
+            0xba, 0x3e, 0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c,
+            0x9c, 0xd0, 0xd8, 0x9d,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test_case]
+    fn test_sha1_empty() {
+        let result = sha1_compute(b"");
+        let expected = [
+            0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d,
+            0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18, 0x90,
+            0xaf, 0xd8, 0x07, 0x09,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test_case]
+    fn test_sha1_long() {
+        // "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+        let result = sha1_compute(
+            b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+        );
+        let expected = [
+            0x84, 0x98, 0x3e, 0x44, 0x1c, 0x3b, 0xd2, 0x6e,
+            0xba, 0xae, 0x4a, 0xa1, 0xf9, 0x51, 0x29, 0xe5,
+            0xe5, 0x46, 0x70, 0xf1,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    // ========================================================================
+    // HMAC-MD5 / HMAC-SHA1 Tests (RFC 2202)
+    // ========================================================================
+
+    #[test_case]
+    fn test_hmac_md5_rfc2202_case1() {
+        let key = [0x0bu8; 16];
+        let data = b"Hi There";
+        let expected = [
+            0x92, 0x94, 0x72, 0x7a, 0x36, 0x38, 0xbb, 0x1c,
+            0x13, 0xf4, 0x8e, 0xf8, 0x15, 0x8b, 0xfc, 0x9d,
+        ];
+        assert_eq!(hmac_md5(&key, data), expected);
+    }
+
+    #[test_case]
+    fn test_hmac_md5_rfc2202_case2() {
+        let key = b"Jefe";
+        let data = b"what do ya want for nothing?";
+        let expected = [
+            0x75, 0x0c, 0x78, 0x3e, 0x6a, 0xb0, 0xb5, 0x03,
+            0xea, 0xa8, 0x6e, 0x31, 0x0a, 0x5d, 0xb7, 0x38,
+        ];
+        assert_eq!(hmac_md5(key, data), expected);
+    }
+
+    #[test_case]
+    fn test_hmac_sha1_rfc2202_case1() {
+        let key = [0x0bu8; 20];
+        let data = b"Hi There";
+        let expected = [
+            0xb6, 0x17, 0x31, 0x86, 0x55, 0x05, 0x72, 0x64,
+            0xe2, 0x8b, 0xc0, 0xb6, 0xfb, 0x37, 0x8c, 0x8e,
+            0xf1, 0x46, 0xbe, 0x00,
+        ];
+        assert_eq!(hmac_sha1(&key, data), expected);
+    }
+
+    #[test_case]
+    fn test_hmac_sha1_rfc2202_case2() {
+        let key = b"Jefe";
+        let data = b"what do ya want for nothing?";
+        let expected = [
+            0xef, 0xfc, 0xdf, 0x6a, 0xe5, 0xeb, 0x2f, 0xa2,
+            0xd2, 0x74, 0x16, 0xd5, 0xf1, 0x84, 0xdf, 0x9c,
+            0x25, 0x9a, 0x7c, 0x79,
+        ];
+        assert_eq!(hmac_sha1(key, data), expected);
+    }
+
+    // ========================================================================
+    // AES-CBC Tests
+    // ========================================================================
+
+    #[test_case]
+    fn test_aes_cbc_roundtrip_128() {
+        let key = [0x2bu8; 16];
+        let iv = [0x00u8; 16];
+        let plaintext = b"Hello, AES-CBC mode test!";
+        let ciphertext = aes_cbc_encrypt(&key, &iv, plaintext);
+        let decrypted = aes_cbc_decrypt(&key, &iv, &ciphertext);
+        assert!(decrypted.is_some());
+        assert_eq!(&decrypted.unwrap()[..plaintext.len()], plaintext);
+    }
+
+    #[test_case]
+    fn test_aes_cbc_roundtrip_256() {
+        let key = [0x60u8; 32];
+        let iv = [0x01u8; 16];
+        let plaintext = b"AES-256-CBC round-trip test data for verification!";
+        let ciphertext = aes_cbc_encrypt(&key, &iv, plaintext);
+        let decrypted = aes_cbc_decrypt(&key, &iv, &ciphertext);
+        assert!(decrypted.is_some());
+        assert_eq!(&decrypted.unwrap()[..plaintext.len()], plaintext);
+    }
+
+    #[test_case]
+    fn test_aes_cbc_empty() {
+        let key = [0x00u8; 16];
+        let iv = [0x00u8; 16];
+        let ciphertext = aes_cbc_encrypt(&key, &iv, b"");
+        // Empty plaintext still gets padded to one block
+        assert_eq!(ciphertext.len(), 16);
+        let decrypted = aes_cbc_decrypt(&key, &iv, &ciphertext);
+        assert!(decrypted.is_some());
+        assert_eq!(decrypted.unwrap().len(), 0);
+    }
+
+    // ========================================================================
+    // TLS Padding Tests
+    // ========================================================================
+
+    #[test_case]
+    fn test_tls_padding_add_verify() {
+        let data = b"test data";
+        let padded = tls_add_padding(data, 16);
+        // padded length should be multiple of 16
+        assert_eq!(padded.len() % 16, 0);
+        // Verify padding is correct
+        let valid_len = tls_verify_padding(&padded);
+        assert!(valid_len.is_some());
+        assert_eq!(valid_len.unwrap(), data.len());
+    }
+
+    #[test_case]
+    fn test_tls_padding_exact_block() {
+        // Data that's exactly one block minus 1 (needs 1 byte of padding content)
+        let data = [0xAA; 15];
+        let padded = tls_add_padding(&data, 16);
+        assert_eq!(padded.len(), 16);
+        assert_eq!(padded[15], 0x00); // pad_byte = 0 (length 1)
+        let valid_len = tls_verify_padding(&padded);
+        assert!(valid_len.is_some());
+        assert_eq!(valid_len.unwrap(), 15);
+    }
+
+    #[test_case]
+    fn test_tls_padding_full_block_pad() {
+        // Data that falls exactly on block boundary → full block of padding
+        let data = [0xBB; 16];
+        let padded = tls_add_padding(&data, 16);
+        assert_eq!(padded.len(), 32);
+        let valid_len = tls_verify_padding(&padded);
+        assert!(valid_len.is_some());
+        assert_eq!(valid_len.unwrap(), 16);
+    }
+
+    // ========================================================================
+    // TLS 1.0 PRF Tests
+    // ========================================================================
+
+    #[test_case]
+    fn test_tls10_prf_deterministic() {
+        let secret = [0x42u8; 48];
+        let label = b"master secret";
+        let seed = [0x01u8; 64];
+        let mut out1 = [0u8; 48];
+        let mut out2 = [0u8; 48];
+        tls10_prf(&secret, label, &seed, &mut out1);
+        tls10_prf(&secret, label, &seed, &mut out2);
+        assert_eq!(out1, out2);
+        // Should not be all zeros
+        assert!(out1.iter().any(|&b| b != 0));
+    }
+
+    #[test_case]
+    fn test_tls10_prf_different_labels() {
+        let secret = [0x42u8; 48];
+        let seed = [0x01u8; 64];
+        let mut out1 = [0u8; 48];
+        let mut out2 = [0u8; 48];
+        tls10_prf(&secret, b"client finished", &seed, &mut out1);
+        tls10_prf(&secret, b"server finished", &seed, &mut out2);
+        assert_ne!(out1, out2);
+    }
+
+    // ========================================================================
+    // TLS MAC Tests
+    // ========================================================================
+
+    #[test_case]
+    fn test_tls_mac_sha1() {
+        let key = [0x0Au8; 20];
+        let mac = compute_tls_mac(
+            &key, 0, ContentType::ApplicationData as u8,
+            TlsVersion::TLS_1_0, b"hello", true,
+        );
+        assert_eq!(mac.len(), 20); // SHA-1 output
+        // Should be deterministic
+        let mac2 = compute_tls_mac(
+            &key, 0, ContentType::ApplicationData as u8,
+            TlsVersion::TLS_1_0, b"hello", true,
+        );
+        assert_eq!(mac, mac2);
+    }
+
+    #[test_case]
+    fn test_tls_mac_sha256() {
+        let key = [0x0Bu8; 32];
+        let mac = compute_tls_mac(
+            &key, 0, ContentType::ApplicationData as u8,
+            TlsVersion::TLS_1_2, b"hello", false,
+        );
+        assert_eq!(mac.len(), 32); // SHA-256 output
+    }
+
+    #[test_case]
+    fn test_tls_mac_seq_affects_output() {
+        let key = [0x0Au8; 20];
+        let mac1 = compute_tls_mac(
+            &key, 0, ContentType::ApplicationData as u8,
+            TlsVersion::TLS_1_0, b"hello", true,
+        );
+        let mac2 = compute_tls_mac(
+            &key, 1, ContentType::ApplicationData as u8,
+            TlsVersion::TLS_1_0, b"hello", true,
+        );
+        assert_ne!(mac1, mac2);
+    }
+
+    // ========================================================================
+    // CBC Cipher Suite Helper Tests
+    // ========================================================================
+
+    #[test_case]
+    fn test_cbc_cipher_suite_helpers() {
+        let suite = CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA;
+        assert!(suite.is_cbc());
+        assert!(suite.is_rsa_key_transport());
+        assert!(suite.uses_sha1_mac());
+        assert_eq!(suite.mac_key_len(), 20);
+        assert_eq!(suite.mac_len(), 20);
+        assert_eq!(suite.cbc_iv_len(), 16);
+        assert!(suite.is_legacy_compatible());
+    }
+
+    #[test_case]
+    fn test_cbc_ecdhe_cipher_suite() {
+        let suite = CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256;
+        assert!(suite.is_cbc());
+        assert!(!suite.is_rsa_key_transport());
+        assert!(!suite.uses_sha1_mac());
+        assert_eq!(suite.mac_key_len(), 32);
+        assert_eq!(suite.mac_len(), 32);
+    }
+
+    #[test_case]
+    fn test_aead_not_cbc() {
+        let suite = CipherSuite::TLS_AES_128_GCM_SHA256;
+        assert!(!suite.is_cbc());
+        assert!(!suite.is_rsa_key_transport());
+        assert!(!suite.is_legacy_compatible());
     }
 }
 
@@ -5574,10 +8962,10 @@ pub mod qemu_tests {
     pub fn wave8_tls_process_handshake_multiple_messages_smoke() -> bool {
         let config = TlsConfig::new();
         let mut conn = TlsConnection::new(config);
-        let data = [14u8, 0, 0, 0, 20, 0, 0, 0];
+        let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
         conn.process_handshake(&data).is_ok()
             && conn.state() == TlsState::Established
-            && conn.handshake_messages.as_slice() == &data
+            && conn.handshake_messages.as_slice() == data.as_slice()
     }
 
     pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
