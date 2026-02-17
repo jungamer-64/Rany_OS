@@ -5231,27 +5231,41 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok(None)
     }
 
-    /// 非同期で指定された名前を持つSFNエントリの場所を検索します。
-    async fn find_sfn_location_async(
-        &self,
-        name_to_find: &str,
-    ) -> FsResult<Option<(Cluster, usize)>> {
+    /// Validate that this inode is a directory and return its start cluster (if valid).
+    fn validate_directory_cluster(&self) -> FsResult<Option<Cluster>> {
         if self.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
-
         let start_cluster = self.inner.blocking_lock().first_cluster;
         if !start_cluster.is_valid() {
             return Ok(None);
         }
+        Ok(Some(start_cluster))
+    }
 
+    /// Read the next cluster in the FAT chain, returning `None` at EOF.
+    async fn read_next_cluster_async(&self, current: Cluster) -> FsResult<Option<Cluster>> {
+        let next = self.fs.read_fat_entry_async(current).await?;
+        if next.is_eof() || !next.is_valid() {
+            Ok(None)
+        } else {
+            Ok(Some(next))
+        }
+    }
+
+    /// Walk the cluster chain searching for an SFN entry matching `name`.
+    async fn walk_clusters_for_sfn_async(
+        &self,
+        start: Cluster,
+        name: &str,
+    ) -> FsResult<Option<(Cluster, usize)>> {
         let cluster_size = self.fs.cluster_size();
         let mut buffer =
             PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
         let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
 
         let mut lfn_parts: Vec<(u8, String, u8)> = Vec::new();
-        let mut current = start_cluster;
+        let mut current = start;
         let mut count = 0usize;
 
         while current.is_valid() {
@@ -5264,19 +5278,29 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
                 .read_cluster_async(current, &mut buffer)
                 .await?;
 
-            match search_cluster_for_sfn(&buffer, entries_per_cluster, name_to_find, &mut lfn_parts, current)? {
-                Some(result) => return Ok(result),
-                None => {}
+            if let Some(result) = search_cluster_for_sfn(&buffer, entries_per_cluster, name, &mut lfn_parts, current)? {
+                return Ok(result);
             }
 
-            let next = self.fs.read_fat_entry_async(current).await?;
-            if next.is_eof() || !next.is_valid() {
-                break;
-            }
-            current = next;
+            current = match self.read_next_cluster_async(current).await? {
+                Some(c) => c,
+                None => break,
+            };
         }
 
         Ok(None)
+    }
+
+    /// 非同期で指定された名前を持つSFNエントリの場所を検索します。
+    async fn find_sfn_location_async(
+        &self,
+        name_to_find: &str,
+    ) -> FsResult<Option<(Cluster, usize)>> {
+        let start_cluster = match self.validate_directory_cluster()? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        self.walk_clusters_for_sfn_async(start_cluster, name_to_find).await
     }
 
     /// ディレクトリエントリのイテレータを返す
@@ -7259,6 +7283,34 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok(copy_len)
     }
 
+    /// Write data to clusters starting at the given cluster and offset.
+    fn write_clusters(
+        &self,
+        start_cluster: Cluster,
+        cluster_offset: usize,
+        buf: &[u8],
+    ) -> FsResult<usize> {
+        let cluster_size = self.fs.cluster_size();
+        let mut cluster_buf =
+            PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
+        let mut current = start_cluster;
+        let mut offset = cluster_offset;
+        let mut bytes_written = 0usize;
+
+        while bytes_written < buf.len() {
+            let copy_len = self.write_single_cluster(
+                current, offset, buf, bytes_written, cluster_size, &mut cluster_buf,
+            )?;
+            bytes_written += copy_len;
+            offset = 0;
+
+            if bytes_written < buf.len() {
+                current = self.next_or_allocate_cluster(current)?;
+            }
+        }
+        Ok(bytes_written)
+    }
+
     pub fn write(&self, offset: u64, buf: &[u8]) -> FsResult<usize> {
         if self.file_type != FileType::File {
             return Err(FsError::IsADirectory);
@@ -7269,9 +7321,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
             return Ok(0);
         }
 
-        let cluster_size = self.fs.cluster_size();
-        let cluster_size_u64 = cluster_size as u64;
-        let mut bytes_written = 0usize;
+        let cluster_size_u64 = self.fs.cluster_size() as u64;
 
         // 必要なクラスタを確保
         let mut cluster = inner.first_cluster;
@@ -7280,32 +7330,63 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         if !cluster.is_valid() {
             cluster = self.fs.allocate_cluster()?;
             inner.first_cluster = cluster;
-            // 親ディレクトリのエントリを更新する必要がある（簡略化のため省略）
         }
 
         // 書き込み開始位置のクラスタまでスキップ
         cluster = self.advance_fat_chain_allocating(cluster, offset / cluster_size_u64)?;
 
-        let mut cluster_offset = (offset % cluster_size_u64) as usize;
-        let mut cluster_buf =
-            PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
-
-        while bytes_written < buf.len() {
-            let copy_len = self.write_single_cluster(
-                cluster, cluster_offset, buf, bytes_written, cluster_size, &mut cluster_buf,
-            )?;
-            bytes_written += copy_len;
-            cluster_offset = 0;
-
-            if bytes_written < buf.len() {
-                cluster = self.next_or_allocate_cluster(cluster)?;
-            }
-        }
+        let cluster_offset = (offset % cluster_size_u64) as usize;
+        let bytes_written = self.write_clusters(cluster, cluster_offset, buf)?;
 
         inner.size = inner.size.max(offset + bytes_written as u64);
         drop(inner);
         self.sync_metadata()?;
         Ok(bytes_written)
+    }
+
+    /// Async write loop: write data to clusters starting at the given cluster and offset.
+    async fn write_clusters_async(
+        &self,
+        start_cluster: Cluster,
+        cluster_offset: usize,
+        buf: &[u8],
+    ) -> FsResult<usize> {
+        let cluster_size = self.fs.cluster_size();
+        let mut cluster_buf =
+            PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
+        let mut current = start_cluster;
+        let mut offset = cluster_offset;
+        let mut bytes_written = 0usize;
+
+        while bytes_written < buf.len() {
+            let written = self
+                .write_single_cluster_async(
+                    current,
+                    offset,
+                    &buf[bytes_written..],
+                    &mut cluster_buf,
+                    cluster_size,
+                )
+                .await?;
+
+            bytes_written += written;
+            offset = 0;
+
+            if bytes_written < buf.len() {
+                current = self.advance_or_allocate_next_async(current).await?;
+            }
+        }
+        Ok(bytes_written)
+    }
+
+    /// Update file size after writing, persisting metadata.
+    async fn update_file_size_async(&self, new_end: u64) -> FsResult<()> {
+        let mut inner = self.inner.lock_async().await;
+        if inner.size < new_end {
+            inner.size = new_end;
+        }
+        drop(inner);
+        self.sync_metadata_async().await
     }
 
     /// 非同期版のファイル書き込み
@@ -7317,45 +7398,15 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
             return Ok(0);
         }
 
-        let cluster_size = self.fs.cluster_size();
-        let cluster_size_u64 = cluster_size as u64;
-        let mut bytes_written = 0usize;
+        let cluster_size_u64 = self.fs.cluster_size() as u64;
 
         let mut cluster = self.ensure_first_cluster_async().await?;
+        cluster = self.advance_fat_chain_async(cluster, offset / cluster_size_u64).await?;
 
-        let start_cluster_idx = offset / cluster_size_u64;
-        cluster = self.advance_fat_chain_async(cluster, start_cluster_idx).await?;
+        let cluster_offset = (offset % cluster_size_u64) as usize;
+        let bytes_written = self.write_clusters_async(cluster, cluster_offset, buf).await?;
 
-        let mut cluster_offset = (offset % cluster_size_u64) as usize;
-        let mut cluster_buf =
-            PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
-
-        while bytes_written < buf.len() {
-            let written = self
-                .write_single_cluster_async(
-                    cluster,
-                    cluster_offset,
-                    &buf[bytes_written..],
-                    &mut cluster_buf,
-                    cluster_size,
-                )
-                .await?;
-
-            bytes_written += written;
-            cluster_offset = 0;
-
-            if bytes_written < buf.len() {
-                cluster = self.advance_or_allocate_next_async(cluster).await?;
-            }
-        }
-
-        let mut inner = self.inner.lock_async().await;
-        let new_size = offset + bytes_written as u64;
-        if inner.size < new_size {
-            inner.size = new_size;
-        }
-        drop(inner);
-        self.sync_metadata_async().await?;
+        self.update_file_size_async(offset + bytes_written as u64).await?;
         Ok(bytes_written)
     }
 

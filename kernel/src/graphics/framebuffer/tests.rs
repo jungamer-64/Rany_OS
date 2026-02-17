@@ -1310,6 +1310,42 @@ fn test_fill_rect_32bit_mmio() {
 }
 
 #[test_case]
+fn test_fill_rect_rgb565_mmio() {
+    let width = 8u32;
+    let height = 4u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 2,
+        format: PixelFormat::Rgb565,
+        bpp: 16,
+    };
+
+    let mut mem = vec![0u8; info.size()];
+    let addr = mem.as_mut_ptr() as u64;
+    let mut info2 = info.clone();
+    info2.address = addr;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+    fb.fill_rect(Rect::new(1, 1, 6, 2), Color::RED);
+
+    // RED in RGB565 little-endian: 0xF800 -> [0x00, 0xF8]
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let off = y * info.stride as usize + x * 2;
+            if (1..=2).contains(&y) && (1..=6).contains(&x) {
+                assert_eq!(mem[off], 0x00, "x={}, y={}", x, y);
+                assert_eq!(mem[off + 1], 0xF8, "x={}, y={}", x, y);
+            } else {
+                assert_eq!(mem[off], 0x00, "x={}, y={}", x, y);
+                assert_eq!(mem[off + 1], 0x00, "x={}, y={}", x, y);
+            }
+        }
+    }
+}
+
+#[test_case]
 fn test_dirty_rect_tracking() {
     let width = 100u32;
     let height = 100u32;
@@ -1537,6 +1573,41 @@ fn test_draw_hline_24bit_rgb888_mmio() {
         assert_eq!(vram[off], 0, "Pixel {} R", i);
         assert_eq!(vram[off + 1], 0, "Pixel {} G", i);
         assert_eq!(vram[off + 2], 255, "Pixel {} B", i);
+    }
+}
+
+#[test_case]
+fn test_draw_hline_rgb565_mmio() {
+    let width = 8u32;
+    let height = 1u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 2,
+        format: PixelFormat::Rgb565,
+        bpp: 16,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let addr = vram.as_mut_ptr() as u64;
+    let mut info2 = info.clone();
+    info2.address = addr;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+
+    fb.draw_hline(1, 6, 0, Color::GREEN);
+
+    // GREEN in RGB565 little-endian: 0x07E0 -> [0xE0, 0x07]
+    for x in 0..width as usize {
+        let off = x * 2;
+        if (1..=6).contains(&x) {
+            assert_eq!(vram[off], 0xE0, "x={}", x);
+            assert_eq!(vram[off + 1], 0x07, "x={}", x);
+        } else {
+            assert_eq!(vram[off], 0x00, "x={}", x);
+            assert_eq!(vram[off + 1], 0x00, "x={}", x);
+        }
     }
 }
 
