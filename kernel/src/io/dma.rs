@@ -1126,18 +1126,52 @@ impl RRefDmaBytes {
 // ============================================================================
 
 /// キャッシュ一貫性を自動管理するDMAバッファ
+///
+/// IOMMU有効時は `new_for_device()` で作成すると自動的にIOMMUマッピングが行われ、
+/// `device_addr()` でデバイスに渡すアドレス（IOVA）を取得できる。
+/// Drop時にIOMMUマッピングは自動的に解除される。
 pub struct CoherentDmaBuffer {
     ptr: NonNull<u8>,
     size: usize,
     layout: Layout,
     phys_addr: PhysAddr,
     attributes: DmaMemoryAttributes,
+    /// IOMMU有効時のIOVA（None = IOMMU未使用、物理アドレスを直接使用）
+    iova: Option<u64>,
+    /// IOMMUマッピング先のデバイスID（unmap時に必要）
+    iommu_device: Option<crate::io::iommu::types::DeviceId>,
 }
 
 impl CoherentDmaBuffer {
     const DMA_ALIGNMENT: usize = 4096;
 
+    /// IOMMUマッピングなしのDMAバッファを割り当てる。
+    ///
+    /// IOMMU有効環境ではデバイスからアクセスできない可能性があるため、
+    /// デバイスDMAに使用する場合は `new_for_device()` を推奨。
     pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
+        Self::new_internal(size, attributes, None)
+    }
+
+    /// 指定デバイスのIOMMUドメインにマッピングされたDMAバッファを割り当てる。
+    ///
+    /// IOMMU有効時はIOVAが自動的に割り当てられ、`device_addr()` でデバイスに
+    /// 渡すアドレスを取得できる。IOMMU無効時は `new()` と同じ動作。
+    /// Drop時にIOMMUマッピングは自動的に解除される。
+    pub fn new_for_device(
+        size: usize,
+        attributes: DmaMemoryAttributes,
+        device: &crate::io::iommu::types::DeviceId,
+    ) -> Option<Self> {
+        Self::new_internal(size, attributes, Some(device))
+    }
+
+    /// 内部実装: DMAバッファの割り当てとオプショナルなIOMMUマッピング
+    fn new_internal(
+        size: usize,
+        attributes: DmaMemoryAttributes,
+        device: Option<&crate::io::iommu::types::DeviceId>,
+    ) -> Option<Self> {
         let layout = Layout::from_size_align(size, Self::DMA_ALIGNMENT).ok()?;
         let ptr = unsafe { alloc(layout) };
         if ptr.is_null() {
@@ -1156,12 +1190,62 @@ impl CoherentDmaBuffer {
         crate::io::log::early_print_hex(phys_addr.as_u64());
         crate::io::log::early_print("\n");
 
+        // IOMMUマッピング（デバイスID指定時かつIOMMU有効時）
+        let (iova, iommu_device) = if let Some(dev) = device {
+            if crate::io::iommu::registry::is_iommu_enabled() {
+                // ページアライメントされたサイズでマッピング（4K境界）
+                let aligned_size = iommu_align_len(size).unwrap_or(size);
+                let (read, write) = match attributes.direction {
+                    DmaDirection::ToDevice => (true, false),
+                    DmaDirection::FromDevice => (false, true),
+                    DmaDirection::Bidirectional => (true, true),
+                };
+                // SAFETY: phys_addr は上記で割り当てた有効な物理メモリを指す。
+                // aligned_size は4Kアライメント済み。メモリはDrop時まで有効。
+                match unsafe {
+                    crate::io::iommu::api::map_for_device_with_perms(
+                        dev,
+                        phys_addr,
+                        aligned_size as u64,
+                        read,
+                        write,
+                    )
+                } {
+                    Ok(iova) => {
+                        log::debug!(
+                            "[DMA] CoherentDmaBuffer IOMMU mapped: phys=0x{:x} -> iova=0x{:x} size={}",
+                            phys_addr.as_u64(), iova, aligned_size
+                        );
+                        (Some(iova), Some(*dev))
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "[DMA] CoherentDmaBuffer IOMMU map failed: {:?}, falling back to phys_addr",
+                            e
+                        );
+                        // IOMMUマッピング失敗時: IOMMU必須ならバッファ解放して失敗
+                        if crate::io::iommu::api::is_iommu_required() {
+                            unsafe { dealloc(ptr, layout); }
+                            return None;
+                        }
+                        (None, None)
+                    }
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
         Some(Self {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
             size,
             layout,
             phys_addr,
             attributes,
+            iova,
+            iommu_device,
         })
     }
 
@@ -1198,6 +1282,21 @@ impl CoherentDmaBuffer {
     pub fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
     }
+
+    /// デバイスに渡すアドレスを取得する。
+    ///
+    /// IOMMU有効時はIOVA（I/O仮想アドレス）を返し、
+    /// IOMMU無効時は物理アドレスを返す。
+    /// デバイスのDMAアドレスレジスタに設定する際はこのメソッドを使用すること。
+    pub fn device_addr(&self) -> u64 {
+        self.iova.unwrap_or(self.phys_addr.as_u64())
+    }
+
+    /// IOMMUマッピングが有効かどうかを返す
+    pub fn is_iommu_mapped(&self) -> bool {
+        self.iova.is_some()
+    }
+
     pub fn size(&self) -> usize {
         self.size
     }
@@ -1205,6 +1304,26 @@ impl CoherentDmaBuffer {
 
 impl Drop for CoherentDmaBuffer {
     fn drop(&mut self) {
+        // IOMMUマッピングの解除
+        if let (Some(iova), Some(ref device)) = (self.iova, self.iommu_device) {
+            let aligned_size = iommu_align_len(self.size).unwrap_or(self.size);
+            if let Err(e) = crate::io::iommu::api::unmap_for_device(
+                device,
+                iova,
+                aligned_size as u64,
+            ) {
+                log::warn!(
+                    "[DMA] CoherentDmaBuffer IOMMU unmap failed: {:?} (iova=0x{:x})",
+                    e, iova
+                );
+            } else {
+                log::debug!(
+                    "[DMA] CoherentDmaBuffer IOMMU unmapped: iova=0x{:x} size={}",
+                    iova, aligned_size
+                );
+            }
+        }
+        // メモリ解放
         unsafe {
             dealloc(self.ptr.as_ptr(), self.layout);
         }

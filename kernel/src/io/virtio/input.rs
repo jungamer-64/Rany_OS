@@ -402,6 +402,18 @@ impl VirtioInputDevice {
         }
     }
 
+    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
+    fn alloc_coherent(
+        &self,
+        size: usize,
+        attrs: DmaMemoryAttributes,
+    ) -> Option<CoherentDmaBuffer> {
+        match &self.iommu_device_id {
+            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
+            None => CoherentDmaBuffer::new(size, attrs),
+        }
+    }
+
     /// Initialize the device following the standard VirtIO initialization sequence.
     ///
     /// # Safety
@@ -481,11 +493,11 @@ impl VirtioInputDevice {
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
-        // Use CoherentDmaBuffer for shared queue memory
-        let buffer = CoherentDmaBuffer::new(total_size, DmaMemoryAttributes::MMIO)
+        // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
+        let buffer = self.alloc_coherent(total_size, DmaMemoryAttributes::MMIO)
             .ok_or(InputError::NotReady)?;
 
-        let phys_base = buffer.phys_addr().as_u64();
+        let dev_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
@@ -494,11 +506,11 @@ impl VirtioInputDevice {
 
         // Write queue configuration
         self.transport.set_queue_size(queue_size);
-        self.transport.set_queue_desc_addr(phys_base);
+        self.transport.set_queue_desc_addr(dev_base);
         self.transport
-            .set_queue_avail_addr(phys_base + desc_size as u64);
+            .set_queue_avail_addr(dev_base + desc_size as u64);
         self.transport
-            .set_queue_used_addr(phys_base + used_offset as u64);
+            .set_queue_used_addr(dev_base + used_offset as u64);
 
         // Activate queue
         self.transport.enable_queue();
@@ -546,10 +558,10 @@ impl VirtioInputDevice {
                 None => break, // no more descriptors available
             };
 
-            // Allocate a DMA-safe buffer for one event
-            let dma_buf = CoherentDmaBuffer::new(event_size, DmaMemoryAttributes::MMIO)
+            // Allocate a DMA-safe buffer for one event (IOMMU-aware)
+            let dma_buf = self.alloc_coherent(event_size, DmaMemoryAttributes::MMIO)
                 .ok_or(InputError::IoError)?;
-            let phys_addr = dma_buf.phys_addr().as_u64();
+            let phys_addr = dma_buf.device_addr();
 
             // Setup descriptor: device-writable buffer
             unsafe {
@@ -586,10 +598,10 @@ impl VirtioInputDevice {
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
-        // Allocate a fresh DMA buffer
-        let dma_buf = CoherentDmaBuffer::new(event_size, DmaMemoryAttributes::MMIO)
+        // Allocate a fresh DMA buffer (IOMMU-aware)
+        let dma_buf = self.alloc_coherent(event_size, DmaMemoryAttributes::MMIO)
             .ok_or(InputError::IoError)?;
-        let phys_addr = dma_buf.phys_addr().as_u64();
+        let phys_addr = dma_buf.device_addr();
 
         // Reconfigure the descriptor
         unsafe {

@@ -375,6 +375,8 @@ pub type DriverEntryFn = extern "C" fn() -> *const DriverVTable;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AbiDmaBuffer {
     pub phys_addr: u64,
+    /// Hardware-visible address (IOVA when IOMMU active, else phys_addr)
+    pub device_addr: u64,
     pub virt_addr: u64,
     pub size: usize,
 }

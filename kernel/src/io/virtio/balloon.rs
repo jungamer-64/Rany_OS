@@ -366,6 +366,18 @@ impl VirtioBalloonDevice {
         }
     }
 
+    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
+    fn alloc_coherent(
+        &self,
+        size: usize,
+        attrs: DmaMemoryAttributes,
+    ) -> Option<CoherentDmaBuffer> {
+        match &self.iommu_device_id {
+            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
+            None => CoherentDmaBuffer::new(size, attrs),
+        }
+    }
+
     /// Initialize the device
     ///
     /// # Safety
@@ -446,14 +458,14 @@ impl VirtioBalloonDevice {
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
-        // Use CoherentDmaBuffer for shared queue memory
-        let buffer = crate::io::dma::CoherentDmaBuffer::new(
+        // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
+        let buffer = self.alloc_coherent(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
         )
         .ok_or(BalloonError::NotReady)?;
 
-        let phys_base = buffer.phys_addr().as_u64();
+        let dev_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
@@ -462,11 +474,11 @@ impl VirtioBalloonDevice {
 
         // Write queue configuration
         self.transport.set_queue_size(queue_size);
-        self.transport.set_queue_desc_addr(phys_base);
+        self.transport.set_queue_desc_addr(dev_base);
         self.transport
-            .set_queue_avail_addr(phys_base + desc_size as u64);
+            .set_queue_avail_addr(dev_base + desc_size as u64);
         self.transport
-            .set_queue_used_addr(phys_base + used_offset as u64);
+            .set_queue_used_addr(dev_base + used_offset as u64);
 
         // Activate queue
         self.transport.enable_queue();
@@ -513,8 +525,8 @@ impl VirtioBalloonDevice {
 
         let byte_len = pfns.len() * core::mem::size_of::<u32>();
 
-        // Allocate a DMA-safe buffer for the PFN array
-        let mut dma_buf = CoherentDmaBuffer::new(byte_len, DmaMemoryAttributes::MMIO)
+        // Allocate a DMA-safe buffer for the PFN array (IOMMU-aware)
+        let mut dma_buf = self.alloc_coherent(byte_len, DmaMemoryAttributes::MMIO)
             .ok_or(BalloonError::AllocFailed)?;
 
         // Copy PFN data into the DMA buffer
@@ -524,7 +536,7 @@ impl VirtioBalloonDevice {
             core::ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), byte_len);
         }
 
-        let phys_addr = dma_buf.phys_addr().as_u64();
+        let phys_addr = dma_buf.device_addr();
 
         let queue_guard = queue.lock();
 

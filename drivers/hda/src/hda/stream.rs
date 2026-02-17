@@ -117,10 +117,12 @@ impl HdaController {
     }
 
     /// Setup Buffer Descriptor List for a stream
+    ///
+    /// `buffer_device_addr` is the hardware-visible address of the audio buffer.
     pub fn setup_bdl(
         &mut self,
         stream_index: u32,
-        buffer_addr: u64,
+        buffer_device_addr: u64,
         buffer_size: u32,
         num_entries: u32,
     ) -> HdaResult<()> {
@@ -132,14 +134,16 @@ impl HdaController {
 
         // Allocate BDL
         let bdl_size = (num_entries as usize) * BDL_ENTRY_SIZE;
-        let bdl_addr = Self::alloc_dma_buffer(bdl_size)?;
-        self.stream_bdl_addrs[stream_index as usize] = bdl_addr;
+        let (bdl_virt, bdl_dev) = Self::alloc_dma_buffer(bdl_size)?;
+        self.stream_bdl_addrs[stream_index as usize] = bdl_virt;
+        self.stream_bdl_device_addrs[stream_index as usize] = bdl_dev;
 
-        // Fill BDL entries
+        // Fill BDL entries (using virtual address for CPU writes,
+        // but device address for audio buffer references in each entry)
         let segment_size = buffer_size / num_entries;
         for i in 0..num_entries {
-            let entry_addr = bdl_addr + (i as u64 * BDL_ENTRY_SIZE as u64);
-            let buf_offset = buffer_addr + (i as u64 * segment_size as u64);
+            let entry_addr = bdl_virt + (i as u64 * BDL_ENTRY_SIZE as u64);
+            let buf_offset = buffer_device_addr + (i as u64 * segment_size as u64);
 
             let entry = BdlEntry::new(buf_offset, segment_size, i == num_entries - 1);
 
@@ -155,9 +159,9 @@ impl HdaController {
         // before we configure the stream to use this BDL.
         crate::io::dma::sfence();
 
-        // Set BDL address
-        self.write32(stream_base + REG_SD_BDPL, bdl_addr as u32);
-        self.write32(stream_base + REG_SD_BDPU, (bdl_addr >> 32) as u32);
+        // Set BDL address (hardware-visible device address)
+        self.write32(stream_base + REG_SD_BDPL, bdl_dev as u32);
+        self.write32(stream_base + REG_SD_BDPU, (bdl_dev >> 32) as u32);
 
         // Set cyclic buffer length
         self.write32(stream_base + REG_SD_CBL, buffer_size);
@@ -334,15 +338,16 @@ impl HdaController {
         let buffer_size = samples * (BITS as usize / 8) * CHANNELS as usize;
 
         // Allocate audio buffer
-        let audio_buffer_addr = Self::alloc_dma_buffer(buffer_size)?;
-        self.audio_buffers[0] = audio_buffer_addr;
+        let (audio_virt, audio_dev) = Self::alloc_dma_buffer(buffer_size)?;
+        self.audio_buffers[0] = audio_virt;
+        self.audio_buffer_device_addrs[0] = audio_dev;
 
         // Generate square wave
-        // SAFETY: audio_buffer_addr points to a valid DMA buffer allocated by alloc_dma_buffer.
+        // SAFETY: audio_virt points to a valid DMA buffer allocated by alloc_dma_buffer.
         // The buffer size is samples * 2 * sizeof(i16) = buffer_size bytes.
         // We create a mutable slice of samples * 2 i16 values (stereo: L, R pairs).
         let buffer_slice =
-            unsafe { core::slice::from_raw_parts_mut(audio_buffer_addr as *mut i16, samples * 2) };
+            unsafe { core::slice::from_raw_parts_mut(audio_virt as *mut i16, samples * 2) };
 
         // Generate mono wave, then copy to stereo
         let mono_buffer: Vec<i16> = (0..samples)
@@ -367,8 +372,8 @@ impl HdaController {
         // Setup output stream
         self.setup_output_stream(0, SAMPLE_RATE, BITS, CHANNELS)?;
 
-        // Setup BDL
-        self.setup_bdl(0, audio_buffer_addr, buffer_size as u32, 4)?;
+        // Setup BDL (pass device address for hardware references)
+        self.setup_bdl(0, audio_dev, buffer_size as u32, 4)?;
 
         // Configure codec
         let codec = self

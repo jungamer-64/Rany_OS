@@ -17,12 +17,15 @@
 
 #![allow(dead_code)]
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
+
+use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 
 // ============================================================================
 // Configuration
@@ -78,17 +81,21 @@ pub struct PoolStats {
 }
 
 /// メモリプール（事前割り当てバッファのプール）
+///
+/// DMA-safe なバッファをプールし、ゼロコピーネットワーク I/O を実現する。
+/// 各バッファは `CoherentDmaBuffer` で割り当てられ、正しい物理/デバイスアドレス
+/// が保証される。
 pub struct MemoryPool {
     /// プールID
     id: PoolId,
     /// バッファサイズ
     buffer_size: usize,
-    /// フリーリスト
+    /// フリーリスト (virtual address pointers)
     free_list: Mutex<Vec<NonNull<u8>>>,
     /// 統計
     stats: PoolStats,
-    /// DMAアドレスマッピング（物理アドレス）
-    dma_mapping: Mutex<Vec<u64>>,
+    /// DMAバッファストレージ: virt_addr -> (CoherentDmaBuffer, device_base_addr)
+    dma_buffers: Mutex<BTreeMap<usize, (CoherentDmaBuffer, u64)>>,
 }
 
 unsafe impl Send for MemoryPool {}
@@ -101,19 +108,16 @@ impl MemoryPool {
         let total_size = aligned_size + BUFFER_HEADROOM + BUFFER_TAILROOM;
 
         let mut free_list = Vec::with_capacity(count);
-        let mut dma_mapping = Vec::with_capacity(count);
+        let mut dma_buffers = BTreeMap::new();
 
-        // バッファを事前割り当て
+        // バッファを事前割り当て (CoherentDmaBuffer経由で正しい物理アドレスを取得)
         for _ in 0..count {
-            let layout = core::alloc::Layout::from_size_align(total_size, DMA_ALIGNMENT)
-                .expect("Invalid layout");
-
-            let ptr = unsafe { alloc::alloc::alloc(layout) };
-            if !ptr.is_null() {
-                if let Some(nn) = NonNull::new(ptr) {
+            if let Some(buf) = CoherentDmaBuffer::new(total_size, DmaMemoryAttributes::MMIO) {
+                let virt_ptr = unsafe { buf.as_slice().as_ptr() } as *mut u8;
+                let dev_addr = buf.device_addr();
+                if let Some(nn) = NonNull::new(virt_ptr) {
                     free_list.push(nn);
-                    // 物理アドレスマッピング（実際のシステムでは変換が必要）
-                    dma_mapping.push(ptr as u64);
+                    dma_buffers.insert(virt_ptr as usize, (buf, dev_addr));
                 }
             }
         }
@@ -123,7 +127,7 @@ impl MemoryPool {
             buffer_size: total_size,
             free_list: Mutex::new(free_list),
             stats: PoolStats::default(),
-            dma_mapping: Mutex::new(dma_mapping),
+            dma_buffers: Mutex::new(dma_buffers),
         };
 
         pool.stats.total.store(count, Ordering::Release);
@@ -138,6 +142,12 @@ impl MemoryPool {
             self.stats.allocations.fetch_add(1, Ordering::Relaxed);
             self.stats.in_use.fetch_add(1, Ordering::Relaxed);
 
+            // デバイスアドレスを取得
+            let dev_base = self.dma_buffers.lock()
+                .get(&(ptr.as_ptr() as usize))
+                .map(|(_, dev)| *dev)
+                .unwrap_or(ptr.as_ptr() as u64);
+
             Some(ZeroCopyBuffer {
                 data: ptr,
                 len: 0,
@@ -145,6 +155,7 @@ impl MemoryPool {
                 headroom: BUFFER_HEADROOM,
                 pool_id: self.id,
                 ref_count: AtomicU32::new(1),
+                device_base_addr: dev_base,
             })
         } else {
             self.stats.alloc_failures.fetch_add(1, Ordering::Relaxed);
@@ -181,15 +192,10 @@ impl MemoryPool {
 
 impl Drop for MemoryPool {
     fn drop(&mut self) {
-        let free_list = self.free_list.lock();
-        let layout = core::alloc::Layout::from_size_align(self.buffer_size, DMA_ALIGNMENT)
-            .expect("Invalid layout");
-
-        for ptr in free_list.iter() {
-            unsafe {
-                alloc::alloc::dealloc(ptr.as_ptr(), layout);
-            }
-        }
+        // CoherentDmaBuffer の Drop が自動的にメモリを解放するため、
+        // フリーリストのポインタは無視し、dma_buffers のドロップに任せる
+        let _ = self.free_list.lock();
+        // dma_buffers はフィールドのDropで自動解放
     }
 }
 
@@ -199,7 +205,7 @@ impl Drop for MemoryPool {
 
 /// ゼロコピーバッファ
 pub struct ZeroCopyBuffer {
-    /// データポインタ
+    /// データポインタ (CPU virtual address)
     data: NonNull<u8>,
     /// 現在のデータ長
     len: usize,
@@ -211,6 +217,8 @@ pub struct ZeroCopyBuffer {
     pool_id: PoolId,
     /// 参照カウント
     ref_count: AtomicU32,
+    /// ベースデバイスアドレス (IOVA or physical)
+    device_base_addr: u64,
 }
 
 unsafe impl Send for ZeroCopyBuffer {}
@@ -269,10 +277,11 @@ impl ZeroCopyBuffer {
         Ok(())
     }
 
-    /// DMAアドレスを取得
+    /// DMAアドレスを取得（ヘッドルームオフセット適用済み）
+    ///
+    /// IOMMU が有効な場合は IOVA、それ以外は物理アドレスを返す。
     pub fn dma_addr(&self) -> u64 {
-        // 実際のシステムでは仮想→物理変換が必要
-        unsafe { self.data.as_ptr().add(self.headroom) as u64 }
+        self.device_base_addr + self.headroom as u64
     }
 
     /// プールIDを取得
@@ -290,6 +299,7 @@ impl ZeroCopyBuffer {
             headroom: self.headroom,
             pool_id: self.pool_id,
             ref_count: AtomicU32::new(1), // 新しいバッファは独自のカウント
+            device_base_addr: self.device_base_addr,
         }
     }
 
@@ -307,6 +317,7 @@ impl ZeroCopyBuffer {
             headroom: 0,
             pool_id: self.pool_id,
             ref_count: AtomicU32::new(1),
+            device_base_addr: self.device_base_addr + (self.headroom + mid) as u64,
         };
 
         self.len = mid;

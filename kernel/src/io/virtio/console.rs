@@ -391,6 +391,18 @@ impl VirtioConsoleDevice {
         }
     }
 
+    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
+    fn alloc_coherent(
+        &self,
+        size: usize,
+        attrs: DmaMemoryAttributes,
+    ) -> Option<CoherentDmaBuffer> {
+        match &self.iommu_device_id {
+            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
+            None => CoherentDmaBuffer::new(size, attrs),
+        }
+    }
+
     /// Initialize the device following the VirtIO initialization sequence.
     ///
     /// # Safety
@@ -500,14 +512,14 @@ impl VirtioConsoleDevice {
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
-        // Use CoherentDmaBuffer for shared queue memory
-        let buffer = crate::io::dma::CoherentDmaBuffer::new(
+        // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
+        let buffer = self.alloc_coherent(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
         )
         .ok_or(ConsoleError::NotReady)?;
 
-        let phys_base = buffer.phys_addr().as_u64();
+        let dev_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
@@ -516,11 +528,11 @@ impl VirtioConsoleDevice {
 
         // Write queue configuration
         self.transport.set_queue_size(queue_size);
-        self.transport.set_queue_desc_addr(phys_base);
+        self.transport.set_queue_desc_addr(dev_base);
         self.transport
-            .set_queue_avail_addr(phys_base + desc_size as u64);
+            .set_queue_avail_addr(dev_base + desc_size as u64);
         self.transport
-            .set_queue_used_addr(phys_base + used_offset as u64);
+            .set_queue_used_addr(dev_base + used_offset as u64);
 
         // Activate queue
         self.transport.enable_queue();
@@ -558,9 +570,9 @@ impl VirtioConsoleDevice {
         let queue_guard = rx_queue.lock();
 
         for _ in 0..RX_BUFFER_COUNT {
-            let buffer = CoherentDmaBuffer::new(RX_BUFFER_SIZE, DmaMemoryAttributes::MMIO)
+            let buffer = self.alloc_coherent(RX_BUFFER_SIZE, DmaMemoryAttributes::MMIO)
                 .ok_or(ConsoleError::NotReady)?;
-            let phys_addr = buffer.phys_addr().as_u64();
+            let phys_addr = buffer.device_addr();
 
             // Allocate a descriptor for this RX buffer
             let desc_idx = queue_guard.alloc_desc().ok_or(ConsoleError::QueueFull)?;
@@ -604,10 +616,10 @@ impl VirtioConsoleDevice {
         let tx_queue = self.tx_queue.as_ref().ok_or(ConsoleError::NotReady)?;
         let queue_guard = tx_queue.lock();
 
-        // Allocate a DMA buffer and copy the data
-        let mut buffer = CoherentDmaBuffer::new(data.len(), DmaMemoryAttributes::MMIO)
+        // Allocate a DMA buffer and copy the data (IOMMU-aware)
+        let mut buffer = self.alloc_coherent(data.len(), DmaMemoryAttributes::MMIO)
             .ok_or(ConsoleError::NotReady)?;
-        let phys_addr = buffer.phys_addr().as_u64();
+        let phys_addr = buffer.device_addr();
 
         unsafe {
             let dst = buffer.as_mut_slice();
@@ -667,11 +679,11 @@ impl VirtioConsoleDevice {
         // Drop the old buffer (it is consumed)
         drop(buffer);
 
-        // Repost a fresh RX buffer
+        // Repost a fresh RX buffer (IOMMU-aware)
         if let Ok(new_buffer) =
-            CoherentDmaBuffer::new(RX_BUFFER_SIZE, DmaMemoryAttributes::MMIO).ok_or(())
+            self.alloc_coherent(RX_BUFFER_SIZE, DmaMemoryAttributes::MMIO).ok_or(())
         {
-            let phys_addr = new_buffer.phys_addr().as_u64();
+            let phys_addr = new_buffer.device_addr();
             if let Some(new_desc) = queue_guard.alloc_desc() {
                 unsafe {
                     (*queue_guard.desc_table.add(new_desc as usize)) = VringDesc {
