@@ -426,6 +426,13 @@ impl ArpCache {
         }
 
         // Find empty slot or oldest entry
+        if let Some(i) = Self::find_available_slot(&entries) {
+            entries[i] = Some(ArpEntry::new_incomplete(ip, current_time));
+        }
+    }
+
+    /// Find an empty slot, or the oldest slot as fallback.
+    fn find_available_slot(entries: &[Option<ArpEntry>; ARP_CACHE_SIZE]) -> Option<usize> {
         let mut empty_slot = None;
         let mut oldest_slot = None;
         let mut oldest_time = u64::MAX;
@@ -443,9 +450,7 @@ impl ArpCache {
             }
         }
 
-        if let Some(i) = empty_slot.or(oldest_slot) {
-            entries[i] = Some(ArpEntry::new_incomplete(ip, current_time));
-        }
+        empty_slot.or(oldest_slot)
     }
 
     /// Check if we have a pending request for an IP

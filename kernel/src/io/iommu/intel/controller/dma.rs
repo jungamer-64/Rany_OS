@@ -133,10 +133,10 @@ fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
 fn try_map_rmrr_region(
     domain: &IommuDomain,
     device: DeviceId,
-    start: usize,
-    size: usize,
+    start: u64,
+    size: u64,
 ) -> Result<(), IommuError> {
-    if let Err(e) = validate_rmrr_region(start as u64, (start + size) as u64) {
+    if let Err(e) = validate_rmrr_region(start, start + size) {
         log::error!(
             "[IOMMU][CRITICAL] RMRR validation failed for {:04x}:{:02x}:{:02x}.{}: \
              region {:#x}-{:#x}, error: {:?}",
@@ -146,7 +146,7 @@ fn try_map_rmrr_region(
         return Err(IommuError::RmrrMapFailed);
     }
 
-    match domain.map(start as u64, start as u64, size as u64, true, true) {
+    match domain.map(start, start, size, true, true) {
         Ok(()) => {
             log::debug!(
                 "[IOMMU] RMRR mapped for {:04x}:{:02x}:{:02x}.{}: {:#x}-{:#x}",

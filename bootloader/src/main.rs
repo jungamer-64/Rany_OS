@@ -1227,19 +1227,20 @@ fn load_kernel(
 }
 
 /// UEFI ファイルシステムからファイルを開く
+fn open_boot_volume(image_handle: Handle) -> Result<Directory, Status> {
+    let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(image_handle)
+        .map_err(|_| Status::ABORTED)?;
+    let device_handle = loaded_image.device().ok_or(Status::ABORTED)?;
+    let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(device_handle)
+        .map_err(|_| Status::ABORTED)?;
+    fs.open_volume().map_err(|_| Status::ABORTED)
+}
+
 fn open_uefi_file(
     image_handle: Handle,
     filename: &str,
 ) -> Result<RegularFile, Status> {
-    let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(image_handle)
-        .map_err(|_| Status::ABORTED)?;
-
-    let device_handle = loaded_image.device().ok_or(Status::ABORTED)?;
-
-    let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(device_handle)
-        .map_err(|_| Status::ABORTED)?;
-
-    let mut root = fs.open_volume().map_err(|_| Status::ABORTED)?;
+    let mut root = open_boot_volume(image_handle)?;
 
     let name_utf16: Vec<u16> = filename.encode_utf16().collect();
     if name_utf16.len() >= 127 {

@@ -233,30 +233,34 @@ impl AmdIommuDriver {
         };
 
         for entry in &unit.device_entries {
-            match entry {
-                IvhdDeviceEntry::Alias {
-                    devid: entry_devid,
-                    alias,
-                    ..
-                } => {
-                    if *entry_devid == devid && *alias != devid {
-                        aliases.push(*alias);
-                    }
-                }
-                IvhdDeviceEntry::AliasRange {
-                    start, end, alias, ..
-                } => {
-                    if devid >= *start && devid <= *end && *alias != devid {
-                        aliases.push(*alias);
-                    }
-                }
-                _ => {}
-            }
+            Self::collect_alias_from_entry(entry, devid, &mut aliases);
         }
 
         aliases.sort_unstable();
         aliases.dedup();
         aliases
+    }
+
+    fn collect_alias_from_entry(entry: &IvhdDeviceEntry, devid: u16, aliases: &mut Vec<u16>) {
+        match entry {
+            IvhdDeviceEntry::Alias {
+                devid: entry_devid,
+                alias,
+                ..
+            } => {
+                if *entry_devid == devid && *alias != devid {
+                    aliases.push(*alias);
+                }
+            }
+            IvhdDeviceEntry::AliasRange {
+                start, end, alias, ..
+            } => {
+                if devid >= *start && devid <= *end && *alias != devid {
+                    aliases.push(*alias);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn map_ivmd_ranges_for_device(

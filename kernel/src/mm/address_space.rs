@@ -502,8 +502,8 @@ impl ProcessAddressSpace {
     /// mprotectで必要な領域分割を行い、新領域を登録する
     fn split_and_reinsert_regions(
         &self,
-        regions: &mut alloc::collections::BTreeMap<u64, Box<AddressRegion>>,
-        region: Box<AddressRegion>,
+        regions: &mut alloc::collections::BTreeMap<u64, Box<MemoryRegion>>,
+        region: Box<MemoryRegion>,
         req_start: VirtAddr,
         req_end: VirtAddr,
         prot: Protection,

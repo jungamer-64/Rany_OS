@@ -449,16 +449,7 @@ impl ExprParser {
         let then_block = self.parse_block_expr()?;
 
         let else_block = if self.match_token(&Token::Else) {
-            if self.peek() == Some(&Token::If) {
-                Some(Box::new(self.parse_if_expr()?))
-            } else if self.peek() == Some(&Token::LBrace) {
-                Some(Box::new(self.parse_block_expr()?))
-            } else {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "'{' or 'if'".to_string(),
-                    found: format!("{:?}", self.peek()),
-                });
-            }
+            Some(Box::new(self.parse_else_branch()?))
         } else {
             None
         };
@@ -468,6 +459,19 @@ impl ExprParser {
             then_block: Box::new(then_block),
             else_block,
         })
+    }
+
+    fn parse_else_branch(&mut self) -> Result<Expr<'static>, ParseError> {
+        if self.peek() == Some(&Token::If) {
+            self.parse_if_expr()
+        } else if self.peek() == Some(&Token::LBrace) {
+            self.parse_block_expr()
+        } else {
+            Err(ParseError::UnexpectedToken {
+                expected: "'{' or 'if'".to_string(),
+                found: format!("{:?}", self.peek()),
+            })
+        }
     }
 
     /// For式のパース

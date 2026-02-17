@@ -504,31 +504,31 @@ impl Executor {
     }
 
     /// Wake queueを処理
+    /// Search PER_CORE_STORES for a task: own core first, then others.
+    /// When `check_active` is true, skip stores that are not marked active.
+    fn find_task_in_stores(&self, task_id: TaskId, check_active: bool) -> Option<Task> {
+        if let Some(task) = PER_CORE_STORES[self.cpu_id].remove(&task_id) {
+            return Some(task);
+        }
+        for (cpu_id, store) in PER_CORE_STORES.iter().enumerate() {
+            if cpu_id == self.cpu_id { continue; }
+            if check_active && !store.active.load(Ordering::Acquire) { continue; }
+            if let Some(task) = store.remove(&task_id) {
+                return Some(task);
+            }
+        }
+        None
+    }
+
     fn process_wake_queue(&mut self) {
         // ロックフリーでWake queueを処理
         let mut woken = 0;
         while let Some(task_id) = WAKE_QUEUE.pop() {
-            // まず自分のCPUのストアを探す
-            if let Some(task) = PER_CORE_STORES[self.cpu_id].remove(&task_id) {
+            if let Some(task) = self.find_task_in_stores(task_id, true) {
                 self.local_queue.push_back(task);
                 woken += 1;
             } else {
-                // 他のCPUのストアを探す
-                let mut found = false;
-                for (cpu_id, store) in PER_CORE_STORES.iter().enumerate() {
-                    if cpu_id != self.cpu_id && store.active.load(Ordering::Acquire) {
-                        if let Some(task) = store.remove(&task_id) {
-                            self.local_queue.push_back(task);
-                            woken += 1;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                // Legacy TASK_STORE is deprecated; cache the task id for later.
-                if !found {
-                    self.local_cache.push_back(task_id);
-                }
+                self.local_cache.push_back(task_id);
             }
 
             // バッチ上限
@@ -543,26 +543,11 @@ impl Executor {
         let mut fetched = 0;
         while fetched < self.batch_size {
             if let Some(task_id) = GLOBAL_QUEUE.pop() {
-                // まず自分のCPUのストアを探す
-                if let Some(task) = PER_CORE_STORES[self.cpu_id].remove(&task_id) {
+                if let Some(task) = self.find_task_in_stores(task_id, false) {
                     self.local_queue.push_back(task);
                     fetched += 1;
-                    continue;
-                }
-                // 他のCPUのストアを探す
-                let mut found = false;
-                for (cpu_id, store) in PER_CORE_STORES.iter().enumerate() {
-                    if cpu_id != self.cpu_id {
-                        if let Some(task) = store.remove(&task_id) {
-                            self.local_queue.push_back(task);
-                            fetched += 1;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                // Legacy TASK_STORE is deprecated; cache the task id for later processing.
-                if !found {
+                } else {
+                    // Legacy TASK_STORE is deprecated; cache the task id for later processing.
                     self.local_cache.push_back(task_id);
                 }
             } else {

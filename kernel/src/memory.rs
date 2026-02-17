@@ -11,7 +11,7 @@
 pub mod oom_killer;
 
 use crate::sync::PoisonLock;
-use boot_proto::{ExoBootInfo, MemoryMap, NumaInfo};
+use boot_proto::{ExoBootInfo, MemoryDescriptor, MemoryMap, NumaInfo};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
@@ -540,6 +540,21 @@ fn is_usable_efi_memory_type(ty: u32) -> bool {
         || ty == EFI_MEMORY_TYPE_BOOT_SERVICES_DATA
 }
 
+/// Validate a memory descriptor and return (clamped_start, end) if usable.
+fn validate_usable_descriptor(desc: &MemoryDescriptor, min_addr: u64) -> Option<(u64, u64)> {
+    if desc.page_count == 0 {
+        return None;
+    }
+    let size = desc.page_count.checked_mul(EFI_PAGE_SIZE)?;
+    let start = desc.phys_start;
+    let end = start.checked_add(size)?;
+    let start = start.max(min_addr);
+    if end <= start {
+        return None;
+    }
+    Some((start, end))
+}
+
 fn get_boot_memory_regions(memory_map: &MemoryMap) -> Vec<(PhysAddr, u64)> {
     let mut regions = Vec::new();
     if memory_map.entries.is_null() || memory_map.count == 0 {
@@ -553,26 +568,31 @@ fn get_boot_memory_regions(memory_map: &MemoryMap) -> Vec<(PhysAddr, u64)> {
         if !is_usable_efi_memory_type(desc.r#type) {
             continue;
         }
-        if desc.page_count == 0 {
-            continue;
+        if let Some((start, end)) = validate_usable_descriptor(desc, MIN_USABLE_PHYS_ADDR) {
+            regions.push((PhysAddr::new(start), end - start));
         }
-        let size = match desc.page_count.checked_mul(EFI_PAGE_SIZE) {
-            Some(size) => size,
-            None => continue,
-        };
-        let start = desc.phys_start;
-        let end = match start.checked_add(size) {
-            Some(end) => end,
-            None => continue,
-        };
-        let start = start.max(MIN_USABLE_PHYS_ADDR);
-        if end <= start {
-            continue;
-        }
-        regions.push((PhysAddr::new(start), end - start));
     }
 
     regions
+}
+
+fn subtract_from_region(
+    start: u64,
+    end: u64,
+    reserved_start: u64,
+    reserved_end: u64,
+    filtered: &mut Vec<(PhysAddr, u64)>,
+) {
+    if reserved_end <= start || reserved_start >= end {
+        filtered.push((PhysAddr::new(start), end - start));
+        return;
+    }
+    if start < reserved_start {
+        filtered.push((PhysAddr::new(start), reserved_start - start));
+    }
+    if end > reserved_end {
+        filtered.push((PhysAddr::new(reserved_end), end - reserved_end));
+    }
 }
 
 fn subtract_reserved_range(
@@ -589,22 +609,7 @@ fn subtract_reserved_range(
     for (addr, size) in regions {
         let start = addr.as_u64();
         let end = start.saturating_add(size);
-        if reserved_end <= start || reserved_start >= end {
-            filtered.push((addr, size));
-            continue;
-        }
-        if start < reserved_start {
-            let left_size = reserved_start - start;
-            if left_size > 0 {
-                filtered.push((PhysAddr::new(start), left_size));
-            }
-        }
-        if end > reserved_end {
-            let right_size = end - reserved_end;
-            if right_size > 0 {
-                filtered.push((PhysAddr::new(reserved_end), right_size));
-            }
-        }
+        subtract_from_region(start, end, reserved_start, reserved_end, &mut filtered);
     }
 
     filtered
@@ -1050,23 +1055,10 @@ pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
         if desc.r#type != EFI_MEMORY_TYPE_ACPI_RECLAIM {
             continue;
         }
-        if desc.page_count == 0 {
-            continue;
+        if let Some((start, end)) = validate_usable_descriptor(desc, MIN_USABLE_PHYS_ADDR) {
+            let released = crate::mm::pmm_release_range(PhysAddr::new(start), end - start);
+            total_pages += released;
         }
-        let size = match desc.page_count.checked_mul(EFI_PAGE_SIZE) {
-            Some(size) => size,
-            None => continue,
-        };
-        let start = desc.phys_start.max(MIN_USABLE_PHYS_ADDR);
-        let end = match desc.phys_start.checked_add(size) {
-            Some(end) => end,
-            None => continue,
-        };
-        if end <= start {
-            continue;
-        }
-        let released = crate::mm::pmm_release_range(PhysAddr::new(start), end - start);
-        total_pages += released;
     }
 
     if total_pages > 0 {

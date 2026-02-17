@@ -2320,6 +2320,15 @@ impl TlsConnection {
         off += ctx_len;
 
         // 拡張をパース
+        self.tls13_skip_cert_request_extensions(data, off)?;
+
+        self.client_auth_requested = true;
+        Ok(())
+    }
+
+    /// Parse and skip certificate request extensions (we only need to detect signature_algorithms).
+    fn tls13_skip_cert_request_extensions(&self, data: &[u8], start: usize) -> TlsResult<()> {
+        let mut off = start;
         if data.len() < off + 2 {
             return Err(TlsError::DecodeError);
         }
@@ -2340,8 +2349,6 @@ impl TlsConnection {
             }
             off += ext_len;
         }
-
-        self.client_auth_requested = true;
         Ok(())
     }
 

@@ -599,36 +599,36 @@ impl XhciPortManager {
 
         // 接続状態変更
         if (portsc & PORTSC_CSC) != 0 {
-            event = if (portsc & PORTSC_CCS) != 0 {
-                self.port_states.lock()[(port - 1) as usize] = PortState::Attached;
-                PortChangeEvent::Connected
-            } else {
-                self.port_states.lock()[(port - 1) as usize] = PortState::Disconnected;
-                self.port_slots.lock()[(port - 1) as usize] = None;
-                PortChangeEvent::Disconnected
-            };
+            event = self.handle_connection_change(port, portsc);
         }
 
         // リセット完了
-        if (portsc & PORTSC_PRC) != 0 {
-            if (portsc & PORTSC_PED) != 0 {
-                self.port_states.lock()[(port - 1) as usize] = PortState::Enabled;
-                event = PortChangeEvent::ResetComplete;
-            }
+        if (portsc & PORTSC_PRC) != 0 && (portsc & PORTSC_PED) != 0 {
+            self.port_states.lock()[(port - 1) as usize] = PortState::Enabled;
+            event = PortChangeEvent::ResetComplete;
         }
 
         // 過電流
-        if (portsc & PORTSC_OCC) != 0 {
-            if (portsc & PORTSC_OCA) != 0 {
-                self.port_states.lock()[(port - 1) as usize] = PortState::OverCurrent;
-                event = PortChangeEvent::OverCurrent;
-            }
+        if (portsc & PORTSC_OCC) != 0 && (portsc & PORTSC_OCA) != 0 {
+            self.port_states.lock()[(port - 1) as usize] = PortState::OverCurrent;
+            event = PortChangeEvent::OverCurrent;
         }
 
         // 変更ビットをクリア
         self.clear_port_change_bits(port);
 
         event
+    }
+
+    fn handle_connection_change(&self, port: u8, portsc: u32) -> PortChangeEvent {
+        if (portsc & PORTSC_CCS) != 0 {
+            self.port_states.lock()[(port - 1) as usize] = PortState::Attached;
+            PortChangeEvent::Connected
+        } else {
+            self.port_states.lock()[(port - 1) as usize] = PortState::Disconnected;
+            self.port_slots.lock()[(port - 1) as usize] = None;
+            PortChangeEvent::Disconnected
+        }
     }
 
     /// 全ポートの変更をスキャン

@@ -298,6 +298,18 @@ fn parse_system_info(info: &mut SmbiosInfo, table_ptr: *const u8, offset: usize,
 
 /// SMBIOS情報の概要をシリアル出力
 #[cfg(feature = "serial_log")]
+fn log_system_uuid(uuid: &[u8; 16]) {
+    if *uuid != [0; 16] {
+        serial_println!("  System UUID: {:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+            uuid[0], uuid[1], uuid[2], uuid[3],
+            uuid[4], uuid[5],
+            uuid[6], uuid[7],
+            uuid[8], uuid[9],
+            uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]
+        );
+    }
+}
+
 pub fn log_smbios_info(info: &SmbiosInfo) {
     use crate::serial_println;
     
@@ -321,16 +333,7 @@ pub fn log_smbios_info(info: &SmbiosInfo) {
     
     if info.flags & smbios_flags::SYSTEM_INFO_VALID != 0 {
         serial_println!("  System info: available");
-        // UUIDを表示（全ゼロでない場合）
-        if info.system_uuid != [0; 16] {
-            serial_println!("  System UUID: {:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-                info.system_uuid[0], info.system_uuid[1], info.system_uuid[2], info.system_uuid[3],
-                info.system_uuid[4], info.system_uuid[5],
-                info.system_uuid[6], info.system_uuid[7],
-                info.system_uuid[8], info.system_uuid[9],
-                info.system_uuid[10], info.system_uuid[11], info.system_uuid[12], info.system_uuid[13], info.system_uuid[14], info.system_uuid[15]
-            );
-        }
+        log_system_uuid(&info.system_uuid);
     }
     
     if info.smbios3_addr == 0 && info.smbios_addr == 0 {

@@ -407,7 +407,7 @@ impl ZombieQueue {
     fn process_single_zombie<F>(
         &self,
         entry: &ZombieEntry,
-        sg: u64,
+        sg: u32,
         callback: &mut F,
     ) -> bool
     where

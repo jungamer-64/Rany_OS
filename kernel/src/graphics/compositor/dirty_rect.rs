@@ -116,6 +116,24 @@ impl DirtyRegionManager {
     }
 
     /// ダーティ領域を最適化（重複を統合）
+    /// Attempt to merge unused regions into `current`. Returns true if any merge occurred.
+    fn merge_pass(regions: &[DirtyRect], current: &mut Rect, used: &mut [bool]) -> bool {
+        let mut merged = false;
+        for j in 0..regions.len() {
+            if used[j] {
+                continue;
+            }
+
+            if let Some(m) = try_merge_rects(current, &regions[j].rect) {
+                *current = m;
+                used[j] = true;
+                merged = true;
+            }
+        }
+
+        merged
+    }
+
     pub fn optimize(&mut self) {
         if self.full_redraw || self.regions.len() <= 1 {
             return;
@@ -133,24 +151,7 @@ impl DirtyRegionManager {
             used[i] = true;
 
             // 他の矩形とマージを試みる
-            loop {
-                let mut merged = false;
-                for j in 0..self.regions.len() {
-                    if used[j] {
-                        continue;
-                    }
-
-                    if let Some(m) = try_merge_rects(&current, &self.regions[j].rect) {
-                        current = m;
-                        used[j] = true;
-                        merged = true;
-                    }
-                }
-
-                if !merged {
-                    break;
-                }
-            }
+            while Self::merge_pass(&self.regions, &mut current, &mut used) {}
 
             optimized.push(DirtyRect::new(current));
         }
