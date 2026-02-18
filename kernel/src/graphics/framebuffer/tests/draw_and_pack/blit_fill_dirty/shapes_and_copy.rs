@@ -346,7 +346,7 @@ pub(crate) fn test_fill_circle_no_gaps_32bit_backbuffer() {
     let cx = 16i32;
     let cy = 16i32;
     let r = 7i32;
-    fb.fill_circle(cx, cy, r as u32, color);
+    fb.fill_circle(cx, cy, r as i32, color);
 
     let buf = fb.back_buffer.as_ref().unwrap();
     // Every pixel strictly inside the circle must be coloured

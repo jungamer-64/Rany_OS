@@ -105,6 +105,12 @@ pub(super) fn read_max_addr_bits(mmio_base: usize) -> u8 {
     }
 }
 
+/// Test stub: always returns 48-bit address width.
+#[cfg(test)]
+pub(super) fn read_max_addr_bits(_mmio_base: usize) -> u8 {
+    48
+}
+
 // IVHD device entry flags
 pub(crate) const IVHD_INIT_PASS: u8 = 1 << 0;
 pub(crate) const IVHD_EINT_PASS: u8 = 1 << 1;

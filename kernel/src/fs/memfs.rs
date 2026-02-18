@@ -17,7 +17,7 @@ use super::page::PagedContent;
 mod shell_integration;
 pub use shell_integration::*;
 
-use super::fs_abstraction:{
+use super::fs_abstraction::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     OpenFlags,
 };

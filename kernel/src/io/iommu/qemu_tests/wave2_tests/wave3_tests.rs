@@ -5,7 +5,7 @@ use super::*;
 mod group_tests;
 pub use group_tests::*;
 pub fn wave3_pasid_table_alloc_free_smoke() -> bool {
-    use super::intel::tables::PasidTable;
+    use crate::io::iommu::intel::tables::PasidTable;
 
     let mut table = match PasidTable::new(6) {
         Ok(t) => t,
@@ -77,7 +77,7 @@ pub fn wave3_pasid_table_alloc_free_smoke() -> bool {
 
 /// PASID table multi-domain: two PASIDs with different domain IDs remain isolated.
 pub fn wave3_pasid_table_multi_domain_smoke() -> bool {
-    use super::intel::tables::PasidTable;
+    use crate::io::iommu::intel::tables::PasidTable;
 
     let mut table = match PasidTable::new(6) {
         Ok(t) => t,
@@ -109,7 +109,7 @@ pub fn wave3_pasid_table_multi_domain_smoke() -> bool {
 
 /// PASID table exhaustion: fill table, verify error, free one, re-allocate succeeds.
 pub fn wave3_pasid_table_exhaustion_smoke() -> bool {
-    use super::intel::tables::PasidTable;
+    use crate::io::iommu::intel::tables::PasidTable;
 
     // size_log2=2 → size=4. PASID 0 reserved, so 3 allocatable PASIDs (1, 2, 3)
     let mut table = match PasidTable::new(2) {
@@ -311,19 +311,19 @@ pub fn wave3_scalable_mode_attach_detach_cycle_smoke() -> bool {
 }
 
 pub fn wave3_mapping_slab_insert_lookup_remove_smoke() -> bool {
-    super::mapping_slab::qemu_smoke_insert_lookup_remove()
+    crate::io::iommu::mapping_slab::qemu_smoke_insert_lookup_remove()
 }
 
 pub fn wave3_mapping_slab_overlap_detection_smoke() -> bool {
-    super::mapping_slab::qemu_smoke_overlap_detection()
+    crate::io::iommu::mapping_slab::qemu_smoke_overlap_detection()
 }
 
 pub fn wave3_zombie_queue_basic_smoke() -> bool {
-    super::zombie_queue::qemu_smoke_queue_basic()
+    crate::io::iommu::zombie_queue::qemu_smoke_queue_basic()
 }
 
 pub fn wave3_zombie_queue_failed_cleanup_smoke() -> bool {
-    super::zombie_queue::qemu_smoke_failed_cleanup()
+    crate::io::iommu::zombie_queue::qemu_smoke_failed_cleanup()
 }
 
 /// PRI fuel-based processing: create queue, populate entries, verify fuel limit and has_more.
@@ -332,7 +332,7 @@ pub fn wave3_zombie_queue_failed_cleanup_smoke() -> bool {
 /// テストでは backing memory に直接書き込み、update_tail() で tail を進めて
 /// fuel 制限付き pop と has_pending() の正確性を検証する。
 pub fn wave3_pri_fuel_processing_smoke() -> bool {
-    use super::common::{PageRequestEntry, PageRequestQueue};
+    use crate::io::iommu::common::{PageRequestEntry, PageRequestQueue};
 
     // Create a small queue (size will round up to power of 2)
     let mut prq = match PageRequestQueue::new(8) {
@@ -403,27 +403,27 @@ pub fn wave3_pri_fuel_processing_smoke() -> bool {
 }
 
 pub fn cmdqueue_reclaim_completed_slot_smoke() -> bool {
-    super::cmdqueue::qemu_smoke_reclaim_completed_slot()
+    crate::io::iommu::cmdqueue::qemu_smoke_reclaim_completed_slot()
 }
 
 pub fn cmdqueue_cancel_queued_command_smoke() -> bool {
-    super::cmdqueue::qemu_smoke_cancel_queued_command()
+    crate::io::iommu::cmdqueue::qemu_smoke_cancel_queued_command()
 }
 
 pub fn cmdqueue_drop_triggers_cancel_smoke() -> bool {
-    super::cmdqueue::qemu_smoke_drop_triggers_cancel()
+    crate::io::iommu::cmdqueue::qemu_smoke_drop_triggers_cancel()
 }
 
 pub fn cmdqueue_process_up_to_respects_fuel_smoke() -> bool {
-    super::cmdqueue::qemu_smoke_process_up_to_respects_fuel()
+    crate::io::iommu::cmdqueue::qemu_smoke_process_up_to_respects_fuel()
 }
 
 pub fn cmdqueue_fuel_shim_basic_smoke() -> bool {
-    super::cmdqueue::qemu_smoke_fuel_shim_basic()
+    crate::io::iommu::cmdqueue::qemu_smoke_fuel_shim_basic()
 }
 
 pub fn cmdqueue_metrics_counts_smoke() -> bool {
-    super::cmdqueue::qemu_smoke_metrics_counts()
+    crate::io::iommu::cmdqueue::qemu_smoke_metrics_counts()
 }
 
 // ============================================================================
