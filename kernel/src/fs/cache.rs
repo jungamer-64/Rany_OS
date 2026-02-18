@@ -35,7 +35,7 @@ use super::fs_abstraction::InodeNum;
 
 /// Default page size (4KB)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub const PAGE_SIZE: usize = 4096;
 
 /// Default cache size limit (64MB)

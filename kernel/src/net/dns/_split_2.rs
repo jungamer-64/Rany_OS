@@ -164,7 +164,7 @@ impl DnsClient {
     }
 
     /// DNSレコードをキャッシュに追加する
-    fn cache_dns_records(&self, records: &[DnsRecord], current_tick: u64) {
+    pub(super) fn cache_dns_records(&self, records: &[DnsRecord], current_tick: u64) {
         if !records.is_empty() {
             if let Some(first) = records.first() {
                 match self.cache.lock() {
@@ -224,7 +224,7 @@ impl DnsClient {
     }
 
     /// 回答セクションをパースする
-    fn parse_answer_section(
+    pub(super) fn parse_answer_section(
         &self,
         data: &[u8],
         offset: &mut usize,
@@ -279,7 +279,7 @@ impl DnsClient {
     }
 
     /// レコードデータ（RDATA）をパースする
-    fn parse_record_data(
+    pub(super) fn parse_record_data(
         &self,
         data: &[u8],
         rdata: &[u8],
@@ -316,7 +316,7 @@ impl DnsClient {
     }
 
     /// TXTレコードをパースする
-    fn parse_txt_record(&self, rdata: &[u8], rdlength: usize) -> DnsRecordData {
+    pub(super) fn parse_txt_record(&self, rdata: &[u8], rdlength: usize) -> DnsRecordData {
         if !rdata.is_empty() {
             let txt_len = rdata[0] as usize;
             if txt_len < rdlength {
@@ -332,7 +332,7 @@ impl DnsClient {
     }
 
     /// ドメイン名をスキップ
-    fn skip_name(&self, data: &[u8], mut offset: usize) -> Result<usize, DnsResponseCode> {
+    pub(super) fn skip_name(&self, data: &[u8], mut offset: usize) -> Result<usize, DnsResponseCode> {
         loop {
             if offset >= data.len() {
                 return Err(DnsResponseCode::FormatError);
@@ -353,7 +353,7 @@ impl DnsClient {
         }
     }
 
-    fn follow_compression_pointer(
+    pub(super) fn follow_compression_pointer(
         &self,
         data: &[u8],
         offset: usize,
@@ -377,7 +377,7 @@ impl DnsClient {
     }
 
     /// ドメイン名を解析 (圧縮対応)
-    fn parse_name(
+    pub(super) fn parse_name(
         &self,
         data: &[u8],
         mut offset: usize,

@@ -29,8 +29,6 @@ use kernel_api::error::KapiError;
 use kernel_api::KapiResult;
 use kernel_api::services::KernelServices;
 use kernel_api::{
-mod _split_1;
-use _split_1::*;
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle,
     NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
     OpenMode, Packet, RawSocketHandle, TaskHandle, TcpEndpoint,
@@ -194,6 +192,8 @@ static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
 use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use x86_64::PhysAddr;
+mod _split_1;
+pub use _split_1::*;
 
 const NVME_PAGE_SIZE: usize = 4096;
 

@@ -29,7 +29,7 @@ impl VirtioBlkDevice {
     }
 
     /// IOMMU対応のDMAバッファを割り当てるヘルパー。
-    fn alloc_coherent(
+    pub(super) fn alloc_coherent(
         &self,
         size: usize,
         attrs: DmaMemoryAttributes,
@@ -117,7 +117,7 @@ impl VirtioBlkDevice {
     // as we use self.transport methods directly.
 
     /// Read device configuration
-    fn read_config(&mut self) -> Result<(), BlockError> {
+    pub(super) fn read_config(&mut self) -> Result<(), BlockError> {
         // Read capacity (8 bytes at offset 0)
         self.config.capacity = self.transport.read_config_u64(0);
 
@@ -164,7 +164,7 @@ impl VirtioBlkDevice {
     }
 
     /// Setup a virtqueue
-    fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> {
+    pub(super) fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> {
         // Select queue and read size
         self.transport.select_queue(queue_idx);
         let max_size = self.transport.get_queue_max_size();
@@ -346,7 +346,7 @@ impl VirtioBlkDevice {
     }
 
     /// Submit a read request (internal)
-    fn alloc_three_descriptors(queue: &VirtQueue) -> Result<(u16, u16, u16), BlockError> {
+    pub(super) fn alloc_three_descriptors(queue: &VirtQueue) -> Result<(u16, u16, u16), BlockError> {
         let desc0 = queue.alloc_desc().ok_or(BlockError::QueueFull)?;
         let desc1 = queue.alloc_desc().ok_or_else(|| {
             queue.free_desc(desc0);
@@ -428,7 +428,7 @@ impl VirtioBlkDevice {
     }
 
     /// Prepare a write request: validate state and create DMA header
-    fn prepare_write_request(&self, sector: u64) -> Result<BlkRequestDma, BlockError> {
+    pub(super) fn prepare_write_request(&self, sector: u64) -> Result<BlkRequestDma, BlockError> {
         if !self.is_ready() {
             return Err(BlockError::NotReady);
         }
@@ -575,7 +575,7 @@ impl VirtioBlkDevice {
     // ========================================================================
 
     /// Map an RRef bounce buffer for a DMA operation via IOMMU.
-    fn map_bounce_for_device(
+    pub(super) fn map_bounce_for_device(
         &self,
         rref: crate::ipc::RRef<[u8]>,
         direction: DmaDirection,
@@ -590,7 +590,7 @@ impl VirtioBlkDevice {
     }
 
     /// DMA read via fully-async IOMMU bounce path.
-    fn dma_read_bounce_async<'a>(
+    pub(super) fn dma_read_bounce_async<'a>(
         &'a self,
         sector: u64,
         buf: &'a mut [u8],
@@ -618,7 +618,7 @@ impl VirtioBlkDevice {
     }
 
     /// DMA read via eager-alloc IOMMU bounce path.
-    fn dma_read_bounce_eager<'a>(
+    pub(super) fn dma_read_bounce_eager<'a>(
         &'a self,
         sector: u64,
         buf: &'a mut [u8],

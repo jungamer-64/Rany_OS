@@ -56,5 +56,6 @@ pub async fn async_flush(device: DeviceId) -> Result<usize, IoError> {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "../../tests.rs"]
 mod tests;
 

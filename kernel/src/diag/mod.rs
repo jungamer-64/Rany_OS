@@ -28,8 +28,8 @@ use spin::Mutex;
 // ============================================================================
 
 /// タイムスタンプカウンタを読む
-mod _split_1;
-use _split_1::*;
+mod accessors;
+pub use accessors::*;
 #[inline(always)]
 pub fn rdtsc() -> u64 {
     #[cfg(target_arch = "x86_64")]

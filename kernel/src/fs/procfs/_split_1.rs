@@ -5,7 +5,7 @@ mod tests {
     use super::*;
 
     #[test_case]
-    fn test_procfs_read() {
+    pub(super) fn test_procfs_read() {
         let fs = ProcFs::new();
 
         let version = fs.read("version").unwrap();
@@ -13,7 +13,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_procfs_directory() {
+    pub(super) fn test_procfs_directory() {
         let fs = ProcFs::new();
 
         let entries = fs.readdir("").unwrap();
@@ -22,7 +22,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_process_entries() {
+    pub(super) fn test_process_entries() {
         let fs = ProcFs::new();
 
         fs.add_process(Pid::new(1234));
@@ -35,7 +35,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_mem_open_with_token_reclaim() {
+    pub(super) fn test_proc_mem_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_proc").unwrap();
         let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_proc").unwrap();
@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_mem_revoke_reclaim_stress() {
+    pub(super) fn test_proc_mem_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_maps_open_with_token_reclaim() {
+    pub(super) fn test_proc_maps_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_maps").unwrap();
         let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_maps").unwrap();
@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_maps_revoke_reclaim_stress() {
+    pub(super) fn test_proc_maps_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_cmdline_open_with_token_reclaim() {
+    pub(super) fn test_proc_cmdline_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_cmdline").unwrap();
         let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_cmdline").unwrap();
@@ -328,7 +328,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_cmdline_revoke_reclaim_stress() {
+    pub(super) fn test_proc_cmdline_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_fd_open_with_token_reclaim() {
+    pub(super) fn test_proc_fd_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_fd").unwrap();
         let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd").unwrap();
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_fd_revoke_reclaim_stress() {
+    pub(super) fn test_proc_fd_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_exe_open_with_token_reclaim() {
+    pub(super) fn test_proc_exe_open_with_token_reclaim() {
         // Setup caller and target domains
         let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_exe").unwrap();
         let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_exe").unwrap();
@@ -576,7 +576,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_exe_revoke_reclaim_stress() {
+    pub(super) fn test_proc_exe_revoke_reclaim_stress() {
         use std::sync::{Arc, Barrier};
         use std::thread;
 
@@ -655,7 +655,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_proc_fd_listing_shows_open_handles() {
+    pub(super) fn test_proc_fd_listing_shows_open_handles() {
         // Create target process
         let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd_list").unwrap();
 

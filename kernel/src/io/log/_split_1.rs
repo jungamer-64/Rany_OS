@@ -52,7 +52,7 @@ impl Log for KernelLogger {
 
 impl KernelLogger {
     /// 非同期バッファへの書き込みを試行。成功した場合trueを返す。
-    fn try_log_async(&self, record: &Record) -> bool {
+    pub(super) fn try_log_async(&self, record: &Record) -> bool {
         if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
             if cpu_id < PER_CPU_COUNT {
                 if let Some(mut guard) = PER_CORE_LOG_BUFFERS[cpu_id].try_lock() {
@@ -73,7 +73,7 @@ impl KernelLogger {
     }
 
     /// 非同期書き込みが競合した場合の同期フォールバック
-    fn log_sync_fallback(&self, record: &Record) {
+    pub(super) fn log_sync_fallback(&self, record: &Record) {
         let _guard = if IN_PANIC.load(Ordering::Relaxed) {
             None
         } else {
@@ -89,7 +89,7 @@ impl KernelLogger {
     }
 
     /// 同期出力パス（ヒープ未初期化またはパニック時）
-    fn log_sync(&self, record: &Record) {
+    pub(super) fn log_sync(&self, record: &Record) {
         let _guard = if IN_PANIC.load(Ordering::Relaxed) {
             None
         } else {
@@ -111,7 +111,7 @@ pub(crate) struct LastCharTracker<W: Write> {
 }
 
 impl<W: Write> LastCharTracker<W> {
-    fn new(inner: W) -> Self {
+    pub(super) fn new(inner: W) -> Self {
         Self {
             inner,
             last_char: 0,
@@ -141,7 +141,7 @@ pub(crate) struct AsyncLogWriter<'a, const N: usize> {
 }
 
 impl<'a, const N: usize> AsyncLogWriter<'a, N> {
-    fn new(buffer: &'a mut RingBuffer<N>) -> Self {
+    pub(super) fn new(buffer: &'a mut RingBuffer<N>) -> Self {
         Self { buffer }
     }
 }

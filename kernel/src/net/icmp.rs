@@ -13,7 +13,7 @@ use super::ipv4::{Ipv4Address, data_checksum};
 
 /// ICMP message type
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum IcmpType {

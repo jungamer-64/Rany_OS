@@ -202,7 +202,7 @@ impl IcmpProcessor {
     }
 
     /// Process an ICMP Redirect packet.
-    fn process_redirect(&self, packet: &IcmpPacket<'_>) -> IcmpResult {
+    pub(super) fn process_redirect(&self, packet: &IcmpPacket<'_>) -> IcmpResult {
         let payload = packet.payload();
         if payload.len() < 4 + 20 {
             return IcmpResult::Invalid;
@@ -228,7 +228,7 @@ impl IcmpProcessor {
     }
 
     /// Process an ICMP Timestamp Request packet.
-    fn process_timestamp_request(&mut self, packet: &IcmpPacket<'_>, src_ip: Ipv4Address) -> IcmpResult {
+    pub(super) fn process_timestamp_request(&mut self, packet: &IcmpPacket<'_>, src_ip: Ipv4Address) -> IcmpResult {
         let payload = packet.payload();
         if payload.len() >= 12 {
             let identifier = u16::from_be_bytes([payload[0], payload[1]]);
@@ -249,5 +249,6 @@ impl IcmpProcessor {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

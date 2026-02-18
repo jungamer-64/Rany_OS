@@ -20,8 +20,8 @@ use spin::{Mutex, RwLock};
 // =============================================================================
 
 /// 温度読み取りなし
-mod _split_1;
-use _split_1::*;
+mod impls;
+pub use impls::*;
 const TEMP_INVALID: i32 = i32::MIN;
 
 /// デフォルトのパッシブスロットリング温度（ミリ摂氏度）

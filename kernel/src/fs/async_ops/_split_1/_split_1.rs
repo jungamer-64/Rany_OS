@@ -3,7 +3,7 @@ use super::*;
 
 mod _split_1;
 impl<'a> AsyncReadFuture<'a> {
-    fn new(file: &'a AsyncFile, buf: &'a mut [u8]) -> Self {
+    pub(super) fn new(file: &'a AsyncFile, buf: &'a mut [u8]) -> Self {
         Self {
             file,
             buf,
@@ -18,7 +18,7 @@ impl<'a> AsyncReadFuture<'a> {
     }
 
     /// Issue a direct-I/O NVMe read command and return Pending.
-    fn start_direct_io(
+    pub(super) fn start_direct_io(
         &mut self,
         cx: &mut Context<'_>,
         position: u64,
@@ -79,7 +79,7 @@ impl<'a> AsyncReadFuture<'a> {
     }
 
     /// Extract completed DMA data into the user buffer.
-    fn complete_dma_read(&mut self) -> Poll<FsResult<usize>> {
+    pub(super) fn complete_dma_read(&mut self) -> Poll<FsResult<usize>> {
         if let Some(mut guard) = self.cancel_guard.take() {
             guard.disarm();
         }
@@ -111,7 +111,7 @@ impl<'a> AsyncReadFuture<'a> {
 }
 
 impl<'a> AsyncReadFuture<'a> {
-    fn try_start_read(&mut self, cx: &mut Context<'_>) -> Option<Poll<FsResult<usize>>> {
+    pub(super) fn try_start_read(&mut self, cx: &mut Context<'_>) -> Option<Poll<FsResult<usize>>> {
         let position = self.file.position.load(Ordering::Relaxed);
         let len = self.buf.len();
         let size = self.file.attr.lock().size;
@@ -186,7 +186,7 @@ pub(crate) struct UnalignedReadSlot {
 }
 
 impl UnalignedReadSlot {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             data: Mutex::new(None),
         }
@@ -211,7 +211,7 @@ pub(crate) enum UnalignedWriteState {
 }
 
 impl<'a> AsyncWriteFuture<'a> {
-    fn new(file: &'a AsyncFile, buf: &'a [u8]) -> Self {
+    pub(super) fn new(file: &'a AsyncFile, buf: &'a [u8]) -> Self {
         Self {
             file,
             buf,
@@ -223,7 +223,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// ファイル位置とサイズを更新する共通ヘルパー
-    fn commit_write(&self, written: usize, base_position: u64) {
+    pub(super) fn commit_write(&self, written: usize, base_position: u64) {
         self.file
             .position
             .fetch_add(written as u64, Ordering::Relaxed);
@@ -235,7 +235,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// 初回ポーリング時の書き込み開始処理
-    fn poll_start(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
+    pub(super) fn poll_start(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
         self.started = true;
 
         let position = self.file.position.load(Ordering::Relaxed);
@@ -266,7 +266,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// 非アラインDMA: Read-Modify-Write開始
-    fn start_unaligned_rmw(
+    pub(super) fn start_unaligned_rmw(
         &mut self,
         position: u64,
         len: usize,
@@ -325,7 +325,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// アラインDMAライト開始
-    fn start_aligned_direct_write(
+    pub(super) fn start_aligned_direct_write(
         &mut self,
         position: u64,
         len: usize,
@@ -369,7 +369,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// アラインDMAライトの完了ポーリング
-    fn poll_aligned_completion(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
+    pub(super) fn poll_aligned_completion(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
         let future = self.io_future.as_mut().unwrap();
         match Pin::new(future).poll(cx) {
             Poll::Ready(Ok(_)) => {
@@ -384,7 +384,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// 非アラインDMAステートのポーリング
-    fn poll_unaligned_state(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
+    pub(super) fn poll_unaligned_state(&mut self, cx: &mut Context<'_>) -> Poll<FsResult<usize>> {
         let state = self.unaligned.take().unwrap();
         match state {
             UnalignedWriteState::Reading {
@@ -407,7 +407,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// 非アラインDMA Reading状態のポーリング
-    fn poll_unaligned_reading(
+    pub(super) fn poll_unaligned_reading(
         &mut self,
         mut io_future: crate::io::io_scheduler::IoFuture,
         data_slot: Arc<UnalignedReadSlot>,
@@ -478,7 +478,7 @@ impl<'a> AsyncWriteFuture<'a> {
     }
 
     /// 非アラインDMA Writing状態のポーリング
-    fn poll_unaligned_writing(
+    pub(super) fn poll_unaligned_writing(
         &mut self,
         mut io_future: crate::io::io_scheduler::IoFuture,
         len: usize,
@@ -535,7 +535,7 @@ pub struct AsyncFlushFuture<'a> {
 }
 
 impl<'a> AsyncFlushFuture<'a> {
-    fn new(file: &'a AsyncFile) -> Self {
+    pub(super) fn new(file: &'a AsyncFile) -> Self {
         Self {
             file,
             started: false,

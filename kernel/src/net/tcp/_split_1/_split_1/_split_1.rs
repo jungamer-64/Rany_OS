@@ -152,7 +152,7 @@ impl TcpProcessor {
         TcpProcessResult::None
     }
 
-    fn handle_incoming_syn(
+    pub(super) fn handle_incoming_syn(
         &mut self,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
@@ -273,7 +273,7 @@ impl TcpProcessor {
     }
 
     /// Create an ACK packet result from current TCB state
-    fn make_ack_result(tcb: &TcpControlBlock) -> TcpProcessResult {
+    pub(super) fn make_ack_result(tcb: &TcpControlBlock) -> TcpProcessResult {
         TcpProcessResult::SendPacket {
             local: tcb.local_addr,
             remote: tcb.remote_addr.unwrap(),
@@ -286,7 +286,7 @@ impl TcpProcessor {
     }
 
     /// Process a TCP segment for an existing connection
-    fn process_segment(
+    pub(super) fn process_segment(
         &mut self,
         tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
         tcb: &mut TcpControlBlock,
@@ -328,7 +328,7 @@ impl TcpProcessor {
     }
 
     /// Handle segment in SYN-SENT state
-    fn handle_syn_sent_segment(
+    pub(super) fn handle_syn_sent_segment(
         tcb: &mut TcpControlBlock,
         syn: bool,
         ack: bool,
@@ -368,7 +368,7 @@ impl TcpProcessor {
     }
 
     /// Handle segment in SYN-RECEIVED state
-    fn handle_syn_received_segment(
+    pub(super) fn handle_syn_received_segment(
         tcb: &mut TcpControlBlock,
         tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
         ack: bool,
@@ -391,7 +391,7 @@ impl TcpProcessor {
     }
 
     /// Push newly established connection to listener backlog and wake accept waker
-    fn notify_backlog(
+    pub(super) fn notify_backlog(
         tcb: &TcpControlBlock,
         tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
     ) {
@@ -411,7 +411,7 @@ impl TcpProcessor {
     }
 
     /// Handle segment in ESTABLISHED state
-    fn handle_established_segment(
+    pub(super) fn handle_established_segment(
         tcb: &mut TcpControlBlock,
         ack: bool,
         ack_num: u32,
@@ -436,7 +436,7 @@ impl TcpProcessor {
     }
 
     /// Process ACK in ESTABLISHED state (new ACK or duplicate ACK)
-    fn handle_established_ack(
+    pub(super) fn handle_established_ack(
         tcb: &mut TcpControlBlock,
         ack: bool,
         ack_num: u32,
@@ -466,7 +466,7 @@ impl TcpProcessor {
     }
 
     /// Attempt fast retransmit on duplicate ACK
-    fn try_fast_retransmit(tcb: &mut TcpControlBlock) -> TcpProcessResult {
+    pub(super) fn try_fast_retransmit(tcb: &mut TcpControlBlock) -> TcpProcessResult {
         let should_retransmit = tcb.on_dup_ack();
         if should_retransmit {
             // Fast retransmit: immediately resend oldest unacked segment
@@ -488,7 +488,7 @@ impl TcpProcessor {
     }
 
     /// Handle incoming data in ESTABLISHED state
-    fn handle_established_data(
+    pub(super) fn handle_established_data(
         tcb: &mut TcpControlBlock,
         seq_num: u32,
         payload: &[u8],
@@ -513,7 +513,7 @@ impl TcpProcessor {
     }
 
     /// Enqueue in-order payload to receive buffer, preferring zero-copy
-    fn enqueue_inorder_payload(
+    pub(super) fn enqueue_inorder_payload(
         tcb: &mut TcpControlBlock,
         payload: &[u8],
         header_len: usize,
@@ -537,7 +537,7 @@ impl TcpProcessor {
     }
 
     /// Copy payload into receive buffer (mempool PacketRef or Vec fallback)
-    fn copy_payload_to_recv(
+    pub(super) fn copy_payload_to_recv(
         tcb: &mut TcpControlBlock,
         payload: &[u8],
         payload_len: usize,
@@ -559,7 +559,7 @@ impl TcpProcessor {
     }
 
     /// Handle FIN flag in ESTABLISHED state
-    fn handle_established_fin(tcb: &mut TcpControlBlock) -> TcpProcessResult {
+    pub(super) fn handle_established_fin(tcb: &mut TcpControlBlock) -> TcpProcessResult {
         tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
         tcb.state = TcpState::CloseWait;
         if let Some(waker) = tcb.read_waker.take() {
@@ -569,7 +569,7 @@ impl TcpProcessor {
     }
 
     /// Handle segment in FIN-WAIT-1 state
-    fn handle_fin_wait1_segment(
+    pub(super) fn handle_fin_wait1_segment(
         tcb: &mut TcpControlBlock,
         ack: bool,
         ack_num: u32,
@@ -611,4 +611,5 @@ impl Default for TcpProcessor {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "../../tests.rs"]
 mod tests;

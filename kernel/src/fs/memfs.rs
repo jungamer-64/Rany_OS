@@ -14,10 +14,10 @@ use hashbrown::HashMap;
 use spin::RwLock;
 
 use super::page::PagedContent;
+mod _split_1;
+pub use _split_1::*;
 
 use super::fs_abstraction::{
-mod _split_1;
-use _split_1::*;
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     OpenFlags,
 };

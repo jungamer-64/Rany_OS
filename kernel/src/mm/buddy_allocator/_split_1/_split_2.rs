@@ -6,7 +6,7 @@ impl BuddyFrameAllocator {
     ///
     /// 以前の再帰実装はスタックオーバーフローのリスクがあったため、
     /// ループベースの反復的実装に変更。
-    fn coalesce(&mut self, block_idx: usize, order: usize) {
+    pub(super) fn coalesce(&mut self, block_idx: usize, order: usize) {
         let mut current_block = block_idx;
         let mut current_order = order;
 
@@ -37,7 +37,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 必要フレーム数から適切なオーダーを計算
-    fn frames_to_order(frames: usize) -> usize {
+    pub(super) fn frames_to_order(frames: usize) -> usize {
         if frames == 0 {
             return 0;
         }
@@ -148,7 +148,7 @@ impl BuddyFrameAllocator {
     }
 
     /// Allocate an order block restricted to [start_frame, end_frame)
-    fn allocate_order_in_range(
+    pub(super) fn allocate_order_in_range(
         &mut self,
         order: usize,
         start_frame: usize,
@@ -182,7 +182,7 @@ impl BuddyFrameAllocator {
 
     /// NUMA-aware allocation helper: try preferred node, then other nodes.
     /// Returns a raw FrameIndex if successful.
-    fn allocate_on_numa_node(&mut self, node: NumaNodeId, order: usize) -> Option<FrameIndex> {
+    pub(super) fn allocate_on_numa_node(&mut self, node: NumaNodeId, order: usize) -> Option<FrameIndex> {
         let map_clone = self.numa_regions.clone();
         let map = map_clone.as_ref()?;
 
@@ -273,7 +273,7 @@ impl BuddyFrameAllocator {
 
     /// ゼロクリア済みブロックかどうかをチェック
     #[inline]
-    fn is_block_zeroed(&self, order: usize, block_idx: usize) -> bool {
+    pub(super) fn is_block_zeroed(&self, order: usize, block_idx: usize) -> bool {
         if order > MAX_ORDER {
             return false;
         }
@@ -289,7 +289,7 @@ impl BuddyFrameAllocator {
 
     /// ブロックをゼロクリア済みとしてマーク
     #[inline]
-    fn set_block_zeroed(&mut self, order: usize, block_idx: usize) {
+    pub(super) fn set_block_zeroed(&mut self, order: usize, block_idx: usize) {
         if order > MAX_ORDER {
             return;
         }
@@ -307,7 +307,7 @@ impl BuddyFrameAllocator {
 
     /// ブロックのゼロクリア済みフラグをクリア
     #[inline]
-    fn clear_block_zeroed(&mut self, order: usize, block_idx: usize) {
+    pub(super) fn clear_block_zeroed(&mut self, order: usize, block_idx: usize) {
         if order > MAX_ORDER {
             return;
         }
@@ -324,7 +324,7 @@ impl BuddyFrameAllocator {
     }
 
     /// ゼロクリア済みの空きブロックを探索
-    fn find_zeroed_free_block(&self, order: usize) -> Option<usize> {
+    pub(super) fn find_zeroed_free_block(&self, order: usize) -> Option<usize> {
         if self.zeroed_counts[order] == 0 {
             return None;
         }

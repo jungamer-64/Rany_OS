@@ -14,7 +14,7 @@ impl IdeChannel {
 
     /// レジスタを読み取り
     #[inline]
-    fn read_reg(&self, reg: u16) -> u8 {
+    pub(super) fn read_reg(&self, reg: u16) -> u8 {
         // 8-bit I/O registers. PortU8::read() is a safe wrapper around the
         // architecture-specific inb instruction; therefore this is safe.
         PortU8::new(self.io_base + reg).read()
@@ -22,19 +22,19 @@ impl IdeChannel {
 
     /// レジスタに書き込み
     #[inline]
-    fn write_reg(&self, reg: u16, value: u8) {
+    pub(super) fn write_reg(&self, reg: u16, value: u8) {
         PortU8::new(self.io_base + reg).write(value);
     }
 
     /// ステータスを読み取り
     #[inline]
-    fn read_status(&self) -> u8 {
+    pub(super) fn read_status(&self) -> u8 {
         self.read_reg(regs::STATUS)
     }
 
     /// 代替ステータスを読み取り（割り込みクリアなし）
     #[inline]
-    fn read_alt_status(&self) -> u8 {
+    pub(super) fn read_alt_status(&self) -> u8 {
         PortU8::new(self.control_base).read()
     }
 

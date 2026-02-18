@@ -42,9 +42,9 @@ use super::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 
 /// 最大オーダー（2^MAX_ORDER * 4KiB = 1GiB）
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 pub const MAX_ORDER: usize = 18;
 
 /// ページモビリティタイプ

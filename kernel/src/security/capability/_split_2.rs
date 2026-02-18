@@ -81,7 +81,7 @@ impl CapabilityManager {
         Ok(())
     }
 
-    fn check_caller_allowed(&self, caller_domain: u64, cap: Capability) -> bool {
+    pub(super) fn check_caller_allowed(&self, caller_domain: u64, cap: Capability) -> bool {
         if self.has_capability(caller_domain, CAP_SYS_ADMIN) {
             return true;
         }
@@ -230,7 +230,7 @@ impl CapabilityManager {
     }
 
     /// Expire grants whose expiry <= current tick
-    fn expire_grants(&self) {
+    pub(super) fn expire_grants(&self) {
         // Acquire 'now' in ticks. In tests this is 0.
         #[cfg(not(test))]
         let now = crate::task::timer::current_tick();

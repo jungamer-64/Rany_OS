@@ -20,7 +20,7 @@ use crate::mm::memcg::MemcgId;
 
 /// 各CPUの現在プロセスID (最大64コア対応)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 static CURRENT_PROCESS: [AtomicU64; 64] = {
     const INIT: AtomicU64 = AtomicU64::new(1); // 初期値はINITプロセス
     [INIT; 64]

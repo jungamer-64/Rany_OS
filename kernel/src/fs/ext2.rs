@@ -21,9 +21,9 @@ use alloc::vec::Vec;
 use core::mem;
 
 use super::block::BlockDevice;
-use super::fs_abstraction::{
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
+use super::fs_abstraction::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     InodeNum, OpenFlags,
 };

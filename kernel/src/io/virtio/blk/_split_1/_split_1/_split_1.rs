@@ -39,14 +39,14 @@ mod unit_tests {
     use super::*;
 
     #[test_case]
-    fn test_virtio_blk_req_type() {
+    pub(super) fn test_virtio_blk_req_type() {
         assert_eq!(VirtioBlkReqType::In as u32, 0);
         assert_eq!(VirtioBlkReqType::Out as u32, 1);
         assert_eq!(VirtioBlkReqType::Flush as u32, 4);
     }
 
     #[test_case]
-    fn test_block_device_config_default() {
+    pub(super) fn test_block_device_config_default() {
         let config = BlockDeviceConfig::default();
         assert_eq!(config.capacity, 0);
         assert_eq!(config.block_size, 512);
@@ -54,7 +54,7 @@ mod unit_tests {
     }
 
     #[test_case]
-    fn test_bounce_map_unmap_via_dmahandle() {
+    pub(super) fn test_bounce_map_unmap_via_dmahandle() {
         // Verify that bounce allocation + DmaHandle mapping/unmap works
         let len = 4096usize;
         let mut rref = allocate_iommu_bounce_bytes(len).expect("alloc bounce bytes failed");

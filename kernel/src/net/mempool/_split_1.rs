@@ -83,5 +83,6 @@ pub fn alloc_packet() -> Option<PacketRef> {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

@@ -3,7 +3,7 @@ use super::*;
 impl IommuDomain {
 
     /// Unmap a contiguous run of 4KB entries within a single PT.
-    fn unmap_range_4k(&self, iova: u64, pages: usize) -> Result<usize, IommuError> {
+    pub(super) fn unmap_range_4k(&self, iova: u64, pages: usize) -> Result<usize, IommuError> {
         if pages == 0 {
             return Ok(0);
         }
@@ -66,7 +66,7 @@ impl IommuDomain {
 
     /// Unmap a single entry at `iova` and return the unmapped size.
     #[allow(dead_code)]
-    fn unmap_entry(&self, iova: u64) -> Result<u64, IommuError> {
+    pub(super) fn unmap_entry(&self, iova: u64) -> Result<u64, IommuError> {
         const SIZE_1GB: u64 = 1024 * 1024 * 1024;
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
         const SIZE_4KB: u64 = 4096;
@@ -111,7 +111,7 @@ impl IommuDomain {
     /// Also reclaims empty page tables (PT, PD, PDP) to prevent memory accumulation
     /// from sparse mappings.
     #[allow(unused_assignments)]
-    fn unmap_page(&self, iova: u64) -> Result<(), IommuError> {
+    pub(super) fn unmap_page(&self, iova: u64) -> Result<(), IommuError> {
         // Extract indices for each level
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
@@ -189,7 +189,7 @@ impl IommuDomain {
         self.mapped_size.load(Ordering::Relaxed)
     }
 
-    fn poison(&self) {
+    pub(super) fn poison(&self) {
         if !self.poisoned.swap(true, Ordering::AcqRel) {
             self.notify_security(SecurityEvent::QuarantinePoisoned { domain_id: self.id });
             log::error!(

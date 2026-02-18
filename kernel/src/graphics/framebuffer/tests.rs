@@ -2,7 +2,7 @@ use super::*;
 use crate::graphics::image::Image;
 
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[test_case]
 fn test_draw_image_32bit_bgra_backbuffer() {
     let width = 4u32;

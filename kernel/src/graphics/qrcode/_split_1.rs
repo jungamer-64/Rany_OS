@@ -139,5 +139,6 @@ pub fn generate_error_qr(error_code: &str) -> Option<QrCode> {
 
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

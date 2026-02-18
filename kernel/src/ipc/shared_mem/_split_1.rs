@@ -381,5 +381,6 @@ impl<T: Copy> SharedRingBuffer<T> {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

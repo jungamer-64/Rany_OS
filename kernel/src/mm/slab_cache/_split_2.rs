@@ -83,7 +83,7 @@ impl SlabCache {
     }
 
     // Inner allocate to separate accounting from logic
-    fn allocate_inner(&mut self) -> Option<NonNull<u8>> {
+    pub(super) fn allocate_inner(&mut self) -> Option<NonNull<u8>> {
         // 1. Current Page
         if let Some(page) = self.current_page {
             let result = unsafe { self.alloc_from_page_tracked(page) };
@@ -110,7 +110,7 @@ impl SlabCache {
     }
     
     /// Pop a page from the partial list
-    fn pop_partial(&mut self) -> Option<NonNull<SlabPageHeader>> {
+    pub(super) fn pop_partial(&mut self) -> Option<NonNull<SlabPageHeader>> {
         if let Some(mut page) = self.partial_list {
             unsafe {
                 let next = page.as_ref().next;
@@ -245,7 +245,7 @@ impl SlabCache {
 
     /// 適応的リフィル数調整（スケールアップ）
     #[inline]
-    fn maybe_adjust_refill_pages(&mut self) {
+    pub(super) fn maybe_adjust_refill_pages(&mut self) {
         let allocs_since_last = self.alloc_count.saturating_sub(self.last_scale_alloc_count);
         
         if allocs_since_last >= REFILL_SCALE_UP_THRESHOLD {
@@ -259,18 +259,18 @@ impl SlabCache {
 
     /// 適応的リフィル数調整（スケールダウン）
     #[inline]
-    fn maybe_scale_down_refill(&mut self) {
+    pub(super) fn maybe_scale_down_refill(&mut self) {
         // Simplified logic: adjust based on total allocated pages vs object count?
         // Or just leave for now.
     }
 
     /// 新しいSlabページを追加（適応的バルクリフィル版）
-    fn grow(&mut self) -> Option<()> {
+    pub(super) fn grow(&mut self) -> Option<()> {
         self.grow_bulk(self.refill_pages)
     }
 
     /// 指定ページ数のSlabページを追加（内部用）
-    fn grow_bulk(&mut self, page_count: usize) -> Option<()> {
+    pub(super) fn grow_bulk(&mut self, page_count: usize) -> Option<()> {
         let mut added = 0;
         for _ in 0..page_count {
             if self.grow_single().is_some() {
@@ -283,7 +283,7 @@ impl SlabCache {
     }
 
     /// 単一のSlabページを追加
-    fn grow_single(&mut self) -> Option<()> {
+    pub(super) fn grow_single(&mut self) -> Option<()> {
         let frame = if let Some(node) = self.numa_node {
             crate::mm::alloc_frame_on_numa_node(super::types::NumaNodeId::new(node))
                 .or_else(|| crate::mm::alloc_frame())?
@@ -340,7 +340,7 @@ impl SlabCache {
     #[inline]
     /// Slab Coloringのオフセットを計算
     
-    fn calculate_color_offset(&self) -> usize {
+    pub(super) fn calculate_color_offset(&self) -> usize {
         // Enhanced: Use xorshift-based PRNG for better distribution
         let page_index = (self.full_page_count + self.partial_page_count + self.empty_page_count) as u32;
         let size_factor = self.object_size as u32;
@@ -417,7 +417,7 @@ impl SlabCache {
     }
     
     // Helper to get partial count (since we tracked it)
-    fn start_tracking_partial_count(&self) -> usize {
+    pub(super) fn start_tracking_partial_count(&self) -> usize {
         self.partial_page_count
     }
 
@@ -541,7 +541,7 @@ impl SlabCache {
     }
 
     /// Evacuate all objects from a page
-    fn evacuate_page(&mut self, mut page: NonNull<SlabPageHeader>) -> usize {
+    pub(super) fn evacuate_page(&mut self, mut page: NonNull<SlabPageHeader>) -> usize {
         let mut moved = 0;
         let object_size = self.object_size; 
         
@@ -594,7 +594,7 @@ impl SlabCache {
     }
 
     /// 単一オブジェクトの移行を試みる。成功時trueを返す。
-    fn try_migrate_object(&mut self, old_ptr: NonNull<u8>) -> bool {
+    pub(super) fn try_migrate_object(&mut self, old_ptr: NonNull<u8>) -> bool {
         let new_ptr = match self.allocate() {
             Some(p) => p,
             None => return false,

@@ -13,7 +13,7 @@ use crate::net::ecdh;
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 enum TranscriptHash {
     Sha256(crate::loader::sha256::Sha256),
     Sha384(crate::loader::sha384::Sha384),

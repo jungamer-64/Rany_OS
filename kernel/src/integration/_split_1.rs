@@ -55,7 +55,7 @@ impl SystemIntegration {
     }
 
     /// Phase 1: ACPI integration
-    fn integrate_acpi(&mut self) -> Result<(), IntegrationError> {
+    pub(super) fn integrate_acpi(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 1: ACPI integration");
 
         // Get ACPI information
@@ -91,7 +91,7 @@ impl SystemIntegration {
     }
 
     /// Phase 2: PCI integration
-    fn integrate_pci(&mut self) -> Result<(), IntegrationError> {
+    pub(super) fn integrate_pci(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 2: PCI bus integration");
 
         // Initialize PCI bus
@@ -137,7 +137,7 @@ impl SystemIntegration {
     }
 
     /// Phase 3: Interrupt integration
-    fn integrate_interrupts(&mut self) -> Result<(), IntegrationError> {
+    pub(super) fn integrate_interrupts(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 3: Interrupt routing configuration");
 
         // Configure IOAPIC redirection entries
@@ -189,7 +189,7 @@ impl SystemIntegration {
     }
 
     /// Phase 4: Device initialization
-    fn integrate_devices(&mut self) -> Result<(), IntegrationError> {
+    pub(super) fn integrate_devices(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 4: Device initialization");
 
         // Initialize VirtIO devices
@@ -216,7 +216,7 @@ impl SystemIntegration {
         Ok(())
     }
 
-    fn init_virtio_blk_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_blk_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Blk at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -293,7 +293,7 @@ impl SystemIntegration {
         }
     }
 
-    fn register_and_start_virtio_net_driver(&mut self, drv: alloc::boxed::Box<crate::net::driver::VirtioNetDriver>) {
+    pub(super) fn register_and_start_virtio_net_driver(&mut self, drv: alloc::boxed::Box<crate::net::driver::VirtioNetDriver>) {
         use crate::driver_registry::{register_driver, driver_registry};
         match register_driver(drv) {
             Ok(handle) => {
@@ -307,7 +307,7 @@ impl SystemIntegration {
         }
     }
 
-    fn init_virtio_net_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_net_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Net at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -379,7 +379,7 @@ impl SystemIntegration {
         }
     }
 
-    fn init_virtio_console_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_console_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Console at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -449,7 +449,7 @@ impl SystemIntegration {
         }
     }
 
-    fn init_virtio_input_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_input_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Input at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -519,7 +519,7 @@ impl SystemIntegration {
         }
     }
 
-    fn init_virtio_balloon_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_balloon_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-Balloon at {:02x}:{:02x}.{}",
             dev.bdf.bus(),

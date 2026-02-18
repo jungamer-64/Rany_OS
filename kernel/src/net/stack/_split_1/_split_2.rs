@@ -4,7 +4,7 @@ mod _split_1;
 impl NetworkStack {
     
     /// Send an IGMP Leave Group message
-    fn send_igmp_leave(&mut self, group_addr: Ipv4Address, current_time: u64) {
+    pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, current_time: u64) {
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
         
@@ -51,7 +51,7 @@ impl NetworkStack {
     }
 
     /// Process UDP data (for reassembled packets)
-    fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+    pub(super) fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
         // For reassembled packets, we don't have a PacketRef for zero-copy
         // Use the non-zero-copy path
         let result = self.udp.process(data, src_ip, dst_ip);
@@ -68,7 +68,7 @@ impl NetworkStack {
     }
 
     /// Process TCP data (for reassembled packets)
-    fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) {
+    pub(super) fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) {
         // For reassembled packets, use the non-zero-copy TCP processing path
         let result = self.tcp.process(data, src_ip, dst_ip, current_time);
 
@@ -125,7 +125,7 @@ impl NetworkStack {
     }
 
     /// Process ARP packet
-    fn process_arp(&mut self, data: &[u8], current_time: u64) {
+    pub(super) fn process_arp(&mut self, data: &[u8], current_time: u64) {
         let result = self.arp.process(data, current_time);
 
         match result {
@@ -143,7 +143,7 @@ impl NetworkStack {
     }
 
     /// Process ICMP packet
-    fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64, _packet: PacketRef) {
+    pub(super) fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64, _packet: PacketRef) {
         if !self.icmp_echo_enabled() {
             return;
         }
@@ -187,7 +187,7 @@ impl NetworkStack {
     }
 
     /// Process UDP packet
-    fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
+    pub(super) fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
         let result = self.udp.process_with_packet(data, src_ip, dst_ip, _packet);
 
         match result {
@@ -203,7 +203,7 @@ impl NetworkStack {
     }
 
     /// Process TCP packet
-    fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef, current_time: u64) {
+    pub(super) fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef, current_time: u64) {
         // Zero-copy path: pass PacketRef to the TCP processor so it can enqueue a zero-copy payload view.
         let result = self.tcp.process_with_packet(data, src_ip, dst_ip, _packet, current_time);
 
@@ -279,7 +279,7 @@ impl NetworkStack {
 
 
     /// Send an ARP reply
-    fn send_arp_reply(&mut self, target_mac: MacAddress, target_ip: Ipv4Address) {
+    pub(super) fn send_arp_reply(&mut self, target_mac: MacAddress, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
         let mac = self.mac_address();
 
@@ -344,7 +344,7 @@ impl NetworkStack {
     }
 
     /// Send ICMP echo reply
-    fn send_icmp_echo_reply(
+    pub(super) fn send_icmp_echo_reply(
         &mut self,
         dst_ip: Ipv4Address,
         identifier: u16,
@@ -422,7 +422,7 @@ impl NetworkStack {
     /// The Next-Hop MTU is encoded in bytes 6-7 of the ICMP message (after the
     /// 4-byte ICMP header). This value indicates the maximum MTU that should be
     /// used for that path.
-    fn handle_icmp_error(&mut self, data: &[u8], icmp_type: IcmpType, code: u8, current_time: u64) {
+    pub(super) fn handle_icmp_error(&mut self, data: &[u8], icmp_type: IcmpType, code: u8, current_time: u64) {
         // Only handle Destination Unreachable with Fragmentation Needed (RFC 1191)
         if icmp_type != IcmpType::DestinationUnreachable {
             return;
@@ -488,7 +488,7 @@ impl NetworkStack {
     /// - Only accept redirects from the current first-hop router
     /// - Validate that the new gateway is on a directly connected network
     /// - Ignore redirects for destinations not matching current routes
-    fn handle_icmp_redirect(
+    pub(super) fn handle_icmp_redirect(
         &mut self,
         code: RedirectCode,
         gateway: Ipv4Address,
@@ -598,7 +598,7 @@ impl NetworkStack {
     }
 
     /// Resolve IP to MAC address
-    fn resolve_mac(
+    pub(super) fn resolve_mac(
         &mut self,
         dst_ip: Ipv4Address,
         config: &NetworkConfig,

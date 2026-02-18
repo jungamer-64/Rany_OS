@@ -13,7 +13,7 @@ impl QuarantineQueue {
 
     /// PRIVATE: Poison the queue and wake all waiters to prevent hangs.
     /// Used when a critical invariant is violated.
-    fn poison_system(&self) {
+    pub(super) fn poison_system(&self) {
         // Only do this once
         if self.poisoned.swap(true, Ordering::AcqRel) {
             return;
@@ -242,7 +242,7 @@ impl QuarantineQueue {
     /// In release builds, excess requests are dropped with an error log.
     /// Pass 1: Verify no Reserved slots exist in pending invalidations.
     /// Returns Some(batch) if corruption is detected, None if all clear.
-    fn verify_no_reserved_slots(&self, inner: &QuarantineQueueInner) -> Option<u64> {
+    pub(super) fn verify_no_reserved_slots(&self, inner: &QuarantineQueueInner) -> Option<u64> {
         for slot in inner.pending_invalidations.iter() {
             if let InvSlot::Reserved { .. } = slot {
                 debug_assert!(
@@ -407,7 +407,7 @@ impl QuarantineQueue {
         }
     }
 
-    fn handle_late_commit(
+    pub(super) fn handle_late_commit(
         late_free: Option<(u64, u64)>,
         late_wake: Option<core::task::Waker>,
         context: &dyn IommuHardwareContext,
@@ -524,7 +524,7 @@ impl QuarantineQueue {
 
     /// Spin until the batch is complete, registering a waker if still pending.
     /// Returns `true` if the batch has completed, `false` if still pending.
-    fn wait_for_batch(
+    pub(super) fn wait_for_batch(
         &self,
         slot: u32,
         slot_gen: u32,
@@ -546,7 +546,7 @@ impl QuarantineQueue {
     }
 
     /// Register the waker for a pending entry under lock.
-    fn poll_register_waker(&self, slot: u32, slot_gen: u32, cx: &mut Context<'_>) {
+    pub(super) fn poll_register_waker(&self, slot: u32, slot_gen: u32, cx: &mut Context<'_>) {
         let mut inner = self.inner.lock();
         if (slot as usize) < QUARANTINE_CAPACITY {
             let current_slot_gen = inner.slot_generations[slot as usize];
@@ -563,7 +563,7 @@ impl QuarantineQueue {
     }
 
     /// Take raw parts of a completed entry under lock, then reconstruct `RRef<T>`.
-    fn take_completed_entry<T: 'static>(
+    pub(super) fn take_completed_entry<T: 'static>(
         &self,
         slot: u32,
         slot_gen: u32,

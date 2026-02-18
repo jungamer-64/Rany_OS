@@ -32,9 +32,9 @@ use super::remote_free::RemoteFreeRing;
 
 /// Slab内のオブジェクトサイズクラス（2のべき乗）
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 pub const SLAB_SIZES: [usize; 8] = [8, 16, 32, 64, 128, 256, 512, 1024];
 
 /// 1つのSlabページのサイズ

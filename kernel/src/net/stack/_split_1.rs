@@ -188,7 +188,7 @@ impl NetworkStack {
     }
 
     /// Process IPv4 packet
-    fn process_ipv4(&mut self, data: &[u8], current_time: u64, packet: PacketRef) {
+    pub(super) fn process_ipv4(&mut self, data: &[u8], current_time: u64, packet: PacketRef) {
         let result = self.ipv4.process_with_time(data, current_time);
 
         match result {
@@ -230,7 +230,7 @@ impl NetworkStack {
     }
 
     /// Process a reassembled IP packet
-    fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64) {
+    pub(super) fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64) {
         // Parse the reassembled packet
         if let Some(packet) = Ipv4Packet::parse(data) {
             let src = packet.source();
@@ -262,7 +262,7 @@ impl NetworkStack {
     }
 
     /// Process ICMP data (for reassembled packets)
-    fn process_icmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
+    pub(super) fn process_icmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
         if !self.icmp_echo_enabled() {
             return;
         }
@@ -304,7 +304,7 @@ impl NetworkStack {
     // =========================================================================
 
     /// Process IPv6 packet data
-    fn process_ipv6_data(&mut self, data: &[u8], current_time: u64) {
+    pub(super) fn process_ipv6_data(&mut self, data: &[u8], current_time: u64) {
         let ipv6 = match self.ipv6 {
             Some(ref ipv6) => ipv6,
             None => return,
@@ -335,7 +335,7 @@ impl NetworkStack {
     }
 
     /// Process ICMPv6 data
-    fn process_icmpv6_data(
+    pub(super) fn process_icmpv6_data(
         &mut self,
         data: &[u8],
         src: Ipv6Address,
@@ -382,7 +382,7 @@ impl NetworkStack {
     }
 
     /// Process NDP message
-    fn process_ndp_message(
+    pub(super) fn process_ndp_message(
         &mut self,
         msg_type: super::icmpv6::Icmpv6Type,
         data: &[u8],
@@ -437,7 +437,7 @@ impl NetworkStack {
     }
 
     /// Send ICMPv6 Echo Reply
-    fn send_icmpv6_echo_reply(
+    pub(super) fn send_icmpv6_echo_reply(
         &mut self,
         dst: Ipv6Address,
         identifier: u16,
@@ -466,7 +466,7 @@ impl NetworkStack {
     }
 
     /// Send an IPv6 packet containing ICMPv6 payload
-    fn send_ipv6_icmpv6(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
+    pub(super) fn send_ipv6_icmpv6(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
         let config = self.config;
 
         // Resolve destination MAC
@@ -526,7 +526,7 @@ impl NetworkStack {
     }
 
     /// Process IGMP data for multicast group management
-    fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address) {
+    pub(super) fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address) {
         let current_time = self.current_time();
         self.igmp.update_time(current_time);
         
@@ -556,7 +556,7 @@ impl NetworkStack {
     }
     
     /// Send pending IGMP reports
-    fn send_pending_igmp_reports(&mut self) {
+    pub(super) fn send_pending_igmp_reports(&mut self) {
         let pending = self.igmp.take_pending_reports();
         let current_time = self.current_time();
         
@@ -570,7 +570,7 @@ impl NetworkStack {
     }
     
     /// Send an IGMP Membership Report
-    fn send_igmp_report(&mut self, group_addr: Ipv4Address, current_time: u64) {
+    pub(super) fn send_igmp_report(&mut self, group_addr: Ipv4Address, current_time: u64) {
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
         

@@ -25,7 +25,7 @@ use kernel_api::error::KapiResult;
 
 /// COM port base addresses
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[repr(u16)]
 #[derive(Debug, Clone, Copy)]
 pub enum ComPort {

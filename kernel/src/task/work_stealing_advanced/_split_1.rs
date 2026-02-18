@@ -46,7 +46,7 @@ impl GlobalScheduler {
     }
 
     /// タスクに適したコアを選択
-    fn select_core_for_task(&self, task: &StealableTask) -> u32 {
+    pub(super) fn select_core_for_task(&self, task: &StealableTask) -> u32 {
         // 優先コアがあればそれを使用
         if let Some(preferred) = task.affinity.preferred_core() {
             if task.affinity.is_allowed(preferred) {
@@ -69,7 +69,7 @@ impl GlobalScheduler {
     }
 
     /// 最も負荷の低いコアを見つける
-    fn find_least_loaded_core(&self, affinity: &CoreAffinity) -> u32 {
+    pub(super) fn find_least_loaded_core(&self, affinity: &CoreAffinity) -> u32 {
         let mut min_load = usize::MAX;
         let mut selected = 0;
 
@@ -120,7 +120,7 @@ impl GlobalScheduler {
     }
 
     /// グローバルキューからポップ
-    fn try_pop_global(&self, core_id: u32) -> Option<Box<StealableTask>> {
+    pub(super) fn try_pop_global(&self, core_id: u32) -> Option<Box<StealableTask>> {
         let mut global = self.global_queue.lock();
 
         // アフィニティに適合するタスクを探す
@@ -138,7 +138,7 @@ impl GlobalScheduler {
     /// 1. ローカルコア（L1/L2キャッシュ共有）から優先
     /// 2. 同一NUMAノード内のコアから
     /// 3. 他のNUMAノードのコアから
-    fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
+    pub(super) fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
         if self.workers.len() <= 1 {
             return None;
         }
@@ -155,7 +155,7 @@ impl GlobalScheduler {
     }
 
     /// Phase 1: 同一LLCを共有するコア（Hyperthread sibling）からスチール
-    fn steal_from_llc_siblings(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
+    pub(super) fn steal_from_llc_siblings(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
         for &sibling_id in numa_info.get_llc_siblings(core_id) {
             if sibling_id == core_id || sibling_id as usize >= self.workers.len() {
                 continue;
@@ -168,7 +168,7 @@ impl GlobalScheduler {
     }
 
     /// Phase 2: 同一NUMAノード内の他コアからスチール（LLC sibling除く）
-    fn steal_from_same_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
+    pub(super) fn steal_from_same_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
         let my_numa_node = numa_info.get_numa_node(core_id);
         for &target_core in numa_info.get_cores_in_node(my_numa_node) {
             if target_core == core_id || target_core as usize >= self.workers.len() {
@@ -185,7 +185,7 @@ impl GlobalScheduler {
     }
 
     /// Phase 3: 他のNUMAノードからスチール（最後の手段）
-    fn steal_from_remote_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
+    pub(super) fn steal_from_remote_numa(&self, core_id: u32, numa_info: &NumaTopology) -> Option<Box<StealableTask>> {
         let my_numa_node = numa_info.get_numa_node(core_id);
         for node in 0..numa_info.num_nodes() {
             if node == my_numa_node {
@@ -208,7 +208,7 @@ impl GlobalScheduler {
     }
 
     /// 特定のコアからタスクをスチール
-    fn try_steal_from_core(&self, victim_id: u32, thief_id: u32) -> Option<Box<StealableTask>> {
+    pub(super) fn try_steal_from_core(&self, victim_id: u32, thief_id: u32) -> Option<Box<StealableTask>> {
         let victim = &self.workers[victim_id as usize];
 
         // 被害者のキューが十分にある場合のみスチール
@@ -230,7 +230,7 @@ impl GlobalScheduler {
     }
 
     /// 負荷バランシングを試行
-    fn maybe_load_balance(&self) {
+    pub(super) fn maybe_load_balance(&self) {
         if !self.load_balance_enabled.load(Ordering::Relaxed) {
             return;
         }
@@ -367,5 +367,6 @@ pub fn schedule(core_id: u32) -> Option<Box<StealableTask>> {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

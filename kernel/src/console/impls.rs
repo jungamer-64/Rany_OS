@@ -22,7 +22,7 @@ impl VirtualConsole {
     }
 
     /// ANSIアクションを実行
-    fn execute_action(&mut self, action: AnsiAction) {
+    pub(super) fn execute_action(&mut self, action: AnsiAction) {
         match action {
             AnsiAction::Print(ch) => {
                 self.buffer.write_char(ch);
@@ -74,7 +74,7 @@ impl VirtualConsole {
     }
 
     /// SGRパラメータを適用
-    fn apply_sgr(&mut self, params: &[u32]) {
+    pub(super) fn apply_sgr(&mut self, params: &[u32]) {
         let mut attr = self.buffer.current_attr;
         let mut i = 0;
 
@@ -413,5 +413,6 @@ macro_rules! console_println {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

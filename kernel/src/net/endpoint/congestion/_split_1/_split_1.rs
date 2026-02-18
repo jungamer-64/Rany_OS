@@ -10,7 +10,7 @@ mod variant_tests {
     use super::*;
 
     #[test_case]
-    fn test_variant_from_algorithm() {
+    pub(super) fn test_variant_from_algorithm() {
         let nr = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::NewReno);
         assert_eq!(nr.algorithm(), CongestionAlgorithm::NewReno);
         assert_eq!(nr.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
@@ -25,14 +25,14 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_with_mss() {
+    pub(super) fn test_variant_with_mss() {
         let v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
         assert_eq!(v.mss(), 1000);
         assert_eq!(v.cwnd(), INITIAL_WINDOW * 1000);
     }
 
     #[test_case]
-    fn test_variant_newreno_ack_delegation() {
+    pub(super) fn test_variant_newreno_ack_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
         let initial_cwnd = v.cwnd();
 
@@ -43,7 +43,7 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_cubic_ack_delegation() {
+    pub(super) fn test_variant_cubic_ack_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
         let initial_cwnd = v.cwnd();
 
@@ -54,7 +54,7 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_bbr_ack_delegation() {
+    pub(super) fn test_variant_bbr_ack_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Bbr, 1000);
 
         // Send then receive ACK
@@ -66,7 +66,7 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_timeout_delegation() {
+    pub(super) fn test_variant_timeout_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
 
         // Simulate data in flight then timeout
@@ -79,7 +79,7 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_reset_delegation() {
+    pub(super) fn test_variant_reset_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
 
         // Modify state
@@ -95,7 +95,7 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_available_window() {
+    pub(super) fn test_variant_available_window() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
 
         v.on_send(3000, 0);
@@ -109,7 +109,7 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_fast_retransmit_newreno() {
+    pub(super) fn test_variant_fast_retransmit_newreno() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
 
         v.on_send(10000, 0);
@@ -123,7 +123,7 @@ mod variant_tests {
     }
 
     #[test_case]
-    fn test_variant_default() {
+    pub(super) fn test_variant_default() {
         let v = CongestionControllerVariant::default();
         assert_eq!(v.algorithm(), CongestionAlgorithm::NewReno);
     }

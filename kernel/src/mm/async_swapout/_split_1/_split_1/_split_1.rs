@@ -2,6 +2,7 @@ use super::*;
 
 
 #[cfg(feature = "qemu-test-export")]
+#[path = "../../qemu_tests.rs"]
 pub mod qemu_tests;
 
 // テスト: キューイング API とワーカの動作を検証するユニットテストを追加
@@ -11,7 +12,7 @@ mod tests {
     use crate::mm::{PAGE_SIZE_4K, frame_backing};
 
     #[test_case]
-    fn test_async_swapout_file_backed() {
+    pub(super) fn test_async_swapout_file_backed() {
         // セットアップ: page cache にページを入れ、対応するフレームを確保して frame_backing を登録
         let cache = crate::fs::PageCache::new(64 * 1024);
         let ino = 42u64;
@@ -44,7 +45,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_async_swapout_dedup() {
+    pub(super) fn test_async_swapout_dedup() {
         // setup similar to file-backed test
         let cache = crate::fs::PageCache::new(64 * 1024);
         let ino = 43u64;
@@ -75,7 +76,7 @@ mod tests {
 
     #[test_case]
     #[cfg(not(feature = "full_mm_tests"))]
-    fn test_enqueue_override_forces_error() {
+    pub(super) fn test_enqueue_override_forces_error() {
         crate::mm::async_swapout::set_test_enqueue_override(Some(SwapError::QueueFull));
 
         let frame = crate::mm::alloc_frame().expect("alloc frame");
@@ -97,7 +98,7 @@ mod tests {
 
     #[test_case]
     #[cfg(feature = "std")]
-    fn test_memcg_concurrent_swapout() {
+    pub(super) fn test_memcg_concurrent_swapout() {
         // Initialize memcg and global page cache
         crate::mm::memcg::init_memcg();
         let cg = crate::mm::memcg::memcg_create(String::from("concurrent"), crate::mm::memcg::memcg_root()).expect("create memcg");
@@ -157,7 +158,7 @@ mod tests {
 
     #[test_case]
     #[cfg(feature = "std")]
-    fn test_async_swapout_concurrent_dedup() {
+    pub(super) fn test_async_swapout_concurrent_dedup() {
         // Initialize global cache
         crate::fs::init_page_cache(64 * 1024);
         let cache = crate::fs::page_cache();
@@ -243,7 +244,7 @@ mod tests {
 
     #[test_case]
     #[cfg(feature = "std")]
-    fn test_worker_restart() {
+    pub(super) fn test_worker_restart() {
         // ensure worker lifecycle control works via top-level API
         start_worker();
         assert!(is_worker_running(), "worker should be running after start");
@@ -266,7 +267,7 @@ mod tests {
 
     #[test_case]
     #[cfg(feature = "std")]
-    fn test_async_swapout_qos_reservation() {
+    pub(super) fn test_async_swapout_qos_reservation() {
         crate::fs::init_page_cache(64 * 1024);
         let cache = crate::fs::page_cache();
 
@@ -330,7 +331,7 @@ mod tests {
 
     #[test_case]
     #[cfg(feature = "std")]
-    fn test_token_bucket_exhaustion_and_refill() {
+    pub(super) fn test_token_bucket_exhaustion_and_refill() {
         // Ensure worker controlled
         stop_worker();
         for _ in 0..20 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
@@ -364,7 +365,7 @@ mod tests {
 
     #[test_case]
     #[cfg(feature = "std")]
-    fn test_token_refill_on_processing() {
+    pub(super) fn test_token_refill_on_processing() {
         // Stop worker to control processing
         stop_worker();
         for _ in 0..20 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
@@ -402,7 +403,7 @@ mod tests {
 
     #[test_case]
     #[cfg(feature = "std")]
-    fn test_async_swapout_stress_concurrency() {
+    pub(super) fn test_async_swapout_stress_concurrency() {
         crate::mm::memcg::init_memcg();
         let cg = crate::mm::memcg::memcg_create(String::from("stress"), crate::mm::memcg::memcg_root()).expect("create memcg");
         crate::fs::init_page_cache(64 * 1024);
@@ -486,7 +487,7 @@ mod tests {
 
     #[test_case]
     #[ignore]
-    fn test_async_swapout_heavy_stress() {
+    pub(super) fn test_async_swapout_heavy_stress() {
         crate::mm::memcg::init_memcg();
         let cg = crate::mm::memcg::memcg_create(String::from("heavy"), crate::mm::memcg::memcg_root()).expect("create memcg");
         crate::fs::init_page_cache(64 * 1024);
@@ -558,7 +559,7 @@ mod tests {
 
     #[test_case]
     #[ignore]
-    fn bench_enqueue_throughput() {
+    pub(super) fn bench_enqueue_throughput() {
         crate::fs::init_page_cache(64 * 1024);
 
         test_impl::set_processing_delay(1);
@@ -581,7 +582,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_zswap_failure_does_not_dealloc() {
+    pub(super) fn test_zswap_failure_does_not_dealloc() {
         crate::fs::init_page_cache(64 * 1024);
 
         // Ensure deterministic worker lifecycle
@@ -617,7 +618,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_huge_page_2m_anon_store() {
+    pub(super) fn test_huge_page_2m_anon_store() {
         // Ensure deterministic worker lifecycle
         test_impl::stop_worker();
         for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
@@ -652,7 +653,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_global_async_swapout_metrics_update() {
+    pub(super) fn test_global_async_swapout_metrics_update() {
         // ensure metrics are zeroed in the beginning
         // Note: These are global, so we don't reset them here; just ensure they are accessible and behave monotonically
         let before_fail = crate::mm::async_swapout::stats_zswap_fail_count();
@@ -687,7 +688,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_notify_failure_on_file_writeback_error() {
+    pub(super) fn test_notify_failure_on_file_writeback_error() {
         crate::fs::init_page_cache(64 * 1024);
 
         test_impl::stop_worker();
@@ -739,7 +740,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_notify_failure_on_anon_zswap_error() {
+    pub(super) fn test_notify_failure_on_anon_zswap_error() {
         test_impl::stop_worker();
         for _ in 0..20 {
             if !test_impl::is_worker_running() {
@@ -792,7 +793,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_notify_success_once_per_pending() {
+    pub(super) fn test_notify_success_once_per_pending() {
         test_impl::stop_worker();
         for _ in 0..20 {
             if !test_impl::is_worker_running() {
@@ -840,7 +841,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_notify_failure_once_per_pending() {
+    pub(super) fn test_notify_failure_once_per_pending() {
         let before = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
 
         let frame = crate::mm::alloc_frame().expect("alloc frame");
@@ -877,7 +878,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_token_exhaustion_does_not_leave_pending() {
+    pub(super) fn test_token_exhaustion_does_not_leave_pending() {
         test_impl::stop_worker();
         for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
 
@@ -894,7 +895,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_file_queue_counter_saturation() {
+    pub(super) fn test_file_queue_counter_saturation() {
         test_impl::stop_worker();
         for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
 
@@ -906,7 +907,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_buffer_pool_basic() {
+    pub(super) fn test_buffer_pool_basic() {
         // Ensure pool is cleared and capacity is small
         crate::mm::async_swapout::buffer_pool_4k_clear();
         crate::mm::async_swapout::buffer_pool_4k_set_capacity(2);
@@ -934,7 +935,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_buffer_pool_concurrent() {
+    pub(super) fn test_buffer_pool_concurrent() {
         crate::mm::async_swapout::buffer_pool_4k_clear();
         crate::mm::async_swapout::buffer_pool_4k_set_capacity(16);
 
@@ -963,7 +964,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_buffer_pool_2m_basic() {
+    pub(super) fn test_buffer_pool_2m_basic() {
         crate::mm::async_swapout::buffer_pool_2m_clear();
         crate::mm::async_swapout::buffer_pool_2m_set_capacity(2);
 
@@ -990,7 +991,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_buffer_pool_2m_concurrent() {
+    pub(super) fn test_buffer_pool_2m_concurrent() {
         crate::mm::async_swapout::buffer_pool_2m_clear();
         crate::mm::async_swapout::buffer_pool_2m_set_capacity(8);
 
@@ -1019,7 +1020,7 @@ mod tests {
 
     #[test_case]
     #[ignore]
-    fn test_buffer_pool_1g_basic() {
+    pub(super) fn test_buffer_pool_1g_basic() {
         crate::mm::async_swapout::buffer_pool_1g_clear();
         crate::mm::async_swapout::buffer_pool_1g_set_capacity(1);
 
@@ -1045,7 +1046,7 @@ mod tests {
     #[test_case]
     #[ignore]
     #[cfg(feature = "std")]
-    fn bench_enqueue_throughput_pool_vs_nopool() {
+    pub(super) fn bench_enqueue_throughput_pool_vs_nopool() {
         crate::fs::init_page_cache(64 * 1024);
 
         // small micro-bench (ignored by default)
@@ -1103,7 +1104,7 @@ mod tests {
     #[test_case]
     #[ignore]
     #[cfg(feature = "std")]
-    fn bench_buffer_pool_2m_throughput() {
+    pub(super) fn bench_buffer_pool_2m_throughput() {
         // micro-bench: small counts to avoid excessive memory use
         let count = 12usize;
 
@@ -1140,7 +1141,7 @@ mod tests {
     #[test_case]
     #[ignore]
     #[cfg(feature = "std")]
-    fn bench_buffer_pool_1g_throughput() {
+    pub(super) fn bench_buffer_pool_1g_throughput() {
         // very small count due to size
         let count = 2usize;
 

@@ -88,5 +88,6 @@ pub fn alloc_buffer() -> Option<ZeroCopyBuffer> {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

@@ -10,6 +10,8 @@
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::{Bar, BdfAddress, ClassCode, DeviceId, VendorId};
 use alloc::vec::Vec;
+mod _split_1;
+pub use _split_1::*;
 
 // ============================================================================
 // Configuration Space Register Offsets
@@ -17,8 +19,6 @@ use alloc::vec::Vec;
 
 /// 標準PCI設定空間レジスタオフセット
 pub mod config_regs {
-mod _split_1;
-use _split_1::*;
     pub const VENDOR_ID: u16 = 0x00;
     pub const DEVICE_ID: u16 = 0x02;
     pub const COMMAND: u16 = 0x04;

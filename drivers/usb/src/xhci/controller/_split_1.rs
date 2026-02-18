@@ -2,14 +2,14 @@ use super::*;
 
 impl XhciController {
 
-    fn write_runtime(&self, offset: usize, value: u32) {
+    pub(super) fn write_runtime(&self, offset: usize, value: u32) {
         hal::mmio::mmio_write_u32(
             (self.rt_offset + IR0 as u64 + offset as u64) as usize,
             value,
         );
     }
 
-    fn write_runtime_64(&self, offset: usize, value: u64) {
+    pub(super) fn write_runtime_64(&self, offset: usize, value: u64) {
         hal::mmio::mmio_write_u64(
             (self.rt_offset + IR0 as u64 + offset as u64) as usize,
             value,
@@ -113,7 +113,7 @@ impl XhciController {
             return Err(UsbError::InvalidDevice);
         }
 
-        let ring = Box::new(TrbRing::new(super::TRANSFER_RING_SIZE));
+        let ring = Box::new(TrbRing::new(TRANSFER_RING_SIZE));
         let ring_addr = ring.physical_address();
 
         let mut transfer_rings = self.transfer_rings.lock();
@@ -136,7 +136,7 @@ impl XhciController {
         speed: UsbSpeed,
         block_set_address: bool,
     ) -> UsbResult<()> {
-        use super::context::InputContext;
+        use crate::xhci::context::InputContext;
 
         // EP0用の転送リングを割り当て
         let tr_dequeue_ptr = self.allocate_transfer_ring(slot_id, 1)?;
@@ -226,9 +226,9 @@ impl XhciController {
     pub async fn configure_endpoints(
         &self,
         slot_id: SlotId,
-        endpoints: &[(u8, super::context::EndpointContext)],
+        endpoints: &[(u8, crate::xhci::context::EndpointContext)],
     ) -> UsbResult<()> {
-        use super::context::InputContext;
+        use crate::xhci::context::InputContext;
 
         // 現在のスロットコンテキストを取得
         let device_contexts = self.device_contexts.lock();

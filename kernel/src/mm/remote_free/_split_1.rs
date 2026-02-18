@@ -475,6 +475,7 @@ pub type FrameQuarantineRing = QuarantineRing<512>;
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 
 // ============================================================================
@@ -659,7 +660,7 @@ pub mod coalescing {
     }
 
     /// グローバル結合統計
-    static COALESCE_STATS: core::sync::atomic::AtomicU64 = 
+    pub(super) static COALESCE_STATS: core::sync::atomic::AtomicU64 = 
         core::sync::atomic::AtomicU64::new(0);
 
     /// 結合統計を更新

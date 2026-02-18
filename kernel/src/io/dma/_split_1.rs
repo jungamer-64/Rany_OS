@@ -360,7 +360,7 @@ pub struct CoherentDmaBuffer {
 }
 
 impl CoherentDmaBuffer {
-    const DMA_ALIGNMENT: usize = 4096;
+    pub(super) const DMA_ALIGNMENT: usize = 4096;
 
     /// IOMMUマッピングなしのDMAバッファを割り当てる。
     ///
@@ -384,7 +384,7 @@ impl CoherentDmaBuffer {
     }
 
     /// 内部実装: DMAバッファの割り当てとオプショナルなIOMMUマッピング
-    fn new_internal(
+    pub(super) fn new_internal(
         size: usize,
         attributes: DmaMemoryAttributes,
         device: Option<&crate::io::iommu::types::DeviceId>,

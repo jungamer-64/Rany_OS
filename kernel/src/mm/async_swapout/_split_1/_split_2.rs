@@ -14,45 +14,45 @@ mod kernel_impl {
     use crate::mm::page_flags::{self, PageMetaFlags};
 
     // Channel capacity and batch size tunables
-    const CHANNEL_SIZE: usize = 1024;
-    const BATCH_SIZE: usize = 32;
+    pub(super) const CHANNEL_SIZE: usize = 1024;
+    pub(super) const BATCH_SIZE: usize = 32;
 
     #[derive(Clone, Copy)]
-    struct SwapEntryKernel {
+    pub(super) struct SwapEntryKernel {
         frame: FrameIndex,
         kind: SwapKind,
     }
 
     // Static channel (initialized once)
-    static CHANNEL_ONCE: Once<Option<(BoundedSender<SwapEntryKernel, CHANNEL_SIZE>, BoundedReceiver<SwapEntryKernel, CHANNEL_SIZE>)>> = Once::new();
+    pub(super) static CHANNEL_ONCE: Once<Option<(BoundedSender<SwapEntryKernel, CHANNEL_SIZE>, BoundedReceiver<SwapEntryKernel, CHANNEL_SIZE>)>> = Once::new();
 
     // Pending set is replaced by GlobalPageFlags
 
     // Queue occupancy counters (for reservation of file slots)
     use core::sync::atomic::{AtomicUsize, Ordering};
-    static QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
     // Reserve some slots for file writes so heavy anon traffic cannot starve file writebacks
-    const RESERVED_FILE_SLOTS: usize = CHANNEL_SIZE / 8; // reserve ~12.5% for file writes
+    pub(super) const RESERVED_FILE_SLOTS: usize = CHANNEL_SIZE / 8; // reserve ~12.5% for file writes
     // Token-bucket backpressure (anonymous pages)
     // - TOKEN_BUCKET_CAPACITY: Burst capacity for anon enqueues. Larger value allows absorbing transient spikes
     //   but increases risk of anon traffic delaying file writebacks.
     // - TOKEN_REFILL_PER_BATCH: Amount of tokens restored per processed batch. Controls long-term sustained rate.
-    const TOKEN_BUCKET_CAPACITY: usize = CHANNEL_SIZE / 4; // anonymous burst capacity
-    const TOKEN_REFILL_PER_BATCH: usize = BATCH_SIZE / 2;
+    pub(super) const TOKEN_BUCKET_CAPACITY: usize = CHANNEL_SIZE / 4; // anonymous burst capacity
+    pub(super) const TOKEN_REFILL_PER_BATCH: usize = BATCH_SIZE / 2;
 
     // Runtime-adjustable parameters (Atomics allow tuning without recompilation)
-    static RESERVED_FILE_SLOTS_ATOMIC: AtomicUsize = AtomicUsize::new(RESERVED_FILE_SLOTS);
-    static TOKEN_BUCKET_CAPACITY_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
-    static TOKEN_REFILL_PER_BATCH_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_REFILL_PER_BATCH);
+    pub(super) static RESERVED_FILE_SLOTS_ATOMIC: AtomicUsize = AtomicUsize::new(RESERVED_FILE_SLOTS);
+    pub(super) static TOKEN_BUCKET_CAPACITY_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
+    pub(super) static TOKEN_REFILL_PER_BATCH_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_REFILL_PER_BATCH);
 
-    static TOKENS: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
+    pub(super) static TOKENS: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
     // Worker waker and running flags
-    static WORKER_WAKER: AtomicWaker = AtomicWaker::new();
-    static WORKER_RUNNING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-    static WORKER_SHUTDOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    pub(super) static WORKER_WAKER: AtomicWaker = AtomicWaker::new();
+    pub(super) static WORKER_RUNNING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    pub(super) static WORKER_SHUTDOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-    fn ensure_channel_started() {
+    pub(super) fn ensure_channel_started() {
         CHANNEL_ONCE.call_once(|| {
             let (s, r) = BoundedChannel::<SwapEntryKernel, CHANNEL_SIZE>::new();
             Some((s, r))
@@ -67,7 +67,7 @@ mod kernel_impl {
     }
 
     // Future that waits until there is work in the channel
-    struct WaitForWork;
+    pub(super) struct WaitForWork;
     impl core::future::Future for WaitForWork {
         type Output = ();
         fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
@@ -92,7 +92,7 @@ mod kernel_impl {
         }
     }
 
-    async fn worker_loop() {
+    pub(super) async fn worker_loop() {
         // reuse buffer to avoid per-page allocations
         let mut reuse_buf = buffer_pool_get_4k();
         loop {
@@ -119,7 +119,7 @@ mod kernel_impl {
     }
 
     /// Check if the worker should shut down (shutdown requested and channel empty).
-    fn should_shutdown() -> bool {
+    pub(super) fn should_shutdown() -> bool {
         if !WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
             return false;
         }
@@ -134,7 +134,7 @@ mod kernel_impl {
     }
 
     /// Drain up to BATCH_SIZE entries from the channel.
-    fn drain_batch() -> Vec<SwapEntryKernel> {
+    pub(super) fn drain_batch() -> Vec<SwapEntryKernel> {
         let mut batch: Vec<SwapEntryKernel> = Vec::new();
         if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
             let rx = &ch.1;
@@ -150,7 +150,7 @@ mod kernel_impl {
     }
 
     /// Process a single swap entry (file or anon).
-    fn process_swap_entry(entry: SwapEntryKernel, reuse_buf: &mut Vec<u8>) {
+    pub(super) fn process_swap_entry(entry: SwapEntryKernel, reuse_buf: &mut Vec<u8>) {
         match entry.kind {
             SwapKind::File { ino, page_num } => {
                 process_file_swap(entry.frame, ino, page_num);
@@ -172,7 +172,7 @@ mod kernel_impl {
     }
 
     /// Process a file swapout entry.
-    fn process_file_swap(frame: FrameIndex, ino: u64, page_num: u64) {
+    pub(super) fn process_file_swap(frame: FrameIndex, ino: u64, page_num: u64) {
         let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
             match crate::fs::write_inode_by_number(ino, offset, data) {
                 Ok(_) => Ok(()),
@@ -202,7 +202,7 @@ mod kernel_impl {
         }
     }
 
-    fn try_consume_token() -> bool {
+    pub(super) fn try_consume_token() -> bool {
         let mut cur = TOKENS.load(Ordering::Acquire);
         loop {
             if cur == 0 {
@@ -215,7 +215,7 @@ mod kernel_impl {
         }
     }
 
-    fn add_tokens(n: usize) {
+    pub(super) fn add_tokens(n: usize) {
         // Respect current dynamic capacity
         let cap = TOKEN_BUCKET_CAPACITY_ATOMIC.load(Ordering::Acquire);
         let mut cur = TOKENS.load(Ordering::Acquire);
@@ -235,7 +235,7 @@ mod kernel_impl {
 
     /// Check channel capacity and anon-specific reservation/token constraints.
     /// Returns `true` if the anon token was consumed (must be restored on send failure).
-    fn check_anon_constraints(
+    pub(super) fn check_anon_constraints(
         sender: &BoundedSender<SwapEntryKernel, CHANNEL_SIZE>,
         frame: FrameIndex,
         kind: &SwapKind,

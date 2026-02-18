@@ -16,7 +16,7 @@ pub mod signature;
 pub mod type_id;
 
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[allow(unused_imports)]
 pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
 #[allow(unused_imports)]

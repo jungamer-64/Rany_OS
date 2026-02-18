@@ -169,7 +169,7 @@ pub(crate) struct DeviceFaultEntry {
 }
 
 impl DeviceFaultEntry {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             source_id: AtomicU32::new(0),
             fault_count: AtomicU32::new(0),
@@ -178,24 +178,24 @@ impl DeviceFaultEntry {
         }
     }
 
-    fn is_unused(&self) -> bool {
+    pub(super) fn is_unused(&self) -> bool {
         self.source_id.load(Ordering::Relaxed) == 0
     }
 
-    fn matches(&self, source_id: u16) -> bool {
+    pub(super) fn matches(&self, source_id: u16) -> bool {
         self.source_id.load(Ordering::Relaxed) == source_id as u32
     }
 
-    fn is_isolated(&self) -> bool {
+    pub(super) fn is_isolated(&self) -> bool {
         self.isolated.load(Ordering::Relaxed) != 0
     }
 
-    fn mark_isolated(&self) {
+    pub(super) fn mark_isolated(&self) {
         self.isolated.store(1, Ordering::Relaxed);
     }
 
     /// Record a fault and return (new_count, triggered_storm) tuple.
-    fn record_fault(&self, current_time_ms: u64) -> (u32, bool) {
+    pub(super) fn record_fault(&self, current_time_ms: u64) -> (u32, bool) {
         let window_start = self.window_start.load(Ordering::Relaxed);
         let elapsed = current_time_ms.saturating_sub(window_start);
 
@@ -213,7 +213,7 @@ impl DeviceFaultEntry {
     }
 
     /// Try to claim this slot for a new device.
-    fn try_claim(&self, source_id: u16, current_time_ms: u64) -> bool {
+    pub(super) fn try_claim(&self, source_id: u16, current_time_ms: u64) -> bool {
         if self
             .source_id
             .compare_exchange(0, source_id as u32, Ordering::AcqRel, Ordering::Relaxed)
@@ -370,7 +370,7 @@ pub(crate) struct EmergencyIsolationSlot {
 }
 
 impl EmergencyIsolationSlot {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             source_id: AtomicU32::new(0),
             status: AtomicU8::new(0),
@@ -379,14 +379,14 @@ impl EmergencyIsolationSlot {
     }
 
     /// Check if slot is unused
-    fn is_unused(&self) -> bool {
+    pub(super) fn is_unused(&self) -> bool {
         self.status.load(Ordering::Acquire) == 0
     }
 
     /// Try to claim this slot for emergency isolation.
     ///
     /// Returns `true` if successfully claimed, `false` if slot was already taken.
-    fn try_claim(&self, source_id: u16) -> bool {
+    pub(super) fn try_claim(&self, source_id: u16) -> bool {
         if self
             .status
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
@@ -402,23 +402,23 @@ impl EmergencyIsolationSlot {
     }
 
     /// Mark device as fully isolated (IOTLB flush completed).
-    fn mark_fully_isolated(&self) {
+    pub(super) fn mark_fully_isolated(&self) {
         self.status.store(2, Ordering::Release);
     }
 
     /// Check if device matches this slot
-    fn matches(&self, source_id: u16) -> bool {
+    pub(super) fn matches(&self, source_id: u16) -> bool {
         self.source_id.load(Ordering::Acquire) == source_id as u32
             && self.status.load(Ordering::Acquire) != 0
     }
 
     /// Get current status
-    fn status(&self) -> u8 {
+    pub(super) fn status(&self) -> u8 {
         self.status.load(Ordering::Acquire)
     }
 
     /// Clear slot (for recovery/reset)
-    fn clear(&self) {
+    pub(super) fn clear(&self) {
         self.status.store(0, Ordering::Release);
         self.source_id.store(0, Ordering::Release);
         self.isolation_tsc.store(0, Ordering::Release);

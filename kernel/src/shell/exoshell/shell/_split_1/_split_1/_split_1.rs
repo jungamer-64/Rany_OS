@@ -3,7 +3,7 @@ use super::*;
 impl ExoShell {
 
     /// Evaluate `cd` path argument and update working directory.
-    fn eval_cd(&mut self, parts: &[&str]) -> ExoValue<'static> {
+    pub(super) fn eval_cd(&mut self, parts: &[&str]) -> ExoValue<'static> {
         if let Some(path) = parts.get(1) {
             self.cwd = if path.starts_with('/') {
                 path.to_string()
@@ -28,7 +28,7 @@ impl ExoShell {
     }
 
     /// Evaluate `ping <ip>` command.
-    async fn eval_ping(&self, parts: &[&str]) -> ExoValue<'static> {
+    pub(super) async fn eval_ping(&self, parts: &[&str]) -> ExoValue<'static> {
         if let Some(host) = parts.get(1) {
             let ip_parts: Vec<&str> = host.split('.').collect();
             if ip_parts.len() == 4 {
@@ -51,7 +51,7 @@ impl ExoShell {
     }
 
     /// Dispatch a `net` or `cell` namespace sub-command.
-    fn dispatch_namespace_command(parts: &[&str], namespace: &str) -> ExoValue<'static> {
+    pub(super) fn dispatch_namespace_command(parts: &[&str], namespace: &str) -> ExoValue<'static> {
         if let Some(method) = parts.get(1) {
             let args: Vec<ExoValue> = parts.iter().skip(2)
                 .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
@@ -218,7 +218,7 @@ impl ExoShell {
     }
 
     /// パスプレフィックスからディレクトリと名前プレフィックスを分離
-    fn split_path_prefix<'a>(path_prefix: &'a str, cwd: &'a str) -> (&'a str, &'a str) {
+    pub(super) fn split_path_prefix<'a>(path_prefix: &'a str, cwd: &'a str) -> (&'a str, &'a str) {
         if path_prefix.contains('/') {
             let last_slash = path_prefix.rfind('/').unwrap();
             if last_slash == 0 {
@@ -232,7 +232,7 @@ impl ExoShell {
     }
 
     /// ファイルパス補完
-    fn complete_filepath(&self, input: &str) -> Option<Vec<String>> {
+    pub(super) fn complete_filepath(&self, input: &str) -> Option<Vec<String>> {
         let quote_pos = input.rfind(|c| c == '"' || c == '\'')?;
         let quote_char = input.chars().nth(quote_pos)?;
 

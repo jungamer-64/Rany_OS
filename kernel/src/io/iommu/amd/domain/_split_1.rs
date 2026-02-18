@@ -87,7 +87,7 @@ impl AmdIommuDriver {
         aliases
     }
 
-    fn collect_alias_from_entry(entry: &IvhdDeviceEntry, devid: u16, aliases: &mut Vec<u16>) {
+    pub(super) fn collect_alias_from_entry(entry: &IvhdDeviceEntry, devid: u16, aliases: &mut Vec<u16>) {
         match entry {
             IvhdDeviceEntry::Alias {
                 devid: entry_devid,
@@ -150,7 +150,7 @@ impl AmdIommuDriver {
     }
 
     /// DTEエントリを書き込み（デバイス本体+エイリアス）
-    fn write_dte_with_aliases(
+    pub(super) fn write_dte_with_aliases(
         &self,
         table: &AmdDeviceTable,
         device: DeviceId,
@@ -166,7 +166,7 @@ impl AmdIommuDriver {
     }
 
     /// DTEエントリをクリア（デバイス本体+エイリアス）
-    fn clear_dte_with_aliases(
+    pub(super) fn clear_dte_with_aliases(
         &self,
         table: &AmdDeviceTable,
         device: DeviceId,
@@ -210,7 +210,7 @@ impl AmdIommuDriver {
     }
 
     /// Invalidate all entries, treating NotSupported as success.
-    fn invalidate_ignoring_unsupported(&self) -> Result<(), IommuError> {
+    pub(super) fn invalidate_ignoring_unsupported(&self) -> Result<(), IommuError> {
         match self.invalidate_all_entries() {
             Ok(()) | Err(IommuError::NotSupported) => Ok(()),
             Err(err) => Err(err),
@@ -266,7 +266,7 @@ impl AmdIommuDriver {
     }
 
     /// Rollback device_domains and DTE entries on attach failure.
-    fn rollback_device_attach(
+    pub(super) fn rollback_device_attach(
         &self,
         device: DeviceId,
         aliases: &[u16],
@@ -292,7 +292,7 @@ impl AmdIommuDriver {
     }
 
     /// Write DTE and invalidate entries; returns first error if any step fails.
-    fn apply_device_entries_and_invalidate(
+    pub(super) fn apply_device_entries_and_invalidate(
         &self,
         device: DeviceId,
         aliases: &[u16],
@@ -348,7 +348,7 @@ impl AmdIommuDriver {
     }
 
     /// DTEクリアと無効化を実行し、失敗時にロールバック
-    fn clear_and_invalidate_device(
+    pub(super) fn clear_and_invalidate_device(
         &self,
         device: DeviceId,
         aliases: &[u16],
@@ -363,7 +363,7 @@ impl AmdIommuDriver {
     }
 
     /// デバイスデタッチ失敗時にデバイスドメインを復元
-    fn rollback_device_detach(
+    pub(super) fn rollback_device_detach(
         &self,
         device: DeviceId,
         aliases: &[u16],

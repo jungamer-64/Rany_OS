@@ -206,7 +206,7 @@ impl PageTableManager {
     }
 
     /// PDPT→PD→PTまでウォークし、PTの物理アドレスを返す
-    fn walk_to_page_table(
+    pub(super) fn walk_to_page_table(
         &mut self,
         indices: [usize; 4],
         flags: PageFlags,
@@ -261,7 +261,7 @@ impl PageTableManager {
     }
 
     /// Adjust PAT flag for huge pages (2MB/1GB): PAT bit moves from bit 7 to bit 12.
-    fn adjust_pat_for_huge(flags: PageFlags) -> PageFlags {
+    pub(super) fn adjust_pat_for_huge(flags: PageFlags) -> PageFlags {
         if flags.contains(PageFlags::PAT) {
             flags.clear(PageFlags::PAT).set(PageFlags::PAT_LARGE)
         } else {
@@ -551,13 +551,13 @@ impl PageTableManager {
     // --- ヘルパー関数 ---
 
     /// 物理アドレスからページテーブルの可変参照を取得
-    fn get_table_mut(&self, phys: PhysAddr) -> &mut PageTable {
+    pub(super) fn get_table_mut(&self, phys: PhysAddr) -> &mut PageTable {
         let virt = self.mapper.phys_to_virt(phys);
         unsafe { &mut *virt.as_mut_ptr() }
     }
 
     /// テーブルエントリが存在しない場合は新しいテーブルを割り当て
-    fn ensure_table_entry(
+    pub(super) fn ensure_table_entry(
         &self,
         table: &mut PageTable,
         index: usize,
@@ -588,7 +588,7 @@ impl PageTableManager {
     }
 
     /// 新しいページテーブル用のフレームを割り当て
-    fn alloc_page_table(&self) -> Result<PhysAddr, MapError> {
+    pub(super) fn alloc_page_table(&self) -> Result<PhysAddr, MapError> {
         // まず現在のCPUのローカルNUMAノードから割り当てを試みる（優先）
         if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
             if let Some(frame) = crate::mm::alloc_frame_local(cpu_id as u8) {
@@ -710,5 +710,6 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

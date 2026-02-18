@@ -304,7 +304,7 @@ impl GlobalDmaAllocator {
     }
 
     /// バウンスバッファの準備（必要な場合）とキャッシュフラッシュ
-    fn prepare_streaming_buffer(
+    pub(super) fn prepare_streaming_buffer(
         buffer: &[u8],
         phys_addr: x86_64::PhysAddr,
         direction: DmaDirection,
@@ -335,7 +335,7 @@ impl GlobalDmaAllocator {
     }
 
     /// IOMMUマッピングを解決してデバイスアドレスを取得
-    fn resolve_iommu_device_addr(
+    pub(super) fn resolve_iommu_device_addr(
         &self,
         phys_addr: x86_64::PhysAddr,
         mapped_len: usize,

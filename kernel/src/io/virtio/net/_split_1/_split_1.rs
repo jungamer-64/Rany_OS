@@ -204,7 +204,7 @@ pub struct SendFuture<'a> {
 
 impl<'a> SendFuture<'a> {
     /// 送信バッファのサブミットを試みる
-    fn try_submit(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
+    pub(super) fn try_submit(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
         let tx_queue = self.device.tx_queue.as_ref()
             .ok_or(VirtioNetError::NotInitialized)?;
 
@@ -281,7 +281,7 @@ pub struct RecvFuture<'a> {
 
 impl<'a> RecvFuture<'a> {
     /// RXバッファのサブミットフェーズ
-    fn try_submit_rx(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
+    pub(super) fn try_submit_rx(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
         if self.buffer.len() < VirtioNetHeader::SIZE {
             return Err(VirtioNetError::BufferTooSmall);
         }
@@ -321,7 +321,7 @@ impl<'a> RecvFuture<'a> {
     }
 
     /// RX完了チェックとペイロード抽出
-    fn check_rx_completion(&mut self, cx: &mut Context<'_>) -> Poll<Result<usize, VirtioNetError>> {
+    pub(super) fn check_rx_completion(&mut self, cx: &mut Context<'_>) -> Poll<Result<usize, VirtioNetError>> {
         let rx_queue = match self.device.rx_queue.as_ref() {
             Some(q) => q,
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
@@ -423,7 +423,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
 }
 
 impl<'a> ZeroCopySendFuture<'a> {
-    fn submit_zero_copy_tx(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
+    pub(super) fn submit_zero_copy_tx(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
         let tx_queue = self.device.tx_queue.as_ref()
             .ok_or(VirtioNetError::NotInitialized)?;
         let packet = self.packet.as_ref()
@@ -477,7 +477,7 @@ pub struct ZeroCopyRecvFuture<'a> {
 
 impl<'a> ZeroCopyRecvFuture<'a> {
     /// Submit an RX buffer: allocate from mempool, prepare DMA mapping, and enqueue.
-    fn submit_rx_buffer(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), VirtioNetError>> {
+    pub(super) fn submit_rx_buffer(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), VirtioNetError>> {
         let packet = self.pool.alloc().ok_or(VirtioNetError::BufferTooSmall)?;
         let phys_addr_val = packet.phys_addr().as_u64();
         let buffer_len = packet.capacity();
@@ -517,7 +517,7 @@ impl<'a> ZeroCopyRecvFuture<'a> {
     }
 
     /// Finalize a completed RX packet: unmap DMA and copy bounce if needed.
-    fn finalize_packet(&mut self, len: u32) -> Result<PacketRef, VirtioNetError> {
+    pub(super) fn finalize_packet(&mut self, len: u32) -> Result<PacketRef, VirtioNetError> {
         let rref = unmap_dma_on_completion(
             self.device.iommu_device_id, &mut self.bounce_handle, &mut self.dma_iova, self.dma_len,
         )?;

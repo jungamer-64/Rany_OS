@@ -3,7 +3,7 @@ use super::*;
 impl NvmePollingDriver {
 
     /// Admin完了をポーリング
-    fn poll_admin_completion(&self) -> Result<NvmeCompletion, &'static str> {
+    pub(super) fn poll_admin_completion(&self) -> Result<NvmeCompletion, &'static str> {
         let admin_queue = self
             .admin_queue
             .as_ref()

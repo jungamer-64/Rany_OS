@@ -27,7 +27,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 /// Per-Core Executor 専用の実装。
 /// Mutex で保護されたVecDequeを使用した簡易実装。
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub struct WorkStealingQueue<T> {
     /// 内部キュー（Mutex保護）
     inner: PoisonLock<VecDeque<T>>,

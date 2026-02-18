@@ -7,7 +7,7 @@ impl KernelLogger {
     /// 送信バッファが空になるまで待機してから書き込む。
     /// タイムアウト時は書き込みをスキップする。
     #[inline]
-    fn write_byte_raw(byte: u8) {
+    pub(super) fn write_byte_raw(byte: u8) {
         let mut status_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_LSR_OFFSET);
         let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_DATA_OFFSET);
 
@@ -51,7 +51,7 @@ impl KernelLogger {
     }
 
     /// パニック時にシリアルの状態をできるだけクリーンにする試み（FIFOクリア等）
-    fn reset_serial_for_panic() {
+    pub(super) fn reset_serial_for_panic() {
         // Try to clear FIFOs and disable interrupts to leave the port in a known state.
         let mut fcr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 2);
         fcr.write(0x07); // enable FIFOs and clear RX/TX
@@ -75,7 +75,7 @@ impl KernelLogger {
     ///
     /// ロックは `Log::log()` 実装側で取得するため、この関数自体はロックを取らない。
     /// 早期ブート時やパニック時に直接呼び出される。
-    fn write_raw(s: &str) {
+    pub(super) fn write_raw(s: &str) {
         for byte in s.bytes() {
             if byte == b'\n' {
                 // LFをCRLFに変換（ターミナル互換性）
@@ -89,14 +89,14 @@ impl KernelLogger {
     ///
     /// `write_byte_raw`のエイリアス。早期ブート用関数からの呼び出しに使用。
     #[inline]
-    fn write_char_raw(c: u8) {
+    pub(super) fn write_char_raw(c: u8) {
         Self::write_byte_raw(c);
     }
 
 
 
     /// ログレベルのプレフィックスを取得
-    fn level_prefix(level: Level) -> &'static str {
+    pub(super) fn level_prefix(level: Level) -> &'static str {
         match level {
             Level::Error => "[ERROR] ",
             Level::Warn => "[WARN]  ",
@@ -108,7 +108,7 @@ impl KernelLogger {
 
     /// ログレベルに応じた色コード（ANSIエスケープシーケンス）
     #[allow(dead_code)]
-    fn level_color(level: Level) -> &'static str {
+    pub(super) fn level_color(level: Level) -> &'static str {
         match level {
             Level::Error => "\x1b[31m", // 赤
             Level::Warn => "\x1b[33m",  // 黄
@@ -119,7 +119,7 @@ impl KernelLogger {
     }
 
     /// Write a record into an async RingBuffer (generic over its capacity)
-    fn write_into_async_buffer<const N: usize>(&self, buf: &mut RingBuffer<N>, record: &Record) {
+    pub(super) fn write_into_async_buffer<const N: usize>(&self, buf: &mut RingBuffer<N>, record: &Record) {
         let writer = AsyncLogWriter::<N>::new(buf);
         let mut tracker = LastCharTracker::new(writer);
 
@@ -131,7 +131,7 @@ impl KernelLogger {
         }
     }
 
-    fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
+    pub(super) fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
         // Timestamp and Core ID
         // Use the RTC when available; for test/bench builds use the test shim in `crate::time`
         #[cfg(any(test, feature = "bench"))]

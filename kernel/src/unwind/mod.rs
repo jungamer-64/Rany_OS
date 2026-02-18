@@ -43,7 +43,7 @@
 // gimliベースの高精度アンワインダー
 // feature = "gimli_unwind" で有効化
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[cfg(feature = "gimli_unwind")]
 pub mod gimli_unwinder;
 

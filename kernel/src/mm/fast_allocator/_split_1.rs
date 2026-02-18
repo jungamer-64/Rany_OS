@@ -59,7 +59,7 @@ impl FastBitmapAllocator {
 
     /// Get current CPU ID
     #[inline]
-    fn current_cpu_id() -> Option<usize> {
+    pub(super) fn current_cpu_id() -> Option<usize> {
         crate::mm::per_cpu::try_current_cpu_id().filter(|&cpu_id| cpu_id < MAX_CPUS)
     }
 
@@ -105,7 +105,7 @@ impl FastBitmapAllocator {
     // ========================================================================
 
     /// Single-writer arena から 4KB ページの割り当てを試みる
-    fn try_arena_4k(&self, magazine: &PerCpuFastMagazine) -> Option<u64> {
+    pub(super) fn try_arena_4k(&self, magazine: &PerCpuFastMagazine) -> Option<u64> {
         if !magazine.is_single_writer_enabled() {
             return None;
         }
@@ -118,7 +118,7 @@ impl FastBitmapAllocator {
     }
 
     /// arena から1ページ割り当て (ウィンドウリロード含む)
-    fn try_arena_allocate_page(&self, arena: &mut PerArenaDetail) -> Option<u64> {
+    pub(super) fn try_arena_allocate_page(&self, arena: &mut PerArenaDetail) -> Option<u64> {
         if let Some(page_idx) = arena.allocate_page() {
             self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
             return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
@@ -136,7 +136,7 @@ impl FastBitmapAllocator {
     }
 
     /// Per-CPU マガジンから 4KB ページの割り当てを試みる (sub-magazine + magazine)
-    fn try_magazine_4k(&self, magazine: &PerCpuFastMagazine) -> Option<u64> {
+    pub(super) fn try_magazine_4k(&self, magazine: &PerCpuFastMagazine) -> Option<u64> {
         {
             let mut sub_mag = magazine.sub_magazine_4k.lock();
             if sub_mag.has_frames() {
@@ -174,7 +174,7 @@ impl FastBitmapAllocator {
     }
 
     /// Allocate from bitmap (slow path)
-    fn allocate_4k_from_bitmap(&self) -> Option<u64> {
+    pub(super) fn allocate_4k_from_bitmap(&self) -> Option<u64> {
         // Try partial 2MB blocks first (hugepage preservation)
         if let Some(page_idx) = self.bitmap.allocate_4k_from_partial() {
             let addr = self.base + (page_idx as u64) * PAGE_SIZE_4K;
@@ -320,7 +320,7 @@ impl FastBitmapAllocator {
     }
 
     /// Attempt to free a page via the single-writer arena path.
-    fn try_free_single_writer(&self, magazine: &PerCpuFastMagazine, page_idx: usize) -> bool {
+    pub(super) fn try_free_single_writer(&self, magazine: &PerCpuFastMagazine, page_idx: usize) -> bool {
         if !magazine.is_single_writer_enabled() {
             return false;
         }
@@ -337,7 +337,7 @@ impl FastBitmapAllocator {
     }
 
     /// Attempt to free a page via the per-CPU magazine.
-    fn try_free_magazine(magazine: &PerCpuFastMagazine, addr: u64) -> bool {
+    pub(super) fn try_free_magazine(magazine: &PerCpuFastMagazine, addr: u64) -> bool {
         if let Some(mag_lock) = magazine.get_magazine(0) {
             let mut mag = mag_lock.lock();
             if !mag.is_full() {
@@ -398,7 +398,7 @@ impl FastBitmapAllocator {
 
     /// Drain remote free ring for a specific CPU
     #[allow(unused_assignments)]
-    fn drain_remote_frees_for_cpu(&self, cpu_id: usize) -> usize {
+    pub(super) fn drain_remote_frees_for_cpu(&self, cpu_id: usize) -> usize {
         let magazine = &self.magazines[cpu_id];
         let mut drained = 0;
 
@@ -518,7 +518,7 @@ impl FastBitmapAllocator {
     }
 
     /// 指定範囲の連続ページを確保してマークする
-    fn try_mark_contiguous_range(&self, start_page: usize, pages_needed: usize) -> bool {
+    pub(super) fn try_mark_contiguous_range(&self, start_page: usize, pages_needed: usize) -> bool {
         let base_bitmap = self.bitmap.base_bitmap();
         if !base_bitmap.is_range_free(start_page, pages_needed) {
             return false;

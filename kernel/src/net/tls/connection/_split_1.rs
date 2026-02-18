@@ -27,7 +27,7 @@ impl TlsConnection {
     }
 
     /// 単一のTLSレコードを処理する
-    fn process_single_record(
+    pub(super) fn process_single_record(
         &mut self,
         content_type: u8,
         payload: &[u8],
@@ -58,7 +58,7 @@ impl TlsConnection {
     }
 
     /// TLSアラートを処理する
-    fn handle_alert(&mut self, payload: &[u8]) -> TlsResult<()> {
+    pub(super) fn handle_alert(&mut self, payload: &[u8]) -> TlsResult<()> {
         if payload.len() >= 2 {
             let _level = payload[0];
             let description = payload[1];
@@ -73,7 +73,7 @@ impl TlsConnection {
     }
 
     /// 確立済みセッションでレコードを復号する
-    fn decrypt_established_data(
+    pub(super) fn decrypt_established_data(
         &mut self,
         payload: &[u8],
         plaintext: &mut Vec<u8>,
@@ -89,7 +89,7 @@ impl TlsConnection {
     }
 
     /// ApplicationDataレコードを処理する
-    fn process_app_data(
+    pub(super) fn process_app_data(
         &mut self,
         payload: &[u8],
         plaintext: &mut Vec<u8>,
@@ -108,7 +108,7 @@ impl TlsConnection {
     }
 
     /// TLS 1.3復号後の内部コンテントタイプを処理する
-    fn dispatch_tls13_inner_content(
+    pub(super) fn dispatch_tls13_inner_content(
         &mut self,
         decrypted: &[u8],
         plaintext: &mut Vec<u8>,
@@ -134,7 +134,7 @@ impl TlsConnection {
     }
 
     /// ハンドシェイクメッセージタイプに応じたディスパッチ
-    fn dispatch_handshake_message(&mut self, msg_type: u8, payload: &[u8]) -> TlsResult<()> {
+    pub(super) fn dispatch_handshake_message(&mut self, msg_type: u8, payload: &[u8]) -> TlsResult<()> {
         match msg_type {
             2 => self.process_server_hello(payload),   // ServerHello
             11 => self.process_certificate(payload),    // Certificate
@@ -146,7 +146,7 @@ impl TlsConnection {
     }
 
     /// ハンドシェイクメッセージを記録し、トランスクリプトハッシュと鍵導出を更新する
-    fn record_and_update_handshake(&mut self, msg_data: &[u8], msg_type: u8) -> TlsResult<()> {
+    pub(super) fn record_and_update_handshake(&mut self, msg_data: &[u8], msg_type: u8) -> TlsResult<()> {
         self.handshake_messages.extend_from_slice(msg_data);
         if let Some(ref mut hasher) = self.transcript_hash {
             hasher.update(msg_data);
@@ -191,7 +191,7 @@ impl TlsConnection {
     }
 
     /// ServerHelloを処理
-    fn process_server_hello(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn process_server_hello(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.len() < 34 {
             return Err(TlsError::DecodeError);
         }
@@ -229,7 +229,7 @@ impl TlsConnection {
     }
 
     /// Parse ServerHello extensions and return the negotiated version and optional key share.
-    fn parse_server_hello_extensions(
+    pub(super) fn parse_server_hello_extensions(
         data: &[u8],
         ext_offset: usize,
         default_version: TlsVersion,
@@ -270,7 +270,7 @@ impl TlsConnection {
     }
 
     /// Process a single ServerHello extension by type.
-    fn apply_server_hello_extension(
+    pub(super) fn apply_server_hello_extension(
         data: &[u8],
         eoff: usize,
         ext_type: u16,
@@ -307,7 +307,7 @@ impl TlsConnection {
     }
 
     /// Handle TLS 1.3 ServerHello key exchange.
-    fn handle_tls13_hello(
+    pub(super) fn handle_tls13_hello(
         &mut self,
         cipher: CipherSuite,
         server_key_share: Option<(u16, Vec<u8>)>,
@@ -350,7 +350,7 @@ impl TlsConnection {
     }
 
     /// Handle TLS 1.2 ServerHello session resumption and state transition.
-    fn handle_tls12_hello(
+    pub(super) fn handle_tls12_hello(
         &mut self,
         session_id_len: usize,
         server_session_id: &[u8; 32],
@@ -379,7 +379,7 @@ impl TlsConnection {
     ///
     /// HRR受信時、サーバーが要求する鍵共有グループで新しいClientHelloを構築する。
     /// トランスクリプトはsynthetic message_hashに置き換える。
-    fn process_hello_retry_request(
+    pub(super) fn process_hello_retry_request(
         &mut self,
         cipher: CipherSuite,
         server_key_share: &Option<(u16, Vec<u8>)>,
@@ -448,7 +448,7 @@ impl TlsConnection {
     ///
     /// 証明書チェーンの最初の証明書をX.509としてパースし、
     /// サーバー公開鍵を抽出して保存する。
-    fn extract_server_public_key(
+    pub(super) fn extract_server_public_key(
         &mut self,
         cert: &crate::net::x509::X509Certificate,
     ) -> TlsResult<()> {
@@ -478,7 +478,7 @@ impl TlsConnection {
         Ok(())
     }
 
-    fn process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.len() < 3 {
             return Err(TlsError::DecodeError);
         }
@@ -515,7 +515,7 @@ impl TlsConnection {
     }
 
     /// RSA署名でServerKeyExchangeを検証
-    fn verify_rsa_ske_signature(
+    pub(super) fn verify_rsa_ske_signature(
         &self,
         signed_data: &[u8],
         signature: &[u8],
@@ -549,7 +549,7 @@ impl TlsConnection {
     }
 
     /// ECDSA P-256署名でServerKeyExchangeを検証
-    fn verify_ecdsa_ske_signature(
+    pub(super) fn verify_ecdsa_ske_signature(
         &self,
         signed_data: &[u8],
         signature: &[u8],
@@ -564,7 +564,7 @@ impl TlsConnection {
     }
 
     /// 署名アルゴリズムに応じたSKE署名検証ディスパッチ
-    fn verify_ske_sig_dispatch(
+    pub(super) fn verify_ske_sig_dispatch(
         &self,
         signed_data: &[u8],
         sig_algorithm: u16,
@@ -584,7 +584,7 @@ impl TlsConnection {
     }
 
     /// ServerKeyExchangeの署名を解析・検証
-    fn verify_ske_signature(&self, data: &[u8], ecdhe_params_end: usize) -> TlsResult<()> {
+    pub(super) fn verify_ske_signature(&self, data: &[u8], ecdhe_params_end: usize) -> TlsResult<()> {
         let sig_offset = ecdhe_params_end;
         if data.len() < sig_offset + 4 {
             return Err(TlsError::DecodeError);

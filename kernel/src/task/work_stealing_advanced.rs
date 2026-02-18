@@ -32,7 +32,7 @@ use crate::interrupts;
 
 /// 最大コア数
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const MAX_CORES: usize = 64;
 
 /// 最大NUMAノード数

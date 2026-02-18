@@ -20,8 +20,6 @@ use x86_64::{PhysAddr, VirtAddr};
 use super::defs::{VirtioDeviceType, status};
 use super::transport::{TransportType, VirtioTransport};
 use crate::io::dma::{
-mod _split_1;
-use _split_1::*;
     allocate_iommu_bounce_bytes, iommu_align_len, CoherentDmaBuffer, CpuOwned, DeviceOwned,
     DmaMemoryAttributes, IommuBounceAllocError, SliceDmaGuard, TypedDmaSlice,
 };
@@ -33,6 +31,8 @@ use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 // Import PacketRef for zero-copy
 use crate::net::mempool::PacketRef;
+mod _split_1;
+pub use _split_1::*;
 
 // ============================================================================
 // VirtIO Net Transport Helper Functions

@@ -213,7 +213,7 @@ impl SwapPrefetcher {
     }
     
     /// アクセスパターンを検出
-    fn detect_access_pattern(&self, current_addr: u64) -> Option<SwapPrefetchHint> {
+    pub(super) fn detect_access_pattern(&self, current_addr: u64) -> Option<SwapPrefetchHint> {
         let history = self.fault_history.lock();
         
         if history.len() < 3 {
@@ -313,6 +313,7 @@ pub fn swap_prefetch_stats() -> SwapPrefetchStats {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[path = "../../qemu_tests.rs"]
 pub mod qemu_tests;
 
 // ============================================================================
@@ -320,4 +321,5 @@ pub mod qemu_tests;
 // ============================================================================
 
 #[cfg(test)]
+#[path = "../../tests.rs"]
 mod tests;

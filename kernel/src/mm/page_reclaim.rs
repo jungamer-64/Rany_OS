@@ -33,7 +33,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 use core::sync::atomic::AtomicU8;
 use alloc::collections::{BTreeMap, VecDeque};

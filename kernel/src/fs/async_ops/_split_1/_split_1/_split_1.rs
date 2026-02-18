@@ -46,7 +46,7 @@ pub struct AsyncSyncFuture<'a> {
 }
 
 impl<'a> AsyncSyncFuture<'a> {
-    fn new(file: &'a AsyncFile) -> Self {
+    pub(super) fn new(file: &'a AsyncFile) -> Self {
         Self {
             file,
             started: false,
@@ -110,7 +110,7 @@ impl DirectBlockHandle {
         }
     }
 
-    fn io_device(&self) -> IoDeviceId {
+    pub(super) fn io_device(&self) -> IoDeviceId {
         IoDeviceId::Nvme {
             controller: 0,
             namespace: nsid_from_device(self.device_id),
@@ -118,7 +118,7 @@ impl DirectBlockHandle {
     }
 
     /// Validate read_blocks parameters and return block count
-    fn validate_read_block_params(&self, block_offset: u64, buf_len: usize) -> FsResult<usize> {
+    pub(super) fn validate_read_block_params(&self, block_offset: u64, buf_len: usize) -> FsResult<usize> {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }
@@ -135,7 +135,7 @@ impl DirectBlockHandle {
     }
 
     /// Complete a DMA read by copying data from the slot to the user buffer
-    fn complete_dma_read(slot: &Arc<Mutex<Option<(TypedDmaSlice<CpuOwned>, usize)>>>, dma_len: usize, buf: &mut [u8]) -> FsResult<usize> {
+    pub(super) fn complete_dma_read(slot: &Arc<Mutex<Option<(TypedDmaSlice<CpuOwned>, usize)>>>, dma_len: usize, buf: &mut [u8]) -> FsResult<usize> {
         let mut guard = slot.lock();
         let (data, bytes_received) = guard.take().ok_or(FsError::IoError)?;
         let bytes_received: usize = bytes_received;
@@ -360,7 +360,7 @@ impl DirectBlockHandle {
     }
 
     /// SG I/Oリクエストのパラメータを検証する
-    fn validate_sg_request(&self, request: &SgIoRequest) -> Result<(usize, u64), FsError> {
+    pub(super) fn validate_sg_request(&self, request: &SgIoRequest) -> Result<(usize, u64), FsError> {
         if request.entries.is_empty() {
             return Ok((0, 0));
         }
@@ -377,7 +377,7 @@ impl DirectBlockHandle {
         Ok((total_bytes, request.offset / (self.block_size as u64)))
     }
 
-    async fn execute_sg_request(&self, request: &SgIoRequest) -> FsResult<usize> {
+    pub(super) async fn execute_sg_request(&self, request: &SgIoRequest) -> FsResult<usize> {
         let (total_bytes, block_offset) = self.validate_sg_request(request)?;
         if total_bytes == 0 {
             return Ok(0);
@@ -396,7 +396,7 @@ impl DirectBlockHandle {
     }
 
     /// Validate write_blocks_dma parameters and return block count
-    fn validate_write_block_params(&self, block_offset: u64, buf_size: usize) -> FsResult<usize> {
+    pub(super) fn validate_write_block_params(&self, block_offset: u64, buf_size: usize) -> FsResult<usize> {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }

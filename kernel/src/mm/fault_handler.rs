@@ -33,8 +33,6 @@ use super::rcu::rcu_read_lock;
 use super::rcu_vma::{VmArea, VmaFlags};
 use super::frame_allocator::alloc_frame;
 use super::higher_half::{
-mod _split_1;
-use _split_1::*;
     global_map_page, global_translate, global_unmap_page, global_update_flags,
     PageFlags, MapError, VirtAddr, PhysAddr,
 };
@@ -45,6 +43,8 @@ use super::cow::{page_refcount, page_put};
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
+mod _split_1;
+pub use _split_1::*;
 
 // ============================================================================
 // Anonymous Page Setup Helper

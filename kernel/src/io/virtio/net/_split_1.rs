@@ -219,7 +219,7 @@ impl VirtioNetDevice {
     }
 
     /// VirtQueueを設定
-    fn setup_queues(&mut self) -> Result<(), VirtioNetError> {
+    pub(super) fn setup_queues(&mut self) -> Result<(), VirtioNetError> {
         // RX queue (queue 0)
         self.setup_single_queue(0)?;
 
@@ -230,7 +230,7 @@ impl VirtioNetDevice {
     }
 
     /// 単一のキューを設定
-    fn setup_single_queue(&mut self, queue_index: u16) -> Result<(), VirtioNetError> {
+    pub(super) fn setup_single_queue(&mut self, queue_index: u16) -> Result<(), VirtioNetError> {
         // キューを選択
         self.transport.select_queue(queue_index);
 
@@ -329,7 +329,7 @@ impl VirtioNetDevice {
     }
 
     /// キューのメモリレイアウトを計算する
-    fn compute_queue_memory_layout(queue_index: u16, queue_size: u16) -> QueueMemoryLayout {
+    pub(super) fn compute_queue_memory_layout(queue_index: u16, queue_size: u16) -> QueueMemoryLayout {
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
         let avail_size = 6 + 2 * queue_size as usize;
         let used_size = 6 + 8 * queue_size as usize;
@@ -358,7 +358,7 @@ impl VirtioNetDevice {
     }
 
     /// キュー用のDMAバッファを割り当てる
-    fn allocate_queue_dma(
+    pub(super) fn allocate_queue_dma(
         &self,
         total_size: usize,
     ) -> Result<(CoherentDmaBuffer, usize), VirtioNetError> {
@@ -379,7 +379,7 @@ impl VirtioNetDevice {
     }
 
     /// キューメモリのIOMMU DMAマッピングを設定する
-    fn setup_iommu_dma_mapping(
+    pub(super) fn setup_iommu_dma_mapping(
         &self,
         buffer: &CoherentDmaBuffer,
         dma_len: usize,
@@ -416,7 +416,7 @@ impl VirtioNetDevice {
     }
 
     /// リングメモリを初期化する
-    fn init_ring_memory(
+    pub(super) fn init_ring_memory(
         desc_table: *mut VringDesc,
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
@@ -446,7 +446,7 @@ impl VirtioNetDevice {
     /// RXバッファ用のIOMMUマッピングを実行する
     ///
     /// Returns (dma_addr, iommu_iova, iommu_map_len).
-    fn map_buffer_for_rx(
+    pub(super) fn map_buffer_for_rx(
         &self,
         phys: u64,
         buf_len: usize,
@@ -482,7 +482,7 @@ impl VirtioNetDevice {
     /// Returns: Ok(true) = posted successfully (continue to next),
     ///          Ok(false) = not posted (fall through to vbuf),
     ///          Err = skip this iteration (e.g. IOMMU failure)
-    fn try_post_rx_packet(
+    pub(super) fn try_post_rx_packet(
         &self,
         rxq: &NetVirtQueue,
     ) -> Result<bool, VirtioNetError> {
@@ -526,7 +526,7 @@ impl VirtioNetDevice {
     /// Returns: Ok(true) = posted successfully,
     ///          Ok(false) = not posted (continue),
     ///          Err = no more buffers available (stop)
-    fn try_post_rx_vbuf(
+    pub(super) fn try_post_rx_vbuf(
         &self,
         rxq: &NetVirtQueue,
     ) -> Result<bool, VirtioNetError> {
@@ -578,7 +578,7 @@ impl VirtioNetDevice {
     }
 
     /// RXキューにバッファを事前割り当てする
-    fn pre_allocate_rx_buffers(&self) {
+    pub(super) fn pre_allocate_rx_buffers(&self) {
         let rxq = match &self.rx_queue {
             Some(q) => q,
             None => return,
@@ -607,7 +607,7 @@ impl VirtioNetDevice {
     /// Submit a transmit packet synchronously by copying into a coherent DMA buffer and
     /// adding it to the TX queue. The buffer is retained in `tx_inflight` until completion
     /// and freed in the interrupt handler.
-    fn process_post_notify_completions(&self) {
+    pub(super) fn process_post_notify_completions(&self) {
         if let Some(ref txq) = self.tx_queue {
             let completions = txq.process_used();
             if !completions.is_empty() {

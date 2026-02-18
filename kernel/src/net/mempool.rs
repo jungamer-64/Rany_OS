@@ -17,7 +17,7 @@ use crate::mm::PAGE_SIZE_4K;
 
 /// DMAページサイズ
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const DMA_PAGE_SIZE: usize = PAGE_SIZE_4K;
 
 /// デフォルトのプール容量

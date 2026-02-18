@@ -69,9 +69,9 @@ use super::LoadError;
 // fallbacks instead. That keeps workspace test runs light and avoids needing
 // the entire kernel `mm` implementation for library-style builds.
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 #[cfg(not(any(test, feature = "bench")))]
 use crate::mm::PageFlags;
 use alloc::string::ToString;

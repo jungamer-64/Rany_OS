@@ -241,7 +241,7 @@ impl TcpControlBlock {
     }
 
     /// Enter Fast Recovery mode (RFC 5681 Section 3.2)
-    fn enter_fast_recovery(&mut self) {
+    pub(super) fn enter_fast_recovery(&mut self) {
         let mss = self.mss as u32;
         
         // ssthresh = max(FlightSize / 2, 2*MSS)
@@ -540,7 +540,7 @@ impl TcpControlBlock {
     }
 
     /// Check if a sequence number is within a range (handling wrap-around)
-    fn seq_in_range(seq: u32, left: u32, right: u32) -> bool {
+    pub(super) fn seq_in_range(seq: u32, left: u32, right: u32) -> bool {
         let diff_left = seq.wrapping_sub(left) as i32;
         let diff_right = right.wrapping_sub(seq) as i32;
         diff_left >= 0 && diff_right > 0

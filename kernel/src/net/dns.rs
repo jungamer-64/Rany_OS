@@ -20,9 +20,9 @@ use super::ipv4::Ipv4Address;
 
 /// DNSポート
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 pub const DNS_PORT: u16 = 53;
 
 /// DNSクエリタイプ

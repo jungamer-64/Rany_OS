@@ -7,6 +7,7 @@ use super::*;
 
 mod _split_1;
 #[cfg(test)]
+#[path = "../tests.rs"]
 mod tests;
 
 /// Future for async read operation

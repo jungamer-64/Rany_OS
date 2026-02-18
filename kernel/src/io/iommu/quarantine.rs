@@ -40,7 +40,7 @@ use super::types::IommuError;
 
 /// Maximum number of quarantined entries per queue
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub const QUARANTINE_CAPACITY: usize = 256;
 
 /// Maximum number of pending invalidation requests

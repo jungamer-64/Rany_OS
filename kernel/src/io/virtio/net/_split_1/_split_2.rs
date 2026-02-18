@@ -142,7 +142,7 @@ impl VirtioNetDevice {
     }
 
     /// Prepare DMA mapping for zero-copy send (IOMMU bounce buffer allocation)
-    fn prepare_zero_copy_dma(
+    pub(super) fn prepare_zero_copy_dma(
         &self,
         phys_addr_val: u64,
         data: &[u8],
@@ -168,7 +168,7 @@ impl VirtioNetDevice {
         }
     }
 
-    fn prepare_bounce_no_page_align(
+    pub(super) fn prepare_bounce_no_page_align(
         &self,
         data: &[u8],
         data_len: usize,
@@ -191,7 +191,7 @@ impl VirtioNetDevice {
         Ok((dma_addr, None, 0, Some(handle)))
     }
 
-    fn prepare_bounce_page_align(
+    pub(super) fn prepare_bounce_page_align(
         &self,
         data: &[u8],
         data_len: usize,
@@ -216,7 +216,7 @@ impl VirtioNetDevice {
         Ok((dma_addr, None, map_len, Some(handle)))
     }
 
-    fn cleanup_dma_on_error(
+    pub(super) fn cleanup_dma_on_error(
         bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
         mapped_iova: Option<u64>,
         mapped_len: usize,
@@ -280,7 +280,7 @@ impl VirtioNetDevice {
     }
 
     /// RXキュー完了を処理し、パケットをスタックに渡す
-    fn process_rx_completions(&self) {
+    pub(super) fn process_rx_completions(&self) {
         let rx_queue = match self.rx_queue.as_ref() {
             Some(q) => q,
             None => return,
@@ -298,7 +298,7 @@ impl VirtioNetDevice {
     }
 
     /// PacketRef ZeroCopy RX完了: IOMMUアンマップ + ブリッジ転送 + 再ポスト
-    fn complete_rx_packetref(&self, rx_queue: &NetVirtQueue, desc_idx: u16, len: u32, inflight: RxPacketInflight) {
+    pub(super) fn complete_rx_packetref(&self, rx_queue: &NetVirtQueue, desc_idx: u16, len: u32, inflight: RxPacketInflight) {
         // Unmap IOMMU mapping if it was active
         if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
             let _ = unmap_for_device(device_id, iova, inflight.iommu_map_len);
@@ -320,7 +320,7 @@ impl VirtioNetDevice {
     }
 
     /// VBuf RX完了: IOMMUアンマップ + 受信完了 + ブリッジ転送
-    fn complete_rx_vbuf(&self, desc_idx: u16, len: u32, mut inflight: RxVbufInflight) {
+    pub(super) fn complete_rx_vbuf(&self, desc_idx: u16, len: u32, mut inflight: RxVbufInflight) {
         // Unmap IOMMU mapping if it was active
         if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
             let _ = unmap_for_device(device_id, iova, inflight.iommu_map_len);
@@ -370,7 +370,7 @@ impl VirtioNetDevice {
     }
 
     /// TXキュー完了を処理し、インフライトバッファを解放
-    fn process_tx_completions(&self) {
+    pub(super) fn process_tx_completions(&self) {
         let tx_queue = match self.tx_queue.as_ref() {
             Some(q) => q,
             None => return,

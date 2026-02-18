@@ -100,7 +100,7 @@ impl ThermalManager {
         Ok(())
     }
 
-    fn register_cpu_sensors(&self) -> ThermalResult<()> {
+    pub(super) fn register_cpu_sensors(&self) -> ThermalResult<()> {
         let driver = self.cpu_driver.lock();
 
         // パッケージセンサー
@@ -122,7 +122,7 @@ impl ThermalManager {
         Ok(())
     }
 
-    fn create_default_zones(&self) {
+    pub(super) fn create_default_zones(&self) {
         let zone_id = self.next_zone_id.fetch_add(1, Ordering::SeqCst);
         let mut zone = ThermalZone::new(zone_id, "CPU".into());
 
@@ -223,7 +223,7 @@ impl ThermalManager {
         }
     }
 
-    fn handle_trip(&self, trip_type: TripPointType, temp: Temperature) {
+    pub(super) fn handle_trip(&self, trip_type: TripPointType, temp: Temperature) {
         match trip_type {
             TripPointType::Active(_) => {
                 // ファン速度を上げる

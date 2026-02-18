@@ -18,7 +18,7 @@ impl MmapManager {
     }
 
     /// 空きアドレスを探す
-    fn find_free_address(&self, size: MappingSize) -> Option<MappedAddress> {
+    pub(super) fn find_free_address(&self, size: MappingSize) -> Option<MappedAddress> {
         let aligned_size = size.page_aligned().as_usize();
         let mappings = self.mappings.read();
 
@@ -90,7 +90,7 @@ impl MmapManager {
     }
 
     /// Resolve the virtual address for a new mapping.
-    fn resolve_mmap_address(
+    pub(super) fn resolve_mmap_address(
         &self,
         addr: Option<MappedAddress>,
         size: MappingSize,
@@ -111,7 +111,7 @@ impl MmapManager {
     }
 
     /// Build page table flags from protection and address.
-    fn build_page_flags(protection: &Protection, address: MappedAddress) -> crate::mm::PageFlags {
+    pub(super) fn build_page_flags(protection: &Protection, address: MappedAddress) -> crate::mm::PageFlags {
         use crate::mm::PageFlags;
         let mut pt_flags = PageFlags::new(PageFlags::PRESENT);
         if protection.can_write() {
@@ -127,7 +127,7 @@ impl MmapManager {
     }
 
     /// Allocate physical frames and map them into the page table.
-    fn map_pages(
+    pub(super) fn map_pages(
         &self,
         address: MappedAddress,
         page_count: usize,

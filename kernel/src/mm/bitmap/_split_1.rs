@@ -450,7 +450,7 @@ impl HugePageBitmap {
     }
 
     /// Allocate 4KB from partial/demoted blocks below limit
-    fn allocate_4k_from_partial_below(&self, limit_page_idx: usize) -> Option<usize> {
+    pub(super) fn allocate_4k_from_partial_below(&self, limit_page_idx: usize) -> Option<usize> {
         let limit_block = (limit_page_idx + PAGES_PER_2MB - 1) / PAGES_PER_2MB;
         let limit_word = (limit_block + BITS_PER_WORD - 1) / BITS_PER_WORD;
 
@@ -474,7 +474,7 @@ impl HugePageBitmap {
 
     /// Scan a bitmap for a usable block below the given limits and allocate a page from it.
     /// Scan individual bits in a single bitmap word for an allocatable page below limit.
-    fn scan_word_bits_below(
+    pub(super) fn scan_word_bits_below(
         &self,
         word: u64,
         word_idx: usize,
@@ -493,7 +493,7 @@ impl HugePageBitmap {
         None
     }
 
-    fn scan_bitmap_below(
+    pub(super) fn scan_bitmap_below(
         &self,
         bitmap: &[AtomicU64],
         limit_word: usize,
@@ -515,7 +515,7 @@ impl HugePageBitmap {
     }
 
     /// Demote a fully-free 2MB block below limit
-    fn demote_2m_block_below(&self, limit_block: usize) -> Option<usize> {
+    pub(super) fn demote_2m_block_below(&self, limit_block: usize) -> Option<usize> {
         let limit_word = (limit_block + BITS_PER_WORD - 1) / BITS_PER_WORD;
         let scan_end = limit_word.min(self.bitmap_2m.len());
 
@@ -728,6 +728,7 @@ impl HugePageBitmap {
 // ============================================================================
 
 #[cfg(feature = "qemu-test-export")]
+#[path = "qemu_tests.rs"]
 pub mod qemu_tests;
 
 // ============================================================================
@@ -735,5 +736,6 @@ pub mod qemu_tests;
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

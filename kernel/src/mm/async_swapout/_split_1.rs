@@ -14,40 +14,40 @@ mod test_impl {
     use std::thread;
 
     /// キュー容量／バッチサイズはテスト向けに控えめに設定可能
-    const QUEUE_CAPACITY: usize = 64;
-    const BATCH_SIZE: usize = 8;
+    pub(super) const QUEUE_CAPACITY: usize = 64;
+    pub(super) const BATCH_SIZE: usize = 8;
 
     use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
 
-    static TEST_FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static TEST_PROCESSING_DELAY_MS: AtomicU64 = AtomicU64::new(0);
-    static TEST_WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
-    static TEST_WORKER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+    pub(super) static TEST_FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static TEST_PROCESSING_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static TEST_WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
+    pub(super) static TEST_WORKER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
     // Test diagnostics
-    static TEST_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static TEST_ZSWAP_FAILS: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static TEST_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static TEST_ZSWAP_FAILS: AtomicUsize = AtomicUsize::new(0);
 
     // Token-bucket backpressure (test)
-    const TEST_TOKEN_CAPACITY: usize = QUEUE_CAPACITY / 4; // burst capacity for anon entries
-    const TEST_REFILL_PER_BATCH: usize = BATCH_SIZE / 2; // tokens added per processed batch
+    pub(super) const TEST_TOKEN_CAPACITY: usize = QUEUE_CAPACITY / 4; // burst capacity for anon entries
+    pub(super) const TEST_REFILL_PER_BATCH: usize = BATCH_SIZE / 2; // tokens added per processed batch
 
     // Allow dynamic test-time override of token capacity and reserved slots
-    static TEST_TOKEN_CAPACITY_DYNAMIC: AtomicUsize = AtomicUsize::new(TEST_TOKEN_CAPACITY);
-    static TEST_TOKENS: AtomicUsize = AtomicUsize::new(TEST_TOKEN_CAPACITY);
+    pub(super) static TEST_TOKEN_CAPACITY_DYNAMIC: AtomicUsize = AtomicUsize::new(TEST_TOKEN_CAPACITY);
+    pub(super) static TEST_TOKENS: AtomicUsize = AtomicUsize::new(TEST_TOKEN_CAPACITY);
 
     // Dynamic reserved file slots
-    const RESERVED_FILE_SLOTS_TEST: usize = QUEUE_CAPACITY / 8;
-    static TEST_RESERVED_FILE_SLOTS_DYNAMIC: AtomicUsize = AtomicUsize::new(RESERVED_FILE_SLOTS_TEST);
+    pub(super) const RESERVED_FILE_SLOTS_TEST: usize = QUEUE_CAPACITY / 8;
+    pub(super) static TEST_RESERVED_FILE_SLOTS_DYNAMIC: AtomicUsize = AtomicUsize::new(RESERVED_FILE_SLOTS_TEST);
 
-    struct WorkerInner {
+    pub(super) struct WorkerInner {
         queue: StdMutex<VecDeque<SwapEntry>>,
         pending: StdMutex<BTreeSet<usize>>,
         condvar: Condvar,
     }
 
-    static WORKER: Once<Arc<WorkerInner>> = Once::new();
+    pub(super) static WORKER: Once<Arc<WorkerInner>> = Once::new();
 
-    fn process_file_swap_entry(entry: &SwapEntry, ino: u64, page_num: u64) {
+    pub(super) fn process_file_swap_entry(entry: &SwapEntry, ino: u64, page_num: u64) {
         let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
             match crate::fs::write_inode_by_number(ino, offset, data) {
                 Ok(_) => Ok(()),
@@ -67,7 +67,7 @@ mod test_impl {
         }
     }
 
-    fn process_file_swap_fallback(entry: &SwapEntry) {
+    pub(super) fn process_file_swap_fallback(entry: &SwapEntry) {
         if crate::fs::page_cache().sync_all(|ino, offset, data| {
             match crate::fs::write_inode_by_number(ino, offset, data) {
                 Ok(_) => Ok(()),
@@ -83,7 +83,7 @@ mod test_impl {
         }
     }
 
-    fn process_anon_swap_entry(entry: &SwapEntry, reuse_buf: &mut crate::mm::async_swapout::Buffer4K) {
+    pub(super) fn process_anon_swap_entry(entry: &SwapEntry, reuse_buf: &mut crate::mm::async_swapout::Buffer4K) {
         if try_zswap_store_and_dealloc_any(entry.frame, reuse_buf) {
             TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
             crate::mm::page_reclaim::notify_async_swapout_success(entry.frame);
@@ -93,7 +93,7 @@ mod test_impl {
         }
     }
 
-    fn finalize_entry(thread_inner: &WorkerInner, entry: &SwapEntry) {
+    pub(super) fn finalize_entry(thread_inner: &WorkerInner, entry: &SwapEntry) {
         // 完了通知
         let (lock, cvar) = &*entry.completion;
         let mut done = lock.lock().unwrap();
@@ -115,7 +115,7 @@ mod test_impl {
         }
     }
 
-    fn refill_token_bucket() {
+    pub(super) fn refill_token_bucket() {
         let add = TEST_REFILL_PER_BATCH;
         loop {
             let cur = TEST_TOKENS.load(Ordering::Acquire);
@@ -129,7 +129,7 @@ mod test_impl {
         }
     }
 
-    fn drain_batch(q_guard: &mut std::sync::MutexGuard<'_, VecDeque<SwapEntry>>) -> Vec<SwapEntry> {
+    pub(super) fn drain_batch(q_guard: &mut std::sync::MutexGuard<'_, VecDeque<SwapEntry>>) -> Vec<SwapEntry> {
         let mut batch = Vec::new();
         for _ in 0..BATCH_SIZE {
             if let Some(entry) = q_guard.pop_front() {
@@ -141,7 +141,7 @@ mod test_impl {
         batch
     }
 
-    fn worker_thread_body(thread_inner: Arc<WorkerInner>) {
+    pub(super) fn worker_thread_body(thread_inner: Arc<WorkerInner>) {
         let mut reuse_buf = crate::mm::async_swapout::buffer_pool_get_4k();
         loop {
             let mut q_guard = thread_inner.queue.lock().unwrap();
@@ -175,7 +175,7 @@ mod test_impl {
         TEST_WORKER_RUNNING.store(false, Ordering::Release);
     }
 
-    fn init_worker() -> Arc<WorkerInner> {
+    pub(super) fn init_worker() -> Arc<WorkerInner> {
         WORKER.call_once(|| {
             Arc::new(WorkerInner {
                 queue: StdMutex::new(VecDeque::new()),

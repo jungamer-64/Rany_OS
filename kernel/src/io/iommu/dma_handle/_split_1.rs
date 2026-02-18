@@ -126,7 +126,7 @@ impl<T> DmaHandle<[T]> {
         }
     }
     /// Determine read/write permissions from DMA direction
-    fn dma_direction_to_perms(direction: DmaDirection) -> (bool, bool) {
+    pub(super) fn dma_direction_to_perms(direction: DmaDirection) -> (bool, bool) {
         match direction {
             DmaDirection::ToDevice => (true, false),
             DmaDirection::FromDevice => (false, true),
@@ -135,7 +135,7 @@ impl<T> DmaHandle<[T]> {
     }
 
     /// Identity-map an RRef slice when IOMMU is not enabled
-    fn map_rref_slice_no_iommu(
+    pub(super) fn map_rref_slice_no_iommu(
         rref: RRef<[T]>,
         size: u64,
         domain_id: u16,
@@ -227,7 +227,7 @@ impl<T> DmaHandle<[T]> {
         ))
     }
 
-    fn try_identity_map_rref_slice(
+    pub(super) fn try_identity_map_rref_slice(
         rref: &RRef<[T]>,
         size: u64,
         direction: DmaDirection,
@@ -498,7 +498,7 @@ impl<T> DmaHandle<T> {
     /// - `Ok(QuarantineTicket<T>)` - On success or after flush. Poll for completion.
     /// - `Err(QuarantineLazyUnmapError<T>)` - On failure after flush attempt.
     /// Flush-and-retry ヘルパー: キューがいっぱいの場合、flushしてリトライ
-    fn flush_and_retry_unmap<I: IommuInvalidator>(
+    pub(super) fn flush_and_retry_unmap<I: IommuInvalidator>(
         handle: DmaHandle<T>,
         domain: &IommuDomain,
         context: &dyn IommuHardwareContext,

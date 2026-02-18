@@ -30,7 +30,7 @@ pub mod gpu_driver;
 
 /// VirtIO GPU フィーチャービット
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0;
 const VIRTIO_GPU_F_EDID: u64 = 1 << 1;
 const VIRTIO_GPU_F_RESOURCE_UUID: u64 = 1 << 2;

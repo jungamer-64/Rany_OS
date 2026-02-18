@@ -45,7 +45,7 @@ impl ClockProList {
     /// # Returns
     /// 回収するフレームのリスト
     /// Coldエントリを回収試行し、成功時はTestエントリに変換する
-    fn try_evict_cold_entry(
+    pub(super) fn try_evict_cold_entry(
         &self,
         pages: &mut alloc::collections::VecDeque<ClockProEntry>,
         hand: usize,

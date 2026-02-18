@@ -168,5 +168,6 @@ pub fn write_inode_by_number(ino: InodeNum, offset: u64, data: &[u8]) -> Result<
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

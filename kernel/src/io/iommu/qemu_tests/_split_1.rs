@@ -431,18 +431,18 @@ pub fn wave3_scalable_mode_pasid0_fault_resolution_smoke() -> bool {
     }
 
     impl Wave3Notifier {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 seen: AtomicBool::new(false),
                 domain_id: AtomicU32::new(u32::MAX),
             }
         }
 
-        fn seen(&self) -> bool {
+        pub(super) fn seen(&self) -> bool {
             self.seen.load(Ordering::Acquire)
         }
 
-        fn domain_id(&self) -> u32 {
+        pub(super) fn domain_id(&self) -> u32 {
             self.domain_id.load(Ordering::Acquire)
         }
     }

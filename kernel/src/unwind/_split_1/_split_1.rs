@@ -107,5 +107,6 @@ impl Default for PanicCatchGuard {
 }
 
 #[cfg(test)]
+#[path = "../tests.rs"]
 mod tests;
 

@@ -652,6 +652,7 @@ impl HugePageStats {
 pub static HUGE_PAGE_STATS: HugePageStats = HugePageStats::new();
 
 #[cfg(test)]
+#[path = "../tests.rs"]
 mod tests;
 
 

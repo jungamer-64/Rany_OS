@@ -7,8 +7,6 @@ use super::fault_log::FaultRecord;
 use super::groups::{IommuGroupManager, PciTopologyProvider};
 use super::intel::controller::dma::DomainManager;
 use super::intel::controller::fault::{
-mod _split_1;
-use _split_1::*;
     drain_deferred_faults_with_controller, push_deferred_fault_for_test, FaultHandler,
     RawFaultEvent,
 };
@@ -29,6 +27,8 @@ use super::security::{
 };
 use super::tables::{HardwareTable, PageTableScope, SlPte};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+mod _split_1;
+pub use _split_1::*;
 
 struct MockSecurityNotifier {
     events: spin::Mutex<[Option<SecurityEvent>; 16]>,

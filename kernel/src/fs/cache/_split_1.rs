@@ -194,7 +194,7 @@ pub(crate) struct LruList {
 
 impl LruList {
     /// 新しいLRUリストを作成
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             nodes: Vec::new(),
             key_to_index: BTreeMap::new(),
@@ -205,7 +205,7 @@ impl LruList {
     }
 
     /// ノードを先頭に挿入（O(1)）
-    fn insert(&mut self, key: BlockCacheKey) {
+    pub(super) fn insert(&mut self, key: BlockCacheKey) {
         // 既に存在する場合は先頭に移動
         if self.key_to_index.contains_key(&key) {
             self.touch(&key);
@@ -245,7 +245,7 @@ impl LruList {
     }
 
     /// キーを先頭に移動（O(1)）
-    fn touch(&mut self, key: &BlockCacheKey) {
+    pub(super) fn touch(&mut self, key: &BlockCacheKey) {
         let Some(&idx) = self.key_to_index.get(key) else {
             return;
         };
@@ -274,7 +274,7 @@ impl LruList {
     }
 
     /// キーを削除（O(1)）
-    fn remove(&mut self, key: &BlockCacheKey) -> bool {
+    pub(super) fn remove(&mut self, key: &BlockCacheKey) -> bool {
         let Some(idx) = self.key_to_index.remove(key) else {
             return false;
         };
@@ -286,7 +286,7 @@ impl LruList {
     }
 
     /// ノードをリストから切り離す（内部関数）
-    fn unlink(&mut self, idx: usize) {
+    pub(super) fn unlink(&mut self, idx: usize) {
         let node = &self.nodes[idx];
         let prev = node.prev;
         let next = node.next;
@@ -307,7 +307,7 @@ impl LruList {
     }
 
     /// LRU（末尾）のキーを取得して削除（O(1)）
-    fn evict_lru(&mut self) -> Option<BlockCacheKey> {
+    pub(super) fn evict_lru(&mut self) -> Option<BlockCacheKey> {
         if self.tail == INVALID_INDEX {
             return None;
         }
@@ -319,17 +319,17 @@ impl LruList {
     }
 
     /// キーが存在するか確認
-    fn contains(&self, key: &BlockCacheKey) -> bool {
+    pub(super) fn contains(&self, key: &BlockCacheKey) -> bool {
         self.key_to_index.contains_key(key)
     }
 
     /// 要素数を取得
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.key_to_index.len()
     }
 
     /// 空かどうか
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.key_to_index.is_empty()
     }
 }
@@ -382,12 +382,12 @@ impl LRUBlockCache {
     }
 
     /// Get current time and increment
-    fn tick(&self) -> u64 {
+    pub(super) fn tick(&self) -> u64 {
         self.time.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Move a key to the front of LRU list (most recently used) - O(1)
-    fn touch_lru(&self, key: BlockCacheKey) {
+    pub(super) fn touch_lru(&self, key: BlockCacheKey) {
         let mut lru_list = self.lru_list.lock();
         lru_list.touch(&key);
     }
@@ -484,7 +484,7 @@ impl LRUBlockCache {
     }
 
     /// Evict blocks to free space - O(1) per eviction
-    fn evict_blocks(&self, needed: usize) {
+    pub(super) fn evict_blocks(&self, needed: usize) {
         let mut freed = 0;
         let mut lru_list = self.lru_list.lock();
         let mut blocks = self.blocks.lock();
@@ -686,7 +686,7 @@ mod block_cache_tests {
     use super::*;
 
     #[test_case]
-    fn test_block_cache_basic() {
+    pub(super) fn test_block_cache_basic() {
         let cache = LRUBlockCache::new(512, 4096); // 4KB cache, 512B blocks
 
         // Insert blocks
@@ -710,7 +710,7 @@ mod block_cache_tests {
     }
 
     #[test_case]
-    fn test_block_cache_lru_eviction() {
+    pub(super) fn test_block_cache_lru_eviction() {
         let cache = LRUBlockCache::new(512, 1024); // 1KB cache, 512B blocks (max 2 blocks)
 
         // Insert 3 blocks (should evict first block)
@@ -727,7 +727,7 @@ mod block_cache_tests {
     }
 
     #[test_case]
-    fn test_block_cache_dirty_tracking() {
+    pub(super) fn test_block_cache_dirty_tracking() {
         let cache = LRUBlockCache::new(512, 4096);
 
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);
@@ -743,7 +743,7 @@ mod block_cache_tests {
     }
 
     #[test_case]
-    fn test_block_cache_flush() {
+    pub(super) fn test_block_cache_flush() {
         let cache = LRUBlockCache::new(512, 4096);
 
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);

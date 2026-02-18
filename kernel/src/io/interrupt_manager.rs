@@ -32,7 +32,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 /// システム予約ベクタ（例外ハンドラ用）
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const RESERVED_VECTORS_START: u8 = 0;
 const RESERVED_VECTORS_END: u8 = 31;
 

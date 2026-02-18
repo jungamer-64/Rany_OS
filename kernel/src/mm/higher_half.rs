@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// 仮想アドレス（型安全）
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct VirtAddr(u64);

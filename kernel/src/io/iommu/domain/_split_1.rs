@@ -280,7 +280,7 @@ impl IommuDomain {
         set
     }
 
-    fn notify_security(&self, event: SecurityEvent) {
+    pub(super) fn notify_security(&self, event: SecurityEvent) {
         if let Some(notifier) = self.security_notifier.get() {
             notifier.notify(event);
         }
@@ -303,7 +303,7 @@ impl IommuDomain {
     /// # Safety
     /// The caller must ensure the IOVA range will be freed after IOTLB invalidation.
     /// Verify domain is not poisoned, look up the mapping, and lock shards.
-    fn verify_and_lock_for_clear(
+    pub(super) fn verify_and_lock_for_clear(
         &self,
         iova: u64,
         size: u64,
@@ -396,7 +396,7 @@ impl IommuDomain {
         Ok(())
     }
 
-    fn within_addr_width(&self, addr: u64, size: u64) -> bool {
+    pub(super) fn within_addr_width(&self, addr: u64, size: u64) -> bool {
         if self.max_addr_bits >= 64 {
             return true;
         }
@@ -410,12 +410,12 @@ impl IommuDomain {
         (addr as u128) < limit && (end as u128) <= limit
     }
 
-    fn shard_for_iova(iova: u64) -> usize {
+    pub(super) fn shard_for_iova(iova: u64) -> usize {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         pml4_idx / PML4_ENTRIES_PER_SHARD
     }
 
-    fn shard_range(&self, iova: u64, size: u64) -> Result<(usize, usize), IommuError> {
+    pub(super) fn shard_range(&self, iova: u64, size: u64) -> Result<(usize, usize), IommuError> {
         if size == 0 {
             return Err(IommuError::InvalidAlignment);
         }
@@ -426,7 +426,7 @@ impl IommuDomain {
         Ok((start, end))
     }
 
-    fn lock_shards(
+    pub(super) fn lock_shards(
         &self,
         start: usize,
         end: usize,
@@ -445,12 +445,12 @@ impl IommuDomain {
     /// This is acceptable because:
     /// - Typical domain has few concurrent mappings (< 100)
     /// - Called only during map() validation, not on hot path
-    fn mapping_overlaps(mappings: &MappingSlab, iova: u64, size: u64) -> bool {
+    pub(super) fn mapping_overlaps(mappings: &MappingSlab, iova: u64, size: u64) -> bool {
         mappings.overlaps(iova, size)
     }
 
     /// Validate alignment, address width, and poison state for a map operation.
-    fn validate_map_args(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
+    pub(super) fn validate_map_args(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
         if self.poisoned.load(Ordering::Acquire) {
             return Err(IommuError::Poisoned);
         }
@@ -467,7 +467,7 @@ impl IommuDomain {
     }
 
     /// Check that no existing mapping overlaps the given range across all shards.
-    fn check_no_overlap(
+    pub(super) fn check_no_overlap(
         guards: &[PoisonLockGuard<'_, DomainShard>],
         iova: u64,
         size: u64,
@@ -481,7 +481,7 @@ impl IommuDomain {
     }
 
     /// Check whether a 1GB huge page can be used for the current mapping position.
-    fn can_use_1gb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
+    pub(super) fn can_use_1gb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
         const SIZE_1GB: u64 = 1024 * 1024 * 1024;
         self.supports_1gb
             && remaining >= SIZE_1GB
@@ -491,7 +491,7 @@ impl IommuDomain {
     }
 
     /// Check whether a 2MB huge page can be used for the current mapping position.
-    fn can_use_2mb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
+    pub(super) fn can_use_2mb_page(&self, iova: u64, phys: u64, remaining: u64) -> bool {
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
         self.supports_2mb
             && remaining >= SIZE_2MB
@@ -502,7 +502,7 @@ impl IommuDomain {
     /// Attempt to map pages at the best available page size (1GB > 2MB > 4KB).
     ///
     /// Returns the number of bytes successfully mapped in this chunk.
-    fn map_next_chunk(
+    pub(super) fn map_next_chunk(
         &self,
         iova: u64,
         phys: u64,
@@ -534,7 +534,7 @@ impl IommuDomain {
     /// Rollback previously mapped pages and return the appropriate error.
     ///
     /// If rollback itself fails, the domain is poisoned.
-    fn rollback_mapping(&self, start_iova: u64, mapped_len: u64, error: IommuError) -> IommuError {
+    pub(super) fn rollback_mapping(&self, start_iova: u64, mapped_len: u64, error: IommuError) -> IommuError {
         if mapped_len > 0 {
             if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
                 log::error!(
@@ -552,7 +552,7 @@ impl IommuDomain {
     /// Map all pages in the given range transactionally.
     ///
     /// If any page mapping fails, all successfully mapped pages are rolled back.
-    fn map_pages_transactional(
+    pub(super) fn map_pages_transactional(
         &self,
         iova: u64,
         phys: u64,
@@ -625,7 +625,7 @@ impl IommuDomain {
     }
 
     /// Unmap a 2MB super-page (for rollback)
-    fn unmap_super_page_2mb(&self, iova: u64) -> Result<(), IommuError> {
+    pub(super) fn unmap_super_page_2mb(&self, iova: u64) -> Result<(), IommuError> {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
@@ -681,7 +681,7 @@ impl IommuDomain {
     }
 
     /// Unmap a 1GB super-page (for rollback)
-    fn unmap_super_page_1gb(&self, iova: u64) -> Result<(), IommuError> {
+    pub(super) fn unmap_super_page_1gb(&self, iova: u64) -> Result<(), IommuError> {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
 

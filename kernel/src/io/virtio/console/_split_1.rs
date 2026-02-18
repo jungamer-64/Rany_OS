@@ -105,4 +105,5 @@ pub(crate) fn align_up(val: usize, align: usize) -> usize {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

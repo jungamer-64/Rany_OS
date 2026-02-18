@@ -87,7 +87,7 @@ impl GroTable {
         flushed
     }
 
-    fn take_segment(&mut self, flow_hash: u32) -> Option<GroSegment> {
+    pub(super) fn take_segment(&mut self, flow_hash: u32) -> Option<GroSegment> {
         for slot in self.segments.iter_mut() {
             let matches = slot
                 .as_ref()

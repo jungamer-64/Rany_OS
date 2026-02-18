@@ -150,4 +150,5 @@ impl Default for UdpProcessor {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

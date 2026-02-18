@@ -330,5 +330,6 @@ pub fn cache_line_size() -> usize {
 }
 
 #[cfg(test)]
+#[path = "../../tests.rs"]
 mod tests;
 

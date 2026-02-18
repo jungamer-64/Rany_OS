@@ -6,7 +6,7 @@ mod tests_usize {
     use super::*;
 
     #[test_case]
-    fn test_usize_basic() {
+    pub(super) fn test_usize_basic() {
         let mut xa = XArrayUsize::new();
         
         assert!(xa.is_empty());
@@ -25,7 +25,7 @@ mod tests_usize {
     }
 
     #[test_case]
-    fn test_usize_marks() {
+    pub(super) fn test_usize_marks() {
         let mut xa = XArrayUsize::new();
         
         xa.store(0, 100);
@@ -39,7 +39,7 @@ mod tests_usize {
     }
 
     #[test_case]
-    fn test_usize_zero_value() {
+    pub(super) fn test_usize_zero_value() {
         let mut xa = XArrayUsize::new();
         
         // 0 も正しく格納できる

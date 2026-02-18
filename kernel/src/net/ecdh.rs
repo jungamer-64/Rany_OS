@@ -30,14 +30,15 @@ use ed25519_compact::x25519::{PublicKey as X25519PublicKey, SecretKey as X25519S
 /// FIPS 186-4準拠のNIST P-256曲線演算を提供する。
 /// ヤコビアン座標によるポイント演算と、NIST高速リダクションによる
 /// フィールド算術を実装している。
+mod _split_1;
+pub use _split_1::*;
+mod _split_2;
+pub use _split_2::*;
+
 pub mod p256 {
     /// P-256素数体の元（リトルエンディアン4×u64リム表現）
     ///
     /// p = FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
-mod _split_1;
-use _split_1::*;
-mod _split_2;
-use _split_2::*;
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct P256FieldElement {
         pub limbs: [u64; 4],

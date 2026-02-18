@@ -26,9 +26,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum CPUs supported
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 const MAX_CPUS: usize = crate::mm::MAX_CPUS;
 
 /// Per-CPU cache capacity (number of cached blocks per size class)

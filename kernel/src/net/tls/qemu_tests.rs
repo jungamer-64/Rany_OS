@@ -4,7 +4,7 @@
 use super::*;
 
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub fn wave8_tls_hmac_sha256_rfc4231_case1_smoke() -> bool {
     let key = [0x0bu8; 20];
     let data = b"Hi There";

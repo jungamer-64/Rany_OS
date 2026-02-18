@@ -3,7 +3,7 @@ use super::*;
 impl DhcpClient {
 
     /// OFFER 受信時の副作用を適用する
-    fn apply_offer(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
+    pub(super) fn apply_offer(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
         match self.offered_lease.lock() {
             Ok(mut g) => *g = Some(lease.clone()),
             Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"),
@@ -24,7 +24,7 @@ impl DhcpClient {
     }
 
     /// ACK 受信時の副作用を適用する
-    fn apply_ack(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
+    pub(super) fn apply_ack(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
         match self.lease.lock() {
             Ok(mut g) => *g = Some(lease.clone()),
             Err(_) => log::error!("[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"),
@@ -42,7 +42,7 @@ impl DhcpClient {
     }
 
     /// NAK 受信時の副作用を適用する
-    fn apply_nak(&self) -> DhcpResponseResult {
+    pub(super) fn apply_nak(&self) -> DhcpResponseResult {
         match self.state.lock() {
             Ok(mut g) => *g = DhcpState::Init,
             Err(_) => log::error!("[NET] DHCP State lock poisoned (process_response Nak) - state not updated"),
@@ -264,7 +264,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: transition state with error logging ---
-    fn transition_state(&self, new_state: DhcpState) {
+    pub(super) fn transition_state(&self, new_state: DhcpState) {
         match self.state.lock() {
             Ok(mut g) => *g = new_state,
             Err(_) => log::error!(
@@ -274,7 +274,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: clear all lease state ---
-    fn clear_all_leases(&self) {
+    pub(super) fn clear_all_leases(&self) {
         match self.lease.lock() {
             Ok(mut g) => *g = None,
             Err(_) => log::error!("[NET] DHCP Lease lock poisoned - cannot clear lease"),
@@ -287,7 +287,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: common retry-or-transition pattern ---
-    fn check_retry_or_transition(&self, elapsed_secs: u64, max_retry_state: DhcpState) -> bool {
+    pub(super) fn check_retry_or_transition(&self, elapsed_secs: u64, max_retry_state: DhcpState) -> bool {
         if elapsed_secs > Self::RETRY_INTERVAL_SECS {
             let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
             if retry >= Self::MAX_RETRIES {
@@ -300,7 +300,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: send initial ARP probe for offered IP ---
-    fn send_initial_arp_probe(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
+    pub(super) fn send_initial_arp_probe(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
         match crate::net::stack::stack().lock() {
             Ok(mut s) => {
                 if let Some(stack) = s.as_mut() {
@@ -315,7 +315,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: check ARP cache for address conflict ---
-    fn check_arp_conflict(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
+    pub(super) fn check_arp_conflict(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
         if let Ok(mut s) = crate::net::stack::stack().lock() {
             if let Some(stack) = s.as_mut() {
                 if let Some(mac) = stack.arp_resolve(offered_ip, current_tick) {
@@ -327,7 +327,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: handle ARP conflict by sending DECLINE ---
-    fn handle_conflict_decline(&self, offered_ip: Ipv4Address, server_ip: Ipv4Address) {
+    pub(super) fn handle_conflict_decline(&self, offered_ip: Ipv4Address, server_ip: Ipv4Address) {
         let _ = self.send_decline(offered_ip, Some(server_ip));
         match self.offered_lease.lock() {
             Ok(mut og) => *og = None,
@@ -337,7 +337,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: evaluate ARP probe result ---
-    fn check_arp_probe_result(
+    pub(super) fn check_arp_probe_result(
         &self,
         offered_ip: Ipv4Address,
         server_ip: Ipv4Address,
@@ -363,7 +363,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: try ARP probe flow for Selecting ---
-    fn try_selecting_arp_probe(&self, current_tick: u64, tick_rate: u64) -> Option<bool> {
+    pub(super) fn try_selecting_arp_probe(&self, current_tick: u64, tick_rate: u64) -> Option<bool> {
         // Extract offered lease info then release the lock to avoid re-entrance deadlock
         let (offered_ip, server_ip) = {
             let off = self.offered_lease.lock().ok()?;
@@ -379,7 +379,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: handle Selecting state ---
-    fn handle_selecting_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
+    pub(super) fn handle_selecting_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
         // If we have an offered lease, perform ARP probe & check for conflicts
         if let Some(result) = self.try_selecting_arp_probe(current_tick, tick_rate) {
             return result;
@@ -389,7 +389,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: handle Bound state ---
-    fn handle_bound_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
+    pub(super) fn handle_bound_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
         if let Ok(guard) = self.lease.lock() {
             if let Some(lease) = guard.as_ref() {
                 if lease.needs_renewal(current_tick, tick_rate) {
@@ -407,7 +407,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: handle Renewing state ---
-    fn handle_renewing_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
+    pub(super) fn handle_renewing_timeout(&self, current_tick: u64, tick_rate: u64, elapsed_secs: u64) -> bool {
         // If T2 is reached, move to Rebinding
         if let Ok(guard) = self.lease.lock() {
             if let Some(lease) = guard.as_ref() {
@@ -425,7 +425,7 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: handle Rebinding state ---
-    fn handle_rebinding_timeout(&self, elapsed_secs: u64) -> bool {
+    pub(super) fn handle_rebinding_timeout(&self, elapsed_secs: u64) -> bool {
         // Retransmit rebind requests; if retried too many times, give up and start over
         if elapsed_secs > Self::RETRY_INTERVAL_SECS {
             let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);

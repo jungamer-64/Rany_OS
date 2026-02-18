@@ -66,7 +66,7 @@ impl PmtuCache {
     }
 
     /// Evict the oldest entry
-    fn evict_oldest(&mut self) {
+    pub(super) fn evict_oldest(&mut self) {
         let oldest = self
             .entries
             .iter()
@@ -229,7 +229,7 @@ impl FragmentBuffer {
     }
 
     /// Store the first fragment header for later reassembly
-    fn store_first_header_if_needed(&mut self, header: &Ipv4Header, fragment_offset: u16) {
+    pub(super) fn store_first_header_if_needed(&mut self, header: &Ipv4Header, fragment_offset: u16) {
         if fragment_offset == 0 && self.first_header.is_none() {
             let mut hdr = [0u8; 20];
             let hdr_bytes = crate::util::struct_as_bytes(header);
@@ -241,7 +241,7 @@ impl FragmentBuffer {
     }
 
     /// RFC 815 hole-list update with a fragment range
-    fn update_holes(&mut self, fragment_offset: u16, fragment_end: u16, more_fragments: bool) {
+    pub(super) fn update_holes(&mut self, fragment_offset: u16, fragment_end: u16, more_fragments: bool) {
         let mut new_holes = Vec::new();
 
         for hole in self.holes.drain(..) {
@@ -267,7 +267,7 @@ impl FragmentBuffer {
     }
 
     /// Remove or clamp holes beyond the known total length
-    fn trim_holes_to_total(&mut self) {
+    pub(super) fn trim_holes_to_total(&mut self) {
         if let Some(total) = self.total_len {
             self.holes.retain(|h| h.first < total);
             for hole in &mut self.holes {
@@ -408,7 +408,7 @@ impl FragmentReassembler {
     }
 
     /// Evict expired reassembly buffers
-    fn evict_expired(&mut self, current_time: u64) {
+    pub(super) fn evict_expired(&mut self, current_time: u64) {
         let expired_keys: Vec<_> = self
             .buffers
             .iter()
@@ -608,7 +608,7 @@ impl Ipv4Processor {
     }
 
     /// Check if a packet is for us
-    fn is_for_us(&self, addr: &Ipv4Address) -> bool {
+    pub(super) fn is_for_us(&self, addr: &Ipv4Address) -> bool {
         *addr == self.config.address
             || addr.is_broadcast()
             || *addr == self.config.broadcast_address()
@@ -690,4 +690,5 @@ pub fn data_checksum(data: &[u8], initial: u32) -> u16 {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

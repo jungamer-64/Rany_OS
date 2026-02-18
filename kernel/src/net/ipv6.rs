@@ -28,7 +28,7 @@ use super::ipv4::IpProtocol;
 
 /// IPv6 address (16 bytes)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv6Address([u8; 16]);
 

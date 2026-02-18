@@ -23,10 +23,6 @@ use kernel_api::DmaBuffer;
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::controller::{
-mod _split_1;
-use _split_1::*;
-mod _split_2;
-use _split_2::*;
     CQ_ENTRY_SIZE, CmbInfo, DEFAULT_QUEUE_DEPTH, FEATURE_NUM_QUEUES, MAX_QUEUE_DEPTH,
     MAX_SGL_ENTRIES, MAX_TRANSFER_SIZE, NvmeAdminQueueAttributes, NvmeCapabilities,
     NvmeControllerConfig, NvmeControllerStatus, QUEUE_ENTRY_SIZE,
@@ -35,6 +31,10 @@ use super::defs::{AdminOpcode, SglDescriptor};
 use super::identify::{IdentifyController, IdentifyNamespace};
 use super::per_core::PerCoreNvmeQueue;
 use super::queue::QueuePair;
+mod _split_1;
+pub use _split_1::*;
+mod _split_2;
+pub use _split_2::*;
 
 // Identify Controller SGLS bits (NVMe spec).
 const SGLS_SUPPORTED: u32 = 1 << 0;

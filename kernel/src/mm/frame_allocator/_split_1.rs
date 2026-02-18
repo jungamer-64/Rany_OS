@@ -20,7 +20,7 @@ pub(crate) struct NumaPmmAllocator {
 }
 
 impl NumaPmmAllocator {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let mut node_allocators = Vec::with_capacity(MAX_NUMA_NODES);
         for _ in 0..MAX_NUMA_NODES {
             node_allocators.push(None);
@@ -31,7 +31,7 @@ impl NumaPmmAllocator {
         }
     }
 
-    fn cpu_ids_for_node(&self, node_idx: usize) -> Vec<usize> {
+    pub(super) fn cpu_ids_for_node(&self, node_idx: usize) -> Vec<usize> {
         let mut ids = Vec::new();
         if node_idx < MAX_NUMA_NODES {
             let mask = self.topology.nodes[node_idx].cpu_mask;
@@ -49,7 +49,7 @@ impl NumaPmmAllocator {
         ids
     }
 
-    fn init_numa_node(&mut self, node_idx: usize, usable_regions: &[(PhysAddr, u64, NumaNodeId)]) -> bool {
+    pub(super) fn init_numa_node(&mut self, node_idx: usize, usable_regions: &[(PhysAddr, u64, NumaNodeId)]) -> bool {
         let node_id = NumaNodeId::new(node_idx as u8);
         let node_regions: Vec<(PhysAddr, u64)> = usable_regions
             .iter()
@@ -75,7 +75,7 @@ impl NumaPmmAllocator {
         true
     }
 
-    fn init_numa(&mut self, usable_regions: &[(PhysAddr, u64, NumaNodeId)]) {
+    pub(super) fn init_numa(&mut self, usable_regions: &[(PhysAddr, u64, NumaNodeId)]) {
         let mut max_node = 0usize;
 
         for node_idx in 0..MAX_NUMA_NODES {
@@ -89,12 +89,12 @@ impl NumaPmmAllocator {
         }
     }
 
-    fn allocate_4k_on_node(&self, node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
+    pub(super) fn allocate_4k_on_node(&self, node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
         let idx = node.as_usize();
         self.node_allocators.get(idx)?.as_ref()?.alloc_4k()
     }
 
-    fn allocate_4k_local(&self, current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
+    pub(super) fn allocate_4k_local(&self, current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -108,12 +108,12 @@ impl NumaPmmAllocator {
         None
     }
 
-    fn allocate_2m_on_node(&self, node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
+    pub(super) fn allocate_2m_on_node(&self, node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
         let idx = node.as_usize();
         self.node_allocators.get(idx)?.as_ref()?.alloc_2m()
     }
 
-    fn allocate_2m_local(&self, current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
+    pub(super) fn allocate_2m_local(&self, current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -127,12 +127,12 @@ impl NumaPmmAllocator {
         None
     }
 
-    fn allocate_1g_on_node(&self, node: NumaNodeId) -> Option<PhysFrame<Size1GiB>> {
+    pub(super) fn allocate_1g_on_node(&self, node: NumaNodeId) -> Option<PhysFrame<Size1GiB>> {
         let idx = node.as_usize();
         self.node_allocators.get(idx)?.as_ref()?.alloc_1g()
     }
 
-    fn allocate_1g_local(&self, current_cpu: u8) -> Option<PhysFrame<Size1GiB>> {
+    pub(super) fn allocate_1g_local(&self, current_cpu: u8) -> Option<PhysFrame<Size1GiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -146,12 +146,12 @@ impl NumaPmmAllocator {
         None
     }
 
-    fn alloc_contiguous_on_node(&self, node: NumaNodeId, frames: usize) -> Option<PhysAddr> {
+    pub(super) fn alloc_contiguous_on_node(&self, node: NumaNodeId, frames: usize) -> Option<PhysAddr> {
         let idx = node.as_usize();
         self.node_allocators.get(idx)?.as_ref()?.alloc_contiguous(frames)
     }
 
-    fn alloc_contiguous_on_node_aligned(
+    pub(super) fn alloc_contiguous_on_node_aligned(
         &self,
         node: NumaNodeId,
         frames: usize,
@@ -164,7 +164,7 @@ impl NumaPmmAllocator {
             .alloc_contiguous_aligned(frames, align_bytes)
     }
 
-    fn alloc_contiguous_local(&self, current_cpu: u8, frames: usize) -> Option<PhysAddr> {
+    pub(super) fn alloc_contiguous_local(&self, current_cpu: u8, frames: usize) -> Option<PhysAddr> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -178,7 +178,7 @@ impl NumaPmmAllocator {
         None
     }
 
-    fn alloc_contiguous_local_aligned(
+    pub(super) fn alloc_contiguous_local_aligned(
         &self,
         current_cpu: u8,
         frames: usize,
@@ -197,7 +197,7 @@ impl NumaPmmAllocator {
         None
     }
 
-    fn deallocate_4k_frame(&self, frame: PhysFrame<Size4KiB>) {
+    pub(super) fn deallocate_4k_frame(&self, frame: PhysFrame<Size4KiB>) {
         let addr = frame.start_address().as_u64();
         let node = self.topology.addr_to_node(addr);
         let idx = node.as_usize();
@@ -206,7 +206,7 @@ impl NumaPmmAllocator {
         }
     }
 
-    fn deallocate_2m_frame(&self, frame: PhysFrame<Size2MiB>) {
+    pub(super) fn deallocate_2m_frame(&self, frame: PhysFrame<Size2MiB>) {
         let addr = frame.start_address().as_u64();
         let node = self.topology.addr_to_node(addr);
         let idx = node.as_usize();
@@ -215,7 +215,7 @@ impl NumaPmmAllocator {
         }
     }
 
-    fn deallocate_1g_frame(&self, frame: PhysFrame<Size1GiB>) {
+    pub(super) fn deallocate_1g_frame(&self, frame: PhysFrame<Size1GiB>) {
         let addr = frame.start_address().as_u64();
         let node = self.topology.addr_to_node(addr);
         let idx = node.as_usize();
@@ -224,7 +224,7 @@ impl NumaPmmAllocator {
         }
     }
 
-    fn stats(&self) -> NumaAllocatorStats {
+    pub(super) fn stats(&self) -> NumaAllocatorStats {
         let mut stats = NumaAllocatorStats {
             per_node: [(0, 0); MAX_NUMA_NODES],
             total_free: 0,
@@ -243,11 +243,11 @@ impl NumaPmmAllocator {
         stats
     }
 
-    fn topology(&self) -> &NumaTopology {
+    pub(super) fn topology(&self) -> &NumaTopology {
         &self.topology
     }
 
-    fn allocator_for_cpu(&self, cpu_id: u8) -> Option<&PmmAllocatorFast> {
+    pub(super) fn allocator_for_cpu(&self, cpu_id: u8) -> Option<&PmmAllocatorFast> {
         let node = self.topology.cpu_to_node(cpu_id);
         let idx = node.as_usize();
         self.node_allocators.get(idx)?.as_ref()

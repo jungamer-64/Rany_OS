@@ -24,7 +24,7 @@ pub mod p384 {
     }
 
     // p = FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF
-    const P: [u64; 6] = [
+    pub(super) const P: [u64; 6] = [
         0x00000000FFFFFFFF,
         0xFFFFFFFF00000000,
         0xFFFFFFFFFFFFFFFE,
@@ -34,7 +34,7 @@ pub mod p384 {
     ];
 
     // a = p - 3
-    const A_LIMBS: [u64; 6] = [
+    pub(super) const A_LIMBS: [u64; 6] = [
         0x00000000FFFFFFFC,
         0xFFFFFFFF00000000,
         0xFFFFFFFFFFFFFFFE,
@@ -44,7 +44,7 @@ pub mod p384 {
     ];
 
     // b (hex BE): B3312FA7E23EE7E4988E056BE3F82D19181D9C6EFE8141120314088F5013875AC656398D8A2ED19D2A85C8EDD3EC2AEF
-    const B_LIMBS: [u64; 6] = [
+    pub(super) const B_LIMBS: [u64; 6] = [
         0x2A85C8EDD3EC2AEF,
         0xC656398D8A2ED19D,
         0x0314088F5013875A,
@@ -54,7 +54,7 @@ pub mod p384 {
     ];
 
     // Gx (hex BE): AA87CA22BE8B05378EB1C71EF320AD746E1D3B628BA79B9859F741E082542A385502F25DBF55296C3A545E3872760AB7
-    const GX_LIMBS: [u64; 6] = [
+    pub(super) const GX_LIMBS: [u64; 6] = [
         0x3A545E3872760AB7,
         0x5502F25DBF55296C,
         0x59F741E082542A38,
@@ -64,7 +64,7 @@ pub mod p384 {
     ];
 
     // Gy (hex BE): 3617DE4A96262C6F5D9E98BF9292DC29F8F41DBD289A147CE9DA3113B5F0B8C00A60B1CE1D7E819D7A431D7C90EA0E5F
-    const GY_LIMBS: [u64; 6] = [
+    pub(super) const GY_LIMBS: [u64; 6] = [
         0x7A431D7C90EA0E5F,
         0x0A60B1CE1D7E819D,
         0xE9DA3113B5F0B8C0,
@@ -74,7 +74,7 @@ pub mod p384 {
     ];
 
     // n (order, hex BE): FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFC7634D81F4372DDF581A0DB248B0A77AECEC196ACCC52973
-    const N: [u64; 6] = [
+    pub(super) const N: [u64; 6] = [
         0xECEC196ACCC52973,
         0x581A0DB248B0A77A,
         0xC7634D81F4372DDF,
@@ -268,7 +268,7 @@ pub mod p384 {
     /// BigUintベースのP-384剰余リダクション
     ///
     /// 768ビット積（12リム）をP-384素数で縮約する。
-    fn reduce_mod_p384(product: &[u64; 12]) -> P384FieldElement {
+    pub(super) fn reduce_mod_p384(product: &[u64; 12]) -> P384FieldElement {
         // 12 u64リム（LE）をビッグエンディアンバイト列に変換
         let mut be_bytes = [0u8; 96];
         for i in 0..12 {
@@ -621,7 +621,7 @@ pub mod p384 {
     }
 
     /// P-384群位数 n 上での冪乗: base^exp mod n
-    fn scalar_pow_mod_n_384(base: &[u8; 48], exp: &[u8; 48]) -> [u8; 48] {
+    pub(super) fn scalar_pow_mod_n_384(base: &[u8; 48], exp: &[u8; 48]) -> [u8; 48] {
         let mut result = [0u8; 48];
         result[47] = 1; // 1
 
@@ -652,7 +652,7 @@ pub mod p384 {
     // ========================================================================
 
     /// DER INTEGERを48バイト固定長に正規化
-    fn normalize_integer_48(data: &[u8]) -> Result<[u8; 48], EcdsaError> {
+    pub(super) fn normalize_integer_48(data: &[u8]) -> Result<[u8; 48], EcdsaError> {
         // 先頭の0x00を除去
         let mut stripped = data;
         while stripped.len() > 1 && stripped[0] == 0 {
@@ -671,7 +671,7 @@ pub mod p384 {
 
     /// DERエンコードされたECDSA署名をパース（P-384用）
     /// DER SEQUENCE ヘッダーをデコードし、(シーケンス長, データ開始位置)を返す
-    fn decode_der_sequence_header(der: &[u8]) -> Result<(usize, usize), EcdsaError> {
+    pub(super) fn decode_der_sequence_header(der: &[u8]) -> Result<(usize, usize), EcdsaError> {
         if der.len() < 6 || der[0] != 0x30 {
             return Err(EcdsaError::InvalidSignature);
         }
@@ -689,7 +689,7 @@ pub mod p384 {
     }
 
     /// DER INTEGERを読み取り、(データスライス, 次のオフセット)を返す
-    fn read_der_integer<'a>(der: &'a [u8], pos: usize) -> Result<(&'a [u8], usize), EcdsaError> {
+    pub(super) fn read_der_integer<'a>(der: &'a [u8], pos: usize) -> Result<(&'a [u8], usize), EcdsaError> {
         if pos >= der.len() || der[pos] != 0x02 {
             return Err(EcdsaError::InvalidSignature);
         }
@@ -701,7 +701,7 @@ pub mod p384 {
         Ok((&der[start..start + len], start + len))
     }
 
-    fn parse_ecdsa_signature_der_384(der: &[u8]) -> Result<([u8; 48], [u8; 48]), EcdsaError> {
+    pub(super) fn parse_ecdsa_signature_der_384(der: &[u8]) -> Result<([u8; 48], [u8; 48]), EcdsaError> {
         let (seq_len, pos) = decode_der_sequence_header(der)?;
 
         if der.len() < pos + seq_len {
@@ -718,7 +718,7 @@ pub mod p384 {
     }
 
     /// Validate and parse ECDSA P-384 inputs (public key + DER signature).
-    fn validate_ecdsa_p384_inputs(
+    pub(super) fn validate_ecdsa_p384_inputs(
         public_key: &[u8],
         signature_der: &[u8],
     ) -> Result<(P384Point, [u8; 48], [u8; 48]), EcdsaError> {
@@ -734,7 +734,7 @@ pub mod p384 {
     }
 
     /// Constant-time comparison of a 48-byte array against a variable-length slice.
-    fn constant_time_eq_48(a: &[u8; 48], b: &[u8]) -> bool {
+    pub(super) fn constant_time_eq_48(a: &[u8; 48], b: &[u8]) -> bool {
         let mut diff = 0u8;
         for i in 0..48 {
             if i < b.len() {

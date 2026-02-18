@@ -7,10 +7,10 @@ impl DhcpClient {
     pub const MAX_RETRIES: u32 = 4;
 
     /// ARP probe waiting time (seconds)
-    const PROBE_WAIT_SECS: u64 = 1;
+    pub(super) const PROBE_WAIT_SECS: u64 = 1;
 
     /// Default retry interval used for retransmits (seconds)
-    const RETRY_INTERVAL_SECS: u64 = 4; 
+    pub(super) const RETRY_INTERVAL_SECS: u64 = 4; 
 
     /// 新しいDHCPクライアントを作成
     pub fn new(mac_address: MacAddress) -> Self {
@@ -163,7 +163,7 @@ impl DhcpClient {
     }
 
     /// Acquire the current DHCP state (helper for lock + error handling).
-    fn lock_dhcp_state(&self) -> Result<DhcpState, &'static str> {
+    pub(super) fn lock_dhcp_state(&self) -> Result<DhcpState, &'static str> {
         match self.state.lock() {
             Ok(g) => Ok(*g),
             Err(_) => {
@@ -174,7 +174,7 @@ impl DhcpClient {
     }
 
     /// Retrieve the lease corresponding to the current DHCP state for REQUEST building.
-    fn get_lease_for_request(&self, state: DhcpState) -> Result<(DhcpLease, bool), &'static str> {
+    pub(super) fn get_lease_for_request(&self, state: DhcpState) -> Result<(DhcpLease, bool), &'static str> {
         match state {
             DhcpState::Requesting => {
                 let offered = match self.offered_lease.lock() {
@@ -201,7 +201,7 @@ impl DhcpClient {
     }
 
     /// Write DHCP REQUEST options into `buffer` starting at `offset`, returning new offset.
-    fn write_request_options(
+    pub(super) fn write_request_options(
         &self,
         buffer: &mut [u8],
         mut offset: usize,
@@ -300,7 +300,7 @@ impl DhcpClient {
     }
 
     // ── Helper: parse a 4-byte IPv4 address from an option value ──
-    fn parse_ipv4_option(opt_data: &[u8]) -> Option<Ipv4Address> {
+    pub(super) fn parse_ipv4_option(opt_data: &[u8]) -> Option<Ipv4Address> {
         if opt_data.len() >= 4 {
             let mut bytes = [0u8; 4];
             bytes.copy_from_slice(&opt_data[..4]);
@@ -311,7 +311,7 @@ impl DhcpClient {
     }
 
     // ── Helper: parse a 4-byte big-endian u32 from an option value ──
-    fn parse_u32_option(opt_data: &[u8]) -> Option<u32> {
+    pub(super) fn parse_u32_option(opt_data: &[u8]) -> Option<u32> {
         if opt_data.len() >= 4 {
             let mut bytes = [0u8; 4];
             bytes.copy_from_slice(&opt_data[..4]);
@@ -322,7 +322,7 @@ impl DhcpClient {
     }
 
     /// ヘッダを検証し、参照を返す
-    fn validate_header<'a>(&self, data: &'a [u8]) -> Result<&'a DhcpHeader, &'static str> {
+    pub(super) fn validate_header<'a>(&self, data: &'a [u8]) -> Result<&'a DhcpHeader, &'static str> {
         if data.len() < DhcpHeader::SIZE + 4 {
             return Err("Packet too small");
         }
@@ -361,7 +361,7 @@ impl DhcpClient {
     }
 
     /// 単一のDHCPオプションを ParsedOptions に適用する
-    fn apply_option(opts: &mut ParsedOptions, opt: u8, opt_data: &[u8]) {
+    pub(super) fn apply_option(opts: &mut ParsedOptions, opt: u8, opt_data: &[u8]) {
         match opt {
             53 => {
                 if !opt_data.is_empty() {
@@ -394,7 +394,7 @@ impl DhcpClient {
     }
 
     /// オプション領域を解析して ParsedOptions を返す
-    fn parse_options(data: &[u8]) -> ParsedOptions {
+    pub(super) fn parse_options(data: &[u8]) -> ParsedOptions {
         let mut opts = ParsedOptions {
             message_type: None,
             subnet_mask: None,
@@ -439,7 +439,7 @@ impl DhcpClient {
     }
 
     /// ACK を Requesting 状態で検証する
-    fn validate_ack_requesting(
+    pub(super) fn validate_ack_requesting(
         &self,
         server_id: Ipv4Address,
         yiaddr: Ipv4Address,
@@ -463,7 +463,7 @@ impl DhcpClient {
     }
 
     /// ACK を Renewing/Rebinding 状態で検証する
-    fn validate_ack_renewing(
+    pub(super) fn validate_ack_renewing(
         &self,
         server_id: Ipv4Address,
         yiaddr: Ipv4Address,
@@ -487,7 +487,7 @@ impl DhcpClient {
     }
 
     /// OFFER の既存オファーとの整合性を検証する
-    fn validate_offer_server(&self, server_id: Ipv4Address) -> Result<(), &'static str> {
+    pub(super) fn validate_offer_server(&self, server_id: Ipv4Address) -> Result<(), &'static str> {
         match self.offered_lease.lock() {
             Ok(off) => {
                 if let Some(ref o) = *off {
@@ -505,7 +505,7 @@ impl DhcpClient {
     }
 
     /// ACK の状態依存検証を実行する
-    fn validate_ack_state(
+    pub(super) fn validate_ack_state(
         &self,
         current_state: DhcpState,
         server_id: Ipv4Address,
@@ -521,7 +521,7 @@ impl DhcpClient {
     }
 
     /// OFFER / ACK の整合性を検証する
-    fn validate_offer_ack(
+    pub(super) fn validate_offer_ack(
         &self,
         msg_type: DhcpMessageType,
         header: &DhcpHeader,
@@ -553,7 +553,7 @@ impl DhcpClient {
     }
 
     /// ParsedOptions と DhcpHeader からリース情報を構築する
-    fn build_lease(header: &DhcpHeader, opts: ParsedOptions, current_tick: u64) -> DhcpLease {
+    pub(super) fn build_lease(header: &DhcpHeader, opts: ParsedOptions, current_tick: u64) -> DhcpLease {
         let t1 = opts.renewal_time.unwrap_or(opts.lease_time / 2);
         let t2 = opts.rebinding_time.unwrap_or((opts.lease_time * 7) / 8);
 
@@ -602,6 +602,7 @@ pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 
 
