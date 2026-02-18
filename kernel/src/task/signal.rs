@@ -2,6 +2,16 @@
 //!
 //! ExoRust用のシグナルシステム実装
 //! POSIX互換性は排除し、Rustらしいエラーハンドリングと統合
+//!
+//! # ⚠ 非推奨 (POSIX Legacy)
+//!
+//! POSIXシグナル（SIGKILL, SIGTERM等）はExokernelの設計に不要です。
+//! Cell/Domainモデルでは、障害はプロキシパターンとResult型で処理されます。
+//!
+//! ## 移行先
+//! - `kill()` / `raise()` → `domain_system::terminate_domain()` + `driver_cell::handle_fault()`
+//! - `SignalHandler` → `FaultHandler` (`crate::driver_cell::fault`)
+//! - `SignalFuture` → ドメイン間プロキシの `Result<T, DomainError>`
 
 #![allow(dead_code)]
 #![allow(unused_imports)]

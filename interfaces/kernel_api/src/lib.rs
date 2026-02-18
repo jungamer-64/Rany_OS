@@ -86,6 +86,6 @@ pub mod qemu_tests {
             && ctx.irq == 0
             && ctx.flags == 0
             && ctx.driver_data == 0
-            && ctx._reserved == [0; 3]
+            && ctx.reserved == [0; 3]
     }
 }

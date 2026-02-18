@@ -1,6 +1,17 @@
 // ============================================================================
 // kernel/src/fs/sysfs.rs - Minimal sysfs support for /sys/cell and /sys/system
 // ============================================================================
+//!
+//! # ⚠ 非推奨 (POSIX Legacy)
+//!
+//! sysfs はLinuxカーネルのデバイス/システム情報公開メカニズムです。
+//! `/sys/cell` でドメイン情報を提供する機能は有用ですが、ファイルシステム
+//! インターフェースではなく、ドメインAPIとして直接提供すべきです。
+//!
+//! ## 移行先
+//! - `/sys/cell/*` → `domain_system::get_domain_stats()` + モニターAPI
+//! - `/sys/system/meminfo` → `mm::phys::get_memory_info()`
+//! - `/sys/system/cpuinfo` → `smp::get_cpu_info()`
 
 use alloc::format;
 use alloc::string::{String, ToString};

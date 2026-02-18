@@ -233,7 +233,7 @@ fn process_tcp_new_connection(
         return;
     };
 
-    let inner = socket.inner().lock();
+    let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
     if inner.state != SocketState::Listening {
         return;
     }
@@ -280,7 +280,7 @@ fn handle_rst_received(tcb: TcpControlBlockEntry) {
 
     // ソケットにエラー通知
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        let mut inner = socket.inner().lock();
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.last_error = Some(SocketError::ConnectionRefused);
         if let Some(waker) = inner.connect_waker.take() {
             waker.wake();
@@ -387,7 +387,7 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
     // ローカルポートでリッスン中のソケットを検索
     // find_by_portを使用
     if let Some(socket) = mgr.find_by_port(SocketType::Tcp, local_port) {
-        let mut inner = socket.inner().lock();
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         // Listening状態でなければスキップ
         if inner.state != SocketState::Listening {
@@ -533,7 +533,7 @@ fn notify_socket_urgent(fd: SocketFd) {
     };
 
     if let Some(socket) = mgr.get(fd) {
-        let mut inner = socket.inner().lock();
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         // urgent flagを設定
         inner.set_urgent_pending(true);
         // recv wakerを起こす（OOBデータ待ちの可能性）
@@ -551,7 +551,7 @@ fn notify_socket_connected(fd: SocketFd) {
     };
 
     if let Some(socket) = mgr.get(fd) {
-        let mut inner = socket.inner().lock();
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         let _ = inner.transition_to(SocketState::Connected);
         if let Some(waker) = inner.connect_waker.take() {
             waker.wake();

@@ -944,7 +944,8 @@ pub mod per_cpu {
 // Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).
 #[cfg(all(test, not(feature = "full_mm_tests")))]
 pub mod ipc {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[repr(transparent)]
     pub struct DomainId(u64);
 
     impl DomainId {
@@ -955,6 +956,8 @@ pub mod ipc {
         pub const fn as_u64(self) -> u64 {
             self.0
         }
+
+        pub const KERNEL: DomainId = DomainId(0);
     }
 
     pub mod rref {
@@ -1417,9 +1420,10 @@ pub mod task {
         pub fn get_timer_ticks() -> u64 { 0 }
     }
 
-    // Minimal domain system stub
+    // Minimal domain system stub (正規版 domain_system.rs と互換)
     pub mod domain_system {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(transparent)]
         pub struct DomainId(pub u64);
 
         impl DomainId {
@@ -1427,16 +1431,55 @@ pub mod task {
                 DomainId(v)
             }
 
-            pub fn as_u64(&self) -> u64 {
+            pub const fn as_u64(&self) -> u64 {
                 self.0
             }
+
+            pub const KERNEL: DomainId = DomainId(0);
         }
 
         impl core::fmt::Display for DomainId {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(f, "DomainId({})", self.0)
+                write!(f, "Domain({})", self.0)
             }
         }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum DomainState {
+            Initializing,
+            Running,
+            Suspended,
+            Stopped,
+            Terminated,
+        }
+
+        #[derive(Debug, Clone, Default)]
+        pub struct DomainStats {
+            pub total: usize,
+            pub running: usize,
+            pub stopped: usize,
+            pub terminated: usize,
+            pub memory_used: u64,
+            pub total_rrefs: u64,
+        }
+
+        pub fn init() {}
+        pub fn create_domain(_name: alloc::string::String) -> Option<DomainId> {
+            static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+            let id = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            Some(DomainId(id))
+        }
+        pub fn set_domain_state(_id: DomainId, _state: DomainState) {}
+        pub fn get_domain_stats() -> DomainStats { DomainStats::default() }
+        pub fn get_stats() -> DomainStats { DomainStats::default() }
+        pub fn handle_domain_panic(_id: DomainId, _msg: alloc::string::String) {}
+        pub fn start_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
+        pub fn stop_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
+        pub fn resume_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
+        pub fn terminate_domain(_id: DomainId) -> Result<(), &'static str> { Ok(()) }
+        pub fn set_domain_numa(_id: DomainId, _node: usize) {}
+        pub fn get_domain_numa(_id: DomainId) -> Option<usize> { None }
+        pub fn add_task_to_domain(_domain_id: DomainId, _task_id: u64) {}
     }
 
     // Task context counters used by procfs tests

@@ -1,7 +1,17 @@
 // ============================================================================
 // src/mm/cow.rs - Copy-on-Write Implementation
 //
-// ## 概要
+// # ⚠ 非推奨 (SAS違反)
+//
+// Copy-on-Writeはfork()を前提としたメカニズムですが、SAS (Single Address Space)
+// アーキテクチャではfork()は存在せず、ドメイン生成により代替されます。
+//
+// ## 移行先
+// - CoW fork → `domain_system::create_domain()` (Copy不要、独立ドメイン)
+// - ページ共有 → `RRef<T>` ベースの明示的共有 (`crate::ipc::rref`)
+// - 参照カウント → SASではドメイン境界での所有権移動が代替
+//
+// ## 概要 (Original)
 //
 // Copy-on-Write（CoW）機構の完全実装。fork()時のページ共有、
 // 参照カウント管理、書き込み時の透過的なページ複製を提供する。

@@ -2,6 +2,16 @@
 //!
 //! ExoRust Async-First アーキテクチャに基づくパイプ実装
 //! ゼロコピー転送と非同期I/Oをサポート
+//!
+//! # ⚠ 部分非推奨 (POSIX Legacy)
+//!
+//! `pipe()`, `pipe2()`, `mkfifo()` はPOSIXパイプAPI互換であり非推奨です。
+//! **`ZeroCopyChannel`/`zero_copy_channel()` はExokernel設計に適合しており推奨です。**
+//!
+//! ## 移行先
+//! - `pipe()` / `pipe2()` → `zero_copy_channel()` (`RRef<T>` ベースのゼロコピー通信)
+//! - `PipeReader` / `PipeWriter` → `ZeroCopySender` / `ZeroCopyReceiver`
+//! - `mkfifo()` → NamedPipeはCapabilityベースのサービス発見に置換
 
 #![allow(dead_code)]
 #![allow(unused_imports)]

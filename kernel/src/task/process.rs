@@ -2,6 +2,17 @@
 //!
 //! ExoRust のタスク/プロセスライフサイクル管理
 //! ドメインベースのプロセスモデル
+//!
+//! # ⚠ 非推奨 (POSIX Legacy)
+//!
+//! このモジュールはUnixプロセスモデル（PID, fork, exec, wait）に基づいており、
+//! ExoRust Exokernelの設計思想（Cell/Domain, SAS, SPL）と矛盾します。
+//!
+//! ## 移行先
+//! - `ProcessId` → `DomainId` (`crate::domain_system::DomainId`)
+//! - `ProcessManager` → `DomainRegistry` (`crate::domain_system`)
+//! - `spawn()` → `create_domain()` + タスクスポーン
+//! - `Credentials` / `UserId` / `GroupId` → `CapabilitySet` (`crate::security`)
 
 #![allow(dead_code)]
 #![allow(unused_imports)]

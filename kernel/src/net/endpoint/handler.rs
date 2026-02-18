@@ -67,7 +67,7 @@ impl NetworkEventHandler {
 
         // 送信バッファからデータを取得（drainは送信成功後に行う）
         let (data, local, remote) = {
-            let inner = socket.inner().lock();
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             if inner.send_buffer.is_empty() {
                 return EventHandleResult::Success;
             }
@@ -114,7 +114,7 @@ impl NetworkEventHandler {
             Ok(()) => {
                 // 送信成功: send_buffer から対応分を削除し、TCB を更新
                 {
-                    let mut inner = socket.inner().lock();
+                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                     let drain_len = data.len();
                     inner.send_buffer.drain(..drain_len);
                     // 送信可能になったため、待ちタスクを起こす
@@ -194,7 +194,7 @@ impl NetworkEventHandler {
 
         // ソケットのローカルアドレスを更新し、輻輳制御アルゴリズム設定を取得
         let congestion_algo = {
-            let mut inner = socket.inner().lock();
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local_addr);
             inner.congestion_algorithm
         };
@@ -279,7 +279,7 @@ impl NetworkEventHandler {
 
         // ローカルアドレスをソケットに設定
         {
-            let mut inner = socket.inner().lock();
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
         }
 
@@ -318,7 +318,7 @@ impl NetworkEventHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let inner = socket.inner().lock();
+        let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         let local = match inner.local_addr {
             Some(addr) => addr,
             None => {
@@ -415,7 +415,7 @@ impl NetworkEventHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let inner = socket.inner().lock();
+        let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         let local = match inner.local_addr {
             Some(addr) => addr,
             None => {
@@ -521,7 +521,7 @@ mod tests {
         let local = SocketAddr::new([127, 0, 0, 1], 12345);
         let remote = SocketAddr::new([127, 0, 0, 1], 80);
         if let Some(s) = sock.socket() {
-            let mut inner = s.inner().lock();
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
             inner.send_buffer.extend(&[1, 2, 3]);
@@ -553,7 +553,7 @@ mod tests {
         let local = SocketAddr::new([127, 0, 0, 1], 12345);
         let remote = SocketAddr::new([10, 0, 2, 2], 80); // likely ARP unresolved
         if let Some(s) = sock.socket() {
-            let mut inner = s.inner().lock();
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
             inner.send_buffer.extend(&[1, 2, 3, 4]);

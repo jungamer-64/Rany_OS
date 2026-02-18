@@ -43,7 +43,7 @@ mod tests {
 
         // Bound -> Listening
         {
-            let mut inner = socket.inner().lock();
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(SocketAddr::new([0, 0, 0, 0], 8080));
             let _ = inner.transition_to(SocketState::Bound);
             let _ = inner.transition_to(SocketState::Listening);
@@ -60,7 +60,7 @@ mod tests {
 
         // Bound -> Listening
         {
-            let mut inner = listen_socket.inner().lock();
+            let mut inner = listen_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(SocketAddr::new([0, 0, 0, 0], 8080));
             let _ = inner.transition_to(SocketState::Bound);
             let _ = inner.transition_to(SocketState::Listening);
@@ -74,7 +74,7 @@ mod tests {
         let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
 
         {
-            let mut inner = listen_socket.inner().lock();
+            let mut inner = listen_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.accept_queue.push_back(conn);
         }
 
@@ -90,7 +90,7 @@ mod tests {
 
     /// 内部テスト用: SocketManager登録をスキップしてaccept
     fn socket_accept_internal(socket: &Socket) -> Option<(Socket, SocketAddr)> {
-        let mut inner = socket.inner().lock();
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         if inner.state != SocketState::Listening {
             return None;
@@ -99,7 +99,7 @@ mod tests {
         if let Some(conn) = inner.accept_queue.pop_front() {
             let new_socket = Socket::new_with_fd(SocketType::Tcp, conn.fd);
             {
-                let mut new_inner = new_socket.inner().lock();
+                let mut new_inner = new_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 let _ = new_inner.transition_to(SocketState::Connected);
@@ -116,7 +116,7 @@ mod tests {
 
         // Listening状態に
         {
-            let mut inner = socket.inner().lock();
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(SocketAddr::new([0, 0, 0, 0], 9000));
             inner.accept_backlog = 2; // 小さいバックログ
             let _ = inner.transition_to(SocketState::Bound);
@@ -131,14 +131,14 @@ mod tests {
             let tcb = TcpControlBlockEntry::new(fd, local, remote);
             let conn = AcceptedConnection::new(fd, local, remote, tcb);
 
-            let mut inner = socket.inner().lock();
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             if inner.accept_queue.len() < inner.accept_backlog {
                 inner.accept_queue.push_back(conn);
             }
         }
 
         // バックログ上限で制限される
-        let inner = socket.inner().lock();
+        let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.accept_queue.len(), 2);
     }
 }
