@@ -17,9 +17,10 @@ pub type InodeNum = u64;
 // ============================================================================
 
 /// ファイルタイプ
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FileType {
     /// 通常ファイル
+    #[default]
     File,
     /// ディレクトリ
     Directory,
@@ -33,12 +34,6 @@ pub enum FileType {
     Pipe,
     /// ソケット
     Socket,
-}
-
-impl Default for FileType {
-    fn default() -> Self {
-        Self::File
-    }
 }
 
 // ============================================================================
@@ -196,31 +191,36 @@ bitflags! {
 impl OpenFlags {
     /// 読み取りアクセスが要求されているか
     #[inline]
-    pub fn can_read(&self) -> bool {
+    #[must_use]
+    pub const fn can_read(&self) -> bool {
         self.contains(Self::READ)
     }
 
     /// 書き込みアクセスが要求されているか
     #[inline]
-    pub fn can_write(&self) -> bool {
+    #[must_use]
+    pub const fn can_write(&self) -> bool {
         self.contains(Self::WRITE)
     }
 
     /// 作成フラグが設定されているか
     #[inline]
-    pub fn should_create(&self) -> bool {
+    #[must_use]
+    pub const fn should_create(&self) -> bool {
         self.contains(Self::CREATE)
     }
 
     /// 切り詰めフラグが設定されているか
     #[inline]
-    pub fn should_truncate(&self) -> bool {
+    #[must_use]
+    pub const fn should_truncate(&self) -> bool {
         self.contains(Self::TRUNCATE)
     }
 
     /// 追記フラグが設定されているか
     #[inline]
-    pub fn should_append(&self) -> bool {
+    #[must_use]
+    pub const fn should_append(&self) -> bool {
         self.contains(Self::APPEND)
     }
 }
@@ -284,66 +284,77 @@ impl UnixFileMode {
 
     /// 新しいファイルモードを作成
     #[inline]
+    #[must_use]
     pub const fn new(mode: u16) -> Self {
         Self(mode)
     }
 
     /// 生の値を取得
     #[inline]
+    #[must_use]
     pub const fn bits(&self) -> u16 {
         self.0
     }
 
     /// オーナーが読み取り可能か
     #[inline]
+    #[must_use]
     pub const fn owner_read(&self) -> bool {
         self.0 & Self::S_IRUSR != 0
     }
 
     /// オーナーが書き込み可能か
     #[inline]
+    #[must_use]
     pub const fn owner_write(&self) -> bool {
         self.0 & Self::S_IWUSR != 0
     }
 
     /// オーナーが実行可能か
     #[inline]
+    #[must_use]
     pub const fn owner_execute(&self) -> bool {
         self.0 & Self::S_IXUSR != 0
     }
 
     /// グループが読み取り可能か
     #[inline]
+    #[must_use]
     pub const fn group_read(&self) -> bool {
         self.0 & Self::S_IRGRP != 0
     }
 
     /// グループが書き込み可能か
     #[inline]
+    #[must_use]
     pub const fn group_write(&self) -> bool {
         self.0 & Self::S_IWGRP != 0
     }
 
     /// グループが実行可能か
     #[inline]
+    #[must_use]
     pub const fn group_execute(&self) -> bool {
         self.0 & Self::S_IXGRP != 0
     }
 
     /// その他が読み取り可能か
     #[inline]
+    #[must_use]
     pub const fn other_read(&self) -> bool {
         self.0 & Self::S_IROTH != 0
     }
 
     /// その他が書き込み可能か
     #[inline]
+    #[must_use]
     pub const fn other_write(&self) -> bool {
         self.0 & Self::S_IWOTH != 0
     }
 
     /// その他が実行可能か
     #[inline]
+    #[must_use]
     pub const fn other_execute(&self) -> bool {
         self.0 & Self::S_IXOTH != 0
     }
@@ -394,6 +405,7 @@ pub struct DirEntry {
 #[cfg(feature = "alloc")]
 impl DirEntry {
     /// 新しいディレクトリエントリを作成
+    #[must_use]
     pub fn new(name: String, ino: InodeNum, file_type: FileType) -> Self {
         Self {
             name,

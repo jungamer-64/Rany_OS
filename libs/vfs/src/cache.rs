@@ -461,7 +461,7 @@ impl PageCache {
         let mut best_page: Option<(InodeNum, u64, u64)> = None;
         let mut best_access_time = u64::MAX;
 
-        for (ino, file_cache) in files.iter() {
+        for (ino, file_cache) in files {
             if let Some(page_num) = file_cache.find_lru_page() {
                 if let Some(page) = file_cache.get_page(page_num) {
                     let access_time = page.last_access();
@@ -547,7 +547,7 @@ impl PageCache {
         let files = self.files.read();
         let mut total_synced = 0;
 
-        for (ino, file_cache) in files.iter() {
+        for (ino, file_cache) in &*files {
             let dirty_pages = file_cache.dirty_pages();
 
             for page in dirty_pages {
@@ -626,8 +626,10 @@ pub fn page_cache() -> &'static PageCache {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
-    use super::*;
+    use super::{CachedPage, LRUBlockCache, PageCache, PageState, PAGE_SIZE};
+    use alloc::vec::Vec;
 
     pub fn cached_page_smoke() -> bool {
         let page = CachedPage::new_empty(0);
@@ -700,7 +702,7 @@ pub mod qemu_tests {
             return false;
         }
 
-        cache.get(0, 0).map(|block| block.is_dirty()).unwrap_or(false)
+        cache.get(0, 0).is_some_and(|block| block.is_dirty())
     }
 
     pub fn block_cache_flush_smoke() -> bool {
@@ -715,7 +717,7 @@ pub mod qemu_tests {
         });
 
         let flushed = result == Ok(true) && flushed_data.first().copied() == Some(0xFF);
-        let clean = cache.get(0, 0).map(|block| !block.is_dirty()).unwrap_or(false);
+        let clean = cache.get(0, 0).is_some_and(|block| !block.is_dirty());
         flushed && clean
     }
 }
@@ -1296,7 +1298,7 @@ impl LRUBlockCache {
         let blocks = self.blocks.lock();
         let mut flushed = 0;
 
-        for (key, block) in blocks.iter() {
+        for (key, block) in &*blocks {
             if key.device_id == device_id && block.is_dirty() {
                 let data = block.data_for_sync();
                 writer(key.block_num, &data)?;
@@ -1345,7 +1347,7 @@ impl LRUBlockCache {
         let blocks = self.blocks.lock();
         let mut flushed = 0;
 
-        for (key, block) in blocks.iter() {
+        for (key, block) in &*blocks {
             if block.is_dirty() {
                 let data = block.data_for_sync();
                 writer(key.device_id, key.block_num, &data)?;

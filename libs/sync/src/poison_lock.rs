@@ -34,7 +34,7 @@ pub struct PoisonError<T> {
 }
 
 impl<T> PoisonError<T> {
-    /// 新しいPoisonErrorを作成
+    /// 新しい`PoisonError`を作成
     pub(crate) const fn new(guard: T) -> Self {
         Self { guard }
     }
@@ -65,7 +65,7 @@ impl<T> fmt::Display for PoisonError<T> {
     }
 }
 
-/// PoisonLock::lock()の戻り値型
+/// `PoisonLock::lock()`の戻り値型
 pub type LockResult<Guard> = Result<Guard, PoisonError<Guard>>;
 
 // ============================================================================
@@ -113,7 +113,7 @@ unsafe impl<T: ?Sized + Send> Sync for PoisonLock<T> {}
 unsafe impl<T: ?Sized + Send> Send for PoisonLock<T> {}
 
 impl<T> PoisonLock<T> {
-    /// 新しいPoisonLockを作成
+    /// 新しい`PoisonLock`を作成
     pub const fn new(data: T) -> Self {
         Self {
             locked: AtomicBool::new(false),
@@ -126,12 +126,16 @@ impl<T> PoisonLock<T> {
     ///
     /// ロックが毒入れされている場合は`Err(PoisonError)`を返す。
     /// 呼び出し側は`into_inner()`で回復を試みることができる。
+    ///
+    /// # Errors
+    ///
+    /// ロックが毒入れされている場合、`PoisonError`を含む`Err`を返す。
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
         #[cfg(feature = "metrics")]
-        let start_spin_count: u64;
+        let _start_spin_count: u64;
         #[cfg(feature = "metrics")]
         {
-            start_spin_count = 0;
+            _start_spin_count = 0;
         }
 
         let mut spin_count: u64 = 0;
@@ -243,6 +247,7 @@ impl<T> PoisonLock<T> {
     ///
     /// # Safety
     /// 呼び出し側は、排他的アクセスを保証する必要がある
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_unchecked_mut(&self) -> &mut T {
         unsafe { &mut *self.data.get() }
     }
@@ -270,7 +275,7 @@ impl<T: fmt::Debug> fmt::Debug for PoisonLock<T> {
 // PoisonLockGuard - PoisonLockのガード
 // ============================================================================
 
-/// PoisonLockのガード
+/// `PoisonLock`のガード
 ///
 /// ドロップ時にロックを解放する。
 /// パニック中にドロップされると、ロックが毒入れされる。
@@ -425,7 +430,7 @@ pub fn get_lock_metrics() -> LockMetrics {
     let acq = LOCK_ACQUIRE_COUNT.load(Ordering::Relaxed);
     let cont = LOCK_CONTENTION_EVENTS.load(Ordering::Relaxed);
     let total = LOCK_TOTAL_ACQUIRE_TICKS.load(Ordering::Relaxed);
-    let avg = if acq > 0 { total / acq } else { 0 };
+    let avg = total.checked_div(acq).unwrap_or(0);
     LockMetrics {
         acquire_count: acq,
         contention_events: cont,
@@ -443,15 +448,16 @@ pub fn reset_lock_metrics() {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
-    use super::*;
+    use super::{LockResult, PoisonLock, PoisonLockGuard};
+    use core::sync::atomic::Ordering;
 
     pub fn basic_lock_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
-        let guard = match lock.lock() {
-            Ok(v) => v,
-            Err(_) => return false,
+        let Ok(guard) = lock.lock() else {
+            return false;
         };
         let ok = *guard == 42;
         drop(guard);
@@ -462,9 +468,8 @@ pub mod qemu_tests {
     pub fn try_lock_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
-        let guard = match lock.try_lock() {
-            Some(Ok(v)) => v,
-            _ => return false,
+        let Some(Ok(guard)) = lock.try_lock() else {
+            return false;
         };
         let value_ok = *guard == 42;
         let contention_ok = lock.try_lock().is_none();
@@ -491,9 +496,6 @@ pub mod qemu_tests {
 
     pub fn default_lock_smoke() -> bool {
         let lock: PoisonLock<i32> = PoisonLock::default();
-        match lock.lock() {
-            Ok(guard) => *guard == 0,
-            Err(_) => false,
-        }
+        lock.lock().map_or(false, |guard| *guard == 0)
     }
 }
