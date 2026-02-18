@@ -450,7 +450,7 @@ pub fn reset_lock_metrics() {
 #[cfg(feature = "qemu-test-export")]
 #[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
-    use super::{LockResult, PoisonLock, PoisonLockGuard};
+    use super::PoisonLock;
     use core::sync::atomic::Ordering;
 
     pub fn basic_lock_smoke() -> bool {

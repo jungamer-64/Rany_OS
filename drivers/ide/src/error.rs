@@ -1,4 +1,4 @@
-use super::*;
+use super::{Mutex, IdeChannel, IdeController, DriveSel};
 
 
 // ============================================================================
@@ -25,7 +25,7 @@ pub enum IdeError {
 // ============================================================================
 
 /// グローバルIDEコントローラ
-pub(crate) static IDE_CHANNELS: Mutex<Option<[IdeChannel; 2]>> = Mutex::new(None);
+pub static IDE_CHANNELS: Mutex<Option<[IdeChannel; 2]>> = Mutex::new(None);
 
 /// IDEコントローラを初期化
 pub fn init() {

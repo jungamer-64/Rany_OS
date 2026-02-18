@@ -1543,6 +1543,7 @@ impl IconGenerator {
 #[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
     use super::{Color, Image, ImageError, ImageViewMut, PixelFormat, Rect, MAX_IMAGE_SIZE};
+    use alloc::vec;
 
     pub fn try_new_overflow_smoke() -> bool {
         let result = Image::try_new(u32::MAX, u32::MAX);

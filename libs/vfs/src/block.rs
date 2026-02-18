@@ -1004,7 +1004,7 @@ pub fn block_manager() -> &'static BlockDeviceManager {
 #[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
     use super::{
-        BlockDeviceInfo, BlockError, BlockResult,
+        BlockDevice, BlockDeviceInfo, BlockError, BlockResult,
         OwnedBytes, RamDisk, ZcFuture, ZeroCopyBlockDevice,
     };
     use alloc::boxed::Box;

@@ -138,7 +138,7 @@ pub fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| manifest_dir.join("..").join(".."))
 }
 
-const fn suite_package_name(suite: &str) -> Option<&'static str> {
+fn suite_package_name(suite: &str) -> Option<&'static str> {
     match suite {
         "core" => Some("qemu_suite_core"),
         "drivers" => Some("qemu_suite_drivers"),

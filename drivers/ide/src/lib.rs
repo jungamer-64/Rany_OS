@@ -29,7 +29,6 @@ use spin::Mutex;
 mod error;
 pub use error::*;
 mod channel;
-pub use channel::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdeController {
     Primary,

@@ -1,4 +1,4 @@
-use super::*;
+use super::{IdeChannel, IdeController, PortU8, regs, IdeError, status, DriveSel, DeviceType, commands, IdentifyData, PortU16};
 
 
 impl IdeChannel {
@@ -178,10 +178,7 @@ impl IdeChannel {
         }
 
         // ATAPIデバイスチェック
-        let device_type = match unsafe { self.detect_device_type() } {
-            Some(dt) => dt,
-            None => return None,
-        };
+        let device_type = unsafe { self.detect_device_type() }?;
 
         // IDENTIFYデータを読み取り
         let mut words = [0u16; 256];
