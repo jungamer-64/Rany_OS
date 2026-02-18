@@ -12,8 +12,8 @@
 use super::ipv4::{Ipv4Address, data_checksum};
 
 /// ICMP message type
-mod _split_1;
-pub use _split_1::*;
+mod processor_impl;
+pub use processor_impl::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum IcmpType {

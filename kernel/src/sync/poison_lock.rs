@@ -26,8 +26,8 @@ use super::lockfree::Backoff;
 ///
 /// 設計書 8.4: 次にそのMutexをロックしようとしたドメインには、
 /// `Result::Err(PoisonError)` が返される。
-mod _split_1;
-pub use _split_1::*;
+mod tests;
+pub use tests::*;
 #[derive(Debug)]
 pub struct PoisonError<T> {
     /// 毒入れされたガード（回復用）

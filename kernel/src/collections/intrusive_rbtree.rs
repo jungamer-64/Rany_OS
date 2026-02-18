@@ -51,8 +51,8 @@ use core::ptr;
 // ============================================================================
 
 /// 赤黒木ノードの色
-mod _split_1;
-pub use _split_1::*;
+mod iter_and_traits;
+pub use iter_and_traits::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Color {

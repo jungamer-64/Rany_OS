@@ -3,7 +3,9 @@ use super::*;
 
 // SAFETY: ExoKernel is stateless and accesses thread-safe globals
 mod _split_1;
+pub use _split_1::*;
 mod _split_2;
+pub use _split_2::*;
 unsafe impl Send for ExoKernel {}
 unsafe impl Sync for ExoKernel {}
 

@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 impl IoScheduler {
     /// 新しいI/Oスケジューラを作成
     pub const fn new() -> Self {

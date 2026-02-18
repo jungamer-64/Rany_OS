@@ -23,8 +23,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 /// IPv4 address (4 bytes)
-mod _split_1;
-pub use _split_1::*;
+mod pmtu_cache_impl;
+pub use pmtu_cache_impl::*;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv4Address([u8; 4]);
 

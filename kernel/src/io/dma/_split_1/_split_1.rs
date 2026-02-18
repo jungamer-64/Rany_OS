@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 impl IommuDmaBuffer {
     pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
         let inner = CoherentDmaBuffer::new(size, attributes)?;

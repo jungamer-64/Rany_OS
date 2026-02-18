@@ -6,6 +6,7 @@ use super::*;
 // ============================================================================
 
 mod _split_1;
+pub use _split_1::*;
 #[cfg(test)]
 #[path = "../tests.rs"]
 mod tests;

@@ -2,7 +2,9 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 mod _split_2;
+pub use _split_2::*;
 #[cfg(all(test, feature = "std"))]
 mod test_impl {
     use super::*;

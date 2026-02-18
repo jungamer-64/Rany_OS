@@ -32,8 +32,8 @@
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-mod _split_1;
-pub use _split_1::*;
+mod mglru_tuning;
+pub use mglru_tuning::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 use core::sync::atomic::AtomicU8;
 use alloc::collections::{BTreeMap, VecDeque};

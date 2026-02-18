@@ -44,10 +44,10 @@ use x86_64::PhysAddr as X64PhysAddr;
 // ============================================================================
 
 /// ユーザー空間の開始アドレス
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod error;
+pub use error::*;
+mod impl_methods;
+pub use impl_methods::*;
 pub const USER_SPACE_START: u64 = 0x0000_0000_0010_0000; // 1MB
 
 /// ユーザー空間の終了アドレス

@@ -16,8 +16,8 @@ use x86_64::PhysAddr;
 use crate::mm::PAGE_SIZE_4K;
 
 /// DMAページサイズ
-mod _split_1;
-pub use _split_1::*;
+mod pool_impl;
+pub use pool_impl::*;
 const DMA_PAGE_SIZE: usize = PAGE_SIZE_4K;
 
 /// デフォルトのプール容量

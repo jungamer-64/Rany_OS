@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 pub fn wave6_draw_image_24bit_mmio_smoke() -> bool {
     let width = 3u32;
     let height = 2u32;

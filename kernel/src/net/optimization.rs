@@ -30,8 +30,8 @@ use super::mempool::PacketRef;
 // ============================================================================
 
 /// 最大バッチサイズ (DPDK/NAPIの典型値)
-mod _split_1;
-pub use _split_1::*;
+mod gro_impl;
+pub use gro_impl::*;
 pub const MAX_BATCH_SIZE: usize = 64;
 
 /// パケットバッチ - 複数パケットをまとめて処理

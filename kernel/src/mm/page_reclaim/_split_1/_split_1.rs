@@ -3,7 +3,9 @@ use super::*;
 
 /// 回収統計
 mod _split_1;
+pub use _split_1::*;
 mod _split_2;
+pub use _split_2::*;
 #[derive(Debug)]
 pub struct ReclaimStats {
     pub direct_reclaim_count: u64,

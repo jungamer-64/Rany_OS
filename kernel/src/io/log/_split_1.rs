@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 impl Log for KernelLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         let current_level = LevelFilter::iter()

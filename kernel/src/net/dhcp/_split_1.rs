@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 impl DhcpClient {
     /// 最大再試行回数
     pub const MAX_RETRIES: u32 = 4;

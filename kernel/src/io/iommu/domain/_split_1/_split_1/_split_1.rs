@@ -189,7 +189,7 @@ impl IommuDomain {
         self.mapped_size.load(Ordering::Relaxed)
     }
 
-    pub(super) fn poison(&self) {
+    pub(crate) fn poison(&self) {
         if !self.poisoned.swap(true, Ordering::AcqRel) {
             self.notify_security(SecurityEvent::QuarantinePoisoned { domain_id: self.id });
             log::error!(
@@ -266,9 +266,9 @@ impl IommuDomain {
         &self,
         rref: crate::ipc::RRef<T>,
         context: &dyn IommuHardwareContext,
-        direction: super::dma_handle::DmaDirection,
-    ) -> Result<super::dma_handle::DmaHandle<T>, super::dma_handle::MapError<T>> {
-        use super::dma_handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
+        direction: crate::io::iommu::dma_handle::DmaDirection,
+    ) -> Result<crate::io::iommu::dma_handle::DmaHandle<T>, crate::io::iommu::dma_handle::MapError<T>> {
+        use crate::io::iommu::dma_handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
         use x86_64::VirtAddr;
 
         // Get physical address from RRef's virtual pointer
@@ -295,9 +295,9 @@ impl IommuDomain {
 
         // Determine permissions from direction
         let (read, write) = match direction {
-            super::dma_handle::DmaDirection::ToDevice => (true, false),
-            super::dma_handle::DmaDirection::FromDevice => (false, true),
-            super::dma_handle::DmaDirection::Bidirectional => (true, true),
+            crate::io::iommu::dma_handle::DmaDirection::ToDevice => (true, false),
+            crate::io::iommu::dma_handle::DmaDirection::FromDevice => (false, true),
+            crate::io::iommu::dma_handle::DmaDirection::Bidirectional => (true, true),
         };
 
         // Create page table mappings
@@ -336,11 +336,11 @@ impl IommuDomain {
     /// Returns `UnmapError<T>` containing the handle on failure.
     pub fn unmap_buffer<T, I: IommuInvalidator>(
         &self,
-        mut handle: super::dma_handle::DmaHandle<T>,
+        mut handle: crate::io::iommu::dma_handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
-        use super::dma_handle::{UnmapError, UnmapErrorKind};
+    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::dma_handle::UnmapError<T>> {
+        use crate::io::iommu::dma_handle::{UnmapError, UnmapErrorKind};
 
         let iova = handle.iova();
         let size = handle.size();
@@ -393,11 +393,11 @@ impl IommuDomain {
     /// A future that resolves to `Result<RRef<T>, UnmapError<T>>`
     pub async fn unmap_buffer_async<T, I: IommuInvalidator + Sync>(
         &self,
-        mut handle: super::dma_handle::DmaHandle<T>,
+        mut handle: crate::io::iommu::dma_handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
-        use super::dma_handle::{UnmapError, UnmapErrorKind};
+    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::dma_handle::UnmapError<T>> {
+        use crate::io::iommu::dma_handle::{UnmapError, UnmapErrorKind};
 
         let iova = handle.iova();
         let size = handle.size();
@@ -478,7 +478,7 @@ impl IommuDomain {
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
-    unsafe fn deallocate_page_tables_iterative(&mut self) { unsafe {
+    pub(crate) pub(crate) unsafe fn deallocate_page_tables_iterative(&mut self) { unsafe {
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");

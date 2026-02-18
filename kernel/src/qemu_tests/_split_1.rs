@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 pub fn net_tls_wave8_tls13_full_key_schedule_smoke() -> bool {
     crate::net::tls::qemu_tests::wave8_tls_tls13_full_key_schedule_smoke()
 }

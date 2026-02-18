@@ -25,8 +25,8 @@ use super::buddy_allocator::PerCpuFrameCache;
 use crate::sync::IrqMutex;
 
 /// Cache entry for device to domain mapping
-mod _split_1;
-pub use _split_1::*;
+mod data;
+pub use data::*;
 #[derive(Clone, Copy, Default)]
 pub struct DomainCacheEntry {
     pub device_id: u16,

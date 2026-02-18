@@ -12,8 +12,8 @@ use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// ARP hardware type
-mod _split_1;
-pub use _split_1::*;
+mod processor_impl;
+pub use processor_impl::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ArpHardwareType {

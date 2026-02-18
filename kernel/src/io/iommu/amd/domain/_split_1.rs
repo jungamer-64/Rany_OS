@@ -2,7 +2,7 @@ use super::*;
 
 
 impl AmdIommuDriver {
-    pub(super) fn ivhd_flags_for_device(&self, device: DeviceId) -> u8 {
+    pub(crate) fn ivhd_flags_for_device(&self, device: DeviceId) -> u8 {
         let mut flags = 0u8;
         let devid = device.requester_id();
         let unit = match self.find_unit_for_device(device) {
@@ -32,7 +32,7 @@ impl AmdIommuDriver {
         flags
     }
 
-    pub(super) fn domain_for_id(&self, domain_id: u16) -> Result<Arc<DomainState>, IommuError> {
+    pub(crate) fn domain_for_id(&self, domain_id: u16) -> Result<Arc<DomainState>, IommuError> {
         let domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
         let info = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
         Ok(info.domain.clone())
@@ -70,7 +70,7 @@ impl AmdIommuDriver {
         Ok(entry)
     }
 
-    pub(super) fn alias_devids_for_device(&self, device: DeviceId) -> Vec<u16> {
+    pub(crate) fn alias_devids_for_device(&self, device: DeviceId) -> Vec<u16> {
         let mut aliases = Vec::new();
         let devid = device.requester_id();
         let unit = match self.find_unit_for_device(device) {
@@ -123,7 +123,7 @@ impl AmdIommuDriver {
         map_ivmd_ranges(domain.as_ref(), &ranges)
     }
 
-    pub(super) fn reject_excluded_ivmd_range(
+    pub(crate) fn reject_excluded_ivmd_range(
         &self,
         device: DeviceId,
         phys_addr: u64,
@@ -217,7 +217,7 @@ impl AmdIommuDriver {
         }
     }
 
-    pub(super) fn populate_default_entries(&self) -> Result<(), IommuError> {
+    pub(crate) fn populate_default_entries(&self) -> Result<(), IommuError> {
         let default_domain = self.domain_for_id(0)?;
         map_ivmd_ranges(default_domain.as_ref(), &self.ivmd_ranges)?;
 

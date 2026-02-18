@@ -3,6 +3,7 @@ use super::*;
 
 /// IOMMUマッピングを一括解放する
 mod _split_1;
+pub use _split_1::*;
 pub(crate) fn cleanup_nvme_maps(maps: &mut Vec<NvmeIommuMapping>) {
     for map in maps.drain(..) {
         map.unmap();

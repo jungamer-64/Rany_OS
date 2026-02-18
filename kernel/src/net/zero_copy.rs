@@ -32,8 +32,8 @@ use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 // ============================================================================
 
 /// デフォルトのバッファサイズ
-mod _split_1;
-pub use _split_1::*;
+mod send_future;
+pub use send_future::*;
 const DEFAULT_BUFFER_SIZE: usize = 2048;
 
 /// DMAアライメント要件

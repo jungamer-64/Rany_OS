@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
 
@@ -23,7 +24,7 @@ impl IommuDomain {
         supports_1gb: bool,
         max_addr_bits: u8,
         domain_type: IommuDomainType,
-        page_table_pool: Arc<super::page_table_pool::PageTablePool>,
+        page_table_pool: Arc<crate::io::iommu::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
     ) -> Self {
         // Allocate page table on the preferred NUMA node when possible.
@@ -56,7 +57,7 @@ impl IommuDomain {
         } else {
             (0x1_0000_0000, 0x8_0000_0000) // 4GB base, 32GB window
         };
-        let per_domain_iova = super::IovaAllocatorFast::new(default_iova_base, default_iova_size);
+        let per_domain_iova = crate::io::iommu::IovaAllocatorFast::new(default_iova_base, default_iova_size);
 
         Self {
             id,
@@ -73,7 +74,7 @@ impl IommuDomain {
             // CRITICAL: This capacity must never be exceeded. The quarantine's
             // drain_pending_invalidations() asserts this in debug builds.
             flush_requests: PoisonLock::new(Vec::with_capacity(
-                super::quarantine::INVALIDATION_CAPACITY,
+                crate::io::iommu::quarantine::INVALIDATION_CAPACITY,
             )),
             page_table_pool,
             pte_format,
@@ -127,7 +128,7 @@ impl IommuDomain {
         supports_1gb: bool,
         max_addr_bits: u8,
         domain_type: IommuDomainType,
-        page_table_pool: Arc<super::page_table_pool::PageTablePool>,
+        page_table_pool: Arc<crate::io::iommu::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
         iova_base: u64,
         iova_size: u64,
@@ -144,7 +145,7 @@ impl IommuDomain {
         );
 
         // Override with custom IOVA range
-        domain.per_domain_iova = super::IovaAllocatorFast::new(iova_base, iova_size);
+        domain.per_domain_iova = crate::io::iommu::IovaAllocatorFast::new(iova_base, iova_size);
 
         log::debug!(
             "[IOMMU] Domain {} initialized with custom IOVA: base=0x{:x}, size=0x{:x}",
@@ -161,20 +162,20 @@ impl IommuDomain {
     /// Uses IovaAllocatorFast with O(1) per-CPU magazine allocation.
     /// All domains have their own IOVA allocator, eliminating lock contention.
     #[inline]
-    pub fn allocate_iova(&self, size: u64) -> Result<u64, super::types::IommuError> {
+    pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
         use super::IovaGranularity;
         
         // IovaAllocatorFast is internally lock-free for common paths
         self.per_domain_iova
             .allocate(size, IovaGranularity::Page4K)
-            .ok_or(super::types::IommuError::OutOfIova)
+            .ok_or(crate::io::iommu::types::IommuError::OutOfIova)
     }
 
     /// Free IOVA back to this domain's allocator.
     ///
     /// Uses IovaAllocatorFast with O(1) per-CPU magazine deallocation.
     #[inline]
-    pub fn free_iova(&self, iova: u64, size: u64) -> Result<(), super::types::IommuError> {
+    pub fn free_iova(&self, iova: u64, size: u64) -> Result<(), crate::io::iommu::types::IommuError> {
         // IovaAllocatorFast is internally lock-free for common paths
         self.per_domain_iova.free(iova, size)
     }
@@ -366,8 +367,8 @@ impl IommuDomain {
             .lock()
             .map_err(|_| IommuError::Poisoned)?;
         let drained_batch = match self.quarantine.drain_pending_invalidations(&mut requests) {
-            super::quarantine::DrainResult::NoWork { .. } => return Ok(()),
-            super::quarantine::DrainResult::NotReady { batch: _ } => {
+            crate::io::iommu::quarantine::DrainResult::NoWork { .. } => return Ok(()),
+            crate::io::iommu::quarantine::DrainResult::NotReady { batch: _ } => {
                 // Round 9 Safety: Reserved slots pending.
                 // We MUST NOT issue invalidations or reap, as that would
                 // advance the batch prematurely or leave valid PTEs behind.
@@ -375,8 +376,8 @@ impl IommuDomain {
                 // but for now we just skip the flush.
                 return Ok(());
             }
-            super::quarantine::DrainResult::Drained { batch } => batch,
-            super::quarantine::DrainResult::Poisoned { .. } => return Err(IommuError::Poisoned),
+            crate::io::iommu::quarantine::DrainResult::Drained { batch } => batch,
+            crate::io::iommu::quarantine::DrainResult::Poisoned { .. } => return Err(IommuError::Poisoned),
         };
 
         // Skip if nothing to flush (double check, though NoWork covers this)

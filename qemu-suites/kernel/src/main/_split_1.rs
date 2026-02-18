@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 pub(crate) fn test_iommu_wave3_pasid_exports() -> bool {
     run_check(
         "iommu_wave3_pasid_table_alloc_free_smoke",

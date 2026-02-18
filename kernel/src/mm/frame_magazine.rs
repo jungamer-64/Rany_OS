@@ -37,8 +37,8 @@ use super::buddy_allocator;
 // ============================================================================
 
 /// マガジンの容量（フレーム数）
-mod _split_1;
-pub use _split_1::*;
+mod stats;
+pub use stats::*;
 pub const MAGAZINE_CAPACITY: usize = 32;
 
 /// バッチ補充時のフレーム数

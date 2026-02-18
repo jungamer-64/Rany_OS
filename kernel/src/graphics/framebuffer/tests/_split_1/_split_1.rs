@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 #[cfg(target_arch = "aarch64")]
 #[test_case]
 pub(crate) fn test_pack_rgba_to_bgr24_neon_matches_scalar() {

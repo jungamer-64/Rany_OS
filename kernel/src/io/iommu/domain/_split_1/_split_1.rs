@@ -1,6 +1,7 @@
 use super::*;
 
 mod _split_1;
+pub use _split_1::*;
 impl IommuDomain {
 
     /// Map a region with identity mapping (IOVA = Physical Address)
