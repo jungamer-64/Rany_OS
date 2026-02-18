@@ -35,6 +35,7 @@ pub mod kapi;
 pub mod security;
 pub mod services;
 pub mod shell;
+pub mod time;
 pub mod types;
 
 // Standalone Cell runtime stubs (allocator, panic handler)
@@ -56,6 +57,7 @@ pub use security::{
     IpcCapability, MemoryCapability, NetCapability, TaskCapability,
 };
 pub use services::{KernelServices, is_kernel_registered, kernel, register_kernel};
+pub use time::{CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats};
 pub use types::{
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle,
     NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,

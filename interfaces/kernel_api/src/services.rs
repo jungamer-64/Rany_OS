@@ -321,6 +321,9 @@ pub trait KernelServices: Send + Sync {
     // GUI Services (Optional)
     // ========================================================================
 
+    /// Access time management services
+    fn time_service(&self) -> Option<&dyn crate::time::TimeService>;
+
     /// Access GUI services if available
     fn gui(&self) -> Option<&dyn crate::gui::GuiServices>;
 

@@ -826,6 +826,7 @@ dependencies = [
  "serial_driver",
  "sha2",
  "spin",
+ "time_driver",
  "uart_16550",
  "usb_driver",
  "vfs",
@@ -1016,6 +1017,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "time_driver"
+version = "0.1.0"
+dependencies = [
+ "kernel_api",
+ "spin",
 ]
 
 [[package]]

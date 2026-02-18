@@ -37,6 +37,7 @@ members = [
     "drivers/acpi",
     "drivers/rtc",
     "drivers/ide",
+    "drivers/time",
     "drivers/example_abi",
     # Apps
     "apps",

@@ -487,7 +487,7 @@ fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
     });
 }
 
-fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
+pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
     // Prefer DRIVER_EXPORTS when available
     let exports_addr = with_registry(|r| {
         let cell = r.get(cell_id)?;
