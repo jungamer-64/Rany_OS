@@ -924,9 +924,8 @@ mod tests {
         worker.join().expect("worker join failed");
     }
 
+    // NOTE: Excluded from custom test framework (was #[ignore]). Run manually if needed.
     #[cfg(feature = "std")]
-    #[test_case]
-    #[ignore]
     fn test_cq_stress_multi_threaded() {
         use alloc::sync::Arc as AllocArc;
         use core::sync::atomic::{AtomicUsize, Ordering};

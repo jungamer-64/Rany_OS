@@ -184,12 +184,51 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
     crate::io::log::early_print_dec(tests.len() as u64);
     crate::io::log::early_print(" tests...\n");
 
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut failed_indices: [usize; 64] = [0; 64];
+
     for (i, t) in tests.iter().enumerate() {
         crate::io::log::early_print("[test] #");
         crate::io::log::early_print_dec(i as u64);
         crate::io::log::early_print(" ... ");
-        t();
-        crate::io::log::early_print("[test] ok\n");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t();
+        }));
+        match result {
+            Ok(()) => {
+                crate::io::log::early_print("[test] ok\n");
+                passed += 1;
+            }
+            Err(_) => {
+                crate::io::log::early_print("[test] FAILED\n");
+                if failed < 64 {
+                    failed_indices[failed] = i;
+                }
+                failed += 1;
+            }
+        }
+    }
+
+    crate::io::log::early_print("\n[test] results: ");
+    crate::io::log::early_print_dec(passed as u64);
+    crate::io::log::early_print(" passed, ");
+    crate::io::log::early_print_dec(failed as u64);
+    crate::io::log::early_print(" failed\n");
+
+    if failed > 0 {
+        crate::io::log::early_print("[test] failed indices: ");
+        let show = if failed < 64 { failed } else { 64 };
+        for fi in 0..show {
+            if fi > 0 { crate::io::log::early_print(", "); }
+            crate::io::log::early_print_dec(failed_indices[fi] as u64);
+        }
+        crate::io::log::early_print("\n");
+    }
+
+    if failed > 0 {
+        crate::io::log::early_print("[qemu-suite] kernel-unit FAIL\n");
+        std::process::exit(1);
     }
 
     crate::io::log::early_print("[qemu-suite] kernel-unit pass\n");
