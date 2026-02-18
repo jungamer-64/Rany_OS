@@ -1,14 +1,15 @@
 // ============================================================================
 // kernel/src/net/endpoint/socket.rs
 // ============================================================================
-//! # Socket - Arc<Mutex<SocketInner>>ラッパー
+//! # Socket - Arc<PoisonLock<SocketInner>>ラッパー
 //!
 //! Socket, OwnedSocket, および関連ヘルパー関数
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use spin::Mutex;
+
+use crate::sync::poison_lock::PoisonLock;
 
 use crate::net::tcp::{
     Ipv4Addr, SocketAddr as TcpSocketAddr, TcpListener as TcpListenerImpl, TcpStream,
@@ -27,8 +28,8 @@ pub struct Socket {
     fd: SocketFd,
     /// ソケットタイプ（不変）
     socket_type: SocketType,
-    /// 内部状態（Arc<Mutex>で保護）
-    inner: Arc<Mutex<SocketInner>>,
+    /// 内部状態（Arc<PoisonLock>で保護 — 設計書 8.4準拠）
+    inner: Arc<PoisonLock<SocketInner>>,
 }
 
 impl Socket {
@@ -38,7 +39,7 @@ impl Socket {
         Self {
             fd,
             socket_type,
-            inner: Arc::new(Mutex::new(SocketInner::new())),
+            inner: Arc::new(PoisonLock::new(SocketInner::new())),
         }
     }
 
@@ -47,7 +48,7 @@ impl Socket {
         Self {
             fd,
             socket_type,
-            inner: Arc::new(Mutex::new(SocketInner::new())),
+            inner: Arc::new(PoisonLock::new(SocketInner::new())),
         }
     }
 
@@ -66,24 +67,24 @@ impl Socket {
     /// 現在の状態取得
     #[inline]
     pub fn state(&self) -> SocketState {
-        self.inner.lock().state
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).state
     }
 
     /// ローカルアドレス取得
     #[inline]
     pub fn local_addr(&self) -> Option<SocketAddr> {
-        self.inner.lock().local_addr
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).local_addr
     }
 
     /// リモートアドレス取得
     #[inline]
     pub fn remote_addr(&self) -> Option<SocketAddr> {
-        self.inner.lock().remote_addr
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).remote_addr
     }
 
     /// 内部状態への参照取得（高度な操作用）
     #[inline]
-    pub fn inner(&self) -> &Arc<Mutex<SocketInner>> {
+    pub fn inner(&self) -> &Arc<PoisonLock<SocketInner>> {
         &self.inner
     }
 
@@ -91,7 +92,7 @@ impl Socket {
     ///
     /// 【設計書】POSIXのbind()ではなく、set_local_addr()を使用
     pub fn set_local_addr(&self, addr: SocketAddr) -> SocketResult<()> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if !inner.state.can_bind() {
             return Err(SocketError::AlreadyBound);
@@ -109,7 +110,7 @@ impl Socket {
     pub fn open_connection(&self, addr: SocketAddr) -> SocketResult<()> {
         let local_addr;
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             if !inner.state.can_connect() {
                 return Err(SocketError::AlreadyConnected);
@@ -143,7 +144,7 @@ impl Socket {
 
         let local_addr;
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             if !inner.state.can_listen() {
                 return Err(SocketError::InvalidStateTransition);
@@ -185,7 +186,7 @@ impl Socket {
             return Err(SocketError::InvalidArgument);
         }
 
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if inner.state != SocketState::Listening {
             return Err(SocketError::InvalidStateTransition);
@@ -196,7 +197,7 @@ impl Socket {
             // 新しいソケットを作成
             let new_socket = Socket::new_with_fd(SocketType::Tcp, conn.fd);
             {
-                let mut new_inner = new_socket.inner.lock();
+                let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 let _ = new_inner.transition_to(SocketState::Connected);
@@ -223,7 +224,7 @@ impl Socket {
 
     /// Accept用Wakerを登録（非同期用）
     pub fn register_accept_waker(&self, waker: core::task::Waker) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.accept_waker = Some(waker);
     }
 
@@ -237,7 +238,7 @@ impl Socket {
             return Err(SocketError::InvalidArgument);
         }
 
-        let inner = self.inner.lock();
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if inner.state != SocketState::Listening {
             return Err(SocketError::InvalidStateTransition);
@@ -245,7 +246,7 @@ impl Socket {
 
         let new_socket = Socket::new(SocketType::Tcp);
         {
-            let mut new_inner = new_socket.inner.lock();
+            let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
             new_inner.local_addr = inner.local_addr;
             new_inner.remote_addr = Some(remote_addr);
             new_inner.tcp_stream = Some(stream);
@@ -258,7 +259,7 @@ impl Socket {
     /// データ送信
     pub fn send(&self, data: &[u8]) -> SocketResult<usize> {
         let len = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             if !inner.state.can_send() {
                 return Err(SocketError::NotConnected);
@@ -280,7 +281,7 @@ impl Socket {
 
     /// データ受信
     pub fn recv(&self, buf: &mut [u8]) -> SocketResult<usize> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if !inner.state.can_receive() {
             return Err(SocketError::NotConnected);
@@ -301,7 +302,7 @@ impl Socket {
         }
 
         {
-            let inner = self.inner.lock();
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             if !matches!(inner.state, SocketState::Bound | SocketState::Connected) {
                 return Err(SocketError::NotConnected);
@@ -324,7 +325,7 @@ impl Socket {
             return Err(SocketError::InvalidArgument);
         }
 
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some((addr, data)) = inner.pending_packets.pop_front() {
             let len = buf.len().min(data.len());
@@ -339,7 +340,7 @@ impl Socket {
     /// プロトコルスタックから呼ばれる
     pub fn push_data(&self, data: &[u8]) {
         let waker = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.push_recv_data(data);
             // 待機中のタスクを起こす準備
             inner.recv_waker.take()
@@ -355,7 +356,7 @@ impl Socket {
     /// プロトコルスタックから呼ばれる
     pub fn push_packet(&self, addr: SocketAddr, data: Vec<u8>) {
         let waker = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.pending_packets.push_back((addr, data));
             // 待機中のタスクを起こす準備
             inner.recv_waker.take()
@@ -370,7 +371,7 @@ impl Socket {
     /// クローズ
     pub fn close(&self) -> SocketResult<()> {
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             // TCPストリームのクリーンアップ
             inner.tcp_stream = None;
@@ -406,19 +407,19 @@ impl Socket {
     /// 受信バッファのデータ量
     #[inline]
     pub fn recv_buffer_len(&self) -> usize {
-        self.inner.lock().recv_buffer.len()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).recv_buffer.len()
     }
 
     /// 送信バッファのデータ量
     #[inline]
     pub fn send_buffer_len(&self) -> usize {
-        self.inner.lock().send_buffer.len()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).send_buffer.len()
     }
 
     /// 受信データがあるか
     #[inline]
     pub fn has_data(&self) -> bool {
-        self.inner.lock().recv_buffer.len() > 0
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).recv_buffer.len() > 0
     }
 }
 
@@ -584,7 +585,7 @@ pub fn create_tcp_socket_with_algorithm(
 ) -> OwnedSocket {
     let socket = OwnedSocket::new(SocketType::Tcp);
     if let Some(inner_socket) = socket.socket() {
-        let mut inner = inner_socket.inner().lock();
+        let mut inner = inner_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.congestion_algorithm = Some(algorithm);
     }
     socket

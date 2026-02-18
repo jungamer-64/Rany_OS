@@ -38,7 +38,7 @@ impl Future for RecvFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        let mut inner = this.socket.inner().lock();
+        let mut inner = this.socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         // 状態チェック
         if !inner.state.can_receive() {
@@ -93,7 +93,7 @@ impl Future for SendFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         // Acquire inner to inspect/modify buffers
-        let mut inner = this.socket.inner().lock();
+        let mut inner = this.socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         // 状態チェック
         if !inner.state.can_send() {
@@ -319,7 +319,7 @@ impl OwnedSocket {
 
     /// TCPのゼロコピーストリームを取得（`TcpStream`をクローンして返す）
     pub fn tcp_stream(&self) -> Option<TcpStream> {
-        self.socket().and_then(|s| s.inner().lock().tcp_stream.clone())
+        self.socket().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).tcp_stream.clone())
     }
 
     /// 非同期ゼロコピー受信（TCP向け） - 成功すると `PacketRef` を返す
@@ -327,6 +327,7 @@ impl OwnedSocket {
         self.socket().and_then(|s| {
             s.inner()
                 .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .tcp_stream
                 .clone()
                 .map(|stream| RecvPacketFuture::new(stream))
@@ -340,7 +341,7 @@ impl OwnedSocket {
         }
         self.socket().and_then(|s| {
             // Clone the optional UdpSocket from the inner state and produce a future
-            let opt = s.inner().lock().udp_socket.clone();
+            let opt = s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone();
             opt.map(|u| u.recv_packet())
         })
     }
@@ -352,7 +353,7 @@ impl OwnedSocket {
 
     /// UDP向けゼロコピー受信のストリームラッパーを取得（内部UDPソケットが設定されている場合）
     pub fn udp_packet_stream(&self) -> Option<UdpPacketStream> {
-        self.socket().and_then(|s| s.inner().lock().udp_socket.clone()).map(|u| UdpPacketStream::new(u))
+        self.socket().and_then(|s| s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone()).map(|u| UdpPacketStream::new(u))
     }
 }
 

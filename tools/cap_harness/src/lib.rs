@@ -1,4 +1,8 @@
 #![no_std]
+//! CapabilitySetテストハーネス
+//!
+//! QEMUテスト用の簡略版CapabilitySet。
+//! 正規版: `libs/security/src/lib.rs`
 
 extern crate alloc;
 

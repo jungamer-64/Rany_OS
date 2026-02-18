@@ -19,36 +19,11 @@ use alloc::boxed::Box;
 use once_cell::race::OnceBox;
 use spin::Mutex;
 
-// Use the canonical DomainId when building the full kernel binary, but provide a
-// lightweight test-only shim when running `cargo test --lib` so the `sas` module
-// can be tested in isolation without pulling in the entire `domain_system`.
-#[cfg(not(any(test, feature = "bench")))]
+// SAS は `domain_system::DomainId` をそのまま使用する。
+// 非testビルドでは正規版 domain_system.rs の DomainId、
+// test/benchビルドでは task/domain_system.rs の shim DomainId が
+// `crate::domain_system` として re-export されるため、条件なしで統一可能。
 pub use crate::domain_system::DomainId;
-
-#[cfg(any(test, feature = "bench"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DomainId(u64);
-
-#[cfg(any(test, feature = "bench"))]
-impl DomainId {
-    pub const fn new(id: u64) -> Self { Self(id) }
-    pub const fn as_u64(&self) -> u64 { self.0 }
-    pub const KERNEL: DomainId = DomainId(0);
-}
-
-#[cfg(any(test, feature = "bench"))]
-impl core::fmt::Display for DomainId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Domain({})", self.0)
-    }
-}
-
-// Note: SAS relies on the canonical `DomainId` from `domain_system` so a single
-// type is used consistently across the kernel. If you need to run isolated
-// `sas` lib tests, adapt the test harness accordingly.
-
-// Display impl is provided by `domain_system::DomainId` to keep a single
-// canonical implementation; tests should use that type when available.
 
 pub use heap_registry::HeapRegistry;
 pub use memory_region::{MemoryRegion, RegionPermissions};

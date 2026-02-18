@@ -1,7 +1,18 @@
 // ============================================================================
 // src/mm/address_space.rs - Process Address Space Management
 //
-// ## 概要
+// # ⚠ 非推奨 (SAS違反)
+//
+// プロセスごとのアドレス空間はSAS (Single Address Space) アーキテクチャと
+// 矛盾します。全ドメインは単一のアドレス空間を共有し、Protection Keyで
+// 分離する設計が正しいです。
+//
+// ## 移行先
+// - `ProcessAddressSpace` → SASセグメント管理 (`crate::sas::MemoryRegion`)
+// - fork/exec → `domain_system::create_domain()` + `loader::load_cell()`
+// - VMA管理 → `rcu_vma` は継続使用可能（グローバルリニアマッピングに適用）
+//
+// ## 概要 (Original)
 //
 // プロセスのアドレス空間を管理する統合レイヤー。
 // VMA管理、ページテーブル、fork/exec、メモリマッピングAPIを統合。

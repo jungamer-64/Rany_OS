@@ -29,7 +29,7 @@ fn test_sendfuture_wakes_on_send() {
     let local = SocketAddr::new([127, 0, 0, 1], 12345);
     let remote = SocketAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
-        let mut inner = s.inner().lock();
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
     }
@@ -97,7 +97,7 @@ fn test_recv_packet_zero_copy_via_owned_socket() {
     let local = SocketAddr::new([127, 0, 0, 1], 12345);
     let remote = SocketAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
-        let mut inner = s.inner().lock();
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
     }
@@ -117,7 +117,7 @@ fn test_recv_packet_zero_copy_via_owned_socket() {
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
     if let Some(s) = sock.socket() {
-        let mut inner = s.inner().lock();
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
         let _ = inner.transition_to(SocketState::Connected);
     }
@@ -173,7 +173,7 @@ fn test_tcp_packet_stream_multiple_packets() {
     let local = SocketAddr::new([127, 0, 0, 1], 12345);
     let remote = SocketAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
-        let mut inner = s.inner().lock();
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(local);
         inner.remote_addr = Some(remote);
     }
@@ -193,7 +193,7 @@ fn test_tcp_packet_stream_multiple_packets() {
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
     if let Some(s) = sock.socket() {
-        let mut inner = s.inner().lock();
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.tcp_stream = Some(stream.clone());
         let _ = inner.transition_to(SocketState::Connected);
     }
@@ -265,7 +265,7 @@ fn test_udp_packet_stream_delivered() {
     // Create an OwnedSocket and attach the UdpSocket instance to its inner state
     let sock = create_udp_socket();
     if let Some(s) = sock.socket() {
-        let mut inner = s.inner().lock();
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.local_addr = Some(SocketAddr::new([127, 0, 0, 1], port));
         inner.udp_socket = Some(u.clone());
         let _ = inner.transition_to(SocketState::Connected);

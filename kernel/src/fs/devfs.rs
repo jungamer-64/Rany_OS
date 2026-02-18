@@ -2,6 +2,16 @@
 //!
 //! /dev ファイルシステムの実装
 //! デバイスノードを仮想ファイルとして公開
+//!
+//! # ⚠ 非推奨 (POSIX Legacy)
+//!
+//! /dev はUnixの「全てはファイル」パラダイムに基づく仮想FSです。
+//! Exokernelではデバイスは Capability ベースのハンドルで直接操作されます。
+//!
+//! ## 移行先
+//! - `DevFs` → `DriverCellManager` (`crate::driver_cell`)
+//! - `DeviceOps` trait → ドライバセルのトレイトインターフェース
+//! - `/dev/null`, `/dev/zero` → ユーザー空間ライブラリ
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;

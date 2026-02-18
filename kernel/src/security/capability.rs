@@ -2,6 +2,15 @@
 //!
 //! This module implements fine-grained capability-based access control
 //! inspired by Linux capabilities.
+//!
+//! # 実装の関係
+//!
+//! - **正規版**: `libs/security/src/lib.rs` (CapabilityManager, Grant/Revokeシステム, InFlight追跡)
+//! - **本ファイル**: カーネル内部の簡略版 (ドメインベースの権限チェックのみ)
+//! - **テスト用**: `tools/cap_harness/src/lib.rs` (QEMUテスト用stub)
+//!
+//! TODO: カーネル版を`libs/security`の正規版へ統合すべき。
+//! `spin::Mutex` → `PoisonLock` への移行も必要。
 
 use alloc::format;
 use alloc::vec::Vec;

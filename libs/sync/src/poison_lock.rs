@@ -9,6 +9,14 @@
 //!
 //! `PoisonLock<T>`は、ロックを保持中にパニックが発生すると自動的に
 //! "poisoned"（毒入れされた）状態としてマークされる。
+//!
+//! # 実装の関係
+//!
+//! - **正規版**: `kernel/src/sync/poison_lock.rs` (IrqPoisonLock, メトリクス含む)
+//! - **本ファイル**: 外部クレート向けスタンドアロン版 (filesystems/fat32, qemu-suites)
+//!
+//! API契約は正規版に準拠。カーネル固有機能（IrqPoisonLock, ロックメトリクス）は
+//! 本ファイルには含まれない。
 
 #![allow(dead_code)]
 
