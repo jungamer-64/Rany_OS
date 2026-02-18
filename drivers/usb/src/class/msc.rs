@@ -21,8 +21,8 @@
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use spin::Mutex;
-mod _split_1;
-pub use _split_1::*;
+mod block_device;
+pub use block_device::*;
 
 use super::{
     ClassDriverError, ClassDriverEvent, REQUEST_DIR_IN, REQUEST_DIR_OUT,

@@ -31,10 +31,10 @@ use super::defs::{AdminOpcode, SglDescriptor};
 use super::identify::{IdentifyController, IdentifyNamespace};
 use super::per_core::PerCoreNvmeQueue;
 use super::queue::QueuePair;
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod drop_and_helpers;
+pub use drop_and_helpers::*;
+mod admin_polling;
+pub use admin_polling::*;
 
 // Identify Controller SGLS bits (NVMe spec).
 const SGLS_SUPPORTED: u32 = 1 << 0;

@@ -22,8 +22,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
-mod _split_1;
-pub use _split_1::*;
+mod keycodes;
+pub use keycodes::*;
 
 use super::{
     ClassDriverError, ClassDriverEvent, REQUEST_DIR_IN, REQUEST_DIR_OUT,

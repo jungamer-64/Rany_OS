@@ -10,8 +10,8 @@
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::{Bar, BdfAddress, ClassCode, DeviceId, VendorId};
 use alloc::vec::Vec;
-mod _split_1;
-pub use _split_1::*;
+mod scan_helpers;
+pub use scan_helpers::*;
 
 // ============================================================================
 // Configuration Space Register Offsets

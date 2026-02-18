@@ -7,8 +7,8 @@ use core::fmt;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-mod _split_1;
-use _split_1::*;
+mod iommu_wave3_tests;
+use iommu_wave3_tests::*;
 const HEAP_SIZE: usize = 64 * 1024 * 1024;
 
 #[repr(align(4096))]
