@@ -138,7 +138,7 @@ pub fn lru_mark_accessed(frame: x86_64::structures::paging::PhysFrame) {
 #[inline]
 pub(crate) fn numa_node_for_phys_addr(phys_addr: u64) -> usize {
     let addr = x86_64::PhysAddr::new(phys_addr);
-    super::frame_allocator::numa_node_for_addr(addr)
+    crate::mm::frame_allocator::numa_node_for_addr(addr)
         .map(|node| node.as_usize())
         .unwrap_or(0)
 }

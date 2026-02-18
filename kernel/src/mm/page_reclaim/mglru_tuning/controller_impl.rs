@@ -54,7 +54,7 @@ impl PageReclaimController {
     pub(super) fn finalize_reclaim_success(&self, entry: &MglruEntry, node_idx: usize) {
         let node = node_idx.min(7) as u8;
         self.lru_lists[node as usize].account_reclaimed(1);
-        super::workingset::workingset_evict(
+        crate::mm::workingset::workingset_evict(
             entry.frame,
             entry.generation,
             entry.page_type as u8,
@@ -383,7 +383,7 @@ impl PageReclaimController {
         if entry.flags.contains(LruFlags::DIRTY) {
             self.try_async_swapout(entry, node_idx, crate::mm::async_swapout::SwapKind::Anon)
         } else {
-            super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
+            crate::mm::memcg::memcg_untrack_and_uncharge(entry.frame, count);
             self.free_frame(entry.frame);
             ReclaimOutcome::FreedNow
         }
@@ -395,12 +395,12 @@ impl PageReclaimController {
         let count = 1u64 << order;
 
         if !entry.flags.contains(LruFlags::DIRTY) {
-            super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
+            crate::mm::memcg::memcg_untrack_and_uncharge(entry.frame, count);
             self.free_frame(entry.frame);
             return ReclaimOutcome::FreedNow;
         }
 
-        if let Some(backing) = super::frame_backing::get_frame_backing(entry.frame) {
+        if let Some(backing) = crate::mm::frame_backing::get_frame_backing(entry.frame) {
             self.reclaim_dirty_file_with_backing(entry, node_idx, &backing, count)
         } else if unsafe_eviction {
             self.try_async_swapout(entry, node_idx, crate::mm::async_swapout::SwapKind::Anon)
@@ -414,7 +414,7 @@ impl PageReclaimController {
         &self,
         entry: &MglruEntry,
         node_idx: usize,
-        backing: &super::frame_backing::FrameBackingInfo,
+        backing: &crate::mm::frame_backing::FrameBackingInfo,
         count: u64,
     ) -> ReclaimOutcome {
         let kind = crate::mm::async_swapout::SwapKind::File { ino: backing.ino, page_num: backing.page_num };
@@ -436,8 +436,8 @@ impl PageReclaimController {
                 if self.attempt_writeback_page(backing.ino, backing.page_num)
                     || self.attempt_writeback_all()
                 {
-                    super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
-                    let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                    crate::mm::memcg::memcg_untrack_and_uncharge(entry.frame, count);
+                    let _ = crate::mm::frame_backing::untrack_frame_backing(entry.frame);
                     self.free_frame(entry.frame);
                     ReclaimOutcome::FreedNow
                 } else {
@@ -473,7 +473,7 @@ impl PageReclaimController {
                 if matches!(kind, crate::mm::async_swapout::SwapKind::Anon) && self.attempt_writeback_all() {
                     let order = crate::mm::page_flags::get_order(entry.frame);
                     let count = 1u64 << order;
-                    super::memcg::memcg_untrack_and_uncharge(entry.frame, count);
+                    crate::mm::memcg::memcg_untrack_and_uncharge(entry.frame, count);
                     self.free_frame(entry.frame);
                     ReclaimOutcome::FreedNow
                 } else {
@@ -491,7 +491,7 @@ impl PageReclaimController {
         use x86_64::PhysAddr;
         
         // Remove any frame backing mapping if present
-        let _ = super::frame_backing::untrack_frame_backing(frame);
+        let _ = crate::mm::frame_backing::untrack_frame_backing(frame);
 
         let phys_frame = unsafe {
             PhysFrame::<Size4KiB>::from_start_address_unchecked(

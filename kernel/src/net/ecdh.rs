@@ -624,4 +624,10 @@ pub mod p256 {
             y2 == rhs
         }
     }
+
+    // p256_parsing モジュールの公開関数を p256 名前空間から再エクスポート
+    pub use crate::net::ecdh::ecdsa_p256_verify;
+    pub use crate::net::ecdh::parse_uncompressed_point;
+    pub use crate::net::ecdh::encode_uncompressed_point;
+    pub use crate::net::ecdh::EcdsaError;
 }
