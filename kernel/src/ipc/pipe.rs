@@ -16,8 +16,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 
 /// パイプファイルディスクリプタ (Newtype)
-mod _split_1;
-pub use _split_1::*;
+mod zero_copy_channel;
+pub use zero_copy_channel::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PipeFd(u32);
 

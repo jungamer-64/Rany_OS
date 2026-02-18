@@ -15,8 +15,8 @@ pub mod sha384;
 pub mod signature;
 pub mod type_id;
 
-mod _split_1;
-pub use _split_1::*;
+mod cell_lookup;
+pub use cell_lookup::*;
 #[allow(unused_imports)]
 pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
 #[allow(unused_imports)]

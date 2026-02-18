@@ -5,8 +5,8 @@ use alloc::sync::Arc;
 use core::fmt::Write;
 use core::sync::atomic::Ordering;
 
-mod _split_1;
-pub use _split_1::*;
+mod wave8_net_tests;
+pub use wave8_net_tests::*;
 struct FixedBuf {
     buf: [u8; 96],
     len: usize,

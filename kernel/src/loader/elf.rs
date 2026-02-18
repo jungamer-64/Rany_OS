@@ -68,10 +68,10 @@ use super::LoadError;
 // avoid pulling in the full `mm`/`security` implementations and use no-op
 // fallbacks instead. That keeps workspace test runs light and avoids needing
 // the entire kernel `mm` implementation for library-style builds.
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod loader_trait;
+pub use loader_trait::*;
+mod elf_loader_impl;
+pub use elf_loader_impl::*;
 #[cfg(not(any(test, feature = "bench")))]
 use crate::mm::PageFlags;
 use alloc::string::ToString;

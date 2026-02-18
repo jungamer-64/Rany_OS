@@ -192,8 +192,8 @@ static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
 use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use x86_64::PhysAddr;
-mod _split_1;
-pub use _split_1::*;
+mod kernel_services;
+pub use kernel_services::*;
 
 const NVME_PAGE_SIZE: usize = 4096;
 

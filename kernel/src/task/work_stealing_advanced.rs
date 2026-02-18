@@ -31,8 +31,8 @@ use crate::interrupts;
 // ============================================================================
 
 /// 最大コア数
-mod _split_1;
-pub use _split_1::*;
+mod scheduler_impl;
+pub use scheduler_impl::*;
 const MAX_CORES: usize = 64;
 
 /// 最大NUMAノード数

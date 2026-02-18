@@ -9,10 +9,10 @@
 //! - Removed Reference Counting (Strict Single Ownership).
 #![allow(dead_code)]
 
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod error_and_tests;
+pub use error_and_tests::*;
+mod reclaim_impl;
+pub use reclaim_impl::*;
 #[cfg(not(any(test, feature = "bench")))]
 use crate::domain_system::DomainId;
 

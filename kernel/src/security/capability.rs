@@ -14,10 +14,10 @@ use crate::security::audit::{AuditEvent, AuditEventType};
 extern crate alloc;
 
 /// Capability bit flags
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod resource_mapping;
+pub use resource_mapping::*;
+mod manager_impl;
+pub use manager_impl::*;
 pub type Capability = u64;
 
 // Capability definitions (inspired by Linux capabilities)
