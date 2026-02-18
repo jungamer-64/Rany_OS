@@ -177,8 +177,7 @@ fn test_draw_image_24bit_bgr_backbuffer() {
     }
 }
 
-#[test_case]
-#[ignore]
+// NOTE: Excluded from custom test framework (was #[ignore]). Run manually if needed.
 #[cfg(feature = "std")]
 fn bench_draw_image_bulk() {
     use std::time::Instant;
@@ -207,8 +206,7 @@ fn bench_draw_image_bulk() {
     log::info!("bench_draw_image_bulk: {:?}", elapsed);
 }
 
-#[test_case]
-#[ignore]
+// NOTE: Excluded from custom test framework (was #[ignore]). Run manually if needed.
 #[cfg(feature = "std")]
 fn bench_draw_image_24bit_bulk() {
     use std::time::Instant;
@@ -237,8 +235,7 @@ fn bench_draw_image_24bit_bulk() {
     log::info!("bench_draw_image_24bit_bulk: {:?}", elapsed);
 }
 
-#[test_case]
-#[ignore]
+// NOTE: Excluded from custom test framework (was #[ignore]). Run manually if needed.
 #[cfg(feature = "std")]
 fn bench_draw_image_rgba_bulk() {
     use std::time::Instant;
@@ -267,8 +264,7 @@ fn bench_draw_image_rgba_bulk() {
     log::info!("bench_draw_image_rgba_bulk: {:?}", elapsed);
 }
 
-#[test_case]
-#[ignore]
+// NOTE: Excluded from custom test framework (was #[ignore]). Run manually if needed.
 #[cfg(feature = "std")]
 fn bench_draw_hline_bulk() {
     use std::time::Instant;
@@ -506,8 +502,7 @@ fn test_packer_env_override_no_std() {
     assert!(dst.len() == 1024);
 }
 
-#[test_case]
-#[ignore]
+// NOTE: Excluded from custom test framework (was #[ignore]). Run manually if needed.
 #[cfg(feature = "std")]
 fn bench_draw_text_bulk() {
     use std::time::Instant;

@@ -303,8 +303,20 @@ pub fn register_simple(domain_id: u64, name: &str, priority: DomainPriority, mem
 mod tests {
     use super::*;
 
+    /// Reset OOM_KILLER to a clean state before each test.
+    /// Clears poison flag, resets in_progress, and removes all domains.
+    fn reset_oom_killer() {
+        OOM_KILLER.in_progress.store(false, Ordering::SeqCst);
+        OOM_KILLER.domains.clear_poison();
+        if let Ok(mut domains) = OOM_KILLER.domains.lock() {
+            domains.clear();
+        }
+    }
+
     #[test_case]
     fn test_domain_registration() {
+        reset_oom_killer();
+
         let info = DomainMemoryInfo {
             domain_id: 1,
             name: String::from("test"),
@@ -322,6 +334,8 @@ mod tests {
 
     #[test_case]
     fn test_victim_selection_by_priority() {
+        reset_oom_killer();
+
         // Low priority should be selected first
         OOM_KILLER.register_domain(DomainMemoryInfo {
             domain_id: 10,
@@ -349,6 +363,8 @@ mod tests {
 
     #[test_case]
     fn test_critical_domains_protected() {
+        reset_oom_killer();
+
         OOM_KILLER.register_domain(DomainMemoryInfo {
             domain_id: 20,
             name: String::from("critical_domain"),
@@ -371,6 +387,8 @@ mod tests {
 
     #[test_case]
     fn test_poisoned_register_skips_and_list_empty() {
+        reset_oom_killer();
+
         use crate::sync::set_panicking;
         set_panicking(true);
         OOM_KILLER.register_domain(DomainMemoryInfo {
@@ -386,6 +404,8 @@ mod tests {
 
     #[test_case]
     fn test_poisoned_stats_returns_zero_total_domains() {
+        reset_oom_killer();
+
         use crate::sync::set_panicking;
         set_panicking(true);
         let s = OOM_KILLER.stats();
