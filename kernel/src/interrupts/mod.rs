@@ -191,7 +191,7 @@ fn init_idt() {
 
         // TLB Flush IPI Vector (0xF1 = 241)
         // マルチコア環境でのTLBシュートダウンに使用
-        idt[crate::mm::tlb_batch::TLB_FLUSH_VECTOR].set_handler_fn(handler_to_x86!(
+        idt[crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR].set_handler_fn(handler_to_x86!(
             tlb_flush_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
         ));
 
@@ -463,7 +463,7 @@ pub fn poll_timer_events() {
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
 
         // PMMメンテナンス (非ISRコンテキスト)
-        crate::mm::pmm_maintenance_tick(tick);
+        crate::mm::phys::frame_allocator::pmm_maintenance_tick(tick);
 
         // Network Stack Batch Flush
         // check_batch_timeout expects MHz; fall back to 2GHz (2000MHz) if TSC frequency is unavailable.
@@ -589,7 +589,7 @@ define_interrupt!(
         // TLBフラッシュ処理を実行
         // Safety: 割り込みハンドラとして呼び出されている
         unsafe {
-            crate::mm::tlb_batch::tlb_flush_ipi_handler();
+            crate::mm::sync::tlb_batch::tlb_flush_ipi_handler();
         }
         
         // Local APICにEOIを送信

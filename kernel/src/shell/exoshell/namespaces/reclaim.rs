@@ -20,7 +20,7 @@ impl ReclaimNamespace {
     }
 
     pub fn status() -> ExoValue<'static> {
-        let stats = crate::mm::page_reclaim::PAGE_RECLAIM.stats();
+        let stats = crate::mm::reclaim::page_reclaim::PAGE_RECLAIM.stats();
         let mut map = BTreeMap::new();
 
         map.insert(
@@ -97,7 +97,7 @@ impl ReclaimNamespace {
         if !caps.has_capability(CAP_SYS_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_ADMIN required"));
         }
-        crate::mm::page_reclaim::set_unsafe_eviction_enabled(enabled);
+        crate::mm::reclaim::page_reclaim::set_unsafe_eviction_enabled(enabled);
         ExoValue::Bool(true)
     }
 }
@@ -174,6 +174,6 @@ mod tests {
             ExoValue::Bool(b) => assert!(b),
             _ => panic!("expected true"),
         }
-        crate::mm::page_reclaim::set_unsafe_eviction_enabled(false);
+        crate::mm::reclaim::page_reclaim::set_unsafe_eviction_enabled(false);
     }
 }

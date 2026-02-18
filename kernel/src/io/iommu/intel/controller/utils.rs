@@ -80,7 +80,7 @@ impl IommuUtils for IommuController {
 
         // If it's safe to yield and scheduler is present, use tick-based waiting
         if can_yield {
-            if let Some(_cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+            if let Some(_cpu_id) = crate::per_cpu::try_current_cpu_id() {
                 // Convert microseconds to milliseconds (ceiling)
                 let timeout_ms = (timeout_us + 999) / 1000;
                 let end_tick = crate::task::timer::current_tick().saturating_add(timeout_ms);

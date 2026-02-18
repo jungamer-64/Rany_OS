@@ -274,7 +274,7 @@ impl IommuDomain {
         // Get physical address from RRef's virtual pointer
         let virt_ptr = &*rref as *const T as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr = crate::mm::virt::mapping::virt_to_phys(virt_addr);
         let phys = phys_addr.as_u64();
 
         let size = core::mem::size_of::<T>() as u64;

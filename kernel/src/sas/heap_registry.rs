@@ -105,7 +105,7 @@ impl HeapRegistry {
         // simple locality-aware heuristics. If NUMA detection is unavailable in
         // lib-test builds, default to a single NUMA node (0).
         #[cfg(not(any(test, feature = "bench")))]
-        let numa_nodes = crate::mm::numa::num_nodes();
+        let numa_nodes = crate::mm::numa::topology::num_nodes();
         #[cfg(any(test, feature = "bench"))]
         let numa_nodes = 1usize;
 

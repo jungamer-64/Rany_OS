@@ -13,7 +13,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use x86_64::PhysAddr;
 
-use crate::mm::PAGE_SIZE_4K;
+use crate::mm::types::PAGE_SIZE_4K;
 
 /// DMAページサイズ
 mod pool_impl;
@@ -447,7 +447,7 @@ impl Mempool {
         for i in 0..capacity {
             // バッファを割り当て (Exchange Heap for RRef compatibility)
             let layout = alloc::alloc::Layout::new::<PacketBuffer>();
-            let nn = crate::mm::exchange_heap::allocate_raw(layout)
+            let nn = crate::mm::cache::exchange_heap::allocate_raw(layout)
                 .ok_or("Failed to allocate buffer")?;
             let non_null = nn.cast::<PacketBuffer>();
 
@@ -469,7 +469,7 @@ impl Mempool {
                 // カーネルヒープはリニアマッピングされているため、
                 // HigherHalfのオフセットを引くことで物理アドレスを得る
                 let virt_addr = buffer_ptr as u64;
-                let offset = crate::mm::mapping::physical_memory_offset();
+                let offset = crate::mm::virt::mapping::physical_memory_offset();
                 let phys = if virt_addr >= offset {
                     virt_addr - offset
                 } else {

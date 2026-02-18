@@ -19,7 +19,7 @@ impl DeviceDmaContext {
         let domain_id = if crate::io::iommu::api::is_iommu_enabled() {
             // IOMMUドメインを作成してデバイスをアタッチ
             crate::io::iommu::api::with_iommu(|iommu| {
-                let numa_hint = Some(crate::mm::numa::current_node());
+                let numa_hint = Some(crate::mm::numa::topology::current_node());
                 let domain_id = iommu
                     .create_domain(
                         numa_hint,
@@ -150,7 +150,7 @@ impl DeviceDmaContext {
         let rref = crate::ipc::RRef::new_slice_default_aligned(
             crate::ipc::DomainId::KERNEL,
             len,
-            crate::mm::PAGE_SIZE_4K,
+            crate::mm::types::PAGE_SIZE_4K,
         )
         .expect("exchange heap allocation failed");
         self.map_rref_slice_buffer(rref, direction)
@@ -185,7 +185,7 @@ impl DeviceDmaContext {
         let rref = crate::ipc::RRef::new_slice_default_aligned(
             crate::ipc::DomainId::KERNEL,
             len,
-            crate::mm::PAGE_SIZE_4K,
+            crate::mm::types::PAGE_SIZE_4K,
         )
         .ok_or(RRefSliceMapError::AllocFailed)?;
         self.map_rref_slice_buffer(rref, direction)
@@ -220,7 +220,7 @@ impl DeviceDmaContext {
         let rref = crate::ipc::RRef::new_slice_with_aligned(
             crate::ipc::DomainId::KERNEL,
             len,
-            crate::mm::PAGE_SIZE_4K,
+            crate::mm::types::PAGE_SIZE_4K,
             init,
         )
         .expect("exchange heap allocation failed");
@@ -240,7 +240,7 @@ impl DeviceDmaContext {
         let rref = crate::ipc::RRef::new_slice_with_aligned(
             crate::ipc::DomainId::KERNEL,
             len,
-            crate::mm::PAGE_SIZE_4K,
+            crate::mm::types::PAGE_SIZE_4K,
             init,
         )
         .ok_or(RRefSliceMapError::AllocFailed)?;

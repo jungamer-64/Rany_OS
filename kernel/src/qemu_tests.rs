@@ -356,99 +356,99 @@ pub fn kernel_async_swapout_sim_smoke() -> bool {
 }
 
 pub fn mm_wave7_buffer_pool_4k_basic_smoke() -> bool {
-    crate::mm::async_swapout::qemu_tests::wave7_buffer_pool_4k_basic_smoke()
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_buffer_pool_4k_basic_smoke()
 }
 
 pub fn mm_wave7_buffer_pool_2m_basic_smoke() -> bool {
-    crate::mm::async_swapout::qemu_tests::wave7_buffer_pool_2m_basic_smoke()
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_buffer_pool_2m_basic_smoke()
 }
 
 pub fn mm_wave7_enqueue_override_forces_error_smoke() -> bool {
-    crate::mm::async_swapout::qemu_tests::wave7_enqueue_override_forces_error_smoke()
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_enqueue_override_forces_error_smoke()
 }
 
 pub fn mm_wave7_token_exhaustion_rolls_back_pending_smoke() -> bool {
-    crate::mm::async_swapout::qemu_tests::wave7_token_exhaustion_rolls_back_pending_smoke()
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_token_exhaustion_rolls_back_pending_smoke()
 }
 
 pub fn mm_wave7_token_bucket_clamp_smoke() -> bool {
-    crate::mm::async_swapout::qemu_tests::wave7_token_bucket_clamp_smoke()
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_token_bucket_clamp_smoke()
 }
 
 pub fn mm_wave7_runtime_tunable_roundtrip_smoke() -> bool {
-    crate::mm::async_swapout::qemu_tests::wave7_runtime_tunable_roundtrip_smoke()
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_runtime_tunable_roundtrip_smoke()
 }
 
 pub fn mm_wave7_watermarks_calculation_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_watermarks_calculation_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_watermarks_calculation_smoke()
 }
 
 pub fn mm_wave7_pressure_level_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_pressure_level_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_pressure_level_smoke()
 }
 
 pub fn mm_wave7_mglru_list_add_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_mglru_list_add_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_mglru_list_add_smoke()
 }
 
 pub fn mm_wave7_blocked_unsafe_requeues_victim_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_blocked_unsafe_requeues_victim_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_blocked_unsafe_requeues_victim_smoke()
 }
 
 pub fn mm_wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke()
 }
 
 pub fn mm_wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke()
 }
 
 pub fn mm_wave7_async_success_clears_pending_and_accounts_success_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_async_success_clears_pending_and_accounts_success_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_async_success_clears_pending_and_accounts_success_smoke()
 }
 
 pub fn mm_wave7_async_failure_requeues_and_clears_pending_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_async_failure_requeues_and_clears_pending_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_async_failure_requeues_and_clears_pending_smoke()
 }
 
 pub fn mm_wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke()
 }
 
 pub fn mm_wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke()
 }
 
 pub fn mm_wave7_file_backed_dirty_without_backing_requeues_with_unsafe_disabled_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_file_backed_dirty_without_backing_requeues_with_unsafe_disabled_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_file_backed_dirty_without_backing_requeues_with_unsafe_disabled_smoke()
 }
 
 pub fn mm_wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_smoke()
 }
 
 pub fn mm_wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke()
 }
 
 pub fn mm_wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke()
 }
 
 pub fn mm_wave7_already_pending_does_not_count_writeback_skipped_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_already_pending_does_not_count_writeback_skipped_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_already_pending_does_not_count_writeback_skipped_smoke()
 }
 
 pub fn mm_wave7_already_pending_without_registered_pending_requeues_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_smoke()
 }
 
 pub fn mm_wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke()
 }
 
 pub fn mm_wave7_queuefull_does_not_count_writeback_skipped_smoke() -> bool {
-    crate::mm::page_reclaim::qemu_tests::wave7_queuefull_does_not_count_writeback_skipped_smoke()
+    crate::mm::reclaim::page_reclaim::qemu_tests::wave7_queuefull_does_not_count_writeback_skipped_smoke()
 }
 
 pub fn net_ecdh_x25519_key_exchange_symmetry_smoke() -> bool {

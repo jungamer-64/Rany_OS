@@ -366,10 +366,10 @@ static DROPPED_LOG_BYTES: AtomicUsize = AtomicUsize::new(0);
 const PER_CORE_BUFFER_CAPACITY: usize = 4 * 1024;
 
 // Number of per-core buffers. When building benches we cannot rely on the full
-// `crate::mm::per_cpu` module being available, so provide a compile-time
+// `crate::per_cpu` module being available, so provide a compile-time
 // fallback to a reasonable default.
 #[cfg(not(feature = "bench"))]
-const PER_CPU_COUNT: usize = crate::mm::per_cpu::MAX_CPUS;
+const PER_CPU_COUNT: usize = crate::per_cpu::MAX_CPUS;
 
 #[cfg(feature = "bench")]
 const PER_CPU_COUNT: usize = 8;

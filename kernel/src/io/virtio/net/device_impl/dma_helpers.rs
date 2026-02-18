@@ -41,7 +41,7 @@ pub(crate) fn prepare_iommu_bounce_tx(
     total_len: usize,
 ) -> Result<(), VirtioNetError> {
     let (alloc_len, offset) = if can_map_page {
-        (crate::mm::PAGE_SIZE_4K, page_offset)
+        (crate::mm::types::PAGE_SIZE_4K, page_offset)
     } else {
         (total_len, 0)
     };
@@ -58,7 +58,7 @@ pub(crate) fn prepare_iommu_bounce_tx(
     result.dma_addr = handle.iova() + if can_map_page { page_offset as u64 } else { 0 };
     result.bounce_handle = Some(handle);
     if can_map_page {
-        result.mapped_len = crate::mm::PAGE_SIZE_4K;
+        result.mapped_len = crate::mm::types::PAGE_SIZE_4K;
     }
     Ok(())
 }
@@ -72,9 +72,9 @@ pub(crate) fn prepare_dma_mapping_tx(
     data: &[u8],
     total_len: usize,
 ) -> Result<DmaPrepareResult, VirtioNetError> {
-    let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+    let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
     let page_offset = (phys_addr_val & page_mask) as usize;
-    let map_len = crate::mm::PAGE_SIZE_4K;
+    let map_len = crate::mm::types::PAGE_SIZE_4K;
     let can_map_page = page_offset + total_len <= map_len;
 
     let mut result = DmaPrepareResult {
@@ -101,7 +101,7 @@ pub(crate) fn prepare_iommu_bounce_rx(
     can_map_page: bool,
     data_len: usize,
 ) -> Result<(), VirtioNetError> {
-    let alloc_len = if can_map_page { crate::mm::PAGE_SIZE_4K } else { data_len };
+    let alloc_len = if can_map_page { crate::mm::types::PAGE_SIZE_4K } else { data_len };
     let rref = allocate_iommu_bounce_bytes(alloc_len).map_err(|err| match err {
         IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
         IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
@@ -114,7 +114,7 @@ pub(crate) fn prepare_iommu_bounce_rx(
     result.dma_addr = handle.iova() + if can_map_page { page_offset as u64 } else { 0 };
     result.bounce_handle = Some(handle);
     if can_map_page {
-        result.mapped_len = crate::mm::PAGE_SIZE_4K;
+        result.mapped_len = crate::mm::types::PAGE_SIZE_4K;
     }
     Ok(())
 }
@@ -125,9 +125,9 @@ pub(crate) fn prepare_dma_mapping_rx(
     phys_addr_val: u64,
     data_len: usize,
 ) -> Result<DmaPrepareResult, VirtioNetError> {
-    let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+    let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
     let page_offset = (phys_addr_val & page_mask) as usize;
-    let map_len = crate::mm::PAGE_SIZE_4K;
+    let map_len = crate::mm::types::PAGE_SIZE_4K;
     let can_map_page = page_offset + data_len <= map_len;
 
     let mut result = DmaPrepareResult {
@@ -211,7 +211,7 @@ impl<'a> SendFuture<'a> {
 
         let data_len = self.len;
         let data_ptr = self.data;
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(VirtAddr::new(data_ptr as u64)).as_u64();
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(VirtAddr::new(data_ptr as u64)).as_u64();
         let data_slice = unsafe { crate::util::raw_ptr_as_slice(data_ptr, data_len) };
 
         let mut prep = prepare_dma_mapping_tx(
@@ -291,7 +291,7 @@ impl<'a> RecvFuture<'a> {
             .ok_or(VirtioNetError::NotInitialized)?;
 
         let buffer_len = self.buffer.len();
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(VirtAddr::new(self.buffer.as_ptr() as u64)).as_u64();
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(VirtAddr::new(self.buffer.as_ptr() as u64)).as_u64();
 
         let mut prep = prepare_dma_mapping_rx(
             self.device.iommu_device_id, phys_addr_val, buffer_len,

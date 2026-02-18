@@ -14,7 +14,7 @@ use super::console::TextConsole;
 use super::framebuffer::Framebuffer;
 use super::{Color, FramebufferInfo, PixelFormat};
 use crate::memory::physical_memory_offset;
-use crate::mm::higher_half::{PageFlags, PageTableManager, VirtAddr};
+use crate::mm::virt::higher_half::{PageFlags, PageTableManager, VirtAddr};
 use core::fmt::{self, Write};
 
 // Simple buffer for formatting - safe enough for single threaded boot
@@ -154,7 +154,7 @@ pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool
 ///
 /// Returns the virtual address where the framebuffer is mapped, or 0 on failure.
 fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
-    use crate::mm::higher_half::PhysAddr;
+    use crate::mm::virt::higher_half::PhysAddr;
 
     crate::io::log::early_print("[GFX] map_framebuffer_vram entry\n");
 

@@ -136,7 +136,7 @@ pub(crate) fn init_buddy_from_boot_info(
     crate::io::log::early_print("[MEM] buddy bootstrap\n");
 
     unsafe {
-        crate::mm::init_buddy_allocator(&usable_regions);
+        crate::mm::phys::buddy_allocator::init_buddy_allocator(&usable_regions);
     }
     crate::io::log::early_print("[MEM] buddy ready\n");
 
@@ -144,7 +144,7 @@ pub(crate) fn init_buddy_from_boot_info(
     {
         crate::io::log::early_print("[MEM] freelist buddy init\n");
         unsafe {
-            crate::mm::buddy_freelist::init_freelist_buddy(&usable_regions);
+            crate::mm::phys::buddy_freelist::init_freelist_buddy(&usable_regions);
         }
         crate::io::log::early_print("[MEM] freelist buddy ready\n");
     }
@@ -166,7 +166,7 @@ pub(crate) fn init_numa_pmm(
         if info.node_count > 0 {
             crate::io::log::early_print("[MEM] NUMA info from bootloader\n");
             unsafe {
-                if crate::mm::init_numa_frame_allocator_from_info(info) {
+                if crate::mm::phys::frame_allocator::init_numa_frame_allocator_from_info(info) {
                     pmm_initialized = true;
                 }
             }
@@ -180,7 +180,7 @@ pub(crate) fn init_numa_pmm(
     if !pmm_initialized {
         crate::io::log::early_print("[MEM] using global PMM\n");
         unsafe {
-            crate::mm::init_frame_allocator(usable_regions);
+            crate::mm::phys::frame_allocator::init_frame_allocator(usable_regions);
         }
     }
 }
@@ -202,12 +202,12 @@ pub(crate) fn init_pmm_from_srat(rsdp_addr: Option<u64>) -> bool {
         );
         crate::io::log::early_print(&s);
         let base_phys = x86_64::PhysAddr::new(base);
-        let node = crate::mm::NumaNodeId::new(proximity as u8);
+        let node = crate::mm::types::NumaNodeId::new(proximity as u8);
         numa_regions.push((base_phys, length, node));
     }
     if !numa_regions.is_empty() {
         unsafe {
-            crate::mm::init_numa_frame_allocator(&numa_regions);
+            crate::mm::phys::frame_allocator::init_numa_frame_allocator(&numa_regions);
         }
         true
     } else {
@@ -220,7 +220,7 @@ pub(crate) fn init_pmm_from_srat(rsdp_addr: Option<u64>) -> bool {
 pub(crate) fn init_post_buddy() {
     crate::io::log::early_print("[MEM] exheap init\n");
     unsafe {
-        crate::mm::init_exchange_heap(exchange_heap_start() as usize, EXCHANGE_HEAP_SIZE);
+        crate::mm::cache::exchange_heap::init_exchange_heap(exchange_heap_start() as usize, EXCHANGE_HEAP_SIZE);
     }
     crate::io::log::early_print("[MEM] exheap done\n");
     crate::io::log::early_print("[HEAP_CHECK] after exchange_heap_init\n");
@@ -228,12 +228,12 @@ pub(crate) fn init_post_buddy() {
 
     crate::io::log::early_print("[MEM] percpu init\n");
     unsafe {
-        crate::mm::init_per_cpu(1);
+        crate::per_cpu::init_per_cpu(1);
     }
     crate::io::log::early_print("[MEM] percpu done\n");
 
     crate::io::log::early_print("[MEM] slab init\n");
-    crate::mm::init_per_core_caches(1);
+    crate::mm::cache::slab_cache::init_per_core_caches(1);
     crate::io::log::early_print("[MEM] slab done\n");
 }
 
@@ -258,7 +258,7 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     crate::io::log::early_print("[MEM] global heap\n");
 
     // 0. Higher Half Manager の初期化 (IOMMUなどが依存)
-    crate::mm::init(physical_memory_offset());
+    crate::mm::virt::higher_half::init(physical_memory_offset());
     crate::io::log::early_print("[MEM] higher half init\n");
 
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
@@ -395,7 +395,7 @@ pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
             continue;
         }
         if let Some((start, end)) = validate_usable_descriptor(desc, MIN_USABLE_PHYS_ADDR) {
-            let released = crate::mm::pmm_release_range(PhysAddr::new(start), end - start);
+            let released = crate::mm::phys::frame_allocator::pmm_release_range(PhysAddr::new(start), end - start);
             total_pages += released;
         }
     }
@@ -445,7 +445,7 @@ pub(crate) fn get_default_memory_regions() -> Vec<(PhysAddr, u64)> {
 
 /// メモリ統計を表示
 pub(crate) fn print_memory_stats() {
-    let buddy_stats = crate::mm::buddy_allocator_stats();
+    let buddy_stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
 
     log::info!("[MEM] === Memory Statistics ===\n");
     log::info!("[MEM] Total Frames: {}\n", buddy_stats.total_frames);
@@ -501,13 +501,13 @@ pub fn heap_stats() -> (usize, usize) {
 
 /// システム総メモリをKB単位で取得
 pub fn total_memory_kb() -> u64 {
-    let stats = crate::mm::buddy_allocator_stats();
+    let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
     (stats.total_frames as u64) * 4 // 1フレーム = 4KB
 }
 
 /// 空きメモリをKB単位で取得
 pub fn free_memory_kb() -> u64 {
-    let stats = crate::mm::buddy_allocator_stats();
+    let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
     (stats.free_frames as u64) * 4 // 1フレーム = 4KB
 }
 

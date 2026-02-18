@@ -150,10 +150,10 @@ pub fn test_proxy_pattern() -> TestResult {
 /// Test exchange heap concept
 pub fn test_exchange_heap() -> TestResult {
     use crate::ipc::DomainId;
-    use crate::mm::exchange_heap::{ExchangeHeap, ExchangeRef};
+    use crate::mm::cache::exchange_heap::{ExchangeHeap, ExchangeRef};
 
     // Get exchange heap
-    let heap = crate::mm::exchange_heap::global_exchange_heap();
+    let heap = crate::mm::cache::exchange_heap::global_exchange_heap();
 
     // Allocate from exchange heap
     let domain = DomainId::new(1);

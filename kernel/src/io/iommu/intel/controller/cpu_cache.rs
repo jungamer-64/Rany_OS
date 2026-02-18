@@ -10,7 +10,7 @@
 /// Lookup domain in local CPU cache
 pub(crate) fn lookup_domain_cached(device_id: u16) -> Option<(u16, u8)> {
     // Use true Per-CPU data via GsBase
-    if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu() } {
+    if let Some(pc) = unsafe { crate::per_cpu::current_per_cpu() } {
         pc.iommu_domain_cache.lookup(device_id)
     } else {
         None
@@ -19,7 +19,7 @@ pub(crate) fn lookup_domain_cached(device_id: u16) -> Option<(u16, u8)> {
 
 /// Update local CPU cache
 pub(crate) fn cache_domain_mapping(device_id: u16, domain_id: u16, controller_idx: u8) {
-    if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
+    if let Some(pc) = unsafe { crate::per_cpu::current_per_cpu_mut() } {
         pc.iommu_domain_cache
             .insert(device_id, domain_id, controller_idx);
     }
@@ -48,7 +48,7 @@ pub(crate) fn invalidate_domain_cache(device_id: u16) {
 
     // Actually, let's just invalidate LOCAL cache for now, which covers the common case
     // where unmap happens on the same CPU that mapped it.
-    if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
+    if let Some(pc) = unsafe { crate::per_cpu::current_per_cpu_mut() } {
         pc.iommu_domain_cache.invalidate(device_id);
     }
 }

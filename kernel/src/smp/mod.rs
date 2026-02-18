@@ -17,7 +17,7 @@ pub fn cpu_count() -> u32 {
 
 /// Get current CPU ID
 pub fn current_cpu() -> u32 {
-    if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
         return cpu_id as u32;
     }
     // Fallback to LAPIC ID when per-CPU data isn't ready yet
@@ -30,7 +30,7 @@ pub fn current_cpu() -> u32 {
 /// this returns a safe 0-based index in range [0, cpu_count()).
 /// Falls back to 0 if per-CPU data isn't initialized.
 pub fn cpu_index() -> usize {
-    if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
         // Per-CPU data stores 0-based logical ID
         return cpu_id as usize;
     }
@@ -75,7 +75,7 @@ pub fn init_smp() -> Result<(), &'static str> {
 
     // Reconfigure PMM arenas for the CPUs that actually came online.
     unsafe {
-        crate::mm::pmm_reconfigure_for_online_cpus();
+        crate::mm::phys::frame_allocator::pmm_reconfigure_for_online_cpus();
     }
 
     Ok(())

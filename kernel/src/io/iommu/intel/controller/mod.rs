@@ -195,7 +195,7 @@ impl IommuController {
             include_all: false,
             pending_waiters: WakerQueue::new(),
             command_queue: None,
-            page_table_pool: PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32),
+            page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
             dropped_security_events: AtomicU64::new(0),
         }
@@ -235,7 +235,7 @@ impl IommuController {
             include_all,
             pending_waiters: WakerQueue::new(),
             command_queue: None,
-            page_table_pool: PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32),
+            page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
             dropped_security_events: AtomicU64::new(0),
         }

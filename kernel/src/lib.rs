@@ -297,6 +297,8 @@ pub mod collections;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod mm;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod per_cpu;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod io;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod task;
@@ -371,41 +373,6 @@ pub mod mm {
         impl<T, const N: usize> Copy for Magazine<T, N> {} 
     }
 
-    pub mod numa {
-        use alloc::alloc::{Layout as ALayout, alloc_zeroed, dealloc};
-        use core::alloc::Layout;
-        use core::ptr::NonNull;
-
-        /// Return the number of NUMA nodes (test shim: single node)
-        pub fn num_nodes() -> usize {
-            1
-        }
-
-        /// Return current node id (test shim: 0)
-        pub fn current_node() -> usize {
-            0
-        }
-
-        /// Allocate zeroed memory on a given node (test shim uses the global allocator)
-        pub fn allocate_zeroed_on_node(
-            layout: Layout,
-            _node: Option<usize>,
-        ) -> Option<NonNull<u8>> {
-            unsafe {
-                let ptr = alloc_zeroed(layout);
-                NonNull::new(ptr)
-            }
-        }
-
-        pub unsafe fn deallocate_on_node(
-            ptr: NonNull<u8>,
-            layout: Layout,
-            _node: Option<usize>,
-        ) {
-            unsafe { dealloc(ptr.as_ptr(), layout); }
-        }
-    }
-
     pub mod memcg {
         #[derive(Copy, Clone, Debug, PartialEq, Eq)]
         pub struct MemcgId;
@@ -414,199 +381,6 @@ pub mod mm {
         }
     }
 
-
-    // Minimal per-CPU stubs used by IOMMU unit tests. These avoid pulling the
-    // full per-CPU subsystem into the test build while providing the API
-    // expected by `iommu.rs`.
-    pub mod per_cpu {
-        use core::array;
-
-        /// Cache entry for device to domain mapping (test shim)
-        #[derive(Clone, Copy, Default)]
-        pub struct DomainCacheEntry {
-            pub device_id: u16,
-            pub domain_id: u16,
-            pub controller_idx: u8,
-            pub valid: bool,
-        }
-
-        /// Per-CPU domain cache (test shim)
-        pub struct PerCpuDomainCache {
-            pub entries: [DomainCacheEntry; Self::CACHE_SIZE],
-        }
-
-        impl PerCpuDomainCache {
-            pub const CACHE_SIZE: usize = 64;
-
-            pub fn new() -> Self {
-                Self {
-                    entries: [DomainCacheEntry {
-                        device_id: 0,
-                        domain_id: 0,
-                        controller_idx: 0,
-                        valid: false,
-                    }; Self::CACHE_SIZE],
-                }
-            }
-
-            pub fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
-                let idx = (device_id as usize) % Self::CACHE_SIZE;
-                let entry = self.entries[idx];
-                if entry.valid && entry.device_id == device_id {
-                    Some((entry.domain_id, entry.controller_idx))
-                } else {
-                    None
-                }
-            }
-
-            pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
-                let idx = (device_id as usize) % Self::CACHE_SIZE;
-                self.entries[idx] = DomainCacheEntry {
-                    device_id,
-                    domain_id,
-                    controller_idx,
-                    valid: true,
-                };
-            }
-
-            pub fn invalidate(&mut self, device_id: u16) {
-                let idx = (device_id as usize) % Self::CACHE_SIZE;
-                if self.entries[idx].device_id == device_id {
-                    self.entries[idx].valid = false;
-                }
-            }
-        }
-
-        pub const IOVA_MAG_CAPACITY: usize = 256;
-        pub const MAX_IOMMU_CONTROLLERS: usize = 8;
-
-        // IOVA_MM_MIGRATION_PLAN Phase 1.1: Magazine<T, N>の型エイリアス
-        use crate::mm::magazine::Magazine;
-        pub type IovaMagazine = Magazine<u64, IOVA_MAG_CAPACITY>;
-
-        // Small per-CPU PtMagazine capacity for page tables
-        pub const PT_MAG_CAPACITY: usize = 8;
-
-        #[derive(Clone, Copy)]
-        pub struct PtMagEntry {
-            pub phys: u64,
-            pub virt: usize,
-            pub node: u8,
-        }
-
-        impl PtMagEntry {
-            pub const fn empty() -> Self {
-                Self { phys: 0, virt: 0, node: 0 }
-            }
-            pub const fn is_valid(&self) -> bool {
-                self.phys != 0
-            }
-        }
-
-        pub struct PtMagazine {
-            entries: [PtMagEntry; PT_MAG_CAPACITY],
-            len: usize,
-            preferred_node: u8,
-        }
-
-        impl PtMagazine {
-            pub fn new() -> Self {
-                Self {
-                    entries: [PtMagEntry::empty(); PT_MAG_CAPACITY],
-                    len: 0,
-                    preferred_node: 0,
-                }
-            }
-
-            pub fn pop(&mut self) -> Option<PtMagEntry> {
-                if self.len == 0 { None } else {
-                    self.len -= 1;
-                    let entry = self.entries[self.len];
-                    self.entries[self.len] = PtMagEntry::empty();
-                    Some(entry)
-                }
-            }
-
-            pub fn push(&mut self, entry: PtMagEntry) -> bool {
-                if self.len >= PT_MAG_CAPACITY { false } else {
-                    self.entries[self.len] = entry;
-                    self.len += 1;
-                    true
-                }
-            }
-
-            pub fn available(&self) -> usize {
-                PT_MAG_CAPACITY - self.len
-            }
-
-            pub fn len(&self) -> usize {
-                self.len
-            }
-
-            pub fn preferred_node(&self) -> u8 {
-                self.preferred_node
-            }
-        }
-
-        /// Per-CPU data (test shim)
-        pub struct PerCpuData {
-            pub iommu_domain_cache: PerCpuDomainCache,
-            pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
-            pub pt_magazine: PtMagazine,
-        }
-
-        impl PerCpuData {
-            pub fn new() -> Self {
-                Self {
-                    iommu_domain_cache: PerCpuDomainCache::new(),
-                    iova_magazines: array::from_fn(|_| IovaMagazine::new()),
-                    pt_magazine: PtMagazine::new(),
-                }
-            }
-        }
-
-        /// Try to get the current CPU id (test shim: single CPU 0)
-        pub fn try_current_cpu_id() -> Option<usize> {
-            Some(0)
-        }
-
-        /// Whether current execution is in interrupt context (test shim: false)
-        pub fn in_interrupt_context() -> bool {
-            false
-        }
-
-        /// Maximum CPUs for the test/bench shim
-        pub const MAX_CPUS: usize = 8;
-
-        use alloc::boxed::Box;
-        use core::sync::atomic::{AtomicBool, Ordering};
-
-        // Lazily-initialized static per-cpu data for unit tests
-        static PER_CPU_INIT: AtomicBool = AtomicBool::new(false);
-        static mut PER_CPU_PTR: *mut PerCpuData = core::ptr::null_mut();
-
-        /// Get a mutable reference to per-CPU data (test shim)
-        pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> { unsafe {
-            if !PER_CPU_INIT.load(Ordering::SeqCst) {
-                let boxed = Box::new(PerCpuData::new());
-                let ptr = Box::into_raw(boxed);
-                PER_CPU_PTR = ptr;
-                PER_CPU_INIT.store(true, Ordering::SeqCst);
-            }
-            (PER_CPU_PTR as *mut PerCpuData).as_mut()
-        }}
-
-        /// Get an immutable reference to per-CPU data (test shim)
-        pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> { unsafe {
-            if !PER_CPU_INIT.load(Ordering::SeqCst) {
-                let boxed = Box::new(PerCpuData::new());
-                let ptr = Box::into_raw(boxed);
-                PER_CPU_PTR = ptr;
-                PER_CPU_INIT.store(true, Ordering::SeqCst);
-            }
-            (PER_CPU_PTR as *mut PerCpuData).as_ref()
-        }}
-    }
 
     // Minimal fast allocator shim used by IOMMU tests
     pub mod fast_allocator {
@@ -763,6 +537,9 @@ pub mod mm {
             pub fn new(n: u8) -> Self { Self(n) }
             pub fn as_usize(&self) -> usize { self.0 as usize }
         }
+        pub const PAGE_SIZE_4K: usize = 4096;
+        pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024;
+        pub const PAGE_SIZE_1G: usize = 1024 * 1024 * 1024;
     }
 
     pub mod frame_allocator {
@@ -801,7 +578,7 @@ pub mod mm {
         pub fn memory_pressure_level() -> u8 { 0 }
     }
 
-    // Re-export frame allocator helpers at `crate::mm::dealloc_frame` etc.
+    // Re-export frame allocator helpers at `crate::mm::phys::frame_allocator::dealloc_frame` etc.
     pub use frame_allocator::dealloc_frame;
     pub use frame_allocator::memory_pressure_level;
 
@@ -823,10 +600,10 @@ pub mod mm {
     }
 
     // Global translate helper for tests (use kernel `higher_half` types)
-    pub fn global_translate(virt: crate::mm::higher_half::VirtAddr) -> Option<crate::mm::higher_half::PhysAddr> {
+    pub fn global_translate(virt: crate::mm::virt::higher_half::VirtAddr) -> Option<crate::mm::virt::higher_half::PhysAddr> {
         let v = x86_64::VirtAddr::new(virt.as_u64());
         let p = mapping::virt_to_phys(v);
-        Some(crate::mm::higher_half::PhysAddr::new(p.as_u64()))
+        Some(crate::mm::virt::higher_half::PhysAddr::new(p.as_u64()))
     }
 
     // Minimal address translation helpers for tests/benches.
@@ -892,6 +669,274 @@ pub mod mm {
 
     /// 4K page size constant for compatibility with drivers/tests
     pub const PAGE_SIZE_4K: usize = 4096;
+
+    // ======================================================================
+    // Wrapper sub-modules mirroring the new directory-based module hierarchy
+    // ======================================================================
+    pub mod phys {
+        pub mod fast_allocator {
+            pub use super::super::fast_allocator::*;
+        }
+        pub mod frame_allocator {
+            pub use super::super::frame_allocator::*;
+        }
+        pub mod buddy_allocator {
+            /// Stub for buddy_allocator_stats (test shim)
+            pub struct BuddyAllocatorStats {
+                pub total_frames: usize,
+                pub free_frames: usize,
+                pub split_count: u64,
+                pub coalesce_count: u64,
+                pub order_stats: [(usize, usize); 19],
+            }
+            pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
+                BuddyAllocatorStats {
+                    total_frames: 0,
+                    free_frames: 0,
+                    split_count: 0,
+                    coalesce_count: 0,
+                    order_stats: [(0, 0); 19],
+                }
+            }
+        }
+        pub mod unified_alloc {
+            pub fn memory_pressure_level() -> u8 { 0 }
+        }
+    }
+
+    pub mod virt {
+        pub mod higher_half {
+            pub use super::super::higher_half::*;
+        }
+        pub mod mapping {
+            pub use super::super::mapping::*;
+        }
+    }
+
+    pub mod cache {
+        pub mod magazine {
+            pub use super::super::magazine::*;
+        }
+    }
+
+    pub mod numa {
+        pub mod topology {
+            use alloc::alloc::{alloc_zeroed, dealloc};
+            use core::alloc::Layout;
+            use core::ptr::NonNull;
+
+            pub const MAX_NUMA_NODES: usize = 8;
+
+            pub fn num_nodes() -> usize { 1 }
+            pub fn current_node() -> usize { 0 }
+
+            pub fn allocate_zeroed_on_node(
+                layout: Layout,
+                _node: Option<usize>,
+            ) -> Option<NonNull<u8>> {
+                unsafe {
+                    let ptr = alloc_zeroed(layout);
+                    NonNull::new(ptr)
+                }
+            }
+
+            pub unsafe fn deallocate_on_node(
+                ptr: NonNull<u8>,
+                layout: Layout,
+                _node: Option<usize>,
+            ) {
+                unsafe { dealloc(ptr.as_ptr(), layout); }
+            }
+        }
+    }
+
+    pub mod meta {
+        pub mod memcg {
+            pub use super::super::memcg::*;
+        }
+    }
+}
+
+// Minimal per-CPU stubs for tests (crate-root level to match new module hierarchy).
+#[cfg(not(feature = "full_mm_tests"))]
+#[cfg(any(test, feature = "bench"))]
+pub mod per_cpu {
+    use core::array;
+
+    #[derive(Clone, Copy, Default)]
+    pub struct DomainCacheEntry {
+        pub device_id: u16,
+        pub domain_id: u16,
+        pub controller_idx: u8,
+        pub valid: bool,
+    }
+
+    pub struct PerCpuDomainCache {
+        pub entries: [DomainCacheEntry; Self::CACHE_SIZE],
+    }
+
+    impl PerCpuDomainCache {
+        pub const CACHE_SIZE: usize = 64;
+
+        pub fn new() -> Self {
+            Self {
+                entries: [DomainCacheEntry {
+                    device_id: 0,
+                    domain_id: 0,
+                    controller_idx: 0,
+                    valid: false,
+                }; Self::CACHE_SIZE],
+            }
+        }
+
+        pub fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
+            let idx = (device_id as usize) % Self::CACHE_SIZE;
+            let entry = self.entries[idx];
+            if entry.valid && entry.device_id == device_id {
+                Some((entry.domain_id, entry.controller_idx))
+            } else {
+                None
+            }
+        }
+
+        pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
+            let idx = (device_id as usize) % Self::CACHE_SIZE;
+            self.entries[idx] = DomainCacheEntry {
+                device_id,
+                domain_id,
+                controller_idx,
+                valid: true,
+            };
+        }
+
+        pub fn invalidate(&mut self, device_id: u16) {
+            let idx = (device_id as usize) % Self::CACHE_SIZE;
+            if self.entries[idx].device_id == device_id {
+                self.entries[idx].valid = false;
+            }
+        }
+    }
+
+    pub const IOVA_MAG_CAPACITY: usize = 256;
+    pub const MAX_IOMMU_CONTROLLERS: usize = 8;
+
+    use crate::mm::cache::magazine::Magazine;
+    pub type IovaMagazine = Magazine<u64, IOVA_MAG_CAPACITY>;
+
+    pub const PT_MAG_CAPACITY: usize = 8;
+
+    #[derive(Clone, Copy)]
+    pub struct PtMagEntry {
+        pub phys: u64,
+        pub virt: usize,
+        pub node: u8,
+    }
+
+    impl PtMagEntry {
+        pub const fn empty() -> Self {
+            Self { phys: 0, virt: 0, node: 0 }
+        }
+        pub const fn is_valid(&self) -> bool {
+            self.phys != 0
+        }
+    }
+
+    pub struct PtMagazine {
+        entries: [PtMagEntry; PT_MAG_CAPACITY],
+        len: usize,
+        preferred_node: u8,
+    }
+
+    impl PtMagazine {
+        pub fn new() -> Self {
+            Self {
+                entries: [PtMagEntry::empty(); PT_MAG_CAPACITY],
+                len: 0,
+                preferred_node: 0,
+            }
+        }
+
+        pub fn pop(&mut self) -> Option<PtMagEntry> {
+            if self.len == 0 { None } else {
+                self.len -= 1;
+                let entry = self.entries[self.len];
+                self.entries[self.len] = PtMagEntry::empty();
+                Some(entry)
+            }
+        }
+
+        pub fn push(&mut self, entry: PtMagEntry) -> bool {
+            if self.len >= PT_MAG_CAPACITY { false } else {
+                self.entries[self.len] = entry;
+                self.len += 1;
+                true
+            }
+        }
+
+        pub fn available(&self) -> usize {
+            PT_MAG_CAPACITY - self.len
+        }
+
+        pub fn len(&self) -> usize {
+            self.len
+        }
+
+        pub fn preferred_node(&self) -> u8 {
+            self.preferred_node
+        }
+    }
+
+    pub struct PerCpuData {
+        pub iommu_domain_cache: PerCpuDomainCache,
+        pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
+        pub pt_magazine: PtMagazine,
+    }
+
+    impl PerCpuData {
+        pub fn new() -> Self {
+            Self {
+                iommu_domain_cache: PerCpuDomainCache::new(),
+                iova_magazines: array::from_fn(|_| IovaMagazine::new()),
+                pt_magazine: PtMagazine::new(),
+            }
+        }
+    }
+
+    pub fn try_current_cpu_id() -> Option<usize> {
+        Some(0)
+    }
+
+    pub fn in_interrupt_context() -> bool {
+        false
+    }
+
+    pub const MAX_CPUS: usize = 8;
+
+    use alloc::boxed::Box;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static PER_CPU_INIT: AtomicBool = AtomicBool::new(false);
+    static mut PER_CPU_PTR: *mut PerCpuData = core::ptr::null_mut();
+
+    pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> { unsafe {
+        if !PER_CPU_INIT.load(Ordering::SeqCst) {
+            let boxed = Box::new(PerCpuData::new());
+            let ptr = Box::into_raw(boxed);
+            PER_CPU_PTR = ptr;
+            PER_CPU_INIT.store(true, Ordering::SeqCst);
+        }
+        (PER_CPU_PTR as *mut PerCpuData).as_mut()
+    }}
+
+    pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> { unsafe {
+        if !PER_CPU_INIT.load(Ordering::SeqCst) {
+            let boxed = Box::new(PerCpuData::new());
+            let ptr = Box::into_raw(boxed);
+            PER_CPU_PTR = ptr;
+            PER_CPU_INIT.store(true, Ordering::SeqCst);
+        }
+        (PER_CPU_PTR as *mut PerCpuData).as_ref()
+    }}
 }
 
 // Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).
@@ -1503,7 +1548,7 @@ pub mod task {
             pub threads: Vec<u64>,
             pub priority: Priority,
             pub cmdline: Vec<String>,
-            pub memcg_id: crate::mm::memcg::MemcgId,
+            pub memcg_id: crate::mm::meta::memcg::MemcgId,
             pub exit_code: Option<u64>,
         }
 
@@ -1537,7 +1582,7 @@ pub mod task {
         pub fn get_current_process() -> ProcessId { ProcessId::new(1) }
 
         // Helper to return current process memcg id (used by some tests)
-        pub fn get_current_process_memcg_id() -> crate::mm::memcg::MemcgId { crate::mm::memcg::MemcgId::ROOT }
+        pub fn get_current_process_memcg_id() -> crate::mm::meta::memcg::MemcgId { crate::mm::meta::memcg::MemcgId::ROOT }
 
         // Re-export the minimal io::nvme driver for compatibility with code that
         // expects `crate::io::nvme` in test builds. This points at `crate::task::io::nvme`.

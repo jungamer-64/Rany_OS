@@ -241,7 +241,7 @@ impl GlobalScheduler {
             
             // AutoNUMA スキャン
             // 内部でタイマーチェックを行うため、頻繁に呼び出しても安全
-            crate::mm::autonuma::try_scan_current_process();
+            crate::mm::numa::autonuma::try_scan_current_process();
         }
     }
 

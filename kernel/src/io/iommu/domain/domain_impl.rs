@@ -36,7 +36,7 @@ impl IommuDomain {
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("Invalid layout for page table");
 
-        let page_table = crate::mm::numa::allocate_zeroed_on_node(layout, numa_node)
+        let page_table = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node)
             .expect("Failed to allocate IOMMU page table")
             .as_ptr() as *mut SlPte;
 

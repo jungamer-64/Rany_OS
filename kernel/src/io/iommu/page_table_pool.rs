@@ -398,7 +398,7 @@ impl PageTablePool {
                 .map_err(|_| IommuError::HardwareError)?;
 
         // Allocate zeroed page on the specified NUMA node
-        let ptr = crate::mm::numa::allocate_zeroed_on_node(layout, Some(node))
+        let ptr = crate::mm::numa::topology::allocate_zeroed_on_node(layout, Some(node))
             .ok_or(IommuError::OutOfMemory)?;
 
         // Get physical address
@@ -416,7 +416,7 @@ impl PageTablePool {
     /// Deallocate a page table
     fn dealloc(pt: PooledPt) {
         // Use the matching dealloc function for allocate_zeroed_on_node
-        unsafe { crate::mm::numa::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node)); }
+        unsafe { crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node)); }
     }
 
     // ========================================================================
@@ -482,7 +482,7 @@ impl PageTablePool {
     #[inline]
     fn try_acquire_from_magazine(&self) -> Option<PooledPt> {
         // SAFETY: Per-CPU data is accessed only by the owning CPU
-        let pc = unsafe { crate::mm::per_cpu::current_per_cpu_mut() }?;
+        let pc = unsafe { crate::per_cpu::current_per_cpu_mut() }?;
         let entry = pc.pt_magazine.pop()?;
 
         if !entry.is_valid() {
@@ -507,11 +507,11 @@ impl PageTablePool {
     #[inline]
     fn try_release_to_magazine(&self, pt: &PooledPt) -> bool {
         // SAFETY: Per-CPU data is accessed only by the owning CPU
-        let Some(pc) = (unsafe { crate::mm::per_cpu::current_per_cpu_mut() }) else {
+        let Some(pc) = (unsafe { crate::per_cpu::current_per_cpu_mut() }) else {
             return false;
         };
 
-        let entry = crate::mm::per_cpu::PtMagEntry {
+        let entry = crate::per_cpu::PtMagEntry {
             phys: pt.phys,
             virt: pt.ptr.as_ptr() as usize,
             node: pt.node as u8,
@@ -524,7 +524,7 @@ impl PageTablePool {
     ///
     /// Transfers up to half capacity from depot to magazine.
     fn refill_magazine_from_depot(&self, node_hint: Option<usize>) {
-        let Some(pc) = (unsafe { crate::mm::per_cpu::current_per_cpu_mut() }) else {
+        let Some(pc) = (unsafe { crate::per_cpu::current_per_cpu_mut() }) else {
             return;
         };
 
@@ -534,11 +534,11 @@ impl PageTablePool {
 
         let mut pool = self.pools[node].lock();
         let available = pc.pt_magazine.available();
-        let transfer_count = available.min(pool.len()).min(crate::mm::per_cpu::PT_MAG_CAPACITY / 2);
+        let transfer_count = available.min(pool.len()).min(crate::per_cpu::PT_MAG_CAPACITY / 2);
 
         for _ in 0..transfer_count {
             if let Some(pt) = pool.pop() {
-                let entry = crate::mm::per_cpu::PtMagEntry {
+                let entry = crate::per_cpu::PtMagEntry {
                     phys: pt.phys,
                     virt: pt.ptr.as_ptr() as usize,
                     node: pt.node as u8,
@@ -560,7 +560,7 @@ impl PageTablePool {
     ///
     /// Transfers half of magazine entries to depot.
     fn drain_magazine_to_depot(&self, preferred_node: usize) {
-        let Some(pc) = (unsafe { crate::mm::per_cpu::current_per_cpu_mut() }) else {
+        let Some(pc) = (unsafe { crate::per_cpu::current_per_cpu_mut() }) else {
             return;
         };
 

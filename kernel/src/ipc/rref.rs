@@ -78,7 +78,7 @@ impl<T> RRef<T> {
 
         // Exchange Heapに割り当て
         crate::io::log::early_print("[RRef] new: allocating on exchange heap\n");
-        let ptr = crate::mm::exchange_heap::allocate_on_exchange(val)
+        let ptr = crate::mm::cache::exchange_heap::allocate_on_exchange(val)
             .expect("Exchange heap allocation failed");
         crate::io::log::early_print("[RRef] new: allocation successful\n");
 
@@ -97,7 +97,7 @@ impl<T> RRef<T> {
     /// 新しいRRefを作成（失敗時はNone）
     pub fn try_new(owner: DomainId, val: T) -> Option<Self> {
         let layout = Layout::new::<T>();
-        let ptr = crate::mm::exchange_heap::allocate_on_exchange(val)?;
+        let ptr = crate::mm::cache::exchange_heap::allocate_on_exchange(val)?;
 
         // Heap Registryに登録（統合されたSAS APIを使用）
         crate::sas::register_object(
@@ -185,7 +185,7 @@ impl<T> RRef<T> {
 
         // メモリを解放
         unsafe {
-            crate::mm::exchange_heap::deallocate_raw(ptr.cast(), layout);
+            crate::mm::cache::exchange_heap::deallocate_raw(ptr.cast(), layout);
         }
 
         value
@@ -218,7 +218,7 @@ impl<T> RRef<[T]> {
     where
         F: FnMut(usize) -> T,
     {
-        let (ptr, layout) = crate::mm::exchange_heap::allocate_slice_with(len, init)?;
+        let (ptr, layout) = crate::mm::cache::exchange_heap::allocate_slice_with(len, init)?;
         crate::sas::register_object(
             ptr.as_ptr() as usize,
             layout.size(),
@@ -239,7 +239,7 @@ impl<T> RRef<[T]> {
             layout = layout.align_to(align).ok()?;
         }
 
-        let ptr = crate::mm::exchange_heap::allocate_raw(layout)?;
+        let ptr = crate::mm::cache::exchange_heap::allocate_raw(layout)?;
         Some((ptr, layout))
     }
 
@@ -276,7 +276,7 @@ impl<T> RRef<[T]> {
 impl<T: Default> RRef<[T]> {
     /// Create a new slice-backed RRef initialized with `T::default()`.
     pub fn new_slice_default(owner: DomainId, len: usize) -> Option<Self> {
-        let (ptr, layout) = crate::mm::exchange_heap::allocate_slice_default::<T>(len)?;
+        let (ptr, layout) = crate::mm::cache::exchange_heap::allocate_slice_default::<T>(len)?;
         crate::sas::register_object(
             ptr.as_ptr() as usize,
             layout.size(),
@@ -315,7 +315,7 @@ impl<T: ?Sized> Drop for RRef<T> {
         unsafe {
             let layout = Layout::for_value(self.ptr.as_ref());
             core::ptr::drop_in_place(self.ptr.as_ptr());
-            crate::mm::exchange_heap::deallocate_raw(self.ptr.cast(), layout);
+            crate::mm::cache::exchange_heap::deallocate_raw(self.ptr.cast(), layout);
         }
     }
 }

@@ -152,7 +152,7 @@ impl<T> DmaHandle<[T]> {
         }
         let virt_ptr = rref.as_ptr() as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
         Ok(Self::new_slice(
             rref,
             phys_addr_val.as_u64(),
@@ -195,7 +195,7 @@ impl<T> DmaHandle<[T]> {
 
         let virt_ptr = rref.as_ptr() as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
 
         if phys_addr_val.as_u64() & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
@@ -240,7 +240,7 @@ impl<T> DmaHandle<[T]> {
         }
         let virt_ptr = rref.as_ptr() as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
         Some((phys_addr_val.as_u64(), phys_addr_val.as_u64(), size, MappingKind::Identity))
     }
 
@@ -277,7 +277,7 @@ impl<T> DmaHandle<[T]> {
 
         let virt_ptr = rref.as_ptr() as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
 
         if phys_addr_val.as_u64() & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));

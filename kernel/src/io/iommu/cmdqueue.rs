@@ -266,7 +266,7 @@ impl CommandQueue {
         // Try to allocate slots on the given NUMA node for locality benefits.
         let layout = Layout::array::<CompletionSlot>(DEFAULT_QUEUE_SIZE).expect("layout");
         let slots: &'static [CompletionSlot] =
-            if let Some(nonnull) = crate::mm::numa::allocate_zeroed_on_node(layout, numa_node) {
+            if let Some(nonnull) = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node) {
                 unsafe {
                     let ptr = nonnull.as_ptr() as *mut CompletionSlot;
                     for i in 0..DEFAULT_QUEUE_SIZE {

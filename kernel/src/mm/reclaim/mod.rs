@@ -1,0 +1,10 @@
+//! ページ回収・圧力管理
+//!
+//! LRU/MGLRU、Shrinker Framework、ZSWAP、非同期スワップアウト。
+
+pub mod page_reclaim;   // Page Reclaim + LRU + MGLRU
+pub mod shrinker;       // Shrinker Framework
+pub mod workingset;     // Workingset Refault Detection
+pub mod zswap;          // ZSWAP - スワップ前メモリ圧縮キャッシュ
+pub mod async_swapout;  // 非同期スワップアウト
+pub mod oom_killer;     // OOM Killer (設計書 9.3.4)

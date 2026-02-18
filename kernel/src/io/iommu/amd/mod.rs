@@ -214,7 +214,7 @@ impl AmdIommuDriver {
         event_logs: Vec<Option<AmdEventLog>>,
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Self {
-        let page_table_pool = PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
+        let page_table_pool = PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32);
         let max_addr_bits = units
             .iter()
             .map(|u| u.max_addr_bits)

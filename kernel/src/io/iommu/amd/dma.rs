@@ -59,7 +59,7 @@ impl AmdIommuDriver {
 
     /// Validate that physical address and size are 4K-page aligned and non-zero.
     fn validate_dma_alignment(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError> {
-        let align = crate::mm::PAGE_SIZE_4K as u64;
+        let align = crate::mm::types::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
         }
@@ -118,7 +118,7 @@ impl AmdIommuDriver {
         phys_addr: PhysAddr,
         size: u64,
     ) -> Result<(u16, u64), IommuError> {
-        let align = crate::mm::PAGE_SIZE_4K as u64;
+        let align = crate::mm::types::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
         }
@@ -358,7 +358,7 @@ impl AmdIommuDriver {
         phys: u64,
         size: u64,
     ) -> Result<(), ()> {
-        let align = crate::mm::PAGE_SIZE_4K as u64;
+        let align = crate::mm::types::PAGE_SIZE_4K as u64;
         if (iova & (align - 1) != 0)
             || (phys & (align - 1) != 0)
             || (size & (align - 1) != 0)

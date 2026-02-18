@@ -62,7 +62,7 @@ use super::LoadError;
 // module-level visibility guarantees are made explicit.
 
 // Use real PageFlags and PKEY allocator from the kernel modules when available
-// - `PageFlags` lives in `crate::mm::higher_half` and provides `set_pkey()`.
+// - `PageFlags` lives in `crate::mm::virt::higher_half` and provides `set_pkey()`.
 // - `allocate_protection_key()` / `free_protection_key()` live in `crate::security::mpk`.
 // When compiling for tests or for bench builds (workspace `--all-features`) we
 // avoid pulling in the full `mm`/`security` implementations and use no-op
@@ -73,7 +73,7 @@ pub use loader_trait::*;
 mod elf_loader_impl;
 pub use elf_loader_impl::*;
 #[cfg(not(any(test, feature = "bench")))]
-use crate::mm::PageFlags;
+use crate::mm::virt::higher_half::PageFlags;
 use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;

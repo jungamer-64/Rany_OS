@@ -148,10 +148,10 @@ impl VirtioNetDevice {
         data: &[u8],
         data_len: usize,
     ) -> Result<(u64, Option<u64>, usize, Option<crate::io::iommu::api::DmaHandle<[u8]>>), VirtioNetError> {
-        let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+        let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
         let page_base = phys_addr_val & !page_mask;
         let page_offset = (phys_addr_val - page_base) as usize;
-        let map_len = crate::mm::PAGE_SIZE_4K;
+        let map_len = crate::mm::types::PAGE_SIZE_4K;
         let can_map_page = page_offset + data_len <= map_len;
 
         if !is_iommu_enabled() {

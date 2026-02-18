@@ -12,7 +12,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::mm::memcg::MemcgId;
+use crate::mm::meta::memcg::MemcgId;
 
 // ============================================================================
 // Per-CPU 現在プロセスID追跡
@@ -439,7 +439,7 @@ impl ProcessInfo {
             exit_code: None,
             children: Vec::new(),
             threads: Vec::new(),
-            numa_scan_addr: AtomicU64::new(crate::mm::address_space::USER_SPACE_START),
+            numa_scan_addr: AtomicU64::new(crate::mm::virt::address_space::USER_SPACE_START),
         }
     }
 

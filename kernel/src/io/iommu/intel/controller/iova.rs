@@ -31,7 +31,7 @@ pub trait IovaManager {
 impl IovaManager for IommuController {
     /// Initialize controller IOVA allocator
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError> {
-        let cpu_id = crate::mm::per_cpu::try_current_cpu_id().unwrap_or(usize::MAX);
+        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(usize::MAX);
         crate::io::log::early_print("[IOMMU] init_iova: enter cpu=");
         crate::io::log::early_print_dec(cpu_id as u64);
         crate::io::log::early_print(" base=");
@@ -112,7 +112,7 @@ impl IovaManager for IommuController {
 
     /// Allocate an IOVA range within a DMA mask limit (inclusive).
     fn allocate_iova_masked(&self, size: u64, mask: u64) -> Result<u64, IommuError> {
-        let cpu_id = crate::mm::per_cpu::try_current_cpu_id().unwrap_or(usize::MAX);
+        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(usize::MAX);
         crate::io::log::early_print("[IOMMU] allocate_iova_masked: enter cpu=");
         crate::io::log::early_print_dec(cpu_id as u64);
         crate::io::log::early_print(" size=");

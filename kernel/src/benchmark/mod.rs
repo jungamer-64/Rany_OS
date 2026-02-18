@@ -496,7 +496,7 @@ pub fn bench_iommu_iova(runner: &mut BenchmarkRunner) {
     use crate::io::iommu::PAGE_SIZE_4K;
     use crate::io::iommu::registry::{get_iommu_driver, get_iommu_registry};
     use crate::io::iommu::IommuBackend;
-    use crate::mm::per_cpu::MAX_IOMMU_CONTROLLERS;
+    use crate::per_cpu::MAX_IOMMU_CONTROLLERS;
 
     let controller = IommuController::new(0, 0);
     let iova_base: u64 = PAGE_SIZE_4K as u64;
