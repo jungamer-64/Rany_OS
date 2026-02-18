@@ -1,15 +1,15 @@
 use super::*;
 
+mod _split_1;
+pub use _split_1::*;
+mod _split_2;
+pub use _split_2::*;
 
 // ============================================================================
 // GuiServices Implementation
 // ============================================================================
 
 use kernel_api::gui::{
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
     FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle,
     PixelFormat as KapiPixelFormat,
 };
