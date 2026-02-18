@@ -26,7 +26,6 @@ extern crate alloc;
 mod resource_mapping;
 pub use resource_mapping::*;
 mod manager_impl;
-pub use manager_impl::*;
 pub type Capability = u64;
 
 // Capability definitions (inspired by Linux capabilities)

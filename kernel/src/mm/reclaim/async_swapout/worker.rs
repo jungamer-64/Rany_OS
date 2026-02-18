@@ -4,7 +4,7 @@ use super::*;
 mod enqueue;
 pub use enqueue::*;
 mod kernel_worker;
-pub use kernel_worker::*;
+use kernel_worker::*;
 #[cfg(all(test, feature = "std"))]
 mod test_impl {
     use super::*;

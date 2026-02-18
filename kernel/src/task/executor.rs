@@ -35,7 +35,6 @@ use x86_64::instructions::interrupts;
 /// 実際のタスクはTASK_STOREに保存し、
 /// キューはTaskIdのみを管理してオーバーヘッド削減。
 mod stats_impl;
-pub use stats_impl::*;
 pub struct LockFreeQueue {
     /// リングバッファ
     buffer: [AtomicU64; QUEUE_SIZE],

@@ -230,7 +230,7 @@ impl<T> DmaHandle<[T]> {
     pub(super) fn try_identity_map_rref_slice(
         rref: &RRef<[T]>,
         size: u64,
-        direction: DmaDirection,
+        _direction: DmaDirection,
     ) -> Option<(u64, u64, u64, MappingKind)> {
         use x86_64::VirtAddr;
         if crate::io::iommu::api::is_iommu_required()

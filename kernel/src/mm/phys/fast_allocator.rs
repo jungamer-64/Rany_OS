@@ -60,7 +60,6 @@ pub use crate::mm::types::{PAGE_SIZE_4K as PAGE_SIZE_4K_USIZE, PAGE_SIZE_2M as P
 
 /// 4KB page size (u64 for address arithmetic)
 mod impl_core;
-pub use impl_core::*;
 pub const PAGE_SIZE_4K: u64 = PAGE_SIZE_4K_USIZE as u64;
 /// 2MB super-page size (u64 for address arithmetic)
 pub const PAGE_SIZE_2M: u64 = PAGE_SIZE_2M_USIZE as u64;

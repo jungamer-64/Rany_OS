@@ -153,6 +153,7 @@ impl VirtQueue {
     /// Caller must ensure:
     /// - Memory regions are valid and properly aligned
     /// - Queue size is power of 2 and <= VIRTQUEUE_MAX_SIZE
+    #[allow(deprecated)]
     pub unsafe fn new(
         queue_size: u16,
         desc_table: *mut VringDesc,
@@ -258,6 +259,7 @@ impl VirtQueue {
     }
 
     /// Notify the device that new buffers are available.
+    #[allow(deprecated)]
     pub fn notify(&self) {
         let Some(addr) = self.notify_addr else {
             return;

@@ -3,7 +3,6 @@ use super::*;
 mod fs_tests;
 pub use self::fs_tests::*;
 mod nvme_tests;
-pub use self::nvme_tests::*;
 
 // ============================================================================
 // GuiServices Implementation

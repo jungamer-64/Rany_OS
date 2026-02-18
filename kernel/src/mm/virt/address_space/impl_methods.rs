@@ -2,7 +2,6 @@ use super::*;
 
 
 mod promotion;
-pub use promotion::*;
 impl ProcessAddressSpace {
     /// 新しいアドレス空間を作成
     pub fn new() -> Self {

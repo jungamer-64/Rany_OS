@@ -31,7 +31,7 @@ use ed25519_compact::x25519::{PublicKey as X25519PublicKey, SecretKey as X25519S
 /// ヤコビアン座標によるポイント演算と、NIST高速リダクションによる
 /// フィールド算術を実装している。
 pub(crate) mod p384;
-pub use self::p384::*;
+pub(crate) use self::p384::*;
 mod p256_parsing;
 pub use p256_parsing::*;
 

@@ -12,7 +12,6 @@
 mod error_and_tests;
 pub use error_and_tests::*;
 mod reclaim_impl;
-pub use reclaim_impl::*;
 #[cfg(not(any(test, feature = "bench")))]
 use crate::domain_system::DomainId;
 

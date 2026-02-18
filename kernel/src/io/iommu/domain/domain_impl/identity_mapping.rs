@@ -1,7 +1,6 @@
 use super::*;
 
 mod unmap_ops;
-pub use unmap_ops::*;
 impl IommuDomain {
 
     /// Map a region with identity mapping (IOVA = Physical Address)
@@ -422,7 +421,7 @@ impl IommuDomain {
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
 
         // Track newly allocated PDP table for rollback via RAII
-        let mut newly_allocated_pdp: Option<PageTableScope> = None;
+        let mut newly_allocated_pdp: Option<PageTableScope>;
 
         let pml4_table = self.page_table;
         let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
@@ -625,7 +624,7 @@ impl IommuDomain {
     ) -> Result<(), IommuError> {
         for idx in 0..count {
             let pt_entry = unsafe { pt_table.add(pt_idx + idx) };
-            if !unsafe { (*pt_entry) }.is_present() {
+            if !unsafe { *pt_entry  }.is_present() {
                 return Err(IommuError::NotMapped);
             }
         }

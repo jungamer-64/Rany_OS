@@ -28,7 +28,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 mod stats_and_compat;
 pub use stats_and_compat::*;
 mod heap_impl;
-pub use heap_impl::*;
 const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
 
 /// Per-CPU cache capacity (number of cached blocks per size class)
@@ -495,7 +494,7 @@ const MIN_BLOCK_WITH_FOOTER: usize = core::mem::size_of::<FreeBlock>() + core::m
 /// - ベストケース: 対応クラスに空きがあれば即座に返却
 /// - ワーストケース: より大きいクラスから分割（小さい定数）
 #[derive(Debug)]
-struct SegregatedFreeListHeap {
+pub(crate) struct SegregatedFreeListHeap {
     /// ヒープ開始アドレス
     heap_start: usize,
     /// ヒープ終了アドレス

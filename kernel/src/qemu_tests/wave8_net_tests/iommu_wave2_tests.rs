@@ -1,5 +1,3 @@
-use super::*;
-
 
 pub fn iommu_wave2_security_notifier_registration_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave2_security_notifier_registration_smoke()

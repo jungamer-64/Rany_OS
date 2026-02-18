@@ -125,7 +125,7 @@ pub mod qemu_tests {
             return false;
         };
 
-        if !info.ivhds.is_empty() { return false; }
+        if info.ivhds.is_empty() { return false; }
 
         if info.ivhds.len() != 1 { return false; }
         if !info.ivmds.is_empty() { return false; }

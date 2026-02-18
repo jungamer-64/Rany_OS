@@ -59,7 +59,6 @@ use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 mod hw_context_impl;
 pub use hw_context_impl::*;
 mod ats_control;
-pub use ats_control::*;
 #[derive(Debug)]
 pub struct HardwareContext {
     /// Root Table: 256 entries (16 bytes each = 4KB)

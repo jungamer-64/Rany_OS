@@ -92,7 +92,7 @@ impl LocalSglDescriptor {
     }
 }
 
-struct NvmeIommuMapping {
+pub(crate) struct NvmeIommuMapping {
     /// Kernel-assigned mapping ID for unmap via kernel_api
     mapping_id: u64,
     iova: u64,
@@ -188,7 +188,7 @@ impl NvmeExternalDmaContext {
     }
 }
 
-struct NvmeSglContext {
+pub(crate) struct NvmeSglContext {
     data_list: Option<TypedSgList<DeviceOwned>>,
     data_guard: Option<SgDmaGuard>,
     data_maps: Vec<NvmeIommuMapping>,

@@ -604,7 +604,7 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
     let pdpt_idx = ((addr >> 30) & 0x1FF) as usize;
     let pd_idx = ((addr >> 21) & 0x1FF) as usize;
     let pt_idx = ((addr >> 12) & 0x1FF) as usize;
-    let offset_4kb = (addr & 0xFFF) as u64;
+    let _offset_4kb = (addr & 0xFFF) as u64;
     
     let mut pte_values = [0u64; 4];
     

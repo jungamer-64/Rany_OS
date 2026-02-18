@@ -352,7 +352,7 @@ impl AmdIommuDriver {
         &self,
         device: DeviceId,
         aliases: &[u16],
-        previous_domain: u16,
+        _previous_domain: u16,
     ) -> Result<(), IommuError> {
         self.write_device_entries_for_domain(device, aliases, None)?;
         self.invalidate_device_entry(device)?;

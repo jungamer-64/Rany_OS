@@ -4,7 +4,6 @@ use super::*;
 mod reclaim_core;
 pub use reclaim_core::*;
 mod controller_impl;
-pub use controller_impl::*;
 impl MglruTuningController {
     /// デフォルト aging interval: 2秒
     pub(super) const DEFAULT_INTERVAL_NS: u64 = 2_000_000_000;

@@ -32,9 +32,8 @@ use super::identify::{IdentifyController, IdentifyNamespace};
 use super::per_core::PerCoreNvmeQueue;
 use super::queue::QueuePair;
 mod drop_and_helpers;
-pub use drop_and_helpers::*;
+use drop_and_helpers::*;
 mod admin_polling;
-pub use admin_polling::*;
 
 // Identify Controller SGLS bits (NVMe spec).
 const SGLS_SUPPORTED: u32 = 1 << 0;

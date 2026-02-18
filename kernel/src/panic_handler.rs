@@ -200,7 +200,7 @@ fn panic_notify_domain(domain_id: u64, message_slice: &[u8]) {
 }
 
 /// Build a BsodInfo struct, capturing registers, backtrace, and location.
-fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo {
+fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo<'_> {
     use crate::graphics::bsod::RegisterDump;
 
     let registers = RegisterDump::capture();

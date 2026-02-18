@@ -360,7 +360,7 @@ pub unsafe fn init_numa_frame_allocator_from_info(numa_info: &NumaInfo) -> bool 
         return false;
     }
 
-    let mut regions = collect_numa_memory_regions(numa_info, node_count);
+    let regions = collect_numa_memory_regions(numa_info, node_count);
 
     if regions.is_empty() {
         return false;

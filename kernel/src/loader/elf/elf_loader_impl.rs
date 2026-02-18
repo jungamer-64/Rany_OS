@@ -2,7 +2,6 @@ use super::*;
 
 
 mod relocation;
-pub use self::relocation::*;
 impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
     ///

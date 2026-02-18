@@ -53,6 +53,7 @@ let shared = Arc::new(PoisonLock::new(data));
 ## 未移行（Arc<Mutex> — 25箇所）
 
 ### VirtIO ドライバ群 (11箇所)
+
 - `io/virtio/console.rs` — `Arc<Mutex<VirtQueue>>` x2
 - `io/virtio/blk.rs` — `Arc<Mutex<VirtQueue>>` x1 + device_impl.rs x1
 - `io/virtio/input.rs` — `Arc<Mutex<VirtQueue>>` x2
@@ -60,29 +61,35 @@ let shared = Arc::new(PoisonLock::new(data));
 - `gpu/mod.rs` — `Arc<Mutex<VirtQueue>>` x2
 
 ### AHCI ドライバ (4箇所)
+
 - `io/ahci/poll_handler.rs` — `Arc<Mutex<AhciController>>` x4
 
 ### メモリサブシステム (3箇所)
+
 - `mm/cache/slab_registry.rs` — `Arc<Mutex<SlabCache>>` x1
 - `mm/cache/slab_cache/magazine_layer/per_core.rs` — `Arc<Mutex<SlabCache>>` x2
 
 ### ファイルシステム (5箇所)
+
 - `fs/async_ops/cleanup_helpers.rs` — `Arc<Mutex<Vec<u8>>>` x3, `Arc<Mutex<Option<...>>>` x2
 
 ## 未移行（spin::Mutex — 約123箇所）
 
 ### 優先度: 高（ドメイン間境界）
+
 - `domain_system.rs` — ドメインレジストリ (PoisonLock使用済み)
 - `sas/` — ヒープレジストリ、所有権管理
 - `ipc/proxy.rs` — プロキシマネージャ
 - `net/` — TCP/UDP ソケットテーブル、イベントキュー
 
 ### 優先度: 中（カーネルサービス）
+
 - `mm/` — フレームアロケータ、ページキャッシュ、スラブキャッシュ
 - `io/` — I/Oスケジューラ、割り込みマネージャ
 - `fs/` — FS抽象化、ブロックキャッシュ
 
 ### 優先度: 低（ドライバ内部）
+
 - `io/virtio/` — VirtQueueロック
 - `io/ahci/` — コントローラロック
 - `gpu/` — GPUキューロック

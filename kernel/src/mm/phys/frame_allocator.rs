@@ -289,7 +289,7 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
 // ============================================================================
 
 /// PMM fast allocator wrapper (phys addr aware)
-struct PmmAllocatorFast {
+pub(crate) struct PmmAllocatorFast {
     inner: FastBitmapAllocator,
     base: u64,
     size: u64,

@@ -38,7 +38,6 @@ use spin::Mutex;
 mod logger_impl;
 pub use logger_impl::*;
 mod serial_output;
-pub use serial_output::*;
 const LOG_BUFFER_CAPACITY: usize = 16 * 1024;
 
 // ============================================================================
@@ -598,7 +597,7 @@ pub fn enable_serial_interrupts() {
 // ============================================================================
 
 /// カーネル用シリアルロガー
-struct KernelLogger;
+pub(crate) struct KernelLogger;
 
 #[inline]
 fn read_tsc_serialized() -> u64 {

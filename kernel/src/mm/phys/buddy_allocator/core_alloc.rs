@@ -4,7 +4,6 @@ use super::*;
 mod trait_impl;
 pub use trait_impl::*;
 mod coalesce;
-pub use coalesce::*;
 impl CompactionCandidates {
     pub const fn new() -> Self {
         Self {

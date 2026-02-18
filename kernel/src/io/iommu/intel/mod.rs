@@ -38,7 +38,6 @@ use self::registry::get_iommu_registry;
 
 
 mod driver_ops;
-pub use driver_ops::*;
 #[derive(Default)]
 pub struct IntelIommuDriver;
 

@@ -2,7 +2,6 @@ use super::*;
 
 
 mod identity_mapping;
-pub use identity_mapping::*;
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
 
