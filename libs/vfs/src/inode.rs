@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 use core::any::Any;
 
 use crate::error::VfsResult;
-use crate::types::{FileAttr, FileType, OpenFlags, UnixFileMode, InodeNum};
+use crate::types::{FileAttr, FileType, OpenFlags, UnixFileMode};
 
 // ============================================================================
 // Inode Trait
@@ -154,22 +154,19 @@ pub trait Inode: Send + Sync + Any {
     /// ディレクトリかどうかを判定
     fn is_dir(&self) -> bool {
         self.file_type()
-            .map(|ft| ft == FileType::Directory)
-            .unwrap_or(false)
+            .is_ok_and(|ft| ft == FileType::Directory)
     }
 
     /// 通常ファイルかどうかを判定
     fn is_file(&self) -> bool {
         self.file_type()
-            .map(|ft| ft == FileType::File)
-            .unwrap_or(false)
+            .is_ok_and(|ft| ft == FileType::File)
     }
 
     /// シンボリックリンクかどうかを判定
     fn is_symlink(&self) -> bool {
         self.file_type()
-            .map(|ft| ft == FileType::Symlink)
-            .unwrap_or(false)
+            .is_ok_and(|ft| ft == FileType::Symlink)
     }
 }
 
@@ -187,14 +184,8 @@ pub use crate::types::DirEntry;
 /// Inode参照からArcにダウンキャスト
 #[cfg(feature = "alloc")]
 pub fn downcast_inode<T: Inode + 'static>(inode: &Arc<dyn Inode>) -> Option<Arc<T>> {
-    // まずAnyにキャストできるか確認
-    let any = inode.as_any();
-    if any.is::<T>() {
-        // 同じArcを再構築（参照カウントを増やす）
-        // 注意: この実装は安全ですが、効率的ではありません
-        // 実際のユースケースでは、具体的な型を直接保持することを推奨
-        None // 安全のためデフォルトではNone
-    } else {
-        None
-    }
+    // 安全のためデフォルトではNone
+    // 実際のユースケースでは、具体的な型を直接保持することを推奨
+    let _any = inode.as_any();
+    None
 }

@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -58,12 +60,12 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BuildError::UnknownSuite(suite) => write!(f, "unknown suite: {suite}"),
-            BuildError::CargoLaunch(err) => write!(f, "failed to launch cargo: {err}"),
-            BuildError::CargoFailed(code) => {
+            Self::UnknownSuite(suite) => write!(f, "unknown suite: {suite}"),
+            Self::CargoLaunch(err) => write!(f, "failed to launch cargo: {err}"),
+            Self::CargoFailed(code) => {
                 write!(f, "cargo build failed with exit code {code}")
             }
-            BuildError::ArtifactMissing(path) => {
+            Self::ArtifactMissing(path) => {
                 write!(f, "suite artifact not found: {}", path.display())
             }
         }
@@ -89,11 +91,11 @@ pub enum RunError {
 impl fmt::Display for RunError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RunError::Build(err) => write!(f, "build failed: {err}"),
-            RunError::QemuNotFound(msg) => write!(f, "{msg}"),
-            RunError::FirmwareMissing(msg) => write!(f, "{msg}"),
-            RunError::QemuLaunch(err) => write!(f, "failed to launch qemu-system-x86_64: {err}"),
-            RunError::Timeout {
+            Self::Build(err) => write!(f, "build failed: {err}"),
+            Self::QemuNotFound(msg) => write!(f, "{msg}"),
+            Self::FirmwareMissing(msg) => write!(f, "{msg}"),
+            Self::QemuLaunch(err) => write!(f, "failed to launch qemu-system-x86_64: {err}"),
+            Self::Timeout {
                 timeout_secs,
                 log_path,
                 qemu_stderr_path,
@@ -103,7 +105,7 @@ impl fmt::Display for RunError {
                 log_path.display(),
                 qemu_stderr_path.display()
             ),
-            RunError::SuiteFailed(report) => write!(
+            Self::SuiteFailed(report) => write!(
                 f,
                 "suite '{}' failed (host exit: {}, serial log: {}, qemu stderr log: {})",
                 report.suite,
@@ -118,7 +120,7 @@ impl fmt::Display for RunError {
 impl std::error::Error for RunError {}
 
 #[must_use]
-pub fn normalize_qemu_exit_code(host_exit_code: i32) -> Option<u32> {
+pub const fn normalize_qemu_exit_code(host_exit_code: i32) -> Option<u32> {
     match host_exit_code {
         33 => Some(0x10),
         35 => Some(0x11),
@@ -136,7 +138,7 @@ pub fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| manifest_dir.join("..").join(".."))
 }
 
-fn suite_package_name(suite: &str) -> Option<&'static str> {
+const fn suite_package_name(suite: &str) -> Option<&'static str> {
     match suite {
         "core" => Some("qemu_suite_core"),
         "drivers" => Some("qemu_suite_drivers"),
@@ -150,6 +152,13 @@ fn suite_package_name(suite: &str) -> Option<&'static str> {
     }
 }
 
+/// Build a UEFI suite binary for the given suite name.
+///
+/// # Errors
+///
+/// Returns [`BuildError`] if the suite name is unknown, cargo fails to
+/// launch or exits with a non-zero code, or the expected artifact is
+/// missing after the build.
 pub fn build_suite(suite: &str) -> Result<Artifact, BuildError> {
     let package = suite_package_name(suite)
         .ok_or_else(|| BuildError::UnknownSuite(String::from(suite)))?
@@ -283,9 +292,9 @@ fn poll_qemu(
             let host_exit_code = if success { 33 } else { 35 };
             let report = make_report(
                 config.suite.clone(),
-                artifact_path.clone(),
-                log_path.clone(),
-                qemu_stderr_path.clone(),
+                artifact_path,
+                log_path,
+                qemu_stderr_path,
                 host_exit_code,
                 start.elapsed(),
             );
@@ -301,9 +310,9 @@ fn poll_qemu(
                 let suite_token_result = detect_suite_result(&log_path, &config.suite);
                 let report = make_report(
                     config.suite.clone(),
-                    artifact_path.clone(),
-                    log_path.clone(),
-                    qemu_stderr_path.clone(),
+                    artifact_path,
+                    log_path,
+                    qemu_stderr_path,
                     host_exit_code,
                     start.elapsed(),
                 );
@@ -324,6 +333,13 @@ fn poll_qemu(
 }
 
 /// Run a UEFI suite binary via OVMF firmware.
+///
+/// # Errors
+///
+/// Returns [`RunError`] if the build fails, QEMU or OVMF firmware is
+/// not available, QEMU fails to launch, the suite times out, or the
+/// suite reports failure.
+#[allow(clippy::needless_pass_by_value)]
 pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
     ensure_qemu_available()?;
     let artifact = build_suite(&config.suite).map_err(RunError::Build)?;
@@ -398,7 +414,7 @@ pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
     let child = qemu_cmd.spawn().map_err(RunError::QemuLaunch)?;
     poll_qemu(
         &config,
-        artifact.binary_path.clone(),
+        artifact.binary_path,
         log_path,
         qemu_stderr_path,
         child,

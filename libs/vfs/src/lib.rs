@@ -10,14 +10,14 @@
 //! ## 主なコンポーネント
 //!
 //! ### 高レベルAPI（シンプル）
-//! - [`FileSystem`]: ファイルシステム全体の操作（ルート取得、マウント等）
-//! - [`VfsNode`]: ファイルまたはディレクトリを表す抽象ノード
-//! - [`File`]: 開かれたファイルの操作（読み書き、シーク）
-//! - [`Directory`]: ディレクトリの操作（エントリ列挙、検索）
+//! - [`FileSystem`] - ファイルシステム全体の操作（ルート取得、マウント等）
+//! - [`VfsNode`] - ファイルまたはディレクトリを表す抽象ノード
+//! - [`File`] - 開かれたファイルの操作（読み書き、シーク）
+//! - [`Directory`] - ディレクトリの操作（エントリ列挙、検索）
 //!
 //! ### 低レベルAPI（POSIX互換）
-//! - [`Inode`]: POSIX互換のInode抽象化
-//! - [`ExtendedFileSystem`]: 統計情報やsync等の拡張操作をサポート
+//! - [`Inode`] - POSIX互換のInode抽象化
+//! - [`ExtendedFileSystem`] - 統計情報やsync等の拡張操作をサポート
 //!
 //! ## 使い分け
 //!
@@ -207,6 +207,7 @@ impl From<block::BlockError> for VfsError {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
     use super::path::Path;
     use super::{block, cache};
@@ -219,7 +220,7 @@ pub mod qemu_tests {
 
     pub fn path_parent_smoke() -> bool {
         let p = Path::new("/var/log/kmsg");
-        p.parent().map(|v| v.as_str() == "/var/log").unwrap_or(false)
+        p.parent().is_some_and(|v| v.as_str() == "/var/log")
     }
 
     pub fn ramdisk_read_write_sync_smoke() -> bool {

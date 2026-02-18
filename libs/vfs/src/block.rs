@@ -1001,13 +1001,21 @@ pub fn block_manager() -> &'static BlockDeviceManager {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
-    use super::*;
+    use super::{
+        BlockDeviceInfo, BlockError, BlockResult,
+        OwnedBytes, RamDisk, ZcFuture, ZeroCopyBlockDevice,
+    };
+    use alloc::boxed::Box;
+    use alloc::vec;
+    use alloc::vec::Vec;
     use core::future::Future;
     use core::pin::Pin;
     use core::ptr;
     use core::sync::atomic::{AtomicUsize, Ordering};
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    use spin::Mutex;
 
     fn noop_raw_waker() -> RawWaker {
         unsafe fn clone(_: *const ()) -> RawWaker {
@@ -1044,12 +1052,12 @@ pub mod qemu_tests {
 
     impl MemDev {
         fn new(block_size: u32, blocks: usize) -> Self {
-            let mut info = BlockDeviceInfo::default();
-            info.block_size = block_size;
-            info.total_blocks = blocks as u64;
-
             Self {
-                info,
+                info: BlockDeviceInfo {
+                    block_size,
+                    total_blocks: blocks as u64,
+                    ..BlockDeviceInfo::default()
+                },
                 data: Mutex::new(vec![0u8; block_size as usize * blocks]),
                 read_calls: AtomicUsize::new(0),
                 write_calls: AtomicUsize::new(0),
@@ -1240,6 +1248,7 @@ pub struct SimpleBlockDeviceAdapter<T: SimpleBlockDevice> {
     /// ペンディングリクエスト
     pending: Mutex<VecDeque<Arc<BlockRequest>>>,
     /// リクエストIDカウンター
+    #[allow(dead_code)]
     next_id: AtomicU64,
 }
 
