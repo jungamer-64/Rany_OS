@@ -1,4 +1,4 @@
-use super::*;
+use super::{acs_regs, ext_cap_id, PcieBdf, PcieConfig, PcieError, PcieResult};
 
 
 /// ACS Capability structure
@@ -86,14 +86,12 @@ impl AcsController {
 
     /// Check if ACS isolation is enabled (basic check)
     pub fn is_isolation_enabled(&self) -> bool {
-        let cap = match self.capability.as_ref() {
-            Some(c) => c,
-            None => return false,
+        let Some(cap) = self.capability.as_ref() else {
+            return false;
         };
 
-        let ctrl = match self.config.read16(self.bdf, cap.offset + acs_regs::CTRL) {
-            Some(v) => v,
-            None => return false,
+        let Some(ctrl) = self.config.read16(self.bdf, cap.offset + acs_regs::CTRL) else {
+            return false;
         };
 
         // Check essential isolation bits if supported

@@ -1,4 +1,7 @@
-use super::*;
+use super::{cap_id, ext_cap_id, PcieBdf, PcieConfig, PcieError, PcieResult};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
+use spin::RwLock;
 
 
 // ============================================================================
@@ -478,8 +481,8 @@ impl PcieExtManager {
 // 初期化
 // ============================================================================
 
-pub(crate) static PCIE_EXT_CONFIG: spin::Once<PcieConfig> = spin::Once::new();
-pub(crate) static PCIE_EXT_MANAGER: spin::Once<PcieExtManager> = spin::Once::new();
+pub static PCIE_EXT_CONFIG: spin::Once<PcieConfig> = spin::Once::new();
+pub static PCIE_EXT_MANAGER: spin::Once<PcieExtManager> = spin::Once::new();
 
 /// PCIe拡張機能を初期化
 pub fn init_pcie_ext(base_addr: u64) -> PcieResult<()> {

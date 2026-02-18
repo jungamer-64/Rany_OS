@@ -1,4 +1,5 @@
-use super::*;
+use super::{PciBusScanner, PciDeviceInfo};
+use alloc::vec::Vec;
 
 
 // ============================================================================
