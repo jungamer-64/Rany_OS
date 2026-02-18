@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use _split_1::*;
+mod level_parse;
+pub use level_parse::*;
 impl Log for KernelLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         let current_level = LevelFilter::iter()
@@ -107,8 +107,8 @@ impl KernelLogger {
 
 /// `Write` トレイトを実装し、最後の文字を追跡するラッパー
 pub(crate) struct LastCharTracker<W: Write> {
-    inner: W,
-    last_char: u8,
+    pub(crate) inner: W,
+    pub(crate) last_char: u8,
 }
 
 impl<W: Write> LastCharTracker<W> {

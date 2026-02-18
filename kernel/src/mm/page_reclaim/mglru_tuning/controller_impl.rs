@@ -486,7 +486,7 @@ impl PageReclaimController {
     
     /// フレームをBuddyに返却
     pub(super) fn free_frame(&self, frame: FrameIndex) {
-        use super::buddy_allocator::buddy_dealloc_frame;
+        use crate::mm::buddy_allocator::buddy_dealloc_frame;
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
         use x86_64::PhysAddr;
         

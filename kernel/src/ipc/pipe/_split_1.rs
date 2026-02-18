@@ -5,7 +5,7 @@ use super::*;
 // Zero-Copy Channel - 設計書 5.3: RRef<T>によるゼロコピーIPC
 // ============================================================================
 
-use super::rref::{DomainId, RRef};
+use crate::ipc::rref::{DomainId, RRef};
 
 /// ゼロコピーチャンネルエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

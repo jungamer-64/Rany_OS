@@ -30,7 +30,7 @@ use ed25519_compact::x25519::{PublicKey as X25519PublicKey, SecretKey as X25519S
 /// FIPS 186-4準拠のNIST P-256曲線演算を提供する。
 /// ヤコビアン座標によるポイント演算と、NIST高速リダクションによる
 /// フィールド算術を実装している。
-mod p384;
+pub(crate) mod p384;
 pub use p384::*;
 mod p256_parsing;
 pub use p256_parsing::*;

@@ -6,8 +6,8 @@ use super::*;
 // ============================================================================
 
 /// Result of DMA buffer preparation for virtio-net I/O.
-mod _split_1;
-pub use _split_1::*;
+mod stats_global;
+pub use stats_global::*;
 pub(crate) struct DmaPrepareResult {
     dma_addr: u64,
     mapped_iova: Option<u64>,

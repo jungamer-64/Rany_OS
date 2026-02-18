@@ -1,10 +1,10 @@
 use super::*;
 
 
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod async_io;
+pub use async_io::*;
+mod dma_dispatch;
+pub use dma_dispatch::*;
 impl VirtioBlkDevice {
     /// Create a new VirtIO block device (uninitialized)
     ///

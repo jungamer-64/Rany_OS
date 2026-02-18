@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use _split_1::*;
+mod coordinator_helpers;
+pub use coordinator_helpers::*;
 impl Future for IoFuture {
     type Output = Result<usize, IoError>;
 

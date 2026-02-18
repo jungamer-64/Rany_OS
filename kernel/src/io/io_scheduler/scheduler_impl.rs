@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use _split_1::*;
+mod io_future;
+pub use io_future::*;
 impl IoScheduler {
     /// 新しいI/Oスケジューラを作成
     pub const fn new() -> Self {

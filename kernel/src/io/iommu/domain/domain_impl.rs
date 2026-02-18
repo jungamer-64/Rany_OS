@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use _split_1::*;
+mod identity_mapping;
+pub use identity_mapping::*;
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
 
@@ -163,7 +163,7 @@ impl IommuDomain {
     /// All domains have their own IOVA allocator, eliminating lock contention.
     #[inline]
     pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
-        use super::IovaGranularity;
+        use crate::io::iommu::IovaGranularity;
         
         // IovaAllocatorFast is internally lock-free for common paths
         self.per_domain_iova

@@ -75,7 +75,7 @@ pub fn lru_add_page(frame: x86_64::structures::paging::PhysFrame, page_type: Pag
     let timestamp = crate::time::current_time_ns();
     
     // Workingset refault detection: evict 後に再度 fault したページかチェック
-    use super::workingset::{workingset_refault, workingset_advance_clock, RefaultResult};
+    use crate::mm::workingset::{workingset_refault, workingset_advance_clock, RefaultResult};
     
     let refault_result = workingset_refault(frame_index);
     workingset_advance_clock();
