@@ -1,5 +1,27 @@
 use super::*;
 
+// ---------- Helpers ----------
+
+/// Find a TLS extension (0x00, ext_lo) in a ClientHello record.
+/// Returns the offset within the payload (after record header) where the type was found.
+fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
+    let payload = &hello[5..]; // Skip 5-byte TLS record header
+    for i in 0..payload.len().saturating_sub(1) {
+        if payload[i] == 0x00 && payload[i + 1] == ext_lo {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// AES-CBC encrypt → decrypt roundtrip assertion.
+fn run_cbc_roundtrip(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) {
+    let ciphertext = aes_cbc_encrypt(key, iv, plaintext);
+    let decrypted = aes_cbc_decrypt(key, iv, &ciphertext);
+    assert!(decrypted.is_some());
+    assert_eq!(&decrypted.unwrap()[..plaintext.len()], plaintext);
+}
+
 
 /// TLS handshake parser should reject truncated handshake headers
 mod mac_tests;
@@ -246,17 +268,10 @@ pub(crate) fn test_tls13_client_hello_key_share() {
     assert_eq!(hello[0], ContentType::Handshake as u8);
 
     // Search for KeyShare extension type (0x0033 = 51)
-    // The hello bytes contain extensions including key_share
-    let hello_payload = &hello[5..]; // Skip record header
-    // Look for the key_share extension type bytes [0x00, 0x33]
-    let mut found_key_share = false;
-    for i in 0..hello_payload.len().saturating_sub(1) {
-        if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x33 {
-            found_key_share = true;
-            break;
-        }
-    }
-    assert!(found_key_share, "KeyShare extension not found in ClientHello");
+    assert!(
+        find_extension_in_hello(&hello, 0x33).is_some(),
+        "KeyShare extension not found in ClientHello",
+    );
 }
 
 /// TLS 1.3: Supported Versions extension should list both TLS 1.3 and 1.2
@@ -265,34 +280,21 @@ pub(crate) fn test_tls13_client_hello_supported_versions() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
     let hello = conn.build_client_hello();
-
-    let hello_payload = &hello[5..]; // Skip record header
+    let payload = &hello[5..];
 
     // Look for supported_versions extension [0x00, 0x2B]
-    let mut found_sv = false;
-    for i in 0..hello_payload.len().saturating_sub(1) {
-        if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x2B {
-            found_sv = true;
-            // Verify it lists both TLS 1.3 (0x0304) and TLS 1.2 (0x0303)
-            if i + 8 < hello_payload.len() {
-                let ext_len =
-                    ((hello_payload[i + 2] as usize) << 8) | hello_payload[i + 3] as usize;
-                // ext_data starts at i+4
-                let versions_len = hello_payload[i + 4] as usize;
-                // Should have at least 4 bytes (2 versions x 2 bytes)
-                assert!(
-                    versions_len >= 4,
-                    "Expected at least 2 versions in supported_versions"
-                );
-                assert_eq!(ext_len, versions_len + 1);
-            }
-            break;
-        }
+    let sv_pos = find_extension_in_hello(&hello, 0x2B)
+        .expect("Supported Versions extension not found in ClientHello");
+    if sv_pos + 8 < payload.len() {
+        let ext_len =
+            ((payload[sv_pos + 2] as usize) << 8) | payload[sv_pos + 3] as usize;
+        let versions_len = payload[sv_pos + 4] as usize;
+        assert!(
+            versions_len >= 4,
+            "Expected at least 2 versions in supported_versions"
+        );
+        assert_eq!(ext_len, versions_len + 1);
     }
-    assert!(
-        found_sv,
-        "Supported Versions extension not found in ClientHello"
-    );
 }
 
 /// TLS 1.3: PSK Key Exchange Modes extension present
@@ -302,19 +304,9 @@ pub(crate) fn test_tls13_client_hello_psk_modes() {
     let mut conn = TlsConnection::new(config);
     let hello = conn.build_client_hello();
 
-    let hello_payload = &hello[5..];
-
-    // Look for psk_key_exchange_modes extension [0x00, 0x2D]
-    let mut found_psk = false;
-    for i in 0..hello_payload.len().saturating_sub(1) {
-        if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x2D {
-            found_psk = true;
-            break;
-        }
-    }
     assert!(
-        found_psk,
-        "PSK Key Exchange Modes extension not found in ClientHello"
+        find_extension_in_hello(&hello, 0x2D).is_some(),
+        "PSK Key Exchange Modes extension not found in ClientHello",
     );
 }
 
@@ -569,24 +561,12 @@ pub(crate) fn test_hmac_sha1_rfc2202_case2() {
 
 #[test_case]
 pub(crate) fn test_aes_cbc_roundtrip_128() {
-    let key = [0x2bu8; 16];
-    let iv = [0x00u8; 16];
-    let plaintext = b"Hello, AES-CBC mode test!";
-    let ciphertext = aes_cbc_encrypt(&key, &iv, plaintext);
-    let decrypted = aes_cbc_decrypt(&key, &iv, &ciphertext);
-    assert!(decrypted.is_some());
-    assert_eq!(&decrypted.unwrap()[..plaintext.len()], plaintext);
+    run_cbc_roundtrip(&[0x2bu8; 16], &[0x00u8; 16], b"Hello, AES-CBC mode test!");
 }
 
 #[test_case]
 pub(crate) fn test_aes_cbc_roundtrip_256() {
-    let key = [0x60u8; 32];
-    let iv = [0x01u8; 16];
-    let plaintext = b"AES-256-CBC round-trip test data for verification!";
-    let ciphertext = aes_cbc_encrypt(&key, &iv, plaintext);
-    let decrypted = aes_cbc_decrypt(&key, &iv, &ciphertext);
-    assert!(decrypted.is_some());
-    assert_eq!(&decrypted.unwrap()[..plaintext.len()], plaintext);
+    run_cbc_roundtrip(&[0x60u8; 32], &[0x01u8; 16], b"AES-256-CBC round-trip test data for verification!");
 }
 
 #[test_case]

@@ -34,624 +34,210 @@ mod tests {
         assert!(fs.lookup("1234").is_err());
     }
 
-    #[test_case]
-    pub(super) fn test_proc_mem_open_with_token_reclaim() {
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_proc").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_proc").unwrap();
+    // ---- Shared test infrastructure for token/reclaim tests ----
 
-        // Caller gets permission to grant CAP_SYS_PTRACE
+    use crate::task::process::ProcessId;
+    use crate::security::capability::{
+        self, Capability, CapabilitySet, CapabilityError,
+        CAP_SYS_PTRACE, CAP_FOWNER,
+    };
+
+    /// Common setup for proc token tests: creates caller/target processes,
+    /// sets the capability, grants a token, and registers the procfs entry.
+    struct ProcTestCtx {
+        caller: ProcessId,
+        target: ProcessId,
+        token: u64,
+    }
+
+    fn setup_proc_token_test(
+        caller_name: &str,
+        target_name: &str,
+        cap: Capability,
+    ) -> ProcTestCtx {
+        let caller = crate::task::process::process_manager()
+            .create(ProcessId::INIT, caller_name).unwrap();
+        let target = crate::task::process::process_manager()
+            .create(ProcessId::INIT, target_name).unwrap();
         crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
+        capability::manager().set_capabilities(
+            caller.as_u64(),
+            CapabilitySet::with_permitted(cap),
+        );
+        let token = capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), cap, None, false)
             .unwrap();
-
-        // Ensure procfs has an entry for the target
         procfs().add_process(Pid::new(target.as_u64() as u32));
+        ProcTestCtx { caller, target, token }
+    }
+
+    /// Run open → revoke → reclaim-busy → drop → reclaim-ok sequence.
+    fn run_open_token_reclaim<H>(
+        ctx: &ProcTestCtx,
+        path_suffix: &str,
+        open_fn: impl FnOnce(&str, Option<u64>) -> Result<H, ProcError>,
+    ) {
+        let path = alloc::format!("{}/{}", ctx.target.as_u64(), path_suffix);
 
         // Target opens using token
-        crate::task::process::set_current_process(target);
-        let path = alloc::format!("{}/mem", target.as_u64());
-        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+        crate::task::process::set_current_process(ctx.target);
+        let handle = open_fn(&path, Some(ctx.token)).expect("open should succeed");
+        assert_eq!(capability::manager().in_flight_count(ctx.token), 1);
 
         // Issue revocation
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+        crate::task::process::set_current_process(ctx.caller);
+        assert!(capability::manager().revoke_grant(ctx.caller.as_u64(), ctx.token, false).is_ok());
 
         // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+        match capability::manager().reclaim_token(ctx.token) {
+            Err(CapabilityError::ReclamationBusy) => {}
             other => panic!("expected ReclamationBusy, got {:?}", other),
         }
 
         // Drop handle
-        crate::task::process::set_current_process(target);
+        crate::task::process::set_current_process(ctx.target);
         drop(handle);
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+        assert_eq!(capability::manager().in_flight_count(ctx.token), 0);
 
         // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        crate::task::process::set_current_process(ctx.caller);
+        assert!(capability::manager().reclaim_token(ctx.token).is_ok());
+    }
+
+    /// Run concurrent open → revoke → reclaim stress test with N workers.
+    fn run_revoke_reclaim_stress<H: Send + 'static>(
+        ctx: &ProcTestCtx,
+        path_suffix: &str,
+        open_fn: fn(&str, Option<u64>) -> Result<H, ProcError>,
+    ) {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let path = alloc::format!("{}/{}", ctx.target.as_u64(), path_suffix);
+
+        const N_WORKERS: usize = 8;
+        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+
+        let mut threads = Vec::new();
+        for _ in 0..N_WORKERS {
+            let ob = opened_barrier.clone();
+            let rb = release_barrier.clone();
+            let p = path.clone();
+            let tok = ctx.token;
+            let target_pid = ctx.target;
+
+            threads.push(thread::spawn(move || {
+                crate::task::process::set_current_process(target_pid);
+                let handle = open_fn(&p, Some(tok)).expect("open should succeed");
+                ob.wait();
+                rb.wait();
+                drop(handle);
+            }));
+        }
+
+        // Wait for all workers to open and hold handles
+        opened_barrier.wait();
+
+        // Revoke token as caller
+        crate::task::process::set_current_process(ctx.caller);
+        assert!(capability::manager().revoke_grant(ctx.caller.as_u64(), ctx.token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match capability::manager().reclaim_token(ctx.token) {
+            Err(CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Release workers so they drop handles
+        release_barrier.wait();
+        for t in threads {
+            t.join().expect("worker thread failed");
+        }
+
+        assert_eq!(capability::manager().in_flight_count(ctx.token), 0);
+        crate::task::process::set_current_process(ctx.caller);
+        assert!(capability::manager().reclaim_token(ctx.token).is_ok());
+    }
+
+    // Helper wrappers for the two distinct open methods (needed as fn pointers
+    // for the stress test helper).
+    fn open_file_with_token(path: &str, token: Option<u64>) -> Result<ProcFileHandle, ProcError> {
+        ProcFileHandle::open_with_token(path, token)
+    }
+
+    fn open_dir_with_token(path: &str, token: Option<u64>) -> Result<ProcDirHandle, ProcError> {
+        procfs().opendir_with_token(path, token)
+    }
+
+    // ---- mem ----
+
+    #[test_case]
+    pub(super) fn test_proc_mem_open_with_token_reclaim() {
+        let ctx = setup_proc_token_test("caller_proc", "target_proc", CAP_SYS_PTRACE);
+        run_open_token_reclaim(&ctx, "mem", ProcFileHandle::open_with_token);
     }
 
     #[test_case]
     pub(super) fn test_proc_mem_revoke_reclaim_stress() {
-        use std::sync::{Arc, Barrier};
-        use std::thread;
-
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_proc_stress").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_proc_stress").unwrap();
-
-        // Caller gets permission to grant CAP_SYS_PTRACE
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-        let path = alloc::format!("{}/mem", target.as_u64());
-
-        const N_WORKERS: usize = 8;
-        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-
-        let mut threads = Vec::new();
-        for _ in 0..N_WORKERS {
-            let opened_barrier = opened_barrier.clone();
-            let release_barrier = release_barrier.clone();
-            let path = path.clone();
-            let tok = token;
-            let target_pid = target;
-
-            threads.push(thread::spawn(move || {
-                // Set thread's current process to target
-                crate::task::process::set_current_process(target_pid);
-
-                // Open and hold handle
-                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
-
-                // Signal that this thread has opened and is holding the handle
-                opened_barrier.wait();
-
-                // Wait until main thread tells us to release
-                release_barrier.wait();
-
-                drop(handle);
-            }));
-        }
-
-        // Wait for all workers to open and hold handles
-        opened_barrier.wait();
-
-        // Revoke token as caller
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Release workers so they drop handles
-        release_barrier.wait();
-
-        // Join workers
-        for t in threads {
-            t.join().expect("worker thread failed");
-        }
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_proc_stress", "target_proc_stress", CAP_SYS_PTRACE);
+        run_revoke_reclaim_stress(&ctx, "mem", open_file_with_token);
     }
+
+    // ---- maps ----
 
     #[test_case]
     pub(super) fn test_proc_maps_open_with_token_reclaim() {
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_maps").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_maps").unwrap();
-
-        // Caller gets permission to grant CAP_SYS_PTRACE
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-
-        // Target opens using token
-        crate::task::process::set_current_process(target);
-        let path = alloc::format!("{}/maps", target.as_u64());
-        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
-
-        // Issue revocation
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Drop handle
-        crate::task::process::set_current_process(target);
-        drop(handle);
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_maps", "target_maps", CAP_SYS_PTRACE);
+        run_open_token_reclaim(&ctx, "maps", ProcFileHandle::open_with_token);
     }
 
     #[test_case]
     pub(super) fn test_proc_maps_revoke_reclaim_stress() {
-        use std::sync::{Arc, Barrier};
-        use std::thread;
-
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_maps_stress").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_maps_stress").unwrap();
-
-        // Caller gets permission to grant CAP_SYS_PTRACE
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-        let path = alloc::format!("{}/maps", target.as_u64());
-
-        const N_WORKERS: usize = 8;
-        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-
-        let mut threads = Vec::new();
-        for _ in 0..N_WORKERS {
-            let opened_barrier = opened_barrier.clone();
-            let release_barrier = release_barrier.clone();
-            let path = path.clone();
-            let tok = token;
-            let target_pid = target;
-
-            threads.push(thread::spawn(move || {
-                // Set thread's current process to target
-                crate::task::process::set_current_process(target_pid);
-
-                // Open and hold handle
-                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
-
-                // Signal that this thread has opened and is holding the handle
-                opened_barrier.wait();
-
-                // Wait until main thread tells us to release
-                release_barrier.wait();
-
-                drop(handle);
-            }));
-        }
-
-        // Wait for all workers to open and hold handles
-        opened_barrier.wait();
-
-        // Revoke token as caller
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Release workers so they drop handles
-        release_barrier.wait();
-
-        // Join workers
-        for t in threads {
-            t.join().expect("worker thread failed");
-        }
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_maps_stress", "target_maps_stress", CAP_SYS_PTRACE);
+        run_revoke_reclaim_stress(&ctx, "maps", open_file_with_token);
     }
+
+    // ---- cmdline ----
 
     #[test_case]
     pub(super) fn test_proc_cmdline_open_with_token_reclaim() {
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_cmdline").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_cmdline").unwrap();
-
-        // Caller gets permission to grant CAP_SYS_PTRACE
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-
-        // Target opens using token
-        crate::task::process::set_current_process(target);
-        let path = alloc::format!("{}/cmdline", target.as_u64());
-        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
-
-        // Issue revocation
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Drop handle
-        crate::task::process::set_current_process(target);
-        drop(handle);
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_cmdline", "target_cmdline", CAP_SYS_PTRACE);
+        run_open_token_reclaim(&ctx, "cmdline", ProcFileHandle::open_with_token);
     }
 
     #[test_case]
     pub(super) fn test_proc_cmdline_revoke_reclaim_stress() {
-        use std::sync::{Arc, Barrier};
-        use std::thread;
-
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_cmdline_stress").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_cmdline_stress").unwrap();
-
-        // Caller gets permission to grant CAP_SYS_PTRACE
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-        let path = alloc::format!("{}/cmdline", target.as_u64());
-
-        const N_WORKERS: usize = 8;
-        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-
-        let mut threads = Vec::new();
-        for _ in 0..N_WORKERS {
-            let opened_barrier = opened_barrier.clone();
-            let release_barrier = release_barrier.clone();
-            let path = path.clone();
-            let tok = token;
-            let target_pid = target;
-
-            threads.push(thread::spawn(move || {
-                // Set thread's current process to target
-                crate::task::process::set_current_process(target_pid);
-
-                // Open and hold handle
-                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
-
-                // Signal that this thread has opened and is holding the handle
-                opened_barrier.wait();
-
-                // Wait until main thread tells us to release
-                release_barrier.wait();
-
-                drop(handle);
-            }));
-        }
-
-        // Wait for all workers to open and hold handles
-        opened_barrier.wait();
-
-        // Revoke token as caller
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Release workers so they drop handles
-        release_barrier.wait();
-
-        // Join workers
-        for t in threads {
-            t.join().expect("worker thread failed");
-        }
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_cmdline_stress", "target_cmdline_stress", CAP_SYS_PTRACE);
+        run_revoke_reclaim_stress(&ctx, "cmdline", open_file_with_token);
     }
+
+    // ---- fd ----
 
     #[test_case]
     pub(super) fn test_proc_fd_open_with_token_reclaim() {
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_fd").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd").unwrap();
-
-        // Caller gets permission to grant CAP_FOWNER
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-
-        // Target opens fd directory using token
-        crate::task::process::set_current_process(target);
-        let path = alloc::format!("{}/fd", target.as_u64());
-        let handle = procfs().opendir_with_token(&path, Some(token)).expect("opendir should succeed");
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
-
-        // Issue revocation
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Drop handle
-        crate::task::process::set_current_process(target);
-        drop(handle);
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_fd", "target_fd", CAP_FOWNER);
+        run_open_token_reclaim(&ctx, "fd", |path, tok| procfs().opendir_with_token(path, tok));
     }
 
     #[test_case]
     pub(super) fn test_proc_fd_revoke_reclaim_stress() {
-        use std::sync::{Arc, Barrier};
-        use std::thread;
-
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_fd_stress").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd_stress").unwrap();
-
-        // Caller gets permission to grant CAP_FOWNER
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-        let path = alloc::format!("{}/fd", target.as_u64());
-
-        const N_WORKERS: usize = 8;
-        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-
-        let mut threads = Vec::new();
-        for _ in 0..N_WORKERS {
-            let opened_barrier = opened_barrier.clone();
-            let release_barrier = release_barrier.clone();
-            let path = path.clone();
-            let tok = token;
-            let target_pid = target;
-
-            threads.push(thread::spawn(move || {
-                // Set thread's current process to target
-                crate::task::process::set_current_process(target_pid);
-
-                // Open and hold handle
-                let handle = procfs().opendir_with_token(&path, Some(tok)).expect("opendir should succeed");
-
-                // Signal that this thread has opened and is holding the handle
-                opened_barrier.wait();
-
-                // Wait until main thread tells us to release
-                release_barrier.wait();
-
-                drop(handle);
-            }));
-        }
-
-        // Wait for all workers to open and hold handles
-        opened_barrier.wait();
-
-        // Revoke token as caller
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Release workers so they drop handles
-        release_barrier.wait();
-
-        // Join workers
-        for t in threads {
-            t.join().expect("worker thread failed");
-        }
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_fd_stress", "target_fd_stress", CAP_FOWNER);
+        run_revoke_reclaim_stress(&ctx, "fd", open_dir_with_token);
     }
+
+    // ---- exe ----
 
     #[test_case]
     pub(super) fn test_proc_exe_open_with_token_reclaim() {
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_exe").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_exe").unwrap();
-
-        // Caller gets permission to grant CAP_FOWNER
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-
-        // Target opens exe using token
-        crate::task::process::set_current_process(target);
-        let path = alloc::format!("{}/exe", target.as_u64());
-        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
-
-        // Issue revocation
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Drop handle
-        crate::task::process::set_current_process(target);
-        drop(handle);
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_exe", "target_exe", CAP_FOWNER);
+        run_open_token_reclaim(&ctx, "exe", ProcFileHandle::open_with_token);
     }
 
     #[test_case]
     pub(super) fn test_proc_exe_revoke_reclaim_stress() {
-        use std::sync::{Arc, Barrier};
-        use std::thread;
-
-        // Setup caller and target domains
-        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_exe_stress").unwrap();
-        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_exe_stress").unwrap();
-
-        // Caller gets permission to grant CAP_FOWNER
-        crate::task::process::set_current_process(caller);
-        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
-
-        // Grant token to target
-        let token = crate::security::capability::manager()
-            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
-            .unwrap();
-
-        // Ensure procfs has an entry for the target
-        procfs().add_process(Pid::new(target.as_u64() as u32));
-        let path = alloc::format!("{}/exe", target.as_u64());
-
-        const N_WORKERS: usize = 8;
-        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
-
-        let mut threads = Vec::new();
-        for _ in 0..N_WORKERS {
-            let opened_barrier = opened_barrier.clone();
-            let release_barrier = release_barrier.clone();
-            let path = path.clone();
-            let tok = token;
-            let target_pid = target;
-
-            threads.push(thread::spawn(move || {
-                // Set thread's current process to target
-                crate::task::process::set_current_process(target_pid);
-
-                // Open and hold handle
-                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
-
-                // Signal that this thread has opened and is holding the handle
-                opened_barrier.wait();
-
-                // Wait until main thread tells us to release
-                release_barrier.wait();
-
-                drop(handle);
-            }));
-        }
-
-        // Wait for all workers to open and hold handles
-        opened_barrier.wait();
-
-        // Revoke token as caller
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
-
-        // Immediate reclaim should fail (in-flight)
-        match crate::security::capability::manager().reclaim_token(token) {
-            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
-            other => panic!("expected ReclamationBusy, got {:?}", other),
-        }
-
-        // Release workers so they drop handles
-        release_barrier.wait();
-
-        // Join workers
-        for t in threads {
-            t.join().expect("worker thread failed");
-        }
-
-        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
-
-        // Now reclaim should succeed
-        crate::task::process::set_current_process(caller);
-        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+        let ctx = setup_proc_token_test("caller_exe_stress", "target_exe_stress", CAP_FOWNER);
+        run_revoke_reclaim_stress(&ctx, "exe", open_file_with_token);
     }
 
     #[test_case]

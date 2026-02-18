@@ -184,7 +184,10 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
     crate::io::log::early_print_dec(tests.len() as u64);
     crate::io::log::early_print(" tests...\n");
 
-    for t in tests {
+    for (i, t) in tests.iter().enumerate() {
+        crate::io::log::early_print("[test] #");
+        crate::io::log::early_print_dec(i as u64);
+        crate::io::log::early_print(" ... ");
         t();
         crate::io::log::early_print("[test] ok\n");
     }

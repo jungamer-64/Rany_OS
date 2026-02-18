@@ -17,6 +17,32 @@ fn reset_test_overrides() {
     clear_test_writeback_overrides();
 }
 
+/// Allocate a real frame, create a Gen3 MglruEntry, and insert it into
+/// `controller.lru_lists[0]` at generation 3.  Returns just the FrameIndex.
+fn setup_gen3_victim(
+    controller: &PageReclaimController,
+    page_type: PageType,
+    dirty: bool,
+) -> FrameIndex {
+    let frame = crate::mm::alloc_frame().expect("alloc frame");
+    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+    let mut entry = MglruEntry::new(frame_idx, page_type, 0);
+    entry.generation = MglruGen::Gen3;
+    if dirty { entry.flags = LruFlags::DIRTY; }
+    entry.referenced.store(false, Ordering::Relaxed);
+    controller.lru_lists[0].add_page_to_generation(entry, 3);
+    frame_idx
+}
+
+/// Allocate a real frame and build a dirty MglruEntry (not added to any LRU).
+fn alloc_dirty_entry(page_type: PageType) -> (FrameIndex, MglruEntry) {
+    let frame = crate::mm::alloc_frame().expect("alloc frame");
+    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+    let mut entry = MglruEntry::new(frame_idx, page_type, 0);
+    entry.flags = LruFlags::DIRTY;
+    (frame_idx, entry)
+}
+
 #[test_case]
 fn test_watermarks_calculation() {
     let wm = Watermarks::calculate(100000);
@@ -70,13 +96,7 @@ fn test_blocked_unsafe_requeues_anonymous_dirty_victim() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(false);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
+    let frame_idx = setup_gen3_victim(&controller, PageType::Anonymous, true);
 
     let reclaimed = controller.direct_reclaim(1);
     assert_eq!(reclaimed, 0);
@@ -98,13 +118,7 @@ fn test_file_backed_clean_reclaims_with_unsafe_disabled() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(false);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-
-    let mut entry = MglruEntry::new(frame_idx, PageType::FileBacked, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
+    let frame_idx = setup_gen3_victim(&controller, PageType::FileBacked, false);
 
     let reclaimed = controller.direct_reclaim(1);
     assert_eq!(reclaimed, 1);
@@ -129,15 +143,8 @@ fn test_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(false);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+    let frame_idx = setup_gen3_victim(&controller, PageType::FileBacked, true);
     crate::mm::frame_backing::track_frame_backing(frame_idx, 0x10, 0);
-
-    let mut entry = MglruEntry::new(frame_idx, PageType::FileBacked, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
 
     let before = controller.stats();
     let reclaimed = controller.direct_reclaim(1);
@@ -165,15 +172,8 @@ fn test_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(false);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+    let frame_idx = setup_gen3_victim(&controller, PageType::FileBacked, true);
     crate::mm::frame_backing::track_frame_backing(frame_idx, 0x11, 1);
-
-    let mut entry = MglruEntry::new(frame_idx, PageType::FileBacked, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
 
     let before = controller.stats();
     let reclaimed = controller.direct_reclaim(1);
@@ -198,14 +198,7 @@ fn test_file_backed_dirty_without_backing_requeues_with_unsafe_disabled() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(false);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-
-    let mut entry = MglruEntry::new(frame_idx, PageType::FileBacked, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
+    let frame_idx = setup_gen3_victim(&controller, PageType::FileBacked, true);
 
     let before = controller.stats();
     let reclaimed = controller.direct_reclaim(1);
@@ -226,10 +219,7 @@ fn test_already_pending_does_not_count_writeback_skipped() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(true);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
-    entry.flags = LruFlags::DIRTY;
+    let (frame_idx, entry) = alloc_dirty_entry(PageType::Anonymous);
 
     controller.enqueue_pending_async(&entry, 0);
     crate::mm::page_flags::set_flag(frame_idx, crate::mm::page_flags::PageMetaFlags::SwapPending);
@@ -257,10 +247,7 @@ fn test_already_pending_without_registered_pending_requeues() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(true);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
-    entry.flags = LruFlags::DIRTY;
+    let (frame_idx, entry) = alloc_dirty_entry(PageType::Anonymous);
 
     let before = controller.stats();
     let outcome = controller.reclaim_page(&entry, 0);
@@ -285,13 +272,7 @@ fn test_already_pending_without_registered_pending_requeues_once_in_direct_recla
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(true);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
+    let frame_idx = setup_gen3_victim(&controller, PageType::Anonymous, true);
 
     let before = controller.stats();
     let reclaimed = controller.direct_reclaim(1);
@@ -314,10 +295,7 @@ fn test_queuefull_does_not_count_writeback_skipped() {
     crate::mm::async_swapout::start_worker();
     crate::mm::async_swapout::set_token_count(0);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
-    entry.flags = LruFlags::DIRTY;
+    let (frame_idx, entry) = alloc_dirty_entry(PageType::Anonymous);
 
     let before = controller.stats();
     let outcome = controller.reclaim_page(&entry, 0);
@@ -342,13 +320,7 @@ fn test_notsupported_anonymous_dirty_requeues_without_writeback_skipped() {
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(true);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    let mut entry = MglruEntry::new(frame_idx, PageType::Anonymous, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
+    let frame_idx = setup_gen3_victim(&controller, PageType::Anonymous, true);
 
     let before = controller.stats();
     let reclaimed = controller.direct_reclaim(1);
@@ -377,15 +349,8 @@ fn test_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success(
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(false);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+    let frame_idx = setup_gen3_victim(&controller, PageType::FileBacked, true);
     crate::mm::frame_backing::track_frame_backing(frame_idx, 0x22, 2);
-
-    let mut entry = MglruEntry::new(frame_idx, PageType::FileBacked, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
 
     let before = controller.stats();
     let reclaimed = controller.direct_reclaim(1);
@@ -412,15 +377,8 @@ fn test_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure
     let controller = PageReclaimController::new();
     controller.set_unsafe_eviction_enabled(false);
 
-    let frame = crate::mm::alloc_frame().expect("alloc frame");
-    let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+    let frame_idx = setup_gen3_victim(&controller, PageType::FileBacked, true);
     crate::mm::frame_backing::track_frame_backing(frame_idx, 0x33, 3);
-
-    let mut entry = MglruEntry::new(frame_idx, PageType::FileBacked, 0);
-    entry.generation = MglruGen::Gen3;
-    entry.flags = LruFlags::DIRTY;
-    entry.referenced.store(false, Ordering::Relaxed);
-    controller.lru_lists[0].add_page_to_generation(entry, 3);
 
     let before = controller.stats();
     let reclaimed = controller.direct_reclaim(1);
