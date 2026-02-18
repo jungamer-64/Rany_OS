@@ -285,7 +285,7 @@ impl SlabCache {
     /// 単一のSlabページを追加
     pub(super) fn grow_single(&mut self) -> Option<()> {
         let frame = if let Some(node) = self.numa_node {
-            crate::mm::alloc_frame_on_numa_node(super::types::NumaNodeId::new(node))
+            crate::mm::alloc_frame_on_numa_node(crate::mm::types::NumaNodeId::new(node))
                 .or_else(|| crate::mm::alloc_frame())?
         } else {
             crate::mm::alloc_frame()?

@@ -18,7 +18,7 @@ pub struct VirtioNetStats {
 // Global Device Instance
 // ============================================================================
 
-use super::transport::VirtioMmioTransport;
+use crate::io::virtio::transport::VirtioMmioTransport;
 
 pub(crate) static VIRTIO_NET_DEVICE: Mutex<Option<VirtioNetDevice>> = Mutex::new(None);
 
@@ -218,7 +218,7 @@ pub struct VirtioNetRxDmaBuffer {
     /// デバイス所有状態（転送中）+ Guard
     inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
     /// アロケート済みバッファサイズ（4Kアライン）
-    alloc_size: usize,
+    pub(crate) alloc_size: usize,
 }
 
 impl VirtioNetRxDmaBuffer {

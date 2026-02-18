@@ -48,8 +48,8 @@ impl IommuHardwareContext for IommuController {
 // ============================================================================
 
 pub struct InvalidationWaiter<'a> {
-    controller: &'a IommuController,
-    submit_result: Result<u64, IommuError>,
+    pub(crate) controller: &'a IommuController,
+    pub(crate) submit_result: Result<u64, IommuError>,
 }
 
 impl<'a> Future for InvalidationWaiter<'a> {

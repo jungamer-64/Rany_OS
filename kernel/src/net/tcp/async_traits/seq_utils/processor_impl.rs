@@ -543,7 +543,7 @@ impl TcpProcessor {
         payload: &[u8],
         payload_len: usize,
     ) {
-        if let Some(mut packet) = super::mempool::alloc_packet() {
+        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
             let data_slice = packet.data_mut();
             if payload_len <= data_slice.len() {
                 data_slice[..payload_len].copy_from_slice(payload);

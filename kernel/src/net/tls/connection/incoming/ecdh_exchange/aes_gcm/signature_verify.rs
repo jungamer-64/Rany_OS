@@ -365,7 +365,7 @@ impl TlsConnection {
     /// AAD = TLS record header（5バイト: type || legacy_version || length）
     ///
     /// `is_handshake`: trueの場合ハンドシェイク鍵、falseの場合アプリケーション鍵を使用
-    pub(super) fn tls13_decrypt_record(&mut self, data: &[u8], is_handshake: bool) -> TlsResult<Vec<u8>> {
+    pub(crate) fn tls13_decrypt_record(&mut self, data: &[u8], is_handshake: bool) -> TlsResult<Vec<u8>> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
@@ -472,7 +472,7 @@ impl TlsConnection {
     }
 
     /// TLS 1.3 アプリケーションデータ暗号化
-    pub(super) fn tls13_encrypt_application_data(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(crate) fn tls13_encrypt_application_data(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         // inner plaintext = data + content_type
         let mut inner = Vec::with_capacity(data.len() + 1);
         inner.extend_from_slice(data);
@@ -507,7 +507,7 @@ impl TlsConnection {
     ///                    Hash(handshake_messages))[0..11]
     ///
     /// サーバーのverify_dataを検証し、鍵ブロックを導出する。
-    pub(super) fn process_finished(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(crate) fn process_finished(&mut self, data: &[u8]) -> TlsResult<()> {
         // TLS 1.2 Finished verify_data は12バイト
         if data.len() < 12 {
             return Err(TlsError::DecodeError);
@@ -538,7 +538,7 @@ impl TlsConnection {
     }
 
     /// レコードを復号
-    pub(super) fn decrypt_record(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(crate) fn decrypt_record(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);

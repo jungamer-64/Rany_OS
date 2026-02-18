@@ -20,8 +20,8 @@ unsafe impl<A: KeyAdapter> Sync for RBTree<A> where A::Entry: Sync {}
 /// 侵入型コンテナはエントリを所有しないため、参照ではなくポインタを返す。
 /// 参照への変換は呼び出し側が `unsafe` で行う。
 pub struct RBTreeIter<A: KeyAdapter> {
-    current: Option<*mut RBLink>,
-    _marker: PhantomData<A>,
+    pub(crate) current: Option<*mut RBLink>,
+    pub(crate) _marker: PhantomData<A>,
 }
 
 impl<A: KeyAdapter> Iterator for RBTreeIter<A> {

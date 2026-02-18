@@ -2,7 +2,7 @@ use super::*;
 
 
 mod _split_1;
-pub use _split_1::*;
+pub use self::_split_1::*;
 impl<'a> Future for AsyncFlushFuture<'a> {
     type Output = FsResult<()>;
 

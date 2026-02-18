@@ -124,7 +124,7 @@ impl AddressSpaceManager {
             
             // CR3を設定
             unsafe {
-                super::higher_half::set_cr3(PhysAddr::new(cr3));
+                crate::mm::higher_half::set_cr3(PhysAddr::new(cr3));
             }
             
             self.current_asid.store(asid, Ordering::Release);

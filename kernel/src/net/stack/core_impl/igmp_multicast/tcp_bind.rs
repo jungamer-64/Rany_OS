@@ -154,7 +154,7 @@ impl NetworkStack {
             if !payload.is_empty() {
                 buffer[20..total_len].copy_from_slice(payload);
             }
-            super::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
+            crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
             Some((local, remote, seq, total_len))
         } else {
             None
@@ -253,7 +253,7 @@ impl NetworkStack {
     }
 
     /// Get list of joined multicast groups
-    pub fn multicast_groups(&self) -> &[super::igmp::MulticastGroup] {
+    pub fn multicast_groups(&self) -> &[crate::net::igmp::MulticastGroup] {
         self.igmp.joined_groups()
     }
 
@@ -268,7 +268,7 @@ impl NetworkStack {
         dst_mac: MacAddress,
         dst_port: u16,
         data: &[u8],
-    ) -> Option<Result<(), super::NetworkError>> {
+    ) -> Option<Result<(), crate::net::NetworkError>> {
         let mut packet = crate::net::mempool::alloc_packet()?;
         let mut frame = EthernetFrameMut::new(packet.data_mut())?;
         frame
@@ -288,7 +288,7 @@ impl NetworkStack {
 
         let ip_payload = ip_packet.payload_mut();
 
-        let udp_len = super::udp::UdpProcessor::build_packet(
+        let udp_len = crate::net::udp::UdpProcessor::build_packet(
             ip_payload,
             config.ipv4.address,
             src_port,
@@ -315,10 +315,10 @@ impl NetworkStack {
 
     pub fn send_udp_addr(
         &mut self,
-        src: super::udp::UdpAddr,
-        dst: super::udp::UdpAddr,
+        src: crate::net::udp::UdpAddr,
+        dst: crate::net::udp::UdpAddr,
         data: &[u8],
-    ) -> Result<(), super::NetworkError> {
+    ) -> Result<(), crate::net::NetworkError> {
         let config = self.config.clone();
         let current_time = self.current_time();
 
@@ -332,7 +332,7 @@ impl NetworkStack {
 
         // Resolve MAC address
         let dst_mac = self.resolve_mac(dst_ip, &config, current_time)
-            .ok_or(super::NetworkError::ArpResolutionPending)?;
+            .ok_or(crate::net::NetworkError::ArpResolutionPending)?;
 
         // Try zero-copy first
         if let Some(result) = self.try_send_udp_zero_copy(
@@ -345,7 +345,7 @@ impl NetworkStack {
 
         // Build Ethernet frame
         let mut frame = EthernetFrameMut::new(&mut buffer)
-            .ok_or(super::NetworkError::BufferTooSmall)?;
+            .ok_or(crate::net::NetworkError::BufferTooSmall)?;
         
         frame
             .set_destination(dst_mac)
@@ -356,7 +356,7 @@ impl NetworkStack {
 
         // Build IP packet
         let mut ip_packet = Ipv4PacketMut::new(eth_payload)
-            .ok_or(super::NetworkError::BufferTooSmall)?;
+            .ok_or(crate::net::NetworkError::BufferTooSmall)?;
         
         ip_packet
             .init_header()
@@ -368,9 +368,9 @@ impl NetworkStack {
         let ip_payload = ip_packet.payload_mut();
         
         // Build UDP datagram
-        let udp_len = super::udp::UdpHeader::SIZE + data.len();
+        let udp_len = crate::net::udp::UdpHeader::SIZE + data.len();
         if ip_payload.len() < udp_len {
-            return Err(super::NetworkError::BufferTooSmall);
+            return Err(crate::net::NetworkError::BufferTooSmall);
         }
 
         // UDP Header
@@ -391,7 +391,7 @@ impl NetworkStack {
         if self.transmit(frame.as_bytes()) {
             Ok(())
         } else {
-            Err(super::NetworkError::TransmitFailed)
+            Err(crate::net::NetworkError::TransmitFailed)
         }
     }
 
@@ -416,13 +416,13 @@ impl NetworkStack {
             .cache()
             .all_entries()
             .iter()
-            .filter(|e| e.state == super::arp::ArpEntryState::Resolved)
+            .filter(|e| e.state == crate::net::arp::ArpEntryState::Resolved)
             .map(|e| (e.ip, e.mac))
             .collect()
     }
 
     /// List all UDP sockets (for debugging/statistics)
-    pub fn list_udp_sockets(&self) -> Vec<super::udp::UdpSocketSnapshot> {
+    pub fn list_udp_sockets(&self) -> Vec<crate::net::udp::UdpSocketSnapshot> {
         self.udp.sockets().list_sockets()
     }
 

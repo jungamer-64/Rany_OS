@@ -9,7 +9,7 @@ use super::*;
 ///
 /// `MemoryReader` を使用して境界チェック付きの安全なパースを行う
 mod _split_1;
-pub use _split_1::*;
+pub use self::_split_1::*;
 pub struct SafeEhFrameParser<'a> {
     pub(crate) reader: MemoryReader<'a>,
     /// 解析されたCIEのキャッシュ（オフセットとCIEのペア）
