@@ -48,8 +48,8 @@ use core::sync::atomic::Ordering;
 use x86_64::PhysAddr;
 
 /// DMAバッファの最小アライメント
-mod _split_1;
-pub use _split_1::*;
+mod cache_ops;
+pub use cache_ops::*;
 const DMA_ALIGNMENT: usize = 4096; // ページアライメント
 
 fn align_up(value: usize, align: usize) -> Option<usize> {

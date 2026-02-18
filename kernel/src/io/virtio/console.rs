@@ -31,8 +31,8 @@ use spin::Mutex;
 // ============================================================================
 
 /// VirtIO device status bits
-mod _split_1;
-pub use _split_1::*;
+mod global_init;
+pub use global_init::*;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VirtioDeviceStatus {

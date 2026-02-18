@@ -37,8 +37,8 @@ use self::registry::get_iommu_registry;
 /// Intel VT-d driver wrapper.
 
 
-mod _split_1;
-pub use _split_1::*;
+mod driver_ops;
+pub use driver_ops::*;
 #[derive(Default)]
 pub struct IntelIommuDriver;
 

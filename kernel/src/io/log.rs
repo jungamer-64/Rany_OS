@@ -35,10 +35,10 @@ use spin::Mutex;
 // ============================================================================
 
 /// 非同期ログバッファの容量 (16KB)
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod logger_impl;
+pub use logger_impl::*;
+mod serial_output;
+pub use serial_output::*;
 const LOG_BUFFER_CAPACITY: usize = 16 * 1024;
 
 // ============================================================================

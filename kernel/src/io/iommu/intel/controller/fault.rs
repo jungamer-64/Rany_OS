@@ -32,8 +32,8 @@ use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 ///
 /// This is a minimal, Copy struct with no allocations.
 /// Contains all information needed for post-ISR processing.
-mod _split_1;
-pub use _split_1::*;
+mod isolation_helpers;
+pub use isolation_helpers::*;
 #[derive(Debug, Clone, Copy)]
 pub struct RawFaultEvent {
     pub source_id: u16,
