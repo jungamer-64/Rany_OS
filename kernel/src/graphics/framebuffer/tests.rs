@@ -367,6 +367,10 @@ pub fn _test_get_packer_mode() -> u8 {
 #[test_case]
 #[cfg(feature = "std")]
 fn test_packer_env_override() {
+    // Reset cached mode so get_packer_mode() re-detects with env override
+    use core::sync::atomic::Ordering;
+    use crate::graphics::packer::PACKER_MODE;
+    PACKER_MODE.store(0, Ordering::Relaxed);
     // Ensure RANY_PACKER override sets the PACKER_MODE
     unsafe { std::env::set_var("RANY_PACKER", "scalar"); }
     let src = vec![0u8; 1024];

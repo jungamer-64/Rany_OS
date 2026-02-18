@@ -23,7 +23,7 @@ use core::mem;
 use super::block::BlockDevice;
 mod inode_impl;
 pub use inode_impl::*;
-use super::fs_abstraction:{
+use super::fs_abstraction::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     InodeNum, OpenFlags,
 };

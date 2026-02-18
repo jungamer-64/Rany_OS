@@ -24,6 +24,19 @@ use x86_64::{PhysAddr, VirtAddr};
 mod ap_boot_reserve;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub use ap_boot_reserve::*;
+
+/// Test-mode volatile write stub (the real implementation is in ap_boot_reserve.rs).
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+fn checked_volatile_write_usize(addr: usize, val: usize, _context: &str) {
+    unsafe { core::ptr::write_volatile(addr as *mut usize, val); }
+}
+
+/// Test-mode phys_to_virt stub.
+#[cfg(all(test, not(feature = "full_mm_tests")))]
+pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
+    VirtAddr::new(phys.as_u64())
+}
+
 static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF_8000_0000_0000);
 
 /// 物理メモリオフセットを取得

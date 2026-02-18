@@ -91,7 +91,7 @@ mod test_bump_alloc {
                     .compare_exchange_weak(current, new_off, Ordering::Relaxed, Ordering::Relaxed)
                     .is_ok()
                 {
-                    return unsafe { HEAP.0.as_mut_ptr().add(aligned) };
+                    return unsafe { core::ptr::addr_of_mut!(HEAP).cast::<u8>().add(aligned) };
                 }
             }
         }
@@ -106,7 +106,7 @@ mod test_bump_alloc {
 #[global_allocator]
 pub static ALLOCATOR: test_bump_alloc::BumpAlloc = test_bump_alloc::BumpAlloc::new();
 
-#[cfg(all(test, not(feature = "std")))]
+#[cfg(all(test, not(feature = "std"), not(target_os = "linux")))]
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // Minimal serial init for test output
@@ -128,7 +128,7 @@ pub extern "C" fn _start() -> ! {
 
 #[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe {
         for byte in b"[test] FAILED\n" {
             core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") *byte);
@@ -681,7 +681,7 @@ pub mod mm {
         }
 
         impl<const CAP: usize> QuarantineRing<CAP> {
-            pub fn new() -> Self { Self { buf: VecDeque::new() } }
+            pub const fn new() -> Self { Self { buf: VecDeque::new() } }
 
             pub fn push(&mut self, addr: u64, size_class: u8, epoch: u32) -> bool {
                 if self.buf.len() >= CAP { false } else {
@@ -1543,46 +1543,75 @@ pub mod io {
     pub mod log {
         /// Early boot serial-like print used before the full logger is initialized.
         pub fn early_print(s: &str) {
-            // Write to COM1 (0x3F8) for test output
-            unsafe {
-                let port = 0x3F8u16;
-                for byte in s.bytes() {
-                     core::arch::asm!("out dx, al", in("dx") port, in("al") byte);
+            #[cfg(feature = "std")]
+            {
+                std::print!("{}", s);
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                // Write to COM1 (0x3F8) for QEMU test output
+                unsafe {
+                    let port = 0x3F8u16;
+                    for byte in s.bytes() {
+                         core::arch::asm!("out dx, al", in("dx") port, in("al") byte);
+                    }
                 }
             }
         }
 
         pub fn early_print_dec(mut n: u64) {
-             if n == 0 {
-                 early_print("0");
+             #[cfg(feature = "std")]
+             {
+                 std::print!("{}", n);
                  return;
              }
-             let mut buf = [0u8; 20];
-             let mut i = 0;
-             while n > 0 {
-                 buf[i] = (n % 10) as u8 + b'0';
-                 n /= 10;
-                 i += 1;
-             }
-             while i > 0 {
-                 i -= 1;
-                 early_print(core::str::from_utf8(&buf[i..=i]).unwrap());
+             #[cfg(not(feature = "std"))]
+             {
+                 if n == 0 {
+                     early_print("0");
+                     return;
+                 }
+                 let mut buf = [0u8; 20];
+                 let mut i = 0;
+                 while n > 0 {
+                     buf[i] = (n % 10) as u8 + b'0';
+                     n /= 10;
+                     i += 1;
+                 }
+                 while i > 0 {
+                     i -= 1;
+                     early_print(core::str::from_utf8(&buf[i..=i]).unwrap());
+                 }
              }
         }
         
         pub fn early_print_hex(n: u64) {
-            early_print("0x");
-            for i in (0..16).rev() {
-                let digit = (n >> (i * 4)) & 0xF;
-                let c = if digit < 10 { b'0' + digit as u8 } else { b'a' + (digit - 10) as u8 };
-                early_print(core::str::from_utf8(&[c]).unwrap());
+            #[cfg(feature = "std")]
+            {
+                std::print!("0x{:016x}", n);
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                early_print("0x");
+                for i in (0..16).rev() {
+                    let digit = (n >> (i * 4)) & 0xF;
+                    let c = if digit < 10 { b'0' + digit as u8 } else { b'a' + (digit - 10) as u8 };
+                    early_print(core::str::from_utf8(&[c]).unwrap());
+                }
             }
         }
 
         /// Early boot single-character print used by low-level routines.
         pub fn early_print_char(c: u8) {
-            unsafe {
-                core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") c);
+            #[cfg(feature = "std")]
+            {
+                std::print!("{}", c as char);
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                unsafe {
+                    core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") c);
+                }
             }
         }
 
@@ -1593,6 +1622,26 @@ pub mod io {
 
         /// Notify the logging subsystem that the heap is now available.
         pub fn notify_heap_available() {}
+
+        /// Print formatted arguments (test stub delegates to early_print).
+        pub fn print(args: core::fmt::Arguments) {
+            #[cfg(feature = "std")]
+            {
+                std::print!("{}", args);
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                use core::fmt::Write;
+                struct SerialWriter;
+                impl core::fmt::Write for SerialWriter {
+                    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                        early_print(s);
+                        Ok(())
+                    }
+                }
+                let _ = SerialWriter.write_fmt(args);
+            }
+        }
     }
 
     pub mod interrupt_manager {
@@ -1673,6 +1722,16 @@ pub mod io {
         pub fn mmio_write_u16(_addr: usize, _v: u16) {}
         pub fn mmio_write_u32(_addr: usize, _v: u32) {}
         pub fn mmio_write_u64(_addr: usize, _v: u64) {}
+
+        /// Generic volatile read for test builds.
+        pub fn volatile_read<T: Copy>(addr: usize) -> T {
+            unsafe { core::ptr::read_volatile(addr as *const T) }
+        }
+
+        /// Generic volatile write for test builds.
+        pub fn volatile_write<T>(addr: usize, val: T) {
+            unsafe { core::ptr::write_volatile(addr as *mut T, val); }
+        }
     }
 
     // Expose a minimal ACPI module in tests so IOMMU init can call into
