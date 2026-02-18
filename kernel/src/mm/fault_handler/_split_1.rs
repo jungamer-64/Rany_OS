@@ -59,5 +59,6 @@ pub fn try_handle_page_fault(error_code: u64) -> bool {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

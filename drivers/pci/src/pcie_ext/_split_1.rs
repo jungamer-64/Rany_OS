@@ -7,6 +7,7 @@ use super::*;
 
 /// PCIe電源状態
 mod _split_1;
+pub use _split_1::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PciePowerState {
     D0,     // Fully On
@@ -375,7 +376,7 @@ impl PcieExtManager {
         }
     }
 
-    fn scan_device(&self, bus: u8, device: u8) {
+    pub(super) fn scan_device(&self, bus: u8, device: u8) {
         let bdf = PcieBdf::new(bus, device, 0);
 
         // Vendor IDを読み取り
@@ -419,7 +420,7 @@ impl PcieExtManager {
         }
     }
 
-    fn scan_function(&self, bus: u8, device: u8, function: u8) {
+    pub(super) fn scan_function(&self, bus: u8, device: u8, function: u8) {
         let bdf = PcieBdf::new(bus, device, function);
 
         let vendor_id = match self.config.read16(bdf, 0x00) {
@@ -556,7 +557,7 @@ impl AtsController {
         })
     }
 
-    fn read_capability(
+    pub(super) fn read_capability(
         config: &PcieConfig,
         bdf: PcieBdf,
         offset: u16,

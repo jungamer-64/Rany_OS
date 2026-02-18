@@ -436,7 +436,7 @@ pub(crate) struct MockPciTopology {
 }
 
 impl MockPciTopology {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             header_types: BTreeMap::new(),
             acs_states: BTreeMap::new(),
@@ -444,11 +444,11 @@ impl MockPciTopology {
         }
     }
 
-    fn add_endpoint(&mut self, bus: u8, device: u8, function: u8) {
+    pub(super) fn add_endpoint(&mut self, bus: u8, device: u8, function: u8) {
         self.header_types.insert((bus, device, function), 0x00);
     }
 
-    fn add_bridge(
+    pub(super) fn add_bridge(
         &mut self,
         bus: u8,
         device: u8,
@@ -461,7 +461,7 @@ impl MockPciTopology {
         }
     }
 
-    fn set_parent_bridge(&mut self, child_bus: u8, parent: (u8, u8, u8)) {
+    pub(super) fn set_parent_bridge(&mut self, child_bus: u8, parent: (u8, u8, u8)) {
         self.bridge_parents.insert(child_bus, parent);
     }
 }

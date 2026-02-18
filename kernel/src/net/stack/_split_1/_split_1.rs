@@ -242,4 +242,5 @@ pub fn is_multicast_member(group: Ipv4Address) -> bool {
 }
 
 #[cfg(test)]
+#[path = "../tests.rs"]
 mod tests;

@@ -32,7 +32,7 @@ use super::types::{FrameIndex, NumaNodeId, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE
 
 /// PMMが管理する最大ページ数 (IOVA bitmapと同等: 256GiB / 4KiB)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const PMM_MAX_PAGES: usize = 64 * 1024 * 1024;
 /// Single-writer arena sync interval (ticks)
 const PMM_SYNC_INTERVAL_TICKS: u64 = 1024;

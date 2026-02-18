@@ -174,7 +174,7 @@ impl ProcessAddressSpace {
     }
     
     /// mprotectで必要な領域分割を行い、新領域を登録する
-    fn split_and_reinsert_regions(
+    pub(super) fn split_and_reinsert_regions(
         &self,
         regions: &mut alloc::collections::BTreeMap<u64, Box<MemoryRegion>>,
         region: Box<MemoryRegion>,
@@ -459,7 +459,7 @@ impl ProcessAddressSpace {
         }
     }
     /// 領域内のページをスキャンしてNUMAヒントを設定する
-    fn scan_region_numa_hints(
+    pub(super) fn scan_region_numa_hints(
         &self,
         region_start: VirtAddr,
         region_end: VirtAddr,
@@ -526,7 +526,7 @@ impl ProcessAddressSpace {
     }
 
     /// PTEを更新してNUMAヒントを設定
-    fn update_pte_for_numa_hint(&self, addr: VirtAddr) -> bool {
+    pub(super) fn update_pte_for_numa_hint(&self, addr: VirtAddr) -> bool {
         // ページテーブルをウォークしてPTEを取得
         let pt_root = self.page_table_root.load(Ordering::Acquire);
         if pt_root == 0 {
@@ -587,7 +587,7 @@ impl ProcessAddressSpace {
     ///
     /// 指定されたアドレスからスキャンを開始し、昇格可能な2MB領域を探す。
     /// Scan a 2MB-aligned range within a region for THP candidates.
-    fn scan_aligned_range_for_thp(
+    pub(super) fn scan_aligned_range_for_thp(
         &self,
         scan_start: VirtAddr,
         region_end: VirtAddr,
@@ -634,7 +634,7 @@ impl ProcessAddressSpace {
     }
 
     /// Check if a 2MB range is a candidate
-    fn check_if_thp_candidate(&self, start: VirtAddr) -> Option<ThpCandidate> {
+    pub(super) fn check_if_thp_candidate(&self, start: VirtAddr) -> Option<ThpCandidate> {
         // Here we need to check if pages are mapped and present
         let mut used_pages = 0;
         

@@ -32,7 +32,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 /// 指数バックオフのための定数
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const BACKOFF_SPIN_LIMIT: u32 = 6;
 const BACKOFF_YIELD_LIMIT: u32 = 10;
 

@@ -4,8 +4,6 @@
 use super::interface::IommuHardwareContext;
 use super::mapping_slab::MappingSlab;
 use super::page_table_pool::{
-mod _split_1;
-use _split_1::*;
     dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
 };
 use super::quarantine::QuarantineQueue;
@@ -22,6 +20,8 @@ use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::sync::{PoisonLock, PoisonLockGuard};
 use spin::{Once, RwLock};
+mod _split_1;
+pub use _split_1::*;
 
 // ============================================================================
 // Invalidation Request Pattern

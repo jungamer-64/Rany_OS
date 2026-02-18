@@ -48,5 +48,6 @@ pub fn increment(name: &'static str) {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

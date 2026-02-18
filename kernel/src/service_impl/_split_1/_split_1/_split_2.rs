@@ -14,13 +14,13 @@ mod nvme_tests {
     use crate::security::capability::{self, CapabilitySet};
     use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};
 
-    fn idle_entry(_: u64) -> ! {
+    pub(super) fn idle_entry(_: u64) -> ! {
         loop {
             core::hint::spin_loop();
         }
     }
 
-    struct CurrentTaskGuard {
+    pub(super) struct CurrentTaskGuard {
         prev: Option<*mut TaskControlBlock>,
         current: *mut TaskControlBlock,
     }
@@ -36,7 +36,7 @@ mod nvme_tests {
         }
     }
 
-    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
+    pub(super) fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
         let cpu_id = crate::smp::current_cpu() as usize;
         let prev = get_current_task(cpu_id);
         let mut tcb = TaskControlBlock::new(idle_entry, 0, 0, domain_id)
@@ -55,7 +55,7 @@ mod nvme_tests {
     }
 
     #[test_case]
-    fn test_nvme_open_with_token_reclaim() {
+    pub(super) fn test_nvme_open_with_token_reclaim() {
         // Setup: create caller and target domains
         let caller = DomainId::new(300);
         let target = DomainId::new(301);

@@ -16,8 +16,6 @@
 #![allow(dead_code)]
 
 use crate::io::dma::{
-mod _split_1;
-use _split_1::*;
     CoherentDmaBuffer, DmaMemoryAttributes, IommuBounceAllocError, allocate_iommu_bounce_bytes,
     iommu_needs_bounce,
 };
@@ -36,6 +34,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
+mod _split_1;
+pub use _split_1::*;
 use vfs::block::{
     BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
     BlockResult as VfsBlockResult, DmaInfo, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,

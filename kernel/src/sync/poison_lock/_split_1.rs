@@ -10,7 +10,7 @@ mod tests {
     use super::*;
 
     #[test_case]
-    fn test_basic_lock() {
+    pub(super) fn test_basic_lock() {
         let lock = PoisonLock::new(42);
 
         let guard = lock.lock().unwrap();
@@ -22,7 +22,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_poisoned_after_simulated_panic() {
+    pub(super) fn test_poisoned_after_simulated_panic() {
         let lock = PoisonLock::new(42);
 
         // パニックをシミュレート
@@ -46,7 +46,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_lock_for_init_recovers_on_poison() {
+    pub(super) fn test_lock_for_init_recovers_on_poison() {
         use crate::sync::set_panicking;
 
         let lock = PoisonLock::new(0usize);
@@ -76,7 +76,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_lock_contention_metrics() {
+    pub(super) fn test_lock_contention_metrics() {
         use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
@@ -116,7 +116,7 @@ mod tests {
     /// them repeatedly. This approximates contention patterns seen in
     /// sharded registries without depending on the full `sas` module.
     #[test_case]
-    fn test_sharded_poisonlock_stress() {
+    pub(super) fn test_sharded_poisonlock_stress() {
         use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
@@ -160,7 +160,7 @@ mod tests {
 
     /// Higher contention scenario: fewer shards, more threads and longer holds.
     #[test_case]
-    fn test_sharded_poisonlock_high_contention() {
+    pub(super) fn test_sharded_poisonlock_high_contention() {
         use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
@@ -205,7 +205,7 @@ mod tests {
     /// This test is intended to run on the host (cfg(test)) only and prints
     /// results to stdout for quick inspection.
     #[test_case]
-    fn test_lock_metrics_sweep() {
+    pub(super) fn test_lock_metrics_sweep() {
         use std::sync::Arc;
         use std::thread;
         use std::time::Duration;

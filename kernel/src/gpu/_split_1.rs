@@ -35,7 +35,7 @@ impl VirtioGpu {
     /// `iommu_device_id` が設定されている場合は `CoherentDmaBuffer::new_for_device()` を
     /// 使い、IOMMU マッピングを自動登録する。設定されていない場合は従来の `new()` に
     /// フォールバックする。
-    fn alloc_coherent(
+    pub(super) fn alloc_coherent(
         &self,
         size: usize,
         attrs: DmaMemoryAttributes,
@@ -101,7 +101,7 @@ impl VirtioGpu {
         Ok(())
     }
 
-    fn setup_queue(&mut self, queue_idx: u16) -> GpuResult<()> {
+    pub(super) fn setup_queue(&mut self, queue_idx: u16) -> GpuResult<()> {
         self.transport.select_queue(queue_idx);
         let max_size = self.transport.get_queue_max_size();
         if max_size == 0 {
@@ -167,7 +167,7 @@ impl VirtioGpu {
     /// Send a raw command to the controlq and synchronously wait for response.
     ///
     /// Returns the response DMA buffer (caller reads the response from it).
-    fn send_command_raw(
+    pub(super) fn send_command_raw(
         &self,
         req_bytes: &[u8],
         resp_size: usize,
@@ -222,7 +222,7 @@ impl VirtioGpu {
     }
 
     /// Send a typed command struct and expect a GpuCtrlHdr response.
-    fn send_command<Req: Copy>(&self, req: &Req) -> GpuResult<GpuCtrlHdr> {
+    pub(super) fn send_command<Req: Copy>(&self, req: &Req) -> GpuResult<GpuCtrlHdr> {
         let req_bytes = unsafe {
             core::slice::from_raw_parts(
                 req as *const Req as *const u8,
@@ -241,7 +241,7 @@ impl VirtioGpu {
     }
 
     /// Send a cursor command to the cursor queue.
-    fn send_cursor_command<Req: Copy>(&self, req: &Req) -> GpuResult<()> {
+    pub(super) fn send_cursor_command<Req: Copy>(&self, req: &Req) -> GpuResult<()> {
         let queue = self.cursor_queue.as_ref().ok_or(GpuError::InitFailed)?;
         let queue_guard = queue.lock();
 
@@ -281,7 +281,7 @@ impl VirtioGpu {
     }
 
     /// Allocate and initialize 3 coherent DMA buffers for a command with data
-    fn alloc_command_buffers(
+    pub(super) fn alloc_command_buffers(
         &self,
         req_bytes: &[u8],
         data_bytes: &[u8],
@@ -302,7 +302,7 @@ impl VirtioGpu {
 
     /// Send a command with an extra data buffer (3-descriptor chain).
     /// Used by attach_backing which needs: header + entries array + response.
-    fn send_command_with_data(
+    pub(super) fn send_command_with_data(
         &self,
         req_bytes: &[u8],
         data_bytes: &[u8],
@@ -362,16 +362,16 @@ impl VirtioGpu {
     // GPU Operations
     // =========================================================================
 
-    fn alloc_resource_id(&self) -> u32 {
+    pub(super) fn alloc_resource_id(&self) -> u32 {
         self.next_resource_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    fn alloc_fence_id(&self) -> u32 {
+    pub(super) fn alloc_fence_id(&self) -> u32 {
         self.next_fence_id.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Get display information from the device.
-    fn refresh_display_info(&self) -> GpuResult<()> {
+    pub(super) fn refresh_display_info(&self) -> GpuResult<()> {
         let hdr = GpuCtrlHdr::new(GpuCmd::GetDisplayInfo);
         let hdr_bytes = unsafe {
             core::slice::from_raw_parts(

@@ -49,7 +49,7 @@ use x86_64::PhysAddr;
 
 /// DMAバッファの最小アライメント
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const DMA_ALIGNMENT: usize = 4096; // ページアライメント
 
 fn align_up(value: usize, align: usize) -> Option<usize> {

@@ -20,7 +20,7 @@ use crate::fs::fs_abstraction::InodeNum;
 
 /// スワップアウト種別
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwapKind {
     File { ino: InodeNum, page_num: u64 },

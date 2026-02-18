@@ -38,7 +38,7 @@ use self::registry::get_iommu_registry;
 
 
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Default)]
 pub struct IntelIommuDriver;
 

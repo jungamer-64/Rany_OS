@@ -19,7 +19,7 @@ use super::ipv4::Ipv4Address;
 
 /// DHCPクライアントポート
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 
 /// DHCPサーバーポート

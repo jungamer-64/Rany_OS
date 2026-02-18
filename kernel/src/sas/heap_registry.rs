@@ -10,9 +10,9 @@
 #![allow(dead_code)]
 
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 #[cfg(not(any(test, feature = "bench")))]
 use crate::domain_system::DomainId;
 

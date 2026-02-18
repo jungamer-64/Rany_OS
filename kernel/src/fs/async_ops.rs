@@ -31,8 +31,6 @@ use kernel_api::DmaBuffer;
 
 use super::cache::{page_cache, PAGE_SIZE as CACHE_PAGE_SIZE};
 use super::fs_abstraction::{
-mod _split_1;
-use _split_1::*;
     read_inode_by_number, write_inode_by_number, FileAttr, FsError, FsResult, SeekFrom,
 };
 
@@ -45,6 +43,8 @@ use crate::io::io_scheduler::{
     IoPriority, NvmeSglDescriptor,
 };
 use crate::io::dma::{CpuOwned, DeviceOwned, SgDmaGuard, SliceDmaGuard, TypedDmaSlice, TypedSgList};
+mod _split_1;
+pub use _split_1::*;
 
 const NVME_PAGE_SIZE: usize = 4096;
 const NVME_BLOCK_SIZE: u64 = 512;

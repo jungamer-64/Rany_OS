@@ -20,7 +20,7 @@ impl NetworkStack {
             .insert_test_connection(local_addr, remote_addr, tcb);
     }
 
-    fn send_tcp_fallback(
+    pub(super) fn send_tcp_fallback(
         &mut self,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
@@ -132,7 +132,7 @@ impl NetworkStack {
     /// Call periodically with current time (ticks) to allow TCP retransmits.
     /// Build a raw TCP packet from TcpProcessResult fields and return the
     /// buffer and total length, or None if the result is not a SendPacket.
-    fn build_tcp_packet_from_result(
+    pub(super) fn build_tcp_packet_from_result(
         res: &TcpProcessResult,
         buffer: &mut [u8; MAX_PACKET_SIZE],
     ) -> Option<(TcpSocketAddr, TcpSocketAddr, u32, usize)> {
@@ -259,7 +259,7 @@ impl NetworkStack {
 
     /// Send a UDP datagram (UdpAddr-based variant)
     /// ゼロコピーUDP送信を試行する
-    fn try_send_udp_zero_copy(
+    pub(super) fn try_send_udp_zero_copy(
         &mut self,
         config: &NetworkConfig,
         src_ip: Ipv4Address,
@@ -440,7 +440,7 @@ impl NetworkStack {
         self.arp.set_local(self.config.mac, ip);
     }
 
-    fn send_icmp_echo_fallback(
+    pub(super) fn send_icmp_echo_fallback(
         &mut self,
         target: Ipv4Address,
         dst_mac: MacAddress,
@@ -577,7 +577,7 @@ impl NetworkStack {
     }
 
     /// Calculate IP/ICMP checksum
-    fn checksum(data: &[u8]) -> u16 {
+    pub(super) fn checksum(data: &[u8]) -> u16 {
         let mut sum: u32 = 0;
         let mut i = 0;
 

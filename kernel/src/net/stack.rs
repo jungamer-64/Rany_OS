@@ -13,8 +13,6 @@ use super::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, I
 use super::icmpv6::{Icmpv6EchoBuilder, Icmpv6Processor, Icmpv6Result};
 use super::igmp::{IgmpProcessor, IgmpResult, IgmpError, IGMP_PROTOCOL, multicast_ip_to_mac};
 use super::ipv4::{
-mod _split_1;
-use _split_1::*;
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
 };
 use super::ipv6::{
@@ -35,6 +33,8 @@ use crate::sync::PoisonLock;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+mod _split_1;
+pub use _split_1::*;
 
 extern crate alloc;
 

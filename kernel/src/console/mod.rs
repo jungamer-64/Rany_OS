@@ -30,8 +30,8 @@ use spin::Mutex;
 // ============================================================================
 
 /// 最大仮想コンソール数
-mod _split_1;
-use _split_1::*;
+mod impls;
+pub use impls::*;
 const MAX_VIRTUAL_CONSOLES: usize = 8;
 
 /// スクロールバックバッファサイズ（行数）

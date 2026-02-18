@@ -837,5 +837,6 @@ pub fn exit_interrupt() {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

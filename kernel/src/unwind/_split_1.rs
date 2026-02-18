@@ -102,7 +102,7 @@ impl<'a> SafeEhFrameParser<'a> {
     /// 特定のPCに対応するFDEを検索
     /// 単一の eh_frame エントリを解析し、CIEならキャッシュ、FDEなら返す。
     /// pc にマッチしなFDEは `Ok(None)` 、マッチするものは `Ok(Some(fde))`。
-    fn process_eh_frame_entry(&mut self, entry_start: usize, length: u64, pc: u64) -> Option<Option<SafeFde>> {
+    pub(super) fn process_eh_frame_entry(&mut self, entry_start: usize, length: u64, pc: u64) -> Option<Option<SafeFde>> {
         let entry_end = self.reader.position() + length as usize;
 
         let cie_id = self.reader.read_u32().ok()?;
@@ -172,7 +172,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// CIE内容をパース
-    fn parse_cie_content(&mut self, remaining_len: usize) -> Option<SafeCie> {
+    pub(super) fn parse_cie_content(&mut self, remaining_len: usize) -> Option<SafeCie> {
         let content_start = self.reader.position();
 
         let version = self.reader.read_u8().ok()?;
@@ -240,7 +240,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// CIEをキャッシュに追加
-    fn cache_cie(&mut self, offset: u64, cie: SafeCie) {
+    pub(super) fn cache_cie(&mut self, offset: u64, cie: SafeCie) {
         if self.cie_cache_len < self.cie_cache_offsets.len() {
             self.cie_cache_offsets[self.cie_cache_len] = offset;
             self.cie_cache_entries[self.cie_cache_len] = Some(cie);
@@ -249,7 +249,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// キャッシュからCIEを取得
-    fn get_cached_cie(&self, offset: u64) -> Option<&SafeCie> {
+    pub(super) fn get_cached_cie(&self, offset: u64) -> Option<&SafeCie> {
         for i in 0..self.cie_cache_len {
             if self.cie_cache_offsets[i] == offset {
                 return self.cie_cache_entries[i].as_ref();
@@ -259,7 +259,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// NULL終端文字列を読む
-    fn read_null_terminated_string(&mut self) -> Option<&'a [u8]> {
+    pub(super) fn read_null_terminated_string(&mut self) -> Option<&'a [u8]> {
         let start = self.reader.position();
         loop {
             let b = self.reader.read_u8().ok()?;
@@ -272,7 +272,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// 符号なしフォーマットでエンコードされた値を読む
-    fn read_unsigned_format(&mut self, format: u8) -> Option<u64> {
+    pub(super) fn read_unsigned_format(&mut self, format: u8) -> Option<u64> {
         match format {
             0x00 | 0x04 => Some(self.reader.read_u64().ok()?),
             0x01 => Some(self.reader.read_uleb128().ok()?),
@@ -283,7 +283,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// 符号付きフォーマットでエンコードされた値を読む
-    fn read_signed_format(&mut self, format: u8) -> Option<u64> {
+    pub(super) fn read_signed_format(&mut self, format: u8) -> Option<u64> {
         match format {
             0x09 => Some(self.reader.read_sleb128().ok()? as u64),
             0x0A => Some(self.reader.read_i16().ok()? as u64),
@@ -294,7 +294,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// エンコードされた値を読む
-    fn read_encoded_value(&mut self, encoding: u8) -> Option<u64> {
+    pub(super) fn read_encoded_value(&mut self, encoding: u8) -> Option<u64> {
         let format = encoding & 0x0F;
         if format <= 0x04 {
             self.read_unsigned_format(format)
@@ -331,7 +331,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// 拡張CFI命令をパース
-    fn parse_extended_instruction(
+    pub(super) fn parse_extended_instruction(
         &mut self,
         opcode: u8,
         data_align: i64,
@@ -348,7 +348,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// AdvanceLoc拡張命令（1/2/4バイト）をパース
-    fn parse_advance_loc_extended(&mut self, opcode: u8) -> Option<SafeCfiInstruction> {
+    pub(super) fn parse_advance_loc_extended(&mut self, opcode: u8) -> Option<SafeCfiInstruction> {
         let delta = match opcode {
             0x02 => self.reader.read_u8().ok()? as u64,
             0x03 => self.reader.read_u16().ok()? as u64,
@@ -359,7 +359,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// レジスタルール命令（offset_extended, restore_extended, undefined, same_value, register）をパース
-    fn parse_register_rule_instruction(
+    pub(super) fn parse_register_rule_instruction(
         &mut self,
         opcode: u8,
         data_align: i64,
@@ -386,7 +386,7 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// CFA定義命令（def_cfa, def_cfa_register, def_cfa_offset）をパース
-    fn parse_cfa_instruction(&mut self, opcode: u8) -> Option<SafeCfiInstruction> {
+    pub(super) fn parse_cfa_instruction(&mut self, opcode: u8) -> Option<SafeCfiInstruction> {
         match opcode {
             0x0C => {
                 // DW_CFA_def_cfa

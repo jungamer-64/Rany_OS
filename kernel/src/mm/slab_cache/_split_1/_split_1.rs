@@ -347,7 +347,7 @@ impl TypedSlabCache {
     }
 
     /// ポインタからオブジェクトインデックスを計算（簡易実装）
-    fn ptr_to_index(&self, ptr: NonNull<u8>) -> usize {
+    pub(super) fn ptr_to_index(&self, ptr: NonNull<u8>) -> usize {
         // アドレス下位12ビット（ページ内オフセット）をオブジェクトサイズで割る
         let offset = (ptr.as_ptr() as usize) & 0xFFF;
         offset / self.inner.lock().object_size
@@ -749,5 +749,6 @@ impl<T> Drop for ObjectCache<T> {
 }
 
 #[cfg(test)]
+#[path = "../tests.rs"]
 mod tests;
 

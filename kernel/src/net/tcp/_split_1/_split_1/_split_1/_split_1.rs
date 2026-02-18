@@ -3,7 +3,7 @@ use super::*;
 impl TcpProcessor {
 
     /// Handle segment in FIN-WAIT-2 state
-    fn handle_fin_wait2_segment(
+    pub(super) fn handle_fin_wait2_segment(
         tcb: &mut TcpControlBlock,
         fin: bool,
         current_time: u64,
@@ -20,7 +20,7 @@ impl TcpProcessor {
     }
 
     /// Handle segment in CLOSING state
-    fn handle_closing_segment(
+    pub(super) fn handle_closing_segment(
         tcb: &mut TcpControlBlock,
         ack: bool,
         ack_num: u32,
@@ -36,7 +36,7 @@ impl TcpProcessor {
     }
 
     /// Handle segment in LAST-ACK state
-    fn handle_last_ack_segment(
+    pub(super) fn handle_last_ack_segment(
         tcb: &mut TcpControlBlock,
         ack: bool,
         ack_num: u32,
@@ -50,7 +50,7 @@ impl TcpProcessor {
     }
 
     /// Handle segment in TIME-WAIT state
-    fn handle_time_wait_segment(
+    pub(super) fn handle_time_wait_segment(
         tcb: &mut TcpControlBlock,
         current_time: u64,
     ) -> TcpProcessResult {
@@ -64,7 +64,7 @@ impl TcpProcessor {
     }
 
     /// Check if seq1 is after seq2 (handling wrap-around)
-    fn seq_after(seq1: u32, seq2: u32) -> bool {
+    pub(super) fn seq_after(seq1: u32, seq2: u32) -> bool {
         (seq1.wrapping_sub(seq2) as i32) > 0
     }
 

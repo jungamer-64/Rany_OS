@@ -9,7 +9,7 @@ impl IommuController {
     /// Evaluate security policy for a fault and return the isolation reason.
     ///
     /// Returns `Some(reason)` if device should be isolated, `None` to skip.
-    fn check_isolation_policy(
+    pub(super) fn check_isolation_policy(
         &self,
         fault: &FaultRecord,
         bus: u8,
@@ -52,7 +52,7 @@ impl IommuController {
     ///
     /// Handles both normal and poisoned lock states.
     /// Returns `(need_invalidation, isolated_domain_id)`.
-    fn disable_device_context_entry(
+    pub(super) fn disable_device_context_entry(
         &self,
         bus: u8,
         dev: u8,
@@ -75,7 +75,7 @@ impl IommuController {
     }
 
     /// Disable a scalable-mode context entry for a device.
-    fn disable_scalable_context_entry(
+    pub(super) fn disable_scalable_context_entry(
         &self,
         hw: &mut HardwareContext,
         bus: u8,
@@ -94,7 +94,7 @@ impl IommuController {
     }
 
     /// Disable a legacy-mode context entry for a device.
-    fn disable_legacy_context_entry(
+    pub(super) fn disable_legacy_context_entry(
         hw: &mut HardwareContext,
         bus: u8,
         idx: usize,
@@ -119,7 +119,7 @@ impl IommuController {
     }
 
     /// Resolve domain_id for a device via PASID tables (scalable mode).
-    fn resolve_scalable_domain_id(&self, bus: u8, idx: usize) -> Option<u16> {
+    pub(super) fn resolve_scalable_domain_id(&self, bus: u8, idx: usize) -> Option<u16> {
         let dev = ((idx >> 3) & 0x1F) as u8;
         let func = (idx & 0x07) as u8;
         if let Ok(pasid_tables) = self.device_pasid_tables.lock() {
@@ -131,7 +131,7 @@ impl IommuController {
     }
 
     /// Perform cache invalidation and security notification after device isolation.
-    fn perform_isolation_invalidation(
+    pub(super) fn perform_isolation_invalidation(
         &self,
         sid: u16,
         isolated_domain_id: Option<u16>,

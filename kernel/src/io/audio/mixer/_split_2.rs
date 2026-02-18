@@ -164,7 +164,7 @@ impl Mixer {
     // ========================================================================
 
     /// 生バイトをf32に変換
-    fn convert_to_f32(data: &[u8], bit_depth: BitDepth) -> Vec<f32> {
+    pub(super) fn convert_to_f32(data: &[u8], bit_depth: BitDepth) -> Vec<f32> {
         match bit_depth {
             BitDepth::U8 => data.iter().map(|&b| (b as f32 - 128.0) / 127.0).collect(),
             BitDepth::S16 => data
@@ -205,7 +205,7 @@ impl Mixer {
     }
 
     /// モノラルをステレオに変換
-    fn mono_to_stereo(mono: &[f32]) -> Vec<f32> {
+    pub(super) fn mono_to_stereo(mono: &[f32]) -> Vec<f32> {
         let mut stereo = Vec::with_capacity(mono.len() * 2);
         for &sample in mono {
             stereo.push(sample); // Left
@@ -219,7 +219,7 @@ impl Mixer {
     // ========================================================================
 
     /// リサンプリング不要時のファストパス
-    fn no_resample_fast_path(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
+    pub(super) fn no_resample_fast_path(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
         let needed = output_frames * 2; // stereo
         if channel.buffer.len() >= needed {
             channel.buffer.drain(..needed).collect()
@@ -231,7 +231,7 @@ impl Mixer {
     }
 
     /// 線形補間によるリサンプリング
-    fn resample_channel(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
+    pub(super) fn resample_channel(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
         let ratio = channel.resample_ratio();
 
         // No resampling needed if same sample rate
@@ -298,7 +298,7 @@ impl Mixer {
 
     /// 音量とパンを適用
     #[cfg(not(target_feature = "sse2"))]
-    fn apply_volume_pan(samples: &mut [f32], volume: f32, pan: f32) {
+    pub(super) fn apply_volume_pan(samples: &mut [f32], volume: f32, pan: f32) {
         // Calculate left/right gain from pan
         // Pan: -1.0 = full left, 0.0 = center, 1.0 = full right
         // Using constant power panning
@@ -317,7 +317,7 @@ impl Mixer {
 
     /// 音量とパンを適用 (SIMD版)
     #[cfg(target_feature = "sse2")]
-    fn apply_volume_pan(samples: &mut [f32], volume: f32, pan: f32) {
+    pub(super) fn apply_volume_pan(samples: &mut [f32], volume: f32, pan: f32) {
         use core::arch::x86_64::*;
 
         let pan_normalized = (pan + 1.0) * 0.5;
@@ -356,7 +356,7 @@ impl Mixer {
     // ========================================================================
 
     /// ソフトリミッターを適用
-    fn apply_limiter_to_buffer(
+    pub(super) fn apply_limiter_to_buffer(
         limiter: &mut LimiterState,
         limiter_enabled: bool,
         samples: &mut [f32],
@@ -415,7 +415,7 @@ impl Mixer {
 
     /// リミッターを適用（SIMD版、バッチ処理）
     #[cfg(target_feature = "avx")]
-    fn apply_limiter_simd_static(
+    pub(super) fn apply_limiter_simd_static(
         _limiter: &mut LimiterState,
         limiter_enabled: bool,
         samples: &mut [f32],
@@ -507,7 +507,7 @@ impl Mixer {
     }
 
     #[cfg(all(target_feature = "sse2", not(target_feature = "avx")))]
-    fn apply_master_volume_sse(buffer: &mut [f32], master_volume: f32) {
+    pub(super) fn apply_master_volume_sse(buffer: &mut [f32], master_volume: f32) {
         use core::arch::x86_64::*;
         unsafe {
             let master_vol = _mm_set1_ps(master_volume);
@@ -525,7 +525,7 @@ impl Mixer {
     }
 
     #[cfg(target_feature = "avx")]
-    fn apply_master_volume_avx(buffer: &mut [f32], master_volume: f32) {
+    pub(super) fn apply_master_volume_avx(buffer: &mut [f32], master_volume: f32) {
         use core::arch::x86_64::*;
         unsafe {
             let master_vol = _mm256_set1_ps(master_volume);

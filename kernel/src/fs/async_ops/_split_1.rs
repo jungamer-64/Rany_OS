@@ -472,7 +472,7 @@ impl AsyncFile {
         }
     }
 
-    fn io_device(&self) -> IoDeviceId {
+    pub(super) fn io_device(&self) -> IoDeviceId {
         IoDeviceId::Nvme {
             controller: 0,
             namespace: nsid_from_device(self.device_id),

@@ -2,7 +2,7 @@ use super::*;
 
 
 impl ExecutorStats {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             tasks_spawned: AtomicU64::new(0),
             tasks_completed: AtomicU64::new(0),

@@ -122,7 +122,7 @@ impl BuddyFrameAllocator {
         }
     }
 
-    fn clear_state(&mut self) {
+    pub(super) fn clear_state(&mut self) {
         for word in self.free_bits.iter_mut() {
             *word = 0;
         }
@@ -185,7 +185,7 @@ impl BuddyFrameAllocator {
         self.update_order_limits();
     }
 
-    fn init_layout(&mut self) {
+    pub(super) fn init_layout(&mut self) {
         if self.layout_initialized {
             return;
         }
@@ -214,14 +214,14 @@ impl BuddyFrameAllocator {
         self.layout_initialized = true;
     }
 
-    fn update_order_limits(&mut self) {
+    pub(super) fn update_order_limits(&mut self) {
         for order in 0..=MAX_ORDER {
             self.order_block_counts[order] = self.total_frames >> order;
         }
     }
 
     /// 連続した空き領域を Buddy システムに追加
-    fn add_region(&mut self, start: FrameIndex, end: FrameIndex) {
+    pub(super) fn add_region(&mut self, start: FrameIndex, end: FrameIndex) {
         let mut current = start.as_usize();
         let mut end_idx = end.as_usize();
 
@@ -258,7 +258,7 @@ impl BuddyFrameAllocator {
     }
 
     #[inline]
-    fn set_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
+    pub(super) fn set_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
         let summary_word_idx =
             self.order_summary_word_start[order] + (detail_word_idx / 64);
         let summary_bit = detail_word_idx % 64;
@@ -268,7 +268,7 @@ impl BuddyFrameAllocator {
     }
 
     #[inline]
-    fn clear_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
+    pub(super) fn clear_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
         let summary_word_idx =
             self.order_summary_word_start[order] + (detail_word_idx / 64);
         let summary_bit = detail_word_idx % 64;
@@ -278,7 +278,7 @@ impl BuddyFrameAllocator {
     }
 
     #[inline]
-    fn set_free_block(&mut self, order: usize, block_idx: usize) {
+    pub(super) fn set_free_block(&mut self, order: usize, block_idx: usize) {
         if block_idx >= self.order_block_capacity[order] {
             return;
         }
@@ -297,7 +297,7 @@ impl BuddyFrameAllocator {
     }
 
     #[inline]
-    fn clear_free_block(&mut self, order: usize, block_idx: usize) {
+    pub(super) fn clear_free_block(&mut self, order: usize, block_idx: usize) {
         if block_idx >= self.order_block_capacity[order] {
             return;
         }
@@ -317,7 +317,7 @@ impl BuddyFrameAllocator {
     }
 
     #[inline]
-    fn is_block_free(&self, order: usize, block_idx: usize) -> bool {
+    pub(super) fn is_block_free(&self, order: usize, block_idx: usize) -> bool {
         if block_idx >= self.order_block_capacity[order] {
             return false;
         }
@@ -328,13 +328,13 @@ impl BuddyFrameAllocator {
     }
 
     #[inline]
-    fn set_free_block_by_frame(&mut self, order: usize, frame: FrameIndex) {
+    pub(super) fn set_free_block_by_frame(&mut self, order: usize, frame: FrameIndex) {
         let block_idx = frame.as_usize() >> order;
         self.set_free_block(order, block_idx);
     }
 
     /// サマリーワード範囲をスキャンして空きブロックを検索
-    fn scan_summary_range(
+    pub(super) fn scan_summary_range(
         &mut self,
         order: usize,
         begin: usize,
@@ -371,7 +371,7 @@ impl BuddyFrameAllocator {
         None
     }
 
-    fn find_free_block(&mut self, order: usize) -> Option<usize> {
+    pub(super) fn find_free_block(&mut self, order: usize) -> Option<usize> {
         if self.order_free_counts[order] == 0 || self.order_block_counts[order] == 0 {
             return None;
         }
@@ -384,7 +384,7 @@ impl BuddyFrameAllocator {
     }
 
     /// ワード内のビットマスクを範囲制限付きで計算
-    fn compute_word_mask(word_base: usize, start_block: usize, end_block: usize) -> u64 {
+    pub(super) fn compute_word_mask(word_base: usize, start_block: usize, end_block: usize) -> u64 {
         let mut mask = u64::MAX;
         if word_base < start_block {
             mask &= !((1u64 << (start_block - word_base)) - 1);
@@ -398,7 +398,7 @@ impl BuddyFrameAllocator {
         mask
     }
 
-    fn find_free_block_in_range(
+    pub(super) fn find_free_block_in_range(
         &mut self,
         order: usize,
         start_block: usize,
@@ -446,7 +446,7 @@ impl BuddyFrameAllocator {
     /// 
     /// 要求サイズのブロックが見つからない場合、まず遅延されていた
     /// 結合処理を実行してから再度探索を試みる。
-    fn allocate_order(&mut self, order: usize) -> Option<FrameIndex> {
+    pub(super) fn allocate_order(&mut self, order: usize) -> Option<FrameIndex> {
         if order > MAX_ORDER {
             return None;
         }
@@ -469,7 +469,7 @@ impl BuddyFrameAllocator {
     }
 
     /// allocate_orderの内部実装（結合なし）
-    fn try_allocate_order_internal(&mut self, order: usize) -> Option<FrameIndex> {
+    pub(super) fn try_allocate_order_internal(&mut self, order: usize) -> Option<FrameIndex> {
         // 要求オーダー以上の空きブロックを探す
         for current_order in order..=MAX_ORDER {
             if let Some(block_idx) = self.find_free_block(current_order) {
@@ -506,7 +506,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 大きなブロックを目標オーダーまで分割
-    fn split_block(&mut self, frame: FrameIndex, from_order: usize, to_order: usize) {
+    pub(super) fn split_block(&mut self, frame: FrameIndex, from_order: usize, to_order: usize) {
         let mut current_order = from_order;
 
         while current_order > to_order {
@@ -529,7 +529,7 @@ impl BuddyFrameAllocator {
     /// - 解放回数が閾値 (LAZY_COALESCE_THRESHOLD) を超えた場合
     /// - allocate_order で要求サイズのブロックが見つからない場合
     /// - 明示的な try_coalesce_all 呼び出し
-    fn deallocate_order(&mut self, frame: FrameIndex, order: usize) {
+    pub(super) fn deallocate_order(&mut self, frame: FrameIndex, order: usize) {
         debug_assert_eq!(frame.align_down(order), frame);
 
         // Phase 6: Clear Folio flags
@@ -574,7 +574,7 @@ impl BuddyFrameAllocator {
     /// 
     /// 遅延結合を使用せず、即座にBuddyとの結合を試みる。
     /// 大きなブロック（2MB以上）の解放など、結合が有利な場合に使用。
-    fn deallocate_order_immediate(&mut self, frame: FrameIndex, order: usize) {
+    pub(super) fn deallocate_order_immediate(&mut self, frame: FrameIndex, order: usize) {
         debug_assert_eq!(frame.align_down(order), frame);
 
         // Phase 6: Clear Folio flags
@@ -618,7 +618,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 特定オーダーのブロックを結合可能な限り結合する
-    fn try_coalesce_order(&mut self, order: usize) {
+    pub(super) fn try_coalesce_order(&mut self, order: usize) {
         if order >= MAX_ORDER {
             return;
         }

@@ -60,7 +60,7 @@ pub use super::types::{PAGE_SIZE_4K as PAGE_SIZE_4K_USIZE, PAGE_SIZE_2M as PAGE_
 
 /// 4KB page size (u64 for address arithmetic)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub const PAGE_SIZE_4K: u64 = PAGE_SIZE_4K_USIZE as u64;
 /// 2MB super-page size (u64 for address arithmetic)
 pub const PAGE_SIZE_2M: u64 = PAGE_SIZE_2M_USIZE as u64;

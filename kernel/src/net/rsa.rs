@@ -30,7 +30,7 @@ use core::cmp::Ordering;
 
 /// 多倍長符号なし整数の最大リム数（64 × 64ビット = 4096ビット）
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const MAX_LIMBS: usize = 64;
 
 /// 多倍長符号なし整数（リトルエンディアン u64 リム表現）

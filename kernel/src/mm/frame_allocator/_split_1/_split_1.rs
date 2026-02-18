@@ -340,5 +340,6 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[path = "../tests.rs"]
 mod tests;
 

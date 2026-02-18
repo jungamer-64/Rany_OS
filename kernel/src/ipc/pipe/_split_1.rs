@@ -246,5 +246,6 @@ pub fn zero_copy_channel<T>(
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

@@ -382,7 +382,7 @@ impl MemoryPressureNotifier {
     }
     
     /// 全コールバックに通知
-    fn notify_all(&self, level: PressureLevel) {
+    pub(super) fn notify_all(&self, level: PressureLevel) {
         let callbacks = self.callbacks.lock();
         
         for slot in callbacks.iter() {

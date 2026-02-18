@@ -12,7 +12,7 @@ use crate::domain_system::{get_domain_snapshot, list_domain_snapshots, DomainId,
 use crate::fs::{DirEntry, FileAttr, FileMode, FileType};
 
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 const CELL_FIELDS: [&str; 15] = [
     "name",
     "state",

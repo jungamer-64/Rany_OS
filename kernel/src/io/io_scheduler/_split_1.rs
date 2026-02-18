@@ -182,7 +182,7 @@ impl IoScheduler {
     }
 
     /// 完了統計とレイテンシレポートを記録する
-    fn report_completion_stats(&self, request: &IoRequest, result: &IoResult) {
+    pub(super) fn report_completion_stats(&self, request: &IoRequest, result: &IoResult) {
         self.stats.total_completed.fetch_add(1, Ordering::Relaxed);
         self.stats
             .current_queue_depth

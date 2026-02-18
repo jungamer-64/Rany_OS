@@ -3,7 +3,7 @@ use super::*;
 mod _split_1;
 impl ExoShell {
 
-    async fn materialize_iterator(&mut self, iter: ExoIterator) -> ExoValue<'static> {
+    pub(super) async fn materialize_iterator(&mut self, iter: ExoIterator) -> ExoValue<'static> {
         let source_expr = match parser::expr_parser::parse_expression(iter.source.as_str()) {
             Ok(expr) => expr,
             Err(err) => {
@@ -57,7 +57,7 @@ impl ExoShell {
     }
 
     /// 配列をフィルタリング (AST版)
-    fn filter_array(
+    pub(super) fn filter_array(
         &self,
         list: Vec<ExoValue<'static>>,
         condition: &Expr<'_>,
@@ -75,7 +75,7 @@ impl ExoShell {
     }
 
     /// Map に対するメソッド
-    fn apply_map_method(
+    pub(super) fn apply_map_method(
         &self,
         map: BTreeMap<String, ExoValue<'static>>,
         method: &str,
@@ -113,7 +113,7 @@ impl ExoShell {
     }
 
     /// Bytes に対するメソッド
-    fn apply_bytes_method(
+    pub(super) fn apply_bytes_method(
         &self,
         bytes: Cow<'static, [u8]>,
         method: &str,
@@ -136,7 +136,7 @@ impl ExoShell {
     }
 
     /// String に対するメソッド
-    fn apply_string_method(
+    pub(super) fn apply_string_method(
         &self,
         s: String,
         method: &str,
@@ -194,7 +194,7 @@ impl ExoShell {
     }
 
     /// 従来の文字列形式でフィルタリング
-    fn filter_with_simple_condition(
+    pub(super) fn filter_with_simple_condition(
         &self,
         list: Vec<ExoValue<'static>>,
         condition: &str,
@@ -227,7 +227,7 @@ impl ExoShell {
     }
 
     /// FileEntryの条件チェック
-    fn check_file_entry_condition(
+    pub(super) fn check_file_entry_condition(
         &self,
         entry: &FileEntry,
         field: &str,
@@ -251,7 +251,7 @@ impl ExoShell {
     }
 
     /// DomainInfoの条件チェック
-    fn check_domain_condition(
+    pub(super) fn check_domain_condition(
         &self,
         domain: &DomainInfo,
         field: &str,
@@ -290,7 +290,7 @@ impl ExoShell {
     }
 
     /// Mapの条件チェック
-    fn check_map_condition(
+    pub(super) fn check_map_condition(
         &self,
         map: &BTreeMap<String, ExoValue<'static>>,
         field: &str,
@@ -312,7 +312,7 @@ impl ExoShell {
     }
 
     /// 数値比較
-    fn compare_numbers(&self, a: i64, op: &str, b: i64) -> bool {
+    pub(super) fn compare_numbers(&self, a: i64, op: &str, b: i64) -> bool {
         match op {
             ">" => a > b,
             ">=" => a >= b,
@@ -325,7 +325,7 @@ impl ExoShell {
     }
 
     /// 文字列比較
-    fn compare_strings(&self, a: &str, op: &str, b: &str) -> bool {
+    pub(super) fn compare_strings(&self, a: &str, op: &str, b: &str) -> bool {
         match op {
             "==" | "=" => a == b,
             "!=" => a != b,
@@ -337,7 +337,7 @@ impl ExoShell {
     }
 
     /// 配列のフィールドを抽出
-    fn map_array(&self, list: Vec<ExoValue<'static>>, field_or_closure: &str) -> ExoValue<'static> {
+    pub(super) fn map_array(&self, list: Vec<ExoValue<'static>>, field_or_closure: &str) -> ExoValue<'static> {
         let field_or_closure = field_or_closure.trim();
 
         if field_or_closure.starts_with('|') {
@@ -350,7 +350,7 @@ impl ExoShell {
     }
 
     /// mapクロージャをパース
-    fn parse_map_closure(&self, input: &str) -> Option<String> {
+    pub(super) fn parse_map_closure(&self, input: &str) -> Option<String> {
         let input = input.trim();
 
         if !input.starts_with('|') {
@@ -371,7 +371,7 @@ impl ExoShell {
     }
 
     /// シンプルなフィールド抽出
-    fn map_array_simple(&self, list: Vec<ExoValue<'static>>, field: &str) -> ExoValue<'static> {
+    pub(super) fn map_array_simple(&self, list: Vec<ExoValue<'static>>, field: &str) -> ExoValue<'static> {
         let mapped: Vec<ExoValue<'static>> = list
             .into_iter()
             .map(|item| match item {
@@ -405,7 +405,7 @@ impl ExoShell {
     }
 
     /// 配列をソート
-    fn sort_array(
+    pub(super) fn sort_array(
         &self,
         mut list: Vec<ExoValue<'static>>,
         field_or_closure: Option<&str>,
@@ -433,7 +433,7 @@ impl ExoShell {
     }
 
     /// フィールドで比較
-    fn compare_by_field(
+    pub(super) fn compare_by_field(
         &self,
         a: &ExoValue<'static>,
         b: &ExoValue<'static>,
@@ -455,7 +455,7 @@ impl ExoShell {
     }
 
     /// フィールド値を取得
-    fn get_field_value(&self, value: &ExoValue<'static>, field: &str) -> ExoValue<'static> {
+    pub(super) fn get_field_value(&self, value: &ExoValue<'static>, field: &str) -> ExoValue<'static> {
         match value {
             ExoValue::FileEntry(entry) => match field {
                 "name" => ExoValue::String(Cow::Owned(entry.name.clone())),
@@ -487,7 +487,7 @@ impl ExoShell {
     }
 
     /// 互換性エイリアス（利便性のため）- async版
-    async fn eval_alias(&mut self, cmd: &str) -> ExoValue<'static> {
+    pub(super) async fn eval_alias(&mut self, cmd: &str) -> ExoValue<'static> {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         if parts.is_empty() {
             return ExoValue::Nil;

@@ -50,7 +50,7 @@ impl IommuDomain {
     }
 
     /// Map a contiguous run of 4KB pages within a single PT.
-    fn map_range_4k(
+    pub(super) fn map_range_4k(
         &self,
         iova: u64,
         phys: u64,
@@ -199,7 +199,7 @@ impl IommuDomain {
     /// Intel VT-d uses: PML4 -> PDP -> PD -> PT (same as x86-64 paging)
     ///
     /// On error, any newly allocated page tables are deallocated to prevent leaks.
-    fn map_page(
+    pub(super) fn map_page(
         &self,
         iova: u64,
         phys: u64,
@@ -259,7 +259,7 @@ impl IommuDomain {
     }
 
     /// 新規割り当て済みページテーブルをコミットする
-    fn commit_allocated_tables(tables: &mut [Option<PageTableScope>]) {
+    pub(super) fn commit_allocated_tables(tables: &mut [Option<PageTableScope>]) {
         for slot in tables.iter_mut() {
             if let Some(scope) = slot {
                 scope.commit();
@@ -271,7 +271,7 @@ impl IommuDomain {
     ///
     /// Uses the domain's page table pool for NUMA-aware recycling.
     /// Falls back to direct allocation if pool is not available.
-    fn allocate_page_table(&self) -> Result<PageTableScope, IommuError> {
+    pub(super) fn allocate_page_table(&self) -> Result<PageTableScope, IommuError> {
         PageTableScope::new_with_pool(self.page_table_pool.clone(), self.numa_node())
     }
 
@@ -460,7 +460,7 @@ impl IommuDomain {
     }
 
     /// 複数シャードのガードを取得する
-    fn acquire_shard_guards<'a>(
+    pub(super) fn acquire_shard_guards<'a>(
         &'a self,
         start_shard: usize,
         end_shard: usize,
@@ -509,7 +509,7 @@ impl IommuDomain {
     }
 
     /// Unmap a range using super-page aware traversal.
-    fn unmap_range(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+    pub(super) fn unmap_range(&self, iova: u64, size: u64) -> Result<(), IommuError> {
         let mut current = iova;
         let mut remaining = size;
         const SIZE_4KB: u64 = 4096;
@@ -539,7 +539,7 @@ impl IommuDomain {
         Ok(())
     }
 
-    fn try_unmap_superpage(&self, iova: u64) -> Result<Option<u64>, IommuError> {
+    pub(super) fn try_unmap_superpage(&self, iova: u64) -> Result<Option<u64>, IommuError> {
         const SIZE_1GB: u64 = 1024 * 1024 * 1024;
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
 
@@ -617,7 +617,7 @@ impl IommuDomain {
         dec_ref(pml4_phys);
     }
 
-    fn verify_pt_entries_present(
+    pub(super) fn verify_pt_entries_present(
         pt_table: *mut SlPte,
         pt_idx: usize,
         count: usize,

@@ -3,7 +3,7 @@ use super::*;
 impl<'a> ElfLoader<'a> {
 
     /// 単一のリロケーションを適用
-    fn apply_relocation(
+    pub(super) fn apply_relocation(
         &self,
         rela: &Elf64Rela,
         base: usize,

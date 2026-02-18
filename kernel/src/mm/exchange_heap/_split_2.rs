@@ -6,7 +6,7 @@ unsafe impl Send for SegregatedFreeListHeap {}
 unsafe impl Sync for SegregatedFreeListHeap {}
 
 impl SegregatedFreeListHeap {
-    const fn empty() -> Self {
+    pub(super) const fn empty() -> Self {
         Self {
             heap_start: 0,
             heap_end: 0,
@@ -25,7 +25,7 @@ impl SegregatedFreeListHeap {
     /// # Returns
     /// サイズを収容できる最小のクラスインデックス
     #[inline]
-    fn size_to_class(size: usize) -> usize {
+    pub(super) fn size_to_class(size: usize) -> usize {
         if size <= MIN_BLOCK_SIZE {
             return 0;
         }
@@ -38,7 +38,7 @@ impl SegregatedFreeListHeap {
 
     /// サイズクラスからブロックサイズを計算
     #[inline]
-    fn class_to_size(class: usize) -> usize {
+    pub(super) fn class_to_size(class: usize) -> usize {
         MIN_BLOCK_SIZE << class
     }
 
@@ -75,7 +75,7 @@ impl SegregatedFreeListHeap {
     }
 
     /// 空きブロックを適切なサイズクラスに追加（結合を試みる）
-    fn add_free_block(&mut self, addr: usize, size: usize) {
+    pub(super) fn add_free_block(&mut self, addr: usize, size: usize) {
         let min_size = MIN_BLOCK_WITH_FOOTER;
         if size < min_size {
             return;
@@ -138,7 +138,7 @@ impl SegregatedFreeListHeap {
     }
     
     /// Try to coalesce with the previous block (using its footer)
-    fn try_coalesce_prev(&mut self, addr: usize, size: usize) -> (usize, usize) {
+    pub(super) fn try_coalesce_prev(&mut self, addr: usize, size: usize) -> (usize, usize) {
         if addr <= self.heap_start + core::mem::size_of::<BlockFooter>() {
             return (addr, size);
         }
@@ -174,7 +174,7 @@ impl SegregatedFreeListHeap {
     }
     
     /// Try to coalesce with the next block
-    fn try_coalesce_next(&mut self, addr: usize, size: usize) -> (usize, usize) {
+    pub(super) fn try_coalesce_next(&mut self, addr: usize, size: usize) -> (usize, usize) {
         let next_addr = addr + size;
         if next_addr >= self.heap_end {
             return (addr, size);
@@ -208,7 +208,7 @@ impl SegregatedFreeListHeap {
     }
     
     /// Remove a block from its free list
-    fn remove_from_free_list(&mut self, addr: usize, size: usize) -> bool {
+    pub(super) fn remove_from_free_list(&mut self, addr: usize, size: usize) -> bool {
         let class = Self::size_to_class(size);
         let target_ptr = addr as *mut FreeBlock;
         
@@ -240,7 +240,7 @@ impl SegregatedFreeListHeap {
     }
 
     /// 指定サイズクラスから空きブロックを取得
-    fn pop_free_block(&mut self, class: usize) -> Option<NonNull<FreeBlock>> {
+    pub(super) fn pop_free_block(&mut self, class: usize) -> Option<NonNull<FreeBlock>> {
         let block = self.free_lists[class]?;
 
         unsafe {
@@ -256,7 +256,7 @@ impl SegregatedFreeListHeap {
     }
 
     /// メモリを割り当て（O(1) Segregated Fit）
-    fn allocate(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
+    pub(super) fn allocate(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
         let align = layout.align().max(core::mem::align_of::<FreeBlock>());
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
 
@@ -344,16 +344,16 @@ impl SegregatedFreeListHeap {
     ///
     /// Now implemented via boundary tags in add_free_block
 
-    fn used(&self) -> usize {
+    pub(super) fn used(&self) -> usize {
         self.allocated_bytes
     }
 
-    fn free(&self) -> usize {
+    pub(super) fn free(&self) -> usize {
         (self.heap_end - self.heap_start).saturating_sub(self.allocated_bytes)
     }
 
     /// 拡張統計情報を取得
-    fn extended_stats(&self) -> ExtendedHeapStats {
+    pub(super) fn extended_stats(&self) -> ExtendedHeapStats {
         let mut non_empty_classes = 0u32;
         for i in 0..SIZE_CLASS_COUNT {
             if self.free_lists[i].is_some() {

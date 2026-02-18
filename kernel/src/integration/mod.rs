@@ -19,7 +19,7 @@ pub mod interrupt_routing;
 pub mod security_integration;
 // Re-exports
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[allow(dead_code)]
 pub use device_manager::{DeviceInfo, DeviceManager};
 pub use interrupt_routing::InterruptRouter;

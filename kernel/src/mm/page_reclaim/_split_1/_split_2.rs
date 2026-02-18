@@ -51,7 +51,7 @@ impl PageReclaimController {
         self.unsafe_eviction_enabled.load(Ordering::Acquire)
     }
 
-    fn finalize_reclaim_success(&self, entry: &MglruEntry, node_idx: usize) {
+    pub(super) fn finalize_reclaim_success(&self, entry: &MglruEntry, node_idx: usize) {
         let node = node_idx.min(7) as u8;
         self.lru_lists[node as usize].account_reclaimed(1);
         super::workingset::workingset_evict(
@@ -62,7 +62,7 @@ impl PageReclaimController {
         );
     }
 
-    fn enqueue_pending_async(&self, entry: &MglruEntry, node_idx: usize) {
+    pub(super) fn enqueue_pending_async(&self, entry: &MglruEntry, node_idx: usize) {
         let mut map = self.pending_async.lock();
         let old = map.insert(
             entry.frame,
@@ -79,7 +79,7 @@ impl PageReclaimController {
         }
     }
 
-    fn take_pending_async(&self, frame: FrameIndex) -> Option<PendingAsyncMeta> {
+    pub(super) fn take_pending_async(&self, frame: FrameIndex) -> Option<PendingAsyncMeta> {
         let mut map = self.pending_async.lock();
         let removed = map.remove(&frame);
         if removed.is_some() {
@@ -88,12 +88,12 @@ impl PageReclaimController {
         removed
     }
 
-    fn has_pending_async(&self, frame: FrameIndex) -> bool {
+    pub(super) fn has_pending_async(&self, frame: FrameIndex) -> bool {
         let map = self.pending_async.lock();
         map.contains_key(&frame)
     }
 
-    fn requeue_candidate(&self, mut entry: MglruEntry, node_idx: usize) {
+    pub(super) fn requeue_candidate(&self, mut entry: MglruEntry, node_idx: usize) {
         entry.generation = MglruGen::Gen1;
         entry.referenced.store(true, Ordering::Relaxed);
         let idx = node_idx.min(7);
@@ -101,7 +101,7 @@ impl PageReclaimController {
         self.requeued.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn pending_meta_to_entry(meta: PendingAsyncMeta) -> MglruEntry {
+    pub(super) fn pending_meta_to_entry(meta: PendingAsyncMeta) -> MglruEntry {
         let mut entry = MglruEntry::new(meta.frame, meta.page_type, crate::time::current_time_ns());
         entry.generation = MglruGen::Gen1;
         entry.flags = meta.flags;
@@ -314,7 +314,7 @@ impl PageReclaimController {
 
     /// Attempt to write back a specific dirty page.
     /// Returns true when the page writeback succeeds.
-    fn attempt_writeback_page(
+    pub(super) fn attempt_writeback_page(
         &self,
         ino: crate::fs::fs_abstraction::InodeNum,
         page_num: u64,
@@ -339,7 +339,7 @@ impl PageReclaimController {
 
     /// Attempt to write back all dirty pages via the global page cache.
     /// Returns true if any pages were written back successfully.
-    fn attempt_writeback_all(&self) -> bool {
+    pub(super) fn attempt_writeback_all(&self) -> bool {
         #[cfg(any(test, feature = "qemu-test-export"))]
         if let Some(forced) = decode_test_writeback_override(
             TEST_SYNC_ALL_WRITEBACK_OVERRIDE.load(Ordering::Acquire),
@@ -361,7 +361,7 @@ impl PageReclaimController {
     }
     
     /// ページを実際に回収
-    fn reclaim_page(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
+    pub(super) fn reclaim_page(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
         let unsafe_eviction = self.unsafe_eviction_enabled();
         if !unsafe_eviction && matches!(entry.page_type, PageType::Anonymous) {
             self.blocked_unsafe.fetch_add(1, Ordering::Relaxed);
@@ -376,7 +376,7 @@ impl PageReclaimController {
     }
 
     /// 匿名ページの回収
-    fn reclaim_anonymous(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
+    pub(super) fn reclaim_anonymous(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
         let order = crate::mm::page_flags::get_order(entry.frame);
         let count = 1u64 << order;
 
@@ -390,7 +390,7 @@ impl PageReclaimController {
     }
 
     /// ファイルバックページの回収
-    fn reclaim_file_backed(&self, entry: &MglruEntry, node_idx: usize, unsafe_eviction: bool) -> ReclaimOutcome {
+    pub(super) fn reclaim_file_backed(&self, entry: &MglruEntry, node_idx: usize, unsafe_eviction: bool) -> ReclaimOutcome {
         let order = crate::mm::page_flags::get_order(entry.frame);
         let count = 1u64 << order;
 
@@ -410,7 +410,7 @@ impl PageReclaimController {
     }
 
     /// ダーティなファイルバックページをバッキング情報ありで回収
-    fn reclaim_dirty_file_with_backing(
+    pub(super) fn reclaim_dirty_file_with_backing(
         &self,
         entry: &MglruEntry,
         node_idx: usize,
@@ -449,7 +449,7 @@ impl PageReclaimController {
     }
 
     /// 非同期スワップアウトを試みる共通ヘルパー
-    fn try_async_swapout(
+    pub(super) fn try_async_swapout(
         &self,
         entry: &MglruEntry,
         node_idx: usize,
@@ -485,7 +485,7 @@ impl PageReclaimController {
     }
     
     /// フレームをBuddyに返却
-    fn free_frame(&self, frame: FrameIndex) {
+    pub(super) fn free_frame(&self, frame: FrameIndex) {
         use super::buddy_allocator::buddy_dealloc_frame;
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
         use x86_64::PhysAddr;

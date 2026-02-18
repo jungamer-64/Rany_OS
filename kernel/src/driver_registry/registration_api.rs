@@ -61,11 +61,11 @@ unsafe impl Send for AbiDriver {}
 unsafe impl Sync for AbiDriver {}
 
 impl AbiDriver {
-    fn vtable(&self) -> &AbiDriverVTable {
+    pub(super) fn vtable(&self) -> &AbiDriverVTable {
         unsafe { &*self.vtable }
     }
 
-    fn map_abi_error(code: i32) -> Result<(), KapiError> {
+    pub(super) fn map_abi_error(code: i32) -> Result<(), KapiError> {
         let abi = AbiErrorCode::from_raw(code);
         match abi {
             AbiErrorCode::Success => Ok(()),
@@ -85,7 +85,7 @@ pub(crate) struct NullDriver {
 }
 
 impl NullDriver {
-    fn new(name: &str, ty: DriverType) -> Self {
+    pub(super) fn new(name: &str, ty: DriverType) -> Self {
         Self {
             name: alloc::string::String::from(name),
             ty,
@@ -191,4 +191,5 @@ impl Driver for AbiDriver {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

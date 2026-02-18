@@ -3,7 +3,7 @@ use super::*;
 impl VirtioBlkDevice {
 
     /// Dispatch DMA read based on IOMMU state.
-    fn dma_read_dispatch<'a>(
+    pub(super) fn dma_read_dispatch<'a>(
         &'a self,
         sector: u64,
         dma: DmaInfo,
@@ -40,7 +40,7 @@ impl VirtioBlkDevice {
     }
 
     /// DMA write via fully-async IOMMU bounce path.
-    fn dma_write_bounce_async<'a>(
+    pub(super) fn dma_write_bounce_async<'a>(
         &'a self,
         sector: u64,
         data: &'a [u8],
@@ -68,7 +68,7 @@ impl VirtioBlkDevice {
     }
 
     /// DMA write via eager-alloc IOMMU bounce path.
-    fn dma_write_bounce_eager<'a>(
+    pub(super) fn dma_write_bounce_eager<'a>(
         &'a self,
         sector: u64,
         data: &'a [u8],
@@ -103,7 +103,7 @@ impl VirtioBlkDevice {
     }
 
     /// Dispatch DMA write based on IOMMU state.
-    fn dma_write_dispatch<'a>(
+    pub(super) fn dma_write_dispatch<'a>(
         &'a self,
         sector: u64,
         dma: DmaInfo,

@@ -21,10 +21,10 @@
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use spin::Mutex;
+mod _split_1;
+pub use _split_1::*;
 
 use super::{
-mod _split_1;
-use _split_1::*;
     ClassDriverError, ClassDriverEvent, REQUEST_DIR_IN, REQUEST_DIR_OUT,
     REQUEST_TYPE_CLASS_INTERFACE, SetupPacket, TransferStatus, UsbClass, UsbClassDriver,
 };

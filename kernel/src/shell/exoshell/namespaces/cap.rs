@@ -10,8 +10,6 @@ use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::security::capability::{
-mod _split_1;
-use _split_1::*;
     self, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DMA, CAP_FOWNER, CAP_INTERRUPT, CAP_IOMMU, CAP_IPC_LOCK,
     CAP_KILL, CAP_NET_ADMIN, CAP_NET_BIND, CAP_NET_RAW, CAP_SETGID, CAP_SETUID, CAP_SYS_ADMIN,
     CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PHYSMEM, CAP_SYS_PTRACE, CAP_SYS_RAWIO,
@@ -19,6 +17,8 @@ use _split_1::*;
 };
 use crate::shell::exoshell::types::*;
 use alloc::boxed::Box;
+mod _split_1;
+pub use _split_1::*;
 
 #[cfg(feature = "posix-compat")]
 const TRACE_RESOURCE: &str = "/proc/*/trace";

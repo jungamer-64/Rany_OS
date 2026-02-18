@@ -16,8 +16,8 @@ mod domain_system;
 mod epoch;
 mod error;
 mod fs;
-mod _split_1;
-use _split_1::*;
+mod ahci_and_init;
+pub use ahci_and_init::*;
 #[macro_use]
 mod interrupt_macros;
 // ============================================================================

@@ -205,7 +205,7 @@ mod tests {
     /// PKEY integration test: verify that loading a cell allocates a PKEY and
     /// unloading the cell frees it.
     #[test_case]
-    fn test_pkey_alloc_and_free_on_load_unload() {
+    pub(super) fn test_pkey_alloc_and_free_on_load_unload() {
         use core::mem;
 
         crate::security::mpk::test_reset_pkey_allocator();

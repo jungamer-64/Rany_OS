@@ -15,8 +15,8 @@ use hal::port_io::{IoPort, PortU8};
 use spin::Mutex;
 
 /// ナノ秒単位の時間
-mod _split_1;
-use _split_1::*;
+mod api;
+pub use api::*;
 pub type Nanoseconds = u64;
 
 /// タイムスタンプ (起動からのtick数)

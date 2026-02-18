@@ -4,7 +4,7 @@ mod _split_1;
 impl TlsConnection {
 
     /// AES-GCM レコード暗号化 (TLS 1.2)
-    fn encrypt_aes_gcm_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_aes_gcm_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         if self.write_key.is_empty() || self.write_iv.len() < 4 {
@@ -39,7 +39,7 @@ impl TlsConnection {
     }
 
     /// ChaCha20-Poly1305 レコード暗号化 (TLS 1.2)
-    fn encrypt_chacha20_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_chacha20_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -87,7 +87,7 @@ impl TlsConnection {
     /// 2. Handshake Secret = HKDF-Extract(Derive-Secret(Early, "derived", ""), DHE)
     /// 3. client/server_handshake_traffic_secret
     /// 4. handshake traffic keys を導出
-    fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
+    pub(super) fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
@@ -171,7 +171,7 @@ impl TlsConnection {
     /// TLS 1.3では ServerHello 以降のハンドシェイクメッセージは
     /// ApplicationData レコードとして暗号化されて送信される。
     /// 復号後、内部コンテントタイプ（最終の非ゼロバイト）に基づいて処理する。
-    fn tls13_process_encrypted_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn tls13_process_encrypted_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         // ハンドシェイクトラフィック鍵で復号
         let decrypted = self.tls13_decrypt_record(data, true)?;
 
@@ -219,7 +219,7 @@ impl TlsConnection {
     }
 
     /// TLS 1.3: 暗号化ハンドシェイク内の複数メッセージを処理
-    fn tls13_process_handshake_messages(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_handshake_messages(&mut self, data: &[u8]) -> TlsResult<()> {
         let mut offset = 0usize;
         while offset < data.len() {
             if data.len() - offset < 4 {
@@ -260,7 +260,7 @@ impl TlsConnection {
     }
 
     /// Dispatch a single TLS 1.3 handshake message to its handler.
-    fn tls13_dispatch_handshake_msg(&mut self, msg_type: u8, payload: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_dispatch_handshake_msg(&mut self, msg_type: u8, payload: &[u8]) -> TlsResult<()> {
         match msg_type {
             8 => {
                 // EncryptedExtensions
@@ -290,7 +290,7 @@ impl TlsConnection {
     }
 
     /// TLS 1.3: EncryptedExtensionsを処理
-    fn tls13_process_encrypted_extensions(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_encrypted_extensions(&mut self, data: &[u8]) -> TlsResult<()> {
         // EncryptedExtensions: extensions length(2) + extensions(N)
         if data.len() < 2 {
             return Err(TlsError::DecodeError);
@@ -335,7 +335,7 @@ impl TlsConnection {
     /// - certificate_request_context (variable)
     /// - extensions length (2 bytes)
     /// - extensions (variable) — signature_algorithms (type 13) は必須
-    fn tls13_process_certificate_request(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_certificate_request(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.is_empty() {
             return Err(TlsError::DecodeError);
         }
@@ -357,7 +357,7 @@ impl TlsConnection {
     }
 
     /// Parse and skip certificate request extensions (we only need to detect signature_algorithms).
-    fn tls13_skip_cert_request_extensions(&self, data: &[u8], start: usize) -> TlsResult<()> {
+    pub(super) fn tls13_skip_cert_request_extensions(&self, data: &[u8], start: usize) -> TlsResult<()> {
         let mut off = start;
         if data.len() < off + 2 {
             return Err(TlsError::DecodeError);
@@ -384,7 +384,7 @@ impl TlsConnection {
 
     /// TLS 1.3 Certificateメッセージから最初の証明書DERを抽出するヘルパー。
     /// 空の証明書リストの場合は Ok(None) を返す。
-    fn tls13_extract_first_cert<'a>(&self, data: &'a [u8]) -> TlsResult<Option<&'a [u8]>> {
+    pub(super) fn tls13_extract_first_cert<'a>(&self, data: &'a [u8]) -> TlsResult<Option<&'a [u8]>> {
         if data.is_empty() {
             return Err(TlsError::DecodeError);
         }
@@ -428,7 +428,7 @@ impl TlsConnection {
     }
 
     /// X.509 DERからサーバー公開鍵を抽出して設定する。
-    fn set_server_public_key_from_cert(&mut self, cert_der: &[u8]) -> TlsResult<()> {
+    pub(super) fn set_server_public_key_from_cert(&mut self, cert_der: &[u8]) -> TlsResult<()> {
         if let Some(cert) = crate::net::x509::parse_x509(cert_der) {
             match cert.subject_public_key_info {
                 crate::net::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
@@ -470,7 +470,7 @@ impl TlsConnection {
     ///   - cert_data (DER encoded X.509)
     ///   - extensions length (2 bytes)
     ///   - extensions (variable)
-    fn tls13_process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {
         let first_cert = self.tls13_extract_first_cert(data)?;
 
         match first_cert {
@@ -494,7 +494,7 @@ impl TlsConnection {
     /// - signature_algorithm (2 bytes)
     /// - signature length (2 bytes)
     /// - signature (variable)
-    fn tls13_process_certificate_verify(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_certificate_verify(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.len() < 4 {
             return Err(TlsError::DecodeError);
         }
@@ -527,7 +527,7 @@ impl TlsConnection {
     ///
     /// RFC 8446 Section 4.4.3:
     /// content = 64 * 0x20 || label || 0x00 || transcript_hash
-    fn build_tls13_cv_verify_content(&self, label: &[u8]) -> Vec<u8> {
+    pub(super) fn build_tls13_cv_verify_content(&self, label: &[u8]) -> Vec<u8> {
         let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
         let transcript_hash: Vec<u8> = if use_384 {
             crate::loader::sha384::compute(&self.handshake_messages).to_vec()
@@ -544,7 +544,7 @@ impl TlsConnection {
     }
 
     /// 署名アルゴリズムに基づくTLS 1.3署名検証ディスパッチ
-    fn dispatch_tls13_signature_verification(
+    pub(super) fn dispatch_tls13_signature_verification(
         &self,
         sig_algorithm: u16,
         content: &[u8],
@@ -561,7 +561,7 @@ impl TlsConnection {
     }
 
     /// RSA PKCS#1 v1.5 署名検証ヘルパー
-    fn verify_rsa_pkcs1_signature(
+    pub(super) fn verify_rsa_pkcs1_signature(
         &self,
         message: &[u8],
         signature: &[u8],
@@ -593,7 +593,7 @@ impl TlsConnection {
     }
 
     /// RSA-PSS 署名検証ヘルパー (RFC 8446 required for TLS 1.3)
-    fn verify_rsa_pss_signature(
+    pub(super) fn verify_rsa_pss_signature(
         &self,
         message: &[u8],
         signature: &[u8],
@@ -625,7 +625,7 @@ impl TlsConnection {
     }
 
     /// ECDSA P-256 署名検証ヘルパー
-    fn verify_ecdsa_p256_signature(
+    pub(super) fn verify_ecdsa_p256_signature(
         &self,
         message: &[u8],
         signature: &[u8],

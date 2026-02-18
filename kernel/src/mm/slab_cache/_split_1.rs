@@ -595,7 +595,7 @@ impl PerCoreCache {
     }
 
     /// サイズに適したキャッシュインデックスを取得
-    fn size_class(size: usize) -> Option<usize> {
+    pub(super) fn size_class(size: usize) -> Option<usize> {
         SLAB_SIZES.iter().position(|&s| size <= s)
     }
 

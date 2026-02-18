@@ -117,4 +117,5 @@ pub fn needs_tcp_fallback(data: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

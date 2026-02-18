@@ -111,5 +111,6 @@ pub fn capability_name(cap: Capability) -> &'static str {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

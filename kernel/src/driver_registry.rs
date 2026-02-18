@@ -31,14 +31,14 @@ use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::driver_abi::{
-mod _split_1;
-use _split_1::*;
     AbiDmaBuffer, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle,
     DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
     DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
     KernelApiV1, DRIVER_EXPORTS_ABI_VERSION, KERNEL_API_ABI_VERSION,
 };
 use kernel_api::error::{KapiError, KapiResult};
+mod registration_api;
+pub use registration_api::*;
 
 // ============================================================================
 // Driver Registry

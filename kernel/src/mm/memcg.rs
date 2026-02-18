@@ -37,7 +37,7 @@ use super::PAGE_SIZE_4K;
 
 /// Cgroup ID型
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct MemcgId(u64);

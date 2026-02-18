@@ -40,7 +40,7 @@ use super::types::{FrameIndex, NumaNodeId, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE
 /// - TZCNT: 3サイクル（Haswell以降）
 /// - trailing_zeros(): コンパイラ最適化次第（通常はTZCNT/BSFにコンパイルされる）
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[inline(always)]
 fn fast_tzcnt_u64(word: u64) -> u32 {
     #[cfg(target_arch = "x86_64")]

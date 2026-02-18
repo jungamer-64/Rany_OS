@@ -72,7 +72,7 @@ use crate::ipc::RRef;
 
 /// DMA transfer direction
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaDirection {
     /// CPU writes, device reads (e.g., TX buffer)

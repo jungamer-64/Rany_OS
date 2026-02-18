@@ -12,7 +12,7 @@ use super::*;
 /// Key  = 0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b (20 bytes)
 /// Data = "Hi There"
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[test_case]
 fn test_hmac_sha256_rfc4231_case1() {
     let key = [0x0bu8; 20];

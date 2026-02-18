@@ -37,7 +37,7 @@ impl TlsConnection {
     /// - explicit_nonce (8 bytes)
     /// - ciphertext (same length as plaintext)
     /// - auth_tag (16 bytes)
-    fn encrypt_aes_gcm(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_aes_gcm(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         // Keys not set — placeholder passthrough
@@ -85,7 +85,7 @@ impl TlsConnection {
     /// - auth_tag (16 bytes)
     ///
     /// Nonce: IV XOR zero-padded sequence number (RFC 7905 Section 2)
-    fn encrypt_chacha20_poly1305(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_chacha20_poly1305(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         // Keys not set — placeholder passthrough
         let (ciphertext, auth_tag) =
             if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
@@ -146,7 +146,7 @@ impl TlsConnection {
     /// TLS 1.3: 復号されたレコードから内部コンテントタイプと平文を分離する
     ///
     /// 戻り値: (content_type, plaintext)
-    fn tls13_split_content_type(decrypted: &[u8]) -> Option<(u8, &[u8])> {
+    pub(super) fn tls13_split_content_type(decrypted: &[u8]) -> Option<(u8, &[u8])> {
         for i in (0..decrypted.len()).rev() {
             if decrypted[i] != 0 {
                 return Some((decrypted[i], &decrypted[..i]));
@@ -160,7 +160,7 @@ impl TlsConnection {
     /// RFC 8446 Section 4.6: Post-Handshake Messages
     /// - NewSessionTicket (type 4)
     /// - KeyUpdate (type 24)
-    fn tls13_process_post_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_post_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
         let mut offset = 0;
         while offset < data.len() {
             if data.len() - offset < 4 {
@@ -210,7 +210,7 @@ impl TlsConnection {
     /// - extensions_length (2 bytes)
     /// - extensions (variable)
     /// TLS 1.3 New Session Ticketの拡張からmax_early_data_sizeを解析
-    fn parse_ticket_extensions(data: &[u8], off: usize) -> u32 {
+    pub(super) fn parse_ticket_extensions(data: &[u8], off: usize) -> u32 {
         let mut max_early_data_size: u32 = 0;
         if data.len() < off + 2 {
             return max_early_data_size;
@@ -236,7 +236,7 @@ impl TlsConnection {
     }
 
     /// Resumption Master SecretからPSKを導出
-    fn derive_tls13_psk_from_rms(&self, ticket_nonce: &[u8]) -> Option<Vec<u8>> {
+    pub(super) fn derive_tls13_psk_from_rms(&self, ticket_nonce: &[u8]) -> Option<Vec<u8>> {
         if self.resumption_master_secret.is_empty() {
             return None;
         }
@@ -257,7 +257,7 @@ impl TlsConnection {
         Some(psk)
     }
 
-    fn tls13_process_new_session_ticket(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_new_session_ticket(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.len() < 9 {
             return Err(TlsError::DecodeError);
         }
@@ -310,7 +310,7 @@ impl TlsConnection {
     /// - request_update (1 byte): 0=update_not_requested, 1=update_requested
     ///
     /// サーバーの読み取り鍵を更新し、要求された場合はクライアント側も更新する
-    fn tls13_process_key_update(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_key_update(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.is_empty() {
             return Err(TlsError::DecodeError);
         }

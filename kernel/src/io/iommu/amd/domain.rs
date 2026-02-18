@@ -22,7 +22,7 @@ use super::{AmdIommuDriver, AmdIvmdRange, AmdDomainInfo};
 // ---------------------------------------------------------------------------
 
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub(super) fn align_down(value: u64, align: usize) -> u64 {
     let align = align as u64;
     if align == 0 { return value; }

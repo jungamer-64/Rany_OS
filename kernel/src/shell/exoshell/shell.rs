@@ -32,7 +32,7 @@ use alloc::sync::Arc;
 /// レジストリは Arc で名前空間を保持するが、既存のシェル API は Box を期待する。
 /// このラッパーにより両方の API を統一できる。
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 struct ArcNamespaceWrapper(Arc<dyn ShellNamespace>);
 
 impl ShellNamespace for ArcNamespaceWrapper {

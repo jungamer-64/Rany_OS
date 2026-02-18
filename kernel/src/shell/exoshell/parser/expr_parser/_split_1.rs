@@ -3,7 +3,7 @@ use super::*;
 impl ExprParser {
 
     /// マップリテラル: { key: value, ... }
-    fn parse_map_literal(&mut self) -> Result<Expr<'static>, ParseError> {
+    pub(super) fn parse_map_literal(&mut self) -> Result<Expr<'static>, ParseError> {
         self.advance();
         let mut pairs = Vec::new();
 
@@ -63,7 +63,7 @@ impl ExprParser {
     }
 
     /// クロージャ: |param| expr
-    fn parse_closure(&mut self) -> Result<Expr<'static>, ParseError> {
+    pub(super) fn parse_closure(&mut self) -> Result<Expr<'static>, ParseError> {
         self.advance();
 
         // パラメータ名
@@ -95,7 +95,7 @@ impl ExprParser {
     }
 
     /// 引数リストをパース
-    fn parse_args(&mut self) -> Result<Vec<Expr<'static>>, ParseError> {
+    pub(super) fn parse_args(&mut self) -> Result<Vec<Expr<'static>>, ParseError> {
         let mut args = Vec::new();
 
         // 空の引数リスト

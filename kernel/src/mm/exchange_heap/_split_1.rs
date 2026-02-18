@@ -25,7 +25,7 @@ pub struct ExtendedHeapStats {
 
 impl SegregatedFreeListHeap {
     /// 旧API互換: allocate_first_fit
-    fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
+    pub(super) fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
         self.allocate(layout)
     }
 }
@@ -60,7 +60,7 @@ impl ExchangeHeap {
         }
     }
 
-    fn try_per_cpu_cache_alloc(size_class: usize) -> Option<NonNull<u8>> {
+    pub(super) fn try_per_cpu_cache_alloc(size_class: usize) -> Option<NonNull<u8>> {
         let cpu_id = crate::mm::per_cpu::try_current_cpu_id()?;
         if cpu_id >= MAX_CPUS {
             return None;
@@ -410,7 +410,7 @@ pub struct InitializedSlice<T: Sized> {
 
 impl<T: Sized> InitializedSlice<T> {
     /// スライスを作成（内部使用のみ）
-    fn new(ptr: NonNull<T>, len: usize, layout: Layout) -> Self {
+    pub(super) fn new(ptr: NonNull<T>, len: usize, layout: Layout) -> Self {
         Self {
             ptr,
             len,
@@ -646,5 +646,6 @@ pub enum ExchangeHeapError {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

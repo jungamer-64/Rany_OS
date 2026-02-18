@@ -89,6 +89,7 @@ pub fn spawn_with_caps(
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 
 /// exit() 相当
@@ -171,7 +172,7 @@ mod unit_tests {
     use super::*;
 
     #[test_case]
-    fn test_process_creation() {
+    pub(super) fn test_process_creation() {
         let pid = PROCESS_MANAGER
             .create(ProcessId::INIT, "test_process")
             .unwrap();
@@ -184,7 +185,7 @@ mod unit_tests {
     }
 
     #[test_case]
-    fn test_process_exit() {
+    pub(super) fn test_process_exit() {
         let pid = PROCESS_MANAGER
             .create(ProcessId::INIT, "exit_test")
             .unwrap();

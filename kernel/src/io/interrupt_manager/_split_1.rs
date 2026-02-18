@@ -69,10 +69,10 @@ pub struct InterruptQueue {
 
 impl InterruptQueue {
     /// キューのサイズ（2の冪乗）
-    const CAPACITY: usize = 1024;
-    const MASK: u32 = (Self::CAPACITY - 1) as u32;
+    pub(super) const CAPACITY: usize = 1024;
+    pub(super) const MASK: u32 = (Self::CAPACITY - 1) as u32;
     /// 空エントリを示す値
-    const EMPTY: u32 = 0xFFFFFFFF;
+    pub(super) const EMPTY: u32 = 0xFFFFFFFF;
 
     /// 新しいキューを作成
     pub const fn new() -> Self {
@@ -373,5 +373,6 @@ define_interrupt!(
 );
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

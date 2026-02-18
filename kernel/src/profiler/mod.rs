@@ -22,8 +22,8 @@ use spin::{Mutex, RwLock};
 // =============================================================================
 
 /// 最大サンプル数
-mod _split_1;
-use _split_1::*;
+mod global;
+pub use global::*;
 const MAX_SAMPLES: usize = 65536;
 
 /// 最大コールスタック深度

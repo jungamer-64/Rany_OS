@@ -59,7 +59,7 @@ pub(crate) struct DeferredIoCompletionQueue {
 }
 
 impl DeferredIoCompletionQueue {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         const ZERO: AtomicU64 = AtomicU64::new(0);
         Self {
             head: AtomicUsize::new(0),
@@ -70,7 +70,7 @@ impl DeferredIoCompletionQueue {
         }
     }
 
-    fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
+    pub(super) fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
         if head.wrapping_sub(tail) >= IO_COMPLETION_QUEUE_SIZE {
@@ -85,7 +85,7 @@ impl DeferredIoCompletionQueue {
         true
     }
 
-    fn pop(&self) -> Option<(DeviceId, IoRequestId, IoResult)> {
+    pub(super) fn pop(&self) -> Option<(DeviceId, IoRequestId, IoResult)> {
         loop {
             let tail = self.tail.load(Ordering::Relaxed);
             let head = self.head.load(Ordering::Acquire);
@@ -139,7 +139,7 @@ pub(crate) struct PerCpuDeferredCompletionQueues {
 }
 
 impl PerCpuDeferredCompletionQueues {
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         const QUEUE: DeferredIoCompletionQueue = DeferredIoCompletionQueue::new();
         Self {
             queues: [QUEUE; MAX_CPUS],
@@ -147,7 +147,7 @@ impl PerCpuDeferredCompletionQueues {
     }
 
     /// 現在のCPUのキューにpush（ISRから呼び出し）
-    fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
+    pub(super) fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
         // cpu_index() は 0-based 連番を返す（APIC ID ではない）
         let cpu_idx = crate::smp::cpu_index();
         debug_assert!(cpu_idx < MAX_CPUS, "CPU index {} exceeds MAX_CPUS", cpu_idx);
@@ -159,7 +159,7 @@ impl PerCpuDeferredCompletionQueues {
     }
 
     /// 指定CPUのキューからpop
-    fn pop_from_cpu(&self, cpu_idx: usize) -> Option<(DeviceId, IoRequestId, IoResult)> {
+    pub(super) fn pop_from_cpu(&self, cpu_idx: usize) -> Option<(DeviceId, IoRequestId, IoResult)> {
         if cpu_idx >= MAX_CPUS {
             return None;
         }
@@ -167,7 +167,7 @@ impl PerCpuDeferredCompletionQueues {
     }
 
     /// 全CPUのキューからドレイン（メインloop用）
-    fn drain_all<F>(&self, mut callback: F) -> usize
+    pub(super) fn drain_all<F>(&self, mut callback: F) -> usize
     where
         F: FnMut(DeviceId, IoRequestId, IoResult),
     {
@@ -383,7 +383,7 @@ impl IoInterruptBridge {
         self.dropped_completions.load(Ordering::Relaxed)
     }
 
-    fn complete_pending(&self, device: DeviceId, request_id: IoRequestId) {
+    pub(super) fn complete_pending(&self, device: DeviceId, request_id: IoRequestId) {
         let mut pending_requests = self.pending_requests.write();
         if let Some(pending) = pending_requests.get_mut(&device) {
             pending.retain(|id| *id != request_id);
@@ -504,7 +504,7 @@ impl HybridIoCoordinator {
     }
 
     /// オーバーフロー時の強制ポーリング回収
-    fn recover_overflow(&self) {
+    pub(super) fn recover_overflow(&self) {
         let was_active = self.polling_executor.is_active();
         if !was_active {
             self.polling_executor.start();
@@ -527,7 +527,7 @@ impl HybridIoCoordinator {
     }
 
     /// グローバルモードに応じたポーリング実行
-    fn poll_by_global_mode(&self) {
+    pub(super) fn poll_by_global_mode(&self) {
         let global_mode = match self.global_mode.load(Ordering::Acquire) {
             0 => IoMode::Interrupt,
             1 => IoMode::Polling,
@@ -578,7 +578,7 @@ impl HybridIoCoordinator {
         self.poll_by_global_mode();
     }
 
-    fn dispatch_pending(&self) {
+    pub(super) fn dispatch_pending(&self) {
         const DISPATCH_BATCH_LIMIT: usize = 64;
 
         for _ in 0..DISPATCH_BATCH_LIMIT {

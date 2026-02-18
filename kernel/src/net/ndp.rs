@@ -30,7 +30,7 @@ use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 
 /// Minimum Neighbor Solicitation size: ICMPv6 header (4) + reserved (4) + target (16) = 24
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 pub const NS_MIN_SIZE: usize = 24;
 
 /// Minimum Neighbor Advertisement size: same as NS

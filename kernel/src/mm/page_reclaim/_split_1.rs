@@ -5,17 +5,17 @@ mod _split_1;
 mod _split_2;
 impl MglruTuningController {
     /// デフォルト aging interval: 2秒
-    const DEFAULT_INTERVAL_NS: u64 = 2_000_000_000;
+    pub(super) const DEFAULT_INTERVAL_NS: u64 = 2_000_000_000;
     /// 最小 interval: 100ms
-    const MIN_INTERVAL_NS: u64 = 100_000_000;
+    pub(super) const MIN_INTERVAL_NS: u64 = 100_000_000;
     /// 最大 interval: 10秒
-    const MAX_INTERVAL_NS: u64 = 10_000_000_000;
+    pub(super) const MAX_INTERVAL_NS: u64 = 10_000_000_000;
     /// 調整ステップ (10%)
-    const ADJUSTMENT_STEP_PERCENT: u64 = 10;
+    pub(super) const ADJUSTMENT_STEP_PERCENT: u64 = 10;
     /// 高 refault 率の閾値
-    const HIGH_REFAULT_THRESHOLD: f32 = 0.4;
+    pub(super) const HIGH_REFAULT_THRESHOLD: f32 = 0.4;
     /// 低 refault 率の閾値
-    const LOW_REFAULT_THRESHOLD: f32 = 0.1;
+    pub(super) const LOW_REFAULT_THRESHOLD: f32 = 0.1;
 
     /// 新しいコントローラを作成
     pub const fn new() -> Self {

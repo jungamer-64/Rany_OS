@@ -22,18 +22,19 @@ use spin::Mutex;
 
 use super::context::DeviceContext;
 use super::event_handler::{
-mod _split_1;
-use _split_1::*;
     CommandCompletionEvent, EventHandler, PortStatusChangeEvent, ProcessedEvent, TransferEvent,
 };
 use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing};
 use super::{
     COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN, IR0,
     MAX_ENDPOINTS, MAX_SLOTS, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS, PORTSC_CHANGE_MASK,
-    PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR, PORTSC_PRC, USBCMD,
+    PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR, PORTSC_PRC,
+    TRANSFER_RING_SIZE, USBCMD,
     USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
 };
 use crate::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
+mod _split_1;
+pub use _split_1::*;
 
 // ============================================================================
 // Register Offsets (from Capability Registers)

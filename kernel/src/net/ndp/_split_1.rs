@@ -62,7 +62,7 @@ impl NdpProcessor {
     /// Process Neighbor Solicitation
     ///
     /// NS format: type(1) + code(1) + checksum(2) + reserved(4) + target(16) [+ options]
-    fn process_ns(
+    pub(super) fn process_ns(
         &mut self,
         data: &[u8],
         src: Ipv6Address,
@@ -118,7 +118,7 @@ impl NdpProcessor {
     /// Process Neighbor Advertisement
     ///
     /// NA format: type(1) + code(1) + checksum(2) + flags(4) + target(16) [+ options]
-    fn process_na(
+    pub(super) fn process_na(
         &mut self,
         data: &[u8],
         src: Ipv6Address,
@@ -179,7 +179,7 @@ impl NdpProcessor {
     /// Process Router Advertisement
     ///
     /// RA provides prefix info, gateway, and hop limit
-    fn process_ra(
+    pub(super) fn process_ra(
         &mut self,
         data: &[u8],
         src: Ipv6Address,
@@ -400,4 +400,5 @@ pub fn ipv6_multicast_to_mac(addr: &Ipv6Address) -> [u8; 6] {
 // =====================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

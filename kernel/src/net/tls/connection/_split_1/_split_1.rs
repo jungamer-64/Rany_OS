@@ -4,7 +4,7 @@ mod _split_1;
 impl TlsConnection {
 
     /// NamedGroup値をEcdhGroupに変換する
-    fn named_curve_to_ecdh_group(named_curve: u16) -> TlsResult<ecdh::EcdhGroup> {
+    pub(super) fn named_curve_to_ecdh_group(named_curve: u16) -> TlsResult<ecdh::EcdhGroup> {
         match named_curve {
             0x0017 => Ok(ecdh::EcdhGroup::Secp256r1),
             0x001D => Ok(ecdh::EcdhGroup::X25519),
@@ -15,7 +15,7 @@ impl TlsConnection {
     /// ECDH鍵交換を実行する
     ///
     /// NamedGroup → 鍵ペア生成 → 共有秘密計算を一括で行う。
-    fn perform_ecdh_exchange(
+    pub(super) fn perform_ecdh_exchange(
         named_curve: u16,
         server_pubkey: &[u8],
     ) -> TlsResult<(ecdh::EcdhKeyPair, Vec<u8>)> {
@@ -32,7 +32,7 @@ impl TlsConnection {
     ///
     /// ECDHEの場合、サーバー公開鍵を受け取り、クライアント側で
     /// 一時鍵ペアを生成してECDH共有秘密を計算する。
-    fn process_server_key_exchange(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn process_server_key_exchange(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.len() < 4 {
             return Err(TlsError::DecodeError);
         }
@@ -110,7 +110,7 @@ impl TlsConnection {
     }
 
     /// ServerHelloDoneを処理
-    fn process_server_hello_done(&mut self, _data: &[u8]) -> TlsResult<()> {
+    pub(super) fn process_server_hello_done(&mut self, _data: &[u8]) -> TlsResult<()> {
         self.state = TlsState::Handshaking;
         Ok(())
     }
@@ -133,7 +133,7 @@ impl TlsConnection {
     }
 
     /// Master secretが未導出の場合に導出する（TLS 1.2）
-    fn ensure_master_secret_derived(&mut self) {
+    pub(super) fn ensure_master_secret_derived(&mut self) {
         if !self.master_secret.iter().all(|&b| b == 0) {
             return;
         }
@@ -165,7 +165,7 @@ impl TlsConnection {
     }
 
     /// TLS 1.2のverify_dataを計算する共通ヘルパー
-    fn compute_tls12_verify_data(&self, label: &[u8]) -> [u8; 12] {
+    pub(super) fn compute_tls12_verify_data(&self, label: &[u8]) -> [u8; 12] {
         let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
         let cipher = self.negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
@@ -197,7 +197,7 @@ impl TlsConnection {
     /// `build_change_cipher_spec()` の後に呼び出し、鍵が有効な状態で使用する。
 
     /// Finishedメッセージを暗号スイートに応じて暗号化する (TLS 1.2)
-    fn encrypt_finished_tls12(&mut self, finished_msg: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_finished_tls12(&mut self, finished_msg: &[u8]) -> TlsResult<Vec<u8>> {
         let cipher = self.negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         if cipher.is_cbc() {
@@ -241,7 +241,7 @@ impl TlsConnection {
     ///
     /// RFC 5246 Section 6.3 に基づき、master_secretからread/writeの
     /// 暗号鍵とIVを導出する。
-    fn derive_tls12_keys(&mut self) -> TlsResult<()> {
+    pub(super) fn derive_tls12_keys(&mut self) -> TlsResult<()> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
@@ -320,7 +320,7 @@ impl TlsConnection {
     }
 
     /// AES-GCM ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
-    fn encrypt_aes_gcm_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_aes_gcm_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         if self.write_key.is_empty() || self.write_iv.len() < 4 {
@@ -355,7 +355,7 @@ impl TlsConnection {
     }
 
     /// ChaCha20-Poly1305 ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
-    fn encrypt_chacha20_poly1305_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_chacha20_poly1305_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -397,7 +397,7 @@ impl TlsConnection {
     // ========================================================================
 
     /// CBC ハンドシェイクメッセージ暗号化（TLS 1.0/1.1/1.2 Finished用）
-    fn encrypt_cbc_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_cbc_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         self.encrypt_cbc_record(ContentType::Handshake as u8, data)
     }
 
@@ -407,7 +407,7 @@ impl TlsConnection {
     /// 1. MAC を計算: HMAC(mac_key, seq_num || type || version || length || fragment)
     /// 2. パディングを追加
     /// 3. CBC暗号化
-    fn encrypt_cbc_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_cbc_record(&mut self, content_type: u8, data: &[u8]) -> TlsResult<Vec<u8>> {
         if self.write_key.is_empty() {
             return Err(TlsError::CryptoError);
         }
@@ -483,7 +483,7 @@ impl TlsConnection {
     }
 
     /// CBC復号用: IVと暗号文を分離し、TLS 1.0の暗黙IVも処理
-    fn split_iv_and_ciphertext<'a>(
+    pub(super) fn split_iv_and_ciphertext<'a>(
         &self,
         data: &'a [u8],
         version: TlsVersion,
@@ -502,7 +502,7 @@ impl TlsConnection {
     }
 
     /// パディング+MACを定時間で検証 (Lucky 13対策)
-    fn verify_cbc_padding_and_mac(
+    pub(super) fn verify_cbc_padding_and_mac(
         &self,
         decrypted: &[u8],
         content_type: u8,
@@ -554,7 +554,7 @@ impl TlsConnection {
     /// 2. パディング検証
     /// 3. MACを分離して検証
     /// TLS 1.0のCBC暗号文最終ブロックを次のIVとして記憶する
-    fn store_last_ciphertext_block_if_tls10(&mut self, version: TlsVersion, ciphertext: &[u8]) {
+    pub(super) fn store_last_ciphertext_block_if_tls10(&mut self, version: TlsVersion, ciphertext: &[u8]) {
         if version == TlsVersion::TLS_1_0 && ciphertext.len() >= 16 {
             let mut last_block = [0u8; 16];
             last_block.copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
@@ -562,7 +562,7 @@ impl TlsConnection {
         }
     }
 
-    fn decrypt_cbc_record(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+    pub(super) fn decrypt_cbc_record(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
         if self.read_key.is_empty() {
             return Err(TlsError::CryptoError);
         }

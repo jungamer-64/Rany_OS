@@ -4,7 +4,7 @@ mod _split_1;
 impl ExoShell {
 
     /// fs.* メソッド（構造化版）- async版
-    async fn eval_fs_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_fs_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -52,7 +52,7 @@ impl ExoShell {
     }
 
     /// net.* メソッド（構造化版）- async版
-    async fn eval_net_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_net_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -119,7 +119,7 @@ impl ExoShell {
     }
 
     /// proc.* メソッド（構造化版）
-    async fn eval_proc_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_proc_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -146,7 +146,7 @@ impl ExoShell {
     }
 
     /// cap.* メソッド（構造化版）
-    async fn eval_cap_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_cap_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -185,7 +185,7 @@ impl ExoShell {
     }
 
     /// cap.grant の引数を解析して実行する
-    fn eval_cap_grant(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub(super) fn eval_cap_grant(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         // grant(resource, [ops], target, [expires], [delegatable])
         let resource = args
             .get(0)
@@ -215,7 +215,7 @@ impl ExoShell {
     }
 
     /// 操作文字列をCapOperationに変換する
-    fn parse_op(s: &str) -> Option<CapOperation> {
+    pub(super) fn parse_op(s: &str) -> Option<CapOperation> {
         match s.to_lowercase().as_str() {
             "read" => Some(CapOperation::Read),
             "write" => Some(CapOperation::Write),
@@ -230,7 +230,7 @@ impl ExoShell {
     }
 
     /// 引数からCapOperation配列を抽出する
-    fn parse_cap_ops(arg: Option<&ExoValue<'static>>) -> Vec<CapOperation> {
+    pub(super) fn parse_cap_ops(arg: Option<&ExoValue<'static>>) -> Vec<CapOperation> {
         let mut ops = Vec::new();
         if let Some(v) = arg {
             match v {
@@ -255,7 +255,7 @@ impl ExoShell {
     }
 
     /// grant対象のターゲットを解決する
-    fn resolve_grant_target(args: &[ExoValue<'static>]) -> Result<String, ExoValue<'static>> {
+    pub(super) fn resolve_grant_target(args: &[ExoValue<'static>]) -> Result<String, ExoValue<'static>> {
         let target_arg = if args.len() >= 3 {
             args.get(2)
         } else if args.len() == 2 {
@@ -277,7 +277,7 @@ impl ExoShell {
     }
 
     /// grantのオプション引数（expires, delegatable）を解析する
-    fn parse_grant_options(args: &[ExoValue<'static>]) -> (Option<u64>, bool) {
+    pub(super) fn parse_grant_options(args: &[ExoValue<'static>]) -> (Option<u64>, bool) {
         let mut expires: Option<u64> = None;
         let mut delegatable: bool = false;
 
@@ -310,13 +310,13 @@ impl ExoShell {
     }
 
     /// sys.* メソッド（名前空間経由）
-    async fn eval_sys_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_sys_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let evaluated = self.evaluate_args(args).await;
         self.call_namespace("sys", name, &evaluated).await
     }
 
     /// driver.* メソッド（名前空間経由）
-    async fn eval_driver_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+    pub(super) async fn eval_driver_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let evaluated = self.evaluate_args(args).await;
         self.call_namespace("driver", name, &evaluated).await
     }
@@ -325,7 +325,7 @@ impl ExoShell {
     /// args は AST (未評価) のまま受け取り、メソッドに応じて評価戦略を変える
     /// 値に対してメソッドを適用（メソッドチェーン）
     /// args は AST (未評価) のまま受け取り、メソッドに応じて評価戦略を変える
-    async fn apply_method(
+    pub(super) async fn apply_method(
         &mut self,
         target: ExoValue<'static>,
         method: &str,
@@ -354,7 +354,7 @@ impl ExoShell {
     }
 
     /// 配列に対するメソッド
-    async fn apply_array_method(
+    pub(super) async fn apply_array_method(
         &mut self,
         list: Vec<ExoValue<'static>>,
         method: &str,
@@ -395,7 +395,7 @@ impl ExoShell {
     }
 
     /// 配列の集約メソッド（sum, avg, min, max）
-    fn apply_array_aggregate(list: Vec<ExoValue<'static>>, method: &str) -> ExoValue<'static> {
+    pub(super) fn apply_array_aggregate(list: Vec<ExoValue<'static>>, method: &str) -> ExoValue<'static> {
         match method {
             "sum" => {
                 let sum: i64 = list
@@ -446,7 +446,7 @@ impl ExoShell {
     }
 
     /// 配列のスライスメソッド（take, skip）
-    async fn apply_array_slice(
+    pub(super) async fn apply_array_slice(
         &mut self,
         list: Vec<ExoValue<'static>>,
         method: &str,
@@ -471,7 +471,7 @@ impl ExoShell {
     }
 
     /// 配列の述語メソッド（filter, find, any, all）
-    fn apply_array_predicate(
+    pub(super) fn apply_array_predicate(
         list: Vec<ExoValue<'static>>,
         method: &str,
         args: &[Expr<'_>],
@@ -507,7 +507,7 @@ impl ExoShell {
     }
 
     /// 配列の変換メソッド（map, sort, join, contains）
-    async fn apply_array_transform(
+    pub(super) async fn apply_array_transform(
         &mut self,
         list: Vec<ExoValue<'static>>,
         method: &str,

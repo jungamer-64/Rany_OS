@@ -61,5 +61,6 @@ pub fn msync(addr: MappedAddress, size: MappingSize) -> Result<(), MmapError> {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

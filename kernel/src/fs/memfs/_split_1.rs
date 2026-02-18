@@ -282,5 +282,6 @@ pub fn create_symlink(target: &str, link_name: &str, cwd: &str) -> FsResult<()> 
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

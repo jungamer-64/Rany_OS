@@ -26,8 +26,8 @@ use spin::Once;
 // ============================================================================
 
 /// ドメインを一意に識別するID
-mod _split_1;
-use _split_1::*;
+mod public_api;
+pub use public_api::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DomainId(u64);
 

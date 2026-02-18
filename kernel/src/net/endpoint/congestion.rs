@@ -12,9 +12,9 @@ use core::cmp::{max, min};
 
 /// Maximum Segment Size (デフォルト)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 pub const DEFAULT_MSS: u32 = 1460;
 
 /// 初期ウィンドウサイズ (RFC 6928: 10 MSS)

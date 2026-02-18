@@ -274,8 +274,10 @@ impl<T, const N: usize> Drop for MpmcRingBuffer<T, N> {
 // ============================================================================
 
 #[cfg(feature = "qemu-test-export")]
+#[path = "qemu_tests.rs"]
 pub mod qemu_tests;
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

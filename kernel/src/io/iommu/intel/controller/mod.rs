@@ -57,9 +57,9 @@ use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 
 /// Hardware Tables (Root Table and Context Tables)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 #[derive(Debug)]
 pub struct HardwareContext {
     /// Root Table: 256 entries (16 bytes each = 4KB)

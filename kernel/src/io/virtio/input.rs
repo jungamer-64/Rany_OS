@@ -36,10 +36,11 @@ use spin::Mutex;
 ///
 /// The driver writes a `select` and `subsel` value, then reads `size` and
 /// `data` from the config space to obtain device information.
+mod _split_1;
+pub use _split_1::*;
+
 pub mod config_select {
     /// Unset / no selection
-mod _split_1;
-use _split_1::*;
     pub const VIRTIO_INPUT_CFG_UNSET: u8 = 0x00;
     /// Query device name string (subsel = 0)
     pub const VIRTIO_INPUT_CFG_ID_NAME: u8 = 0x01;

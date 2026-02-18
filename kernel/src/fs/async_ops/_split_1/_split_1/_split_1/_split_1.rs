@@ -7,7 +7,7 @@ pub struct SgIoFuture {
 }
 
 impl SgIoFuture {
-    fn new(request: Arc<SgIoRequest>) -> Self {
+    pub(super) fn new(request: Arc<SgIoRequest>) -> Self {
         Self { request }
     }
 
@@ -172,7 +172,7 @@ impl AsyncIoScheduler {
         future
     }
 
-    fn complete_sg_request(&self, request_id: u64) {
+    pub(super) fn complete_sg_request(&self, request_id: u64) {
         self.pending_sg.lock().remove(&request_id);
         self.requests_completed.fetch_add(1, Ordering::Relaxed);
     }
@@ -237,5 +237,6 @@ pub fn async_io_scheduler() -> &'static AsyncIoScheduler {
 }
 
 #[cfg(test)]
+#[path = "../../../tests.rs"]
 mod tests;
 

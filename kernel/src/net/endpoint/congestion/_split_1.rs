@@ -17,14 +17,14 @@ mod cubic_tests {
     use super::*;
 
     #[test_case]
-    fn test_cubic_initial_state() {
+    pub(super) fn test_cubic_initial_state() {
         let cc = CubicController::new();
         assert_eq!(cc.state(), CongestionState::SlowStart);
         assert_eq!(cc.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
     }
 
     #[test_case]
-    fn test_cubic_slow_start() {
+    pub(super) fn test_cubic_slow_start() {
         let mut cc = CubicController::with_mss(1000);
         let initial = cc.cwnd();
         
@@ -34,7 +34,7 @@ mod cubic_tests {
     }
 
     #[test_case]
-    fn test_cubic_root() {
+    pub(super) fn test_cubic_root() {
         assert_eq!(CubicController::cubic_root(0), 0);
         assert_eq!(CubicController::cubic_root(1), 1);
         assert_eq!(CubicController::cubic_root(8), 2);
@@ -43,7 +43,7 @@ mod cubic_tests {
     }
 
     #[test_case]
-    fn test_cubic_fast_recovery() {
+    pub(super) fn test_cubic_fast_recovery() {
         let mut cc = CubicController::with_mss(1000);
         cc.base.cwnd = 50000;
         cc.base.bytes_in_flight = 40000;

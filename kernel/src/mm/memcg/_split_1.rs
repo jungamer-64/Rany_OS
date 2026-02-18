@@ -55,5 +55,6 @@ pub fn memcg_get_page_info(frame: FrameIndex) -> Option<PageMemcgInfo> {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

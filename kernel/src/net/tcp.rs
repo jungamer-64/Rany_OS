@@ -30,9 +30,9 @@ use super::mempool::PacketRef;
 
 /// IPv4アドレス
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ipv4Addr(pub [u8; 4]);
 

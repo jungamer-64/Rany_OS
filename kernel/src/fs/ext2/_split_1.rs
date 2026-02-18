@@ -171,5 +171,6 @@ impl Inode for Ext2InodeWrapper {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

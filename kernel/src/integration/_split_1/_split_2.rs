@@ -2,7 +2,7 @@ use super::*;
 
 impl SystemIntegration {
 
-    fn init_virtio_gpu_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
+    pub(super) fn init_virtio_gpu_device(&mut self, dev: &crate::io::pci::PciDeviceInfo) {
         self.log(&alloc::format!(
             "  Initializing VirtIO-GPU at {:02x}:{:02x}.{}",
             dev.bdf.bus(),
@@ -72,7 +72,7 @@ impl SystemIntegration {
         }
     }
 
-    fn init_nvme_devices(&mut self) {
+    pub(super) fn init_nvme_devices(&mut self) {
         let mut nvme_controller_id: u8 = 0;
         let nvme_devices = crate::io::pci::find_by_class(0x01, 0x08);
         for dev in nvme_devices {
@@ -138,7 +138,7 @@ impl SystemIntegration {
         }
     }
 
-    fn init_hda_devices(&mut self) {
+    pub(super) fn init_hda_devices(&mut self) {
         let hda_devices = crate::io::pci::find_by_class(0x04, 0x03);
         for dev in hda_devices {
              self.log(&alloc::format!(
@@ -177,7 +177,7 @@ impl SystemIntegration {
     }
 
     /// Phase 5: Security integration
-    fn integrate_security(&mut self) -> Result<(), IntegrationError> {
+    pub(super) fn integrate_security(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 5: Security context binding");
 
         // Bind devices to security contexts
@@ -215,7 +215,7 @@ impl SystemIntegration {
     }
 
     /// Add log entry
-    fn log(&mut self, msg: &str) {
+    pub(super) fn log(&mut self, msg: &str) {
         crate::io::log::early_print("[INTEGRATION] ");
         crate::io::log::early_print(msg);
         crate::io::log::early_print("\n");

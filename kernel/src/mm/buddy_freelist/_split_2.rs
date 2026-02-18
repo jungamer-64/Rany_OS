@@ -47,13 +47,13 @@ impl FreeListBuddyAllocator {
     
     /// ページ記述子を取得
     #[inline]
-    fn get_page(&self, frame_idx: usize) -> Option<&PageDescriptor> {
+    pub(super) fn get_page(&self, frame_idx: usize) -> Option<&PageDescriptor> {
         self.page_descriptors.as_ref()?.get(frame_idx)
     }
     
     /// ページ記述子を取得（可変）
     #[inline]
-    fn get_page_mut(&mut self, frame_idx: usize) -> Option<&mut PageDescriptor> {
+    pub(super) fn get_page_mut(&mut self, frame_idx: usize) -> Option<&mut PageDescriptor> {
         self.page_descriptors.as_mut()?.get_mut(frame_idx)
     }
     
@@ -87,7 +87,7 @@ impl FreeListBuddyAllocator {
     /// * `start_frame` - 開始フレームインデックス
     /// * `order` - ブロックオーダー
     /// * `mt` - 設定するモビリティタイプ
-    fn set_pageblocks_mt_for_range(
+    pub(super) fn set_pageblocks_mt_for_range(
         &mut self,
         start_frame: usize,
         order: usize,
@@ -111,7 +111,7 @@ impl FreeListBuddyAllocator {
     // ========================================================================
     
     /// フリーリストの先頭にブロックを追加
-    fn list_add_head(
+    pub(super) fn list_add_head(
         &mut self,
         frame_idx: usize,
         order: usize,
@@ -156,7 +156,7 @@ impl FreeListBuddyAllocator {
     }
     
     /// フリーリストからブロックを削除
-    fn list_del(
+    pub(super) fn list_del(
         &mut self,
         frame_idx: usize,
         order: usize,
@@ -217,7 +217,7 @@ impl FreeListBuddyAllocator {
     }
     
     /// フリーリストの先頭からブロックを取り出す（O(1)）
-    fn list_pop_head(
+    pub(super) fn list_pop_head(
         &mut self,
         order: usize,
         migrate_type: MigrateType,
@@ -238,7 +238,7 @@ impl FreeListBuddyAllocator {
     /// 
     /// 断片化防止のため、あるブロックからページを「盗む」際に、
     /// そのブロック内の他の空きページもまとめて移動させるために使用。
-    fn move_freepages_block(
+    pub(super) fn move_freepages_block(
         &mut self,
         start_frame: usize,
         end_frame: usize,
@@ -367,7 +367,7 @@ impl FreeListBuddyAllocator {
     }
     
     /// 内部割り当て実装
-    fn try_allocate_internal(
+    pub(super) fn try_allocate_internal(
         &mut self,
         order: usize,
         migrate_type: MigrateType,
@@ -391,7 +391,7 @@ impl FreeListBuddyAllocator {
     }
     
     /// ブロックを分割
-    fn split_block(
+    pub(super) fn split_block(
         &mut self,
         frame: FrameIndex,
         from_order: usize,
@@ -456,7 +456,7 @@ impl FreeListBuddyAllocator {
     /// }
     /// ```
     /// これにより、migrate type隔離が強化され、2MB huge page割り当ての成功率が向上します。
-    fn free_one_page(
+    pub(super) fn free_one_page(
         &mut self,
         frame_idx: usize,
         order: usize,
@@ -671,7 +671,7 @@ impl FreeListBuddyAllocator {
     ///
     /// 各フレームに対して、そのアライメントで可能な最大オーダーの
     /// ブロックとして追加する。Linuxの`memblock_free_all`相当。
-    fn add_free_region(&mut self, start_frame: usize, end_frame: usize) {
+    pub(super) fn add_free_region(&mut self, start_frame: usize, end_frame: usize) {
         let mut current = start_frame;
 
         while current < end_frame {
@@ -709,7 +709,7 @@ impl FreeListBuddyAllocator {
     // ========================================================================
 
     /// 必要フレーム数から適切なオーダーを計算
-    fn frames_to_order(frames: usize) -> usize {
+    pub(super) fn frames_to_order(frames: usize) -> usize {
         if frames <= 1 {
             return 0;
         }

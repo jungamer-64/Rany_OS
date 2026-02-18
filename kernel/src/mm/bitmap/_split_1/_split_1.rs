@@ -3,7 +3,7 @@ use super::*;
 impl HugePageBitmap {
     
     /// Allocate 4KB from demoted blocks
-    fn allocate_4k_from_demoted(&self) -> Option<usize> {
+    pub(super) fn allocate_4k_from_demoted(&self) -> Option<usize> {
         for word_idx in 0..self.demoted_2m.len() {
             let word = self.demoted_2m[word_idx].load(Ordering::Acquire);
             if word == 0 {
@@ -30,7 +30,7 @@ impl HugePageBitmap {
     }
     
     /// Allocate a 4KB page from a specific 2MB block
-    fn allocate_from_block(&self, block_idx: usize) -> Option<usize> {
+    pub(super) fn allocate_from_block(&self, block_idx: usize) -> Option<usize> {
         let mask = self.free_word_mask_2m[block_idx].load(Ordering::Acquire);
         if mask == 0 {
             return None;
@@ -48,7 +48,7 @@ impl HugePageBitmap {
     }
     
     /// Demote a fully-free 2MB block for 4KB allocation
-    fn demote_2m_block(&self) -> Option<usize> {
+    pub(super) fn demote_2m_block(&self) -> Option<usize> {
         // Find a fully-free, non-demoted block
         for word_idx in 0..self.bitmap_2m.len() {
             loop {
@@ -447,7 +447,7 @@ impl HugePageBitmap {
     }
 
     /// Update 2MB/1GB hierarchy after freeing pages in a word
-    fn update_2m_hierarchy_on_free(&self, word_idx: usize, freed_count: usize) {
+    pub(super) fn update_2m_hierarchy_on_free(&self, word_idx: usize, freed_count: usize) {
         let start_page = word_idx * BITS_PER_WORD;
         let block_2m = start_page / PAGES_PER_2MB;
         

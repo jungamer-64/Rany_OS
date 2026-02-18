@@ -37,7 +37,7 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// 単一のPT_LOADセグメントを検証・解析する
-    fn validate_load_segment(
+    pub(super) fn validate_load_segment(
         ph: &Elf64ProgramHeader,
         segments: &mut Vec<SegmentInfo>,
         max_addr: &mut usize,
@@ -141,7 +141,7 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// シンボルを解析
-    fn parse_symbols(
+    pub(super) fn parse_symbols(
         &self,
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
@@ -167,7 +167,7 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// シンボルテーブルを処理
-    fn process_symbol_table(
+    pub(super) fn process_symbol_table(
         &self,
         sh: &Elf64SectionHeader,
         exports: &mut Vec<(&'a str, u64)>,
@@ -208,7 +208,7 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// 文字列テーブルを取得
-    fn get_string_table(&self, index: usize) -> Result<&'a [u8], LoadError> {
+    pub(super) fn get_string_table(&self, index: usize) -> Result<&'a [u8], LoadError> {
         let sh_offset = self.header.e_shoff as usize + (index * self.header.e_shentsize as usize);
 
         // 【設計書 2.2】安全なラッパーを使用
@@ -226,7 +226,7 @@ impl<'a> ElfLoader<'a> {
     /// 文字列テーブルから文字列を取得
     ///
     /// 【セキュリティ】シンボル名の長さ制限を適用してDoS攻撃を防止
-    fn get_string(&self, strtab: &'a [u8], offset: usize) -> Option<&'a str> {
+    pub(super) fn get_string(&self, strtab: &'a [u8], offset: usize) -> Option<&'a str> {
         if offset >= strtab.len() {
             return None;
         }
@@ -257,13 +257,13 @@ impl<'a> ElfLoader<'a> {
         struct PkeyGuard(Option<u8>);
         #[cfg(any(feature = "pkey_integration_test", not(test)))]
         impl PkeyGuard {
-            fn new(v: u8) -> Self {
+            pub(super) fn new(v: u8) -> Self {
                 Self(Some(v))
             }
 
             /// Consume the guard and take ownership of the key so it will not be
             /// freed by Drop.
-            fn release(mut self) -> u8 {
+            pub(super) fn release(mut self) -> u8 {
                 let v = self.0.take().unwrap();
                 core::mem::forget(self);
                 v

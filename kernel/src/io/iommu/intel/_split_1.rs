@@ -121,7 +121,7 @@ impl IntelIommuDriver {
         unsafe { self.map_for_dma_with_perms(phys_addr, size, true, true) }
     }
 
-    fn validate_dma_alignment(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError> {
+    pub(super) fn validate_dma_alignment(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError> {
         let align = crate::mm::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
@@ -180,7 +180,7 @@ impl IntelIommuDriver {
         Ok(())
     }
 
-    fn rollback_dma_mappings(
+    pub(super) fn rollback_dma_mappings(
         registry: &'static self::registry::IommuRegistry,
         mapped_indices: &[usize],
         iova: u64,
@@ -202,7 +202,7 @@ impl IntelIommuDriver {
         ok
     }
 
-    fn free_reserved_iovas(
+    pub(super) fn free_reserved_iovas(
         registry: &'static self::registry::IommuRegistry,
         reserved_indices: &[usize],
         iova: u64,
@@ -371,7 +371,7 @@ impl IntelIommuDriver {
     }
 
     /// Execute the actual unmap on a resolved domain, using CQ fast-path when available.
-    fn perform_unmap(
+    pub(super) fn perform_unmap(
         controller: &controller::IommuController,
         domain_arc: &Arc<IommuDomain>,
         iova: u64,
@@ -408,7 +408,7 @@ impl IntelIommuDriver {
     }
 
     /// コマンドキュー経由で非同期 UnmapRegion を実行する
-    async fn try_cq_unmap_async(
+    pub(super) async fn try_cq_unmap_async(
         cq: &crate::io::iommu::cmdqueue::CommandQueue,
         domain_arc: &Arc<IommuDomain>,
         controller: &controller::IommuController,
@@ -429,7 +429,7 @@ impl IntelIommuDriver {
     }
 
     /// 直接 unmap + IOTLB 無効化 (非同期)
-    async fn direct_unmap_invalidate_async(
+    pub(super) async fn direct_unmap_invalidate_async(
         domain_arc: &Arc<IommuDomain>,
         controller: &controller::IommuController,
         iova: u64,

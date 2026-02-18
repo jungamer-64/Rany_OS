@@ -52,7 +52,7 @@ use core::ptr;
 
 /// 赤黒木ノードの色
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Color {

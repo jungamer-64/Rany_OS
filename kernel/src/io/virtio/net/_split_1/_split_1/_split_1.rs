@@ -86,6 +86,7 @@ pub fn handle_virtio_net_interrupt() {
 }
 
 #[cfg(test)]
+#[path = "../../tests.rs"]
 mod tests;
 
 // ============================================================================

@@ -40,9 +40,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// 出力サンプリングレート (Hz)
 mod _split_1;
-use _split_1::*;
+pub use _split_1::*;
 mod _split_2;
-use _split_2::*;
+pub use _split_2::*;
 pub const OUTPUT_SAMPLE_RATE: u32 = 48000;
 
 /// 出力ビット深度

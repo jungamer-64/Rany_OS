@@ -520,5 +520,6 @@ pub fn used_memory_kb() -> u64 {
 // #[alloc_error_handler] removed. Defined in kernel_content.rs
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
 

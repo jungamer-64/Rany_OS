@@ -53,4 +53,5 @@ pub fn get_virtio_input_device() -> Option<Arc<VirtioInputDevice>> {
 // ============================================================================
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;
