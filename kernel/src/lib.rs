@@ -342,6 +342,8 @@ pub mod power;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod loader;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
+pub mod driver_cell;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod console;
 
 #[cfg(not(feature = "full_mm_tests"))]

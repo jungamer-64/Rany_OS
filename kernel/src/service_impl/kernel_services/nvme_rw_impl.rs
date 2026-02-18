@@ -134,6 +134,10 @@ impl KernelServices for ExoKernel {
         }
     }
 
+    fn time_service(&self) -> Option<&dyn kernel_api::time::TimeService> {
+        Some(time_driver::time_service())
+    }
+
     fn gui(&self) -> Option<&dyn kernel_api::gui::GuiServices> {
         #[cfg(not(any(test, feature = "bench")))]
         {
