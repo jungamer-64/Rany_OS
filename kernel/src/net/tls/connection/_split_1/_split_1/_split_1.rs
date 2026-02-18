@@ -88,7 +88,7 @@ impl TlsConnection {
     /// 2. Handshake Secret = HKDF-Extract(Derive-Secret(Early, "derived", ""), DHE)
     /// 3. client/server_handshake_traffic_secret
     /// 4. handshake traffic keys を導出
-    pub(super) fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
+    pub(crate) fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
@@ -172,7 +172,7 @@ impl TlsConnection {
     /// TLS 1.3では ServerHello 以降のハンドシェイクメッセージは
     /// ApplicationData レコードとして暗号化されて送信される。
     /// 復号後、内部コンテントタイプ（最終の非ゼロバイト）に基づいて処理する。
-    pub(super) fn tls13_process_encrypted_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(crate) fn tls13_process_encrypted_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         // ハンドシェイクトラフィック鍵で復号
         let decrypted = self.tls13_decrypt_record(data, true)?;
 

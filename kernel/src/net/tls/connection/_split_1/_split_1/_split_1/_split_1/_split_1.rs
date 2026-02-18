@@ -146,7 +146,7 @@ impl TlsConnection {
     /// TLS 1.3: 復号されたレコードから内部コンテントタイプと平文を分離する
     ///
     /// 戻り値: (content_type, plaintext)
-    pub(super) fn tls13_split_content_type(decrypted: &[u8]) -> Option<(u8, &[u8])> {
+    pub(crate) fn tls13_split_content_type(decrypted: &[u8]) -> Option<(u8, &[u8])> {
         for i in (0..decrypted.len()).rev() {
             if decrypted[i] != 0 {
                 return Some((decrypted[i], &decrypted[..i]));
@@ -160,7 +160,7 @@ impl TlsConnection {
     /// RFC 8446 Section 4.6: Post-Handshake Messages
     /// - NewSessionTicket (type 4)
     /// - KeyUpdate (type 24)
-    pub(super) fn tls13_process_post_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(crate) fn tls13_process_post_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
         let mut offset = 0;
         while offset < data.len() {
             if data.len() - offset < 4 {

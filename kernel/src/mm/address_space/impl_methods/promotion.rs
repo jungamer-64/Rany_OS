@@ -3,7 +3,7 @@ use super::*;
 impl ProcessAddressSpace {
 
     /// Internal unsafe helper for promotion
-    unsafe fn perform_promotion(
+    pub(crate) unsafe fn perform_promotion(
         &self, 
         pt_root: u64, 
         indices: [usize; 4], 
@@ -16,29 +16,29 @@ impl ProcessAddressSpace {
         
         // Level 4 (PML4)
         let pml4_phys = PhysAddr::new(pt_root);
-        let pml4 = &*super::higher_half::phys_to_virt(pml4_phys).as_ptr::<PageTable>();
+        let pml4 = &*crate::mm::higher_half::phys_to_virt(pml4_phys).as_ptr::<PageTable>();
         let pml4e = pml4.entry(indices[0]);
         if !pml4e.is_present() { return false; }
 
         // Level 3 (PDPT)
         let pdpt_phys = pml4e.phys_addr();
-        let pdpt = &*super::higher_half::phys_to_virt(pdpt_phys).as_ptr::<PageTable>();
+        let pdpt = &*crate::mm::higher_half::phys_to_virt(pdpt_phys).as_ptr::<PageTable>();
         let pdpte = pdpt.entry(indices[1]);
         if !pdpte.is_present() { return false; }
         if pdpte.is_huge() { return false; } 
 
         // Level 2 (PD) - This is where we modify
         let pd_phys = pdpte.phys_addr();
-        let pd = &mut *super::higher_half::phys_to_virt(pd_phys).as_mut_ptr::<PageTable>();
+        let pd = &mut *crate::mm::higher_half::phys_to_virt(pd_phys).as_mut_ptr::<PageTable>();
         let pde = pd.entry_mut(indices[2]);
         if !pde.is_present() { return false; }
         if pde.is_huge() { return false; } // Already huge
 
         // Level 1 (PT) - The table we are replacing
         let pt_phys = pde.phys_addr();
-        let pt = &*super::higher_half::phys_to_virt(pt_phys).as_ptr::<PageTable>();
+        let pt = &*crate::mm::higher_half::phys_to_virt(pt_phys).as_ptr::<PageTable>();
         
-        let huge_base_virt = super::mapping::phys_to_virt(huge_phys_x64);
+        let huge_base_virt = crate::mm::mapping::phys_to_virt(huge_phys_x64);
         
         let frames_to_free = Self::copy_pt_entries_to_huge(pt, huge_base_virt);
         
@@ -59,16 +59,16 @@ impl ProcessAddressSpace {
 
     /// Copy all present PT entries to a huge page frame, returning frames to free
     unsafe fn copy_pt_entries_to_huge(
-        pt: &super::higher_half::PageTable,
+        pt: &crate::mm::higher_half::PageTable,
         huge_base_virt: x86_64::VirtAddr,
-    ) -> Vec<super::higher_half::PhysAddr> {
+    ) -> Vec<crate::mm::higher_half::PhysAddr> {
         let mut frames_to_free = Vec::new();
         for i in 0..512 {
             let pte = pt.entry(i);
             if pte.is_present() {
                 let src_phys_hh = pte.phys_addr();
                 let src_phys_x64 = X64PhysAddr::new(src_phys_hh.as_u64());
-                let src_virt = super::mapping::phys_to_virt(src_phys_x64);
+                let src_virt = crate::mm::mapping::phys_to_virt(src_phys_x64);
                 let dst_virt = huge_base_virt + (i as u64 * 4096);
                 core::ptr::copy_nonoverlapping(src_virt.as_ptr::<u8>(), dst_virt.as_mut_ptr::<u8>(), 4096);
                 frames_to_free.push(src_phys_hh);
@@ -80,8 +80,8 @@ impl ProcessAddressSpace {
     /// TLB flush and free old 4K frames + PT frame
     unsafe fn finalize_promotion_cleanup(
         indices: &[usize; 4],
-        frames_to_free: Vec<super::higher_half::PhysAddr>,
-        pt_phys: super::higher_half::PhysAddr,
+        frames_to_free: Vec<crate::mm::higher_half::PhysAddr>,
+        pt_phys: crate::mm::higher_half::PhysAddr,
     ) {
         let vaddr = (indices[0] as u64) << 39 | (indices[1] as u64) << 30 | (indices[2] as u64) << 21;
         let _vaddr_canon = if vaddr & (1 << 47) != 0 { vaddr | 0xFFFF000000000000 } else { vaddr };

@@ -478,7 +478,7 @@ impl IommuDomain {
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
-    pub(crate) pub(crate) unsafe fn deallocate_page_tables_iterative(&mut self) { unsafe {
+    pub(crate) unsafe fn deallocate_page_tables_iterative(&mut self) { unsafe {
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");

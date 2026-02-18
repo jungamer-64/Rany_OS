@@ -47,7 +47,7 @@ pub struct AsyncSyncFuture<'a> {
 }
 
 impl<'a> AsyncSyncFuture<'a> {
-    pub(super) fn new(file: &'a AsyncFile) -> Self {
+    pub(crate) fn new(file: &'a AsyncFile) -> Self {
         Self {
             file,
             started: false,
