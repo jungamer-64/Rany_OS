@@ -78,7 +78,7 @@ impl BuddyFrameAllocator {
         let order = crate::mm::page_flags::get_order(frame_idx) as usize;
 
         // Memcg: ページがmemcgでトラックされている場合はアンチャージ
-        super::memcg::memcg_untrack_and_uncharge(frame_idx, 1);
+        crate::mm::memcg::memcg_untrack_and_uncharge(frame_idx, 1);
 
         self.deallocate_order(frame_idx, order);
     }
@@ -93,7 +93,7 @@ impl BuddyFrameAllocator {
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
-            super::memcg::memcg_untrack_and_uncharge(idx, 1);
+            crate::mm::memcg::memcg_untrack_and_uncharge(idx, 1);
         }
 
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
@@ -110,7 +110,7 @@ impl BuddyFrameAllocator {
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
-            super::memcg::memcg_untrack_and_uncharge(idx, 1);
+            crate::mm::memcg::memcg_untrack_and_uncharge(idx, 1);
         }
 
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);

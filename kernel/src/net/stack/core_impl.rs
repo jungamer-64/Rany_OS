@@ -386,7 +386,7 @@ impl NetworkStack {
     /// Process NDP message
     pub(super) fn process_ndp_message(
         &mut self,
-        msg_type: super::icmpv6::Icmpv6Type,
+        msg_type: crate::net::icmpv6::Icmpv6Type,
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
@@ -602,7 +602,7 @@ impl NetworkStack {
                 // Build IGMP message into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
                 if ip_payload.len() >= 8 {
-                    if let Some(len) = super::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
+                    if let Some(len) = crate::net::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
 

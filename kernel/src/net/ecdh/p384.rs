@@ -816,6 +816,6 @@ pub mod p384 {
     }
 }
 
-// p384::p384 の公開関数を p384 名前空間から再エクスポート
-pub use p384::ecdsa_p384_verify;
-pub use p384::EcdsaError as EcdsaErrorP384;
+// p384モジュール内の公開関数を p384.rs トップレベルで再エクスポート
+pub use self::p384::ecdsa_p384_verify;
+pub use self::p384::EcdsaError as EcdsaErrorP384;

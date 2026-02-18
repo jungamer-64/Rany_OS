@@ -193,14 +193,14 @@ pub(crate) fn unmap_dma_on_completion(
 
 /// 送信用Future
 pub struct SendFuture<'a> {
-    device: &'a VirtioNetDevice,
-    data: *const u8,
-    len: usize,
-    submitted: bool,
-    desc_idx: u16,
-    dma_len: usize,
-    dma_iova: Option<u64>,
-    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) device: &'a VirtioNetDevice,
+    pub(crate) data: *const u8,
+    pub(crate) len: usize,
+    pub(crate) submitted: bool,
+    pub(crate) desc_idx: u16,
+    pub(crate) dma_len: usize,
+    pub(crate) dma_iova: Option<u64>,
+    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> SendFuture<'a> {
@@ -271,13 +271,13 @@ impl<'a> Future for SendFuture<'a> {
 
 /// 受信用Future
 pub struct RecvFuture<'a> {
-    device: &'a VirtioNetDevice,
-    buffer: &'a mut [u8],
-    submitted: bool,
-    desc_idx: u16,
-    dma_len: usize,
-    dma_iova: Option<u64>,
-    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) device: &'a VirtioNetDevice,
+    pub(crate) buffer: &'a mut [u8],
+    pub(crate) submitted: bool,
+    pub(crate) desc_idx: u16,
+    pub(crate) dma_len: usize,
+    pub(crate) dma_iova: Option<u64>,
+    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> RecvFuture<'a> {
@@ -385,13 +385,13 @@ impl<'a> Future for RecvFuture<'a> {
 /// PacketRefの所有権を取得し、DMA転送が完了するまで保持する。
 /// 完了後、PacketRefは自動的にMempoolに返却される。
 pub struct ZeroCopySendFuture<'a> {
-    device: &'a VirtioNetDevice,
-    packet: Option<PacketRef>,
-    submitted: bool,
-    desc_idx: u16,
-    dma_len: usize,
-    dma_iova: Option<u64>,
-    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) device: &'a VirtioNetDevice,
+    pub(crate) packet: Option<PacketRef>,
+    pub(crate) submitted: bool,
+    pub(crate) desc_idx: u16,
+    pub(crate) dma_len: usize,
+    pub(crate) dma_iova: Option<u64>,
+    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> Future for ZeroCopySendFuture<'a> {
@@ -466,14 +466,14 @@ impl<'a> ZeroCopySendFuture<'a> {
 /// Mempoolから直接バッファを割り当て、DMAバッファとして使用。
 /// 受信完了後、PacketRefとしてデータを返却する。
 pub struct ZeroCopyRecvFuture<'a> {
-    device: &'a VirtioNetDevice,
-    pool: &'static crate::net::mempool::Mempool,
-    packet: Option<PacketRef>,
-    submitted: bool,
-    desc_idx: u16,
-    dma_len: usize,
-    dma_iova: Option<u64>,
-    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) device: &'a VirtioNetDevice,
+    pub(crate) pool: &'static crate::net::mempool::Mempool,
+    pub(crate) packet: Option<PacketRef>,
+    pub(crate) submitted: bool,
+    pub(crate) desc_idx: u16,
+    pub(crate) dma_len: usize,
+    pub(crate) dma_iova: Option<u64>,
+    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> ZeroCopyRecvFuture<'a> {

@@ -249,7 +249,7 @@ impl AsyncWrite for TcpStream {
                 }
 
                 // パケットを割り当てて送信キューに追加
-                if let Some(mut packet) = super::mempool::alloc_packet() {
+                if let Some(mut packet) = crate::net::mempool::alloc_packet() {
                     let len = buf.len().min(1460).min(available); // MSS制限 + available
                     if len == 0 {
                         tcb.write_waker = Some(cx.waker().clone());

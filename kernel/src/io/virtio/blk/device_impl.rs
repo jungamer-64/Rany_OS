@@ -295,8 +295,8 @@ impl VirtioBlkDevice {
             let queue_guard = queue.lock();
             while let Some((desc_id, _len)) = queue_guard.poll_completions() {
                 // io_scheduler 管理下のリクエストかチェック
-                let io_sched_req = super::blk_scheduler::get_poll_handler(0)
-                    .and_then(|handler| handler.take_pending(q_idx, desc_id));
+                let io_sched_req = crate::io::virtio::blk_scheduler::get_poll_handler(0)
+                    .and_then(|handler: alloc::sync::Arc<crate::io::virtio::blk_scheduler::VirtioBlkPollHandler>| handler.take_pending(q_idx, desc_id));
 
                 // DMA バッファからステータスを確認
                 let status_ok = if let Some(req_dma) = self.inflight_dma.lock().remove(&desc_id) {

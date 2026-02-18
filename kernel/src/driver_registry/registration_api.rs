@@ -47,10 +47,10 @@ pub fn update_abi_driver(handle: DriverHandle, entry: AbiEntryFn) -> Result<(), 
 
 // Adapter to delegate trait calls to ABI vtable
 pub(crate) struct AbiDriver {
-    vtable: *const AbiDriverVTable,
-    name: alloc::string::String,
-    ctx: AbiDriverContext,
-    exports_fini: Option<extern "C" fn() -> i32>,
+    pub(crate) vtable: *const AbiDriverVTable,
+    pub(crate) name: alloc::string::String,
+    pub(crate) ctx: AbiDriverContext,
+    pub(crate) exports_fini: Option<extern "C" fn() -> i32>,
 }
 
 // Safety: AbiDriver contains a raw pointer to a statically allocated vtable that

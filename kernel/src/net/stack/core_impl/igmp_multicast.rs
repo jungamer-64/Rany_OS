@@ -35,7 +35,7 @@ impl NetworkStack {
                 // Build IGMP leave into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
                 if ip_payload.len() >= 8 {
-                    if let Some(len) = super::igmp::IgmpProcessor::build_leave(group_addr, ip_payload) {
+                    if let Some(len) = crate::net::igmp::IgmpProcessor::build_leave(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
 
@@ -105,7 +105,7 @@ impl NetworkStack {
                     buffer[20..total_len].copy_from_slice(&payload);
                 }
 
-                super::tcp::calculate_tcp_checksum(
+                crate::net::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
                     local.ip.octets(),
                     remote.ip.octets(),
@@ -252,7 +252,7 @@ impl NetworkStack {
                 }
                 
                 // Calculate Checksum
-                super::tcp::calculate_tcp_checksum(
+                crate::net::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
                     local.ip.octets(),
                     remote.ip.octets(),
@@ -577,7 +577,7 @@ impl NetworkStack {
                 let ip_payload = ip_packet.payload_mut();
 
                 // Build UDP packet
-                if let Some(udp_len) = super::udp::UdpProcessor::build_packet(
+                if let Some(udp_len) = crate::net::udp::UdpProcessor::build_packet(
                     ip_payload,
                     config.ipv4.address,
                     src_port,
@@ -648,7 +648,7 @@ impl NetworkStack {
              }
         };
         
-        // super::tcp::send_syn_packet(local_addr, remote_addr, initial_seq);
+        // crate::net::tcp::send_syn_packet(local_addr, remote_addr, initial_seq);
         // DEADLOCK AVOIDANCE: send_syn_packet locks NETWORK_STACK, but we already hold it.
         // We must construct and send manually.
         {
@@ -678,7 +678,7 @@ impl NetworkStack {
             buffer[18..20].fill(0);
             
              // Calculate Checksum
-            super::tcp::calculate_tcp_checksum(
+            crate::net::tcp::calculate_tcp_checksum(
                 &mut buffer[..total_len],
                 local_addr.ip.octets(),
                 remote_addr.ip.octets(),

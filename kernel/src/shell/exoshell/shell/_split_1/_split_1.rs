@@ -1,10 +1,10 @@
 use super::*;
 
 mod _split_1;
-pub use _split_1::*;
+pub use self::_split_1::*;
 impl ExoShell {
 
-    pub(super) async fn materialize_iterator(&mut self, iter: ExoIterator) -> ExoValue<'static> {
+    pub(crate) async fn materialize_iterator(&mut self, iter: ExoIterator) -> ExoValue<'static> {
         let source_expr = match parser::expr_parser::parse_expression(iter.source.as_str()) {
             Ok(expr) => expr,
             Err(err) => {
@@ -488,7 +488,7 @@ impl ExoShell {
     }
 
     /// 互換性エイリアス（利便性のため）- async版
-    pub(super) async fn eval_alias(&mut self, cmd: &str) -> ExoValue<'static> {
+    pub(crate) async fn eval_alias(&mut self, cmd: &str) -> ExoValue<'static> {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         if parts.is_empty() {
             return ExoValue::Nil;

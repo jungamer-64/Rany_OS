@@ -2,7 +2,7 @@ use super::*;
 
 
 mod _split_1;
-pub use _split_1::*;
+pub use self::_split_1::*;
 unsafe impl Send for VirtioGpu {}
 unsafe impl Sync for VirtioGpu {}
 

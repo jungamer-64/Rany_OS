@@ -57,8 +57,8 @@ impl ExoShell {
                 .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
                 .collect();
             match namespace {
-                "net" => super::namespaces::net::NetNamespace::dispatch(method, &args),
-                "cell" => super::namespaces::cell::CellNamespace::dispatch(method, &args),
+                "net" => crate::shell::exoshell::namespaces::net::NetNamespace::dispatch(method, &args),
+                "cell" => crate::shell::exoshell::namespaces::cell::CellNamespace::dispatch(method, &args),
                 _ => ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace))),
             }
         } else {

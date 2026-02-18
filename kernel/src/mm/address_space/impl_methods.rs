@@ -27,20 +27,20 @@ impl ProcessAddressSpace {
         let pt_phys = frame.start_address().as_u64();
         
         // ゼロクリア
-        let virt = super::mapping::phys_to_virt(frame.start_address());
+        let virt = crate::mm::mapping::phys_to_virt(frame.start_address());
         unsafe {
             core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, PAGE_SIZE as usize);
         }
         
         // カーネル空間のマッピングをコピー（Higher Half）
-        let current_pml4_phys = super::higher_half::get_cr3();
+        let current_pml4_phys = crate::mm::higher_half::get_cr3();
         let new_pml4_phys = PhysAddr::new(pt_phys);
         let kernel_pml4_index = VirtAddr::new(KERNEL_SPACE_START).page_table_indices()[0];
         unsafe {
-            let current_pml4 = &*super::higher_half::phys_to_virt(current_pml4_phys)
-                .as_ptr::<super::higher_half::PageTable>();
-            let new_pml4 = &mut *super::higher_half::phys_to_virt(new_pml4_phys)
-                .as_mut_ptr::<super::higher_half::PageTable>();
+            let current_pml4 = &*crate::mm::higher_half::phys_to_virt(current_pml4_phys)
+                .as_ptr::<crate::mm::higher_half::PageTable>();
+            let new_pml4 = &mut *crate::mm::higher_half::phys_to_virt(new_pml4_phys)
+                .as_mut_ptr::<crate::mm::higher_half::PageTable>();
 
             for i in kernel_pml4_index..512 {
                 *new_pml4.entry_mut(i) = *current_pml4.entry(i);
@@ -233,7 +233,7 @@ impl ProcessAddressSpace {
         for i in 0..page_count {
             let page_addr = VirtAddr::new(addr.as_u64() + i * PAGE_SIZE);
             let flags = prot.to_page_flags();
-            unsafe { let _ = super::higher_half::global_update_flags(page_addr, flags); }
+            unsafe { let _ = crate::mm::higher_half::global_update_flags(page_addr, flags); }
         }
 
         Ok(())
@@ -539,14 +539,14 @@ impl ProcessAddressSpace {
         // Manual four-level walk using phys_to_virt
         // Level 4 (PML4)
         let pml4_phys = PhysAddr::new(pt_root);
-        let pml4_ptr = super::higher_half::phys_to_virt(pml4_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pml4_ptr = crate::mm::higher_half::phys_to_virt(pml4_phys).as_mut_ptr::<crate::mm::higher_half::PageTable>();
         let pml4 = unsafe { &mut *pml4_ptr };
         let pml4e = pml4.entry_mut(indices[0]);
         if !pml4e.is_present() { return false; }
 
         // Level 3 (PDPT)
         let pdpt_phys = pml4e.phys_addr();
-        let pdpt_ptr = super::higher_half::phys_to_virt(pdpt_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pdpt_ptr = crate::mm::higher_half::phys_to_virt(pdpt_phys).as_mut_ptr::<crate::mm::higher_half::PageTable>();
         let pdpt = unsafe { &mut *pdpt_ptr };
         let pdpte = pdpt.entry_mut(indices[1]);
         if !pdpte.is_present() { return false; }
@@ -554,7 +554,7 @@ impl ProcessAddressSpace {
 
         // Level 2 (PD)
         let pd_phys = pdpte.phys_addr();
-        let pd_ptr = super::higher_half::phys_to_virt(pd_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pd_ptr = crate::mm::higher_half::phys_to_virt(pd_phys).as_mut_ptr::<crate::mm::higher_half::PageTable>();
         let pd = unsafe { &mut *pd_ptr };
         let pde = pd.entry_mut(indices[2]);
         if !pde.is_present() { return false; }
@@ -562,7 +562,7 @@ impl ProcessAddressSpace {
 
         // Level 1 (PT)
         let pt_phys = pde.phys_addr();
-        let pt_ptr = super::higher_half::phys_to_virt(pt_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pt_ptr = crate::mm::higher_half::phys_to_virt(pt_phys).as_mut_ptr::<crate::mm::higher_half::PageTable>();
         let pt = unsafe { &mut *pt_ptr };
         let pte = pt.entry_mut(indices[3]);
 
@@ -679,7 +679,7 @@ impl ProcessAddressSpace {
             None => return false,
         };
         let huge_phys_x64 = huge_frame.start_address(); // x86_64::PhysAddr
-        let huge_virt = super::mapping::phys_to_virt(huge_phys_x64); // mapping uses x86_64 types
+        let huge_virt = crate::mm::mapping::phys_to_virt(huge_phys_x64); // mapping uses x86_64 types
         // For higher_half functions, convert:
         let _huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
 

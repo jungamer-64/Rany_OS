@@ -73,7 +73,7 @@ impl EcdhKeyPair {
     pub fn generate(group: EcdhGroup) -> Result<Self, EcdhError> {
         match group {
             EcdhGroup::X25519 => {
-                let random_bytes = super::tls::generate_random();
+                let random_bytes = crate::net::tls::generate_random();
                 let sk = X25519SecretKey::new(random_bytes);
                 let pk = sk
                     .recover_public_key()
@@ -81,21 +81,21 @@ impl EcdhKeyPair {
                 Ok(EcdhKeyPair::X25519 { sk, pk })
             }
             EcdhGroup::Secp256r1 => {
-                let mut sk_bytes = super::tls::generate_random();
+                let mut sk_bytes = crate::net::tls::generate_random();
 
                 // 有効なスカラー (1 <= k < n) になるまでリトライ
                 // 通常は最初の試行で成功する
                 let mut attempts = 0;
-                while !p256::scalar_is_valid(&sk_bytes) {
+                while !crate::net::ecdh::scalar_is_valid(&sk_bytes) {
                     attempts += 1;
                     if attempts > 16 {
                         return Err(EcdhError::KeyGenerationFailed);
                     }
-                    sk_bytes = super::tls::generate_random();
+                    sk_bytes = crate::net::tls::generate_random();
                 }
 
-                let pub_point = p256::scalar_base_mul(&sk_bytes);
-                let pk_bytes = p256::encode_uncompressed_point(&pub_point)
+                let pub_point = crate::net::ecdh::scalar_base_mul(&sk_bytes);
+                let pk_bytes = crate::net::ecdh::encode_uncompressed_point(&pub_point)
                     .ok_or(EcdhError::KeyGenerationFailed)?;
 
                 Ok(EcdhKeyPair::Secp256r1 {
@@ -328,7 +328,7 @@ pub mod qemu_tests {
     pub fn ecdh_p256_scalar_mul_base_smoke() -> bool {
         let mut scalar_one = [0u8; 32];
         scalar_one[31] = 1;
-        let result = p256::scalar_base_mul(&scalar_one);
+        let result = crate::net::ecdh::scalar_base_mul(&scalar_one);
         !result.is_identity()
     }
 }

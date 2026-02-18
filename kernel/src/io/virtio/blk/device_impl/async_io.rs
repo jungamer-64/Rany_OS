@@ -13,12 +13,12 @@ mod tests;
 
 /// Future for async read operation
 pub struct ReadFuture<'a> {
-    device: &'a VirtioBlkDevice,
-    sector: u64,
-    buf: &'a mut [u8],
-    submitted: bool,
-    desc_id: Option<u16>,
-    queue_idx: usize,
+    pub(crate) device: &'a VirtioBlkDevice,
+    pub(crate) sector: u64,
+    pub(crate) buf: &'a mut [u8],
+    pub(crate) submitted: bool,
+    pub(crate) desc_id: Option<u16>,
+    pub(crate) queue_idx: usize,
 }
 
 /// デスクリプタ完了をポーリングする
@@ -78,12 +78,12 @@ impl<'a> Future for ReadFuture<'a> {
 
 /// Future for async write operation
 pub struct WriteFuture<'a> {
-    device: &'a VirtioBlkDevice,
-    sector: u64,
-    buf: &'a [u8],
-    submitted: bool,
-    desc_id: Option<u16>,
-    queue_idx: usize,
+    pub(crate) device: &'a VirtioBlkDevice,
+    pub(crate) sector: u64,
+    pub(crate) buf: &'a [u8],
+    pub(crate) submitted: bool,
+    pub(crate) desc_id: Option<u16>,
+    pub(crate) queue_idx: usize,
 }
 
 impl<'a> Future for WriteFuture<'a> {
@@ -149,13 +149,13 @@ pub(crate) fn register_desc_waker(
 
 /// Future for async DMA read operation (uses physical address).
 pub struct DmaReadFuture<'a> {
-    device: &'a VirtioBlkDevice,
-    sector: u64,
-    dma_addr: u64,
-    buf: &'a mut [u8],
-    submitted: bool,
-    desc_id: Option<u16>,
-    queue_idx: usize,
+    pub(crate) device: &'a VirtioBlkDevice,
+    pub(crate) sector: u64,
+    pub(crate) dma_addr: u64,
+    pub(crate) buf: &'a mut [u8],
+    pub(crate) submitted: bool,
+    pub(crate) desc_id: Option<u16>,
+    pub(crate) queue_idx: usize,
 }
 
 impl<'a> Future for DmaReadFuture<'a> {
@@ -199,13 +199,13 @@ impl<'a> Future for DmaReadFuture<'a> {
 
 /// Future for async DMA write operation (uses physical address).
 pub struct DmaWriteFuture<'a> {
-    device: &'a VirtioBlkDevice,
-    sector: u64,
-    dma_addr: u64,
-    buf: &'a [u8],
-    submitted: bool,
-    desc_id: Option<u16>,
-    queue_idx: usize,
+    pub(crate) device: &'a VirtioBlkDevice,
+    pub(crate) sector: u64,
+    pub(crate) dma_addr: u64,
+    pub(crate) buf: &'a [u8],
+    pub(crate) submitted: bool,
+    pub(crate) desc_id: Option<u16>,
+    pub(crate) queue_idx: usize,
 }
 
 impl<'a> Future for DmaWriteFuture<'a> {
@@ -249,10 +249,10 @@ impl<'a> Future for DmaWriteFuture<'a> {
 
 /// Future for async flush operation
 pub struct FlushFuture<'a> {
-    device: &'a VirtioBlkDevice,
-    submitted: bool,
-    desc_id: Option<u16>,
-    queue_idx: usize,
+    pub(crate) device: &'a VirtioBlkDevice,
+    pub(crate) submitted: bool,
+    pub(crate) desc_id: Option<u16>,
+    pub(crate) queue_idx: usize,
 }
 
 impl<'a> Future for FlushFuture<'a> {

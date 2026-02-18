@@ -4,7 +4,7 @@ use super::*;
 
 // カーネル向け実装: 永続ワーカ（non-test）
 #[cfg(any(not(test), feature = "full_mm_tests"))]
-mod kernel_impl {
+pub(crate) mod kernel_impl {
     use super::*;
     use alloc::vec::Vec;
     use spin::Once;

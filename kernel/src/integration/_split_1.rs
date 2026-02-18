@@ -2,9 +2,9 @@ use super::*;
 
 
 mod _split_1;
-pub use _split_1::*;
+pub use self::_split_1::*;
 mod _split_2;
-pub use _split_2::*;
+pub use self::_split_2::*;
 impl SystemIntegration {
     /// Create a new system integration controller
     pub fn new() -> Self {
