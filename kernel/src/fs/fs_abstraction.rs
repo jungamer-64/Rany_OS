@@ -60,8 +60,8 @@ pub use vfs::types::SeekFrom as VfsSeekFrom;
 // ============================================================================
 
 /// Filesystem error types
-mod _split_1;
-pub use _split_1::*;
+mod mount_table;
+pub use mount_table::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FsError {
     /// File not found

@@ -14,8 +14,8 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::domain_system::DomainId;
 use crate::task::process::{ProcessId, process_manager};
 
-mod _split_1;
-pub use _split_1::*;
+mod tests;
+pub use tests::*;
 #[path = "../../compat/posix/procfs_pid.rs"]
 mod pid;
 pub use pid::Pid;

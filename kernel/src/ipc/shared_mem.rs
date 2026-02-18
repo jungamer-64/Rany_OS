@@ -14,8 +14,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// 共有メモリID (Newtype)
-mod _split_1;
-pub use _split_1::*;
+mod shm_info;
+pub use shm_info::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ShmId(u64);
 

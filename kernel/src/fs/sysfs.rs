@@ -11,8 +11,8 @@ use core::sync::atomic::Ordering;
 use crate::domain_system::{get_domain_snapshot, list_domain_snapshots, DomainId, DomainState};
 use crate::fs::{DirEntry, FileAttr, FileMode, FileType};
 
-mod _split_1;
-pub use _split_1::*;
+mod cpuinfo_gen;
+pub use cpuinfo_gen::*;
 const CELL_FIELDS: [&str; 15] = [
     "name",
     "state",
