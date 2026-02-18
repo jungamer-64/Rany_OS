@@ -37,10 +37,10 @@ use crate::security::audit::{AuditEvent, AuditEventType};
 
 /// Fixed-size buffer for numeric formatting (avoids heap allocation).
 /// Maximum hex u64 with "0x" prefix: "0xffffffffffffffff" = 18 chars + null = 19
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod monitor_task;
+pub use monitor_task::*;
+mod audit_convert;
+pub use audit_convert::*;
 const FMT_BUF_SIZE: usize = 24;
 
 /// Format a u64 as hexadecimal string without allocation.

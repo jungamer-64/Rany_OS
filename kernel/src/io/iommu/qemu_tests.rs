@@ -27,8 +27,8 @@ use super::security::{
 };
 use super::tables::{HardwareTable, PageTableScope, SlPte};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
-mod _split_1;
-pub use _split_1::*;
+mod wave2_tests;
+pub use wave2_tests::*;
 
 struct MockSecurityNotifier {
     events: spin::Mutex<[Option<SecurityEvent>; 16]>,

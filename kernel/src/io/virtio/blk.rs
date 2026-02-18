@@ -34,9 +34,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
-mod _split_1;
-pub use _split_1::*;
-use vfs::block::{
+mod device_impl;
+pub use device_impl::*;
+use vfs::block:{
     BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
     BlockResult as VfsBlockResult, DmaInfo, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,
     ZeroCopyBlockDevice,

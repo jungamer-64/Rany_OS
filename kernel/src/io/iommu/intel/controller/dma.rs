@@ -23,8 +23,8 @@ use super::{HardwareContext, IommuController};
 use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
 
-mod _split_1;
-pub use _split_1::*;
+mod domain_manager_impl;
+pub use domain_manager_impl::*;
 fn align_down(value: u64, align: usize) -> u64 {
     let align = align as u64;
     if align == 0 { return value; }

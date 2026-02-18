@@ -20,8 +20,8 @@ use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::sync::{PoisonLock, PoisonLockGuard};
 use spin::{Once, RwLock};
-mod _split_1;
-pub use _split_1::*;
+mod domain_impl;
+pub use domain_impl::*;
 
 // ============================================================================
 // Invalidation Request Pattern

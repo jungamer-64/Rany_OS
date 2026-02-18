@@ -21,8 +21,8 @@ use super::{AmdIommuDriver, AmdIvmdRange, AmdDomainInfo};
 // Alignment helpers
 // ---------------------------------------------------------------------------
 
-mod _split_1;
-pub use _split_1::*;
+mod ivhd_flags;
+pub use ivhd_flags::*;
 pub(super) fn align_down(value: u64, align: usize) -> u64 {
     let align = align as u64;
     if align == 0 { return value; }

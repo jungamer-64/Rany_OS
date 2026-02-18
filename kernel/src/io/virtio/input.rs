@@ -36,8 +36,8 @@ use spin::Mutex;
 ///
 /// The driver writes a `select` and `subsel` value, then reads `size` and
 /// `data` from the config space to obtain device information.
-mod _split_1;
-pub use _split_1::*;
+mod global_init;
+pub use global_init::*;
 
 pub mod config_select {
     /// Unset / no selection

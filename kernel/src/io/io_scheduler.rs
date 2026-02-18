@@ -26,8 +26,8 @@ use spin::{Mutex, RwLock};
 // ============================================================================
 
 /// I/O操作の種類
-mod _split_1;
-pub use _split_1::*;
+mod scheduler_impl;
+pub use scheduler_impl::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoOperationType {
     /// 読み取り

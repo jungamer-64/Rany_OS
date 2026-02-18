@@ -31,8 +31,8 @@ use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 // Import PacketRef for zero-copy
 use crate::net::mempool::PacketRef;
-mod _split_1;
-pub use _split_1::*;
+mod device_impl;
+pub use device_impl::*;
 
 // ============================================================================
 // VirtIO Net Transport Helper Functions
