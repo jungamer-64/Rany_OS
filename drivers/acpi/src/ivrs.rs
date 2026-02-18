@@ -282,9 +282,8 @@ unsafe fn parse_ivhd_device_entries(ptr: *const u8, len: usize) -> Vec<IvhdDevic
     while cursor < end {
         let remaining = end as usize - cursor as usize;
         let entry_type = unsafe { *cursor };
-        let entry_len = match ivhd_entry_length(entry_type, cursor, remaining) {
-            Some(len) => len,
-            None => break,
+        let Some(entry_len) = ivhd_entry_length(entry_type, cursor, remaining) else {
+            break;
         };
 
         if entry_len < mem::size_of::<u32>() || entry_len > remaining {
@@ -372,6 +371,7 @@ unsafe fn parse_ivhd_device_entries(ptr: *const u8, len: usize) -> Vec<IvhdDevic
 }
 
 /// Parse an IVRS table located at `addr` (physical/virtual pointer address)
+#[allow(clippy::similar_names)]
 pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
     let header = unsafe { &*(addr as *const IvrsHeader) };
     if !header.is_valid() {
@@ -414,6 +414,7 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
 }
 
 /// Parse a single IVRS block (IVHD or IVMD) and push to the appropriate list
+#[allow(clippy::similar_names)]
 unsafe fn process_ivrs_block(
     entry_ptr: *const IvrsBlockHeader,
     entry_type: u8,
@@ -422,9 +423,8 @@ unsafe fn process_ivrs_block(
     ivmds: &mut Vec<IvmdInfo>,
 ) {
     if is_ivhd(entry_type) {
-        let header_size = match ivhd_header_size(entry_type) {
-            Some(size) => size,
-            None => return,
+        let Some(header_size) = ivhd_header_size(entry_type) else {
+            return;
         };
         if entry_len < header_size {
             return;
