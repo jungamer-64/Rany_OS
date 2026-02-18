@@ -3,8 +3,8 @@ use crate::graphics::image::Image;
 use alloc::vec;
 use alloc::vec::Vec;
 
-mod _split_1;
-pub use _split_1::*;
+mod wave6_smoke;
+pub use wave6_smoke::*;
 #[inline]
 fn eq_color(c: Color, red: u8, green: u8, blue: u8, alpha: u8) -> bool {
     c.red == red && c.green == green && c.blue == blue && c.alpha == alpha

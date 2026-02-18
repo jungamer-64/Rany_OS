@@ -3,6 +3,7 @@ use super::*;
 
 /// PASID table alloc/free lifecycle: allocate 3 PASIDs, setup SL entries, verify domain IDs, free all.
 mod _split_1;
+pub use _split_1::*;
 pub fn wave3_pasid_table_alloc_free_smoke() -> bool {
     use super::intel::tables::PasidTable;
 

@@ -43,8 +43,8 @@ use super::types::{FixedVec, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 // ============================================================================
 
 /// Default capacity for RemoteFreeRing
-mod _split_1;
-pub use _split_1::*;
+mod quarantine;
+pub use quarantine::*;
 pub const DEFAULT_REMOTE_FREE_CAPACITY: usize = 256;
 
 /// Default capacity for quarantine ring

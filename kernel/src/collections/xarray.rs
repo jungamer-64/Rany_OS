@@ -40,8 +40,6 @@ use core::marker::PhantomData;
 
 /// Radix Tree のファンアウト（各ノードのスロット数）
 /// 64 = 2^6 なので、6ビットずつインデックスを分割
-mod _split_1;
-pub use _split_1::*;
 const XA_CHUNK_SHIFT: usize = 6;
 const XA_CHUNK_SIZE: usize = 1 << XA_CHUNK_SHIFT;
 const XA_CHUNK_MASK: usize = XA_CHUNK_SIZE - 1;

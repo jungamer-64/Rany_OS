@@ -24,10 +24,10 @@ use crate::net::NetworkError;
 extern crate alloc;
 
 /// UDP header
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod types;
+pub use types::*;
+mod socket_table_impl;
+pub use socket_table_impl::*;
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct UdpHeader {

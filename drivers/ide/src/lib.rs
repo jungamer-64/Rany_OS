@@ -26,10 +26,10 @@ use spin::Mutex;
 // ============================================================================
 
 /// IDEコントローラタイプ
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod error;
+pub use error::*;
+mod channel;
+pub use channel::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdeController {
     Primary,

@@ -21,8 +21,8 @@
 use super::{Color, Framebuffer, Rect};
 
 /// QR Code Version 1 Size (21x21)
-mod _split_1;
-pub use _split_1::*;
+mod reed_solomon;
+pub use reed_solomon::*;
 const QR_SIZE: usize = 21;
 /// Maximum characters for Version 1-L Alphanumeric
 const MAX_CHARS: usize = 25;

@@ -7,6 +7,7 @@ use super::*;
 
 /// 非同期読み取りトレイト
 mod _split_1;
+pub use _split_1::*;
 pub trait AsyncRead {
     fn poll_read(
         self: Pin<&mut Self>,

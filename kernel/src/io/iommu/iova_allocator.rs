@@ -18,7 +18,7 @@
 // │                       IovaAllocator                         │
 // │                                                             │
 // │  ┌──────────────────────┐   ┌────────────────────────────┐  │
-// │  │  Quarantine Layer    │   │      Epoch Manager         │  │
+// │  │  Quarantine Layer                     │   │      Epoch Manager         │  │
 // │  │ (Per-CPU Rings)      │   │ (Atomic Sequence Counter)  │  │
 // │  └──────────┬───────────┘   └──────────────┬─────────────┘  │
 // │             │ Free (Delayed)               │ Advance        │

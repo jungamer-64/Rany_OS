@@ -3,6 +3,7 @@ use super::*;
 
 /// TLS handshake parser should reject truncated handshake headers
 mod _split_1;
+pub use _split_1::*;
 #[test_case]
 pub(crate) fn test_process_handshake_truncated_header() {
     let config = TlsConfig::new();

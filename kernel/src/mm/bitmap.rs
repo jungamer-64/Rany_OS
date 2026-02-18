@@ -25,8 +25,8 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 // ============================================================================
 
 /// Bits per word (u64)
-mod _split_1;
-pub use _split_1::*;
+mod huge_page;
+pub use huge_page::*;
 const BITS_PER_WORD: usize = 64;
 
 /// Units covered per L1 summary bit (= bits per detail word)

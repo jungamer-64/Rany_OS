@@ -31,10 +31,10 @@ use crate::mm::slab_registry::{SlabCacheRegistry, SlabFlags};
 use super::remote_free::RemoteFreeRing;
 
 /// Slab内のオブジェクトサイズクラス（2のべき乗）
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod magazine_layer;
+pub use magazine_layer::*;
+mod cache_impl;
+pub use cache_impl::*;
 pub const SLAB_SIZES: [usize; 8] = [8, 16, 32, 64, 128, 256, 512, 1024];
 
 /// 1つのSlabページのサイズ

@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 #[test_case]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
     let width = 3u32;

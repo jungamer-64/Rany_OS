@@ -43,8 +43,8 @@ use super::cow::{page_refcount, page_put};
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
-mod _split_1;
-pub use _split_1::*;
+mod integration;
+pub use integration::*;
 
 // ============================================================================
 // Anonymous Page Setup Helper

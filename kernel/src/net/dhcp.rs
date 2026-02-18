@@ -18,8 +18,8 @@ use super::ethernet::MacAddress;
 use super::ipv4::Ipv4Address;
 
 /// DHCPクライアントポート
-mod _split_1;
-pub use _split_1::*;
+mod client_impl;
+pub use client_impl::*;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 
 /// DHCPサーバーポート

@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 impl<'a> AsyncReadFuture<'a> {
     pub(super) fn new(file: &'a AsyncFile, buf: &'a mut [u8]) -> Self {
         Self {

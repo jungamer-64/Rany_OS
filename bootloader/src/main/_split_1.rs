@@ -3,6 +3,7 @@ use super::*;
 
 /// Process all ELF RELA relocations
 mod _split_1;
+pub use _split_1::*;
 pub(crate) fn process_elf_relocations(
     elf: &xmas_elf::ElfFile,
     segment_info: &[(u64, u64, u64)],

@@ -1,6 +1,7 @@
 use super::*;
 
 mod _split_1;
+pub use _split_1::*;
 impl TlsConnection {
 
     /// データを受信して処理

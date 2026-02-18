@@ -11,6 +11,7 @@ use super::*;
 /// ヤコビアン座標によるポイント演算とBigUintベースの
 /// フィールド算術を実装している。
 mod _split_1;
+pub use _split_1::*;
 #[allow(dead_code)]
 pub mod p384 {
     use alloc::vec::Vec;

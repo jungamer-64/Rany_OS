@@ -41,10 +41,10 @@ use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, 
 use super::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 
 /// 最大オーダー（2^MAX_ORDER * 4KiB = 1GiB）
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod stats_and_flags;
+pub use stats_and_flags::*;
+mod allocator_core;
+pub use allocator_core::*;
 pub const MAX_ORDER: usize = 18;
 
 /// ページモビリティタイプ

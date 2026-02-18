@@ -2,6 +2,7 @@ use super::*;
 
 
 mod _split_1;
+pub use _split_1::*;
 #[test_case]
 pub(crate) fn test_draw_line_matches_naive_32bit_backbuffer() {
     let width = 16u32;

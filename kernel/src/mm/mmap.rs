@@ -15,10 +15,10 @@ use super::address_space::Protection;
 use super::types::{MappedAddress, MappingOffset, MappingSize};
 
 /// マッピングフラグ
-mod _split_1;
-pub use _split_1::*;
-mod _split_2;
-pub use _split_2::*;
+mod api;
+pub use api::*;
+mod manager_impl;
+pub use manager_impl::*;
 #[derive(Debug, Clone, Copy)]
 pub struct MappingFlags {
     /// 共有マッピング

@@ -33,8 +33,8 @@ use crate::sync::PoisonLock;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-mod _split_1;
-pub use _split_1::*;
+mod core_impl;
+pub use core_impl::*;
 
 extern crate alloc;
 

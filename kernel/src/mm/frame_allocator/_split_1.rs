@@ -3,6 +3,7 @@ use super::*;
 
 /// NUMA統計情報
 mod _split_1;
+pub use _split_1::*;
 #[derive(Debug, Clone)]
 pub struct NumaAllocatorStats {
     /// 各ノードの(空きフレーム数, 総フレーム数)
