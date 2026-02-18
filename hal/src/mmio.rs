@@ -88,7 +88,7 @@ fn debug_check_mmio_access<T>(addr: usize) {
     if cfg!(debug_assertions) {
         let align = core::mem::align_of::<T>();
         debug_assert!(addr != 0, "MMIO access with null address");
-        debug_assert!(align == 0 || addr % align == 0, "MMIO access is unaligned");
+        debug_assert!(align == 0 || addr.is_multiple_of(align), "MMIO access is unaligned");
     }
 }
 

@@ -291,12 +291,9 @@ impl CapabilityManager {
         self.expire_grants();
 
         let caller_caps = self.get_capabilities(caller_domain);
-        let mut allowed = false;
-        if self.has_capability(caller_domain, CAP_SYS_ADMIN) {
-            allowed = true;
-        } else if caller_caps.is_permitted(cap) {
-            allowed = true;
-        } else {
+        let mut allowed = self.has_capability(caller_domain, CAP_SYS_ADMIN)
+            || caller_caps.is_permitted(cap);
+        if !allowed {
             let grants = self.grants.lock();
             if grants.iter().any(|t| t.target == caller_domain && t.cap == cap && t.delegatable) {
                 allowed = true;
@@ -326,7 +323,7 @@ impl CapabilityManager {
         };
         self.grants.lock().push(token);
         // Log for host tests
-        log::info!("[SEC] grant token {}: cap {} -> domain {} by {}", token_id, cap, target_domain, caller_domain);
+        log::info!("[SEC] grant token {token_id}: cap {cap} -> domain {target_domain} by {caller_domain}");
         Ok(token_id)
     }
 
@@ -351,8 +348,7 @@ impl CapabilityManager {
                 let mut caps = self.get_capabilities(token.target);
                 caps.drop_permanently(token.cap);
                 self.set_capabilities(token.target, caps);
-                log::info!("[SEC] revoke token {}: cap {} from domain {} by {} (force)", token_id, token.cap, token.target, caller_domain);
-                Ok(())
+                log::info!("[SEC] revoke token {token_id}: cap {} from domain {} by {caller_domain} (force)", token.cap, token.target);
             } else {
                 grants[pos].revoked = true;
                 grants[pos].revoked_at = Some(now);
@@ -361,9 +357,9 @@ impl CapabilityManager {
                 let mut caps = self.get_capabilities(token.target);
                 caps.drop_permanently(token.cap);
                 self.set_capabilities(token.target, caps);
-                log::info!("[SEC] mark token {} revoked: cap {} for domain {} by {}", token_id, token.cap, token.target, caller_domain);
-                Ok(())
+                log::info!("[SEC] mark token {token_id} revoked: cap {} for domain {} by {caller_domain}", token.cap, token.target);
             }
+            Ok(())
         } else {
             Err(CapabilityError::InvalidCapability)
         }
@@ -387,11 +383,9 @@ impl CapabilityManager {
             let mut grants = self.grants.lock();
             let mut i = 0usize;
             while i < grants.len() {
-                if let Some(e) = grants[i].expires {
-                    if e <= now {
-                        expired.push(grants.remove(i));
-                        continue;
-                    }
+                if grants[i].expires.is_some_and(|e| e <= now) {
+                    expired.push(grants.remove(i));
+                    continue;
                 }
                 i += 1;
             }
@@ -532,7 +526,7 @@ impl CapabilityManager {
                 grants.remove(pos);
                 let mut m = self.in_flight.lock();
                 if let Some(p) = m.iter().position(|(tid,_)| *tid == id) { m.remove(p); }
-                log::info!("[SEC] reclaimed token {}", id);
+                log::info!("[SEC] reclaimed token {id}");
             }
         }
     }
@@ -595,8 +589,12 @@ pub fn init() {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
-    use super::*;
+    use super::{
+        CAP_NET_BIND, CAP_NET_RAW, CAP_SYS_ADMIN, CapabilityError, CapabilitySet,
+        ReclamationStatus, expire_grants_now, manager, reclaim_revoked_now,
+    };
 
     pub fn capability_set_smoke() -> bool {
         let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND);
@@ -611,9 +609,8 @@ pub mod qemu_tests {
         let target: u64 = 9002;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
-            Ok(v) => v,
-            Err(_) => return false,
+        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+            return false;
         };
 
         if !manager().has_capability(target, CAP_NET_BIND) {
@@ -662,9 +659,8 @@ pub mod qemu_tests {
         let caller: u64 = 8002;
         let target: u64 = 8102;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(9999), false) {
-            Ok(v) => v,
-            Err(_) => return false,
+        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(9999), false) else {
+            return false;
         };
         if !manager().has_capability(target, CAP_NET_BIND) { return false; }
         let grants = manager().list_grants(target);
@@ -679,9 +675,8 @@ pub mod qemu_tests {
         let caller: u64 = 8003;
         let target: u64 = 8103;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
-            Ok(v) => v,
-            Err(_) => return false,
+        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+            return false;
         };
         if !manager().has_capability(target, CAP_NET_BIND) { return false; }
 
@@ -705,9 +700,8 @@ pub mod qemu_tests {
         let caller: u64 = 8004;
         let target: u64 = 8104;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
-            Ok(v) => v,
-            Err(_) => return false,
+        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+            return false;
         };
 
         // increment in-flight
@@ -738,9 +732,8 @@ pub mod qemu_tests {
         let caller: u64 = 8005;
         let target: u64 = 8105;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let _token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false) {
-            Ok(v) => v,
-            Err(_) => return false,
+        let Ok(_token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false) else {
+            return false;
         };
         if !manager().has_capability(target, CAP_NET_BIND) { return false; }
 
@@ -754,9 +747,8 @@ pub mod qemu_tests {
         let caller: u64 = 8006;
         let target: u64 = 8106;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let token = match manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) {
-            Ok(v) => v,
-            Err(_) => return false,
+        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+            return false;
         };
         if !manager().has_capability(target, CAP_NET_BIND) { return false; }
 

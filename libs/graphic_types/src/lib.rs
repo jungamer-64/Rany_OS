@@ -33,6 +33,7 @@ pub use image::{
 };
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
     pub fn color_ctor_smoke() -> bool {
         crate::types::qemu_tests::color_ctor_smoke()

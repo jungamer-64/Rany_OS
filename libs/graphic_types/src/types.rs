@@ -394,8 +394,9 @@ impl Rect {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::must_use_candidate, clippy::missing_const_for_fn)]
 pub mod qemu_tests {
-    use super::*;
+    use super::{Color, PixelFormat, Point, Rect};
 
     pub fn color_ctor_smoke() -> bool {
         let c = Color::new(255, 128, 64);
@@ -417,15 +418,12 @@ pub mod qemu_tests {
             return false;
         }
 
-        match r1.intersection(&r2) {
-            Some(intersection) => {
-                intersection.x == 50
-                    && intersection.y == 50
-                    && intersection.width == 50
-                    && intersection.height == 50
-            }
-            None => false,
-        }
+        r1.intersection(&r2).map_or(false, |intersection| {
+            intersection.x == 50
+                && intersection.y == 50
+                && intersection.width == 50
+                && intersection.height == 50
+        })
     }
 
     pub fn rect_contains_smoke() -> bool {
