@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use self::_split_1::*;
+mod relocation;
+pub use self::relocation::*;
 impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
     ///

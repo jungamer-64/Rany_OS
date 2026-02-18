@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use self::_split_1::*;
+mod flush_future_impl;
+pub use self::flush_future_impl::*;
 impl<'a> AsyncReadFuture<'a> {
     pub(super) fn new(file: &'a AsyncFile, buf: &'a mut [u8]) -> Self {
         Self {
