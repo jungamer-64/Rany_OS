@@ -47,7 +47,7 @@ impl SegregatedFreeListHeap {
     /// # Safety
     /// - `heap_start` は有効なメモリ領域を指す
     /// - `size` バイトがアクセス可能
-    unsafe fn init(&mut self, heap_start: *mut u8, size: usize) {
+    pub(crate) unsafe fn init(&mut self, heap_start: *mut u8, size: usize) {
         crate::io::log::early_print("[ExHeap] init heap_start=");
         crate::io::log::early_print_hex(heap_start as u64);
         crate::io::log::early_print(" size=");
@@ -321,7 +321,7 @@ impl SegregatedFreeListHeap {
     ///
     /// # Safety
     /// - `ptr` は以前に `allocate` で取得したポインタ
-    unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+    pub(crate) unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
         let addr = ptr.as_ptr() as usize;
 

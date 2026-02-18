@@ -64,7 +64,7 @@ impl TcpProcessor {
     }
 
     /// Check if seq1 is after seq2 (handling wrap-around)
-    pub(super) fn seq_after(seq1: u32, seq2: u32) -> bool {
+    pub(crate) fn seq_after(seq1: u32, seq2: u32) -> bool {
         (seq1.wrapping_sub(seq2) as i32) > 0
     }
 
