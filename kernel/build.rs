@@ -29,7 +29,7 @@ fn main() {
             if let Ok(entries) = std::fs::read_dir(sdk_root) {
                 let mut versions: Vec<_> = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
                     .map(|e| e.file_name().into_string().ok().unwrap_or_default())
                     .filter(|s| s.starts_with("10."))
                     .collect();
@@ -64,7 +64,7 @@ fn main() {
             if let Ok(entries) = std::fs::read_dir(msvc_root) {
                 let mut versions: Vec<_> = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
                     .map(|e| e.file_name().into_string().ok().unwrap_or_default())
                     .collect();
                 versions.sort();

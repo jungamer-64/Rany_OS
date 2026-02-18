@@ -2,9 +2,9 @@
 // libs/sync/src/poison_lock.rs - パニック時自動毒入れロック
 // ============================================================================
 //!
-//! ExoRust設計書 8.4: Poisoning戦略：共有リソースの安全な回収
+//! `ExoRust`設計書 8.4: Poisoning戦略：共有リソースの安全な回収
 //!
-//! ドメインがMutexを保持したままパニックすると、そのロックを待機している
+//! ドメインが`Mutex`を保持したままパニックすると、そのロックを待機している
 //! 他のドメインがデッドロックに陥る問題を解決する。
 //!
 //! `PoisonLock<T>`は、ロックを保持中にパニックが発生すると自動的に
@@ -15,7 +15,7 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::Backoff;
 
@@ -25,7 +25,7 @@ use crate::Backoff;
 
 /// ロックが毒入れされた場合のエラー
 ///
-/// 設計書 8.4: 次にそのMutexをロックしようとしたドメインには、
+/// 設計書 8.4: 次にその`Mutex`をロックしようとしたドメインには、
 /// `Result::Err(PoisonError)` が返される。
 #[derive(Debug)]
 pub struct PoisonError<T> {
@@ -35,7 +35,7 @@ pub struct PoisonError<T> {
 
 impl<T> PoisonError<T> {
     /// 新しいPoisonErrorを作成
-    pub(crate) fn new(guard: T) -> Self {
+    pub(crate) const fn new(guard: T) -> Self {
         Self { guard }
     }
 
@@ -49,7 +49,7 @@ impl<T> PoisonError<T> {
     }
 
     /// 毒入れされたデータへの参照を取得
-    pub fn get_ref(&self) -> &T {
+    pub const fn get_ref(&self) -> &T {
         &self.guard
     }
 

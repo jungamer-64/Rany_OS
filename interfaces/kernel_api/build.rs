@@ -44,7 +44,7 @@ fn calculate_abi_hash(content: &str) -> u64 {
     // 2. Hash `#[repr(...)]` attributes only for ABI-critical declarations.
     // This avoids unrelated repr additions from changing DRIVER_TYPE_HASH.
     for line in repr_lines_for_decls(
-        &content,
+        content,
         &[
             "pub struct DriverContext",
             "pub struct DriverVTable",

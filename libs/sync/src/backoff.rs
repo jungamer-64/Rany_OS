@@ -4,8 +4,6 @@
 //!
 //! 指数バックオフアルゴリズム
 
-use core::sync::atomic::{spin_loop_hint, AtomicU32, Ordering};
-
 /// 指数バックオフ
 ///
 /// スピンロックの競合時に、徐々にスリープ時間を増やすことで
@@ -40,13 +38,14 @@ impl Backoff {
 
     /// バックオフ状態をリセット
     #[inline]
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.step = 0;
     }
 
     /// 現在のステップ数を取得
     #[inline]
-    pub fn step(&self) -> u32 {
+    #[must_use]
+    pub const fn step(&self) -> u32 {
         self.step
     }
 }
