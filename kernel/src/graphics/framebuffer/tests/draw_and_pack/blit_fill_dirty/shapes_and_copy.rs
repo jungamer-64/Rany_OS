@@ -4,23 +4,8 @@ use super::*;
 mod simd_pack_32bit;
 #[test_case]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
-    let width = 3u32;
-    let height = 1u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 2,
-        format: PixelFormat::Rgb565,
-        bpp: 16,
-    };
-
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-
-    let mut fb = unsafe { Framebuffer::new(info2) };
-    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+    let info = fb_info(3, 1, PixelFormat::Rgb565);
+    let (mut fb, mut vram) = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -41,23 +26,12 @@ pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
 
 #[test_case]
 pub(crate) fn test_copy_rect_backbuffer_same_row_overlap() {
-    let width = 8u32;
-    let height = 1u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
-
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+    let info = fb_info(8, 1, PixelFormat::Bgra8888);
+    let mut fb = make_backbuf_fb(&info);
 
     {
         let back = fb.back_buffer.as_mut().unwrap();
-        for x in 0..width as usize {
+        for x in 0..info.width as usize {
             back[x] = Color::with_alpha(x as u8, 0, 0, 255).to_u32();
         }
     }
@@ -75,25 +49,14 @@ pub(crate) fn test_copy_rect_backbuffer_same_row_overlap() {
 
 #[test_case]
 pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
-    let width = 4u32;
-    let height = 4u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
-
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+    let info = fb_info(4, 4, PixelFormat::Bgra8888);
+    let mut fb = make_backbuf_fb(&info);
 
     {
         let back = fb.back_buffer.as_mut().unwrap();
-        for y in 0..height as usize {
-            for x in 0..width as usize {
-                let idx = y * width as usize + x;
+        for y in 0..info.height as usize {
+            for x in 0..info.width as usize {
+                let idx = y * info.width as usize + x;
                 let red = (y * 10 + x) as u8;
                 back[idx] = Color::with_alpha(red, 0, 0, 255).to_u32();
             }
@@ -101,35 +64,22 @@ pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
     }
 
     // vertical non-overlap copy: row0 -> row2
-    fb.copy_rect(Rect::new(0, 0, width, 1), 0, 2);
+    fb.copy_rect(Rect::new(0, 0, info.width, 1), 0, 2);
 
     let back = fb.back_buffer.as_ref().unwrap();
-    for x in 0..width as usize {
+    for x in 0..info.width as usize {
         let src = Color::from_u32(back[x]);
-        let dst = Color::from_u32(back[2 * width as usize + x]);
+        let dst = Color::from_u32(back[2 * info.width as usize + x]);
         assert_eq!(dst.red, src.red, "x={}", x);
     }
 }
 
 #[test_case]
 pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
-    let width = 8u32;
-    let height = 1u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
+    let info = fb_info(8, 1, PixelFormat::Bgra8888);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
 
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
-
-    for x in 0..width as i32 {
+    for x in 0..info.width as i32 {
         fb.set_pixel(x, 0, Color::with_alpha(x as u8, 0, 0, 255));
     }
 
@@ -146,19 +96,10 @@ pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
 
 #[test_case]
 pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
-    let width = 6u32;
-    let height = 4u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
-
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+    let info = fb_info(6, 4, PixelFormat::Bgra8888);
+    let mut fb = make_backbuf_fb(&info);
+    let width = info.width;
+    let height = info.height;
 
     let c = Color::with_alpha(12, 34, 56, 255);
     fb.fill_rect(Rect::new(0, 1, width, 2), c);
@@ -180,22 +121,8 @@ pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
 
 #[test_case]
 pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
-    let width = 8u32;
-    let height = 16u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 2,
-        format: PixelFormat::Rgb565,
-        bpp: 16,
-    };
-
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let info = fb_info(8, 16, PixelFormat::Rgb565);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
     let fg = Color::with_alpha(255, 0, 0, 255); // red
     let bg = Color::with_alpha(0, 0, 0, 255); // black
 
@@ -217,27 +144,14 @@ pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
 
 #[test_case]
 pub(crate) fn test_clear_rgb565_mmio() {
-    let width = 6u32;
-    let height = 3u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 2,
-        format: PixelFormat::Rgb565,
-        bpp: 16,
-    };
-
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let info = fb_info(6, 3, PixelFormat::Rgb565);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
 
     fb.clear(Color::BLUE);
 
     // BLUE in RGB565 little-endian: 0x001F -> [0x1F, 0x00]
-    for y in 0..height as usize {
-        for x in 0..width as usize {
+    for y in 0..info.height as usize {
+        for x in 0..info.width as usize {
             let off = y * info.stride as usize + x * 2;
             assert_eq!(vram[off], 0x1F, "x={}, y={}", x, y);
             assert_eq!(vram[off + 1], 0x00, "x={}, y={}", x, y);
@@ -247,21 +161,8 @@ pub(crate) fn test_clear_rgb565_mmio() {
 
 #[test_case]
 pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
-    let width = 8u32;
-    let height = 16u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 2,
-        format: PixelFormat::Rgb565,
-        bpp: 16,
-    };
-
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let info = fb_info(8, 16, PixelFormat::Rgb565);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
 
     let fg = Color::RED;
     let bg = Color::BLACK;
@@ -284,18 +185,8 @@ pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
 /// draw_circle: symmetric 8-pixel pattern check on 32-bit backbuffer
 #[test_case]
 pub(crate) fn test_draw_circle_symmetric_32bit_backbuffer() {
-    let width = 32u32;
-    let height = 32u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+    let info = fb_info(32, 32, PixelFormat::Bgra8888);
+    let mut fb = make_backbuf_fb(&info);
 
     let color = Color::with_alpha(0, 255, 0, 255);
     fb.draw_circle(16, 16, 8, color);
@@ -304,8 +195,8 @@ pub(crate) fn test_draw_circle_symmetric_32bit_backbuffer() {
     // pixels at all 8 mirrored positions.
     let buf = fb.back_buffer.as_ref().unwrap();
     let px = |x: i32, y: i32| -> bool {
-        if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 { return false; }
-        buf[y as usize * width as usize + x as usize] != 0
+        if x < 0 || y < 0 || x >= info.width as i32 || y >= info.height as i32 { return false; }
+        buf[y as usize * info.width as usize + x as usize] != 0
     };
 
     let mut any_on = false;
@@ -329,18 +220,9 @@ pub(crate) fn test_draw_circle_symmetric_32bit_backbuffer() {
 /// fill_circle: all pixels inside radius must be set, no gaps
 #[test_case]
 pub(crate) fn test_fill_circle_no_gaps_32bit_backbuffer() {
-    let width = 32u32;
-    let height = 32u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+    let info = fb_info(32, 32, PixelFormat::Bgra8888);
+    let mut fb = make_backbuf_fb(&info);
+    let width = info.width;
 
     let color = Color::with_alpha(0, 0, 255, 255);
     let cx = 16i32;
@@ -364,18 +246,9 @@ pub(crate) fn test_fill_circle_no_gaps_32bit_backbuffer() {
 /// draw_rect: outline must have exactly the border pixels set
 #[test_case]
 pub(crate) fn test_draw_rect_outline_32bit_backbuffer() {
-    let width = 20u32;
-    let height = 20u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    fb.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
+    let info = fb_info(20, 20, PixelFormat::Bgra8888);
+    let mut fb = make_backbuf_fb(&info);
+    let width = info.width;
 
     let color = Color::with_alpha(255, 0, 0, 255);
     fb.draw_rect(Rect::new(2, 3, 10, 8), color);
@@ -404,26 +277,10 @@ pub(crate) fn test_draw_rect_outline_32bit_backbuffer() {
 /// draw_line steep: matches naive Bresenham on MMIO (RGB565)
 #[test_case]
 pub(crate) fn test_draw_line_steep_rgb565_mmio() {
-    let width = 20u32;
-    let height = 20u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 2,
-        format: PixelFormat::Rgb565,
-        bpp: 16,
-    };
+    let info = fb_info(20, 20, PixelFormat::Rgb565);
 
-    let mut vram_opt = vec![0u8; info.size()];
-    let mut vram_naive = vec![0u8; info.size()];
-    let mut info_opt = info.clone();
-    info_opt.address = vram_opt.as_mut_ptr() as u64;
-    let mut info_naive = info.clone();
-    info_naive.address = vram_naive.as_mut_ptr() as u64;
-
-    let mut fb_opt = unsafe { Framebuffer::new(info_opt) };
-    let mut fb_naive = unsafe { Framebuffer::new(info_naive) };
+    let (mut fb_opt, mut vram_opt) = make_mmio_fb(&info);
+    let (mut fb_naive, mut vram_naive) = make_mmio_fb(&info);
 
     let color = Color::with_alpha(0, 255, 0, 255);
 
@@ -465,21 +322,9 @@ pub(crate) fn test_draw_line_steep_rgb565_mmio() {
 /// copy_rect overlapping on MMIO: verify data integrity
 #[test_case]
 pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
-    let width = 16u32;
-    let height = 16u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 4,
-        format: PixelFormat::Bgra8888,
-        bpp: 32,
-    };
-
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let info = fb_info(16, 16, PixelFormat::Bgra8888);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let width = info.width;
 
     // Paint a 4x4 block at (0,0) with known pattern
     for y in 0..4u32 {
@@ -514,21 +359,8 @@ pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
 /// draw_text 24bpp single-pass MMIO: verify fg/bg pattern for '!'
 #[test_case]
 pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
-    let width = 8u32;
-    let height = 16u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 3,
-        format: PixelFormat::Bgr888,
-        bpp: 24,
-    };
-
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let info = fb_info(8, 16, PixelFormat::Bgr888);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
 
     let fg = Color::with_alpha(255, 0, 0, 255); // red
     let bg = Color::with_alpha(0, 0, 255, 255); // blue
@@ -549,21 +381,8 @@ pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
 /// draw_char_8x16 24bpp MMIO single-pass: verify fg/bg pattern
 #[test_case]
 pub(crate) fn test_draw_char_8x16_24bit_mmio() {
-    let width = 8u32;
-    let height = 16u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 3,
-        format: PixelFormat::Bgr888,
-        bpp: 24,
-    };
-
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let info = fb_info(8, 16, PixelFormat::Bgr888);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
 
     let fg = Color::GREEN;
     let bg = Color::BLACK;
@@ -583,28 +402,15 @@ pub(crate) fn test_draw_char_8x16_24bit_mmio() {
 /// draw_image 16bpp MMIO: blit_mmio_row RGB565 path
 #[test_case]
 pub(crate) fn test_draw_image_rgb565_mmio() {
-    let width = 4u32;
-    let height = 2u32;
-    let info = FramebufferInfo {
-        address: 0,
-        width,
-        height,
-        stride: width * 2,
-        format: PixelFormat::Rgb565,
-        bpp: 16,
-    };
+    let info = fb_info(4, 2, PixelFormat::Rgb565);
+    let (mut fb, mut vram) = make_mmio_fb(&info);
 
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
-
-    let img = Image::filled(width, height, Color::with_alpha(255, 0, 0, 255));
+    let img = Image::filled(info.width, info.height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
 
     // Red in RGB565 = 0xF800, LE = [0x00, 0xF8]
-    for y in 0..height as usize {
-        for x in 0..width as usize {
+    for y in 0..info.height as usize {
+        for x in 0..info.width as usize {
             let off = y * info.stride as usize + x * 2;
             assert_eq!(&vram[off..off + 2], &[0x00, 0xF8], "pixel ({x},{y})");
         }

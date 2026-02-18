@@ -1,6 +1,120 @@
 use super::*;
 use crate::graphics::image::Image;
 
+// ---- Shared helpers to reduce duplication across FB test files ----
+
+/// Build a `FramebufferInfo` for the given format.
+fn fb_info(w: u32, h: u32, fmt: PixelFormat) -> FramebufferInfo {
+    let bpp: u8 = match fmt {
+        PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => 32,
+        PixelFormat::Bgr888 | PixelFormat::Rgb888 => 24,
+        PixelFormat::Rgb565 => 16,
+    };
+    FramebufferInfo {
+        address: 0,
+        width: w,
+        height: h,
+        stride: w * (bpp as u32 / 8),
+        format: fmt,
+        bpp,
+    }
+}
+
+/// Create an MMIO-backed Framebuffer and its backing memory.
+/// Returns `(framebuffer, backing_vec)`. The Vec must outlive the Framebuffer.
+fn make_mmio_fb(info: &FramebufferInfo) -> (Framebuffer, Vec<u8>) {
+    let mut mem = vec![0u8; info.size()];
+    let addr = mem.as_mut_ptr() as u64;
+    let mut info2 = info.clone();
+    info2.address = addr;
+    let fb = unsafe { Framebuffer::new(info2) };
+    (fb, mem)
+}
+
+/// Create a double-buffered Framebuffer (no MMIO memory).
+fn make_backbuf_fb(info: &FramebufferInfo) -> Framebuffer {
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let back = vec![0u32; (info.width * info.height) as usize];
+    fb.enable_double_buffering_from_vec(back);
+    fb
+}
+
+/// Naive Bresenham line draw for comparison testing.
+fn draw_line_naive(fb: &mut Framebuffer, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
+    let mut x = x1;
+    let mut y = y1;
+    let dx = (x2 - x1).abs();
+    let dy = -(y2 - y1).abs();
+    let sx = if x1 < x2 { 1 } else { -1 };
+    let sy = if y1 < y2 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        fb.set_pixel(x, y, color);
+        if x == x2 && y == y2 { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x += sx; }
+        if e2 <= dx { err += dx; y += sy; }
+    }
+}
+
+/// Compare SIMD pack function against scalar reference for multiple sizes.
+/// `simd_fn` receives (src_ptr, dst_ptr, byte_len).
+/// `scalar_fn` receives (&[u8], &mut [u8]).
+fn assert_simd_matches_scalar(
+    sizes: &[usize],
+    seed_mul: usize,
+    simd_fn: unsafe fn(*const u8, *mut u8, usize),
+    scalar_fn: fn(&[u8], &mut [u8]),
+) {
+    for &len in sizes {
+        let mut src = vec![0u8; len * 4];
+        for (i, b) in src.iter_mut().enumerate() {
+            *b = (i * seed_mul % 251) as u8;
+        }
+        let mut dst_simd = vec![0u8; src.len()];
+        let mut dst_scalar = vec![0u8; src.len()];
+        unsafe { simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), src.len()); }
+        scalar_fn(&src, &mut dst_scalar);
+        assert_eq!(dst_simd, dst_scalar, "mismatch at size {len}");
+    }
+}
+
+/// Create a framebuffer with MMIO backing AND a backbuffer (for flush tests).
+fn make_flush_fb(info: &FramebufferInfo) -> (Framebuffer, Vec<u8>) {
+    let (mut fb, vram) = make_mmio_fb(info);
+    fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
+    (fb, vram)
+}
+
+/// Compare SIMD BGR24 8-pixel pack against scalar reference.
+fn assert_bgr24_8px_matches_scalar(
+    seed_mul: usize,
+    is_bgr: bool,
+    simd_fn: unsafe fn(*const u8, *mut u8, bool),
+) {
+    let len = 8usize;
+    let mut src = vec![0u8; len * 4];
+    for (i, b) in src.iter_mut().enumerate() {
+        *b = (i * seed_mul % 251) as u8;
+    }
+    let mut dst_simd = vec![0u8; len * 3];
+    unsafe { simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), is_bgr); }
+    let mut dst_scalar = vec![0u8; len * 3];
+    for p in 0..len {
+        let s = p * 4;
+        if is_bgr {
+            dst_scalar[p * 3] = src[s + 2];
+            dst_scalar[p * 3 + 1] = src[s + 1];
+            dst_scalar[p * 3 + 2] = src[s];
+        } else {
+            dst_scalar[p * 3] = src[s];
+            dst_scalar[p * 3 + 1] = src[s + 1];
+            dst_scalar[p * 3 + 2] = src[s + 2];
+        }
+    }
+    assert_eq!(dst_simd, dst_scalar);
+}
+
 mod draw_and_pack;
 pub use draw_and_pack::*;
 #[test_case]
