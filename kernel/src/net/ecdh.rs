@@ -85,7 +85,7 @@ pub mod p256 {
     ];
 
     // n = FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
-    const N: [u64; 4] = [
+    pub(crate) const N: [u64; 4] = [
         0xF3B9CAC2FC632551,
         0xBCE6FAADA7179E84,
         0xFFFFFFFFFFFFFFFF,
@@ -630,4 +630,8 @@ pub mod p256 {
     pub use crate::net::ecdh::parse_uncompressed_point;
     pub use crate::net::ecdh::encode_uncompressed_point;
     pub use crate::net::ecdh::EcdsaError;
+    pub use crate::net::ecdh::scalar_is_valid;
+    pub use crate::net::ecdh::scalar_base_mul;
+    pub use crate::net::ecdh::scalar_mul_mod_n;
+    pub use crate::net::ecdh::scalar_inv_mod_n;
 }
