@@ -28,15 +28,22 @@ pub use dmar::DmarInfo;
 pub use ivrs::{IvmdInfo, IvrsInfo};
 
 #[cfg(feature = "qemu-test-export")]
+#[allow(clippy::cast_possible_truncation)]
 pub mod qemu_tests {
     use alloc::vec::Vec;
     use core::mem;
 
-    use crate::dmar::*;
-    use crate::ivrs::*;
-    use crate::tables::*;
+    use crate::dmar::{DmarHeader, DmarRemappingHeader, RmrrWrapper, parse_dmar};
+    use crate::ivrs::{
+        IVHD_DEV_ALIAS, IVHD_DEV_ALIAS_RANGE, IVHD_DEV_EXT_SELECT,
+        IVHD_DEV_EXT_SELECT_RANGE, IVHD_DEV_RANGE_END, IVHD_DEV_SELECT,
+        IVHD_DEV_SELECT_RANGE_START, IVHD_TYPE_10, IVMD_FLAG_IR, IVMD_FLAG_IW,
+        IVMD_FLAG_UNITY_MAP, IVMD_TYPE_RANGE, IvhdDeviceEntry, IvhdHeader,
+        IvmdHeader, IvrsBlockHeader, IvrsHeader, parse_ivrs,
+    };
+    use crate::tables::{AcpiSdtHeader, MadtEntryType};
 
-    pub fn madt_entry_type_smoke() -> bool {
+    pub const fn madt_entry_type_smoke() -> bool {
         MadtEntryType::LocalApic as u8 == 0
             && MadtEntryType::IoApic as u8 == 1
     }
@@ -50,6 +57,7 @@ pub mod qemu_tests {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn ivrs_parse_ivhd_smoke() -> bool {
         let mut entries = Vec::new();
 
@@ -59,8 +67,8 @@ pub mod qemu_tests {
         push_entry(&mut entries, IVHD_DEV_ALIAS, 0x0300, 0x22, Some((0x0310u32) << 8));
         push_entry(&mut entries, IVHD_DEV_ALIAS_RANGE, 0x0400, 0x33, Some((0x0410u32) << 8));
         push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0402, 0x00, None);
-        push_entry(&mut entries, IVHD_DEV_EXT_SELECT, 0x0500, 0x44, Some(0xaabbccdd));
-        push_entry(&mut entries, IVHD_DEV_EXT_SELECT_RANGE, 0x0600, 0x55, Some(0x11223344));
+        push_entry(&mut entries, IVHD_DEV_EXT_SELECT, 0x0500, 0x44, Some(0xaabb_ccdd));
+        push_entry(&mut entries, IVHD_DEV_EXT_SELECT_RANGE, 0x0600, 0x55, Some(0x1122_3344));
         push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0602, 0x00, None);
 
         let ivhd_len = mem::size_of::<IvhdHeader>() + entries.len();
@@ -72,7 +80,7 @@ pub mod qemu_tests {
             },
             device_id: 0,
             capability_offset: 0,
-            iommu_base: 0xfee00000,
+            iommu_base: 0xfee0_0000,
             pci_segment: 0,
             iommu_info: 0,
             iommu_feature: 0,
@@ -98,7 +106,7 @@ pub mod qemu_tests {
         let mut buf = Vec::new();
         let ivrs_bytes = unsafe {
             core::slice::from_raw_parts(
-                &ivrs as *const IvrsHeader as *const u8,
+                (&raw const ivrs).cast::<u8>(),
                 mem::size_of::<IvrsHeader>(),
             )
         };
@@ -106,17 +114,18 @@ pub mod qemu_tests {
 
         let ivhd_bytes = unsafe {
             core::slice::from_raw_parts(
-                &ivhd as *const IvhdHeader as *const u8,
+                (&raw const ivhd).cast::<u8>(),
                 mem::size_of::<IvhdHeader>(),
             )
         };
         buf.extend_from_slice(ivhd_bytes);
         buf.extend_from_slice(&entries);
 
-        let info = match unsafe { parse_ivrs(buf.as_ptr() as usize) } {
-            Ok(info) => info,
-            Err(_) => return false,
+        let Ok(info) = (unsafe { parse_ivrs(buf.as_ptr() as usize) }) else {
+            return false;
         };
+
+        if !info.ivhds.is_empty() { return false; }
 
         if info.ivhds.len() != 1 { return false; }
         if !info.ivmds.is_empty() { return false; }
@@ -155,7 +164,7 @@ pub mod qemu_tests {
 
         match &ivhd_info.device_entries[4] {
             IvhdDeviceEntry::ExtSelect { devid, flags, ext_flags } => {
-                if *devid != 0x0500 || *flags != 0x44 || *ext_flags != 0xaabbccdd {
+                if *devid != 0x0500 || *flags != 0x44 || *ext_flags != 0xaabb_ccdd {
                     return false;
                 }
             }
@@ -165,7 +174,7 @@ pub mod qemu_tests {
         match &ivhd_info.device_entries[5] {
             IvhdDeviceEntry::ExtRange { start, end, flags, ext_flags } => {
                 if *start != 0x0600 || *end != 0x0602 || *flags != 0x55
-                    || *ext_flags != 0x11223344
+                    || *ext_flags != 0x1122_3344
                 {
                     return false;
                 }
@@ -211,7 +220,7 @@ pub mod qemu_tests {
         let mut buf = Vec::new();
         let ivrs_bytes = unsafe {
             core::slice::from_raw_parts(
-                &ivrs as *const IvrsHeader as *const u8,
+                (&raw const ivrs).cast::<u8>(),
                 mem::size_of::<IvrsHeader>(),
             )
         };
@@ -219,18 +228,15 @@ pub mod qemu_tests {
 
         let ivmd_bytes = unsafe {
             core::slice::from_raw_parts(
-                &ivmd as *const IvmdHeader as *const u8,
+                (&raw const ivmd).cast::<u8>(),
                 mem::size_of::<IvmdHeader>(),
             )
         };
         buf.extend_from_slice(ivmd_bytes);
 
-        let info = match unsafe { parse_ivrs(buf.as_ptr() as usize) } {
-            Ok(info) => info,
-            Err(_) => return false,
+        let Ok(info) = (unsafe { parse_ivrs(buf.as_ptr() as usize) }) else {
+            return false;
         };
-
-        if !info.ivhds.is_empty() { return false; }
         if info.ivmds.len() != 1 { return false; }
 
         let ivmd_info = &info.ivmds[0];
@@ -266,7 +272,7 @@ pub mod qemu_tests {
         let mut buf = Vec::new();
         let dmar_bytes = unsafe {
             core::slice::from_raw_parts(
-                &dmar as *const DmarHeader as *const u8,
+                (&raw const dmar).cast::<u8>(),
                 mem::size_of::<DmarHeader>(),
             )
         };
@@ -284,7 +290,7 @@ pub mod qemu_tests {
         };
         let rmrr_bytes = unsafe {
             core::slice::from_raw_parts(
-                &rmrr as *const RmrrWrapper as *const u8,
+                (&raw const rmrr).cast::<u8>(),
                 mem::size_of::<RmrrWrapper>(),
             )
         };
@@ -295,9 +301,8 @@ pub mod qemu_tests {
         let len_bytes = total_len.to_le_bytes();
         buf[4..8].copy_from_slice(&len_bytes);
 
-        let info = match unsafe { parse_dmar(buf.as_ptr() as usize) } {
-            Ok(info) => info,
-            Err(_) => return false,
+        let Ok(info) = (unsafe { parse_dmar(buf.as_ptr() as usize) }) else {
+            return false;
         };
 
         info.rmrr_regions.len() == 1
