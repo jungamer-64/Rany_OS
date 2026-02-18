@@ -6,8 +6,8 @@ use super::*;
 // ============================================================================
 
 /// 指定範囲のキャッシュをフラッシュ（DMA転送開始前 CPU→デバイス）
-mod _split_1;
-pub use _split_1::*;
+mod iommu_buffer;
+pub use iommu_buffer::*;
 pub fn flush_cache_range(addr: *const u8, size: usize) {
     let start = addr as usize;
     let end = start.checked_add(size).unwrap_or(usize::MAX);

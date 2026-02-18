@@ -5,8 +5,8 @@ use super::*;
 // Async Futures
 // ============================================================================
 
-mod _split_1;
-pub use _split_1::*;
+mod interrupt_sync;
+pub use interrupt_sync::*;
 #[cfg(test)]
 #[path = "../tests.rs"]
 mod tests;

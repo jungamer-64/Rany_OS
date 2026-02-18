@@ -154,7 +154,7 @@ impl MglruTuningStats {
 pub struct PageReclaimController {
     /// NUMAノードごとのLRUリスト
     /// インデックス = NUMAノードID
-    lru_lists: [MglruList; 8],
+    pub(crate) lru_lists: [MglruList; 8],
     
     /// ウォーターマーク
     watermarks: Watermarks,

@@ -83,7 +83,7 @@ pub fn shm_unlink(name: &str) -> Result<(), ShmError> {
 // Zero-Copy Shared Memory - 設計書 5.3: RRef<T>によるゼロコピーIPC
 // ============================================================================
 
-use super::rref::{DomainId, RRef};
+use crate::ipc::rref::{DomainId, RRef};
 
 /// 共有メモリベースのゼロコピーリージョン
 ///

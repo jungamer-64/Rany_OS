@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use _split_1::*;
+mod wave3_tests;
+pub use wave3_tests::*;
 pub fn wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
     let parent_phys = 0xBABA;
     let mut parent_entry = SlPte::new();

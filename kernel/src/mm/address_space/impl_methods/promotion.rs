@@ -10,7 +10,7 @@ impl ProcessAddressSpace {
         huge_phys_x64: X64PhysAddr,
         protection: Protection
     ) -> bool {
-        use super::higher_half::{PageTable, PageFlags, PageTableEntry};
+        use crate::mm::higher_half::{PageTable, PageFlags, PageTableEntry};
         // Convert x86_64::PhysAddr to higher_half::PhysAddr for PT operations
         let huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
         
