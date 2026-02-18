@@ -17,7 +17,7 @@ use super::types::IommuError;
 /// Default panic DMA pool size (bytes).
 pub const PANIC_DMA_POOL_BYTES: usize = 256 * 1024;
 
-const PANIC_DMA_ALIGN: u64 = crate::mm::PAGE_SIZE_4K as u64;
+const PANIC_DMA_ALIGN: u64 = crate::mm::types::PAGE_SIZE_4K as u64;
 const PANIC_DMA_MAGIC: u32 = 0x5041_4E49;
 
 #[repr(C)]
@@ -86,17 +86,17 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     let size = align_up(bytes as u64, PANIC_DMA_ALIGN);
     let frames = (size / PANIC_DMA_ALIGN) as usize;
 
-    let phys = crate::mm::alloc_contiguous_frames(frames).ok_or(IommuError::OutOfMemory)?;
+    let phys = crate::mm::phys::frame_allocator::alloc_contiguous_frames(frames).ok_or(IommuError::OutOfMemory)?;
     let phys_addr = PhysAddr::new(phys.as_u64());
     let iova = match unsafe { super::api::map_for_dma(phys_addr, size) } {
         Ok(iova) => iova,
         Err(err) => {
-            crate::mm::dealloc_contiguous_frames(phys, frames);
+            crate::mm::phys::frame_allocator::dealloc_contiguous_frames(phys, frames);
             return Err(err);
         }
     };
 
-    let virt_base = crate::mm::mapping_phys_to_virt(phys_addr).as_u64() as usize;
+    let virt_base = crate::mm::virt::mapping::phys_to_virt(phys_addr).as_u64() as usize;
     unsafe {
         core::ptr::write_bytes(virt_base as *mut u8, 0, size as usize);
     }

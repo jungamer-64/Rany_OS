@@ -4,8 +4,8 @@ use super::*;
 impl IommuHardwareContext for IommuController {
     fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
         // Fast path for 4KB-aligned allocations
-        if alignment <= crate::mm::PAGE_SIZE_4K as u64 {
-            if size == crate::mm::PAGE_SIZE_4K as u64 {
+        if alignment <= crate::mm::types::PAGE_SIZE_4K as u64 {
+            if size == crate::mm::types::PAGE_SIZE_4K as u64 {
                 return IovaManager::allocate_iova_fast(self, size);
             }
             return IovaManager::allocate_iova(self, size);
@@ -35,7 +35,7 @@ impl IommuHardwareContext for IommuController {
     }
 
     fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        if size == crate::mm::PAGE_SIZE_4K as u64 {
+        if size == crate::mm::types::PAGE_SIZE_4K as u64 {
             IovaManager::free_iova_fast(self, iova, size)
         } else {
             IovaManager::free_iova(self, iova, size)

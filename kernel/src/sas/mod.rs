@@ -123,7 +123,7 @@ impl SingleAddressSpaceManager {
                 let layout = Layout::from_size_align(size, 4096).unwrap();
                 let ptr = alloc(layout);
                 if !ptr.is_null() {
-                    crate::mm::exchange_heap::init_exchange_heap(ptr as usize, size);
+                    crate::mm::cache::exchange_heap::init_exchange_heap(ptr as usize, size);
                     log::info!(
                         "[SAS] Exchange Heap initialized (32MB) at {:#x}\n",
                         ptr as usize

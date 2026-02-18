@@ -456,9 +456,9 @@ impl From<crate::ipc::proxy::ProxyError> for KernelError {
 }
 
 // mm::exchange_heap::ExchangeHeapError からの変換
-impl From<crate::mm::exchange_heap::ExchangeHeapError> for KernelError {
-    fn from(e: crate::mm::exchange_heap::ExchangeHeapError) -> Self {
-        use crate::mm::exchange_heap::ExchangeHeapError as EHE;
+impl From<crate::mm::cache::exchange_heap::ExchangeHeapError> for KernelError {
+    fn from(e: crate::mm::cache::exchange_heap::ExchangeHeapError) -> Self {
+        use crate::mm::cache::exchange_heap::ExchangeHeapError as EHE;
         KernelError::Memory(match e {
             EHE::OutOfMemory => MemoryError::OutOfMemory,
             EHE::SliceFull => MemoryError::OutOfMemory,

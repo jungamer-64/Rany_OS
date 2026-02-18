@@ -428,9 +428,9 @@ pub extern "C" fn ap_entry(ap_index: u32) {
 
     // Initialize per-CPU data and per-core caches for this AP.
     unsafe {
-        crate::mm::setup_current_cpu(ap_index as usize);
+        crate::per_cpu::setup_current_cpu(ap_index as usize);
     }
-    crate::mm::init_per_core_cache_for_cpu(ap_index as usize);
+    crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(ap_index as usize);
 
     // Map APIC ID to logical CPU ID for NVMe queue routing.
     let apic_id = crate::io::apic::local_apic().id() as u32;

@@ -4,8 +4,8 @@ mod kernel_runtime;
 use self::kernel_runtime::*;
 
 pub(crate) fn ahci_ensure_mapping(
-    virt_start: crate::mm::higher_half::VirtAddr,
-    phys_expected: crate::mm::higher_half::PhysAddr,
+    virt_start: crate::mm::virt::higher_half::VirtAddr,
+    phys_expected: crate::mm::virt::higher_half::PhysAddr,
     base_phys: u64,
     base_virt: u64,
     bar_size: u64,
@@ -17,13 +17,13 @@ pub(crate) fn ahci_ensure_mapping(
         }
         let page_size: u64 = 0x1000;
         let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
-        let pm_offset = crate::mm::higher_half::physical_memory_offset();
-        let mut manager = unsafe { crate::mm::higher_half::PageTableManager::from_current_cr3(pm_offset) };
-        let flags = crate::mm::higher_half::PageFlags::write_combining();
+        let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
+        let mut manager = unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
         match unsafe {
             manager.map_range(
-                crate::mm::higher_half::VirtAddr::new(base_virt),
-                crate::mm::higher_half::PhysAddr::new(base_phys),
+                crate::mm::virt::higher_half::VirtAddr::new(base_virt),
+                crate::mm::virt::higher_half::PhysAddr::new(base_phys),
                 map_size,
                 flags,
             )
@@ -43,13 +43,13 @@ pub(crate) fn ahci_ensure_mapping(
                 crate::io::log::early_print_hex(base_phys);
                 crate::io::log::early_print(" err=");
                 let err_str = match e {
-                    crate::mm::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
-                    crate::mm::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
-                    crate::mm::higher_half::MapError::NotMapped => "NotMapped",
-                    crate::mm::higher_half::MapError::InvalidAddress => "InvalidAddress",
-                    crate::mm::higher_half::MapError::AlignmentError => "AlignmentError",
-                    crate::mm::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
-                    crate::mm::higher_half::MapError::HardwareError => "HardwareError",
+                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
+                    crate::mm::virt::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
+                    crate::mm::virt::higher_half::MapError::NotMapped => "NotMapped",
+                    crate::mm::virt::higher_half::MapError::InvalidAddress => "InvalidAddress",
+                    crate::mm::virt::higher_half::MapError::AlignmentError => "AlignmentError",
+                    crate::mm::virt::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
+                    crate::mm::virt::higher_half::MapError::HardwareError => "HardwareError",
                 };
                 crate::io::log::early_print(err_str);
                 crate::io::log::early_print("\n");
@@ -58,7 +58,7 @@ pub(crate) fn ahci_ensure_mapping(
         }
     }
 
-    match crate::mm::higher_half::get_current_pte(virt_start) {
+    match crate::mm::virt::higher_half::get_current_pte(virt_start) {
         Some(pte) => {
             crate::io::log::early_print("[AHCI] existing PTE present? ");
             crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });

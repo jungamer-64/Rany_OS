@@ -384,14 +384,14 @@ pub fn handle_double_fault(
 // ============================================================================
 
 pub fn setup_stack_guard(stack_bottom: usize, _stack_size: usize) {
-    use crate::mm::higher_half::VirtAddr;
+    use crate::mm::virt::higher_half::VirtAddr;
 
     // ガードページのアドレス（スタックの直下）
     let guard_page_addr = VirtAddr::new(stack_bottom as u64).align_down();
 
     // ページテーブルからガードページをアンマップ
     unsafe {
-        if let Err(e) = crate::mm::higher_half::global_unmap_page(guard_page_addr) {
+        if let Err(e) = crate::mm::virt::higher_half::global_unmap_page(guard_page_addr) {
             // alloc::formatは使わない
              crate::io::log::early_print("[StackGuard] Warning: Could not setup guard page\n");
              let _ = e;

@@ -63,7 +63,7 @@ impl IntelIommuDriver {
 // ---------------------------------------------------------------------------
 
 fn validate_dma_params(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError> {
-    let align = crate::mm::PAGE_SIZE_4K as u64;
+    let align = crate::mm::types::PAGE_SIZE_4K as u64;
     if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
         return Err(IommuError::InvalidAlignment);
     }
@@ -78,7 +78,7 @@ fn allocate_iova_for_device(
     let mask = crate::io::iommu::api::get_device_dma_mask(device);
     match mask {
         Some(limit) => controller.allocate_iova_masked(size, limit),
-        None if size == crate::mm::PAGE_SIZE_4K as u64 => controller.allocate_iova_fast(size),
+        None if size == crate::mm::types::PAGE_SIZE_4K as u64 => controller.allocate_iova_fast(size),
         None => controller.allocate_iova(size),
     }
 }

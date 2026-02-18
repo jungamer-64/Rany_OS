@@ -420,18 +420,18 @@ impl<'a> ElfLoader<'a> {
             PageFlags::user_data().set_pkey(pkey)
         };
 
-        let seg_start = crate::mm::VirtAddr::new(dest as u64).align_down().as_u64() as usize;
-        let seg_end = crate::mm::VirtAddr::new((dest + mem_size) as u64)
+        let seg_start = crate::mm::virt::higher_half::VirtAddr::new(dest as u64).align_down().as_u64() as usize;
+        let seg_end = crate::mm::virt::higher_half::VirtAddr::new((dest + mem_size) as u64)
             .align_up()
             .as_u64() as usize;
 
         for page_addr in (seg_start..seg_end).step_by(4096) {
-            let virt = crate::mm::VirtAddr::new(page_addr as u64);
+            let virt = crate::mm::virt::higher_half::VirtAddr::new(page_addr as u64);
             unsafe {
-                match crate::mm::global_update_flags(virt, flags) {
+                match crate::mm::virt::higher_half::global_update_flags(virt, flags) {
                     Ok(()) => {}
                     Err(e) => match e {
-                        crate::mm::MapError::InvalidAddress | crate::mm::MapError::NotMapped => {
+                        crate::mm::virt::higher_half::MapError::InvalidAddress | crate::mm::virt::higher_half::MapError::NotMapped => {
                             log::warn!(
                                 "[ELF] Could not update flags for page {:#x}: {:?} (continuing)",
                                 page_addr,

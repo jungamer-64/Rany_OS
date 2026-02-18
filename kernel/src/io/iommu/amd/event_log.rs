@@ -12,8 +12,8 @@ use x86_64::PhysAddr;
 use crate::io::iommu::tables::phys_to_virt_usize;
 use crate::io::iommu::PAGE_SIZE_4K;
 use crate::io::mmio::{mmio_write_u32, mmio_write_u64};
-use crate::mm::alloc_contiguous_frames;
-use crate::mm::mapping::phys_to_virt;
+use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
+use crate::mm::virt::mapping::phys_to_virt;
 
 use super::registers::*;
 use super::AmdIommuUnit;

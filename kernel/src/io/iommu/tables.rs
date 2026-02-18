@@ -215,7 +215,7 @@ impl PageTableScope {
                 .map_err(|_| IommuError::HardwareError)?;
 
         let node = numa_hint.unwrap_or(0);
-        let ptr = crate::mm::numa::allocate_zeroed_on_node(layout, numa_hint)
+        let ptr = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_hint)
             .ok_or(IommuError::HardwareError)?
             .as_ptr() as *mut SlPte;
 
@@ -339,7 +339,7 @@ impl Drop for PageTableScope {
             } else if let Some(layout) = self.layout {
                 // Direct allocation: dealloc via NUMA helper
                 unsafe {
-                    crate::mm::numa::deallocate_on_node(
+                    crate::mm::numa::topology::deallocate_on_node(
                         core::ptr::NonNull::new_unchecked(self.ptr as *mut u8),
                         layout,
                         Some(self.node),
@@ -357,7 +357,7 @@ impl Drop for PageTableScope {
 pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
     #[cfg(not(any(test, feature = "qemu-test-export")))]
     {
-        crate::mm::virt_to_phys(crate::mm::VirtAddr::new(ptr as u64))
+        crate::mm::virt::higher_half::virt_to_phys(crate::mm::virt::higher_half::VirtAddr::new(ptr as u64))
             .ok_or(IommuError::HardwareError)
             .map(|p| p.as_u64())
     }
@@ -373,7 +373,7 @@ pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
 pub fn phys_to_virt_usize(phys: u64) -> usize {
     #[cfg(not(any(test, feature = "qemu-test-export")))]
     {
-        crate::mm::phys_to_virt(crate::mm::PhysAddr::new(phys)).as_u64() as usize
+        crate::mm::virt::higher_half::phys_to_virt(crate::mm::virt::higher_half::PhysAddr::new(phys)).as_u64() as usize
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]
@@ -468,7 +468,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             .checked_mul(count)
             .ok_or(IommuError::InvalidAddress)?;
 
-        let page_size = crate::mm::PAGE_SIZE_4K as usize;
+        let page_size = crate::mm::types::PAGE_SIZE_4K as usize;
         let alloc_bytes = bytes.checked_add(page_size - 1).ok_or(IommuError::InvalidAddress)?
             / page_size
             * page_size;
@@ -524,7 +524,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     ) -> Result<Self, IommuError> {
         let phys = Self::alloc_phys_frames(frame_count, numa_hint)?;
 
-        let virt_addr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+        let virt_addr = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
         let raw_ptr = virt_addr.as_u64() as *mut u8;
 
         // SAFETY: We just allocated this region and own it exclusively
@@ -550,11 +550,11 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     fn alloc_phys_frames(frame_count: usize, numa_hint: Option<usize>) -> Result<u64, IommuError> {
         if frame_count == 1 {
             let frame = if let Some(node) = numa_hint {
-                crate::mm::frame_allocator::alloc_frame_on_numa_node(
+                crate::mm::phys::frame_allocator::alloc_frame_on_numa_node(
                     crate::mm::types::NumaNodeId::new(node as u8),
                 )
             } else {
-                crate::mm::frame_allocator::alloc_frame()
+                crate::mm::phys::frame_allocator::alloc_frame()
             }
             .ok_or(IommuError::OutOfMemory)?;
             Ok(frame.start_address().as_u64())
@@ -562,7 +562,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             if numa_hint.is_some() {
                 log::debug!("[IOMMU] NUMA hint ignored for contiguous table allocation");
             }
-            crate::mm::frame_allocator::alloc_contiguous_frames(frame_count)
+            crate::mm::phys::frame_allocator::alloc_contiguous_frames(frame_count)
                 .ok_or(IommuError::OutOfMemory)
                 .map(|a| a.as_u64())
         }
@@ -660,7 +660,7 @@ impl<T: Sized + Copy> Drop for HardwareTable<T> {
         if self.heap_backed {
             if let Ok(layout) = alloc::alloc::Layout::from_size_align(
                 self.alloc_bytes,
-                crate::mm::PAGE_SIZE_4K as usize,
+                crate::mm::types::PAGE_SIZE_4K as usize,
             ) {
                 // SAFETY: heap-backed tables were allocated via allocate_zeroed.
                 unsafe {
@@ -675,9 +675,9 @@ impl<T: Sized + Copy> Drop for HardwareTable<T> {
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
         for idx in 0..self.frame_count {
-            let addr = self.phys + (idx as u64) * (crate::mm::PAGE_SIZE_4K as u64);
+            let addr = self.phys + (idx as u64) * (crate::mm::types::PAGE_SIZE_4K as u64);
             let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
-            crate::mm::dealloc_frame(frame);
+            crate::mm::phys::frame_allocator::dealloc_frame(frame);
         }
     }
 }

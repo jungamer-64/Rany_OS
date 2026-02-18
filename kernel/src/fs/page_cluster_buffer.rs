@@ -11,7 +11,8 @@ use fat32::{ClusterBuffer, ClusterBufferAllocator};
 use vfs::block::DmaInfo;
 use x86_64::PhysAddr;
 
-use crate::mm::{alloc_contiguous_frames, dealloc_contiguous_frames, PAGE_SIZE_4K};
+use crate::mm::types::PAGE_SIZE_4K;
+use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
 
 /// Page-backed cluster buffer
 pub struct PageClusterBuffer {
@@ -129,7 +130,7 @@ mod tests {
     use alloc::vec::Vec;
     use alloc::vec;
     use vfs::block::{ZeroCopyBuffer, ZeroCopyBufferMut};
-    use crate::mm::mapping::phys_to_virt;
+    use crate::mm::virt::mapping::phys_to_virt;
     use x86_64::PhysAddr;
 
     #[test_case]
@@ -192,7 +193,7 @@ mod tests {
         use vfs::block::{ZeroCopyBlockDevice, BlockDeviceInfo, BlockError, BlockResult};
         use fat32::Cluster;
         use crate::task::block_on;
-        use crate::mm::mapping::phys_to_virt;
+        use crate::mm::virt::mapping::phys_to_virt;
         use core::slice;
 
         // If the test environment cannot allocate contiguous frames, skip.

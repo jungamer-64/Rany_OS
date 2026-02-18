@@ -5,7 +5,8 @@ use core::sync::atomic::Ordering;
 use super::*;
 use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 use crate::fs::page_cluster_buffer::PageClusterBuffer;
-use crate::mm::{PAGE_SIZE_4K, alloc_contiguous_frames, dealloc_contiguous_frames};
+use crate::mm::types::PAGE_SIZE_4K;
+use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
 use x86_64::PhysAddr;
 
 struct NoopTransport;

@@ -254,7 +254,8 @@ pub fn test_network() -> IntegrationTestSuite {
 // ============================================================================
 
 use crate::fs::page_cluster_buffer::{PageClusterBuffer, PageClusterBufferAllocator};
-use crate::mm::{PAGE_SIZE_4K, alloc_contiguous_frames};
+use crate::mm::types::PAGE_SIZE_4K;
+use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::task::block_on;
 use alloc::sync::Arc as StdArc;
 use vfs::block::{BlockError, BlockResult, ZcFuture, ZeroCopyBlockDevice};
@@ -291,7 +292,7 @@ impl ZeroCopyBlockDevice for VirtioPageAdapter {
                 return Ok(buf);
             }
             // fallback: free & error
-            crate::mm::dealloc_contiguous_frames(start_phys, frames_needed);
+            crate::mm::phys::frame_allocator::dealloc_contiguous_frames(start_phys, frames_needed);
         }
         Err(BlockError::NotReady)
     }

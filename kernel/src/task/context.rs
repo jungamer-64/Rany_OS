@@ -342,8 +342,8 @@ impl TaskControlBlock {
 /// # Safety
 /// tcb は有効な TaskControlBlock へのポインタである必要がある
 pub unsafe fn set_current_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
-    if cpu_id < crate::mm::per_cpu::MAX_CPUS {
-        let per_cpu = crate::mm::per_cpu::get_per_cpu_data_mut(cpu_id);
+    if cpu_id < crate::per_cpu::MAX_CPUS {
+        let per_cpu = crate::per_cpu::get_per_cpu_data_mut(cpu_id);
         per_cpu.current_task_ptr.store(tcb as u64, Ordering::Release);
         
         // Legacy support: update ID if needed
@@ -358,8 +358,8 @@ pub unsafe fn set_current_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
 
 /// 現在のCPUで実行中のタスクを取得
 pub fn get_current_task(cpu_id: usize) -> Option<*mut TaskControlBlock> {
-    if cpu_id < crate::mm::per_cpu::MAX_CPUS {
-        let per_cpu = unsafe { crate::mm::per_cpu::get_per_cpu_data(cpu_id) };
+    if cpu_id < crate::per_cpu::MAX_CPUS {
+        let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(cpu_id) };
         let ptr = per_cpu.current_task_ptr.load(Ordering::Acquire);
         if ptr == 0 {
             None

@@ -91,7 +91,7 @@ pub(crate) fn run_zombie_dma_gc() {
 
     // Always process some zombies if there are any pending
     let pending = zombie_queue::has_pending_zombies();
-    let memory_pressure = crate::mm::memory_pressure_level();
+    let memory_pressure = crate::mm::phys::unified_alloc::memory_pressure_level();
 
     // Determine how many to process based on pressure
     let max_process = if memory_pressure >= 80 {

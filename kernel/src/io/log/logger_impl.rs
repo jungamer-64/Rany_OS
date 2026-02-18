@@ -54,7 +54,7 @@ impl Log for KernelLogger {
 impl KernelLogger {
     /// 非同期バッファへの書き込みを試行。成功した場合trueを返す。
     pub(super) fn try_log_async(&self, record: &Record) -> bool {
-        if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
             if cpu_id < PER_CPU_COUNT {
                 if let Some(mut guard) = PER_CORE_LOG_BUFFERS[cpu_id].try_lock() {
                     self.write_into_async_buffer::<{ PER_CORE_BUFFER_CAPACITY }>(

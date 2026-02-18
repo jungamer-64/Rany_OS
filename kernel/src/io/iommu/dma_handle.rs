@@ -42,7 +42,7 @@
 //! let rref = RRef::new_slice_default_aligned(
 //!     DomainId::KERNEL,
 //!     4096,
-//!     crate::mm::PAGE_SIZE_4K,
+//!     crate::mm::types::PAGE_SIZE_4K,
 //! )
 //! .expect("alloc rref slice");
 //! let handle = crate::io::iommu::dma_handle::DmaHandle::map_rref_slice(
@@ -447,7 +447,7 @@ impl<T> DmaHandle<T> {
         let virt_addr = VirtAddr::new(virt_ptr);
 
         // Use mapping::virt_to_phys which assumes linear mapping (always succeeds)
-        let phys_addr = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr = crate::mm::virt::mapping::virt_to_phys(virt_addr);
         let phys = phys_addr.as_u64();
 
         let size = core::mem::size_of::<T>() as u64;
@@ -566,7 +566,7 @@ impl<T> DmaHandle<T> {
     /// `unmap_async()` for ISR-safe unmapping.
     pub fn unmap_sync(self) -> Result<RRef<T>, UnmapError<T>> {
         // Check if we're in interrupt context - blocking waits are forbidden
-        if crate::mm::per_cpu::in_interrupt_context() {
+        if crate::per_cpu::in_interrupt_context() {
             log::warn!(
                 "[DmaHandle] unmap_sync() called from ISR context at IOVA {:#x} - \
                  blocking operations forbidden in ISR, returning error",
@@ -732,7 +732,7 @@ impl<T> DmaHandle<T> {
         // Get physical address from RRef's virtual pointer
         let virt_ptr = &*rref as *const T as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
         let size = core::mem::size_of::<T>() as u64;
         if size == 0 {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
@@ -807,7 +807,7 @@ impl<T> DmaHandle<T> {
 
         let virt_ptr = &*rref as *const T as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
         let size = core::mem::size_of::<T>() as u64;
         if size == 0 {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));

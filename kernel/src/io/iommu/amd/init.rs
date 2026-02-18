@@ -18,8 +18,8 @@ use crate::io::iommu::IommuBackend;
 use crate::io::iommu::config::IommuConfig;
 use crate::io::iommu::registry::get_iommu_driver;
 use crate::io::iommu::types::IommuError;
-use crate::mm::alloc_contiguous_frames;
-use crate::mm::mapping::phys_to_virt;
+use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
+use crate::mm::virt::mapping::phys_to_virt;
 use crate::io::iommu::tables::phys_to_virt_usize;
 use crate::sync::PoisonLock;
 

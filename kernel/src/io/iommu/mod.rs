@@ -41,7 +41,7 @@ pub(crate) mod interface;
 
 // pub(crate) mod iova_bitmap; // Keep module implementation for now (contains constants)
 // pub(crate) use iova_bitmap::PAGE_SIZE_4K;
-pub(crate) use crate::mm::PAGE_SIZE_4K;
+pub(crate) use crate::mm::types::PAGE_SIZE_4K;
 
 pub(crate) mod iova_allocator; // New FastBitmapAllocator-based IOVA allocator (Phase 4)
 pub(crate) use iova_allocator::{IovaAllocator as IovaAllocatorFast, IovaGranularity};
