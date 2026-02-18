@@ -52,7 +52,6 @@
 /// Increment this when making breaking changes to the vtable layout.
 /// Drivers compiled with a different ABI version will be rejected.
 mod export_macro;
-use export_macro::*;
 pub const DRIVER_ABI_VERSION: u64 = 1;
 
 // Include the generated type hash
@@ -184,7 +183,7 @@ pub struct DriverContext {
     /// Driver-specific data pointer (used to store Box<Driver> raw pointer)
     pub driver_data: u64,
     /// Reserved for future use
-    pub _reserved: [u64; 3],
+    pub reserved: [u64; 3],
 }
 
 impl DriverContext {
@@ -199,7 +198,7 @@ impl DriverContext {
             device_id: 0,
             class_code: 0,
             driver_data: 0,
-            _reserved: [0; 3],
+            reserved: [0; 3],
         }
     }
 
@@ -220,7 +219,7 @@ impl DriverContext {
             device_id,
             class_code,
             driver_data: 0,
-            _reserved: [0; 3],
+            reserved: [0; 3],
         }
     }
 }
@@ -306,7 +305,7 @@ pub struct DriverVTable {
     pub handle_irq: Option<extern "C" fn(ctx: *mut DriverContext) -> bool>,
 
     /// Reserved for future expansion
-    pub _reserved: [u64; 7],
+    pub reserved: [u64; 7],
 }
 
 impl DriverVTable {
@@ -352,7 +351,7 @@ impl DriverVTable {
             version,
             request_capabilities,
             handle_irq,
-            _reserved: [0; 7],
+            reserved: [0; 7],
         }
     }
 }
@@ -411,7 +410,7 @@ pub struct KernelApiV1 {
     pub irq_bind: extern "C" fn(irq: u32, cookie: u64) -> i32,
     pub irq_unbind: extern "C" fn(irq: u32) -> i32,
 
-    pub _reserved: [u64; 8],
+    pub reserved: [u64; 8],
 }
 
 /// Driver export header for `DRIVER_EXPORTS`.
@@ -427,7 +426,7 @@ pub struct DriverExportsV1 {
     pub init: Option<extern "C" fn(api: *const KernelApiV1) -> i32>,
     pub fini: Option<extern "C" fn() -> i32>,
 
-    pub _reserved: [u64; 8],
+    pub reserved: [u64; 8],
 }
 
 // ============================================================================

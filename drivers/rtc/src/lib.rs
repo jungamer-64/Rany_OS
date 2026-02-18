@@ -111,7 +111,7 @@ impl DateTime {
     }
 
     /// Unix時間から変換
-    pub fn from_unix_timestamp(timestamp: i64) -> Self {
+    pub const fn from_unix_timestamp(timestamp: i64) -> Self {
         let mut remaining = timestamp;
 
         // 秒・分・時を計算
@@ -184,6 +184,7 @@ const fn is_leap_year(year: u16) -> bool {
 
 /// RTCドライバ
 pub struct Rtc {
+
     /// バイナリモードか
     binary_mode: bool,
     /// 24時間モードか
@@ -192,6 +193,12 @@ pub struct Rtc {
     century_register: Option<u8>,
     /// Periodic Interrupt Rate (Hz)
     periodic_rate: u32,
+}
+
+impl Default for Rtc {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Rtc {
@@ -230,16 +237,17 @@ impl Rtc {
     }
 
     /// BCDをバイナリに変換
-    fn bcd_to_binary(bcd: u8) -> u8 {
+    const fn bcd_to_binary(bcd: u8) -> u8 {
         (bcd & 0x0F) + ((bcd >> 4) * 10)
     }
 
     /// バイナリをBCDに変換
-    fn binary_to_bcd(bin: u8) -> u8 {
+    const fn binary_to_bcd(bin: u8) -> u8 {
         ((bin / 10) << 4) | (bin % 10)
     }
 
     /// 新しいRTCドライバを作成
+    #[must_use]
     pub fn new() -> Self {
         let status_b = unsafe { Self::read_cmos(regs::STATUS_B) };
         let status_a = unsafe { Self::read_cmos(regs::STATUS_A) };
@@ -458,6 +466,10 @@ impl Rtc {
 
     /// 周期的割り込みの周波数をHz単位で設定
     /// サポートされている値: 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192
+    ///
+    /// # Errors
+    ///
+    /// サポートされていない周波数が指定された場合にエラーを返します。
     pub fn set_frequency(&mut self, hz: u32) -> Result<(), &'static str> {
         let rate = match hz {
             8192 => 3,

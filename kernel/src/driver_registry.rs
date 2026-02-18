@@ -558,7 +558,7 @@ static KERNEL_API_V1: KernelApiV1 = KernelApiV1 {
     unmap_mmio: kapi_unmap_mmio,
     irq_bind: kapi_irq_bind,
     irq_unbind: kapi_irq_unbind,
-    _reserved: [0; 8],
+    reserved: [0; 8],
 };
 
 pub(crate) fn kernel_api_v1() -> &'static KernelApiV1 {

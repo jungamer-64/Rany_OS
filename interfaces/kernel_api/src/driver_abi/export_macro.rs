@@ -1,4 +1,3 @@
-use super::*;
 
 
 /// Export an `AsyncDriver` implementation as a C-compatible `DriverVTable`.

@@ -8,6 +8,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
+description = "Boot protocol types for RanyOS"
 
 [dependencies]
 graphic_types = { path = "../graphic_types", default-features = false }
