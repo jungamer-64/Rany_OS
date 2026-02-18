@@ -42,7 +42,6 @@ use crate::sync::IrqMutex;
 
 use crate::mm::types::FrameIndex;
 use crate::mm::types::AddressUnit;
-use crate::mm::types::FixedVec;
 
 /// 一度に若返らせる最大エントリ数
 const MAX_REJUVENATE_BATCH: usize = 64;

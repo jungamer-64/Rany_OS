@@ -34,7 +34,6 @@ use crate::mm::remote_free::RemoteFreeRing;
 mod magazine_layer;
 pub use magazine_layer::*;
 mod cache_impl;
-pub use cache_impl::*;
 pub const SLAB_SIZES: [usize; 8] = [8, 16, 32, 64, 128, 256, 512, 1024];
 
 /// 1つのSlabページのサイズ

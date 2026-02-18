@@ -4,7 +4,6 @@ use super::*;
 mod async_io;
 pub use async_io::*;
 mod dma_dispatch;
-pub use dma_dispatch::*;
 impl VirtioBlkDevice {
     /// Create a new VirtIO block device (uninitialized)
     ///

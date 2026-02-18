@@ -5,7 +5,6 @@ use super::*;
 mod clock_pro_stats;
 pub use clock_pro_stats::*;
 mod clock_pro_impl;
-pub use clock_pro_impl::*;
 #[derive(Debug)]
 pub struct ReclaimStats {
     pub direct_reclaim_count: u64,

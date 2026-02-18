@@ -173,6 +173,7 @@ pub fn parse_config(text: &str) -> BootConfig {
 }
 
 /// Create default configuration when no config file exists
+#[allow(dead_code)]
 pub fn default_config() -> BootConfig {
     let mut config = BootConfig::default();
 

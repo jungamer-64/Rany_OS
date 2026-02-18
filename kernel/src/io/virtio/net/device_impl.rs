@@ -4,7 +4,6 @@ use super::*;
 mod dma_helpers;
 pub use dma_helpers::*;
 mod tx_submit;
-pub use tx_submit::*;
 impl Drop for NetVirtQueue {
     fn drop(&mut self) {
         if let Some(map) = self.iommu_map.take() {

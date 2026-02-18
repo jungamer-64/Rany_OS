@@ -514,7 +514,7 @@ impl IommuDomain {
             // Copy current entry values to avoid borrow conflicts
             let table_ptr = stack[entry_idx].table_ptr;
             let level = stack[entry_idx].level;
-            let mut next_idx = stack[entry_idx].next_idx;
+            let next_idx = stack[entry_idx].next_idx;
 
             // Leaf level (level 1) or all children processed - free this table
             if level <= 1 || next_idx >= PT_ENTRIES {

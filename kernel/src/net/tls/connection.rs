@@ -334,7 +334,7 @@ impl TlsConnection {
         } else {
             let early_secret = tls13_early_secret(Some(psk));
             let empty_hash = {
-                let mut h = crate::loader::sha256::Sha256::new();
+                let h = crate::loader::sha256::Sha256::new();
                 h.finalize()
             };
             let binder_key = tls13_derive_secret(&early_secret, b"res binder", &empty_hash);

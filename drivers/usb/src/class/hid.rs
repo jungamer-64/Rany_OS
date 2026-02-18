@@ -23,7 +23,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 mod keycodes;
-pub use keycodes::*;
 
 use super::{
     ClassDriverError, ClassDriverEvent, REQUEST_DIR_IN, REQUEST_DIR_OUT,

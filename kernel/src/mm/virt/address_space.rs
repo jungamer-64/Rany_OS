@@ -58,7 +58,6 @@ use x86_64::PhysAddr as X64PhysAddr;
 mod error;
 pub use error::*;
 mod impl_methods;
-pub use impl_methods::*;
 pub const USER_SPACE_START: u64 = 0x0000_0000_0010_0000; // 1MB
 
 /// ユーザー空間の終了アドレス

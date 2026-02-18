@@ -34,7 +34,6 @@ use super::{
 };
 use crate::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
 mod runtime_ops;
-pub use runtime_ops::*;
 
 // ============================================================================
 // Register Offsets (from Capability Registers)

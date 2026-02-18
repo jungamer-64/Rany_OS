@@ -294,6 +294,7 @@ impl NetVirtQueue {
     ///
     /// # Safety
     /// desc_table, avail_ring, used_ring は有効なDMA可能メモリを指している必要がある
+    #[allow(deprecated)]
     pub unsafe fn new(
         index: u16,
         size: u16,
@@ -360,6 +361,7 @@ impl NetVirtQueue {
     }
 
     /// Notify the device that new buffers are available.
+    #[allow(deprecated)]
     pub fn notify(&self) {
         let Some(addr) = self.notify_addr else {
             return;

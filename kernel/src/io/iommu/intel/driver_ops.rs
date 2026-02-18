@@ -2,7 +2,6 @@ use super::*;
 
 
 mod domain_query;
-pub use domain_query::*;
 impl IntelIommuDriver {
     pub(crate) fn is_enabled(&self) -> bool {
         get_iommu_registry().map_or(false, |r| !r.controllers.is_empty())

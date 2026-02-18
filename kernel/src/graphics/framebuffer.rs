@@ -2986,9 +2986,6 @@ impl Framebuffer {
             PixelFormat::Rgb565 => {
                 self.fill_rect_16bpp_mmio(r, color);
             }
-            _ => {
-                self.fill_rect_pixel_fallback(r, color);
-            }
         }
     }
 

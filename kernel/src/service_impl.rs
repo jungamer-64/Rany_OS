@@ -157,7 +157,7 @@ impl DmaRegistry {
 
     fn register(
         &self,
-        buf: Box<dyn core::any::Any + Send>,
+        _buf: Box<dyn core::any::Any + Send>,
     ) -> usize {
         // Register with a runtime-generated key based on the pointer value.
         // Since we don't have direct access to the inner buffer here,

@@ -12,7 +12,6 @@
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(alloc_error_handler))]
 #![feature(format_args_nl)]
 
-#[macro_use]
 extern crate alloc;
 
 

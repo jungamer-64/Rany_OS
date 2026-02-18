@@ -23,7 +23,7 @@ use crate::domain_system::{get_domain_snapshot, list_domain_snapshots, DomainId,
 use crate::fs::{DirEntry, FileAttr, FileMode, FileType};
 
 mod cpuinfo_gen;
-pub use cpuinfo_gen::*;
+use cpuinfo_gen::*;
 const CELL_FIELDS: [&str; 15] = [
     "name",
     "state",

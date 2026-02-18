@@ -2,7 +2,6 @@ use super::*;
 
 
 mod demoted_alloc;
-pub use demoted_alloc::*;
 impl HugePageBitmap {
     /// Create a new HugePageBitmap
     ///

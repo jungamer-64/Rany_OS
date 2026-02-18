@@ -12,8 +12,7 @@ use core::sync::atomic::Ordering;
 use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits;
-use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
-use crate::io::iommu::tables::HardwareTable;
+use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 use x86_64::PhysAddr;
 
@@ -24,7 +23,6 @@ use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
 
 mod domain_manager_impl;
-pub use domain_manager_impl::*;
 fn align_down(value: u64, align: usize) -> u64 {
     let align = align as u64;
     if align == 0 { return value; }

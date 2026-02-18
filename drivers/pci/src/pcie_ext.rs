@@ -13,9 +13,7 @@
 
 #![allow(dead_code)]
 
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use spin::RwLock;
 
 use crate::types::BdfAddress;
 

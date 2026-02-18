@@ -42,7 +42,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 mod math_utils;
 pub use math_utils::*;
 mod mixer_impl;
-pub use mixer_impl::*;
 pub const OUTPUT_SAMPLE_RATE: u32 = 48000;
 
 /// 出力ビット深度

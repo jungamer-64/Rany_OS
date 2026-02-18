@@ -72,7 +72,6 @@ use crate::ipc::RRef;
 
 /// DMA transfer direction
 mod slice_handle;
-pub use slice_handle::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaDirection {
     /// CPU writes, device reads (e.g., TX buffer)

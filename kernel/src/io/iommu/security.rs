@@ -40,7 +40,7 @@ use crate::security::audit::{AuditEvent, AuditEventType};
 mod monitor_task;
 pub use monitor_task::*;
 mod audit_convert;
-pub use audit_convert::*;
+use audit_convert::*;
 const FMT_BUF_SIZE: usize = 24;
 
 /// Format a u64 as hexadecimal string without allocation.

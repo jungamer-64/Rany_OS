@@ -192,7 +192,7 @@ pub mod qemu_tests {
 
         // n = EM にバイトを加えた値（EM < n を保証）
         // 最も簡単: n の最上位バイトを EM のそれより大きくする
-        let mut n_bytes = vec![0xFFu8; k];
+        let n_bytes = vec![0xFFu8; k];
         // n は全バイト 0xFF → 確実に EM より大きい
 
         let key = RsaPublicKey {
