@@ -36,7 +36,7 @@ use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
 mod device_impl;
 pub use device_impl::*;
-use vfs::block:{
+use vfs::block::{
     BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
     BlockResult as VfsBlockResult, DmaInfo, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,
     ZeroCopyBlockDevice,
