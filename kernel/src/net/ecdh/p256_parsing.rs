@@ -1,4 +1,4 @@
-use super::*;
+use super::p256::{P256FieldElement, P256Point, N};
 
 /// 非圧縮公開鍵（04 || x || y）をパースしてP256Pointに変換
 ///
