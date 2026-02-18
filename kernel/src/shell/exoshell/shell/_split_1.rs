@@ -1,7 +1,7 @@
 use super::*;
 
-mod _split_1;
-pub use self::_split_1::*;
+mod iterator_impl;
+pub use self::iterator_impl::*;
 impl ExoShell {
 
     /// fs.* メソッド（構造化版）- async版

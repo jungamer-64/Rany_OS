@@ -1,8 +1,8 @@
 use super::*;
 
 
-mod _split_1;
-pub use self::_split_1::*;
+mod graphics_manager;
+pub use self::graphics_manager::*;
 unsafe impl Send for VirtioGpu {}
 unsafe impl Sync for VirtioGpu {}
 

@@ -1,10 +1,10 @@
 use super::*;
 
 
-mod _split_1;
-pub use self::_split_1::*;
-mod _split_2;
-pub use self::_split_2::*;
+mod global_init;
+pub use self::global_init::*;
+mod virtio_gpu_init;
+pub use self::virtio_gpu_init::*;
 impl SystemIntegration {
     /// Create a new system integration controller
     pub fn new() -> Self {

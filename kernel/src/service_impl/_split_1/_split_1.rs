@@ -1,9 +1,9 @@
 use super::*;
 
-mod _split_1;
-pub use self::_split_1::*;
-mod _split_2;
-pub use self::_split_2::*;
+mod fs_tests;
+pub use self::fs_tests::*;
+mod nvme_tests;
+pub use self::nvme_tests::*;
 
 // ============================================================================
 // GuiServices Implementation

@@ -8,8 +8,8 @@ use super::*;
 /// 型安全な .eh_frame パーサー
 ///
 /// `MemoryReader` を使用して境界チェック付きの安全なパースを行う
-mod _split_1;
-pub use self::_split_1::*;
+mod catch_panic;
+pub use self::catch_panic::*;
 pub struct SafeEhFrameParser<'a> {
     pub(crate) reader: MemoryReader<'a>,
     /// 解析されたCIEのキャッシュ（オフセットとCIEのペア）
