@@ -19,8 +19,8 @@ use ed25519_compact::{PublicKey, Signature};
 mod ap_boot;
 mod boot_log;
 mod config;
-mod _split_1;
-use _split_1::*;
+mod elf_relocations;
+use elf_relocations::*;
 #[cfg(feature = "ui")]
 mod menu;
 mod numa;

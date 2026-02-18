@@ -20,7 +20,9 @@ use x86_64::{PhysAddr, VirtAddr};
 
 /// 設計書 1.3: Higher Half Kernel Base (SAS)
 /// ブートローダーから取得した物理メモリオフセット（ランタイム設定）
+#[cfg(any(not(test), feature = "full_mm_tests"))]
 mod ap_boot_reserve;
+#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub use ap_boot_reserve::*;
 static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF_8000_0000_0000);
 

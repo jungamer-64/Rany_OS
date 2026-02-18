@@ -51,8 +51,8 @@
 ///
 /// Increment this when making breaking changes to the vtable layout.
 /// Drivers compiled with a different ABI version will be rejected.
-mod _split_1;
-use _split_1::*;
+mod export_macro;
+use export_macro::*;
 pub const DRIVER_ABI_VERSION: u64 = 1;
 
 // Include the generated type hash

@@ -6,8 +6,8 @@ use super::*;
 // ============================================================================
 
 /// PCIe電源状態
-mod _split_1;
-pub use _split_1::*;
+mod acs_capability;
+pub use acs_capability::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PciePowerState {
     D0,     // Fully On

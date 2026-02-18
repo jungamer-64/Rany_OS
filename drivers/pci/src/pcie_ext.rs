@@ -24,8 +24,8 @@ use crate::types::BdfAddress;
 // ============================================================================
 
 /// PCIeコンフィグ空間サイズ
-mod _split_1;
-pub use _split_1::*;
+mod power_management;
+pub use power_management::*;
 pub const PCIE_CONFIG_SIZE: usize = 4096;
 
 /// PCIe拡張ケイパビリティオフセット

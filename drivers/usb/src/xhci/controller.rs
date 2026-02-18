@@ -33,8 +33,8 @@ use super::{
     USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
 };
 use crate::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
-mod _split_1;
-pub use _split_1::*;
+mod runtime_ops;
+pub use runtime_ops::*;
 
 // ============================================================================
 // Register Offsets (from Capability Registers)
