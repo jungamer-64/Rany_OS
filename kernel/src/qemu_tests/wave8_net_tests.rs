@@ -357,6 +357,100 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     }
 }
 
+pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
+    use crate::net::driver_bridge;
+    use crate::net::ipv6::{Ipv6Address, Ipv6PacketMut};
+    use crate::net::tcp::{SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState};
+    use crate::net::{self, VirtioNetHeader, mempool, stack, IpProtocol};
+    use crate::sync::PoisonLock;
+
+    let _ = mempool::init_net_mempool(4);
+
+    let mut config = net::NetworkConfig::default();
+    config.ipv6 = Some(crate::net::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
+    stack::init(config);
+
+    let local = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK, 1000);
+    let remote = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK, 2000);
+
+    let mut tcb = TcpControlBlock::new(local);
+    tcb.remote_addr = Some(remote);
+    tcb.state = TcpState::Established;
+    tcb.rcv_nxt = 1;
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+
+    match stack::stack().lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
+            } else {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+
+    let header_size = VirtioNetHeader::SIZE;
+    let payload = b"hello-v6";
+    let tcp_len = 20 + payload.len();
+    let ipv6_total_len = 40 + tcp_len;
+    let eth_total_len = 14 + ipv6_total_len;
+
+    let mut packet = match mempool::alloc_packet() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    let buf = packet.data_mut();
+    let needed = header_size + eth_total_len;
+    if buf.len() < needed {
+        return false;
+    }
+
+    for b in &mut buf[0..header_size] { *b = 0; }
+
+    let eth_off = header_size;
+    buf[eth_off..eth_off + 6].copy_from_slice(&[0xff; 6]);
+    buf[eth_off + 6..eth_off + 12].copy_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+    buf[eth_off + 12..eth_off + 14].copy_from_slice(&[0x86, 0xdd]);
+
+    let ip_off = eth_off + 14;
+    if let Some(mut ipv6_mut) = Ipv6PacketMut::new(&mut buf[ip_off..ip_off + 40]) {
+        ipv6_mut.init_header();
+        ipv6_mut.set_source(&Ipv6Address::LOOPBACK);
+        ipv6_mut.set_destination(&Ipv6Address::LOOPBACK);
+        ipv6_mut.set_next_header(IpProtocol::Tcp);
+        ipv6_mut.set_payload_length(tcp_len as u16);
+    } else {
+        return false;
+    }
+
+    let tcp_off = ip_off + 40;
+    buf[tcp_off..tcp_off + 2].copy_from_slice(&2000u16.to_be_bytes());
+    buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&1000u16.to_be_bytes());
+    buf[tcp_off + 4..tcp_off + 8].copy_from_slice(&1u32.to_be_bytes());
+    buf[tcp_off + 8..tcp_off + 12].copy_from_slice(&0u32.to_be_bytes());
+    let data_off_flags = (5u16 << 12).to_be_bytes();
+    buf[tcp_off + 12..tcp_off + 14].copy_from_slice(&data_off_flags);
+    buf[tcp_off + 14..tcp_off + 16].copy_from_slice(&65535u16.to_be_bytes());
+    buf[tcp_off + 20..tcp_off + 20 + payload.len()].copy_from_slice(payload);
+
+    packet.set_len(header_size + eth_total_len);
+    driver_bridge::process_received_packet_zero_copy(packet, header_size, eth_total_len);
+    driver_bridge::check_batch_timeout(100_000, 1);
+
+    if let Ok(guard) = tcb_arc.lock() {
+        if guard.recv_buffer.is_empty() { return false; }
+        if let Some(first) = guard.recv_buffer.front() {
+            first.data() == payload
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
 pub fn kernel_bench_framebuffer_smoke() -> bool {
     use crate::graphics::image::Image;
     use crate::graphics::{Color, Framebuffer, FramebufferInfo, PixelFormat};

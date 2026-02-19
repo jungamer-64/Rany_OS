@@ -14,7 +14,6 @@
 
 extern crate alloc;
 
-
 // Interrupt helper macro moved to a shared module so it's visible in both the
 // library and binary crate (define_interrupt! is used by modules included by
 // `main.rs`). See `interrupt_macros.rs` for the implementation.
@@ -176,7 +175,7 @@ macro_rules! eprintln {
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 pub fn test_runner(tests: &[&dyn Fn()]) {
     crate::io::log::early_print("[qemu-suite] kernel-unit start\n");
     crate::io::log::early_print("[test] running ");
@@ -228,6 +227,53 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
     if failed > 0 {
         crate::io::log::early_print("[qemu-suite] kernel-unit FAIL\n");
         std::process::exit(1);
+    }
+
+    crate::io::log::early_print("[qemu-suite] kernel-unit pass\n");
+}
+
+#[cfg(all(test, not(feature = "std")))]
+pub fn test_runner(tests: &[&dyn Fn()]) {
+    crate::io::log::early_print("[qemu-suite] kernel-unit start\n");
+    crate::io::log::early_print("[test] running ");
+    crate::io::log::early_print_dec(tests.len() as u64);
+    crate::io::log::early_print(" tests...\n");
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut failed_indices: [usize; 64] = [0; 64];
+
+    for (i, t) in tests.iter().enumerate() {
+        crate::io::log::early_print("[test] #");
+        crate::io::log::early_print_dec(i as u64);
+        crate::io::log::early_print(" ... ");
+
+        // In no_std test builds there is no catch_unwind; run the test directly.
+        // If the test panics the panic handler will abort (QEMU test behavior).
+        t();
+        crate::io::log::early_print("[test] ok\n");
+        passed += 1;
+    }
+
+    crate::io::log::early_print("\n[test] results: ");
+    crate::io::log::early_print_dec(passed as u64);
+    crate::io::log::early_print(" passed, ");
+    crate::io::log::early_print_dec(failed as u64);
+    crate::io::log::early_print(" failed\n");
+
+    if failed > 0 {
+        crate::io::log::early_print("[test] failed indices: ");
+        let show = if failed < 64 { failed } else { 64 };
+        for fi in 0..show {
+            if fi > 0 { crate::io::log::early_print(", "); }
+            crate::io::log::early_print_dec(failed_indices[fi] as u64);
+        }
+        crate::io::log::early_print("\n");
+    }
+
+    if failed > 0 {
+        crate::io::log::early_print("[qemu-suite] kernel-unit FAIL\n");
+        exit_qemu(QemuExitCode::Failed);
     }
 
     crate::io::log::early_print("[qemu-suite] kernel-unit pass\n");
@@ -295,7 +341,6 @@ pub mod collections;
 
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod mm;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod per_cpu;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod io;

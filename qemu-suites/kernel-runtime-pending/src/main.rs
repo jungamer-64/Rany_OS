@@ -121,6 +121,11 @@ fn run_suite() -> RuntimeCounts {
         &mut counts,
     );
     run_runtime_case(
+        "kernel_net_bridge_zero_copy_integration_v6",
+        rany_os::qemu_tests::kernel_net_bridge_zero_copy_integration_v6_smoke,
+        &mut counts,
+    );
+    run_runtime_case(
         "kernel_bench_framebuffer",
         rany_os::qemu_tests::kernel_bench_framebuffer_smoke,
         &mut counts,

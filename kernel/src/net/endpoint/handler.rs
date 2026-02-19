@@ -108,7 +108,7 @@ impl NetworkEventHandler {
             .build();
 
         if local.is_ipv6() || remote.is_ipv6() {
-            TcpSegmentBuilder::calculate_checksum_v6(&mut segment, local.as_ipv6(), remote.as_ipv6());
+            TcpSegmentBuilder::calculate_checksum_v6(&mut segment, crate::net::ipv6::Ipv6Address::new(local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
         } else {
             TcpSegmentBuilder::calculate_checksum(&mut segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
         }
@@ -226,7 +226,7 @@ impl NetworkEventHandler {
 
         // チェックサム計算 (IPv4/IPv6)
         if local_addr.is_ipv6() || remote.is_ipv6() {
-            TcpSegmentBuilder::calculate_checksum_v6(&mut syn_segment, local_addr.as_ipv6(), remote.as_ipv6());
+            TcpSegmentBuilder::calculate_checksum_v6(&mut syn_segment, crate::net::ipv6::Ipv6Address::new(local_addr.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
         } else {
             TcpSegmentBuilder::calculate_checksum(&mut syn_segment, local_addr.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
         }
@@ -363,7 +363,7 @@ impl NetworkEventHandler {
                     .build();
 
                 if local.is_ipv6() || remote.is_ipv6() {
-                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, local.as_ipv6(), remote.as_ipv6());
+                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, crate::net::ipv6::Ipv6Address::new(local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
                 } else {
                     TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
                 }
@@ -393,7 +393,7 @@ impl NetworkEventHandler {
                     .build();
 
                 if local.is_ipv6() || remote.is_ipv6() {
-                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, local.as_ipv6(), remote.as_ipv6());
+                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, crate::net::ipv6::Ipv6Address::new(local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
                 } else {
                     TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
                 }
