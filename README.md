@@ -260,7 +260,7 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 ```
 
 `cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の required suites をQEMU上で実行します。`pending` / `kernel_runtime_pending` は `--ignored` 指定時のみ実行される非必須スイートです（例: `cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_pending`）。
-`suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）に加えて wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）、wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）、wave5 deterministic（canonical 4件 + residual 1件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行します。IOMMU residual canonical は pending/parity で1件のみ監視し、旧 wave2 residual 名は compat alias（required 非正規導線）として維持します。
+`suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）に加えて wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）、wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）、wave5 deterministic（canonical 5件 + residual 0件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行します。IOMMU residual canonical は pending/parity ともに `none` 運用へ移行し、旧 wave2 residual 名は compat alias（required 非正規導線）として維持します。
 
 `pending` 運用:
 - 監視項目の管理: `scripts/qemu_pending_cases.lst`
@@ -278,8 +278,8 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`
 - runtime pending は runtime依存2件（`kernel_net_bridge_zero_copy_integration` / `kernel_bench_framebuffer`）専用の non-blocking 監視
 - `kernel-runtime-pending-summary` は `suite`, `passed_count`, `failed_count`, `blocked_count`, `suite_log_path`, `generated_at_utc` を出力
-- IOMMU residual canonical pending: `test_map_for_device_async_and_unmap`
-- IOMMU Wave5 canonical required（4件）: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
+- IOMMU residual canonical pending: `none`
+- IOMMU Wave5 canonical required（5件）: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`, `test_map_for_device_async_and_unmap`
 - IOMMU wave3 pending monitored smoke（required 未投入）: `none`
 - AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
 - AMD-Vi Wave1 required 実行対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`

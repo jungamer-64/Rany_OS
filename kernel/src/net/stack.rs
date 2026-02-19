@@ -17,7 +17,7 @@ use super::ipv4::{
 };
 use super::ipv6::{
     Ipv6Address, Ipv6Config, Ipv6PacketMut, Ipv6ProcessResult, Ipv6Processor, IPV6_HEADER_SIZE,
-    Ipv6FragmentReassembler,
+    Ipv6FragmentReassembler, Ipv6PmtuCache,
 };
 use super::ndp::{NdpProcessor, NdpResult};
 use super::mempool::{PacketPool, PacketRef};
@@ -284,6 +284,8 @@ pub struct NetworkStack {
     ndp_pending_queue: NdpPendingQueue,
     /// IPv6 fragment reassembler
     ipv6_fragment_reassembler: Ipv6FragmentReassembler,
+    /// IPv6 Path MTU Discovery cache
+    ipv6_pmtu_cache: Ipv6PmtuCache,
 }
 
 /// NDP解決待ちパケットキュー

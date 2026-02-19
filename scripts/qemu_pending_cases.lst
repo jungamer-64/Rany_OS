@@ -8,8 +8,8 @@ kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snaps
 kernel/tests/* migration to qemu-suites/kernel (current snapshot: 0 files, 0 #[test_case])
 kernel runtime pending suite execution for full-runtime cases (net_bridge/framebuffer) and blocked-state monitoring (runtime pass/fail/blocked only)
 IOMMU residual canonical parity tracking (original host test names are kept for migration visibility; required no_std smoke mapping is defined in scripts/qemu_iommu_residual_parity.lst)
-IOMMU residual canonical: test_map_for_device_async_and_unmap
-IOMMU Wave5 canonical deterministic set is promoted to required suite_kernel: test_cmdqueue_map_unmap_with_domain, test_map_for_device_respects_dma_mask, test_api_security_notifier_registration, test_qi_metrics_pressure
+IOMMU residual canonical pending: none
+IOMMU Wave5 canonical deterministic set is promoted to required suite_kernel: test_cmdqueue_map_unmap_with_domain, test_map_for_device_respects_dma_mask, test_api_security_notifier_registration, test_qi_metrics_pressure, test_map_for_device_async_and_unmap
 IOMMU wave3 required deterministic set (source of truth: qemu-suites/kernel/src/main.rs): scalable_mode(pasid0_fault_resolution+detach_cleans_pasid+attach_detach_cycle) + pasid_table(alloc_free+multi_domain+exhaustion) + mapping_slab + zombie_queue + pri_fuel
 IOMMU wave3 pending monitored smoke candidates (not in required): none
 IOMMU AMD Wave1+Wave5 deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
@@ -30,5 +30,5 @@ NET ECDH Phase B P-256 deterministic set is promoted to required suite_kernel (s
 NET TLS Wave8 residual monitored cases (post-Phase F): none
 Graphics/Framebuffer Wave6 residual (bench only): bench_draw_image_bulk, bench_draw_image_24bit_bulk, bench_draw_image_rgba_bulk, bench_draw_hline_bulk, bench_draw_text_bulk
 MM Wave7 residual monitored cases (std::thread/stress/bench): test_memcg_concurrent_swapout, test_async_swapout_concurrent_dedup, test_async_swapout_stress_concurrency, test_async_swapout_heavy_stress, bench_enqueue_throughput_pool_vs_nopool, bench_buffer_pool_2m_throughput, bench_buffer_pool_1g_throughput
-qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri)+iommu-wave5(canonical+residual required split)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5(amd-wave1+amd-wave5-irt required)+mm-wave7(async_swapout phase-a+phase-d; page_reclaim phase-a+phase-b+phase-c required)+net-wave8(tls-crypto phase-a+phase-b1+phase-b2+phase-c+phase-d+phase-e+phase-f required)+net-ecdh(x25519+phase-b required) toward broader migrated kernel test groups
+qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri)+iommu-wave5(canonical required, residual none)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5(amd-wave1+amd-wave5-irt required)+mm-wave7(async_swapout phase-a+phase-d; page_reclaim phase-a+phase-b+phase-c required)+net-wave8(tls-crypto phase-a+phase-b1+phase-b2+phase-c+phase-d+phase-e+phase-f required)+net-ecdh(x25519+phase-b required) toward broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

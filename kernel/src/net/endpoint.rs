@@ -19,6 +19,7 @@ pub mod futures;
 pub mod handler;
 pub mod inner;
 pub mod manager;
+pub mod ooo_queue;
 pub mod retransmit;
 pub mod segment;
 pub mod socket;

@@ -117,13 +117,9 @@ pub(crate) fn test_iommu_wave5_canonical_exports() -> bool {
     ) && run_check(
         "iommu_wave5_qi_metrics_pressure_canonical_smoke",
         rany_os::qemu_tests::iommu_wave5_qi_metrics_pressure_canonical_smoke,
-    )
-}
-
-pub(crate) fn test_iommu_wave5_residual_exports() -> bool {
-    run_check(
-        "iommu_wave5_map_for_device_async_and_unmap_residual_smoke",
-        rany_os::qemu_tests::iommu_wave5_map_for_device_async_and_unmap_residual_smoke,
+    ) && run_check(
+        "iommu_wave5_map_for_device_async_and_unmap_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_map_for_device_async_and_unmap_canonical_smoke,
     )
 }
 

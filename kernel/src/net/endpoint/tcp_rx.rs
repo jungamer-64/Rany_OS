@@ -12,6 +12,7 @@
 use super::event::event_queue;
 use super::handler::{EventHandleResult, NetworkEventHandler};
 use super::manager::SOCKET_MANAGER;
+use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
@@ -289,6 +290,7 @@ fn handle_rst_received(tcb: TcpControlBlockEntry) {
 
     // リソースクリーンアップ
     retransmit_queue_remove(tcb.local, tcb.remote);
+    ooo_queue::remove_ooo_queue(tcb.local, tcb.remote);
     tcb_table().remove(tcb.local, tcb.remote);
 }
 
@@ -419,26 +421,46 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
     false
 }
 
-/// データ受信処理
+/// データ受信処理（OOO再組立て対応）
 fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
-    // シーケンス番号チェック
     if seq_num != tcb.rcv_nxt {
-        // Out-of-order → 将来の再送処理で対応
+        // Out-of-order: OOOキューに保存し、即座にDupACKを返す
+        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data);
+
+        // DupACK — 現在のrcv_nxtで応答（Fast Retransmitトリガ用）
+        let mut dup_ack = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+            .seq(tcb.snd_nxt)
+            .ack(tcb.rcv_nxt)
+            .ack_flag()
+            .window(65535)
+            .build();
+        TcpSegmentBuilder::calculate_checksum(&mut dup_ack, tcb.local.ip, tcb.remote.ip);
+        send_tcp_segment(tcb.local, tcb.remote, dup_ack);
         return;
     }
 
-    // TCB更新
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = entry.rcv_nxt.wrapping_add(data.len() as u32);
-    });
+    // --- In-order セグメント処理 ---
+    let mut new_rcv_nxt = tcb.rcv_nxt.wrapping_add(data.len() as u32);
 
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
         socket.push_data(data);
+
+        // OOOキューから連続セグメントをドレインしてバッファに追加
+        let (drained, final_rcv_nxt) =
+            ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt);
+        for (_seg_seq, seg_data) in &drained {
+            socket.push_data(seg_data);
+        }
+        new_rcv_nxt = final_rcv_nxt;
     }
 
-    // ACK送信
-    let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(data.len() as u32);
+    // TCB更新
+    tcb_table().update(tcb.local, tcb.remote, |entry| {
+        entry.rcv_nxt = new_rcv_nxt;
+    });
+
+    // ACK送信（ドレイン後のrcv_nxtで応答）
     let mut ack = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
         .seq(tcb.snd_nxt)
         .ack(new_rcv_nxt)
@@ -447,7 +469,6 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         .build();
 
     TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.ip, tcb.remote.ip);
-    // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }
 
@@ -506,6 +527,7 @@ fn handle_final_ack(tcb: TcpControlBlockEntry, ack_num: u32) {
 
     // リソースクリーンアップ
     retransmit_queue_remove(tcb.local, tcb.remote);
+    ooo_queue::remove_ooo_queue(tcb.local, tcb.remote);
     tcb_table().remove(tcb.local, tcb.remote);
 }
 

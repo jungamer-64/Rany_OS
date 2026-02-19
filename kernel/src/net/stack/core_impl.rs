@@ -49,6 +49,7 @@ impl NetworkStack {
             ipv6_fragment_reassembler: Ipv6FragmentReassembler::new(
                 Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
             ),
+            ipv6_pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
         }
     }
 
@@ -361,14 +362,11 @@ impl NetworkStack {
             Ipv6ProcessResult::Icmpv6(payload, src, dst) => {
                 self.process_icmpv6_data(payload, src, dst, current_time);
             }
-            Ipv6ProcessResult::Tcp(_payload, _src, _dst) => {
-                // TCP over IPv6 - future implementation
-                // Will need dual-stack endpoint support
-                self.stats.record_dropped();
+            Ipv6ProcessResult::Tcp(payload, src, dst) => {
+                self.process_tcp_data_v6(payload, src, dst, current_time);
             }
-            Ipv6ProcessResult::Udp(_payload, _src, _dst) => {
-                // UDP over IPv6 - future implementation
-                self.stats.record_dropped();
+            Ipv6ProcessResult::Udp(payload, src, dst) => {
+                self.process_udp_data_v6(payload, src, dst);
             }
             Ipv6ProcessResult::Dropped => {
                 self.stats.record_dropped();
@@ -419,8 +417,10 @@ impl NetworkStack {
                 self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, current_time);
             }
             Icmpv6Result::PacketTooBig { mtu } => {
-                log::info!("ICMPv6: Packet Too Big, MTU={}", mtu);
-                // Path MTU Discovery for IPv6 - future implementation
+                log::info!("ICMPv6: Packet Too Big from {}, MTU={}", src, mtu);
+                // Update IPv6 Path MTU cache (RFC 8201)
+                let current_time = self.current_time();
+                self.ipv6_pmtu_cache.update(src, mtu, current_time);
             }
             Icmpv6Result::Dropped | Icmpv6Result::Error => {}
         }
@@ -477,7 +477,48 @@ impl NetworkStack {
                 prefixes,
             } => {
                 log::info!("NDP: Router Advertisement from {}, {} prefixes", router, prefixes.len());
-                // SLAAC: Apply prefix information - future enhancement
+                // SLAAC (RFC 4862): Apply prefix information
+                for prefix_opt in &prefixes {
+                    if let crate::net::ndp::NdpOption::PrefixInfo {
+                        prefix_len,
+                        on_link: _,
+                        autonomous,
+                        valid_lifetime,
+                        preferred_lifetime: _,
+                        prefix,
+                    } = prefix_opt
+                    {
+                        // Only process /64 autonomous prefixes with non-zero lifetime
+                        if *autonomous && *prefix_len == 64 && *valid_lifetime > 0 {
+                            if let Some(ref mut ipv6) = self.ipv6 {
+                                let mac_bytes = self.config.mac.as_bytes();
+                                let global_addr =
+                                    Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
+                                // Only set if we don't already have this address
+                                if ipv6.config().global != Some(global_addr) {
+                                    ipv6.set_global_address(global_addr);
+                                    log::info!(
+                                        "SLAAC: Configured global address {} from prefix {}",
+                                        global_addr, prefix
+                                    );
+                                }
+                            }
+                            if let Some(ref mut ndp) = self.ndp {
+                                let mac_bytes = self.config.mac.as_bytes();
+                                let global_addr =
+                                    Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
+                                ndp.add_global_address(global_addr);
+                            }
+                        }
+                    }
+                }
+                // Set router as default gateway
+                if let Some(ref mut ipv6) = self.ipv6 {
+                    if ipv6.config().gateway.is_none() {
+                        ipv6.config_mut().gateway = Some(router);
+                        log::info!("SLAAC: Set default gateway to {}", router);
+                    }
+                }
             }
             NdpResult::None | NdpResult::Error => {}
         }

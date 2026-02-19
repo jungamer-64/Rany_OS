@@ -125,6 +125,118 @@ impl NetworkStack {
         }
     }
 
+    /// Process UDP data over IPv6
+    ///
+    /// IPv6擬似ヘッダーでチェックサムを検証し、ポート番号ベースで
+    /// 既存のUDPソケットにデータグラムを配送する。
+    pub(super) fn process_udp_data_v6(
+        &mut self,
+        data: &[u8],
+        src: crate::net::ipv6::Ipv6Address,
+        dst: crate::net::ipv6::Ipv6Address,
+    ) {
+        use crate::net::ipv4::IpProtocol;
+        use crate::net::ipv6::ipv6_pseudo_header_checksum;
+        use crate::net::ipv4::data_checksum;
+
+        // UDPヘッダー最小長チェック (8 bytes)
+        if data.len() < 8 {
+            self.stats.record_rx_error();
+            return;
+        }
+
+        let src_port = u16::from_be_bytes([data[0], data[1]]);
+        let dst_port = u16::from_be_bytes([data[2], data[3]]);
+        let udp_length = u16::from_be_bytes([data[4], data[5]]);
+        let checksum = u16::from_be_bytes([data[6], data[7]]);
+
+        // RFC 8200: UDP over IPv6ではチェックサム0は許可されない
+        if checksum == 0 {
+            self.stats.record_rx_error();
+            return;
+        }
+
+        // IPv6擬似ヘッダーでチェックサム検証
+        let pseudo = ipv6_pseudo_header_checksum(
+            &src, &dst, IpProtocol::Udp, udp_length as u32,
+        );
+        let verify = data_checksum(&data[..udp_length as usize], pseudo);
+        if verify != 0xFFFF {
+            self.stats.record_rx_error();
+            return;
+        }
+
+        // ペイロード抽出
+        let payload_end = core::cmp::min(udp_length as usize, data.len());
+        if payload_end <= 8 {
+            // ペイロードなし — 有効だがデータなし
+            return;
+        }
+        let payload = &data[8..payload_end];
+
+        // 既存のUDPソケットテーブルにポートベースで配送
+        // src IPはIPv4マッピング不可のため0.0.0.0を使用（ソケット側で区別可能）
+        let datagram = crate::net::udp::UdpDatagram {
+            src: crate::net::udp::UdpAddr::new(
+                Ipv4Address::new([0, 0, 0, 0]),
+                src_port,
+            ),
+            dst_port,
+            data: payload.to_vec(),
+        };
+
+        if self.udp.sockets().deliver(datagram) {
+            self.stats.record_rx(data.len());
+        } else {
+            self.stats.record_dropped();
+        }
+    }
+
+    /// Process TCP data over IPv6
+    ///
+    /// IPv6擬似ヘッダーでチェックサムを検証する。
+    /// 現在のTCPプロセッサはIPv4専用のため、検証後にログ記録のみ行う。
+    /// 将来のデュアルスタック対応でフル処理を実装予定。
+    pub(super) fn process_tcp_data_v6(
+        &mut self,
+        data: &[u8],
+        src: crate::net::ipv6::Ipv6Address,
+        dst: crate::net::ipv6::Ipv6Address,
+        _current_time: u64,
+    ) {
+        use crate::net::ipv4::IpProtocol;
+        use crate::net::ipv6::ipv6_pseudo_header_checksum;
+        use crate::net::ipv4::data_checksum;
+
+        // TCPヘッダー最小長チェック (20 bytes)
+        if data.len() < 20 {
+            self.stats.record_rx_error();
+            return;
+        }
+
+        // IPv6擬似ヘッダーでチェックサム検証
+        let pseudo = ipv6_pseudo_header_checksum(
+            &src, &dst, IpProtocol::Tcp, data.len() as u32,
+        );
+        let verify = data_checksum(data, pseudo);
+        if verify != 0xFFFF {
+            self.stats.record_rx_error();
+            return;
+        }
+
+        let src_port = u16::from_be_bytes([data[0], data[1]]);
+        let dst_port = u16::from_be_bytes([data[2], data[3]]);
+
+        log::debug!(
+            "TCP/IPv6: Received segment {}:{} -> {}:{} ({} bytes) — dual-stack endpoint未対応",
+            src, src_port, dst, dst_port, data.len()
+        );
+
+        // TODO: デュアルスタックTCPエンドポイント対応後にフル処理を実装
+        // 現在はチェックサム検証済みとして統計カウントのみ
+        self.stats.record_dropped();
+    }
+
     /// Process ARP packet
     pub(super) fn process_arp(&mut self, data: &[u8], current_time: u64) {
         let result = self.arp.process(data, current_time);

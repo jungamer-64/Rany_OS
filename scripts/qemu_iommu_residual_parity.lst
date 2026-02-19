@@ -2,6 +2,6 @@
 # Format: original_case|required_smoke_case|status|notes
 # - Empty lines and lines starting with '#' are ignored.
 # - `original_case` must exist in kernel/src/io/iommu/tests.rs.
-# - `required_smoke_case` must exist in kernel/src/io/iommu/qemu_tests.rs and be wired to suite_kernel.
+# - `required_smoke_case` must exist under kernel/src/io/iommu/qemu_tests/ and be wired to suite_kernel.
 
-test_map_for_device_async_and_unmap|wave5_map_for_device_async_and_unmap_residual_smoke|tracked|thread+global-original
+# none

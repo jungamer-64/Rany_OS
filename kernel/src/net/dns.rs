@@ -45,6 +45,8 @@ pub enum DnsQueryType {
     TXT = 16,
     /// IPv6アドレス
     AAAA = 28,
+    /// サービスロケーション (RFC 2782)
+    SRV = 33,
     /// 全タイプ
     ALL = 255,
 }
@@ -61,6 +63,7 @@ impl DnsQueryType {
             15 => Some(Self::MX),
             16 => Some(Self::TXT),
             28 => Some(Self::AAAA),
+            33 => Some(Self::SRV),
             255 => Some(Self::ALL),
             _ => None,
         }
@@ -203,6 +206,13 @@ pub enum DnsRecordData {
     MX(u16, String),
     /// TXTレコード
     TXT(String),
+    /// SRVレコード (優先度, ウェイト, ポート, ターゲット)
+    SRV {
+        priority: u16,
+        weight: u16,
+        port: u16,
+        target: String,
+    },
     /// その他/未解析
     Raw(Vec<u8>),
 }

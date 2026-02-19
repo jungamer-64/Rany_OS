@@ -408,10 +408,10 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - runtime pending は runtime依存2件（`kernel_net_bridge_zero_copy_integration` / `kernel_bench_framebuffer`）専用の non-blocking 監視として運用する。
 - `kernel-runtime-pending-summary` は `suite`, `passed_count`, `failed_count`, `blocked_count`, `suite_log_path`, `generated_at_utc` を出力する。
 - CI pending ジョブは `suite_kernel_runtime_pending` と `suite_pending` を実行し、required 判定には影響させない（non-blocking）。
-- `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）に加えて wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）および wave5 deterministic（canonical 4件 + residual 1件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行する。
-- IOMMU residual は二層管理（required no_std smoke + pending canonical 名監視）で運用する。
-- IOMMU residual canonical pending: `test_map_for_device_async_and_unmap`
-- IOMMU Wave5 canonical required（4件）: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`
+- `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）に加えて wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）および wave5 deterministic（canonical 5件 + residual 0件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行する。
+- IOMMU residual は final 状態として pending/parity ともに `none` で運用し、旧 wave2 residual 名は compat alias（非正規導線）として維持する。
+- IOMMU residual canonical pending: `none`
+- IOMMU Wave5 canonical required（5件）: `test_cmdqueue_map_unmap_with_domain`, `test_map_for_device_respects_dma_mask`, `test_api_security_notifier_registration`, `test_qi_metrics_pressure`, `test_map_for_device_async_and_unmap`
 - IOMMU wave2 residual 名は compat alias（非正規導線）として維持し、required は Wave5 名へ統一する。
 - IOMMU wave3 pending monitored smoke（required 未投入）: `none`
 - AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`

@@ -148,6 +148,143 @@ pub struct X509Certificate<'a> {
     pub subject_public_key_info: SubjectPublicKeyInfo<'a>,
     /// 署名値（BIT STRINGの未使用ビットバイトを除いたデータ）
     pub signature_value: &'a [u8],
+    /// 有効期間開始（UNIXタイムスタンプ秒、パース失敗時は0）
+    pub not_before: u64,
+    /// 有効期間終了（UNIXタイムスタンプ秒、パース失敗時はu64::MAX）
+    pub not_after: u64,
+}
+
+impl<'a> X509Certificate<'a> {
+    /// 証明書が指定時刻で有効かチェック（unix_secs = UNIXタイムスタンプ秒）
+    pub fn is_valid_at(&self, unix_secs: u64) -> bool {
+        unix_secs >= self.not_before && unix_secs <= self.not_after
+    }
+}
+
+// ============================================================================
+// ASN.1 Time Parsing (UTCTime / GeneralizedTime → UNIX timestamp)
+// ============================================================================
+
+/// ASCII数字2桁を数値に変換
+fn parse_two_digits(data: &[u8], offset: usize) -> Option<u32> {
+    if offset + 2 > data.len() {
+        return None;
+    }
+    let d1 = data[offset].wrapping_sub(b'0') as u32;
+    let d2 = data[offset + 1].wrapping_sub(b'0') as u32;
+    if d1 > 9 || d2 > 9 {
+        return None;
+    }
+    Some(d1 * 10 + d2)
+}
+
+/// ASCII数字4桁を数値に変換
+fn parse_four_digits(data: &[u8], offset: usize) -> Option<u32> {
+    let hi = parse_two_digits(data, offset)?;
+    let lo = parse_two_digits(data, offset + 2)?;
+    Some(hi * 100 + lo)
+}
+
+/// 月の日数（うるう年考慮なし）
+const DAYS_IN_MONTH: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/// うるう年判定
+fn is_leap_year(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+/// 年月日時分秒からUNIXタイムスタンプ（秒）を計算
+///
+/// 簡易実装: 1970年基準。2000-2099年程度の範囲を想定。
+fn datetime_to_unix(year: u32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> Option<u64> {
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+
+    let mut days: u64 = 0;
+
+    // 1970年から当該年までの日数
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+
+    // 当該年の1月から当該月前月までの日数
+    for m in 0..(month - 1) as usize {
+        days += DAYS_IN_MONTH[m] as u64;
+        if m == 1 && is_leap_year(year) {
+            days += 1; // 2月のうるう日
+        }
+    }
+
+    days += (day - 1) as u64;
+
+    Some(days * 86400 + hour as u64 * 3600 + min as u64 * 60 + sec as u64)
+}
+
+/// ASN.1 UTCTime を解析してUNIXタイムスタンプに変換
+///
+/// フォーマット: YYMMDDHHMMSSZ (13 bytes)
+/// YY < 50 → 2000+YY, YY >= 50 → 1900+YY (RFC 5280)
+fn parse_utctime(data: &[u8]) -> Option<u64> {
+    // 最小13バイト (YYMMDDHHMMSSZ)
+    if data.len() < 13 {
+        return None;
+    }
+
+    let yy = parse_two_digits(data, 0)?;
+    let year = if yy < 50 { 2000 + yy } else { 1900 + yy };
+    let month = parse_two_digits(data, 2)?;
+    let day = parse_two_digits(data, 4)?;
+    let hour = parse_two_digits(data, 6)?;
+    let min = parse_two_digits(data, 8)?;
+    let sec = parse_two_digits(data, 10)?;
+
+    datetime_to_unix(year, month, day, hour, min, sec)
+}
+
+/// ASN.1 GeneralizedTime を解析してUNIXタイムスタンプに変換
+///
+/// フォーマット: YYYYMMDDHHMMSSZ (15 bytes)
+fn parse_generalizedtime(data: &[u8]) -> Option<u64> {
+    if data.len() < 15 {
+        return None;
+    }
+
+    let year = parse_four_digits(data, 0)?;
+    let month = parse_two_digits(data, 4)?;
+    let day = parse_two_digits(data, 6)?;
+    let hour = parse_two_digits(data, 8)?;
+    let min = parse_two_digits(data, 10)?;
+    let sec = parse_two_digits(data, 12)?;
+
+    datetime_to_unix(year, month, day, hour, min, sec)
+}
+
+/// ASN.1 Time (UTCTime | GeneralizedTime) をDerParserから読み取る
+///
+/// UTCTime tag = 0x17, GeneralizedTime tag = 0x18
+fn parse_asn1_time(parser: &mut DerParser<'_>) -> Option<u64> {
+    let (tag, value) = parser.read_tlv()?;
+    match tag {
+        0x17 => parse_utctime(value),    // UTCTime
+        0x18 => parse_generalizedtime(value), // GeneralizedTime
+        _ => None,
+    }
+}
+
+/// Validity SEQUENCE { notBefore Time, notAfter Time } を解析
+fn parse_validity(tbs: &mut DerParser<'_>) -> (u64, u64) {
+    let result = (|| -> Option<(u64, u64)> {
+        let validity_content = tbs.read_sequence()?;
+        let mut vp = DerParser::new(validity_content);
+        let not_before = parse_asn1_time(&mut vp)?;
+        let not_after = parse_asn1_time(&mut vp)?;
+        Some((not_before, not_after))
+    })();
+
+    // パース失敗時は安全なデフォルト（常に無効）ではなく
+    // 互換性のため（0, u64::MAX）を返す
+    result.unwrap_or((0, u64::MAX))
 }
 
 // ============================================================================
@@ -358,7 +495,7 @@ fn parse_tbs_preamble(tbs: &mut DerParser<'_>) -> Option<SignatureAlgorithmId> {
 }
 
 /// TBSCertificateフィールドを解析
-fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, usize, usize, usize, usize, SubjectPublicKeyInfo<'a>)> {
+fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, usize, usize, usize, usize, SubjectPublicKeyInfo<'a>, u64, u64)> {
     let mut tbs = DerParser::new(tbs_content);
 
     let signature_algorithm = parse_tbs_preamble(&mut tbs)?;
@@ -368,8 +505,8 @@ fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, 
     tbs.skip_tlv()?;
     let issuer_end = tbs.position();
 
-    // Validity — スキップ
-    tbs.skip_tlv()?;
+    // Validity — notBefore / notAfter を解析
+    let (not_before, not_after) = parse_validity(&mut tbs);
 
     // Subject — 生DERをキャプチャ
     let subject_start = tbs.position();
@@ -380,7 +517,7 @@ fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, 
     let spki_content = tbs.read_sequence()?;
     let subject_public_key_info = parse_spki(spki_content)?;
 
-    Some((signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info))
+    Some((signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info, not_before, not_after))
 }
 
 pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
@@ -396,7 +533,7 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
     let tbs_end = parser.position();
     let raw_tbs = &cert_content[tbs_start..tbs_end];
 
-    let (signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info) =
+    let (signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info, not_before, not_after) =
         parse_tbs_fields(tbs_content)?;
 
     let issuer_raw = &tbs_content[issuer_start..issuer_end];
@@ -415,6 +552,8 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
         subject_raw,
         subject_public_key_info,
         signature_value,
+        not_before,
+        not_after,
     })
 }
 
