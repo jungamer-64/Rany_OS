@@ -274,6 +274,7 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - NET/TLS Wave8 required 配線ガード（Phase A+B1+B2+C+D+E+F）: `bash scripts/verify_net_tls_wave8_required.sh`
 - NET/ECDH required 配線ガード（x25519+phase-b）: `bash scripts/verify_net_ecdh_required.sh`
 - Driver time/driver_cell required 配線ガード: `bash scripts/verify_driver_time_driver_cell_required.sh`
+- NET endpoint required 配線ガード: `bash scripts/verify_net_endpoint_required.sh`
 - legacy `#[test]`（drivers/time, kernel/driver_cell）は qemu-test-export へ移植済み。`scripts/qemu_legacy_test_allowlist.lst` は空運用を維持。
 - CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
 - 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
@@ -300,6 +301,8 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - NET/TLS Wave8 residual（pending監視）: `none`（Phase A+B1+B2+C+D+E+F deterministic set は required へ昇格済み）
 - NET/ECDH required 実行対象（x25519, 6件）: `x25519_key_exchange_symmetry`, `x25519_public_key_length`, `x25519_group`, `group_from_named_group`, `x25519_reject_invalid_peer_key`, `x25519_rfc7748_vector`
 - NET/ECDH Phase B required 実行対象（P-256, 6件）: `p256_key_exchange_symmetry`, `p256_public_key_length`, `p256_reject_invalid_peer_key`, `group_from_named_group_p256`, `p256_point_on_curve`, `p256_scalar_mul_base`
+- NET endpoint required 実行対象（69件）: `congestion_default(10)`, `congestion_variant(10)`, `congestion_core(6)`, `flow_control(7)`, `futures(4)`, `handler(2)`, `inner(2)`, `retransmit(8)`, `segment(4)`, `socket(1)`, `tcb(3)`, `core(5)`, `types(2)`, `window_scale(5)`
+- NET endpoint residual（pending監視）: `none`
 - Graphics/Framebuffer Wave6 residual（pending）: bench系5件のみ（`packer_env_override_no_std` は required で env parity 検証済み）
 - MM Wave7 residual（pending監視）: `test_memcg_concurrent_swapout`, `test_async_swapout_concurrent_dedup`, `test_async_swapout_stress_concurrency`, `test_async_swapout_heavy_stress`, `bench_enqueue_throughput_pool_vs_nopool`, `bench_buffer_pool_2m_throughput`, `bench_buffer_pool_1g_throughput`
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。

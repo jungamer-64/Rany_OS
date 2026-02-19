@@ -535,3 +535,47 @@ mod tests {
     }
 }
 
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn tcp_connection_state_smoke() -> bool {
+        let state = TcpConnectionState::Closed;
+        if !matches!(state, TcpConnectionState::Closed) {
+            return false;
+        }
+
+        let state = TcpConnectionState::Established;
+        matches!(state, TcpConnectionState::Established)
+    }
+
+    pub fn tcp_control_block_entry_smoke() -> bool {
+        let fd = SocketFd::from_raw(1);
+        let local = SocketAddr::new([192, 168, 1, 1], 12345);
+        let remote = SocketAddr::new([192, 168, 1, 2], 80);
+
+        let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
+        if tcb.state != TcpConnectionState::Closed || tcb.snd_nxt != 0 || tcb.snd_una != 0 {
+            return false;
+        }
+
+        tcb.initialize_seq(1000);
+        tcb.snd_nxt == 1000 && tcb.snd_una == 1000
+    }
+
+    pub fn tcp_flags_smoke() -> bool {
+        if tcp_flags::FIN != 0x01
+            || tcp_flags::SYN != 0x02
+            || tcp_flags::RST != 0x04
+            || tcp_flags::PSH != 0x08
+            || tcp_flags::ACK != 0x10
+            || tcp_flags::URG != 0x20
+        {
+            return false;
+        }
+
+        let syn_ack = tcp_flags::SYN | tcp_flags::ACK;
+        syn_ack == 0x12
+    }
+}

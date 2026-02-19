@@ -242,3 +242,35 @@ mod tests {
     }
 }
 
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn socket_state_transitions_smoke() -> bool {
+        let mut inner = SocketInner::new();
+
+        if inner.transition_to(SocketState::Bound).is_err() || inner.state != SocketState::Bound {
+            return false;
+        }
+
+        if inner.transition_to(SocketState::Listening).is_err() || inner.state != SocketState::Listening {
+            return false;
+        }
+
+        inner.transition_to(SocketState::Connected).is_err()
+    }
+
+    pub fn vecdeque_buffer_smoke() -> bool {
+        let mut inner = SocketInner::new();
+        inner.push_recv_data(&[1, 2, 3, 4, 5]);
+        if inner.recv_buffer.len() != 5 {
+            return false;
+        }
+
+        let mut buf = [0u8; 3];
+        let len = inner.recv_from_buffer(&mut buf);
+
+        len == 3 && buf == [1, 2, 3] && inner.recv_buffer.len() == 2
+    }
+}

@@ -1,7 +1,6 @@
-use super::*;
 
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(all(test, feature = "qemu-test-export"))]
 #[path = "../../qemu_tests.rs"]
 pub mod qemu_tests;
 

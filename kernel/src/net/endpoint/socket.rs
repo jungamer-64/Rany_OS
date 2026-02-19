@@ -648,3 +648,15 @@ mod tests {
     }
 }
 
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn owned_socket_raii_smoke() -> bool {
+        {
+            let _socket = OwnedSocket::new(SocketType::Tcp);
+        }
+        true
+    }
+}

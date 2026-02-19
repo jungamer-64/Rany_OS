@@ -170,6 +170,8 @@ pub use dhcp::{
     DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_SERVER_PORT, DhcpClient, DhcpHeader, DhcpLease,
     DhcpMessageType, DhcpOperation, DhcpResponseResult, DhcpState, client as dhcp_client,
     init as init_dhcp,
+    // DHCPv6
+    DHCPV6_CLIENT_PORT, DHCPV6_SERVER_PORT, DhcpV6Client, init_v6 as init_dhcpv6, client_v6,
 };
 
 // Re-export DNS

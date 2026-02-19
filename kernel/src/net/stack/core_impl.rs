@@ -670,6 +670,87 @@ impl NetworkStack {
         }
     }
 
+    /// Send a UDP/IPv6 datagram (with NDP resolution)
+    pub fn send_udp_v6_raw(&mut self, src_port: u16, src_ip: Ipv6Address, dst: Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
+        let config = self.config;
+        let current_time = self.current_time.load(Ordering::Relaxed);
+
+        // Resolve destination MAC address (multicast -> multicast MAC, otherwise via NDP)
+        let dst_mac = if dst.is_multicast() {
+            MacAddress::new(dst.multicast_mac())
+        } else {
+            match self.ndp {
+                Some(ref mut ndp) => match ndp.resolve(&dst) {
+                    Some(mac) => MacAddress::new(mac),
+                    None => {
+                        // Queue packet for later and trigger NDP resolution
+                        // We'll enqueue in ndp_pending_queue similar to ICMPv6 send path
+                        let mut buf = [0u8; MAX_PACKET_SIZE];
+                        // Build minimal IPv6+UDP packet for queuing (reuse payload area)
+                        // For queuing, store as icmpv6_data-like structure: src/dst/payload
+                        // Use same pending queue as ICMPv6 (it stores raw icmpv6_data), so place UDP data there
+                        self.ndp_pending_queue.enqueue(src_ip, dst, data, current_time);
+
+                        // Start NDP resolution
+                        let ns_msg = ndp.start_resolution(&dst, current_time);
+                        let sn_mcast = dst.solicited_node();
+                        let our_ll = ndp.our_link_local;
+                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
+                        return false;
+                    }
+                },
+                None => return false,
+            }
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
+                ip_packet.init_header();
+                ip_packet.set_source(&src_ip);
+                ip_packet.set_destination(&dst);
+                ip_packet.set_next_header(IpProtocol::Udp);
+                ip_packet.set_hop_limit(64);
+
+                // Build UDP header + payload into IPv6 payload area
+                let payload_buf = ip_packet.payload_mut();
+                if payload_buf.len() < 8 + data.len() {
+                    return false;
+                }
+
+                // UDP header
+                payload_buf[0..2].copy_from_slice(&src_port.to_be_bytes());
+                payload_buf[2..4].copy_from_slice(&dst_port.to_be_bytes());
+                let udp_len = (8 + data.len()) as u16;
+                payload_buf[4..6].copy_from_slice(&udp_len.to_be_bytes());
+                payload_buf[6..8].copy_from_slice(&0u16.to_be_bytes()); // checksum=0 for calc
+
+                // payload
+                payload_buf[8..8 + data.len()].copy_from_slice(data);
+
+                // Compute UDP checksum (IPv6 pseudo-header)
+                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_ip, &dst, IpProtocol::Udp, udp_len as u32);
+                let checksum = crate::net::ipv4::data_checksum(&payload_buf[..udp_len as usize], pseudo);
+                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                payload_buf[6..8].copy_from_slice(&final_checksum.to_be_bytes());
+
+                ip_packet.finalize(udp_len as usize);
+                let total_len = IPV6_HEADER_SIZE + udp_len as usize;
+                frame.set_payload_len(total_len);
+
+                return self.transmit(frame.as_bytes());
+            }
+        }
+
+        false
+    }
+
     /// Drain pending packets for a resolved neighbor
     ///
     /// NDP Neighbor Advertisementを受信してキャッシュが更新された際に呼び出す。
@@ -688,6 +769,16 @@ impl NetworkStack {
 
         for pkt in pending {
             self.send_ipv6_icmpv6(&pkt.src, &pkt.dst, &pkt.icmpv6_data);
+        }
+    }
+
+    /// Apply a DHCPv6-obtained global IPv6 address to the stack
+    pub fn apply_ipv6_global_address(&mut self, addr: crate::net::ipv6::Ipv6Address) {
+        if let Some(ref mut ipv6_proc) = self.ipv6 {
+            ipv6_proc.set_global_address(addr);
+        }
+        if let Some(ref mut ndp_proc) = self.ndp {
+            ndp_proc.add_global_address(addr);
         }
     }
 

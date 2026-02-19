@@ -658,3 +658,143 @@ pub enum CongestionControllerVariant {
     /// BBRv1
     Bbr(BbrController),
 }
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn initial_state_smoke() -> bool {
+        let cc = CongestionController::new();
+        cc.state() == CongestionState::SlowStart
+            && cc.cwnd() == INITIAL_WINDOW * DEFAULT_MSS
+            && cc.ssthresh() == u32::MAX
+    }
+
+    pub fn slow_start_growth_smoke() -> bool {
+        let mut cc = CongestionController::with_mss(1000);
+        let initial_cwnd = cc.cwnd();
+
+        cc.on_ack(1000, false, 1000);
+        cc.cwnd() > initial_cwnd && cc.state() == CongestionState::SlowStart
+    }
+
+    pub fn transition_to_congestion_avoidance_smoke() -> bool {
+        let mut cc = CongestionController::with_mss(1000);
+        cc.ssthresh = 5000;
+
+        for _ in 0..10 {
+            cc.on_ack(1000, false, 0);
+        }
+
+        cc.state() == CongestionState::CongestionAvoidance
+    }
+
+    pub fn fast_retransmit_smoke() -> bool {
+        let mut cc = CongestionController::with_mss(1000);
+        cc.bytes_in_flight = 10000;
+
+        cc.on_ack(0, true, 1000);
+        cc.on_ack(0, true, 1000);
+        cc.on_ack(0, true, 1000);
+
+        cc.state() == CongestionState::FastRecovery && cc.ssthresh() < u32::MAX
+    }
+
+    pub fn timeout_smoke() -> bool {
+        let mut cc = CongestionController::with_mss(1000);
+        cc.cwnd = 50000;
+        cc.bytes_in_flight = 30000;
+
+        cc.on_timeout();
+
+        cc.state() == CongestionState::SlowStart && cc.cwnd() == 1000 && cc.ssthresh() == 15000
+    }
+
+    pub fn available_window_smoke() -> bool {
+        let mut cc = CongestionController::with_mss(1000);
+        cc.cwnd = 10000;
+        cc.bytes_in_flight = 3000;
+
+        cc.available_window(20000) == 7000 && cc.available_window(5000) == 2000
+    }
+
+    pub fn cubic_initial_state_smoke() -> bool {
+        default_and_tests::qemu_tests::cubic_initial_state_smoke()
+    }
+
+    pub fn cubic_slow_start_smoke() -> bool {
+        default_and_tests::qemu_tests::cubic_slow_start_smoke()
+    }
+
+    pub fn cubic_root_smoke() -> bool {
+        default_and_tests::qemu_tests::cubic_root_smoke()
+    }
+
+    pub fn cubic_fast_recovery_smoke() -> bool {
+        default_and_tests::qemu_tests::cubic_fast_recovery_smoke()
+    }
+
+    pub fn bbr_initial_state_smoke() -> bool {
+        default_and_tests::qemu_tests::bbr_initial_state_smoke()
+    }
+
+    pub fn bbr_startup_growth_smoke() -> bool {
+        default_and_tests::qemu_tests::bbr_startup_growth_smoke()
+    }
+
+    pub fn bbr_rt_prop_tracking_smoke() -> bool {
+        default_and_tests::qemu_tests::bbr_rt_prop_tracking_smoke()
+    }
+
+    pub fn bbr_available_window_smoke() -> bool {
+        default_and_tests::qemu_tests::bbr_available_window_smoke()
+    }
+
+    pub fn bbr_bdp_calculation_smoke() -> bool {
+        default_and_tests::qemu_tests::bbr_bdp_calculation_smoke()
+    }
+
+    pub fn bbr_startup_to_drain_smoke() -> bool {
+        default_and_tests::qemu_tests::bbr_startup_to_drain_smoke()
+    }
+
+    pub fn variant_from_algorithm_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_from_algorithm_smoke()
+    }
+
+    pub fn variant_with_mss_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_with_mss_smoke()
+    }
+
+    pub fn variant_newreno_ack_delegation_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_newreno_ack_delegation_smoke()
+    }
+
+    pub fn variant_cubic_ack_delegation_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_cubic_ack_delegation_smoke()
+    }
+
+    pub fn variant_bbr_ack_delegation_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_bbr_ack_delegation_smoke()
+    }
+
+    pub fn variant_timeout_delegation_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_timeout_delegation_smoke()
+    }
+
+    pub fn variant_reset_delegation_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_reset_delegation_smoke()
+    }
+
+    pub fn variant_available_window_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_available_window_smoke()
+    }
+
+    pub fn variant_fast_retransmit_newreno_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_fast_retransmit_newreno_smoke()
+    }
+
+    pub fn variant_default_smoke() -> bool {
+        default_and_tests::qemu_tests::variant_default_smoke()
+    }
+}

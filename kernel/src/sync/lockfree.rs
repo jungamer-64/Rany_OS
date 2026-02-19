@@ -32,7 +32,6 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 /// 指数バックオフのための定数
 mod mpmc;
-pub use mpmc::*;
 const BACKOFF_SPIN_LIMIT: u32 = 6;
 const BACKOFF_YIELD_LIMIT: u32 = 10;
 

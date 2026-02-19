@@ -85,7 +85,7 @@ impl ConnectionOooQueue {
     /// SACKブロックを生成（最大4ブロック、RFC 2018）
     fn sack_blocks(&self) -> Vec<(u32, u32)> {
         let mut blocks = Vec::new();
-        let mut iter = self.segments.iter();
+        let iter = self.segments.iter();
 
         let mut block_start = None;
         let mut block_end = 0u32;

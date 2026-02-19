@@ -657,11 +657,18 @@ impl NetworkStack {
         // Cleanup expired DNS cache entries
         crate::net::dns::cleanup_cache(current_time);
 
-        // Check DHCP lease timers (T1 renewal, T2 rebinding)
+        // Check DHCP (IPv4) lease timers (T1 renewal, T2 rebinding)
         // tick_rate = 1000 (current_time is in milliseconds, DHCP timers are in seconds)
         if let Ok(guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
             if let Some(ref client) = *guard {
                 let _ = client.check_timeout(current_time, 1000);
+            }
+        }
+
+        // Check DHCPv6 client timers
+        if let Ok(guard6) = crate::net::dhcp::DHCPV6_CLIENT.lock() {
+            if let Some(ref client6) = *guard6 {
+                let _ = client6.check_timeout(current_time, 1000);
             }
         }
 

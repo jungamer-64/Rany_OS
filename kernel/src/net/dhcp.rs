@@ -20,6 +20,9 @@ use super::ipv4::Ipv4Address;
 /// DHCPクライアントポート
 mod client_impl;
 pub use client_impl::*;
+
+mod v6;
+pub use v6::*;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 
 /// DHCPサーバーポート
