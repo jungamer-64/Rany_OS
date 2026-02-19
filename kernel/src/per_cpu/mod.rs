@@ -21,7 +21,7 @@ use crate::mm::numa::topology::MAX_NUMA_NODES;
 // Remote Free batch support
 use crate::mm::remote_free::RemoteFreeEntry;
 // Buddy Allocator Cache
-use crate::mm::phys::buddy_allocator::core_alloc::PerCpuFrameCache;
+use crate::mm::phys::buddy_allocator::PerCpuFrameCache;
 use crate::sync::IrqMutex;
 
 /// Cache entry for device to domain mapping
