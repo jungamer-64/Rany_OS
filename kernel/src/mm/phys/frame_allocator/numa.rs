@@ -482,7 +482,26 @@ pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
         return pmm.alloc_4k();
     }
 
-    FRAME_ALLOCATOR.lock().allocate_4k_frame()
+    // Try legacy bitmap allocator and log diagnostics on failure (helpful for qemu-suite debugging)
+    let res = FRAME_ALLOCATOR.lock().allocate_4k_frame();
+    if res.is_none() {
+        // Gather diagnostics (best-effort, may race with other allocs)
+        let pmm_init = pmm_initialized();
+        let (attempts, successes) = get_frame_local_alloc_metrics();
+        let buddy_stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
+        let bitmap_free = crate::mm::phys::frame_allocator::FRAME_ALLOCATOR.lock().free_frame_count();
+        eprintln!("[alloc_frame] FAILED: pmm_initialized={} pmm_numa_exists={} pmm_global_exists={} attempts/successes={}/{}, buddy_free_frames={} total_frames={} bitmap_free_frames={}",
+            pmm_init,
+            crate::mm::phys::frame_allocator::pmm_numa().is_some(),
+            crate::mm::phys::frame_allocator::pmm_global().is_some(),
+            attempts, successes,
+            buddy_stats.free_frames,
+            buddy_stats.total_frames,
+            bitmap_free
+        );
+    }
+
+    res
 }
 
 /// 指定NUMAノードから4KiBフレームを割り当て

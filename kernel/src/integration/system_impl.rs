@@ -341,6 +341,7 @@ impl SystemIntegration {
             ) {
                 match crate::io::virtio::init_virtio_net_with_transport(
                     alloc::boxed::Box::new(transport),
+                    Some(iommu_device),
                 ) {
                     Ok(()) => {
                         self.log("    VirtIO-net PCI transport initialized");

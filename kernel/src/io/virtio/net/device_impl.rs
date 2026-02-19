@@ -155,12 +155,32 @@ impl VirtioNetDevice {
         }
     }
 
+    /// Validate strict IOMMU policy for VirtIO-Net.
+    ///
+    /// In strict mode, when IOMMU translation is active, device-scoped mappings
+    /// require a concrete device identifier.
+    fn validate_iommu_device_requirement(
+        iommu_enabled: bool,
+        iommu_device_id: Option<IommuDeviceId>,
+    ) -> Result<(), VirtioNetError> {
+        if iommu_enabled && iommu_device_id.is_none() {
+            log::error!(
+                "[VIRTIO-NET] strict IOMMU mode requires iommu_device_id when IOMMU is enabled"
+            );
+            return Err(VirtioNetError::DeviceError);
+        }
+        Ok(())
+    }
+
     /// デバイスを初期化
     pub fn init(&mut self) -> Result<(), VirtioNetError> {
         // 1. デバイスタイプ確認（トランスポートはすでにmagic/version検証済み）
         if self.transport.device_type() != VirtioDeviceType::Network {
             return Err(VirtioNetError::DeviceError);
         }
+
+        // Strict policy: device-scoped DMA mapping requires device ID when IOMMU is active.
+        Self::validate_iommu_device_requirement(is_iommu_enabled(), self.iommu_device_id)?;
 
         // 2. デバイスリセット
         self.transport.reset();
@@ -625,5 +645,29 @@ impl VirtioNetDevice {
                 crate::io::log::early_print("[EARLY][NET-TX] no completions found after notify\n");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn test_validate_iommu_device_requirement_rejects_missing_device_id_when_enabled() {
+        let result = VirtioNetDevice::validate_iommu_device_requirement(true, None);
+        assert_eq!(result, Err(VirtioNetError::DeviceError));
+    }
+
+    #[test_case]
+    fn test_validate_iommu_device_requirement_accepts_device_id_when_enabled() {
+        let device = IommuDeviceId::new(0, 0, 1, 0);
+        let result = VirtioNetDevice::validate_iommu_device_requirement(true, Some(device));
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test_case]
+    fn test_validate_iommu_device_requirement_accepts_missing_device_id_when_disabled() {
+        let result = VirtioNetDevice::validate_iommu_device_requirement(false, None);
+        assert_eq!(result, Ok(()));
     }
 }

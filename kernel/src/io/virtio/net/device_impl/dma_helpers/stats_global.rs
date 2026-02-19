@@ -54,11 +54,14 @@ pub fn init_virtio_net_for_device(
     Ok(())
 }
 
-/// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI)
+/// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI).
+///
+/// `iommu_device_id` must be provided when IOMMU is enabled (strict mode).
 pub fn init_virtio_net_with_transport(
     transport: Box<dyn VirtioTransport>,
+    iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), VirtioNetError> {
-    let mut device = VirtioNetDevice::new(transport);
+    let mut device = VirtioNetDevice::new_with_device(transport, iommu_device_id);
     device.init()?;
     *VIRTIO_NET_DEVICE.lock() = Some(device);
     Ok(())
@@ -407,4 +410,3 @@ impl VirtQueueDmaBuffers {
         self.used_ring.phys_addr().as_u64()
     }
 }
-
