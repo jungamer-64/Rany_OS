@@ -195,6 +195,10 @@ fn run_suite() -> bool {
             "net_ecdh_phase_b_exports",
             test_net_ecdh_phase_b_exports,
         )
+        && run_check(
+            "kernel_driver_cell_exports",
+            test_kernel_driver_cell_exports,
+        )
         && run_check("kernel_integration_exports", test_kernel_integration_exports)
         && run_check(
             "graphics_framebuffer_wave9_exports",

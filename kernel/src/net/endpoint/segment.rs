@@ -153,6 +153,23 @@ impl TcpSegmentBuilder {
         self
     }
 
+    /// SACK ブロックオプション追加 (RFC 2018)
+    /// Kind=5, Length=2+8*N, N個の (left_edge, right_edge) ペア
+    pub fn sack_blocks(mut self, blocks: &[(u32, u32)]) -> Self {
+        if blocks.is_empty() {
+            return self;
+        }
+        let num = blocks.len().min(4); // 最大4ブロック
+        let opt_len = 2 + num * 8; // Kind(1) + Length(1) + N*8
+        self.options.push(5);            // Kind = SACK
+        self.options.push(opt_len as u8);
+        for (left, right) in blocks.iter().take(num) {
+            self.options.extend_from_slice(&left.to_be_bytes());
+            self.options.extend_from_slice(&right.to_be_bytes());
+        }
+        self
+    }
+
     /// Timestamp オプション追加
     /// Kind=8, Length=10, TSval=ts_val, TSecr=ts_ecr
     pub fn timestamp(mut self, ts_val: u32, ts_ecr: u32) -> Self {

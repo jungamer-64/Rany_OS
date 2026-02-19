@@ -19,3 +19,4 @@ hda_driver = { path = "../../drivers/hda", features = ["qemu-test-export"] }
 nvme_driver = { path = "../../drivers/nvme", features = ["qemu-test-export"] }
 usb_driver = { path = "../../drivers/usb", features = ["qemu-test-export"] }
 virtio_driver = { path = "../../drivers/virtio", features = ["qemu-test-export"] }
+time_driver = { path = "../../drivers/time", features = ["qemu-test-export"] }

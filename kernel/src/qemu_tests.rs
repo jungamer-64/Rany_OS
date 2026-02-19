@@ -451,6 +451,86 @@ pub fn mm_wave7_queuefull_does_not_count_writeback_skipped_smoke() -> bool {
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_queuefull_does_not_count_writeback_skipped_smoke()
 }
 
+pub fn driver_cell_state_default_is_created_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_state_default_is_created_smoke()
+}
+
+pub fn driver_cell_state_transitions_are_valid_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_state_transitions_are_valid_smoke()
+}
+
+pub fn driver_cell_state_faulted_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_state_faulted_smoke()
+}
+
+pub fn driver_cell_id_equality_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_id_equality_smoke()
+}
+
+pub fn driver_cell_id_ordering_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_id_ordering_smoke()
+}
+
+pub fn driver_cell_restart_policy_never_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_restart_policy_never_smoke()
+}
+
+pub fn driver_cell_restart_policy_on_panic_defaults_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_restart_policy_on_panic_defaults_smoke()
+}
+
+pub fn driver_cell_restart_policy_always_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_restart_policy_always_smoke()
+}
+
+pub fn driver_cell_fault_kind_variants_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_fault_kind_variants_smoke()
+}
+
+pub fn driver_cell_stats_initial_values_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_stats_initial_values_smoke()
+}
+
+pub fn driver_cell_stats_default_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_stats_default_smoke()
+}
+
+pub fn driver_cell_stats_record_start_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_stats_record_start_smoke()
+}
+
+pub fn driver_cell_stats_record_stop_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_stats_record_stop_smoke()
+}
+
+pub fn driver_cell_stats_record_fault_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_stats_record_fault_smoke()
+}
+
+pub fn driver_cell_stats_record_restart_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_stats_record_restart_smoke()
+}
+
+pub fn driver_cell_stats_record_hot_swap_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_stats_record_hot_swap_smoke()
+}
+
+pub fn driver_cell_error_not_found_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_error_not_found_smoke()
+}
+
+pub fn driver_cell_error_invalid_state_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_error_invalid_state_smoke()
+}
+
+pub fn driver_cell_global_stats_new_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_global_stats_new_smoke()
+}
+
+pub fn driver_cell_global_stats_tracking_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_global_stats_tracking_smoke()
+}
+
 pub fn net_ecdh_x25519_key_exchange_symmetry_smoke() -> bool {
     crate::net::ecdh::qemu_tests::ecdh_x25519_key_exchange_symmetry_smoke()
 }

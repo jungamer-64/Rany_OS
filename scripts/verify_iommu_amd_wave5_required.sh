@@ -6,19 +6,21 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AMD_EXPORT_FILE="$ROOT_DIR/kernel/src/io/iommu/amd/qemu_tests.rs"
-IOMMU_WRAPPER_FILE="$ROOT_DIR/kernel/src/io/iommu/qemu_tests.rs"
+IOMMU_WRAPPER_ROOT="$ROOT_DIR/kernel/src/io/iommu/qemu_tests"
+KERNEL_WRAPPER_ROOT="$ROOT_DIR/kernel/src/qemu_tests"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
-KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+KERNEL_SUITE_ROOT="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
 for required_file in \
   "$AMD_EXPORT_FILE" \
-  "$IOMMU_WRAPPER_FILE" \
+  "$IOMMU_WRAPPER_ROOT" \
+  "$KERNEL_WRAPPER_ROOT" \
   "$KERNEL_WRAPPER_FILE" \
-  "$KERNEL_SUITE_FILE" \
+  "$KERNEL_SUITE_ROOT" \
   "$PENDING_FILE"
 do
-  if [[ ! -f "$required_file" ]]; then
+  if [[ ! -e "$required_file" ]]; then
     echo "[verify_iommu_amd_wave5_required] missing file: $required_file" >&2
     exit 1
   fi
@@ -43,8 +45,8 @@ wave5_cases=(
 
 violations=0
 
-if ! rg -q "fn test_iommu_wave5_amd_exports\\(" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_iommu_amd_wave5_required] missing test_iommu_wave5_amd_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+if ! rg -q "fn test_iommu_wave5_amd_exports\\(" "$KERNEL_SUITE_ROOT"; then
+  echo "[verify_iommu_amd_wave5_required] missing test_iommu_wave5_amd_exports under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -58,18 +60,18 @@ for case_name in "${wave1_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${iommu_wrapper}\\(" "$IOMMU_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${iommu_wrapper}\\(" "$IOMMU_WRAPPER_ROOT"; then
+    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' under ${IOMMU_WRAPPER_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${kernel_wrapper}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${kernel_wrapper}\\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_ROOT"; then
+    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' under kernel/src/qemu_tests*"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${kernel_wrapper}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${kernel_wrapper}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
@@ -84,18 +86,18 @@ for case_name in "${wave5_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${iommu_wrapper}\\(" "$IOMMU_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' in ${IOMMU_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${iommu_wrapper}\\(" "$IOMMU_WRAPPER_ROOT"; then
+    echo "[verify_iommu_amd_wave5_required] missing IOMMU wrapper '${iommu_wrapper}' under ${IOMMU_WRAPPER_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${kernel_wrapper}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${kernel_wrapper}\\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_ROOT"; then
+    echo "[verify_iommu_amd_wave5_required] missing kernel wrapper '${kernel_wrapper}' under kernel/src/qemu_tests*"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${kernel_wrapper}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${kernel_wrapper}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_iommu_amd_wave5_required] missing required suite wiring '${kernel_wrapper}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done

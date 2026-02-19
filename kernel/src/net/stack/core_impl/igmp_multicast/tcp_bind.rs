@@ -189,6 +189,17 @@ impl NetworkStack {
                 self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
             }
         }
+
+        // Process zero-window probes (RFC 1122 Section 4.2.2.17)
+        let zwp_results = self.tcp.process_zero_window_probes(current_time);
+        for res in zwp_results {
+            let mut buffer = [0u8; MAX_PACKET_SIZE];
+            if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
+                let src_ip_out = Ipv4Address::new(local.ip.octets());
+                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+            }
+        }
     }
 
     /// Bind a UDP socket (uses token-based API)
@@ -614,13 +625,45 @@ impl NetworkStack {
         // Expire timed-out NDP pending packets
         self.expire_ndp_pending();
 
-        // Run NDP periodic maintenance (expire stale neighbor cache entries)
-        if let Some(ref mut ndp) = self.ndp {
-            ndp.tick(current_time);
+        // Run NDP periodic maintenance (expire stale neighbor cache entries + NUD probes)
+        // Collect NS messages and link-local address first to avoid double borrow
+        let ndp_ns_data: alloc::vec::Vec<(crate::net::ipv6::Ipv6Address, crate::net::ipv6::Ipv6Address, alloc::vec::Vec<u8>)> = {
+            if let Some(ref mut ndp) = self.ndp {
+                let ns_messages = ndp.tick(current_time);
+                let our_ll = ndp.our_link_local;
+                ns_messages
+                    .into_iter()
+                    .filter_map(|ns_msg| {
+                        if ns_msg.len() >= 24 {
+                            let mut target_bytes = [0u8; 16];
+                            target_bytes.copy_from_slice(&ns_msg[8..24]);
+                            let target = crate::net::ipv6::Ipv6Address::new(target_bytes);
+                            let sn_mcast = target.solicited_node();
+                            Some((our_ll, sn_mcast, ns_msg))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                alloc::vec::Vec::new()
+            }
+        };
+        // Send NUD probe NS messages (borrow of self.ndp is released)
+        for (our_ll, sn_mcast, ns_msg) in &ndp_ns_data {
+            self.send_ipv6_icmpv6_raw(our_ll, sn_mcast, ns_msg);
         }
 
         // Cleanup expired DNS cache entries
         crate::net::dns::cleanup_cache(current_time);
+
+        // Check DHCP lease timers (T1 renewal, T2 rebinding)
+        // tick_rate = 1000 (current_time is in milliseconds, DHCP timers are in seconds)
+        if let Ok(guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+            if let Some(ref client) = *guard {
+                let _ = client.check_timeout(current_time, 1000);
+            }
+        }
 
         // Evict expired IPv6 PMTU cache entries
         self.ipv6_pmtu_cache.evict_expired(current_time);

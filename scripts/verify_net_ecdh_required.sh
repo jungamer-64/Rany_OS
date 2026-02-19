@@ -9,18 +9,20 @@ set -euo pipefail
 # legacy net_tls_wave8_*p256* compatibility wrappers must not be wired into suite_kernel.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ECDH_EXPORT_FILE="$ROOT_DIR/kernel/src/net/ecdh.rs"
+ECDH_ENTRY_FILE="$ROOT_DIR/kernel/src/net/ecdh.rs"
+ECDH_EXPORT_ROOT="$ROOT_DIR/kernel/src/net/ecdh"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
-KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+KERNEL_SUITE_ROOT="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
 for required_file in \
-  "$ECDH_EXPORT_FILE" \
+  "$ECDH_ENTRY_FILE" \
+  "$ECDH_EXPORT_ROOT" \
   "$KERNEL_WRAPPER_FILE" \
-  "$KERNEL_SUITE_FILE" \
+  "$KERNEL_SUITE_ROOT" \
   "$PENDING_FILE"
 do
-  if [[ ! -f "$required_file" ]]; then
+  if [[ ! -e "$required_file" ]]; then
     echo "[verify_net_ecdh_required] missing file: $required_file" >&2
     exit 1
   fi
@@ -50,8 +52,8 @@ for suite_group in \
   "net_ecdh_exports" \
   "net_ecdh_phase_b_exports"
 do
-  if ! rg -q "${suite_group}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_ecdh_required] missing ${suite_group} in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${suite_group}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_net_ecdh_required] missing ${suite_group} under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
@@ -65,14 +67,14 @@ for forbidden_wrapper in \
   "net_tls_wave8_ecdh_p256_reject_invalid_peer_key_smoke" \
   "net_tls_wave8_ecdh_group_from_named_group_p256_smoke"
 do
-  if rg -q "${forbidden_wrapper}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_ecdh_required] unexpected TLS-routed P-256 wiring '${forbidden_wrapper}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if rg -q "${forbidden_wrapper}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_net_ecdh_required] unexpected TLS-routed P-256 wiring '${forbidden_wrapper}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done
 
-if ! rg -q "pub mod qemu_tests" "$ECDH_EXPORT_FILE"; then
-  echo "[verify_net_ecdh_required] missing qemu_tests module in ${ECDH_EXPORT_FILE#"$ROOT_DIR"/}"
+if ! rg -q "pub mod qemu_tests" "$ECDH_EXPORT_ROOT"; then
+  echo "[verify_net_ecdh_required] missing qemu_tests module declaration under ${ECDH_EXPORT_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -81,8 +83,8 @@ verify_case() {
   local export_fn="$2"
   local wrapper_fn="$3"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$ECDH_EXPORT_FILE"; then
-    echo "[verify_net_ecdh_required] missing ECDH export '${export_fn}' in ${ECDH_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$ECDH_EXPORT_ROOT"; then
+    echo "[verify_net_ecdh_required] missing ECDH export '${export_fn}' under ${ECDH_EXPORT_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -91,8 +93,8 @@ verify_case() {
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_net_ecdh_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_net_ecdh_required] missing suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 

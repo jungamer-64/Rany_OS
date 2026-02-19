@@ -273,6 +273,8 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - MM Wave7 required 配線ガード（Phase A+B+C+D）: `bash scripts/verify_mm_wave7_required.sh`
 - NET/TLS Wave8 required 配線ガード（Phase A+B1+B2+C+D+E+F）: `bash scripts/verify_net_tls_wave8_required.sh`
 - NET/ECDH required 配線ガード（x25519+phase-b）: `bash scripts/verify_net_ecdh_required.sh`
+- Driver time/driver_cell required 配線ガード: `bash scripts/verify_driver_time_driver_cell_required.sh`
+- legacy `#[test]`（drivers/time, kernel/driver_cell）は qemu-test-export へ移植済み。`scripts/qemu_legacy_test_allowlist.lst` は空運用を維持。
 - CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
 - 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
 - runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`

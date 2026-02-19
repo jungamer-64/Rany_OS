@@ -5,20 +5,24 @@ set -euo pipefail
 # are wired into suite_kernel as required checks.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FB_EXPORT_ROOT="$ROOT_DIR/kernel/src/graphics/framebuffer/qemu_tests"
 FB_EXPORT_FILE="$ROOT_DIR/kernel/src/graphics/framebuffer/qemu_tests.rs"
 PACKER_FILE="$ROOT_DIR/kernel/src/graphics/packer.rs"
+KERNEL_WRAPPER_ROOT="$ROOT_DIR/kernel/src/qemu_tests"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
-KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+KERNEL_SUITE_ROOT="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
 for required_file in \
+  "$FB_EXPORT_ROOT" \
   "$FB_EXPORT_FILE" \
   "$PACKER_FILE" \
+  "$KERNEL_WRAPPER_ROOT" \
   "$KERNEL_WRAPPER_FILE" \
-  "$KERNEL_SUITE_FILE" \
+  "$KERNEL_SUITE_ROOT" \
   "$PENDING_FILE"
 do
-  if [[ ! -f "$required_file" ]]; then
+  if [[ ! -e "$required_file" ]]; then
     echo "[verify_graphics_framebuffer_wave6_required] missing file: $required_file" >&2
     exit 1
   fi
@@ -53,13 +57,13 @@ cases=(
 
 violations=0
 
-if ! rg -q "graphics_framebuffer_wave6_phase_a_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase A suite entry in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+if ! rg -q "graphics_framebuffer_wave6_phase_a_exports" "$KERNEL_SUITE_ROOT"; then
+  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase A suite entry under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
-if ! rg -q "graphics_framebuffer_wave6_phase_b_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase B suite entry in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+if ! rg -q "graphics_framebuffer_wave6_phase_b_exports" "$KERNEL_SUITE_ROOT"; then
+  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 phase B suite entry under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -82,18 +86,18 @@ for case_name in "${cases[@]}"; do
   export_fn="wave6_${case_name}_smoke"
   wrapper_fn="graphics_wave6_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$FB_EXPORT_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' in ${FB_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$FB_EXPORT_FILE" "$FB_EXPORT_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' under kernel/src/graphics/framebuffer/qemu_tests*"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' under kernel/src/qemu_tests*"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -122,18 +126,18 @@ for case_name in "${phase_b_cases[@]}"; do
   export_fn="wave6_${case_name}_smoke"
   wrapper_fn="graphics_wave6_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$FB_EXPORT_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' in ${FB_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$FB_EXPORT_FILE" "$FB_EXPORT_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' under kernel/src/graphics/framebuffer/qemu_tests*"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' under kernel/src/qemu_tests*"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 

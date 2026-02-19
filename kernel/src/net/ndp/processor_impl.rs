@@ -393,10 +393,36 @@ impl NdpProcessor {
         Self::build_ns(&self.our_link_local, &sn_mcast, target, &self.our_mac)
     }
 
-    /// Run periodic maintenance (expire entries)
-    pub fn tick(&mut self, current_time: u64) {
+    /// Run periodic maintenance (expire entries + NUD timer processing)
+    ///
+    /// Returns a list of NS probe messages to send (for NUD Probe/Incomplete states)
+    pub fn tick(&mut self, current_time: u64) -> Vec<Vec<u8>> {
         self.cache.expire_reachable(current_time);
         self.cache.expire_old(current_time);
+
+        // Process NUD state machine timers (Delay→Probe, Probe retries)
+        let probe_targets = self.cache.process_nud_timers(current_time);
+        let mut ns_messages = Vec::new();
+
+        for target in probe_targets {
+            // Build unicast NS for Probe, or solicited-node multicast NS for Incomplete
+            let entry_state = self.cache.lookup(&target).map(|e| e.state);
+            let ns = match entry_state {
+                Some(NeighborState::Probe) => {
+                    // Unicast NS to target's last known address
+                    Self::build_ns(&self.our_link_local, &target, &target, &self.our_mac)
+                }
+                _ => {
+                    // Multicast NS to solicited-node address
+                    let sn_mcast = target.solicited_node();
+                    Self::build_ns(&self.our_link_local, &sn_mcast, &target, &self.our_mac)
+                }
+            };
+            self.stats.ns_sent.fetch_add(1, Ordering::Relaxed);
+            ns_messages.push(ns);
+        }
+
+        ns_messages
     }
 }
 

@@ -67,8 +67,9 @@ pub mod hot_swap;
 pub mod lifecycle;
 pub mod stats;
 
-#[cfg(test)]
-mod tests;
+#[cfg(feature = "qemu-test-export")]
+#[path = "tests.rs"]
+pub mod qemu_tests;
 
 extern crate alloc;
 

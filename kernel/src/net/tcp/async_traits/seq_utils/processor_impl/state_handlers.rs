@@ -216,6 +216,52 @@ impl TcpProcessor {
         results
     }
 
+    /// Process zero-window probes for connections with peer window = 0
+    /// Returns packets to send (ACK probes with seq = snd_una - 1)
+    pub fn process_zero_window_probes(&mut self, current_time: u64) -> Vec<TcpProcessResult> {
+        let mut results = Vec::new();
+        let mut dead_connections = Vec::new();
+
+        for (key, tcb_lock) in self.connections.iter() {
+            if let Ok(mut tcb) = tcb_lock.lock() {
+                match tcb.check_zero_window_probe(current_time) {
+                    Some(true) => {
+                        // Send zero-window probe: ACK with seq = snd_una - 1
+                        // This forces the peer to respond with its current window size
+                        if let Some(remote) = tcb.remote_addr {
+                            results.push(TcpProcessResult::SendPacket {
+                                local: tcb.local_addr,
+                                remote,
+                                seq: tcb.snd_una.wrapping_sub(1),
+                                ack: tcb.rcv_nxt,
+                                flags: TcpHeader::FLAG_ACK,
+                                window: tcb.rcv_wnd,
+                                payload: Vec::new(),
+                            });
+                        }
+                    }
+                    Some(false) => {
+                        // Too many probes — connection dead
+                        dead_connections.push(*key);
+                    }
+                    None => {}
+                }
+            }
+        }
+
+        // Mark dead connections as closed
+        for key in dead_connections {
+            if let Some(tcb_lock) = self.connections.get(&key) {
+                if let Ok(mut tcb) = tcb_lock.lock() {
+                    log::info!("[TCP] Zero-window probe timeout: {} -> {:?}", tcb.local_addr, tcb.remote_addr);
+                    tcb.state = TcpState::Closed;
+                }
+            }
+        }
+
+        results
+    }
+
     /// Mark that a retransmit for a given (local, remote, seq) has been sent.
     /// Updates the corresponding unacked segment's sent_time and retransmit counters
     /// and applies RTO backoff.

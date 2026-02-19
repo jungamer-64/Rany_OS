@@ -74,6 +74,7 @@ fn run_suite() -> bool {
         && test_nvme()
         && test_usb()
         && test_virtio()
+        && test_time_driver_exports()
 }
 
 #[cfg(not(target_os = "uefi"))]
@@ -207,6 +208,15 @@ fn test_usb() -> bool {
 
 fn test_virtio() -> bool {
     virtio_driver::qemu_tests::transport_init_sequence_smoke()
+}
+
+fn test_time_driver_exports() -> bool {
+    time_driver::qemu_tests::tick_increment_smoke()
+        && time_driver::qemu_tests::timer_registration_smoke()
+        && time_driver::qemu_tests::cpu_tracker_smoke()
+        && time_driver::qemu_tests::shard_index_smoke()
+        && time_driver::qemu_tests::uptime_ns_smoke()
+        && time_driver::qemu_tests::wall_clock_adjustment_smoke()
 }
 
 fn serial_write_str(s: &str) {

@@ -61,6 +61,9 @@ impl TcpControlBlock {
             sack_blocks: [(0, 0); 4],
             sack_block_count: 0,
             sack_scoreboard: alloc::vec::Vec::new(),
+            // Zero-Window Probe (RFC 1122)
+            zwp_probes_sent: 0,
+            zwp_last_probe_time: 0,
         }
     }
 
@@ -370,6 +373,54 @@ impl TcpControlBlock {
     /// Reset keepalive state (call when ACK received)
     pub fn reset_keepalive(&mut self) {
         self.keepalive_probes_sent = 0;
+    }
+
+    // ========================================================================
+    // Zero-Window Probe (RFC 1122 Section 4.2.2.17)
+    // ========================================================================
+
+    /// ゼロウィンドウプローブ間隔 (マイクロ秒): 500ms
+    const ZWP_INITIAL_INTERVAL_US: u64 = 500_000;
+    /// ゼロウィンドウプローブ最大再試行回数
+    const ZWP_MAX_PROBES: u8 = 10;
+
+    /// Check if zero-window probe should be sent.
+    ///
+    /// Returns:
+    /// - Some(true):  Send a probe (peer window is 0 and interval elapsed)
+    /// - Some(false): Too many probes — consider connection dead
+    /// - None:        No action needed (non-zero window or interval not elapsed)
+    pub fn check_zero_window_probe(&mut self, current_time: u64) -> Option<bool> {
+        // Only probe in Established state when peer window is 0
+        if self.state != TcpState::Established {
+            return None;
+        }
+        let effective_wnd = self.get_effective_snd_wnd();
+        if effective_wnd > 0 {
+            // Window opened — reset probe state
+            if self.zwp_probes_sent > 0 {
+                self.zwp_probes_sent = 0;
+            }
+            return None;
+        }
+
+        // Peer window is zero
+        if self.zwp_probes_sent >= Self::ZWP_MAX_PROBES {
+            return Some(false); // Connection dead
+        }
+
+        // Exponential backoff: initial * 2^min(probes, 6)
+        let backoff = 1u64 << core::cmp::min(self.zwp_probes_sent, 6);
+        let interval = Self::ZWP_INITIAL_INTERVAL_US.saturating_mul(backoff);
+        let elapsed = current_time.saturating_sub(self.zwp_last_probe_time);
+
+        if elapsed >= interval {
+            self.zwp_probes_sent = self.zwp_probes_sent.saturating_add(1);
+            self.zwp_last_probe_time = current_time;
+            Some(true) // Send probe
+        } else {
+            None
+        }
     }
 
     // ========================================================================
