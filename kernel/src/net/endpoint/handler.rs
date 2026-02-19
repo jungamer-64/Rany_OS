@@ -107,7 +107,11 @@ impl NetworkEventHandler {
             .payload(&data)
             .build();
 
-        TcpSegmentBuilder::calculate_checksum(&mut segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+        if local.is_ipv6() || remote.is_ipv6() {
+            TcpSegmentBuilder::calculate_checksum_v6(&mut segment, local.as_ipv6(), remote.as_ipv6());
+        } else {
+            TcpSegmentBuilder::calculate_checksum(&mut segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+        }
 
         // パケット送信を試みる
         match self.send_tcp_segment(local, remote, segment) {
@@ -220,8 +224,12 @@ impl NetworkEventHandler {
             .syn_options(1460, 7) // MSS + Window Scale + SACK Permitted
             .build();
 
-        // チェックサム計算
-        TcpSegmentBuilder::calculate_checksum(&mut syn_segment, local_addr.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+        // チェックサム計算 (IPv4/IPv6)
+        if local_addr.is_ipv6() || remote.is_ipv6() {
+            TcpSegmentBuilder::calculate_checksum_v6(&mut syn_segment, local_addr.as_ipv6(), remote.as_ipv6());
+        } else {
+            TcpSegmentBuilder::calculate_checksum(&mut syn_segment, local_addr.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+        }
 
         // パケット送信（IPスタック経由）
         if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
@@ -230,9 +238,9 @@ impl NetworkEventHandler {
         }
 
         log::info!(
-            "TCP: SYN sent {:?} -> {:?} (seq={})",
-            local_addr.as_ipv4().unwrap(),
-            remote.as_ipv4().unwrap(),
+            "TCP: SYN sent {} -> {} (seq={})",
+            local_addr,
+            remote,
             isn
         );
 
@@ -249,11 +257,9 @@ impl NetworkEventHandler {
         dst: SocketAddr,
         segment: Vec<u8>,
     ) -> SocketResult<()> {
-        // Convert addresses and forward to the global network stack
-        let src_ip = crate::net::ipv4::Ipv4Address::new(src.as_ipv4().unwrap());
-        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst.as_ipv4().unwrap());
-
-        if crate::net::stack::send_tcp(src_ip, dst_ip, &segment) {
+        // Delegate to the module-level `send_tcp_segment` which is IPv4/IPv6-aware.
+        // This centralizes IP family handling and ARP/NDP queuing logic.
+        if super::segment::send_tcp_segment(src, dst, segment) {
             Ok(())
         } else {
             Err(SocketError::ResourceExhausted)
@@ -294,8 +300,8 @@ impl NetworkEventHandler {
         tcb_table().insert(tcb);
 
         log::info!(
-            "TCP: Listening on {:?} (fd={}, backlog={})",
-            local.as_ipv4().unwrap(),
+            "TCP: Listening on {} (fd={}, backlog={})",
+            local,
             fd.raw(),
             backlog
         );
@@ -356,7 +362,11 @@ impl NetworkEventHandler {
                     .window(65535)
                     .build();
 
-                TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+                if local.is_ipv6() || remote.is_ipv6() {
+                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, local.as_ipv6(), remote.as_ipv6());
+                } else {
+                    TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+                }
 
                 if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
@@ -382,7 +392,11 @@ impl NetworkEventHandler {
                     .window(65535)
                     .build();
 
-                TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+                if local.is_ipv6() || remote.is_ipv6() {
+                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, local.as_ipv6(), remote.as_ipv6());
+                } else {
+                    TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+                }
 
                 if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);

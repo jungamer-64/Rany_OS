@@ -246,14 +246,18 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
 
     let mut ack_segment = builder.build();
 
-    TcpSegmentBuilder::calculate_checksum(&mut ack_segment, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+    if tcb.local.is_ipv6() || tcb.remote.is_ipv6() {
+        TcpSegmentBuilder::calculate_checksum_v6(&mut ack_segment, tcb.local.as_ipv6(), tcb.remote.as_ipv6());
+    } else {
+        TcpSegmentBuilder::calculate_checksum(&mut ack_segment, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+    }
 
     // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack_segment);
     log::info!(
-        "TCP: Connection established {:?} <-> {:?}",
-        tcb.local.as_ipv4().unwrap(),
-        tcb.remote.as_ipv4().unwrap()
+        "TCP: Connection established {} <-> {}",
+        tcb.local,
+        tcb.remote
     );
 
     // ソケットのWakerを起こす
@@ -301,7 +305,11 @@ fn process_tcp_new_connection(
             .ack_flag()
             .window(0)
             .build();
+    if local.is_ipv6() || remote.is_ipv6() {
+        TcpSegmentBuilder::calculate_checksum_v6(&mut rst, local.as_ipv6(), remote.as_ipv6());
+    } else {
         TcpSegmentBuilder::calculate_checksum(&mut rst, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+    }
         send_tcp_segment(local, remote, rst);
         return;
     };
@@ -347,14 +355,18 @@ fn process_tcp_new_connection(
     }
 
     let mut syn_ack = builder.build();
-    TcpSegmentBuilder::calculate_checksum(&mut syn_ack, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+    if local.is_ipv6() || remote.is_ipv6() {
+        TcpSegmentBuilder::calculate_checksum_v6(&mut syn_ack, local.as_ipv6(), remote.as_ipv6());
+    } else {
+        TcpSegmentBuilder::calculate_checksum(&mut syn_ack, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+    }
 
     // パケット送信
     send_tcp_segment(local, remote, syn_ack);
     log::info!(
-        "TCP: SYN-ACK sent {:?} -> {:?}",
-        local.as_ipv4().unwrap(),
-        remote.as_ipv4().unwrap()
+        "TCP: SYN-ACK sent {} -> {}",
+        local,
+        remote
     );
 }
 
@@ -536,7 +548,11 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         }
 
         let mut dup_ack = builder.build();
-        TcpSegmentBuilder::calculate_checksum(&mut dup_ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+        if tcb.local.is_ipv6() || tcb.remote.is_ipv6() {
+            TcpSegmentBuilder::calculate_checksum_v6(&mut dup_ack, tcb.local.as_ipv6(), tcb.remote.as_ipv6());
+        } else {
+            TcpSegmentBuilder::calculate_checksum(&mut dup_ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+        }
         send_tcp_segment(tcb.local, tcb.remote, dup_ack);
         return;
     }
@@ -584,7 +600,11 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
 
     let mut ack = builder.build();
 
-    TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+    if tcb.local.is_ipv6() || tcb.remote.is_ipv6() {
+        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, tcb.local.as_ipv6(), tcb.remote.as_ipv6());
+    } else {
+        TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+    }
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }
 
@@ -608,7 +628,11 @@ fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
         .window(65535)
         .build();
 
-    TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+    if tcb.local.is_ipv6() || tcb.remote.is_ipv6() {
+        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, tcb.local.as_ipv6(), tcb.remote.as_ipv6());
+    } else {
+        TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+    }
     // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }
