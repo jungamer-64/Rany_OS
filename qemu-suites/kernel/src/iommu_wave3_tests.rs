@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod tls_wave8_tests;
 pub(crate) use tls_wave8_tests::*;
 pub(crate) fn test_iommu_wave3_pasid_exports() -> bool {
@@ -239,6 +238,26 @@ pub(crate) fn test_mm_wave7_async_swapout_phase_d_exports() -> bool {
     )
 }
 
+pub(crate) fn test_mm_wave7_async_swapout_phase_e_exports() -> bool {
+    run_check(
+        "mm_wave7_memcg_concurrent_swapout_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_memcg_concurrent_swapout_canonical_smoke,
+    ) && run_check(
+        "mm_wave7_async_swapout_concurrent_dedup_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_async_swapout_concurrent_dedup_canonical_smoke,
+    )
+}
+
+pub(crate) fn test_mm_wave7_async_swapout_phase_f_exports() -> bool {
+    run_check(
+        "mm_wave7_async_swapout_stress_concurrency_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_async_swapout_stress_concurrency_canonical_smoke,
+    ) && run_check(
+        "mm_wave7_async_swapout_heavy_stress_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_async_swapout_heavy_stress_canonical_smoke,
+    )
+}
+
 pub(crate) fn test_mm_wave7_page_reclaim_exports() -> bool {
     run_check(
         "mm_wave7_watermarks_calculation_smoke",
@@ -406,7 +425,6 @@ pub(crate) fn test_net_tls_wave8_phase_b2_exports() -> bool {
         rany_os::qemu_tests::net_tls_wave8_tls13_strip_content_type_smoke,
     )
 }
-
 
 pub(crate) fn test_net_tls_wave8_phase_c_exports() -> bool {
     run_check(

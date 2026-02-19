@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use qemu_runner::{run_suite, RunConfig};
+use qemu_runner::{RunConfig, run_suite};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -109,10 +109,9 @@ fn run_runtime_pending(suite: &str) {
     drop(guard);
     match result {
         Ok(report) => {
-            let summary =
-                write_kernel_runtime_pending_summaries(&report).unwrap_or_else(|err| {
-                    panic!("kernel runtime pending summary generation failed: {err}")
-                });
+            let summary = write_kernel_runtime_pending_summaries(&report).unwrap_or_else(|err| {
+                panic!("kernel runtime pending summary generation failed: {err}")
+            });
             eprintln!(
                 "runtime pending suite '{}' passed in {:?} (log: {}, pass={}, fail={}, blocked={})",
                 report.suite,
@@ -125,6 +124,31 @@ fn run_runtime_pending(suite: &str) {
         }
         Err(err) => {
             panic!("runtime pending suite '{suite}' failed: {err}");
+        }
+    }
+}
+
+fn run_mm_pending(suite: &str) {
+    let guard = suite_lock().lock().expect("qemu suite lock poisoned");
+    let cfg = base_config(suite);
+    let result = run_suite(cfg);
+    drop(guard);
+    match result {
+        Ok(report) => {
+            let summary = write_kernel_mm_pending_summaries(&report)
+                .unwrap_or_else(|err| panic!("kernel mm pending summary generation failed: {err}"));
+            eprintln!(
+                "mm pending suite {} passed in {:?} (log: {}, pass={}, fail={}, blocked={})",
+                report.suite,
+                report.duration,
+                report.log_path.display(),
+                summary.passed_count,
+                summary.failed_count,
+                summary.blocked_count
+            );
+        }
+        Err(err) => {
+            panic!("mm pending suite {suite} failed: {err}");
         }
     }
 }
@@ -169,6 +193,12 @@ fn suite_pending() {
 #[ignore = "runtime pending suite is informational and non-blocking in CI"]
 fn suite_kernel_runtime_pending() {
     run_runtime_pending("kernel_runtime_pending");
+}
+
+#[test]
+#[ignore = "mm pending suite is informational and non-blocking in CI"]
+fn suite_kernel_mm_pending() {
+    run_mm_pending("kernel_mm_pending");
 }
 
 #[test]
@@ -245,7 +275,9 @@ fn parse_iommu_residual_parity_line(
     })
 }
 
-fn collect_iommu_residual_parity_items(path: &Path) -> Result<Vec<IommuResidualParityItem>, String> {
+fn collect_iommu_residual_parity_items(
+    path: &Path,
+) -> Result<Vec<IommuResidualParityItem>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|err| format!("failed to read '{}': {err}", path.display()))?;
     let mut items = Vec::new();
@@ -304,13 +336,14 @@ fn json_escape(input: &str) -> String {
     escaped
 }
 
-fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64), String> {
+fn parse_suite_counts(log_path: &Path, suite: &str) -> Result<(u64, u64, u64), String> {
     let content = std::fs::read_to_string(log_path)
-        .map_err(|err| format!("failed to read runtime pending log '{}': {err}", log_path.display()))?;
+        .map_err(|err| format!("failed to read pending log '{}': {err}", log_path.display()))?;
 
+    let marker = format!("{suite} counts ");
     for line in content.lines().rev() {
         let line = line.trim();
-        if let Some((_, tail)) = line.split_once("kernel_runtime_pending counts ") {
+        if let Some((_, tail)) = line.split_once(&marker) {
             let mut passed_count: Option<u64> = None;
             let mut failed_count: Option<u64> = None;
             let mut blocked_count: Option<u64> = None;
@@ -338,9 +371,17 @@ fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64), Strin
     }
 
     Err(format!(
-        "failed to find kernel runtime pending counts in '{}'",
+        "failed to find {suite} counts in '{}'",
         log_path.display()
     ))
+}
+
+fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64), String> {
+    parse_suite_counts(log_path, "kernel_runtime_pending")
+}
+
+fn parse_kernel_mm_pending_counts(log_path: &Path) -> Result<(u64, u64, u64), String> {
+    parse_suite_counts(log_path, "kernel_mm_pending")
 }
 
 fn write_pending_summaries(report: &qemu_runner::RunReport) -> Result<PendingSummaryStats, String> {
@@ -361,7 +402,9 @@ fn write_pending_summaries(report: &qemu_runner::RunReport) -> Result<PendingSum
         .filter(|item| !item.required_smoke_case.is_empty())
         .count();
 
-    let log_dir = qemu_runner::workspace_root().join("target").join("qemu-logs");
+    let log_dir = qemu_runner::workspace_root()
+        .join("target")
+        .join("qemu-logs");
     std::fs::create_dir_all(&log_dir).map_err(|err| {
         format!(
             "failed to create pending summary directory '{}': {err}",

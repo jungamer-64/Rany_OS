@@ -122,7 +122,7 @@ fn cpuid(leaf: u32) -> CpuidResult {
     let ebx: u32;
     let ecx: u32;
     let edx: u32;
-    
+
     // Note: rbx/ebx is reserved by LLVM for PIC code, so we need to save/restore it
     unsafe {
         core::arch::asm!(
@@ -136,7 +136,7 @@ fn cpuid(leaf: u32) -> CpuidResult {
             out("edx") edx,
         );
     }
-    
+
     CpuidResult { eax, ebx, ecx, edx }
 }
 
@@ -145,16 +145,16 @@ fn cpuid(leaf: u32) -> CpuidResult {
 fn read_sev_status_msr() -> Option<u64> {
     // Only attempt on AMD platforms
     let vendor = cpuid(0);
-    
+
     // Check for "AuthenticAMD"
     let is_amd = vendor.ebx == 0x6874_7541  // "Auth"
         && vendor.edx == 0x6974_6E65        // "enti"
-        && vendor.ecx == 0x444D_4163;       // "cAMD"
-    
+        && vendor.ecx == 0x444D_4163; // "cAMD"
+
     if !is_amd {
         return None;
     }
-    
+
     // Read MSR_AMD_SEV_STATUS
     let value: u64;
     unsafe {
@@ -169,36 +169,36 @@ fn read_sev_status_msr() -> Option<u64> {
         );
         value = ((high as u64) << 32) | (low as u64);
     }
-    
+
     Some(value)
 }
 
 /// Detect Intel TDX (Trust Domain Extensions)
-/// 
+///
 /// TDX detection is complex and typically involves:
 /// 1. Checking CPUID leaf 0x21 for TDX signature
 /// 2. Verifying we're running in a TD (Trust Domain)
 fn detect_intel_tdx() -> bool {
     // Check for Intel vendor
     let vendor = cpuid(0);
-    
+
     // Check for "GenuineIntel"
     let is_intel = vendor.ebx == 0x756E_6547  // "Genu"
         && vendor.edx == 0x4965_6E69          // "ineI"
-        && vendor.ecx == 0x6C65_746E;         // "ntel"
-    
+        && vendor.ecx == 0x6C65_746E; // "ntel"
+
     if !is_intel {
         return false;
     }
-    
+
     // Check if CPUID leaf 0x21 is available
     if vendor.eax < 0x21 {
         return false;
     }
-    
+
     // Check for TDX signature in leaf 0x21
     let tdx_check = cpuid(0x21);
-    
+
     // TDX CPUID signature: "IntelTDX    " in EBX:EDX:ECX
     // EBX = "Inte" = 0x6574_6E49
     // EDX = "lTDX" = 0x5844_546C
@@ -206,12 +206,12 @@ fn detect_intel_tdx() -> bool {
     let is_tdx = tdx_check.ebx == 0x6574_6E49
         && tdx_check.edx == 0x5844_546C
         && tdx_check.ecx == 0x2020_2020;
-    
+
     is_tdx
 }
 
 /// Get the encryption mask for page table entries
-/// 
+///
 /// This mask should be OR'd with page table entries to mark
 /// pages as encrypted when SME/SEV is enabled.
 #[allow(dead_code)]

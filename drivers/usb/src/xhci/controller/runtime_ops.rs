@@ -1,7 +1,6 @@
 use super::*;
 
 impl XhciController {
-
     pub(super) fn write_runtime(&self, offset: usize, value: u32) {
         hal::mmio::mmio_write_u32(
             (self.rt_offset + IR0 as u64 + offset as u64) as usize,
@@ -83,7 +82,9 @@ impl XhciController {
         let ctx_device_addr = dma_buf.device_address();
 
         // ゼロ初期化
-        unsafe { core::ptr::write_bytes(ctx_ptr, 0, 1); }
+        unsafe {
+            core::ptr::write_bytes(ctx_ptr, 0, 1);
+        }
 
         // DCBAAに登録 (デバイス可視アドレスで)
         // SAFETY: slot_id は max_slots 以下であることを確認済み
@@ -240,10 +241,7 @@ impl XhciController {
         drop(device_contexts);
 
         // 入力コンテキストを作成
-        let input_context = InputContext::for_configure_endpoint(
-            &slot_context,
-            endpoints,
-        );
+        let input_context = InputContext::for_configure_endpoint(&slot_context, endpoints);
 
         // InputContextをDMAバッファにコピー
         let input_ctx_size = core::mem::size_of::<InputContext>();

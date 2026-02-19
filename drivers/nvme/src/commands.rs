@@ -254,13 +254,7 @@ impl NvmeCommand {
     }
 
     /// Read コマンドを作成（SGL）
-    pub fn read_sgl(
-        cid: u16,
-        nsid: u32,
-        slba: u64,
-        nlb: u16,
-        sgl: SglDescriptor,
-    ) -> Self {
+    pub fn read_sgl(cid: u16, nsid: u32, slba: u64, nlb: u16, sgl: SglDescriptor) -> Self {
         let mut cmd = Self::with_opcode_and_cid(IoOpcode::Read as u8, cid);
         cmd.nsid = nsid;
         cmd.set_sgl(&sgl);
@@ -282,13 +276,7 @@ impl NvmeCommand {
     }
 
     /// Write コマンドを作成（SGL）
-    pub fn write_sgl(
-        cid: u16,
-        nsid: u32,
-        slba: u64,
-        nlb: u16,
-        sgl: SglDescriptor,
-    ) -> Self {
+    pub fn write_sgl(cid: u16, nsid: u32, slba: u64, nlb: u16, sgl: SglDescriptor) -> Self {
         let mut cmd = Self::with_opcode_and_cid(IoOpcode::Write as u8, cid);
         cmd.nsid = nsid;
         cmd.set_sgl(&sgl);

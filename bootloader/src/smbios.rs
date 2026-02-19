@@ -89,7 +89,7 @@ pub mod smbios_flags {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 struct Smbios3EntryPoint {
-    anchor: [u8; 5],           // "_SM3_"
+    anchor: [u8; 5], // "_SM3_"
     checksum: u8,
     length: u8,
     major_version: u8,
@@ -105,7 +105,7 @@ struct Smbios3EntryPoint {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 struct Smbios2EntryPoint {
-    anchor: [u8; 4],           // "_SM_"
+    anchor: [u8; 4], // "_SM_"
     checksum: u8,
     length: u8,
     major_version: u8,
@@ -145,27 +145,31 @@ pub fn detect_smbios() -> SmbiosInfo {
             if entry.guid == SMBIOS3_TABLE_GUID {
                 info.smbios3_addr = entry.address as u64;
                 info.flags |= smbios_flags::SMBIOS3_AVAILABLE;
-                
+
                 // SMBIOS 3.x Entry Point をパース
-                if let Some((major, minor, max_size, table_addr)) = parse_smbios3_entry(entry.address) {
+                if let Some((major, minor, max_size, table_addr)) =
+                    parse_smbios3_entry(entry.address)
+                {
                     info.major_version = major;
                     info.minor_version = minor;
                     info.table_max_size = max_size;
-                    
+
                     // 構造体テーブルをパース
                     parse_smbios_structures(&mut info, table_addr, max_size as usize);
                 }
             } else if entry.guid == SMBIOS_TABLE_GUID {
                 info.smbios_addr = entry.address as u64;
                 info.flags |= smbios_flags::SMBIOS2_AVAILABLE;
-                
+
                 // SMBIOS 3.x が未検出の場合のみ 2.x を使用
                 if info.smbios3_addr == 0 {
-                    if let Some((major, minor, table_addr, table_len)) = parse_smbios2_entry(entry.address) {
+                    if let Some((major, minor, table_addr, table_len)) =
+                        parse_smbios2_entry(entry.address)
+                    {
                         info.major_version = major;
                         info.minor_version = minor;
                         info.table_max_size = table_len as u32;
-                        
+
                         parse_smbios_structures(&mut info, table_addr as u64, table_len as usize);
                     }
                 }
@@ -179,12 +183,12 @@ pub fn detect_smbios() -> SmbiosInfo {
 /// SMBIOS 3.x Entry Pointをパース
 fn parse_smbios3_entry(addr: *const core::ffi::c_void) -> Option<(u8, u8, u32, u64)> {
     let entry = unsafe { ptr::read_unaligned(addr as *const Smbios3EntryPoint) };
-    
+
     // アンカー文字列を検証
     if &entry.anchor != b"_SM3_" {
         return None;
     }
-    
+
     Some((
         entry.major_version,
         entry.minor_version,
@@ -196,12 +200,12 @@ fn parse_smbios3_entry(addr: *const core::ffi::c_void) -> Option<(u8, u8, u32, u
 /// SMBIOS 2.x Entry Pointをパース
 fn parse_smbios2_entry(addr: *const core::ffi::c_void) -> Option<(u8, u8, u32, u16)> {
     let entry = unsafe { ptr::read_unaligned(addr as *const Smbios2EntryPoint) };
-    
+
     // アンカー文字列を検証
     if &entry.anchor != b"_SM_" {
         return None;
     }
-    
+
     Some((
         entry.major_version,
         entry.minor_version,
@@ -214,20 +218,18 @@ fn parse_smbios2_entry(addr: *const core::ffi::c_void) -> Option<(u8, u8, u32, u
 fn parse_smbios_structures(info: &mut SmbiosInfo, table_addr: u64, max_size: usize) {
     let mut offset: usize = 0;
     let table_ptr = table_addr as *const u8;
-    
+
     while offset < max_size {
         // ヘッダを読み取り
-        let header = unsafe {
-            ptr::read_unaligned(table_ptr.add(offset) as *const SmbiosHeader)
-        };
-        
+        let header = unsafe { ptr::read_unaligned(table_ptr.add(offset) as *const SmbiosHeader) };
+
         // End of Table
         if header.struct_type == SMBIOS_TYPE_END_OF_TABLE {
             break;
         }
-        
+
         let struct_start = offset;
-        
+
         // 構造体タイプに応じてパース
         match header.struct_type {
             SMBIOS_TYPE_BIOS => {
@@ -238,15 +240,15 @@ fn parse_smbios_structures(info: &mut SmbiosInfo, table_addr: u64, max_size: usi
             }
             _ => {}
         }
-        
+
         // 構造体の終端（文字列テーブル後の2つのNULL）を探す
         offset += header.length as usize;
-        
+
         // 文字列テーブルをスキップ
         while offset + 1 < max_size {
             let b0 = unsafe { *table_ptr.add(offset) };
             let b1 = unsafe { *table_ptr.add(offset + 1) };
-            
+
             if b0 == 0 && b1 == 0 {
                 offset += 2;
                 break;
@@ -261,12 +263,12 @@ fn parse_bios_info(info: &mut SmbiosInfo, table_ptr: *const u8, offset: usize, _
     // Type 0 構造体: offset+4 = Vendor string index, offset+5 = Version string index
     let vendor_idx = unsafe { *table_ptr.add(offset + 4) };
     let version_idx = unsafe { *table_ptr.add(offset + 5) };
-    
+
     // 文字列テーブルのオフセットを記録（実際の文字列は構造体の後）
     // ここでは構造体開始からのオフセットを記録
     info.bios_vendor_offset = (offset as u32) | ((vendor_idx as u32) << 24);
     info.bios_version_offset = (offset as u32) | ((version_idx as u32) << 24);
-    
+
     info.flags |= smbios_flags::BIOS_INFO_VALID;
 }
 
@@ -277,22 +279,22 @@ fn parse_system_info(info: &mut SmbiosInfo, table_ptr: *const u8, offset: usize,
     // offset+5 = Product Name string index
     // offset+7 = Serial Number string index
     // offset+8..24 = UUID (16 bytes) - length >= 25 の場合のみ
-    
+
     let manufacturer_idx = unsafe { *table_ptr.add(offset + 4) };
     let product_idx = unsafe { *table_ptr.add(offset + 5) };
     let serial_idx = unsafe { *table_ptr.add(offset + 7) };
-    
+
     info.system_manufacturer_offset = (offset as u32) | ((manufacturer_idx as u32) << 24);
     info.system_product_offset = (offset as u32) | ((product_idx as u32) << 24);
     info.system_serial_offset = (offset as u32) | ((serial_idx as u32) << 24);
-    
+
     // UUID (SMBIOS 2.1+)
     if length >= 25 {
         for i in 0..16 {
             info.system_uuid[i] = unsafe { *table_ptr.add(offset + 8 + i) };
         }
     }
-    
+
     info.flags |= smbios_flags::SYSTEM_INFO_VALID;
 }
 
@@ -300,42 +302,54 @@ fn parse_system_info(info: &mut SmbiosInfo, table_ptr: *const u8, offset: usize,
 #[cfg(feature = "serial_log")]
 fn log_system_uuid(uuid: &[u8; 16]) {
     if *uuid != [0; 16] {
-        serial_println!("  System UUID: {:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            uuid[0], uuid[1], uuid[2], uuid[3],
-            uuid[4], uuid[5],
-            uuid[6], uuid[7],
-            uuid[8], uuid[9],
-            uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]
+        serial_println!(
+            "  System UUID: {:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+            uuid[0],
+            uuid[1],
+            uuid[2],
+            uuid[3],
+            uuid[4],
+            uuid[5],
+            uuid[6],
+            uuid[7],
+            uuid[8],
+            uuid[9],
+            uuid[10],
+            uuid[11],
+            uuid[12],
+            uuid[13],
+            uuid[14],
+            uuid[15]
         );
     }
 }
 
 pub fn log_smbios_info(info: &SmbiosInfo) {
     use crate::serial_println;
-    
+
     serial_println!("[SMBIOS] Detection results:");
-    
+
     if info.flags & smbios_flags::SMBIOS3_AVAILABLE != 0 {
         serial_println!("  SMBIOS 3.x: 0x{:016X}", info.smbios3_addr);
     }
     if info.flags & smbios_flags::SMBIOS2_AVAILABLE != 0 {
         serial_println!("  SMBIOS 2.x: 0x{:016X}", info.smbios_addr);
     }
-    
+
     if info.major_version > 0 {
         serial_println!("  Version: {}.{}", info.major_version, info.minor_version);
         serial_println!("  Table max size: {} bytes", info.table_max_size);
     }
-    
+
     if info.flags & smbios_flags::BIOS_INFO_VALID != 0 {
         serial_println!("  BIOS info: available");
     }
-    
+
     if info.flags & smbios_flags::SYSTEM_INFO_VALID != 0 {
         serial_println!("  System info: available");
         log_system_uuid(&info.system_uuid);
     }
-    
+
     if info.smbios3_addr == 0 && info.smbios_addr == 0 {
         serial_println!("  No SMBIOS tables found");
     }

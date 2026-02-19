@@ -1,5 +1,3 @@
-
-
 #[cfg(all(test, feature = "qemu-test-export"))]
 #[path = "../../qemu_tests.rs"]
 pub mod qemu_tests;
@@ -8,8 +6,8 @@ pub mod qemu_tests;
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+    use crate::mm::meta::frame_backing;
     use crate::mm::types::PAGE_SIZE_4K;
-use crate::mm::meta::frame_backing;
 
     #[test_case]
     pub(super) fn test_async_swapout_file_backed() {
@@ -23,14 +21,18 @@ use crate::mm::meta::frame_backing;
 
         // allocate a frame to represent the physical page
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
         // track the frame backing
         frame_backing::track_frame_backing(frame_idx, ino, page_num);
 
         // enqueue
-        let handle = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num })
-            .expect("enqueue ok");
+        let handle = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+            frame_idx,
+            SwapKind::File { ino, page_num },
+        )
+        .expect("enqueue ok");
 
         // wait for completion
         handle.wait();
@@ -40,7 +42,13 @@ use crate::mm::meta::frame_backing;
 
         // page should be present and readable (cleanness asserted via PageCache API)
         let mut buf = vec![0u8; PAGE_SIZE_4K];
-        let read = crate::fs::PageCache::read(&cache, ino, page_num * PAGE_SIZE_4K as u64, &mut buf, PAGE_SIZE_4K as u64);
+        let read = crate::fs::PageCache::read(
+            &cache,
+            ino,
+            page_num * PAGE_SIZE_4K as u64,
+            &mut buf,
+            PAGE_SIZE_4K as u64,
+        );
         assert!(read.is_some(), "page should exist and be readable");
     }
 
@@ -55,19 +63,32 @@ use crate::mm::meta::frame_backing;
         assert!(cache.mark_dirty(ino, page_num));
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         frame_backing::track_frame_backing(frame_idx, ino, page_num);
 
         // first enqueue should succeed
-        let handle1 = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+        let handle1 = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+            frame_idx,
+            SwapKind::File { ino, page_num },
+        )
+        .expect("enqueue ok");
 
         // second enqueue for same frame should return AlreadyPending
-        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect_err("should be pending");
+        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+            frame_idx,
+            SwapKind::File { ino, page_num },
+        )
+        .expect_err("should be pending");
         assert_eq!(err, SwapError::AlreadyPending);
 
         // wait for first completion, then enqueue again
         handle1.wait();
-        let handle2 = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+        let handle2 = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+            frame_idx,
+            SwapKind::File { ino, page_num },
+        )
+        .expect("enqueue ok");
         handle2.wait();
 
         // after completion backing must be removed
@@ -80,7 +101,8 @@ use crate::mm::meta::frame_backing;
         crate::mm::reclaim::async_swapout::set_test_enqueue_override(Some(SwapError::QueueFull));
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
             .expect_err("override must force error");
         assert_eq!(err, SwapError::QueueFull);
@@ -101,7 +123,11 @@ use crate::mm::meta::frame_backing;
     pub(super) fn test_memcg_concurrent_swapout() {
         // Initialize memcg and global page cache
         crate::mm::meta::memcg::init_memcg();
-        let cg = crate::mm::meta::memcg::memcg_create(String::from("concurrent"), crate::mm::meta::memcg::memcg_root()).expect("create memcg");
+        let cg = crate::mm::meta::memcg::memcg_create(
+            String::from("concurrent"),
+            crate::mm::meta::memcg::memcg_root(),
+        )
+        .expect("create memcg");
         crate::fs::init_page_cache(64 * 1024);
         let cache = crate::fs::page_cache();
 
@@ -114,12 +140,24 @@ use crate::mm::meta::frame_backing;
             let handle = std::thread::spawn(move || {
                 // allocate a frame
                 let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-                let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+                let frame_idx =
+                    crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
                 if i % 2 == 0 {
                     // file-backed
-                    assert!(crate::mm::meta::memcg::memcg_charge(cg, 1, crate::mm::meta::memcg::ChargeType::Cache).is_ok());
-                    crate::mm::meta::memcg::memcg_track_page(frame_idx, cg, crate::mm::meta::memcg::ChargeType::Cache);
+                    assert!(
+                        crate::mm::meta::memcg::memcg_charge(
+                            cg,
+                            1,
+                            crate::mm::meta::memcg::ChargeType::Cache
+                        )
+                        .is_ok()
+                    );
+                    crate::mm::meta::memcg::memcg_track_page(
+                        frame_idx,
+                        cg,
+                        crate::mm::meta::memcg::ChargeType::Cache,
+                    );
 
                     let ino = 1000u64;
                     let page_num = i as u64;
@@ -128,14 +166,33 @@ use crate::mm::meta::frame_backing;
                     assert!(cache.mark_dirty(ino, page_num));
                     crate::mm::meta::frame_backing::track_frame_backing(frame_idx, ino, page_num);
 
-                    let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+                    let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                        frame_idx,
+                        SwapKind::File { ino, page_num },
+                    )
+                    .expect("enqueue ok");
                     h.wait();
                 } else {
                     // anon
-                    assert!(crate::mm::meta::memcg::memcg_charge(cg, 1, crate::mm::meta::memcg::ChargeType::Anon).is_ok());
-                    crate::mm::meta::memcg::memcg_track_page(frame_idx, cg, crate::mm::meta::memcg::ChargeType::Anon);
+                    assert!(
+                        crate::mm::meta::memcg::memcg_charge(
+                            cg,
+                            1,
+                            crate::mm::meta::memcg::ChargeType::Anon
+                        )
+                        .is_ok()
+                    );
+                    crate::mm::meta::memcg::memcg_track_page(
+                        frame_idx,
+                        cg,
+                        crate::mm::meta::memcg::ChargeType::Anon,
+                    );
 
-                    let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+                    let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                        frame_idx,
+                        SwapKind::Anon,
+                    )
+                    .expect("enqueue ok");
                     h.wait();
                 }
 
@@ -171,7 +228,8 @@ use crate::mm::meta::frame_backing;
         assert!(cache.mark_dirty(ino, page_num));
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         crate::mm::meta::frame_backing::track_frame_backing(frame_idx, ino, page_num);
 
         // Check queue/pending metrics before enqueue
@@ -191,7 +249,10 @@ use crate::mm::meta::frame_backing;
             let frame_idx = frame_idx;
             let t = std::thread::spawn(move || {
                 barrier.wait();
-                let res = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num });
+                let res = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                    frame_idx,
+                    SwapKind::File { ino, page_num },
+                );
                 results.lock().unwrap().push(res);
             });
             joiners.push(t);
@@ -252,14 +313,19 @@ use crate::mm::meta::frame_backing;
         stop_worker();
         // Wait for worker to stop
         for _ in 0..20 {
-            if !is_worker_running() { break; }
+            if !is_worker_running() {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!is_worker_running(), "worker should have stopped");
 
         // Restart and ensure it runs
         start_worker();
-        assert!(is_worker_running(), "worker should be running after restart");
+        assert!(
+            is_worker_running(),
+            "worker should be running after restart"
+        );
 
         // Clean up
         stop_worker();
@@ -274,7 +340,9 @@ use crate::mm::meta::frame_backing;
         // Stop worker to allow deterministic queue fill
         test_impl::stop_worker();
         for _ in 0..20 {
-            if !test_impl::is_worker_running() { break; }
+            if !test_impl::is_worker_running() {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
@@ -293,10 +361,15 @@ use crate::mm::meta::frame_backing;
             assert!(cache.mark_dirty(ino, page_num));
 
             let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            let frame_idx =
+                crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
             crate::mm::meta::frame_backing::track_frame_backing(frame_idx, ino, page_num);
 
-            let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+            let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                frame_idx,
+                SwapKind::File { ino, page_num },
+            )
+            .expect("enqueue ok");
             handles.push(h);
         }
 
@@ -304,8 +377,10 @@ use crate::mm::meta::frame_backing;
         assert!(test_impl::_file_queue_len() >= reserved);
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
-        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect_err("expected QueueFull due to reservation");
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect_err("expected QueueFull due to reservation");
         assert_eq!(err, SwapError::QueueFull);
 
         // Start worker to process entries
@@ -321,8 +396,10 @@ use crate::mm::meta::frame_backing;
 
         // Now anon enqueue should succeed
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect("enqueue ok");
         h.wait();
 
         // Ensure backing removed (if any)
@@ -334,17 +411,24 @@ use crate::mm::meta::frame_backing;
     pub(super) fn test_token_bucket_exhaustion_and_refill() {
         // Ensure worker controlled
         stop_worker();
-        for _ in 0..20 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..20 {
+            if !is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         // Set tokens to zero to simulate exhaustion
         test_impl::set_tokens(0);
 
         // allocate a frame
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
         // Ensure anon enqueue fails
-        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect_err("should be QueueFull due to tokens");
+        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect_err("should be QueueFull due to tokens");
         assert_eq!(err, SwapError::QueueFull);
 
         // Add one token and try again
@@ -353,7 +437,8 @@ use crate::mm::meta::frame_backing;
         // Start worker to allow processing
         start_worker();
 
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect("enqueue ok");
         h.wait();
 
         // cleanup: restore tokens to capacity
@@ -368,7 +453,12 @@ use crate::mm::meta::frame_backing;
     pub(super) fn test_token_refill_on_processing() {
         // Stop worker to control processing
         stop_worker();
-        for _ in 0..20 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..20 {
+            if !is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         // Set tokens to zero
         test_impl::set_tokens(0);
@@ -383,11 +473,16 @@ use crate::mm::meta::frame_backing;
         assert!(cache.mark_dirty(ino, page_num));
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         crate::mm::meta::frame_backing::track_frame_backing(frame_idx, ino, page_num);
 
         // Enqueue file entry
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+            frame_idx,
+            SwapKind::File { ino, page_num },
+        )
+        .expect("enqueue ok");
 
         // Start worker to process and refill tokens
         start_worker();
@@ -405,7 +500,11 @@ use crate::mm::meta::frame_backing;
     #[cfg(feature = "std")]
     pub(super) fn test_async_swapout_stress_concurrency() {
         crate::mm::meta::memcg::init_memcg();
-        let cg = crate::mm::meta::memcg::memcg_create(String::from("stress"), crate::mm::meta::memcg::memcg_root()).expect("create memcg");
+        let cg = crate::mm::meta::memcg::memcg_create(
+            String::from("stress"),
+            crate::mm::meta::memcg::memcg_root(),
+        )
+        .expect("create memcg");
         crate::fs::init_page_cache(64 * 1024);
         let cache = crate::fs::page_cache();
 
@@ -425,40 +524,89 @@ use crate::mm::meta::frame_backing;
             #[cfg(feature = "std")]
             let j = std::thread::spawn(move || {
                 for i in 0..iters {
-                    let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-                    let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+                    let frame =
+                        crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
+                    let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(
+                        frame.start_address().as_u64(),
+                    );
 
                     if ((i + t) % 2) == 0 {
                         // file-backed
-                        assert!(crate::mm::meta::memcg::memcg_charge(cg, 1, crate::mm::meta::memcg::ChargeType::Cache).is_ok());
-                        crate::mm::meta::memcg::memcg_track_page(frame_idx, cg, crate::mm::meta::memcg::ChargeType::Cache);
+                        assert!(
+                            crate::mm::meta::memcg::memcg_charge(
+                                cg,
+                                1,
+                                crate::mm::meta::memcg::ChargeType::Cache
+                            )
+                            .is_ok()
+                        );
+                        crate::mm::meta::memcg::memcg_track_page(
+                            frame_idx,
+                            cg,
+                            crate::mm::meta::memcg::ChargeType::Cache,
+                        );
 
                         let ino = 6000u64 + (i % 256) as u64;
                         let page_num = i as u64;
                         let data = alloc::vec![0u8; PAGE_SIZE_4K];
                         cache.insert(ino, page_num, data, PAGE_SIZE_4K as u64);
                         assert!(cache.mark_dirty(ino, page_num));
-                        crate::mm::meta::frame_backing::track_frame_backing(frame_idx, ino, page_num);
+                        crate::mm::meta::frame_backing::track_frame_backing(
+                            frame_idx, ino, page_num,
+                        );
 
-                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }) {
-                            Ok(h) => { h.wait(); }
+                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                            frame_idx,
+                            SwapKind::File { ino, page_num },
+                        ) {
+                            Ok(h) => {
+                                h.wait();
+                            }
                             Err(SwapError::QueueFull) => {
                                 // fallback sync writeback
-                                let _ = crate::fs::page_cache().sync_page(ino, page_num, |_offset, _data| Ok(()));
-                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                let _ = crate::fs::page_cache().sync_page(
+                                    ino,
+                                    page_num,
+                                    |_offset, _data| Ok(()),
+                                );
+                                let physf = unsafe {
+                                    PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(
+                                        frame_idx.to_phys_addr(),
+                                    ))
+                                };
                                 buddy_allocator::buddy_dealloc_frame(physf);
                             }
                             Err(e) => panic!("unexpected enqueue error: {:?}", e),
                         }
                     } else {
                         // anon
-                        assert!(crate::mm::meta::memcg::memcg_charge(cg, 1, crate::mm::meta::memcg::ChargeType::Anon).is_ok());
-                        crate::mm::meta::memcg::memcg_track_page(frame_idx, cg, crate::mm::meta::memcg::ChargeType::Anon);
+                        assert!(
+                            crate::mm::meta::memcg::memcg_charge(
+                                cg,
+                                1,
+                                crate::mm::meta::memcg::ChargeType::Anon
+                            )
+                            .is_ok()
+                        );
+                        crate::mm::meta::memcg::memcg_track_page(
+                            frame_idx,
+                            cg,
+                            crate::mm::meta::memcg::ChargeType::Anon,
+                        );
 
-                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon) {
-                            Ok(h) => { h.wait(); }
+                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                            frame_idx,
+                            SwapKind::Anon,
+                        ) {
+                            Ok(h) => {
+                                h.wait();
+                            }
                             Err(SwapError::QueueFull) => {
-                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                let physf = unsafe {
+                                    PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(
+                                        frame_idx.to_phys_addr(),
+                                    ))
+                                };
                                 buddy_allocator::buddy_dealloc_frame(physf);
                             }
                             Err(e) => panic!("unexpected enqueue error: {:?}", e),
@@ -476,7 +624,9 @@ use crate::mm::meta::frame_backing;
 
         stop_worker();
         for _ in 0..200 {
-            if !is_worker_running() { break; }
+            if !is_worker_running() {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
@@ -489,7 +639,11 @@ use crate::mm::meta::frame_backing;
     #[ignore]
     pub(super) fn test_async_swapout_heavy_stress() {
         crate::mm::meta::memcg::init_memcg();
-        let cg = crate::mm::meta::memcg::memcg_create(String::from("heavy"), crate::mm::meta::memcg::memcg_root()).expect("create memcg");
+        let cg = crate::mm::meta::memcg::memcg_create(
+            String::from("heavy"),
+            crate::mm::meta::memcg::memcg_root(),
+        )
+        .expect("create memcg");
         crate::fs::init_page_cache(64 * 1024);
         let cache = crate::fs::page_cache();
 
@@ -510,33 +664,80 @@ use crate::mm::meta::frame_backing;
             let cg = cg;
             let j = std::thread::spawn(move || {
                 for i in 0..iters {
-                    let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-                    let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+                    let frame =
+                        crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
+                    let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(
+                        frame.start_address().as_u64(),
+                    );
                     if ((i + t) % 2) == 0 {
-                        assert!(crate::mm::meta::memcg::memcg_charge(cg, 1, crate::mm::meta::memcg::ChargeType::Cache).is_ok());
-                        crate::mm::meta::memcg::memcg_track_page(frame_idx, cg, crate::mm::meta::memcg::ChargeType::Cache);
+                        assert!(
+                            crate::mm::meta::memcg::memcg_charge(
+                                cg,
+                                1,
+                                crate::mm::meta::memcg::ChargeType::Cache
+                            )
+                            .is_ok()
+                        );
+                        crate::mm::meta::memcg::memcg_track_page(
+                            frame_idx,
+                            cg,
+                            crate::mm::meta::memcg::ChargeType::Cache,
+                        );
                         let ino = 7000u64 + (i % 512) as u64;
                         let page_num = i as u64;
                         let data = alloc::vec![0u8; PAGE_SIZE_4K];
                         cache.insert(ino, page_num, data, PAGE_SIZE_4K as u64);
                         assert!(cache.mark_dirty(ino, page_num));
-                        crate::mm::meta::frame_backing::track_frame_backing(frame_idx, ino, page_num);
-                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }) {
-                            Ok(h) => { h.wait(); }
+                        crate::mm::meta::frame_backing::track_frame_backing(
+                            frame_idx, ino, page_num,
+                        );
+                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                            frame_idx,
+                            SwapKind::File { ino, page_num },
+                        ) {
+                            Ok(h) => {
+                                h.wait();
+                            }
                             Err(SwapError::QueueFull) => {
-                                let _ = crate::fs::page_cache().sync_page(ino, page_num, |_o, _d| Ok(()));
-                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                let _ =
+                                    crate::fs::page_cache()
+                                        .sync_page(ino, page_num, |_o, _d| Ok(()));
+                                let physf = unsafe {
+                                    PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(
+                                        frame_idx.to_phys_addr(),
+                                    ))
+                                };
                                 buddy_allocator::buddy_dealloc_frame(physf);
                             }
                             Err(e) => panic!("unexpected enqueue error: {:?}", e),
                         }
                     } else {
-                        assert!(crate::mm::meta::memcg::memcg_charge(cg, 1, crate::mm::meta::memcg::ChargeType::Anon).is_ok());
-                        crate::mm::meta::memcg::memcg_track_page(frame_idx, cg, crate::mm::meta::memcg::ChargeType::Anon);
-                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon) {
-                            Ok(h) => { h.wait(); }
+                        assert!(
+                            crate::mm::meta::memcg::memcg_charge(
+                                cg,
+                                1,
+                                crate::mm::meta::memcg::ChargeType::Anon
+                            )
+                            .is_ok()
+                        );
+                        crate::mm::meta::memcg::memcg_track_page(
+                            frame_idx,
+                            cg,
+                            crate::mm::meta::memcg::ChargeType::Anon,
+                        );
+                        match crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+                            frame_idx,
+                            SwapKind::Anon,
+                        ) {
+                            Ok(h) => {
+                                h.wait();
+                            }
                             Err(SwapError::QueueFull) => {
-                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                let physf = unsafe {
+                                    PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(
+                                        frame_idx.to_phys_addr(),
+                                    ))
+                                };
                                 buddy_allocator::buddy_dealloc_frame(physf);
                             }
                             Err(e) => panic!("unexpected enqueue error: {:?}", e),
@@ -547,10 +748,17 @@ use crate::mm::meta::frame_backing;
             joiners.push(j);
         }
 
-        for j in joiners { j.join().expect("join"); }
+        for j in joiners {
+            j.join().expect("join");
+        }
 
         stop_worker();
-        for _ in 0..500 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..500 {
+            if !is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         let stats = crate::mm::meta::memcg::memcg_stats(cg).expect("stats");
         assert_eq!(stats.cache_pages, 0);
@@ -571,8 +779,11 @@ use crate::mm::meta::frame_backing;
         let start = std::time::Instant::now();
         for _ in 0..count {
             let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
-            let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+            let frame_idx =
+                crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            let h =
+                crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+                    .expect("enqueue ok");
             h.wait();
         }
         let dur = start.elapsed();
@@ -587,7 +798,12 @@ use crate::mm::meta::frame_backing;
 
         // Ensure deterministic worker lifecycle
         test_impl::stop_worker();
-        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         test_impl::_reset_dealloc_count();
         test_impl::_reset_zswap_fail_count();
@@ -604,9 +820,11 @@ use crate::mm::meta::frame_backing;
         });
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect("enqueue ok");
         test_impl::start_worker();
         h.wait();
 
@@ -621,7 +839,12 @@ use crate::mm::meta::frame_backing;
     pub(super) fn test_huge_page_2m_anon_store() {
         // Ensure deterministic worker lifecycle
         test_impl::stop_worker();
-        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         // Ensure zswap is enabled and has room for 2MiB
         crate::mm::reclaim::zswap::zswap_set_enabled(true);
@@ -635,19 +858,23 @@ use crate::mm::meta::frame_backing;
         });
 
         // Allocate a 2MiB huge page (buddy allocator)
-        let huge = crate::mm::phys::buddy_allocator::buddy_alloc_frame_2m().expect("alloc 2m frame");
+        let huge =
+            crate::mm::phys::buddy_allocator::buddy_alloc_frame_2m().expect("alloc 2m frame");
         let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(huge.start_address().as_u64());
 
         let before = crate::mm::reclaim::zswap::zswap_stats().stored_pages_2m;
 
         // Enqueue as anon
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect("enqueue ok");
         test_impl::start_worker();
         h.wait();
 
         // Should have been stored and deallocated
         assert!(crate::mm::reclaim::zswap::zswap_stats().stored_pages_2m > before);
-        assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
+        assert!(!crate::mm::phys::buddy_allocator::is_frame_allocated(
+            frame_idx.as_usize()
+        ));
 
         stop_worker();
     }
@@ -661,7 +888,12 @@ use crate::mm::meta::frame_backing;
 
         // Force zswap failure and enqueue anon
         test_impl::stop_worker();
-        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         crate::mm::reclaim::zswap::zswap_set_enabled(true);
         crate::mm::reclaim::zswap::zswap_update_config(crate::mm::reclaim::zswap::ZswapConfig {
@@ -674,9 +906,11 @@ use crate::mm::meta::frame_backing;
         });
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect("enqueue ok");
         test_impl::start_worker();
         h.wait();
 
@@ -702,7 +936,8 @@ use crate::mm::meta::frame_backing;
         let before = crate::mm::reclaim::page_reclaim::PAGE_RECLAIM.stats();
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         crate::mm::reclaim::page_reclaim::test_register_pending_async(
             frame_idx,
             crate::mm::reclaim::page_reclaim::PageType::FileBacked,
@@ -712,11 +947,19 @@ use crate::mm::meta::frame_backing;
         let ino = u64::MAX - 1;
         let page_num = 0u64;
         let cache = crate::fs::page_cache();
-        cache.insert(ino, page_num, alloc::vec![0x11u8; PAGE_SIZE_4K], PAGE_SIZE_4K as u64);
+        cache.insert(
+            ino,
+            page_num,
+            alloc::vec![0x11u8; PAGE_SIZE_4K],
+            PAGE_SIZE_4K as u64,
+        );
         assert!(cache.mark_dirty(ino, page_num));
 
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num })
-            .expect("enqueue file");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(
+            frame_idx,
+            SwapKind::File { ino, page_num },
+        )
+        .expect("enqueue file");
         test_impl::start_worker();
         h.wait();
 
@@ -762,14 +1005,16 @@ use crate::mm::meta::frame_backing;
         let before = crate::mm::reclaim::page_reclaim::PAGE_RECLAIM.stats();
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         crate::mm::reclaim::page_reclaim::test_register_pending_async(
             frame_idx,
             crate::mm::reclaim::page_reclaim::PageType::Anonymous,
             0,
         );
 
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue anon");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect("enqueue anon");
         test_impl::start_worker();
         h.wait();
 
@@ -815,14 +1060,16 @@ use crate::mm::meta::frame_backing;
         let before = crate::mm::reclaim::page_reclaim::PAGE_RECLAIM.stats();
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         crate::mm::reclaim::page_reclaim::test_register_pending_async(
             frame_idx,
             crate::mm::reclaim::page_reclaim::PageType::Anonymous,
             0,
         );
 
-        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue anon");
+        let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect("enqueue anon");
         test_impl::start_worker();
         h.wait();
 
@@ -845,7 +1092,8 @@ use crate::mm::meta::frame_backing;
         let before = crate::mm::reclaim::page_reclaim::PAGE_RECLAIM.stats();
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
         crate::mm::reclaim::page_reclaim::test_register_pending_async(
             frame_idx,
             crate::mm::reclaim::page_reclaim::PageType::Anonymous,
@@ -880,14 +1128,21 @@ use crate::mm::meta::frame_backing;
     #[test_case]
     pub(super) fn test_token_exhaustion_does_not_leave_pending() {
         test_impl::stop_worker();
-        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         test_impl::set_tokens(0);
 
         let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frame_idx =
+            crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
-        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect_err("should be QueueFull due to tokens");
+        let err = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+            .expect_err("should be QueueFull due to tokens");
         assert_eq!(err, SwapError::QueueFull);
 
         // Ensure pending flag was rolled back
@@ -897,7 +1152,12 @@ use crate::mm::meta::frame_backing;
     #[test_case]
     pub(super) fn test_file_queue_counter_saturation() {
         test_impl::stop_worker();
-        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         // Repeated safe decrement must not underflow
         for _ in 0..10 {
@@ -954,7 +1214,9 @@ use crate::mm::meta::frame_backing;
             handles.push(h);
         }
 
-        for h in handles { h.join().expect("join"); }
+        for h in handles {
+            h.join().expect("join");
+        }
 
         let (hits, misses, occ) = crate::mm::reclaim::async_swapout::buffer_pool_4k_stats();
         assert!(hits + misses >= threads * iters);
@@ -1009,7 +1271,9 @@ use crate::mm::meta::frame_backing;
             handles.push(h);
         }
 
-        for h in handles { h.join().expect("join"); }
+        for h in handles {
+            h.join().expect("join");
+        }
 
         let (hits, misses, occ) = crate::mm::reclaim::async_swapout::buffer_pool_2m_stats();
         assert!(hits + misses >= threads * iters);
@@ -1063,8 +1327,11 @@ use crate::mm::meta::frame_backing;
         let start = std::time::Instant::now();
         for _ in 0..count {
             let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
-            let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+            let frame_idx =
+                crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            let h =
+                crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+                    .expect("enqueue ok");
             h.wait();
         }
         let dur_no_pool = start.elapsed();
@@ -1085,8 +1352,11 @@ use crate::mm::meta::frame_backing;
         let start2 = std::time::Instant::now();
         for _ in 0..count {
             let frame = crate::mm::phys::frame_allocator::alloc_frame().expect("alloc frame");
-            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
-            let h = crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+            let frame_idx =
+                crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            let h =
+                crate::mm::reclaim::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon)
+                    .expect("enqueue ok");
             h.wait();
         }
         let dur_pool = start2.elapsed();

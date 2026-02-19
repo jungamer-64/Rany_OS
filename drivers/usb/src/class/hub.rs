@@ -21,13 +21,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
-use super::{
-    ClassDriverError, ClassDriverEvent, TransferStatus, UsbClass, UsbClassDriver,
-};
-use crate::{
-    SetupPacket, UsbDevice,
-    descriptor::{SafePackedRead},
-};
+use super::{ClassDriverError, ClassDriverEvent, TransferStatus, UsbClass, UsbClassDriver};
+use crate::{SetupPacket, UsbDevice, descriptor::SafePackedRead};
 
 /// フィールドの安全な読み取りマクロ
 macro_rules! read_field {

@@ -41,10 +41,7 @@ impl Write for FixedBuf {
 pub fn error_conversion_smoke() -> bool {
     let mem_err = MemoryError::OutOfMemory;
     let kernel_err: KernelError = mem_err.into();
-    matches!(
-        kernel_err,
-        KernelError::Memory(MemoryError::OutOfMemory)
-    )
+    matches!(kernel_err, KernelError::Memory(MemoryError::OutOfMemory))
 }
 
 pub fn error_display_smoke() -> bool {
@@ -59,9 +56,9 @@ pub fn error_display_smoke() -> bool {
 pub fn loader_sha256_empty_smoke() -> bool {
     let hash = sha256::compute(b"");
     let expected = [
-        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
-        0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
-        0x78, 0x52, 0xb8, 0x55,
+        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9,
+        0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52,
+        0xb8, 0x55,
     ];
     hash == expected
 }
@@ -69,9 +66,9 @@ pub fn loader_sha256_empty_smoke() -> bool {
 pub fn loader_sha256_abc_smoke() -> bool {
     let hash = sha256::compute(b"abc");
     let expected = [
-        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
-        0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
-        0xf2, 0x00, 0x15, 0xad,
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22,
+        0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00,
+        0x15, 0xad,
     ];
     hash == expected
 }
@@ -99,17 +96,17 @@ pub fn loader_ed25519_signature_format_smoke() -> bool {
 
 pub fn loader_ed25519_rfc8032_vector1_smoke() -> bool {
     let public_key: [u8; 32] = [
-        0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64,
-        0x07, 0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68,
-        0xf7, 0x07, 0x51, 0x1a,
+        0xd7, 0x5a, 0x98, 0x01, 0x82, 0xb1, 0x0a, 0xb7, 0xd5, 0x4b, 0xfe, 0xd3, 0xc9, 0x64, 0x07,
+        0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07,
+        0x51, 0x1a,
     ];
     let message: &[u8] = b"";
     let signature: [u8; 64] = [
-        0xe5, 0x56, 0x43, 0x00, 0xc3, 0x60, 0xac, 0x72, 0x90, 0x86, 0xe2, 0xcc, 0x80, 0x6e,
-        0x82, 0x8a, 0x84, 0x87, 0x7f, 0x1e, 0xb8, 0xe5, 0xd9, 0x74, 0xd8, 0x73, 0xe0, 0x65,
-        0x22, 0x49, 0x01, 0x55, 0x5f, 0xb8, 0x82, 0x15, 0x90, 0xa3, 0x3b, 0xac, 0xc6, 0x1e,
-        0x39, 0x70, 0x1c, 0xf9, 0xb4, 0x6b, 0xd2, 0x5b, 0xf5, 0xf0, 0x59, 0x5b, 0xbe, 0x24,
-        0x65, 0x51, 0x41, 0x43, 0x8e, 0x7a, 0x10, 0x0b,
+        0xe5, 0x56, 0x43, 0x00, 0xc3, 0x60, 0xac, 0x72, 0x90, 0x86, 0xe2, 0xcc, 0x80, 0x6e, 0x82,
+        0x8a, 0x84, 0x87, 0x7f, 0x1e, 0xb8, 0xe5, 0xd9, 0x74, 0xd8, 0x73, 0xe0, 0x65, 0x22, 0x49,
+        0x01, 0x55, 0x5f, 0xb8, 0x82, 0x15, 0x90, 0xa3, 0x3b, 0xac, 0xc6, 0x1e, 0x39, 0x70, 0x1c,
+        0xf9, 0xb4, 0x6b, 0xd2, 0x5b, 0xf5, 0xf0, 0x59, 0x5b, 0xbe, 0x24, 0x65, 0x51, 0x41, 0x43,
+        0x8e, 0x7a, 0x10, 0x0b,
     ];
     ed25519::verify_message(&public_key, message, &signature)
 }
@@ -301,7 +298,8 @@ pub fn kernel_async_swapout_sim_smoke() -> bool {
             let q_len = state.queue.len();
             let can_enqueue = if kind == SwapKind::File {
                 q_len < channel_size
-                    && (state.tokens > 0 || q_len < channel_size.saturating_sub(reserved_file_slots))
+                    && (state.tokens > 0
+                        || q_len < channel_size.saturating_sub(reserved_file_slots))
             } else {
                 q_len < channel_size
             };
@@ -379,6 +377,35 @@ pub fn mm_wave7_runtime_tunable_roundtrip_smoke() -> bool {
     crate::mm::reclaim::async_swapout::qemu_tests::wave7_runtime_tunable_roundtrip_smoke()
 }
 
+pub fn mm_wave7_memcg_concurrent_swapout_canonical_smoke() -> bool {
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_memcg_concurrent_swapout_canonical_smoke()
+}
+
+pub fn mm_wave7_async_swapout_concurrent_dedup_canonical_smoke() -> bool {
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_async_swapout_concurrent_dedup_canonical_smoke()
+}
+
+pub fn mm_wave7_async_swapout_stress_concurrency_canonical_smoke() -> bool {
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_async_swapout_stress_concurrency_canonical_smoke()
+}
+
+pub fn mm_wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_async_swapout_heavy_stress_canonical_smoke(
+    )
+}
+
+pub fn mm_wave7_bench_enqueue_pool_effect_smoke() -> bool {
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_bench_enqueue_pool_effect_smoke()
+}
+
+pub fn mm_wave7_bench_buffer_pool_2m_reuse_smoke() -> bool {
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_bench_buffer_pool_2m_reuse_smoke()
+}
+
+pub fn mm_wave7_bench_buffer_pool_1g_reuse_smoke() -> bool {
+    crate::mm::reclaim::async_swapout::qemu_tests::wave7_bench_buffer_pool_1g_reuse_smoke()
+}
+
 pub fn mm_wave7_watermarks_calculation_smoke() -> bool {
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_watermarks_calculation_smoke()
 }
@@ -411,11 +438,13 @@ pub fn mm_wave7_async_failure_requeues_and_clears_pending_smoke() -> bool {
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_async_failure_requeues_and_clears_pending_smoke()
 }
 
-pub fn mm_wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke() -> bool {
+pub fn mm_wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke() -> bool
+{
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled_smoke()
 }
 
-pub fn mm_wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke() -> bool {
+pub fn mm_wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke() -> bool
+{
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled_smoke()
 }
 
@@ -427,11 +456,13 @@ pub fn mm_wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_notsupported_anonymous_dirty_requeues_without_writeback_skipped_smoke()
 }
 
-pub fn mm_wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke() -> bool {
+pub fn mm_wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke()
+-> bool {
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success_smoke()
 }
 
-pub fn mm_wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke() -> bool {
+pub fn mm_wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke()
+-> bool {
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure_smoke()
 }
 
@@ -443,7 +474,8 @@ pub fn mm_wave7_already_pending_without_registered_pending_requeues_smoke() -> b
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_smoke()
 }
 
-pub fn mm_wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke() -> bool {
+pub fn mm_wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke()
+-> bool {
     crate::mm::reclaim::page_reclaim::qemu_tests::wave7_already_pending_without_registered_pending_requeues_once_in_direct_reclaim_smoke()
 }
 

@@ -99,10 +99,16 @@ impl<T: ?Sized> IrqPoisonLock<T> {
 
         // 3. warn if poisoned (best-effort)
         if self.poisoned.load(Ordering::Acquire) {
-            log::error!("[fat32::IrqPoisonLock] lock is poisoned; continuing with best-effort access");
+            log::error!(
+                "[fat32::IrqPoisonLock] lock is poisoned; continuing with best-effort access"
+            );
         }
 
-        IrqPoisonLockGuard { lock: self, irq_was_enabled, nosend: core::marker::PhantomData }
+        IrqPoisonLockGuard {
+            lock: self,
+            irq_was_enabled,
+            nosend: core::marker::PhantomData,
+        }
     }
 
     /// Try to acquire the lock without blocking. If acquired, interrupts are disabled until guard is dropped.
@@ -117,7 +123,11 @@ impl<T: ?Sized> IrqPoisonLock<T> {
             if self.poisoned.load(Ordering::Acquire) {
                 log::error!("[fat32::IrqPoisonLock] try_lock acquired but lock is poisoned");
             }
-            Some(IrqPoisonLockGuard { lock: self, irq_was_enabled, nosend: core::marker::PhantomData })
+            Some(IrqPoisonLockGuard {
+                lock: self,
+                irq_was_enabled,
+                nosend: core::marker::PhantomData,
+            })
         } else {
             // failed to acquire -> restore interrupts
             restore_interrupts(irq_was_enabled);

@@ -205,12 +205,7 @@ pub struct DirectBlockHandle {
 impl DirectBlockHandle {
     /// Create a new direct block handle (kernel-only)
     /// This constructor represents a *standalone* handle (not a kernel-registered open).
-    pub const fn new(
-        device_id: u64,
-        start_block: u64,
-        block_count: u64,
-        block_size: u32,
-    ) -> Self {
+    pub const fn new(device_id: u64, start_block: u64, block_count: u64, block_size: u32) -> Self {
         Self {
             device_id,
             start_block,
@@ -360,7 +355,12 @@ pub struct NvmeDmaHandle {
 impl NvmeDmaHandle {
     /// Create a new handle (kernel-only)
     pub const fn new(id: u64, data_iova: u64, prp2_or_sgl: u64, len: usize) -> Self {
-        Self { id, data_iova, prp2_or_sgl, len }
+        Self {
+            id,
+            data_iova,
+            prp2_or_sgl,
+            len,
+        }
     }
 
     /// Internal context ID

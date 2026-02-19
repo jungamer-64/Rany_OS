@@ -17,7 +17,7 @@ use log::info;
 use uefi::prelude::*;
 use uefi::proto::unsafe_protocol;
 use uefi::runtime::{self, VariableVendor};
-use uefi::{boot, Guid};
+use uefi::{Guid, boot};
 
 /// Shim Lock Protocol GUID
 /// {605DAB50-E046-4300-ABB6-3DD810DD8B23}
@@ -65,12 +65,9 @@ pub struct ShimMokInfo {
 #[unsafe_protocol(SHIM_LOCK_GUID)]
 pub struct ShimLock {
     /// Verify a buffer against enrolled keys
-    pub verify: unsafe extern "efiapi" fn(
-        this: *const ShimLock,
-        buffer: *const u8,
-        size: u32,
-    ) -> Status,
-    
+    pub verify:
+        unsafe extern "efiapi" fn(this: *const ShimLock, buffer: *const u8, size: u32) -> Status,
+
     /// Hash a buffer
     pub hash: unsafe extern "efiapi" fn(
         this: *const ShimLock,
@@ -79,7 +76,7 @@ pub struct ShimLock {
         context: *mut u8,
         context_size: *mut u32,
     ) -> Status,
-    
+
     /// Get context (extended interface, may not be present in older Shim)
     pub context: unsafe extern "efiapi" fn(
         this: *const ShimLock,
@@ -93,10 +90,17 @@ fn detect_mok_variables(info: &mut ShimMokInfo) {
     // Check MokSBState (Secure Boot state within Shim)
     if let Some(value) = read_mok_u8_variable("MokSBState") {
         info.mok_sb_state = value;
-        info!("MokSBState: {} ({})", value, 
-            if value == 0 { "validation disabled" } else { "validation enabled" });
+        info!(
+            "MokSBState: {} ({})",
+            value,
+            if value == 0 {
+                "validation disabled"
+            } else {
+                "validation enabled"
+            }
+        );
     }
-    
+
     // Check MokList (enrolled MOK certificates)
     info.mok_list_present = mok_variable_exists("MokList");
     if info.mok_list_present {
@@ -106,19 +110,19 @@ fn detect_mok_variables(info: &mut ShimMokInfo) {
             info!("  {} MOK certificate(s) enrolled", info.mok_count);
         }
     }
-    
+
     // Check MokListRT (runtime-accessible MOK list)
     info.mok_list_rt_present = mok_variable_exists("MokListRT");
     if info.mok_list_rt_present {
         info!("MokListRT present (runtime MOK access available)");
     }
-    
+
     // Check MokListX (MOK blacklist/revocation list)
     info.mok_list_x_present = mok_variable_exists("MokListX");
     if info.mok_list_x_present {
         info!("MokListX present (MOK revocation list)");
     }
-    
+
     // Check SbatLevel (SBAT revocation data)
     info.sbat_level_present = mok_variable_exists("SbatLevel");
     if info.sbat_level_present {
@@ -145,26 +149,26 @@ fn log_shim_summary(info: &ShimMokInfo) {
 /// ShimMokInfo containing Shim/MOK detection results
 pub fn detect_shim_mok() -> ShimMokInfo {
     let mut info = ShimMokInfo::default();
-    
+
     // 1. Check for Shim Lock Protocol
     info.shim_detected = detect_shim_lock_protocol();
-    
+
     if info.shim_detected {
         info!("Shim bootloader detected (SHIM_LOCK protocol present)");
     }
-    
+
     // 2. Read MOK-related variables
     detect_mok_variables(&mut info);
-    
+
     // 3. Try to verify ourselves with Shim (if protocol available)
     if info.shim_detected {
         info.shim_validated = true;
         info!("Shim validation: PASSED (we were loaded by Shim)");
     }
-    
+
     // Summary
     log_shim_summary(&info);
-    
+
     info
 }
 
@@ -181,7 +185,7 @@ fn detect_shim_lock_protocol() -> bool {
 fn read_mok_u8_variable(name: &str) -> Option<u8> {
     let mut buffer = [0u8; 1];
     let vendor = VariableVendor(SHIM_VARIABLE_GUID);
-    
+
     // Convert name to UCS-2
     let mut name_buf = [0u16; 32];
     let mut len = 0;
@@ -190,12 +194,12 @@ fn read_mok_u8_variable(name: &str) -> Option<u8> {
         len += 1;
     }
     name_buf[len] = 0;
-    
+
     let name_cstr = match uefi::CStr16::from_u16_with_nul(&name_buf[..=len]) {
         Ok(s) => s,
         Err(_) => return None,
     };
-    
+
     match runtime::get_variable(name_cstr, &vendor, &mut buffer) {
         Ok(_) => Some(buffer[0]),
         Err(_) => None,
@@ -206,7 +210,7 @@ fn read_mok_u8_variable(name: &str) -> Option<u8> {
 fn mok_variable_exists(name: &str) -> bool {
     let mut buffer = [0u8; 1];
     let vendor = VariableVendor(SHIM_VARIABLE_GUID);
-    
+
     // Convert name to UCS-2
     let mut name_buf = [0u16; 32];
     let mut len = 0;
@@ -215,12 +219,12 @@ fn mok_variable_exists(name: &str) -> bool {
         len += 1;
     }
     name_buf[len] = 0;
-    
+
     let name_cstr = match uefi::CStr16::from_u16_with_nul(&name_buf[..=len]) {
         Ok(s) => s,
         Err(_) => return false,
     };
-    
+
     match runtime::get_variable(name_cstr, &vendor, &mut buffer) {
         Ok(_) => true,
         Err(e) => matches!(e.status(), Status::BUFFER_TOO_SMALL),
@@ -233,13 +237,13 @@ fn count_mok_certificates() -> u16 {
     // MokList is a EFI_SIGNATURE_LIST structure
     // Each entry contains: SignatureListSize, SignatureHeaderSize, SignatureSize
     // The number of certificates = (SignatureListSize - sizeof(header) - SignatureHeaderSize) / SignatureSize
-    
+
     // First, get the size of MokList
     let vendor = VariableVendor(SHIM_VARIABLE_GUID);
-    
+
     let name = cstr16!("MokList");
     let mut size_buf = [0u8; 4096]; // Reasonable max size
-    
+
     match runtime::get_variable(name, &vendor, &mut size_buf) {
         Ok((data, _attrs)) => {
             // Parse EFI_SIGNATURE_LIST to count entries
@@ -259,7 +263,7 @@ fn count_mok_certificates() -> u16 {
 }
 
 /// Verify a binary using Shim Lock Protocol
-/// 
+///
 /// # Arguments
 /// * `data` - Binary data to verify
 ///
@@ -272,18 +276,18 @@ pub fn verify_with_shim(data: &[u8]) -> bool {
         Ok(h) => h,
         Err(_) => return false,
     };
-    
+
     let handle = match handles.first() {
         Some(h) => *h,
         None => return false,
     };
-    
+
     // Open the protocol
     let shim_lock = match boot::open_protocol_exclusive::<ShimLock>(handle) {
         Ok(p) => p,
         Err(_) => return false,
     };
-    
+
     // Call verify function
     let status = unsafe {
         (shim_lock.verify)(
@@ -292,7 +296,7 @@ pub fn verify_with_shim(data: &[u8]) -> bool {
             data.len() as u32,
         )
     };
-    
+
     status == Status::SUCCESS
 }
 

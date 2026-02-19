@@ -257,7 +257,7 @@ impl UnixFileMode {
     pub const S_IWUSR: u16 = 0o200;
     /// オーナー実行許可
     pub const S_IXUSR: u16 = 0o100;
-    
+
     // Group permissions
     /// グループ読み取り許可
     pub const S_IRGRP: u16 = 0o040;
@@ -265,7 +265,7 @@ impl UnixFileMode {
     pub const S_IWGRP: u16 = 0o020;
     /// グループ実行許可
     pub const S_IXGRP: u16 = 0o010;
-    
+
     // Other permissions
     /// その他読み取り許可
     pub const S_IROTH: u16 = 0o004;

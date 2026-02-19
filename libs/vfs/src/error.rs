@@ -88,24 +88,24 @@ impl From<VfsError> for u32 {
     /// エラーコードへの変換（システムコール用）
     fn from(err: VfsError) -> u32 {
         match err {
-            VfsError::NotFound => 2,             // ENOENT
-            VfsError::PermissionDenied => 13,    // EACCES
-            VfsError::AlreadyExists => 17,       // EEXIST
-            VfsError::DirectoryNotEmpty => 39,   // ENOTEMPTY
-            VfsError::NotADirectory => 20,       // ENOTDIR
-            VfsError::IsADirectory => 21,        // EISDIR
-            VfsError::InvalidInput => 22,        // EINVAL
-            VfsError::InvalidPath => 22,         // EINVAL
-            VfsError::StorageFull => 28,         // ENOSPC
-            VfsError::IoError => 5,              // EIO
-            VfsError::NotSupported => 95,        // EOPNOTSUPP
-            VfsError::ReadOnly => 30,            // EROFS
-            VfsError::FileSystemCorrupted => 5,  // EIO
-            VfsError::CrossDeviceLink => 18,     // EXDEV
-            VfsError::TooManyOpenFiles => 24,    // EMFILE
-            VfsError::BadFileDescriptor => 9,    // EBADF
-            VfsError::NameTooLong => 36,         // ENAMETOOLONG
-            VfsError::Interrupted => 4,          // EINTR
+            VfsError::NotFound => 2,            // ENOENT
+            VfsError::PermissionDenied => 13,   // EACCES
+            VfsError::AlreadyExists => 17,      // EEXIST
+            VfsError::DirectoryNotEmpty => 39,  // ENOTEMPTY
+            VfsError::NotADirectory => 20,      // ENOTDIR
+            VfsError::IsADirectory => 21,       // EISDIR
+            VfsError::InvalidInput => 22,       // EINVAL
+            VfsError::InvalidPath => 22,        // EINVAL
+            VfsError::StorageFull => 28,        // ENOSPC
+            VfsError::IoError => 5,             // EIO
+            VfsError::NotSupported => 95,       // EOPNOTSUPP
+            VfsError::ReadOnly => 30,           // EROFS
+            VfsError::FileSystemCorrupted => 5, // EIO
+            VfsError::CrossDeviceLink => 18,    // EXDEV
+            VfsError::TooManyOpenFiles => 24,   // EMFILE
+            VfsError::BadFileDescriptor => 9,   // EBADF
+            VfsError::NameTooLong => 36,        // ENAMETOOLONG
+            VfsError::Interrupted => 4,         // EINTR
             VfsError::Other => 255,
         }
     }

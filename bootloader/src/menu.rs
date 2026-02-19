@@ -6,9 +6,9 @@
 use crate::config::{BootConfig, BootEntry};
 use core::time::Duration;
 use log::info;
+use uefi::boot;
 use uefi::prelude::*;
 use uefi::proto::console::text::{Key, ScanCode};
-use uefi::boot;
 
 /// Boot menu result
 pub enum MenuResult {
@@ -32,12 +32,20 @@ fn handle_menu_key(
 ) -> (Option<MenuResult>, bool) {
     match key {
         Key::Special(ScanCode::UP) => {
-            *selected = if *selected > 0 { *selected - 1 } else { entries_len - 1 };
+            *selected = if *selected > 0 {
+                *selected - 1
+            } else {
+                entries_len - 1
+            };
             *remaining_seconds = 0;
             (None, true)
         }
         Key::Special(ScanCode::DOWN) => {
-            *selected = if *selected < entries_len - 1 { *selected + 1 } else { 0 };
+            *selected = if *selected < entries_len - 1 {
+                *selected + 1
+            } else {
+                0
+            };
             *remaining_seconds = 0;
             (None, true)
         }
@@ -72,7 +80,10 @@ fn handle_timeout_tick(
         *remaining_seconds -= 1;
 
         if *remaining_seconds == 0 && config.timeout > 0 {
-            info!("Boot menu timeout, selecting default entry {}", config.default_entry);
+            info!(
+                "Boot menu timeout, selecting default entry {}",
+                config.default_entry
+            );
             return Some(MenuResult::Timeout);
         }
 
@@ -104,7 +115,10 @@ pub fn show_boot_menu(config: &BootConfig) -> MenuResult {
         // Check for key press (non-blocking)
         if let Some(key) = read_key_nonblocking() {
             let (result, needs_redraw) = handle_menu_key(
-                key, &mut selected, config.entries.len(), &mut remaining_seconds,
+                key,
+                &mut selected,
+                config.entries.len(),
+                &mut remaining_seconds,
             );
             if let Some(r) = result {
                 return r;
@@ -122,11 +136,7 @@ pub fn show_boot_menu(config: &BootConfig) -> MenuResult {
 }
 
 /// Draw the boot menu
-fn draw_menu(
-    config: &BootConfig,
-    selected: usize,
-    remaining_seconds: u32,
-) {
+fn draw_menu(config: &BootConfig, selected: usize, remaining_seconds: u32) {
     uefi::system::with_stdout(|stdout| {
         // Clear screen
         let _ = stdout.clear();
@@ -155,7 +165,9 @@ fn draw_menu(
 
         // Footer with instructions
         let _ = stdout.output_string(cstr16!("  ─────────────────────────────────────────\r\n"));
-        let _ = stdout.output_string(cstr16!("  Use ↑↓ to select, Enter to boot, ESC to cancel\r\n"));
+        let _ = stdout.output_string(cstr16!(
+            "  Use ↑↓ to select, Enter to boot, ESC to cancel\r\n"
+        ));
 
         // Timer display
         if remaining_seconds > 0 {
@@ -212,14 +224,15 @@ fn print_number(stdout: &mut uefi::proto::console::text::Output, n: u32) {
 
 /// Non-blocking key read
 fn read_key_nonblocking() -> Option<Key> {
-    uefi::system::with_stdin(|stdin| {
-        stdin.read_key().ok().flatten()
-    })
+    uefi::system::with_stdin(|stdin| stdin.read_key().ok().flatten())
 }
 
 /// Get the selected boot entry
 #[allow(dead_code)]
-pub fn get_selected_entry<'a>(config: &'a BootConfig, result: &MenuResult) -> Option<&'a BootEntry> {
+pub fn get_selected_entry<'a>(
+    config: &'a BootConfig,
+    result: &MenuResult,
+) -> Option<&'a BootEntry> {
     match result {
         MenuResult::Selected(idx) => config.entries.get(*idx),
         MenuResult::Timeout => config.entries.get(config.default_entry),

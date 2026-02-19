@@ -112,8 +112,7 @@ pub mod qemu_tests {
         }
 
         fn set_driver_features_low(&mut self, features: u32) {
-            self.driver_features =
-                (self.driver_features & 0xFFFFFFFF00000000) | features as u64;
+            self.driver_features = (self.driver_features & 0xFFFFFFFF00000000) | features as u64;
         }
 
         fn set_driver_features_high(&mut self, features: u32) {

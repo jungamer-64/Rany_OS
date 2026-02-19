@@ -1,7 +1,6 @@
 use super::*;
 
 impl NvmePollingDriver {
-
     /// Admin完了をポーリング
     pub(super) fn poll_admin_completion(&self) -> Result<NvmeCompletion, &'static str> {
         let admin_queue = self
@@ -182,11 +181,7 @@ impl NvmePollingDriver {
             ctrl.msdbd as usize
         };
         let max = max.min(MAX_SGL_ENTRIES);
-        if max == 0 {
-            None
-        } else {
-            Some(max)
-        }
+        if max == 0 { None } else { Some(max) }
     }
 
     /// フラッシュコマンドを発行
@@ -304,11 +299,7 @@ impl NvmePollingDriver {
     pub fn collect_stats(&self) -> NvmeDriverStats {
         let mut stats = NvmeDriverStats::default();
 
-        for queue in self
-            .io_queues
-            .iter()
-            .take(self.io_queue_count as usize)
-        {
+        for queue in self.io_queues.iter().take(self.io_queue_count as usize) {
             let qs = queue.stats();
             stats.total_commands_submitted += qs.commands_submitted.load(Ordering::Relaxed);
             stats.total_commands_completed += qs.commands_completed.load(Ordering::Relaxed);

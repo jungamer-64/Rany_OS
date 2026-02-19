@@ -154,7 +154,20 @@ impl NetworkStack {
             if !payload.is_empty() {
                 buffer[20..total_len].copy_from_slice(payload);
             }
-            crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.as_ipv4().unwrap().octets(), remote.as_ipv4().unwrap().octets());
+
+            // Compute TCP checksum according to address family
+            if local.is_ipv6() || remote.is_ipv6() {
+                let src_v6 = local.as_ipv6();
+                let dst_v6 = remote.as_ipv6();
+                // IPv6 pseudo-header based checksum
+                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::ipv4::IpProtocol::Tcp, total_len as u32);
+                let checksum = crate::net::ipv4::data_checksum(&buffer[..total_len], pseudo);
+                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
+            } else {
+                crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.as_ipv4().unwrap().octets(), remote.as_ipv4().unwrap().octets());
+            }
+
             Some((local, remote, seq, total_len))
         } else {
             None
@@ -167,9 +180,19 @@ impl NetworkStack {
         for res in results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
             if let Some((local, remote, seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
-                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
-                let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                let sent = if local.is_ipv6() && remote.is_ipv6() {
+                    let src_v6 = local.as_ipv6();
+                    let dst_v6 = remote.as_ipv6();
+                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
+                } else if local.is_ipv4() && remote.is_ipv4() {
+                    let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                    let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
+                } else {
+                    // Mixed family — ignore
+                    false
+                };
+
                 let now = self.current_time();
                 if sent {
                     self.tcp.mark_retransmit_sent(local, remote, seq, now);
@@ -184,9 +207,15 @@ impl NetworkStack {
         for res in keepalive_results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
             if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
-                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
-                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                if local.is_ipv6() && remote.is_ipv6() {
+                    let src_v6 = local.as_ipv6();
+                    let dst_v6 = remote.as_ipv6();
+                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
+                } else if local.is_ipv4() && remote.is_ipv4() {
+                    let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                    let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                }
             }
         }
 
@@ -195,9 +224,15 @@ impl NetworkStack {
         for res in zwp_results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
             if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
-                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
-                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                if local.is_ipv6() && remote.is_ipv6() {
+                    let src_v6 = local.as_ipv6();
+                    let dst_v6 = remote.as_ipv6();
+                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
+                } else if local.is_ipv4() && remote.is_ipv4() {
+                    let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                    let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                }
             }
         }
     }

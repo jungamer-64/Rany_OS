@@ -99,13 +99,20 @@ pub trait KernelServices: Send + Sync {
     /// This returns a future that resolves when data is available for the
     /// specified endpoint. The implementation may allocate/copy data as
     /// necessary for cross-domain safety.
-    fn net_recv_packet(&self, endpoint: TcpEndpoint) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
+    fn net_recv_packet(
+        &self,
+        endpoint: TcpEndpoint,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
 
     /// Send a packet (async). Takes ownership of the `Packet`.
     ///
     /// This returns a future that completes when the packet has been queued
     /// for transmission (or an error occurred).
-    fn net_send_packet(&self, endpoint: TcpEndpoint, packet: crate::Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+    fn net_send_packet(
+        &self,
+        endpoint: TcpEndpoint,
+        packet: crate::Packet,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     /// Create a raw (packet-oriented) socket
     fn net_create_raw_socket(&self) -> KapiResult<crate::RawSocketHandle>;
 
@@ -113,10 +120,17 @@ pub trait KernelServices: Send + Sync {
     fn net_close_raw_socket(&self, endpoint: crate::RawSocketHandle) -> KapiResult<()>;
 
     /// Receive a raw packet (async)
-    fn net_recv_raw(&self, endpoint: crate::RawSocketHandle) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
+    fn net_recv_raw(
+        &self,
+        endpoint: crate::RawSocketHandle,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<crate::Packet>> + Send>>;
 
     /// Send a raw packet (async)
-    fn net_send_raw(&self, endpoint: crate::RawSocketHandle, packet: crate::Packet) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+    fn net_send_raw(
+        &self,
+        endpoint: crate::RawSocketHandle,
+        packet: crate::Packet,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     // ========================================================================
     // Filesystem
     // ========================================================================
@@ -133,7 +147,12 @@ pub trait KernelServices: Send + Sync {
     /// Open a file and associate with an optional token.
     /// If `token` is Some(id) then the token must validate for `CAP_FOWNER`
     /// and the manager's in-flight counter will be incremented until `fs_close`.
-    fn fs_open_with_token(&self, path: &str, mode: crate::OpenMode, token: Option<u64>) -> KapiResult<FileHandle>;
+    fn fs_open_with_token(
+        &self,
+        path: &str,
+        mode: crate::OpenMode,
+        token: Option<u64>,
+    ) -> KapiResult<FileHandle>;
 
     /// Close a file
     ///
@@ -224,11 +243,8 @@ pub trait KernelServices: Send + Sync {
     /// # Errors
     /// - `KapiError::OutOfMemory` if DMA allocation fails
     /// - `KapiError::IoError` if IOMMU mapping fails
-    fn nvme_prepare_dma_read(
-        &self,
-        device_id: u64,
-        len: usize,
-    ) -> KapiResult<crate::NvmeDmaHandle>;
+    fn nvme_prepare_dma_read(&self, device_id: u64, len: usize)
+    -> KapiResult<crate::NvmeDmaHandle>;
 
     /// Prepare DMA context for NVMe write operation
     ///
@@ -264,12 +280,8 @@ pub trait KernelServices: Send + Sync {
     /// Creates an IOMMU mapping for the given physical address.
     /// Returns (iova, mapping_id) where iova is the device-visible address
     /// and mapping_id is used for later unmap.
-    fn nvme_iommu_map(
-        &self,
-        device_id: u64,
-        phys_addr: u64,
-        size: usize,
-    ) -> KapiResult<(u64, u64)>;
+    fn nvme_iommu_map(&self, device_id: u64, phys_addr: u64, size: usize)
+    -> KapiResult<(u64, u64)>;
 
     /// Unmap a previous IOMMU mapping
     fn nvme_iommu_unmap(&self, mapping_id: u64) -> KapiResult<()>;

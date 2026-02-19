@@ -727,7 +727,16 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     match bpp {
         24 => decode_bmp_rows_24(pixel_data, width, height, top_down, row_size, &mut image),
         32 => decode_bmp_rows_32(pixel_data, width, height, top_down, row_size, &mut image),
-        8 => decode_bmp_rows_8(data, pixel_data, &info_header, width, height, top_down, row_size, &mut image),
+        8 => decode_bmp_rows_8(
+            data,
+            pixel_data,
+            &info_header,
+            width,
+            height,
+            top_down,
+            row_size,
+            &mut image,
+        ),
         _ => return Err(ImageError::UnsupportedFormat),
     }
 
@@ -735,7 +744,14 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
 }
 
 /// Decode 24-bit BGR rows into an Image.
-fn decode_bmp_rows_24(pixel_data: &[u8], width: u32, height: u32, top_down: bool, row_size: usize, image: &mut Image) {
+fn decode_bmp_rows_24(
+    pixel_data: &[u8],
+    width: u32,
+    height: u32,
+    top_down: bool,
+    row_size: usize,
+    image: &mut Image,
+) {
     for y in 0..height {
         let src_y = if top_down { y } else { height - 1 - y };
         let row_start = src_y as usize * row_size;
@@ -750,7 +766,14 @@ fn decode_bmp_rows_24(pixel_data: &[u8], width: u32, height: u32, top_down: bool
 }
 
 /// Decode 32-bit BGRA rows into an Image.
-fn decode_bmp_rows_32(pixel_data: &[u8], width: u32, height: u32, top_down: bool, row_size: usize, image: &mut Image) {
+fn decode_bmp_rows_32(
+    pixel_data: &[u8],
+    width: u32,
+    height: u32,
+    top_down: bool,
+    row_size: usize,
+    image: &mut Image,
+) {
     for y in 0..height {
         let src_y = if top_down { y } else { height - 1 - y };
         let row_start = src_y as usize * row_size;
@@ -908,8 +931,7 @@ fn decode_bmp_rows_24_into(
         for x in 0..width {
             let idx = row_start + x as usize * 3;
             if idx + 2 < pixel_data.len() {
-                let color =
-                    Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
+                let color = Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
                 output.set_pixel(x, y, color);
             }
         }
@@ -1031,13 +1053,31 @@ fn decode_tga_rle(
 
         if is_rle {
             src_idx = decode_tga_rle_packet(
-                pixel_data, image, src_idx, count, bytes_per_pixel, bpp,
-                width, height, top_down, &mut x, &mut y,
+                pixel_data,
+                image,
+                src_idx,
+                count,
+                bytes_per_pixel,
+                bpp,
+                width,
+                height,
+                top_down,
+                &mut x,
+                &mut y,
             );
         } else {
             src_idx = decode_tga_raw_packet(
-                pixel_data, image, src_idx, count, bytes_per_pixel, bpp,
-                width, height, top_down, &mut x, &mut y,
+                pixel_data,
+                image,
+                src_idx,
+                count,
+                bytes_per_pixel,
+                bpp,
+                width,
+                height,
+                top_down,
+                &mut x,
+                &mut y,
             );
         }
     }
@@ -1542,7 +1582,7 @@ impl IconGenerator {
 #[cfg(feature = "qemu-test-export")]
 #[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
-    use super::{Color, Image, ImageError, ImageViewMut, PixelFormat, Rect, MAX_IMAGE_SIZE};
+    use super::{Color, Image, ImageError, ImageViewMut, MAX_IMAGE_SIZE, PixelFormat, Rect};
     use alloc::vec;
 
     pub fn try_new_overflow_smoke() -> bool {
@@ -1609,7 +1649,8 @@ pub mod qemu_tests {
 
     pub fn image_view_external_buffer_smoke() -> bool {
         let mut buffer = vec![0u8; 100 * 4];
-        let Some(mut view) = ImageViewMut::new(&mut buffer, 10, 10, 40, PixelFormat::Rgba8888) else {
+        let Some(mut view) = ImageViewMut::new(&mut buffer, 10, 10, 40, PixelFormat::Rgba8888)
+        else {
             return false;
         };
 
@@ -1620,7 +1661,8 @@ pub mod qemu_tests {
 
     pub fn image_view_stride_smoke() -> bool {
         let mut buffer = vec![0u8; 48 * 10];
-        let Some(mut view) = ImageViewMut::new(&mut buffer, 10, 10, 48, PixelFormat::Rgba8888) else {
+        let Some(mut view) = ImageViewMut::new(&mut buffer, 10, 10, 48, PixelFormat::Rgba8888)
+        else {
             return false;
         };
 

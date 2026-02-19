@@ -88,7 +88,10 @@ fn debug_check_mmio_access<T>(addr: usize) {
     if cfg!(debug_assertions) {
         let align = core::mem::align_of::<T>();
         debug_assert!(addr != 0, "MMIO access with null address");
-        debug_assert!(align == 0 || addr.is_multiple_of(align), "MMIO access is unaligned");
+        debug_assert!(
+            align == 0 || addr.is_multiple_of(align),
+            "MMIO access is unaligned"
+        );
     }
 }
 
@@ -239,12 +242,18 @@ impl MmioReg<u64> {
 #[inline]
 pub fn sfence() {
     // Only use SSE intrinsics when target has SSE enabled at compile time
-    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse"))]
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse"
+    ))]
     unsafe {
         core::arch::x86_64::_mm_sfence();
     }
     // Fallback for soft-float targets or non-x86 architectures
-    #[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse")))]
+    #[cfg(not(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse"
+    )))]
     {
         // Use a compiler fence as fallback
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
@@ -253,7 +262,10 @@ pub fn sfence() {
 
 /// Write a 32-bit value using non-temporal store (bypasses cache).
 /// The address must be 4-byte aligned.
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+))]
 #[inline]
 #[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u32(addr: usize, val: u32) {
@@ -263,7 +275,10 @@ pub fn stream_write_u32(addr: usize, val: u32) {
 }
 
 /// Fallback for soft-float targets: use volatile write
-#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2")))]
+#[cfg(not(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+)))]
 #[inline]
 pub fn stream_write_u32(addr: usize, val: u32) {
     unsafe {
@@ -273,7 +288,10 @@ pub fn stream_write_u32(addr: usize, val: u32) {
 
 /// Write a 64-bit value using non-temporal store (bypasses cache).
 /// The address must be 8-byte aligned.
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2"))]
+#[cfg(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+))]
 #[inline]
 #[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u64(addr: usize, val: u64) {
@@ -283,7 +301,10 @@ pub fn stream_write_u64(addr: usize, val: u64) {
 }
 
 /// Fallback for soft-float targets: use volatile write
-#[cfg(not(all(any(target_arch = "x86", target_arch = "x86_64"), target_feature = "sse2")))]
+#[cfg(not(all(
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2"
+)))]
 #[inline]
 pub fn stream_write_u64(addr: usize, val: u64) {
     unsafe {

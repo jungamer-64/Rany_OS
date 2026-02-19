@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use cap_harness::{grant, CapabilitySet, Manager, CAP_NET_BIND};
+use cap_harness::{CAP_NET_BIND, CapabilitySet, Manager, grant};
 use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -63,9 +63,7 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 
 fn run_suite() -> bool {
-    test_cap_harness_grant()
-        && test_cap_harness_qemu_tests()
-        && test_framebuffer_smoke()
+    test_cap_harness_grant() && test_cap_harness_qemu_tests() && test_framebuffer_smoke()
 }
 
 #[cfg(not(target_os = "uefi"))]

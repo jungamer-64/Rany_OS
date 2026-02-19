@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Helper to redraw line from cursor position
 pub(crate) fn redraw_from_cursor(port: &AsyncSerialPort, editor: &LineEditor) {
     let pos = editor.cursor();

@@ -72,7 +72,7 @@ pub use ecam::{EcamAccess, EcamManager};
 // Removed deprecated re-exports `LegacyPciAccessor` and `get_legacy_accessor`.
 // Migration: use `pci_driver::EcamAccess` or the new PCI APIs instead.
 
-pub use legacy::{ pci_read, pci_read8, pci_read16, pci_write };
+pub use legacy::{pci_read, pci_read8, pci_read16, pci_write};
 pub use msi::{
     DeliveryMode, MsiCapability, MsiConfig, MsixCapability, MsixTableEntry, TriggerMode,
     allocate_vector, allocate_vectors, disable_intx, enable_intx, setup_msi, setup_msix,

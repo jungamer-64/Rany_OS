@@ -6,12 +6,12 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 use core::time::Duration;
 use log::{error, info};
+use uefi::mem::memory_map::{MemoryMap, MemoryType};
 use uefi::prelude::*;
 use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode, RegularFile};
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::{boot, CStr16, Identify};
-use uefi::mem::memory_map::{MemoryType, MemoryMap};
+use uefi::{CStr16, Identify, boot};
 
 // Ed25519 signature verification for secure boot
 use ed25519_compact::{PublicKey, Signature};
@@ -86,7 +86,10 @@ fn main() -> Status {
     };
 
     #[cfg(not(feature = "ui"))]
-    let selected_entry = boot_config.entries.get(boot_config.default_entry).or_else(|| boot_config.entries.first());
+    let selected_entry = boot_config
+        .entries
+        .get(boot_config.default_entry)
+        .or_else(|| boot_config.entries.first());
 
     let (kernel_name, initramfs_name, entry_cmdline) = determine_boot_paths(selected_entry);
 
@@ -115,9 +118,7 @@ fn main() -> Status {
     if tpm_result.tpm_available {
         info!(
             "TPM Measured Boot: kernel={}, initramfs={}, cmdline={}",
-            tpm_result.kernel_measured,
-            tpm_result.initramfs_measured,
-            tpm_result.cmdline_measured
+            tpm_result.kernel_measured, tpm_result.initramfs_measured, tpm_result.cmdline_measured
         );
     }
 
@@ -136,9 +137,8 @@ fn main() -> Status {
     );
 
     info!("Allocating PML4...");
-    let pml4_addr =
-        UefiMapper::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA)
-            .expect("Failed to allocate PML4");
+    let pml4_addr = UefiMapper::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA)
+        .expect("Failed to allocate PML4");
     let pml4 = unsafe { &mut *(pml4_addr as *mut PageTable) };
     let mut mapper = UefiMapper::new(pml4);
 
@@ -181,7 +181,9 @@ fn main() -> Status {
     );
 
     // 6. Populate Boot Info
-    use boot_proto::{ExoBootInfo, MemoryDescriptor as BootMemoryDescriptor, EXO_BOOT_INFO_VERSION};
+    use boot_proto::{
+        EXO_BOOT_INFO_VERSION, ExoBootInfo, MemoryDescriptor as BootMemoryDescriptor,
+    };
 
     info!("Allocating BootInfo...");
     let boot_info_phys =
@@ -216,9 +218,11 @@ fn main() -> Status {
     let mmap_estimate_count = 512;
     let mmap_buffer_size = mmap_estimate_count * core::mem::size_of::<BootMemoryDescriptor>();
     let mmap_buffer_pages = (mmap_buffer_size + 4095) / 4096;
-    let mmap_buffer_phys =
-        page_table::UefiMapper::alloc_zeroed_pages(mmap_buffer_pages, MemoryType::RUNTIME_SERVICES_DATA)
-            .expect("Failed to allocate memory map buffer");
+    let mmap_buffer_phys = page_table::UefiMapper::alloc_zeroed_pages(
+        mmap_buffer_pages,
+        MemoryType::RUNTIME_SERVICES_DATA,
+    )
+    .expect("Failed to allocate memory map buffer");
 
     // Log kernel entry points before exiting boot services
     let entry_addr = elf.header.pt2.entry_point();
@@ -236,7 +240,13 @@ fn main() -> Status {
     let mmap = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
 
     // Build memory map from UEFI into pre-allocated buffer
-    build_memory_map_from_uefi(&mmap, boot_info, mmap_buffer_phys, mmap_estimate_count, hhdm_start);
+    build_memory_map_from_uefi(
+        &mmap,
+        boot_info,
+        mmap_buffer_phys,
+        mmap_estimate_count,
+        hhdm_start,
+    );
 
     // 8. Switch CR3 & Jump to kernel
     unsafe {
@@ -411,10 +421,7 @@ fn log_effective_cmdline(cmdline: Option<&[u8]>) {
 }
 
 /// Load and merge kernel command line from file and config
-fn load_and_merge_cmdline(
-    image_handle: Handle,
-    entry_cmdline: Option<&str>,
-) -> Option<Vec<u8>> {
+fn load_and_merge_cmdline(image_handle: Handle, entry_cmdline: Option<&str>) -> Option<Vec<u8>> {
     let file_cmdline = load_cmdline_from_file(image_handle);
     let result = merge_cmdline_sources(file_cmdline, entry_cmdline);
     log_effective_cmdline(result.as_deref());
@@ -492,9 +499,8 @@ fn map_single_load_segment(
         virt_addr, virt_start_aligned, page_offset, ph.mem_size, num_pages, ph.flags
     );
 
-    let phys_start =
-        page_table::UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
-            .expect("Failed to allocate kernel segment");
+    let phys_start = page_table::UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
+        .expect("Failed to allocate kernel segment");
 
     let data_slice = &kernel_elf_data[ph.offset as usize..(ph.offset + ph.file_size) as usize];
     unsafe {
@@ -559,10 +565,7 @@ fn detect_tls_segment(elf: &xmas_elf::ElfFile) -> boot_proto::TlsInfo {
 }
 
 /// Find the physical address corresponding to a relocation offset
-fn find_reloc_physical_addr(
-    reloc_offset: u64,
-    segment_info: &[(u64, u64, u64)],
-) -> Option<u64> {
+fn find_reloc_physical_addr(reloc_offset: u64, segment_info: &[(u64, u64, u64)]) -> Option<u64> {
     for &(seg_virt, seg_phys, seg_size) in segment_info {
         if reloc_offset >= seg_virt && reloc_offset < seg_virt + seg_size {
             return Some(seg_phys + (reloc_offset - seg_virt));
@@ -589,8 +592,7 @@ fn process_rela_entries(
                 let addend = rela.get_addend();
                 match find_reloc_physical_addr(reloc_offset, segment_info) {
                     Some(reloc_phys) => {
-                        let value =
-                            (KERNEL_BASE as i64).wrapping_add(addend as i64) as u64;
+                        let value = (KERNEL_BASE as i64).wrapping_add(addend as i64) as u64;
                         if *applied_count < 5 {
                             info!(
                                 "RELA[{}]: off=0x{:x} add=0x{:x} val=0x{:x} phys=0x{:x}",

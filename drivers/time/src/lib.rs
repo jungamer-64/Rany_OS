@@ -35,9 +35,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
-use kernel_api::time::{
-    CpuTimeStats, TimerHandle, TimerMode, TimerServiceStats, TimeService,
-};
+use kernel_api::time::{CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats};
 use spin::Mutex;
 
 // ============================================================================
@@ -97,10 +95,8 @@ impl ShardedSleepRegistry {
     fn drain_expired(&self, current_tick: u64, out: &mut Vec<Waker>) {
         for shard in &self.shards {
             if let Some(mut guard) = shard.try_lock() {
-                let expired_keys: Vec<u64> = guard
-                    .range(..=current_tick)
-                    .map(|(k, _)| *k)
-                    .collect();
+                let expired_keys: Vec<u64> =
+                    guard.range(..=current_tick).map(|(k, _)| *k).collect();
 
                 for key in expired_keys {
                     if let Some(waker) = guard.remove(&key) {
@@ -357,7 +353,8 @@ impl TimeManagement {
 
     /// 起動時のUnixタイムスタンプを設定（RTCから）
     pub fn set_boot_timestamp_ms(&self, timestamp_ms: u64) {
-        self.boot_unix_timestamp_ms.store(timestamp_ms, Ordering::SeqCst);
+        self.boot_unix_timestamp_ms
+            .store(timestamp_ms, Ordering::SeqCst);
     }
 
     /// ペンディングWaker数を取得
@@ -388,12 +385,15 @@ impl TimeManagement {
                     self.total_fired.fetch_add(1, Ordering::Relaxed);
 
                     if entry.mode == TimerMode::Periodic {
-                        to_reschedule.push((*id, TimerEntry {
-                            fire_tick: current_tick + entry.interval_ms,
-                            interval_ms: entry.interval_ms,
-                            mode: entry.mode,
-                            waker: entry.waker,
-                        }));
+                        to_reschedule.push((
+                            *id,
+                            TimerEntry {
+                                fire_tick: current_tick + entry.interval_ms,
+                                interval_ms: entry.interval_ms,
+                                mode: entry.mode,
+                                waker: entry.waker,
+                            },
+                        ));
                     }
                 }
             }
@@ -410,12 +410,7 @@ impl TimeService for TimeManagement {
         self.ticks.load(Ordering::SeqCst) + duration_ms
     }
 
-    fn register_timer(
-        &self,
-        interval_ms: u64,
-        mode: TimerMode,
-        waker: Waker,
-    ) -> TimerHandle {
+    fn register_timer(&self, interval_ms: u64, mode: TimerMode, waker: Waker) -> TimerHandle {
         let id = self.next_timer_id.fetch_add(1, Ordering::Relaxed);
         let current = self.ticks.load(Ordering::SeqCst);
 
@@ -491,7 +486,8 @@ impl TimeService for TimeManagement {
 
         // スリープレジストリから期限切れWakerを収集
         let mut expired = Vec::new();
-        self.sleep_registry.drain_expired(current_tick, &mut expired);
+        self.sleep_registry
+            .drain_expired(current_tick, &mut expired);
 
         // ロックフリーキューにエンキュー (ISR安全)
         for waker in expired {
@@ -512,7 +508,8 @@ impl TimeService for TimeManagement {
     }
 
     fn adjust_wall_clock(&self, delta_ns: i64) {
-        self.wall_clock_adjustment_ns.fetch_add(delta_ns, Ordering::Relaxed);
+        self.wall_clock_adjustment_ns
+            .fetch_add(delta_ns, Ordering::Relaxed);
     }
 
     fn register_sleep(&self, wake_tick: u64, waker: Waker) {

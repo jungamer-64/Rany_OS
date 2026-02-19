@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// Process all ELF RELA relocations
 mod cr3_jump;
 pub use cr3_jump::*;
@@ -74,8 +73,7 @@ pub(crate) fn resolve_entry_physical_address(
 
 /// Compute maximum physical address from UEFI memory map
 pub(crate) fn compute_max_physical_address() -> u64 {
-    let map =
-        boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get mmap");
+    let map = boot::memory_map(MemoryType::LOADER_DATA).expect("Failed to get mmap");
     let mut max_phys = 0u64;
     for desc in map.entries() {
         let end = desc.phys_start + (desc.page_count * 4096);
@@ -430,9 +428,9 @@ pub(crate) fn configure_pixel_format(
 
 /// Setup GOP (Graphics Output Protocol) framebuffer in boot_info
 pub(crate) fn setup_gop_framebuffer(boot_info: &mut boot_proto::ExoBootInfo) {
-    let handles = match boot::locate_handle_buffer(
-        uefi::boot::SearchType::ByProtocol(&uefi::proto::console::gop::GraphicsOutput::GUID),
-    ) {
+    let handles = match boot::locate_handle_buffer(uefi::boot::SearchType::ByProtocol(
+        &uefi::proto::console::gop::GraphicsOutput::GUID,
+    )) {
         Ok(h) => h,
         Err(_) => return,
     };
@@ -442,13 +440,11 @@ pub(crate) fn setup_gop_framebuffer(boot_info: &mut boot_proto::ExoBootInfo) {
         None => return,
     };
 
-    let mut gop = match boot::open_protocol_exclusive::<
-        uefi::proto::console::gop::GraphicsOutput,
-    >(handle)
-    {
-        Ok(g) => g,
-        Err(_) => return,
-    };
+    let mut gop =
+        match boot::open_protocol_exclusive::<uefi::proto::console::gop::GraphicsOutput>(handle) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
 
     let mode = gop.current_mode_info();
     let mut fb = gop.frame_buffer();

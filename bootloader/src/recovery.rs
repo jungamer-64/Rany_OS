@@ -8,7 +8,7 @@
 
 use alloc::string::String;
 use uefi::runtime::{self, VariableAttributes, VariableVendor};
-use uefi::{cstr16, CStr16, Guid};
+use uefi::{CStr16, Guid, cstr16};
 
 #[allow(unused_imports)]
 use crate::serial_println;
@@ -138,10 +138,7 @@ pub fn load_boot_state() -> BootState {
 }
 
 /// ブート開始前の状態更新（失敗カウンターをインクリメント）
-pub fn prepare_boot_attempt(
-    state: &mut BootState,
-    selected_entry: u8,
-) -> BootRecoveryInfo {
+pub fn prepare_boot_attempt(state: &mut BootState, selected_entry: u8) -> BootRecoveryInfo {
     let vendor = get_vendor();
 
     // 前回起動が成功していなければ失敗カウンターをインクリメント

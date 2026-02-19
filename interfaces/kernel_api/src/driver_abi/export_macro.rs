@@ -1,5 +1,3 @@
-
-
 /// Export an `AsyncDriver` implementation as a C-compatible `DriverVTable`.
 #[macro_export]
 macro_rules! export_async_driver {

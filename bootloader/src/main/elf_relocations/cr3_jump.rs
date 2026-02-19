@@ -1,64 +1,63 @@
 use super::*;
 
-
 /// Switch CR3 to kernel page tables and jump to kernel entry point
-pub(crate) unsafe fn switch_cr3_and_jump(pml4_addr: u64, boot_info_virt: u64, entry_addr: u64) -> ! {
-    unsafe { core::arch::asm!(
-        // Output 'J' before cli to show we're about to jump
-        "mov dx, 0x3F8",
-        "mov al, 0x4A",  // 'J' for Jump
-        "out dx, al",
-        // Disable interrupts
-        "cli",
-        // Output '1' to show cli executed
-        "mov al, 0x31",  // '1'
-        "out dx, al",
-        // Memory fence
-        "mfence",
-        // Output '2' to show mfence executed
-        "mov al, 0x32",  // '2'
-        "out dx, al",
-        // Switch to kernel page tables
-        "mov cr3, r8",
-        // Output '3' to show CR3 switch executed
-        "mov al, 0x33",  // '3'
-        "out dx, al",
-        // Set up argument register
-        "mov rdi, r9",
-        // Output '4' to show mov rdi executed
-        "mov al, 0x34",  // '4'
-        "out dx, al",
-        // Jump to kernel entry
-        "jmp r10",
-        in("r8") pml4_addr,
-        in("r9") boot_info_virt,
-        in("r10") entry_addr,
-        options(noreturn)
-    ); }
+pub(crate) unsafe fn switch_cr3_and_jump(
+    pml4_addr: u64,
+    boot_info_virt: u64,
+    entry_addr: u64,
+) -> ! {
+    unsafe {
+        core::arch::asm!(
+            // Output 'J' before cli to show we're about to jump
+            "mov dx, 0x3F8",
+            "mov al, 0x4A",  // 'J' for Jump
+            "out dx, al",
+            // Disable interrupts
+            "cli",
+            // Output '1' to show cli executed
+            "mov al, 0x31",  // '1'
+            "out dx, al",
+            // Memory fence
+            "mfence",
+            // Output '2' to show mfence executed
+            "mov al, 0x32",  // '2'
+            "out dx, al",
+            // Switch to kernel page tables
+            "mov cr3, r8",
+            // Output '3' to show CR3 switch executed
+            "mov al, 0x33",  // '3'
+            "out dx, al",
+            // Set up argument register
+            "mov rdi, r9",
+            // Output '4' to show mov rdi executed
+            "mov al, 0x34",  // '4'
+            "out dx, al",
+            // Jump to kernel entry
+            "jmp r10",
+            in("r8") pml4_addr,
+            in("r9") boot_info_virt,
+            in("r10") entry_addr,
+            options(noreturn)
+        );
+    }
 }
 
-pub(crate) fn load_kernel(
-    image_handle: Handle,
-    filename: &str,
-) -> Result<Vec<u8>, Status> {
+pub(crate) fn load_kernel(image_handle: Handle, filename: &str) -> Result<Vec<u8>, Status> {
     let mut file = open_uefi_file(image_handle, filename)?;
     read_uefi_file_contents(&mut file)
 }
 
 /// UEFI ファイルシステムからファイルを開く
 pub(crate) fn open_boot_volume(image_handle: Handle) -> Result<Directory, Status> {
-    let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(image_handle)
-        .map_err(|_| Status::ABORTED)?;
+    let loaded_image =
+        boot::open_protocol_exclusive::<LoadedImage>(image_handle).map_err(|_| Status::ABORTED)?;
     let device_handle = loaded_image.device().ok_or(Status::ABORTED)?;
     let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(device_handle)
         .map_err(|_| Status::ABORTED)?;
     fs.open_volume().map_err(|_| Status::ABORTED)
 }
 
-pub(crate) fn open_uefi_file(
-    image_handle: Handle,
-    filename: &str,
-) -> Result<RegularFile, Status> {
+pub(crate) fn open_uefi_file(image_handle: Handle, filename: &str) -> Result<RegularFile, Status> {
     let mut root = open_boot_volume(image_handle)?;
 
     let name_utf16: Vec<u16> = filename.encode_utf16().collect();
@@ -128,7 +127,10 @@ pub(crate) fn read_uefi_file_contents(file: &mut RegularFile) -> Result<Vec<u8>,
 /// # Returns
 /// * `Ok(())` if verification passes
 /// * `Err(ed25519_compact::Error)` if verification fails
-pub(crate) fn verify_kernel(sig_bytes: &[u8], message: &[u8]) -> Result<(), ed25519_compact::Error> {
+pub(crate) fn verify_kernel(
+    sig_bytes: &[u8],
+    message: &[u8],
+) -> Result<(), ed25519_compact::Error> {
     // Create public key from embedded bytes
     let pk = PublicKey::from_slice(PUBLIC_KEY_BYTES)?;
 

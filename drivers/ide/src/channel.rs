@@ -1,5 +1,7 @@
-use super::{IdeChannel, IdeController, PortU8, regs, IdeError, status, DriveSel, DeviceType, commands, IdentifyData, PortU16};
-
+use super::{
+    DeviceType, DriveSel, IdeChannel, IdeController, IdeError, IdentifyData, PortU8, PortU16,
+    commands, regs, status,
+};
 
 impl IdeChannel {
     /// 新しいIDEチャネルを作成

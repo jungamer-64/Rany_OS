@@ -90,7 +90,10 @@ fn run_suite() -> bool {
         && run_check("kernel_error_exports", test_kernel_error_exports)
         && run_check("loader_crypto_exports", test_loader_crypto_exports)
         && run_check("loader_metadata_exports", test_loader_metadata_exports)
-        && run_check("loader_live_update_exports", test_loader_live_update_exports)
+        && run_check(
+            "loader_live_update_exports",
+            test_loader_live_update_exports,
+        )
         && run_check("loader_elf_exports", test_loader_elf_exports)
         && run_check(
             "iommu_wave2_runtime_readiness",
@@ -98,7 +101,10 @@ fn run_suite() -> bool {
         )
         && run_check("iommu_cmdqueue_exports", test_iommu_cmdqueue_exports)
         && run_check("iommu_wave2_core_exports", test_iommu_wave2_core_exports)
-        && run_check("iommu_wave2_poison_exports", test_iommu_wave2_poison_exports)
+        && run_check(
+            "iommu_wave2_poison_exports",
+            test_iommu_wave2_poison_exports,
+        )
         && run_check(
             "iommu_wave2_grouping_exports",
             test_iommu_wave2_grouping_exports,
@@ -111,22 +117,13 @@ fn run_suite() -> bool {
             "iommu_wave3_scalable_exports",
             test_iommu_wave3_scalable_exports,
         )
-        && run_check(
-            "iommu_wave3_pasid_exports",
-            test_iommu_wave3_pasid_exports,
-        )
+        && run_check("iommu_wave3_pasid_exports", test_iommu_wave3_pasid_exports)
         && run_check(
             "iommu_wave3_core_structures_exports",
             test_iommu_wave3_core_structures_exports,
         )
-        && run_check(
-            "iommu_wave4_amd_exports",
-            test_iommu_wave4_amd_exports,
-        )
-        && run_check(
-            "iommu_wave5_amd_exports",
-            test_iommu_wave5_amd_exports,
-        )
+        && run_check("iommu_wave4_amd_exports", test_iommu_wave4_amd_exports)
+        && run_check("iommu_wave5_amd_exports", test_iommu_wave5_amd_exports)
         && run_check(
             "graphics_framebuffer_wave6_phase_a_exports",
             test_graphics_framebuffer_wave6_phase_a_exports,
@@ -142,6 +139,14 @@ fn run_suite() -> bool {
         && run_check(
             "mm_wave7_async_swapout_phase_d_exports",
             test_mm_wave7_async_swapout_phase_d_exports,
+        )
+        && run_check(
+            "mm_wave7_async_swapout_phase_e_exports",
+            test_mm_wave7_async_swapout_phase_e_exports,
+        )
+        && run_check(
+            "mm_wave7_async_swapout_phase_f_exports",
+            test_mm_wave7_async_swapout_phase_f_exports,
         )
         && run_check(
             "mm_wave7_page_reclaim_exports",
@@ -187,14 +192,8 @@ fn run_suite() -> bool {
             "net_tls_wave8_phase_f_exports",
             test_net_tls_wave8_phase_f_exports,
         )
-        && run_check(
-            "net_ecdh_exports",
-            test_net_ecdh_exports,
-        )
-        && run_check(
-            "net_ecdh_phase_b_exports",
-            test_net_ecdh_phase_b_exports,
-        )
+        && run_check("net_ecdh_exports", test_net_ecdh_exports)
+        && run_check("net_ecdh_phase_b_exports", test_net_ecdh_phase_b_exports)
         && run_check(
             "net_endpoint_congestion_default_exports",
             test_net_endpoint_congestion_default_exports,
@@ -235,14 +234,8 @@ fn run_suite() -> bool {
             "net_endpoint_socket_exports",
             test_net_endpoint_socket_exports,
         )
-        && run_check(
-            "net_endpoint_tcb_exports",
-            test_net_endpoint_tcb_exports,
-        )
-        && run_check(
-            "net_endpoint_core_exports",
-            test_net_endpoint_core_exports,
-        )
+        && run_check("net_endpoint_tcb_exports", test_net_endpoint_tcb_exports)
+        && run_check("net_endpoint_core_exports", test_net_endpoint_core_exports)
         && run_check(
             "net_endpoint_types_exports",
             test_net_endpoint_types_exports,
@@ -255,7 +248,10 @@ fn run_suite() -> bool {
             "kernel_driver_cell_exports",
             test_kernel_driver_cell_exports,
         )
-        && run_check("kernel_integration_exports", test_kernel_integration_exports)
+        && run_check(
+            "kernel_integration_exports",
+            test_kernel_integration_exports,
+        )
         && run_check(
             "graphics_framebuffer_wave9_exports",
             test_graphics_framebuffer_wave9_exports,

@@ -357,7 +357,8 @@ impl AhciPort {
         }
 
         unsafe {
-            let headers = slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32);
+            let headers =
+                slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32);
             let header = &mut headers[slot.as_usize()];
             header.set_flags(5, false, false, false);
             header.prdtl = 1;
@@ -401,7 +402,8 @@ impl AhciPort {
         }
 
         unsafe {
-            let headers = slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32);
+            let headers =
+                slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32);
             let header = &mut headers[slot.as_usize()];
             header.set_flags(5, true, false, false);
             header.prdtl = 1;
@@ -428,7 +430,9 @@ impl AhciPort {
         }
 
         // Read prdbc from header to determine bytes transferred
-        let headers = unsafe { slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32) };
+        let headers = unsafe {
+            slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32)
+        };
         let header = &mut headers[slot.as_usize()];
         let transferred = header.prdbc as usize;
 

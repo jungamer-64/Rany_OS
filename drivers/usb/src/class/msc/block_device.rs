@@ -1,6 +1,5 @@
 use super::*;
 
-
 // ============================================================================
 // Block Device Interface
 // ============================================================================
@@ -43,7 +42,7 @@ pub trait UsbBlockDevice: Send + Sync {
 
 #[cfg(feature = "vfs_integration")]
 mod vfs_adapter {
-    use super::{MscDevice, ClassDriverError};
+    use super::{ClassDriverError, MscDevice};
     use vfs::block::{BlockError, BlockResult, SimpleBlockDevice};
 
     impl From<ClassDriverError> for BlockError {

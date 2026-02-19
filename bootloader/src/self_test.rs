@@ -8,10 +8,10 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use uefi::boot::{self, AllocateType, SearchType};
-use uefi::mem::memory_map::{MemoryType, MemoryMap};
-use uefi::proto::console::gop::GraphicsOutput;
 use uefi::Identify;
+use uefi::boot::{self, AllocateType, SearchType};
+use uefi::mem::memory_map::{MemoryMap, MemoryType};
+use uefi::proto::console::gop::GraphicsOutput;
 
 use crate::serial_println;
 
@@ -113,9 +113,7 @@ impl Default for SelfTestConfig {
 }
 
 /// セルフテストを実行
-pub fn run_self_tests(
-    config: &SelfTestConfig,
-) -> SelfTestResults {
+pub fn run_self_tests(config: &SelfTestConfig) -> SelfTestResults {
     let mut results = SelfTestResults::new();
 
     serial_println!("[SelfTest] Starting boot self-tests...");
@@ -154,7 +152,11 @@ fn test_cpu_features(results: &mut SelfTestResults) {
     let cpuid_available = true; // x86_64では保証
 
     if !cpuid_available {
-        results.add("CPU: CPUID", TestResult::Fail, Some("CPUID not available".into()));
+        results.add(
+            "CPU: CPUID",
+            TestResult::Fail,
+            Some("CPUID not available".into()),
+        );
         return;
     }
 
@@ -179,7 +181,11 @@ fn test_cpu_features(results: &mut SelfTestResults) {
     };
 
     if max_func == 0 {
-        results.add("CPU: Basic CPUID", TestResult::Fail, Some("Invalid CPUID response".into()));
+        results.add(
+            "CPU: Basic CPUID",
+            TestResult::Fail,
+            Some("Invalid CPUID response".into()),
+        );
         return;
     }
 
@@ -204,7 +210,11 @@ fn test_cpu_features(results: &mut SelfTestResults) {
     if long_mode_supported {
         results.add("CPU: Long Mode", TestResult::Pass, None);
     } else {
-        results.add("CPU: Long Mode", TestResult::Fail, Some("64-bit mode not supported".into()));
+        results.add(
+            "CPU: Long Mode",
+            TestResult::Fail,
+            Some("64-bit mode not supported".into()),
+        );
     }
 
     // NX bit サポート確認
@@ -225,7 +235,11 @@ fn test_cpu_features(results: &mut SelfTestResults) {
     if nx_supported {
         results.add("CPU: NX bit", TestResult::Pass, None);
     } else {
-        results.add("CPU: NX bit", TestResult::Warning, Some("NX not supported, security reduced".into()));
+        results.add(
+            "CPU: NX bit",
+            TestResult::Warning,
+            Some("NX not supported, security reduced".into()),
+        );
     }
 }
 
@@ -236,26 +250,37 @@ fn test_acpi_tables(results: &mut SelfTestResults) {
     // RSDP を探す
     let rsdp_found = uefi::system::with_config_table(|entries| {
         entries.iter().any(|entry| {
-            entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI2_GUID || entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI_GUID
+            entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI2_GUID
+                || entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI_GUID
         })
     });
 
     if rsdp_found {
         results.add("ACPI: RSDP", TestResult::Pass, None);
     } else {
-        results.add("ACPI: RSDP", TestResult::Fail, Some("RSDP not found in config tables".into()));
+        results.add(
+            "ACPI: RSDP",
+            TestResult::Fail,
+            Some("RSDP not found in config tables".into()),
+        );
         return;
     }
 
     // ACPI 2.0 を優先的に確認
     let acpi2_found = uefi::system::with_config_table(|entries| {
-        entries.iter().any(|entry| entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI2_GUID)
+        entries
+            .iter()
+            .any(|entry| entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI2_GUID)
     });
 
     if acpi2_found {
         results.add("ACPI: Version 2.0+", TestResult::Pass, None);
     } else {
-        results.add("ACPI: Version 2.0+", TestResult::Warning, Some("Only ACPI 1.0 available".into()));
+        results.add(
+            "ACPI: Version 2.0+",
+            TestResult::Warning,
+            Some("Only ACPI 1.0 available".into()),
+        );
     }
 }
 
@@ -264,14 +289,13 @@ fn test_gop(results: &mut SelfTestResults) {
     serial_println!("[SelfTest] Validating GOP...");
 
     // GOPハンドルを探す
-    let gop_handle = boot::locate_handle_buffer(
-        SearchType::ByProtocol(&GraphicsOutput::GUID),
-    );
+    let gop_handle = boot::locate_handle_buffer(SearchType::ByProtocol(&GraphicsOutput::GUID));
 
     match gop_handle {
         Ok(handles) if !handles.is_empty() => {
             // GOPを開いてモード情報を確認
-            if let Ok(gop) = boot::open_protocol_exclusive::<GraphicsOutput>(*handles.first().unwrap())
+            if let Ok(gop) =
+                boot::open_protocol_exclusive::<GraphicsOutput>(*handles.first().unwrap())
             {
                 let mode = gop.current_mode_info();
                 let (width, height) = mode.resolution();
@@ -290,18 +314,29 @@ fn test_gop(results: &mut SelfTestResults) {
                     );
                 }
             } else {
-                results.add("GOP: Protocol", TestResult::Warning, Some("Could not open GOP".into()));
+                results.add(
+                    "GOP: Protocol",
+                    TestResult::Warning,
+                    Some("Could not open GOP".into()),
+                );
             }
         }
         _ => {
-            results.add("GOP: Protocol", TestResult::Warning, Some("GOP not available".into()));
+            results.add(
+                "GOP: Protocol",
+                TestResult::Warning,
+                Some("GOP not available".into()),
+            );
         }
     }
 }
 
 /// メモリテスト（簡易版）
 fn test_memory(results: &mut SelfTestResults, fast_mode: bool) {
-    serial_println!("[SelfTest] Running memory test (fast mode: {})...", fast_mode);
+    serial_println!(
+        "[SelfTest] Running memory test (fast mode: {})...",
+        fast_mode
+    );
 
     // メモリマップを取得してConventionalMemoryの総量を確認
     match boot::memory_map(MemoryType::LOADER_DATA) {
@@ -322,7 +357,11 @@ fn test_memory(results: &mut SelfTestResults, fast_mode: bool) {
                 results.add(
                     "Memory: Available",
                     TestResult::Pass,
-                    Some(alloc::format!("{} MB in {} regions", total_mb, region_count)),
+                    Some(alloc::format!(
+                        "{} MB in {} regions",
+                        total_mb,
+                        region_count
+                    )),
                 );
             } else if total_mb >= 32 {
                 results.add(
@@ -342,11 +381,7 @@ fn test_memory(results: &mut SelfTestResults, fast_mode: bool) {
             if !fast_mode {
                 // 小さなテスト領域を割り当ててパターンテスト
                 let test_size = 4096; // 4KB
-                match boot::allocate_pages(
-                    AllocateType::AnyPages,
-                    MemoryType::LOADER_DATA,
-                    1,
-                ) {
+                match boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1) {
                     Ok(ptr) => {
                         let addr = ptr.as_ptr() as u64;
                         let test_ptr = addr as *mut u64;
@@ -410,12 +445,7 @@ fn log_test_results(results: &SelfTestResults) {
 
     for test in &results.tests {
         let msg = test.message.as_deref().unwrap_or("");
-        serial_println!(
-            "  [{}] {}: {}",
-            test.result.as_str(),
-            test.name,
-            msg
-        );
+        serial_println!("  [{}] {}: {}", test.result.as_str(), test.name, msg);
     }
 
     serial_println!("  ----------------------------------------");

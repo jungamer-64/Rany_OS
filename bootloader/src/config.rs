@@ -116,11 +116,7 @@ fn apply_entry_setting(entry: &mut BootEntry, key: &str, value: &str) {
 }
 
 /// Process a single configuration line, updating global config or current entry.
-fn process_config_line(
-    config: &mut BootConfig,
-    current_entry: &mut Option<BootEntry>,
-    line: &str,
-) {
+fn process_config_line(config: &mut BootConfig, current_entry: &mut Option<BootEntry>, line: &str) {
     let line = line.trim();
 
     if line.is_empty() || line.starts_with('#') {

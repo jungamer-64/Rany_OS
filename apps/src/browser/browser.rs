@@ -18,8 +18,8 @@ use graphic_types::{Color, Image};
 use super::css::{CssColor, CssParser, Stylesheet};
 use super::dom::Node;
 use super::html::HtmlParser;
-use super::layout::{layout_tree, Dimensions, Rect};
-use super::render::{build_display_list, DisplayCommand, DisplayList};
+use super::layout::{Dimensions, Rect, layout_tree};
+use super::render::{DisplayCommand, DisplayList, build_display_list};
 use super::style::style_tree;
 
 // ============================================================================

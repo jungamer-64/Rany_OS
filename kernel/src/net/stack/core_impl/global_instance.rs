@@ -98,7 +98,7 @@ pub fn send_udp_v6(src_port: u16, src_ip: crate::net::ipv6::Ipv6Address, dst_ip:
     }
 }
 
-/// Send a TCP segment
+/// Send a TCP segment (IPv4)
 pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
@@ -110,6 +110,23 @@ pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) ->
         }
         Err(_) => {
             log::error!("[NET] Global Stack poisoned - send_tcp failed");
+            false
+        }
+    }
+}
+
+/// Send a TCP segment over IPv6
+pub fn send_tcp_v6(src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address, tcp_segment: &[u8]) -> bool {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.send_tcp_v6_raw(src_ip, dst_ip, tcp_segment)
+            } else {
+                false
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - send_tcp_v6 failed");
             false
         }
     }
