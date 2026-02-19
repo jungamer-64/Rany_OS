@@ -88,6 +88,8 @@ pub struct TcpControlBlockEntry {
     /// Urgent mode active (receive side)
     pub rcv_urg: bool,
     // === TCP Timestamps (RFC 7323) ===
+    /// SACK negotiated (SACK-Permitted seen in SYN from peer)
+    pub sack_enabled: bool,
     /// Timestamps negotiated (TSopt seen in SYN from peer)
     pub ts_enabled: bool,
     /// Our timestamp value (monotonic, incremented per tick)
@@ -129,6 +131,7 @@ impl TcpControlBlockEntry {
             snd_urg: false,
             rcv_up: 0,
             rcv_urg: false,
+            sack_enabled: false,
             ts_enabled: false,
             ts_val: 0,
             ts_ecr: 0,

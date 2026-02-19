@@ -9,11 +9,16 @@ use super::stats::DriverCellStats;
 use super::*;
 
 pub fn driver_cell_state_default_is_created_smoke() -> bool {
-    matches!(DriverCellState::Created, DriverCellState::Created)
+    let state = DriverCellState::Created;
+    matches!(state, DriverCellState::Created)
 }
 
 pub fn driver_cell_state_transitions_are_valid_smoke() -> bool {
     let mut state = DriverCellState::Created;
+    if !matches!(state, DriverCellState::Created) {
+        return false;
+    }
+
     state = DriverCellState::Loaded;
     if !matches!(state, DriverCellState::Loaded) {
         return false;
@@ -34,7 +39,8 @@ pub fn driver_cell_state_transitions_are_valid_smoke() -> bool {
 }
 
 pub fn driver_cell_state_faulted_smoke() -> bool {
-    matches!(DriverCellState::Faulted, DriverCellState::Faulted)
+    let state = DriverCellState::Faulted;
+    matches!(state, DriverCellState::Faulted)
 }
 
 pub fn driver_cell_id_equality_smoke() -> bool {
@@ -54,7 +60,8 @@ pub fn driver_cell_id_ordering_smoke() -> bool {
 }
 
 pub fn driver_cell_restart_policy_never_smoke() -> bool {
-    matches!(RestartPolicy::Never, RestartPolicy::Never)
+    let policy = RestartPolicy::Never;
+    matches!(policy, RestartPolicy::Never)
 }
 
 pub fn driver_cell_restart_policy_on_panic_defaults_smoke() -> bool {
@@ -89,23 +96,23 @@ pub fn driver_cell_restart_policy_always_smoke() -> bool {
 
 pub fn driver_cell_fault_kind_variants_smoke() -> bool {
     let kinds = [
-        FaultKind::Panic,
-        FaultKind::InitFailed,
+        FaultKind::Panic(String::from("panic")),
+        FaultKind::InitFailed(String::from("init")),
         FaultKind::Timeout,
-        FaultKind::QuotaExceeded,
+        FaultKind::QuotaExceeded(String::from("quota")),
         FaultKind::MemoryViolation,
-        FaultKind::Other,
+        FaultKind::Other(String::from("other")),
     ];
 
     for kind in kinds {
         let ok = matches!(
             kind,
-            FaultKind::Panic
-                | FaultKind::InitFailed
+            FaultKind::Panic(_)
+                | FaultKind::InitFailed(_)
                 | FaultKind::Timeout
-                | FaultKind::QuotaExceeded
+                | FaultKind::QuotaExceeded(_)
                 | FaultKind::MemoryViolation
-                | FaultKind::Other
+                | FaultKind::Other(_)
         );
         if !ok {
             return false;
@@ -172,16 +179,16 @@ pub fn driver_cell_error_not_found_smoke() -> bool {
 }
 
 pub fn driver_cell_error_invalid_state_smoke() -> bool {
-    let err = DriverCellError::InvalidState {
-        expected: DriverCellState::Loaded,
-        actual: DriverCellState::Running,
+    let err = DriverCellError::InvalidStateTransition {
+        from: DriverCellState::Loaded,
+        to: DriverCellState::Running,
     };
 
     matches!(
         err,
-        DriverCellError::InvalidState {
-            expected: DriverCellState::Loaded,
-            actual: DriverCellState::Running
+        DriverCellError::InvalidStateTransition {
+            from: DriverCellState::Loaded,
+            to: DriverCellState::Running
         }
     )
 }

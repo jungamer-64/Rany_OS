@@ -249,6 +249,32 @@ pub fn retransmit_queue_ack(local: SocketAddr, remote: SocketAddr, ack_num: u32)
     }
 }
 
+/// SACKオプションで通知された領域を再送キューから取り除く
+pub fn retransmit_queue_process_sack(local: SocketAddr, remote: SocketAddr, blocks: &[(u32, u32)]) {
+    let mut queues = RETRANSMIT_QUEUES.write();
+    if let Some(queue) = queues.get_mut(&(local, remote)) {
+        // フィルタしてSACKで完全に被覆されるセグメントを削除
+        let mut new_unacked = VecDeque::new();
+        while let Some(seg) = queue.unacked.pop_front() {
+            let seg_end = seg.seq.wrapping_add(seg.data.len() as u32);
+            let mut is_sacked = false;
+            for &(l, r) in blocks {
+                // シーケンスレンジがブロック内に完全に含まれるか
+                let in_left = seg.seq.wrapping_sub(l) as i32 >= 0;
+                let in_right = r.wrapping_sub(seg_end) as i32 >= 0;
+                if in_left && in_right {
+                    is_sacked = true;
+                    break;
+                }
+            }
+            if !is_sacked {
+                new_unacked.push_back(seg);
+            }
+        }
+        queue.unacked = new_unacked;
+    }
+}
+
 /// 再送キュー削除
 pub fn retransmit_queue_remove(local: SocketAddr, remote: SocketAddr) {
     RETRANSMIT_QUEUES.write().remove(&(local, remote));
@@ -384,6 +410,27 @@ mod tests {
         let seg = queue.check_timeout(3000).unwrap();
         assert_eq!(seg.retransmit_count, 1);
         assert!(seg.is_retransmit);
+    }
+
+    #[test_case]
+    fn test_retransmit_queue_process_sack() {
+        use super::SocketAddr;
+        let local = SocketAddr::new([192,168,0,1], 10000);
+        let remote = SocketAddr::new([192,168,0,2], 20000);
+
+        // 再送キュー作成とセグメント追加
+        get_or_create_retransmit_queue(local, remote);
+        retransmit_queue_push(local, remote, 1000, alloc::vec![1,2,3]);
+        retransmit_queue_push(local, remote, 1003, alloc::vec![4,5,6]);
+
+        // SACKで最初のセグメント(1000..1003)が通知される
+        retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
+
+        // 内部状態を確認（最初のセグメントが削除され、残り1件）
+        let qs = RETRANSMIT_QUEUES.read();
+        let q = qs.get(&(local, remote)).unwrap();
+        assert_eq!(q.unacked.len(), 1);
+        assert_eq!(q.unacked.front().unwrap().seq, 1003);
     }
 
     #[test_case]

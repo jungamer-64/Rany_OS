@@ -88,16 +88,33 @@ fn handle_established_segment(
     let is_urg = (flags & tcp_flags::URG) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
 
-    // TCP Timestamps (RFC 7323): 受信セグメントのTSvalをTCBに記録
-    if tcb.ts_enabled && data_offset > 20 && data_offset <= segment.len() {
+    // TCPオプション解析（SACK / Timestamps）
+    if data_offset > 20 && data_offset <= segment.len() {
         let options = &segment[20..data_offset];
         let mut parser = TcpOptionParser::new(options);
-        if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
-            tcb_table().update(tcb.local, tcb.remote, |entry| {
-                entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
-                // 自分のTSvalを更新
-                entry.ts_val = generate_tcp_timestamp();
-            });
+
+        // 受信SACKオプション（送信側の再送キューに反映）
+        if tcb.sack_enabled {
+            if let Some(blocks) = parser.find_sack_blocks() {
+                if !blocks.is_empty() {
+                    crate::net::endpoint::retransmit::retransmit_queue_process_sack(
+                        tcb.local,
+                        tcb.remote,
+                        &blocks,
+                    );
+                }
+            }
+        }
+
+        // Timestamp
+        if tcb.ts_enabled {
+            if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
+                tcb_table().update(tcb.local, tcb.remote, |entry| {
+                    entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
+                    // 自分のTSvalを更新
+                    entry.ts_val = generate_tcp_timestamp();
+                });
+            }
         }
     }
 
@@ -182,13 +199,13 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
         return;
     }
 
-    // SYN-ACKのTCPオプションを解析（TSopt検出）
-    let peer_ts = if data_offset > 20 && data_offset <= segment.len() {
+    // SYN-ACKのTCPオプションを解析（TSopt / SACK-Permitted検出）
+    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
         let options = &segment[20..data_offset];
         let mut parser = TcpOptionParser::new(options);
-        parser.find_timestamps()
+        (parser.find_timestamps(), parser.find_sack_permitted())
     } else {
-        None
+        (None, false)
     };
 
     // TCB更新
@@ -202,6 +219,11 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
             entry.ts_enabled = true;
             entry.ts_ecr = peer_ts_val;
             entry.ts_val = generate_tcp_timestamp();
+        }
+
+        // SACK negotiation
+        if sack_permitted {
+            entry.sack_enabled = true;
         }
     });
 
@@ -256,13 +278,13 @@ fn process_tcp_new_connection(
         return;
     }
 
-    // SYNのTCPオプションを解析（TSopt検出）
-    let peer_ts = if data_offset > 20 && data_offset <= segment.len() {
+    // SYNのTCPオプションを解析（TSopt / SACK-Permitted 検出）
+    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
         let options = &segment[20..data_offset];
         let mut parser = TcpOptionParser::new(options);
-        parser.find_timestamps()
+        (parser.find_timestamps(), parser.find_sack_permitted())
     } else {
-        None
+        (None, false)
     };
 
     // リッスン中のソケットを探す
@@ -299,10 +321,13 @@ fn process_tcp_new_connection(
     tcb.rcv_nxt = seq_num.wrapping_add(1);
     tcb.state = TcpConnectionState::SynReceived;
 
-    // TCP Timestamps (RFC 7323): SYNにTSoptがあれば有効化
+    // TCP Timestamps / SACK negotiation
     if let Some((peer_ts_val, _)) = peer_ts {
         tcb.ts_enabled = true;
         tcb.ts_ecr = peer_ts_val; // SYN-ACKのTSecr = 相手のTSval
+    }
+    if sack_permitted {
+        tcb.sack_enabled = true;
     }
     tcb_table().insert(tcb);
 
@@ -501,14 +526,19 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
             .ack_flag()
             .window(65535);
 
-        // TCP Timestamps (RFC 7323): DupACKにもTSoptを付与
+        // TCP Timestamps (RFC 7323): DupACKにTSoptとSACKを付与（合意済みの場合）
         if tcb.ts_enabled {
-            builder = builder.nop().nop().timestamp(tcb.ts_val, tcb.ts_ecr);
+            // Timestamp は最後に置く（SACK の後ろに置いても OK）
+            // We will add SACK below if negotiated.
         }
 
-        if !sack.is_empty() {
+        if tcb.sack_enabled && !sack.is_empty() {
             // NOP+NOP+SACK でアラインメント (RFC 2018 Section 3)
             builder = builder.nop().nop().sack_blocks(&sack);
+        }
+
+        if tcb.ts_enabled {
+            builder = builder.nop().nop().timestamp(tcb.ts_val, tcb.ts_ecr);
         }
 
         let mut dup_ack = builder.build();
@@ -544,6 +574,14 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         .ack(new_rcv_nxt)
         .ack_flag()
         .window(65535);
+
+    // SACK: OOOキューのSACKブロックをACKに付与（交渉済みの場合）
+    if tcb.sack_enabled {
+        let sack = ooo_queue::get_sack_blocks(tcb.local, tcb.remote);
+        if !sack.is_empty() {
+            builder = builder.nop().nop().sack_blocks(&sack);
+        }
+    }
 
     // TCP Timestamps (RFC 7323): ACKにTSoptを付与
     if tcb.ts_enabled {
