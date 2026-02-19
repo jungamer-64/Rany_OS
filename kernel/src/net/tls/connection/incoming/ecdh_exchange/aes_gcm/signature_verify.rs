@@ -628,10 +628,9 @@ impl TlsConnection {
         let ciphertext = &data[0..ciphertext_len];
         let auth_tag = &data[ciphertext_len..];
 
-        // Keys not set — placeholder passthrough
+        // Keys not set — return error (decryption requires valid keys)
         if self.read_key.is_empty() || self.read_key.len() < 32 || self.read_iv.len() < 12 {
-            self.read_seq += 1;
-            return Ok(ciphertext.to_vec());
+            return Err(TlsError::CryptoError);
         }
 
         // Construct 12-byte nonce: IV XOR (zero-padded sequence number)

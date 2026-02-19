@@ -7,9 +7,27 @@ impl NdpProcessor {
         Self {
             cache: NeighborCache::new(),
             our_link_local,
+            global_addresses: Vec::new(),
             our_mac,
             stats: NdpStats::default(),
         }
+    }
+
+    /// Add a global address that this node responds to for NDP
+    pub fn add_global_address(&mut self, addr: Ipv6Address) {
+        if !self.global_addresses.contains(&addr) {
+            self.global_addresses.push(addr);
+        }
+    }
+
+    /// Remove a global address
+    pub fn remove_global_address(&mut self, addr: &Ipv6Address) {
+        self.global_addresses.retain(|a| a != addr);
+    }
+
+    /// Check if the given address is one of our addresses (link-local or global)
+    pub fn is_our_address(&self, addr: &Ipv6Address) -> bool {
+        *addr == self.our_link_local || self.global_addresses.contains(addr)
     }
 
     /// Get neighbor cache reference
@@ -80,9 +98,8 @@ impl NdpProcessor {
         target_bytes.copy_from_slice(&data[8..24]);
         let target = Ipv6Address::new(target_bytes);
 
-        // Check if this NS is for us
-        if target != self.our_link_local {
-            // TODO: also check global address
+        // Check if this NS is for us (link-local or any global address)
+        if !self.is_our_address(&target) {
             return NdpResult::None;
         }
 

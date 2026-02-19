@@ -40,9 +40,9 @@ impl TlsConnection {
     pub(super) fn encrypt_aes_gcm(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
-        // Keys not set — placeholder passthrough
+        // Keys not set — return error (encryption requires valid keys)
         let (ciphertext, auth_tag) = if self.write_key.is_empty() || self.write_iv.len() < 4 {
-            (data.to_vec(), [0u8; 16])
+            return Err(TlsError::CryptoError);
         } else {
             // 12-byte nonce: implicit_iv(4) || explicit_nonce(8)
             let mut nonce = [0u8; 12];
@@ -86,10 +86,10 @@ impl TlsConnection {
     ///
     /// Nonce: IV XOR zero-padded sequence number (RFC 7905 Section 2)
     pub(super) fn encrypt_chacha20_poly1305(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
-        // Keys not set — placeholder passthrough
+        // Keys not set — return error (encryption requires valid keys)
         let (ciphertext, auth_tag) =
             if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
-                (data.to_vec(), [0u8; 16])
+                return Err(TlsError::CryptoError);
             } else {
                 // Construct 12-byte nonce: IV XOR (zero-padded sequence number)
                 let mut nonce = [0u8; 12];

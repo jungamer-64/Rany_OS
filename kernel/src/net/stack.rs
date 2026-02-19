@@ -17,6 +17,7 @@ use super::ipv4::{
 };
 use super::ipv6::{
     Ipv6Address, Ipv6Config, Ipv6PacketMut, Ipv6ProcessResult, Ipv6Processor, IPV6_HEADER_SIZE,
+    Ipv6FragmentReassembler,
 };
 use super::ndp::{NdpProcessor, NdpResult};
 use super::mempool::{PacketPool, PacketRef};
@@ -281,6 +282,8 @@ pub struct NetworkStack {
     redirect_cache: RedirectCache,
     /// Pending IPv6 packets awaiting NDP resolution
     ndp_pending_queue: NdpPendingQueue,
+    /// IPv6 fragment reassembler
+    ipv6_fragment_reassembler: Ipv6FragmentReassembler,
 }
 
 /// NDP解決待ちパケットキュー

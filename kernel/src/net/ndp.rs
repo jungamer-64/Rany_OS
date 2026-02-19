@@ -401,6 +401,8 @@ pub struct NdpProcessor {
     cache: NeighborCache,
     /// Our link-local address
     pub(crate) our_link_local: Ipv6Address,
+    /// Our global addresses (SLAAC / manual)
+    pub(crate) global_addresses: Vec<Ipv6Address>,
     /// Our MAC address
     our_mac: [u8; 6],
     /// Statistics

@@ -80,6 +80,7 @@ pub(crate) fn hash_compute(hash_alg: HashAlgorithm, data: &[u8]) -> Vec<u8> {
     match hash_alg {
         HashAlgorithm::Sha256 => crate::loader::sha256::compute(data).to_vec(),
         HashAlgorithm::Sha384 => crate::loader::sha384::compute(data).to_vec(),
+        HashAlgorithm::Sha512 => crate::loader::sha512::compute(data).to_vec(),
     }
 }
 

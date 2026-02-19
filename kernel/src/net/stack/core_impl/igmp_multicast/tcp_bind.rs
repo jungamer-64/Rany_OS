@@ -606,5 +606,17 @@ impl NetworkStack {
 
         // Clean up closed and expired TIME_WAIT TCP connections
         self.tcp.cleanup_closed();
+
+        // Process IGMP timers and send pending reports
+        self.igmp.update_time(current_time);
+        self.send_pending_igmp_reports();
+
+        // Expire timed-out NDP pending packets
+        self.expire_ndp_pending();
+
+        // Run NDP periodic maintenance (expire stale neighbor cache entries)
+        if let Some(ref mut ndp) = self.ndp {
+            ndp.tick(current_time);
+        }
     }
 }

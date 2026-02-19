@@ -653,9 +653,13 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
             }
         }
         SignatureAlgorithmId::Sha512WithRsa => {
-            // SHA-512 RSA: 現時点ではSHA-384で代替（SHA-512ハッシュ実装待ち）
-            // TODO: crate::loader::sha512::compute が利用可能になったら更新
-            false
+            if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {
+                let digest = crate::loader::sha512::compute(cert.raw_tbs);
+                let key = RsaPublicKey { modulus, exponent };
+                rsa_pkcs1_verify(&key, HashAlgorithm::Sha512, &digest, cert.signature_value).is_ok()
+            } else {
+                false
+            }
         }
         SignatureAlgorithmId::RsaPss => {
             if let SubjectPublicKeyInfo::Rsa { modulus, exponent } = issuer_pubkey {

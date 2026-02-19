@@ -28,7 +28,9 @@ use super::ipv4::IpProtocol;
 
 /// IPv6 address (16 bytes)
 mod processor_impl;
+pub mod fragment;
 pub use processor_impl::*;
+pub use fragment::{Ipv6FragmentHeader, Ipv6FragmentReassembler, Ipv6FragmentStats};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv6Address([u8; 16]);
 
@@ -602,7 +604,10 @@ pub fn skip_extension_headers<'a>(
                 let ext_next = data[0];
                 next_header = IpProtocol::from(ext_next);
                 data = &data[8..];
-                // Note: actual fragment reassembly not implemented yet
+                // Fragment reassembly handled by Ipv6FragmentReassembler
+                // skip_extension_headers only strips the header for non-fragment
+                // processing path. Use skip_extension_headers_fraginfo() for
+                // fragment-aware processing.
             }
             EXT_HEADER_NO_NEXT => {
                 // No next header — end of chain
@@ -611,6 +616,74 @@ pub fn skip_extension_headers<'a>(
             _ => {
                 // Upper-layer protocol (TCP, UDP, ICMPv6, etc.)
                 return (next_header, data);
+            }
+        }
+    }
+}
+
+/// Result of extension-header walk with fragment awareness.
+pub enum ExtHeaderResult<'a> {
+    /// No fragment header encountered — upper-layer protocol and payload
+    NoFragment(IpProtocol, &'a [u8]),
+    /// Fragment header found.
+    /// Fields: (unfragmentable part, fragment header, fragment payload)
+    Fragment {
+        /// Everything before the fragment header (IPv6 fixed header + pre-fragment exts)
+        unfragmentable: &'a [u8],
+        /// Parsed fragment header
+        frag_header: Ipv6FragmentHeader,
+        /// Fragment payload (data after the fragment header)
+        frag_payload: &'a [u8],
+    },
+}
+
+/// Walk extension headers returning fragment info if present.
+///
+/// `raw_packet` is the entire IPv6 packet from byte 0 (fixed header start).
+/// Returns `ExtHeaderResult` describing the final state.
+pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_> {
+    if raw_packet.len() < 40 {
+        return ExtHeaderResult::NoFragment(IpProtocol::from(0), &[]);
+    }
+
+    let mut next_header = raw_packet[6];
+    let mut offset = 40usize; // after fixed header
+
+    loop {
+        match next_header {
+            EXT_HEADER_HOP_BY_HOP | EXT_HEADER_ROUTING | EXT_HEADER_DESTINATION => {
+                if offset + 2 > raw_packet.len() {
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                }
+                let ext_next = raw_packet[offset];
+                let ext_len = (raw_packet[offset + 1] as usize + 1) * 8;
+                if offset + ext_len > raw_packet.len() {
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                }
+                next_header = ext_next;
+                offset += ext_len;
+            }
+            EXT_HEADER_FRAGMENT => {
+                if offset + 8 > raw_packet.len() {
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+                }
+                if let Some(frag) = Ipv6FragmentHeader::parse(&raw_packet[offset..]) {
+                    let unfragmentable = &raw_packet[..offset];
+                    let frag_payload = &raw_packet[offset + 8..];
+                    return ExtHeaderResult::Fragment {
+                        unfragmentable,
+                        frag_header: frag,
+                        frag_payload,
+                    };
+                }
+                // Failed to parse — treat as no fragment
+                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+            }
+            EXT_HEADER_NO_NEXT => {
+                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+            }
+            _ => {
+                return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
             }
         }
     }
