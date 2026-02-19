@@ -10,8 +10,8 @@
 //! - PCR[14]: Boot configuration (cmdline, etc.)
 
 use log::info;
-use uefi::prelude::*;
 use uefi::boot;
+use uefi::prelude::*;
 
 /// PCR index for kernel measurement
 pub const PCR_KERNEL: u32 = 8;
@@ -77,9 +77,9 @@ struct Tcg2Protocol {
         data_to_hash_len: u64,
         event: *const Tcg2Event,
     ) -> Status,
-    submit_command: usize,      // Not used
-    get_active_pcr_banks: usize, // Not used
-    set_active_pcr_banks: usize, // Not used
+    submit_command: usize,                     // Not used
+    get_active_pcr_banks: usize,               // Not used
+    set_active_pcr_banks: usize,               // Not used
     get_result_of_set_active_pcr_banks: usize, // Not used
 }
 
@@ -172,14 +172,30 @@ pub fn perform_measured_boot(
     );
 
     // Measure kernel
-    if extend_pcr(tcg2, PCR_KERNEL, kernel_data, TcgEventType::KernelLoad, b"ExoLoader Kernel").is_ok() {
+    if extend_pcr(
+        tcg2,
+        PCR_KERNEL,
+        kernel_data,
+        TcgEventType::KernelLoad,
+        b"ExoLoader Kernel",
+    )
+    .is_ok()
+    {
         result.kernel_measured = true;
         info!("TPM: Kernel measured to PCR[{}]", PCR_KERNEL);
     }
 
     // Measure initramfs if present
     if let Some(initramfs) = initramfs_data {
-        if extend_pcr(tcg2, PCR_INITRAMFS, initramfs, TcgEventType::InitramfsLoad, b"ExoLoader Initramfs").is_ok() {
+        if extend_pcr(
+            tcg2,
+            PCR_INITRAMFS,
+            initramfs,
+            TcgEventType::InitramfsLoad,
+            b"ExoLoader Initramfs",
+        )
+        .is_ok()
+        {
             result.initramfs_measured = true;
             info!("TPM: Initramfs measured to PCR[{}]", PCR_INITRAMFS);
         }
@@ -187,7 +203,15 @@ pub fn perform_measured_boot(
 
     // Measure command line if present
     if let Some(cmdline_data) = cmdline {
-        if extend_pcr(tcg2, PCR_BOOT_CONFIG, cmdline_data, TcgEventType::CommandLine, b"ExoLoader Cmdline").is_ok() {
+        if extend_pcr(
+            tcg2,
+            PCR_BOOT_CONFIG,
+            cmdline_data,
+            TcgEventType::CommandLine,
+            b"ExoLoader Cmdline",
+        )
+        .is_ok()
+        {
             result.cmdline_measured = true;
             info!("TPM: Command line measured to PCR[{}]", PCR_BOOT_CONFIG);
         }
@@ -199,8 +223,8 @@ pub fn perform_measured_boot(
 /// Locate the TCG2 protocol
 fn locate_tcg2_protocol() -> Option<*const Tcg2Protocol> {
     // Search for handles that support TCG2 protocol
-    let handles = boot::locate_handle_buffer(boot::SearchType::ByProtocol(&TCG2_PROTOCOL_GUID))
-        .ok()?;
+    let handles =
+        boot::locate_handle_buffer(boot::SearchType::ByProtocol(&TCG2_PROTOCOL_GUID)).ok()?;
 
     if handles.is_empty() {
         return None;
@@ -210,11 +234,11 @@ fn locate_tcg2_protocol() -> Option<*const Tcg2Protocol> {
     // Since TCG2 is not a standard uefi-rs protocol, we need raw access
     // Use raw UEFI boot services for handle_protocol call
     let mut protocol_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-    
+
     // Get raw boot services table pointer
     let st_ptr = uefi::table::system_table_raw().expect("No system table available");
     let bs_raw = unsafe { (*st_ptr.as_ptr()).boot_services };
-    
+
     let status = unsafe {
         let handle_protocol_fn = (*bs_raw).handle_protocol;
         handle_protocol_fn(
@@ -259,7 +283,11 @@ fn extend_pcr(
     event.header.event_type = event_type as u32;
 
     // Copy description to event data
-    let event_data_ptr = unsafe { event_buf.as_mut_ptr().add(core::mem::size_of::<Tcg2Event>()) };
+    let event_data_ptr = unsafe {
+        event_buf
+            .as_mut_ptr()
+            .add(core::mem::size_of::<Tcg2Event>())
+    };
     unsafe {
         core::ptr::copy_nonoverlapping(description.as_ptr(), event_data_ptr, event_data_len);
     }

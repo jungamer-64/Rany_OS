@@ -13,7 +13,6 @@
 
 #![allow(dead_code)]
 
-use exorust_sync::PoisonLock;
 use alloc::collections::VecDeque;
 use core::cell::UnsafeCell;
 use core::future::Future;
@@ -24,6 +23,7 @@ use core::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
 };
+use exorust_sync::PoisonLock;
 
 pub struct AsyncMutex<T: ?Sized> {
     locked: AtomicBool,

@@ -1,17 +1,15 @@
 use super::*;
 
-
-
 // カーネル向け実装: 永続ワーカ（non-test）
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub(crate) mod kernel_impl {
     use super::*;
+    use crate::mm::meta::page_flags::{self, PageMetaFlags};
+    use crate::sync::AtomicWaker;
+    use crate::sync::lockfree::{BoundedChannel, BoundedReceiver, BoundedSender};
+    use crate::task::Task;
     use alloc::vec::Vec;
     use spin::Once;
-    use crate::sync::lockfree::{BoundedChannel, BoundedSender, BoundedReceiver};
-    use crate::sync::AtomicWaker;
-    use crate::task::Task;
-    use crate::mm::meta::page_flags::{self, PageMetaFlags};
 
     // Channel capacity and batch size tunables
     pub(super) const CHANNEL_SIZE: usize = 1024;
@@ -24,7 +22,12 @@ pub(crate) mod kernel_impl {
     }
 
     // Static channel (initialized once)
-    pub(super) static CHANNEL_ONCE: Once<Option<(BoundedSender<SwapEntryKernel, CHANNEL_SIZE>, BoundedReceiver<SwapEntryKernel, CHANNEL_SIZE>)>> = Once::new();
+    pub(super) static CHANNEL_ONCE: Once<
+        Option<(
+            BoundedSender<SwapEntryKernel, CHANNEL_SIZE>,
+            BoundedReceiver<SwapEntryKernel, CHANNEL_SIZE>,
+        )>,
+    > = Once::new();
 
     // Pending set is replaced by GlobalPageFlags
 
@@ -42,15 +45,20 @@ pub(crate) mod kernel_impl {
     pub(super) const TOKEN_REFILL_PER_BATCH: usize = BATCH_SIZE / 2;
 
     // Runtime-adjustable parameters (Atomics allow tuning without recompilation)
-    pub(super) static RESERVED_FILE_SLOTS_ATOMIC: AtomicUsize = AtomicUsize::new(RESERVED_FILE_SLOTS);
-    pub(super) static TOKEN_BUCKET_CAPACITY_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
-    pub(super) static TOKEN_REFILL_PER_BATCH_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_REFILL_PER_BATCH);
+    pub(super) static RESERVED_FILE_SLOTS_ATOMIC: AtomicUsize =
+        AtomicUsize::new(RESERVED_FILE_SLOTS);
+    pub(super) static TOKEN_BUCKET_CAPACITY_ATOMIC: AtomicUsize =
+        AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
+    pub(super) static TOKEN_REFILL_PER_BATCH_ATOMIC: AtomicUsize =
+        AtomicUsize::new(TOKEN_REFILL_PER_BATCH);
 
     pub(super) static TOKENS: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
     // Worker waker and running flags
     pub(super) static WORKER_WAKER: AtomicWaker = AtomicWaker::new();
-    pub(super) static WORKER_RUNNING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-    pub(super) static WORKER_SHUTDOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    pub(super) static WORKER_RUNNING: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    pub(super) static WORKER_SHUTDOWN: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
 
     pub(super) fn ensure_channel_started() {
         CHANNEL_ONCE.call_once(|| {
@@ -59,7 +67,15 @@ pub(crate) mod kernel_impl {
         });
 
         // Try to spawn the worker if not already running
-        if WORKER_RUNNING.compare_exchange(false, true, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_ok() {
+        if WORKER_RUNNING
+            .compare_exchange(
+                false,
+                true,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
             WORKER_SHUTDOWN.store(false, core::sync::atomic::Ordering::Release);
             let task = Task::new(async move { worker_loop().await });
             crate::task::Executor::spawn_global(task);
@@ -70,7 +86,10 @@ pub(crate) mod kernel_impl {
     pub(super) struct WaitForWork;
     impl core::future::Future for WaitForWork {
         type Output = ();
-        fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
+        fn poll(
+            self: core::pin::Pin<&mut Self>,
+            cx: &mut core::task::Context<'_>,
+        ) -> core::task::Poll<()> {
             // Fast path: if receiver has elements, return ready
             if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
                 if !ch.1.is_empty() {
@@ -162,7 +181,10 @@ pub(crate) mod kernel_impl {
                 if try_zswap_store_and_dealloc_any(entry.frame, reuse_buf) {
                     crate::mm::reclaim::page_reclaim::notify_async_swapout_success(entry.frame);
                 } else {
-                    log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
+                    log::warn!(
+                        "zswap store failed during anon swapout for frame {:?}",
+                        entry.frame
+                    );
                     crate::mm::reclaim::page_reclaim::notify_async_swapout_failure(entry.frame);
                 }
                 page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
@@ -186,12 +208,16 @@ pub(crate) mod kernel_impl {
                 crate::mm::reclaim::page_reclaim::notify_async_swapout_success(frame);
             }
             _ => {
-                if crate::fs::page_cache().sync_all(|ino, offset, data| {
-                    match crate::fs::write_inode_by_number(ino, offset, data) {
-                        Ok(_) => Ok(()),
-                        Err(_) => Err(()),
-                    }
-                }).unwrap_or(0) > 0 {
+                if crate::fs::page_cache()
+                    .sync_all(|ino, offset, data| {
+                        match crate::fs::write_inode_by_number(ino, offset, data) {
+                            Ok(_) => Ok(()),
+                            Err(_) => Err(()),
+                        }
+                    })
+                    .unwrap_or(0)
+                    > 0
+                {
                     release_frame_and_untrack(frame);
                     crate::mm::reclaim::page_reclaim::notify_async_swapout_success(frame);
                 } else {
@@ -230,8 +256,6 @@ pub(crate) mod kernel_impl {
             }
         }
     }
-
-
 
     /// Check channel capacity and anon-specific reservation/token constraints.
     /// Returns `true` if the anon token was consumed (must be restored on send failure).
@@ -273,8 +297,8 @@ pub(crate) mod kernel_impl {
 
         // Fast-path: try to set pending flag (atomic)
         if page_flags::test_and_set_flag(frame, PageMetaFlags::SwapPending) {
-             // Already set
-             return Err(SwapError::AlreadyPending);
+            // Already set
+            return Err(SwapError::AlreadyPending);
         }
 
         // Check sender capacity
@@ -310,7 +334,10 @@ pub(crate) mod kernel_impl {
 
     // Kernel control / introspection
     pub fn queued_counts() -> (usize, usize) {
-        (QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire), FILE_QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire))
+        (
+            QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire),
+            FILE_QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire),
+        )
     }
 
     pub fn token_count() -> usize {
@@ -324,7 +351,9 @@ pub(crate) mod kernel_impl {
         // Trim current tokens if above new capacity
         loop {
             let cur = TOKENS.load(Ordering::Acquire);
-            if cur <= n { break; }
+            if cur <= n {
+                break;
+            }
             match TOKENS.compare_exchange(cur, n, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
                 Err(_) => continue,
@@ -359,6 +388,62 @@ pub(crate) mod kernel_impl {
 
     pub fn add_tokens_public(n: usize) {
         add_tokens(n);
+    }
+
+    pub fn qemu_test_drain_until_idle(max_rounds: usize) -> bool {
+        ensure_channel_started();
+
+        let rounds = max_rounds.max(1);
+        let mut reuse_buf = buffer_pool_get_4k();
+        for _ in 0..rounds {
+            let batch = drain_batch();
+            if batch.is_empty() {
+                let queue_empty = CHANNEL_ONCE
+                    .get()
+                    .and_then(|opt| opt.as_ref())
+                    .map_or(true, |ch| ch.1.is_empty());
+                if queue_empty {
+                    buffer_pool_put_4k(reuse_buf);
+                    return true;
+                }
+                continue;
+            }
+
+            for entry in batch {
+                process_swap_entry(entry, &mut reuse_buf);
+            }
+
+            add_tokens(TOKEN_REFILL_PER_BATCH_ATOMIC.load(Ordering::Acquire));
+        }
+
+        let drained = CHANNEL_ONCE
+            .get()
+            .and_then(|opt| opt.as_ref())
+            .map_or(true, |ch| ch.1.is_empty());
+        buffer_pool_put_4k(reuse_buf);
+        drained
+    }
+
+    pub fn qemu_test_reset_worker_runtime_state() {
+        WORKER_SHUTDOWN.store(true, Ordering::Release);
+        WORKER_WAKER.wake();
+
+        if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+            while let Some(entry) = ch.1.recv() {
+                page_flags::clear_flag(entry.frame, PageMetaFlags::SwapPending);
+            }
+        }
+
+        QUEUE_COUNT.store(0, Ordering::Release);
+        FILE_QUEUE_COUNT.store(0, Ordering::Release);
+
+        RESERVED_FILE_SLOTS_ATOMIC.store(RESERVED_FILE_SLOTS, Ordering::Release);
+        TOKEN_BUCKET_CAPACITY_ATOMIC.store(TOKEN_BUCKET_CAPACITY, Ordering::Release);
+        TOKEN_REFILL_PER_BATCH_ATOMIC.store(TOKEN_REFILL_PER_BATCH, Ordering::Release);
+        TOKENS.store(TOKEN_BUCKET_CAPACITY, Ordering::Release);
+
+        let _ = should_shutdown();
+        WORKER_SHUTDOWN.store(false, Ordering::Release);
     }
 
     pub fn start_worker() {

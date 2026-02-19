@@ -4,8 +4,6 @@
 
 #![allow(dead_code)]
 
-
-
 #[derive(Debug, Clone, Copy)]
 pub struct StreamConfig {
     pub sample_rate: u32,

@@ -1,5 +1,4 @@
-use super::{acs_regs, ext_cap_id, PcieBdf, PcieConfig, PcieError, PcieResult};
-
+use super::{PcieBdf, PcieConfig, PcieError, PcieResult, acs_regs, ext_cap_id};
 
 /// ACS Capability structure
 #[derive(Debug, Clone)]

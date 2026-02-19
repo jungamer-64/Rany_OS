@@ -1,4 +1,3 @@
-
 pub fn iommu_wave2_security_notifier_registration_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave2_security_notifier_registration_smoke()
 }
@@ -40,8 +39,7 @@ pub fn iommu_wave2_create_domain_poisoned_returns_hw_error_smoke() -> bool {
 }
 
 pub fn iommu_wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke(
-    )
+    crate::io::iommu::qemu_tests::wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke()
 }
 
 pub fn iommu_wave2_domain_map_poisoned_returns_none_smoke() -> bool {
@@ -66,8 +64,7 @@ pub fn iommu_wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_s
 }
 
 pub fn iommu_wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke(
-    )
+    crate::io::iommu::qemu_tests::wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke()
 }
 
 pub fn iommu_wave2_submit_invalidation_poisoned_returns_error_smoke() -> bool {

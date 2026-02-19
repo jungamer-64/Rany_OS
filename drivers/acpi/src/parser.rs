@@ -110,7 +110,11 @@ impl AcpiParser {
     ///
     /// # Safety
     /// Caller must ensure `table_addr` points to a valid ACPI SDT header.
-    unsafe fn dispatch_table(&mut self, table_addr: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
+    unsafe fn dispatch_table(
+        &mut self,
+        table_addr: u64,
+        info: &mut AcpiInfo,
+    ) -> Result<(), AcpiError> {
         let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
         if header.signature == signature::MADT {
             unsafe { self.parse_madt(table_addr, info)? };
@@ -277,11 +281,7 @@ impl AcpiParser {
     }
 
     /// Parse a Processor Local APIC/SAPIC Affinity entry from SRAT.
-    unsafe fn parse_srat_processor_affinity(
-        offset: usize,
-        entry_len: usize,
-        info: &mut AcpiInfo,
-    ) {
+    unsafe fn parse_srat_processor_affinity(offset: usize, entry_len: usize, info: &mut AcpiInfo) {
         let apic_id = unsafe { core::ptr::read((offset + 3) as *const u8) };
         let proximity = if entry_len >= 8 {
             unsafe { core::ptr::read_unaligned((offset + 4) as *const u32) }
@@ -294,23 +294,16 @@ impl AcpiParser {
     }
 
     /// Parse a Memory Affinity entry from SRAT.
-    unsafe fn parse_srat_memory_affinity(
-        offset: usize,
-        entry_len: usize,
-        info: &mut AcpiInfo,
-    ) {
+    unsafe fn parse_srat_memory_affinity(offset: usize, entry_len: usize, info: &mut AcpiInfo) {
         if entry_len < 24 {
             return;
         }
-        let proximity =
-            unsafe { core::ptr::read_unaligned((offset + 2) as *const u32) };
+        let proximity = unsafe { core::ptr::read_unaligned((offset + 2) as *const u32) };
         if entry_len < 24 + 8 {
             return;
         }
-        let base =
-            unsafe { core::ptr::read_unaligned((offset + 8) as *const u64) };
-        let length =
-            unsafe { core::ptr::read_unaligned((offset + 16) as *const u64) };
+        let base = unsafe { core::ptr::read_unaligned((offset + 8) as *const u64) };
+        let length = unsafe { core::ptr::read_unaligned((offset + 16) as *const u64) };
         let flags = if entry_len >= 28 {
             unsafe { core::ptr::read_unaligned((offset + 24) as *const u32) }
         } else {

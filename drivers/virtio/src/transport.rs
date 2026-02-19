@@ -370,10 +370,18 @@ impl VirtioTransport for VirtioMmioTransport {
 
     fn notify_queue(&mut self, queue_index: u16) {
         let addr = (self.base + mmio_regs::QUEUE_NOTIFY) as usize;
-        log::info!("[EARLY][VIRTIO-MMIO] notify_queue queue={} addr=0x{:x}", queue_index, addr);
+        log::info!(
+            "[EARLY][VIRTIO-MMIO] notify_queue queue={} addr=0x{:x}",
+            queue_index,
+            addr
+        );
         self.write32(mmio_regs::QUEUE_NOTIFY, queue_index as u32);
         let read_back = self.read32(mmio_regs::QUEUE_NOTIFY);
-        log::info!("[EARLY][VIRTIO-MMIO] notify wrote {}, read_back=0x{:x}", queue_index, read_back);
+        log::info!(
+            "[EARLY][VIRTIO-MMIO] notify wrote {}, read_back=0x{:x}",
+            queue_index,
+            read_back
+        );
     }
 
     fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
@@ -622,14 +630,24 @@ impl VirtioTransport for VirtioPciTransport {
         // Compute notify doorbell address using the multiplier
         let notify_addr = self.notify_addr + notify_off * self.notify_off_multiplier as usize;
 
-        log::info!("[EARLY][VIRTIO-PCI] notify_queue queue={} notify_off={} notify_mult={} notify_addr=0x{:x}", queue_index, notify_off, self.notify_off_multiplier, notify_addr);
+        log::info!(
+            "[EARLY][VIRTIO-PCI] notify_queue queue={} notify_off={} notify_mult={} notify_addr=0x{:x}",
+            queue_index,
+            notify_off,
+            self.notify_off_multiplier,
+            notify_addr
+        );
 
         // Perform the doorbell write (16-bit)
         hal::mmio::mmio_write_u16(notify_addr as usize, queue_index);
 
         // Read back for diagnostics (may not reflect device state)
         let read_back = hal::mmio::mmio_read_u16(notify_addr as usize);
-        log::info!("[EARLY][VIRTIO-PCI] notify_queue wrote {} read_back=0x{:x}", queue_index, read_back);
+        log::info!(
+            "[EARLY][VIRTIO-PCI] notify_queue wrote {} read_back=0x{:x}",
+            queue_index,
+            read_back
+        );
     }
 
     fn get_notify_addr(&mut self, queue_index: u16) -> Option<u64> {
@@ -757,4 +775,3 @@ impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
         Ok(())
     }
 }
-

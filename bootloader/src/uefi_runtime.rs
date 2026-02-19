@@ -4,12 +4,10 @@
 //! memory regions so the kernel can continue using UEFI services after
 //! ExitBootServices().
 
-use boot_proto::{
-    runtime_caps, RuntimeMemoryRegion, UefiRuntimeInfo, MAX_RUNTIME_MMAP_ENTRIES,
-};
+use boot_proto::{MAX_RUNTIME_MMAP_ENTRIES, RuntimeMemoryRegion, UefiRuntimeInfo, runtime_caps};
 use log::info;
 use uefi::boot;
-use uefi::mem::memory_map::{MemoryType, MemoryMap};
+use uefi::mem::memory_map::{MemoryMap, MemoryType};
 
 /// UEFI memory types that must remain accessible at runtime
 const RUNTIME_MEMORY_TYPES: &[MemoryType] = &[
@@ -56,16 +54,11 @@ pub fn collect_runtime_info(hhdm_offset: u64) -> UefiRuntimeInfo {
 fn detect_runtime_capabilities() -> u32 {
     // All standard UEFI 2.x implementations support these
     // We could probe more carefully, but these are required by spec
-    runtime_caps::TIME_SERVICES
-        | runtime_caps::VARIABLE_SERVICES
-        | runtime_caps::RESET_SYSTEM
+    runtime_caps::TIME_SERVICES | runtime_caps::VARIABLE_SERVICES | runtime_caps::RESET_SYSTEM
 }
 
 /// Collect runtime memory regions from UEFI memory map
-fn collect_runtime_memory_map(
-    runtime_info: &mut UefiRuntimeInfo,
-    hhdm_offset: u64,
-) {
+fn collect_runtime_memory_map(runtime_info: &mut UefiRuntimeInfo, hhdm_offset: u64) {
     // Get memory map using boot module
     let mmap = match boot::memory_map(MemoryType::LOADER_DATA) {
         Ok(map) => map,
@@ -104,10 +97,7 @@ fn collect_runtime_memory_map(
 
     runtime_info.runtime_mmap_count = count as u32;
 
-    info!(
-        "UEFI Runtime: Collected {} runtime memory region(s)",
-        count
-    );
+    info!("UEFI Runtime: Collected {} runtime memory region(s)", count);
 
     // Log first few regions for debugging
     for i in 0..count.min(4) {
@@ -129,10 +119,7 @@ fn is_runtime_memory_type(mem_type: MemoryType) -> bool {
 /// # Safety
 /// Must be called after ExitBootServices with the returned Runtime table
 #[allow(dead_code)]
-pub fn finalize_runtime_info(
-    runtime_info: &mut UefiRuntimeInfo,
-    runtime_services_addr: u64,
-) {
+pub fn finalize_runtime_info(runtime_info: &mut UefiRuntimeInfo, runtime_services_addr: u64) {
     // Update with the actual runtime services pointer
     // After ExitBootServices, the Runtime table pointer may have changed
     runtime_info.runtime_services_addr = runtime_services_addr;

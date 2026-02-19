@@ -280,11 +280,48 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
             return;
         }
 
-        log::debug!(
-            "TCP/IPv6: Received segment {}:{} -> {}:{} ({} bytes) — native IPv6 TCP not yet supported",
-            src, src_port, dst, dst_port, data.len()
-        );
-        self.stats.record_dropped();
+        // Native IPv6 TCP: delegate to the IPv6-capable TCP processor and
+        // build/send any resulting TCP segments over IPv6.
+        let res = self.tcp.process_v6(data, src, dst, self.current_time());
+        match res {
+            TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } => {
+                // Build TCP segment and send over IPv6
+                let mut buffer = [0u8; 1518];
+                let header_len = 20usize;
+                let total_len = header_len + payload.len();
+                if total_len > buffer.len() { return; }
+
+                buffer[0..2].copy_from_slice(&local.port().to_be_bytes());
+                buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
+                buffer[4..8].copy_from_slice(&seq.to_be_bytes());
+                buffer[8..12].copy_from_slice(&ack.to_be_bytes());
+                let offset_flags = (5u16 << 12) | (flags & 0x01ff);
+                buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+                buffer[14..16].copy_from_slice(&window.to_be_bytes());
+                buffer[16..18].fill(0);
+                buffer[18..20].fill(0);
+                if !payload.is_empty() {
+                    buffer[20..total_len].copy_from_slice(&payload);
+                }
+
+                // IPv6 TCP checksum
+                let src_v6 = local.as_ipv6();
+                let dst_v6 = remote.as_ipv6();
+                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::ipv4::IpProtocol::Tcp, total_len as u32);
+                let checksum = crate::net::ipv4::data_checksum(&buffer[..total_len], pseudo);
+                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
+
+                // Send over IPv6
+                let sent = self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
+                let now = self.current_time();
+                if sent {
+                    self.tcp.record_sent_packet(local, remote, seq, flags, &payload, now);
+                }
+            }
+            TcpProcessResult::None => {}
+        }
+
     }
 
     /// Process ARP packet
@@ -839,18 +876,22 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
             // Urgent Pointer
             buffer[18..20].fill(0);
             
-             // Calculate Checksum
-            crate::net::tcp::calculate_tcp_checksum(
-                &mut buffer[..total_len],
-                local_addr.as_ipv4().unwrap().octets(),
-                remote_addr.as_ipv4().unwrap().octets(),
-            );
-            
-            // Send via IP
-            let src_ip_out = Ipv4Address::new(local_addr.as_ipv4().unwrap().octets());
-            let dst_ip_out = Ipv4Address::new(remote_addr.as_ipv4().unwrap().octets());
-            
-            let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+             // Calculate checksum and send (support IPv4 & IPv6)
+            let sent = if local_addr.is_ipv6() || remote_addr.is_ipv6() {
+                let src_v6 = local_addr.as_ipv6();
+                let dst_v6 = remote_addr.as_ipv6();
+                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::ipv4::IpProtocol::Tcp, total_len as u32);
+                let checksum = crate::net::ipv4::data_checksum(&buffer[..total_len], pseudo);
+                let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+                buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
+                self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
+            } else {
+                crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local_addr.as_ipv4().unwrap().octets(), remote_addr.as_ipv4().unwrap().octets());
+                let src_ip_out = Ipv4Address::new(local_addr.as_ipv4().unwrap().octets());
+                let dst_ip_out = Ipv4Address::new(remote_addr.as_ipv4().unwrap().octets());
+                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
+            };
+
             let now = self.current_time();
             if sent {
                 // Record that a SYN was sent so TCB outstanding bytes and snd_nxt are updated

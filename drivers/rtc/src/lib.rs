@@ -184,7 +184,6 @@ const fn is_leap_year(year: u16) -> bool {
 
 /// RTCドライバ
 pub struct Rtc {
-
     /// バイナリモードか
     binary_mode: bool,
     /// 24時間モードか

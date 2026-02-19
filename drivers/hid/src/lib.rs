@@ -33,8 +33,8 @@ pub use driver::KeyboardDriver;
 
 // Re-export stream/future helpers for kernel use
 pub use stream::{
-    CharFuture, CharFutureArc, DriverOps, KeyEventFuture, KeyboardStream, KeyboardStreamArc,
-    DEFAULT_POLL_BUDGET,
+    CharFuture, CharFutureArc, DEFAULT_POLL_BUDGET, DriverOps, KeyEventFuture, KeyboardStream,
+    KeyboardStreamArc,
 };
 
 use alloc::string::String;
@@ -305,8 +305,8 @@ pub type HidResult<T> = Result<T, HidError>;
 // Keymap Re-exports
 // ============================================================================
 pub use keymap::{
-    ctrl_char_map, DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap, DEFAULT_KEYMAP, DVORAK_KEYMAP,
-    JIS_KEYMAP,
+    DEFAULT_KEYMAP, DVORAK_KEYMAP, DvorakKeymap, JIS_KEYMAP, JisKeymap, Keymap, UsQwertyKeymap,
+    ctrl_char_map,
 };
 
 // Keyboard helpers - use `hid_driver::keyboard::*` for full access
@@ -315,7 +315,7 @@ pub use keyboard::StreamAlreadyTaken;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use crate::keymap::{DvorakKeymap, Keymap, UsQwertyKeymap};
-    use crate::queue::{ScancodeQueue, DEFAULT_QUEUE_SIZE};
+    use crate::queue::{DEFAULT_QUEUE_SIZE, ScancodeQueue};
     use crate::{KeyCode, Modifiers};
 
     pub fn keymap_smoke() -> bool {

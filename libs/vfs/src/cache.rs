@@ -628,7 +628,7 @@ pub fn page_cache() -> &'static PageCache {
 #[cfg(feature = "qemu-test-export")]
 #[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
-    use super::{CachedPage, LRUBlockCache, PageCache, PageState, PAGE_SIZE};
+    use super::{CachedPage, LRUBlockCache, PAGE_SIZE, PageCache, PageState};
     use alloc::vec::Vec;
 
     pub fn cached_page_smoke() -> bool {

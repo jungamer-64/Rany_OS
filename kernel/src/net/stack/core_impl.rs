@@ -750,6 +750,66 @@ impl NetworkStack {
         false
     }
 
+    /// Send a TCP segment over IPv6 (with NDP resolution)
+    pub fn send_tcp_v6_raw(&mut self, src_ip: Ipv6Address, dst: Ipv6Address, tcp_segment: &[u8]) -> bool {
+        let config = self.config;
+        let current_time = self.current_time.load(Ordering::Relaxed);
+
+        // Resolve destination MAC (multicast -> multicast MAC, otherwise via NDP)
+        let dst_mac = if dst.is_multicast() {
+            MacAddress::new(dst.multicast_mac())
+        } else {
+            match self.ndp {
+                Some(ref mut ndp) => match ndp.resolve(&dst) {
+                    Some(mac) => MacAddress::new(mac),
+                    None => {
+                        // Queue packet for later and trigger NDP resolution
+                        self.ndp_pending_queue.enqueue(src_ip, dst, tcp_segment, current_time);
+
+                        let ns_msg = ndp.start_resolution(&dst, current_time);
+                        let sn_mcast = dst.solicited_node();
+                        let our_ll = ndp.our_link_local;
+                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
+                        return false;
+                    }
+                },
+                None => return false,
+            }
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
+                ip_packet.init_header();
+                ip_packet.set_source(&src_ip);
+                ip_packet.set_destination(&dst);
+                ip_packet.set_next_header(IpProtocol::Tcp);
+                ip_packet.set_hop_limit(64);
+
+                let payload_buf = ip_packet.payload_mut();
+                if payload_buf.len() < tcp_segment.len() {
+                    return false;
+                }
+
+                payload_buf[..tcp_segment.len()].copy_from_slice(tcp_segment);
+                ip_packet.finalize(tcp_segment.len());
+
+                let total_len = IPV6_HEADER_SIZE + tcp_segment.len();
+                frame.set_payload_len(total_len);
+
+                return self.transmit(frame.as_bytes());
+            }
+        }
+
+        false
+    }
+
     /// Drain pending packets for a resolved neighbor
     ///
     /// NDP Neighbor Advertisementを受信してキャッシュが更新された際に呼び出す。

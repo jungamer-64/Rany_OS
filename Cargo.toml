@@ -8,6 +8,7 @@ members = [
     "qemu-suites/fs",
     "qemu-suites/kernel",
     "qemu-suites/kernel-runtime-pending",
+    "qemu-suites/kernel-mm-pending",
     "qemu-suites/graphics",
     "qemu-suites/tools",
     "qemu-suites/pending",

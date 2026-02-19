@@ -1,8 +1,7 @@
-use super::{cap_id, ext_cap_id, PcieBdf, PcieConfig, PcieError, PcieResult};
+use super::{PcieBdf, PcieConfig, PcieError, PcieResult, cap_id, ext_cap_id};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::RwLock;
-
 
 // ============================================================================
 // 電源管理

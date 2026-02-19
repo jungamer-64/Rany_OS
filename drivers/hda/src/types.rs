@@ -141,4 +141,3 @@ impl fmt::Display for HdaError {
         write!(f, "HDA error: {:?}", self)
     }
 }
-

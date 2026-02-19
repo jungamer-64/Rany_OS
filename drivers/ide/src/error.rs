@@ -1,5 +1,4 @@
-use super::{Mutex, IdeChannel, IdeController, DriveSel};
-
+use super::{DriveSel, IdeChannel, IdeController, Mutex};
 
 // ============================================================================
 // IDE Error

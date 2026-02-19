@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod iommu_wave2_tests;
 pub use iommu_wave2_tests::*;
 mod net_endpoint_tests;
@@ -259,7 +258,7 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     use crate::net::tcp::{
         Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
     };
-    use crate::net::{self, mempool, stack, VirtioNetHeader};
+    use crate::net::{self, VirtioNetHeader, mempool, stack};
     use crate::sync::PoisonLock;
 
     let _ = mempool::init_net_mempool(4);
@@ -428,7 +427,8 @@ pub fn graphics_wave6_write_bgr_run_small_mmio_pairs_aligned_smoke() -> bool {
 }
 
 pub fn graphics_wave6_write_bgr_run_small_mmio_generic_unaligned_smoke() -> bool {
-    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_generic_unaligned_smoke()
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_generic_unaligned_smoke(
+    )
 }
 
 pub fn graphics_wave6_draw_hline_32bit_backbuffer_smoke() -> bool {
@@ -480,7 +480,8 @@ pub fn graphics_wave6_pack_rgba_to_bgra_scalar_random_smoke() -> bool {
 }
 
 pub fn graphics_wave6_draw_image_bgra_stream_matches_backbuffer_smoke() -> bool {
-    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_bgra_stream_matches_backbuffer_smoke()
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_bgra_stream_matches_backbuffer_smoke(
+    )
 }
 
 pub fn graphics_wave6_fill_rect_32bit_mmio_smoke() -> bool {

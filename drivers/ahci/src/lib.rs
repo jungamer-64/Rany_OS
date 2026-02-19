@@ -31,12 +31,12 @@ pub mod identify;
 pub mod types;
 
 // Modules with kernel deps - excluded for now
+pub mod atapi;
 pub mod controller;
 pub mod dma_buffer;
 pub mod driver_impl;
 pub mod ffi;
-pub mod port;
-pub mod atapi; // ATAPI (CD/DVD) support
+pub mod port; // ATAPI (CD/DVD) support
 // pub mod poll_handler;
 
 // 主要な型を再エクスポート
@@ -119,7 +119,6 @@ pub mod qemu_tests {
             last_lba_be: 0x01020304u32.to_be(),
             block_length_be: 0x00000800u32.to_be(),
         };
-        response.last_lba() == 0x01020304
-            && response.block_length() == 2048
+        response.last_lba() == 0x01020304 && response.block_length() == 2048
     }
 }

@@ -7,8 +7,8 @@
 extern crate alloc;
 
 pub mod dmar;
-pub mod ivrs;
 pub mod info;
+pub mod ivrs;
 pub mod parser;
 pub mod tables;
 
@@ -35,17 +35,15 @@ pub mod qemu_tests {
 
     use crate::dmar::{DmarHeader, DmarRemappingHeader, RmrrWrapper, parse_dmar};
     use crate::ivrs::{
-        IVHD_DEV_ALIAS, IVHD_DEV_ALIAS_RANGE, IVHD_DEV_EXT_SELECT,
-        IVHD_DEV_EXT_SELECT_RANGE, IVHD_DEV_RANGE_END, IVHD_DEV_SELECT,
-        IVHD_DEV_SELECT_RANGE_START, IVHD_TYPE_10, IVMD_FLAG_IR, IVMD_FLAG_IW,
-        IVMD_FLAG_UNITY_MAP, IVMD_TYPE_RANGE, IvhdDeviceEntry, IvhdHeader,
-        IvmdHeader, IvrsBlockHeader, IvrsHeader, parse_ivrs,
+        IVHD_DEV_ALIAS, IVHD_DEV_ALIAS_RANGE, IVHD_DEV_EXT_SELECT, IVHD_DEV_EXT_SELECT_RANGE,
+        IVHD_DEV_RANGE_END, IVHD_DEV_SELECT, IVHD_DEV_SELECT_RANGE_START, IVHD_TYPE_10,
+        IVMD_FLAG_IR, IVMD_FLAG_IW, IVMD_FLAG_UNITY_MAP, IVMD_TYPE_RANGE, IvhdDeviceEntry,
+        IvhdHeader, IvmdHeader, IvrsBlockHeader, IvrsHeader, parse_ivrs,
     };
     use crate::tables::{AcpiSdtHeader, MadtEntryType};
 
     pub const fn madt_entry_type_smoke() -> bool {
-        MadtEntryType::LocalApic as u8 == 0
-            && MadtEntryType::IoApic as u8 == 1
+        MadtEntryType::LocalApic as u8 == 0 && MadtEntryType::IoApic as u8 == 1
     }
 
     fn push_entry(buf: &mut Vec<u8>, entry_type: u8, devid: u16, flags: u8, ext: Option<u32>) {
@@ -62,13 +60,43 @@ pub mod qemu_tests {
         let mut entries = Vec::new();
 
         push_entry(&mut entries, IVHD_DEV_SELECT, 0x0102, 0xaa, None);
-        push_entry(&mut entries, IVHD_DEV_SELECT_RANGE_START, 0x0200, 0x11, None);
+        push_entry(
+            &mut entries,
+            IVHD_DEV_SELECT_RANGE_START,
+            0x0200,
+            0x11,
+            None,
+        );
         push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0203, 0x00, None);
-        push_entry(&mut entries, IVHD_DEV_ALIAS, 0x0300, 0x22, Some((0x0310u32) << 8));
-        push_entry(&mut entries, IVHD_DEV_ALIAS_RANGE, 0x0400, 0x33, Some((0x0410u32) << 8));
+        push_entry(
+            &mut entries,
+            IVHD_DEV_ALIAS,
+            0x0300,
+            0x22,
+            Some((0x0310u32) << 8),
+        );
+        push_entry(
+            &mut entries,
+            IVHD_DEV_ALIAS_RANGE,
+            0x0400,
+            0x33,
+            Some((0x0410u32) << 8),
+        );
         push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0402, 0x00, None);
-        push_entry(&mut entries, IVHD_DEV_EXT_SELECT, 0x0500, 0x44, Some(0xaabb_ccdd));
-        push_entry(&mut entries, IVHD_DEV_EXT_SELECT_RANGE, 0x0600, 0x55, Some(0x1122_3344));
+        push_entry(
+            &mut entries,
+            IVHD_DEV_EXT_SELECT,
+            0x0500,
+            0x44,
+            Some(0xaabb_ccdd),
+        );
+        push_entry(
+            &mut entries,
+            IVHD_DEV_EXT_SELECT_RANGE,
+            0x0600,
+            0x55,
+            Some(0x1122_3344),
+        );
         push_entry(&mut entries, IVHD_DEV_RANGE_END, 0x0602, 0x00, None);
 
         let ivhd_len = mem::size_of::<IvhdHeader>() + entries.len();
@@ -125,36 +153,59 @@ pub mod qemu_tests {
             return false;
         };
 
-        if info.ivhds.is_empty() { return false; }
+        if info.ivhds.is_empty() {
+            return false;
+        }
 
-        if info.ivhds.len() != 1 { return false; }
-        if !info.ivmds.is_empty() { return false; }
+        if info.ivhds.len() != 1 {
+            return false;
+        }
+        if !info.ivmds.is_empty() {
+            return false;
+        }
         let ivhd_info = &info.ivhds[0];
-        if ivhd_info.device_entries.len() != 6 { return false; }
+        if ivhd_info.device_entries.len() != 6 {
+            return false;
+        }
 
         match &ivhd_info.device_entries[0] {
             IvhdDeviceEntry::Select { devid, flags } => {
-                if *devid != 0x0102 || *flags != 0xaa { return false; }
+                if *devid != 0x0102 || *flags != 0xaa {
+                    return false;
+                }
             }
             _ => return false,
         }
 
         match &ivhd_info.device_entries[1] {
             IvhdDeviceEntry::Range { start, end, flags } => {
-                if *start != 0x0200 || *end != 0x0203 || *flags != 0x11 { return false; }
+                if *start != 0x0200 || *end != 0x0203 || *flags != 0x11 {
+                    return false;
+                }
             }
             _ => return false,
         }
 
         match &ivhd_info.device_entries[2] {
-            IvhdDeviceEntry::Alias { devid, alias, flags } => {
-                if *devid != 0x0300 || *alias != 0x0310 || *flags != 0x22 { return false; }
+            IvhdDeviceEntry::Alias {
+                devid,
+                alias,
+                flags,
+            } => {
+                if *devid != 0x0300 || *alias != 0x0310 || *flags != 0x22 {
+                    return false;
+                }
             }
             _ => return false,
         }
 
         match &ivhd_info.device_entries[3] {
-            IvhdDeviceEntry::AliasRange { start, end, alias, flags } => {
+            IvhdDeviceEntry::AliasRange {
+                start,
+                end,
+                alias,
+                flags,
+            } => {
                 if *start != 0x0400 || *end != 0x0402 || *alias != 0x0410 || *flags != 0x33 {
                     return false;
                 }
@@ -163,7 +214,11 @@ pub mod qemu_tests {
         }
 
         match &ivhd_info.device_entries[4] {
-            IvhdDeviceEntry::ExtSelect { devid, flags, ext_flags } => {
+            IvhdDeviceEntry::ExtSelect {
+                devid,
+                flags,
+                ext_flags,
+            } => {
                 if *devid != 0x0500 || *flags != 0x44 || *ext_flags != 0xaabb_ccdd {
                     return false;
                 }
@@ -172,9 +227,13 @@ pub mod qemu_tests {
         }
 
         match &ivhd_info.device_entries[5] {
-            IvhdDeviceEntry::ExtRange { start, end, flags, ext_flags } => {
-                if *start != 0x0600 || *end != 0x0602 || *flags != 0x55
-                    || *ext_flags != 0x1122_3344
+            IvhdDeviceEntry::ExtRange {
+                start,
+                end,
+                flags,
+                ext_flags,
+            } => {
+                if *start != 0x0600 || *end != 0x0602 || *flags != 0x55 || *ext_flags != 0x1122_3344
                 {
                     return false;
                 }
@@ -237,7 +296,9 @@ pub mod qemu_tests {
         let Ok(info) = (unsafe { parse_ivrs(buf.as_ptr() as usize) }) else {
             return false;
         };
-        if info.ivmds.len() != 1 { return false; }
+        if info.ivmds.len() != 1 {
+            return false;
+        }
 
         let ivmd_info = &info.ivmds[0];
         ivmd_info.block_type == IVMD_TYPE_RANGE

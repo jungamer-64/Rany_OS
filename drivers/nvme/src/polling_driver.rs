@@ -314,9 +314,7 @@ impl NvmePollingDriver {
     /// アラインメント検証付きDMAバッファを割り当てる
     fn alloc_dma_aligned(size: usize, alloc_err: &'static str) -> Result<DmaBuffer, &'static str> {
         let kernel = kernel_api::services::kernel();
-        let buffer = kernel
-            .alloc_dma(size)
-            .map_err(|_| alloc_err)?;
+        let buffer = kernel.alloc_dma(size).map_err(|_| alloc_err)?;
         if buffer.physical_address() & 0xFFF != 0 {
             return Err("DMA buffer not 4KB aligned");
         }
@@ -347,14 +345,7 @@ impl NvmePollingDriver {
         let sq_phys = sq_buffer.physical_address();
         let sq_ptr = sq_buffer.as_ptr() as *mut NvmeCommand;
 
-        self.create_io_queue_pair_internal(
-            core_id,
-            sq_ptr,
-            cq_ptr,
-            sq_phys,
-            cq_phys,
-            depth,
-        )?;
+        self.create_io_queue_pair_internal(core_id, sq_ptr, cq_ptr, sq_phys, cq_phys, depth)?;
 
         self.io_sq_buffers[core_id as usize] = Some(sq_buffer);
         self.io_cq_buffers[core_id as usize] = Some(cq_buffer);
@@ -368,17 +359,15 @@ impl NvmePollingDriver {
         }
 
         // コントローラに対してI/Oキュー数を要求
-        let (allocated_sq, allocated_cq) =
-            self.set_num_queues(num_cores as u16, num_cores as u16).unwrap_or((1, 1));
+        let (allocated_sq, allocated_cq) = self
+            .set_num_queues(num_cores as u16, num_cores as u16)
+            .unwrap_or((1, 1));
         let io_queue_count = core::cmp::min(allocated_sq, allocated_cq).min(num_cores as u16);
         if io_queue_count == 0 {
             return Err("No I/O queues allocated by controller");
         }
 
-        let depth = self
-            .max_queue_depth
-            .min(DEFAULT_QUEUE_DEPTH as u16)
-            .max(2);
+        let depth = self.max_queue_depth.min(DEFAULT_QUEUE_DEPTH as u16).max(2);
 
         for core_id in 0..io_queue_count as u32 {
             self.allocate_io_queue_for_core(core_id, depth)?;

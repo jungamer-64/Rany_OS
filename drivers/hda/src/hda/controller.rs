@@ -12,7 +12,6 @@
 
 #![allow(dead_code)]
 
-
 use alloc::vec::Vec;
 // Volatile memory reads/writes centralized via mmio helpers
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -553,7 +552,9 @@ impl HdaController {
                 // speculative loads don't return stale data.
                 // Use target_feature guard for SSE intrinsics
                 #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-                unsafe { core::arch::x86_64::_mm_lfence() };
+                unsafe {
+                    core::arch::x86_64::_mm_lfence()
+                };
                 #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
                 core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Acquire);
 

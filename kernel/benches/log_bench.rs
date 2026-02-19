@@ -1,17 +1,16 @@
 #![cfg(feature = "bench")]
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::time::{Duration, Instant};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use rany_os::io::log::{
-    bench_clear_buffers,
-    bench_push_per_core,
-    bench_push_global,
-    bench_pop_global_buf,
-    bench_pop_per_core_buf,
-    bench_total_pending_bytes,
+    bench_clear_buffers, bench_pop_global_buf, bench_pop_per_core_buf, bench_push_global,
+    bench_push_per_core, bench_total_pending_bytes,
 };
 
 fn run_benchmark(per_core: bool, threads: usize, entries: usize, entry_size: usize) -> Duration {
@@ -87,9 +86,20 @@ fn max_cpus() -> usize {
 }
 
 fn bench_log_per_core(c: &mut Criterion) {
-    let threads = std::cmp::min(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4), max_cpus());
-    let entries = std::env::var("RANY_BENCH_LOG_ENTRIES").ok().and_then(|s| s.parse().ok()).unwrap_or(10000usize);
-    let entry_size = std::env::var("RANY_BENCH_ENTRY_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(64usize);
+    let threads = std::cmp::min(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
+        max_cpus(),
+    );
+    let entries = std::env::var("RANY_BENCH_LOG_ENTRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10000usize);
+    let entry_size = std::env::var("RANY_BENCH_ENTRY_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64usize);
 
     c.bench_function("log_per_core_concurrent", |b| {
         b.iter_custom(|iters| {
@@ -103,9 +113,20 @@ fn bench_log_per_core(c: &mut Criterion) {
 }
 
 fn bench_log_global(c: &mut Criterion) {
-    let threads = std::cmp::min(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4), max_cpus());
-    let entries = std::env::var("RANY_BENCH_LOG_ENTRIES").ok().and_then(|s| s.parse().ok()).unwrap_or(10000usize);
-    let entry_size = std::env::var("RANY_BENCH_ENTRY_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(64usize);
+    let threads = std::cmp::min(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
+        max_cpus(),
+    );
+    let entries = std::env::var("RANY_BENCH_LOG_ENTRIES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10000usize);
+    let entry_size = std::env::var("RANY_BENCH_ENTRY_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64usize);
 
     c.bench_function("log_global_concurrent", |b| {
         b.iter_custom(|iters| {

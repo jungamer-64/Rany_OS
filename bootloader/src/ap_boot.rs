@@ -7,10 +7,10 @@
 
 use boot_proto::ApBootInfo;
 use log::info;
+use uefi::Identify;
 use uefi::boot::{self, AllocateType, SearchType};
 use uefi::mem::memory_map::MemoryType;
 use uefi::proto::pi::mp::MpServices;
-use uefi::Identify;
 
 /// Size of AP trampoline code region (4KB aligned)
 pub const AP_TRAMPOLINE_SIZE: usize = 4096;
@@ -91,18 +91,16 @@ fn detect_cpu_count() -> u32 {
         Ok(handles) => {
             if let Some(&handle) = handles.first() {
                 match boot::open_protocol_exclusive::<MpServices>(handle) {
-                    Ok(mp_protocol) => {
-                        match mp_protocol.get_number_of_processors() {
-                            Ok(processor_count) => {
-                                let total = processor_count.total;
-                                info!("AP Boot: MP Protocol reports {} processor(s)", total);
-                                return total as u32;
-                            }
-                            Err(e) => {
-                                info!("AP Boot: MP Protocol query failed: {:?}", e);
-                            }
+                    Ok(mp_protocol) => match mp_protocol.get_number_of_processors() {
+                        Ok(processor_count) => {
+                            let total = processor_count.total;
+                            info!("AP Boot: MP Protocol reports {} processor(s)", total);
+                            return total as u32;
                         }
-                    }
+                        Err(e) => {
+                            info!("AP Boot: MP Protocol query failed: {:?}", e);
+                        }
+                    },
                     Err(e) => {
                         info!("AP Boot: Failed to open MP Services: {:?}", e);
                     }
@@ -127,7 +125,10 @@ fn allocate_trampoline() -> u64 {
     ) {
         Ok(ptr) => {
             let addr = ptr.as_ptr() as u64;
-            info!("AP Boot: Trampoline allocated at preferred address 0x{:x}", addr);
+            info!(
+                "AP Boot: Trampoline allocated at preferred address 0x{:x}",
+                addr
+            );
             return addr;
         }
         Err(_) => {
@@ -143,7 +144,10 @@ fn allocate_trampoline() -> u64 {
     ) {
         Ok(ptr) => {
             let addr = ptr.as_ptr() as u64;
-            info!("AP Boot: Trampoline allocated at fallback address 0x{:x}", addr);
+            info!(
+                "AP Boot: Trampoline allocated at fallback address 0x{:x}",
+                addr
+            );
             addr
         }
         Err(e) => {
@@ -159,11 +163,7 @@ fn allocate_ap_stacks(ap_count: usize) -> (u64, usize) {
     let total_size = stack_count * AP_STACK_SIZE;
     let page_count = (total_size + 4095) / 4096;
 
-    match boot::allocate_pages(
-        AllocateType::AnyPages,
-        MemoryType::LOADER_DATA,
-        page_count,
-    ) {
+    match boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, page_count) {
         Ok(ptr) => {
             let addr = ptr.as_ptr() as u64;
             info!(

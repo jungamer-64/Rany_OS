@@ -350,4 +350,3 @@ impl DoorbellCoordinator {
         self.manager.ring_command();
     }
 }
-

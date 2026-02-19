@@ -153,20 +153,17 @@ pub trait Inode: Send + Sync + Any {
 
     /// ディレクトリかどうかを判定
     fn is_dir(&self) -> bool {
-        self.file_type()
-            .is_ok_and(|ft| ft == FileType::Directory)
+        self.file_type().is_ok_and(|ft| ft == FileType::Directory)
     }
 
     /// 通常ファイルかどうかを判定
     fn is_file(&self) -> bool {
-        self.file_type()
-            .is_ok_and(|ft| ft == FileType::File)
+        self.file_type().is_ok_and(|ft| ft == FileType::File)
     }
 
     /// シンボリックリンクかどうかを判定
     fn is_symlink(&self) -> bool {
-        self.file_type()
-            .is_ok_and(|ft| ft == FileType::Symlink)
+        self.file_type().is_ok_and(|ft| ft == FileType::Symlink)
     }
 }
 

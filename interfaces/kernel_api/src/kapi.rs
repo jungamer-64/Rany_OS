@@ -217,7 +217,10 @@ pub mod net {
     }
 
     /// Close a raw socket
-    pub fn close_raw_socket(_cap: &NetCapability, endpoint: crate::RawSocketHandle) -> KapiResult<()> {
+    pub fn close_raw_socket(
+        _cap: &NetCapability,
+        endpoint: crate::RawSocketHandle,
+    ) -> KapiResult<()> {
         crate::kernel().net_close_raw_socket(endpoint)
     }
 

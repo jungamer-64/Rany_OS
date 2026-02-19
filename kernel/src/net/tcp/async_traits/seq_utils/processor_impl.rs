@@ -153,6 +153,63 @@ impl TcpProcessor {
         TcpProcessResult::None
     }
 
+    /// IPv6 variant of `process` — accepts IPv6 source/destination and uses `SocketAddr::V6` keys.
+    pub fn process_v6(
+        &mut self,
+        data: &[u8],
+        src_ip: crate::net::ipv6::Ipv6Address,
+        dst_ip: crate::net::ipv6::Ipv6Address,
+        current_time: u64,
+    ) -> TcpProcessResult {
+        use crate::net::ipv6::Ipv6Address as V6;
+
+        if data.len() < TcpHeader::MIN_HEADER_LEN {
+            return TcpProcessResult::None;
+        }
+
+        // Read header fields directly from bytes to avoid packed struct alignment issues
+        let src_port = u16::from_be_bytes([data[0], data[1]]);
+        let dst_port = u16::from_be_bytes([data[2], data[3]]);
+        let seq_num = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let ack_num = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
+        let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
+        let flags = data_offset_flags & 0x003F;
+        let window = u16::from_be_bytes([data[14], data[15]]);
+        let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
+
+        // Convert to internal address types (SocketAddr::V6)
+        let remote_addr = SocketAddr::new_v6(src_ip, src_port);
+        let local_addr = SocketAddr::new_v6(dst_ip, dst_port);
+
+        // Extract payload
+        let payload = if data.len() > header_len {
+            &data[header_len..]
+        } else {
+            &[]
+        };
+
+        // Handle RST - reset connection immediately
+        if flags & TcpHeader::FLAG_RST != 0 {
+            self.connections.remove(&(local_addr, remote_addr));
+            return TcpProcessResult::None;
+        }
+
+        // Try to find existing connection
+        if let Some(tcb_lock) = self.connections.get(&(local_addr, remote_addr)).cloned() {
+            if let Ok(mut tcb) = tcb_lock.lock() {
+                return self.process_segment(&tcb_lock, &mut *tcb, seq_num, ack_num, flags, window, header_len, payload, None, current_time);
+            }
+        }
+
+        // Check if this is for a listening socket
+        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window) {
+            return result;
+        }
+
+        // No matching connection or listener - ignore or send RST
+        TcpProcessResult::None
+    }
+
     pub(super) fn handle_incoming_syn(
         &mut self,
         local_addr: SocketAddr,
@@ -271,6 +328,66 @@ impl TcpProcessor {
 
         // Not an existing connection - fall back to normal processing (listener/SYN handling)
         self.process(data, src_ip, dst_ip, current_time)
+    }
+
+    /// IPv6 variant of `process_with_packet` to support zero-copy receive for native IPv6.
+    pub fn process_with_packet_v6(
+        &mut self,
+        data: &[u8],
+        src_ip: crate::net::ipv6::Ipv6Address,
+        dst_ip: crate::net::ipv6::Ipv6Address,
+        packet: PacketRef,
+        current_time: u64,
+    ) -> TcpProcessResult {
+        use crate::net::ipv6::Ipv6Address as V6;
+
+        if data.len() < TcpHeader::MIN_HEADER_LEN {
+            return TcpProcessResult::None;
+        }
+
+        // Read header fields directly from bytes to avoid packed struct alignment issues
+        let src_port = u16::from_be_bytes([data[0], data[1]]);
+        let dst_port = u16::from_be_bytes([data[2], data[3]]);
+        let seq_num = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let ack_num = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
+        let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
+        let flags = data_offset_flags & 0x003F;
+        let window = u16::from_be_bytes([data[14], data[15]]);
+        let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
+
+        // Convert to internal address types
+        let remote_addr = SocketAddr::new_v6(src_ip, src_port);
+        let local_addr = SocketAddr::new_v6(dst_ip, dst_port);
+
+        // Extract payload
+        let payload = if data.len() > header_len { &data[header_len..] } else { &[] };
+
+        // Handle RST - reset connection immediately
+        if flags & TcpHeader::FLAG_RST != 0 {
+            self.connections.remove(&(local_addr, remote_addr));
+            return TcpProcessResult::None;
+        }
+
+        // Try to find existing connection and use the packet for zero-copy enqueue
+        if let Some(tcb_lock) = self.connections.get(&(local_addr, remote_addr)).cloned() {
+            if let Ok(mut tcb) = tcb_lock.lock() {
+                return self.process_segment(
+                    &tcb_lock,
+                    &mut *tcb,
+                    seq_num,
+                    ack_num,
+                    flags,
+                    window,
+                    header_len,
+                    payload,
+                    Some(packet),
+                    current_time,
+                );
+            }
+        }
+
+        // Not an existing connection - fall back to normal processing (listener/SYN handling)
+        self.process_v6(data, src_ip, dst_ip, current_time)
     }
 
     /// Create an ACK packet result from current TCB state

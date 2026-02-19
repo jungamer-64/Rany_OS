@@ -1004,8 +1004,8 @@ pub fn block_manager() -> &'static BlockDeviceManager {
 #[allow(clippy::must_use_candidate)]
 pub mod qemu_tests {
     use super::{
-        BlockDevice, BlockDeviceInfo, BlockError, BlockResult,
-        OwnedBytes, RamDisk, ZcFuture, ZeroCopyBlockDevice,
+        BlockDevice, BlockDeviceInfo, BlockError, BlockResult, OwnedBytes, RamDisk, ZcFuture,
+        ZeroCopyBlockDevice,
     };
     use alloc::boxed::Box;
     use alloc::vec;
@@ -1297,12 +1297,10 @@ impl<T: SimpleBlockDevice> SimpleBlockDeviceAdapter<T> {
                     request.set_state(RequestState::Failed(BlockError::InvalidBufferSize));
                 }
             }
-            RequestType::Flush => {
-                match self.inner.flush() {
-                    Ok(()) => request.set_state(RequestState::Completed),
-                    Err(e) => request.set_state(RequestState::Failed(e)),
-                }
-            }
+            RequestType::Flush => match self.inner.flush() {
+                Ok(()) => request.set_state(RequestState::Completed),
+                Err(e) => request.set_state(RequestState::Failed(e)),
+            },
             RequestType::Discard => {
                 // SimpleBlockDevice has no discard primitive; treat as best-effort no-op.
                 request.set_state(RequestState::Completed);

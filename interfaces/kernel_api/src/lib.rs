@@ -46,10 +46,10 @@ pub mod cell_runtime;
 pub use application::{AppContext, Application};
 pub use driver::{DeviceId, Driver, DriverInfo, DriverState, DriverType, DriverVersion};
 pub use driver_abi::{
-    AbiDmaBuffer, AbiDriverType, AbiError, AbiMmioHandle, DRIVER_ABI_VERSION,
-    DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_ABI_VERSION, DRIVER_EXPORTS_SYMBOL, DriverCapabilities,
-    DriverContext, DriverEntryFn, DriverExportsV1, DriverVTable, KERNEL_API_ABI_VERSION,
-    KernelApiV1, pack_version, unpack_version,
+    AbiDmaBuffer, AbiDriverType, AbiError, AbiMmioHandle, DRIVER_ABI_VERSION, DRIVER_ENTRY_SYMBOL,
+    DRIVER_EXPORTS_ABI_VERSION, DRIVER_EXPORTS_SYMBOL, DriverCapabilities, DriverContext,
+    DriverEntryFn, DriverExportsV1, DriverVTable, KERNEL_API_ABI_VERSION, KernelApiV1,
+    pack_version, unpack_version,
 };
 pub use error::{KapiError, KapiResult};
 pub use security::{
@@ -59,9 +59,9 @@ pub use security::{
 pub use services::{KernelServices, is_kernel_registered, kernel, register_kernel};
 pub use time::{CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats};
 pub use types::{
-    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle,
-    NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
-    OpenMode, Packet, RawSocketHandle, SystemInfo, TaskHandle, TcpEndpoint,
+    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, NvmeDmaHandle, NvmeIoHandle,
+    NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest, OpenMode, Packet, RawSocketHandle,
+    SystemInfo, TaskHandle, TcpEndpoint,
 };
 
 #[cfg(feature = "qemu-test-export")]

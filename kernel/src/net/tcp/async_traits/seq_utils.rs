@@ -67,16 +67,23 @@ pub(crate) fn send_tcp_packet(
         segment[header_len..].copy_from_slice(payload);
     }
 
-    // チェックサム計算
-    calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
-
-    // ネットワークスタック経由で送信 - 戻り値を返す
-    let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
-    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
-    crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+    // チェックサム計算 + 送信 (IPv6対応)
+    if local.is_ipv6() || remote.is_ipv6() {
+        // IPv6 path
+        let src_v6 = local.as_ipv6();
+        let dst_v6 = remote.as_ipv6();
+        calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
+        crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+    } else {
+        // IPv4 path
+        calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
+        let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
+        let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
+        crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+    }
 }
 
-/// TCPチェックサム計算（疑似ヘッダ込み）
+/// TCPチェックサム計算（IPv4疑似ヘッダ込み）
 pub(crate) fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
     // チェックサムフィールドをゼロに
     segment[16] = 0;
@@ -109,6 +116,22 @@ pub(crate) fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip
     let checksum = !sum as u16;
 
     segment[16..18].copy_from_slice(&checksum.to_be_bytes());
+}
+
+/// TCPチェックサム計算（IPv6擬似ヘッダ）
+pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address) {
+    // Ensure checksum field is zeroed
+    segment[16] = 0;
+    segment[17] = 0;
+
+    use crate::net::ipv6::ipv6_pseudo_header_checksum;
+    use crate::net::ipv4::data_checksum;
+    use crate::net::ipv4::IpProtocol;
+
+    let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+    let checksum = data_checksum(segment, pseudo);
+    let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+    segment[16..18].copy_from_slice(&final_checksum.to_be_bytes());
 }
 
 /// SYNパケットを送信
@@ -222,13 +245,18 @@ pub(crate) fn send_tcp_packet_with_options(
         segment[header_len..].copy_from_slice(payload);
     }
 
-    // チェックサム計算
-    calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
-
-    // ネットワークスタック経由で送信
-    let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
-    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
-    crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+    // チェックサム計算 + 送信 (IPv6対応)
+    if local.is_ipv6() || remote.is_ipv6() {
+        let src_v6 = local.as_ipv6();
+        let dst_v6 = remote.as_ipv6();
+        calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
+        crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+    } else {
+        calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
+        let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
+        let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
+        crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+    }
 }
 
 /// SYN-ACKパケットを送信

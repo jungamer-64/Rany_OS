@@ -599,9 +599,7 @@ pub fn init() {
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
-    use crate::xhci::{
-        CommandBuilder, DoorbellBatch, DoorbellTarget, TransferBuilder, TrbType,
-    };
+    use crate::xhci::{CommandBuilder, DoorbellBatch, DoorbellTarget, TransferBuilder, TrbType};
 
     pub fn doorbell_target_smoke() -> bool {
         DoorbellTarget::CommandRing.target_value() == 0

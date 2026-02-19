@@ -178,12 +178,12 @@ impl<'a> UefiMapper<'a> {
     }
 
     /// Map a global 1GB huge page (requires CPU support)
-    /// 
+    ///
     /// # Arguments
     /// * `virt` - Virtual address (must be 1GB aligned)
     /// * `phys` - Physical address (must be 1GB aligned)
     /// * `flags` - Page flags (PAGE_WRITABLE, PAGE_NO_EXECUTE, etc.)
-    /// 
+    ///
     /// # Returns
     /// * `Ok(())` if mapping succeeded
     /// * `Err(())` if allocation failed

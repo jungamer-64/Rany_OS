@@ -267,6 +267,116 @@ fn test_three_way_handshake() {
     }
 }
 
+
+#[test_case]
+fn test_three_way_handshake_v6() {
+    // IPv6 three-way handshake using TcpProcessor::process_v6
+    let _ = crate::net::mempool::init_net_mempool(4);
+
+    let mut client = TcpProcessor::new();
+    let mut server = TcpProcessor::new();
+
+    let client_addr = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 3000);
+    let server_addr = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 4000);
+
+    let listener = server.bind(server_addr).expect("bind v6");
+
+    let _client_stream = client.connect(client_addr, server_addr).expect("connect v6");
+
+    let client_tcb_arc = client
+        .connections
+        .get(&(client_addr, server_addr))
+        .expect("client tcb missing")
+        .clone();
+
+    let client_initial_seq = match client_tcb_arc.lock() {
+        Ok(g) => g.snd_nxt,
+        Err(_) => panic!("TCB lock poisoned"),
+    };
+
+    // Build SYN bytes
+    let mut syn = [0u8; 20];
+    syn[0..2].copy_from_slice(&client_addr.port().to_be_bytes());
+    syn[2..4].copy_from_slice(&server_addr.port().to_be_bytes());
+    syn[4..8].copy_from_slice(&client_initial_seq.to_be_bytes());
+    syn[8..12].copy_from_slice(&0u32.to_be_bytes());
+    let data_off_flags = ((5u16 << 12) | TcpHeader::FLAG_SYN).to_be_bytes();
+    syn[12..14].copy_from_slice(&data_off_flags);
+    syn[14..16].copy_from_slice(&65535u16.to_be_bytes());
+
+    // Server processes SYN (IPv6)
+    let res = server.process_v6(
+        &syn,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        0,
+    );
+
+    let syn_ack_pkt = match res {
+        TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
+            assert!(flags & TcpHeader::FLAG_SYN != 0);
+            assert!(flags & TcpHeader::FLAG_ACK != 0);
+            (local, remote, seq, ack)
+        }
+        _ => panic!("Expected SYN-ACK from server (v6)"),
+    };
+
+    // Build SYN-ACK and feed to client
+    let mut synack = [0u8; 20];
+    synack[0..2].copy_from_slice(&syn_ack_pkt.0.port().to_be_bytes());
+    synack[2..4].copy_from_slice(&syn_ack_pkt.1.port().to_be_bytes());
+    synack[4..8].copy_from_slice(&syn_ack_pkt.2.to_be_bytes());
+    synack[8..12].copy_from_slice(&syn_ack_pkt.3.to_be_bytes());
+    let off_flags = ((5u16 << 12) | (TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK)).to_be_bytes();
+    synack[12..14].copy_from_slice(&off_flags);
+    synack[14..16].copy_from_slice(&65535u16.to_be_bytes());
+
+    let client_res = client.process_v6(
+        &synack,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        0,
+    );
+
+    let ack_pkt = match client_res {
+        TcpProcessResult::SendPacket { local, remote, seq, ack, flags, .. } => {
+            assert!(flags & TcpHeader::FLAG_ACK != 0);
+            (local, remote, seq, ack)
+        }
+        _ => panic!("Expected ACK from client (v6)"),
+    };
+
+    let mut ack = [0u8; 20];
+    ack[0..2].copy_from_slice(&ack_pkt.0.port().to_be_bytes());
+    ack[2..4].copy_from_slice(&ack_pkt.1.port().to_be_bytes());
+    ack[4..8].copy_from_slice(&ack_pkt.2.to_be_bytes());
+    ack[8..12].copy_from_slice(&ack_pkt.3.to_be_bytes());
+    let ack_off_flags = ((5u16 << 12) | (TcpHeader::FLAG_ACK)).to_be_bytes();
+    ack[12..14].copy_from_slice(&ack_off_flags);
+    ack[14..16].copy_from_slice(&65535u16.to_be_bytes());
+
+    let srv_res = server.process_v6(
+        &ack,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        0,
+    );
+
+    match srv_res {
+        TcpProcessResult::SendPacket { flags, .. } => {
+            assert!(flags & TcpHeader::FLAG_ACK != 0);
+        }
+        TcpProcessResult::None => {}
+    }
+
+    if let Ok(mut backlog) = listener.backlog.lock() {
+        assert!(!backlog.is_empty());
+        let stream = backlog.pop_front().unwrap();
+        assert_eq!(stream.peer_addr().unwrap(), client_addr);
+    } else {
+        panic!("Listener backlog poisoned");
+    }
+}
 #[test_case]
 fn test_retransmit_on_timeout() {
     let _ = crate::net::mempool::init_net_mempool(2);

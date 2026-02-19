@@ -9,9 +9,9 @@
 //! - Signature database (db/dbx) status
 
 use log::info;
+use uefi::CStr16;
 use uefi::prelude::*;
 use uefi::runtime::{self, VariableVendor};
-use uefi::CStr16;
 
 /// UEFI Global Variable GUID
 /// {8BE4DF61-93CA-11D2-AA0D-00E098032B8C}
@@ -67,7 +67,15 @@ fn read_boot_mode_variables(info: &mut SecureBootInfo) {
 
     if let Some(value) = read_u8_variable(cstr16!("SetupMode")) {
         info.setup_mode = value == 1;
-        info!("SetupMode: {} ({})", value, if value == 1 { "Setup Mode" } else { "User Mode" });
+        info!(
+            "SetupMode: {} ({})",
+            value,
+            if value == 1 {
+                "Setup Mode"
+            } else {
+                "User Mode"
+            }
+        );
     }
 
     if let Some(value) = read_u8_variable(cstr16!("AuditMode")) {
@@ -129,10 +137,10 @@ fn log_secure_boot_summary(info: &SecureBootInfo) {
 /// Read a single byte UEFI variable
 fn read_u8_variable(name: &CStr16) -> Option<u8> {
     let mut buffer = [0u8; 1];
-    
+
     // Use the global variable vendor GUID
     let vendor = VariableVendor(EFI_GLOBAL_VARIABLE_GUID);
-    
+
     match runtime::get_variable(name, &vendor, &mut buffer) {
         Ok(_) => Some(buffer[0]),
         Err(_) => None,
@@ -145,7 +153,7 @@ fn variable_exists(name: &CStr16) -> bool {
     // we'll get a buffer too small error, which still indicates the variable exists
     let mut buffer = [0u8; 1];
     let vendor = VariableVendor(EFI_GLOBAL_VARIABLE_GUID);
-    
+
     match runtime::get_variable(name, &vendor, &mut buffer) {
         Ok(_) => true,
         Err(e) => {
@@ -156,7 +164,7 @@ fn variable_exists(name: &CStr16) -> bool {
 }
 
 /// Check if the current boot was verified by Secure Boot
-/// 
+///
 /// This is useful for determining if we're running as a trusted boot component.
 /// Note: This only indicates the Secure Boot state, not whether this specific
 /// bootloader binary was verified (that depends on whether we're signed and in db).

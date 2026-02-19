@@ -554,8 +554,7 @@ fn process_descriptor_at_offset(
         }
         Some(DescriptorType::SuperSpeedEndpointCompanion) => {
             if let Some(iface) = current_interface {
-                if let Some(companion) =
-                    SsEndpointCompanionDescriptor::from_bytes(&data[offset..])
+                if let Some(companion) = SsEndpointCompanionDescriptor::from_bytes(&data[offset..])
                 {
                     iface.ss_companions.push(companion);
                 }

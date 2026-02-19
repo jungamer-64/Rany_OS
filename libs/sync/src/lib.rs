@@ -21,11 +21,11 @@
 #![no_std]
 #![allow(dead_code)]
 
-mod poison_lock;
 mod backoff;
+mod poison_lock;
 
-pub use poison_lock::{LockResult, PoisonError, PoisonLock, PoisonLockGuard};
 pub use backoff::Backoff;
+pub use poison_lock::{LockResult, PoisonError, PoisonLock, PoisonLockGuard};
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {

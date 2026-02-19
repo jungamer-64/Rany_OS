@@ -7,7 +7,7 @@ kernel_api::register_cell_runtime!();
 use kernel_api::driver_abi::DriverContext;
 #[cfg(feature = "export_driver_entry")]
 use kernel_api::driver_abi::{
-    AbiError, DriverExportsV1, KernelApiV1, DRIVER_EXPORTS_ABI_VERSION, KERNEL_API_ABI_VERSION,
+    AbiError, DRIVER_EXPORTS_ABI_VERSION, DriverExportsV1, KERNEL_API_ABI_VERSION, KernelApiV1,
 };
 
 pub extern "C" fn probe_fn(_ctx: *mut DriverContext) -> i32 {

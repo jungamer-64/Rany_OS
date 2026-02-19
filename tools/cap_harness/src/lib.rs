@@ -191,9 +191,13 @@ pub mod qemu_tests {
 
         let target = 4u64;
         let res = grant(&mut manager, caller, "/net/bind", &[], target);
-        if res.is_err() { return false; }
+        if res.is_err() {
+            return false;
+        }
         let cap = res.unwrap();
-        if cap.resource != "/net/bind" { return false; }
+        if cap.resource != "/net/bind" {
+            return false;
+        }
         manager.has_capability(target, CAP_NET_BIND)
     }
 }

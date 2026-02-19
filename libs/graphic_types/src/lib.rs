@@ -28,8 +28,8 @@ pub mod image;
 
 #[cfg(feature = "alloc")]
 pub use image::{
-    decode_bmp, decode_bmp_into, Image, ImageError, ImageResult, ImageView, ImageViewMut,
-    MAX_IMAGE_SIZE,
+    Image, ImageError, ImageResult, ImageView, ImageViewMut, MAX_IMAGE_SIZE, decode_bmp,
+    decode_bmp_into,
 };
 
 #[cfg(feature = "qemu-test-export")]

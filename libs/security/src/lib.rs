@@ -11,20 +11,19 @@
 //! Provides [`Capability`], [`CapabilitySet`], and [`CapabilityManager`] with tests.
 
 #[cfg(feature = "std")]
-use std::vec::Vec;
-#[cfg(feature = "std")]
 use std::sync::Once;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 #[cfg(not(feature = "std"))]
-
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 use core::fmt;
-use spin::Mutex;
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
 
 pub type Capability = u64;
 
@@ -291,11 +290,14 @@ impl CapabilityManager {
         self.expire_grants();
 
         let caller_caps = self.get_capabilities(caller_domain);
-        let mut allowed = self.has_capability(caller_domain, CAP_SYS_ADMIN)
-            || caller_caps.is_permitted(cap);
+        let mut allowed =
+            self.has_capability(caller_domain, CAP_SYS_ADMIN) || caller_caps.is_permitted(cap);
         if !allowed {
             let grants = self.grants.lock();
-            if grants.iter().any(|t| t.target == caller_domain && t.cap == cap && t.delegatable) {
+            if grants
+                .iter()
+                .any(|t| t.target == caller_domain && t.cap == cap && t.delegatable)
+            {
                 allowed = true;
             }
         }
@@ -323,17 +325,26 @@ impl CapabilityManager {
         };
         self.grants.lock().push(token);
         // Log for host tests
-        log::info!("[SEC] grant token {token_id}: cap {cap} -> domain {target_domain} by {caller_domain}");
+        log::info!(
+            "[SEC] grant token {token_id}: cap {cap} -> domain {target_domain} by {caller_domain}"
+        );
         Ok(token_id)
     }
 
     /// Revoke a grant by token id
-    pub fn revoke_grant(&self, caller_domain: u64, token_id: u64, force: bool) -> Result<(), CapabilityError> {
+    pub fn revoke_grant(
+        &self,
+        caller_domain: u64,
+        token_id: u64,
+        force: bool,
+    ) -> Result<(), CapabilityError> {
         self.expire_grants();
         let mut grants = self.grants.lock();
         if let Some(pos) = grants.iter().position(|t| t.id == token_id) {
             // Authorization
-            if caller_domain != grants[pos].issuer && !self.has_capability(caller_domain, CAP_SYS_ADMIN) {
+            if caller_domain != grants[pos].issuer
+                && !self.has_capability(caller_domain, CAP_SYS_ADMIN)
+            {
                 return Err(CapabilityError::NotPermitted);
             }
 
@@ -348,7 +359,11 @@ impl CapabilityManager {
                 let mut caps = self.get_capabilities(token.target);
                 caps.drop_permanently(token.cap);
                 self.set_capabilities(token.target, caps);
-                log::info!("[SEC] revoke token {token_id}: cap {} from domain {} by {caller_domain} (force)", token.cap, token.target);
+                log::info!(
+                    "[SEC] revoke token {token_id}: cap {} from domain {} by {caller_domain} (force)",
+                    token.cap,
+                    token.target
+                );
             } else {
                 grants[pos].revoked = true;
                 grants[pos].revoked_at = Some(now);
@@ -357,7 +372,11 @@ impl CapabilityManager {
                 let mut caps = self.get_capabilities(token.target);
                 caps.drop_permanently(token.cap);
                 self.set_capabilities(token.target, caps);
-                log::info!("[SEC] mark token {token_id} revoked: cap {} for domain {} by {caller_domain}", token.cap, token.target);
+                log::info!(
+                    "[SEC] mark token {token_id} revoked: cap {} for domain {} by {caller_domain}",
+                    token.cap,
+                    token.target
+                );
             }
             Ok(())
         } else {
@@ -369,7 +388,11 @@ impl CapabilityManager {
     pub fn list_grants(&self, domain_id: u64) -> Vec<GrantToken> {
         self.expire_grants();
         let grants = self.grants.lock();
-        grants.iter().filter(|t| t.target == domain_id).cloned().collect()
+        grants
+            .iter()
+            .filter(|t| t.target == domain_id)
+            .cloned()
+            .collect()
     }
 
     fn expire_grants(&self) {
@@ -395,7 +418,12 @@ impl CapabilityManager {
             let mut caps = self.get_capabilities(t.target);
             caps.drop_permanently(t.cap);
             self.set_capabilities(t.target, caps);
-            log::info!("[SEC] expired token {} cap {} for domain {}", t.id, t.cap, t.target);
+            log::info!(
+                "[SEC] expired token {} cap {} for domain {}",
+                t.id,
+                t.cap,
+                t.target
+            );
         }
     }
 
@@ -430,7 +458,9 @@ impl CapabilityManager {
         let grants = self.grants.lock();
         grants.iter().find(|t| t.id == token_id).map(|t| {
             if t.revoked {
-                ReclamationStatus::Revoked { revoked_at: t.revoked_at.unwrap_or(0) }
+                ReclamationStatus::Revoked {
+                    revoked_at: t.revoked_at.unwrap_or(0),
+                }
             } else {
                 ReclamationStatus::Active
             }
@@ -440,7 +470,13 @@ impl CapabilityManager {
     /// Forcefully reclaim a revoked token (physically remove it); returns Err if not revoked or not found
     pub fn reclaim_token(&self, token_id: u64) -> Result<(), CapabilityError> {
         // Can't reclaim while there are in-flight users
-        let in_flight = { let m = self.in_flight.lock(); m.iter().find(|(id,_)| *id == token_id).map(|(_,cnt)| *cnt).unwrap_or(0) };
+        let in_flight = {
+            let m = self.in_flight.lock();
+            m.iter()
+                .find(|(id, _)| *id == token_id)
+                .map(|(_, cnt)| *cnt)
+                .unwrap_or(0)
+        };
         if in_flight > 0 {
             return Err(CapabilityError::ReclamationBusy);
         }
@@ -452,7 +488,9 @@ impl CapabilityManager {
             }
             grants.remove(pos);
             let mut m = self.in_flight.lock();
-            if let Some(p) = m.iter().position(|(id,_)| *id == token_id) { m.remove(p); }
+            if let Some(p) = m.iter().position(|(id, _)| *id == token_id) {
+                m.remove(p);
+            }
             Ok(())
         } else {
             Err(CapabilityError::InvalidCapability)
@@ -473,7 +511,7 @@ impl CapabilityManager {
         }
 
         let mut m = self.in_flight.lock();
-        if let Some(pair) = m.iter_mut().find(|(id,_)| *id == token_id) {
+        if let Some(pair) = m.iter_mut().find(|(id, _)| *id == token_id) {
             pair.1 += 1;
         } else {
             m.push((token_id, 1));
@@ -484,7 +522,7 @@ impl CapabilityManager {
     /// Decrement in-flight counter for a token.
     pub fn decrement_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
         let mut m = self.in_flight.lock();
-        if let Some(pos) = m.iter().position(|(id,_)| *id == token_id) {
+        if let Some(pos) = m.iter().position(|(id, _)| *id == token_id) {
             if m[pos].1 == 0 {
                 return Err(CapabilityError::InvalidCapability);
             }
@@ -501,7 +539,10 @@ impl CapabilityManager {
     /// Current in-flight count
     pub fn in_flight_count(&self, token_id: u64) -> u64 {
         let m = self.in_flight.lock();
-        m.iter().find(|(id,_)| *id == token_id).map(|(_,c)| *c).unwrap_or(0)
+        m.iter()
+            .find(|(id, _)| *id == token_id)
+            .map(|(_, c)| *c)
+            .unwrap_or(0)
     }
 
     /// Reclaim revoked tokens that have no in-flight users
@@ -512,7 +553,11 @@ impl CapabilityManager {
             let in_flight = self.in_flight.lock();
             for t in grants.iter() {
                 if t.revoked {
-                    let cnt = in_flight.iter().find(|(id,_)| *id == t.id).map(|(_,c)| *c).unwrap_or(0);
+                    let cnt = in_flight
+                        .iter()
+                        .find(|(id, _)| *id == t.id)
+                        .map(|(_, c)| *c)
+                        .unwrap_or(0);
                     if cnt == 0 {
                         to_reclaim.push(t.id);
                     }
@@ -525,7 +570,9 @@ impl CapabilityManager {
             if let Some(pos) = grants.iter().position(|t| t.id == id && t.revoked) {
                 grants.remove(pos);
                 let mut m = self.in_flight.lock();
-                if let Some(p) = m.iter().position(|(tid,_)| *tid == id) { m.remove(p); }
+                if let Some(p) = m.iter().position(|(tid, _)| *tid == id) {
+                    m.remove(p);
+                }
                 log::info!("[SEC] reclaimed token {id}");
             }
         }
@@ -539,9 +586,13 @@ static EXPIRY_DAEMON: Once = Once::new();
 #[cfg(feature = "std")]
 pub fn spawn_expiry_daemon_task() {
     EXPIRY_DAEMON.call_once(|| {
-        std::thread::spawn(|| loop {
-            manager().expire_grants();
-            std::thread::sleep(std::time::Duration::from_millis(CAPABILITY_EXPIRY_INTERVAL_MS));
+        std::thread::spawn(|| {
+            loop {
+                manager().expire_grants();
+                std::thread::sleep(std::time::Duration::from_millis(
+                    CAPABILITY_EXPIRY_INTERVAL_MS,
+                ));
+            }
         });
     });
 }
@@ -558,9 +609,13 @@ static RECLAIM_DAEMON: Once = Once::new();
 #[cfg(feature = "std")]
 pub fn spawn_reclamation_daemon_task() {
     RECLAIM_DAEMON.call_once(|| {
-        std::thread::spawn(|| loop {
-            manager().reclaim_revoked_now();
-            std::thread::sleep(std::time::Duration::from_millis(CAPABILITY_EXPIRY_INTERVAL_MS));
+        std::thread::spawn(|| {
+            loop {
+                manager().reclaim_revoked_now();
+                std::thread::sleep(std::time::Duration::from_millis(
+                    CAPABILITY_EXPIRY_INTERVAL_MS,
+                ));
+            }
         });
     });
 }
@@ -575,8 +630,6 @@ static MANAGER: CapabilityManager = CapabilityManager::new();
 pub fn manager() -> &'static CapabilityManager {
     &MANAGER
 }
-
-
 
 impl Default for CapabilityManager {
     fn default() -> Self {
@@ -609,7 +662,9 @@ pub mod qemu_tests {
         let target: u64 = 9002;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+        let Ok(token) =
+            manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
+        else {
             return false;
         };
 
@@ -617,19 +672,30 @@ pub mod qemu_tests {
             return false;
         }
 
-        manager().revoke_grant(caller, token, false).is_ok() && !manager().has_capability(target, CAP_NET_BIND)
+        manager().revoke_grant(caller, token, false).is_ok()
+            && !manager().has_capability(target, CAP_NET_BIND)
     }
 
     pub fn capability_set_full_smoke() -> bool {
         let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND | CAP_NET_RAW);
-        if !caps.has_capability(CAP_NET_BIND) { return false; }
-        if !caps.has_capability(CAP_NET_RAW) { return false; }
-        if caps.has_capability(CAP_SYS_ADMIN) { return false; }
+        if !caps.has_capability(CAP_NET_BIND) {
+            return false;
+        }
+        if !caps.has_capability(CAP_NET_RAW) {
+            return false;
+        }
+        if caps.has_capability(CAP_SYS_ADMIN) {
+            return false;
+        }
 
         caps.drop(CAP_NET_BIND);
-        if caps.has_capability(CAP_NET_BIND) { return false; }
+        if caps.has_capability(CAP_NET_BIND) {
+            return false;
+        }
 
-        if caps.raise(CAP_NET_BIND).is_err() { return false; }
+        if caps.raise(CAP_NET_BIND).is_err() {
+            return false;
+        }
         caps.has_capability(CAP_NET_BIND)
     }
 
@@ -642,14 +708,19 @@ pub mod qemu_tests {
         let caller: u64 = 8000;
         let target: u64 = 8100;
         manager().set_capabilities(caller, CapabilitySet::empty());
-        manager().grant_capability(caller, target, CAP_NET_BIND).is_err()
+        manager()
+            .grant_capability(caller, target, CAP_NET_BIND)
+            .is_err()
     }
 
     pub fn grant_with_permitted_smoke() -> bool {
         let caller: u64 = 8001;
         let target: u64 = 8101;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        if manager().grant_capability(caller, target, CAP_NET_BIND).is_err() {
+        if manager()
+            .grant_capability(caller, target, CAP_NET_BIND)
+            .is_err()
+        {
             return false;
         }
         manager().has_capability(target, CAP_NET_BIND)
@@ -659,15 +730,27 @@ pub mod qemu_tests {
         let caller: u64 = 8002;
         let target: u64 = 8102;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(9999), false) else {
+        let Ok(token) =
+            manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(9999), false)
+        else {
             return false;
         };
-        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+        if !manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
         let grants = manager().list_grants(target);
-        if grants.len() != 1 { return false; }
-        if grants[0].id != token { return false; }
-        if grants[0].delegatable { return false; }
-        if grants[0].expires != Some(9999) { return false; }
+        if grants.len() != 1 {
+            return false;
+        }
+        if grants[0].id != token {
+            return false;
+        }
+        if grants[0].delegatable {
+            return false;
+        }
+        if grants[0].expires != Some(9999) {
+            return false;
+        }
         true
     }
 
@@ -675,14 +758,22 @@ pub mod qemu_tests {
         let caller: u64 = 8003;
         let target: u64 = 8103;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+        let Ok(token) =
+            manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
+        else {
             return false;
         };
-        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+        if !manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
 
         // Revoke (mark revoked)
-        if manager().revoke_grant(caller, token, false).is_err() { return false; }
-        if manager().has_capability(target, CAP_NET_BIND) { return false; }
+        if manager().revoke_grant(caller, token, false).is_err() {
+            return false;
+        }
+        if manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
 
         // Reclamation status should report revoked
         match manager().reclamation_status(token) {
@@ -691,7 +782,9 @@ pub mod qemu_tests {
         }
 
         // Now reclaim it
-        if manager().reclaim_token(token).is_err() { return false; }
+        if manager().reclaim_token(token).is_err() {
+            return false;
+        }
         // Token should be gone
         manager().list_grants(target).is_empty()
     }
@@ -700,19 +793,27 @@ pub mod qemu_tests {
         let caller: u64 = 8004;
         let target: u64 = 8104;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+        let Ok(token) =
+            manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
+        else {
             return false;
         };
 
         // increment in-flight
-        if manager().increment_in_flight(token).is_err() { return false; }
+        if manager().increment_in_flight(token).is_err() {
+            return false;
+        }
 
         // revoke
-        if manager().revoke_grant(caller, token, false).is_err() { return false; }
+        if manager().revoke_grant(caller, token, false).is_err() {
+            return false;
+        }
 
         // reclaim_now should not remove while in-flight
         reclaim_revoked_now();
-        if manager().list_grants(target).len() != 1 { return false; }
+        if manager().list_grants(target).len() != 1 {
+            return false;
+        }
 
         // reclaim_token should return busy
         match manager().reclaim_token(token) {
@@ -721,7 +822,9 @@ pub mod qemu_tests {
         }
 
         // decrement
-        if manager().decrement_in_flight(token).is_err() { return false; }
+        if manager().decrement_in_flight(token).is_err() {
+            return false;
+        }
 
         // now reclaim
         reclaim_revoked_now();
@@ -732,14 +835,20 @@ pub mod qemu_tests {
         let caller: u64 = 8005;
         let target: u64 = 8105;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let Ok(_token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false) else {
+        let Ok(_token) =
+            manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false)
+        else {
             return false;
         };
-        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+        if !manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
 
         expire_grants_now();
 
-        if manager().has_capability(target, CAP_NET_BIND) { return false; }
+        if manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
         manager().list_grants(target).is_empty()
     }
 
@@ -747,19 +856,31 @@ pub mod qemu_tests {
         let caller: u64 = 8006;
         let target: u64 = 8106;
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
-        let Ok(token) = manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false) else {
+        let Ok(token) =
+            manager().grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
+        else {
             return false;
         };
-        if !manager().has_capability(target, CAP_NET_BIND) { return false; }
+        if !manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
 
         // Revoke by issuer (mark revoked but keep token)
-        if manager().revoke_grant(caller, token, false).is_err() { return false; }
-        if manager().has_capability(target, CAP_NET_BIND) { return false; }
+        if manager().revoke_grant(caller, token, false).is_err() {
+            return false;
+        }
+        if manager().has_capability(target, CAP_NET_BIND) {
+            return false;
+        }
 
         // Token should remain but be marked revoked
         let grants = manager().list_grants(target);
-        if grants.len() != 1 { return false; }
-        if grants[0].id != token { return false; }
+        if grants.len() != 1 {
+            return false;
+        }
+        if grants[0].id != token {
+            return false;
+        }
         grants[0].revoked
     }
 }

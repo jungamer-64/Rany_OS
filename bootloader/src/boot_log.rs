@@ -8,7 +8,7 @@
 use alloc::string::String;
 use core::fmt::Write;
 use uefi::runtime::{self, VariableAttributes, VariableVendor};
-use uefi::{cstr16, CStr16, Guid};
+use uefi::{CStr16, Guid, cstr16};
 
 #[allow(unused_imports)]
 use crate::serial_println;
@@ -150,12 +150,7 @@ impl BootLogger {
         let vendor = get_vendor();
 
         // 現在のログを保存
-        match runtime::set_variable(
-            VAR_LOG_CURRENT,
-            vendor,
-            VAR_ATTRS,
-            self.buffer.as_bytes(),
-        ) {
+        match runtime::set_variable(VAR_LOG_CURRENT, vendor, VAR_ATTRS, self.buffer.as_bytes()) {
             Ok(_) => {
                 serial_println!(
                     "[BootLog] Saved {} bytes to UEFI variable",

@@ -525,7 +525,10 @@ impl TrbRing {
 
                 let last_idx = size - 1;
                 unsafe {
-                    core::ptr::write_volatile(trb_ptr.add(last_idx), Trb::link(phys_addr, true, false));
+                    core::ptr::write_volatile(
+                        trb_ptr.add(last_idx),
+                        Trb::link(phys_addr, true, false),
+                    );
                 }
 
                 Self {

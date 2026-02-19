@@ -29,8 +29,8 @@ use super::{
     COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN, IR0,
     MAX_ENDPOINTS, MAX_SLOTS, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS, PORTSC_CHANGE_MASK,
     PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR, PORTSC_PRC,
-    TRANSFER_RING_SIZE, USBCMD,
-    USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
+    TRANSFER_RING_SIZE, USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR,
+    USBSTS_HCH,
 };
 use crate::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
 mod runtime_ops;
@@ -229,7 +229,9 @@ impl XhciController {
                 Ok(dma_buf) => {
                     let ptr = dma_buf.as_ptr() as *mut u64;
                     let dev_addr = dma_buf.device_address();
-                    unsafe { core::ptr::write_bytes(ptr, 0, dcbaa_entries); }
+                    unsafe {
+                        core::ptr::write_bytes(ptr, 0, dcbaa_entries);
+                    }
                     (ptr, dev_addr, Some(dma_buf))
                 }
                 Err(_) => {
@@ -243,8 +245,7 @@ impl XhciController {
             };
 
         // Device contextsの初期化
-        let device_contexts: Vec<Option<DmaDeviceContext>> =
-            (0..MAX_SLOTS).map(|_| None).collect();
+        let device_contexts: Vec<Option<DmaDeviceContext>> = (0..MAX_SLOTS).map(|_| None).collect();
         // Transfer ringsの初期化
         let transfer_rings: Vec<Vec<Option<Box<TrbRing>>>> = (0..MAX_SLOTS)
             .map(|_| (0..MAX_ENDPOINTS).map(|_| None).collect())
@@ -565,7 +566,8 @@ impl XhciController {
 
         loop {
             let idx = event_ring.dequeue_index;
-            let trb = hal::mmio::volatile_read::<Trb>(&event_ring.trbs()[idx] as *const Trb as usize);
+            let trb =
+                hal::mmio::volatile_read::<Trb>(&event_ring.trbs()[idx] as *const Trb as usize);
 
             if trb.cycle_bit() != expected_cycle {
                 break;
