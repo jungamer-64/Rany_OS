@@ -479,6 +479,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
 
         #[cfg(feature = "qemu-test-export")]
         {
+            let _ = numa_hint;
             return Self::new_heap_backed(count, alloc_bytes, frame_count, page_size);
         }
 

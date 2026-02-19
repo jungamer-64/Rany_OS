@@ -685,7 +685,6 @@ impl NetworkStack {
                     None => {
                         // Queue packet for later and trigger NDP resolution
                         // We'll enqueue in ndp_pending_queue similar to ICMPv6 send path
-                        let mut buf = [0u8; MAX_PACKET_SIZE];
                         // Build minimal IPv6+UDP packet for queuing (reuse payload area)
                         // For queuing, store as icmpv6_data-like structure: src/dst/payload
                         // Use same pending queue as ICMPv6 (it stores raw icmpv6_data), so place UDP data there
