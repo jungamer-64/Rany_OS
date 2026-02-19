@@ -153,14 +153,10 @@ impl Socket {
             local_addr = inner.local_addr.ok_or(SocketError::InvalidArgument)?;
 
             // TCPリスナー作成 - tcp.rsのSocketAddr型に変換
+            let v4 = local_addr.as_ipv4().unwrap();
             let tcp_addr = TcpSocketAddr::new(
-                Ipv4Addr::new(
-                    local_addr.ip[0],
-                    local_addr.ip[1],
-                    local_addr.ip[2],
-                    local_addr.ip[3],
-                ),
-                local_addr.port,
+                Ipv4Addr::new(v4[0], v4[1], v4[2], v4[3]),
+                local_addr.port(),
             );
             let listener =
                 TcpListenerImpl::bind(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
@@ -209,9 +205,8 @@ impl Socket {
             }
 
             log::info!(
-                "TCP: Accepted connection from {:?}:{}",
-                conn.remote_addr.ip,
-                conn.remote_addr.port
+                "TCP: Accepted connection from {:?}",
+                conn.remote_addr.as_ipv4().unwrap()
             );
 
             return Ok((new_socket, conn.remote_addr));

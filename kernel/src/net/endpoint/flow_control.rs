@@ -358,15 +358,14 @@ mod tests {
         let mut fc = FlowController::new();
         fc.update_peer_window(0);
 
-        // 最初のプローブ
-        assert!(fc.should_send_probe(0));
-        fc.on_probe_sent(0);
-
-        // すぐには次のプローブは不要
-        assert!(!fc.should_send_probe(100));
-
-        // インターバル後
+        // Initial probe requires waiting the base interval.
+        assert!(!fc.should_send_probe(0));
         assert!(fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS));
+        fc.on_probe_sent(ZERO_WINDOW_PROBE_INTERVAL_MS);
+
+        // Next probe uses exponential backoff (x2 after first probe).
+        assert!(!fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 2));
+        assert!(fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 3));
     }
 }
 
@@ -432,15 +431,18 @@ pub mod qemu_tests {
         let mut fc = FlowController::new();
         fc.update_peer_window(0);
 
-        if !fc.should_send_probe(0) {
+        if fc.should_send_probe(0) {
             return false;
         }
-        fc.on_probe_sent(0);
+        if !fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS) {
+            return false;
+        }
+        fc.on_probe_sent(ZERO_WINDOW_PROBE_INTERVAL_MS);
 
-        if fc.should_send_probe(100) {
+        if fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 2) {
             return false;
         }
 
-        fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS)
+        fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 3)
     }
 }

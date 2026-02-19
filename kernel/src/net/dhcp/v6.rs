@@ -47,6 +47,10 @@ pub struct DhcpV6Client {
     xid: AtomicU32, // 24-bit トランザクションIDを格納
     iaid: u32,
     lease: PoisonLock<Option<DhcpV6Lease>>,
+    /// Last-seen server DUID (Server Identifier option)
+    server_duid: PoisonLock<Option<Vec<u8>>>,
+    /// Last-seen server IPv6 source address (used for unicast Renew)
+    server_addr: PoisonLock<Option<Ipv6Address>>,
     state_time: AtomicU64,
     retry_count: AtomicU32,
 }
@@ -74,8 +78,8 @@ impl DhcpV6Client {
             state: PoisonLock::new(DhcpV6State::Init),
             xid: AtomicU32::new(0),
             iaid: 0xAABBCCDD, // 固定 IAID（将来乱数化可）
-            lease: PoisonLock::new(None),
-            state_time: AtomicU64::new(0),
+            lease: PoisonLock::new(None),            server_duid: PoisonLock::new(None),
+            server_addr: PoisonLock::new(None),            state_time: AtomicU64::new(0),
             retry_count: AtomicU32::new(0),
         }
     }
@@ -191,6 +195,56 @@ impl DhcpV6Client {
         Ok(off)
     }
 
+    /// Build a DHCPv6 REQUEST to *select* a server after receiving ADVERTISE.
+    /// Includes ClientID + ServerID (if available) + IA_NA (no IAADDR suboption).
+    pub fn build_request_from_advertise(&self, buf: &mut [u8], current_time: u64) -> Result<usize, &'static str> {
+        if buf.len() < 128 {
+            return Err("buffer too small");
+        }
+
+        // Generate XID (24-bit)
+        let xid = ((current_time as u32) ^ 0xC0FFEE) & 0x00FF_FFFF;
+        self.xid.store(xid, Ordering::SeqCst);
+
+        // Header
+        buf[0] = DhcpV6MessageType::Request as u8;
+        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
+        let mut off = 4usize;
+
+        // Client Identifier (option 1)
+        let cl_id_len = self.duid.len();
+        buf[off..off + 2].copy_from_slice(&(1u16.to_be_bytes())); // option-code
+        buf[off + 2..off + 4].copy_from_slice(&(cl_id_len as u16).to_be_bytes());
+        off += 4;
+        buf[off..off + cl_id_len].copy_from_slice(&self.duid);
+        off += cl_id_len;
+
+        // Server Identifier (option 2) if we have a DUID
+        if let Ok(g) = self.server_duid.lock() {
+            if let Some(ref duid) = *g {
+                buf[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
+                buf[off + 2..off + 4].copy_from_slice(&(duid.len() as u16).to_be_bytes());
+                off += 4;
+                buf[off..off + duid.len()].copy_from_slice(duid);
+                off += duid.len();
+            }
+        }
+
+        // IA_NA (option 3) without IAADDR suboption
+        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
+        // length = IAID(4) + T1(4) + T2(4) = 12
+        buf[off + 2..off + 4].copy_from_slice(&(12u16.to_be_bytes()));
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
+        off += 4;
+        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
+        off += 4;
+
+        Ok(off)
+    }
+
     /// Parse a DHCPv6 REPLY/ADVERTISE and extract IAADDR if present
     pub fn parse_reply(&self, data: &[u8], current_time: u64) -> Result<Option<DhcpV6Lease>, &'static str> {
         if data.len() < 4 {
@@ -214,6 +268,14 @@ impl DhcpV6Client {
             }
 
             match code {
+                2 => {
+                    // Server Identifier (DUID) - remember it for future Renew
+                    if len > 0 {
+                        if let Ok(mut g) = self.server_duid.lock() {
+                            *g = Some(data[off..off + len].to_vec());
+                        }
+                    }
+                }
                 3 => {
                     // IA_NA - scan suboptions for IAADDR
                     let mut sub_off = off + 12; // skip IAID/T1/T2
@@ -264,15 +326,57 @@ impl DhcpV6Client {
     }
 
     /// Handle an incoming DHCPv6 packet (called by network receive path)
+    /// `src` is the IPv6 source address the packet was received from.
     /// Returns true if handled
-    pub fn handle_packet(&self, data: &[u8]) -> bool {
+    pub fn handle_packet(&self, data: &[u8], src: Ipv6Address) -> bool {
         let now = crate::net::tcb_table().get_current_tick();
+
+        // Inspect message type first so we can react to ADVERTISE even when no IAADDR is present
+        let msg_type = data.get(0).copied().unwrap_or(0);
+
+        // Parse options (this will populate server_duid if present)
+        let _ = self.parse_reply(data, now);
+
+        // If this is an ADVERTISE and we're waiting for it, move to REQUESTING and send Request
+        if msg_type == (DhcpV6MessageType::Advertise as u8) {
+            if let Ok(mut st) = self.state.lock() {
+                if *st == DhcpV6State::SolicitSent {
+                    // remember server address (src) and transition to Requesting
+                    if let Ok(mut sd) = self.server_addr.lock() {
+                        *sd = Some(src);
+                    }
+                    *st = DhcpV6State::Requesting;
+                    self.state_time.store(now, Ordering::SeqCst);
+                    self.retry_count.store(0, Ordering::SeqCst);
+
+                    // build and send REQUEST (selection)
+                    let mut buf = [0u8; 256];
+                    if let Ok(len) = self.build_request_from_advertise(&mut buf, now) {
+                        if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                            if let Some(ref mut stack) = *guard {
+                                if let Some(ref ipv6_cfg) = stack.config().ipv6 {
+                                    let src_ip = ipv6_cfg.link_local;
+                                    let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src_ip, src, DHCPV6_SERVER_PORT, &buf[..len]);
+                                }
+                            }
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+
+        // Otherwise, treat REPLY that contains IAADDR as lease acceptance
         match self.parse_reply(data, now) {
             Ok(Some(lease)) => {
                 // Accept lease: configure IPv6 address + NDP
-                // Store lease and transition to Bound; apply address to stack
                 if let Ok(mut g) = self.lease.lock() {
                     *g = Some(lease.clone());
+                }
+
+                // Remember the server IPv6 address (useful for unicast Renew)
+                if let Ok(mut sd) = self.server_addr.lock() {
+                    *sd = Some(src);
                 }
 
                 // Apply IPv6 address to the running NetworkStack
@@ -281,10 +385,10 @@ impl DhcpV6Client {
                 if let Ok(mut st) = self.state.lock() {
                     *st = DhcpV6State::Bound;
                 }
-                true
+                return true;
             }
-            Ok(None) => false,
-            Err(_) => false,
+            Ok(None) => return false,
+            Err(_) => return false,
         }
     }
 
@@ -339,6 +443,34 @@ impl DhcpV6Client {
                         }
                     }
                 }
+                DhcpV6State::Requesting => {
+                    // Retransmit REQUEST (unicast to server if known)
+                    let elapsed_secs = (current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst))) / tick_rate;
+                    if elapsed_secs >= Self::RETRANS_INTERVAL_SECS {
+                        let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
+                        if retries >= Self::MAX_RETRIES {
+                            // Give up and return to Init
+                            *s = DhcpV6State::Init;
+                        } else {
+                            // rebuild Request (selection) and resend
+                            let mut buf = [0u8; 256];
+                            let len = self.build_request_from_advertise(&mut buf, current_tick)?;
+                            if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                                if let Some(ref mut stack) = *guard {
+                                    if let Some(ref ipv6_cfg) = stack.config().ipv6 {
+                                        let src = ipv6_cfg.link_local;
+                                        let dst = match self.server_addr.lock() {
+                                            Ok(ref a) => a.clone().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
+                                            Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
+                                        };
+                                        let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);
+                                    }
+                                }
+                            }
+                            self.state_time.store(current_tick, Ordering::SeqCst);
+                        }
+                    }
+                }
                 DhcpV6State::Bound => {
                     // Check lease lifetimes and transition to Renewing if needed
                     if let Some(lease) = self.lease() {
@@ -369,8 +501,12 @@ impl DhcpV6Client {
                                     if let Some(ref mut stack) = *guard {
                                         if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                             let src = ipv6_cfg.link_local;
-                                            // Per RFC, Renew is sent to the server; fallback to multicast if unknown
-                                            let dst = crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+                                            // If we know the server IPv6 address, send unicast Renew there;
+                                            // otherwise fall back to multicast.
+                                            let dst = match self.server_addr.lock() {
+                                                Ok(ref a) => a.clone().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
+                                                Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
+                                            };
                                             let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);
                                         }
                                     }
@@ -415,7 +551,6 @@ impl DhcpV6Client {
                         }
                     }
                 }
-                DhcpV6State::Requesting => {}
             },
             Err(_) => return Err("state lock poisoned"),
         }
@@ -547,5 +682,186 @@ mod tests {
         }
         // after exceeding retries client should be in Rebinding or Init depending on counts
         assert!(client.state() == DhcpV6State::Rebinding || client.state() == DhcpV6State::Init);
+    }
+
+    #[test_case]
+    fn test_handle_packet_stores_server_addr_and_duid() {
+        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+
+        // Build a REPLY that contains Server Identifier (option 2) + IA_NA with IAADDR
+        let server_duid: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
+        let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,4]);
+
+        // layout: header(4) + srv_id(opt2) + IA_NA(opt3)+IAADDR(subopt5)
+        let mut pkt = alloc::vec![0u8; 4 + 4 + server_duid.len() + 4 + 12 + 4 + 24];
+        pkt[0] = DhcpV6MessageType::Reply as u8;
+        pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+        let mut off = 4;
+        // Server Identifier (option 2)
+        pkt[off..off+2].copy_from_slice(&(2u16.to_be_bytes()));
+        pkt[off+2..off+4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
+        off += 4;
+        pkt[off..off+server_duid.len()].copy_from_slice(&server_duid);
+        off += server_duid.len();
+
+        // IA_NA option (top-level)
+        pkt[off..off+2].copy_from_slice(&(3u16.to_be_bytes())); // code
+        pkt[off+2..off+4].copy_from_slice(&(12u16.to_be_bytes())); // len
+        off += 4;
+        // IAID + T1 + T2
+        pkt[off..off+12].copy_from_slice(&[0u8; 12]);
+        off += 12;
+
+        // IAADDR as a top-level option for this test (simpler)
+        pkt[off..off+2].copy_from_slice(&(5u16.to_be_bytes()));
+        pkt[off+2..off+4].copy_from_slice(&(24u16.to_be_bytes()));
+        off += 4;
+        pkt[off..off+16].copy_from_slice(&addr.as_bytes());
+        off += 16;
+        pkt[off..off+4].copy_from_slice(&3600u32.to_be_bytes());
+        off += 4;
+        pkt[off..off+4].copy_from_slice(&7200u32.to_be_bytes());
+
+        let src_ip = Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,1]);
+        let handled = client.handle_packet(&pkt, src_ip);
+        assert!(handled);
+        // lease stored
+        let l = client.lease();
+        assert!(l.is_some());
+        // server_addr recorded
+        if let Ok(g) = client.server_addr.lock() {
+            assert_eq!(g.as_ref().unwrap(), &src_ip);
+        } else {
+            panic!("server_addr lock poisoned");
+        }
+        // server_duid recorded
+        if let Ok(g) = client.server_duid.lock() {
+            assert_eq!(g.as_ref().unwrap().as_slice(), &server_duid);
+        } else {
+            panic!("server_duid lock poisoned");
+        }
+    }
+
+    #[test_case]
+    fn test_advertise_triggers_request_and_requesting_state() {
+        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+
+        // Put client into SolicitSent
+        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::SolicitSent; }
+
+        // Build an ADVERTISE that contains Server Identifier (option 2) but no IAADDR
+        let server_duid: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
+        let mut pkt = alloc::vec![0u8; 4 + 4 + server_duid.len()];
+        pkt[0] = DhcpV6MessageType::Advertise as u8;
+        pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+        let mut off = 4;
+        pkt[off..off+2].copy_from_slice(&(2u16.to_be_bytes()));
+        pkt[off+2..off+4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
+        off += 4;
+        pkt[off..off+server_duid.len()].copy_from_slice(&server_duid);
+
+        let src_ip = Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,9]);
+        let handled = client.handle_packet(&pkt, src_ip);
+        assert!(handled);
+        assert_eq!(client.state(), DhcpV6State::Requesting);
+        // server_addr and server_duid should be set
+        if let Ok(g) = client.server_addr.lock() { assert_eq!(g.as_ref().unwrap(), &src_ip); }
+        if let Ok(g) = client.server_duid.lock() { assert_eq!(g.as_ref().unwrap().as_slice(), &server_duid); }
+    }
+
+    #[test_case]
+    fn test_requesting_retransmit_exhaustion_goes_to_init() {
+        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Requesting; }
+        // simulate having already retried up to MAX_RETRIES
+        client.retry_count.store(DhcpV6Client::MAX_RETRIES, Ordering::SeqCst);
+        let tick_rate = 1000u64;
+        let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
+        client.check_timeout(now, tick_rate).unwrap();
+        assert_eq!(client.state(), DhcpV6State::Init);
+    }
+
+    #[test_case]
+    fn test_solicit_advertise_request_reply_complete_flow() {
+        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+
+        // Start from Init -> send SOLICIT (simulate periodic trigger)
+        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::SolicitSent; }
+
+        // Build ADVERTISE (server-id only)
+        let server_duid: [u8; 4] = [0x11, 0x22, 0x33, 0x44];
+        let mut adv = alloc::vec![0u8; 4 + 4 + server_duid.len()];
+        adv[0] = DhcpV6MessageType::Advertise as u8;
+        adv[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+        let mut off = 4;
+        adv[off..off+2].copy_from_slice(&(2u16.to_be_bytes()));
+        adv[off+2..off+4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
+        off += 4;
+        adv[off..off+server_duid.len()].copy_from_slice(&server_duid);
+
+        let server_ip = Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,7]);
+        assert!(client.handle_packet(&adv, server_ip));
+        assert_eq!(client.state(), DhcpV6State::Requesting);
+
+        // Now build a REPLY that contains IAADDR for the requested IA
+        let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,6]);
+        let mut reply = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
+        reply[0] = DhcpV6MessageType::Reply as u8;
+        reply[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+        let mut roff = 4;
+        // IA_NA option (top-level)
+        reply[roff..roff+2].copy_from_slice(&(3u16.to_be_bytes())); // code
+        reply[roff+2..roff+4].copy_from_slice(&(12u16.to_be_bytes())); // len
+        roff += 4;
+        // IAID + T1 + T2
+        reply[roff..roff+12].copy_from_slice(&[0u8; 12]);
+        roff += 12;
+        // IAADDR (as top-level for test simplicity)
+        reply[roff..roff+2].copy_from_slice(&(5u16.to_be_bytes()));
+        reply[roff+2..roff+4].copy_from_slice(&(24u16.to_be_bytes()));
+        roff += 4;
+        reply[roff..roff+16].copy_from_slice(&addr.as_bytes());
+        roff += 16;
+        reply[roff..roff+4].copy_from_slice(&3600u32.to_be_bytes());
+        roff += 4;
+        reply[roff..roff+4].copy_from_slice(&7200u32.to_be_bytes());
+
+        assert!(client.handle_packet(&reply, server_ip));
+        assert_eq!(client.state(), DhcpV6State::Bound);
+        let l = client.lease();
+        assert!(l.is_some());
+        assert_eq!(l.unwrap().addr, addr);
+    }
+
+    #[test_case]
+    fn test_renew_uses_known_server_address_for_dst() {
+        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+        let lease = DhcpV6Lease {
+            addr: crate::net::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,5]),
+            preferred_lifetime: 1,
+            valid_lifetime: 10,
+            obtained_at: 0,
+        };
+        if let Ok(mut lg) = client.lease.lock() {
+            *lg = Some(lease.clone());
+        }
+        if let Ok(mut st) = client.state.lock() {
+            *st = DhcpV6State::Renewing;
+        }
+        // set known server address
+        let server_ip = crate::net::ipv6::Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+        if let Ok(mut g) = client.server_addr.lock() { *g = Some(server_ip); }
+
+        let tick_rate = 1000u64;
+        // force a retransmit interval to elapse
+        let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
+        client.check_timeout(now, tick_rate).unwrap();
+        // should still be Renewing (not immediately escalate to Rebinding)
+        assert_eq!(client.state(), DhcpV6State::Renewing);
     }
 }

@@ -497,16 +497,8 @@ pub fn get_tcp_connections() -> Option<Vec<TcpConnectionInfo>> {
     let connections = snapshots
         .into_iter()
         .map(|snap| {
-            let local_addr = format!(
-                "{}.{}.{}.{}:{}",
-                snap.local.ip[0], snap.local.ip[1], snap.local.ip[2], snap.local.ip[3],
-                snap.local.port
-            );
-            let remote_addr = format!(
-                "{}.{}.{}.{}:{}",
-                snap.remote.ip[0], snap.remote.ip[1], snap.remote.ip[2], snap.remote.ip[3],
-                snap.remote.port
-            );
+            let local_addr = format!("{}", snap.local);
+            let remote_addr = format!("{}", snap.remote);
             let state = match snap.state {
                 TcpConnectionState::Closed => "CLOSED",
                 TcpConnectionState::Listen => "LISTEN",

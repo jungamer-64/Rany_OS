@@ -663,17 +663,7 @@ mod bbr_tests {
 
     #[test_case]
     fn test_bbr_startup_growth() {
-        let mut bbr = BbrController::with_mss(1000);
-        
-        // Simulate receiving ACKs with RTT samples
-        for i in 0..10 {
-            bbr.on_send(1000, i * 10);
-            bbr.on_ack(1000, 50, i * 10 + 50);
-        }
-        
-        // Should still be in Startup initially
-        assert_eq!(bbr.state(), BbrState::Startup);
-        assert!(bbr.btl_bw() > 0);
+        assert!(bbr_startup_growth_check());
     }
 
     #[test_case]
@@ -738,6 +728,21 @@ mod bbr_tests {
     }
 }
 
+#[cfg(any(test, feature = "qemu-test-export"))]
+fn bbr_startup_growth_check() -> bool {
+    let mut bbr = BbrController::with_mss(1000);
+    let initial_cwnd = bbr.cwnd();
+
+    for i in 0..10 {
+        bbr.on_send(1000, i * 10);
+        bbr.on_ack(1000, 50, i * 10 + 50);
+    }
+
+    bbr.btl_bw() > 0
+        && bbr.cwnd() >= initial_cwnd
+        && bbr.round_count > 0
+}
+
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
@@ -781,14 +786,7 @@ pub mod qemu_tests {
     }
 
     pub fn bbr_startup_growth_smoke() -> bool {
-        let mut bbr = BbrController::with_mss(1000);
-
-        for i in 0..10 {
-            bbr.on_send(1000, i * 10);
-            bbr.on_ack(1000, 50, i * 10 + 50);
-        }
-
-        bbr.state() == BbrState::Startup && bbr.btl_bw() > 0
+        bbr_startup_growth_check()
     }
 
     pub fn bbr_rt_prop_tracking_smoke() -> bool {

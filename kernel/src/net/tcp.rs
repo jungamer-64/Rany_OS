@@ -64,22 +64,89 @@ impl core::fmt::Display for Ipv4Addr {
     }
 }
 
-/// ソケットアドレス（IPv4 + ポート）
+/// ソケットアドレス（IPv4 / IPv6 - unified）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SocketAddr {
-    pub ip: Ipv4Addr,
-    pub port: u16,
+pub enum SocketAddr {
+    V4 { ip: Ipv4Addr, port: u16 },
+    V6 { ip: crate::net::ipv6::Ipv6Address, port: u16 },
 }
 
 impl SocketAddr {
+    /// Backwards-compatible constructor for IPv4
     pub const fn new(ip: Ipv4Addr, port: u16) -> Self {
-        Self { ip, port }
+        SocketAddr::V4 { ip, port }
     }
-}
+
+    /// IPv6 constructor
+    pub const fn new_v6(ip: crate::net::ipv6::Ipv6Address, port: u16) -> Self {
+        SocketAddr::V6 { ip, port }
+    }
+
+    /// Return true if IPv4
+    #[inline]
+    pub fn is_ipv4(&self) -> bool {
+        matches!(self, SocketAddr::V4 { .. })
+    }
+
+    /// Return true if IPv6
+    #[inline]
+    pub fn is_ipv6(&self) -> bool {
+        matches!(self, SocketAddr::V6 { .. })
+    }
+
+    /// Return IPv4 addr when available (or None)
+    #[inline]
+    pub fn as_ipv4(&self) -> Option<Ipv4Addr> {
+        match *self {
+            SocketAddr::V4 { ip, .. } => Some(ip),
+            SocketAddr::V6 { ip, .. } => {
+                // map ::ffff:a.b.c.d -> a.b.c.d, otherwise None
+                let bytes = ip.0;
+                if bytes[..10] == [0u8; 10] && bytes[10] == 0xff && bytes[11] == 0xff {
+                    Some(Ipv4Addr::from_u32(u32::from_be_bytes([
+                        bytes[12], bytes[13], bytes[14], bytes[15],
+                    ])))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Return IPv6 bytes (for IPv4 returns mapped form)
+    #[inline]
+    pub fn as_ipv6(&self) -> crate::net::ipv6::Ipv6Address {
+        match *self {
+            SocketAddr::V6 { ip, .. } => ip,
+            SocketAddr::V4 { ip, .. } => {
+                let mut b = [0u8; 16];
+                b[10] = 0xff;
+                b[11] = 0xff;
+                let oct = ip.octets();
+                b[12..16].copy_from_slice(&oct);
+                crate::net::ipv6::Ipv6Address::new(b)
+            }
+        }
+    }
+
+    /// Return port
+    #[inline]
+    pub fn port(&self) -> u16 {
+        match *self {
+            SocketAddr::V4 { port, .. } => port,
+            SocketAddr::V6 { port, .. } => port,
+        }
+    }}
 
 impl core::fmt::Display for SocketAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{}:{}", self.ip, self.port)
+        match *self {
+            SocketAddr::V4 { ip, port } => write!(f, "{}:{}", ip, port),
+            SocketAddr::V6 { ip, port } => {
+                // Use bracketed IPv6 literal
+                write!(f, "[{}]:{}", ip, port)
+            }
+        }
     }
 }
 

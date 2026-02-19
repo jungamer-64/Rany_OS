@@ -142,8 +142,8 @@ impl NetworkStack {
             if total_len > buffer.len() {
                 return None;
             }
-            buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
-            buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+            buffer[0..2].copy_from_slice(&local.port().to_be_bytes());
+            buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
             buffer[4..8].copy_from_slice(&seq.to_be_bytes());
             buffer[8..12].copy_from_slice(&ack.to_be_bytes());
             let offset_flags = ((5u16 << 12) | (flags & 0x1FF)) as u16;
@@ -154,7 +154,7 @@ impl NetworkStack {
             if !payload.is_empty() {
                 buffer[20..total_len].copy_from_slice(payload);
             }
-            crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.ip.octets(), remote.ip.octets());
+            crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.as_ipv4().unwrap().octets(), remote.as_ipv4().unwrap().octets());
             Some((local, remote, seq, total_len))
         } else {
             None
@@ -167,8 +167,8 @@ impl NetworkStack {
         for res in results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
             if let Some((local, remote, seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
-                let src_ip_out = Ipv4Address::new(local.ip.octets());
-                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
@@ -184,8 +184,8 @@ impl NetworkStack {
         for res in keepalive_results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
             if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
-                let src_ip_out = Ipv4Address::new(local.ip.octets());
-                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
                 self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
             }
         }
@@ -195,8 +195,8 @@ impl NetworkStack {
         for res in zwp_results {
             let mut buffer = [0u8; MAX_PACKET_SIZE];
             if let Some((local, remote, _seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
-                let src_ip_out = Ipv4Address::new(local.ip.octets());
-                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
                 self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
             }
         }

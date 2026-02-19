@@ -181,8 +181,8 @@ fn test_three_way_handshake() {
 
     // Build SYN from client -> server
     let mut syn = [0u8; 20];
-    syn[0..2].copy_from_slice(&client_addr.port.to_be_bytes());
-    syn[2..4].copy_from_slice(&server_addr.port.to_be_bytes());
+    syn[0..2].copy_from_slice(&client_addr.port().to_be_bytes());
+    syn[2..4].copy_from_slice(&server_addr.port().to_be_bytes());
     syn[4..8].copy_from_slice(&client_initial_seq.to_be_bytes());
     syn[8..12].copy_from_slice(&0u32.to_be_bytes());
     let data_off_flags = ((5u16 << 12) | TcpHeader::FLAG_SYN).to_be_bytes();
@@ -207,8 +207,8 @@ fn test_three_way_handshake() {
 
     // Build SYN-ACK bytes and feed to client
     let mut synack = [0u8; 20];
-    synack[0..2].copy_from_slice(&syn_ack_pkt.0.port.to_be_bytes());
-    synack[2..4].copy_from_slice(&syn_ack_pkt.1.port.to_be_bytes());
+    synack[0..2].copy_from_slice(&syn_ack_pkt.0.port().to_be_bytes());
+    synack[2..4].copy_from_slice(&syn_ack_pkt.1.port().to_be_bytes());
     synack[4..8].copy_from_slice(&syn_ack_pkt.2.to_be_bytes());
     synack[8..12].copy_from_slice(&syn_ack_pkt.3.to_be_bytes());
     let off_flags = ((5u16 << 12) | (TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK)).to_be_bytes();
@@ -233,8 +233,8 @@ fn test_three_way_handshake() {
 
     // Build ACK bytes and feed back to server to complete handshake
     let mut ack = [0u8; 20];
-    ack[0..2].copy_from_slice(&ack_pkt.0.port.to_be_bytes());
-    ack[2..4].copy_from_slice(&ack_pkt.1.port.to_be_bytes());
+    ack[0..2].copy_from_slice(&ack_pkt.0.port().to_be_bytes());
+    ack[2..4].copy_from_slice(&ack_pkt.1.port().to_be_bytes());
     ack[4..8].copy_from_slice(&ack_pkt.2.to_be_bytes());
     ack[8..12].copy_from_slice(&ack_pkt.3.to_be_bytes());
     let ack_off_flags = ((5u16 << 12) | (TcpHeader::FLAG_ACK)).to_be_bytes();

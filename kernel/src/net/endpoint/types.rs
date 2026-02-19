@@ -163,44 +163,118 @@ impl core::fmt::Display for SocketError {
 /// ソケット結果型
 pub type SocketResult<T> = Result<T, SocketError>;
 
-/// ソケットアドレス（IPv4）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord, Hash)]
-pub struct SocketAddr {
-    /// IPアドレス
-    pub ip: [u8; 4],
-    /// ポート番号
-    pub port: u16,
+/// ソケットアドレス（IPv4 / IPv6 - unified）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SocketAddr {
+    /// IPv4 address + port
+    V4 { ip: [u8; 4], port: u16 },
+    /// IPv6 address + port
+    V6 { ip: [u8; 16], port: u16 },
 }
 
 impl SocketAddr {
-    /// 任意アドレス
-    pub const ANY: Self = Self {
-        ip: [0, 0, 0, 0],
-        port: 0,
-    };
-
-    /// ループバックアドレス
-    pub const LOCALHOST: Self = Self {
-        ip: [127, 0, 0, 1],
-        port: 0,
-    };
-
-    /// 新規作成
+    /// Backwards-compatible constructor for IPv4
     #[inline(always)]
     pub const fn new(ip: [u8; 4], port: u16) -> Self {
-        Self { ip, port }
+        SocketAddr::V4 { ip, port }
     }
 
-    /// ポート付きで作成
+    /// Create an IPv6 socket address
     #[inline(always)]
-    pub const fn with_port(self, port: u16) -> Self {
-        Self { ip: self.ip, port }
+    pub const fn new_v6(ip: [u8; 16], port: u16) -> Self {
+        SocketAddr::V6 { ip, port }
     }
 
-    /// IPアドレスをu32で取得
+    /// Any/unspecified (IPv4)
+    pub const ANY: Self = SocketAddr::V4 { ip: [0, 0, 0, 0], port: 0 };
+
+    /// IPv4 loopback
+    pub const LOCALHOST: Self = SocketAddr::V4 { ip: [127, 0, 0, 1], port: 0 };
+
+    /// Any/unspecified (IPv6)
+    pub const ANY_V6: Self = SocketAddr::V6 { ip: [0u8; 16], port: 0 };
+
+    /// IPv6 loopback ::1
+    pub const LOCALHOST_V6: Self = SocketAddr::V6 { ip: {
+        let mut a = [0u8; 16];
+        a[15] = 1;
+        a
+    }, port: 0 };
+
+    /// Return true if IPv4
     #[inline(always)]
-    pub const fn ip_u32(self) -> u32 {
-        u32::from_be_bytes(self.ip)
+    pub fn is_ipv4(&self) -> bool {
+        matches!(self, SocketAddr::V4 { .. })
+    }
+
+    /// Return true if IPv6
+    #[inline(always)]
+    pub fn is_ipv6(&self) -> bool {
+        matches!(self, SocketAddr::V6 { .. })
+    }
+
+    /// Get port
+    #[inline(always)]
+    pub fn port(&self) -> u16 {
+        match *self {
+            SocketAddr::V4 { port, .. } => port,
+            SocketAddr::V6 { port, .. } => port,
+        }
+    }
+
+    /// Return IPv4 bytes if this is an IPv4 address, otherwise None.
+    #[inline]
+    pub fn as_ipv4(&self) -> Option<[u8; 4]> {
+        match *self {
+            SocketAddr::V4 { ip, .. } => Some(ip),
+            SocketAddr::V6 { ip, .. } => {
+                // Check for IPv4-mapped IPv6 ::ffff:a.b.c.d
+                if ip[..10] == [0u8; 10] && ip[10] == 0xff && ip[11] == 0xff {
+                    Some([ip[12], ip[13], ip[14], ip[15]])
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Return IPv6 bytes; for IPv4 addresses returns IPv4-mapped IPv6 form
+    #[inline]
+    pub fn as_ipv6(&self) -> [u8; 16] {
+        match *self {
+            SocketAddr::V6 { ip, .. } => ip,
+            SocketAddr::V4 { ip, .. } => {
+                let mut v6 = [0u8; 16];
+                v6[10] = 0xff;
+                v6[11] = 0xff;
+                v6[12..16].copy_from_slice(&ip);
+                v6
+            }
+        }
+    }
+
+    /// Convenience: return IPv4 u32 when available
+    #[inline]
+    pub fn ip_u32(&self) -> Option<u32> {
+        self.as_ipv4().map(|b| u32::from_be_bytes(b))
+    }
+
+    /// Set port
+    #[inline]
+    pub fn with_port(self, port: u16) -> Self {
+        match self {
+            SocketAddr::V4 { ip, .. } => SocketAddr::V4 { ip, port },
+            SocketAddr::V6 { ip, .. } => SocketAddr::V6 { ip, port },
+        }
+    }
+}
+
+impl core::fmt::Display for SocketAddr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            SocketAddr::V4 { ip, port } => write!(f, "{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port),
+            SocketAddr::V6 { ip, port } => write!(f, "[{}]:{}", crate::net::Ipv6Address::new(ip), port),
+        }
     }
 }
 
@@ -259,12 +333,12 @@ mod tests {
     #[test_case]
     fn test_socket_addr() {
         let addr = SocketAddr::new([192, 168, 1, 1], 8080);
-        assert_eq!(addr.ip, [192, 168, 1, 1]);
-        assert_eq!(addr.port, 8080);
+        assert_eq!(addr.as_ipv4().unwrap(), [192, 168, 1, 1]);
+        assert_eq!(addr.port(), 8080);
 
         let localhost = SocketAddr::LOCALHOST.with_port(3000);
-        assert_eq!(localhost.ip, [127, 0, 0, 1]);
-        assert_eq!(localhost.port, 3000);
+        assert_eq!(localhost.as_ipv4().unwrap(), [127, 0, 0, 1]);
+        assert_eq!(localhost.port(), 3000);
     }
 }
 
@@ -282,11 +356,11 @@ pub mod qemu_tests {
 
     pub fn socket_addr_smoke() -> bool {
         let addr = SocketAddr::new([192, 168, 1, 1], 8080);
-        if addr.ip != [192, 168, 1, 1] || addr.port != 8080 {
+        if addr.as_ipv4().unwrap() != [192, 168, 1, 1] || addr.port() != 8080 {
             return false;
         }
 
         let localhost = SocketAddr::LOCALHOST.with_port(3000);
-        localhost.ip == [127, 0, 0, 1] && localhost.port == 3000
+        localhost.as_ipv4().unwrap() == [127, 0, 0, 1] && localhost.port() == 3000
     }
 }
