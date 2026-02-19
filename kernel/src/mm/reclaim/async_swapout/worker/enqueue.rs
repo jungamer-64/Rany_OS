@@ -5,7 +5,6 @@ use super::*;
 
 // 公開API: try_enqueue_swapout
 mod tests;
-pub use tests::*;
 pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHandle, SwapError> {
     #[cfg(feature = "qemu-test-export")]
     {

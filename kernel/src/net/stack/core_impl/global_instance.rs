@@ -81,6 +81,23 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
     }
 }
 
+/// Send a UDP datagram over IPv6
+pub fn send_udp_v6(src_port: u16, src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.send_udp_v6_raw(src_port, src_ip, dst_ip, dst_port, data)
+            } else {
+                false
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - send_udp_v6 failed");
+            false
+        }
+    }
+}
+
 /// Send a TCP segment
 pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
@@ -134,6 +151,17 @@ pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpSocket> {
     }
 }
 
+/// Apply IPv6 global address obtained via DHCPv6
+pub fn apply_ipv6_global_address(addr: crate::net::ipv6::Ipv6Address) {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.apply_ipv6_global_address(addr);
+            }
+        }
+        Err(_) => log::error!("[NET] Global Stack poisoned - apply_ipv6_global_address failed"),
+    }
+}
 /// Unbind a UDP socket
 pub fn unbind_udp(port: u16) {
     match NETWORK_STACK.lock() {

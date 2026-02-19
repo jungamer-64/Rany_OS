@@ -21,6 +21,8 @@ use crate::fs::fs_abstraction::InodeNum;
 /// スワップアウト種別
 mod worker;
 pub use worker::*;
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwapKind {
     File { ino: InodeNum, page_num: u64 },

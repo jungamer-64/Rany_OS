@@ -250,3 +250,266 @@ pub(crate) fn exit_qemu(code: u32) -> ! {
         core::hint::spin_loop();
     }
 }
+
+pub(crate) fn test_net_endpoint_congestion_default_exports() -> bool {
+    run_check(
+        "net_endpoint_congestion_default_cubic_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_cubic_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_cubic_slow_start_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_cubic_slow_start_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_cubic_root_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_cubic_root_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_cubic_fast_recovery_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_cubic_fast_recovery_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_bbr_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_bbr_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_bbr_startup_growth_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_bbr_startup_growth_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_bbr_rt_prop_tracking_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_bbr_rt_prop_tracking_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_bbr_available_window_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_bbr_available_window_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_bbr_bdp_calculation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_bbr_bdp_calculation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_default_bbr_startup_to_drain_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_default_bbr_startup_to_drain_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_congestion_variant_exports() -> bool {
+    run_check(
+        "net_endpoint_congestion_variant_variant_from_algorithm_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_from_algorithm_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_with_mss_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_with_mss_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_newreno_ack_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_newreno_ack_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_cubic_ack_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_cubic_ack_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_bbr_ack_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_bbr_ack_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_timeout_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_timeout_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_reset_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_reset_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_available_window_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_available_window_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_fast_retransmit_newreno_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_fast_retransmit_newreno_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_variant_default_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_variant_default_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_congestion_core_exports() -> bool {
+    run_check(
+        "net_endpoint_congestion_core_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_slow_start_growth_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_slow_start_growth_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_transition_to_congestion_avoidance_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_transition_to_congestion_avoidance_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_fast_retransmit_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_fast_retransmit_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_timeout_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_timeout_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_available_window_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_available_window_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_flow_control_exports() -> bool {
+    run_check(
+        "net_endpoint_flow_control_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_receive_data_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_receive_data_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_consume_data_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_consume_data_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_zero_window_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_zero_window_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_sws_avoidance_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_sws_avoidance_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_peer_zero_window_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_peer_zero_window_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_probe_timing_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_probe_timing_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_futures_exports() -> bool {
+    run_check(
+        "net_endpoint_futures_sendfuture_wakes_on_send_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_sendfuture_wakes_on_send_smoke,
+    ) && run_check(
+        "net_endpoint_futures_recv_packet_zero_copy_via_owned_socket_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_recv_packet_zero_copy_via_owned_socket_smoke,
+    ) && run_check(
+        "net_endpoint_futures_tcp_packet_stream_multiple_packets_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_tcp_packet_stream_multiple_packets_smoke,
+    ) && run_check(
+        "net_endpoint_futures_udp_packet_stream_delivered_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_udp_packet_stream_delivered_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_handler_exports() -> bool {
+    run_check(
+        "net_endpoint_handler_handle_tx_available_requeues_dataready_smoke",
+        rany_os::qemu_tests::net_endpoint_handler_handle_tx_available_requeues_dataready_smoke,
+    ) && run_check(
+        "net_endpoint_handler_handle_data_ready_retry_when_no_device_smoke",
+        rany_os::qemu_tests::net_endpoint_handler_handle_data_ready_retry_when_no_device_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_inner_exports() -> bool {
+    run_check(
+        "net_endpoint_inner_socket_state_transitions_smoke",
+        rany_os::qemu_tests::net_endpoint_inner_socket_state_transitions_smoke,
+    ) && run_check(
+        "net_endpoint_inner_vecdeque_buffer_smoke",
+        rany_os::qemu_tests::net_endpoint_inner_vecdeque_buffer_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_retransmit_exports() -> bool {
+    run_check(
+        "net_endpoint_retransmit_rto_calculator_initial_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_rto_calculator_initial_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_rto_calculator_update_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_rto_calculator_update_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_rto_calculator_backoff_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_rto_calculator_backoff_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_retransmit_queue_push_and_ack_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_retransmit_queue_push_and_ack_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_retransmit_queue_timeout_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_retransmit_queue_timeout_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_retransmit_queue_retransmit_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_retransmit_queue_retransmit_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_retransmit_queue_process_sack_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_retransmit_queue_process_sack_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_seq_comparison_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_seq_comparison_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_segment_exports() -> bool {
+    run_check(
+        "net_endpoint_segment_tcp_segment_builder_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_segment_builder_smoke,
+    ) && run_check(
+        "net_endpoint_segment_tcp_segment_with_data_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_segment_with_data_smoke,
+    ) && run_check(
+        "net_endpoint_segment_tcp_segment_with_options_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_segment_with_options_smoke,
+    ) && run_check(
+        "net_endpoint_segment_tcp_message_length_field_for_checksum_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_message_length_field_for_checksum_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_socket_exports() -> bool {
+    run_check(
+        "net_endpoint_socket_owned_socket_raii_smoke",
+        rany_os::qemu_tests::net_endpoint_socket_owned_socket_raii_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_tcb_exports() -> bool {
+    run_check(
+        "net_endpoint_tcb_tcp_connection_state_smoke",
+        rany_os::qemu_tests::net_endpoint_tcb_tcp_connection_state_smoke,
+    ) && run_check(
+        "net_endpoint_tcb_tcp_control_block_entry_smoke",
+        rany_os::qemu_tests::net_endpoint_tcb_tcp_control_block_entry_smoke,
+    ) && run_check(
+        "net_endpoint_tcb_tcp_flags_smoke",
+        rany_os::qemu_tests::net_endpoint_tcb_tcp_flags_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_core_exports() -> bool {
+    run_check(
+        "net_endpoint_core_accepted_connection_smoke",
+        rany_os::qemu_tests::net_endpoint_core_accepted_connection_smoke,
+    ) && run_check(
+        "net_endpoint_core_socket_new_with_fd_smoke",
+        rany_os::qemu_tests::net_endpoint_core_socket_new_with_fd_smoke,
+    ) && run_check(
+        "net_endpoint_core_socket_accept_empty_queue_smoke",
+        rany_os::qemu_tests::net_endpoint_core_socket_accept_empty_queue_smoke,
+    ) && run_check(
+        "net_endpoint_core_socket_accept_with_connection_smoke",
+        rany_os::qemu_tests::net_endpoint_core_socket_accept_with_connection_smoke,
+    ) && run_check(
+        "net_endpoint_core_accept_backlog_limit_smoke",
+        rany_os::qemu_tests::net_endpoint_core_accept_backlog_limit_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_types_exports() -> bool {
+    run_check(
+        "net_endpoint_types_socket_fd_smoke",
+        rany_os::qemu_tests::net_endpoint_types_socket_fd_smoke,
+    ) && run_check(
+        "net_endpoint_types_socket_addr_smoke",
+        rany_os::qemu_tests::net_endpoint_types_socket_addr_smoke,
+    )
+}
+
+pub(crate) fn test_net_endpoint_window_scale_exports() -> bool {
+    run_check(
+        "net_endpoint_window_scale_window_scale_disabled_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_window_scale_disabled_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_window_scale_enabled_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_window_scale_enabled_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_advertised_window_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_advertised_window_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_option_builder_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_option_builder_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_option_parser_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_option_parser_smoke,
+    )
+}

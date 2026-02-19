@@ -196,6 +196,62 @@ fn run_suite() -> bool {
             test_net_ecdh_phase_b_exports,
         )
         && run_check(
+            "net_endpoint_congestion_default_exports",
+            test_net_endpoint_congestion_default_exports,
+        )
+        && run_check(
+            "net_endpoint_congestion_variant_exports",
+            test_net_endpoint_congestion_variant_exports,
+        )
+        && run_check(
+            "net_endpoint_congestion_core_exports",
+            test_net_endpoint_congestion_core_exports,
+        )
+        && run_check(
+            "net_endpoint_flow_control_exports",
+            test_net_endpoint_flow_control_exports,
+        )
+        && run_check(
+            "net_endpoint_futures_exports",
+            test_net_endpoint_futures_exports,
+        )
+        && run_check(
+            "net_endpoint_handler_exports",
+            test_net_endpoint_handler_exports,
+        )
+        && run_check(
+            "net_endpoint_inner_exports",
+            test_net_endpoint_inner_exports,
+        )
+        && run_check(
+            "net_endpoint_retransmit_exports",
+            test_net_endpoint_retransmit_exports,
+        )
+        && run_check(
+            "net_endpoint_segment_exports",
+            test_net_endpoint_segment_exports,
+        )
+        && run_check(
+            "net_endpoint_socket_exports",
+            test_net_endpoint_socket_exports,
+        )
+        && run_check(
+            "net_endpoint_tcb_exports",
+            test_net_endpoint_tcb_exports,
+        )
+        && run_check(
+            "net_endpoint_core_exports",
+            test_net_endpoint_core_exports,
+        )
+        && run_check(
+            "net_endpoint_types_exports",
+            test_net_endpoint_types_exports,
+        )
+        && run_check(
+            "net_endpoint_window_scale_exports",
+            test_net_endpoint_window_scale_exports,
+        )
+        && run_check(
             "kernel_driver_cell_exports",
             test_kernel_driver_cell_exports,
         )

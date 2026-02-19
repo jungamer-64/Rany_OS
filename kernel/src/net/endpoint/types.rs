@@ -268,3 +268,25 @@ mod tests {
     }
 }
 
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn socket_fd_smoke() -> bool {
+        let fd1 = SocketFd::from_raw(1);
+        let fd2 = SocketFd::from_raw(2);
+
+        fd1.is_valid() && !SocketFd::INVALID.is_valid() && fd1 < fd2
+    }
+
+    pub fn socket_addr_smoke() -> bool {
+        let addr = SocketAddr::new([192, 168, 1, 1], 8080);
+        if addr.ip != [192, 168, 1, 1] || addr.port != 8080 {
+            return false;
+        }
+
+        let localhost = SocketAddr::LOCALHOST.with_port(3000);
+        localhost.ip == [127, 0, 0, 1] && localhost.port == 3000
+    }
+}

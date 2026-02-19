@@ -66,6 +66,9 @@ jobs:
       - name: Verify driver time/driver_cell required wiring
         run: bash scripts/verify_driver_time_driver_cell_required.sh
 
+      - name: Verify NET endpoint required wiring
+        run: bash scripts/verify_net_endpoint_required.sh
+
       - name: Verify NET/TLS Wave8 required wiring
         run: bash scripts/verify_net_tls_wave8_required.sh
 

@@ -27,6 +27,8 @@ pub mod tcb;
 pub mod tcp_rx;
 #[cfg(test)]
 mod tests;
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
 pub mod types;
 pub mod window_scale;
 

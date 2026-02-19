@@ -365,3 +365,259 @@ impl OwnedSocket {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+    use crate::net::endpoint::manager::init_socket_manager;
+    use crate::net::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+    use crate::net::endpoint::{SocketAddr, SocketState};
+    use crate::net::{self, create_tcp_socket, create_udp_socket, stack, NetworkEvent};
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll, Waker};
+
+    pub fn sendfuture_wakes_on_send_smoke() -> bool {
+        init_socket_manager();
+
+        stack::init_default();
+        if let Ok(mut guard) = stack::stack().lock() {
+            if let Some(ref mut s) = *guard {
+                s.set_transmit_fn(|_data: &[u8]| true);
+            }
+        }
+
+        let sock = create_tcp_socket();
+        let fd = sock.fd();
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([127, 0, 0, 1], 80);
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+        }
+
+        let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
+        tcb.state = TcpConnectionState::Established;
+        tcb_table().insert(tcb);
+
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let data = alloc::vec![1u8, 2u8, 3u8, 4u8];
+        let Some(mut fut) = sock.send_async(data) else {
+            return false;
+        };
+        let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
+
+        if !matches!(pinned.as_mut().poll(&mut cx), Poll::Pending) {
+            return false;
+        }
+
+        let handler = crate::net::endpoint::handler::NetworkEventHandler::new();
+        if !matches!(
+            handler.handle_event(NetworkEvent::DataReady {
+                fd,
+                socket_type: crate::net::endpoint::types::SocketType::Tcp,
+            }),
+            crate::net::endpoint::handler::EventHandleResult::Success
+        ) {
+            return false;
+        }
+
+        matches!(pinned.as_mut().poll(&mut cx), Poll::Ready(Ok(4)))
+    }
+
+    pub fn recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
+        init_socket_manager();
+        stack::init_default();
+
+        let sock = create_tcp_socket();
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([127, 0, 0, 1], 80);
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+        }
+
+        use alloc::sync::Arc;
+        use crate::sync::PoisonLock;
+        use crate::net::tcp::{
+            Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
+            TcpStream,
+        };
+
+        let t_local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
+        let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+
+        let mut tcb = TcpControlBlock::new(t_local);
+        tcb.remote_addr = Some(t_remote);
+        tcb.state = TcpState::Established;
+        let tcb_arc = Arc::new(PoisonLock::new(tcb));
+        let stream = TcpStream { tcb: tcb_arc.clone() };
+
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.tcp_stream = Some(stream.clone());
+            let _ = inner.transition_to(SocketState::Connected);
+        }
+
+        let Some(mut packet) = crate::net::mempool::alloc_packet() else {
+            return false;
+        };
+        let data = [1u8, 2u8, 3u8, 4u8];
+        packet.data_mut()[..data.len()].copy_from_slice(&data);
+        packet.set_len(data.len());
+
+        if let Ok(mut tlock) = tcb_arc.lock() {
+            tlock.recv_buffer.push_back(packet);
+        } else {
+            return false;
+        }
+
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let Some(mut fut) = sock.recv_packet_async() else {
+            return false;
+        };
+        let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
+
+        match pinned.as_mut().poll(&mut cx) {
+            Poll::Ready(Some(pkt)) => pkt.data() == &data,
+            _ => false,
+        }
+    }
+
+    pub fn tcp_packet_stream_multiple_packets_smoke() -> bool {
+        init_socket_manager();
+        stack::init_default();
+
+        let sock = create_tcp_socket();
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([127, 0, 0, 1], 80);
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+        }
+
+        use alloc::sync::Arc;
+        use crate::sync::PoisonLock;
+        use crate::net::tcp::{
+            Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
+            TcpStream,
+        };
+
+        let t_local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
+        let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
+
+        let mut tcb = TcpControlBlock::new(t_local);
+        tcb.remote_addr = Some(t_remote);
+        tcb.state = TcpState::Established;
+        let tcb_arc = Arc::new(PoisonLock::new(tcb));
+        let stream = TcpStream { tcb: tcb_arc.clone() };
+
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.tcp_stream = Some(stream.clone());
+            let _ = inner.transition_to(SocketState::Connected);
+        }
+
+        let Some(mut p1) = crate::net::mempool::alloc_packet() else {
+            return false;
+        };
+        let d1 = [10u8, 11u8];
+        p1.data_mut()[..d1.len()].copy_from_slice(&d1);
+        p1.set_len(d1.len());
+
+        let Some(mut p2) = crate::net::mempool::alloc_packet() else {
+            return false;
+        };
+        let d2 = [20u8, 21u8, 22u8];
+        p2.data_mut()[..d2.len()].copy_from_slice(&d2);
+        p2.set_len(d2.len());
+
+        if let Ok(mut tlock) = tcb_arc.lock() {
+            tlock.recv_buffer.push_back(p1);
+            tlock.recv_buffer.push_back(p2);
+        } else {
+            return false;
+        }
+
+        let Some(stream_wrapper) = sock.tcp_packet_stream() else {
+            return false;
+        };
+
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let mut fut1 = stream_wrapper.next_packet();
+        let mut pinned1 = unsafe { Pin::new_unchecked(&mut fut1) };
+        let first_ok = matches!(pinned1.as_mut().poll(&mut cx), Poll::Ready(Some(pkt)) if pkt.data() == &d1);
+
+        if !first_ok {
+            return false;
+        }
+
+        let mut fut2 = stream_wrapper.next_packet();
+        let mut pinned2 = unsafe { Pin::new_unchecked(&mut fut2) };
+        matches!(pinned2.as_mut().poll(&mut cx), Poll::Ready(Some(pkt)) if pkt.data() == &d2)
+    }
+
+    pub fn udp_packet_stream_delivered_smoke() -> bool {
+        init_socket_manager();
+
+        let proc = crate::net::udp::UdpProcessor::new();
+        let port = 40000u16;
+        let Ok(u) = proc.bind_with_token(port, None) else {
+            return false;
+        };
+
+        let sock = create_udp_socket();
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(SocketAddr::new([127, 0, 0, 1], port));
+            inner.udp_socket = Some(u.clone());
+            let _ = inner.transition_to(SocketState::Connected);
+        }
+
+        let src_ip = crate::net::ipv4::Ipv4Address::from_octets(127, 0, 0, 1);
+        let dst_ip = src_ip;
+        let Some(mut packet) = crate::net::mempool::alloc_packet() else {
+            return false;
+        };
+        let Some(len) = crate::net::udp::UdpProcessor::build_packet(
+            packet.data_mut(),
+            src_ip,
+            12345,
+            dst_ip,
+            port,
+            b"hello",
+        ) else {
+            return false;
+        };
+        packet.set_len(len);
+
+        let packet_data = alloc::vec::Vec::from(packet.data());
+        let res = proc.process_with_packet(&packet_data, src_ip, dst_ip, packet);
+        if res != crate::net::udp::UdpResult::Delivered {
+            return false;
+        }
+
+        let Some(stream) = sock.udp_packet_stream() else {
+            return false;
+        };
+
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let mut fut = stream.next_packet();
+        let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
+        match pinned.as_mut().poll(&mut cx) {
+            Poll::Ready(Some((addr, pkt))) => pkt.data() == b"hello" && addr.port == 12345,
+            _ => false,
+        }
+    }
+}

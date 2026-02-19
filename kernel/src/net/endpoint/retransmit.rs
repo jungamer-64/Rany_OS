@@ -444,3 +444,116 @@ mod tests {
     }
 }
 
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+
+    pub fn rto_calculator_initial_smoke() -> bool {
+        let calc = RtoCalculator::new();
+        calc.get_rto() == 1000
+    }
+
+    pub fn rto_calculator_update_smoke() -> bool {
+        let mut calc = RtoCalculator::new();
+        calc.update(100);
+        let rto1 = calc.get_rto();
+        if !(200..=1000).contains(&rto1) {
+            return false;
+        }
+
+        calc.update(100);
+        let rto2 = calc.get_rto();
+        rto2 <= rto1
+    }
+
+    pub fn rto_calculator_backoff_smoke() -> bool {
+        let mut calc = RtoCalculator::new();
+        calc.update(100);
+        let rto_before = calc.get_rto();
+        calc.backoff();
+        let rto_after = calc.get_rto();
+        rto_after >= rto_before
+    }
+
+    pub fn retransmit_queue_push_and_ack_smoke() -> bool {
+        let mut queue = RetransmitQueue::new();
+        if !queue.is_empty() {
+            return false;
+        }
+
+        queue.push(1000, alloc::vec![1, 2, 3], 100);
+        queue.push(1003, alloc::vec![4, 5, 6], 110);
+        if queue.is_empty() {
+            return false;
+        }
+
+        queue.ack_received(1003, 150);
+        if queue.is_empty() {
+            return false;
+        }
+
+        queue.ack_received(1006, 160);
+        queue.is_empty()
+    }
+
+    pub fn retransmit_queue_timeout_smoke() -> bool {
+        let mut queue = RetransmitQueue::new();
+        queue.push(1000, alloc::vec![1, 2, 3], 0);
+
+        if queue.check_timeout(500).is_some() {
+            return false;
+        }
+
+        queue.check_timeout(1500).is_some()
+    }
+
+    pub fn retransmit_queue_retransmit_smoke() -> bool {
+        let mut queue = RetransmitQueue::new();
+        let original_data = alloc::vec![1, 2, 3, 4, 5];
+        queue.push(1000, original_data.clone(), 0);
+
+        let Some(retransmitted) = queue.retransmit(1500) else {
+            return false;
+        };
+        if retransmitted != original_data {
+            return false;
+        }
+
+        let Some(seg) = queue.check_timeout(3000) else {
+            return false;
+        };
+
+        seg.retransmit_count == 1 && seg.is_retransmit
+    }
+
+    pub fn retransmit_queue_process_sack_smoke() -> bool {
+        let local = SocketAddr::new([192, 168, 0, 1], 10000);
+        let remote = SocketAddr::new([192, 168, 0, 2], 20000);
+
+        retransmit_queue_remove(local, remote);
+
+        get_or_create_retransmit_queue(local, remote);
+        retransmit_queue_push(local, remote, 1000, alloc::vec![1, 2, 3]);
+        retransmit_queue_push(local, remote, 1003, alloc::vec![4, 5, 6]);
+
+        retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
+
+        let ok = {
+            let qs = RETRANSMIT_QUEUES.read();
+            let Some(q) = qs.get(&(local, remote)) else {
+                return false;
+            };
+            q.unacked.len() == 1 && q.unacked.front().map(|x| x.seq) == Some(1003)
+        };
+
+        retransmit_queue_remove(local, remote);
+        ok
+    }
+
+    pub fn seq_comparison_smoke() -> bool {
+        RetransmitQueue::seq_before(1000, 2000)
+            && !RetransmitQueue::seq_before(2000, 1000)
+            && RetransmitQueue::seq_before(0xFFFF_FFF0, 0x0000_0010)
+    }
+}

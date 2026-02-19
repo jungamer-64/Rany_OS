@@ -578,3 +578,68 @@ pub fn init_network_event_handler() {
     // crate::task::per_core_executor::spawn(super::tcp_rx::network_event_task());
     // 上記は起動シーケンスで呼び出される必要があるため、ここではログのみ
 }
+
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    use super::*;
+    use crate::net::endpoint::event::{event_queue, NetworkEvent};
+    use crate::net::endpoint::manager::init_socket_manager;
+    use crate::net::endpoint::{create_tcp_socket, SocketAddr};
+
+    pub fn handle_tx_available_requeues_dataready_smoke() -> bool {
+        init_socket_manager();
+
+        while event_queue().recv().is_some() {}
+
+        let sock = create_tcp_socket();
+        let fd = sock.fd();
+
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([127, 0, 0, 1], 80);
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+            inner.send_buffer.extend(&[1, 2, 3]);
+        }
+
+        let handler = NetworkEventHandler::new();
+        if !matches!(handler.handle_tx_available(), EventHandleResult::Success) {
+            return false;
+        }
+
+        for _ in 0..8 {
+            if let Some(evt) = event_queue().recv() {
+                if let NetworkEvent::DataReady { fd: efd, .. } = evt {
+                    return efd.raw() == fd.raw();
+                }
+            } else {
+                break;
+            }
+        }
+
+        false
+    }
+
+    pub fn handle_data_ready_retry_when_no_device_smoke() -> bool {
+        init_socket_manager();
+
+        let sock = create_tcp_socket();
+        let fd = sock.fd();
+
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([10, 0, 2, 2], 80);
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+            inner.send_buffer.extend(&[1, 2, 3, 4]);
+        }
+
+        let handler = NetworkEventHandler::new();
+        matches!(
+            handler.handle_data_ready(fd, SocketType::Tcp),
+            EventHandleResult::Retry
+        )
+    }
+}
