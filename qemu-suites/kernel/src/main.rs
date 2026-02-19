@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 mod iommu_wave3_tests;
 use iommu_wave3_tests::*;
-const HEAP_SIZE: usize = 64 * 1024 * 1024;
+const HEAP_SIZE: usize = 128 * 1024 * 1024; // increased to avoid OOM in qemu-suite tests
 
 #[repr(align(4096))]
 struct Heap([u8; HEAP_SIZE]);
