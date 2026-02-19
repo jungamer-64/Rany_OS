@@ -742,6 +742,7 @@ dependencies = [
  "hid_driver",
  "nvme_driver",
  "pci_driver",
+ "time_driver",
  "usb_driver",
  "virtio_driver",
 ]

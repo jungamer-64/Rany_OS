@@ -4,20 +4,24 @@ set -euo pipefail
 # Validates that Wave7 MM deterministic exports stay wired into suite_kernel.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ASYNC_EXPORT_FILE="$ROOT_DIR/kernel/src/mm/async_swapout/qemu_tests.rs"
-RECLAIM_EXPORT_FILE="$ROOT_DIR/kernel/src/mm/page_reclaim/qemu_tests.rs"
+ASYNC_EXPORT_ROOT="$ROOT_DIR/kernel/src/mm/reclaim/async_swapout"
+ASYNC_EXPORT_FILE="$ROOT_DIR/kernel/src/mm/reclaim/async_swapout/qemu_tests.rs"
+RECLAIM_EXPORT_ROOT="$ROOT_DIR/kernel/src/mm/reclaim/page_reclaim"
+RECLAIM_EXPORT_FILE="$ROOT_DIR/kernel/src/mm/reclaim/page_reclaim/qemu_tests.rs"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
-KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+KERNEL_SUITE_ROOT="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
 for required_file in \
+  "$ASYNC_EXPORT_ROOT" \
   "$ASYNC_EXPORT_FILE" \
+  "$RECLAIM_EXPORT_ROOT" \
   "$RECLAIM_EXPORT_FILE" \
   "$KERNEL_WRAPPER_FILE" \
-  "$KERNEL_SUITE_FILE" \
+  "$KERNEL_SUITE_ROOT" \
   "$PENDING_FILE"
 do
-  if [[ ! -f "$required_file" ]]; then
+  if [[ ! -e "$required_file" ]]; then
     echo "[verify_mm_wave7_required] missing file: $required_file" >&2
     exit 1
   fi
@@ -64,53 +68,41 @@ reclaim_phase_c_cases=(
 
 violations=0
 
-if ! rg -q "mm_wave7_async_swapout_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_mm_wave7_required] missing mm_wave7_async_swapout_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+for suite_group in \
+  "mm_wave7_async_swapout_exports" \
+  "mm_wave7_async_swapout_phase_d_exports" \
+  "mm_wave7_page_reclaim_exports" \
+  "mm_wave7_page_reclaim_phase_b_exports" \
+  "mm_wave7_page_reclaim_phase_c_exports"
+do
+  if ! rg -q "${suite_group}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_mm_wave7_required] missing ${suite_group} under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
+    violations=$((violations + 1))
+  fi
+done
+
+if ! rg -q "pub fn qemu_test_set_enqueue_override\\(" "$ASYNC_EXPORT_ROOT"; then
+  echo "[verify_mm_wave7_required] missing qemu enqueue hook under ${ASYNC_EXPORT_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
-if ! rg -q "mm_wave7_async_swapout_phase_d_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_mm_wave7_required] missing mm_wave7_async_swapout_phase_d_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+if ! rg -q "pub fn qemu_test_clear_enqueue_override\\(" "$ASYNC_EXPORT_ROOT"; then
+  echo "[verify_mm_wave7_required] missing qemu enqueue clear hook under ${ASYNC_EXPORT_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
-if ! rg -q "mm_wave7_page_reclaim_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_mm_wave7_required] missing mm_wave7_page_reclaim_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+if ! rg -q "pub fn qemu_test_set_sync_page_writeback_override\\(" "$RECLAIM_EXPORT_ROOT"; then
+  echo "[verify_mm_wave7_required] missing qemu page writeback hook under ${RECLAIM_EXPORT_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
-if ! rg -q "mm_wave7_page_reclaim_phase_b_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_mm_wave7_required] missing mm_wave7_page_reclaim_phase_b_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+if ! rg -q "pub fn qemu_test_set_sync_all_writeback_override\\(" "$RECLAIM_EXPORT_ROOT"; then
+  echo "[verify_mm_wave7_required] missing qemu all-writeback hook under ${RECLAIM_EXPORT_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
-if ! rg -q "mm_wave7_page_reclaim_phase_c_exports" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_mm_wave7_required] missing mm_wave7_page_reclaim_phase_c_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "pub fn qemu_test_set_enqueue_override\\(" "$ROOT_DIR/kernel/src/mm/async_swapout.rs"; then
-  echo "[verify_mm_wave7_required] missing qemu enqueue hook in kernel/src/mm/async_swapout.rs"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "pub fn qemu_test_clear_enqueue_override\\(" "$ROOT_DIR/kernel/src/mm/async_swapout.rs"; then
-  echo "[verify_mm_wave7_required] missing qemu enqueue clear hook in kernel/src/mm/async_swapout.rs"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "pub fn qemu_test_set_sync_page_writeback_override\\(" "$ROOT_DIR/kernel/src/mm/page_reclaim.rs"; then
-  echo "[verify_mm_wave7_required] missing qemu page writeback hook in kernel/src/mm/page_reclaim.rs"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "pub fn qemu_test_set_sync_all_writeback_override\\(" "$ROOT_DIR/kernel/src/mm/page_reclaim.rs"; then
-  echo "[verify_mm_wave7_required] missing qemu all-writeback hook in kernel/src/mm/page_reclaim.rs"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "pub fn qemu_test_clear_writeback_overrides\\(" "$ROOT_DIR/kernel/src/mm/page_reclaim.rs"; then
-  echo "[verify_mm_wave7_required] missing qemu writeback clear hook in kernel/src/mm/page_reclaim.rs"
+if ! rg -q "pub fn qemu_test_clear_writeback_overrides\\(" "$RECLAIM_EXPORT_ROOT"; then
+  echo "[verify_mm_wave7_required] missing qemu writeback clear hook under ${RECLAIM_EXPORT_ROOT#"$ROOT_DIR"/}"
   violations=$((violations + 1))
 fi
 
@@ -118,8 +110,8 @@ for case_name in "${async_phase_d_cases[@]}"; do
   export_fn="wave7_${case_name}_smoke"
   wrapper_fn="mm_wave7_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$ASYNC_EXPORT_FILE"; then
-    echo "[verify_mm_wave7_required] missing async phase-d export '${export_fn}' in ${ASYNC_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$ASYNC_EXPORT_FILE" "$ASYNC_EXPORT_ROOT"; then
+    echo "[verify_mm_wave7_required] missing async phase-d export '${export_fn}' under ${ASYNC_EXPORT_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -128,8 +120,8 @@ for case_name in "${async_phase_d_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_mm_wave7_required] missing async phase-d suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_mm_wave7_required] missing async phase-d suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -143,8 +135,8 @@ for case_name in "${async_cases[@]}"; do
   export_fn="wave7_${case_name}_smoke"
   wrapper_fn="mm_wave7_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$ASYNC_EXPORT_FILE"; then
-    echo "[verify_mm_wave7_required] missing async export '${export_fn}' in ${ASYNC_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$ASYNC_EXPORT_FILE" "$ASYNC_EXPORT_ROOT"; then
+    echo "[verify_mm_wave7_required] missing async export '${export_fn}' under ${ASYNC_EXPORT_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -153,8 +145,8 @@ for case_name in "${async_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_mm_wave7_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_mm_wave7_required] missing suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -168,8 +160,8 @@ for case_name in "${reclaim_phase_c_cases[@]}"; do
   export_fn="wave7_${case_name}_smoke"
   wrapper_fn="mm_wave7_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$RECLAIM_EXPORT_FILE"; then
-    echo "[verify_mm_wave7_required] missing reclaim phase-c export '${export_fn}' in ${RECLAIM_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$RECLAIM_EXPORT_FILE" "$RECLAIM_EXPORT_ROOT"; then
+    echo "[verify_mm_wave7_required] missing reclaim phase-c export '${export_fn}' under ${RECLAIM_EXPORT_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -178,8 +170,8 @@ for case_name in "${reclaim_phase_c_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_mm_wave7_required] missing phase-c suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_mm_wave7_required] missing phase-c suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -193,8 +185,8 @@ for case_name in "${reclaim_phase_b_cases[@]}"; do
   export_fn="wave7_${case_name}_smoke"
   wrapper_fn="mm_wave7_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$RECLAIM_EXPORT_FILE"; then
-    echo "[verify_mm_wave7_required] missing reclaim phase-b export '${export_fn}' in ${RECLAIM_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$RECLAIM_EXPORT_FILE" "$RECLAIM_EXPORT_ROOT"; then
+    echo "[verify_mm_wave7_required] missing reclaim phase-b export '${export_fn}' under ${RECLAIM_EXPORT_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -203,8 +195,8 @@ for case_name in "${reclaim_phase_b_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_mm_wave7_required] missing phase-b suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_mm_wave7_required] missing phase-b suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -218,8 +210,8 @@ for case_name in "${reclaim_cases[@]}"; do
   export_fn="wave7_${case_name}_smoke"
   wrapper_fn="mm_wave7_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$RECLAIM_EXPORT_FILE"; then
-    echo "[verify_mm_wave7_required] missing reclaim export '${export_fn}' in ${RECLAIM_EXPORT_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_fn}\\(" "$RECLAIM_EXPORT_FILE" "$RECLAIM_EXPORT_ROOT"; then
+    echo "[verify_mm_wave7_required] missing reclaim export '${export_fn}' under ${RECLAIM_EXPORT_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -228,8 +220,8 @@ for case_name in "${reclaim_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_mm_wave7_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_mm_wave7_required] missing suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
@@ -239,25 +231,17 @@ for case_name in "${reclaim_cases[@]}"; do
   fi
 done
 
-if ! rg -q "MM Wave7 Phase A deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
-  echo "[verify_mm_wave7_required] missing Wave7 marker in ${PENDING_FILE#"$ROOT_DIR"/}"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "MM Wave7 Phase B deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
-  echo "[verify_mm_wave7_required] missing Wave7 phase-b marker in ${PENDING_FILE#"$ROOT_DIR"/}"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "MM Wave7 Phase C deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
-  echo "[verify_mm_wave7_required] missing Wave7 phase-c marker in ${PENDING_FILE#"$ROOT_DIR"/}"
-  violations=$((violations + 1))
-fi
-
-if ! rg -q "MM Wave7 Phase D deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
-  echo "[verify_mm_wave7_required] missing Wave7 phase-d marker in ${PENDING_FILE#"$ROOT_DIR"/}"
-  violations=$((violations + 1))
-fi
+for marker in \
+  "MM Wave7 Phase A deterministic set is promoted to required suite_kernel" \
+  "MM Wave7 Phase B deterministic set is promoted to required suite_kernel" \
+  "MM Wave7 Phase C deterministic set is promoted to required suite_kernel" \
+  "MM Wave7 Phase D deterministic set is promoted to required suite_kernel"
+do
+  if ! rg -q "${marker}" "$PENDING_FILE"; then
+    echo "[verify_mm_wave7_required] missing marker '${marker}' in ${PENDING_FILE#"$ROOT_DIR"/}"
+    violations=$((violations + 1))
+  fi
+done
 
 if [[ "$violations" -gt 0 ]]; then
   echo "[verify_mm_wave7_required] FAIL: found $violations issues"

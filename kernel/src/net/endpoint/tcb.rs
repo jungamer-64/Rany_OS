@@ -87,6 +87,13 @@ pub struct TcpControlBlockEntry {
     pub rcv_up: u32,
     /// Urgent mode active (receive side)
     pub rcv_urg: bool,
+    // === TCP Timestamps (RFC 7323) ===
+    /// Timestamps negotiated (TSopt seen in SYN from peer)
+    pub ts_enabled: bool,
+    /// Our timestamp value (monotonic, incremented per tick)
+    pub ts_val: u32,
+    /// Last received TSval from peer (echoed back as TSecr)
+    pub ts_ecr: u32,
 }
 
 impl TcpControlBlockEntry {
@@ -122,6 +129,9 @@ impl TcpControlBlockEntry {
             snd_urg: false,
             rcv_up: 0,
             rcv_urg: false,
+            ts_enabled: false,
+            ts_val: 0,
+            ts_ecr: 0,
         }
     }
 

@@ -13,3 +13,7 @@ description = "Time Management Driver (Cell) for RanyOS - high-level timer servi
 [dependencies]
 spin = "0.10"
 kernel_api = { path = "../../interfaces/kernel_api" }
+
+[features]
+default = []
+qemu-test-export = []

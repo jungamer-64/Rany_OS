@@ -240,6 +240,12 @@ pub struct TcpControlBlock {
     pub sack_block_count: u8,
     /// Segments marked as SACKed (for selective retransmit)
     pub sack_scoreboard: alloc::vec::Vec<(u32, u32)>,
+
+    // Zero-Window Probe (RFC 1122 Section 4.2.2.17)
+    /// Number of zero-window probes sent since peer window became 0
+    pub zwp_probes_sent: u8,
+    /// Timestamp of last zero-window probe sent (microseconds)
+    pub zwp_last_probe_time: u64,
 }
 
 /// Unacknowledged segment for retransmission

@@ -48,6 +48,18 @@ pub const STALE_TIMEOUT_MS: u64 = 600_000;
 /// Maximum entries in neighbor cache
 pub const MAX_NEIGHBOR_ENTRIES: usize = 128;
 
+/// Delay before first probe when Stale→Delay (RFC 4861 Section 7.3.3)
+pub const DELAY_FIRST_PROBE_TIME_MS: u64 = 5_000;
+
+/// Maximum unicast solicitations before declaring unreachable (RFC 4861)
+pub const MAX_UNICAST_SOLICIT: u8 = 3;
+
+/// Retransmit interval for unicast NS in Probe state (ms, RFC 4861)
+pub const RETRANS_TIMER_MS: u64 = 1_000;
+
+/// Maximum multicast solicitations for incomplete resolution (RFC 4861)
+pub const MAX_MULTICAST_SOLICIT: u8 = 3;
+
 // =====================================================
 // NDP Option Types
 // =====================================================
@@ -322,6 +334,77 @@ impl NeighborCache {
             }
             true
         });
+    }
+
+    /// Trigger NUD: Stale → Delay when traffic is sent to a Stale neighbor
+    /// (RFC 4861 Section 7.3.3)
+    /// Returns true if the entry exists and can be used (has a valid MAC)
+    pub fn trigger_delay(&mut self, ip: &Ipv6Address, current_time: u64) -> bool {
+        if let Some(entry) = self.entries.get_mut(ip.as_bytes()) {
+            if entry.state == NeighborState::Stale {
+                entry.state = NeighborState::Delay;
+                entry.timestamp = current_time;
+                entry.probes_sent = 0;
+            }
+            entry.has_mac()
+        } else {
+            false
+        }
+    }
+
+    /// Process NUD timers — advances Delay→Probe, Probe retries, and
+    /// removes entries that exceeded MAX_UNICAST_SOLICIT.
+    /// Returns a list of IPv6 addresses that need a unicast NS probe.
+    pub fn process_nud_timers(&mut self, current_time: u64) -> Vec<Ipv6Address> {
+        let mut probe_targets = Vec::new();
+        let mut dead_keys = Vec::new();
+
+        for (key, entry) in self.entries.iter_mut() {
+            match entry.state {
+                NeighborState::Delay => {
+                    // After DELAY_FIRST_PROBE_TIME, transition to Probe
+                    if current_time.saturating_sub(entry.timestamp) >= DELAY_FIRST_PROBE_TIME_MS {
+                        entry.state = NeighborState::Probe;
+                        entry.timestamp = current_time;
+                        entry.probes_sent = 1;
+                        probe_targets.push(entry.ip);
+                    }
+                }
+                NeighborState::Probe => {
+                    // Retransmit NS at RETRANS_TIMER_MS intervals
+                    if current_time.saturating_sub(entry.timestamp) >= RETRANS_TIMER_MS {
+                        if entry.probes_sent >= MAX_UNICAST_SOLICIT {
+                            // Unreachable — schedule removal
+                            dead_keys.push(*key);
+                        } else {
+                            entry.probes_sent += 1;
+                            entry.timestamp = current_time;
+                            probe_targets.push(entry.ip);
+                        }
+                    }
+                }
+                NeighborState::Incomplete => {
+                    // Timeout for multicast solicitation
+                    if current_time.saturating_sub(entry.timestamp) >= RETRANS_TIMER_MS {
+                        if entry.probes_sent >= MAX_MULTICAST_SOLICIT {
+                            dead_keys.push(*key);
+                        } else {
+                            entry.probes_sent += 1;
+                            entry.timestamp = current_time;
+                            probe_targets.push(entry.ip);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Remove unreachable entries
+        for key in dead_keys {
+            self.entries.remove(&key);
+        }
+
+        probe_targets
     }
 
     /// Get number of entries

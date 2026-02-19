@@ -123,6 +123,70 @@ pub(crate) fn test_iommu_wave5_canonical_exports() -> bool {
     )
 }
 
+pub(crate) fn test_kernel_driver_cell_exports() -> bool {
+    run_check(
+        "driver_cell_state_default_is_created_smoke",
+        rany_os::qemu_tests::driver_cell_state_default_is_created_smoke,
+    ) && run_check(
+        "driver_cell_state_transitions_are_valid_smoke",
+        rany_os::qemu_tests::driver_cell_state_transitions_are_valid_smoke,
+    ) && run_check(
+        "driver_cell_state_faulted_smoke",
+        rany_os::qemu_tests::driver_cell_state_faulted_smoke,
+    ) && run_check(
+        "driver_cell_id_equality_smoke",
+        rany_os::qemu_tests::driver_cell_id_equality_smoke,
+    ) && run_check(
+        "driver_cell_id_ordering_smoke",
+        rany_os::qemu_tests::driver_cell_id_ordering_smoke,
+    ) && run_check(
+        "driver_cell_restart_policy_never_smoke",
+        rany_os::qemu_tests::driver_cell_restart_policy_never_smoke,
+    ) && run_check(
+        "driver_cell_restart_policy_on_panic_defaults_smoke",
+        rany_os::qemu_tests::driver_cell_restart_policy_on_panic_defaults_smoke,
+    ) && run_check(
+        "driver_cell_restart_policy_always_smoke",
+        rany_os::qemu_tests::driver_cell_restart_policy_always_smoke,
+    ) && run_check(
+        "driver_cell_fault_kind_variants_smoke",
+        rany_os::qemu_tests::driver_cell_fault_kind_variants_smoke,
+    ) && run_check(
+        "driver_cell_stats_initial_values_smoke",
+        rany_os::qemu_tests::driver_cell_stats_initial_values_smoke,
+    ) && run_check(
+        "driver_cell_stats_default_smoke",
+        rany_os::qemu_tests::driver_cell_stats_default_smoke,
+    ) && run_check(
+        "driver_cell_stats_record_start_smoke",
+        rany_os::qemu_tests::driver_cell_stats_record_start_smoke,
+    ) && run_check(
+        "driver_cell_stats_record_stop_smoke",
+        rany_os::qemu_tests::driver_cell_stats_record_stop_smoke,
+    ) && run_check(
+        "driver_cell_stats_record_fault_smoke",
+        rany_os::qemu_tests::driver_cell_stats_record_fault_smoke,
+    ) && run_check(
+        "driver_cell_stats_record_restart_smoke",
+        rany_os::qemu_tests::driver_cell_stats_record_restart_smoke,
+    ) && run_check(
+        "driver_cell_stats_record_hot_swap_smoke",
+        rany_os::qemu_tests::driver_cell_stats_record_hot_swap_smoke,
+    ) && run_check(
+        "driver_cell_error_not_found_smoke",
+        rany_os::qemu_tests::driver_cell_error_not_found_smoke,
+    ) && run_check(
+        "driver_cell_error_invalid_state_smoke",
+        rany_os::qemu_tests::driver_cell_error_invalid_state_smoke,
+    ) && run_check(
+        "driver_cell_global_stats_new_smoke",
+        rany_os::qemu_tests::driver_cell_global_stats_new_smoke,
+    ) && run_check(
+        "driver_cell_global_stats_tracking_smoke",
+        rany_os::qemu_tests::driver_cell_global_stats_tracking_smoke,
+    )
+}
+
 pub(crate) fn report_iommu_wave2_runtime_readiness() -> bool {
     serial_write_str("[qemu-suite] kernel info iommu_wave2 runtime_ready=");
     if rany_os::memory::is_initialized() {

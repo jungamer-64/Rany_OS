@@ -624,68 +624,9 @@ impl Drop for SleepFuture {
 }
 
 // ============================================================================
-// Tests
+// ============================================================================
+// QEMU Test Exports
 // ============================================================================
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tick_increment() {
-        let tm = TimeManagement::new();
-        assert_eq!(tm.current_tick_ms(), 0);
-        tm.on_timer_interrupt();
-        assert_eq!(tm.current_tick_ms(), 1);
-        tm.on_timer_interrupt();
-        assert_eq!(tm.current_tick_ms(), 2);
-    }
-
-    #[test]
-    fn test_timer_registration() {
-        let tm = TimeManagement::new();
-        let waker = core::task::Waker::noop();
-        let handle = tm.register_timer(100, TimerMode::OneShot, waker);
-        assert!(tm.cancel_timer(handle));
-        // 二重キャンセルは false
-        assert!(!tm.cancel_timer(handle));
-    }
-
-    #[test]
-    fn test_cpu_tracker() {
-        let tm = TimeManagement::new();
-        tm.on_timer_interrupt(); // tick=1
-        tm.record_task_start(42);
-        tm.on_timer_interrupt(); // tick=2
-        tm.on_timer_interrupt(); // tick=3
-        tm.record_task_stop(42);
-
-        let stats = tm.task_cpu_stats(42).unwrap();
-        assert_eq!(stats.schedule_count, 1);
-        assert!(stats.cpu_time_ns > 0);
-    }
-
-    #[test]
-    fn test_shard_index() {
-        assert_eq!(ShardedSleepRegistry::shard_index(0), 0);
-        assert_eq!(ShardedSleepRegistry::shard_index(16), 0);
-        assert_eq!(ShardedSleepRegistry::shard_index(1), 1);
-        assert_eq!(ShardedSleepRegistry::shard_index(15), 15);
-    }
-
-    #[test]
-    fn test_uptime_ns() {
-        let tm = TimeManagement::new();
-        tm.on_timer_interrupt();
-        assert_eq!(tm.uptime_ns(), NANOS_PER_MILLI);
-    }
-
-    #[test]
-    fn test_wall_clock_adjustment() {
-        let tm = TimeManagement::new();
-        tm.set_boot_timestamp_ms(1_000_000);
-        tm.adjust_wall_clock(500_000_000); // +500ms
-        let ts = tm.unix_timestamp_ms();
-        assert_eq!(ts, 1_000_500);
-    }
-}
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;

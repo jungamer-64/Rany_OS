@@ -10,6 +10,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # IOMMU AMD Wave5 required wiring is verified by scripts/verify_iommu_amd_wave5_required.sh.
 # Graphics/Framebuffer Wave6 required wiring is verified by scripts/verify_graphics_framebuffer_wave6_required.sh.
 # MM Wave7 required wiring is verified by scripts/verify_mm_wave7_required.sh.
+# Driver time/driver_cell required wiring is verified by scripts/verify_driver_time_driver_cell_required.sh.
 ALLOWLIST_FILE="$ROOT_DIR/scripts/qemu_legacy_test_allowlist.lst"
 
 if [[ ! -f "$ALLOWLIST_FILE" ]]; then

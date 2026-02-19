@@ -22,6 +22,13 @@ use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags}
 use super::types::{
     AcceptedConnection, SocketAddr, SocketError, SocketFd, SocketState, SocketType,
 };
+use super::window_scale::TcpOptionParser;
+
+/// TCPタイムスタンプ値を生成（10ms粒度、RFC 7323準拠）
+fn generate_tcp_timestamp() -> u32 {
+    let ms = tcb_table().get_current_tick();
+    (ms / 10) as u32
+}
 
 /// TCPセグメント受信処理
 /// プロトコルスタック（ipv4.rs）から呼ばれる
@@ -54,13 +61,13 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
 }
 
 /// SYN-SENT状態でのセグメント処理
-fn handle_syn_sent_segment(tcb: TcpControlBlockEntry, flags: u8, seq_num: u32, ack_num: u32) {
+fn handle_syn_sent_segment(tcb: TcpControlBlockEntry, flags: u8, seq_num: u32, ack_num: u32, segment: &[u8], data_offset: usize) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_rst = (flags & tcp_flags::RST) != 0;
 
     if is_syn && is_ack {
-        handle_syn_ack_received(tcb, seq_num, ack_num);
+        handle_syn_ack_received(tcb, seq_num, ack_num, segment, data_offset);
     } else if is_rst {
         handle_rst_received(tcb);
     }
@@ -80,6 +87,19 @@ fn handle_established_segment(
     let is_rst = (flags & tcp_flags::RST) != 0;
     let is_urg = (flags & tcp_flags::URG) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
+
+    // TCP Timestamps (RFC 7323): 受信セグメントのTSvalをTCBに記録
+    if tcb.ts_enabled && data_offset > 20 && data_offset <= segment.len() {
+        let options = &segment[20..data_offset];
+        let mut parser = TcpOptionParser::new(options);
+        if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
+            tcb_table().update(tcb.local, tcb.remote, |entry| {
+                entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
+                // 自分のTSvalを更新
+                entry.ts_val = generate_tcp_timestamp();
+            });
+        }
+    }
 
     if is_fin {
         handle_fin_received(tcb, seq_num);
@@ -123,7 +143,7 @@ fn process_tcp_with_tcb(
 ) {
     match tcb.state {
         TcpConnectionState::SynSent => {
-            handle_syn_sent_segment(tcb, flags, seq_num, ack_num);
+            handle_syn_sent_segment(tcb, flags, seq_num, ack_num, segment, data_offset);
         }
         TcpConnectionState::SynReceived => {
             if (flags & tcp_flags::ACK) != 0 {
@@ -151,7 +171,7 @@ fn process_tcp_with_tcb(
 }
 
 /// SYN-ACK受信処理（クライアント側3ウェイハンドシェイク）
-fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32) {
+fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32, segment: &[u8], data_offset: usize) {
     // ACK番号を検証
     if ack_num != tcb.snd_nxt {
         log::info!(
@@ -162,11 +182,27 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
         return;
     }
 
+    // SYN-ACKのTCPオプションを解析（TSopt検出）
+    let peer_ts = if data_offset > 20 && data_offset <= segment.len() {
+        let options = &segment[20..data_offset];
+        let mut parser = TcpOptionParser::new(options);
+        parser.find_timestamps()
+    } else {
+        None
+    };
+
     // TCB更新
     let updated = tcb_table().update(tcb.local, tcb.remote, |entry| {
         entry.rcv_nxt = seq_num.wrapping_add(1); // SYNは1バイト消費
         entry.snd_una = ack_num;
         entry.state = TcpConnectionState::Established;
+
+        // TCP Timestamps (RFC 7323): SYN-ACKにTSoptがあればクライアント側も有効化
+        if let Some((peer_ts_val, _)) = peer_ts {
+            entry.ts_enabled = true;
+            entry.ts_ecr = peer_ts_val;
+            entry.ts_val = generate_tcp_timestamp();
+        }
     });
 
     if !updated {
@@ -174,12 +210,19 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
     }
 
     // ACKパケット送信
-    let mut ack_segment = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+    let mut builder = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
         .seq(ack_num)
         .ack(seq_num.wrapping_add(1))
         .ack_flag()
-        .window(65535)
-        .build();
+        .window(65535);
+
+    // TCP Timestamps: 3ウェイハンドシェイクの最終ACKにもTSoptを付与
+    if let Some((peer_ts_val, _)) = peer_ts {
+        let our_ts = generate_tcp_timestamp();
+        builder = builder.nop().nop().timestamp(our_ts, peer_ts_val);
+    }
+
+    let mut ack_segment = builder.build();
 
     TcpSegmentBuilder::calculate_checksum(&mut ack_segment, tcb.local.ip, tcb.remote.ip);
 
@@ -203,8 +246,8 @@ fn process_tcp_new_connection(
     remote: SocketAddr,
     flags: u8,
     seq_num: u32,
-    _segment: &[u8],
-    _data_offset: usize,
+    segment: &[u8],
+    data_offset: usize,
 ) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
 
@@ -212,6 +255,15 @@ fn process_tcp_new_connection(
         // SYN以外の新規接続は無視（またはRST送信）
         return;
     }
+
+    // SYNのTCPオプションを解析（TSopt検出）
+    let peer_ts = if data_offset > 20 && data_offset <= segment.len() {
+        let options = &segment[20..data_offset];
+        let mut parser = TcpOptionParser::new(options);
+        parser.find_timestamps()
+    } else {
+        None
+    };
 
     // リッスン中のソケットを探す
     let manager = SOCKET_MANAGER.read();
@@ -246,20 +298,32 @@ fn process_tcp_new_connection(
     tcb.initialize_seq(isn);
     tcb.rcv_nxt = seq_num.wrapping_add(1);
     tcb.state = TcpConnectionState::SynReceived;
+
+    // TCP Timestamps (RFC 7323): SYNにTSoptがあれば有効化
+    if let Some((peer_ts_val, _)) = peer_ts {
+        tcb.ts_enabled = true;
+        tcb.ts_ecr = peer_ts_val; // SYN-ACKのTSecr = 相手のTSval
+    }
     tcb_table().insert(tcb);
 
     // SYN-ACK送信 (TCPオプション付き)
     // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)
     // Window Scale=7 (最大8MBウィンドウ)
-    let mut syn_ack = TcpSegmentBuilder::new(local.port, remote.port)
+    let mut builder = TcpSegmentBuilder::new(local.port, remote.port)
         .seq(isn)
         .ack(seq_num.wrapping_add(1))
         .syn()
         .ack_flag()
         .window(65535)
-        .syn_options(1460, 7) // MSS + Window Scale + SACK Permitted
-        .build();
+        .syn_options(1460, 7); // MSS + Window Scale + SACK Permitted
 
+    // TSopt付きSYN-ACK (RFC 7323 Section 3.2)
+    if let Some((peer_ts_val, _)) = peer_ts {
+        let our_ts = generate_tcp_timestamp();
+        builder = builder.nop().nop().timestamp(our_ts, peer_ts_val);
+    }
+
+    let mut syn_ack = builder.build();
     TcpSegmentBuilder::calculate_checksum(&mut syn_ack, local.ip, remote.ip);
 
     // パケット送信
@@ -427,13 +491,27 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         // Out-of-order: OOOキューに保存し、即座にDupACKを返す
         ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data);
 
-        // DupACK — 現在のrcv_nxtで応答（Fast Retransmitトリガ用）
-        let mut dup_ack = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+        // SACKブロック取得（OOOキュー内の受信済み範囲を通知）
+        let sack = ooo_queue::get_sack_blocks(tcb.local, tcb.remote);
+
+        // DupACK — 現在のrcv_nxtで応答（Fast Retransmitトリガ用 + SACKブロック付き）
+        let mut builder = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
             .seq(tcb.snd_nxt)
             .ack(tcb.rcv_nxt)
             .ack_flag()
-            .window(65535)
-            .build();
+            .window(65535);
+
+        // TCP Timestamps (RFC 7323): DupACKにもTSoptを付与
+        if tcb.ts_enabled {
+            builder = builder.nop().nop().timestamp(tcb.ts_val, tcb.ts_ecr);
+        }
+
+        if !sack.is_empty() {
+            // NOP+NOP+SACK でアラインメント (RFC 2018 Section 3)
+            builder = builder.nop().nop().sack_blocks(&sack);
+        }
+
+        let mut dup_ack = builder.build();
         TcpSegmentBuilder::calculate_checksum(&mut dup_ack, tcb.local.ip, tcb.remote.ip);
         send_tcp_segment(tcb.local, tcb.remote, dup_ack);
         return;
@@ -461,12 +539,18 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
     });
 
     // ACK送信（ドレイン後のrcv_nxtで応答）
-    let mut ack = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+    let mut builder = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
         .seq(tcb.snd_nxt)
         .ack(new_rcv_nxt)
         .ack_flag()
-        .window(65535)
-        .build();
+        .window(65535);
+
+    // TCP Timestamps (RFC 7323): ACKにTSoptを付与
+    if tcb.ts_enabled {
+        builder = builder.nop().nop().timestamp(tcb.ts_val, tcb.ts_ecr);
+    }
+
+    let mut ack = builder.build();
 
     TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.ip, tcb.remote.ip);
     send_tcp_segment(tcb.local, tcb.remote, ack);

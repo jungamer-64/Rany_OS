@@ -402,6 +402,8 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
 - MM Wave7 required 配線の整合チェック（Phase A+B+C+D）は `bash scripts/verify_mm_wave7_required.sh` で実行する。
 - NET/TLS Wave8 required 配線の整合チェック（Phase A+B1+B2+C+D+E+F）は `bash scripts/verify_net_tls_wave8_required.sh` で実行する。
 - NET/ECDH required 配線の整合チェック（x25519+phase-b）は `bash scripts/verify_net_ecdh_required.sh` で実行する。
+- Driver time/driver_cell required 配線の整合チェックは `bash scripts/verify_driver_time_driver_cell_required.sh` で実行する。
+- legacy `#[test]`（drivers/time, kernel/driver_cell）は qemu-test-export へ移植済みで、`scripts/qemu_legacy_test_allowlist.lst` は空運用を維持する。
 - CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
 - `suite_pending` 実行時に `target/qemu-logs/pending-summary.txt` と `target/qemu-logs/pending-summary.json` が生成される。
 - `suite_kernel_runtime_pending` 実行時に `target/qemu-logs/kernel-runtime-pending-summary.txt` と `target/qemu-logs/kernel-runtime-pending-summary.json` が生成される。
