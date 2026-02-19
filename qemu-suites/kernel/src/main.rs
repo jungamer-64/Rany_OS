@@ -160,10 +160,6 @@ fn run_suite() -> bool {
             test_iommu_wave5_canonical_exports,
         )
         && run_check(
-            "iommu_wave5_residual_exports",
-            test_iommu_wave5_residual_exports,
-        )
-        && run_check(
             "net_tls_wave8_phase_a_exports",
             test_net_tls_wave8_phase_a_exports,
         )

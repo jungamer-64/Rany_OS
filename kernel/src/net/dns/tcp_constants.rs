@@ -116,6 +116,20 @@ pub fn needs_tcp_fallback(data: &[u8]) -> bool {
     }
 }
 
+/// 期限切れDNSキャッシュエントリを定期的にクリーンアップ
+///
+/// ネットワークスタックの`periodic()`から呼び出される。
+pub fn cleanup_cache(current_tick: u64) {
+    match DNS_CLIENT.lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.cleanup_cache(current_tick);
+            }
+        }
+        Err(_) => {}
+    }
+}
+
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

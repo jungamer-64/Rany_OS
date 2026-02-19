@@ -98,6 +98,40 @@ impl ArpProcessor {
         Some(ArpPacket::SIZE)
     }
 
+    /// Build a Gratuitous ARP packet (RFC 5227)
+    ///
+    /// Gratuitous ARP is an ARP request where sender IP = target IP.
+    /// Used to announce address changes and update caches on the network.
+    pub fn build_gratuitous(&self, buffer: &mut [u8]) -> Option<usize> {
+        if buffer.len() < ArpPacket::SIZE {
+            return None;
+        }
+
+        let packet = crate::util::get_mut_ref::<ArpPacket>(buffer, 0)
+            .expect("ARP packet slice out of bounds");
+
+        // Gratuitous: request where sender_ip == target_ip, target_mac = broadcast
+        packet.init_request(self.local_mac, self.local_ip, self.local_ip);
+        Some(ArpPacket::SIZE)
+    }
+
+    /// Build an ARP probe packet (RFC 5227)
+    ///
+    /// ARP probe is used for Duplicate Address Detection (DAD).
+    /// sender_ip = 0.0.0.0, target_ip = address being probed.
+    pub fn build_probe(&self, buffer: &mut [u8], probe_ip: Ipv4Address) -> Option<usize> {
+        if buffer.len() < ArpPacket::SIZE {
+            return None;
+        }
+
+        let packet = crate::util::get_mut_ref::<ArpPacket>(buffer, 0)
+            .expect("ARP packet slice out of bounds");
+
+        // Probe: sender_ip = 0.0.0.0 to avoid polluting caches
+        packet.init_request(self.local_mac, Ipv4Address::ANY, probe_ip);
+        Some(ArpPacket::SIZE)
+    }
+
     /// Resolve an IP address to MAC (from cache)
     pub fn resolve(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
         // Broadcast IP -> broadcast MAC

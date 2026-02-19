@@ -618,5 +618,11 @@ impl NetworkStack {
         if let Some(ref mut ndp) = self.ndp {
             ndp.tick(current_time);
         }
+
+        // Cleanup expired DNS cache entries
+        crate::net::dns::cleanup_cache(current_time);
+
+        // Evict expired IPv6 PMTU cache entries
+        self.ipv6_pmtu_cache.evict_expired(current_time);
     }
 }

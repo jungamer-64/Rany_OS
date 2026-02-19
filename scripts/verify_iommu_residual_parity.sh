@@ -8,9 +8,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PARITY_FILE="$ROOT_DIR/scripts/qemu_iommu_residual_parity.lst"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 IOMMU_TESTS_FILE="$ROOT_DIR/kernel/src/io/iommu/tests.rs"
-IOMMU_QEMU_TESTS_FILE="$ROOT_DIR/kernel/src/io/iommu/qemu_tests.rs"
-KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
-KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+IOMMU_QEMU_TESTS_ROOT="$ROOT_DIR/kernel/src/io/iommu/qemu_tests"
+KERNEL_WRAPPER_ROOT="$ROOT_DIR/kernel/src/qemu_tests"
+KERNEL_SUITE_ROOT="$ROOT_DIR/qemu-suites/kernel/src"
 
 if [[ ! -f "$PARITY_FILE" ]]; then
   echo "[verify_iommu_residual_parity] missing parity file: $PARITY_FILE" >&2
@@ -22,8 +22,24 @@ if [[ ! -f "$PENDING_FILE" ]]; then
   exit 1
 fi
 
+if [[ ! -d "$IOMMU_QEMU_TESTS_ROOT" ]]; then
+  echo "[verify_iommu_residual_parity] missing qemu-tests root: $IOMMU_QEMU_TESTS_ROOT" >&2
+  exit 1
+fi
+
+if [[ ! -d "$KERNEL_WRAPPER_ROOT" ]]; then
+  echo "[verify_iommu_residual_parity] missing wrapper root: $KERNEL_WRAPPER_ROOT" >&2
+  exit 1
+fi
+
+if [[ ! -d "$KERNEL_SUITE_ROOT" ]]; then
+  echo "[verify_iommu_residual_parity] missing suite root: $KERNEL_SUITE_ROOT" >&2
+  exit 1
+fi
+
 violations=0
 line_no=0
+entry_count=0
 declare -A seen_original=()
 declare -A seen_smoke=()
 
@@ -34,6 +50,8 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   if [[ -z "$line" || "$line" == \#* ]]; then
     continue
   fi
+
+  entry_count=$((entry_count + 1))
 
   IFS='|' read -r original_case required_smoke_case status notes extra <<<"$line"
   original_case="$(echo "${original_case:-}" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')"
@@ -60,7 +78,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   fi
   seen_smoke["$required_smoke_case"]=1
 
-  if ! rg -q "$original_case" "$PENDING_FILE"; then
+  if ! rg -q "${original_case}" "$PENDING_FILE"; then
     echo "[verify_iommu_residual_parity] missing canonical pending entry for '${original_case}' in ${PENDING_FILE#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
@@ -70,22 +88,39 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${required_smoke_case}\\(" "$IOMMU_QEMU_TESTS_FILE"; then
-    echo "[verify_iommu_residual_parity] missing required smoke '${required_smoke_case}' in ${IOMMU_QEMU_TESTS_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${required_smoke_case}\\(" "$IOMMU_QEMU_TESTS_ROOT"; then
+    echo "[verify_iommu_residual_parity] missing required smoke '${required_smoke_case}' under ${IOMMU_QEMU_TESTS_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
   wrapper_case="iommu_${required_smoke_case}"
-  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_residual_parity] missing wrapper '${wrapper_case}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_ROOT"; then
+    echo "[verify_iommu_residual_parity] missing wrapper '${wrapper_case}' under ${KERNEL_WRAPPER_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_iommu_residual_parity] missing suite wiring '${wrapper_case}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_case}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_iommu_residual_parity] missing suite wiring '${wrapper_case}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
     violations=$((violations + 1))
   fi
 done < "$PARITY_FILE"
+
+if [[ "$entry_count" -eq 0 ]]; then
+  if ! rg -q "^IOMMU residual canonical pending: none$" "$PENDING_FILE"; then
+    echo "[verify_iommu_residual_parity] parity is empty but pending none-marker is missing in ${PENDING_FILE#"$ROOT_DIR"/}"
+    violations=$((violations + 1))
+  fi
+
+  if ! rg -q "^# none$" "$PARITY_FILE"; then
+    echo "[verify_iommu_residual_parity] parity is empty but '# none' marker is missing in ${PARITY_FILE#"$ROOT_DIR"/}"
+    violations=$((violations + 1))
+  fi
+else
+  if rg -q "^IOMMU residual canonical pending: none$" "$PENDING_FILE"; then
+    echo "[verify_iommu_residual_parity] parity has entries but pending none-marker is still present in ${PENDING_FILE#"$ROOT_DIR"/}"
+    violations=$((violations + 1))
+  fi
+fi
 
 if [[ "$violations" -gt 0 ]]; then
   echo "[verify_iommu_residual_parity] FAIL: found $violations issues"

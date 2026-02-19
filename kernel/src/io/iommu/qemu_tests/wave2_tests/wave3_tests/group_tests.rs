@@ -249,27 +249,61 @@ pub(crate) fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
     domain_arc.mapping(0x1000).is_none()
 }
 
-/// CQ map-device non-blocking: submit MapRegion + UnmapRegion via handle_command_queue_entry.
-/// Migrated from test_map_for_device_async_and_unmap (removed std::thread + global singleton).
-pub(crate) fn wave5_map_for_device_async_and_unmap_residual_impl() -> bool {
-    use crate::io::iommu::cmdqueue::{CommandQueue, IommuCommandKind};
+/// API path parity for test_map_for_device_async_and_unmap:
+/// use map_for_device_async/unmap_for_device_async with deterministic no-CQ setup.
+pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
+    use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
+    use crate::io::iommu::config::IommuConfig;
     use crate::io::iommu::intel::controller::dma::DomainManager;
     use crate::io::iommu::intel::controller::iova::IovaManager;
+    use crate::io::iommu::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
+    use crate::io::iommu::registry::get_iommu_driver;
 
-    let ctrl = IommuController::new(0x0, 0);
-    let cq = CommandQueue::new();
+    let controller = if let Some(registry) = get_iommu_registry() {
+        match registry.controllers.get(0).cloned() {
+            Some(ctrl) => ctrl,
+            None => return false,
+        }
+    } else {
+        let ctrl = Arc::new(IommuController::new(0x0, 0));
+        let registry = IommuRegistry::new(
+            alloc::vec![ctrl.clone()],
+            alloc::vec::Vec::new(),
+            IommuConfig::default(),
+        );
+        init_registry(registry);
+        ctrl
+    };
 
-    if ctrl.init_iova(0x8000_0000, 0x10000).is_err() {
+    if get_iommu_driver().is_none() {
+        crate::io::iommu::intel::IntelIommuDriver::register_driver();
+    }
+
+    let Some(driver) = get_iommu_driver() else {
+        return false;
+    };
+    if !matches!(driver.as_ref(), crate::io::iommu::IommuBackend::Intel(_)) {
         return false;
     }
 
-    // Create domain and register device mapping
-    let domain_id = match ctrl.create_domain(None, IommuDomainType::Translated) {
+    if controller
+        .init_iova(0x1000, 0x1_0000_0000 - 0x1000)
+        .is_err()
+    {
+        return false;
+    }
+
+    let domain_id = match controller.create_domain(None, IommuDomainType::Translated) {
         Ok(id) => id,
         Err(_) => return false,
     };
+    let domain_arc = match controller.domain(domain_id) {
+        Some(domain) => domain,
+        None => return false,
+    };
+
     let device = DeviceId::new(0, 0, 1, 0);
-    match ctrl.device_domains.lock() {
+    match controller.device_domains.lock() {
         Ok(mut dmap) => {
             dmap.insert(device, domain_id);
         }
@@ -279,60 +313,49 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_residual_impl() -> bool {
         }
     }
 
-    // Allocate IOVA for the mapping
-    let iova = match ctrl.allocate_iova(0x1000) {
-        Ok(iova) => iova,
-        Err(_) => return false,
-    };
+    let mut mapped_iova: Option<u64> = None;
+    let result = (|| {
+        let iova = match crate::task::block_on(async {
+            // SAFETY: deterministic test mapping of fixed aligned test address.
+            unsafe { map_for_device_async(&device, x86_64::PhysAddr::new(0x2000_0000), 0x1000).await }
+        }) {
+            Ok(iova) => iova,
+            Err(_) => return false,
+        };
+        mapped_iova = Some(iova);
 
-    // Submit MapRegion via CQ
-    let map_cmd = IommuCommandKind::MapRegion {
-        domain: domain_id,
-        iova,
-        phys: 0x2000_0000,
-        size: 0x1000,
-        read: true,
-        write: true,
-    };
-    let map_completion = match cq.submit(map_cmd) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+        if domain_arc.mapping(iova).is_none() {
+            return false;
+        }
 
-    // Process single-threaded
-    let processed = cq.process_once(|k| ctrl.handle_command_queue_entry(k));
-    if processed == 0 {
-        return false;
+        if crate::task::block_on(async { unmap_for_device_async(&device, iova, 0x1000).await })
+            .is_err()
+        {
+            return false;
+        }
+        mapped_iova = None;
+        domain_arc.mapping(iova).is_none()
+    })();
+
+    if let Some(iova) = mapped_iova {
+        let _ = crate::task::block_on(async { unmap_for_device_async(&device, iova, 0x1000).await });
     }
-    let _result = map_completion.wait_blocking();
-
-    // Verify mapping exists
-    let domain_arc = match ctrl.domain(domain_id) {
-        Some(d) => d,
-        None => return false,
-    };
-    if domain_arc.mapping(iova).is_none() {
-        return false;
+    match controller.device_domains.lock() {
+        Ok(mut dmap) => {
+            dmap.remove(&device);
+        }
+        Err(poisoned) => {
+            let mut dmap = poisoned.into_inner();
+            dmap.remove(&device);
+        }
     }
 
-    // Submit UnmapRegion via CQ
-    let unmap_cmd = IommuCommandKind::UnmapRegion {
-        domain: domain_id,
-        iova,
-        size: 0x1000,
-    };
-    let unmap_completion = match cq.submit(unmap_cmd) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let processed = cq.process_once(|k| ctrl.handle_command_queue_entry(k));
-    if processed == 0 {
-        return false;
-    }
-    let _result = unmap_completion.wait_blocking();
+    result
+}
 
-    // Verify mapping removed
-    domain_arc.mapping(iova).is_none()
+/// Compat implementation alias retained for wave5/wave2 legacy names.
+pub(crate) fn wave5_map_for_device_async_and_unmap_residual_impl() -> bool {
+    wave5_map_for_device_async_and_unmap_canonical_impl()
 }
 
 /// DMA mask validation: register 32-bit mask → allocate IOVA → verify within mask bounds.
@@ -499,6 +522,11 @@ pub fn wave5_qi_metrics_pressure_canonical_smoke() -> bool {
     wave5_qi_metrics_pressure_canonical_impl()
 }
 
+/// Wave5 canonical required export: API-path async map/unmap parity.
+pub fn wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
+    wave5_map_for_device_async_and_unmap_canonical_impl()
+}
+
 /// Wave5 canonical required export: cmdqueue map/unmap with domain parity.
 pub fn wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
     wave5_cmdqueue_map_unmap_with_domain_canonical_impl()
@@ -509,9 +537,9 @@ pub fn wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {
     wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
 }
 
-/// Wave5 residual export retained in required suite for staged migration.
+/// Wave5 residual export retained as compat alias.
 pub fn wave5_map_for_device_async_and_unmap_residual_smoke() -> bool {
-    wave5_map_for_device_async_and_unmap_residual_impl()
+    wave5_map_for_device_async_and_unmap_canonical_smoke()
 }
 
 // Compat alias: legacy wave2 residual name.
@@ -521,9 +549,9 @@ pub fn wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
 }
 
 // Compat alias: legacy wave2 residual name.
-// Required suite does not use this entrypoint; it forwards to the Wave5 residual export.
+// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
 pub fn wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
-    wave5_map_for_device_async_and_unmap_residual_smoke()
+    wave5_map_for_device_async_and_unmap_canonical_smoke()
 }
 
 // Compat alias: legacy wave2 residual name.

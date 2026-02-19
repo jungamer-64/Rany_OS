@@ -53,6 +53,14 @@ impl DnsClient {
         None
     }
 
+    /// 期限切れキャッシュエントリをクリーンアップ
+    pub fn cleanup_cache(&self, current_tick: u64) {
+        match self.cache.lock() {
+            Ok(mut cache) => cache.cleanup(current_tick),
+            Err(_) => log::error!("[NET] DNS Cache lock poisoned (cleanup_cache) - operation skipped"),
+        }
+    }
+
     /// DNSクエリパケットを構築
     pub fn build_query(
         &self,
@@ -310,6 +318,16 @@ impl DnsClient {
             }
             Some(DnsQueryType::TXT) => {
                 self.parse_txt_record(rdata, rdlength)
+            }
+            Some(DnsQueryType::SRV) if rdlength >= 7 => {
+                let priority = u16::from_be_bytes([rdata[0], rdata[1]]);
+                let weight = u16::from_be_bytes([rdata[2], rdata[3]]);
+                let port = u16::from_be_bytes([rdata[4], rdata[5]]);
+                if let Ok((target, _)) = self.parse_name(data, offset_after_rdata - rdlength + 6) {
+                    DnsRecordData::SRV { priority, weight, port, target }
+                } else {
+                    DnsRecordData::Raw(rdata.to_vec())
+                }
             }
             _ => DnsRecordData::Raw(rdata.to_vec()),
         }

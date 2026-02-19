@@ -16,6 +16,7 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -76,6 +77,19 @@ impl Ipv6Address {
     pub const fn from_eui64(mac: &[u8; 6]) -> Self {
         Self([
             0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+            mac[0] ^ 0x02, mac[1], mac[2], 0xff,
+            0xfe, mac[3], mac[4], mac[5],
+        ])
+    }
+
+    /// Create a global address from a /64 prefix + MAC address using EUI-64
+    ///
+    /// prefix[0..8] || EUI-64(mac)
+    /// Used by SLAAC (RFC 4862) to generate autoconfigured global addresses.
+    pub fn from_prefix_eui64(prefix: &Ipv6Address, mac: &[u8; 6]) -> Self {
+        let p = prefix.as_bytes();
+        Self([
+            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
             mac[0] ^ 0x02, mac[1], mac[2], 0xff,
             0xfe, mac[3], mac[4], mac[5],
         ])
@@ -796,4 +810,170 @@ pub struct Ipv6Processor {
     config: Ipv6Config,
     /// Statistics
     stats: Ipv6Stats,
+}
+
+// ============================================================================
+// IPv6 Path MTU Discovery (RFC 8201)
+// ============================================================================
+
+/// IPv6 Path MTU Discovery entry
+#[derive(Debug, Clone, Copy)]
+pub struct Ipv6PmtuEntry {
+    /// Path MTU in bytes
+    pub pmtu: u32,
+    /// Timestamp when this entry was last updated (ms)
+    pub updated_at: u64,
+    /// Timestamp for next probe
+    pub next_probe: u64,
+}
+
+impl Ipv6PmtuEntry {
+    /// Default MTU (standard Ethernet)
+    pub const DEFAULT_MTU: u32 = 1500;
+    /// Minimum MTU for IPv6 (RFC 8200)
+    pub const MIN_MTU: u32 = 1280;
+    /// Maximum MTU
+    pub const MAX_MTU: u32 = 65535;
+    /// Cache entry timeout in milliseconds (10 minutes, RFC 8201)
+    pub const TIMEOUT_MS: u64 = 600_000;
+
+    /// Create a new PMTU entry
+    pub fn new(pmtu: u32, timestamp: u64) -> Self {
+        Self {
+            pmtu: pmtu.clamp(Self::MIN_MTU, Self::MAX_MTU),
+            updated_at: timestamp,
+            next_probe: timestamp + Self::TIMEOUT_MS,
+        }
+    }
+
+    /// Check if the entry has expired
+    pub fn is_expired(&self, current_time: u64) -> bool {
+        current_time.saturating_sub(self.updated_at) > Self::TIMEOUT_MS
+    }
+
+    /// Check if we should probe for a larger MTU
+    pub fn should_probe(&self, current_time: u64) -> bool {
+        current_time >= self.next_probe && self.pmtu < Self::DEFAULT_MTU
+    }
+}
+
+/// IPv6 Path MTU Discovery cache
+pub struct Ipv6PmtuCache {
+    /// PMTU entries keyed by destination IPv6 address
+    entries: BTreeMap<Ipv6Address, Ipv6PmtuEntry>,
+    /// Maximum number of entries
+    max_entries: usize,
+    /// Statistics
+    stats: Ipv6PmtuStats,
+}
+
+/// IPv6 PMTU statistics
+#[derive(Debug, Default, Clone)]
+pub struct Ipv6PmtuStats {
+    /// Number of PMTU discoveries
+    pub discoveries: u64,
+    /// Number of PMTU updates (reductions)
+    pub reductions: u64,
+    /// Number of cache hits
+    pub hits: u64,
+    /// Number of cache misses
+    pub misses: u64,
+}
+
+impl Ipv6PmtuCache {
+    /// Default maximum entries
+    pub const DEFAULT_MAX_ENTRIES: usize = 256;
+
+    /// Create a new IPv6 PMTU cache
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            max_entries,
+            stats: Ipv6PmtuStats::default(),
+        }
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &Ipv6PmtuStats {
+        &self.stats
+    }
+
+    /// Get PMTU for a destination
+    pub fn get(&mut self, dst: &Ipv6Address, current_time: u64) -> u32 {
+        if let Some(entry) = self.entries.get(dst) {
+            if !entry.is_expired(current_time) {
+                self.stats.hits += 1;
+                return entry.pmtu;
+            }
+        }
+        self.stats.misses += 1;
+        Ipv6PmtuEntry::DEFAULT_MTU
+    }
+
+    /// Update PMTU for a destination (called when receiving ICMPv6 Packet Too Big)
+    pub fn update(&mut self, dst: Ipv6Address, new_mtu: u32, current_time: u64) {
+        let clamped_mtu = new_mtu.clamp(Ipv6PmtuEntry::MIN_MTU, Ipv6PmtuEntry::MAX_MTU);
+
+        if let Some(entry) = self.entries.get_mut(&dst) {
+            if clamped_mtu < entry.pmtu {
+                entry.pmtu = clamped_mtu;
+                entry.updated_at = current_time;
+                entry.next_probe = current_time + Ipv6PmtuEntry::TIMEOUT_MS;
+                self.stats.reductions += 1;
+            }
+        } else {
+            if self.entries.len() >= self.max_entries {
+                self.evict_oldest();
+            }
+            self.entries.insert(dst, Ipv6PmtuEntry::new(clamped_mtu, current_time));
+            self.stats.discoveries += 1;
+        }
+    }
+
+    /// Probe for a larger MTU (called periodically)
+    pub fn probe(&mut self, dst: &Ipv6Address, current_time: u64) -> Option<u32> {
+        if let Some(entry) = self.entries.get_mut(dst) {
+            if entry.should_probe(current_time) {
+                let probe_mtu = (entry.pmtu + 100).min(Ipv6PmtuEntry::DEFAULT_MTU);
+                entry.next_probe = current_time + Ipv6PmtuEntry::TIMEOUT_MS / 2;
+                return Some(probe_mtu);
+            }
+        }
+        None
+    }
+
+    /// Evict the oldest entry
+    fn evict_oldest(&mut self) {
+        let oldest = self
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.updated_at)
+            .map(|(k, _)| *k);
+        if let Some(key) = oldest {
+            self.entries.remove(&key);
+        }
+    }
+
+    /// Evict expired entries
+    pub fn evict_expired(&mut self, current_time: u64) {
+        let expired: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.is_expired(current_time))
+            .map(|(k, _)| *k)
+            .collect();
+        for key in expired {
+            self.entries.remove(&key);
+        }
+    }
+
+    /// Get the number of entries
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if cache is empty
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
