@@ -167,6 +167,264 @@ impl TsoContext {
 }
 
 // ============================================================================
+// TSO Engine - TCP Segmentation Offload エンジン
+// ============================================================================
+//
+// ソフトウェアTSOエンジン: 大きなTCPペイロードをMSSサイズのセグメントに分割し、
+// 各セグメントに適切なTCP/IPv4ヘッダを付与して送信する。
+// ハードウェアTSOが利用不可の場合のフォールバック。
+
+/// TSO分割ヘッダテンプレート
+///
+/// 送信側がTCPヘッダ情報を指定し、エンジンがセグメントごとに
+/// シーケンス番号とチェックサムを更新する。
+#[derive(Debug, Clone, Copy)]
+pub struct TsoHeaderTemplate {
+    /// 送信元IPv4アドレス (ネットワークバイトオーダー)
+    pub src_ip: [u8; 4],
+    /// 宛先IPv4アドレス (ネットワークバイトオーダー)
+    pub dst_ip: [u8; 4],
+    /// 送信元ポート
+    pub src_port: u16,
+    /// 宛先ポート
+    pub dst_port: u16,
+    /// 初期シーケンス番号
+    pub seq_start: u32,
+    /// ACK番号
+    pub ack_num: u32,
+    /// TCPフラグ (PSH, ACKなど)
+    pub flags: u8,
+    /// ウィンドウサイズ
+    pub window: u16,
+    /// IPv4 identification の初期値
+    pub ip_id_start: u16,
+    /// TTL (Time To Live)
+    pub ttl: u8,
+}
+
+/// TSO分割結果 — 1セグメント分のメタデータ
+#[derive(Debug, Clone, Copy)]
+pub struct TsoSegmentInfo {
+    /// このセグメントのデータオフセット (元バッファ内)
+    pub data_offset: u32,
+    /// このセグメントのデータ長
+    pub data_len: u16,
+    /// このセグメントのTCPシーケンス番号
+    pub seq: u32,
+    /// IPv4 identification
+    pub ip_id: u16,
+    /// 最終セグメントか (PSHフラグ付与)
+    pub is_last: bool,
+}
+
+/// TCPソフトウェアTSOエンジン
+///
+/// 大きなペイロードをMSSに分割し、個別のセグメント情報を生成する。
+/// 実際のパケット構築は呼び出し元が行う（ゼロコピー設計）。
+pub struct TsoEngine {
+    /// MSS (Maximum Segment Size)
+    mss: u16,
+    /// ヘッダテンプレート
+    template: TsoHeaderTemplate,
+    /// 総データ長
+    total_len: u32,
+    /// 現在のオフセット
+    offset: u32,
+    /// 生成セグメント数
+    segments_generated: u32,
+}
+
+impl TsoEngine {
+    /// 新しいTSOエンジンを作成
+    pub fn new(template: TsoHeaderTemplate, total_len: u32, mss: u16) -> Self {
+        Self {
+            mss,
+            template,
+            total_len,
+            offset: 0,
+            segments_generated: 0,
+        }
+    }
+
+    /// 次のセグメント情報を取得
+    ///
+    /// 呼び出し元はこの情報を使ってパケットバッファにヘッダ+データを書き込む。
+    pub fn next_segment_info(&mut self) -> Option<TsoSegmentInfo> {
+        if self.offset >= self.total_len {
+            return None;
+        }
+
+        let remaining = self.total_len - self.offset;
+        let seg_len = core::cmp::min(remaining, self.mss as u32) as u16;
+        let is_last = self.offset + seg_len as u32 >= self.total_len;
+
+        let info = TsoSegmentInfo {
+            data_offset: self.offset,
+            data_len: seg_len,
+            seq: self.template.seq_start.wrapping_add(self.offset),
+            ip_id: self.template.ip_id_start.wrapping_add(self.segments_generated as u16),
+            is_last,
+        };
+
+        self.offset += seg_len as u32;
+        self.segments_generated += 1;
+
+        Some(info)
+    }
+
+    /// セグメントをバッファに書き込む
+    ///
+    /// `output` はEthernetヘッダの直後から始まるバッファ。
+    /// IPv4ヘッダ(20) + TCPヘッダ(20) + データ を書き込む。
+    /// `payload` はTCPペイロード全体。
+    ///
+    /// 戻り値: 書き込んだ総バイト数 (IPv4+TCP+データ)
+    pub fn write_segment(
+        &self,
+        output: &mut [u8],
+        payload: &[u8],
+        info: &TsoSegmentInfo,
+    ) -> Option<usize> {
+        let ip_hdr_len = 20usize;
+        let tcp_hdr_len = 20usize;
+        let total_needed = ip_hdr_len + tcp_hdr_len + info.data_len as usize;
+
+        if output.len() < total_needed {
+            return None;
+        }
+
+        let data_start = info.data_offset as usize;
+        let data_end = data_start + info.data_len as usize;
+        if data_end > payload.len() {
+            return None;
+        }
+
+        // --- IPv4 Header (20 bytes) ---
+        let ip_total_len = (ip_hdr_len + tcp_hdr_len + info.data_len as usize) as u16;
+        output[0] = 0x45; // Version=4, IHL=5
+        output[1] = 0x00; // DSCP/ECN
+        output[2..4].copy_from_slice(&ip_total_len.to_be_bytes());
+        output[4..6].copy_from_slice(&info.ip_id.to_be_bytes());
+        output[6] = 0x40; // Don't Fragment
+        output[7] = 0x00;
+        output[8] = self.template.ttl;
+        output[9] = 6; // TCP protocol
+        output[10..12].copy_from_slice(&[0, 0]); // checksum placeholder
+        output[12..16].copy_from_slice(&self.template.src_ip);
+        output[16..20].copy_from_slice(&self.template.dst_ip);
+
+        // IPv4 header checksum
+        let ip_cksum = Self::ip_checksum(&output[..ip_hdr_len]);
+        output[10..12].copy_from_slice(&ip_cksum.to_be_bytes());
+
+        // --- TCP Header (20 bytes) ---
+        let tcp_start = ip_hdr_len;
+        output[tcp_start..tcp_start + 2].copy_from_slice(&self.template.src_port.to_be_bytes());
+        output[tcp_start + 2..tcp_start + 4].copy_from_slice(&self.template.dst_port.to_be_bytes());
+        output[tcp_start + 4..tcp_start + 8].copy_from_slice(&info.seq.to_be_bytes());
+        output[tcp_start + 8..tcp_start + 12].copy_from_slice(&self.template.ack_num.to_be_bytes());
+        // Data offset = 5 (20/4), reserved, flags
+        let data_offset_byte = 0x50u8; // 5 << 4
+        output[tcp_start + 12] = data_offset_byte;
+        // Flags: 最終セグメントならPSH+ACK、それ以外はACKのみ
+        let flags = if info.is_last {
+            self.template.flags | 0x08 // PSH
+        } else {
+            self.template.flags & !0x08 // clear PSH
+        };
+        output[tcp_start + 13] = flags;
+        output[tcp_start + 14..tcp_start + 16].copy_from_slice(&self.template.window.to_be_bytes());
+        output[tcp_start + 16..tcp_start + 18].copy_from_slice(&[0, 0]); // checksum placeholder
+        output[tcp_start + 18..tcp_start + 20].copy_from_slice(&[0, 0]); // urgent pointer
+
+        // --- Payload ---
+        let payload_start = ip_hdr_len + tcp_hdr_len;
+        output[payload_start..payload_start + info.data_len as usize]
+            .copy_from_slice(&payload[data_start..data_end]);
+
+        // TCP checksum (with pseudo header)
+        let tcp_len = (tcp_hdr_len + info.data_len as usize) as u16;
+        let tcp_cksum = Self::tcp_checksum(
+            &self.template.src_ip,
+            &self.template.dst_ip,
+            &output[tcp_start..tcp_start + tcp_hdr_len + info.data_len as usize],
+            tcp_len,
+        );
+        output[tcp_start + 16..tcp_start + 18].copy_from_slice(&tcp_cksum.to_be_bytes());
+
+        Some(total_needed)
+    }
+
+    /// 残りセグメント数
+    pub fn remaining_segments(&self) -> u32 {
+        if self.offset >= self.total_len {
+            return 0;
+        }
+        let remaining = self.total_len - self.offset;
+        (remaining + self.mss as u32 - 1) / self.mss as u32
+    }
+
+    /// 生成済みセグメント数
+    pub fn segments_generated(&self) -> u32 {
+        self.segments_generated
+    }
+
+    /// 総セグメント数を計算
+    pub fn total_segments(&self) -> u32 {
+        if self.total_len == 0 {
+            return 0;
+        }
+        (self.total_len + self.mss as u32 - 1) / self.mss as u32
+    }
+
+    /// IPv4ヘッダチェックサム計算
+    fn ip_checksum(header: &[u8]) -> u16 {
+        let mut sum: u32 = 0;
+        let mut i = 0;
+        while i + 1 < header.len() {
+            let word = u16::from_be_bytes([header[i], header[i + 1]]);
+            sum += word as u32;
+            i += 2;
+        }
+        // Fold carry
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
+
+    /// TCPチェックサム計算 (疑似ヘッダ含む)
+    fn tcp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], tcp_data: &[u8], tcp_len: u16) -> u16 {
+        let mut sum: u32 = 0;
+
+        // Pseudo-header
+        sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
+        sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
+        sum += u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32;
+        sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
+        sum += 6u32; // TCP protocol number
+        sum += tcp_len as u32;
+
+        // TCP header + data
+        let mut i = 0;
+        while i + 1 < tcp_data.len() {
+            let word = u16::from_be_bytes([tcp_data[i], tcp_data[i + 1]]);
+            sum += word as u32;
+            i += 2;
+        }
+        if i < tcp_data.len() {
+            sum += (tcp_data[i] as u32) << 8;
+        }
+
+        // Fold carry
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        !(sum as u16)
+    }
+}
+
+// ============================================================================
 // Performance Metrics
 // ============================================================================
 

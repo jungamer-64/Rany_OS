@@ -279,4 +279,77 @@ pub struct NetworkStack {
     current_time: AtomicU64,
     /// ICMP Redirect cache
     redirect_cache: RedirectCache,
+    /// Pending IPv6 packets awaiting NDP resolution
+    ndp_pending_queue: NdpPendingQueue,
+}
+
+/// NDP解決待ちパケットキュー
+///
+/// IPv6パケット送信時にNDP解決が未完了の場合、パケットをキューに
+/// 保管し、NA受信時に自動的に送信を再試行する。
+const NDP_PENDING_QUEUE_SIZE: usize = 16;
+const NDP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
+
+/// NDP解決待ちパケット
+#[derive(Clone)]
+struct PendingIpv6Packet {
+    /// 送信先IPv6アドレス
+    dst: Ipv6Address,
+    /// 送信元IPv6アドレス
+    src: Ipv6Address,
+    /// ICMPv6ペイロード
+    icmpv6_data: Vec<u8>,
+    /// キューイング時刻
+    queued_at: u64,
+}
+
+/// NDP解決待ちキュー
+struct NdpPendingQueue {
+    packets: Vec<PendingIpv6Packet>,
+}
+
+impl NdpPendingQueue {
+    fn new() -> Self {
+        Self {
+            packets: Vec::new(),
+        }
+    }
+
+    /// パケットをキューに追加
+    fn enqueue(&mut self, src: Ipv6Address, dst: Ipv6Address, icmpv6_data: &[u8], current_time: u64) {
+        // キュー満杯なら最古のエントリを破棄
+        if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
+            self.packets.remove(0);
+        }
+        self.packets.push(PendingIpv6Packet {
+            dst,
+            src,
+            icmpv6_data: icmpv6_data.to_vec(),
+            queued_at: current_time,
+        });
+    }
+
+    /// 指定アドレス宛のパケットを取り出す
+    fn drain_for(&mut self, dst: &Ipv6Address) -> Vec<PendingIpv6Packet> {
+        let mut matched = Vec::new();
+        let mut remaining = Vec::new();
+
+        for pkt in self.packets.drain(..) {
+            if pkt.dst == *dst {
+                matched.push(pkt);
+            } else {
+                remaining.push(pkt);
+            }
+        }
+
+        self.packets = remaining;
+        matched
+    }
+
+    /// タイムアウトしたパケットを削除
+    fn expire(&mut self, current_time: u64) {
+        self.packets.retain(|pkt| {
+            current_time.saturating_sub(pkt.queued_at) < NDP_PENDING_TIMEOUT_MS
+        });
+    }
 }
