@@ -45,9 +45,9 @@ pub(crate) fn send_tcp_packet(
 
     // TCPヘッダ構築
     // Source port (2バイト)
-    segment[0..2].copy_from_slice(&local.port.to_be_bytes());
+    segment[0..2].copy_from_slice(&local.port().to_be_bytes());
     // Destination port (2バイト)
-    segment[2..4].copy_from_slice(&remote.port.to_be_bytes());
+    segment[2..4].copy_from_slice(&remote.port().to_be_bytes());
     // Sequence number (4バイト)
     segment[4..8].copy_from_slice(&seq.to_be_bytes());
     // ACK number (4バイト)
@@ -68,11 +68,11 @@ pub(crate) fn send_tcp_packet(
     }
 
     // チェックサム計算
-    calculate_tcp_checksum(&mut segment, local.ip.0, remote.ip.0);
+    calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
 
     // ネットワークスタック経由で送信 - 戻り値を返す
-    let src_ip = crate::net::ipv4::Ipv4Address::new(local.ip.0);
-    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.ip.0);
+    let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
+    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
     crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
 }
 
@@ -201,8 +201,8 @@ pub(crate) fn send_tcp_packet_with_options(
     let mut segment = vec![0u8; total_len];
 
     // TCPヘッダ構築
-    segment[0..2].copy_from_slice(&local.port.to_be_bytes());
-    segment[2..4].copy_from_slice(&remote.port.to_be_bytes());
+    segment[0..2].copy_from_slice(&local.port().to_be_bytes());
+    segment[2..4].copy_from_slice(&remote.port().to_be_bytes());
     segment[4..8].copy_from_slice(&seq.to_be_bytes());
     segment[8..12].copy_from_slice(&ack.to_be_bytes());
 
@@ -223,11 +223,11 @@ pub(crate) fn send_tcp_packet_with_options(
     }
 
     // チェックサム計算
-    calculate_tcp_checksum(&mut segment, local.ip.0, remote.ip.0);
+    calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
 
     // ネットワークスタック経由で送信
-    let src_ip = crate::net::ipv4::Ipv4Address::new(local.ip.0);
-    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.ip.0);
+    let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
+    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
     crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
 }
 

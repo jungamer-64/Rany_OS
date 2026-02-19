@@ -92,8 +92,8 @@ impl NetworkStack {
                 }
 
                 // Construct TCP header
-                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
-                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+                buffer[0..2].copy_from_slice(&local.port().to_be_bytes());
+                buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
                 buffer[4..8].copy_from_slice(&seq.to_be_bytes());
                 buffer[8..12].copy_from_slice(&ack.to_be_bytes());
                 let offset_flags = (5u16 << 12) | (flags & 0x01ff);
@@ -107,12 +107,12 @@ impl NetworkStack {
 
                 crate::net::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
-                    local.ip.octets(),
-                    remote.ip.octets(),
+                    local.as_ipv4().unwrap().octets(),
+                    remote.as_ipv4().unwrap().octets(),
                 );
 
-                let src_ip_out = Ipv4Address::new(local.ip.octets());
-                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
@@ -227,13 +227,63 @@ impl NetworkStack {
         let src_port = u16::from_be_bytes([data[0], data[1]]);
         let dst_port = u16::from_be_bytes([data[2], data[3]]);
 
+        // If addresses are IPv4-mapped (::ffff:a.b.c.d) we can route to the existing
+        // IPv4 TCP processor (partial dual-stack / processor-level support).
+        let sbytes = src.as_bytes();
+        let dbytes = dst.as_bytes();
+        let is_src_ipv4_mapped = sbytes[0..10] == [0u8; 10] && sbytes[10] == 0xff && sbytes[11] == 0xff;
+        let is_dst_ipv4_mapped = dbytes[0..10] == [0u8; 10] && dbytes[10] == 0xff && dbytes[11] == 0xff;
+
+        if is_src_ipv4_mapped && is_dst_ipv4_mapped {
+            use crate::net::ipv4::Ipv4Address;
+
+            let src_v4 = Ipv4Address::new([sbytes[12], sbytes[13], sbytes[14], sbytes[15]]);
+            let dst_v4 = Ipv4Address::new([dbytes[12], dbytes[13], dbytes[14], dbytes[15]]);
+
+            // Delegate to existing IPv4 TCP processor (non-zero-copy path)
+            let res = self.tcp.process(data, src_v4, dst_v4, self.current_time());
+
+            match res {
+                TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } => {
+                    let mut buffer = [0u8; 1518];
+                    let header_len = 20usize;
+                    let total_len = header_len + payload.len();
+                    if total_len > buffer.len() { return; }
+
+                    buffer[0..2].copy_from_slice(&local.port().to_be_bytes());
+                    buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
+                    buffer[4..8].copy_from_slice(&seq.to_be_bytes());
+                    buffer[8..12].copy_from_slice(&ack.to_be_bytes());
+                    let offset_flags = (5 << 12) | (flags & 0x1FF);
+                    buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+                    buffer[14..16].copy_from_slice(&window.to_be_bytes());
+                    buffer[16..18].fill(0);
+                    buffer[18..20].fill(0);
+                    if !payload.is_empty() {
+                        buffer[20..total_len].copy_from_slice(&payload);
+                    }
+
+                    // IPv4 TCP checksum (we're sending over IPv4 for mapped addresses)
+                    crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
+
+let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+
+                    let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
+                    let now = self.current_time();
+                    if sent {
+                        self.tcp.record_sent_packet(local, remote, seq, flags, &payload, now);
+                    }
+                }
+                TcpProcessResult::None => {}
+            }
+            return;
+        }
+
         log::debug!(
-            "TCP/IPv6: Received segment {}:{} -> {}:{} ({} bytes) — dual-stack endpoint未対応",
+            "TCP/IPv6: Received segment {}:{} -> {}:{} ({} bytes) — native IPv6 TCP not yet supported",
             src, src_port, dst, dst_port, data.len()
         );
-
-        // TODO: デュアルスタックTCPエンドポイント対応後にフル処理を実装
-        // 現在はチェックサム検証済みとして統計カウントのみ
         self.stats.record_dropped();
     }
 
@@ -341,9 +391,9 @@ impl NetworkStack {
                 
                 // Construct TCP header
                 // Source Port
-                buffer[0..2].copy_from_slice(&local.port.to_be_bytes());
+                buffer[0..2].copy_from_slice(&local.port().to_be_bytes());
                 // Dest Port
-                buffer[2..4].copy_from_slice(&remote.port.to_be_bytes());
+                buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
                 // Seq
                 buffer[4..8].copy_from_slice(&seq.to_be_bytes());
                 // Ack
@@ -366,14 +416,14 @@ impl NetworkStack {
                 // Calculate Checksum
                 crate::net::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
-                    local.ip.octets(),
-                    remote.ip.octets(),
+                    local.as_ipv4().unwrap().octets(),
+                    remote.as_ipv4().unwrap().octets(),
                 );
                 
                 // Send via IP
                 // Convert TcpIpv4Addr -> Ipv4Address
-                let src_ip_out = Ipv4Address::new(local.ip.octets());
-                let dst_ip_out = Ipv4Address::new(remote.ip.octets());
+                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
+                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
                 
                 // Send segment via IP
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
@@ -770,9 +820,9 @@ impl NetworkStack {
             
             // Construct TCP header
             // Source Port
-            buffer[0..2].copy_from_slice(&local_addr.port.to_be_bytes());
+            buffer[0..2].copy_from_slice(&local_addr.port().to_be_bytes());
             // Dest Port
-            buffer[2..4].copy_from_slice(&remote_addr.port.to_be_bytes());
+            buffer[2..4].copy_from_slice(&remote_addr.port().to_be_bytes());
             // Seq
             buffer[4..8].copy_from_slice(&initial_seq.to_be_bytes());
             // Ack (0 for SYN)
@@ -792,13 +842,13 @@ impl NetworkStack {
              // Calculate Checksum
             crate::net::tcp::calculate_tcp_checksum(
                 &mut buffer[..total_len],
-                local_addr.ip.octets(),
-                remote_addr.ip.octets(),
+                local_addr.as_ipv4().unwrap().octets(),
+                remote_addr.as_ipv4().unwrap().octets(),
             );
             
             // Send via IP
-            let src_ip_out = Ipv4Address::new(local_addr.ip.octets());
-            let dst_ip_out = Ipv4Address::new(remote_addr.ip.octets());
+            let src_ip_out = Ipv4Address::new(local_addr.as_ipv4().unwrap().octets());
+            let dst_ip_out = Ipv4Address::new(remote_addr.as_ipv4().unwrap().octets());
             
             let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
             let now = self.current_time();

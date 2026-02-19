@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(retransmitted, original_data);
 
         // 再送カウント増加を確認
-        let seg = queue.check_timeout(3000).unwrap();
+        let seg = queue.check_timeout(1500 + queue.get_rto()).unwrap();
         assert_eq!(seg.retransmit_count, 1);
         assert!(seg.is_retransmit);
     }
@@ -520,7 +520,7 @@ pub mod qemu_tests {
             return false;
         }
 
-        let Some(seg) = queue.check_timeout(3000) else {
+        let Some(seg) = queue.check_timeout(1500 + queue.get_rto()) else {
             return false;
         };
 

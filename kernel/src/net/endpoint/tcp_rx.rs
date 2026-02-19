@@ -232,7 +232,7 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
     }
 
     // ACKパケット送信
-    let mut builder = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+    let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(ack_num)
         .ack(seq_num.wrapping_add(1))
         .ack_flag()
@@ -246,16 +246,14 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
 
     let mut ack_segment = builder.build();
 
-    TcpSegmentBuilder::calculate_checksum(&mut ack_segment, tcb.local.ip, tcb.remote.ip);
+    TcpSegmentBuilder::calculate_checksum(&mut ack_segment, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
 
     // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack_segment);
     log::info!(
-        "TCP: Connection established {}:{} <-> {}:{}",
-        tcb.local.ip[0],
-        tcb.local.port,
-        tcb.remote.ip[0],
-        tcb.remote.port
+        "TCP: Connection established {:?} <-> {:?}",
+        tcb.local.as_ipv4().unwrap(),
+        tcb.remote.as_ipv4().unwrap()
     );
 
     // ソケットのWakerを起こす
@@ -293,17 +291,17 @@ fn process_tcp_new_connection(
         return;
     };
 
-    let socket = mgr.find_by_port(SocketType::Tcp, local.port);
+    let socket = mgr.find_by_port(SocketType::Tcp, local.port());
     let Some(socket) = socket else {
         // リッスン中のソケットがない → RST送信
-        let mut rst = TcpSegmentBuilder::new(local.port, remote.port)
+        let mut rst = TcpSegmentBuilder::new(local.port(), remote.port())
             .seq(0)
             .ack(seq_num.wrapping_add(1))
             .rst()
             .ack_flag()
             .window(0)
             .build();
-        TcpSegmentBuilder::calculate_checksum(&mut rst, local.ip, remote.ip);
+        TcpSegmentBuilder::calculate_checksum(&mut rst, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
         send_tcp_segment(local, remote, rst);
         return;
     };
@@ -334,7 +332,7 @@ fn process_tcp_new_connection(
     // SYN-ACK送信 (TCPオプション付き)
     // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)
     // Window Scale=7 (最大8MBウィンドウ)
-    let mut builder = TcpSegmentBuilder::new(local.port, remote.port)
+    let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
         .seq(isn)
         .ack(seq_num.wrapping_add(1))
         .syn()
@@ -349,16 +347,14 @@ fn process_tcp_new_connection(
     }
 
     let mut syn_ack = builder.build();
-    TcpSegmentBuilder::calculate_checksum(&mut syn_ack, local.ip, remote.ip);
+    TcpSegmentBuilder::calculate_checksum(&mut syn_ack, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
 
     // パケット送信
     send_tcp_segment(local, remote, syn_ack);
     log::info!(
-        "TCP: SYN-ACK sent {}:{} -> {}:{}",
-        local.ip[0],
-        local.port,
-        remote.ip[0],
-        remote.port
+        "TCP: SYN-ACK sent {:?} -> {:?}",
+        local.as_ipv4().unwrap(),
+        remote.as_ipv4().unwrap()
     );
 }
 
@@ -419,11 +415,9 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     });
 
     log::info!(
-        "TCP: Server connection established {}:{} <- {}:{}",
-        tcb.local.ip[0],
-        tcb.local.port,
-        tcb.remote.ip[0],
-        tcb.remote.port
+        "TCP: Server connection established {:?} <- {:?}",
+        tcb.local.as_ipv4().unwrap(),
+        tcb.remote.as_ipv4().unwrap()
     );
 
     // 新しい接続用ソケットを作成
@@ -436,8 +430,8 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     };
 
     // Listeningソケットを探してAcceptキューに追加
-    if !push_to_accept_queue(tcb.local.port, new_socket) {
-        log::info!("TCP: No listening socket found for port {}", tcb.local.port);
+    if !push_to_accept_queue(tcb.local.port(), new_socket) {
+        log::info!("TCP: No listening socket found for port {}", tcb.local.port());
     }
 }
 
@@ -520,7 +514,7 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         let sack = ooo_queue::get_sack_blocks(tcb.local, tcb.remote);
 
         // DupACK — 現在のrcv_nxtで応答（Fast Retransmitトリガ用 + SACKブロック付き）
-        let mut builder = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+        let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
             .seq(tcb.snd_nxt)
             .ack(tcb.rcv_nxt)
             .ack_flag()
@@ -542,7 +536,7 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         }
 
         let mut dup_ack = builder.build();
-        TcpSegmentBuilder::calculate_checksum(&mut dup_ack, tcb.local.ip, tcb.remote.ip);
+        TcpSegmentBuilder::calculate_checksum(&mut dup_ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
         send_tcp_segment(tcb.local, tcb.remote, dup_ack);
         return;
     }
@@ -569,7 +563,7 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
     });
 
     // ACK送信（ドレイン後のrcv_nxtで応答）
-    let mut builder = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+    let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(tcb.snd_nxt)
         .ack(new_rcv_nxt)
         .ack_flag()
@@ -590,7 +584,7 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
 
     let mut ack = builder.build();
 
-    TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.ip, tcb.remote.ip);
+    TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }
 
@@ -607,14 +601,14 @@ fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
     });
 
     // ACK送信
-    let mut ack = TcpSegmentBuilder::new(tcb.local.port, tcb.remote.port)
+    let mut ack = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(tcb.snd_nxt)
         .ack(seq_num.wrapping_add(1))
         .ack_flag()
         .window(65535)
         .build();
 
-    TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.ip, tcb.remote.ip);
+    TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
     // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }

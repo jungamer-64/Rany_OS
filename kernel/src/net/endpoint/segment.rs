@@ -297,8 +297,8 @@ impl TcpSegmentBuilder {
 /// TCPセグメント送信（IP層に渡す）
 pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>) {
     // IP層経由でパケット送信
-    let src_ip = crate::net::ipv4::Ipv4Address::new(local.ip);
-    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.ip);
+    let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap());
+    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap());
 
     // NetworkStack経由で送信
     let stack = crate::net::stack::stack();
@@ -308,19 +308,19 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
                 if s.send_tcp(src_ip, dst_ip, &segment) {
                     log::info!(
                         "TCP TX: {:?}:{} -> {:?}:{} ({} bytes)",
-                        local.ip,
-                        local.port,
-                        remote.ip,
-                        remote.port,
+                        local.as_ipv4().unwrap(),
+                        local.port(),
+                        remote.as_ipv4().unwrap(),
+                        remote.port(),
                         segment.len()
                     );
                 } else {
                     log::info!(
                         "TCP TX failed (ARP pending?): {:?}:{} -> {:?}:{}",
-                        local.ip,
-                        local.port,
-                        remote.ip,
-                        remote.port
+                        local.as_ipv4().unwrap(),
+                        local.port(),
+                        remote.as_ipv4().unwrap(),
+                        remote.port()
                     );
                 }
             } else {
