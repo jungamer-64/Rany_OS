@@ -587,6 +587,10 @@ impl TlsConnection {
                 let h = crate::loader::sha384::compute(message);
                 h.to_vec()
             }
+            crate::net::rsa::HashAlgorithm::Sha512 => {
+                let h = crate::loader::sha512::compute(message);
+                h.to_vec()
+            }
         };
 
         crate::net::rsa::rsa_pkcs1_verify(&pubkey, hash_alg, &digest, signature)
@@ -617,6 +621,10 @@ impl TlsConnection {
             }
             crate::net::rsa::HashAlgorithm::Sha384 => {
                 let h = crate::loader::sha384::compute(message);
+                h.to_vec()
+            }
+            crate::net::rsa::HashAlgorithm::Sha512 => {
+                let h = crate::loader::sha512::compute(message);
                 h.to_vec()
             }
         };

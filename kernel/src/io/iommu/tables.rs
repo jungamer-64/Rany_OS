@@ -459,7 +459,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     /// allocator to allocate a contiguous region sized for the table. This is a
     /// VT-d hardware requirement - root tables, context tables, and page tables
     /// must all be physically contiguous.
-    pub fn new(count: usize, _numa_hint: Option<usize>) -> Result<Self, IommuError> {
+    pub fn new(count: usize, numa_hint: Option<usize>) -> Result<Self, IommuError> {
         if count == 0 {
             return Err(IommuError::InvalidAddress);
         }

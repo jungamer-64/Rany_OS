@@ -12,6 +12,7 @@ pub mod driver_pack;
 pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
 pub mod sha256;
 pub mod sha384;
+pub mod sha512;
 pub mod signature;
 pub mod type_id;
 

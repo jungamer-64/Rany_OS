@@ -46,6 +46,9 @@ impl NetworkStack {
             current_time: AtomicU64::new(0),
             redirect_cache: RedirectCache::new(),
             ndp_pending_queue: NdpPendingQueue::new(),
+            ipv6_fragment_reassembler: Ipv6FragmentReassembler::new(
+                Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
+            ),
         }
     }
 
@@ -312,6 +315,45 @@ impl NetworkStack {
             Some(ref ipv6) => ipv6,
             None => return,
         };
+
+        // Check for fragment header before normal processing
+        use crate::net::ipv6::{skip_extension_headers_fraginfo, ExtHeaderResult};
+        match skip_extension_headers_fraginfo(data) {
+            ExtHeaderResult::Fragment {
+                unfragmentable,
+                frag_header,
+                frag_payload,
+            } => {
+                // Extract src/dst from fixed header for the fragment key
+                if data.len() < 40 {
+                    return;
+                }
+                let src = crate::net::ipv6::Ipv6Address::new([
+                    data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
+                    data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
+                ]);
+                let dst = crate::net::ipv6::Ipv6Address::new([
+                    data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
+                    data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
+                ]);
+
+                if let Some(reassembled) = self.ipv6_fragment_reassembler.process_fragment(
+                    src,
+                    dst,
+                    unfragmentable,
+                    &frag_header,
+                    frag_payload,
+                    current_time,
+                ) {
+                    // Recursively process the reassembled (non-fragmented) packet
+                    self.process_ipv6_data(&reassembled, current_time);
+                }
+                return;
+            }
+            ExtHeaderResult::NoFragment(_, _) => {
+                // Fall through to normal processing
+            }
+        }
 
         let result = ipv6.process(data);
 

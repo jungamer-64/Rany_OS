@@ -451,6 +451,8 @@ pub enum HashAlgorithm {
     Sha256,
     /// SHA-384 (48バイトダイジェスト)
     Sha384,
+    /// SHA-512 (64バイトダイジェスト)
+    Sha512,
 }
 
 impl HashAlgorithm {
@@ -459,6 +461,7 @@ impl HashAlgorithm {
         match self {
             HashAlgorithm::Sha256 => 32,
             HashAlgorithm::Sha384 => 48,
+            HashAlgorithm::Sha512 => 64,
         }
     }
 }
@@ -501,6 +504,14 @@ const DIGEST_INFO_SHA256_PREFIX: [u8; 19] = [
 const DIGEST_INFO_SHA384_PREFIX: [u8; 19] = [
     0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02,
     0x05, 0x00, 0x04, 0x30,
+];
+
+/// SHA-512 DigestInfo DERプレフィックス
+///
+/// 30 51 30 0d 06 09 60 86 48 01 65 03 04 02 03 05 00 04 40
+const DIGEST_INFO_SHA512_PREFIX: [u8; 19] = [
+    0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+    0x05, 0x00, 0x04, 0x40,
 ];
 
 // ============================================================================
@@ -615,6 +626,7 @@ pub fn rsa_pkcs1_verify(
     let prefix = match hash_alg {
         HashAlgorithm::Sha256 => &DIGEST_INFO_SHA256_PREFIX[..],
         HashAlgorithm::Sha384 => &DIGEST_INFO_SHA384_PREFIX[..],
+        HashAlgorithm::Sha512 => &DIGEST_INFO_SHA512_PREFIX[..],
     };
 
     // T = DigestInfo = prefix || digest
