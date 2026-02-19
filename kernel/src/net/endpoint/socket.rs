@@ -152,14 +152,18 @@ impl Socket {
 
             local_addr = inner.local_addr.ok_or(SocketError::InvalidArgument)?;
 
-            // TCPリスナー作成 - tcp.rsのSocketAddr型に変換
-            let v4 = local_addr.as_ipv4().unwrap();
-            let tcp_addr = TcpSocketAddr::new(
-                Ipv4Addr::new(v4[0], v4[1], v4[2], v4[3]),
-                local_addr.port(),
-            );
-            let listener =
-                TcpListenerImpl::bind(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
+            // TCPリスナー作成 - tcp.rs の SocketAddr 型に変換 (IPv4/IPv6 対応)
+            let tcp_addr = if local_addr.is_ipv6() {
+                let v6 = crate::net::ipv6::Ipv6Address::new(local_addr.as_ipv6());
+                crate::net::tcp::SocketAddr::new_v6(v6, local_addr.port())
+            } else {
+                let v4 = local_addr.as_ipv4().unwrap();
+                crate::net::tcp::SocketAddr::new(
+                    crate::net::tcp::Ipv4Addr::new(v4[0], v4[1], v4[2], v4[3]),
+                    local_addr.port(),
+                )
+            };
+            let listener = TcpListenerImpl::bind(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
             inner.tcp_listener = Some(listener);
             inner.transition_to(SocketState::Listening)?;
         }
@@ -205,8 +209,8 @@ impl Socket {
             }
 
             log::info!(
-                "TCP: Accepted connection from {:?}",
-                conn.remote_addr.as_ipv4().unwrap()
+                "TCP: Accepted connection from {}",
+                conn.remote_addr
             );
 
             return Ok((new_socket, conn.remote_addr));

@@ -85,6 +85,81 @@ fn test_sendfuture_wakes_on_send() {
     }
 }
 
+
+#[test_case]
+fn test_sendfuture_wakes_on_send_v6() {
+    init_socket_manager();
+
+    // Initialize stack with IPv6 enabled and set transmit to always succeed
+    let mut cfg = crate::net::stack::NetworkConfig::default();
+    cfg.ipv6 = Some(crate::net::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
+    crate::net::stack::init(cfg);
+
+    if let Ok(mut guard) = crate::net::stack::stack().lock() {
+        if let Some(ref mut s) = *guard {
+            s.set_transmit_fn(|_data: &[u8]| true);
+        }
+    }
+
+    // Create socket and set IPv6 local/remote (remote uses multicast so no NDP needed)
+    let sock = create_tcp_socket();
+    let fd = sock.fd();
+    let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::ALL_NODES_LINK_LOCAL.octets(), 80);
+    if let Some(s) = sock.socket() {
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+    }
+
+    // Insert an Established TCB so handler will proceed
+    let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
+    tcb.state = TcpConnectionState::Established;
+    crate::net::endpoint::tcb::tcb_table().insert(tcb);
+
+    // Prepare a waker that increments a counter
+    static WAKE_COUNT_V6: AtomicU32 = AtomicU32::new(0);
+    const VTABLE_V6: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(core::ptr::null(), &VTABLE_V6),
+        |_| {
+            WAKE_COUNT_V6.fetch_add(1, Ordering::SeqCst);
+        },
+        |_| {
+            WAKE_COUNT_V6.fetch_add(1, Ordering::SeqCst);
+        },
+        |_| {},
+    );
+    let raw = RawWaker::new(core::ptr::null(), &VTABLE_V6);
+    let waker = unsafe { Waker::from_raw(raw) };
+    let mut cx = Context::from_waker(&waker);
+
+    // Create SendFuture and poll once (should register waker and queue DataReady)
+    let data = alloc::vec![9u8, 8u8, 7u8, 6u8];
+    let mut fut = sock.send_async(data).expect("send_async should return future");
+    let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
+
+    match pinned.as_mut().poll(&mut cx) {
+        Poll::Pending => {}
+        Poll::Ready(_) => panic!("SendFuture should not complete immediately"),
+    }
+
+    // Trigger DataReady event
+    let handler = crate::net::endpoint::handler::NetworkEventHandler::new();
+    let res = handler.handle_event(NetworkEvent::DataReady {
+        fd,
+        socket_type: crate::net::endpoint::types::SocketType::Tcp,
+    });
+
+    assert!(matches!(res, crate::net::endpoint::handler::EventHandleResult::Success));
+    assert!(WAKE_COUNT_V6.load(Ordering::SeqCst) > 0);
+
+    // Re-poll the future: it should now be Ready with the number of bytes sent
+    match pinned.as_mut().poll(&mut cx) {
+        Poll::Ready(Ok(n)) => assert_eq!(n, 4usize),
+        other => panic!("SendFuture returned unexpected result: {:?}", other),
+    }
+}
+
 #[test_case]
 fn test_recv_packet_zero_copy_via_owned_socket() {
     init_socket_manager();
@@ -149,6 +224,85 @@ fn test_recv_packet_zero_copy_via_owned_socket() {
         |_| {},
     );
     let raw = RawWaker::new(core::ptr::null(), &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw) };
+    let mut cx = Context::from_waker(&waker);
+
+    // Create RecvPacketFuture and poll → should be Ready with the packet
+    let mut fut = sock.recv_packet_async().expect("recv_packet_async should return future");
+    let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
+
+    match pinned.as_mut().poll(&mut cx) {
+        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &data),
+        Poll::Ready(None) => panic!("Expected packet, got None"),
+        Poll::Pending => panic!("Future pending despite packet present"),
+    }
+}
+
+
+#[test_case]
+fn test_recv_packet_zero_copy_via_owned_socket_v6() {
+    init_socket_manager();
+
+    // Initialize stack (some operations rely on stack state)
+    stack::init_default();
+
+    let sock = create_tcp_socket();
+    let fd = sock.fd();
+    let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+    if let Some(s) = sock.socket() {
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+    }
+
+    // Create TCB and attach a TcpStream to the socket (IPv6)
+    use alloc::sync::Arc;
+    use crate::sync::PoisonLock;
+    use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, TcpStream};
+
+    let t_local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 12345);
+    let t_remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 80);
+
+    let mut tcb = TcpControlBlock::new(t_local);
+    tcb.remote_addr = Some(t_remote);
+    tcb.state = TcpState::Established;
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+    let stream = TcpStream { tcb: tcb_arc.clone() };
+
+    if let Some(s) = sock.socket() {
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.tcp_stream = Some(stream.clone());
+        let _ = inner.transition_to(SocketState::Connected);
+    }
+
+    // Prepare a packet and push it into the TCB recv buffer
+    let mut packet = crate::net::mempool::alloc_packet().expect("alloc packet");
+    let data = [9u8, 10u8, 11u8];
+    packet.data_mut()[..data.len()].copy_from_slice(&data);
+    packet.set_len(data.len());
+
+    {
+        if let Ok(mut tlock) = tcb_arc.lock() {
+            tlock.recv_buffer.push_back(packet);
+        } else {
+            panic!("TCB lock poisoned");
+        }
+    }
+
+    // Prepare a simple waker
+    static WAKE_COUNT_V6: AtomicU32 = AtomicU32::new(0);
+    const VTABLE_V6: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(core::ptr::null(), &VTABLE_V6),
+        |_| {
+            WAKE_COUNT_V6.fetch_add(1, Ordering::SeqCst);
+        },
+        |_| {
+            WAKE_COUNT_V6.fetch_add(1, Ordering::SeqCst);
+        },
+        |_| {},
+    );
+    let raw = RawWaker::new(core::ptr::null(), &VTABLE_V6);
     let waker = unsafe { Waker::from_raw(raw) };
     let mut cx = Context::from_waker(&waker);
 

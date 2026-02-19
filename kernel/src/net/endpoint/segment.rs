@@ -254,7 +254,7 @@ impl TcpSegmentBuilder {
         segment
     }
 
-    /// チェックサム計算（疑似ヘッダ込み）
+    /// チェックサム計算（疑似ヘッダ込み） — IPv4 用
     pub fn calculate_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
         // チェックサムフィールドをゼロに
         segment[16] = 0;
@@ -292,11 +292,52 @@ impl TcpSegmentBuilder {
 
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
+
+    /// TCPチェックサム計算（IPv6擬似ヘッダ）
+    pub fn calculate_checksum_v6(segment: &mut [u8], src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address) {
+        // Ensure checksum field is zeroed
+        segment[16] = 0;
+        segment[17] = 0;
+
+        use crate::net::ipv6::ipv6_pseudo_header_checksum;
+        use crate::net::ipv4::data_checksum;
+        use crate::net::ipv4::IpProtocol;
+
+        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+        let checksum = data_checksum(segment, pseudo);
+        let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+        segment[16..18].copy_from_slice(&final_checksum.to_be_bytes());
+    }
 }
 
-/// TCPセグメント送信（IP層に渡す）
+/// TCPセグメント送信（IP層に渡す） — IPv4/IPv6 デュアルスタック対応
 pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>) {
-    // IP層経由でパケット送信
+    // IPv6優先パス
+    if local.is_ipv6() || remote.is_ipv6() {
+        let src_v6 = local.as_ipv6();
+        let dst_v6 = remote.as_ipv6();
+        if crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment) {
+            log::info!(
+                "TCP TX (v6): [{}]:{} -> [{}]:{} ({} bytes)",
+                src_v6,
+                local.port(),
+                dst_v6,
+                remote.port(),
+                segment.len()
+            );
+        } else {
+            log::info!(
+                "TCP TX failed (NDP/queue?): [{}]:{} -> [{}]:{}",
+                src_v6,
+                local.port(),
+                dst_v6,
+                remote.port()
+            );
+        }
+        return;
+    }
+
+    // IPv4 path (従来通り)
     let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap());
     let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap());
 
@@ -441,6 +482,18 @@ mod tests {
 
         let checksum = u16::from_be_bytes([segment[16], segment[17]]);
         assert_ne!(checksum, 0);
+    }
+
+    #[test_case]
+    fn test_tcp_checksum_v6() {
+        let mut segment = TcpSegmentBuilder::new(1234, 80).seq(1).ack(0).build();
+        TcpSegmentBuilder::calculate_checksum_v6(
+            &mut segment,
+            crate::net::ipv6::Ipv6Address::LOOPBACK,
+            crate::net::ipv6::Ipv6Address::LOOPBACK,
+        );
+        // Checksum field should be non-zero for valid segment
+        assert!(segment[16] != 0 || segment[17] != 0);
     }
 }
 
