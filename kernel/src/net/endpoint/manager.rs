@@ -77,10 +77,10 @@ impl SocketManager {
             if let Some(addr) = s.local_addr() {
                 match s.socket_type() {
                     SocketType::Tcp => {
-                        self.tcp_ports.write().remove(&addr.port);
+                        self.tcp_ports.write().remove(&addr.port());
                     }
                     SocketType::Udp => {
-                        self.udp_ports.write().remove(&addr.port);
+                        self.udp_ports.write().remove(&addr.port());
                     }
                     _ => {}
                 }

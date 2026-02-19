@@ -101,7 +101,7 @@ impl SocketAddr {
             SocketAddr::V4 { ip, .. } => Some(ip),
             SocketAddr::V6 { ip, .. } => {
                 // map ::ffff:a.b.c.d -> a.b.c.d, otherwise None
-                let bytes = ip.0;
+                let bytes = ip.octets();
                 if bytes[..10] == [0u8; 10] && bytes[10] == 0xff && bytes[11] == 0xff {
                     Some(Ipv4Addr::from_u32(u32::from_be_bytes([
                         bytes[12], bytes[13], bytes[14], bytes[15],
