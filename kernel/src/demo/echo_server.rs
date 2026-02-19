@@ -124,9 +124,8 @@ pub async fn run_echo_server_on_port(port: u16) {
                 Ok((client_socket, client_addr)) => {
                     STATS.on_connect();
                     log::info!(
-                        "Echo Server: New connection from {:?}:{} (total: {})",
-                        client_addr.ip,
-                        client_addr.port,
+                        "Echo Server: New connection from {} (total: {})",
+                        client_addr,
                         STATS.connections.load(Ordering::Relaxed)
                     );
 

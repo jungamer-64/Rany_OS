@@ -416,6 +416,7 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
     crate::mm::meta::memcg::init_memcg();
 
     if !prepare_wave7_worker() {
+        eprintln!("[qemu-test] mm_wave7_async_swapout_heavy_stress: prepare_wave7_worker() returned false");
         return false;
     }
 
@@ -431,9 +432,10 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
     let mut all_frames: Vec<FrameIndex> = Vec::new();
     let mut total_enqueued = 0usize;
 
-    for _ in 0..DEFAULT_HEAVY_ROUNDS {
+    for round in 0..DEFAULT_HEAVY_ROUNDS {
+        eprintln!("[qemu-test] mm_wave7_async_swapout_heavy_stress: starting round {}/{}", round+1, DEFAULT_HEAVY_ROUNDS);
         let mut round_frames: Vec<FrameIndex> = Vec::new();
-        for _ in 0..DEFAULT_HEAVY_BATCH {
+        for batch_idx in 0..DEFAULT_HEAVY_BATCH {
             let Some(frame_idx) = alloc_anon_tracked_frame(memcg_id) else {
                 continue;
             };
@@ -443,7 +445,13 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
                     round_frames.push(frame_idx);
                     total_enqueued = total_enqueued.saturating_add(1);
                 }
-                Err(_) => {
+                Err(e) => {
+                    eprintln!(
+                        "[qemu-test] mm_wave7_async_swapout_heavy_stress: try_enqueue_swapout failed: {:?} (round {}, batch {})",
+                        e,
+                        round+1,
+                        batch_idx+1
+                    );
                     cleanup_memcg_and_frame(frame_idx);
                     return false;
                 }
@@ -451,6 +459,12 @@ pub fn wave7_async_swapout_heavy_stress_canonical_smoke() -> bool {
         }
 
         if !qemu_test_drain_until_idle(DEFAULT_DRAIN_ROUNDS) {
+            eprintln!(
+                "[qemu-test] mm_wave7_async_swapout_heavy_stress: qemu_test_drain_until_idle returned false at round {} (queued_counts={:?})",
+                round+1,
+                crate::mm::reclaim::async_swapout::queued_counts()
+            );
+
             for frame in round_frames {
                 cleanup_memcg_and_frame(frame);
             }
