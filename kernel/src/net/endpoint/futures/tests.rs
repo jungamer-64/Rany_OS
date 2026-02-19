@@ -408,6 +408,95 @@ fn test_tcp_packet_stream_multiple_packets() {
 }
 
 #[test_case]
+fn test_tcp_packet_stream_multiple_packets_v6() {
+    init_socket_manager();
+    stack::init_default();
+
+    let sock = create_tcp_socket();
+    let fd = sock.fd();
+    let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+    let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+    if let Some(s) = sock.socket() {
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+    }
+
+    // Create TCB and attach a TcpStream to the socket (IPv6)
+    use alloc::sync::Arc;
+    use crate::sync::PoisonLock;
+    use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, TcpStream};
+
+    let t_local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 12345);
+    let t_remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 80);
+
+    let mut tcb = TcpControlBlock::new(t_local);
+    tcb.remote_addr = Some(t_remote);
+    tcb.state = TcpState::Established;
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+    let stream = TcpStream { tcb: tcb_arc.clone() };
+
+    if let Some(s) = sock.socket() {
+        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.tcp_stream = Some(stream.clone());
+        let _ = inner.transition_to(SocketState::Connected);
+    }
+
+    // Prepare two packets and push into TCB recv buffer
+    let mut p1 = crate::net::mempool::alloc_packet().expect("alloc packet");
+    let d1 = [10u8, 11u8];
+    p1.data_mut()[..d1.len()].copy_from_slice(&d1);
+    p1.set_len(d1.len());
+
+    let mut p2 = crate::net::mempool::alloc_packet().expect("alloc packet");
+    let d2 = [20u8, 21u8, 22u8];
+    p2.data_mut()[..d2.len()].copy_from_slice(&d2);
+    p2.set_len(d2.len());
+
+    {
+        if let Ok(mut tlock) = tcb_arc.lock() {
+            tlock.recv_buffer.push_back(p1);
+            tlock.recv_buffer.push_back(p2);
+        } else {
+            panic!("TCB lock poisoned");
+        }
+    }
+
+    let stream_wrapper = sock.tcp_packet_stream().expect("tcp_packet_stream should exist");
+
+    // Prepare a simple waker
+    static WAKE_COUNT: AtomicU32 = AtomicU32::new(0);
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(core::ptr::null(), &VTABLE),
+        |_| {
+            WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+        },
+        |_| {
+            WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
+        },
+        |_| {},
+    );
+    let raw = RawWaker::new(core::ptr::null(), &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw) };
+    let mut cx = Context::from_waker(&waker);
+
+    // First packet
+    let mut fut1 = stream_wrapper.next_packet();
+    let mut pinned1 = unsafe { Pin::new_unchecked(&mut fut1) };
+    match pinned1.as_mut().poll(&mut cx) {
+        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &d1),
+        _ => panic!("Expected first packet"),
+    }
+
+    // Second packet
+    let mut fut2 = stream_wrapper.next_packet();
+    let mut pinned2 = unsafe { Pin::new_unchecked(&mut fut2) };
+    match pinned2.as_mut().poll(&mut cx) {
+        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &d2),
+        _ => panic!("Expected second packet"),
+    }
+}
+#[test_case]
 fn test_udp_packet_stream_delivered() {
     init_socket_manager();
 

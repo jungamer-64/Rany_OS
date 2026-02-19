@@ -414,3 +414,105 @@ impl VirtioNetDevice {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
+    use crate::net::mempool;
+    use crate::net::driver_bridge;
+
+    struct NoopTransport;
+
+    impl VirtioTransport for NoopTransport {
+        fn device_type(&self) -> VirtioDeviceType {
+            VirtioDeviceType::Network
+        }
+        fn get_status(&self) -> u8 { 0 }
+        fn set_status(&mut self, _status: u8) {}
+        fn get_device_features_low(&self) -> u32 { 0 }
+        fn get_device_features_high(&self) -> u32 { 0 }
+        fn set_driver_features_low(&mut self, _features: u32) {}
+        fn set_driver_features_high(&mut self, _features: u32) {}
+        fn get_num_queues(&self) -> u16 { 2 }
+        fn select_queue(&mut self, _queue_index: u16) {}
+        fn get_queue_max_size(&self) -> u16 { 8 }
+        fn set_queue_size(&mut self, _size: u16) {}
+        fn is_queue_ready(&self) -> bool { false }
+        fn enable_queue(&mut self) {}
+        fn disable_queue(&mut self) {}
+        fn set_queue_desc_addr(&mut self, _addr: u64) {}
+        fn set_queue_avail_addr(&mut self, _addr: u64) {}
+        fn set_queue_used_addr(&mut self, _addr: u64) {}
+        fn notify_queue(&mut self, _queue_index: u16) {}
+        fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> { None }
+        fn get_interrupt_status(&self) -> u32 { 0 }
+        fn ack_interrupt(&self, _status: u32) {}
+        fn read_config_u8(&self, _offset: usize) -> u8 { 0 }
+        fn read_config_u16(&self, _offset: usize) -> u16 { 0 }
+        fn read_config_u32(&self, _offset: usize) -> u32 { 0 }
+        fn write_config_u8(&mut self, _offset: usize, _value: u8) {}
+        fn write_config_u16(&mut self, _offset: usize, _value: u16) {}
+        fn write_config_u32(&mut self, _offset: usize, _value: u32) {}
+        fn transport_type(&self) -> TransportType { TransportType::Mmio }
+    }
+
+    #[test_case]
+    fn test_complete_rx_packetref_handoff_and_repost() {
+        // Ensure mempool is available for PacketRef posting
+        let _ = mempool::init_net_mempool(4);
+
+        // Create and initialize device
+        let mut dev = VirtioNetDevice::new(Box::new(NoopTransport));
+        assert!(dev.init().is_ok());
+
+        let rxq = dev.rx_queue.as_ref().expect("rx_queue present after init");
+
+        // Post a PacketRef into the RX queue
+        assert!(dev.try_post_rx_packet(rxq).unwrap());
+
+        // Grab the desc index of the posted PacketRef
+        let desc_idx = {
+            let map = dev.rx_packetrefs.lock();
+            *map.keys().next().expect("expected a posted PacketRef")
+        };
+
+        // Populate the PacketRef payload to simulate device write
+        let payload = b"driver-test";
+        let header_size = core::mem::size_of::<crate::io::virtio::net::VirtioNetHeader>();
+        {
+            let mut map = dev.rx_packetrefs.lock();
+            let inflight = map.get_mut(&desc_idx).expect("inflight present");
+            let buf = inflight.packet.data_mut();
+            // Write virtio header (zeros) + ethernet/payload starting at header_size
+            for i in 0..header_size { buf[i] = 0; }
+            let start = header_size;
+            buf[start..start + payload.len()].copy_from_slice(payload);
+        }
+
+        // Ensure bridge counter is zero before completion
+        let before = driver_bridge::get_bridge_stats().rx_packets;
+
+        // Simulate device placing a used ring entry for the posted desc
+        unsafe {
+            let used = &mut *rxq.used_ring.as_ptr();
+            let slot = (used.idx % rxq.size) as usize;
+            used.ring[slot] = VringUsedElem { id: desc_idx as u32, len: (header_size + payload.len()) as u32 };
+            used.idx = used.idx.wrapping_add(1);
+        }
+
+        // Process RX completions (this should call complete_rx_packetref)
+        dev.process_rx_completions();
+
+        // Bridge should have observed one RX (process_received_packet_zero_copy increments RX_PACKETS)
+        let after = driver_bridge::get_bridge_stats().rx_packets;
+        assert!(after >= before + 1, "bridge did not observe RX packet");
+
+        // The original desc entry must have been consumed (removed)
+        let map = dev.rx_packetrefs.lock();
+        assert!(!map.contains_key(&desc_idx), "old desc should be removed after completion");
+        // A replacement PacketRef should have been reposted (map should not be empty)
+        assert!(!map.is_empty(), "replacement PacketRef should be posted");
+    }
+}

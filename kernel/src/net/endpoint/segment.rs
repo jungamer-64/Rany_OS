@@ -311,12 +311,13 @@ impl TcpSegmentBuilder {
 }
 
 /// TCPセグメント送信（IP層に渡す） — IPv4/IPv6 デュアルスタック対応
-pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>) {
+pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>) -> bool {
     // IPv6優先パス
     if local.is_ipv6() || remote.is_ipv6() {
-        let src_v6 = local.as_ipv6();
-        let dst_v6 = remote.as_ipv6();
-        if crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment) {
+        let src_v6 = crate::net::ipv6::Ipv6Address::new(local.as_ipv6());
+        let dst_v6 = crate::net::ipv6::Ipv6Address::new(remote.as_ipv6());
+        let ok = crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment);
+        if ok {
             log::info!(
                 "TCP TX (v6): [{}]:{} -> [{}]:{} ({} bytes)",
                 src_v6,
@@ -334,7 +335,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
                 remote.port()
             );
         }
-        return;
+        return ok;
     }
 
     // IPv4 path (従来通り)
@@ -355,6 +356,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
                         remote.port(),
                         segment.len()
                     );
+                    return true;
                 } else {
                     log::info!(
                         "TCP TX failed (ARP pending?): {:?}:{} -> {:?}:{}",
@@ -363,6 +365,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
                         remote.as_ipv4().unwrap(),
                         remote.port()
                     );
+                    return false;
                 }
             } else {
                 log::info!("TCP TX: Network stack not initialized");
@@ -372,6 +375,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
             log::error!("[NET] Stack poisoned - dropping TCP segment");
         }
     }
+    false
 }
 
 // =====================================================
