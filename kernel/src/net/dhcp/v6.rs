@@ -460,7 +460,7 @@ impl DhcpV6Client {
                                     if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                         let src = ipv6_cfg.link_local;
                                         let dst = match self.server_addr.lock() {
-                                            Ok(ref a) => a.clone().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
+                                            Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
                                             Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
                                         };
                                         let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);
@@ -504,7 +504,7 @@ impl DhcpV6Client {
                                             // If we know the server IPv6 address, send unicast Renew there;
                                             // otherwise fall back to multicast.
                                             let dst = match self.server_addr.lock() {
-                                                Ok(ref a) => a.clone().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
+                                                Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
                                                 Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
                                             };
                                             let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);

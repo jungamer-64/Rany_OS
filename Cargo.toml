@@ -120,5 +120,3 @@ opt-level = 3
 debug = false
 strip = "symbols"
 
-[profile.test]
-panic = "unwind"
