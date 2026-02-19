@@ -31,7 +31,6 @@ mod ipc;
 mod loader;
 mod memory;
 mod mm;
-mod per_cpu;
 mod net;
 mod panic_handler;
 mod power;
