@@ -502,6 +502,17 @@ impl VlanTag {
     /// Size of VLAN tag
     pub const SIZE: usize = 4;
 
+    /// Create a new VLAN tag
+    pub const fn new(vlan_id: u16, pcp: u8, dei: bool) -> Self {
+        let tci_val = (vlan_id & 0x0FFF)
+            | ((pcp as u16 & 0x07) << 13)
+            | if dei { 0x1000 } else { 0 };
+        Self {
+            tpid: [0x81, 0x00],
+            tci: tci_val.to_be_bytes(),
+        }
+    }
+
     /// Get VLAN ID (12 bits)
     pub fn vlan_id(&self) -> u16 {
         u16::from_be_bytes(self.tci) & 0x0FFF
@@ -516,6 +527,172 @@ impl VlanTag {
     pub fn dei(&self) -> bool {
         (self.tci[0] & 0x10) != 0
     }
+
+    /// Serialize the VLAN tag to bytes
+    pub fn to_bytes(&self) -> [u8; 4] {
+        [self.tpid[0], self.tpid[1], self.tci[0], self.tci[1]]
+    }
+}
+
+// ============================================================================
+// VLAN-Aware Ethernet Frame Builder (802.1Q TX)
+// ============================================================================
+
+/// Ethernet frame with 802.1Q VLAN tag for transmission
+///
+/// Frame layout: DST(6) + SRC(6) + TPID(2) + TCI(2) + EtherType(2) + Payload
+/// Total header = 18 bytes (vs 14 for untagged)
+pub struct VlanEthernetFrameMut<'a> {
+    /// Raw frame buffer
+    data: &'a mut [u8],
+    /// Current payload length
+    payload_len: usize,
+}
+
+impl<'a> VlanEthernetFrameMut<'a> {
+    /// VLAN-tagged Ethernet header size (14 + 4 = 18 bytes)
+    pub const HEADER_SIZE: usize = 18;
+
+    /// Maximum frame size (1518 + 4 for VLAN tag)
+    pub const MAX_SIZE: usize = 1522;
+
+    /// Create a new VLAN-tagged Ethernet frame builder
+    pub fn new(buffer: &'a mut [u8]) -> Option<Self> {
+        if buffer.len() < Self::HEADER_SIZE {
+            return None;
+        }
+        Some(VlanEthernetFrameMut {
+            data: buffer,
+            payload_len: 0,
+        })
+    }
+
+    /// Set destination MAC address
+    pub fn set_destination(&mut self, mac: MacAddress) -> &mut Self {
+        self.data[0..6].copy_from_slice(mac.as_bytes());
+        self
+    }
+
+    /// Set source MAC address
+    pub fn set_source(&mut self, mac: MacAddress) -> &mut Self {
+        self.data[6..12].copy_from_slice(mac.as_bytes());
+        self
+    }
+
+    /// Set VLAN tag (TPID + TCI)
+    pub fn set_vlan_tag(&mut self, vlan_id: u16, pcp: u8, dei: bool) -> &mut Self {
+        let tag = VlanTag::new(vlan_id, pcp, dei);
+        let tag_bytes = tag.to_bytes();
+        self.data[12..16].copy_from_slice(&tag_bytes);
+        self
+    }
+
+    /// Set inner EtherType (after VLAN tag)
+    pub fn set_ether_type(&mut self, ether_type: EtherType) -> &mut Self {
+        let et_bytes = u16::to_be_bytes(ether_type.into());
+        self.data[16..18].copy_from_slice(&et_bytes);
+        self
+    }
+
+    /// Get mutable payload buffer (after VLAN + EtherType)
+    pub fn payload_mut(&mut self) -> &mut [u8] {
+        &mut self.data[Self::HEADER_SIZE..]
+    }
+
+    /// Set payload length
+    pub fn set_payload_len(&mut self, len: usize) -> &mut Self {
+        self.payload_len = len.min(self.data.len() - Self::HEADER_SIZE);
+        self
+    }
+
+    /// Copy payload data into frame
+    pub fn write_payload(&mut self, payload: &[u8]) -> usize {
+        let max_len = self.data.len() - Self::HEADER_SIZE;
+        let copy_len = payload.len().min(max_len);
+        self.data[Self::HEADER_SIZE..Self::HEADER_SIZE + copy_len]
+            .copy_from_slice(&payload[..copy_len]);
+        self.payload_len = copy_len;
+        copy_len
+    }
+
+    /// Get total frame length
+    pub fn total_len(&self) -> usize {
+        Self::HEADER_SIZE + self.payload_len
+    }
+
+    /// Get the complete frame as bytes
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data[..self.total_len()]
+    }
+
+    /// Pad frame to minimum size (64 bytes for tagged)
+    pub fn pad_to_minimum(&mut self) {
+        let min_size = 64; // 802.1Q minimum frame size
+        let current_len = self.total_len();
+        if current_len < min_size {
+            for byte in &mut self.data[current_len..min_size] {
+                *byte = 0;
+            }
+            self.payload_len = min_size - Self::HEADER_SIZE;
+        }
+    }
+}
+
+/// Insert a VLAN tag into an existing untagged Ethernet frame
+///
+/// Takes an untagged frame buffer, shifts the payload to make room for the
+/// 4-byte VLAN tag, and inserts the tag. Returns the new frame length.
+///
+/// `frame` must be large enough to hold the additional 4 bytes.
+/// `frame_len` is the current length of the untagged frame.
+pub fn insert_vlan_tag(
+    frame: &mut [u8],
+    frame_len: usize,
+    vlan_id: u16,
+    pcp: u8,
+    dei: bool,
+) -> Option<usize> {
+    let new_len = frame_len + VlanTag::SIZE;
+    if new_len > frame.len() || frame_len < EthernetHeader::SIZE {
+        return None;
+    }
+
+    // Shift payload (everything after dst+src MAC, i.e. from offset 12) by 4 bytes
+    // We need to move bytes [12..frame_len] to [16..frame_len+4]
+    frame.copy_within(12..frame_len, 16);
+
+    // Insert VLAN tag at offset 12
+    let tag = VlanTag::new(vlan_id, pcp, dei);
+    let tag_bytes = tag.to_bytes();
+    frame[12..16].copy_from_slice(&tag_bytes);
+
+    Some(new_len)
+}
+
+/// Strip a VLAN tag from a tagged frame
+///
+/// Removes the 4-byte VLAN tag and shifts payload back.
+/// Returns (vlan_id, new_frame_len).
+pub fn strip_vlan_tag(frame: &mut [u8], frame_len: usize) -> Option<(u16, usize)> {
+    if frame_len < VlanEthernetFrameMut::HEADER_SIZE {
+        return None;
+    }
+
+    // Check TPID
+    let tpid = u16::from_be_bytes([frame[12], frame[13]]);
+    if tpid != 0x8100 {
+        return None;
+    }
+
+    // Read VLAN ID
+    let tci = u16::from_be_bytes([frame[14], frame[15]]);
+    let vlan_id = tci & 0x0FFF;
+
+    // Shift payload back: move [16..frame_len] to [12..frame_len-4]
+    let new_len = frame_len - VlanTag::SIZE;
+    frame.copy_within(16..frame_len, 12);
+
+    Some((vlan_id, new_len))
 }
 
 #[cfg(test)]

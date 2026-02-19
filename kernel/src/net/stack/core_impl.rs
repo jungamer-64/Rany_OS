@@ -45,6 +45,7 @@ impl NetworkStack {
             transmit_fn: None,
             current_time: AtomicU64::new(0),
             redirect_cache: RedirectCache::new(),
+            ndp_pending_queue: NdpPendingQueue::new(),
         }
     }
 
@@ -425,6 +426,8 @@ impl NetworkStack {
                     "NDP: Neighbor {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     ip, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
                 );
+                // Drain any pending packets for this now-resolved neighbor
+                self.drain_ndp_pending(&ip);
             }
             NdpResult::RouterAdvertisement {
                 router,
@@ -470,6 +473,7 @@ impl NetworkStack {
     /// Send an IPv6 packet containing ICMPv6 payload
     pub(super) fn send_ipv6_icmpv6(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
         let config = self.config;
+        let current_time = self.current_time.load(Ordering::Relaxed);
 
         // Resolve destination MAC
         let dst_mac = if dst.is_multicast() {
@@ -477,12 +481,27 @@ impl NetworkStack {
         } else {
             // Use NDP to resolve
             match self.ndp {
-                Some(ref ndp) => {
+                Some(ref mut ndp) => {
                     match ndp.resolve(dst) {
                         Some(mac) => mac,
                         None => {
-                            // TODO: queue packet and send NS
-                            log::debug!("IPv6: NDP resolution pending for {}", dst);
+                            // Queue packet for later delivery
+                            self.ndp_pending_queue.enqueue(*src, *dst, icmpv6_data, current_time);
+
+                            // Start NDP resolution (send NS)
+                            let ns_msg = ndp.start_resolution(dst, current_time);
+                            // Send NS via solicited-node multicast
+                            let sn_mcast = dst.solicited_node();
+                            log::debug!(
+                                "IPv6: NDP resolution started for {}, packet queued ({} pending)",
+                                dst,
+                                self.ndp_pending_queue.packets.len()
+                            );
+
+                            // We need to send the NS message — use the link-local address as src
+                            let our_ll = ndp.our_link_local;
+                            // Send NS via the regular send path (multicast MAC is resolved directly)
+                            self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
                             return;
                         }
                     }
@@ -525,6 +544,74 @@ impl NetworkStack {
                 }
             }
         }
+    }
+
+    /// Send an IPv6/ICMPv6 packet without NDP resolution (for multicast destinations)
+    ///
+    /// NDP NS送信など、NDP解決自体の送信パスで再帰を避けるために使用。
+    /// 宛先はマルチキャストアドレスのみ想定。
+    fn send_ipv6_icmpv6_raw(&mut self, src: &Ipv6Address, dst: &Ipv6Address, icmpv6_data: &[u8]) {
+        let config = self.config;
+
+        // Multicast MAC resolution (no NDP needed)
+        let dst_mac = MacAddress::new(dst.multicast_mac());
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+
+            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
+                ip_packet.init_header();
+                ip_packet.set_source(src);
+                ip_packet.set_destination(dst);
+                ip_packet.set_next_header(IpProtocol::Icmpv6);
+                ip_packet.set_hop_limit(255);
+
+                let payload = ip_packet.payload_mut();
+                if icmpv6_data.len() <= payload.len() {
+                    payload[..icmpv6_data.len()].copy_from_slice(icmpv6_data);
+                    ip_packet.finalize(icmpv6_data.len());
+
+                    let total_len = IPV6_HEADER_SIZE + icmpv6_data.len();
+                    frame.set_payload_len(total_len);
+
+                    self.transmit(frame.as_bytes());
+                }
+            }
+        }
+    }
+
+    /// Drain pending packets for a resolved neighbor
+    ///
+    /// NDP Neighbor Advertisementを受信してキャッシュが更新された際に呼び出す。
+    /// 指定アドレス宛の保留パケットを全て送信する。
+    fn drain_ndp_pending(&mut self, resolved_ip: &Ipv6Address) {
+        let pending = self.ndp_pending_queue.drain_for(resolved_ip);
+        if pending.is_empty() {
+            return;
+        }
+
+        log::debug!(
+            "NDP: Draining {} pending packets for {}",
+            pending.len(),
+            resolved_ip
+        );
+
+        for pkt in pending {
+            self.send_ipv6_icmpv6(&pkt.src, &pkt.dst, &pkt.icmpv6_data);
+        }
+    }
+
+    /// Expire timed-out NDP pending packets
+    pub fn expire_ndp_pending(&mut self) {
+        let current_time = self.current_time.load(Ordering::Relaxed);
+        self.ndp_pending_queue.expire(current_time);
     }
 
     /// Process IGMP data for multicast group management

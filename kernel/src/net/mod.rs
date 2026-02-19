@@ -79,6 +79,12 @@ pub mod rsa;
 // TLS support
 pub mod tls;
 
+// Checksum Offload
+pub mod checksum_offload;
+
+// Timeout helpers
+pub mod stack_timeouts;
+
 // Re-export mempool
 #[allow(unused_imports)]
 pub use mempool::{
@@ -108,7 +114,7 @@ pub use tcp::{
 #[allow(unused_imports)]
 pub use ethernet::{
     EtherType, EthernetFrame, EthernetFrameMut, EthernetHeader, EthernetProcessor, EthernetStats,
-    MacAddress,
+    MacAddress, VlanEthernetFrameMut, VlanTag, insert_vlan_tag, strip_vlan_tag,
 };
 
 // Re-export IPv4
@@ -236,6 +242,9 @@ pub use optimization::{
     // Batch processing
     PacketBatch,
     TsoContext,
+    TsoEngine,
+    TsoHeaderTemplate,
+    TsoSegmentInfo,
     adaptive_coalescing,
     batch_processor,
     flow_affinity,
@@ -301,6 +310,19 @@ pub use endpoint::{
     send_tcp_segment,
     tcb_table,
     tcp_flags,
+};
+
+// Re-export Checksum Offload
+#[allow(unused_imports)]
+pub use checksum_offload::{
+    ChecksumCapabilities, ChecksumOffloadManager, ChecksumStats, RxChecksumStatus,
+    TxChecksumAction, internet_checksum, pseudo_header_partial_sum,
+};
+
+// Re-export Stack Timeouts
+#[allow(unused_imports)]
+pub use stack_timeouts::{
+    KeepaliveTimer, RetransmitTimer, TimeWaitTimer, TimerEntry, TimerKind, TimeoutWheel,
 };
 
 // ============================================================================

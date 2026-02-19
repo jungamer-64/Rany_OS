@@ -400,7 +400,7 @@ pub struct NdpProcessor {
     /// Neighbor cache
     cache: NeighborCache,
     /// Our link-local address
-    our_link_local: Ipv6Address,
+    pub(crate) our_link_local: Ipv6Address,
     /// Our MAC address
     our_mac: [u8; 6],
     /// Statistics
