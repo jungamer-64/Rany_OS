@@ -276,6 +276,18 @@ fn run_check(name: &str, f: fn() -> bool) -> bool {
 pub extern "C" fn _start() -> ! {
     serial_write_str("[qemu-suite] kernel start\n");
 
+    // Ensure a usable PMM region is available for qemu-suite tests so
+    // `alloc_frame()` and friends succeed. This mirrors unit-test usage
+    // of `init_frame_allocator()` and is safe for the qemu-test harness.
+    unsafe {
+        // Reserve a 64 MiB test-only physical region starting at 1 MiB.
+        // Chosen large enough for the kernel qemu-suite allocations but
+        // small enough to avoid conflicts in the minimal test environment.
+        let regions = [(x86_64::PhysAddr::new(0x1_0000u64), 64 * 1024 * 1024u64)];
+        rany_os::mm::phys::frame_allocator::init_frame_allocator(&regions);
+        serial_write_str("[qemu-suite] initialized test frame allocator\n");
+    }
+
     // Migration baseline check: verify shared utility path still behaves.
     if run_suite() {
         serial_write_str("[qemu-suite] kernel pass\n");
