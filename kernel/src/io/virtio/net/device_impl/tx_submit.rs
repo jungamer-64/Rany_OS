@@ -279,6 +279,118 @@ impl VirtioNetDevice {
         );
     }
 
+    /// Legacy RX completion handler shared by IRQ path and PollHandler path.
+    ///
+    /// Returns true when the descriptor belonged to the legacy data path and was handled.
+    pub(super) fn handle_legacy_rx_completion(
+        &self,
+        rx_queue: &NetVirtQueue,
+        desc_idx: u16,
+        len: u32,
+    ) -> bool {
+        if let Some(inflight) = self.rx_packetrefs.lock().remove(&desc_idx) {
+            let completion_len = match rx_queue.take_completion(desc_idx) {
+                Some(completion_len) => completion_len,
+                None => {
+                    log::warn!(
+                        "[VIRTIO-NET] RX legacy completion missing pending slot desc={}",
+                        desc_idx
+                    );
+                    len
+                }
+            };
+            self.complete_rx_packetref(rx_queue, desc_idx, completion_len, inflight);
+            return true;
+        }
+
+        if let Some(inflight) = self.rx_buffers.lock().remove(&desc_idx) {
+            let completion_len = match rx_queue.take_completion(desc_idx) {
+                Some(completion_len) => completion_len,
+                None => {
+                    log::warn!(
+                        "[VIRTIO-NET] RX legacy completion missing pending slot desc={}",
+                        desc_idx
+                    );
+                    len
+                }
+            };
+            self.complete_rx_vbuf(desc_idx, completion_len, inflight);
+            return true;
+        }
+
+        false
+    }
+
+    /// Legacy TX completion handler shared by IRQ path and PollHandler path.
+    ///
+    /// Returns true when the descriptor belonged to the legacy data path and was handled.
+    pub(super) fn handle_legacy_tx_completion(
+        &self,
+        tx_queue: &NetVirtQueue,
+        desc_idx: u16,
+        len: u32,
+    ) -> bool {
+        if let Some(_buf) = self.tx_inflight.lock().remove(&desc_idx) {
+            if tx_queue.take_completion(desc_idx).is_none() {
+                log::warn!(
+                    "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
+                    desc_idx
+                );
+            }
+            crate::io::log::early_print(&alloc::format!(
+                "[EARLY][VIRTIO-NET] TX-COMP freed buffer for desc={} len={}\n",
+                desc_idx, len
+            ));
+            log::info!("[VIRTIO-NET][TX-COMP] freed buffer for desc={}", desc_idx);
+            return true;
+        }
+
+        if let Some(entry) = self.tx_packetrefs.lock().remove(&desc_idx) {
+            if tx_queue.take_completion(desc_idx).is_none() {
+                log::warn!(
+                    "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
+                    desc_idx
+                );
+            }
+            cleanup_dma_resources(
+                self.iommu_device_id,
+                entry.bounce_handle,
+                entry.dma_iova,
+                entry.dma_len,
+            );
+            crate::io::log::early_print(&alloc::format!(
+                "[EARLY][VIRTIO-NET] TX-COMP freed PacketRef for desc={} len={}\n",
+                desc_idx, len
+            ));
+            log::info!("[VIRTIO-NET][TX-COMP] freed PacketRef for desc={}", desc_idx);
+            return true;
+        }
+
+        false
+    }
+
+    /// Release unknown RX completion to avoid descriptor leaks.
+    pub(super) fn release_unknown_rx_completion(&self, rx_queue: &NetVirtQueue, desc_idx: u16) {
+        if rx_queue.take_completion(desc_idx).is_none() {
+            log::warn!(
+                "[VIRTIO-NET] RX completion missing pending slot for unknown desc {}",
+                desc_idx
+            );
+        }
+        log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
+    }
+
+    /// Release unknown TX completion to avoid descriptor leaks.
+    pub(super) fn release_unknown_tx_completion(&self, tx_queue: &NetVirtQueue, desc_idx: u16) {
+        if tx_queue.take_completion(desc_idx).is_none() {
+            log::warn!(
+                "[VIRTIO-NET] TX completion missing pending slot for unknown desc {}",
+                desc_idx
+            );
+        }
+        log::warn!("[VIRTIO-NET] TX completion for unknown desc {}", desc_idx);
+    }
+
     /// RXキュー完了を処理し、パケットをスタックに渡す
     pub(super) fn process_rx_completions(&self) {
         let rx_queue = match self.rx_queue.as_ref() {
@@ -292,11 +404,21 @@ impl VirtioNetDevice {
             // IoScheduler path: completion belongs to a pending IoRequest.
             if let Some(handler) = get_poll_handler(0) {
                 if let Some((io_id, requested_bytes)) = handler.take_pending_rx(desc_idx) {
-                    let _ = rx_queue.take_completion(desc_idx);
-                    let payload_len = (len as usize).saturating_sub(VirtioNetHeader::SIZE);
-                    let payload_cap = requested_bytes.saturating_sub(VirtioNetHeader::SIZE);
-                    let completed = core::cmp::min(payload_len, payload_cap);
-                    let result = crate::io::io_scheduler::IoResult::Success(completed);
+                    let result = if let Some(completion_len) = rx_queue.take_completion(desc_idx) {
+                        let payload_len =
+                            (completion_len as usize).saturating_sub(VirtioNetHeader::SIZE);
+                        let payload_cap = requested_bytes.saturating_sub(VirtioNetHeader::SIZE);
+                        let completed = core::cmp::min(payload_len, payload_cap);
+                        crate::io::io_scheduler::IoResult::Success(completed)
+                    } else {
+                        log::warn!(
+                            "[VIRTIO-NET] RX scheduler completion disappeared desc={}",
+                            desc_idx
+                        );
+                        crate::io::io_scheduler::IoResult::Error(
+                            crate::io::io_scheduler::IoError::DeviceError,
+                        )
+                    };
                     let device_id = crate::io::io_scheduler::DeviceId::VirtioNet { index: 0 };
                     let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
                     bridge.handle_interrupt(device_id, &[(io_id, result)]);
@@ -304,11 +426,11 @@ impl VirtioNetDevice {
                 }
             }
 
-            if let Some(inflight) = self.rx_packetrefs.lock().remove(&desc_idx) {
-                self.complete_rx_packetref(rx_queue, desc_idx, len, inflight);
-            } else if let Some(inflight) = self.rx_buffers.lock().remove(&desc_idx) {
-                self.complete_rx_vbuf(desc_idx, len, inflight);
+            if self.handle_legacy_rx_completion(rx_queue, desc_idx, len) {
+                continue;
             }
+
+            self.release_unknown_rx_completion(rx_queue, desc_idx);
         }
     }
 
@@ -404,8 +526,17 @@ impl VirtioNetDevice {
             // IoScheduler path: completion belongs to a pending IoRequest.
             if let Some(handler) = get_poll_handler(0) {
                 if let Some((io_id, requested_bytes)) = handler.take_pending_tx(desc_idx) {
-                    let _ = tx_queue.take_completion(desc_idx);
-                    let result = crate::io::io_scheduler::IoResult::Success(requested_bytes);
+                    let result = if tx_queue.take_completion(desc_idx).is_some() {
+                        crate::io::io_scheduler::IoResult::Success(requested_bytes)
+                    } else {
+                        log::warn!(
+                            "[VIRTIO-NET] TX scheduler completion disappeared desc={}",
+                            desc_idx
+                        );
+                        crate::io::io_scheduler::IoResult::Error(
+                            crate::io::io_scheduler::IoError::DeviceError,
+                        )
+                    };
                     let device_id = crate::io::io_scheduler::DeviceId::VirtioNet { index: 0 };
                     let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
                     bridge.handle_interrupt(device_id, &[(io_id, result)]);
@@ -413,16 +544,11 @@ impl VirtioNetDevice {
                 }
             }
 
-            if let Some(_buf) = self.tx_inflight.lock().remove(&desc_idx) {
-                crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] TX-COMP freed buffer for desc={} len={}\n", desc_idx, len));
-                log::info!("[VIRTIO-NET][TX-COMP] freed buffer for desc={}", desc_idx);
-            } else if let Some(entry) = self.tx_packetrefs.lock().remove(&desc_idx) {
-                cleanup_dma_resources(self.iommu_device_id, entry.bounce_handle, entry.dma_iova, entry.dma_len);
-                crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] TX-COMP freed PacketRef for desc={} len={}\n", desc_idx, len));
-                log::info!("[VIRTIO-NET][TX-COMP] freed PacketRef for desc={}", desc_idx);
-            } else {
-                log::warn!("[VIRTIO-NET] TX completion for unknown desc {}", desc_idx);
+            if self.handle_legacy_tx_completion(tx_queue, desc_idx, len) {
+                continue;
             }
+
+            self.release_unknown_tx_completion(tx_queue, desc_idx);
         }
 
         // Notify network stack that TX resources became available
