@@ -175,57 +175,93 @@ impl VirtioNetPollHandler {
             .map(|req| (req.io_id, req.requested_bytes))
     }
 
-    fn match_rx_completion(
+    fn route_scheduler_rx_completion(
         &self,
         rx_queue: &NetVirtQueue,
         desc_id: u16,
-        len: u32,
     ) -> Option<(IoRequestId, IoResult)> {
         let pending = self.pending_rx.lock().remove(&desc_id);
-        let Some(req) = pending else {
-            log::warn!(
-                "[VIRTIO-NET] poll_completions: unmatched RX completion desc={}",
-                desc_id
-            );
-            return None;
+        let Some(req) = pending else { return None };
+
+        let completion_len = match rx_queue.take_completion(desc_id) {
+            Some(completion_len) => completion_len,
+            None => {
+                log::warn!(
+                    "[VIRTIO-NET] poll_completions: RX completion disappeared desc={}",
+                    desc_id
+                );
+                return Some((
+                    req.io_id,
+                    IoResult::Error(crate::io::io_scheduler::IoError::DeviceError),
+                ));
+            }
         };
 
-        if rx_queue.take_completion(desc_id).is_none() {
-            log::warn!(
-                "[VIRTIO-NET] poll_completions: RX completion disappeared desc={}",
-                desc_id
-            );
-        }
-
         let header_size = VirtioNetHeader::SIZE;
-        let payload_len = (len as usize).saturating_sub(header_size);
+        let payload_len = (completion_len as usize).saturating_sub(header_size);
         let payload_cap = req.requested_bytes.saturating_sub(header_size);
         let completed = core::cmp::min(payload_len, payload_cap);
         Some((req.io_id, IoResult::Success(completed)))
     }
 
-    fn match_tx_completion(
+    fn route_scheduler_tx_completion(
         &self,
         tx_queue: &NetVirtQueue,
         desc_id: u16,
     ) -> Option<(IoRequestId, IoResult)> {
         let pending = self.pending_tx.lock().remove(&desc_id);
-        let Some(req) = pending else {
-            log::warn!(
-                "[VIRTIO-NET] poll_completions: unmatched TX completion desc={}",
-                desc_id
-            );
-            return None;
-        };
+        let Some(req) = pending else { return None };
 
         if tx_queue.take_completion(desc_id).is_none() {
             log::warn!(
                 "[VIRTIO-NET] poll_completions: TX completion disappeared desc={}",
                 desc_id
             );
+            return Some((
+                req.io_id,
+                IoResult::Error(crate::io::io_scheduler::IoError::DeviceError),
+            ));
         }
 
         Some((req.io_id, IoResult::Success(req.requested_bytes)))
+    }
+
+    fn route_legacy_rx_completion(
+        &self,
+        device: &VirtioNetDevice,
+        rx_queue: &NetVirtQueue,
+        desc_id: u16,
+        len: u32,
+    ) -> bool {
+        device.handle_legacy_rx_completion(rx_queue, desc_id, len)
+    }
+
+    fn route_legacy_tx_completion(
+        &self,
+        device: &VirtioNetDevice,
+        tx_queue: &NetVirtQueue,
+        desc_id: u16,
+        len: u32,
+    ) -> bool {
+        device.handle_legacy_tx_completion(tx_queue, desc_id, len)
+    }
+
+    fn release_unknown_rx_completion(
+        &self,
+        device: &VirtioNetDevice,
+        rx_queue: &NetVirtQueue,
+        desc_id: u16,
+    ) {
+        device.release_unknown_rx_completion(rx_queue, desc_id);
+    }
+
+    fn release_unknown_tx_completion(
+        &self,
+        device: &VirtioNetDevice,
+        tx_queue: &NetVirtQueue,
+        desc_id: u16,
+    ) {
+        device.release_unknown_tx_completion(tx_queue, desc_id);
     }
 
     #[cfg(test)]
@@ -246,18 +282,46 @@ impl PollHandler for VirtioNetPollHandler {
         if let Some(ref device) = *self.device_lock.lock() {
             if let Some(ref rx_queue) = device.rx_queue {
                 for (desc_id, len) in rx_queue.process_used() {
-                    if let Some(result) = self.match_rx_completion(rx_queue, desc_id, len) {
+                    device.rx_packets.fetch_add(1, Ordering::Relaxed);
+
+                    if let Some(result) = self.route_scheduler_rx_completion(rx_queue, desc_id)
+                    {
                         results.push(result);
+                        continue;
                     }
+
+                    if self.route_legacy_rx_completion(device, rx_queue, desc_id, len) {
+                        continue;
+                    }
+
+                    self.release_unknown_rx_completion(device, rx_queue, desc_id);
                 }
             }
 
+            let mut tx_completed = false;
             if let Some(ref tx_queue) = device.tx_queue {
-                for (desc_id, _len) in tx_queue.process_used() {
-                    if let Some(result) = self.match_tx_completion(tx_queue, desc_id) {
+                for (desc_id, len) in tx_queue.process_used() {
+                    tx_completed = true;
+                    device.tx_packets.fetch_add(1, Ordering::Relaxed);
+                    device.tx_bytes.fetch_add(len, Ordering::Relaxed);
+
+                    if let Some(result) = self.route_scheduler_tx_completion(tx_queue, desc_id) {
                         results.push(result);
+                        continue;
                     }
+
+                    if self.route_legacy_tx_completion(device, tx_queue, desc_id, len) {
+                        continue;
+                    }
+
+                    self.release_unknown_tx_completion(device, tx_queue, desc_id);
                 }
+            }
+
+            if tx_completed {
+                crate::net::endpoint::event::send_event_ignore(
+                    crate::net::endpoint::event::NetworkEvent::TxAvailable,
+                );
             }
         }
 
@@ -386,7 +450,10 @@ impl PollHandler for VirtioNetPollHandlerWrapper {
 static VIRTIO_NET_POLL_HANDLERS: RwLock<BTreeMap<u8, Arc<VirtioNetPollHandler>>> =
     RwLock::new(BTreeMap::new());
 
-/// 指定デバイスの PollHandler を取得（IRQ完了連携で使用）
+/// 指定デバイスの PollHandler を取得（IRQ完了連携で使用）。
+///
+/// - 未登録 index の場合は `None` を返す。
+/// - 登録済み index の場合は、登録時と同一ハンドラ参照（`Arc` クローン）を返す。
 pub fn get_poll_handler(index: u8) -> Option<Arc<VirtioNetPollHandler>> {
     VIRTIO_NET_POLL_HANDLERS.read().get(&index).cloned()
 }
@@ -396,13 +463,27 @@ pub(crate) fn clear_poll_handler_registry_for_tests() {
     VIRTIO_NET_POLL_HANDLERS.write().clear();
 }
 
-/// VirtIO ネットワークを IoScheduler に登録（依存注入版）
+/// VirtIO ネットワークを IoScheduler に登録（依存注入版）。
+///
+/// 同じ `index` の再登録は no-op で成功し、既存の PollHandler / DeviceOps を維持する。
 pub fn register_virtio_net_with(
     coordinator: &alloc::sync::Arc<crate::io::io_scheduler::HybridIoCoordinator>,
     index: u8,
 ) {
     let device_id = DeviceId::VirtioNet { index };
+
+    if VIRTIO_NET_POLL_HANDLERS.read().contains_key(&index) {
+        return;
+    }
+
     let handler = Arc::new(VirtioNetPollHandler::new());
+    {
+        let mut handlers = VIRTIO_NET_POLL_HANDLERS.write();
+        if handlers.contains_key(&index) {
+            return;
+        }
+        handlers.insert(index, handler.clone());
+    }
 
     coordinator.polling_executor().register_handler(
         device_id,
@@ -411,13 +492,42 @@ pub fn register_virtio_net_with(
         }),
     );
 
-    VIRTIO_NET_POLL_HANDLERS.write().insert(index, handler.clone());
-
     crate::io::io_scheduler::io_scheduler()
         .register_device_ops(device_id, Arc::new(VirtioNetOps::new(index, handler)));
 }
 
-/// VirtIO ネットワークを IoScheduler に登録（後方互換wrapper）
+/// VirtIO ネットワークを IoScheduler に opt-in 登録（後方互換 wrapper）。
+///
+/// `system_impl` からは自動呼び出しされないため、運用で有効化する場合は
+/// 明示的にこの関数を呼ぶ。
+///
+/// # Examples
+/// ```ignore
+/// use crate::io::io_scheduler::{DeviceId, IoCommand, IoPriority, DmaBufHandle, hybrid_coordinator};
+/// use crate::io::virtio::{
+///     register_virtio_net_with_io_scheduler, VIRTIO_NET_IOCTL_RX, VIRTIO_NET_IOCTL_TX,
+/// };
+///
+/// register_virtio_net_with_io_scheduler(0);
+///
+/// let _tx = hybrid_coordinator().submit_io_command(
+///     DeviceId::VirtioNet { index: 0 },
+///     IoCommand::Ioctl {
+///         code: VIRTIO_NET_IOCTL_TX,
+///         buf: DmaBufHandle { iova: 0x1000, len: 2048 },
+///     },
+///     IoPriority::Normal,
+/// );
+///
+/// let _rx = hybrid_coordinator().submit_io_command(
+///     DeviceId::VirtioNet { index: 0 },
+///     IoCommand::Ioctl {
+///         code: VIRTIO_NET_IOCTL_RX,
+///         buf: DmaBufHandle { iova: 0x2000, len: 2048 },
+///     },
+///     IoPriority::Normal,
+/// );
+/// ```
 pub fn register_virtio_net_with_io_scheduler(index: u8) {
     register_virtio_net_with(&hybrid_coordinator(), index);
 }
@@ -585,6 +695,43 @@ mod io_scheduler_tests {
     }
 
     #[test_case]
+    fn test_poll_completions_routes_legacy_tx_without_result() {
+        let _guard = TestStateGuard::new_with_device();
+        let handler = VirtioNetPollHandler::new();
+
+        let desc_id = {
+            let guard = VIRTIO_NET_DEVICE.lock();
+            let device = guard.as_ref().expect("device");
+            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let desc_id = tx_queue
+                .add_tx_buffer_zero_copy(0x4200, 64)
+                .expect("tx submit");
+            let inflight = CoherentDmaBuffer::new(64, DmaMemoryAttributes::MMIO)
+                .expect("inflight buffer");
+            device.tx_inflight.lock().insert(desc_id, inflight);
+            unsafe {
+                let used = &mut *tx_queue.used_ring.as_ptr();
+                let slot = (used.idx % tx_queue.size) as usize;
+                used.ring[slot] = VringUsedElem {
+                    id: desc_id as u32,
+                    len: 64,
+                };
+                used.idx = used.idx.wrapping_add(1);
+            }
+            desc_id
+        };
+
+        let results = handler.poll_completions();
+        assert!(results.is_empty());
+
+        let guard = VIRTIO_NET_DEVICE.lock();
+        let device = guard.as_ref().expect("device");
+        assert!(!device.tx_inflight.lock().contains_key(&desc_id));
+        let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+        assert!(tx_queue.take_completion(desc_id).is_none());
+    }
+
+    #[test_case]
     fn test_poll_completions_matches_rx_pending_payload_len() {
         let _guard = TestStateGuard::new_with_device();
         let handler = VirtioNetPollHandler::new();
@@ -622,6 +769,152 @@ mod io_scheduler_tests {
         let device = guard.as_ref().expect("device");
         let rx_queue = device.rx_queue.as_ref().expect("rx queue");
         assert!(rx_queue.take_completion(desc_id).is_none());
+    }
+
+    #[test_case]
+    fn test_poll_completions_routes_legacy_rx_to_bridge() {
+        let _ = crate::net::mempool::init_net_mempool(4);
+        let _guard = TestStateGuard::new_with_device();
+        let handler = VirtioNetPollHandler::new();
+        let payload = b"poll-legacy-rx";
+        let header_size = VirtioNetHeader::SIZE;
+        let before = crate::net::driver_bridge::get_bridge_stats().rx_packets;
+
+        let desc_id = {
+            let guard = VIRTIO_NET_DEVICE.lock();
+            let device = guard.as_ref().expect("device");
+            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+            assert!(device.try_post_rx_packet(rx_queue).expect("post packet"));
+            let desc_id = {
+                let map = device.rx_packetrefs.lock();
+                *map.keys().next().expect("posted PacketRef")
+            };
+            {
+                let mut map = device.rx_packetrefs.lock();
+                let inflight = map.get_mut(&desc_id).expect("inflight");
+                let packet_data = inflight.packet.data_mut();
+                packet_data[..header_size].fill(0);
+                let start = header_size;
+                packet_data[start..start + payload.len()].copy_from_slice(payload);
+            }
+            unsafe {
+                let used = &mut *rx_queue.used_ring.as_ptr();
+                let slot = (used.idx % rx_queue.size) as usize;
+                used.ring[slot] = VringUsedElem {
+                    id: desc_id as u32,
+                    len: (header_size + payload.len()) as u32,
+                };
+                used.idx = used.idx.wrapping_add(1);
+            }
+            desc_id
+        };
+
+        let results = handler.poll_completions();
+        assert!(results.is_empty());
+
+        let after = crate::net::driver_bridge::get_bridge_stats().rx_packets;
+        assert!(after >= before + 1, "bridge did not observe legacy RX packet");
+
+        let guard = VIRTIO_NET_DEVICE.lock();
+        let device = guard.as_ref().expect("device");
+        assert!(!device.rx_packetrefs.lock().contains_key(&desc_id));
+        let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+        assert!(rx_queue.take_completion(desc_id).is_none());
+    }
+
+    #[test_case]
+    fn test_poll_completions_releases_unknown_tx_completion() {
+        let _guard = TestStateGuard::new_with_device();
+        let handler = VirtioNetPollHandler::new();
+
+        let desc_id = {
+            let guard = VIRTIO_NET_DEVICE.lock();
+            let device = guard.as_ref().expect("device");
+            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let desc_id = tx_queue
+                .add_tx_buffer_zero_copy(0x4600, 64)
+                .expect("tx submit");
+            unsafe {
+                let used = &mut *tx_queue.used_ring.as_ptr();
+                let slot = (used.idx % tx_queue.size) as usize;
+                used.ring[slot] = VringUsedElem {
+                    id: desc_id as u32,
+                    len: 64,
+                };
+                used.idx = used.idx.wrapping_add(1);
+            }
+            desc_id
+        };
+
+        let results = handler.poll_completions();
+        assert!(results.is_empty());
+
+        let guard = VIRTIO_NET_DEVICE.lock();
+        let device = guard.as_ref().expect("device");
+        let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+        assert!(tx_queue.take_completion(desc_id).is_none());
+    }
+
+    #[test_case]
+    fn test_poll_completions_releases_unknown_rx_completion() {
+        let _guard = TestStateGuard::new_with_device();
+        let handler = VirtioNetPollHandler::new();
+
+        let desc_id = {
+            let guard = VIRTIO_NET_DEVICE.lock();
+            let device = guard.as_ref().expect("device");
+            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+            let desc_id = rx_queue
+                .add_rx_buffer_zero_copy(0x4800, VirtioNetHeader::SIZE + 64)
+                .expect("rx submit");
+            unsafe {
+                let used = &mut *rx_queue.used_ring.as_ptr();
+                let slot = (used.idx % rx_queue.size) as usize;
+                used.ring[slot] = VringUsedElem {
+                    id: desc_id as u32,
+                    len: (VirtioNetHeader::SIZE + 16) as u32,
+                };
+                used.idx = used.idx.wrapping_add(1);
+            }
+            desc_id
+        };
+
+        let results = handler.poll_completions();
+        assert!(results.is_empty());
+
+        let guard = VIRTIO_NET_DEVICE.lock();
+        let device = guard.as_ref().expect("device");
+        let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+        assert!(rx_queue.take_completion(desc_id).is_none());
+    }
+
+    #[test_case]
+    fn test_register_virtio_net_with_is_idempotent() {
+        crate::io::io_scheduler::init_io_scheduler();
+        clear_poll_handler_registry_for_tests();
+
+        let scheduler = Arc::new(crate::io::io_scheduler::IoScheduler::new());
+        let coordinator = Arc::new(crate::io::io_scheduler::HybridIoCoordinator::new(scheduler));
+        let index = 99u8;
+        let device_id = DeviceId::VirtioNet { index };
+
+        register_virtio_net_with(&coordinator, index);
+        let first_handler = get_poll_handler(index).expect("first handler");
+        let first_ops = crate::io::io_scheduler::io_scheduler()
+            .get_device_ops(device_id)
+            .expect("first device ops");
+
+        register_virtio_net_with(&coordinator, index);
+        let second_handler = get_poll_handler(index).expect("second handler");
+        let second_ops = crate::io::io_scheduler::io_scheduler()
+            .get_device_ops(device_id)
+            .expect("second device ops");
+
+        assert!(Arc::ptr_eq(&first_handler, &second_handler));
+        assert!(Arc::ptr_eq(&first_ops, &second_ops));
+        assert_eq!(VIRTIO_NET_POLL_HANDLERS.read().len(), 1);
+
+        clear_poll_handler_registry_for_tests();
     }
 
     #[test_case]

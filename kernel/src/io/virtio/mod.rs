@@ -16,6 +16,11 @@
 //! - `console`: VirtIO-Consoleドライバ
 //! - `input`: VirtIO-Inputドライバ
 //! - `balloon`: VirtIO-Balloonドライバ
+//!
+//! ## VirtIO-Net IoScheduler opt-in
+//! - 公式入口は `io::virtio::register_virtio_net_with_io_scheduler(index)`。
+//! - `system_impl` からは自動登録しないため、利用時は明示的に opt-in する。
+//! - 送受信は `IoCommand::Ioctl` + `VIRTIO_NET_IOCTL_TX/RX` を使用する。
 
 #![allow(dead_code)]
 
