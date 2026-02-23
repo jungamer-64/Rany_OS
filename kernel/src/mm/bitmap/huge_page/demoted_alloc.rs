@@ -64,7 +64,14 @@ impl HugePageBitmap {
                 // Check if already demoted
                 let demoted_word = self.demoted_2m[word_idx].load(Ordering::Acquire);
                 if (demoted_word & bit_mask) != 0 {
-                    // Try next bit
+                    // Already demoted — clear stale bit from bitmap_2m to prevent
+                    // infinite loop (trailing_zeros would find the same bit forever).
+                    let _ = self.bitmap_2m[word_idx].compare_exchange_weak(
+                        word,
+                        word & !bit_mask,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
                     continue;
                 }
                 

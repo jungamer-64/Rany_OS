@@ -534,33 +534,15 @@ impl HugePageBitmap {
                 // Check demoted
                 let demoted = self.demoted_2m[word_idx].load(Ordering::Acquire);
                 if (demoted & bit_mask) != 0 {
-                    // Already demoted, try next bit 
-                    // But trailing_zeros finds FIRST. If first is demoted, we must mask it out to find next?
-                    // Optimized loop should rely on masking or iterator?
-                    // This naive loop is broken if we just 'continue' without changing 'word'.
-                    // Actually demoted blocks are removed from bitmap_2m? 
-                    // No. bitmap_2m tracks "fully free".
-                    // demoted_2m tracks "demoted (was fully free, now for 4k)".
-                    // If demoted, it IS fully free in 2MB sense? No, it's BEING USESD for 4K.
-                    // Wait, `demote_2m_block` implementation (Line 1097) checks `demoted_2m`.
-                    // And it attempts to CLEAR `bitmap_2m`.
-                    // `match self.bitmap_2m... compare_exchange(word, word & !bit_mask ...)`
-                    // So if it succeeds, it REMOVES from bitmap_2m.
-                    // So next strict loop read will see 'word' without that bit.
-                    // BUT: if we fail CAS or find demoted, we need to retry loop with refreshed 'word'.
-                    // My loop `let word = ...` is inside `loop`.
-                    
-                    // But if (demoted & bit_mask) != 0:
-                    // It means bit is set in `bitmap_2m`.
-                    // But it is ALSO set in `demoted_2m`?
-                    // No, `allocate_4k_from_demoted` consumes pages.
-                    // If a block is demoted, it should NOT be in `bitmap_2m` as "Full Free".
-                    // Line 1105: `word & !bit_mask`. It clears it from `bitmap_2m`.
-                    // So `bitmap_2m` bit 1 means "Fully Free and NOT Demoted".
-                    // So `demote_2m_block` check at 1097 `if (demoted_word & bit_mask) != 0` seems redundant or paranoid?
-                    // Ah, maybe race condition where it was added to demoted but not yet removed from bitmap_2m (unlikely with CAS).
-                    // Or maybe I misunderstand `bitmap_2m` semantics.
-                    // `bitmap_2m` = "Fully Free 2MB Block".
+                    // Already demoted — clear stale bit from bitmap_2m to prevent
+                    // infinite loop (trailing_zeros would find the same bit forever).
+                    let _ = self.bitmap_2m[word_idx].compare_exchange_weak(
+                        word,
+                        word & !bit_mask,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    continue;
                 }
                 
                 match self.bitmap_2m[word_idx].compare_exchange_weak(word, word & !bit_mask, Ordering::AcqRel, Ordering::Acquire) {

@@ -148,6 +148,13 @@ pub(crate) fn init_network_subsystem() {
             info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
         }
     }
+
+    // quick internal ping check right after stack initialization
+    crate::io::log::early_print("[DEBUG] running inline ping test\n");
+    match crate::net::send_icmp_echo([10, 0, 2, 2], 1) {
+        Ok(rtt) => crate::io::log::early_print("[DEBUG] inline ping succeeded\n"),
+        Err(_) => crate::io::log::early_print("[DEBUG] inline ping failed\n"),
+    }
 }
 
 /// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.

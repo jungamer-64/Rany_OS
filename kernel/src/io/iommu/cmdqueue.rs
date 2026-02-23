@@ -181,6 +181,44 @@ impl CommandCompletion {
         }
     }
 
+    /// Synchronous wait that also acts as a worker to drain the queue.
+    /// This prevents deadlocks when submitting synchronously on a single-core
+    /// or before the asynchronous executor is running.
+    pub fn wait_sync_with_worker<F>(&self, q: &CommandQueue, mut handler: F) -> i32
+    where
+        F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
+    {
+        let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
+        let mut backoff = Backoff::new();
+        let mut spins = 0u64;
+        loop {
+            if slot.state.load(Ordering::Acquire) == 2 {
+                let r = slot.result.load(Ordering::Acquire);
+                // reset slot state/result and return
+                slot.result.store(0, Ordering::Release);
+                slot.canceled.store(0, Ordering::Release);
+                slot.state.store(0, Ordering::Release);
+                // Notify tasks waiting for slots
+                let q_ref = unsafe { &*self.queue_ptr };
+                q_ref.notify_slot_available();
+                return r;
+            }
+            
+            // Try to make progress by processing the queue manually
+            let processed = q.process_up_to(&mut handler, 1);
+            if processed == 0 {
+                backoff.spin();
+                spins += 1;
+                if spins % 1000000 == 0 {
+                    crate::io::log::early_print("[IOMMU] wait_sync_with_worker stuck spin warning\n");
+                }
+            } else {
+                backoff = Backoff::new(); // reset backoff
+                spins = 0;
+            }
+        }
+    }
+
     /// Attempt to cancel a queued (not yet processed) command. Returns true if the
     /// cancellation flag was set successfully. This does not guarantee the command
     /// won't be processed if the worker already pulled it - cancellation is best-effort.
@@ -426,6 +464,16 @@ impl CommandQueue {
     pub fn submit_sync(&self, kind: IommuCommandKind) -> Result<(), ()> {
         let comp = self.submit(kind)?;
         let rc = comp.wait_blocking();
+        if rc == RESULT_OK { Ok(()) } else { Err(()) }
+    }
+
+    /// Synchronous submit with polling worker implementation to prevent deadlocks
+    pub fn submit_sync_with_worker<F>(&self, kind: IommuCommandKind, mut handler: F) -> Result<(), ()>
+    where
+        F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
+    {
+        let comp = self.submit(kind)?;
+        let rc = comp.wait_sync_with_worker(self, &mut handler);
         if rc == RESULT_OK { Ok(()) } else { Err(()) }
     }
 

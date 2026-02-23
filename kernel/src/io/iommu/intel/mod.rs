@@ -93,6 +93,7 @@ unsafe fn apply_mapping_sync(
 ) -> Result<u64, IommuError> {
     let domain_id = domain_arc.id();
     if let Some(ref cq) = controller.command_queue {
+        crate::io::log::early_print("[DMA] apply_mapping_sync: CQ path, execute_sync_command\n");
         let cmd = IommuCommandKind::MapRegion {
             domain: domain_id,
             iova,
@@ -101,16 +102,21 @@ unsafe fn apply_mapping_sync(
             read,
             write,
         };
-        if cq.submit_sync(cmd).is_err() {
+        if controller.execute_sync_command(cmd).is_err() {
+            crate::io::log::early_print("[DMA] apply_mapping_sync: execute_sync_command FAILED\n");
             let _ = controller.free_iova(iova, size);
             return Err(IommuError::HardwareError);
         }
+        crate::io::log::early_print("[DMA] apply_mapping_sync: execute_sync_command OK\n");
         return Ok(iova);
     }
+    crate::io::log::early_print("[DMA] apply_mapping_sync: direct map path\n");
     if let Err(err) = domain_arc.map(iova, phys, size, read, write) {
+        crate::io::log::early_print("[DMA] apply_mapping_sync: map FAILED\n");
         let _ = controller.free_iova(iova, size);
         return Err(err);
     }
+    crate::io::log::early_print("[DMA] apply_mapping_sync: map OK\n");
     Ok(iova)
 }
 
