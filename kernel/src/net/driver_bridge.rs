@@ -65,12 +65,16 @@ static FORWARD_EVENTS: RwLock<Vec<(super::NetIfId, super::Ipv4Address)>> =
     RwLock::new(Vec::new());
 
 const NAT_EPHEMERAL_START: u16 = 40_000;
+const NAT_IDLE_TIMEOUT_MS: u64 = 5 * 60_000;
+const NAT_GC_EVERY_RX_MASK: u64 = 0xFF;
 
 /// Simple NAT entry for TCP/UDP port translation.
 /// External port is key; value stores internal address/port.
 #[derive(Clone, Copy)]
 struct NatEntry {
     protocol: crate::net::ipv4::IpProtocol,
+    external_addr: super::Ipv4Address,
+    egress_if: super::NetIfId,
     internal_addr: super::Ipv4Address,
     internal_port: u16,
     last_seen: u64,
@@ -128,6 +132,8 @@ fn nat_translate_out(
             ext_port,
             NatEntry {
                 protocol,
+                external_addr: ext_ip,
+                egress_if: out_if_id,
                 internal_addr: internal_ip,
                 internal_port,
                 last_seen: crate::time::get_uptime_ms(),
@@ -153,7 +159,7 @@ fn nat_translate_in(
 
     let mut tablew = NAT_TABLE.write();
     if let Some(entry) = tablew.get_mut(dst_port) {
-        if entry.protocol != protocol {
+        if entry.protocol != protocol || entry.external_addr != *dst_ip {
             return false;
         }
         // rewrite
@@ -200,6 +206,31 @@ fn recompute_ipv4_transport_checksum(
     let checksum = crate::net::ipv4::data_checksum(transport, pseudo);
     let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
     transport[checksum_off..checksum_off + 2].copy_from_slice(&final_checksum.to_be_bytes());
+}
+
+fn nat_prune_expired(now_ms: u64, idle_timeout_ms: u64) -> usize {
+    let mut removed = 0usize;
+    let mut table = NAT_TABLE.write();
+    let mut stale_ports = Vec::new();
+    for (&ext_port, entry) in table.iter() {
+        if now_ms.saturating_sub(entry.last_seen) > idle_timeout_ms {
+            stale_ports.push(ext_port);
+        }
+    }
+    for ext_port in stale_ports {
+        if table.remove(&ext_port).is_some() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+fn nat_maybe_gc(rx_packets_after_increment: u64) {
+    if (rx_packets_after_increment & NAT_GC_EVERY_RX_MASK) != 0 {
+        return;
+    }
+    let now_ms = crate::time::get_uptime_ms();
+    let _ = nat_prune_expired(now_ms, NAT_IDLE_TIMEOUT_MS);
 }
 
 /// Determine if the given IPv4 address is assigned to any local interface.
@@ -421,8 +452,9 @@ pub fn process_received_packet_zero_copy_for_interface(
     payload_len: usize,
 ) {
     ensure_bridge_if_state(if_id, None);
-    RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+    let rx_count = RX_PACKETS.fetch_add(1, Ordering::Relaxed).saturating_add(1);
     record_bridge_if_rx(if_id);
+    nat_maybe_gc(rx_count);
 
     packet.set_len(header_size + payload_len);
     if header_size > 0 {
@@ -1075,6 +1107,7 @@ mod tests {
         super::manager::init_network_manager();
 
         let wan_if = super::manager::register_interface(String::from("wan0"));
+        let other_wan_if = super::manager::register_interface(String::from("wan1"));
         let wan_cfg = super::NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 42),
             ipv4: Ipv4Config {
@@ -1087,6 +1120,20 @@ mod tests {
             icmp_echo_enabled: true,
         };
         let _ = super::manager::set_interface_config(wan_if, wan_cfg);
+        let _ = super::manager::set_interface_config(
+            other_wan_if,
+            super::NetworkConfig {
+                mac: MacAddress::from_octets(0, 1, 2, 3, 4, 43),
+                ipv4: Ipv4Config {
+                    address: Ipv4Address::new([10, 0, 2, 1]),
+                    subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                    gateway: Ipv4Address::ANY,
+                    dns: None,
+                },
+                ipv6: None,
+                icmp_echo_enabled: true,
+            },
+        );
 
         let internal_ip = Ipv4Address::new([10, 0, 0, 2]);
         let internal_port = 1234;
@@ -1109,12 +1156,67 @@ mod tests {
         assert_eq!(dst_ip, ext_ip);
         assert_eq!(dst_port, ext_port);
 
+        // Different local WAN IP (also local) must not match this mapping.
+        let mut dst_ip = Ipv4Address::new([10, 0, 2, 1]);
+        let mut dst_port = ext_port;
+        assert!(!nat_translate_in(IpProtocol::Udp, &mut dst_ip, &mut dst_port));
+        assert_eq!(dst_ip, Ipv4Address::new([10, 0, 2, 1]));
+        assert_eq!(dst_port, ext_port);
+
         // Non-local destination addresses must not be rewritten.
         let mut dst_ip = Ipv4Address::new([203, 0, 113, 9]);
         let mut dst_port = ext_port;
         assert!(!nat_translate_in(IpProtocol::Udp, &mut dst_ip, &mut dst_port));
         assert_eq!(dst_ip, Ipv4Address::new([203, 0, 113, 9]));
         assert_eq!(dst_port, ext_port);
+    }
+
+    #[test_case]
+    fn test_nat_gc_expires_idle_entries() {
+        let _guard = BridgeStateGuard::new();
+        super::manager::init_network_manager();
+
+        let wan_if = super::manager::register_interface(String::from("wan0"));
+        let _ = super::manager::set_interface_config(
+            wan_if,
+            super::NetworkConfig {
+                mac: MacAddress::from_octets(0, 1, 2, 3, 4, 44),
+                ipv4: Ipv4Config {
+                    address: Ipv4Address::new([10, 0, 9, 1]),
+                    subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                    gateway: Ipv4Address::ANY,
+                    dns: None,
+                },
+                ipv6: None,
+                icmp_echo_enabled: true,
+            },
+        );
+
+        let (_, stale_port) = nat_translate_out(
+            IpProtocol::Udp,
+            Ipv4Address::new([10, 0, 0, 2]),
+            1111,
+            wan_if,
+        );
+        let (_, fresh_port) = nat_translate_out(
+            IpProtocol::Udp,
+            Ipv4Address::new([10, 0, 0, 3]),
+            2222,
+            wan_if,
+        );
+
+        {
+            let mut table = NAT_TABLE.write();
+            table.get_mut(&stale_port).unwrap().last_seen = 100;
+            table.get_mut(&fresh_port).unwrap().last_seen = 900;
+        }
+
+        let removed = nat_prune_expired(1_000, 200);
+        assert_eq!(removed, 1);
+
+        let table = NAT_TABLE.read();
+        assert!(!table.contains_key(&stale_port));
+        assert!(table.contains_key(&fresh_port));
     }
 
     #[test_case]
