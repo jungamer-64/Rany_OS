@@ -575,13 +575,13 @@ pub fn client_v6() -> Option<&'static PoisonLock<Option<DhcpV6Client>>> {
     Some(&DHCPV6_CLIENT)
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) mod tests {
     use super::*;
     use crate::net::ipv6::Ipv6Address;
 
-    #[test_case]
-    fn test_build_solicit_min_size() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_solicit_min_size() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         let mut buf = [0u8; 256];
@@ -591,8 +591,8 @@ mod tests {
         assert_eq!(buf[0], DhcpV6MessageType::Solicit as u8);
     }
 
-    #[test_case]
-    fn test_parse_reply_with_iaaddr() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_parse_reply_with_iaaddr() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         // construct a fake REPLY that contains IA_NA with IAADDR
@@ -614,7 +614,7 @@ mod tests {
         pkt[off+2..off+4].copy_from_slice(&(24u16.to_be_bytes()));
         off += 4;
         let addr = Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,1]);
-        pkt[off..off+16].copy_from_slice(&addr.as_bytes());
+        pkt[off..off+16].copy_from_slice(addr.as_bytes());
         off += 16;
         pkt[off..off+4].copy_from_slice(&3600u32.to_be_bytes());
         off += 4;
@@ -626,8 +626,8 @@ mod tests {
         assert_eq!(lease.addr, addr);
     }
 
-    #[test_case]
-    fn test_build_request_min_size() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_request_min_size() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
@@ -652,8 +652,8 @@ mod tests {
         assert!(found);
     }
 
-    #[test_case]
-    fn test_bound_to_renewing_and_rebinding_transitions() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_bound_to_renewing_and_rebinding_transitions() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         // set lease with preferred lifetime = 1 second
@@ -684,8 +684,8 @@ mod tests {
         assert!(client.state() == DhcpV6State::Rebinding || client.state() == DhcpV6State::Init);
     }
 
-    #[test_case]
-    fn test_handle_packet_stores_server_addr_and_duid() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_handle_packet_stores_server_addr_and_duid() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
 
@@ -717,7 +717,7 @@ mod tests {
         pkt[off..off+2].copy_from_slice(&(5u16.to_be_bytes()));
         pkt[off+2..off+4].copy_from_slice(&(24u16.to_be_bytes()));
         off += 4;
-        pkt[off..off+16].copy_from_slice(&addr.as_bytes());
+        pkt[off..off+16].copy_from_slice(addr.as_bytes());
         off += 16;
         pkt[off..off+4].copy_from_slice(&3600u32.to_be_bytes());
         off += 4;
@@ -743,8 +743,8 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_advertise_triggers_request_and_requesting_state() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_advertise_triggers_request_and_requesting_state() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
 
@@ -771,8 +771,8 @@ mod tests {
         if let Ok(g) = client.server_duid.lock() { assert_eq!(g.as_ref().unwrap().as_slice(), &server_duid); }
     }
 
-    #[test_case]
-    fn test_requesting_retransmit_exhaustion_goes_to_init() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_requesting_retransmit_exhaustion_goes_to_init() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Requesting; }
@@ -784,8 +784,8 @@ mod tests {
         assert_eq!(client.state(), DhcpV6State::Init);
     }
 
-    #[test_case]
-    fn test_solicit_advertise_request_reply_complete_flow() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_solicit_advertise_request_reply_complete_flow() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
 
@@ -824,7 +824,7 @@ mod tests {
         reply[roff..roff+2].copy_from_slice(&(5u16.to_be_bytes()));
         reply[roff+2..roff+4].copy_from_slice(&(24u16.to_be_bytes()));
         roff += 4;
-        reply[roff..roff+16].copy_from_slice(&addr.as_bytes());
+        reply[roff..roff+16].copy_from_slice(addr.as_bytes());
         roff += 16;
         reply[roff..roff+4].copy_from_slice(&3600u32.to_be_bytes());
         roff += 4;
@@ -837,8 +837,8 @@ mod tests {
         assert_eq!(l.unwrap().addr, addr);
     }
 
-    #[test_case]
-    fn test_renew_uses_known_server_address_for_dst() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_renew_uses_known_server_address_for_dst() {
         let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {

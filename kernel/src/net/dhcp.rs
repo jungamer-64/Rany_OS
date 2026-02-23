@@ -20,9 +20,13 @@ use super::ipv4::Ipv4Address;
 /// DHCPクライアントポート
 mod client_impl;
 pub use client_impl::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use client_impl::tests as qemu_v4_tests;
 
 mod v6;
 pub use v6::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use v6::tests as qemu_v6_tests;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 
 /// DHCPサーバーポート

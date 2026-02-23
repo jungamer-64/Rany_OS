@@ -21,6 +21,8 @@ use super::ipv4::Ipv4Address;
 /// DNSポート
 mod tcp_constants;
 pub use tcp_constants::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use tcp_constants::tests;
 mod client_impl;
 pub use client_impl::*;
 pub const DNS_PORT: u16 = 53;

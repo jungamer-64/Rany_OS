@@ -130,6 +130,6 @@ pub fn cleanup_cache(current_tick: u64) {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -500,20 +500,20 @@ pub fn multicast_ip_to_mac(ip: Ipv4Address) -> MacAddress {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_igmp_type_conversion() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_igmp_type_conversion() {
         assert_eq!(IgmpType::from_u8(0x11), Some(IgmpType::MembershipQuery));
         assert_eq!(IgmpType::from_u8(0x16), Some(IgmpType::V2MembershipReport));
         assert_eq!(IgmpType::from_u8(0x17), Some(IgmpType::LeaveGroup));
         assert_eq!(IgmpType::from_u8(0xFF), None);
     }
 
-    #[test_case]
-    fn test_multicast_validation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_multicast_validation() {
         let multicast = Ipv4Address::new([224, 0, 0, 1]);
         let unicast = Ipv4Address::new([192, 168, 1, 1]);
         
@@ -521,8 +521,8 @@ mod tests {
         assert!(!unicast.is_multicast());
     }
 
-    #[test_case]
-    fn test_join_group() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_join_group() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
         
@@ -539,16 +539,16 @@ mod tests {
         assert_eq!(reports[0], (group, false));
     }
 
-    #[test_case]
-    fn test_join_invalid_address() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_join_invalid_address() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let unicast = Ipv4Address::new([192, 168, 1, 1]);
         
         assert_eq!(processor.join_group(unicast), Err(IgmpError::InvalidGroupAddress));
     }
 
-    #[test_case]
-    fn test_leave_group() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_leave_group() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
         
@@ -566,16 +566,16 @@ mod tests {
         assert_eq!(reports[0], (group, true)); // true = leave
     }
 
-    #[test_case]
-    fn test_leave_nonmember() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_leave_nonmember() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
         
         assert_eq!(processor.leave_group(group), Err(IgmpError::NotMember));
     }
 
-    #[test_case]
-    fn test_igmp_checksum() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_igmp_checksum() {
         // IGMP message: Query for all groups
         let message = [0x11, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let checksum = compute_igmp_checksum(&message);
@@ -588,8 +588,8 @@ mod tests {
         assert_eq!(compute_igmp_checksum(&valid_message), 0);
     }
 
-    #[test_case]
-    fn test_build_report() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_report() {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         let mut buffer = [0u8; 8];
         
@@ -602,8 +602,8 @@ mod tests {
         assert_eq!(compute_igmp_checksum(&buffer), 0);
     }
 
-    #[test_case]
-    fn test_build_leave() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_leave() {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         let mut buffer = [0u8; 8];
         
@@ -615,8 +615,8 @@ mod tests {
         assert_eq!(compute_igmp_checksum(&buffer), 0);
     }
 
-    #[test_case]
-    fn test_multicast_ip_to_mac() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_multicast_ip_to_mac() {
         // 224.0.0.1 -> 01:00:5E:00:00:01
         let ip1 = Ipv4Address::new([224, 0, 0, 1]);
         let mac1 = multicast_ip_to_mac(ip1);
@@ -628,8 +628,8 @@ mod tests {
         assert_eq!(mac2, MacAddress::from_octets(0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa));
     }
 
-    #[test_case]
-    fn test_process_general_query() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_process_general_query() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
         processor.join_group(group).unwrap();
@@ -656,8 +656,8 @@ mod tests {
         assert_eq!(processor.groups[0].state, GroupState::DelayingMember);
     }
 
-    #[test_case]
-    fn test_report_suppression() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_report_suppression() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
         processor.join_group(group).unwrap();

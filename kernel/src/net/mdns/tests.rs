@@ -1,20 +1,20 @@
 use super::*;
 
-#[test_case]
-fn test_constants() {
+#[cfg_attr(test, test_case)]
+pub fn test_constants() {
     assert_eq!(MDNS_PORT, 5353);
     assert_eq!(MDNS_MULTICAST_GROUP, Ipv4Address::new([224, 0, 0, 251]));
     assert_eq!(MDNS_DEFAULT_TTL, 120);
 }
 
-#[test_case]
-fn test_multicast_mac() {
+#[cfg_attr(test, test_case)]
+pub fn test_multicast_mac() {
     let mac = multicast_mac();
     assert_eq!(mac, [0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB]);
 }
 
-#[test_case]
-fn test_mdns_service_new() {
+#[cfg_attr(test, test_case)]
+pub fn test_mdns_service_new() {
     let service =
         MdnsService::new(String::from("myhost"), Ipv4Address::new([192, 168, 1, 100]));
     assert_eq!(service.hostname(), "myhost");
@@ -23,8 +23,8 @@ fn test_mdns_service_new() {
     assert_eq!(service.cache_len(), 0);
 }
 
-#[test_case]
-fn test_encode_decode_dns_name() {
+#[cfg_attr(test, test_case)]
+pub fn test_encode_decode_dns_name() {
     let mut buffer = [0u8; 256];
     let name = "myhost.local";
 
@@ -44,8 +44,8 @@ fn test_encode_decode_dns_name() {
     assert_eq!(offset, 14);
 }
 
-#[test_case]
-fn test_build_query() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_query() {
     let mut buffer = [0u8; 256];
     let len = MdnsService::build_query(&mut buffer, "test.local").expect("build_query should succeed");
 
@@ -56,8 +56,8 @@ fn test_build_query() {
     assert_eq!(u16::from_be_bytes([buffer[6], buffer[7]]), 0); // ANCOUNT = 0
 }
 
-#[test_case]
-fn test_build_response() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_response() {
     let mut buffer = [0u8; 256];
     let ip = Ipv4Address::new([192, 168, 1, 42]);
     let len = MdnsService::build_response(&mut buffer, "test.local", ip, 120)
@@ -78,8 +78,8 @@ fn test_build_response() {
     assert_eq!(buffer[rdata_start + 3], 42);
 }
 
-#[test_case]
-fn test_process_query_for_our_hostname() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_query_for_our_hostname() {
     let mut service =
         MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
@@ -100,8 +100,8 @@ fn test_process_query_for_our_hostname() {
     }
 }
 
-#[test_case]
-fn test_process_query_for_other_hostname() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_query_for_other_hostname() {
     let mut service =
         MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
@@ -118,8 +118,8 @@ fn test_process_query_for_other_hostname() {
     }
 }
 
-#[test_case]
-fn test_process_response_updates_cache() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_response_updates_cache() {
     let mut service =
         MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
@@ -152,8 +152,8 @@ fn test_process_response_updates_cache() {
     assert_eq!(resolved_expired, None);
 }
 
-#[test_case]
-fn test_cleanup_expired() {
+#[cfg_attr(test, test_case)]
+pub fn test_cleanup_expired() {
     let mut service =
         MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
@@ -186,8 +186,8 @@ fn test_cleanup_expired() {
     );
 }
 
-#[test_case]
-fn test_invalid_packet_too_short() {
+#[cfg_attr(test, test_case)]
+pub fn test_invalid_packet_too_short() {
     let mut service =
         MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
 
@@ -201,15 +201,15 @@ fn test_invalid_packet_too_short() {
     }
 }
 
-#[test_case]
-fn test_names_equal_case_insensitive() {
+#[cfg_attr(test, test_case)]
+pub fn test_names_equal_case_insensitive() {
     assert!(names_equal("MyHost.Local", "myhost.local"));
     assert!(names_equal("HOST.LOCAL", "host.local"));
     assert!(!names_equal("host1.local", "host2.local"));
 }
 
-#[test_case]
-fn test_dns_name_compression() {
+#[cfg_attr(test, test_case)]
+pub fn test_dns_name_compression() {
     // Craft a packet with compression pointer
     // Name at offset 0: [4, 't', 'e', 's', 't', 5, 'l', 'o', 'c', 'a', 'l', 0]
     // Compressed name pointing back to offset 0: [0xC0, 0x00]
@@ -242,8 +242,8 @@ fn test_dns_name_compression() {
     assert_eq!(off2, 16); // past the 2-byte pointer
 }
 
-#[test_case]
-fn test_encode_dns_name_label_too_long() {
+#[cfg_attr(test, test_case)]
+pub fn test_encode_dns_name_label_too_long() {
     let mut buffer = [0u8; 256];
     // Create a label longer than 63 chars
     let long_label = "a".repeat(64);
@@ -253,8 +253,8 @@ fn test_encode_dns_name_label_too_long() {
     assert!(result.is_none());
 }
 
-#[test_case]
-fn test_roundtrip_query_response() {
+#[cfg_attr(test, test_case)]
+pub fn test_roundtrip_query_response() {
     let mut server =
         MdnsService::new(String::from("server"), Ipv4Address::new([192, 168, 1, 10]));
     let mut client =

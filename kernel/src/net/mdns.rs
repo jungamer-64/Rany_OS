@@ -815,5 +815,5 @@ fn to_lowercase(s: &str) -> String {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) mod tests;
