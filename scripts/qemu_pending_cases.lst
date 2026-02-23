@@ -4,7 +4,7 @@
 # - This file is for migration visibility only.
 # - Do NOT use this file as #[test_case] allowlist input.
 #
-kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snapshot: 911 cases)
+kernel/src remaining #[test_case] migration to qemu-suites/kernel (current snapshot: 852 cases)
 kernel/tests/* migration to qemu-suites/kernel (current snapshot: 0 files, 0 #[test_case])
 kernel runtime pending suite execution for full-runtime cases (net_bridge/framebuffer) and blocked-state monitoring (runtime pass/fail/blocked only)
 IOMMU residual canonical parity tracking (original host test names are kept for migration visibility; required no_std smoke mapping is defined in scripts/qemu_iommu_residual_parity.lst)
@@ -22,7 +22,7 @@ Graphics/Framebuffer Wave6 bench deterministic set is promoted to required suite
 Graphics/Framebuffer Wave6 residual (bench only): none
 MM Wave7 bench deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 MM Wave7 residual monitored cases: none
-qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri)+iommu-wave5(canonical required)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5-amd(amd-wave1+amd-wave5-irt required)+mm-wave7(async_swapout phase-a+phase-e+phase-f+bench + page_reclaim required)+net-endpoint(required 68)+net-core(required 90)+net-peripheral(required 67) toward broader migrated kernel test groups
+qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri)+iommu-wave5(canonical required)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5-amd(amd-wave1+amd-wave5-irt required)+mm-wave7(async_swapout phase-a+phase-e+phase-f+bench + page_reclaim required)+net-endpoint(required 68)+net-core(required 90)+net-peripheral(required 67)+storage-fs(required 59) toward broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites
 NET endpoint deterministic set (68 cases) is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 NET endpoint residual monitored cases: none
@@ -30,3 +30,5 @@ NET core stack deterministic set (90 cases) is promoted to required suite_kernel
 NET core stack residual monitored cases: none
 NET peripheral deterministic set (67 cases) is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 NET peripheral residual monitored cases: none
+Storage/FS deterministic set (59 cases) is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+Storage/FS residual monitored cases: none

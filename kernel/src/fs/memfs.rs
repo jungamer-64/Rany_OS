@@ -624,3 +624,8 @@ impl Inode for MemoryInode {
         Ok(()) // メモリFSなので何もしない
     }
 }
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use tests::*;

@@ -3,7 +3,7 @@
 //! This module delegates to existing NET core `tests::test_*` implementations
 //! so host `#[test_case]` and QEMU suites stay aligned.
 
-use super::{adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp};
+use super::{adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, stack_timeouts, ipv6, ndp, tcp};
 use super::{dhcp, dns, mdns, igmp, driver_bridge};
 
 macro_rules! run_case {
@@ -277,6 +277,37 @@ pub fn stack_redirect_cache_cleanup_smoke() -> bool {
 
 pub fn stack_redirect_cache_eviction_smoke() -> bool {
     run_case!(stack::tests::test_redirect_cache_eviction)
+}
+
+// The following cases exercise the `stack_timeouts` helpers which are used by
+// TCP/UDP internal timers.  Host tests use `#[test_case]` but we need wrappers
+// in the QEMU suite as well so they are tracked by the kernel runner.
+pub fn stack_timeout_wheel_basic_smoke() -> bool {
+    run_case!(stack_timeouts::tests::test_timeout_wheel_basic)
+}
+
+pub fn stack_timeout_wheel_cancel_smoke() -> bool {
+    run_case!(stack_timeouts::tests::test_timeout_wheel_cancel)
+}
+
+pub fn stack_retransmit_timer_initial_smoke() -> bool {
+    run_case!(stack_timeouts::tests::test_retransmit_timer_initial)
+}
+
+pub fn stack_retransmit_timer_update_smoke() -> bool {
+    run_case!(stack_timeouts::tests::test_retransmit_timer_update)
+}
+
+pub fn stack_retransmit_timer_backoff_smoke() -> bool {
+    run_case!(stack_timeouts::tests::test_retransmit_timer_backoff)
+}
+
+pub fn stack_keepalive_timer_smoke() -> bool {
+    run_case!(stack_timeouts::tests::test_keepalive_timer)
+}
+
+pub fn stack_time_wait_timer_smoke() -> bool {
+    run_case!(stack_timeouts::tests::test_time_wait_timer)
 }
 
 pub fn ipv6_unspecified_smoke() -> bool {

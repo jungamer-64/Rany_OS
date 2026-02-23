@@ -681,12 +681,12 @@ pub fn block_cache() -> &'static LRUBlockCache {
 // Block Cache Tests
 // ============================================================================
 
-#[cfg(test)]
-mod block_cache_tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) mod block_cache_tests {
     use super::*;
 
-    #[test_case]
-    pub(super) fn test_block_cache_basic() {
+    #[cfg_attr(test, test_case)]
+    pub(crate) fn test_block_cache_basic() {
         let cache = LRUBlockCache::new(512, 4096); // 4KB cache, 512B blocks
 
         // Insert blocks
@@ -709,8 +709,8 @@ mod block_cache_tests {
         assert_eq!(stats.blocks, 2);
     }
 
-    #[test_case]
-    pub(super) fn test_block_cache_lru_eviction() {
+    #[cfg_attr(test, test_case)]
+    pub(crate) fn test_block_cache_lru_eviction() {
         let cache = LRUBlockCache::new(512, 1024); // 1KB cache, 512B blocks (max 2 blocks)
 
         // Insert 3 blocks (should evict first block)
@@ -726,8 +726,8 @@ mod block_cache_tests {
         assert!(cache.get(0, 2).is_some());
     }
 
-    #[test_case]
-    pub(super) fn test_block_cache_dirty_tracking() {
+    #[cfg_attr(test, test_case)]
+    pub(crate) fn test_block_cache_dirty_tracking() {
         let cache = LRUBlockCache::new(512, 4096);
 
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);
@@ -742,8 +742,8 @@ mod block_cache_tests {
         assert!(block.is_dirty());
     }
 
-    #[test_case]
-    pub(super) fn test_block_cache_flush() {
+    #[cfg_attr(test, test_case)]
+    pub(crate) fn test_block_cache_flush() {
         let cache = LRUBlockCache::new(512, 4096);
 
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);

@@ -801,3 +801,8 @@ impl PathResolver {
         Ok(())
     }
 }
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use tests::*;

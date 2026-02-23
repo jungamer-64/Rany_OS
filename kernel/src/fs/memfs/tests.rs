@@ -1,8 +1,8 @@
 use super::*;
 use alloc::vec;
 
-#[test_case]
-fn test_paged_content_in_inode() {
+#[cfg_attr(test, test_case)]
+pub fn test_paged_content_in_inode() {
     let inode = MemoryInode::new_file(1, "test.txt", FileMode::DEFAULT_FILE);
 
     // 書き込み
@@ -15,8 +15,8 @@ fn test_paged_content_in_inode() {
     assert_eq!(&buf, b"Hello, World!");
 }
 
-#[test_case]
-fn test_large_file_paging() {
+#[cfg_attr(test, test_case)]
+pub fn test_large_file_paging() {
     use super::super::page::PAGE_SIZE;
 
     let inode = MemoryInode::new_file(1, "large.bin", FileMode::DEFAULT_FILE);
@@ -35,8 +35,8 @@ fn test_large_file_paging() {
     assert_eq!(buf, data);
 }
 
-#[test_case]
-fn test_cow_copy() {
+#[cfg_attr(test, test_case)]
+pub fn test_cow_copy() {
     let src = MemoryInode::new_file(1, "src.txt", FileMode::DEFAULT_FILE);
     src.write(0, b"Original content").unwrap();
 
@@ -58,8 +58,8 @@ fn test_cow_copy() {
     assert_eq!(&buf2, b"Original content");
 }
 
-#[test_case]
-fn test_sparse_file() {
+#[cfg_attr(test, test_case)]
+pub fn test_sparse_file() {
     let inode = MemoryInode::new_file(1, "sparse.bin", FileMode::DEFAULT_FILE);
 
     // オフセット1MBに書き込み（中間領域はスパース）
@@ -77,8 +77,8 @@ fn test_sparse_file() {
     assert_eq!(&buf2, b"sparse data");
 }
 
-#[test_case]
-fn test_truncate_releases_pages() {
+#[cfg_attr(test, test_case)]
+pub fn test_truncate_releases_pages() {
     use super::super::page::PAGE_SIZE;
 
     let inode = MemoryInode::new_file(1, "truncate.bin", FileMode::DEFAULT_FILE);
@@ -94,8 +94,8 @@ fn test_truncate_releases_pages() {
     assert_eq!(attr.size, PAGE_SIZE as u64);
 }
 
-#[test_case]
-fn test_get_page_zero_copy() {
+#[cfg_attr(test, test_case)]
+pub fn test_get_page_zero_copy() {
     let inode = MemoryInode::new_file(1, "zero_copy.bin", FileMode::DEFAULT_FILE);
     inode.write(0, b"Page data for test").unwrap();
 

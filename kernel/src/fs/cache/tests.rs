@@ -1,7 +1,7 @@
 use super::*;
 
-#[test_case]
-fn test_cached_page() {
+#[cfg_attr(test, test_case)]
+pub fn test_cached_page() {
     let page = CachedPage::new_empty(0);
     assert_eq!(page.page_num(), 0);
     assert_eq!(page.state(), PageState::Clean);
@@ -12,8 +12,8 @@ fn test_cached_page() {
     assert_eq!(page.state(), PageState::Dirty);
 }
 
-#[test_case]
-fn test_page_pin() {
+#[cfg_attr(test, test_case)]
+pub fn test_page_pin() {
     let page = CachedPage::new_empty(0);
     assert!(!page.is_pinned());
 
@@ -24,8 +24,8 @@ fn test_page_pin() {
     assert!(!page.is_pinned());
 }
 
-#[test_case]
-fn test_page_cache() {
+#[cfg_attr(test, test_case)]
+pub fn test_page_cache() {
     let cache = PageCache::new(64 * 1024);
 
     // Insert a page
@@ -45,8 +45,8 @@ fn test_page_cache() {
     assert_eq!(stats.pages, 1);
 }
 
-#[test_case]
-fn test_sync_page() {
+#[cfg_attr(test, test_case)]
+pub fn test_sync_page() {
     let cache = PageCache::new(64 * 1024);
 
     // Insert and dirty a page

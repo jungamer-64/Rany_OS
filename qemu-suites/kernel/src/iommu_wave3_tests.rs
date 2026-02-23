@@ -4,6 +4,8 @@ mod tls_wave8_tests;
 pub(crate) use tls_wave8_tests::*;
 mod net_peripheral_tests;
 pub(crate) use net_peripheral_tests::*;
+mod storage_fs_tests;
+pub(crate) use storage_fs_tests::*;
 pub(crate) fn test_iommu_wave3_pasid_exports() -> bool {
     run_check(
         "iommu_wave3_pasid_table_alloc_free_smoke",

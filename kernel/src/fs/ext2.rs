@@ -675,3 +675,8 @@ impl Ext2InodeWrapper {
         Ok(entries)
     }
 }
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use tests::*;

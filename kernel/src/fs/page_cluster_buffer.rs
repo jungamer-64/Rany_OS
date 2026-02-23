@@ -124,8 +124,8 @@ impl ClusterBufferAllocator for PageClusterBufferAllocator {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
     use alloc::vec::Vec;
     use alloc::vec;
@@ -133,23 +133,23 @@ mod tests {
     use crate::mm::virt::mapping::phys_to_virt;
     use x86_64::PhysAddr;
 
-    #[test_case]
-    fn test_page_cluster_buffer_alloc_fallback_or_contig() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_page_cluster_buffer_alloc_fallback_or_contig() {
         let alloc = PageClusterBufferAllocator::new();
         // Try small allocation
         let b = alloc.alloc(4096).expect("alloc failed");
         assert!(b.len() >= 4096);
     }
 
-    #[test_case]
-    fn test_impl_zero_copy_traits() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_impl_zero_copy_traits() {
         // Compile-time trait bound test
         fn assert_traits<T: ZeroCopyBuffer + ZeroCopyBufferMut>() {}
         assert_traits::<PageClusterBuffer>();
     }
 
-    #[test_case]
-    fn test_page_cluster_buffer_dma_info() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_page_cluster_buffer_dma_info() {
         let phys = 0x1000_0000u64;
         let size = PAGE_SIZE_4K as usize;
         if let Some(buf) = PageClusterBuffer::new_from_phys(phys, size) {
@@ -161,8 +161,8 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_page_cluster_buffer_physical_alloc_and_write() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_page_cluster_buffer_physical_alloc_and_write() {
         // Try to allocate contiguous frames for an end-to-end memory-backed buffer
         let frames_needed = 1usize;
         if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
@@ -187,11 +187,10 @@ mod tests {
     }
 
     // Integration test: mount FAT using PageClusterBuffer-backed zero-copy device
-    #[test_case]
-    fn test_fat_mount_with_page_allocator_zero_copy() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_fat_mount_with_page_allocator_zero_copy() {
         use alloc::sync::Arc;
-        use vfs::block::{ZeroCopyBlockDevice, BlockDeviceInfo, BlockError, BlockResult};
-        use fat32::Cluster;
+        use vfs::block::{ZeroCopyBlockDevice, BlockError, BlockResult};
         use crate::task::block_on;
         use crate::mm::virt::mapping::phys_to_virt;
         use core::slice;

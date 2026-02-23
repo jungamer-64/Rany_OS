@@ -250,6 +250,7 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending s
 - NET endpoint required 配線ガード: `bash scripts/verify_net_endpoint_required.sh`
 - NET core stack required 配線ガード: `bash scripts/verify_net_core_required.sh`
 - NET peripheral required 配線ガード: `bash scripts/verify_net_peripheral_required.sh`
+- Storage/FS required 配線ガード: `bash scripts/verify_storage_fs_required.sh`
 - 公式導線 warning ゼロガード: `bash scripts/verify_qemu_official_warning_free.sh`
 - CI warning 専用ジョブ: `warning-free-official`（`target/qemu-logs/warning-check-*.log` を artifact 化）
 - CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
@@ -278,6 +279,8 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending s
 - NET core stack residual（pending監視）: `none`。
 - NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
 - NET peripheral residual（pending監視）: `none`。
+- Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（`qemu_suite_kernel` は `posix-compat` 有効）。
+- Storage/FS residual（pending監視）: `none`。
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。
 - `#[test]` 例外の技術的ガード（実装ガード）: `scripts/qemu_legacy_test_allowlist.lst`

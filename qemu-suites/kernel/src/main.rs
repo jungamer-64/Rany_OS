@@ -335,6 +335,52 @@ fn run_suite() -> bool {
             "net_peripheral_driver_bridge_exports",
             test_net_peripheral_driver_bridge_exports,
         )
+// BEGIN Storage/FS required run_suite wiring (59 cases).
+        && run_check(
+            "storage_fs_async_ops_exports",
+            test_storage_fs_async_ops_exports,
+        )
+        && run_check(
+            "storage_fs_async_memfs_exports",
+            test_storage_fs_async_memfs_exports,
+        )
+        && run_check(
+            "storage_fs_cache_core_exports",
+            test_storage_fs_cache_core_exports,
+        )
+        && run_check(
+            "storage_fs_cache_block_exports",
+            test_storage_fs_cache_block_exports,
+        )
+        && run_check(
+            "storage_fs_devfs_exports",
+            test_storage_fs_devfs_exports,
+        )
+        && run_check(
+            "storage_fs_ext2_exports",
+            test_storage_fs_ext2_exports,
+        )
+        && run_check(
+            "storage_fs_fs_abstraction_exports",
+            test_storage_fs_fs_abstraction_exports,
+        )
+        && run_check(
+            "storage_fs_memfs_exports",
+            test_storage_fs_memfs_exports,
+        )
+        && run_check(
+            "storage_fs_page_exports",
+            test_storage_fs_page_exports,
+        )
+        && run_check(
+            "storage_fs_page_cluster_buffer_exports",
+            test_storage_fs_page_cluster_buffer_exports,
+        )
+        && run_check(
+            "storage_fs_procfs_exports",
+            test_storage_fs_procfs_exports,
+        )
+// END Storage/FS required run_suite wiring (59 cases).
 // END NET peripheral required run_suite wiring (67 cases).
 // BEGIN re-added local run_suite wiring after origin/master rebase
         && run_check(
