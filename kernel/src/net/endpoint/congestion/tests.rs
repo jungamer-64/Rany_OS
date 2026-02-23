@@ -1,15 +1,15 @@
 use super::*;
 
-#[test_case]
-fn test_initial_state() {
+#[cfg_attr(test, test_case)]
+pub fn test_initial_state() {
     let cc = CongestionController::new();
     assert_eq!(cc.state(), CongestionState::SlowStart);
     assert_eq!(cc.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
     assert_eq!(cc.ssthresh(), u32::MAX);
 }
 
-#[test_case]
-fn test_slow_start_growth() {
+#[cfg_attr(test, test_case)]
+pub fn test_slow_start_growth() {
     let mut cc = CongestionController::with_mss(1000);
     let initial_cwnd = cc.cwnd();
 
@@ -19,8 +19,8 @@ fn test_slow_start_growth() {
     assert_eq!(cc.state(), CongestionState::SlowStart);
 }
 
-#[test_case]
-fn test_transition_to_congestion_avoidance() {
+#[cfg_attr(test, test_case)]
+pub fn test_transition_to_congestion_avoidance() {
     let mut cc = CongestionController::with_mss(1000);
     cc.ssthresh = 5000; // 強制的に低く設定
 
@@ -32,8 +32,8 @@ fn test_transition_to_congestion_avoidance() {
     assert_eq!(cc.state(), CongestionState::CongestionAvoidance);
 }
 
-#[test_case]
-fn test_fast_retransmit() {
+#[cfg_attr(test, test_case)]
+pub fn test_fast_retransmit() {
     let mut cc = CongestionController::with_mss(1000);
     cc.bytes_in_flight = 10000;
 
@@ -46,8 +46,8 @@ fn test_fast_retransmit() {
     assert!(cc.ssthresh() < u32::MAX);
 }
 
-#[test_case]
-fn test_timeout() {
+#[cfg_attr(test, test_case)]
+pub fn test_timeout() {
     let mut cc = CongestionController::with_mss(1000);
     cc.cwnd = 50000;
     cc.bytes_in_flight = 30000;
@@ -59,8 +59,8 @@ fn test_timeout() {
     assert_eq!(cc.ssthresh(), 15000); // FlightSize / 2
 }
 
-#[test_case]
-fn test_available_window() {
+#[cfg_attr(test, test_case)]
+pub fn test_available_window() {
     let mut cc = CongestionController::with_mss(1000);
     cc.cwnd = 10000;
     cc.bytes_in_flight = 3000;

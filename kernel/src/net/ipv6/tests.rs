@@ -2,8 +2,8 @@ use super::*;
 
 // --- Address tests ---
 
-#[test_case]
-fn test_unspecified() {
+#[cfg_attr(test, test_case)]
+pub fn test_unspecified() {
     let addr = Ipv6Address::UNSPECIFIED;
     assert!(addr.is_unspecified());
     assert!(!addr.is_loopback());
@@ -11,24 +11,24 @@ fn test_unspecified() {
     assert!(!addr.is_unicast_link_local());
 }
 
-#[test_case]
-fn test_loopback() {
+#[cfg_attr(test, test_case)]
+pub fn test_loopback() {
     let addr = Ipv6Address::LOOPBACK;
     assert!(!addr.is_unspecified());
     assert!(addr.is_loopback());
     assert!(!addr.is_multicast());
 }
 
-#[test_case]
-fn test_multicast() {
+#[cfg_attr(test, test_case)]
+pub fn test_multicast() {
     let addr = Ipv6Address::ALL_NODES_LINK_LOCAL;
     assert!(addr.is_multicast());
     assert!(addr.is_link_local());
     assert!(!addr.is_unicast_link_local());
 }
 
-#[test_case]
-fn test_link_local() {
+#[cfg_attr(test, test_case)]
+pub fn test_link_local() {
     // fe80::1
     let addr = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     assert!(addr.is_unicast_link_local());
@@ -37,8 +37,8 @@ fn test_link_local() {
     assert!(!addr.is_global());
 }
 
-#[test_case]
-fn test_global() {
+#[cfg_attr(test, test_case)]
+pub fn test_global() {
     // 2001:db8::1
     let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     assert!(addr.is_global());
@@ -47,8 +47,8 @@ fn test_global() {
     assert!(!addr.is_loopback());
 }
 
-#[test_case]
-fn test_eui64() {
+#[cfg_attr(test, test_case)]
+pub fn test_eui64() {
     // MAC: 52:54:00:12:34:56
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let addr = Ipv6Address::from_eui64(&mac);
@@ -68,8 +68,8 @@ fn test_eui64() {
     assert_eq!(addr.as_bytes()[15], 0x56);
 }
 
-#[test_case]
-fn test_solicited_node() {
+#[cfg_attr(test, test_case)]
+pub fn test_solicited_node() {
     // fe80::5054:00ff:fe12:3456 → ff02::1:ff12:3456
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let addr = Ipv6Address::from_eui64(&mac);
@@ -83,8 +83,8 @@ fn test_solicited_node() {
     assert_eq!(sn.as_bytes()[15], 0x56);
 }
 
-#[test_case]
-fn test_multicast_mac() {
+#[cfg_attr(test, test_case)]
+pub fn test_multicast_mac() {
     // ff02::1:ff12:3456 → 33:33:ff:12:34:56
     let addr = Ipv6Address::new([
         0xff, 0x02, 0, 0, 0, 0, 0, 0,
@@ -96,13 +96,13 @@ fn test_multicast_mac() {
 
 // --- Header / Packet tests ---
 
-#[test_case]
-fn test_header_size() {
+#[cfg_attr(test, test_case)]
+pub fn test_header_size() {
     assert_eq!(core::mem::size_of::<Ipv6Header>(), IPV6_HEADER_SIZE);
 }
 
-#[test_case]
-fn test_packet_parse_valid() {
+#[cfg_attr(test, test_case)]
+pub fn test_packet_parse_valid() {
     // Construct a minimal valid IPv6 packet (ICMPv6 Echo Request)
     let mut buf = [0u8; 48]; // 40 header + 8 payload
     buf[0] = 0x60; // version = 6
@@ -118,21 +118,21 @@ fn test_packet_parse_valid() {
     assert_eq!(packet.payload().len(), 8);
 }
 
-#[test_case]
-fn test_packet_parse_wrong_version() {
+#[cfg_attr(test, test_case)]
+pub fn test_packet_parse_wrong_version() {
     let mut buf = [0u8; 48];
     buf[0] = 0x40; // version = 4 (IPv4)
     assert!(Ipv6Packet::parse(&buf).is_none());
 }
 
-#[test_case]
-fn test_packet_parse_too_short() {
+#[cfg_attr(test, test_case)]
+pub fn test_packet_parse_too_short() {
     let buf = [0x60u8; 20]; // too short for IPv6 header
     assert!(Ipv6Packet::parse(&buf).is_none());
 }
 
-#[test_case]
-fn test_packet_mut_build() {
+#[cfg_attr(test, test_case)]
+pub fn test_packet_mut_build() {
     let mut buf = [0u8; 60]; // 40 header + 20 payload
     let mut pkt = Ipv6PacketMut::new(&mut buf).unwrap();
     pkt.init_header();
@@ -156,8 +156,8 @@ fn test_packet_mut_build() {
 
 // --- Extension header tests ---
 
-#[test_case]
-fn test_skip_no_extension_headers() {
+#[cfg_attr(test, test_case)]
+pub fn test_skip_no_extension_headers() {
     // Payload that starts directly with upper-layer data
     let data = [1, 2, 3, 4, 5, 6, 7, 8];
     let (proto, remaining) = skip_extension_headers(IpProtocol::Tcp, &data);
@@ -165,8 +165,8 @@ fn test_skip_no_extension_headers() {
     assert_eq!(remaining.len(), 8);
 }
 
-#[test_case]
-fn test_skip_hop_by_hop() {
+#[cfg_attr(test, test_case)]
+pub fn test_skip_hop_by_hop() {
     // Hop-by-Hop Options header: next=ICMPv6(58), len=0 → 8 bytes total
     let mut data = [0u8; 16];
     data[0] = 58; // next header = ICMPv6
@@ -183,8 +183,8 @@ fn test_skip_hop_by_hop() {
     assert_eq!(remaining[0], 0x80);
 }
 
-#[test_case]
-fn test_skip_fragment_header() {
+#[cfg_attr(test, test_case)]
+pub fn test_skip_fragment_header() {
     // Fragment header: next=TCP(6), always 8 bytes
     let mut data = [0u8; 16];
     data[0] = 6; // next header = TCP
@@ -202,8 +202,8 @@ fn test_skip_fragment_header() {
 
 // --- Pseudo-header checksum test ---
 
-#[test_case]
-fn test_pseudo_header_checksum() {
+#[cfg_attr(test, test_case)]
+pub fn test_pseudo_header_checksum() {
     let src = Ipv6Address::LOOPBACK;
     let dst = Ipv6Address::LOOPBACK;
     let sum = ipv6_pseudo_header_checksum(&src, &dst, IpProtocol::Icmpv6, 8);
@@ -219,30 +219,30 @@ fn test_pseudo_header_checksum() {
 
 // --- Display test ---
 
-#[test_case]
-fn test_display_loopback() {
+#[cfg_attr(test, test_case)]
+pub fn test_display_loopback() {
     let addr = Ipv6Address::LOOPBACK;
     let s = alloc::format!("{}", addr);
     assert_eq!(s, "::1");
 }
 
-#[test_case]
-fn test_display_link_local() {
+#[cfg_attr(test, test_case)]
+pub fn test_display_link_local() {
     // fe80::1
     let addr = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let s = alloc::format!("{}", addr);
     assert_eq!(s, "fe80::1");
 }
 
-#[test_case]
-fn test_display_all_nodes() {
+#[cfg_attr(test, test_case)]
+pub fn test_display_all_nodes() {
     let addr = Ipv6Address::ALL_NODES_LINK_LOCAL;
     let s = alloc::format!("{}", addr);
     assert_eq!(s, "ff02::1");
 }
 
-#[test_case]
-fn test_display_full() {
+#[cfg_attr(test, test_case)]
+pub fn test_display_full() {
     // 2001:db8:1:2:3:4:5:6 (no zero run >= 2)
     let addr = Ipv6Address::new([
         0x20, 0x01, 0x0d, 0xb8, 0x00, 0x01, 0x00, 0x02,
@@ -252,8 +252,8 @@ fn test_display_full() {
     assert_eq!(s, "2001:db8:1:2:3:4:5:6");
 }
 
-#[test_case]
-fn test_from_u64_pair() {
+#[cfg_attr(test, test_case)]
+pub fn test_from_u64_pair() {
     let addr = Ipv6Address::from_u64_pair(
         0xfe80_0000_0000_0000,
         0x0000_0000_0000_0001,

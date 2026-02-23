@@ -1,7 +1,8 @@
 use super::*;
+use alloc::vec;
 
-#[test_case]
-fn test_neighbor_cache_basic() {
+#[cfg_attr(test, test_case)]
+pub fn test_neighbor_cache_basic() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
@@ -19,8 +20,8 @@ fn test_neighbor_cache_basic() {
     assert!(cache.is_empty());
 }
 
-#[test_case]
-fn test_neighbor_cache_update() {
+#[cfg_attr(test, test_case)]
+pub fn test_neighbor_cache_update() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::LOOPBACK;
 
@@ -37,8 +38,8 @@ fn test_neighbor_cache_update() {
     assert_eq!(entry.state, NeighborState::Reachable);
 }
 
-#[test_case]
-fn test_neighbor_cache_expiry() {
+#[cfg_attr(test, test_case)]
+pub fn test_neighbor_cache_expiry() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::LOOPBACK;
     let mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
@@ -55,8 +56,8 @@ fn test_neighbor_cache_expiry() {
     assert!(cache.is_empty());
 }
 
-#[test_case]
-fn test_parse_slla_option() {
+#[cfg_attr(test, test_case)]
+pub fn test_parse_slla_option() {
     // Source Link-Layer Address: type=1, len=1 (8 bytes), mac=52:54:00:12:34:56
     let data = [1, 1, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let options = parse_ndp_options(&data);
@@ -70,8 +71,8 @@ fn test_parse_slla_option() {
     }
 }
 
-#[test_case]
-fn test_parse_prefix_info_option() {
+#[cfg_attr(test, test_case)]
+pub fn test_parse_prefix_info_option() {
     // Prefix Information: type=3, len=4 (32 bytes)
     let mut data = [0u8; 32];
     data[0] = 3;  // type
@@ -101,8 +102,8 @@ fn test_parse_prefix_info_option() {
     }
 }
 
-#[test_case]
-fn test_build_ns() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_ns() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0x00, 0xff, 0xfe, 0x12, 0x34, 0x56]);
     let target = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = target.solicited_node();
@@ -124,8 +125,8 @@ fn test_build_ns() {
     assert_eq!(cksum, 0);
 }
 
-#[test_case]
-fn test_build_na() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_na() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let dst = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let target = src;
@@ -145,8 +146,8 @@ fn test_build_na() {
     assert_eq!(cksum, 0);
 }
 
-#[test_case]
-fn test_build_rs() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_rs() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
@@ -161,15 +162,15 @@ fn test_build_rs() {
     assert_eq!(cksum, 0);
 }
 
-#[test_case]
-fn test_multicast_mac() {
+#[cfg_attr(test, test_case)]
+pub fn test_multicast_mac() {
     let addr = Ipv6Address::ALL_NODES_LINK_LOCAL;
     let mac = ipv6_multicast_to_mac(&addr);
     assert_eq!(mac, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
 }
 
-#[test_case]
-fn test_resolve_multicast() {
+#[cfg_attr(test, test_case)]
+pub fn test_resolve_multicast() {
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let proc = NdpProcessor::new(Ipv6Address::LOOPBACK, mac);
 
@@ -178,8 +179,8 @@ fn test_resolve_multicast() {
     assert_eq!(resolved, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
 }
 
-#[test_case]
-fn test_ns_processing() {
+#[cfg_attr(test, test_case)]
+pub fn test_ns_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
     let mut proc = NdpProcessor::new(our_ip, our_mac);

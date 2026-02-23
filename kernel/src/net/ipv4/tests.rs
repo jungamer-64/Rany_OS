@@ -1,7 +1,7 @@
 use super::*;
 
-#[test_case]
-fn test_ipv4_address() {
+#[cfg_attr(test, test_case)]
+pub fn test_ipv4_address() {
     let addr = Ipv4Address::from_octets(192, 168, 1, 1);
     assert!(addr.is_private());
     assert!(!addr.is_loopback());
@@ -10,8 +10,8 @@ fn test_ipv4_address() {
     assert!(Ipv4Address::BROADCAST.is_broadcast());
 }
 
-#[test_case]
-fn test_subnet() {
+#[cfg_attr(test, test_case)]
+pub fn test_subnet() {
     let addr1 = Ipv4Address::from_octets(192, 168, 1, 1);
     let addr2 = Ipv4Address::from_octets(192, 168, 1, 100);
     let mask = Ipv4Address::from_octets(255, 255, 255, 0);
@@ -19,8 +19,8 @@ fn test_subnet() {
     assert!(addr1.same_subnet(&addr2, mask));
 }
 
-#[test_case]
-fn test_fragment_key() {
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_key() {
     let mut header = Ipv4Header {
         version_ihl: 0x45,
         dscp_ecn: 0,
@@ -41,16 +41,16 @@ fn test_fragment_key() {
     assert_eq!(key.protocol, 6);
 }
 
-#[test_case]
-fn test_fragment_buffer_basic() {
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_buffer_basic() {
     let mut buffer = FragmentBuffer::new(0);
     assert!(!buffer.is_complete());
     assert!(!buffer.is_expired(1000));
     assert!(buffer.is_expired(31000)); // After 30s timeout
 }
 
-#[test_case]
-fn test_fragment_reassembly_simple() {
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_reassembly_simple() {
     let mut reassembler = FragmentReassembler::new(16);
 
     // First fragment (offset 0, more fragments)
@@ -94,8 +94,8 @@ fn test_fragment_reassembly_simple() {
     assert!(reassembled.len() >= 36); // 20 header + 16 payload
 }
 
-#[test_case]
-fn test_pmtu_cache_basic() {
+#[cfg_attr(test, test_case)]
+pub fn test_pmtu_cache_basic() {
     let mut cache = PmtuCache::new(256);
     let dst = Ipv4Address::from_octets(192, 168, 1, 100);
     let current_time = 0u64;
@@ -114,8 +114,8 @@ fn test_pmtu_cache_basic() {
     assert_eq!(cache.get(dst, after_timeout), PmtuEntry::DEFAULT_MTU);
 }
 
-#[test_case]
-fn test_pmtu_cache_update_smaller() {
+#[cfg_attr(test, test_case)]
+pub fn test_pmtu_cache_update_smaller() {
     let mut cache = PmtuCache::new(256);
     let dst = Ipv4Address::from_octets(10, 0, 0, 1);
     let current_time = 0u64;
@@ -129,8 +129,8 @@ fn test_pmtu_cache_update_smaller() {
     assert_eq!(cache.get(dst, current_time + 100), 1200);
 }
 
-#[test_case]
-fn test_pmtu_cache_minimum() {
+#[cfg_attr(test, test_case)]
+pub fn test_pmtu_cache_minimum() {
     let mut cache = PmtuCache::new(256);
     let dst = Ipv4Address::from_octets(8, 8, 8, 8);
 

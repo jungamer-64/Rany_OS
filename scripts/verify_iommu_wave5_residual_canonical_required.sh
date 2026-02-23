@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Validates IOMMU Wave5 required wiring after residual-zero migration.
-# Scope: canonical required chain + compat alias retention + pending/parity none-state.
+# Validates IOMMU Wave5 canonical required wiring and residual-none boundaries.
+# Scope: required wiring + canonical pending/parity responsibility split.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IOMMU_QEMU_TESTS_FILE="$ROOT_DIR/kernel/src/io/iommu/qemu_tests/wave2_tests/wave3_tests/group_tests.rs"
-KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests/wave8_net_tests/iommu_wave2_tests.rs"
-KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/iommu_wave3_tests/tls_wave8_tests.rs"
-KERNEL_SUITE_MAIN_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
-SECURITY_FILE="$ROOT_DIR/kernel/src/io/iommu/security/monitor_task.rs"
+IOMMU_QEMU_TESTS_FILE="$ROOT_DIR/kernel/src/io/iommu/qemu_tests.rs"
+IOMMU_SECURITY_FILE="$ROOT_DIR/kernel/src/io/iommu/security.rs"
+KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
+KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 PARITY_FILE="$ROOT_DIR/scripts/qemu_iommu_residual_parity.lst"
 
 for required_file in \
   "$IOMMU_QEMU_TESTS_FILE" \
+  "$IOMMU_SECURITY_FILE" \
   "$KERNEL_WRAPPER_FILE" \
   "$KERNEL_SUITE_FILE" \
-  "$KERNEL_SUITE_MAIN_FILE" \
-  "$SECURITY_FILE" \
   "$PENDING_FILE" \
   "$PARITY_FILE"
 do
@@ -30,13 +28,13 @@ done
 
 canonical_cases=(
   "cmdqueue_map_unmap_with_domain_canonical"
+  "map_for_device_async_and_unmap_canonical"
   "map_for_device_respects_dma_mask_canonical"
   "api_security_notifier_registration_canonical"
   "qi_metrics_pressure_canonical"
-  "map_for_device_async_and_unmap_canonical"
 )
 
-legacy_wave2_compat=(
+compat_wave2_exports=(
   "wave2_cmdqueue_map_unmap_with_domain_smoke"
   "wave2_cmdqueue_map_device_nonblocking_smoke"
   "wave2_dma_mask_respects_32bit_limit_smoke"
@@ -44,121 +42,129 @@ legacy_wave2_compat=(
   "wave2_qi_metrics_pressure_smoke"
 )
 
-compat_wave5_aliases=(
-  "wave5_cmdqueue_map_unmap_with_domain_residual_smoke"
-  "wave5_map_for_device_async_and_unmap_residual_smoke"
+compat_wave2_wrappers=(
+  "iommu_wave2_cmdqueue_map_unmap_with_domain_smoke"
+  "iommu_wave2_cmdqueue_map_device_nonblocking_smoke"
+  "iommu_wave2_dma_mask_respects_32bit_limit_smoke"
+  "iommu_wave2_controller_security_notifier_dispatch_smoke"
+  "iommu_wave2_qi_metrics_pressure_smoke"
 )
 
-promoted_canonical_originals=(
+promoted_original_cases=(
   "test_cmdqueue_map_unmap_with_domain"
+  "test_map_for_device_async_and_unmap"
   "test_map_for_device_respects_dma_mask"
   "test_api_security_notifier_registration"
   "test_qi_metrics_pressure"
-  "test_map_for_device_async_and_unmap"
+)
+
+residual_wrapper_cases=(
+  "iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke"
+  "iommu_wave5_map_for_device_async_and_unmap_residual_smoke"
 )
 
 violations=0
 
-if ! rg -q "pub fn qemu_test_clear_security_notifier\\(" "$SECURITY_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] missing qemu_test_clear_security_notifier hook in ${SECURITY_FILE#"$ROOT_DIR"/}"
-  violations=$((violations + 1))
-fi
-
 if ! rg -q "fn test_iommu_wave5_canonical_exports\\(" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] missing test_iommu_wave5_canonical_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  echo "[verify_iommu_wave5_residual_canonical_required] missing test_iommu_wave5_canonical_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
 if rg -q "fn test_iommu_wave5_residual_exports\\(" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] stale test_iommu_wave5_residual_exports in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+  echo "[verify_iommu_wave5_residual_canonical_required] stale test_iommu_wave5_residual_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
-if rg -q "iommu_wave5_residual_exports" "$KERNEL_SUITE_MAIN_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] stale iommu_wave5_residual_exports reference in ${KERNEL_SUITE_MAIN_FILE#"$ROOT_DIR"/}"
+if rg -q "iommu_wave5_residual_exports" "$KERNEL_SUITE_FILE"; then
+  echo "[verify_iommu_wave5_residual_canonical_required] stale iommu_wave5_residual_exports run_check in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
-if rg -q "iommu_wave2_residual_exports" "$KERNEL_SUITE_MAIN_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] stale iommu_wave2_residual_exports reference in ${KERNEL_SUITE_MAIN_FILE#"$ROOT_DIR"/}"
+if rg -q "fn test_iommu_wave2_residual_exports\\(" "$KERNEL_SUITE_FILE"; then
+  echo "[verify_iommu_wave5_residual_canonical_required] stale test_iommu_wave2_residual_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
-if rg -q "iommu_wave2_.*smoke" "$KERNEL_SUITE_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] required suite still references iommu_wave2_* compat wrappers in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
+if ! rg -q "pub fn qemu_test_clear_security_notifier\\(" "$IOMMU_SECURITY_FILE"; then
+  echo "[verify_iommu_wave5_residual_canonical_required] missing qemu_test_clear_security_notifier in ${IOMMU_SECURITY_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
-
-for legacy in "${legacy_wave2_compat[@]}"; do
-  if ! rg -q "pub fn ${legacy}\\(" "$IOMMU_QEMU_TESTS_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] missing compat alias '${legacy}' in ${IOMMU_QEMU_TESTS_FILE#"$ROOT_DIR"/}"
-    violations=$((violations + 1))
-  fi
-
-  wrapper="iommu_${legacy}"
-  if ! rg -q "pub fn ${wrapper}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] missing compat wrapper '${wrapper}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
-    violations=$((violations + 1))
-  fi
-done
-
-for alias in "${compat_wave5_aliases[@]}"; do
-  if ! rg -q "pub fn ${alias}\\(" "$IOMMU_QEMU_TESTS_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] missing compat alias '${alias}' in ${IOMMU_QEMU_TESTS_FILE#"$ROOT_DIR"/}"
-    violations=$((violations + 1))
-  fi
-
-  wrapper="iommu_${alias}"
-  if ! rg -q "pub fn ${wrapper}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] missing compat wrapper '${wrapper}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
-    violations=$((violations + 1))
-  fi
-done
 
 for case_name in "${canonical_cases[@]}"; do
-  export_fn="wave5_${case_name}_smoke"
-  wrapper_fn="iommu_wave5_${case_name}_smoke"
+  export_case="wave5_${case_name}_smoke"
+  wrapper_case="iommu_wave5_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$IOMMU_QEMU_TESTS_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] missing canonical export '${export_fn}' in ${IOMMU_QEMU_TESTS_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${export_case}\\(" "$IOMMU_QEMU_TESTS_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] missing export '${export_case}' in ${IOMMU_QEMU_TESTS_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] missing canonical wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] missing wrapper '${wrapper_case}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] missing canonical suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#"$ROOT_DIR"/}"
-    violations=$((violations + 1))
-  fi
-done
-
-for original in "${promoted_canonical_originals[@]}"; do
-  if rg -q "^IOMMU residual canonical: ${original}$" "$PENDING_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] promoted canonical '${original}' still present as residual canonical entry in ${PENDING_FILE#"$ROOT_DIR"/}"
-    violations=$((violations + 1))
-  fi
-
-  if rg -q "^${original}\\|" "$PARITY_FILE"; then
-    echo "[verify_iommu_wave5_residual_canonical_required] promoted canonical '${original}' still present in ${PARITY_FILE#"$ROOT_DIR"/}"
+  if ! rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] missing suite wiring '${wrapper_case}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 done
 
-if ! rg -q "^IOMMU residual canonical pending: none$" "$PENDING_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] missing residual-none marker in ${PENDING_FILE#"$ROOT_DIR"/}"
-  violations=$((violations + 1))
-fi
+for wrapper_case in "${residual_wrapper_cases[@]}"; do
+  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] missing compat residual wrapper '${wrapper_case}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
 
-if rg -q "^[[:space:]]*test_[^|]*\\|" "$PARITY_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] parity file still contains active residual entries in ${PARITY_FILE#"$ROOT_DIR"/}"
+  if rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] stale required suite wiring for residual wrapper '${wrapper_case}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+done
+
+for export_case in "${compat_wave2_exports[@]}"; do
+  if ! rg -q "pub fn ${export_case}\\(" "$IOMMU_QEMU_TESTS_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] missing compat export '${export_case}' in ${IOMMU_QEMU_TESTS_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+done
+
+for wrapper_case in "${compat_wave2_wrappers[@]}"; do
+  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] missing compat wrapper '${wrapper_case}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+
+  if rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] stale required suite wiring for compat wrapper '${wrapper_case}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+done
+
+for original_case in "${promoted_original_cases[@]}"; do
+  if rg -q "IOMMU residual canonical: ${original_case}" "$PENDING_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] promoted canonical case still pending: '${original_case}' in ${PENDING_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+
+  if rg -q "^${original_case}\\|" "$PARITY_FILE"; then
+    echo "[verify_iommu_wave5_residual_canonical_required] promoted canonical case still in parity map: '${original_case}' in ${PARITY_FILE#$ROOT_DIR/}"
+    violations=$((violations + 1))
+  fi
+done
+
+if ! rg -q "IOMMU residual canonical pending: none" "$PENDING_FILE"; then
+  echo "[verify_iommu_wave5_residual_canonical_required] missing residual none marker in ${PENDING_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
 if ! rg -q "^# none$" "$PARITY_FILE"; then
-  echo "[verify_iommu_wave5_residual_canonical_required] missing '# none' marker in ${PARITY_FILE#"$ROOT_DIR"/}"
+  echo "[verify_iommu_wave5_residual_canonical_required] missing '# none' marker in ${PARITY_FILE#$ROOT_DIR/}"
+  violations=$((violations + 1))
+fi
+
+if ! rg -q "IOMMU Wave5 canonical deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
+  echo "[verify_iommu_wave5_residual_canonical_required] missing Wave5 promotion marker in ${PENDING_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 

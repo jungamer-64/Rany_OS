@@ -6,7 +6,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-const HEAP_SIZE: usize = 32 * 1024 * 1024;
+const HEAP_SIZE: usize = 8 * 1024 * 1024;
 
 #[repr(align(16))]
 struct Heap([u8; HEAP_SIZE]);
@@ -136,7 +136,6 @@ pub extern "C" fn _start() -> ! {
     let counts = run_suite();
     write_counts(&counts);
 
-    // MM pending suite is informational and non-fatal.
     serial_write_str("[qemu-suite] kernel_mm_pending pass\n");
     exit_qemu(0x10)
 }
@@ -146,6 +145,7 @@ pub extern "C" fn _start() -> ! {
 pub extern "efiapi" fn efi_main(_image_handle: usize, _system_table: usize) -> usize {
     let counts = run_suite();
     write_counts(&counts);
+
     serial_write_str("[qemu-suite] kernel_mm_pending pass\n");
     0
 }

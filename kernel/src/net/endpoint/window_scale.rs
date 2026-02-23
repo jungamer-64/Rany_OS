@@ -557,20 +557,20 @@ impl Default for TcpOptionBuilder {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_window_scale_disabled() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_window_scale_disabled() {
         let ws = WindowScaleOption::new();
         assert!(!ws.enabled);
         assert_eq!(ws.scale_snd_window(65535), 65535);
         assert_eq!(ws.scale_rcv_window(65535), 65535);
     }
 
-    #[test_case]
-    fn test_window_scale_enabled() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_window_scale_enabled() {
         let mut ws = WindowScaleOption::with_scale(7);
         assert!(ws.enabled);
         ws.set_snd_scale(7);
@@ -580,8 +580,8 @@ mod tests {
         assert_eq!(ws.scale_rcv_window(1000), 128000);
     }
 
-    #[test_case]
-    fn test_advertised_window() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_advertised_window() {
         let ws = WindowScaleOption::with_scale(7);
 
         // 128で割ってスケールダウン
@@ -591,8 +591,8 @@ mod tests {
         assert_eq!(ws.advertised_window(u32::MAX), 65535);
     }
 
-    #[test_case]
-    fn test_option_builder() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_option_builder() {
         let mut builder = TcpOptionBuilder::new();
         builder
             .add_mss(1460)
@@ -604,8 +604,8 @@ mod tests {
         assert_eq!(options.len() % 4, 0); // 4バイト境界
     }
 
-    #[test_case]
-    fn test_option_parser() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_option_parser() {
         // MSS=1460, WSopt=7 のオプション
         let options = [
             2, 4, 0x05, 0xB4, // MSS = 1460

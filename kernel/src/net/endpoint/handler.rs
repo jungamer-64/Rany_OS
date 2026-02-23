@@ -515,16 +515,16 @@ impl Default for NetworkEventHandler {
 }
 
 // File-level tests for handler
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
     use crate::net::endpoint::event::{event_queue, NetworkEvent};
     use crate::net::endpoint::manager::init_socket_manager;
     use crate::net::endpoint::{create_tcp_socket, SocketAddr, SocketState};
     use crate::net::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
 
-    #[test_case]
-    fn test_handle_tx_available_requeues_dataready() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_handle_tx_available_requeues_dataready() {
         init_socket_manager();
 
         let sock = create_tcp_socket();
@@ -555,8 +555,8 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_handle_data_ready_retry_when_no_device() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_handle_data_ready_retry_when_no_device() {
         init_socket_manager();
 
         let sock = create_tcp_socket();

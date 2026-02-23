@@ -5,12 +5,12 @@ use super::*;
 // CongestionControllerVariant テスト
 // =====================================================
 
-#[cfg(test)]
-mod variant_tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod variant_tests {
     use super::*;
 
-    #[test_case]
-    pub(super) fn test_variant_from_algorithm() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_from_algorithm() {
         let nr = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::NewReno);
         assert_eq!(nr.algorithm(), CongestionAlgorithm::NewReno);
         assert_eq!(nr.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
@@ -24,15 +24,15 @@ mod variant_tests {
         assert_eq!(bbr.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_with_mss() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_with_mss() {
         let v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
         assert_eq!(v.mss(), 1000);
         assert_eq!(v.cwnd(), INITIAL_WINDOW * 1000);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_newreno_ack_delegation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_newreno_ack_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
         let initial_cwnd = v.cwnd();
 
@@ -42,8 +42,8 @@ mod variant_tests {
         assert_eq!(v.congestion_state(), CongestionState::SlowStart);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_cubic_ack_delegation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_cubic_ack_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
         let initial_cwnd = v.cwnd();
 
@@ -53,8 +53,8 @@ mod variant_tests {
         assert_eq!(v.congestion_state(), CongestionState::SlowStart);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_bbr_ack_delegation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_bbr_ack_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Bbr, 1000);
 
         // Send then receive ACK
@@ -65,8 +65,8 @@ mod variant_tests {
         assert_eq!(v.congestion_state(), CongestionState::CongestionAvoidance);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_timeout_delegation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_timeout_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
 
         // Simulate data in flight then timeout
@@ -78,8 +78,8 @@ mod variant_tests {
         assert_eq!(v.cwnd(), 1000); // 1 MSS
     }
 
-    #[test_case]
-    pub(super) fn test_variant_reset_delegation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_reset_delegation() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
 
         // Modify state
@@ -94,8 +94,8 @@ mod variant_tests {
         assert_eq!(v.congestion_state(), CongestionState::SlowStart);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_available_window() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_available_window() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
 
         v.on_send(3000, 0);
@@ -108,8 +108,8 @@ mod variant_tests {
         assert_eq!(v.available_window(5000), 2000);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_fast_retransmit_newreno() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_fast_retransmit_newreno() {
         let mut v = CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::NewReno, 1000);
 
         v.on_send(10000, 0);
@@ -122,8 +122,8 @@ mod variant_tests {
         assert_eq!(v.congestion_state(), CongestionState::FastRecovery);
     }
 
-    #[test_case]
-    pub(super) fn test_variant_default() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_variant_default() {
         let v = CongestionControllerVariant::default();
         assert_eq!(v.algorithm(), CongestionAlgorithm::NewReno);
     }

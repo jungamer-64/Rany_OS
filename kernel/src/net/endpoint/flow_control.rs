@@ -282,20 +282,20 @@ pub struct FlowControlDebugInfo {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_initial_state() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_initial_state() {
         let fc = FlowController::new();
         assert_eq!(fc.state(), FlowControlState::Normal);
         assert_eq!(fc.advertised_window(), DEFAULT_RECV_BUFFER_SIZE);
         assert_eq!(fc.buffer_utilization(), 0);
     }
 
-    #[test_case]
-    fn test_receive_data() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_receive_data() {
         let mut fc = FlowController::with_buffer_size(10000);
 
         fc.on_receive(3000);
@@ -303,8 +303,8 @@ mod tests {
         assert_eq!(fc.advertised_window(), 7000);
     }
 
-    #[test_case]
-    fn test_consume_data() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_consume_data() {
         let mut fc = FlowController::with_buffer_size(10000);
 
         fc.on_receive(5000);
@@ -314,8 +314,8 @@ mod tests {
         assert_eq!(fc.advertised_window(), 8000);
     }
 
-    #[test_case]
-    fn test_zero_window() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_zero_window() {
         let mut fc = FlowController::with_buffer_size(1000);
 
         // バッファを満タンに
@@ -329,8 +329,8 @@ mod tests {
         assert!(fc.advertised_window() > 0);
     }
 
-    #[test_case]
-    fn test_sws_avoidance() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_sws_avoidance() {
         let mut fc = FlowController::with_buffer_size(10000);
 
         // ほぼ満タン - 小さすぎるウィンドウは0にする
@@ -340,8 +340,8 @@ mod tests {
         assert_eq!(fc.advertised_window(), 0);
     }
 
-    #[test_case]
-    fn test_peer_zero_window() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_peer_zero_window() {
         let mut fc = FlowController::new();
 
         fc.update_peer_window(0);
@@ -353,8 +353,8 @@ mod tests {
         assert_eq!(fc.state(), FlowControlState::Normal);
     }
 
-    #[test_case]
-    fn test_probe_timing() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_probe_timing() {
         let mut fc = FlowController::new();
         fc.update_peer_window(0);
 

@@ -68,6 +68,8 @@ pub mod driver;
 
 // Endpoint API (旧称: socket → ゼロコピー所有権モデルを反映)
 pub mod endpoint;
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
 
 // ECDH key exchange
 pub mod ecdh;

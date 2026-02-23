@@ -382,12 +382,12 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_tcp_segment_builder() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_segment_builder() {
         // SYNセグメント構築
         let segment = TcpSegmentBuilder::new(12345, 80)
             .seq(1000)
@@ -414,8 +414,8 @@ mod tests {
         assert_eq!(flags & tcp_flags::SYN, tcp_flags::SYN);
     }
 
-    #[test_case]
-    fn test_tcp_segment_with_data() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_segment_with_data() {
         let data = alloc::vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
         let segment = TcpSegmentBuilder::new(8080, 80)
             .seq(2000)
@@ -431,8 +431,8 @@ mod tests {
         assert_eq!(&segment[20..], b"Hello");
     }
 
-    #[test_case]
-    fn test_tcp_segment_with_options() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_segment_with_options() {
         // SYNセグメント with TCP options
         let segment = TcpSegmentBuilder::new(12345, 80)
             .seq(1000)
@@ -469,8 +469,8 @@ mod tests {
         assert_eq!(segment[30], 1);  // NOP
     }
 
-    #[test_case]
-    fn test_tcp_message_length_field_for_checksum() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_message_length_field_for_checksum() {
         let mut segment = TcpSegmentBuilder::new(12345, 80)
             .seq(1)
             .ack(1)
@@ -488,8 +488,8 @@ mod tests {
         assert_ne!(checksum, 0);
     }
 
-    #[test_case]
-    fn test_tcp_checksum_v6() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_checksum_v6() {
         let mut segment = TcpSegmentBuilder::new(1234, 80).seq(1).ack(0).build();
         TcpSegmentBuilder::calculate_checksum_v6(
             &mut segment,

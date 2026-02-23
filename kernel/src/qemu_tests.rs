@@ -694,3 +694,1310 @@ pub fn net_tls_wave8_tls13_derive_traffic_keys_smoke() -> bool {
 pub fn net_tls_wave8_tls13_finished_key_and_verify_data_smoke() -> bool {
     crate::net::tls::qemu_tests::wave8_tls_tls13_finished_key_and_verify_data_smoke()
 }
+
+// BEGIN NET core required wrappers (90 cases)
+
+pub fn net_core_adaptive_polling_polling_mode_default_smoke() -> bool {
+    crate::net::qemu_tests::adaptive_polling_polling_mode_default_smoke()
+}
+
+pub fn net_core_adaptive_polling_ring_buffer_smoke() -> bool {
+    crate::net::qemu_tests::adaptive_polling_ring_buffer_smoke()
+}
+
+pub fn net_core_adaptive_polling_network_stats_smoke() -> bool {
+    crate::net::qemu_tests::adaptive_polling_network_stats_smoke()
+}
+
+pub fn net_core_mempool_mempool_poisoned_alloc_fails_smoke() -> bool {
+    crate::net::qemu_tests::mempool_mempool_poisoned_alloc_fails_smoke()
+}
+
+pub fn net_core_mempool_mempool_stats_smoke() -> bool {
+    crate::net::qemu_tests::mempool_mempool_stats_smoke()
+}
+
+pub fn net_core_zero_copy_pool_id_smoke() -> bool {
+    crate::net::qemu_tests::zero_copy_pool_id_smoke()
+}
+
+pub fn net_core_zero_copy_sg_list_smoke() -> bool {
+    crate::net::qemu_tests::zero_copy_sg_list_smoke()
+}
+
+pub fn net_core_zero_copy_packet_chain_smoke() -> bool {
+    crate::net::qemu_tests::zero_copy_packet_chain_smoke()
+}
+
+pub fn net_core_ethernet_mac_address_smoke() -> bool {
+    crate::net::qemu_tests::ethernet_mac_address_smoke()
+}
+
+pub fn net_core_ethernet_ether_type_smoke() -> bool {
+    crate::net::qemu_tests::ethernet_ether_type_smoke()
+}
+
+pub fn net_core_arp_arp_cache_smoke() -> bool {
+    crate::net::qemu_tests::arp_arp_cache_smoke()
+}
+
+pub fn net_core_arp_arp_packet_smoke() -> bool {
+    crate::net::qemu_tests::arp_arp_packet_smoke()
+}
+
+pub fn net_core_icmp_icmp_type_smoke() -> bool {
+    crate::net::qemu_tests::icmp_icmp_type_smoke()
+}
+
+pub fn net_core_icmp_echo_builder_smoke() -> bool {
+    crate::net::qemu_tests::icmp_echo_builder_smoke()
+}
+
+pub fn net_core_udp_udp_packet_smoke() -> bool {
+    crate::net::qemu_tests::udp_udp_packet_smoke()
+}
+
+pub fn net_core_udp_udp_socket_poisoned_methods_return_defaults_smoke() -> bool {
+    crate::net::qemu_tests::udp_udp_socket_poisoned_methods_return_defaults_smoke()
+}
+
+pub fn net_core_udp_bind_with_token_reclaim_smoke() -> bool {
+    crate::net::qemu_tests::udp_bind_with_token_reclaim_smoke()
+}
+
+pub fn net_core_udp_udp_recv_future_poisoned_returns_closed_smoke() -> bool {
+    crate::net::qemu_tests::udp_udp_recv_future_poisoned_returns_closed_smoke()
+}
+
+pub fn net_core_udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
+    crate::net::qemu_tests::udp_udp_processor_poisoned_bind_and_process_smoke()
+}
+
+pub fn net_core_ipv4_ipv4_address_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_ipv4_address_smoke()
+}
+
+pub fn net_core_ipv4_subnet_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_subnet_smoke()
+}
+
+pub fn net_core_ipv4_fragment_key_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_fragment_key_smoke()
+}
+
+pub fn net_core_ipv4_fragment_buffer_basic_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_fragment_buffer_basic_smoke()
+}
+
+pub fn net_core_ipv4_fragment_reassembly_simple_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_fragment_reassembly_simple_smoke()
+}
+
+pub fn net_core_ipv4_pmtu_cache_basic_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_pmtu_cache_basic_smoke()
+}
+
+pub fn net_core_ipv4_pmtu_cache_update_smaller_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_pmtu_cache_update_smaller_smoke()
+}
+
+pub fn net_core_ipv4_pmtu_cache_minimum_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_pmtu_cache_minimum_smoke()
+}
+
+pub fn net_core_icmpv6_icmpv6_type_from_u8_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_icmpv6_type_from_u8_smoke()
+}
+
+pub fn net_core_icmpv6_icmpv6_type_classification_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_icmpv6_type_classification_smoke()
+}
+
+pub fn net_core_icmpv6_echo_reply_build_and_verify_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_echo_reply_build_and_verify_smoke()
+}
+
+pub fn net_core_icmpv6_echo_request_build_and_verify_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_echo_request_build_and_verify_smoke()
+}
+
+pub fn net_core_icmpv6_processor_echo_request_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_processor_echo_request_smoke()
+}
+
+pub fn net_core_icmpv6_processor_echo_disabled_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_processor_echo_disabled_smoke()
+}
+
+pub fn net_core_icmpv6_processor_checksum_error_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_processor_checksum_error_smoke()
+}
+
+pub fn net_core_icmpv6_ndp_delegation_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_ndp_delegation_smoke()
+}
+
+pub fn net_core_icmpv6_header_size_smoke() -> bool {
+    crate::net::qemu_tests::icmpv6_header_size_smoke()
+}
+
+pub fn net_core_stack_network_stack_creation_smoke() -> bool {
+    crate::net::qemu_tests::stack_network_stack_creation_smoke()
+}
+
+pub fn net_core_stack_network_stack_poisoned_runtime_apis_fail_smoke() -> bool {
+    crate::net::qemu_tests::stack_network_stack_poisoned_runtime_apis_fail_smoke()
+}
+
+pub fn net_core_stack_send_udp_fallback_zero_copy_smoke() -> bool {
+    crate::net::qemu_tests::stack_send_udp_fallback_zero_copy_smoke()
+}
+
+pub fn net_core_stack_send_icmp_fallback_zero_copy_smoke() -> bool {
+    crate::net::qemu_tests::stack_send_icmp_fallback_zero_copy_smoke()
+}
+
+pub fn net_core_stack_redirect_cache_basic_smoke() -> bool {
+    crate::net::qemu_tests::stack_redirect_cache_basic_smoke()
+}
+
+pub fn net_core_stack_redirect_cache_expiry_smoke() -> bool {
+    crate::net::qemu_tests::stack_redirect_cache_expiry_smoke()
+}
+
+pub fn net_core_stack_redirect_cache_cleanup_smoke() -> bool {
+    crate::net::qemu_tests::stack_redirect_cache_cleanup_smoke()
+}
+
+pub fn net_core_stack_redirect_cache_eviction_smoke() -> bool {
+    crate::net::qemu_tests::stack_redirect_cache_eviction_smoke()
+}
+
+pub fn net_core_ipv6_unspecified_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_unspecified_smoke()
+}
+
+pub fn net_core_ipv6_loopback_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_loopback_smoke()
+}
+
+pub fn net_core_ipv6_multicast_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_multicast_smoke()
+}
+
+pub fn net_core_ipv6_link_local_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_link_local_smoke()
+}
+
+pub fn net_core_ipv6_global_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_global_smoke()
+}
+
+pub fn net_core_ipv6_eui64_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_eui64_smoke()
+}
+
+pub fn net_core_ipv6_solicited_node_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_solicited_node_smoke()
+}
+
+pub fn net_core_ipv6_multicast_mac_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_multicast_mac_smoke()
+}
+
+pub fn net_core_ipv6_header_size_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_header_size_smoke()
+}
+
+pub fn net_core_ipv6_packet_parse_valid_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_packet_parse_valid_smoke()
+}
+
+pub fn net_core_ipv6_packet_parse_wrong_version_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_packet_parse_wrong_version_smoke()
+}
+
+pub fn net_core_ipv6_packet_parse_too_short_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_packet_parse_too_short_smoke()
+}
+
+pub fn net_core_ipv6_packet_mut_build_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_packet_mut_build_smoke()
+}
+
+pub fn net_core_ipv6_skip_no_extension_headers_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_skip_no_extension_headers_smoke()
+}
+
+pub fn net_core_ipv6_skip_hop_by_hop_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_skip_hop_by_hop_smoke()
+}
+
+pub fn net_core_ipv6_skip_fragment_header_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_skip_fragment_header_smoke()
+}
+
+pub fn net_core_ipv6_pseudo_header_checksum_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_pseudo_header_checksum_smoke()
+}
+
+pub fn net_core_ipv6_display_loopback_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_display_loopback_smoke()
+}
+
+pub fn net_core_ipv6_display_link_local_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_display_link_local_smoke()
+}
+
+pub fn net_core_ipv6_display_all_nodes_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_display_all_nodes_smoke()
+}
+
+pub fn net_core_ipv6_display_full_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_display_full_smoke()
+}
+
+pub fn net_core_ipv6_from_u64_pair_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_from_u64_pair_smoke()
+}
+
+pub fn net_core_ndp_neighbor_cache_basic_smoke() -> bool {
+    crate::net::qemu_tests::ndp_neighbor_cache_basic_smoke()
+}
+
+pub fn net_core_ndp_neighbor_cache_update_smoke() -> bool {
+    crate::net::qemu_tests::ndp_neighbor_cache_update_smoke()
+}
+
+pub fn net_core_ndp_neighbor_cache_expiry_smoke() -> bool {
+    crate::net::qemu_tests::ndp_neighbor_cache_expiry_smoke()
+}
+
+pub fn net_core_ndp_parse_slla_option_smoke() -> bool {
+    crate::net::qemu_tests::ndp_parse_slla_option_smoke()
+}
+
+pub fn net_core_ndp_parse_prefix_info_option_smoke() -> bool {
+    crate::net::qemu_tests::ndp_parse_prefix_info_option_smoke()
+}
+
+pub fn net_core_ndp_build_ns_smoke() -> bool {
+    crate::net::qemu_tests::ndp_build_ns_smoke()
+}
+
+pub fn net_core_ndp_build_na_smoke() -> bool {
+    crate::net::qemu_tests::ndp_build_na_smoke()
+}
+
+pub fn net_core_ndp_build_rs_smoke() -> bool {
+    crate::net::qemu_tests::ndp_build_rs_smoke()
+}
+
+pub fn net_core_ndp_multicast_mac_smoke() -> bool {
+    crate::net::qemu_tests::ndp_multicast_mac_smoke()
+}
+
+pub fn net_core_ndp_resolve_multicast_smoke() -> bool {
+    crate::net::qemu_tests::ndp_resolve_multicast_smoke()
+}
+
+pub fn net_core_ndp_ns_processing_smoke() -> bool {
+    crate::net::qemu_tests::ndp_ns_processing_smoke()
+}
+
+pub fn net_core_tcp_ipv4_addr_smoke() -> bool {
+    crate::net::qemu_tests::tcp_ipv4_addr_smoke()
+}
+
+pub fn net_core_tcp_socket_addr_smoke() -> bool {
+    crate::net::qemu_tests::tcp_socket_addr_smoke()
+}
+
+pub fn net_core_tcp_tcp_state_smoke() -> bool {
+    crate::net::qemu_tests::tcp_tcp_state_smoke()
+}
+
+pub fn net_core_tcp_process_with_packet_zero_copy_smoke() -> bool {
+    crate::net::qemu_tests::tcp_process_with_packet_zero_copy_smoke()
+}
+
+pub fn net_core_tcp_can_send_respects_cwnd_bytes_smoke() -> bool {
+    crate::net::qemu_tests::tcp_can_send_respects_cwnd_bytes_smoke()
+}
+
+pub fn net_core_tcp_send_buffer_bytes_decrement_on_flush_smoke() -> bool {
+    crate::net::qemu_tests::tcp_send_buffer_bytes_decrement_on_flush_smoke()
+}
+
+pub fn net_core_tcp_three_way_handshake_smoke() -> bool {
+    crate::net::qemu_tests::tcp_three_way_handshake_smoke()
+}
+
+pub fn net_core_tcp_retransmit_on_timeout_smoke() -> bool {
+    crate::net::qemu_tests::tcp_retransmit_on_timeout_smoke()
+}
+
+pub fn net_core_tcp_connect_future_wakes_on_established_smoke() -> bool {
+    crate::net::qemu_tests::tcp_connect_future_wakes_on_established_smoke()
+}
+
+pub fn net_core_tcp_record_sent_packet_updates_tcb_smoke() -> bool {
+    crate::net::qemu_tests::tcp_record_sent_packet_updates_tcb_smoke()
+}
+
+pub fn net_core_tcp_ack_segments_removes_unacked_and_reduces_outstanding_smoke() -> bool {
+    crate::net::qemu_tests::tcp_ack_segments_removes_unacked_and_reduces_outstanding_smoke()
+}
+
+pub fn net_core_tcp_accept_future_returns_on_push_connection_smoke() -> bool {
+    crate::net::qemu_tests::tcp_accept_future_returns_on_push_connection_smoke()
+}
+
+pub fn net_core_tcp_connect_timeout_expires_smoke() -> bool {
+    crate::net::qemu_tests::tcp_connect_timeout_expires_smoke()
+}
+
+// END NET core required wrappers (90 cases)
+
+// BEGIN re-added local QEMU wrappers after origin/master rebase
+
+pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
+    use crate::net::driver_bridge;
+    use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
+    use crate::net::tcp::{
+        Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
+    };
+    use crate::net::{self, VirtioNetHeader, mempool, stack};
+    use crate::sync::PoisonLock;
+
+    let _ = mempool::init_net_mempool(4);
+
+    let mut config = net::NetworkConfig::default();
+    config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
+    stack::init(config);
+
+    let local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
+    let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
+
+    let mut tcb = TcpControlBlock::new(local);
+    tcb.remote_addr = Some(remote);
+    tcb.state = TcpState::Established;
+    tcb.rcv_nxt = 1;
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+
+    match stack::stack().lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
+            } else {
+                return false;
+            }
+        }
+        Err(_) => return false,
+    }
+
+    let header_size = VirtioNetHeader::SIZE;
+    let payload = b"hello";
+    let tcp_len = 20 + payload.len();
+    let eth_total_len = 14 + 20 + tcp_len;
+
+    let mut packet = match mempool::alloc_packet() {
+        Some(packet) => packet,
+        None => return false,
+    };
+    let buf = packet.data_mut();
+    let needed = header_size + eth_total_len;
+    if buf.len() < needed {
+        return false;
+    }
+
+    for b in &mut buf[0..header_size] {
+        *b = 0;
+    }
+
+    let eth_off = header_size;
+    buf[eth_off..eth_off + 6].copy_from_slice(&[0xff; 6]);
+    buf[eth_off + 6..eth_off + 12].copy_from_slice(&[0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+    buf[eth_off + 12..eth_off + 14].copy_from_slice(&[0x08, 0x00]);
+
+    let ip_off = eth_off + 14;
+    if let Some(mut ipv4_mut) = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]) {
+        ipv4_mut
+            .init_header()
+            .set_source(Ipv4Address::new([127, 0, 0, 1]))
+            .set_destination(Ipv4Address::new([127, 0, 0, 1]))
+            .set_protocol(IpProtocol::Tcp)
+            .set_identification(1);
+    } else {
+        return false;
+    }
+
+    let tcp_off = ip_off + 20;
+    buf[tcp_off..tcp_off + 2].copy_from_slice(&2000u16.to_be_bytes());
+    buf[tcp_off + 2..tcp_off + 4].copy_from_slice(&1000u16.to_be_bytes());
+    buf[tcp_off + 4..tcp_off + 8].copy_from_slice(&1u32.to_be_bytes());
+    buf[tcp_off + 8..tcp_off + 12].copy_from_slice(&0u32.to_be_bytes());
+    let data_off_flags = (5u16 << 12).to_be_bytes();
+    buf[tcp_off + 12..tcp_off + 14].copy_from_slice(&data_off_flags);
+    buf[tcp_off + 14..tcp_off + 16].copy_from_slice(&65535u16.to_be_bytes());
+    buf[tcp_off + 20..tcp_off + 20 + payload.len()].copy_from_slice(payload);
+
+    if let Some(mut ipv4_mut) = Ipv4PacketMut::new(&mut buf[ip_off..ip_off + 20]) {
+        ipv4_mut.finalize(tcp_len);
+    } else {
+        return false;
+    }
+
+    packet.set_len(header_size + eth_total_len);
+    driver_bridge::process_received_packet_zero_copy(packet, header_size, eth_total_len);
+    driver_bridge::check_batch_timeout(100_000, 1);
+
+    if let Ok(guard) = tcb_arc.lock() {
+        if guard.recv_buffer.is_empty() {
+            return false;
+        }
+        if let Some(first) = guard.recv_buffer.front() {
+            first.data() == payload
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+pub fn kernel_bench_framebuffer_smoke() -> bool {
+    use crate::graphics::image::Image;
+    use crate::graphics::{Color, Framebuffer, FramebufferInfo, PixelFormat};
+
+    let width = 800u32;
+    let height = 600u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let size = info.size();
+    let back = alloc::vec![0u32; (size / 4) as usize];
+    fb.enable_double_buffering_from_vec(back);
+
+    let img_opaque = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
+    let img_alpha = Image::filled(width, height, Color::with_alpha(64, 128, 192, 128));
+
+    for _ in 0..10 {
+        fb.draw_image(&img_opaque, 0, 0);
+    }
+    for _ in 0..10 {
+        fb.draw_image(&img_alpha, 0, 0);
+    }
+    for _ in 0..100 {
+        fb.draw_text(
+            10,
+            10,
+            "Hello, RanyOS Benchmark!",
+            Color::WHITE,
+            Color::BLACK,
+        );
+    }
+    for i in 0..1000 {
+        fb.draw_line(0, 0, width as i32, (i % height) as i32, Color::RED);
+    }
+
+    true
+}
+
+pub fn graphics_wave6_draw_image_32bit_bgra_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_32bit_bgra_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_image_24bit_bgr_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_24bit_bgr_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_small_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_large_mmio_full_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_mmio_full_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_large_mmio_full_unaligned_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_mmio_full_unaligned_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_small_mmio_pairs_aligned_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_pairs_aligned_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_small_mmio_generic_unaligned_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_small_mmio_generic_unaligned_smoke(
+    )
+}
+
+pub fn graphics_wave6_draw_hline_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_hline_32bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_text_space_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_text_space_32bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_line_matches_naive_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_line_matches_naive_32bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_line_matches_naive_24bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_line_matches_naive_24bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_text_space_24bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_text_space_24bit_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_image_32bit_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_32bit_mmio_smoke()
+}
+
+pub fn graphics_wave6_draw_image_24bit_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_24bit_mmio_smoke()
+}
+
+pub fn graphics_wave6_draw_image_32bit_mmio_rgba_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_32bit_mmio_rgba_smoke()
+}
+
+pub fn graphics_wave6_write_bytes_mmio_alignment_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bytes_mmio_alignment_smoke()
+}
+
+pub fn graphics_wave6_write_opaque_run_24bit_even_odd_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_opaque_run_24bit_even_odd_mmio_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_basic_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_basic_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_scalar_random_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_scalar_random_smoke()
+}
+
+pub fn graphics_wave6_draw_image_bgra_stream_matches_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_bgra_stream_matches_backbuffer_smoke(
+    )
+}
+
+pub fn graphics_wave6_fill_rect_32bit_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_fill_rect_32bit_mmio_smoke()
+}
+
+pub fn graphics_wave6_dirty_rect_tracking_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_dirty_rect_tracking_smoke()
+}
+
+pub fn graphics_wave6_dirty_rect_flush_only_marked_area_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_dirty_rect_flush_only_marked_area_smoke()
+}
+
+pub fn graphics_wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke(
+    )
+}
+
+pub fn graphics_wave6_write_bgr_run_large_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_mmio_smoke()
+}
+
+pub fn graphics_wave6_write_bgr_run_large_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_write_bgr_run_large_smoke()
+}
+
+pub fn graphics_wave6_draw_image_24bit_rgb888_backbuffer_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_image_24bit_rgb888_backbuffer_smoke()
+}
+
+pub fn graphics_wave6_draw_hline_24bit_rgb888_mmio_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_draw_hline_24bit_rgb888_mmio_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke()
+}
+
+pub fn graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke(
+    )
+}
+
+pub fn graphics_wave6_packer_env_override_no_std_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_packer_env_override_no_std_smoke()
+}
+
+pub fn iommu_cmdqueue_reclaim_completed_slot_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_reclaim_completed_slot_smoke()
+}
+
+pub fn iommu_cmdqueue_cancel_queued_command_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_cancel_queued_command_smoke()
+}
+
+pub fn iommu_cmdqueue_drop_triggers_cancel_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_drop_triggers_cancel_smoke()
+}
+
+pub fn iommu_cmdqueue_process_up_to_respects_fuel_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_process_up_to_respects_fuel_smoke()
+}
+
+pub fn iommu_cmdqueue_fuel_shim_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_fuel_shim_basic_smoke()
+}
+
+pub fn iommu_cmdqueue_metrics_counts_smoke() -> bool {
+    crate::io::iommu::qemu_tests::cmdqueue_metrics_counts_smoke()
+}
+
+pub fn iommu_wave2_device_id_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_device_id_smoke()
+}
+
+pub fn iommu_wave2_sl_pte_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_sl_pte_smoke()
+}
+
+pub fn iommu_wave2_iommu_domain_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_iommu_domain_smoke()
+}
+
+pub fn iommu_wave2_map_rollback_hidden_mapping_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_rollback_hidden_mapping_smoke()
+}
+
+pub fn iommu_wave2_map_rollback_hidden_mapping_amd_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_rollback_hidden_mapping_amd_smoke()
+}
+
+pub fn iommu_wave2_map_rollback_superpage_2mb_collision_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_rollback_superpage_2mb_collision_smoke()
+}
+
+pub fn iommu_wave2_create_domain_with_numa_hint_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_create_domain_with_numa_hint_smoke()
+}
+
+pub fn iommu_wave2_iova_allocator_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_iova_allocator_basic_smoke()
+}
+
+pub fn iommu_wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_map_for_dma_alloc_non_identity_smoke()
+}
+
+pub fn iommu_wave2_unmap_reclaims_empty_tables_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_unmap_reclaims_empty_tables_smoke()
+}
+
+pub fn iommu_wave2_unmap_partial_keeps_tables_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_unmap_partial_keeps_tables_smoke()
+}
+
+pub fn iommu_wave2_unmap_mixed_superpages_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_unmap_mixed_superpages_smoke()
+}
+
+pub fn iommu_wave2_page_table_scope_commit_preserves_counts_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_page_table_scope_commit_preserves_counts_smoke()
+}
+
+pub fn iommu_wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_page_table_scope_drop_rolls_back_parent_smoke()
+}
+
+pub fn iommu_wave2_security_notifier_registration_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_security_notifier_registration_smoke()
+}
+
+pub fn iommu_wave2_security_event_types_are_copy_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_security_event_types_are_copy_smoke()
+}
+
+pub fn iommu_wave2_fault_summary_from_fault_record_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_fault_summary_from_fault_record_smoke()
+}
+
+pub fn iommu_wave2_isolation_decision_default_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_isolation_decision_default_smoke()
+}
+
+pub fn iommu_wave2_identity_mapping_disabled_by_default_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_identity_mapping_disabled_by_default_smoke()
+}
+
+pub fn iommu_wave2_iova_not_equal_phys_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_iova_not_equal_phys_smoke()
+}
+
+pub fn iommu_wave2_domain_type_not_passthrough_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_domain_type_not_passthrough_smoke()
+}
+
+pub fn iommu_wave2_mapping_iova_phys_distinct_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_mapping_iova_phys_distinct_smoke()
+}
+
+pub fn iommu_wave2_process_page_requests_poisoned_returns_empty_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_process_page_requests_poisoned_returns_empty_smoke()
+}
+
+pub fn iommu_wave2_create_domain_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_create_domain_poisoned_returns_hw_error_smoke()
+}
+
+pub fn iommu_wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke()
+}
+
+pub fn iommu_wave2_domain_map_poisoned_returns_none_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_domain_map_poisoned_returns_none_smoke()
+}
+
+pub fn iommu_wave2_get_domain_for_device_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_get_domain_for_device_poisoned_returns_hw_error_smoke()
+}
+
+pub fn iommu_wave2_set_domain_numa_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_set_domain_numa_poisoned_returns_hw_error_smoke()
+}
+
+pub fn iommu_wave2_init_iova_poisoned_proceeds_with_best_effort_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_init_iova_poisoned_proceeds_with_best_effort_smoke()
+}
+
+pub fn iommu_wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke(
+    )
+}
+
+pub fn iommu_wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke()
+}
+
+pub fn iommu_wave2_submit_invalidation_poisoned_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_submit_invalidation_poisoned_returns_error_smoke()
+}
+
+pub fn iommu_wave2_qi_wait_sync_poisoned_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_qi_wait_sync_poisoned_returns_error_smoke()
+}
+
+pub fn iommu_wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_qi_wait_async_poisoned_returns_error_smoke()
+}
+
+pub fn iommu_wave3_scalable_mode_pasid0_fault_resolution_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_scalable_mode_pasid0_fault_resolution_smoke()
+}
+
+pub fn iommu_wave3_mapping_slab_insert_lookup_remove_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_mapping_slab_insert_lookup_remove_smoke()
+}
+
+pub fn iommu_wave3_mapping_slab_overlap_detection_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_mapping_slab_overlap_detection_smoke()
+}
+
+pub fn iommu_wave3_zombie_queue_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_zombie_queue_basic_smoke()
+}
+
+pub fn iommu_wave3_zombie_queue_failed_cleanup_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_zombie_queue_failed_cleanup_smoke()
+}
+
+pub fn iommu_wave3_pri_fuel_processing_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pri_fuel_processing_smoke()
+}
+
+pub fn iommu_wave3_pasid_table_alloc_free_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pasid_table_alloc_free_smoke()
+}
+
+pub fn iommu_wave3_pasid_table_multi_domain_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pasid_table_multi_domain_smoke()
+}
+
+pub fn iommu_wave3_pasid_table_exhaustion_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_pasid_table_exhaustion_smoke()
+}
+
+pub fn iommu_wave3_scalable_mode_detach_cleans_pasid_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_scalable_mode_detach_cleans_pasid_smoke()
+}
+
+pub fn iommu_wave3_scalable_mode_attach_detach_cycle_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3_scalable_mode_attach_detach_cycle_smoke()
+}
+
+pub fn iommu_wave2_group_creation_basic_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_creation_basic_smoke()
+}
+
+pub fn iommu_wave2_group_multifunction_same_group_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_multifunction_same_group_smoke()
+}
+
+pub fn iommu_wave2_group_acs_isolated_separation_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_acs_isolated_separation_smoke()
+}
+
+pub fn iommu_wave2_group_reuse_for_same_group_devices_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_reuse_for_same_group_devices_smoke()
+}
+
+pub fn iommu_wave2_group_poisoned_lock_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_poisoned_lock_returns_error_smoke()
+}
+
+pub fn iommu_wave2_group_full_flow_discovery_to_attach_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_full_flow_discovery_to_attach_smoke()
+}
+
+pub fn iommu_wave2_group_shared_domain_multi_device_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_shared_domain_multi_device_smoke()
+}
+
+pub fn iommu_wave2_group_device_detach_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_device_detach_smoke()
+}
+
+pub fn iommu_wave2_group_poisoned_device_to_group_returns_error_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_poisoned_device_to_group_returns_error_smoke()
+}
+
+pub fn iommu_wave2_ats_enable_disable_lifecycle_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_ats_enable_disable_lifecycle_smoke()
+}
+
+pub fn iommu_wave2_ats_block_untrusted_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_ats_block_untrusted_smoke()
+}
+
+pub fn iommu_wave2_ats_detach_disables_ats_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_ats_detach_disables_ats_smoke()
+}
+
+pub fn iommu_wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
+    iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
+}
+
+pub fn iommu_wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
+    iommu_wave5_map_for_device_async_and_unmap_canonical_smoke()
+}
+
+pub fn iommu_wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
+    iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke()
+}
+
+pub fn iommu_wave2_controller_security_notifier_dispatch_smoke() -> bool {
+    iommu_wave5_api_security_notifier_registration_canonical_smoke()
+}
+
+pub fn iommu_wave2_qi_metrics_pressure_smoke() -> bool {
+    iommu_wave5_qi_metrics_pressure_canonical_smoke()
+}
+
+pub fn iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
+}
+
+pub fn iommu_wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_map_for_device_async_and_unmap_canonical_smoke()
+}
+
+pub fn iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_map_for_device_respects_dma_mask_canonical_smoke()
+}
+
+pub fn iommu_wave5_api_security_notifier_registration_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_api_security_notifier_registration_canonical_smoke()
+}
+
+pub fn iommu_wave5_qi_metrics_pressure_canonical_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave5_qi_metrics_pressure_canonical_smoke()
+}
+
+pub fn iommu_wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {
+    iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
+}
+
+pub fn iommu_wave5_map_for_device_async_and_unmap_residual_smoke() -> bool {
+    iommu_wave5_map_for_device_async_and_unmap_canonical_smoke()
+}
+
+pub fn iommu_amd_wave0_alias_devids_for_device_dedup_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_alias_devids_for_device_dedup_smoke()
+}
+
+pub fn iommu_amd_wave0_alias_devids_for_device_no_match_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_alias_devids_for_device_no_match_smoke()
+}
+
+pub fn iommu_amd_wave0_ivhd_flags_for_device_combined_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_ivhd_flags_for_device_combined_smoke()
+}
+
+pub fn iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_ivhd_flags_for_device_acpi_hid_smoke()
+}
+
+pub fn iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_map_ivmd_ranges_exclusion_splits_smoke()
+}
+
+pub fn iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave0_map_for_device_rejects_exclusion_range_smoke()
+}
+
+pub fn iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_cmdqueue_map_unmap_with_domain_smoke()
+}
+
+pub fn iommu_amd_wave1_map_device_nonblocking_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_map_device_nonblocking_smoke()
+}
+
+pub fn iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_dma_mask_respects_32bit_limit_smoke()
+}
+
+pub fn iommu_amd_wave1_security_notifier_dispatch_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_security_notifier_dispatch_smoke()
+}
+
+pub fn iommu_amd_wave1_cmdqueue_pressure_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave1_cmdqueue_pressure_smoke()
+}
+
+pub fn iommu_amd_wave5_irt_entry_construction_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_entry_construction_smoke()
+}
+
+pub fn iommu_amd_wave5_irt_alloc_free_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_alloc_free_smoke()
+}
+
+pub fn iommu_amd_wave5_irt_exhaustion_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_exhaustion_smoke()
+}
+
+pub fn iommu_amd_wave5_irt_invalidation_cmd_format_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_irt_invalidation_cmd_format_smoke()
+}
+
+pub fn iommu_amd_wave5_map_interrupt_returns_handle_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_map_interrupt_returns_handle_smoke()
+}
+
+pub fn iommu_amd_wave5_get_remap_msi_message_format_smoke() -> bool {
+    crate::io::iommu::qemu_tests::amd_wave5_get_remap_msi_message_format_smoke()
+}
+
+pub fn net_endpoint_congestion_core_initial_state_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_core_initial_state_smoke()
+}
+
+pub fn net_endpoint_congestion_core_slow_start_growth_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_core_slow_start_growth_smoke()
+}
+
+pub fn net_endpoint_congestion_core_transition_to_congestion_avoidance_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_core_transition_to_congestion_avoidance_smoke()
+}
+
+pub fn net_endpoint_congestion_core_fast_retransmit_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_core_fast_retransmit_smoke()
+}
+
+pub fn net_endpoint_congestion_core_timeout_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_core_timeout_smoke()
+}
+
+pub fn net_endpoint_congestion_core_available_window_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_core_available_window_smoke()
+}
+
+pub fn net_endpoint_congestion_cubic_initial_state_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_cubic_initial_state_smoke()
+}
+
+pub fn net_endpoint_congestion_cubic_slow_start_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_cubic_slow_start_smoke()
+}
+
+pub fn net_endpoint_congestion_cubic_root_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_cubic_root_smoke()
+}
+
+pub fn net_endpoint_congestion_cubic_fast_recovery_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_cubic_fast_recovery_smoke()
+}
+
+pub fn net_endpoint_congestion_bbr_initial_state_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_bbr_initial_state_smoke()
+}
+
+pub fn net_endpoint_congestion_bbr_startup_growth_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_bbr_startup_growth_smoke()
+}
+
+pub fn net_endpoint_congestion_bbr_rt_prop_tracking_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_bbr_rt_prop_tracking_smoke()
+}
+
+pub fn net_endpoint_congestion_bbr_available_window_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_bbr_available_window_smoke()
+}
+
+pub fn net_endpoint_congestion_bbr_bdp_calculation_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_bbr_bdp_calculation_smoke()
+}
+
+pub fn net_endpoint_congestion_bbr_startup_to_drain_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_bbr_startup_to_drain_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_from_algorithm_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_from_algorithm_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_with_mss_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_with_mss_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_newreno_ack_delegation_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_newreno_ack_delegation_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_cubic_ack_delegation_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_cubic_ack_delegation_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_bbr_ack_delegation_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_bbr_ack_delegation_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_timeout_delegation_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_timeout_delegation_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_reset_delegation_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_reset_delegation_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_available_window_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_available_window_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_fast_retransmit_newreno_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_fast_retransmit_newreno_smoke()
+}
+
+pub fn net_endpoint_congestion_variant_default_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::congestion_variant_default_smoke()
+}
+
+pub fn net_endpoint_flow_control_initial_state_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::flow_control_initial_state_smoke()
+}
+
+pub fn net_endpoint_flow_control_receive_data_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::flow_control_receive_data_smoke()
+}
+
+pub fn net_endpoint_flow_control_consume_data_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::flow_control_consume_data_smoke()
+}
+
+pub fn net_endpoint_flow_control_zero_window_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::flow_control_zero_window_smoke()
+}
+
+pub fn net_endpoint_flow_control_sws_avoidance_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::flow_control_sws_avoidance_smoke()
+}
+
+pub fn net_endpoint_flow_control_peer_zero_window_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::flow_control_peer_zero_window_smoke()
+}
+
+pub fn net_endpoint_flow_control_probe_timing_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::flow_control_probe_timing_smoke()
+}
+
+pub fn net_endpoint_futures_sendfuture_wakes_on_send_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::futures_sendfuture_wakes_on_send_smoke()
+}
+
+pub fn net_endpoint_futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::futures_recv_packet_zero_copy_via_owned_socket_smoke()
+}
+
+pub fn net_endpoint_futures_tcp_packet_stream_multiple_packets_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::futures_tcp_packet_stream_multiple_packets_smoke()
+}
+
+pub fn net_endpoint_futures_udp_packet_stream_delivered_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::futures_udp_packet_stream_delivered_smoke()
+}
+
+pub fn net_endpoint_handler_handle_tx_available_requeues_dataready_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::handler_handle_tx_available_requeues_dataready_smoke()
+}
+
+pub fn net_endpoint_handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::handler_handle_data_ready_retry_when_no_device_smoke()
+}
+
+pub fn net_endpoint_inner_socket_state_transitions_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::inner_socket_state_transitions_smoke()
+}
+
+pub fn net_endpoint_inner_vecdeque_buffer_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::inner_vecdeque_buffer_smoke()
+}
+
+pub fn net_endpoint_retransmit_rto_calculator_initial_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::retransmit_rto_calculator_initial_smoke()
+}
+
+pub fn net_endpoint_retransmit_rto_calculator_update_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::retransmit_rto_calculator_update_smoke()
+}
+
+pub fn net_endpoint_retransmit_rto_calculator_backoff_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::retransmit_rto_calculator_backoff_smoke()
+}
+
+pub fn net_endpoint_retransmit_retransmit_queue_push_and_ack_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::retransmit_retransmit_queue_push_and_ack_smoke()
+}
+
+pub fn net_endpoint_retransmit_retransmit_queue_timeout_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::retransmit_retransmit_queue_timeout_smoke()
+}
+
+pub fn net_endpoint_retransmit_retransmit_queue_retransmit_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::retransmit_retransmit_queue_retransmit_smoke()
+}
+
+pub fn net_endpoint_retransmit_seq_comparison_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::retransmit_seq_comparison_smoke()
+}
+
+pub fn net_endpoint_segment_tcp_segment_builder_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::segment_tcp_segment_builder_smoke()
+}
+
+pub fn net_endpoint_segment_tcp_segment_with_data_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::segment_tcp_segment_with_data_smoke()
+}
+
+pub fn net_endpoint_segment_tcp_segment_with_options_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::segment_tcp_segment_with_options_smoke()
+}
+
+pub fn net_endpoint_segment_tcp_message_length_field_for_checksum_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::segment_tcp_message_length_field_for_checksum_smoke()
+}
+
+pub fn net_endpoint_socket_owned_socket_raii_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::socket_owned_socket_raii_smoke()
+}
+
+pub fn net_endpoint_tcb_tcp_connection_state_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::tcb_tcp_connection_state_smoke()
+}
+
+pub fn net_endpoint_tcb_tcp_control_block_entry_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::tcb_tcp_control_block_entry_smoke()
+}
+
+pub fn net_endpoint_tcb_tcp_flags_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::tcb_tcp_flags_smoke()
+}
+
+pub fn net_endpoint_core_accepted_connection_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::core_accepted_connection_smoke()
+}
+
+pub fn net_endpoint_core_socket_new_with_fd_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::core_socket_new_with_fd_smoke()
+}
+
+pub fn net_endpoint_core_socket_accept_empty_queue_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::core_socket_accept_empty_queue_smoke()
+}
+
+pub fn net_endpoint_core_socket_accept_with_connection_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::core_socket_accept_with_connection_smoke()
+}
+
+pub fn net_endpoint_core_accept_backlog_limit_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::core_accept_backlog_limit_smoke()
+}
+
+pub fn net_endpoint_types_socket_fd_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::types_socket_fd_smoke()
+}
+
+pub fn net_endpoint_types_socket_addr_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::types_socket_addr_smoke()
+}
+
+pub fn net_endpoint_window_scale_disabled_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::window_scale_disabled_smoke()
+}
+
+pub fn net_endpoint_window_scale_enabled_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::window_scale_enabled_smoke()
+}
+
+pub fn net_endpoint_window_scale_advertised_window_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::window_scale_advertised_window_smoke()
+}
+
+pub fn net_endpoint_window_scale_option_builder_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::window_scale_option_builder_smoke()
+}
+
+pub fn net_endpoint_window_scale_option_parser_smoke() -> bool {
+    crate::net::endpoint::qemu_tests::window_scale_option_parser_smoke()
+}
+
+// END re-added local QEMU wrappers after origin/master rebase

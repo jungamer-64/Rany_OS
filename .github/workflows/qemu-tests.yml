@@ -69,6 +69,9 @@ jobs:
       - name: Verify NET endpoint required wiring
         run: bash scripts/verify_net_endpoint_required.sh
 
+      - name: Verify NET core required wiring
+        run: bash scripts/verify_net_core_required.sh
+
       - name: Verify NET/TLS Wave8 required wiring
         run: bash scripts/verify_net_tls_wave8_required.sh
 
@@ -109,6 +112,48 @@ jobs:
           path: |
             target/qemu-logs
             scripts/qemu_legacy_test_allowlist.lst
+          if-no-files-found: ignore
+
+  warning-free-official:
+    name: Warning-free official QEMU entrypoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools-preview
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-qemu-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-qemu-
+
+      - name: Verify warning-free official entrypoint
+        run: bash scripts/verify_qemu_official_warning_free.sh
+
+      - name: Upload warning check logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-warning-check-logs
+          path: |
+            target/qemu-logs/warning-check-*.log
           if-no-files-found: ignore
 
   pending-suite:
@@ -164,6 +209,7 @@ jobs:
           set -euo pipefail
           cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
           cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_mm_pending
+          jq -e '.failed_count == 0' target/qemu-logs/kernel-mm-pending-summary.json
           cargo test -p qemu-tests -- --ignored --nocapture suite_pending
 
       - name: Upload pending logs

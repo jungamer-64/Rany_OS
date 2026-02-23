@@ -487,12 +487,12 @@ impl Icmpv6EchoBuilder {
 // Tests
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_icmpv6_type_from_u8() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_icmpv6_type_from_u8() {
         assert_eq!(Icmpv6Type::from(128), Icmpv6Type::EchoRequest);
         assert_eq!(Icmpv6Type::from(129), Icmpv6Type::EchoReply);
         assert_eq!(Icmpv6Type::from(135), Icmpv6Type::NeighborSolicitation);
@@ -501,8 +501,8 @@ mod tests {
         assert_eq!(Icmpv6Type::from(99), Icmpv6Type::Unknown(99));
     }
 
-    #[test_case]
-    fn test_icmpv6_type_classification() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_icmpv6_type_classification() {
         assert!(Icmpv6Type::DestinationUnreachable.is_error());
         assert!(Icmpv6Type::PacketTooBig.is_error());
         assert!(!Icmpv6Type::EchoRequest.is_error());
@@ -514,8 +514,8 @@ mod tests {
         assert!(!Icmpv6Type::EchoRequest.is_ndp());
     }
 
-    #[test_case]
-    fn test_echo_reply_build_and_verify() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_echo_reply_build_and_verify() {
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::LOOPBACK;
         let payload = [0xDE, 0xAD, 0xBE, 0xEF];
@@ -535,8 +535,8 @@ mod tests {
         assert_eq!(cksum, 0); // valid checksum should fold to 0
     }
 
-    #[test_case]
-    fn test_echo_request_build_and_verify() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_echo_request_build_and_verify() {
         let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         let dst = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
@@ -551,8 +551,8 @@ mod tests {
         assert_eq!(cksum, 0);
     }
 
-    #[test_case]
-    fn test_processor_echo_request() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_processor_echo_request() {
         let processor = Icmpv6Processor::new(true);
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::LOOPBACK;
@@ -573,8 +573,8 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_processor_echo_disabled() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_processor_echo_disabled() {
         let processor = Icmpv6Processor::new(false);
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::LOOPBACK;
@@ -584,8 +584,8 @@ mod tests {
         assert!(matches!(result, Icmpv6Result::Dropped));
     }
 
-    #[test_case]
-    fn test_processor_checksum_error() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_processor_checksum_error() {
         let processor = Icmpv6Processor::new(true);
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::LOOPBACK;
@@ -598,8 +598,8 @@ mod tests {
         assert!(matches!(result, Icmpv6Result::Dropped));
     }
 
-    #[test_case]
-    fn test_ndp_delegation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_ndp_delegation() {
         let processor = Icmpv6Processor::new(true);
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::ALL_NODES_LINK_LOCAL;
@@ -628,8 +628,8 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_header_size() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_header_size() {
         assert_eq!(core::mem::size_of::<Icmpv6Header>(), ICMPV6_HEADER_SIZE);
     }
 }

@@ -15,6 +15,11 @@ mod default_and_tests;
 pub use default_and_tests::*;
 mod variant_impl;
 pub use variant_impl::*;
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod variant_tests {
+    pub use super::default_and_tests::variant_tests::variant_tests::*;
+}
 pub const DEFAULT_MSS: u32 = 1460;
 
 /// 初期ウィンドウサイズ (RFC 6928: 10 MSS)
@@ -309,8 +314,8 @@ pub struct CongestionDebugInfo {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 
 // =====================================================
 // CUBIC 輻輳制御 (RFC 8312)

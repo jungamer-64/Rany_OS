@@ -205,12 +205,12 @@ impl Default for SocketInner {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_socket_state_transitions() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_socket_state_transitions() {
         let mut inner = SocketInner::new();
 
         // Created -> Bound
@@ -225,8 +225,8 @@ mod tests {
         assert!(inner.transition_to(SocketState::Connected).is_err());
     }
 
-    #[test_case]
-    fn test_vecdeque_buffer() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_vecdeque_buffer() {
         let mut inner = SocketInner::new();
 
         // データ追加

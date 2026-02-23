@@ -45,8 +45,8 @@ fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
     CurrentTaskGuard { prev, current }
 }
 
-#[test_case]
-fn test_udp_packet() {
+#[cfg_attr(test, test_case)]
+pub fn test_udp_packet() {
     let mut buffer = [0u8; 64];
 
     let src_ip = Ipv4Address::from_octets(192, 168, 1, 1);
@@ -64,8 +64,8 @@ fn test_udp_packet() {
     assert!(packet.verify_checksum(src_ip, dst_ip));
 }
 
-#[test_case]
-fn test_udp_socket_poisoned_methods_return_defaults() {
+#[cfg_attr(test, test_case)]
+pub fn test_udp_socket_poisoned_methods_return_defaults() {
     use crate::sync::set_panicking;
 
     let socket = UdpSocket::new(12345);
@@ -85,8 +85,8 @@ fn test_udp_socket_poisoned_methods_return_defaults() {
     socket.close();
 }
 
-#[test_case]
-fn test_bind_with_token_reclaim() {
+#[cfg_attr(test, test_case)]
+pub fn test_bind_with_token_reclaim() {
     // Setup: create caller and target domains
     let caller = DomainId::new(1);
     let target = DomainId::new(2);
@@ -128,8 +128,8 @@ fn test_bind_with_token_reclaim() {
     assert!(manager().reclaim_token(token).is_ok());
 }
 
-#[test_case]
-fn test_udp_recv_future_poisoned_returns_closed() {
+#[cfg_attr(test, test_case)]
+pub fn test_udp_recv_future_poisoned_returns_closed() {
     use crate::sync::set_panicking;
     use core::task::{RawWaker, RawWakerVTable, Waker, Context};
     use core::pin::Pin;
@@ -162,8 +162,8 @@ fn test_udp_recv_future_poisoned_returns_closed() {
     assert_eq!(Pin::new(&mut fut).poll(&mut cx), Poll::Ready(None));
 }
 
-#[test_case]
-fn test_udp_processor_poisoned_bind_and_process() {
+#[cfg_attr(test, test_case)]
+pub fn test_udp_processor_poisoned_bind_and_process() {
     use crate::sync::set_panicking;
 
     let proc = UdpProcessor::new();

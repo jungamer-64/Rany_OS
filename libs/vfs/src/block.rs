@@ -726,6 +726,7 @@ pub struct RamDisk {
     /// Pending requests
     pending: Mutex<VecDeque<Arc<BlockRequest>>>,
     /// Request ID counter
+    #[allow(dead_code)]
     next_id: AtomicU64,
 }
 

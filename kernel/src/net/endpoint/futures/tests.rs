@@ -11,8 +11,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 // Simple test that verifies SendFuture writes into socket buffer
 // and is woken when the DataReady event is processed successfully
-#[test_case]
-fn test_sendfuture_wakes_on_send() {
+#[cfg_attr(test, test_case)]
+pub fn test_sendfuture_wakes_on_send() {
     init_socket_manager();
 
     // Initialize stack and set a dummy transmit function that always succeeds
@@ -86,8 +86,8 @@ fn test_sendfuture_wakes_on_send() {
 }
 
 
-#[test_case]
-fn test_sendfuture_wakes_on_send_v6() {
+#[cfg_attr(test, test_case)]
+pub fn test_sendfuture_wakes_on_send_v6() {
     init_socket_manager();
 
     // Initialize stack with IPv6 enabled and set transmit to always succeed
@@ -160,8 +160,8 @@ fn test_sendfuture_wakes_on_send_v6() {
     }
 }
 
-#[test_case]
-fn test_recv_packet_zero_copy_via_owned_socket() {
+#[cfg_attr(test, test_case)]
+pub fn test_recv_packet_zero_copy_via_owned_socket() {
     init_socket_manager();
 
     // Initialize stack (some operations rely on stack state)
@@ -239,8 +239,8 @@ fn test_recv_packet_zero_copy_via_owned_socket() {
 }
 
 
-#[test_case]
-fn test_recv_packet_zero_copy_via_owned_socket_v6() {
+#[cfg_attr(test, test_case)]
+pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     init_socket_manager();
 
     // Initialize stack (some operations rely on stack state)
@@ -317,8 +317,8 @@ fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     }
 }
 
-#[test_case]
-fn test_tcp_packet_stream_multiple_packets() {
+#[cfg_attr(test, test_case)]
+pub fn test_tcp_packet_stream_multiple_packets() {
     init_socket_manager();
     stack::init_default();
 
@@ -407,8 +407,8 @@ fn test_tcp_packet_stream_multiple_packets() {
     }
 }
 
-#[test_case]
-fn test_tcp_packet_stream_multiple_packets_v6() {
+#[cfg_attr(test, test_case)]
+pub fn test_tcp_packet_stream_multiple_packets_v6() {
     init_socket_manager();
     stack::init_default();
 
@@ -496,8 +496,8 @@ fn test_tcp_packet_stream_multiple_packets_v6() {
         _ => panic!("Expected second packet"),
     }
 }
-#[test_case]
-fn test_udp_packet_stream_delivered() {
+#[cfg_attr(test, test_case)]
+pub fn test_udp_packet_stream_delivered() {
     init_socket_manager();
 
     // Use a UdpProcessor instance and bind a socket to a port
@@ -549,7 +549,7 @@ fn test_udp_packet_stream_delivered() {
     match pinned.as_mut().poll(&mut cx2) {
         Poll::Ready(Some((addr, pkt))) => {
             assert_eq!(pkt.data(), b"hello");
-            assert_eq!(addr.port(), 12345);
+            assert_eq!(addr.port, 12345);
         }
         _ => panic!("Expected UDP packet"),
     }

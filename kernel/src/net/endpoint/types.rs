@@ -316,12 +316,12 @@ impl AcceptedConnection {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_socket_fd() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_socket_fd() {
         let fd1 = SocketFd::from_raw(1);
         let fd2 = SocketFd::from_raw(2);
 
@@ -330,8 +330,8 @@ mod tests {
         assert!(fd1 < fd2);
     }
 
-    #[test_case]
-    fn test_socket_addr() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_socket_addr() {
         let addr = SocketAddr::new([192, 168, 1, 1], 8080);
         assert_eq!(addr.as_ipv4().unwrap(), [192, 168, 1, 1]);
         assert_eq!(addr.port(), 8080);
