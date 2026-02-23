@@ -200,7 +200,7 @@ impl SystemIntegration {
         for dev in virtio_devices {
             match dev.device_id.0 {
                 0x1001 | 0x1042 => self.init_virtio_blk_device(&dev),
-                0x1000 | 0x1041 => self.init_virtio_net_device(&dev),
+                //0x1000 | 0x1041 => self.init_virtio_net_device(&dev), // disabled during network crash investigation
                 0x1003 | 0x1043 => self.init_virtio_console_device(&dev),
                 0x1052 => self.init_virtio_input_device(&dev),
                 0x1005 | 0x1045 => self.init_virtio_balloon_device(&dev),
@@ -328,58 +328,50 @@ impl SystemIntegration {
         dev.enable_bus_master();
         dev.enable_memory_space();
 
-        if let Some(bar0) = dev.bars[0] {
-            let bar0_phys = bar0.base();
-            let bar0_virt =
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
-                    .as_u64();
-
-            // Attempt PCI transport first
-            let mut initialized_via_pci = false;
-            if let Some(transport) = try_create_pci_transport(
-                dev,
-                crate::io::virtio::VirtioDeviceType::Network,
+        // Try PCI transport regardless of BAR0 presence.  The transport
+        // parser will examine virtio PCI capabilities and pick the correct BARs.
+        let mut initialized_via_pci = false;
+        if let Some(transport) = try_create_pci_transport(
+            dev,
+            crate::io::virtio::VirtioDeviceType::Network,
+        ) {
+            let _ = crate::net::init_driver_bridge();
+            match crate::io::virtio::init_virtio_net_with_transport(
+                alloc::boxed::Box::new(transport),
+                Some(iommu_device),
             ) {
-                match crate::io::virtio::init_virtio_net_with_transport(
-                    alloc::boxed::Box::new(transport),
-                    Some(iommu_device),
-                ) {
-                    Ok(()) => {
-                        self.log("    VirtIO-net PCI transport initialized");
-                        initialized_via_pci = true;
-
-                        // Ensure Net Bridge is initialized (idempotent)
-                        if !crate::net::driver_bridge::is_initialized() {
-                            match crate::net::init_driver_bridge() {
-                                Ok(()) => self.log("    Net Bridge initialized by integration"),
-                                Err(_) => self.log("    Net Bridge init failed"),
-                            }
-                        } else {
-                            self.log("    Net Bridge already initialized");
-                        }
-                    }
-                    Err(e) => {
-                        self.log(&alloc::format!(
-                            "    VirtIO-net PCI init failed: {:?}, falling back to MMIO",
-                            e
-                        ));
-                    }
+                Ok(()) => {
+                    self.log("    VirtIO-net PCI transport initialized");
+                    initialized_via_pci = true;
+                }
+                Err(e) => {
+                    self.log(&alloc::format!(
+                        "    VirtIO-net PCI init failed: {:?}, will try MMIO fallback",
+                        e
+                    ));
                 }
             }
+        }
 
-            // Register Driver via DriverRegistry
-            use alloc::boxed::Box;
-            use crate::net::driver::VirtioNetDriver;
+        // Determine legacy MMIO base from BAR0 if available
+        let bar0_virt_opt = dev.bars[0].map(|bar0| {
+            let phys = bar0.base();
+            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(phys))
+                .as_u64()
+        });
 
-            if initialized_via_pci {
-                let drv = Box::new(VirtioNetDriver::new());
-                self.register_and_start_virtio_net_driver(drv);
-            } else {
-                let drv = Box::new(VirtioNetDriver::new_with_device(bar0_virt as u64, iommu_device));
-                self.register_and_start_virtio_net_driver(drv);
-            }
+        // Register Driver via DriverRegistry
+        use alloc::boxed::Box;
+        use crate::net::driver::VirtioNetDriver;
+
+        if initialized_via_pci {
+            let drv = Box::new(VirtioNetDriver::new());
+            self.register_and_start_virtio_net_driver(drv);
+        } else if let Some(base) = bar0_virt_opt {
+            let drv = Box::new(VirtioNetDriver::new_with_device(base as u64, iommu_device));
+            self.register_and_start_virtio_net_driver(drv);
         } else {
-            self.log("    VirtIO-net found but BAR0 is missing, skipping init");
+            self.log("    VirtIO-net found but no usable BAR0 and PCI transport failed, skipping init");
         }
     }
 
