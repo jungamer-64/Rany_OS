@@ -896,6 +896,9 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_zero_copy_via_bridge() {
+        let _guard = BridgeStateGuard::new();
+        stack::stack().clear_poison();
+
         // Initialize mempool and stack
         let _ = mempool::init_net_mempool(4);
 
@@ -1223,6 +1226,9 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_zero_copy_via_bridge_v6() {
+        let _guard = BridgeStateGuard::new();
+        stack::stack().clear_poison();
+
         // Initialize mempool and stack
         let _ = mempool::init_net_mempool(4);
 

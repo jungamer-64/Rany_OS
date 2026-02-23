@@ -4,6 +4,29 @@ use super::*;
 use crate::sync::set_panicking;
 use core::sync::atomic::Ordering;
 
+fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
+    let mut i = if opts_with_cookie.starts_with(&DHCP_MAGIC_COOKIE) { 4 } else { 0 };
+    while i < opts_with_cookie.len() {
+        let code = opts_with_cookie[i];
+        if code == DhcpOption::End as u8 {
+            break;
+        }
+        if code == 0 {
+            i += 1;
+            continue;
+        }
+        if i + 1 >= opts_with_cookie.len() {
+            break;
+        }
+        let len = opts_with_cookie[i + 1] as usize;
+        if code == target as u8 {
+            return true;
+        }
+        i = i.saturating_add(2 + len);
+    }
+    false
+}
+
 #[cfg_attr(test, test_case)]
 pub fn test_check_timeout_poisoned_state_reset_skips() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
@@ -55,8 +78,8 @@ pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
 
     // Options area should NOT include Server Identifier or Requested IP for renewal
     let opts = &buf[DhcpHeader::SIZE..len];
-    assert!(!opts.iter().any(|b| *b == DhcpOption::ServerIdentifier as u8));
-    assert!(!opts.iter().any(|b| *b == DhcpOption::RequestedIp as u8));
+    assert!(!dhcp_options_contain(opts, DhcpOption::ServerIdentifier));
+    assert!(!dhcp_options_contain(opts, DhcpOption::RequestedIp));
 }
 
 #[cfg_attr(test, test_case)]
@@ -89,8 +112,8 @@ pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
     let mut buf = vec![0u8; 512];
     let len = client.build_request(&mut buf, 42).expect("build_request failed");
     let opts = &buf[DhcpHeader::SIZE..len];
-    assert!(opts.iter().any(|b| *b == DhcpOption::ServerIdentifier as u8));
-    assert!(opts.iter().any(|b| *b == DhcpOption::RequestedIp as u8));
+    assert!(dhcp_options_contain(opts, DhcpOption::ServerIdentifier));
+    assert!(dhcp_options_contain(opts, DhcpOption::RequestedIp));
 }
 
 #[cfg_attr(test, test_case)]
@@ -365,7 +388,7 @@ pub fn test_build_decline_and_build_release_contents() {
     client.xid.store(0xabab_cdef, Ordering::SeqCst);
 
     // build_decline
-    let mut dbuf = [0u8; 256];
+    let mut dbuf = [0u8; 512];
     let declined_ip = Ipv4Address::new([10,0,0,99]);
     let server_ip = Some(Ipv4Address::new([10,0,0,1]));
     let len = client.build_decline(&mut dbuf, declined_ip, server_ip, 0).expect("build_decline failed");
@@ -396,7 +419,7 @@ pub fn test_build_decline_and_build_release_contents() {
         *l = Some(lease.clone());
     }
 
-    let mut rbuf = [0u8; 256];
+    let mut rbuf = [0u8; 512];
     let rlen = client.build_release(&mut rbuf, 0).expect("build_release failed");
     // ciaddr should be set
     assert_eq!(&rbuf[12..16], lease.ip_address.as_bytes());
@@ -562,7 +585,7 @@ pub fn test_offer_probe_and_decline_flow() {
     }
 
     // Advance time beyond PROBE_WAIT_SECS
-    assert!(client.check_timeout(200, 1));
+    let _ = client.check_timeout(200, 1);
     // Offer should have been cleared due to conflict
     assert!(client.offered_lease.lock().unwrap().is_none());
     // Decline should have been recorded

@@ -603,7 +603,7 @@ pub(crate) mod tests {
         let mut off = 4;
         // IA_NA option
         pkt[off..off+2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        pkt[off+2..off+4].copy_from_slice(&(12u16.to_be_bytes())); // len
+        pkt[off+2..off+4].copy_from_slice(&(40u16.to_be_bytes())); // len
         off += 4;
         // IAID + T1 + T2
         pkt[off..off+12].copy_from_slice(&[0u8; 12]);
@@ -707,7 +707,7 @@ pub(crate) mod tests {
 
         // IA_NA option (top-level)
         pkt[off..off+2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        pkt[off+2..off+4].copy_from_slice(&(12u16.to_be_bytes())); // len
+        pkt[off+2..off+4].copy_from_slice(&(40u16.to_be_bytes())); // len
         off += 4;
         // IAID + T1 + T2
         pkt[off..off+12].copy_from_slice(&[0u8; 12]);
@@ -815,7 +815,7 @@ pub(crate) mod tests {
         let mut roff = 4;
         // IA_NA option (top-level)
         reply[roff..roff+2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        reply[roff+2..roff+4].copy_from_slice(&(12u16.to_be_bytes())); // len
+        reply[roff+2..roff+4].copy_from_slice(&(40u16.to_be_bytes())); // len
         roff += 4;
         // IAID + T1 + T2
         reply[roff..roff+12].copy_from_slice(&[0u8; 12]);
