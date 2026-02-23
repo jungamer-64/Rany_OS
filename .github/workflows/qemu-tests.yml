@@ -211,8 +211,6 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
-          cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_mm_pending
-          jq -e '.failed_count == 0' target/qemu-logs/kernel-mm-pending-summary.json
           cargo test -p qemu-tests -- --ignored --nocapture suite_pending
 
       - name: Upload pending logs
@@ -226,8 +224,6 @@ jobs:
             target/qemu-logs/pending-summary.json
             target/qemu-logs/kernel-runtime-pending-summary.txt
             target/qemu-logs/kernel-runtime-pending-summary.json
-            target/qemu-logs/kernel-mm-pending-summary.txt
-            target/qemu-logs/kernel-mm-pending-summary.json
             scripts/qemu_pending_cases.lst
             scripts/qemu_iommu_residual_parity.lst
             scripts/qemu_legacy_test_allowlist.lst

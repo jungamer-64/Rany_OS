@@ -145,7 +145,6 @@ fn suite_package_name(suite: &str) -> Option<&'static str> {
         "fs" => Some("qemu_suite_fs"),
         "kernel" => Some("qemu_suite_kernel"),
         "kernel_runtime_pending" => Some("qemu_suite_kernel_runtime_pending"),
-        "kernel_mm_pending" => Some("qemu_suite_kernel_mm_pending"),
         "tools" => Some("qemu_suite_tools"),
         "graphics" => Some("qemu_suite_graphics"),
         "pending" => Some("qemu_suite_pending"),

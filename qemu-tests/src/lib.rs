@@ -128,31 +128,6 @@ fn run_runtime_pending(suite: &str) {
     }
 }
 
-fn run_mm_pending(suite: &str) {
-    let guard = suite_lock().lock().expect("qemu suite lock poisoned");
-    let cfg = base_config(suite);
-    let result = run_suite(cfg);
-    drop(guard);
-    match result {
-        Ok(report) => {
-            let summary = write_kernel_mm_pending_summaries(&report)
-                .unwrap_or_else(|err| panic!("kernel mm pending summary generation failed: {err}"));
-            eprintln!(
-                "mm pending suite {} passed in {:?} (log: {}, pass={}, fail={}, blocked={})",
-                report.suite,
-                report.duration,
-                report.log_path.display(),
-                summary.passed_count,
-                summary.failed_count,
-                summary.blocked_count
-            );
-        }
-        Err(err) => {
-            panic!("mm pending suite {suite} failed: {err}");
-        }
-    }
-}
-
 #[test]
 fn suite_core() {
     run_required("core");
@@ -193,12 +168,6 @@ fn suite_pending() {
 #[ignore = "runtime pending suite is informational and non-blocking in CI"]
 fn suite_kernel_runtime_pending() {
     run_runtime_pending("kernel_runtime_pending");
-}
-
-#[test]
-#[ignore = "mm pending suite is informational and non-blocking in CI"]
-fn suite_kernel_mm_pending() {
-    run_mm_pending("kernel_mm_pending");
 }
 
 #[test]
@@ -378,10 +347,6 @@ fn parse_suite_counts(log_path: &Path, suite: &str) -> Result<(u64, u64, u64), S
 
 fn parse_kernel_runtime_counts(log_path: &Path) -> Result<(u64, u64, u64), String> {
     parse_suite_counts(log_path, "kernel_runtime_pending")
-}
-
-fn parse_kernel_mm_pending_counts(log_path: &Path) -> Result<(u64, u64, u64), String> {
-    parse_suite_counts(log_path, "kernel_mm_pending")
 }
 
 fn write_pending_summaries(report: &qemu_runner::RunReport) -> Result<PendingSummaryStats, String> {

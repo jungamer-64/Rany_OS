@@ -84,18 +84,3 @@ pub(crate) fn write_kernel_runtime_pending_summaries(
     )
 }
 
-pub(crate) fn write_kernel_mm_pending_summaries(
-    report: &qemu_runner::RunReport,
-) -> Result<RuntimePendingSummaryStats, String> {
-    let (passed_count, failed_count, blocked_count) =
-        parse_kernel_mm_pending_counts(&report.log_path)?;
-    write_counts_summary(
-        report,
-        "kernel_mm_pending",
-        "kernel-mm-pending-summary.txt",
-        "kernel-mm-pending-summary.json",
-        passed_count,
-        failed_count,
-        blocked_count,
-    )
-}
