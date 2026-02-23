@@ -14,8 +14,9 @@
   - 成功すると PacketRef の所有権はデバイス側（tx_packetrefs）に移り、デバイスの TX 完了で unmap と解放が行われる。
 
 - VirtIO ドライバ
-  - `kernel/src/io/virtio/net.rs` にて `enqueue_send_zero_copy(packet)` を実装。IOMMU の必要な処理（バウンス / map）や DMA マスクチェックを行う。
+  - `kernel/src/io/virtio/net.rs` にて `enqueue_send_zero_copy(packet)` を実装。IOMMU の必要な処理（バウンス / map）や DMA マスクチェックを行う。デバイス毎の DMA マスクや strict IOMMU ポリシを検証し、必要に応じてバウンスバッファを割り当てる。
   - TX 完了時に PacketRef のクリーンアップを行い、完了後に `NetworkEvent::TxAvailable` を発行してスタックに送信資源の解放を通知する。
+  - RX 側も `add_rx_buffer_zero_copy` を駆使して mempool から直接物理アドレスを投稿し、NDP/ARP と組み合わせた最小コピー受信を実現している。
 
 非同期 API とバックプレッシャー
 - ソケット: `OwnedSocket::send_async` と `SendFuture`
