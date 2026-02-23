@@ -170,12 +170,7 @@ impl<T: ?Sized> DerefMut for IrqPoisonLockGuard<'_, T> {
 
 impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
     fn drop(&mut self) {
-        // If we are panicking in test environment, mark poisoned
-        #[cfg(test)]
-        if std::thread::panicking() {
-            self.lock.poisoned.store(true, Ordering::Release);
-            log::error!("[fat32::IrqPoisonLock] lock poisoned due to panic");
-        }
+        // Host-side unit tests are not used; QEMU smoke tests do not depend on std panic detection.
 
         // release lock
         self.lock.locked.store(false, Ordering::Release);
