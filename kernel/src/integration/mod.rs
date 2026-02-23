@@ -133,6 +133,21 @@ fn try_create_pci_transport(
     let cbar_info = dev.bars[cbar as usize]?;
     let dbar_info = dev.bars[dbar as usize]?;
 
+    // ensure the whole BARs are mapped so accesses to capability offsets work
+    // map the BAR regions into the kernel page tables
+    let _ = crate::ensure_phys_bar_mapped(cbar_info.base(), cbar_info.size());
+    let _ = crate::ensure_phys_bar_mapped(dbar_info.base(), dbar_info.size());
+    if let Some((nbar, _, _)) = caps.notify_cfg {
+        if let Some(info) = dev.bars[nbar as usize] {
+            let _ = crate::ensure_phys_bar_mapped(info.base(), info.size());
+        }
+    }
+    if let Some((ibar, _, _)) = caps.isr_cfg {
+        if let Some(info) = dev.bars[ibar as usize] {
+            let _ = crate::ensure_phys_bar_mapped(info.base(), info.size());
+        }
+    }
+
     let common_phys = cbar_info.base() + (coff as u64);
     let device_phys = dbar_info.base() + (doff as u64);
 
@@ -143,6 +158,12 @@ fn try_create_pci_transport(
 
     let notify_virt = resolve_bar_virt_addr(dev, caps.notify_cfg);
     let isr_virt = resolve_bar_virt_addr(dev, caps.isr_cfg);
+
+    // Log computed addresses for debugging transport initialization
+    crate::io::log::early_print(&alloc::format!(
+        "[EARLY] try_create_pci_transport: common=0x{:x} notify=0x{:x} isr=0x{:x} device=0x{:x} multiplier={}\n",
+        common_virt, notify_virt, isr_virt, device_virt, caps.notify_multiplier,
+    ));
 
     unsafe {
         crate::io::virtio::VirtioPciTransport::new(
