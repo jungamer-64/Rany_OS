@@ -153,6 +153,10 @@ fn run_suite() -> bool {
             test_mm_wave7_async_swapout_phase_f_exports,
         )
         && run_check(
+            "mm_wave7_async_swapout_bench_exports",
+            test_mm_wave7_async_swapout_bench_exports,
+        )
+        && run_check(
             "mm_wave7_page_reclaim_exports",
             test_mm_wave7_page_reclaim_exports,
         )

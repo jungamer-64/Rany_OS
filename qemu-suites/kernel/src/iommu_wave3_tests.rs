@@ -277,6 +277,19 @@ pub(crate) fn test_mm_wave7_async_swapout_phase_f_exports() -> bool {
     )
 }
 
+pub(crate) fn test_mm_wave7_async_swapout_bench_exports() -> bool {
+    run_check(
+        "mm_wave7_bench_enqueue_pool_effect_smoke",
+        rany_os::qemu_tests::mm_wave7_bench_enqueue_pool_effect_smoke,
+    ) && run_check(
+        "mm_wave7_bench_buffer_pool_2m_reuse_smoke",
+        rany_os::qemu_tests::mm_wave7_bench_buffer_pool_2m_reuse_smoke,
+    ) && run_check(
+        "mm_wave7_bench_buffer_pool_1g_reuse_smoke",
+        rany_os::qemu_tests::mm_wave7_bench_buffer_pool_1g_reuse_smoke,
+    )
+}
+
 pub(crate) fn test_mm_wave7_page_reclaim_exports() -> bool {
     run_check(
         "mm_wave7_watermarks_calculation_smoke",

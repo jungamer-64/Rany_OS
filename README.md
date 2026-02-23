@@ -231,11 +231,11 @@ cargo test -p qemu-tests -- --nocapture suite_core
 cargo test -p qemu-tests -- --ignored --nocapture suite_pending
 
 # 7. 任意: runtime pending スイート（非必須・runtime依存監視）
-cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_kernel_mm_pending
+cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_pending
 
 ```
 
-`cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の required suites をQEMU上で実行します。`pending` / `kernel_runtime_pending` / `kernel_mm_pending` は `--ignored` 指定時のみ実行される非必須スイートです（例: `cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_kernel_mm_pending suite_pending`）。
+`cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の required suites をQEMU上で実行します。`pending` / `kernel_runtime_pending` は `--ignored` 指定時のみ実行される非必須スイートです（例: `cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_pending`）。
 `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）に加えて wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）、wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）、wave5 deterministic（canonical 5件 + residual 0件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行します。IOMMU residual canonical pending/parity は `none` 運用で、旧 `wave2` と `wave5_residual` 名は compat alias（required 非使用）として維持します。
 
 `pending` 運用:
@@ -254,7 +254,6 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending s
 - CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
 - 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
 - runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`
-- MM bench-smoke監視サマリ: `target/qemu-logs/kernel-mm-pending-summary.txt`, `target/qemu-logs/kernel-mm-pending-summary.json`（期待値: `pass=3, fail=0, blocked=0`）
 - runtime pending は runtime依存2件（`kernel_net_bridge_zero_copy_integration` / `kernel_bench_framebuffer`）専用の non-blocking 監視
 - `kernel-runtime-pending-summary` は `suite`, `passed_count`, `failed_count`, `blocked_count`, `suite_log_path`, `generated_at_utc` を出力
 - IOMMU residual canonical pending: `none`
@@ -267,11 +266,11 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending s
 - Graphics/Framebuffer Wave6 Phase B required 実行対象（12件）: `write_bgr_run_large_mmio`, `write_bgr_run_large`, `draw_image_24bit_rgb888_backbuffer`, `draw_hline_24bit_rgb888_mmio`, `pack_rgba_to_bgra_ssse3_matches_scalar`, `pack_rgba_to_bgra_avx2_matches_scalar`, `pack_rgba_to_bgr24_avx2_matches_scalar`, `pack_rgba_to_bgr24_ssse3_matches_scalar`, `pack_rgba_to_bgra_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar_rgb`, `packer_env_override_no_std`（ターゲット未対応SIMDは deterministic skip）
 
 - Graphics/Framebuffer Wave6 bench required 実行対象（5件）: `bench_draw_image_bulk`, `bench_draw_image_24bit_bulk`, `bench_draw_image_rgba_bulk`, `bench_draw_hline_bulk`, `bench_draw_text_bulk`（QEMU required では性能比較ではなく deterministic functional smoke として検証）
-- MM Wave7 async_swapout required 実行対象（6件）: `buffer_pool_4k_basic`, `buffer_pool_2m_basic`, `memcg_concurrent_swapout_canonical`, `async_swapout_concurrent_dedup_canonical`, `async_swapout_stress_concurrency_canonical`, `async_swapout_heavy_stress_canonical`
+- MM Wave7 async_swapout required 実行対象（9件）: `buffer_pool_4k_basic`, `buffer_pool_2m_basic`, `memcg_concurrent_swapout_canonical`, `async_swapout_concurrent_dedup_canonical`, `async_swapout_stress_concurrency_canonical`, `async_swapout_heavy_stress_canonical`, `bench_enqueue_pool_effect`, `bench_buffer_pool_2m_reuse`, `bench_buffer_pool_1g_reuse`（bench は性能比較ではなく deterministic functional smoke）
 - MM Wave7 required strict policy: allocation不足は required failure 扱い（OOM-pass fallback を許容しない）
 - MM Wave7 page_reclaim required 実行対象（8件）: `watermarks_calculation`, `pressure_level`, `mglru_list_add`, `blocked_unsafe_requeues_victim`, `blocked_unsafe_requeues_anonymous_dirty_victim`, `file_backed_clean_reclaims_with_unsafe_disabled`, `async_success_clears_pending_and_accounts_success`, `async_failure_requeues_and_clears_pending`
 - Graphics/Framebuffer Wave6 residual（pending）: `none`（bench系5件は required で deterministic functional smoke 化済み）
-- MM Wave7 residual（pending監視）: bench 3件のみ（`bench_enqueue_throughput_pool_vs_nopool`, `bench_buffer_pool_2m_throughput`, `bench_buffer_pool_1g_throughput`）。実行レーンは `suite_kernel_mm_pending`（期待値: summary `failed_count==0`）。
+- MM Wave7 residual（pending監視）: `none`。
 - NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + socket + tcb + core(tests.rs) + types + window_scale。
 - NET endpoint residual（pending監視）: `none`。
 - NET core stack required 実行対象（90件）: L2-L4中心（adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp）。

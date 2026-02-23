@@ -19,7 +19,7 @@ use crate::io::virtio::{
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use spin::RwLock;
 
 extern crate alloc;
@@ -54,6 +54,169 @@ static BRIDGE_IF_STATS: RwLock<BTreeMap<super::NetIfId, BridgeInterfaceStats>> =
 
 /// Primary interface used by legacy bridge wrappers.
 static PRIMARY_BRIDGE_IF: RwLock<Option<super::NetIfId>> = RwLock::new(None);
+
+// ============================================================================
+// NAT (Network Address Translation) support
+// ============================================================================
+
+#[cfg(test)]
+/// Records routing events (if_id,destination) for unit tests.
+static FORWARD_EVENTS: RwLock<Vec<(super::NetIfId, super::Ipv4Address)>> =
+    RwLock::new(Vec::new());
+
+const NAT_EPHEMERAL_START: u16 = 40_000;
+
+/// Simple NAT entry for TCP/UDP port translation.
+/// External port is key; value stores internal address/port.
+#[derive(Clone, Copy)]
+struct NatEntry {
+    protocol: crate::net::ipv4::IpProtocol,
+    internal_addr: super::Ipv4Address,
+    internal_port: u16,
+    last_seen: u64,
+}
+
+/// Global NAT mapping: external_port -> NatEntry
+static NAT_TABLE: RwLock<alloc::collections::BTreeMap<u16, NatEntry>> =
+    RwLock::new(alloc::collections::BTreeMap::new());
+
+/// Next ephemeral port to allocate for NAT
+static NAT_NEXT_PORT: AtomicU16 = AtomicU16::new(NAT_EPHEMERAL_START);
+
+/// Perform outbound NAT translation for a packet leaving on `out_if_id`.
+/// Returns (translated_src_ip, translated_src_port).
+fn nat_translate_out(
+    protocol: crate::net::ipv4::IpProtocol,
+    internal_ip: super::Ipv4Address,
+    internal_port: u16,
+    out_if_id: super::NetIfId,
+) -> (super::Ipv4Address, u16) {
+    // determine external IP from interface config
+    let mut ext_ip = internal_ip;
+    if let Ok(iface_opt) = super::manager::get_interface(out_if_id) {
+        if let Some(iface) = iface_opt {
+            if let Some(cfg) = iface.config {
+                ext_ip = cfg.ipv4.address;
+            }
+        }
+    }
+
+    // look for existing mapping (by internal_addr+port)
+    {
+        let table = NAT_TABLE.read();
+        for (&ext_port, entry) in table.iter() {
+            if entry.protocol == protocol
+                && entry.internal_addr == internal_ip
+                && entry.internal_port == internal_port
+            {
+                // refresh timestamp
+                drop(table);
+                let mut tablew = NAT_TABLE.write();
+                if let Some(e) = tablew.get_mut(&ext_port) {
+                    e.last_seen = crate::time::get_uptime_ms();
+                }
+                return (ext_ip, ext_port);
+            }
+        }
+    }
+
+    // allocate new external port
+    let ext_port = NAT_NEXT_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    {
+        let mut tablew = NAT_TABLE.write();
+        tablew.insert(
+            ext_port,
+            NatEntry {
+                protocol,
+                internal_addr: internal_ip,
+                internal_port,
+                last_seen: crate::time::get_uptime_ms(),
+            },
+        );
+    }
+
+    (ext_ip, ext_port)
+}
+
+/// Perform inbound NAT translation on a packet arriving on any interface.
+/// If translation exists for `dst_port`, rewrites `dst_ip` and `dst_port` to
+/// the internal values and returns true.  Caller should recompute checksums.
+fn nat_translate_in(
+    protocol: crate::net::ipv4::IpProtocol,
+    dst_ip: &mut super::Ipv4Address,
+    dst_port: &mut u16,
+) -> bool {
+    // Only DNAT packets that are actually addressed to one of our local IPs.
+    if !is_local_ipv4(*dst_ip) {
+        return false;
+    }
+
+    let mut tablew = NAT_TABLE.write();
+    if let Some(entry) = tablew.get_mut(dst_port) {
+        if entry.protocol != protocol {
+            return false;
+        }
+        // rewrite
+        *dst_ip = entry.internal_addr;
+        *dst_port = entry.internal_port;
+        entry.last_seen = crate::time::get_uptime_ms();
+        true
+    } else {
+        false
+    }
+}
+
+fn transport_checksum_offset(protocol: crate::net::ipv4::IpProtocol) -> Option<usize> {
+    match protocol {
+        crate::net::ipv4::IpProtocol::Udp => Some(6),
+        crate::net::ipv4::IpProtocol::Tcp => Some(16),
+        _ => None,
+    }
+}
+
+fn recompute_ipv4_transport_checksum(
+    transport: &mut [u8],
+    src_ip: super::Ipv4Address,
+    dst_ip: super::Ipv4Address,
+    protocol: crate::net::ipv4::IpProtocol,
+) {
+    let Some(checksum_off) = transport_checksum_offset(protocol) else {
+        return;
+    };
+    if transport.len() < checksum_off + 2 || transport.len() > u16::MAX as usize {
+        return;
+    }
+
+    // IPv4 UDP checksum may be zero (disabled). Preserve that behavior.
+    if protocol == crate::net::ipv4::IpProtocol::Udp
+        && u16::from_be_bytes([transport[checksum_off], transport[checksum_off + 1]]) == 0
+    {
+        return;
+    }
+
+    transport[checksum_off..checksum_off + 2].copy_from_slice(&0u16.to_be_bytes());
+    let pseudo =
+        crate::net::ipv4::pseudo_header_checksum(src_ip, dst_ip, protocol, transport.len() as u16);
+    let checksum = crate::net::ipv4::data_checksum(transport, pseudo);
+    let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+    transport[checksum_off..checksum_off + 2].copy_from_slice(&final_checksum.to_be_bytes());
+}
+
+/// Determine if the given IPv4 address is assigned to any local interface.
+fn is_local_ipv4(addr: super::Ipv4Address) -> bool {
+    if let Ok(routes) = super::manager::NETWORK_MANAGER.lock() {
+        if let Some(mgr) = routes.as_ref() {
+            for iface in mgr.list_interfaces() {
+                if let Some(cfg) = iface.config {
+                    if cfg.ipv4.address == addr {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
 
 fn ensure_bridge_if_state(if_id: super::NetIfId, virtio_index: Option<u8>) {
     let mut stats = BRIDGE_IF_STATS.write();
@@ -264,6 +427,152 @@ pub fn process_received_packet_zero_copy_for_interface(
     packet.set_len(header_size + payload_len);
     if header_size > 0 {
         packet.advance(header_size);
+    }
+
+    // Attempt inbound NAT translation first (may rewrite dst address/port)
+    {
+        let data = packet.data_mut();
+        if let Some(mut eth) = crate::net::ethernet::EthernetFrameMut::new(data) {
+            if eth.header_mut().ether_type() == crate::net::ethernet::EtherType::Ipv4 {
+                let ip_buf = eth.payload_mut();
+                let parsed = crate::net::ipv4::Ipv4Packet::parse(ip_buf).map(|ip_pkt| {
+                    (
+                        ip_pkt.protocol(),
+                        ip_pkt.header().header_len(),
+                        ip_pkt.source(),
+                        ip_pkt.destination(),
+                    )
+                });
+
+                let mut translated_dst = None;
+                if let Some((proto, header_len, src_ip, mut dst_ip)) = parsed {
+                    if (proto == crate::net::ipv4::IpProtocol::Udp
+                        || proto == crate::net::ipv4::IpProtocol::Tcp)
+                        && header_len <= ip_buf.len().saturating_sub(4)
+                    {
+                        let (_, transport) = ip_buf.split_at_mut(header_len);
+                        let mut dst_port = u16::from_be_bytes([transport[2], transport[3]]);
+                        if nat_translate_in(proto, &mut dst_ip, &mut dst_port) {
+                            transport[2..4].copy_from_slice(&dst_port.to_be_bytes());
+                            recompute_ipv4_transport_checksum(transport, src_ip, dst_ip, proto);
+                            translated_dst = Some(dst_ip);
+                        }
+                    }
+                }
+
+                if let Some(dst_ip) = translated_dst {
+                    if let Some(mut ip_pkt) = crate::net::ipv4::Ipv4PacketMut::new(ip_buf) {
+                        ip_pkt.set_destination(dst_ip);
+                        ip_pkt.update_checksum();
+                    }
+                }
+            }
+        }
+    }
+
+    // Routing: forward packets not destined for local addresses
+    if {
+        let data = packet.data_mut();
+        let mut forwarded = false;
+        if let Some(eth) = crate::net::ethernet::EthernetFrame::parse(&*data) {
+            if eth.ether_type() == crate::net::ethernet::EtherType::Ipv4 {
+                if let Some(ip_pkt) = crate::net::ipv4::Ipv4Packet::parse(eth.payload()) {
+                    let dst = ip_pkt.destination();
+                    if !is_local_ipv4(dst) {
+                        if let Ok(Some(route)) = super::manager::lookup_ipv4_route(dst) {
+                            // record for tests
+                            #[cfg(test)]
+                            {
+                                let mut ev = FORWARD_EVENTS.lock();
+                                ev.push((route.if_id, dst));
+                            }
+                            // apply NAT outbound if necessary
+                            let src = ip_pkt.source();
+                            let proto = ip_pkt.protocol();
+                            let transport = ip_pkt.payload();
+                            // need to parse transport header for ports
+                            let (_new_src, _new_port) = match proto {
+                                crate::net::ipv4::IpProtocol::Udp => {
+                                    if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
+                                        let (ns, np) = nat_translate_out(
+                                            crate::net::ipv4::IpProtocol::Udp,
+                                            src,
+                                            udp.src_port(),
+                                            route.if_id,
+                                        );
+                                        (ns, np)
+                                    } else {
+                                        (src, 0)
+                                    }
+                                }
+                                crate::net::ipv4::IpProtocol::Tcp => {
+                                    let tcp_src_port = transport
+                                        .get(..2)
+                                        .map(|port| u16::from_be_bytes([port[0], port[1]]))
+                                        .unwrap_or(0);
+                                    let (ns, np) = nat_translate_out(
+                                        crate::net::ipv4::IpProtocol::Tcp,
+                                        src,
+                                        tcp_src_port,
+                                        route.if_id,
+                                    );
+                                    (ns, np)
+                                }
+                                _ => (src, 0),
+                            };
+
+                            // decrement TTL or drop
+                            if ip_pkt.ttl() > 1 {
+                                // build new packet via stack send API
+                                match proto {
+                                    crate::net::ipv4::IpProtocol::Udp => {
+                                        if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
+                                            let payload = udp.payload();
+                                            let src_port = _new_port;
+                                            let dst_port = udp.dst_port();
+                                            // send via stack
+                                            let _ = stack::stack().lock().and_then(|mut g| {
+                                                if let Some(ref mut s) = *g {
+                                                    Ok(s.send_udp_raw_on(route.if_id, src_port, dst, dst_port, payload))
+                                                } else {
+                                                    Ok(false)
+                                                }
+                                            });
+                                        }
+                                    }
+                                    crate::net::ipv4::IpProtocol::Tcp => {
+                                        // entire segment including header
+                                        let mut nat_segment = Vec::from(transport);
+                                        if _new_port != 0 && nat_segment.len() >= 18 {
+                                            nat_segment[0..2].copy_from_slice(&_new_port.to_be_bytes());
+                                            recompute_ipv4_transport_checksum(
+                                                &mut nat_segment,
+                                                _new_src,
+                                                dst,
+                                                crate::net::ipv4::IpProtocol::Tcp,
+                                            );
+                                        }
+                                        let _ = stack::stack().lock().and_then(|mut g| {
+                                            if let Some(ref mut s) = *g {
+                                                Ok(s.send_tcp(_new_src, dst, &nat_segment))
+                                            } else {
+                                                Ok(false)
+                                            }
+                                        });
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            forwarded = true;
+                        }
+                    }
+                }
+            }
+        }
+        forwarded
+    } {
+        // packet was forwarded, drop original
+        return;
     }
 
     if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
@@ -481,6 +790,9 @@ mod tests {
     struct BridgeStateGuard {
         prev_if_stats: BTreeMap<super::super::NetIfId, BridgeInterfaceStats>,
         prev_primary_if: Option<super::super::NetIfId>,
+        prev_nat_table: BTreeMap<u16, NatEntry>,
+        prev_nat_next_port: u16,
+        prev_forward_events: Vec<(super::super::NetIfId, super::super::Ipv4Address)>,
         prev_manager: Option<crate::net::manager::NetworkManager>,
     }
 
@@ -493,6 +805,10 @@ mod tests {
                 *g = None;
                 v
             };
+            let prev_nat_table = core::mem::take(&mut *NAT_TABLE.write());
+            let prev_nat_next_port =
+                NAT_NEXT_PORT.swap(NAT_EPHEMERAL_START, core::sync::atomic::Ordering::Relaxed);
+            let prev_forward_events = core::mem::take(&mut *FORWARD_EVENTS.write());
             let prev_manager = {
                 let mut guard = crate::net::manager::NETWORK_MANAGER
                     .lock_for_init("[TEST][NET BRIDGE] manager snapshot");
@@ -501,6 +817,9 @@ mod tests {
             Self {
                 prev_if_stats,
                 prev_primary_if,
+                prev_nat_table,
+                prev_nat_next_port,
+                prev_forward_events,
                 prev_manager,
             }
         }
@@ -510,6 +829,9 @@ mod tests {
         fn drop(&mut self) {
             *BRIDGE_IF_STATS.write() = core::mem::take(&mut self.prev_if_stats);
             *PRIMARY_BRIDGE_IF.write() = self.prev_primary_if.take();
+            *NAT_TABLE.write() = core::mem::take(&mut self.prev_nat_table);
+            NAT_NEXT_PORT.store(self.prev_nat_next_port, core::sync::atomic::Ordering::Relaxed);
+            *FORWARD_EVENTS.write() = core::mem::take(&mut self.prev_forward_events);
             let mut guard = crate::net::manager::NETWORK_MANAGER
                 .lock_for_init("[TEST][NET BRIDGE] manager restore");
             *guard = self.prev_manager.take();
@@ -620,6 +942,157 @@ mod tests {
         } else {
             panic!("TCB lock poisoned in test");
         }
+    }
+
+    #[test_case]
+    fn test_routing_and_nat() {
+        // setup environment
+        let _guard = BridgeStateGuard::new();
+        let _ = mempool::init_net_mempool(4);
+        super::manager::init_network_manager();
+
+        // create two interfaces
+        let if1 = super::manager::register_interface(String::from("if1"));
+        let if2 = super::manager::register_interface(String::from("if2"));
+        // configure addresses
+        let cfg1 = super::NetworkConfig {
+            mac: MacAddress::from_octets(0,1,2,3,4,5),
+            ipv4: Ipv4Config {
+                address: Ipv4Address::new([10,0,0,1]),
+                subnet_mask: Ipv4Address::new([255,255,255,0]),
+                gateway: Ipv4Address::ANY,
+                dns: None,
+            },
+            ipv6: None,
+            icmp_echo_enabled: true,
+        };
+        let cfg2 = super::NetworkConfig {
+            mac: MacAddress::from_octets(0,1,2,3,4,6),
+            ipv4: Ipv4Config {
+                address: Ipv4Address::new([10,0,1,1]),
+                subnet_mask: Ipv4Address::new([255,255,255,0]),
+                gateway: Ipv4Address::ANY,
+                dns: None,
+            },
+            ipv6: None,
+            icmp_echo_enabled: true,
+        };
+        let _ = super::manager::set_interface_config(if1, cfg1);
+        let _ = super::manager::set_interface_config(if2, cfg2);
+
+        // add route 10.0.1.0/24 via if2
+        let route = super::manager::Ipv4Route {
+            destination: Ipv4Address::new([10,0,1,0]),
+            prefix_len: 24,
+            gateway: None,
+            if_id: if2,
+            metric: 1,
+            flags: super::manager::RouteFlags::connected(),
+            admin_enabled: true,
+            managed_by_interface: false,
+        };
+        let _ = super::manager::add_ipv4_route(route);
+
+        // craft a UDP packet from 10.0.0.2:1234 to 10.0.1.5:80 arriving on if1
+        let header_size = crate::io::virtio::net::VirtioNetHeader::SIZE;
+        let mut packet = mempool::alloc_packet().unwrap();
+        let buf = packet.data_mut();
+        // build ethernet, ip, udp similar to earlier tests
+        let eth_off = header_size;
+        let ip_off = eth_off + 14;
+        // fill with minimal sizes
+        buf[0..header_size].fill(0);
+        // eth header
+        buf[eth_off..eth_off+6].fill(0xff);
+        buf[eth_off+6..eth_off+12].copy_from_slice(&[0,1,2,3,4,5]);
+        buf[eth_off+12..eth_off+14].copy_from_slice(&[0x08,0x00]); // IPv4
+        // ip header
+        {
+            let mut ipm = Ipv4PacketMut::new(&mut buf[ip_off..ip_off+20]).unwrap();
+            ipm.init_header()
+                .set_source(Ipv4Address::new([10,0,0,2]))
+                .set_destination(Ipv4Address::new([10,0,1,5]))
+                .set_protocol(IpProtocol::Udp);
+            ipm.set_total_length(28); // 20 ip + 8 udp
+            ipm.update_checksum();
+        }
+        // udp header
+        let udp_off = ip_off + 20;
+        buf[udp_off..udp_off+2].copy_from_slice(&1234u16.to_be_bytes());
+        buf[udp_off+2..udp_off+4].copy_from_slice(&80u16.to_be_bytes());
+        buf[udp_off+4..udp_off+6].copy_from_slice(&8u16.to_be_bytes());
+        buf[udp_off+6..udp_off+8].copy_from_slice(&0u16.to_be_bytes());
+
+        let total_len = header_size + 14 + 28;
+        packet.set_len(total_len);
+
+        // clear forward events
+        #[cfg(test)]{
+            FORWARD_EVENTS.write().clear();
+        }
+
+        process_received_packet_zero_copy_for_interface(if1, packet, header_size, 14+28);
+
+        // verify forwarded to if2 and NAT table contains entry
+        #[cfg(test)]{
+            let ev = FORWARD_EVENTS.read();
+            assert!(ev.iter().any(|(id, dst)| *id == if2 && *dst == Ipv4Address::new([10,0,1,5])));
+            // check NAT entry exists for internal port 1234
+            let table = NAT_TABLE.read();
+            assert!(table.values().any(|e|
+                e.protocol == IpProtocol::Udp
+                    && e.internal_addr == Ipv4Address::new([10,0,0,2])
+                    && e.internal_port == 1234
+            ));
+        }
+    }
+
+    #[test_case]
+    fn test_nat_inbound_roundtrip_is_protocol_scoped() {
+        let _guard = BridgeStateGuard::new();
+        super::manager::init_network_manager();
+
+        let wan_if = super::manager::register_interface(String::from("wan0"));
+        let wan_cfg = super::NetworkConfig {
+            mac: MacAddress::from_octets(0, 1, 2, 3, 4, 42),
+            ipv4: Ipv4Config {
+                address: Ipv4Address::new([10, 0, 1, 1]),
+                subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                gateway: Ipv4Address::ANY,
+                dns: None,
+            },
+            ipv6: None,
+            icmp_echo_enabled: true,
+        };
+        let _ = super::manager::set_interface_config(wan_if, wan_cfg);
+
+        let internal_ip = Ipv4Address::new([10, 0, 0, 2]);
+        let internal_port = 1234;
+        let (ext_ip, ext_port) =
+            nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, wan_if);
+
+        assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
+        assert!(ext_port >= NAT_EPHEMERAL_START);
+
+        let mut dst_ip = ext_ip;
+        let mut dst_port = ext_port;
+        assert!(nat_translate_in(IpProtocol::Udp, &mut dst_ip, &mut dst_port));
+        assert_eq!(dst_ip, internal_ip);
+        assert_eq!(dst_port, internal_port);
+
+        // Same external port but different protocol must not match.
+        let mut dst_ip = ext_ip;
+        let mut dst_port = ext_port;
+        assert!(!nat_translate_in(IpProtocol::Tcp, &mut dst_ip, &mut dst_port));
+        assert_eq!(dst_ip, ext_ip);
+        assert_eq!(dst_port, ext_port);
+
+        // Non-local destination addresses must not be rewritten.
+        let mut dst_ip = Ipv4Address::new([203, 0, 113, 9]);
+        let mut dst_port = ext_port;
+        assert!(!nat_translate_in(IpProtocol::Udp, &mut dst_ip, &mut dst_port));
+        assert_eq!(dst_ip, Ipv4Address::new([203, 0, 113, 9]));
+        assert_eq!(dst_port, ext_port);
     }
 
     #[test_case]

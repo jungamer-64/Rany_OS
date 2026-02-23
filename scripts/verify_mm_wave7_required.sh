@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Validates MM Wave7 required wiring (Phase A + Phase E/F), qemu hooks,
+# Validates MM Wave7 required wiring (Phase A + Phase E/F + bench), qemu hooks,
 # and guards against degenerate implementations.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,15 +14,7 @@ KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
 KERNEL_SUITE_DIR="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
-for required_file in \
-  "$ASYNC_EXPORT_FILE" \
-  "$ASYNC_HOOK_FILE" \
-  "$RECLAIM_EXPORT_FILE" \
-  "$KERNEL_WRAPPER_FILE" \
-  "$KERNEL_WRAPPER_DIR" \
-  "$KERNEL_SUITE_FILE" \
-  "$KERNEL_SUITE_DIR" \
-  "$PENDING_FILE"
+for required_file in   "$ASYNC_EXPORT_FILE"   "$ASYNC_HOOK_FILE"   "$RECLAIM_EXPORT_FILE"   "$KERNEL_WRAPPER_FILE"   "$KERNEL_WRAPPER_DIR"   "$KERNEL_SUITE_FILE"   "$KERNEL_SUITE_DIR"   "$PENDING_FILE"
 do
   if [[ ! -e "$required_file" ]]; then
     echo "[verify_mm_wave7_required] missing file: $required_file" >&2
@@ -45,6 +37,12 @@ phase_f_async_cases=(
   "async_swapout_heavy_stress_canonical"
 )
 
+bench_async_cases=(
+  "bench_enqueue_pool_effect"
+  "bench_buffer_pool_2m_reuse"
+  "bench_buffer_pool_1g_reuse"
+)
+
 reclaim_cases=(
   "watermarks_calculation"
   "pressure_level"
@@ -65,11 +63,7 @@ promoted_original_cases=(
 
 violations=0
 
-for group_name in \
-  "mm_wave7_async_swapout_exports" \
-  "mm_wave7_async_swapout_phase_e_exports" \
-  "mm_wave7_async_swapout_phase_f_exports" \
-  "mm_wave7_page_reclaim_exports"
+for group_name in   "mm_wave7_async_swapout_exports"   "mm_wave7_async_swapout_phase_e_exports"   "mm_wave7_async_swapout_phase_f_exports"   "mm_wave7_async_swapout_bench_exports"   "mm_wave7_page_reclaim_exports"
 do
   if ! rg -q "$group_name" "$KERNEL_SUITE_FILE"; then
     echo "[verify_mm_wave7_required] missing ${group_name} in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
@@ -77,11 +71,9 @@ do
   fi
 done
 
-for hook_fn in \
-  "qemu_test_drain_until_idle" \
-  "qemu_test_reset_worker_runtime_state"
+for hook_fn in   "qemu_test_drain_until_idle"   "qemu_test_reset_worker_runtime_state"
 do
-  if ! rg -q "pub fn ${hook_fn}\\(" "$ASYNC_HOOK_FILE"; then
+  if ! rg -q "pub fn ${hook_fn}\(" "$ASYNC_HOOK_FILE"; then
     echo "[verify_mm_wave7_required] missing hook '${hook_fn}' in ${ASYNC_HOOK_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
@@ -92,12 +84,12 @@ check_async_case() {
   local export_fn="wave7_${case_name}_smoke"
   local wrapper_fn="mm_wave7_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$ASYNC_EXPORT_FILE"; then
+  if ! rg -q "pub fn ${export_fn}\(" "$ASYNC_EXPORT_FILE"; then
     echo "[verify_mm_wave7_required] missing async export '${export_fn}' in ${ASYNC_EXPORT_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
+  if ! rg -q "pub fn ${wrapper_fn}\(" "$KERNEL_WRAPPER_FILE"; then
     echo "[verify_mm_wave7_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
@@ -120,16 +112,20 @@ for case_name in "${phase_f_async_cases[@]}"; do
   check_async_case "$case_name"
 done
 
+for case_name in "${bench_async_cases[@]}"; do
+  check_async_case "$case_name"
+done
+
 for case_name in "${reclaim_cases[@]}"; do
   export_fn="wave7_${case_name}_smoke"
   wrapper_fn="mm_wave7_${case_name}_smoke"
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$RECLAIM_EXPORT_FILE"; then
+  if ! rg -q "pub fn ${export_fn}\(" "$RECLAIM_EXPORT_FILE"; then
     echo "[verify_mm_wave7_required] missing reclaim export '${export_fn}' in ${RECLAIM_EXPORT_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
+  if ! rg -q "pub fn ${wrapper_fn}\(" "$KERNEL_WRAPPER_FILE"; then
     echo "[verify_mm_wave7_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
@@ -139,20 +135,6 @@ for case_name in "${reclaim_cases[@]}"; do
     violations=$((violations + 1))
   fi
 done
-
-require_tokens() {
-  local body="$1"
-  shift
-  local export_fn="$1"
-  shift
-  local token
-  for token in "$@"; do
-    if ! printf '%s\n' "$body" | rg -q "$token"; then
-      echo "[verify_mm_wave7_required] missing token '${token}' in '${export_fn}'"
-      violations=$((violations + 1))
-    fi
-  done
-}
 
 # STRICT_FIDELITY_CHECKS_DISABLED_AFTER_REBASE:
 # Upstream mm/reclaim refactors changed Wave7 qemu smoke implementations and hook placement.
@@ -164,16 +146,52 @@ for case_name in "${promoted_original_cases[@]}"; do
   fi
 done
 
-for marker in \
-  "MM Wave7 Phase A deterministic set is promoted to required suite_kernel" \
-  "MM Wave7 Phase E deterministic set is promoted to required suite_kernel" \
-  "MM Wave7 Phase F deterministic set is promoted to required suite_kernel"
+if rg -q "kernel mm pending suite execution.*suite_kernel_mm_pending" "$PENDING_FILE"; then
+  echo "[verify_mm_wave7_required] legacy kernel_mm_pending tracker line still present"
+  violations=$((violations + 1))
+fi
+
+if rg -q "MM Wave7 residual monitored cases .*suite_kernel_mm_pending" "$PENDING_FILE"; then
+  echo "[verify_mm_wave7_required] legacy MM bench residual pending line still references suite_kernel_mm_pending"
+  violations=$((violations + 1))
+fi
+
+for marker in   "MM Wave7 Phase A deterministic set is promoted to required suite_kernel"   "MM Wave7 Phase E deterministic set is promoted to required suite_kernel"   "MM Wave7 Phase F deterministic set is promoted to required suite_kernel"   "MM Wave7 bench deterministic set is promoted to required suite_kernel"
 do
   if ! rg -q "$marker" "$PENDING_FILE"; then
     echo "[verify_mm_wave7_required] missing marker '${marker}' in ${PENDING_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 done
+
+if ! rg -q '^MM Wave7 residual monitored cases: none$' "$PENDING_FILE"; then
+  echo "[verify_mm_wave7_required] missing 'MM Wave7 residual monitored cases: none' in ${PENDING_FILE#$ROOT_DIR/}"
+  violations=$((violations + 1))
+fi
+
+# Minimal fidelity guard against trivial true-return regressions for bench smokes.
+check_body_tokens() {
+  local fn_name="$1"
+  shift
+  local body
+  body="$(awk "/^pub fn ${fn_name}\(/ {flag=1} flag {print} /^}/ && flag {exit}" "$ASYNC_EXPORT_FILE")"
+  if [[ -z "$body" ]]; then
+    echo "[verify_mm_wave7_required] unable to read body for ${fn_name}"
+    violations=$((violations + 1))
+    return
+  fi
+  for token in "$@"; do
+    if ! printf '%s
+' "$body" | rg -q "$token"; then
+      echo "[verify_mm_wave7_required] missing token '${token}' in '${fn_name}'"
+      violations=$((violations + 1))
+    fi
+  done
+}
+
+check_body_tokens "wave7_bench_enqueue_pool_effect_smoke"   "buffer_pool_4k_extended_stats" "buffer_pool_get_4k" "buffer_pool_put_4k"
+check_body_tokens "wave7_bench_buffer_pool_2m_reuse_smoke"   "buffer_pool_get_2m" "buffer_pool_put_2m" "buffer_pool_2m_stats"
+check_body_tokens "wave7_bench_buffer_pool_1g_reuse_smoke"   "buffer_pool_1g_stats" "buffer_pool_1g_set_capacity"
 
 if [[ "$violations" -gt 0 ]]; then
   echo "[verify_mm_wave7_required] FAIL: found $violations issues"
