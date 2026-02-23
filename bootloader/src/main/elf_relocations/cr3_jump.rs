@@ -1,4 +1,5 @@
 use super::*;
+use uefi::proto::media::file::Directory;
 
 /// Switch CR3 to kernel page tables and jump to kernel entry point
 pub(crate) unsafe fn switch_cr3_and_jump(

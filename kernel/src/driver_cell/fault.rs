@@ -308,19 +308,28 @@ pub fn handle_fault(
 ///
 /// パニックハンドラ → Domain → DriverCell の連携
 pub fn notify_domain_panic(domain_id: DomainId, message: String) {
+    if let Err(e) = notify_domain_panic_inner(domain_id, message) {
+        log::error!(
+            "[DriverCell] Failed to handle fault for domain {}: {}\n",
+            domain_id,
+            e
+        );
+    }
+}
+
+fn notify_domain_panic_inner(
+    domain_id: DomainId,
+    message: String,
+) -> Result<Option<FaultAction>, DriverCellError> {
     let manager = driver_cell_manager();
 
     // DomainIDからDriverCellを検索
     if let Some(cell_id) = manager.find_by_domain(domain_id) {
         let fault = FaultKind::Panic(message);
-        if let Err(e) = handle_fault(cell_id, fault) {
-            log::error!(
-                "[DriverCell] Failed to handle fault for domain {}: {}\n",
-                domain_id,
-                e
-            );
-        }
+        return handle_fault(cell_id, fault).map(Some);
     }
+
+    Ok(None)
 }
 
 /// DriverCellの全ドライバを停止（障害処理用）
@@ -464,4 +473,102 @@ impl core::fmt::Display for FaultAction {
             Self::Stopped => write!(f, "Stopped (no restart)"),
         }
     }
+}
+
+#[cfg(feature = "qemu-test-export")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestFaultKind {
+    Panic,
+    Timeout,
+    Other,
+}
+
+#[cfg(feature = "qemu-test-export")]
+impl TestFaultKind {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "panic" => Some(Self::Panic),
+            "timeout" => Some(Self::Timeout),
+            "other" => Some(Self::Other),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+impl core::fmt::Display for TestFaultKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Panic => write!(f, "panic"),
+            Self::Timeout => write!(f, "timeout"),
+            Self::Other => write!(f, "other"),
+        }
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+#[derive(Debug, Clone)]
+pub struct TestFaultOutcome {
+    pub requested_kind: TestFaultKind,
+    pub action: FaultAction,
+    pub driver_cell_state_after: DriverCellState,
+    pub hot_swap_state_after: HotSwapState,
+    pub consecutive_faults_after: u32,
+    pub last_health_failure_after: Option<String>,
+}
+
+/// qemu-test限定の障害注入フック。
+///
+/// DriverCellのfault/panic経路をdeterministicに起動して、手動QEMU検証や
+/// 将来のqemu-suite自動化で再利用する。
+#[cfg(feature = "qemu-test-export")]
+pub fn inject_test_fault(
+    id: DriverCellId,
+    kind: TestFaultKind,
+) -> Result<TestFaultOutcome, DriverCellError> {
+    let manager = driver_cell_manager();
+    let domain_id = manager.with_cell(id, |cell| cell.domain_id)?;
+
+    let action = match kind {
+        TestFaultKind::Panic => {
+            if let Some(did) = domain_id {
+                match notify_domain_panic_inner(did, format!("qemu-test injected panic for {}", id.as_u64()))? {
+                    Some(a) => a,
+                    None => handle_fault(
+                        id,
+                        FaultKind::Panic(format!("qemu-test injected panic for {}", id.as_u64())),
+                    )?,
+                }
+            } else {
+                handle_fault(
+                    id,
+                    FaultKind::Panic(format!("qemu-test injected panic for {}", id.as_u64())),
+                )?
+            }
+        }
+        TestFaultKind::Timeout => handle_fault(id, FaultKind::Timeout)?,
+        TestFaultKind::Other => handle_fault(
+            id,
+            FaultKind::Other(format!("qemu-test injected fault for {}", id.as_u64())),
+        )?,
+    };
+
+    let (driver_cell_state_after, hot_swap_state_after, consecutive_faults_after, last_health_failure_after) =
+        manager.with_cell(id, |cell| {
+            (
+                cell.state,
+                cell.hot_swap_state,
+                cell.consecutive_faults,
+                cell.last_health_failure.clone(),
+            )
+        })?;
+
+    Ok(TestFaultOutcome {
+        requested_kind: kind,
+        action,
+        driver_cell_state_after,
+        hot_swap_state_after,
+        consecutive_faults_after,
+        last_health_failure_after,
+    })
 }

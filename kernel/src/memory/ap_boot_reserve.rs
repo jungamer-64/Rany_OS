@@ -411,20 +411,14 @@ pub(crate) fn init_global_heap() {
     {
         crate::io::log::early_print("[HEAP] lock\n");
         let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] global allocator init");
-    crate::io::log::early_print("[HEAP] init call\n");
-    let start = heap_start();
-    crate::io::log::early_print("[HEAP] addr ok\n");
-    unsafe {
-        guard.init(start as usize, HEAP_SIZE);
-    }
-    // Debug: print guard pointer for diagnosing early-allocation issues
-    {
-        let guard_ptr = (&*ALLOCATOR.0.lock().unwrap()) as *const _ as usize;
-        crate::io::log::early_print("[HEAP DEBUG] init guard ptr=");
-        crate::io::log::early_print_hex(guard_ptr as u64);
-        crate::io::log::early_print("\n");
-    }
-    crate::io::log::early_print("[HEAP] done\n");
+        crate::io::log::early_print("[HEAP] init call\n");
+        let start = heap_start();
+        crate::io::log::early_print("[HEAP] addr ok\n");
+        unsafe {
+            guard.init(start as usize, HEAP_SIZE);
+        }
+        drop(guard);
+        crate::io::log::early_print("[HEAP] done\n");
     }
 
     #[cfg(feature = "full_mm_tests")]
@@ -522,4 +516,3 @@ pub fn used_memory_kb() -> u64 {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

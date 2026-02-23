@@ -422,12 +422,6 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 
         match self.0.lock() {
             Ok(mut guard) => {
-                // Debug: print guard pointer to detect allocator corruption
-                let guard_ptr = (&*guard) as *const _ as usize;
-                crate::io::log::early_print("[HEAP DEBUG] alloc guard ptr=");
-                crate::io::log::early_print_hex(guard_ptr as u64);
-                crate::io::log::early_print("\n");
-
                 let ptr = guard.allocate(layout);
                 if ptr.is_null() {
                     Self::dump_alloc_failure(&*guard, layout, size);

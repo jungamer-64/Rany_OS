@@ -1,0 +1,27 @@
+[package]
+name = "driver_cell_probe"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "DriverCell/LiveUpdate runtime verification probe cell"
+
+[lib]
+name = "driver_cell_probe"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+kernel_api = { path = "../../interfaces/kernel_api" }
+
+[features]
+default = []
+standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
+export_driver_entry = ["kernel_api/export_driver_entry"]
+variant_v1 = []
+variant_v2 = []
+qemu-test-export = []

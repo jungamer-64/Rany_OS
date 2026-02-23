@@ -19,6 +19,7 @@ use ed25519_compact::{PublicKey, Signature};
 mod ap_boot;
 mod boot_log;
 mod config;
+#[path = "main/elf_relocations.rs"]
 mod elf_relocations;
 use elf_relocations::*;
 #[cfg(feature = "ui")]
@@ -30,6 +31,7 @@ mod secure_boot;
 #[cfg(feature = "self_test")]
 mod self_test;
 #[cfg(feature = "serial_log")]
+#[macro_use]
 mod serial;
 mod shim_mok;
 mod smbios;
