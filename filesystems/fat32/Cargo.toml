@@ -20,9 +20,6 @@ exorust_sync = { path = "../../libs/sync" }
 log = "0.4"
 hashbrown = "0.16"
 
-[dev-dependencies]
-futures = "0.3"
-
 [features]
 debug-trace = []
 qemu-test-export = []
