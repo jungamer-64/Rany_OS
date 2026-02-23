@@ -1,6 +1,8 @@
 use super::*;
 
+#[cfg(test)]
 mod fs_tests;
+#[cfg(test)]
 pub use self::fs_tests::*;
 mod nvme_tests;
 

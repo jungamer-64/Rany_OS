@@ -114,8 +114,23 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
 }
 
 /// Initialize the panic DMA pool with the default size.
+///
+/// The initial allocation may fail if no sufficiently large contiguous region is
+/// available. In that case we retry with progressively smaller sizes (divide by
+/// four) down to one page.  This makes boot more robust on fragmented memory
+/// layouts.
 pub fn init_panic_dma_pool_default() -> Result<(), IommuError> {
-    init_panic_dma_pool(PANIC_DMA_POOL_BYTES)
+    let mut size = PANIC_DMA_POOL_BYTES;
+    while size >= crate::mm::types::PAGE_SIZE_4K {
+        match init_panic_dma_pool(size) {
+            Ok(()) => return Ok(()),
+            Err(IommuError::OutOfMemory) => {
+                size /= 4;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(IommuError::OutOfMemory)
 }
 
 /// Allocate from the panic DMA pool without locks or heap allocation.

@@ -8,7 +8,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Once;
+use spin::Mutex;
 
 use crate::io::iommu::config::IommuConfig;
 pub use crate::io::iommu::config::ReservedMemoryRegion; // Will be moved? RMRR is defined in mod?
@@ -96,13 +96,18 @@ impl IommuRegistry {
     }
 }
 
-/// Global Intel IOMMU Registry
-static IOMMU_REGISTRY: Once<IommuRegistry> = Once::new();
+/// Global Intel IOMMU Registry guarded by a spin mutex.
+static IOMMU_REGISTRY: Mutex<Option<IommuRegistry>> = Mutex::new(None);
 
 pub fn get_iommu_registry() -> Option<&'static IommuRegistry> {
-    IOMMU_REGISTRY.get()
+    let guard = IOMMU_REGISTRY.lock();
+    guard.as_ref().map(|r| unsafe { &*(r as *const IommuRegistry) })
 }
 
 pub fn init_registry(registry: IommuRegistry) {
-    IOMMU_REGISTRY.call_once(|| registry);
+    let mut guard = IOMMU_REGISTRY.lock();
+    if guard.is_some() {
+        panic!("IOMMU registry already initialized");
+    }
+    *guard = Some(registry);
 }

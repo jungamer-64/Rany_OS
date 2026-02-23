@@ -11,16 +11,13 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::transport::VirtioTransport; // trait object for transport implementations
 
 pub mod gpu_driver;
 

@@ -4,7 +4,8 @@ use super::*;
 mod global_init;
 pub use self::global_init::*;
 mod virtio_gpu_init;
-pub use self::virtio_gpu_init::*;
+// We do not publicly re-export the contents of `virtio_gpu_init`; the
+// methods are used internally by `SystemIntegration` only.
 impl SystemIntegration {
     /// Create a new system integration controller
     pub fn new() -> Self {

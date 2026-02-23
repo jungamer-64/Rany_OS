@@ -8,31 +8,38 @@
 //! It provides a singleton accessor for the enum-dispatch backend.
 
 use alloc::sync::Arc;
-use spin::Once;
+use spin::Mutex;
 
 use super::IommuBackend;
 #[allow(unused_imports)]
 pub use super::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
 
-/// Global IOMMU Driver (backend abstraction, initialized once during boot)
-static IOMMU_DRIVER: Once<Arc<IommuBackend>> = Once::new();
+// Global IOMMU driver protected by a spin mutex.  We hold the mutex only
+// briefly to set or read the option, and then return `'static` references by
+// transmuting from the locked value.
+static IOMMU_DRIVER: Mutex<Option<Arc<IommuBackend>>> = Mutex::new(None);
 
 /// Get reference to the registered IOMMU driver (backend abstraction)
 pub fn get_iommu_driver() -> Option<&'static Arc<IommuBackend>> {
-    IOMMU_DRIVER.get()
+    let guard = IOMMU_DRIVER.lock();
+    guard.as_ref().map(|arc| unsafe { &*(arc as *const Arc<IommuBackend>) })
 }
 
 /// Check if IOMMU is enabled (driver registered and backend available)
 pub fn is_iommu_enabled() -> bool {
-    IOMMU_DRIVER.get().map_or(false, |d| d.is_enabled())
+    get_iommu_driver().map_or(false, |d| d.is_enabled())
 }
 
-/// Initialize the global driver (call once during boot)
+/// Initialize the global driver. Must be called exactly once during boot.
 ///
 /// # Panics
-/// Panics if called more than once.
+/// Panics if `init_driver` is called more than once.
 pub fn init_driver(driver: Arc<IommuBackend>) {
-    IOMMU_DRIVER.call_once(|| driver);
+    let mut guard = IOMMU_DRIVER.lock();
+    if guard.is_some() {
+        panic!("IOMMU driver already initialized");
+    }
+    *guard = Some(driver);
 }
 
 // ========================================================================

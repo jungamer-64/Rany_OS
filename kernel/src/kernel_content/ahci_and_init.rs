@@ -104,7 +104,6 @@ pub(crate) fn init_hid_and_serial_drivers() {
     info!(target: "boot", "BOOT COMPLETE!");
 
     // Serial port
-    io::log::early_print("[DEBUG] Before Serial Driver\n");
     info!(target: "init", "Initializing serial port via DriverRegistry");
     {
         use io::serial::SerialDriver;
@@ -117,12 +116,11 @@ pub(crate) fn init_hid_and_serial_drivers() {
             info!(target: "init", "Serial driver initialized via DriverRegistry");
         }
     }
-    io::log::early_print("[DEBUG] After Serial Driver\n");
+    // serial driver done
 }
 
 /// Initialize the network subsystem, shell API, and VirtIO-Net driver.
 pub(crate) fn init_network_subsystem() {
-    io::log::early_print("[DEBUG] Network init\n");
     info!(target: "init", "Initializing network subsystem");
     net::init_stack_default();
     net::init_socket_manager();
@@ -198,7 +196,6 @@ pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_m
 
 /// Scan PCI bus for USB xHCI controllers and initialize them.
 pub(crate) fn init_usb_controllers() {
-    io::log::early_print("[DEBUG] USB scan STARTING\n");
     info!(target: "init", "Scanning for USB xHCI controllers...");
 
     use alloc::boxed::Box;
@@ -335,26 +332,21 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
 
 
-    // Debug: pinpoint crash location
-    io::log::early_print("[DEBUG] After huge_pages::init\n");
-
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
-
-    io::log::early_print("[DEBUG] After notify_heap_available\n");
 
     // Register kernel services (SPL契約の有効化)
     info!(target: "init", "Registering kernel services...");
 
-    io::log::early_print("[DEBUG] Before register_kernel_services\n");
+    // register kernel services
 
     unsafe {
         service_impl::register_kernel_services();
     }
 
-    io::log::early_print("[DEBUG] After register_kernel_services\n");
+    // kernel services registered
 
-    io::log::early_print("[DEBUG] About to call info! macro\n");
+    // about to log next info
 
     info!(target: "init", "Kernel services registered");
 
@@ -362,16 +354,16 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // use crate::shell::graphical::async_runtime as graphical_shell;
     // Moved below graphics initialization
 
-    io::log::early_print("[DEBUG] After first info! macro\n");
+    // first info printed
 
-    io::log::early_print("[DEBUG] Before second info! macro\n");
+    // second info will be printed
     info!(target: "init", "KernelServices registered");
-    io::log::early_print("[DEBUG] After second info! macro\n");
+    // second info printed
 
     // グラフィックスフレームバッファの初期化（ExoLoader経由）
-    io::log::early_print("[DEBUG] Before graphics init info!\n");
+    // preparing graphics init log
     info!(target: "init", "Initializing graphics framebuffer...");
-    io::log::early_print("[DEBUG] After graphics init info!\n");
+    // graphics info logged
 
     #[cfg(not(any(test, feature = "bench")))]
     {
@@ -398,7 +390,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     }
 
     // アロケーションテスト（シンプル化）
-    io::log::early_print("[DEBUG] Before Allocation Tests\n");
+    // allocation tests (commented out below) begin
     /*
     debug!(target: "test", "Running allocation tests");
     {
@@ -429,11 +421,11 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     */
 
     // 2. ドメイン管理システムの初期化
-    io::log::early_print("[DEBUG] Before domain_system::init\n");
+    // before domain system initialization
     info!(target: "init", "Initializing domain system");
     domain_system::init();
     info!(target: "init", "Domain system initialized");
-    io::log::early_print("[DEBUG] After domain_system::init\n");
+    // after domain system initialization
     // Check buddy heap integrity for early detection of corruption
     crate::memory::verify_buddy_integrity();
 
@@ -458,7 +450,6 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "MPK/PKU security initialized");
 
     // 2.8.5. セルローダー / ライブアップデート / DriverCell の基盤初期化
-    io::log::early_print("[DEBUG] Before early loader init\n");
     info!(target: "init", "Initializing cell loader (early)");
     loader::init_kernel_cell();
     register_kernel_symbols();
@@ -466,7 +457,6 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     loader::live_update::set_active_cores(1);
     crate::driver_cell::init();
     info!(target: "init", "Cell loader/live update/DriverCell initialized");
-    io::log::early_print("[DEBUG] After early loader init\n");
 
     // 2.9. Initramfs からドライバ Cells をロード
     info!(target: "init", "Loading driver Cells from initramfs...");
@@ -478,13 +468,11 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     }
 
     init_hid_and_serial_drivers();
-    io::log::early_print("[DEBUG] calling info! for NVMe\n");
     // 3.5.5 – 3.5.7. Storage and USB controller scanning
     init_nvme_controllers();
     init_ahci_controllers();
     init_usb_controllers();
     // 3.5.8. ドライバ初期化サマリ
-    io::log::early_print("[DEBUG] Driver Summary STARTING\n");
     {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
@@ -499,26 +487,20 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     init_network_subsystem();
 
     // 3.7. ファイルシステム（memfs）の初期化
-    io::log::early_print("[DEBUG] Before memfs init\n");
     info!(target: "init", "Initializing memory filesystem");
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
-    io::log::early_print("[DEBUG] After memfs init\n");
 
     // 4. タスクスケジューラの初期化
-    io::log::early_print("[DEBUG] Before scheduler init\n");
     info!(target: "init", "Initializing task scheduler");
     #[cfg(feature = "legacy-scheduler")]
     task::init_scheduler(0); // CPU 0
     info!(target: "init", "Task scheduler initialized");
-    io::log::early_print("[DEBUG] After scheduler init\n");
 
     // 4.5. Per-Core Executorの初期化（設計書 4.3）
-    io::log::early_print("[DEBUG] Before executor init\n");
     info!(target: "init", "Initializing per-core executors");
     task::init_executors(1); // シングルコアで開始
     info!(target: "init", "Per-core executors initialized");
-    io::log::early_print("[DEBUG] After executor init\n");
 
     // 4.6. I/Oスケジューラの初期化
     io::io_scheduler::init_io_scheduler();
@@ -531,31 +513,29 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     debug!(target: "init", "Cell loader/live update already initialized (early path)");
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
-    io::log::early_print("[DEBUG] Before symbol table init\n");
     info!(target: "init", "Initializing symbol table");
     unwind::init_symbol_table();
     info!(target: "init", "Symbol table initialized");
-    io::log::early_print("[DEBUG] After symbol table init\n");
 
     // 5.6. テストフレームワークの初期化
-    io::log::early_print("[DEBUG] Before test::init\n");
+    // before test framework init
     info!(target: "init", "Initializing test framework");
     test::init();
     info!(target: "init", "Test framework initialized");
-    io::log::early_print("[DEBUG] After test::init\n");
+    // after test framework init
 
     // 5.7. システム統合の初期化
-    io::log::early_print("[DEBUG] Before integration::init\n");
+    // before system integration
     info!(target: "init", "Initializing system integration");
     if let Err(e) = integration::init() {
         warn!(target: "init", "System integration failed: {:?}", e);
     } else {
         info!(target: "init", "System integration initialized");
     }
-    io::log::early_print("[DEBUG] After integration::init\n");
+    // after system integration
 
     // Diagnostic: immediate manual ping attempt to exercise network transmit path
-    io::log::early_print("[DEBUG] Manual ping insertion point\n");
+    // manual ping insertion point (network debug)
     info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
     match crate::net::send_real_icmp_echo([10, 0, 2, 2], 1) {
         Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
@@ -565,26 +545,24 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     run_integration_tests_if_requested(boot_info, phys_mem_offset);
 
     // 6. 割り込みを有効化
-    io::log::early_print("[DEBUG] Before enable interrupts\n");
+    // about to enable interrupts
     interrupts::enable_interrupts();
     info!(target: "init", "Interrupts enabled");
-    io::log::early_print("[DEBUG] After enable interrupts\n");
+    // interrupts now enabled
 
     // 7. システム統計を表示
-    io::log::early_print("[DEBUG] Before print_system_stats\n");
+    // before printing system stats
     print_system_stats();
-    io::log::early_print("[DEBUG] After print_system_stats\n");
+    // after printing system stats
 
     // 8. Executorの作成とタスクスポーン
-    io::log::early_print("[DEBUG] Before Executor::new\n");
+    // before creating executor
     info!(target: "init", "Creating async executor");
     let mut executor = task::Executor::new();
-    io::log::early_print("[DEBUG] After Executor::new\n");
 
-    io::log::early_print("[DEBUG] Before spawn_kernel_tasks\n");
+    // spawning kernel tasks
     spawn_kernel_tasks(&mut executor);
     info!(target: "init", "Kernel tasks spawned");
-    io::log::early_print("[DEBUG] After spawn_kernel_tasks\n");
 
     // =========================================================================
     // 🚨 STACK OVERFLOW TEST (Double Fault Verification)
@@ -596,9 +574,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // stack_overflow();
     // =========================================================================
 
-    io::log::early_print("[DEBUG] Before executor info macro\n");
     info!(target: "run", "Starting executor main loop");
-    crate::io::log::early_print("[DEBUG] Executor run starting...\n");
 
     // グラフィカルシェルを開始
     // graphical_shell::start();
