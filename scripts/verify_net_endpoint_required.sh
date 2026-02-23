@@ -6,16 +6,20 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENDPOINT_EXPORT_FILE="$ROOT_DIR/kernel/src/net/endpoint/qemu_tests.rs"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
+KERNEL_WRAPPER_DIR="$ROOT_DIR/kernel/src/qemu_tests"
 KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+KERNEL_SUITE_DIR="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
 for required_file in \
   "$ENDPOINT_EXPORT_FILE" \
   "$KERNEL_WRAPPER_FILE" \
+  "$KERNEL_WRAPPER_DIR" \
   "$KERNEL_SUITE_FILE" \
+  "$KERNEL_SUITE_DIR" \
   "$PENDING_FILE"
 do
-  if [[ ! -f "$required_file" ]]; then
+  if [[ ! -e "$required_file" ]]; then
     echo "[verify_net_endpoint_required] missing file: $required_file" >&2
     exit 1
   fi
@@ -122,18 +126,32 @@ done
 for case_name in "${cases[@]}"; do
   export_fn="${case_name}_smoke"
   wrapper_fn="net_endpoint_${case_name}_smoke"
+  alt_wrapper_fn=""
 
-  if ! rg -q "pub fn ${export_fn}\\(" "$ENDPOINT_EXPORT_FILE"; then
+  case "$case_name" in
+    congestion_variant_*) alt_wrapper_fn="net_endpoint_congestion_variant_variant_${case_name#congestion_variant_}_smoke" ;;
+    window_scale_disabled|window_scale_enabled) alt_wrapper_fn="net_endpoint_window_scale_${case_name}_smoke" ;;
+  esac
+
+  if ! rg -q "pub fn ${export_fn}\(" "$ENDPOINT_EXPORT_FILE"; then
     echo "[verify_net_endpoint_required] missing export '${export_fn}' in ${ENDPOINT_EXPORT_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${wrapper_fn}\\(" "$KERNEL_WRAPPER_FILE"; then
+  if [[ -n "$alt_wrapper_fn" ]]; then
+    wrapper_pat="pub fn (${wrapper_fn}|${alt_wrapper_fn})\("
+    suite_pat="(${wrapper_fn}|${alt_wrapper_fn})"
+  else
+    wrapper_pat="pub fn ${wrapper_fn}\("
+    suite_pat="${wrapper_fn}"
+  fi
+
+  if ! rg -q "$wrapper_pat" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_DIR"; then
     echo "[verify_net_endpoint_required] missing wrapper '${wrapper_fn}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
+  if ! rg -q "$suite_pat" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
     echo "[verify_net_endpoint_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
