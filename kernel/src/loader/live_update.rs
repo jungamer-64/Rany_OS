@@ -332,7 +332,7 @@ pub struct LiveUpdateManager {
     /// ロールバック猶予期間のエポック
     rollback_epoch: AtomicU64,
     /// デフォルトロールバック猶予期間（ティック）
-    rollback_grace_period: u64,
+    rollback_grace_period: AtomicU64,
     /// 検証猶予中の更新コンテキスト
     pending: Mutex<Option<PendingUpdateContext>>,
     /// 直近の更新結果（DriverCell側の状態同期用）
@@ -346,7 +346,7 @@ impl LiveUpdateManager {
             state: Mutex::new(LiveUpdateState::Ready),
             updating: AtomicBool::new(false),
             rollback_epoch: AtomicU64::new(0),
-            rollback_grace_period: 60 * 1000, // 60秒（ミリ秒）
+            rollback_grace_period: AtomicU64::new(60 * 1000), // 60秒（ミリ秒）
             pending: Mutex::new(None),
             recent_outcomes: Mutex::new(Vec::new()),
         }
@@ -506,7 +506,8 @@ impl LiveUpdateManager {
         log::info!("[LIVE_UPDATE] All cores reached quiescent state\n");
 
         let now = crate::task::timer::current_tick();
-        let deadline = now.saturating_add(self.rollback_grace_period);
+        let grace = self.rollback_grace_period.load(Ordering::Acquire);
+        let deadline = now.saturating_add(grace);
         {
             let mut pending = self.pending.lock();
             *pending = Some(PendingUpdateContext {
@@ -723,6 +724,12 @@ impl LiveUpdateManager {
             outcomes.drain(0..drain);
         }
     }
+
+    #[cfg(feature = "qemu-test-export")]
+    pub fn set_rollback_grace_period_for_test(&self, ticks: u64) -> u64 {
+        self.rollback_grace_period
+            .swap(ticks, Ordering::AcqRel)
+    }
 }
 
 impl Default for LiveUpdateManager {
@@ -805,6 +812,11 @@ pub fn live_update_manager() -> &'static LiveUpdateManager {
 /// Quiescent point などから呼ぶ保留更新の自動処理
 pub fn poll_pending_updates() {
     LIVE_UPDATE_MANAGER.poll_pending_updates();
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn set_rollback_grace_period_for_test(ticks: u64) -> u64 {
+    LIVE_UPDATE_MANAGER.set_rollback_grace_period_for_test(ticks)
 }
 
 /// アクティブコア数を設定

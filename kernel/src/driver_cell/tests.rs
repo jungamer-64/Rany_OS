@@ -4,6 +4,10 @@
 
 #![allow(dead_code)]
 
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use super::fault::{FaultKind, RestartPolicy};
 use super::stats::DriverCellStats;
 use super::*;
@@ -225,4 +229,556 @@ pub fn driver_cell_global_stats_tracking_smoke() -> bool {
 
     let summary = stats.summary();
     summary.total_created == 2 && summary.total_faults == 1 && summary.total_hot_swaps == 1
+}
+
+#[cfg(feature = "qemu-test-export")]
+#[derive(Debug, Clone, Copy)]
+pub struct DriverCellRuntimeSuiteSummary {
+    pub passed: u32,
+    pub failed: u32,
+    pub blocked: u32,
+}
+
+#[cfg(feature = "qemu-test-export")]
+impl DriverCellRuntimeSuiteSummary {
+    pub const fn new() -> Self {
+        Self {
+            passed: 0,
+            failed: 0,
+            blocked: 0,
+        }
+    }
+
+    pub const fn is_success(&self) -> bool {
+        self.failed == 0 && self.blocked == 0
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+#[derive(Debug)]
+enum RuntimeCaseError {
+    Failed(String),
+    Blocked(String),
+}
+
+#[cfg(feature = "qemu-test-export")]
+impl RuntimeCaseError {
+    fn failed(msg: impl Into<String>) -> Self {
+        Self::Failed(msg.into())
+    }
+
+    fn blocked(msg: impl Into<String>) -> Self {
+        Self::Blocked(msg.into())
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+struct RuntimeContext {
+    driver_cell_id: DriverCellId,
+    v1_cell: Vec<u8>,
+    v2_cell: Vec<u8>,
+}
+
+#[cfg(feature = "qemu-test-export")]
+pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
+    let mut summary = DriverCellRuntimeSuiteSummary::new();
+    runtime_log_line("[driver-cell-runtime] start");
+
+    let mut ctx = match preflight() {
+        Ok(ctx) => {
+            summary.passed += 1;
+            log_case("preflight", "pass", "");
+            ctx
+        }
+        Err(RuntimeCaseError::Failed(reason)) => {
+            summary.failed += 1;
+            log_case("preflight", "fail", &reason);
+            log_summary(&summary);
+            return summary;
+        }
+        Err(RuntimeCaseError::Blocked(reason)) => {
+            summary.blocked += 1;
+            log_case("preflight", "blocked", &reason);
+            log_summary(&summary);
+            return summary;
+        }
+    };
+
+    let old_grace = crate::loader::live_update::set_rollback_grace_period_for_test(1_000);
+
+    run_case(
+        &mut summary,
+        "update_validating",
+        case_update_to_validating(&mut ctx),
+    );
+    run_case(
+        &mut summary,
+        "manual_rollback",
+        case_manual_rollback(&mut ctx),
+    );
+    run_case(
+        &mut summary,
+        "manual_commit",
+        case_manual_commit(&mut ctx),
+    );
+    run_case(&mut summary, "auto_commit", case_auto_commit(&mut ctx));
+    run_case(
+        &mut summary,
+        "auto_rollback_panic",
+        case_auto_rollback_panic(&mut ctx),
+    );
+    run_case(
+        &mut summary,
+        "idle_restart_panic",
+        case_idle_restart_panic(&mut ctx),
+    );
+    run_case(&mut summary, "unload_after_restart", case_unload(&mut ctx));
+
+    crate::loader::live_update::set_rollback_grace_period_for_test(old_grace);
+    log_summary(&summary);
+    summary
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
+    let manager = driver_cell_manager();
+    let driver_cell_id = manager
+        .find_by_name("driver_cell_probe")
+        .ok_or_else(|| RuntimeCaseError::failed("driver_cell_probe is not loaded from initramfs"))?;
+
+    let (state, hot_swap_state, loader_cell_id) = manager
+        .with_cell(driver_cell_id, |cell| (cell.state, cell.hot_swap_state, cell.cell_id))
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverCell: {}", e)))?;
+
+    if state != DriverCellState::Running {
+        return Err(RuntimeCaseError::failed(format!(
+            "driver_cell_probe is not Running (state={})",
+            state
+        )));
+    }
+    if hot_swap_state != HotSwapState::Idle {
+        return Err(RuntimeCaseError::failed(format!(
+            "driver_cell_probe hot_swap state is not Idle (state={})",
+            hot_swap_state
+        )));
+    }
+    if loader_cell_id.is_none() {
+        return Err(RuntimeCaseError::failed(
+            "driver_cell_probe has no loader CellId",
+        ));
+    }
+
+    let v1_cell = crate::fs::read_file_content("/cells/driver_cell_probe_v1.cell", "/")
+        .map_err(|e| RuntimeCaseError::failed(format!("missing /cells/driver_cell_probe_v1.cell: {:?}", e)))?;
+    let v2_cell = crate::fs::read_file_content("/cells/driver_cell_probe_v2.cell", "/")
+        .map_err(|e| RuntimeCaseError::failed(format!("missing /cells/driver_cell_probe_v2.cell: {:?}", e)))?;
+
+    if !wait_for_tick_progress(5, 300_000) {
+        return Err(RuntimeCaseError::blocked(
+            "timer tick did not advance (try removing qemu_no_if=1)",
+        ));
+    }
+
+    Ok(RuntimeContext {
+        driver_cell_id,
+        v1_cell,
+        v2_cell,
+    })
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_update_to_validating(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    ensure_running_idle(ctx.driver_cell_id)?;
+    let result = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v2_cell)
+        .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
+    poll_runtime();
+
+    let health = super::hot_swap::health_status(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+    if health.hot_swap_state != HotSwapState::Validating {
+        return Err(RuntimeCaseError::failed(format!(
+            "expected Validating after update, got {}",
+            health.hot_swap_state
+        )));
+    }
+    if health.validation_deadline_tick.is_none() {
+        return Err(RuntimeCaseError::failed(
+            "validation deadline is missing after update",
+        ));
+    }
+    if health.loader_cell_id.map(|v| v.as_u64()) != Some(result.new_cell_id.as_u64()) {
+        return Err(RuntimeCaseError::failed(
+            "loader CellId did not switch to new cell",
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    let before = super::hot_swap::health_status(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+    if before.hot_swap_state != HotSwapState::Validating {
+        return Err(RuntimeCaseError::failed(
+            "manual rollback expects Validating state",
+        ));
+    }
+    let before_loader = before
+        .loader_cell_id
+        .ok_or_else(|| RuntimeCaseError::failed("current loader CellId missing"))?
+        .as_u64();
+
+    super::hot_swap::rollback(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("rollback failed: {}", e)))?;
+    poll_runtime();
+
+    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+    if after.hot_swap_state != HotSwapState::Idle {
+        return Err(RuntimeCaseError::failed(format!(
+            "expected Idle after rollback, got {}",
+            after.hot_swap_state
+        )));
+    }
+    if after.validation_deadline_tick.is_some() {
+        return Err(RuntimeCaseError::failed(
+            "validation deadline remained after rollback",
+        ));
+    }
+    let after_loader = after
+        .loader_cell_id
+        .ok_or_else(|| RuntimeCaseError::failed("loader CellId missing after rollback"))?
+        .as_u64();
+    if after_loader == before_loader {
+        return Err(RuntimeCaseError::failed(
+            "loader CellId did not move back on rollback",
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_manual_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    ensure_running_idle(ctx.driver_cell_id)?;
+    let update = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v2_cell)
+        .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
+    poll_runtime();
+
+    super::hot_swap::commit(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("commit failed: {}", e)))?;
+    poll_runtime();
+
+    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+    if after.hot_swap_state != HotSwapState::Idle {
+        return Err(RuntimeCaseError::failed(format!(
+            "expected Idle after commit, got {}",
+            after.hot_swap_state
+        )));
+    }
+    if after.validation_deadline_tick.is_some() {
+        return Err(RuntimeCaseError::failed(
+            "validation deadline remained after commit",
+        ));
+    }
+    if after.loader_cell_id.map(|v| v.as_u64()) != Some(update.new_cell_id.as_u64()) {
+        return Err(RuntimeCaseError::failed(
+            "loader CellId is not the committed new cell",
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    ensure_running_idle(ctx.driver_cell_id)?;
+    let update = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v1_cell)
+        .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v1) failed: {}", e)))?;
+    poll_runtime();
+
+    let validating = super::hot_swap::health_status(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+    let deadline = validating
+        .validation_deadline_tick
+        .ok_or_else(|| RuntimeCaseError::failed("missing validation deadline for auto-commit"))?;
+
+    if !wait_for_tick(deadline.saturating_add(5), 1_000_000) {
+        return Err(RuntimeCaseError::blocked(
+            "timer did not reach auto-commit deadline",
+        ));
+    }
+    poll_runtime();
+
+    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+    if after.hot_swap_state != HotSwapState::Idle {
+        return Err(RuntimeCaseError::failed(format!(
+            "auto-commit did not finish (state={})",
+            after.hot_swap_state
+        )));
+    }
+    if after.validation_deadline_tick.is_some() {
+        return Err(RuntimeCaseError::failed(
+            "validation deadline remained after auto-commit",
+        ));
+    }
+    if after.loader_cell_id.map(|v| v.as_u64()) != Some(update.new_cell_id.as_u64()) {
+        return Err(RuntimeCaseError::failed(
+            "auto-commit did not keep new loader CellId",
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    ensure_running_idle(ctx.driver_cell_id)?;
+    let update = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v2_cell)
+        .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
+    poll_runtime();
+
+    let (restart_before, fault_before) = driver_cell_manager()
+        .with_cell(ctx.driver_cell_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to read stats: {}", e)))?;
+
+    let outcome = super::fault::inject_test_fault(ctx.driver_cell_id, super::fault::TestFaultKind::Panic)
+        .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
+    poll_runtime();
+
+    if outcome.action != super::fault::FaultAction::RolledBack {
+        return Err(RuntimeCaseError::failed(format!(
+            "expected RolledBack action, got {}",
+            outcome.action
+        )));
+    }
+
+    let (restart_after, fault_after) = driver_cell_manager()
+        .with_cell(ctx.driver_cell_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to read stats: {}", e)))?;
+    if restart_after != restart_before {
+        return Err(RuntimeCaseError::failed(
+            "restart_count changed during auto-rollback path",
+        ));
+    }
+    if fault_after <= fault_before {
+        return Err(RuntimeCaseError::failed(
+            "fault_count did not increase after injected panic",
+        ));
+    }
+
+    let after = super::hot_swap::health_status(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
+    if after.hot_swap_state != HotSwapState::Idle {
+        return Err(RuntimeCaseError::failed(format!(
+            "auto-rollback did not return to Idle (state={})",
+            after.hot_swap_state
+        )));
+    }
+    if after.validation_deadline_tick.is_some() {
+        return Err(RuntimeCaseError::failed(
+            "validation deadline remained after auto-rollback",
+        ));
+    }
+    if after.loader_cell_id.map(|v| v.as_u64()) != Some(update.old_cell_id.as_u64()) {
+        return Err(RuntimeCaseError::failed(
+            "loader CellId did not return to old cell after auto-rollback",
+        ));
+    }
+    if after.last_health_failure.is_none() {
+        return Err(RuntimeCaseError::failed(
+            "last_health_failure is empty after auto-rollback panic",
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    ensure_running_idle(ctx.driver_cell_id)?;
+    let restart_before = driver_cell_manager()
+        .with_cell(ctx.driver_cell_id, |cell| cell.stats.restart_count)
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to read restart_count: {}", e)))?;
+
+    let outcome = super::fault::inject_test_fault(ctx.driver_cell_id, super::fault::TestFaultKind::Panic)
+        .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
+    poll_runtime();
+
+    if outcome.action != super::fault::FaultAction::Restarted {
+        return Err(RuntimeCaseError::failed(format!(
+            "expected Restarted action in Idle panic path, got {}",
+            outcome.action
+        )));
+    }
+
+    let (restart_after, state_after, hot_swap_after) = driver_cell_manager()
+        .with_cell(ctx.driver_cell_id, |cell| {
+            (cell.stats.restart_count, cell.state, cell.hot_swap_state)
+        })
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect post-restart state: {}", e)))?;
+
+    if restart_after <= restart_before {
+        return Err(RuntimeCaseError::failed(
+            "restart_count did not increase in Idle panic path",
+        ));
+    }
+    if state_after != DriverCellState::Running {
+        return Err(RuntimeCaseError::failed(format!(
+            "DriverCell did not return to Running (state={})",
+            state_after
+        )));
+    }
+    if hot_swap_after != HotSwapState::Idle {
+        return Err(RuntimeCaseError::failed(format!(
+            "HotSwap state is not Idle after restart (state={})",
+            hot_swap_after
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_unload(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    super::lifecycle::unload(ctx.driver_cell_id)
+        .map_err(|e| RuntimeCaseError::failed(format!("unload failed after restart: {}", e)))?;
+    poll_runtime();
+
+    if driver_cell_manager().find_by_name("driver_cell_probe").is_some() {
+        return Err(RuntimeCaseError::failed(
+            "driver_cell_probe still exists after unload",
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn ensure_running_idle(id: DriverCellId) -> Result<(), RuntimeCaseError> {
+    let (state, hot_swap_state) = driver_cell_manager()
+        .with_cell(id, |cell| (cell.state, cell.hot_swap_state))
+        .map_err(|e| RuntimeCaseError::failed(format!("failed to inspect DriverCell state: {}", e)))?;
+    if state != DriverCellState::Running {
+        return Err(RuntimeCaseError::failed(format!(
+            "expected Running state, got {}",
+            state
+        )));
+    }
+    if hot_swap_state != HotSwapState::Idle {
+        return Err(RuntimeCaseError::failed(format!(
+            "expected Idle hot_swap state, got {}",
+            hot_swap_state
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn poll_runtime() {
+    crate::loader::live_update::poll_pending_updates();
+    super::hot_swap::poll_validation_windows();
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn wait_for_tick_progress(delta: u64, max_stagnant_loops: usize) -> bool {
+    let start = crate::task::timer::current_tick();
+    let mut last_tick = start;
+    let mut stagnant = 0usize;
+
+    while crate::task::timer::current_tick().saturating_sub(start) < delta {
+        poll_runtime();
+        let now = crate::task::timer::current_tick();
+        if now > last_tick {
+            last_tick = now;
+            stagnant = 0;
+        } else {
+            stagnant = stagnant.saturating_add(1);
+        }
+
+        if stagnant >= max_stagnant_loops {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+
+    true
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn wait_for_tick(target: u64, max_stagnant_loops: usize) -> bool {
+    let mut last_tick = crate::task::timer::current_tick();
+    let mut stagnant = 0usize;
+
+    while crate::task::timer::current_tick() < target {
+        poll_runtime();
+        let now = crate::task::timer::current_tick();
+        if now > last_tick {
+            last_tick = now;
+            stagnant = 0;
+        } else {
+            stagnant = stagnant.saturating_add(1);
+        }
+
+        if stagnant >= max_stagnant_loops {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+    true
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn run_case(
+    summary: &mut DriverCellRuntimeSuiteSummary,
+    name: &str,
+    result: Result<(), RuntimeCaseError>,
+) {
+    match result {
+        Ok(()) => {
+            summary.passed += 1;
+            log_case(name, "pass", "");
+        }
+        Err(RuntimeCaseError::Failed(reason)) => {
+            summary.failed += 1;
+            log_case(name, "fail", &reason);
+        }
+        Err(RuntimeCaseError::Blocked(reason)) => {
+            summary.blocked += 1;
+            log_case(name, "blocked", &reason);
+        }
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn log_case(name: &str, status: &str, detail: &str) {
+    if detail.is_empty() {
+        runtime_log_line(&format!("[driver-cell-runtime] case {} ... {}", name, status));
+    } else {
+        runtime_log_line(&format!(
+            "[driver-cell-runtime] case {} ... {} ({})",
+            name,
+            status,
+            detail
+        ));
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn log_summary(summary: &DriverCellRuntimeSuiteSummary) {
+    runtime_log_line(&format!(
+        "[driver-cell-runtime] summary pass={} fail={} blocked={}",
+        summary.passed,
+        summary.failed,
+        summary.blocked
+    ));
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn runtime_log_line(line: &str) {
+    crate::io::log::early_print(line);
+    crate::io::log::early_print("\n");
 }

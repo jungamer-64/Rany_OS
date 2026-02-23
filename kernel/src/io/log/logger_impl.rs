@@ -11,6 +11,13 @@ impl Log for KernelLogger {
     }
 
     fn log(&self, record: &Record) {
+        // diagnostic: print the message content via early_print if heap is available
+        if HEAP_AVAILABLE.load(Ordering::Relaxed) {
+            let msg = alloc::format!("{}", record.args());
+            super::early_print("[LOGDBG] msg=[");
+            super::early_print(&msg);
+            super::early_print("]\n");
+        }
         if !self.enabled(record.metadata()) {
             return;
         }

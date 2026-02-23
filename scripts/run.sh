@@ -61,6 +61,7 @@ FEATURES=()
 QEMU_EXTRA_ARGS=()
 CARGO_RUNNER=false
 CARGO_KERNEL_PATH=""
+KERNEL_CMDLINE=""
 
 # --- Argument Parsing ---
 while [[ $# -gt 0 ]]; do
@@ -135,6 +136,9 @@ while [[ $# -gt 0 ]]; do
         --qemu-extra)
             QEMU_EXTRA_ARGS+=("$2")
             shift 2 ;;
+        --cmdline)
+            KERNEL_CMDLINE="$2"
+            shift 2 ;;
         --cargo-runner)
             CARGO_RUNNER=true
             CARGO_KERNEL_PATH="$2"
@@ -160,6 +164,7 @@ QEMU Options:
   --tcg             Force TCG software emulation (slower but compatible)
   --reset-vars      Reset UEFI variables (OVMF_VARS.fd) to original state
   --monitor         Enable QEMU Monitor on telnet port 4444
+  --cmdline ARGS    Write ARGS to exoloader.cmdline for kernel cmdline injection
 
 Hardware Emulation:
   --iommu           Enable Intel VT-d IOMMU emulation (default: enabled)
@@ -439,6 +444,12 @@ create_disk_image() {
     # Copy artifacts
     cp "$LOADER_EFI" "$FAT_ROOT/EFI/BOOT/BOOTX64.EFI"
     cp "$KERNEL_SIGNED" "$FAT_ROOT/rany_os"
+
+    # Optional kernel cmdline injection (bootloader reads exoloader.cmdline)
+    if [[ -n "$KERNEL_CMDLINE" ]]; then
+        printf '%s\n' "$KERNEL_CMDLINE" > "$FAT_ROOT/exoloader.cmdline"
+        done_ "Injected exoloader.cmdline"
+    fi
 
     # Optional initramfs
     if [[ -f "$TARGET_DIR/initramfs.tar" ]]; then

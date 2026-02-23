@@ -201,6 +201,44 @@ pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_m
                     loop {
                         x86_64::instructions::hlt();
                     }
+                } else if val == "driver_cell" {
+                    info!(target: "init", "Running integration tests (driver_cell) as requested by cmdline");
+                    #[cfg(feature = "qemu-test-export")]
+                    {
+                        let summary = crate::driver_cell::qemu_tests::run_driver_cell_runtime_suite();
+                        info!(
+                            target: "init",
+                            "driver_cell runtime summary: pass={} fail={} blocked={}",
+                            summary.passed,
+                            summary.failed,
+                            summary.blocked
+                        );
+                        use hal::port_io::PortU32;
+
+                        let mut port = PortU32::new(0xf4);
+                        if summary.is_success() {
+                            port.write(0x10u32);
+                        } else {
+                            port.write(0x11u32);
+                        }
+                        loop {
+                            x86_64::instructions::hlt();
+                        }
+                    }
+                    #[cfg(not(feature = "qemu-test-export"))]
+                    {
+                        warn!(
+                            target: "init",
+                            "run_integration=driver_cell requires qemu-test-export feature"
+                        );
+                        use hal::port_io::PortU32;
+
+                        let mut port = PortU32::new(0xf4);
+                        port.write(0x11u32);
+                        loop {
+                            x86_64::instructions::hlt();
+                        }
+                    }
                 }
             }
         }
@@ -562,8 +600,6 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         }
     }
 
-    run_integration_tests_if_requested(boot_info, phys_mem_offset);
-
     // 6. 割り込みを有効化
     #[cfg(not(feature = "qemu-test-export"))]
     {
@@ -572,8 +608,33 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     }
     #[cfg(feature = "qemu-test-export")]
     {
-        info!(target: "init", "Interrupt enable skipped in qemu-test-export mode");
+        let mut skip_interrupt_enable = false;
+        if boot_info.cmdline_len > 0 {
+            let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
+            let slice =
+                unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+            if let Ok(cmdline) = core::str::from_utf8(slice) {
+                if let Some(v) = util::get_cmdline_option(cmdline, "qemu_no_if") {
+                    if v == "1" || v == "true" || v == "yes" {
+                        skip_interrupt_enable = true;
+                    }
+                }
+            }
+        }
+
+        if skip_interrupt_enable {
+            info!(
+                target: "init",
+                "Interrupt enable skipped by cmdline option qemu_no_if=1"
+            );
+        } else {
+            interrupts::enable_interrupts();
+            info!(target: "init", "Interrupts enabled (qemu-test-export mode)");
+        }
     }
+
+    // 6.5. cmdline 指定の統合テスト実行（必要ならここで QEMU へ終了コードを返す）
+    run_integration_tests_if_requested(boot_info, phys_mem_offset);
 
     // 7. システム統計を表示
     // before printing system stats
