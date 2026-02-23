@@ -1,5 +1,7 @@
 # **ExoRust**
 
+[![Codacy Badge](https://api.codacy.com/project/badge/Grade/3c55bda6c0f34dccbf71b93e2e1917a9)](https://app.codacy.com/gh/jungamer-64/Rany_OS?utm_source=github.com&utm_medium=referral&utm_content=jungamer-64/Rany_OS&utm_campaign=Badge_Grade)
+
 **ExoRust** は、Linux/POSIX互換性を完全に排除し、Rustの所有権モデルと型システムをOS設計の根幹に据えた、次世代x86_64用高性能Exokernel研究プロジェクトです。
 
 ## **🎯 アーキテクチャ概論**
