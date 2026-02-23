@@ -250,8 +250,10 @@ pub fn enable_interrupts() {
     // guarantee some output even if logging backend is unusable
     crate::io::log::early_print("[INT] enable_interrupts() entry\n");
 
-    // log before toggling the IF flag so we know the call was reached
-    log::info!("[INT] enable_interrupts() about to set IF");
+    // We avoid calling `log::info!` here; the logger mutex may deadlock
+    // if an interrupt fires immediately after IF is set and the handler tries
+    // to log.  Use early_print which does not take the lock.
+    crate::io::log::early_print("[INT] enable_interrupts() about to set IF\n");
 
     // actually enable
     x86_64::instructions::interrupts::enable();
@@ -431,7 +433,8 @@ define_interrupt!(
     fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
         // log first tick to confirm handler firing
         if !TIMER_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-            log::warn!("[INT] timer interrupt handler entered");
+            // use early_print to avoid acquiring the logger lock inside ISR
+            crate::io::log::early_print("[INT] timer interrupt handler entered\n");
         }
 
         // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）

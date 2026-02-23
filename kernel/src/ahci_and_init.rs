@@ -556,10 +556,17 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     // Diagnostic: immediate manual ping attempt to exercise network transmit path
     io::log::early_print("[DEBUG] Manual ping insertion point\n");
-    info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
-    match crate::net::send_real_icmp_echo([10, 0, 2, 2], 1) {
-        Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
-        Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
+    io::log::early_print("[DEBUG] Manual network ping attempt to 10.0.2.2 (will trigger ARP)\n");
+    let ping_res = crate::net::send_real_icmp_echo([10, 0, 2, 2], 1);
+    match ping_res {
+        Ok(rtt) => {
+            info!(target: "init", "Manual ping success rtt={}", rtt);
+            io::log::early_print(&alloc::format!("[DEBUG] Manual ping success rtt={}\n", rtt));
+        }
+        Err(e) => {
+            warn!(target: "init", "Manual ping failed: {}", e);
+            io::log::early_print(&alloc::format!("[DEBUG] Manual ping failed: {}\n", e));
+        }
     }
 
     run_integration_tests_if_requested(boot_info, phys_mem_offset);
