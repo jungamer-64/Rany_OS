@@ -22,20 +22,103 @@ use crate::io::virtio::transport::VirtioMmioTransport;
 use alloc::sync::Arc;
 use spin::RwLock;
 
+/// Primary (legacy) VirtIO-Net device slot kept for compatibility (`index=0`).
 pub(crate) static VIRTIO_NET_DEVICE: Mutex<Option<VirtioNetDevice>> = Mutex::new(None);
+/// Additional VirtIO-Net devices (`index != 0`).
+pub(crate) static VIRTIO_NET_DEVICES: RwLock<BTreeMap<u8, Arc<Mutex<VirtioNetDevice>>>> =
+    RwLock::new(BTreeMap::new());
+
+fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
+    if index == 0 {
+        *VIRTIO_NET_DEVICE.lock() = Some(device);
+    } else {
+        VIRTIO_NET_DEVICES
+            .write()
+            .insert(index, Arc::new(Mutex::new(device)));
+    }
+}
+
+fn with_virtio_net_device_at_index<F, R>(index: u8, f: F) -> Option<R>
+where
+    F: FnOnce(&VirtioNetDevice) -> R,
+{
+    if index == 0 {
+        return VIRTIO_NET_DEVICE.lock().as_ref().map(f);
+    }
+
+    let device = VIRTIO_NET_DEVICES.read().get(&index).cloned()?;
+    let guard = device.lock();
+    Some(f(&guard))
+}
+
+fn with_virtio_net_device_at_index_mut<F, R>(index: u8, f: F) -> Option<R>
+where
+    F: FnOnce(&mut VirtioNetDevice) -> R,
+{
+    if index == 0 {
+        let mut guard = VIRTIO_NET_DEVICE.lock();
+        return guard.as_mut().map(f);
+    }
+
+    let device = VIRTIO_NET_DEVICES.read().get(&index).cloned()?;
+    let mut guard = device.lock();
+    Some(f(&mut guard))
+}
+
+fn has_virtio_net_device(index: u8) -> bool {
+    if index == 0 {
+        return VIRTIO_NET_DEVICE.lock().is_some();
+    }
+    VIRTIO_NET_DEVICES.read().contains_key(&index)
+}
+
+fn collect_registered_virtio_net_indices() -> Vec<u8> {
+    let mut indices = Vec::new();
+    if VIRTIO_NET_DEVICE.lock().is_some() {
+        indices.push(0);
+    }
+    indices.extend(VIRTIO_NET_DEVICES.read().keys().copied());
+    indices
+}
+
+/// VirtIO ネットワークデバイス（MMIO）を index 指定で初期化
+///
+/// # Safety
+/// `base_addr` は有効なVirtIO MMIOデバイスのベースアドレスを指す必要がある
+pub fn init_virtio_net_at_index(index: u8, base_addr: usize) -> Result<(), VirtioNetError> {
+    let transport =
+        unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
+
+    let mut device = VirtioNetDevice::new_at_index(index, Box::new(transport));
+    device.init()?;
+    install_virtio_net_device(index, device);
+    Ok(())
+}
 
 /// VirtIO ネットワークデバイス（MMIO）を初期化
 ///
 /// # Safety
 /// `base_addr` は有効なVirtIO MMIOデバイスのベースアドレスを指す必要がある
 pub fn init_virtio_net(base_addr: usize) -> Result<(), VirtioNetError> {
-    // トランスポート作成（magic/version検証含む）
+    init_virtio_net_at_index(0, base_addr)
+}
+
+/// VirtIO ネットワークデバイス（MMIO）を index + IOMMUデバイスID指定で初期化
+///
+/// # Safety
+/// `base_addr` は有効なVirtIO MMIOデバイスのベースアドレスを指す必要がある
+pub fn init_virtio_net_for_device_at_index(
+    index: u8,
+    base_addr: usize,
+    device: IommuDeviceId,
+) -> Result<(), VirtioNetError> {
     let transport =
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
-    let mut device = VirtioNetDevice::new(Box::new(transport));
+    let mut device =
+        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), Some(device));
     device.init()?;
-    *VIRTIO_NET_DEVICE.lock() = Some(device);
+    install_virtio_net_device(index, device);
     Ok(())
 }
 
@@ -47,26 +130,62 @@ pub fn init_virtio_net_for_device(
     base_addr: usize,
     device: IommuDeviceId,
 ) -> Result<(), VirtioNetError> {
-    let transport =
-        unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
-
-    let mut device = VirtioNetDevice::new_with_device(Box::new(transport), Some(device));
-    device.init()?;
-    *VIRTIO_NET_DEVICE.lock() = Some(device);
-    Ok(())
+    init_virtio_net_for_device_at_index(0, base_addr, device)
 }
 
 /// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI).
 ///
 /// `iommu_device_id` must be provided when IOMMU is enabled (strict mode).
+pub fn init_virtio_net_with_transport_at_index(
+    index: u8,
+    transport: Box<dyn VirtioTransport>,
+    iommu_device_id: Option<IommuDeviceId>,
+) -> Result<(), VirtioNetError> {
+    let mut device = VirtioNetDevice::new_with_index_and_device(index, transport, iommu_device_id);
+    device.init()?;
+    install_virtio_net_device(index, device);
+    Ok(())
+}
+
+/// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI).
+///
+/// Compatibility wrapper for `index=0`.
 pub fn init_virtio_net_with_transport(
     transport: Box<dyn VirtioTransport>,
     iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), VirtioNetError> {
-    let mut device = VirtioNetDevice::new_with_device(transport, iommu_device_id);
-    device.init()?;
-    *VIRTIO_NET_DEVICE.lock() = Some(device);
-    Ok(())
+    init_virtio_net_with_transport_at_index(0, transport, iommu_device_id)
+}
+
+/// VirtIO ネットワークデバイスに index 指定でアクセス
+pub fn with_virtio_net_at_index<F, R>(index: u8, f: F) -> Option<R>
+where
+    F: FnOnce(&VirtioNetDevice) -> R,
+{
+    with_virtio_net_device_at_index(index, f)
+}
+
+/// Bind a VirtIO-Net device index to a logical network interface id.
+///
+/// Returns `true` if the device exists and was updated.
+pub fn bind_virtio_net_interface(index: u8, if_id: crate::net::NetIfId) -> bool {
+    with_virtio_net_device_at_index_mut(index, |device| {
+        device.set_net_if_id(if_id);
+    })
+    .is_some()
+}
+
+/// 登録済み VirtIO-Net デバイスを列挙して処理する。
+pub fn for_each_virtio_net<F>(mut f: F)
+where
+    F: FnMut(u8, &VirtioNetDevice),
+{
+    let indices = collect_registered_virtio_net_indices();
+    for index in indices {
+        let _ = with_virtio_net_device_at_index(index, |device| {
+            f(index, device);
+        });
+    }
 }
 
 /// VirtIO ネットワークデバイスにアクセス
@@ -74,25 +193,44 @@ pub fn with_virtio_net<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&VirtioNetDevice) -> R,
 {
-    VIRTIO_NET_DEVICE.lock().as_ref().map(f)
+    with_virtio_net_device_at_index(0, f)
+}
+
+/// 指定 index の VirtIO-Net 割り込みを処理する。
+pub fn handle_virtio_net_interrupt_for_index(index: u8) {
+    let _ = with_virtio_net_device_at_index(index, |device| {
+        let status = device.transport.get_interrupt_status();
+        crate::io::log::early_print(&alloc::format!(
+            "[EARLY][VIRTIO-NET] IRQ status read index={} status=0x{:x}\n",
+            index, status
+        ));
+        device.transport.ack_interrupt(status);
+        device.handle_interrupt();
+    });
+}
+
+/// 登録済みの全 VirtIO-Net デバイス割り込みを処理する（共有IRQ向け）。
+pub fn handle_all_virtio_net_interrupts() {
+    let indices = collect_registered_virtio_net_indices();
+    for index in indices {
+        handle_virtio_net_interrupt_for_index(index);
+    }
 }
 
 /// 割り込みハンドラ
 pub fn handle_virtio_net_interrupt() {
-    if let Some(ref mut device) = *VIRTIO_NET_DEVICE.lock() {
-        // Read and ack interrupt status for diagnostics and clearing the device
-        let status = device.transport.get_interrupt_status();
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] IRQ status read=0x{:x}\n", status));
-        device.transport.ack_interrupt(status);
-
-        // Now process completions
-        device.handle_interrupt();
-    }
+    handle_all_virtio_net_interrupts();
 }
 
 #[cfg(test)]
 #[path = "../../tests.rs"]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn clear_virtio_net_devices_for_tests() {
+    *VIRTIO_NET_DEVICE.lock() = None;
+    VIRTIO_NET_DEVICES.write().clear();
+}
 
 // ============================================================================
 // IoScheduler Integration
@@ -111,8 +249,8 @@ struct PendingNetRequest {
 
 /// VirtIO ネットワーク PollHandler 実装
 pub struct VirtioNetPollHandler {
-    /// デバイスへの参照
-    device_lock: &'static Mutex<Option<VirtioNetDevice>>,
+    /// 対象 VirtIO-Net device index
+    device_index: u8,
     /// 保留中RXリクエスト (desc_id -> request)
     pending_rx: Mutex<BTreeMap<u16, PendingNetRequest>>,
     /// 保留中TXリクエスト (desc_id -> request)
@@ -124,12 +262,28 @@ pub struct VirtioNetPollHandler {
 impl VirtioNetPollHandler {
     /// 新しい VirtioNetPollHandler を作成
     pub fn new() -> Self {
+        Self::new_for_index(0)
+    }
+
+    /// 指定 index 用の VirtioNetPollHandler を作成
+    pub fn new_for_index(device_index: u8) -> Self {
         Self {
-            device_lock: &VIRTIO_NET_DEVICE,
+            device_index,
             pending_rx: Mutex::new(BTreeMap::new()),
             pending_tx: Mutex::new(BTreeMap::new()),
             next_request_id: AtomicU64::new(1),
         }
+    }
+
+    fn with_device<F, R>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&VirtioNetDevice) -> R,
+    {
+        with_virtio_net_device_at_index(self.device_index, f)
+    }
+
+    fn is_device_ready(&self) -> bool {
+        has_virtio_net_device(self.device_index)
     }
 
     /// 新しいリクエストIDを生成
@@ -277,9 +431,8 @@ impl VirtioNetPollHandler {
 
 impl PollHandler for VirtioNetPollHandler {
     fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
-        let mut results = Vec::new();
-
-        if let Some(ref device) = *self.device_lock.lock() {
+        self.with_device(|device| {
+            let mut results = Vec::new();
             if let Some(ref rx_queue) = device.rx_queue {
                 for (desc_id, len) in rx_queue.process_used() {
                     device.rx_packets.fetch_add(1, Ordering::Relaxed);
@@ -323,13 +476,13 @@ impl PollHandler for VirtioNetPollHandler {
                     crate::net::endpoint::event::NetworkEvent::TxAvailable,
                 );
             }
-        }
-
-        results
+            results
+        })
+        .unwrap_or_default()
     }
 
     fn is_ready(&self) -> bool {
-        self.device_lock.lock().is_some()
+        self.is_device_ready()
     }
 }
 
@@ -368,43 +521,44 @@ impl VirtioNetOps {
         code: u32,
         buf: crate::io::io_scheduler::DmaBufHandle,
     ) -> Result<(), crate::io::io_scheduler::IoError> {
-        let _ = self.device_index;
-
-        let device_guard = self.handler.device_lock.lock();
-        let device = device_guard
-            .as_ref()
-            .ok_or(crate::io::io_scheduler::IoError::NoResources)?;
-
-        match code {
-            VIRTIO_NET_IOCTL_TX => {
-                let tx_queue = device
-                    .tx_queue
-                    .as_ref()
-                    .ok_or(crate::io::io_scheduler::IoError::NoResources)?;
-                let desc_id = tx_queue
-                    .add_tx_buffer_zero_copy(buf.iova, buf.len)
-                    .map_err(map_virtio_net_error)?;
-                self.handler.add_pending_tx(io_id, desc_id, buf.len);
-                tx_queue.notify();
-                Ok(())
-            }
-            VIRTIO_NET_IOCTL_RX => {
-                if buf.len < VirtioNetHeader::SIZE {
-                    return Err(crate::io::io_scheduler::IoError::InvalidParameter);
+        self.handler
+            .with_device(|device| match code {
+                VIRTIO_NET_IOCTL_TX => {
+                    if device.virtio_index != self.device_index {
+                        return Err(crate::io::io_scheduler::IoError::DeviceError);
+                    }
+                    let tx_queue = device
+                        .tx_queue
+                        .as_ref()
+                        .ok_or(crate::io::io_scheduler::IoError::NoResources)?;
+                    let desc_id = tx_queue
+                        .add_tx_buffer_zero_copy(buf.iova, buf.len)
+                        .map_err(map_virtio_net_error)?;
+                    self.handler.add_pending_tx(io_id, desc_id, buf.len);
+                    tx_queue.notify();
+                    Ok(())
                 }
-                let rx_queue = device
-                    .rx_queue
-                    .as_ref()
-                    .ok_or(crate::io::io_scheduler::IoError::NoResources)?;
-                let desc_id = rx_queue
-                    .add_rx_buffer_zero_copy(buf.iova, buf.len)
-                    .map_err(map_virtio_net_error)?;
-                self.handler.add_pending_rx(io_id, desc_id, buf.len);
-                rx_queue.notify();
-                Ok(())
-            }
-            _ => Err(crate::io::io_scheduler::IoError::NotSupported),
-        }
+                VIRTIO_NET_IOCTL_RX => {
+                    if device.virtio_index != self.device_index {
+                        return Err(crate::io::io_scheduler::IoError::DeviceError);
+                    }
+                    if buf.len < VirtioNetHeader::SIZE {
+                        return Err(crate::io::io_scheduler::IoError::InvalidParameter);
+                    }
+                    let rx_queue = device
+                        .rx_queue
+                        .as_ref()
+                        .ok_or(crate::io::io_scheduler::IoError::NoResources)?;
+                    let desc_id = rx_queue
+                        .add_rx_buffer_zero_copy(buf.iova, buf.len)
+                        .map_err(map_virtio_net_error)?;
+                    self.handler.add_pending_rx(io_id, desc_id, buf.len);
+                    rx_queue.notify();
+                    Ok(())
+                }
+                _ => Err(crate::io::io_scheduler::IoError::NotSupported),
+            })
+            .ok_or(crate::io::io_scheduler::IoError::NoResources)?
     }
 }
 
@@ -476,7 +630,7 @@ pub fn register_virtio_net_with(
         return;
     }
 
-    let handler = Arc::new(VirtioNetPollHandler::new());
+    let handler = Arc::new(VirtioNetPollHandler::new_for_index(index));
     {
         let mut handlers = VIRTIO_NET_POLL_HANDLERS.write();
         if handlers.contains_key(&index) {
@@ -602,12 +756,16 @@ mod io_scheduler_tests {
 
     struct TestStateGuard {
         prev_device: Option<VirtioNetDevice>,
+        prev_devices: BTreeMap<u8, Arc<Mutex<VirtioNetDevice>>>,
         prev_handlers: BTreeMap<u8, Arc<VirtioNetPollHandler>>,
     }
 
     impl TestStateGuard {
         fn new_with_device() -> Self {
             let prev_device = VIRTIO_NET_DEVICE.lock().take();
+            let mut devices = VIRTIO_NET_DEVICES.write();
+            let prev_devices = core::mem::take(&mut *devices);
+            drop(devices);
             let mut handlers = VIRTIO_NET_POLL_HANDLERS.write();
             let prev_handlers = core::mem::take(&mut *handlers);
             drop(handlers);
@@ -618,6 +776,7 @@ mod io_scheduler_tests {
 
             Self {
                 prev_device,
+                prev_devices,
                 prev_handlers,
             }
         }
@@ -626,7 +785,20 @@ mod io_scheduler_tests {
     impl Drop for TestStateGuard {
         fn drop(&mut self) {
             *VIRTIO_NET_DEVICE.lock() = self.prev_device.take();
+            *VIRTIO_NET_DEVICES.write() = core::mem::take(&mut self.prev_devices);
             *VIRTIO_NET_POLL_HANDLERS.write() = core::mem::take(&mut self.prev_handlers);
+        }
+    }
+
+    fn install_test_device_at_index(index: u8) {
+        let mut device = VirtioNetDevice::new_at_index(index, Box::new(TestTransport));
+        assert!(device.init().is_ok());
+        if index == 0 {
+            *VIRTIO_NET_DEVICE.lock() = Some(device);
+        } else {
+            VIRTIO_NET_DEVICES
+                .write()
+                .insert(index, Arc::new(Mutex::new(device)));
         }
     }
 
@@ -654,6 +826,63 @@ mod io_scheduler_tests {
         let _guard = TestStateGuard::new_with_device();
         let handler = VirtioNetPollHandler::new();
         assert!(handler.poll_completions().is_empty());
+    }
+
+    #[test_case]
+    fn test_poll_handlers_do_not_cross_consume_between_indices() {
+        let _guard = TestStateGuard::new_with_device();
+        install_test_device_at_index(1);
+
+        let handler0 = VirtioNetPollHandler::new_for_index(0);
+        let handler1 = VirtioNetPollHandler::new_for_index(1);
+        let io_id = IoRequestId(1101);
+
+        let desc_id = {
+            let device_lock = VIRTIO_NET_DEVICES
+                .read()
+                .get(&1)
+                .cloned()
+                .expect("device index 1");
+            let guard = device_lock.lock();
+            let device = &*guard;
+            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let desc_id = tx_queue
+                .add_tx_buffer_zero_copy(0x4100, 64)
+                .expect("tx submit");
+            unsafe {
+                let used = &mut *tx_queue.used_ring.as_ptr();
+                let slot = (used.idx % tx_queue.size) as usize;
+                used.ring[slot] = VringUsedElem {
+                    id: desc_id as u32,
+                    len: 64,
+                };
+                used.idx = used.idx.wrapping_add(1);
+            }
+            desc_id
+        };
+
+        handler1.add_pending_tx(io_id, desc_id, 64);
+
+        assert!(handler0.poll_completions().is_empty());
+
+        let results = handler1.poll_completions();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, io_id);
+        assert_eq!(results[0].1, IoResult::Success(64));
+    }
+
+    #[test_case]
+    fn test_bind_virtio_net_interface_updates_device_binding() {
+        let _guard = TestStateGuard::new_with_device();
+        install_test_device_at_index(1);
+        let if_id = crate::net::NetIfId(77);
+
+        assert!(bind_virtio_net_interface(1, if_id));
+        assert_eq!(
+            with_virtio_net_at_index(1, |device| device.net_if_id()),
+            Some(Some(if_id))
+        );
+        assert!(!bind_virtio_net_interface(42, if_id));
     }
 
     #[test_case]
@@ -913,6 +1142,33 @@ mod io_scheduler_tests {
         assert!(Arc::ptr_eq(&first_handler, &second_handler));
         assert!(Arc::ptr_eq(&first_ops, &second_ops));
         assert_eq!(VIRTIO_NET_POLL_HANDLERS.read().len(), 1);
+
+        clear_poll_handler_registry_for_tests();
+    }
+
+    #[test_case]
+    fn test_register_virtio_net_with_registers_distinct_indices() {
+        crate::io::io_scheduler::init_io_scheduler();
+        clear_poll_handler_registry_for_tests();
+
+        let scheduler = Arc::new(crate::io::io_scheduler::IoScheduler::new());
+        let coordinator = Arc::new(crate::io::io_scheduler::HybridIoCoordinator::new(scheduler));
+
+        register_virtio_net_with(&coordinator, 0);
+        register_virtio_net_with(&coordinator, 1);
+
+        let handler0 = get_poll_handler(0).expect("handler0");
+        let handler1 = get_poll_handler(1).expect("handler1");
+        let ops0 = crate::io::io_scheduler::io_scheduler()
+            .get_device_ops(DeviceId::VirtioNet { index: 0 })
+            .expect("ops0");
+        let ops1 = crate::io::io_scheduler::io_scheduler()
+            .get_device_ops(DeviceId::VirtioNet { index: 1 })
+            .expect("ops1");
+
+        assert!(!Arc::ptr_eq(&handler0, &handler1));
+        assert!(!Arc::ptr_eq(&ops0, &ops1));
+        assert_eq!(VIRTIO_NET_POLL_HANDLERS.read().len(), 2);
 
         clear_poll_handler_registry_for_tests();
     }
