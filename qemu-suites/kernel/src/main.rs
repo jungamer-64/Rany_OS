@@ -133,6 +133,10 @@ fn run_suite() -> bool {
             test_graphics_framebuffer_wave6_phase_b_exports,
         )
         && run_check(
+            "graphics_framebuffer_wave6_bench_exports",
+            test_graphics_framebuffer_wave6_bench_exports,
+        )
+        && run_check(
             "mm_wave7_async_swapout_exports",
             test_mm_wave7_async_swapout_exports,
         )

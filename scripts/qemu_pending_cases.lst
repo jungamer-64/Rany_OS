@@ -19,7 +19,8 @@ MM Wave7 Phase A deterministic set is promoted to required suite_kernel (source 
 MM Wave7 Phase E deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 MM Wave7 Phase F deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
 MM Wave7 required strict mode: allocation shortage is failure (no OOM-pass fallback in required Phase E/F cases)
-Graphics/Framebuffer Wave6 residual (bench only): bench_draw_image_bulk, bench_draw_image_24bit_bulk, bench_draw_image_rgba_bulk, bench_draw_hline_bulk, bench_draw_text_bulk
+Graphics/Framebuffer Wave6 bench deterministic set is promoted to required suite_kernel (source of truth: qemu-suites/kernel/src/main.rs)
+Graphics/Framebuffer Wave6 residual (bench only): none
 MM Wave7 residual monitored cases (bench list-only in suite_kernel_mm_pending, expected fail=0): bench_enqueue_throughput_pool_vs_nopool, bench_buffer_pool_2m_throughput, bench_buffer_pool_1g_throughput
 qemu-suites/kernel expansion from baseline+error+loader(crypto+metadata+live_update+elf)+async_swapout+iommu-cmdqueue+iommu-wave2(core+poison+grouping+ats_pri)+iommu-wave5(canonical required)+iommu-wave3(scalable+pasid_table+mapping_slab+zombie_queue+pri_fuel)+iommu-wave4(amd-wave0)+iommu-wave5-amd(amd-wave1+amd-wave5-irt required)+mm-wave7(async_swapout phase-a+phase-e+phase-f + page_reclaim required)+net-endpoint(required 68)+net-core(required 90) toward broader migrated kernel test groups
 kernel IOMMU/NET/SECURITY heavy test clusters staged migration into required or pending suites

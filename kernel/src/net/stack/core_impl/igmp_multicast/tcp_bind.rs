@@ -444,7 +444,7 @@ impl NetworkStack {
     /// Transmit a raw Ethernet frame
     pub fn transmit(&self, data: &[u8]) -> bool {
         if let Some(f) = self.transmit_fn {
-            if f(data) {
+            if f(None, data) {
                 self.stats.record_tx(data.len());
                 return true;
             } else {

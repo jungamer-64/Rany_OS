@@ -114,9 +114,11 @@ fn set_primary_bridge_if_for_virtio(if_id: super::NetIfId, virtio_index: u8) {
 // ============================================================================
 
 /// Transmit callback for NetworkStack
-/// This is called when NetworkStack needs to send a packet
-fn virtio_transmit(data: &[u8]) -> bool {
-    if let Some(if_id) = primary_bridge_if() {
+/// This is called when NetworkStack needs to send a packet.  The first
+/// argument is an optional interface identifier; if the stack supplies `None`
+/// the bridge will fall back to the legacy ``primary_bridge_if`` behaviour.
+fn virtio_transmit(if_id: Option<super::NetIfId>, data: &[u8]) -> bool {
+    if let Some(if_id) = if_id.or_else(primary_bridge_if) {
         return send_packet_on_interface(if_id, data);
     }
 
@@ -130,7 +132,7 @@ fn virtio_transmit(data: &[u8]) -> bool {
     match result {
         Some(Ok(())) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
-            if let Some(if_id) = primary_bridge_if() {
+            if let Some(if_id) = if_id.or_else(primary_bridge_if) {
                 record_bridge_if_tx(if_id);
             }
             true
@@ -774,6 +776,14 @@ mod tests {
 
         let _if2 = register_virtio_port(2, None).expect("register vnet2");
         assert_eq!(primary_bridge_if(), Some(if0));
+    }
+
+    #[test_case]
+    fn test_virtio_transmit_interface_argument() {
+        // using a dummy interface id should simply delegate to the
+        // per-interface send function, which currently fails (no mapping)
+        let dummy = super::super::NetIfId(7);
+        assert!(!virtio_transmit(Some(dummy), b"hello"));
     }
 }
 

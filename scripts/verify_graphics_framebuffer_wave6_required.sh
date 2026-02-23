@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Validates that Wave6 graphics/framebuffer deterministic Phase A/B exports
+# Validates that Wave6 graphics/framebuffer deterministic Phase A/B + bench exports
 # are wired into suite_kernel as required checks.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -67,6 +67,11 @@ if ! rg -q "graphics_framebuffer_wave6_phase_b_exports" "$KERNEL_SUITE_ROOT"; th
   violations=$((violations + 1))
 fi
 
+if ! rg -q "graphics_framebuffer_wave6_bench_exports" "$KERNEL_SUITE_ROOT"; then
+  echo "[verify_graphics_framebuffer_wave6_required] missing wave6 bench suite entry under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
+  violations=$((violations + 1))
+fi
+
 if ! rg -q "pub fn qemu_test_set_packer_mode_override\\(" "$PACKER_FILE"; then
   echo "[verify_graphics_framebuffer_wave6_required] missing qemu hook 'qemu_test_set_packer_mode_override' in ${PACKER_FILE#"$ROOT_DIR"/}"
   violations=$((violations + 1))
@@ -107,6 +112,14 @@ for case_name in "${cases[@]}"; do
   fi
 done
 
+bench_cases=(
+  "draw_image_bulk"
+  "draw_image_24bit_bulk"
+  "draw_image_rgba_bulk"
+  "draw_hline_bulk"
+  "draw_text_bulk"
+)
+
 phase_b_cases=(
   "write_bgr_run_large_mmio"
   "write_bgr_run_large"
@@ -146,6 +159,42 @@ for case_name in "${phase_b_cases[@]}"; do
     violations=$((violations + 1))
   fi
 done
+
+for case_name in "${bench_cases[@]}"; do
+  export_fn="wave6_bench_${case_name}_smoke"
+  wrapper_fn="graphics_wave6_bench_${case_name}_smoke"
+  pending_case="bench_${case_name}"
+
+  if ! rg -q "pub fn ${export_fn}\(" "$FB_EXPORT_FILE" "$FB_EXPORT_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing export '${export_fn}' under kernel/src/graphics/framebuffer/qemu_tests*"
+    violations=$((violations + 1))
+  fi
+
+  if ! rg -q "pub fn ${wrapper_fn}\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing wrapper '${wrapper_fn}' under kernel/src/qemu_tests*"
+    violations=$((violations + 1))
+  fi
+
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_ROOT"; then
+    echo "[verify_graphics_framebuffer_wave6_required] missing suite wiring '${wrapper_fn}' under ${KERNEL_SUITE_ROOT#"$ROOT_DIR"/}"
+    violations=$((violations + 1))
+  fi
+
+  if rg -q "${pending_case}" "$PENDING_FILE"; then
+    echo "[verify_graphics_framebuffer_wave6_required] promoted bench case '${pending_case}' still listed in ${PENDING_FILE#"$ROOT_DIR"/}"
+    violations=$((violations + 1))
+  fi
+done
+
+if ! rg -q "Graphics/Framebuffer Wave6 bench deterministic set is promoted to required suite_kernel" "$PENDING_FILE"; then
+  echo "[verify_graphics_framebuffer_wave6_required] missing Wave6 bench promotion marker in ${PENDING_FILE#"$ROOT_DIR"/}"
+  violations=$((violations + 1))
+fi
+
+if ! rg -q "Graphics/Framebuffer Wave6 residual \(bench only\): none" "$PENDING_FILE"; then
+  echo "[verify_graphics_framebuffer_wave6_required] missing Wave6 bench residual-none marker in ${PENDING_FILE#"$ROOT_DIR"/}"
+  violations=$((violations + 1))
+fi
 
 if [[ "$violations" -gt 0 ]]; then
   echo "[verify_graphics_framebuffer_wave6_required] FAIL: found $violations issues"

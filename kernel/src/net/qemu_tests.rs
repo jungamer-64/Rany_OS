@@ -230,7 +230,10 @@ pub fn stack_send_udp_fallback_zero_copy_smoke() -> bool {
     match stack::stack().lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_data: &[u8]| true);
+                s.set_transmit_fn(|_if: Option<crate::net::NetIfId>, _data: &[u8]| {
+                    assert!(_if.is_none());
+                    true
+                });
                 let _ = s.config();
             }
             true
@@ -244,7 +247,10 @@ pub fn stack_send_icmp_fallback_zero_copy_smoke() -> bool {
     match stack::stack().lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_data: &[u8]| true);
+                s.set_transmit_fn(|_if: Option<crate::net::NetIfId>, _data: &[u8]| {
+                    assert!(_if.is_none());
+                    true
+                });
                 let _ = s.current_time();
             }
             true
