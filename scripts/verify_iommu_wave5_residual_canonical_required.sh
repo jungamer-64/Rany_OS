@@ -8,7 +8,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IOMMU_QEMU_TESTS_FILE="$ROOT_DIR/kernel/src/io/iommu/qemu_tests.rs"
 IOMMU_SECURITY_FILE="$ROOT_DIR/kernel/src/io/iommu/security.rs"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
+KERNEL_WRAPPER_DIR="$ROOT_DIR/kernel/src/qemu_tests"
 KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+KERNEL_SUITE_DIR="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 PARITY_FILE="$ROOT_DIR/scripts/qemu_iommu_residual_parity.lst"
 
@@ -16,11 +18,13 @@ for required_file in \
   "$IOMMU_QEMU_TESTS_FILE" \
   "$IOMMU_SECURITY_FILE" \
   "$KERNEL_WRAPPER_FILE" \
+  "$KERNEL_WRAPPER_DIR" \
   "$KERNEL_SUITE_FILE" \
+  "$KERNEL_SUITE_DIR" \
   "$PENDING_FILE" \
   "$PARITY_FILE"
 do
-  if [[ ! -f "$required_file" ]]; then
+  if [[ ! -e "$required_file" ]]; then
     echo "[verify_iommu_wave5_residual_canonical_required] missing file: $required_file" >&2
     exit 1
   fi
@@ -65,22 +69,22 @@ residual_wrapper_cases=(
 
 violations=0
 
-if ! rg -q "fn test_iommu_wave5_canonical_exports\\(" "$KERNEL_SUITE_FILE"; then
+if ! rg -q "fn test_iommu_wave5_canonical_exports\\(" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
   echo "[verify_iommu_wave5_residual_canonical_required] missing test_iommu_wave5_canonical_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
-if rg -q "fn test_iommu_wave5_residual_exports\\(" "$KERNEL_SUITE_FILE"; then
+if rg -q "fn test_iommu_wave5_residual_exports\\(" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
   echo "[verify_iommu_wave5_residual_canonical_required] stale test_iommu_wave5_residual_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
-if rg -q "iommu_wave5_residual_exports" "$KERNEL_SUITE_FILE"; then
+if rg -q "iommu_wave5_residual_exports" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
   echo "[verify_iommu_wave5_residual_canonical_required] stale iommu_wave5_residual_exports run_check in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
 
-if rg -q "fn test_iommu_wave2_residual_exports\\(" "$KERNEL_SUITE_FILE"; then
+if rg -q "fn test_iommu_wave2_residual_exports\\(" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
   echo "[verify_iommu_wave5_residual_canonical_required] stale test_iommu_wave2_residual_exports in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi
@@ -99,24 +103,24 @@ for case_name in "${canonical_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE"; then
+  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_DIR"; then
     echo "[verify_iommu_wave5_residual_canonical_required] missing wrapper '${wrapper_case}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE"; then
+  if ! rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
     echo "[verify_iommu_wave5_residual_canonical_required] missing suite wiring '${wrapper_case}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 done
 
 for wrapper_case in "${residual_wrapper_cases[@]}"; do
-  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE"; then
+  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_DIR"; then
     echo "[verify_iommu_wave5_residual_canonical_required] missing compat residual wrapper '${wrapper_case}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE"; then
+  if rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
     echo "[verify_iommu_wave5_residual_canonical_required] stale required suite wiring for residual wrapper '${wrapper_case}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
@@ -130,12 +134,12 @@ for export_case in "${compat_wave2_exports[@]}"; do
 done
 
 for wrapper_case in "${compat_wave2_wrappers[@]}"; do
-  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE"; then
+  if ! rg -q "pub fn ${wrapper_case}\\(" "$KERNEL_WRAPPER_FILE" "$KERNEL_WRAPPER_DIR"; then
     echo "[verify_iommu_wave5_residual_canonical_required] missing compat wrapper '${wrapper_case}' in ${KERNEL_WRAPPER_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
 
-  if rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE"; then
+  if rg -q "${wrapper_case}" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
     echo "[verify_iommu_wave5_residual_canonical_required] stale required suite wiring for compat wrapper '${wrapper_case}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi

@@ -144,6 +144,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-qemu-
 
+      - name: Verify warning root-cause cleanup
+        run: bash scripts/verify_qemu_warning_root_cause_cleanup.sh
+
       - name: Verify warning-free official entrypoint
         run: bash scripts/verify_qemu_official_warning_free.sh
 

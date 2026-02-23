@@ -8,7 +8,7 @@ pub fn test_pool_id() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_sg_list() {
-    let mut sg = SgList::new();
+    let sg = SgList::new();
     assert!(sg.is_empty());
     assert_eq!(sg.total_len(), 0);
 }

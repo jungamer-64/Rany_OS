@@ -9,7 +9,9 @@ ASYNC_EXPORT_FILE="$ROOT_DIR/kernel/src/mm/reclaim/async_swapout/qemu_tests.rs"
 ASYNC_HOOK_FILE="$ROOT_DIR/kernel/src/mm/reclaim/async_swapout/worker/enqueue.rs"
 RECLAIM_EXPORT_FILE="$ROOT_DIR/kernel/src/mm/reclaim/page_reclaim/qemu_tests.rs"
 KERNEL_WRAPPER_FILE="$ROOT_DIR/kernel/src/qemu_tests.rs"
+KERNEL_WRAPPER_DIR="$ROOT_DIR/kernel/src/qemu_tests"
 KERNEL_SUITE_FILE="$ROOT_DIR/qemu-suites/kernel/src/main.rs"
+KERNEL_SUITE_DIR="$ROOT_DIR/qemu-suites/kernel/src"
 PENDING_FILE="$ROOT_DIR/scripts/qemu_pending_cases.lst"
 
 for required_file in \
@@ -17,10 +19,12 @@ for required_file in \
   "$ASYNC_HOOK_FILE" \
   "$RECLAIM_EXPORT_FILE" \
   "$KERNEL_WRAPPER_FILE" \
+  "$KERNEL_WRAPPER_DIR" \
   "$KERNEL_SUITE_FILE" \
+  "$KERNEL_SUITE_DIR" \
   "$PENDING_FILE"
 do
-  if [[ ! -f "$required_file" ]]; then
+  if [[ ! -e "$required_file" ]]; then
     echo "[verify_mm_wave7_required] missing file: $required_file" >&2
     exit 1
   fi
@@ -98,7 +102,7 @@ check_async_case() {
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
     echo "[verify_mm_wave7_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi
@@ -130,7 +134,7 @@ for case_name in "${reclaim_cases[@]}"; do
     violations=$((violations + 1))
   fi
 
-  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE"; then
+  if ! rg -q "${wrapper_fn}" "$KERNEL_SUITE_FILE" "$KERNEL_SUITE_DIR"; then
     echo "[verify_mm_wave7_required] missing suite wiring '${wrapper_fn}' in ${KERNEL_SUITE_FILE#$ROOT_DIR/}"
     violations=$((violations + 1))
   fi

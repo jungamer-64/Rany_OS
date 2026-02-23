@@ -21,7 +21,7 @@ pub fn test_subnet() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_fragment_key() {
-    let mut header = Ipv4Header {
+    let header = Ipv4Header {
         version_ihl: 0x45,
         dscp_ecn: 0,
         total_length: [0, 40],
@@ -43,7 +43,7 @@ pub fn test_fragment_key() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_fragment_buffer_basic() {
-    let mut buffer = FragmentBuffer::new(0);
+    let buffer = FragmentBuffer::new(0);
     assert!(!buffer.is_complete());
     assert!(!buffer.is_expired(1000));
     assert!(buffer.is_expired(31000)); // After 30s timeout
