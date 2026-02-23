@@ -150,6 +150,13 @@ pub(crate) fn init_network_subsystem() {
             info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
         }
     }
+
+    // Diagnostic: attempt a manual ping to exercise the transmit path
+    info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
+    match crate::net::send_icmp_echo([10, 0, 2, 2], 1) {
+        Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
+        Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
+    }
 }
 
 /// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.

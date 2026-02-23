@@ -200,7 +200,7 @@ impl SystemIntegration {
         for dev in virtio_devices {
             match dev.device_id.0 {
                 0x1001 | 0x1042 => self.init_virtio_blk_device(&dev),
-                //0x1000 | 0x1041 => self.init_virtio_net_device(&dev), // disabled during network crash investigation
+                0x1000 | 0x1041 => self.init_virtio_net_device(&dev),
                 0x1003 | 0x1043 => self.init_virtio_console_device(&dev),
                 0x1052 => self.init_virtio_input_device(&dev),
                 0x1005 | 0x1045 => self.init_virtio_balloon_device(&dev),
