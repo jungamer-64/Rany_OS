@@ -200,7 +200,10 @@ impl DomainManager for IommuController {
         kind: &crate::io::iommu::cmdqueue::IommuCommandKind,
     ) -> Result<i32, ()> {
         use crate::io::iommu::cmdqueue::IommuCommandKind;
-        match kind {
+        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+
+        crate::io::log::early_print("[DMA] handle_command_queue_entry called\n");
+        let res = match kind {
             IommuCommandKind::MapRegion {
                 domain,
                 iova,
@@ -208,24 +211,38 @@ impl DomainManager for IommuController {
                 size,
                 read,
                 write,
-            } => match self.domains.lock() {
+            } => {
+                crate::io::log::early_print("[DMA] handle_command_queue_entry: about to lock domains\n");
+                match self.domains.lock() {
                 Ok(dom_map) => {
+                    crate::io::log::early_print("[DMA] handle_command_queue_entry: locked domains\n");
                     let domain_arc = dom_map.get(domain).cloned();
                     drop(dom_map);
+                    crate::io::log::early_print("[DMA] handle_command_queue_entry: dropped domains lock\n");
                     if let Some(domain_arc) = domain_arc {
+                        crate::io::log::early_print("[DMA] handle_command_queue_entry: about to call domain.map()\n");
                         match domain_arc.map(*iova, *phys, *size, *read, *write) {
                             Ok(_) => {
-                                unsafe { self.invalidate_iotlb_direct(*domain) };
+                                crate::io::log::early_print("[DMA] handle_command_queue_entry: domain.map() OK, calling invalidate\n");
+                                self.invalidate_iotlb(*domain);
+                                crate::io::log::early_print("[DMA] handle_command_queue_entry: invalidate OK\n");
                                 Ok(0)
                             }
-                            Err(_) => Err(()),
+                            Err(_) => {
+                                crate::io::log::early_print("[DMA] handle_command_queue_entry: domain.map() FAILED\n");
+                                Err(())
+                            }
                         }
                     } else {
+                        crate::io::log::early_print("[DMA] handle_command_queue_entry MapRegion No Domain\n");
                         Err(())
                     }
                 }
-                Err(_) => Err(()),
-            },
+                Err(_) => {
+                    crate::io::log::early_print("[DMA] handle_command_queue_entry MapRegion Domain lock poisoned\n");
+                    Err(())
+                }
+            }},
             IommuCommandKind::MapRegionDevice { .. } => Err(()),
             IommuCommandKind::UnmapRegion {
                 domain,
@@ -238,7 +255,7 @@ impl DomainManager for IommuController {
                     if let Some(domain_arc) = domain_arc {
                         match domain_arc.unmap(*iova) {
                             Ok(_) => {
-                                unsafe { self.invalidate_iotlb_direct(*domain) };
+                                self.invalidate_iotlb(*domain);
                                 Ok(0)
                             }
                             Err(_) => Err(()),
@@ -251,13 +268,18 @@ impl DomainManager for IommuController {
             },
             IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
             IommuCommandKind::InvalidateIotlbDomain { domain } => {
-                unsafe { self.invalidate_iotlb_direct(*domain) };
+                self.invalidate_iotlb(*domain);
                 Ok(0)
             }
             IommuCommandKind::InvalidateIotlbGlobal => {
-                unsafe { self.invalidate_iotlb_global() };
+                let _ = self.invalidate_iotlb_global_sync();
                 Ok(0)
             }
+        };
+
+        if self.is_queued_invalidation_enabled() {
+            let _ = self.qi_wait_sync();
         }
+        res
     }
 }

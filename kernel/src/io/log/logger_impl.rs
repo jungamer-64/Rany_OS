@@ -1,6 +1,5 @@
 use super::*;
 
-
 mod level_parse;
 pub use level_parse::*;
 impl Log for KernelLogger {
@@ -17,7 +16,6 @@ impl Log for KernelLogger {
         }
 
         let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed) && !IN_PANIC.load(Ordering::Relaxed);
-
         if use_async {
             if self.try_log_async(record) {
                 start_serial_tx();

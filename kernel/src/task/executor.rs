@@ -24,6 +24,7 @@ use crate::io::iommu::intel::controller::dma::DomainManager;
 use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
+#[cfg(not(feature = "qemu-test-export"))]
 use x86_64::instructions::interrupts;
 
 // ============================================================================
@@ -451,6 +452,12 @@ impl Executor {
                 // extra background tasks by leveraging the executor idle path.
                 crate::io::log::kick_serial_tx();
 
+                #[cfg(feature = "qemu-test-export")]
+                {
+                    core::hint::spin_loop();
+                    continue;
+                }
+                #[cfg(not(feature = "qemu-test-export"))]
                 interrupts::enable_and_hlt();
             }
         }

@@ -18,6 +18,7 @@ use core::future::poll_fn;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
+use spin::Mutex;
 
 use alloc::alloc::Layout;
 use alloc::boxed::Box;
@@ -278,7 +279,7 @@ impl core::future::Future for CommandCompletion {
 /// CommandQueue holds sender/receiver and completion slots
 pub struct CommandQueue {
     sender: BoundedSender<IommuCommand, DEFAULT_QUEUE_SIZE>,
-    receiver: BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>,
+    receiver: Mutex<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,
     slots: &'static [CompletionSlot],
     next_alloc: AtomicUsize,
     /// Optional NUMA node hint used for allocating the slots array
@@ -330,7 +331,7 @@ impl CommandQueue {
 
         Self {
             sender: s,
-            receiver: r,
+            receiver: Mutex::new(r),
             slots,
             next_alloc: AtomicUsize::new(0),
             numa_node,
@@ -472,7 +473,44 @@ impl CommandQueue {
     where
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
-        let comp = self.submit(kind)?;
+        // Allocate a slot first
+        let mut slot_idx = None;
+        let mut backoff = Backoff::new();
+        while slot_idx.is_none() {
+            slot_idx = self.alloc_slot();
+            if slot_idx.is_none() {
+                // If we can't allocate a slot, the queue might be full. Process to free slots.
+                let _ = self.process_up_to(&mut handler, 1);
+                backoff.snooze();
+            }
+        }
+        let slot_idx = slot_idx.unwrap();
+        let cmd = IommuCommand { kind, slot_idx };
+
+        // Wait for sender to accept (bounded). Try with small backoff and drain queue
+        backoff.reset();
+        loop {
+            match self.sender.send(cmd.clone()) {
+                Ok(_) => {
+                    self.recv_waiter.wake();
+                    break;
+                }
+                Err(_) => {
+                    // Queue full, drain it to make progress
+                    let processed = self.process_up_to(&mut handler, 1);
+                    if processed == 0 {
+                        backoff.snooze();
+                    }
+                }
+            }
+        }
+
+        let comp = CommandCompletion {
+            slot_idx,
+            slots_ptr: self.slots.as_ptr() as *const CompletionSlot,
+            queue_ptr: self as *const CommandQueue,
+        };
+
         let rc = comp.wait_sync_with_worker(self, &mut handler);
         if rc == RESULT_OK { Ok(()) } else { Err(()) }
     }
@@ -480,11 +518,11 @@ impl CommandQueue {
     /// Await until work arrives on the queue.
     pub async fn wait_for_work(&self) {
         poll_fn(|cx| {
-            if !self.receiver.is_empty() {
+            if !self.receiver.lock().is_empty() {
                 return Poll::Ready(());
             }
             self.recv_waiter.register(cx.waker());
-            if !self.receiver.is_empty() {
+            if !self.receiver.lock().is_empty() {
                 return Poll::Ready(());
             }
             Poll::Pending
@@ -504,7 +542,7 @@ impl CommandQueue {
             // If fuel is active and there is no work, break early
             #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
-                if self.receiver.is_empty() {
+                if self.receiver.lock().is_empty() {
                     break;
                 }
                 if !crate::task::fuel::Fuel::consume(1) {
@@ -512,7 +550,7 @@ impl CommandQueue {
                 }
             }
 
-            if let Some(cmd) = self.receiver.recv() {
+            if let Some(cmd) = self.receiver.lock().recv() {
                 // Receiving an item freed up channel capacity; notify potential senders
                 self.notify_send_available();
 
@@ -558,13 +596,14 @@ impl CommandQueue {
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
         let mut processed = 0usize;
+        let rx = self.receiver.lock();
 
         while processed < max {
             // If fuel is active and there is no work, break early. If fuel is active and depleted,
             // consume will return false and we'll break before popping an item (avoids losing it).
             #[cfg(all(test, not(target_os = "none")))]
             if crate::task::fuel::Fuel::is_active() {
-                if self.receiver.is_empty() {
+                if rx.is_empty() {
                     break;
                 }
                 if !crate::task::fuel::Fuel::consume(1) {
@@ -572,7 +611,7 @@ impl CommandQueue {
                 }
             }
 
-            if let Some(cmd) = self.receiver.recv() {
+            if let Some(cmd) = rx.recv() {
                 // Receiving an item freed up channel capacity; notify potential senders
                 self.notify_send_available();
                 // If the slot was canceled while queued, short-circuit

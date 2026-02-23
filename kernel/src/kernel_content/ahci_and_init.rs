@@ -121,18 +121,24 @@ pub(crate) fn init_hid_and_serial_drivers() {
 
 /// Initialize the network subsystem, shell API, and VirtIO-Net driver.
 pub(crate) fn init_network_subsystem() {
+    io::log::early_print("[EPRINT] about to log 'Initializing network subsystem'\n");
     info!(target: "init", "Initializing network subsystem");
     net::init_stack_default();
     net::init_socket_manager();
 
+    io::log::early_print("[EPRINT] about to log 'Initializing network shell API'\n");
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
+    io::log::early_print("[EPRINT] about to log 'Network stack initialized'\n");
     info!(target: "init", "Network stack initialized");
 
+    io::log::early_print("[EPRINT] about to log bridge init status\n");
     info!(target: "init", "Net Bridge initialized: {}", crate::net::driver_bridge::is_initialized());
+    io::log::early_print("[EPRINT] about to log virtio-net device presence\n");
     info!(target: "init", "Global VirtIO-Net device present: {}", crate::io::virtio::with_virtio_net(|_| ()).is_some());
 
     // VirtIO-Net driver via DriverRegistry
+    io::log::early_print("[EPRINT] about to log 'Registering VirtIO-Net driver via DriverRegistry'\n");
     info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
     {
         use alloc::boxed::Box;
@@ -559,10 +565,15 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     run_integration_tests_if_requested(boot_info, phys_mem_offset);
 
     // 6. 割り込みを有効化
-    // about to enable interrupts
-    interrupts::enable_interrupts();
-    info!(target: "init", "Interrupts enabled");
-    // interrupts now enabled
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        interrupts::enable_interrupts();
+        info!(target: "init", "Interrupts enabled");
+    }
+    #[cfg(feature = "qemu-test-export")]
+    {
+        info!(target: "init", "Interrupt enable skipped in qemu-test-export mode");
+    }
 
     // 7. システム統計を表示
     // before printing system stats

@@ -429,11 +429,13 @@ impl IommuController {
 
         // Write command (IVT bit must be set in the upper 64-bit write or simultaneous)
         self.write64(offset + iotlb_regs::IOTLB, cmd);
+        crate::io::log::early_print("[DMA] invalidate_iotlb_direct: waiting for IVT clear\n");
 
         // Wait for completion (IVT bit cleared)
         while (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) != 0 {
             core::hint::spin_loop();
         }
+        crate::io::log::early_print("[DMA] invalidate_iotlb_direct: IVT cleared\n");
     }
 
     /// Invalidate Global IOTLB (Register-based / Direct)

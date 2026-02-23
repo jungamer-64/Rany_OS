@@ -403,6 +403,13 @@ impl<'a> Future for SerialReadFuture<'a> {
             return Poll::Ready(byte);
         }
 
+        // In early boot / test configurations we may intentionally keep IF=0.
+        // In that mode no IRQ-driven wakeup arrives, so request a cooperative
+        // re-poll to allow direct-port polling progress.
+        if !x86_64::instructions::interrupts::are_enabled() {
+            cx.waker().wake_by_ref();
+        }
+
         Poll::Pending
     }
 }

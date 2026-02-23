@@ -173,15 +173,7 @@ impl BuddyHeapAllocator {
 
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
-        // DEBUG: Log the operation
-        crate::io::log::early_print("[BUD] add addr=");
-        crate::io::log::early_print_hex(addr as u64);
-        crate::io::log::early_print(" order=");
-        crate::io::log::early_print_dec(order as u64);
-        crate::io::log::early_print(" old_head=");
         let old_head = self.free_lists[order].unwrap_or(0);
-        crate::io::log::early_print_hex(old_head as u64);
-        crate::io::log::early_print("\n");
 
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr_addr = addr as usize;

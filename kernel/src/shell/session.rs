@@ -94,10 +94,14 @@ pub fn spawn_console_shell(executor: &mut crate::task::Executor) {
     use crate::shell::frontend::ConsoleFrontend;
 
     executor.spawn(Task::new(async {
+        #[cfg(feature = "qemu-test-export")]
+        crate::io::log::early_print("[SHELL] console shell task start\n");
         crate::task::yield_now().await;
         // Wait a bit more for drivers?
         let mut session = ShellSession::new(ConsoleFrontend::new());
         session.run().await;
+        #[cfg(feature = "qemu-test-export")]
+        crate::io::log::early_print("[SHELL] console shell task exit\n");
     }));
 }
 
@@ -107,8 +111,12 @@ pub fn spawn_serial_shell(executor: &mut crate::task::Executor) {
     use crate::shell::exoshell::frontend::serial::SerialFrontend;
 
     executor.spawn(Task::new(async {
+        #[cfg(feature = "qemu-test-export")]
+        crate::io::log::early_print("[SHELL] serial shell task start\n");
         crate::task::yield_now().await;
         let mut session = ShellSession::new(SerialFrontend::new());
         session.run().await;
+        #[cfg(feature = "qemu-test-export")]
+        crate::io::log::early_print("[SHELL] serial shell task exit\n");
     }));
 }

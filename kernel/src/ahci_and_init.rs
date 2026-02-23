@@ -580,8 +580,15 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
     // 6. 割り込みを有効化
     io::log::early_print("[DEBUG] Before enable interrupts\n");
-    interrupts::enable_interrupts();
-    info!(target: "init", "Interrupts enabled");
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        interrupts::enable_interrupts();
+        info!(target: "init", "Interrupts enabled");
+    }
+    #[cfg(feature = "qemu-test-export")]
+    {
+        info!(target: "init", "Interrupt enable skipped in qemu-test-export mode");
+    }
     io::log::early_print("[DEBUG] After enable interrupts\n");
 
     // 7. システム統計を表示

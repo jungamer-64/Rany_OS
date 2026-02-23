@@ -50,6 +50,7 @@ NO_IOMMU=false
 NUMA=true
 NO_NUMA=false
 NETWORK=true          # network enabled by default
+NO_NETWORK=false
 MONITOR=false
 TCG=false
 VERBOSE=false
@@ -97,6 +98,9 @@ while [[ $# -gt 0 ]]; do
             shift ;;
         --network)
             NETWORK=true
+            shift ;;
+        --no-network)
+            NO_NETWORK=true
             shift ;;
         --monitor)
             MONITOR=true
@@ -163,6 +167,7 @@ Hardware Emulation:
   --numa            Enable NUMA topology simulation (default: enabled, 2 nodes)
   --no-numa         Disable NUMA topology simulation
   --network         Enable VirtIO network device (hostfwd: 5555->80) [default]
+  --no-network      Disable VirtIO network device
   --nvme SIZE       Add virtual NVMe device (e.g., "1G", "512M")
 
 Advanced:
@@ -592,7 +597,7 @@ start_qemu() {
     fi
 
     # [ExoRust] VirtIO Network with IOMMU Support
-    if [[ "$NETWORK" = true ]]; then
+    if [[ "$NETWORK" = true ]] && [[ "$NO_NETWORK" != true ]]; then
         local netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
         local device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"
         if [[ "$iommu_active" = true ]]; then
