@@ -840,7 +840,6 @@ pub(crate) mod tests {
     use crate::net::ipv4::{Ipv4PacketMut, Ipv4Address, IpProtocol};
     use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr};
     use alloc::collections::BTreeMap;
-    use alloc::string::String;
     use alloc::vec::Vec;
     use crate::net::manager;
 
@@ -1009,8 +1008,8 @@ pub(crate) mod tests {
         manager::init_network_manager();
 
         // create two interfaces
-        let if1 = manager::register_interface(String::from("if1"));
-        let if2 = manager::register_interface(String::from("if2"));
+        let if1 = manager::register_interface("if1").expect("register if1");
+        let if2 = manager::register_interface("if2").expect("register if2");
         // configure addresses
         let cfg1 = super::NetworkConfig {
             mac: MacAddress::from_octets(0,1,2,3,4,5),
@@ -1109,8 +1108,8 @@ pub(crate) mod tests {
         let _guard = BridgeStateGuard::new();
         manager::init_network_manager();
 
-        let wan_if = manager::register_interface(String::from("wan0"));
-        let other_wan_if = manager::register_interface(String::from("wan1"));
+        let wan_if = manager::register_interface("wan0").expect("register wan0");
+        let other_wan_if = manager::register_interface("wan1").expect("register wan1");
         let wan_cfg = super::NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 42),
             ipv4: Ipv4Config {
@@ -1179,7 +1178,7 @@ pub(crate) mod tests {
         let _guard = BridgeStateGuard::new();
         manager::init_network_manager();
 
-        let wan_if = manager::register_interface(String::from("wan0"));
+        let wan_if = manager::register_interface("wan0").expect("register wan0");
         let _ = manager::set_interface_config(
             wan_if,
             super::NetworkConfig {
