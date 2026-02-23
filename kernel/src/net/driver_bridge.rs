@@ -521,8 +521,22 @@ pub fn process_received_packet_zero_copy_for_interface(
                                 _ => (src, 0),
                             };
 
-                            // decrement TTL or drop
-                            if ip_pkt.ttl() > 1 {
+                            let ttl = ip_pkt.ttl();
+                            if ttl <= 1 {
+                                let original_ip = ip_pkt.as_bytes();
+                                let _ = stack::stack().lock().and_then(|mut g| {
+                                    if let Some(ref mut s) = *g {
+                                        Ok(s.send_icmp_time_exceeded(
+                                            src,
+                                            crate::net::icmp::TimeExceededCode::TtlExceeded,
+                                            original_ip,
+                                        ))
+                                    } else {
+                                        Ok(false)
+                                    }
+                                });
+                            } else {
+                                let next_ttl = ttl - 1;
                                 // build new packet via stack send API
                                 match proto {
                                     crate::net::ipv4::IpProtocol::Udp => {
@@ -533,7 +547,15 @@ pub fn process_received_packet_zero_copy_for_interface(
                                             // send via stack
                                             let _ = stack::stack().lock().and_then(|mut g| {
                                                 if let Some(ref mut s) = *g {
-                                                    Ok(s.send_udp_raw_on(route.if_id, src_port, dst, dst_port, payload))
+                                                    Ok(s.send_udp_raw_on_with_src_ttl(
+                                                        route.if_id,
+                                                        _new_src,
+                                                        src_port,
+                                                        dst,
+                                                        dst_port,
+                                                        payload,
+                                                        next_ttl,
+                                                    ))
                                                 } else {
                                                     Ok(false)
                                                 }
@@ -554,7 +576,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                         }
                                         let _ = stack::stack().lock().and_then(|mut g| {
                                             if let Some(ref mut s) = *g {
-                                                Ok(s.send_tcp(_new_src, dst, &nat_segment))
+                                                Ok(s.send_tcp_with_ttl(_new_src, dst, &nat_segment, next_ttl))
                                             } else {
                                                 Ok(false)
                                             }
