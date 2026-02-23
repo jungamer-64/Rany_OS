@@ -1,6 +1,5 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::vec;
 use super::*;
 use crate::sync::set_panicking;
 use core::sync::atomic::Ordering;
@@ -162,9 +161,8 @@ pub fn test_process_response_chaddr_mismatch() {
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(&[192, 168, 0, 1]);
     offset += 6;
-
     buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+
 
     assert!(client.process_response(&buf, 100).is_err());
 }
@@ -194,9 +192,8 @@ pub fn test_process_response_offer_missing_serverid_returns_err() {
     offset += 3;
 
     // No Server Identifier option
-
     buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+
 
     assert!(client.process_response(&buf, 200).is_err());
 }
@@ -231,9 +228,8 @@ pub fn test_process_response_siaddr_serverid_mismatch() {
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(&[192, 168, 0, 1]);
     offset += 6;
-
     buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+
 
     assert!(client.process_response(&buf, 300).is_err());
 }
@@ -291,9 +287,8 @@ pub fn test_process_response_ack_requesting_mismatch() {
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(&[10, 0, 0, 2]);
     offset += 6;
-
     buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+
 
     assert!(client.process_response(&buf, 400).is_err());
 }
@@ -350,9 +345,8 @@ pub fn test_process_response_ack_renewal_success() {
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(lease.server_ip.as_bytes());
     offset += 6;
-
     buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+
 
     let res = client.process_response(&buf, 500).expect("ACK should be accepted");
     match res {
@@ -490,9 +484,8 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(&60u32.to_be_bytes());
     offset += 6;
-
     buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+
 
     let res = client.process_response(&buf, 0).expect("ACK should be accepted");
     match res {
@@ -553,9 +546,8 @@ pub fn test_offer_probe_and_decline_flow() {
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(&[10, 0, 0, 1]);
     offset += 6;
-
     buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+
 
     // Process offer (should send ARP probe and set probe timestamp)
     let _ = client.process_response(&buf, 100).expect("Offer should be processed");
