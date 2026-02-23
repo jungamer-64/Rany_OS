@@ -121,6 +121,19 @@ pub fn driver_cell_fault_kind_variants_smoke() -> bool {
     true
 }
 
+pub fn driver_cell_restart_policy_retry_boundary_smoke() -> bool {
+    let policy = RestartPolicy::on_panic(3, 100);
+    policy.should_restart(FaultKind::Panic(String::from("x")), 1)
+        && policy.should_restart(FaultKind::Panic(String::from("x")), 3)
+        && !policy.should_restart(FaultKind::Panic(String::from("x")), 4)
+        && !policy.should_restart(FaultKind::Timeout, 1)
+}
+
+pub fn driver_cell_restart_policy_backoff_cap_smoke() -> bool {
+    let policy = RestartPolicy::always(10, 10_000);
+    policy.backoff_for_attempt(0) == 10_000 && policy.backoff_for_attempt(10) == 30_000
+}
+
 pub fn driver_cell_stats_initial_values_smoke() -> bool {
     let stats = DriverCellStats::new();
     stats.load_duration_ticks == 0

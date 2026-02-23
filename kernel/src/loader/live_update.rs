@@ -27,6 +27,8 @@
 
 #![allow(dead_code)]
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kernel_api::driver_abi::{DriverEntryFn, DriverExportsV1, DRIVER_ENTRY_SYMBOL, DRIVER_EXPORTS_SYMBOL};
 use spin::Mutex;
@@ -255,6 +257,72 @@ impl core::fmt::Display for LiveUpdateError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingUpdateStatus {
+    pub old_cell_id: u64,
+    pub new_cell_id: u64,
+    pub started_at_tick: u64,
+    pub deadline_tick: u64,
+    pub health_failed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PendingUpdateContext {
+    old_cell_id: crate::loader::CellId,
+    new_cell_id: crate::loader::CellId,
+    updated_handles: Vec<crate::driver_registry::DriverHandle>,
+    old_entry: Option<(DriverEntryFn, Option<extern "C" fn() -> i32>)>,
+    old_epoch: u64,
+    started_at_tick: u64,
+    deadline_tick: u64,
+    health_failed: bool,
+    health_failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateTransition {
+    pub old_cell_id: u64,
+    pub new_cell_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub enum CompletedUpdateOutcome {
+    Committed {
+        old_cell_id: u64,
+        new_cell_id: u64,
+        at_tick: u64,
+    },
+    RolledBack {
+        old_cell_id: u64,
+        new_cell_id: u64,
+        at_tick: u64,
+        reason: Option<String>,
+    },
+}
+
+impl CompletedUpdateOutcome {
+    fn matches_cell(&self, cell_id: u64) -> bool {
+        match self {
+            Self::Committed {
+                old_cell_id,
+                new_cell_id,
+                ..
+            }
+            | Self::RolledBack {
+                old_cell_id,
+                new_cell_id,
+                ..
+            } => *old_cell_id == cell_id || *new_cell_id == cell_id,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SwapDriversResult {
+    updated_handles: Vec<crate::driver_registry::DriverHandle>,
+    old_entry: Option<(DriverEntryFn, Option<extern "C" fn() -> i32>)>,
+}
+
 /// ライブアップデートマネージャ
 pub struct LiveUpdateManager {
     /// 現在の状態
@@ -265,6 +333,10 @@ pub struct LiveUpdateManager {
     rollback_epoch: AtomicU64,
     /// デフォルトロールバック猶予期間（ティック）
     rollback_grace_period: u64,
+    /// 検証猶予中の更新コンテキスト
+    pending: Mutex<Option<PendingUpdateContext>>,
+    /// 直近の更新結果（DriverCell側の状態同期用）
+    recent_outcomes: Mutex<Vec<CompletedUpdateOutcome>>,
 }
 
 impl LiveUpdateManager {
@@ -275,6 +347,8 @@ impl LiveUpdateManager {
             updating: AtomicBool::new(false),
             rollback_epoch: AtomicU64::new(0),
             rollback_grace_period: 60 * 1000, // 60秒（ミリ秒）
+            pending: Mutex::new(None),
+            recent_outcomes: Mutex::new(Vec::new()),
         }
     }
 
@@ -296,6 +370,9 @@ impl LiveUpdateManager {
         _cell_id: u64,
         _new_elf_data: &[u8],
     ) -> Result<u64, LiveUpdateError> {
+        if self.pending.lock().is_some() {
+            return Err(LiveUpdateError::UpdateInProgress);
+        }
         // 排他制御
         if self.updating.swap(true, Ordering::Acquire) {
             return Err(LiveUpdateError::UpdateInProgress);
@@ -351,16 +428,19 @@ impl LiveUpdateManager {
         // Step 3: Swap (Update Driver Registry)
         *self.state.lock() = LiveUpdateState::Switching;
 
-        if let Err(e) = Self::swap_drivers(old_cell_id, new_cell_id, &old_drivers) {
-            let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
-            return Err(e);
-        }
+        let swap_result = match Self::swap_drivers(old_cell_id, new_cell_id, &old_drivers) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
+                return Err(e);
+            }
+        };
 
         // Step 3.5: Migrate ownership in Cell Registry
         Self::migrate_driver_ownership(old_cell_id, new_cell_id, &old_drivers);
 
         // Step 4-5: Wait for quiescent state and finalize
-        self.finalize_update(old_cell_id, new_cell_id, old_epoch)
+        self.finalize_update(old_cell_id, new_cell_id, old_epoch, swap_result)
     }
 
     /// ドライバのエントリポイントをスワップし、失敗時にロールバック
@@ -368,7 +448,7 @@ impl LiveUpdateManager {
         old_cell_id: crate::loader::CellId,
         new_cell_id: crate::loader::CellId,
         old_drivers: &[crate::driver_registry::DriverHandle],
-    ) -> Result<(), LiveUpdateError> {
+    ) -> Result<SwapDriversResult, LiveUpdateError> {
         // Resolve entry symbol in NEW cell
         let (entry_fn, entry_fini) = resolve_cell_entry(new_cell_id, true)?;
 
@@ -388,7 +468,10 @@ impl LiveUpdateManager {
                 }
             }
         }
-        Ok(())
+        Ok(SwapDriversResult {
+            updated_handles,
+            old_entry,
+        })
     }
 
     /// ドライバの所有権を旧セルから新セルへ移行
@@ -409,28 +492,38 @@ impl LiveUpdateManager {
         });
     }
 
-    /// Quiescent state の待機と旧セルの解放
+    /// Quiescent state の待機と検証猶予コンテキストの作成
     fn finalize_update(
         &self,
         old_cell_id: crate::loader::CellId,
         new_cell_id: crate::loader::CellId,
         old_epoch: u64,
+        swap_result: SwapDriversResult,
     ) -> Result<u64, LiveUpdateError> {
         *self.state.lock() = LiveUpdateState::WaitingQuiescent;
         log::info!("[LIVE_UPDATE] Waiting for quiescent state...\n");
         wait_for_quiescent_state(old_epoch);
         log::info!("[LIVE_UPDATE] All cores reached quiescent state\n");
 
+        let now = crate::task::timer::current_tick();
+        let deadline = now.saturating_add(self.rollback_grace_period);
+        {
+            let mut pending = self.pending.lock();
+            *pending = Some(PendingUpdateContext {
+                old_cell_id,
+                new_cell_id,
+                updated_handles: swap_result.updated_handles,
+                old_entry: swap_result.old_entry,
+                old_epoch,
+                started_at_tick: now,
+                deadline_tick: deadline,
+                health_failed: false,
+                health_failure_reason: None,
+            });
+        }
+
         *self.state.lock() = LiveUpdateState::Complete;
         self.rollback_epoch.store(old_epoch + 1, Ordering::Release);
-
-        match crate::loader::unload_cell(old_cell_id) {
-            Ok(_) => log::info!("[LIVE_UPDATE] Old cell unloaded\n"),
-            Err(e) => log::info!(
-                "[LIVE_UPDATE] Warning: Failed to unload old cell: {:?}\n",
-                e
-            ),
-        }
 
         Ok(new_cell_id.as_u64())
     }
@@ -438,8 +531,197 @@ impl LiveUpdateManager {
     /// ロールバックを実行
     pub fn rollback(&self) -> Result<(), LiveUpdateError> {
         log::info!("[LIVE_UPDATE] Rollback requested\n");
-        // TODO: ロールバック実装
-        Ok(())
+        self.rollback_pending_update().map(|_| ())
+    }
+
+    pub fn rollback_for_cell(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
+        self.rollback_pending_update_for(cell_id)
+    }
+
+    pub fn commit_for_cell(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
+        self.commit_pending_update_for(cell_id)
+    }
+
+    pub fn pending_status(&self, cell_id: u64) -> Option<PendingUpdateStatus> {
+        let pending = self.pending.lock();
+        let p = pending.as_ref()?;
+        if p.old_cell_id.as_u64() != cell_id && p.new_cell_id.as_u64() != cell_id {
+            return None;
+        }
+        Some(PendingUpdateStatus {
+            old_cell_id: p.old_cell_id.as_u64(),
+            new_cell_id: p.new_cell_id.as_u64(),
+            started_at_tick: p.started_at_tick,
+            deadline_tick: p.deadline_tick,
+            health_failed: p.health_failed,
+        })
+    }
+
+    pub fn mark_health_failure(&self, cell_id: u64, reason: impl Into<String>) -> bool {
+        let mut pending = self.pending.lock();
+        let Some(p) = pending.as_mut() else {
+            return false;
+        };
+        if p.old_cell_id.as_u64() != cell_id && p.new_cell_id.as_u64() != cell_id {
+            return false;
+        }
+        p.health_failed = true;
+        p.health_failure_reason = Some(reason.into());
+        *self.state.lock() = LiveUpdateState::Error;
+        true
+    }
+
+    pub fn take_recent_outcome_for_cell(&self, cell_id: u64) -> Option<CompletedUpdateOutcome> {
+        let mut outcomes = self.recent_outcomes.lock();
+        let idx = outcomes.iter().position(|o| o.matches_cell(cell_id))?;
+        Some(outcomes.remove(idx))
+    }
+
+    pub fn poll_pending_updates(&self) {
+        let (deadline_expired, health_failed) = {
+            let pending = self.pending.lock();
+            let Some(p) = pending.as_ref() else {
+                return;
+            };
+            (
+                crate::task::timer::current_tick() >= p.deadline_tick,
+                p.health_failed,
+            )
+        };
+
+        if health_failed {
+            if let Err(e) = self.rollback() {
+                log::warn!("[LIVE_UPDATE] Auto-rollback failed during poll: {}\n", e);
+            }
+            return;
+        }
+
+        if deadline_expired {
+            if let Err(e) = self.commit_pending_update() {
+                log::warn!("[LIVE_UPDATE] Auto-commit failed during poll: {}\n", e);
+            }
+        }
+    }
+
+    fn commit_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
+        let ctx = {
+            let mut pending = self.pending.lock();
+            pending.take().ok_or(LiveUpdateError::CellNotFound)?
+        };
+        self.commit_context(ctx)
+    }
+
+    fn commit_pending_update_for(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
+        let ctx = {
+            let mut pending = self.pending.lock();
+            let matches = pending
+                .as_ref()
+                .map(|p| p.old_cell_id.as_u64() == cell_id || p.new_cell_id.as_u64() == cell_id)
+                .unwrap_or(false);
+            if !matches {
+                return Err(LiveUpdateError::CellNotFound);
+            }
+            pending.take().ok_or(LiveUpdateError::CellNotFound)?
+        };
+        self.commit_context(ctx)
+    }
+
+    fn commit_context(&self, ctx: PendingUpdateContext) -> Result<UpdateTransition, LiveUpdateError> {
+        *self.state.lock() = LiveUpdateState::WaitingQuiescent;
+        log::info!(
+            "[LIVE_UPDATE] Committing update old={} new={}\n",
+            ctx.old_cell_id.as_u64(),
+            ctx.new_cell_id.as_u64()
+        );
+
+        // Ensure all readers have moved past the swap epoch before freeing old code.
+        wait_for_quiescent_state(ctx.old_epoch);
+
+        if crate::loader::unload_cell(ctx.old_cell_id).is_err() {
+            *self.pending.lock() = Some(ctx);
+            *self.state.lock() = LiveUpdateState::Error;
+            return Err(LiveUpdateError::LoadFailed);
+        }
+
+        let result = UpdateTransition {
+            old_cell_id: ctx.old_cell_id.as_u64(),
+            new_cell_id: ctx.new_cell_id.as_u64(),
+        };
+        self.push_outcome(CompletedUpdateOutcome::Committed {
+            old_cell_id: result.old_cell_id,
+            new_cell_id: result.new_cell_id,
+            at_tick: crate::task::timer::current_tick(),
+        });
+        *self.state.lock() = LiveUpdateState::Ready;
+        self.rollback_epoch.store(0, Ordering::Release);
+        Ok(result)
+    }
+
+    fn rollback_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
+        let ctx = {
+            let mut pending = self.pending.lock();
+            pending.take().ok_or(LiveUpdateError::CellNotFound)?
+        };
+        self.rollback_context(ctx)
+    }
+
+    fn rollback_pending_update_for(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
+        let ctx = {
+            let mut pending = self.pending.lock();
+            let matches = pending
+                .as_ref()
+                .map(|p| p.old_cell_id.as_u64() == cell_id || p.new_cell_id.as_u64() == cell_id)
+                .unwrap_or(false);
+            if !matches {
+                return Err(LiveUpdateError::CellNotFound);
+            }
+            pending.take().ok_or(LiveUpdateError::CellNotFound)?
+        };
+        self.rollback_context(ctx)
+    }
+
+    fn rollback_context(
+        &self,
+        ctx: PendingUpdateContext,
+    ) -> Result<UpdateTransition, LiveUpdateError> {
+        *self.state.lock() = LiveUpdateState::Switching;
+        log::info!(
+            "[LIVE_UPDATE] Rolling back update old={} new={}\n",
+            ctx.old_cell_id.as_u64(),
+            ctx.new_cell_id.as_u64()
+        );
+
+        rollback_drivers(&ctx.updated_handles, ctx.old_entry);
+        Self::migrate_driver_ownership(ctx.new_cell_id, ctx.old_cell_id, &ctx.updated_handles);
+
+        if crate::loader::unload_cell(ctx.new_cell_id).is_err() {
+            *self.pending.lock() = Some(ctx);
+            *self.state.lock() = LiveUpdateState::Error;
+            return Err(LiveUpdateError::LoadFailed);
+        }
+
+        let result = UpdateTransition {
+            old_cell_id: ctx.old_cell_id.as_u64(),
+            new_cell_id: ctx.new_cell_id.as_u64(),
+        };
+        self.push_outcome(CompletedUpdateOutcome::RolledBack {
+            old_cell_id: result.old_cell_id,
+            new_cell_id: result.new_cell_id,
+            at_tick: crate::task::timer::current_tick(),
+            reason: ctx.health_failure_reason,
+        });
+        *self.state.lock() = LiveUpdateState::Ready;
+        self.rollback_epoch.store(0, Ordering::Release);
+        Ok(result)
+    }
+
+    fn push_outcome(&self, outcome: CompletedUpdateOutcome) {
+        let mut outcomes = self.recent_outcomes.lock();
+        outcomes.push(outcome);
+        if outcomes.len() > 32 {
+            let drain = outcomes.len() - 32;
+            outcomes.drain(0..drain);
+        }
     }
 }
 
@@ -520,6 +802,11 @@ pub fn live_update_manager() -> &'static LiveUpdateManager {
     &LIVE_UPDATE_MANAGER
 }
 
+/// Quiescent point などから呼ぶ保留更新の自動処理
+pub fn poll_pending_updates() {
+    LIVE_UPDATE_MANAGER.poll_pending_updates();
+}
+
 /// アクティブコア数を設定
 pub fn set_active_cores(count: u64) {
     ACTIVE_CORES.store(count, Ordering::Release);
@@ -562,8 +849,6 @@ fn get_current_core_id() -> usize {
 // ============================================================================
 // StateTransfer Trait - 設計書 3.5.2: 状態移行プロトコル
 // ============================================================================
-
-use alloc::vec::Vec;
 
 /// ライブアップデート時の状態エクスポートエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -732,5 +1017,3 @@ impl StateTransfer for StatelessCell {
         Ok(StatelessCell)
     }
 }
-
-

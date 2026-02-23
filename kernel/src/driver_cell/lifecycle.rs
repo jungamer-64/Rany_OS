@@ -132,6 +132,7 @@ pub fn create(config: &DriverCellConfig) -> Result<DriverCellId, DriverCellError
 
     let cell = DriverCell::from_config(id, config);
     manager.register(cell)?;
+    super::stats::global_stats().on_created();
 
     log::info!(
         "[DriverCell] Created: {} (id={}, priority={:?}, restart={:?})\n",
@@ -199,13 +200,33 @@ pub fn load(
         }
     };
 
-    // 3. NUMAアフィニティを設定
-    let numa_node = manager.with_cell(id, |cell| cell.numa_node)?;
+    // 3. DriverCell設定をDomainへ反映（メタデータ + セキュリティ）
+    let (numa_node, caps, priority, cpu_limit, mem_limit, io_limit) = manager.with_cell(id, |cell| {
+        (
+            cell.numa_node,
+            cell.capabilities,
+            cell.priority,
+            cell.cpu_limit_percent,
+            cell.memory_limit_bytes,
+            cell.io_bandwidth_limit,
+        )
+    })?;
+
+    let _ = crate::domain_system::set_domain_capabilities(domain_id, caps);
+    let _ = crate::domain_system::set_domain_priority(domain_id, priority);
+    let _ = crate::domain_system::set_domain_resource_limits(
+        domain_id,
+        cpu_limit,
+        mem_limit,
+        io_limit,
+    );
+
+    // 4. NUMAアフィニティを設定
     if let Some(node) = numa_node {
         crate::domain_system::set_domain_numa(domain_id, node);
     }
 
-    // 4. DriverCellに紐付け
+    // 5. DriverCellに紐付け
     manager.with_cell_mut(id, |cell| {
         cell.set_cell_id(cell_id);
         cell.set_domain_id(domain_id);
@@ -414,6 +435,7 @@ pub fn unload(id: DriverCellId) -> Result<(), DriverCellError> {
         cell.transition_to(DriverCellState::Unloaded);
     })?;
     manager.remove(id)?;
+    super::stats::global_stats().on_unloaded();
 
     log::info!(
         "[DriverCell] Unloaded: {} (id={})\n",
@@ -451,6 +473,21 @@ pub fn create_and_start(
             Err(e)
         }
     }
+}
+
+/// よく使うデフォルト設定で DriverCell を作成して開始する簡易API
+pub fn create_and_start_default(
+    name: &str,
+    elf_data: &[u8],
+    allow_unsafe: bool,
+) -> Result<(DriverCellId, Vec<DriverHandle>), DriverCellError> {
+    let mut config = DriverCellConfig::new(name)
+        .with_restart_policy(RestartPolicy::on_panic(3, 100))
+        .with_capabilities(CapabilitySet::empty());
+    if allow_unsafe {
+        config = config.with_unsafe_allowed();
+    }
+    create_and_start(&config, elf_data)
 }
 
 /// 全DriverCellを停止

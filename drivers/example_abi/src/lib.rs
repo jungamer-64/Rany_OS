@@ -28,7 +28,7 @@ pub extern "C" fn irq_handler(_ctx: *mut DriverContext) -> bool {
     true
 }
 
-pub fn driver_name() -> &'static str {
+pub const fn driver_name() -> &'static str {
     "example_abi\0"
 }
 
@@ -74,5 +74,5 @@ pub static DRIVER_EXPORTS: DriverExportsV1 = DriverExportsV1 {
     entry: _exorust_driver_entry,
     init: Some(driver_init),
     fini: Some(driver_fini),
-    _reserved: [0; 8],
+    reserved: [0; 8],
 };

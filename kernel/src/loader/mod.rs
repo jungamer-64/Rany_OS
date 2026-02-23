@@ -22,8 +22,9 @@ pub use cell_lookup::*;
 pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
 #[allow(unused_imports)]
 pub use live_update::{
-    LiveUpdateError, LiveUpdateManager, LiveUpdateState, RequestTracker, current_epoch,
-    enter_critical_section, enter_quiescent_state, leave_critical_section, live_update_manager,
+    CompletedUpdateOutcome, LiveUpdateError, LiveUpdateManager, LiveUpdateState,
+    PendingUpdateStatus, RequestTracker, UpdateTransition, current_epoch, enter_critical_section,
+    enter_quiescent_state, leave_critical_section, live_update_manager, poll_pending_updates,
     wait_for_quiescent_state,
 };
 #[allow(unused_imports)]

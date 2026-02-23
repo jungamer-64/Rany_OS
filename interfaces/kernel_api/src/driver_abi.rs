@@ -429,6 +429,11 @@ pub struct DriverExportsV1 {
     pub reserved: [u64; 8],
 }
 
+// SAFETY: `DriverExportsV1` is an immutable table of function pointers and raw
+// pointers to static data emitted by a driver crate. It is read-only after
+// initialization and safe to share as a `static`.
+unsafe impl Sync for DriverExportsV1 {}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================

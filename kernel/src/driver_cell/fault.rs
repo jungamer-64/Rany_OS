@@ -31,9 +31,8 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::domain_system::DomainId;
-use crate::ipc::rref::reclaim_domain_resources;
 
-use super::{DriverCellError, DriverCellId, DriverCellState, driver_cell_manager};
+use super::{DriverCellError, DriverCellId, DriverCellState, HotSwapState, driver_cell_manager};
 
 // ============================================================================
 // Restart Policy
@@ -90,12 +89,12 @@ impl RestartPolicy {
                 if !matches!(fault_kind, FaultKind::Panic(_)) {
                     return false;
                 }
-                *max_retries == 0 || consecutive_faults < *max_retries
+                *max_retries == 0 || consecutive_faults <= *max_retries
             }
             RestartPolicy::Always {
                 max_retries,
                 ..
-            } => *max_retries == 0 || consecutive_faults < *max_retries,
+            } => *max_retries == 0 || consecutive_faults <= *max_retries,
         }
     }
 
@@ -201,7 +200,7 @@ pub fn handle_fault(
     let manager = driver_cell_manager();
 
     // 障害情報を記録
-    let (restart_policy, consecutive, domain_id) = manager.with_cell_mut(id, |cell| {
+    let (restart_policy, consecutive, domain_id, hot_swap_state, cell_id) = manager.with_cell_mut(id, |cell| {
         cell.consecutive_faults += 1;
         let consecutive = cell.consecutive_faults;
 
@@ -211,8 +210,15 @@ pub fn handle_fault(
         cell.transition_to(DriverCellState::Faulted);
         cell.stats.record_fault();
 
-        (cell.restart_policy, consecutive, cell.domain_id)
+        (
+            cell.restart_policy,
+            consecutive,
+            cell.domain_id,
+            cell.hot_swap_state,
+            cell.cell_id,
+        )
     })?;
+    super::stats::global_stats().on_fault();
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
 
@@ -225,7 +231,6 @@ pub fn handle_fault(
 
     // ドメインのリソースを回収
     if let Some(did) = domain_id {
-        reclaim_domain_resources(did);
         crate::domain_system::handle_domain_panic(
             did,
             format!("DriverCell fault: {}", fault_kind),
@@ -234,6 +239,24 @@ pub fn handle_fault(
 
     // ドライバを停止（可能なら）
     stop_drivers_for_cell(id);
+
+    // ホットスワップ検証中の障害は、再起動より先にロールバックを優先
+    if hot_swap_state == HotSwapState::Validating {
+        if let Some(cid) = cell_id {
+            let _ = crate::loader::live_update::live_update_manager().mark_health_failure(
+                cid.as_u64(),
+                format!("Fault during validation: {}", fault_kind),
+            );
+        }
+
+        match super::hot_swap::rollback(id) {
+            Ok(()) => return Ok(FaultAction::RolledBack),
+            Err(e) => {
+                log::warn!("[DriverCell] Validation rollback failed: {}\n", e);
+                return Ok(FaultAction::RollbackFailed(format!("{}", e)));
+            }
+        }
+    }
 
     // 再起動ポリシーを評価
     if restart_policy.should_restart(fault_kind.clone(), consecutive) {
@@ -246,9 +269,12 @@ pub fn handle_fault(
             backoff
         );
 
+        spin_wait_ticks(backoff);
+
         // 再起動を実行
         match attempt_restart(id) {
             Ok(()) => {
+                super::stats::global_stats().on_restart_succeeded();
                 // 障害レコードを更新
                 manager.with_cell_mut(id, |cell| {
                     if let Some(last) = cell.fault_history.last_mut() {
@@ -258,6 +284,7 @@ pub fn handle_fault(
                 Ok(FaultAction::Restarted)
             }
             Err(e) => {
+                super::stats::global_stats().on_restart_failed();
                 log::warn!(
                     "[DriverCell] Restart failed for '{}': {}\n",
                     name,
@@ -333,8 +360,13 @@ fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
     // 古いドライバをunregister
     let old_handles = manager.with_cell(id, |cell| cell.driver_handles.clone())?;
     for handle in &old_handles {
-        let registry = crate::driver_registry::driver_registry();
-        let _ = registry.unregister(*handle);
+        if let Err(e) = crate::loader::unload_driver(*handle) {
+            log::warn!(
+                "[DriverCell] Failed to unload driver handle {:?} during restart: {}\n",
+                handle.index(),
+                e
+            );
+        }
     }
 
     // DriverCell内のハンドルリストをクリア
@@ -393,6 +425,16 @@ fn attempt_restart(id: DriverCellId) -> Result<(), DriverCellError> {
     Ok(())
 }
 
+fn spin_wait_ticks(delay_ticks: u64) {
+    if delay_ticks == 0 {
+        return;
+    }
+    let start = crate::task::timer::current_tick();
+    while crate::task::timer::current_tick().saturating_sub(start) < delay_ticks {
+        core::hint::spin_loop();
+    }
+}
+
 // ============================================================================
 // Fault Action
 // ============================================================================
@@ -404,6 +446,10 @@ pub enum FaultAction {
     Restarted,
     /// 再起動に失敗した
     RestartFailed(String),
+    /// 検証中アップデートをロールバックした
+    RolledBack,
+    /// 検証中アップデートのロールバックに失敗した
+    RollbackFailed(String),
     /// 停止のまま（再起動なし）
     Stopped,
 }
@@ -413,6 +459,8 @@ impl core::fmt::Display for FaultAction {
         match self {
             Self::Restarted => write!(f, "Restarted"),
             Self::RestartFailed(msg) => write!(f, "Restart failed: {}", msg),
+            Self::RolledBack => write!(f, "Rolled back"),
+            Self::RollbackFailed(msg) => write!(f, "Rollback failed: {}", msg),
             Self::Stopped => write!(f, "Stopped (no restart)"),
         }
     }
