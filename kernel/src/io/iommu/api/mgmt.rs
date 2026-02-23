@@ -40,8 +40,15 @@ pub fn enforce_iommu_requirement() {
 
 /// Enable IOMMU translation (on all controllers)
 pub fn enable_iommu() -> Result<(), IommuError> {
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    driver.enable()
+    // diagnostic logging: check whether driver pointer exists
+    let has = get_iommu_driver().is_some();
+    if !has {
+        // early return to make logs clear
+        return Err(IommuError::NotInitialized);
+    }
+    let driver = get_iommu_driver().unwrap();
+    let result = driver.enable();
+    result
 }
 
 /// Disable IOMMU translation (on all controllers)

@@ -29,7 +29,10 @@ use spin::Mutex;
 
 /// タイムスタンプカウンタを読む
 mod accessors;
-pub use accessors::*;
+// The accessors module provides helpers that may be consumed by
+// other crates/tests. We don't re-export its contents here to
+// avoid unused-import warnings, though the module is kept for
+// organization and future use.
 #[inline(always)]
 pub fn rdtsc() -> u64 {
     #[cfg(target_arch = "x86_64")]

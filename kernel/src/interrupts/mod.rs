@@ -247,7 +247,12 @@ pub fn enable_interrupts() {
     if !IDT_INITIALIZED.load(Ordering::SeqCst) {
         panic!("Cannot enable interrupts: IDT not initialized");
     }
+    // log before toggling the IF flag so we know the call was reached
+    log::info!("[INT] enable_interrupts() about to set IF");
     x86_64::instructions::interrupts::enable();
+    // as soon as interrupts are enabled we may be taken immediately,
+    // but if control returns to this function we can log success.
+    log::info!("[INT] enable_interrupts() returned (IF set)");
 }
 
 /// 割り込みを無効化
@@ -412,8 +417,16 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 // - タイマーティックの管理
 // - フラグ設定のみで重い処理は遅延
 // - Wakerを起床させるだけ
+// simple counter for timer debug logging
+static TIMER_LOGGED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 define_interrupt!(
     fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        // log first tick to confirm handler firing
+        if !TIMER_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+            log::warn!("[INT] timer interrupt handler entered");
+        }
+
         // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
         let _tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
 
@@ -444,6 +457,12 @@ define_interrupt!(
 
 /// タイマーイベントペンディングフラグ
 static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Debug helpers: log first occurrence of certain interrupts
+static KEYBOARD_LOGGED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+static IOMMU_LOGGED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
@@ -486,6 +505,9 @@ pub fn poll_timer_events() {
 // Interrupt-Wakerブリッジとの連携
 define_interrupt!(
     fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        if !KEYBOARD_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+            log::warn!("[INT] keyboard interrupt received");
+        }
         // Delegate to the PS/2 controller handler which reads status/data itself.
         crate::io::hid::ps2::keyboard_interrupt_handler();
 
@@ -534,6 +556,9 @@ define_interrupt!(
 // Also wakes any pending async invalidation waiters.
 define_interrupt!(
     fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
+        if !IOMMU_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+            log::warn!("[INT] IOMMU fault interrupt received");
+        }
         // Process faults
         crate::io::iommu::api::handle_fault();
 
@@ -601,8 +626,15 @@ define_interrupt!(
 // Spurious Interrupt Handler (0xFF)
 // APICノイズによる偽の割り込みを処理
 // 何もせず単にリターンする（EOIも送らないのが一般的だが、ISR上はiretが必要）
+// For debug we log the *first* occurrence.
+static SPURIOUS_LOGGED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 define_interrupt!(
     fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        if !SPURIOUS_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+            // log once to avoid flooding
+            log::warn!("[INT] spurious interrupt received");
+        }
         // 偽割り込みに対してはEOIを送らないのがIntel仕様での推奨
         // (ただし、Local APICのSIVRのビット8がクリアされている場合などは挙動が異なるが、
         // ここではSoft Enableされている前提)

@@ -49,7 +49,7 @@ IOMMU=true
 NO_IOMMU=false
 NUMA=true
 NO_NUMA=false
-NETWORK=false
+NETWORK=true          # network enabled by default
 MONITOR=false
 TCG=false
 VERBOSE=false
@@ -162,7 +162,7 @@ Hardware Emulation:
   --no-iommu        Disable IOMMU emulation
   --numa            Enable NUMA topology simulation (default: enabled, 2 nodes)
   --no-numa         Disable NUMA topology simulation
-  --network         Enable VirtIO network device (hostfwd: 5555->80)
+  --network         Enable VirtIO network device (hostfwd: 5555->80) [default]
   --nvme SIZE       Add virtual NVMe device (e.g., "1G", "512M")
 
 Advanced:
