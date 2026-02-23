@@ -1,4 +1,6 @@
 use super::*;
+use alloc::sync::Arc;
+use crate::io::virtio::TransportType;
 
 
 mod graphics_manager;
