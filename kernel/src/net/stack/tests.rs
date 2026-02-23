@@ -114,19 +114,34 @@ pub fn test_redirect_cache_expiry() {
 pub fn test_transmit_fn_interface_parameter() {
     // verify that the stack passes the optional interface ID through the
     // transmit callback.  by default we expect `None` to be delivered.
+    use core::sync::atomic::{AtomicU16, AtomicU8, Ordering};
+
+    static SEEN_KIND: AtomicU8 = AtomicU8::new(0);
+    static SEEN_IF_ID: AtomicU16 = AtomicU16::new(0);
+
+    fn record_if_id(if_id: Option<NetIfId>, _data: &[u8]) -> bool {
+        match if_id {
+            Some(id) => {
+                SEEN_IF_ID.store(id.0, Ordering::Relaxed);
+                SEEN_KIND.store(2, Ordering::Relaxed);
+            }
+            None => {
+                SEEN_KIND.store(1, Ordering::Relaxed);
+            }
+        }
+        true
+    }
+
     init_default();
-    let seen: core::cell::Cell<Option<NetIfId>> = core::cell::Cell::new(None);
+    SEEN_KIND.store(0, Ordering::Relaxed);
     if let Ok(mut guard) = stack().lock() {
         if let Some(ref mut s) = *guard {
-            s.set_transmit_fn(|if_id, _data| {
-                seen.set(if_id);
-                true
-            });
+            s.set_transmit_fn(record_if_id);
         }
     }
     // perform a simple send which triggers the callback
     let _ = send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0u8]);
-    assert!(seen.get().is_none());
+    assert_eq!(SEEN_KIND.load(Ordering::Relaxed), 1);
 }
 
 #[cfg_attr(test, test_case)]
