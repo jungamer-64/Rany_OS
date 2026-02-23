@@ -20,7 +20,7 @@ members = [
     "libs/app_sdk",
     "libs/security",
     "libs/graphic_types",
-    "libs/vfs",
+    "filesystems/vfs",
     "libs/sync",
     # Filesystems
     "filesystems/fat32",
@@ -119,4 +119,3 @@ opt-level = 3
 # embedding large debug/symbol sections that can overlap loadable ranges.
 debug = false
 strip = "symbols"
-

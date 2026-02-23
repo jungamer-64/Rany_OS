@@ -17,7 +17,7 @@ use crate::task::process::{ProcessId, process_manager};
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "../../compat/posix/procfs_pid.rs"]
+#[path = "../../../kernel/src/compat/posix/procfs_pid.rs"]
 mod pid;
 pub use pid::Pid;
 

@@ -48,7 +48,7 @@ time_driver = { path = "../drivers/time" }
 
 # Filesystems
 fat32 = { path = "../filesystems/fat32" }
-vfs = { path = "../libs/vfs" }
+vfs = { path = "../filesystems/vfs" }
 
 # ブートローダーAPI（ExoLoader Protocol）
 boot_proto = { path = "../libs/boot_proto" }
