@@ -187,6 +187,10 @@ done
 TARGET_DIR="$ROOT_DIR/target"
 KERNEL_TARGET_DIR="$TARGET_DIR/x86_64-exorust/$PROFILE"
 LOADER_TARGET_DIR="$TARGET_DIR/$TARGET_LOADER/release"  # Loader is always release
+# FAT_ROOT is derived from the kernel output directory and used by both
+# create_disk_image and start_qemu.  Calculating it here avoids accidental
+# usage before it is set (e.g. if pipelines are reordered later).
+FAT_ROOT="$KERNEL_TARGET_DIR/fat_root"
 
 if [[ "$CARGO_RUNNER" = true ]] && [[ -n "$CARGO_KERNEL_PATH" ]]; then
     KERNEL_RAW="$CARGO_KERNEL_PATH"
@@ -237,6 +241,16 @@ check_dependencies() {
     if ! rustup component list --installed 2>/dev/null | grep -q "^rust-src"; then
         warn_ "Rust component 'rust-src' is missing. Installing..."
         rustup component add rust-src
+    fi
+
+    # If we plan to lint, ensure the formatter and clippy are installed too.
+    if [[ "$LINT" = true ]]; then
+        for comp in rustfmt clippy; do
+            if ! rustup component list --installed 2>/dev/null | grep -q "^${comp}"; then
+                warn_ "Rust component '$comp' is missing. Installing..."
+                rustup component add "$comp"
+            fi
+        done
     fi
 
     # QEMU check (only if we're going to run)
@@ -325,7 +339,10 @@ build_signer() {
 }
 
 setup_keys() {
-    if [[ ! -f "$KEYS_DIR/kernel_pub.key" ]]; then
+    # ensure both public and private key exist; regenerating when either is
+    # missing avoids situations where a leftover pub key but missing secret
+    # would later make sign_kernel fail with a confusing error.
+    if [[ ! -f "$KEYS_DIR/kernel_pub.key" ]] || [[ ! -f "$KEYS_DIR/kernel.key" ]]; then
         step "Generating Secure Boot Keys..."
         mkdir -p "$KEYS_DIR"
         "$SIGNER_TOOL_BIN" keygen --output-dir "$KEYS_DIR"
@@ -385,6 +402,10 @@ sign_kernel() {
         fail_ "Kernel binary not found at $KERNEL_RAW"
         exit 1
     fi
+    # Ensure output directory exists (cargorunner skips kernel build which may
+    # leave $KERNEL_TARGET_DIR missing).  Without this qemu pipeline will blow
+    # up inside the signer tool.
+    mkdir -p "$(dirname "$KERNEL_SIGNED")"
     "$SIGNER_TOOL_BIN" sign \
         --kernel "$KERNEL_RAW" \
         --secret-key "$KEYS_DIR/kernel.key" \
@@ -397,7 +418,6 @@ sign_kernel() {
 create_disk_image() {
     step "Preparing Boot Image..."
 
-    FAT_ROOT="$KERNEL_TARGET_DIR/fat_root"
     rm -rf "$FAT_ROOT"
     mkdir -p "$FAT_ROOT/EFI/BOOT"
 
@@ -605,6 +625,10 @@ start_qemu() {
 
     # [ExoRust] QEMU Monitor for runtime inspection
     if [[ "$MONITOR" = true ]] || [[ "$GDB_DEBUG" = true ]]; then
+        # check port to help users diagnose silent failures
+        if command -v lsof &>/dev/null && lsof -iTCP:4444 -sTCP:LISTEN &>/dev/null; then
+            warn_ "Port 4444 is already in use; QEMU monitor may fail to bind"
+        fi
         qemu_args+=(-monitor "telnet:127.0.0.1:4444,server,nowait")
         done_ "[MONITOR] telnet localhost 4444 (info tlb, info mem, etc.)"
     fi
