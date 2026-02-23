@@ -568,3 +568,8 @@ fn validate_sgl_total_bytes(
     }
     Ok(total)
 }
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use tests::*;

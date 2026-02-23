@@ -34,7 +34,7 @@ use super::fs_abstraction::InodeNum;
 // ============================================================================
 
 /// Default page size (4KB)
-mod cached_block_impl;
+pub(crate) mod cached_block_impl;
 pub use cached_block_impl::*;
 pub const PAGE_SIZE: usize = 4096;
 
@@ -673,8 +673,8 @@ pub fn page_cache() -> &'static PageCache {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 
 // ============================================================================
 // LRU Block Cache

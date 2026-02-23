@@ -75,6 +75,9 @@ jobs:
       - name: Verify NET peripheral required wiring
         run: bash scripts/verify_net_peripheral_required.sh
 
+      - name: Verify Storage/FS required wiring
+        run: bash scripts/verify_storage_fs_required.sh
+
       - name: Verify NET/TLS Wave8 required wiring
         run: bash scripts/verify_net_tls_wave8_required.sh
 

@@ -45,8 +45,8 @@ fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
     CurrentTaskGuard { prev, current }
 }
 
-#[test_case]
-fn test_null_device() {
+#[cfg_attr(test, test_case)]
+pub fn test_null_device() {
     let null = NullDevice;
 
     let mut buf = [0u8; 10];
@@ -56,8 +56,8 @@ fn test_null_device() {
     assert_eq!(null.write(0, data).unwrap(), 4);
 }
 
-#[test_case]
-fn test_zero_device() {
+#[cfg_attr(test, test_case)]
+pub fn test_zero_device() {
     let zero = ZeroDevice;
 
     let mut buf = [1u8; 10];
@@ -65,8 +65,8 @@ fn test_zero_device() {
     assert!(buf.iter().all(|&b| b == 0));
 }
 
-#[test_case]
-fn test_random_device() {
+#[cfg_attr(test, test_case)]
+pub fn test_random_device() {
     let random = RandomDevice::new();
 
     let mut buf1 = [0u8; 8];
@@ -79,8 +79,8 @@ fn test_random_device() {
     assert_ne!(buf1, buf2);
 }
 
-#[test_case]
-fn test_dev_open_with_token_reclaim() {
+#[cfg_attr(test, test_case)]
+pub fn test_dev_open_with_token_reclaim() {
     // Setup: create caller and target domains
     let caller = DomainId::new(500);
     let target = DomainId::new(501);
@@ -122,8 +122,8 @@ fn test_dev_open_with_token_reclaim() {
     assert!(manager().reclaim_token(token).is_ok());
 }
 
-#[test_case]
-fn test_devfs_structure() {
+#[cfg_attr(test, test_case)]
+pub fn test_devfs_structure() {
     let fs = DevFs::new();
 
     let entries = fs.readdir("").unwrap();
@@ -132,8 +132,8 @@ fn test_devfs_structure() {
     assert!(entries.contains(&String::from("random")));
 }
 
-#[test_case]
-fn test_find_block_device_by_number() {
+#[cfg_attr(test, test_case)]
+pub fn test_find_block_device_by_number() {
     struct TestBlockDevice;
     impl DeviceOps for TestBlockDevice {
         fn open(&self) -> Result<(), DevError> { Ok(()) }

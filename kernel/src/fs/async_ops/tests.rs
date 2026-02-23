@@ -1,7 +1,7 @@
 use super::*;
 
-#[test_case]
-fn test_async_file_seek() {
+#[cfg_attr(test, test_case)]
+pub fn test_async_file_seek() {
     let attr = FileAttr {
         size: 1000,
         ..Default::default()
@@ -21,9 +21,9 @@ fn test_async_file_seek() {
     assert_eq!(file.seek(SeekFrom::End(-100)).unwrap(), 900);
 }
 
-#[test_case]
-fn test_direct_block_handle() {
+#[cfg_attr(test, test_case)]
+pub fn test_direct_block_handle() {
     let handle = DirectBlockHandle::new(0, 0, 1000, 512);
-    assert_eq!(handle.block_size, 512);
-    assert_eq!(handle.block_count, 1000);
+    assert_eq!(handle.qemu_test_block_size(), 512);
+    assert_eq!(handle.qemu_test_block_count(), 1000);
 }

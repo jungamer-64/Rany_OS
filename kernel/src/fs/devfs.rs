@@ -710,6 +710,6 @@ impl Drop for DevFileHandle {
     }
 }
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 

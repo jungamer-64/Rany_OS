@@ -1,7 +1,7 @@
 use super::*;
 
-#[test_case]
-fn test_superblock_block_size() {
+#[cfg_attr(test, test_case)]
+pub fn test_superblock_block_size() {
     // block_size = 1024 << 0 = 1024
     let mut sb: Superblock = unsafe { core::mem::zeroed() };
     sb.log_block_size = 0;
@@ -12,8 +12,8 @@ fn test_superblock_block_size() {
     assert_eq!(sb.block_size(), 4096);
 }
 
-#[test_case]
-fn test_inode_file_type() {
+#[cfg_attr(test, test_case)]
+pub fn test_inode_file_type() {
     let mut inode: Ext2Inode = unsafe { core::mem::zeroed() };
 
     inode.mode = S_IFREG;

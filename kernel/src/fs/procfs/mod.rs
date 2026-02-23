@@ -14,8 +14,9 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::domain_system::DomainId;
 use crate::task::process::{ProcessId, process_manager};
 
-mod tests;
-pub use tests::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "../../compat/posix/procfs_pid.rs"]
 mod pid;
 pub use pid::Pid;

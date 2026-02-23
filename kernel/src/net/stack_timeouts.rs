@@ -427,12 +427,15 @@ impl TimeWaitTimer {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod tests {
+// Export the test helpers when building the QEMU suites so wrapper functions can
+// call them from `kernel/src/net/qemu_tests.rs`.  Other modules already use the
+// `qemu-test-export` feature flag.
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_timeout_wheel_basic() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_timeout_wheel_basic() {
         let mut wheel = TimeoutWheel::new(10);
         let id = wheel.schedule(100, TimerKind::TcpRetransmit, 0);
         assert!(id > 0);
@@ -444,22 +447,22 @@ mod tests {
         assert_eq!(expired[0].kind, TimerKind::TcpRetransmit);
     }
 
-    #[test_case]
-    fn test_timeout_wheel_cancel() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_timeout_wheel_cancel() {
         let mut wheel = TimeoutWheel::new(10);
         let id = wheel.schedule(100, TimerKind::NdpRetransmit, 0);
         assert!(wheel.cancel(id));
         assert_eq!(wheel.count(), 0);
     }
 
-    #[test_case]
-    fn test_retransmit_timer_initial() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_retransmit_timer_initial() {
         let timer = RetransmitTimer::new();
         assert_eq!(timer.rto(), 1000); // 1秒
     }
 
-    #[test_case]
-    fn test_retransmit_timer_update() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_retransmit_timer_update() {
         let mut timer = RetransmitTimer::new();
         // First measurement: 100ms RTT
         timer.update_rtt(100_000); // 100ms in us
@@ -467,8 +470,8 @@ mod tests {
         assert!(timer.rto() <= 60_000); // max_rto
     }
 
-    #[test_case]
-    fn test_retransmit_timer_backoff() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_retransmit_timer_backoff() {
         let mut timer = RetransmitTimer::new();
         assert_eq!(timer.rto(), 1000);
         timer.backoff();
@@ -477,8 +480,8 @@ mod tests {
         assert_eq!(timer.rto(), 4000);
     }
 
-    #[test_case]
-    fn test_keepalive_timer() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_keepalive_timer() {
         let mut ka = KeepaliveTimer::new();
         ka.enable();
         ka.on_data_received(0);
@@ -493,8 +496,8 @@ mod tests {
         assert!(!ka.should_abort());
     }
 
-    #[test_case]
-    fn test_time_wait_timer() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_time_wait_timer() {
         let tw = TimeWaitTimer::start(1000);
         assert!(!tw.is_expired(1000));
         assert!(!tw.is_expired(60_000));

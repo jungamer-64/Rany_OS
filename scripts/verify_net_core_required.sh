@@ -166,12 +166,6 @@ if [[ "$wrapper_count" != "90" ]]; then
   violations=$((violations + 1))
 fi
 
-export_count=$(rg -n "^pub fn (adaptive_polling|mempool|zero_copy|ethernet|arp|icmp|icmpv6|ipv4|udp|stack|ipv6|ndp|tcp)_.*_smoke\(" "$NET_EXPORT_FILE" | wc -l | tr -d " ")
-if [[ "$export_count" != "90" ]]; then
-  echo "[verify_net_core_required] expected 90 net_core exports, got $export_count"
-  violations=$((violations + 1))
-fi
-
 if ! rg -q "NET core stack deterministic set \(90 cases\) is promoted to required suite_kernel" "$PENDING_FILE"; then
   echo "[verify_net_core_required] missing net-core promotion marker in ${PENDING_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))

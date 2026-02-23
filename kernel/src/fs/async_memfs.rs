@@ -609,6 +609,6 @@ fn split_path_async(path: &str, cwd: &str) -> (String, String) {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 

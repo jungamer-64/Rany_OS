@@ -64,6 +64,8 @@ pub mod page;
 pub mod sysfs;
 #[cfg(feature = "posix-compat")]
 pub mod procfs;
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
 
 #[allow(unused_imports)]
 pub use async_ops::{

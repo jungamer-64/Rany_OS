@@ -13,6 +13,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # NET endpoint required wiring (68 cases) is verified by scripts/verify_net_endpoint_required.sh.
 # NET core stack required wiring (90 cases) is verified by scripts/verify_net_core_required.sh.
 # NET peripheral required wiring (67 cases) is verified by scripts/verify_net_peripheral_required.sh.
+# Storage/FS required wiring (59 cases) is verified by scripts/verify_storage_fs_required.sh.
 # Official QEMU warning-free gate is verified by scripts/verify_qemu_official_warning_free.sh.
 # Duplicate wrapper/helper root-cause cleanup is verified by scripts/verify_qemu_warning_root_cause_cleanup.sh.
 ALLOWLIST_FILE="$ROOT_DIR/scripts/qemu_legacy_test_allowlist.lst"

@@ -111,6 +111,16 @@ impl DirectBlockHandle {
         }
     }
 
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub(crate) fn qemu_test_block_count(&self) -> u64 {
+        self.block_count
+    }
+
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub(crate) fn qemu_test_block_size(&self) -> u32 {
+        self.block_size
+    }
+
     pub(super) fn io_device(&self) -> IoDeviceId {
         IoDeviceId::Nvme {
             controller: 0,
