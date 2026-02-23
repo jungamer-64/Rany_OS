@@ -8,9 +8,14 @@ pub fn test_primary_server_poisoned_returns_none() {
         let mut s = client.servers.lock().unwrap();
         s.push(Ipv4Address::from_octets(1, 2, 3, 4));
     }
+
     set_panicking(true);
-    assert_eq!(client.primary_server(), None);
+    {
+        let _guard = client.servers.lock().unwrap();
+    }
     set_panicking(false);
+
+    assert_eq!(client.primary_server(), None);
 }
 
 #[cfg_attr(test, test_case)]
