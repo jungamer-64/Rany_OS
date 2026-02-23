@@ -894,6 +894,187 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(feature = "qemu-test-export")]
+    pub fn qemu_packet_path_available() -> bool {
+        let _ = mempool::init_net_mempool(1);
+        mempool::alloc_packet().is_some()
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    fn qemu_zero_copy_prereq_ipv4_heapless_smoke() -> bool {
+        let _bridge_guard = BridgeStateGuard::new();
+        stack::stack().clear_poison();
+
+        let mut config = super::NetworkConfig::default();
+        config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
+        stack::init(config);
+
+        let local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
+        let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
+
+        let mut tcb = TcpControlBlock::new(local);
+        tcb.remote_addr = Some(remote);
+        tcb.state = TcpState::Established;
+        tcb.rcv_nxt = 1;
+        let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
+
+        match stack::stack().lock() {
+            Ok(mut guard) => {
+                if let Some(ref mut s) = *guard {
+                    s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
+                } else {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+
+        check_batch_timeout(100_000, 1);
+
+        match tcb_arc.lock() {
+            Ok(guard) => guard.recv_buffer.is_empty() && guard.state == TcpState::Established,
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    fn qemu_zero_copy_prereq_ipv6_heapless_smoke() -> bool {
+        let _bridge_guard = BridgeStateGuard::new();
+        stack::stack().clear_poison();
+
+        let mut config = super::NetworkConfig::default();
+        config.ipv6 = Some(crate::net::ipv6::Ipv6Config::from_mac(&[
+            0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
+        ]));
+        stack::init(config);
+
+        let local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 1000);
+        let remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 2000);
+
+        let mut tcb = TcpControlBlock::new(local);
+        tcb.remote_addr = Some(remote);
+        tcb.state = TcpState::Established;
+        tcb.rcv_nxt = 1;
+        let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
+
+        match stack::stack().lock() {
+            Ok(mut guard) => {
+                if let Some(ref mut s) = *guard {
+                    s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
+                } else {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+
+        check_batch_timeout(100_000, 1);
+
+        match tcb_arc.lock() {
+            Ok(guard) => guard.recv_buffer.is_empty() && guard.state == TcpState::Established,
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    fn qemu_routing_nat_heapless_smoke() -> bool {
+        let _guard = BridgeStateGuard::new();
+        manager::init_network_manager();
+
+        let if1 = match manager::register_interface("qemu-if-a") {
+            Ok(id) => id,
+            Err(_) => return false,
+        };
+        let if2 = match manager::register_interface("qemu-if-b") {
+            Ok(id) => id,
+            Err(_) => return false,
+        };
+
+        let cfg1 = super::NetworkConfig {
+            mac: MacAddress::from_octets(0, 1, 2, 3, 4, 5),
+            ipv4: Ipv4Config {
+                address: Ipv4Address::new([10, 0, 0, 1]),
+                subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                gateway: Ipv4Address::ANY,
+                dns: None,
+            },
+            ipv6: None,
+            icmp_echo_enabled: true,
+        };
+        let cfg2 = super::NetworkConfig {
+            mac: MacAddress::from_octets(0, 1, 2, 3, 4, 6),
+            ipv4: Ipv4Config {
+                address: Ipv4Address::new([10, 0, 1, 1]),
+                subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                gateway: Ipv4Address::ANY,
+                dns: None,
+            },
+            ipv6: None,
+            icmp_echo_enabled: true,
+        };
+        if manager::set_interface_config(if1, cfg1).is_err()
+            || manager::set_interface_config(if2, cfg2).is_err()
+        {
+            return false;
+        }
+
+        let route = manager::Ipv4Route {
+            destination: Ipv4Address::new([10, 0, 1, 0]),
+            prefix_len: 24,
+            gateway: None,
+            if_id: if2,
+            metric: 1,
+            flags: manager::RouteFlags::connected(),
+            admin_enabled: true,
+            managed_by_interface: false,
+        };
+        if manager::add_ipv4_route(route).is_err() {
+            return false;
+        }
+
+        let route_ok = matches!(
+            manager::lookup_ipv4_route(Ipv4Address::new([10, 0, 1, 5])),
+            Ok(Some(r)) if r.if_id == if2
+        );
+        if !route_ok {
+            return false;
+        }
+
+        test_nat_inbound_roundtrip_is_protocol_scoped();
+        test_nat_gc_expires_idle_entries();
+        true
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    pub fn qemu_zero_copy_via_bridge_smoke() -> bool {
+        if qemu_packet_path_available() {
+            test_zero_copy_via_bridge();
+            true
+        } else {
+            qemu_zero_copy_prereq_ipv4_heapless_smoke()
+        }
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    pub fn qemu_routing_and_nat_smoke() -> bool {
+        if qemu_packet_path_available() {
+            test_routing_and_nat();
+            true
+        } else {
+            qemu_routing_nat_heapless_smoke()
+        }
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    pub fn qemu_zero_copy_via_bridge_v6_smoke() -> bool {
+        if qemu_packet_path_available() {
+            test_zero_copy_via_bridge_v6();
+            true
+        } else {
+            qemu_zero_copy_prereq_ipv6_heapless_smoke()
+        }
+    }
+
     #[cfg_attr(test, test_case)]
     pub fn test_zero_copy_via_bridge() {
         let _guard = BridgeStateGuard::new();
