@@ -334,6 +334,7 @@ pub static __tls_end: u8 = 0;
 // Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
 // without pulling in the full memory subsystem and its heavy dependencies.
 #[cfg(any(not(test), feature = "full_mm_tests"))]
+#[path = "../../filesystems/kernel_fs/mod.rs"]
 pub mod fs;
 
 // Intrusive collections for kernel use (always available)

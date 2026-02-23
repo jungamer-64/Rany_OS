@@ -15,6 +15,7 @@ mod domain;
 mod domain_system;
 mod epoch;
 mod error;
+#[path = "../../filesystems/kernel_fs/mod.rs"]
 mod fs;
 mod ahci_and_init;
 pub use ahci_and_init::*;
