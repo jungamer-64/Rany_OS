@@ -439,6 +439,8 @@ impl Executor {
             // 4.5. Quiescent Point (設計書 3.5.3: Epoch-based Reclamation)
             // ライブアップデートのために「安全な状態」を通知
             crate::loader::live_update::enter_quiescent_state();
+            crate::loader::live_update::poll_pending_updates();
+            crate::driver_cell::hot_swap::poll_validation_windows();
 
             // 5. アイドル状態
             if self.local_queue.is_empty() && self.local_cache.is_empty() {

@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 // 【設計書 8.1】PoisonLock使用 - パニック時自動毒入れ
+use crate::domain::quota::DomainPriority;
 use crate::error::{DomainErrorKind, KernelError};
 use crate::security::CapabilitySet;
 use crate::sync::PoisonLock;
@@ -181,6 +182,14 @@ pub struct Domain {
     pub last_error: Option<String>,
     /// NUMAノードアフィニティ（任意）
     pub numa_node: Option<usize>,
+    /// スケジューリング/回収優先度（メタデータ）
+    pub priority: DomainPriority,
+    /// CPU使用率上限（%）
+    pub cpu_limit_percent: u64,
+    /// メモリ使用量上限（バイト）
+    pub memory_limit_bytes: u64,
+    /// I/O帯域上限（バイト/秒、0=無制限）
+    pub io_bandwidth_limit: u64,
 }
 
 /// Domain summary snapshot for external queries
@@ -199,6 +208,10 @@ pub struct DomainSnapshot {
     pub dependencies: Vec<DomainId>,
     pub dependents: Vec<DomainId>,
     pub numa_node: Option<usize>,
+    pub priority: DomainPriority,
+    pub cpu_limit_percent: u64,
+    pub memory_limit_bytes: u64,
+    pub io_bandwidth_limit: u64,
     pub panic_message: Option<String>,
     pub last_error: Option<String>,
 }
@@ -228,6 +241,10 @@ impl Domain {
             panic_message: None,
             last_error: None,
             numa_node: None,
+            priority: DomainPriority::Normal,
+            cpu_limit_percent: 100,
+            memory_limit_bytes: u64::MAX,
+            io_bandwidth_limit: 0,
         }
     }
 
@@ -297,6 +314,28 @@ impl Domain {
     /// NUMAノードを取得
     pub fn get_numa_node(&self) -> Option<usize> {
         self.numa_node
+    }
+
+    /// ケイパビリティセットを設定（メタデータ + ポリシー入力）
+    pub fn set_capabilities(&mut self, caps: CapabilitySet) {
+        Arc::make_mut(&mut self.security).caps = caps;
+    }
+
+    /// 優先度を設定（将来のQoS enforcement用）
+    pub fn set_priority(&mut self, priority: DomainPriority) {
+        self.priority = priority;
+    }
+
+    /// リソース上限メタデータを設定（将来のquota enforcement用）
+    pub fn set_resource_limits(
+        &mut self,
+        cpu_limit_percent: u64,
+        memory_limit_bytes: u64,
+        io_bandwidth_limit: u64,
+    ) {
+        self.cpu_limit_percent = cpu_limit_percent;
+        self.memory_limit_bytes = memory_limit_bytes;
+        self.io_bandwidth_limit = io_bandwidth_limit;
     }
 
     /// メモリ使用量を減少
@@ -463,6 +502,10 @@ fn to_snapshot(domain: &Domain) -> DomainSnapshot {
         dependencies: domain.dependencies.clone(),
         dependents: domain.dependents.clone(),
         numa_node: domain.numa_node,
+        priority: domain.priority,
+        cpu_limit_percent: domain.cpu_limit_percent,
+        memory_limit_bytes: domain.memory_limit_bytes,
+        io_bandwidth_limit: domain.io_bandwidth_limit,
         panic_message: domain.panic_message.clone(),
         last_error: domain.last_error.clone(),
     }
@@ -536,6 +579,69 @@ pub fn set_domain_numa(id: DomainId, node: usize) {
             }
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (set_domain_numa) - no-op"),
+    }
+}
+
+/// Set capability set for a domain (DriverCell metadata integration hook)
+pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), &'static str> {
+    match REGISTRY.lock() {
+        Ok(mut guard) => {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                domain.set_capabilities(caps);
+                Ok(())
+            } else {
+                Err("Domain not found")
+            }
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (set_domain_capabilities)");
+            Err("Domain registry poisoned")
+        }
+    }
+}
+
+/// Set priority metadata for a domain (future scheduler/QoS hook)
+pub fn set_domain_priority(id: DomainId, priority: DomainPriority) -> Result<(), &'static str> {
+    match REGISTRY.lock() {
+        Ok(mut guard) => {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                domain.set_priority(priority);
+                Ok(())
+            } else {
+                Err("Domain not found")
+            }
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (set_domain_priority)");
+            Err("Domain registry poisoned")
+        }
+    }
+}
+
+/// Set quota metadata for a domain (future quota enforcement hook)
+pub fn set_domain_resource_limits(
+    id: DomainId,
+    cpu_limit_percent: u64,
+    memory_limit_bytes: u64,
+    io_bandwidth_limit: u64,
+) -> Result<(), &'static str> {
+    match REGISTRY.lock() {
+        Ok(mut guard) => {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                domain.set_resource_limits(
+                    cpu_limit_percent,
+                    memory_limit_bytes,
+                    io_bandwidth_limit,
+                );
+                Ok(())
+            } else {
+                Err("Domain not found")
+            }
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (set_domain_resource_limits)");
+            Err("Domain registry poisoned")
+        }
     }
 }
 

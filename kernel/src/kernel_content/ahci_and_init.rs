@@ -457,6 +457,17 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     security::mpk::init();
     info!(target: "init", "MPK/PKU security initialized");
 
+    // 2.8.5. セルローダー / ライブアップデート / DriverCell の基盤初期化
+    io::log::early_print("[DEBUG] Before early loader init\n");
+    info!(target: "init", "Initializing cell loader (early)");
+    loader::init_kernel_cell();
+    register_kernel_symbols();
+    loader::live_update::init();
+    loader::live_update::set_active_cores(1);
+    crate::driver_cell::init();
+    info!(target: "init", "Cell loader/live update/DriverCell initialized");
+    io::log::early_print("[DEBUG] After early loader init\n");
+
     // 2.9. Initramfs からドライバ Cells をロード
     info!(target: "init", "Loading driver Cells from initramfs...");
     let loaded_cells = initramfs::load_cells_from_initramfs(&boot_info.initramfs);
@@ -516,18 +527,8 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // spawn is not required in the normal runtime path.
     debug!(target: "init", "Log aggregation will run on executor idle");
 
-    // 5. ローダーシステムの初期化
-    io::log::early_print("[DEBUG] Before loader init\n");
-    info!(target: "init", "Initializing cell loader");
-    loader::init_kernel_cell();
-    register_kernel_symbols();
-    info!(target: "init", "Cell loader initialized");
-    io::log::early_print("[DEBUG] After loader init\n");
-
-    // 5.1. ライブアップデート / Epoch-based Reclamation の初期化 (設計書 3.5.3)
-    info!(target: "init", "Initializing live update (Epoch-based Reclamation)");
-    loader::live_update::init();
-    info!(target: "init", "Live update initialized");
+    // 5. ローダー/ライブアップデートは initramfs より前に初期化済み
+    debug!(target: "init", "Cell loader/live update already initialized (early path)");
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
     io::log::early_print("[DEBUG] Before symbol table init\n");

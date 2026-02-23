@@ -259,6 +259,10 @@ pub struct DriverCell {
     // === ホットスワップ ===
     /// ホットスワップ状態
     pub hot_swap_state: HotSwapState,
+    /// 検証猶予の期限（ティック）
+    pub validation_deadline_tick: Option<u64>,
+    /// 直近のヘルス失敗理由
+    pub last_health_failure: Option<String>,
 
     // === 統計情報 ===
     /// 統計データ
@@ -293,6 +297,8 @@ impl DriverCell {
             fault_history: Vec::new(),
             consecutive_faults: 0,
             hot_swap_state: HotSwapState::Idle,
+            validation_deadline_tick: None,
+            last_health_failure: None,
             stats: DriverCellStats::new(),
             numa_node: None,
             created_at: crate::task::timer::current_tick(),
@@ -371,6 +377,9 @@ impl DriverCell {
             numa_node: self.numa_node,
             created_at: self.created_at,
             stats: self.stats.clone(),
+            hot_swap_state: self.hot_swap_state,
+            validation_deadline_tick: self.validation_deadline_tick,
+            last_health_failure: self.last_health_failure.clone(),
         }
     }
 }
@@ -412,6 +421,9 @@ pub struct DriverCellSnapshot {
     pub numa_node: Option<usize>,
     pub created_at: u64,
     pub stats: DriverCellStats,
+    pub hot_swap_state: HotSwapState,
+    pub validation_deadline_tick: Option<u64>,
+    pub last_health_failure: Option<String>,
 }
 
 // ============================================================================

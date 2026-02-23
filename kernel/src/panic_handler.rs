@@ -298,16 +298,28 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 }
 
 /// ドメイン固有のパニック処理を試みる
-fn try_handle_domain_panic(domain_id: u64, _message: &str) -> bool {
+fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
     use crate::ipc::rref::DomainId;
 
     let id = DomainId::new(domain_id);
     let sas_domain_id = crate::sas::DomainId::new(domain_id);
+    let driver_cell_domain_id = crate::domain_system::DomainId::new(domain_id);
 
     // 【設計書 8.4】ドメインが所有する全オブジェクトをポイズニング
     let poisoned_count = crate::sas::poison_domain_objects(sas_domain_id);
     if poisoned_count > 0 {
         crate::io::log::early_print("[PanicHandler] Poisoned objects owned by domain\n");
+    }
+
+    if crate::driver_cell::driver_cell_manager()
+        .find_by_domain(driver_cell_domain_id)
+        .is_some()
+    {
+        crate::driver_cell::fault::notify_domain_panic(
+            driver_cell_domain_id,
+            alloc::string::String::from(message),
+        );
+        return true;
     }
 
     // ドメインのリソースを回収

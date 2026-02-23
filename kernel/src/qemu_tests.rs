@@ -521,6 +521,14 @@ pub fn driver_cell_fault_kind_variants_smoke() -> bool {
     crate::driver_cell::qemu_tests::driver_cell_fault_kind_variants_smoke()
 }
 
+pub fn driver_cell_restart_policy_retry_boundary_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_restart_policy_retry_boundary_smoke()
+}
+
+pub fn driver_cell_restart_policy_backoff_cap_smoke() -> bool {
+    crate::driver_cell::qemu_tests::driver_cell_restart_policy_backoff_cap_smoke()
+}
+
 pub fn driver_cell_stats_initial_values_smoke() -> bool {
     crate::driver_cell::qemu_tests::driver_cell_stats_initial_values_smoke()
 }

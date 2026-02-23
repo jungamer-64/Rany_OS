@@ -15,7 +15,9 @@
 //!
 //! The archive ends with two consecutive zero-filled 512-byte blocks.
 
-use crate::loader;
+use crate::driver_cell;
+use crate::driver_cell::lifecycle::DriverCellConfig;
+use crate::driver_cell::RestartPolicy;
 use alloc::string::String;
 use alloc::vec::Vec;
 use boot_proto::InitramfsModule;
@@ -219,13 +221,25 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
             // Extract driver name without path and extension
             let driver_name = extract_driver_name(&entry.name);
 
-            match loader::load_driver(&driver_name, entry.data, true) {
-                Ok(handle) => {
+            let config = DriverCellConfig::new(driver_name.clone())
+                .with_restart_policy(RestartPolicy::on_panic(3, 100))
+                .with_capabilities(crate::security::CapabilitySet::empty())
+                .with_unsafe_allowed();
+
+            match driver_cell::lifecycle::create_and_start(&config, entry.data) {
+                Ok((driver_cell_id, handles)) => {
+                    let loader_cell_id = driver_cell::driver_cell_manager()
+                        .with_cell(driver_cell_id, |c| c.cell_id)
+                        .ok()
+                        .flatten()
+                        .map(|c| c.as_u64());
                     info!(
                         target: "initramfs",
-                        "Loaded driver '{}' as {:?}",
+                        "Loaded driver cell '{}' as dcell={} loader_cell={:?} handles={}",
                         driver_name,
-                        handle
+                        driver_cell_id.as_u64(),
+                        loader_cell_id,
+                        handles.len()
                     );
                     loaded += 1;
                 }
