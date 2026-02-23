@@ -247,11 +247,18 @@ pub fn enable_interrupts() {
     if !IDT_INITIALIZED.load(Ordering::SeqCst) {
         panic!("Cannot enable interrupts: IDT not initialized");
     }
+    // guarantee some output even if logging backend is unusable
+    crate::io::log::early_print("[INT] enable_interrupts() entry\n");
+
     // log before toggling the IF flag so we know the call was reached
     log::info!("[INT] enable_interrupts() about to set IF");
+
+    // actually enable
     x86_64::instructions::interrupts::enable();
-    // as soon as interrupts are enabled we may be taken immediately,
-    // but if control returns to this function we can log success.
+
+    // we might be interrupted immediately after the preceding instruction,
+    // but if execution resumes in this thread we can record that fact.
+    crate::io::log::early_print("[INT] after IF set\n");
     log::info!("[INT] enable_interrupts() returned (IF set)");
 }
 
