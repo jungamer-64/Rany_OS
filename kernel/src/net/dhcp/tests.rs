@@ -1,9 +1,12 @@
+use alloc::vec;
+use alloc::vec::Vec;
+use alloc::vec;
 use super::*;
 use crate::sync::set_panicking;
 use core::sync::atomic::Ordering;
 
-#[test_case]
-fn test_check_timeout_poisoned_state_reset_skips() {
+#[cfg_attr(test, test_case)]
+pub fn test_check_timeout_poisoned_state_reset_skips() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
     {
         let mut s = client.state.lock().unwrap();
@@ -18,8 +21,8 @@ fn test_check_timeout_poisoned_state_reset_skips() {
     set_panicking(false);
 }
 
-#[test_case]
-fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
 
     let lease = DhcpLease {
@@ -57,8 +60,8 @@ fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
     assert!(!opts.iter().any(|b| *b == DhcpOption::RequestedIp as u8));
 }
 
-#[test_case]
-fn test_build_request_requesting_includes_serverid_and_requestedip() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
 
     let offered = DhcpLease {
@@ -91,8 +94,8 @@ fn test_build_request_requesting_includes_serverid_and_requestedip() {
     assert!(opts.iter().any(|b| *b == DhcpOption::RequestedIp as u8));
 }
 
-#[test_case]
-fn test_build_discover_reuse_xid_on_retransmit() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_discover_reuse_xid_on_retransmit() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
 
     // Pre-set XID and state to Selecting (retransmit scenario)
@@ -113,8 +116,8 @@ fn test_build_discover_reuse_xid_on_retransmit() {
     assert_eq!(xid2, 0x1234_5678);
 }
 
-#[test_case]
-fn test_build_discover_state_lock_poison_returns_err() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_discover_state_lock_poison_returns_err() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
 
     // Poison the state lock by dropping a guard while marked as panicking
@@ -129,8 +132,8 @@ fn test_build_discover_state_lock_poison_returns_err() {
     assert!(client.build_discover(&mut buf, 100).is_err());
 }
 
-#[test_case]
-fn test_process_response_chaddr_mismatch() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_response_chaddr_mismatch() {
     use crate::net::ethernet::MacAddress;
 
     let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
@@ -166,8 +169,8 @@ fn test_process_response_chaddr_mismatch() {
     assert!(client.process_response(&buf, 100).is_err());
 }
 
-#[test_case]
-fn test_process_response_offer_missing_serverid_returns_err() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_response_offer_missing_serverid_returns_err() {
     use crate::net::ethernet::MacAddress;
 
     let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
@@ -198,8 +201,8 @@ fn test_process_response_offer_missing_serverid_returns_err() {
     assert!(client.process_response(&buf, 200).is_err());
 }
 
-#[test_case]
-fn test_process_response_siaddr_serverid_mismatch() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_response_siaddr_serverid_mismatch() {
     use crate::net::ethernet::MacAddress;
 
     let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
@@ -235,8 +238,8 @@ fn test_process_response_siaddr_serverid_mismatch() {
     assert!(client.process_response(&buf, 300).is_err());
 }
 
-#[test_case]
-fn test_process_response_ack_requesting_mismatch() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_response_ack_requesting_mismatch() {
     use crate::net::ethernet::MacAddress;
 
     let client = DhcpClient::new(MacAddress::new([8, 8, 8, 8, 8, 8]));
@@ -295,8 +298,8 @@ fn test_process_response_ack_requesting_mismatch() {
     assert!(client.process_response(&buf, 400).is_err());
 }
 
-#[test_case]
-fn test_process_response_ack_renewal_success() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_response_ack_renewal_success() {
     use crate::net::ethernet::MacAddress;
 
     let client = DhcpClient::new(MacAddress::new([9, 9, 9, 9, 9, 9]));
@@ -360,8 +363,8 @@ fn test_process_response_ack_renewal_success() {
     }
 }
 
-#[test_case]
-fn test_build_decline_and_build_release_contents() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_decline_and_build_release_contents() {
     use crate::net::ethernet::MacAddress;
 
     let client = DhcpClient::new(MacAddress::new([1,2,3,4,5,6]));
@@ -408,8 +411,8 @@ fn test_build_decline_and_build_release_contents() {
     assert!(ropts.windows(6).any(|w| w[0] == DhcpOption::ServerIdentifier as u8 && w[1] == 4 && &w[2..6] == lease.server_ip.as_bytes()));
 }
 
-#[test_case]
-fn test_release_clears_lease_and_sets_last_released() {
+#[cfg_attr(test, test_case)]
+pub fn test_release_clears_lease_and_sets_last_released() {
     use crate::net::ethernet::MacAddress;
 
     let client = DhcpClient::new(MacAddress::new([5,5,5,5,5,5]));
@@ -441,8 +444,8 @@ fn test_release_clears_lease_and_sets_last_released() {
     assert_eq!(client.last_released_ip(), Some(lease.ip_address));
 }
 
-#[test_case]
-fn test_parse_t1_t2_and_timeout_transitions() {
+#[cfg_attr(test, test_case)]
+pub fn test_parse_t1_t2_and_timeout_transitions() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
     client.xid.store(0x1111_2222, Ordering::SeqCst);
 
@@ -516,8 +519,8 @@ fn test_parse_t1_t2_and_timeout_transitions() {
     }
 }
 
-#[test_case]
-fn test_offer_probe_and_decline_flow() {
+#[cfg_attr(test, test_case)]
+pub fn test_offer_probe_and_decline_flow() {
     use crate::net::stack;
     use crate::net::ethernet::MacAddress;
 

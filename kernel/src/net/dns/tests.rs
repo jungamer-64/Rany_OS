@@ -1,8 +1,8 @@
 use super::*;
 use crate::sync::set_panicking;
 
-#[test_case]
-fn test_primary_server_poisoned_returns_none() {
+#[cfg_attr(test, test_case)]
+pub fn test_primary_server_poisoned_returns_none() {
     let client = DnsClient::new(100);
     {
         let mut s = client.servers.lock().unwrap();
@@ -13,8 +13,8 @@ fn test_primary_server_poisoned_returns_none() {
     set_panicking(false);
 }
 
-#[test_case]
-fn test_dns_header_truncated_flag() {
+#[cfg_attr(test, test_case)]
+pub fn test_dns_header_truncated_flag() {
     // Create a header with TC bit set (bit 9 of flags)
     let mut data = [0u8; 12];
     // Flags with TC=1: 0x8200 (response + truncated)
@@ -26,8 +26,8 @@ fn test_dns_header_truncated_flag() {
     assert!(header.is_response());
 }
 
-#[test_case]
-fn test_dns_header_not_truncated() {
+#[cfg_attr(test, test_case)]
+pub fn test_dns_header_not_truncated() {
     let mut data = [0u8; 12];
     // Flags: standard response without TC
     data[2] = 0x80;
@@ -37,8 +37,8 @@ fn test_dns_header_not_truncated() {
     assert!(!header.is_truncated());
 }
 
-#[test_case]
-fn test_build_tcp_query() {
+#[cfg_attr(test, test_case)]
+pub fn test_build_tcp_query() {
     let client = DnsClient::new(100);
     let mut buffer = [0u8; 256];
     
@@ -53,8 +53,8 @@ fn test_build_tcp_query() {
     assert!(!header.is_response()); // Query, not response
 }
 
-#[test_case]
-fn test_needs_tcp_fallback_truncated() {
+#[cfg_attr(test, test_case)]
+pub fn test_needs_tcp_fallback_truncated() {
     let client = DnsClient::new(100);
     
     // Create truncated response
@@ -65,8 +65,8 @@ fn test_needs_tcp_fallback_truncated() {
     assert!(client.needs_tcp_fallback(&data));
 }
 
-#[test_case]
-fn test_needs_tcp_fallback_512_bytes() {
+#[cfg_attr(test, test_case)]
+pub fn test_needs_tcp_fallback_512_bytes() {
     let client = DnsClient::new(100);
     
     // Create response at UDP limit
@@ -77,8 +77,8 @@ fn test_needs_tcp_fallback_512_bytes() {
     assert!(client.needs_tcp_fallback(&data));
 }
 
-#[test_case]
-fn test_needs_tcp_fallback_normal() {
+#[cfg_attr(test, test_case)]
+pub fn test_needs_tcp_fallback_normal() {
     let client = DnsClient::new(100);
     
     // Create normal response below limit
@@ -89,8 +89,8 @@ fn test_needs_tcp_fallback_normal() {
     assert!(!client.needs_tcp_fallback(&data));
 }
 
-#[test_case]
-fn test_tcp_message_length() {
+#[cfg_attr(test, test_case)]
+pub fn test_tcp_message_length() {
     assert_eq!(DnsClient::tcp_message_length(&[0x00, 0x20]), 32);
     assert_eq!(DnsClient::tcp_message_length(&[0x01, 0x00]), 256);
     assert_eq!(DnsClient::tcp_message_length(&[0xFF, 0xFF]), 65535);

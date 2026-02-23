@@ -602,8 +602,8 @@ pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
     Some(&DHCP_CLIENT)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 

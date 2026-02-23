@@ -310,6 +310,32 @@ fn run_suite() -> bool {
             test_net_core_tcp_exports,
         )
 // END NET core required run_suite wiring (90 cases).
+// BEGIN NET peripheral required run_suite wiring (67 cases).
+        && run_check(
+            "net_peripheral_dhcp_v4_exports",
+            test_net_peripheral_dhcp_v4_exports,
+        )
+        && run_check(
+            "net_peripheral_dhcp_v6_exports",
+            test_net_peripheral_dhcp_v6_exports,
+        )
+        && run_check(
+            "net_peripheral_dns_exports",
+            test_net_peripheral_dns_exports,
+        )
+        && run_check(
+            "net_peripheral_mdns_exports",
+            test_net_peripheral_mdns_exports,
+        )
+        && run_check(
+            "net_peripheral_igmp_exports",
+            test_net_peripheral_igmp_exports,
+        )
+        && run_check(
+            "net_peripheral_driver_bridge_exports",
+            test_net_peripheral_driver_bridge_exports,
+        )
+// END NET peripheral required run_suite wiring (67 cases).
 // BEGIN re-added local run_suite wiring after origin/master rebase
         && run_check(
             "net_endpoint_congestion_cubic_exports",

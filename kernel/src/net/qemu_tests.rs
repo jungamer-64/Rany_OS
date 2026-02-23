@@ -4,6 +4,7 @@
 //! so host `#[test_case]` and QEMU suites stay aligned.
 
 use super::{adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp};
+use super::{dhcp, dns, mdns, igmp, driver_bridge};
 
 macro_rules! run_case {
     ($func:path) => {{
@@ -11,6 +12,9 @@ macro_rules! run_case {
         true
     }};
 }
+
+mod peripheral_tests;
+pub use peripheral_tests::*;
 
 pub fn adaptive_polling_polling_mode_default_smoke() -> bool {
     run_case!(adaptive_polling::tests::test_polling_mode_default)

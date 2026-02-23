@@ -13,6 +13,7 @@ use super::ethernet::MacAddress;
 use super::ipv4::{Ipv4Address, Ipv4Config};
 use super::optimization::{BatchConfig, BatchProcessor};
 use super::stack::{self, NetworkConfig, NetworkStack};
+use super::manager;
 use crate::io::virtio::{
     VirtioNetDevice, bind_virtio_net_interface, with_virtio_net, with_virtio_net_at_index,
 };
@@ -59,7 +60,7 @@ static PRIMARY_BRIDGE_IF: RwLock<Option<super::NetIfId>> = RwLock::new(None);
 // NAT (Network Address Translation) support
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 /// Records routing events (if_id,destination) for unit tests.
 static FORWARD_EVENTS: RwLock<Vec<(super::NetIfId, super::Ipv4Address)>> =
     RwLock::new(Vec::new());
@@ -97,7 +98,7 @@ fn nat_translate_out(
 ) -> (super::Ipv4Address, u16) {
     // determine external IP from interface config
     let mut ext_ip = internal_ip;
-    if let Ok(iface_opt) = super::manager::get_interface(out_if_id) {
+    if let Ok(iface_opt) = manager::get_interface(out_if_id) {
         if let Some(iface) = iface_opt {
             if let Some(cfg) = iface.config {
                 ext_ip = cfg.ipv4.address;
@@ -235,7 +236,7 @@ fn nat_maybe_gc(rx_packets_after_increment: u64) {
 
 /// Determine if the given IPv4 address is assigned to any local interface.
 fn is_local_ipv4(addr: super::Ipv4Address) -> bool {
-    if let Ok(routes) = super::manager::NETWORK_MANAGER.lock() {
+    if let Ok(routes) = manager::NETWORK_MANAGER.lock() {
         if let Some(mgr) = routes.as_ref() {
             for iface in mgr.list_interfaces() {
                 if let Some(cfg) = iface.config {
@@ -378,7 +379,7 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
 }
 
 fn lookup_virtio_index_for_interface(if_id: super::NetIfId) -> Option<u8> {
-    super::manager::get_interface(if_id)
+    manager::get_interface(if_id)
         .ok()
         .flatten()
         .and_then(|iface| iface.virtio_index)
@@ -511,11 +512,11 @@ pub fn process_received_packet_zero_copy_for_interface(
                 if let Some(ip_pkt) = crate::net::ipv4::Ipv4Packet::parse(eth.payload()) {
                     let dst = ip_pkt.destination();
                     if !is_local_ipv4(dst) {
-                        if let Ok(Some(route)) = super::manager::lookup_ipv4_route(dst) {
+                        if let Ok(Some(route)) = manager::lookup_ipv4_route(dst) {
                             // record for tests
-                            #[cfg(test)]
+                            #[cfg(any(test, feature = "qemu-test-export"))]
                             {
-                                let mut ev = FORWARD_EVENTS.lock();
+                                let mut ev = FORWARD_EVENTS.write();
                                 ev.push((route.if_id, dst));
                             }
                             // apply NAT outbound if necessary
@@ -683,8 +684,8 @@ pub fn init_bridge() -> Result<(), &'static str> {
 
     // Transitional multi-NIC groundwork:
     // register the legacy bridge path as primary vnet0 in NetworkManager.
-    super::manager::init_network_manager();
-    match super::manager::register_virtio_port(0, Some(config)) {
+    manager::init_network_manager();
+    match manager::register_virtio_port(0, Some(config)) {
         Ok(if_id) => {
             ensure_bridge_if_state(if_id, Some(0));
             set_primary_bridge_if_for_virtio(if_id, 0);
@@ -771,8 +772,8 @@ pub fn register_virtio_port(
     virtio_index: u8,
     initial_config: Option<NetworkConfig>,
 ) -> Result<super::NetIfId, &'static str> {
-    super::manager::init_network_manager();
-    let if_id = super::manager::register_virtio_port(virtio_index, initial_config)
+    manager::init_network_manager();
+    let if_id = manager::register_virtio_port(virtio_index, initial_config)
         .map_err(|_| "failed to register virtio port")?;
     ensure_bridge_if_state(if_id, Some(virtio_index));
     let _ = bind_virtio_net_interface(virtio_index, if_id);
@@ -782,7 +783,7 @@ pub fn register_virtio_port(
 
 /// Look up the logical interface id mapped to a VirtIO index.
 pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<super::NetIfId> {
-    super::manager::lookup_if_by_virtio_index(virtio_index)
+    manager::lookup_if_by_virtio_index(virtio_index)
 }
 
 /// Per-interface bridge stats snapshot.
@@ -832,14 +833,16 @@ pub fn get_real_config_for_interface(if_id: super::NetIfId) -> Option<super::Net
 }
 
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) mod tests {
     use super::*;
     use crate::net::{mempool, stack};
     use crate::net::ipv4::{Ipv4PacketMut, Ipv4Address, IpProtocol};
     use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr};
     use alloc::collections::BTreeMap;
+    use alloc::string::String;
     use alloc::vec::Vec;
+    use crate::net::manager;
 
     struct BridgeStateGuard {
         prev_if_stats: BTreeMap<super::super::NetIfId, BridgeInterfaceStats>,
@@ -892,8 +895,8 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_zero_copy_via_bridge() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_zero_copy_via_bridge() {
         // Initialize mempool and stack
         let _ = mempool::init_net_mempool(4);
 
@@ -989,7 +992,7 @@ mod tests {
         check_batch_timeout(100_000, 1);
 
         // Now verify TCB received the payload zero-copy
-        if let Ok(mut guard) = tcb_arc.lock() {
+        if let Ok(guard) = tcb_arc.lock() {
             assert!(!guard.recv_buffer.is_empty());
             let first = guard.recv_buffer.front().unwrap();
             assert_eq!(first.data(), payload);
@@ -998,16 +1001,16 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_routing_and_nat() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_routing_and_nat() {
         // setup environment
         let _guard = BridgeStateGuard::new();
         let _ = mempool::init_net_mempool(4);
-        super::manager::init_network_manager();
+        manager::init_network_manager();
 
         // create two interfaces
-        let if1 = super::manager::register_interface(String::from("if1"));
-        let if2 = super::manager::register_interface(String::from("if2"));
+        let if1 = manager::register_interface(String::from("if1"));
+        let if2 = manager::register_interface(String::from("if2"));
         // configure addresses
         let cfg1 = super::NetworkConfig {
             mac: MacAddress::from_octets(0,1,2,3,4,5),
@@ -1031,21 +1034,21 @@ mod tests {
             ipv6: None,
             icmp_echo_enabled: true,
         };
-        let _ = super::manager::set_interface_config(if1, cfg1);
-        let _ = super::manager::set_interface_config(if2, cfg2);
+        let _ = manager::set_interface_config(if1, cfg1);
+        let _ = manager::set_interface_config(if2, cfg2);
 
         // add route 10.0.1.0/24 via if2
-        let route = super::manager::Ipv4Route {
+        let route = manager::Ipv4Route {
             destination: Ipv4Address::new([10,0,1,0]),
             prefix_len: 24,
             gateway: None,
             if_id: if2,
             metric: 1,
-            flags: super::manager::RouteFlags::connected(),
+            flags: manager::RouteFlags::connected(),
             admin_enabled: true,
             managed_by_interface: false,
         };
-        let _ = super::manager::add_ipv4_route(route);
+        let _ = manager::add_ipv4_route(route);
 
         // craft a UDP packet from 10.0.0.2:1234 to 10.0.1.5:80 arriving on if1
         let header_size = crate::io::virtio::net::VirtioNetHeader::SIZE;
@@ -1081,14 +1084,14 @@ mod tests {
         packet.set_len(total_len);
 
         // clear forward events
-        #[cfg(test)]{
+        #[cfg(any(test, feature = "qemu-test-export"))]{
             FORWARD_EVENTS.write().clear();
         }
 
         process_received_packet_zero_copy_for_interface(if1, packet, header_size, 14+28);
 
         // verify forwarded to if2 and NAT table contains entry
-        #[cfg(test)]{
+        #[cfg(any(test, feature = "qemu-test-export"))]{
             let ev = FORWARD_EVENTS.read();
             assert!(ev.iter().any(|(id, dst)| *id == if2 && *dst == Ipv4Address::new([10,0,1,5])));
             // check NAT entry exists for internal port 1234
@@ -1101,13 +1104,13 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_nat_inbound_roundtrip_is_protocol_scoped() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
         let _guard = BridgeStateGuard::new();
-        super::manager::init_network_manager();
+        manager::init_network_manager();
 
-        let wan_if = super::manager::register_interface(String::from("wan0"));
-        let other_wan_if = super::manager::register_interface(String::from("wan1"));
+        let wan_if = manager::register_interface(String::from("wan0"));
+        let other_wan_if = manager::register_interface(String::from("wan1"));
         let wan_cfg = super::NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 42),
             ipv4: Ipv4Config {
@@ -1119,8 +1122,8 @@ mod tests {
             ipv6: None,
             icmp_echo_enabled: true,
         };
-        let _ = super::manager::set_interface_config(wan_if, wan_cfg);
-        let _ = super::manager::set_interface_config(
+        let _ = manager::set_interface_config(wan_if, wan_cfg);
+        let _ = manager::set_interface_config(
             other_wan_if,
             super::NetworkConfig {
                 mac: MacAddress::from_octets(0, 1, 2, 3, 4, 43),
@@ -1171,13 +1174,13 @@ mod tests {
         assert_eq!(dst_port, ext_port);
     }
 
-    #[test_case]
-    fn test_nat_gc_expires_idle_entries() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_nat_gc_expires_idle_entries() {
         let _guard = BridgeStateGuard::new();
-        super::manager::init_network_manager();
+        manager::init_network_manager();
 
-        let wan_if = super::manager::register_interface(String::from("wan0"));
-        let _ = super::manager::set_interface_config(
+        let wan_if = manager::register_interface(String::from("wan0"));
+        let _ = manager::set_interface_config(
             wan_if,
             super::NetworkConfig {
                 mac: MacAddress::from_octets(0, 1, 2, 3, 4, 44),
@@ -1219,8 +1222,8 @@ mod tests {
         assert!(table.contains_key(&fresh_port));
     }
 
-    #[test_case]
-    fn test_zero_copy_via_bridge_v6() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_zero_copy_via_bridge_v6() {
         // Initialize mempool and stack
         let _ = mempool::init_net_mempool(4);
 
@@ -1311,7 +1314,7 @@ mod tests {
         check_batch_timeout(100_000, 1);
 
         // Now verify TCB received the payload zero-copy
-        if let Ok(mut guard) = tcb_arc.lock() {
+        if let Ok(guard) = tcb_arc.lock() {
             assert!(!guard.recv_buffer.is_empty());
             let first = guard.recv_buffer.front().unwrap();
             assert_eq!(first.data(), payload);
@@ -1320,8 +1323,8 @@ mod tests {
         }
     }
 
-    #[test_case]
-    fn test_per_interface_bridge_stats_are_separated() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_per_interface_bridge_stats_are_separated() {
         let _guard = BridgeStateGuard::new();
         let if0 = super::super::NetIfId(10);
         let if1 = super::super::NetIfId(11);
@@ -1341,8 +1344,8 @@ mod tests {
         assert_eq!(list_bridge_stats().len(), 2);
     }
 
-    #[test_case]
-    fn test_register_virtio_port_is_idempotent_and_records_mapping() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_register_virtio_port_is_idempotent_and_records_mapping() {
         let _guard = BridgeStateGuard::new();
 
         let if0 = register_virtio_port(0, None).expect("register vnet0");
@@ -1361,8 +1364,8 @@ mod tests {
         assert_eq!(list_bridge_stats().len(), 2);
     }
 
-    #[test_case]
-    fn test_register_virtio_port_prefers_vnet0_as_primary() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_register_virtio_port_prefers_vnet0_as_primary() {
         let _guard = BridgeStateGuard::new();
 
         let if1 = register_virtio_port(1, None).expect("register vnet1");
@@ -1375,8 +1378,8 @@ mod tests {
         assert_eq!(primary_bridge_if(), Some(if0));
     }
 
-    #[test_case]
-    fn test_virtio_transmit_interface_argument() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_virtio_transmit_interface_argument() {
         // using a dummy interface id should simply delegate to the
         // per-interface send function, which currently fails (no mapping)
         let dummy = super::super::NetIfId(7);
