@@ -100,9 +100,11 @@ fn primary_bridge_if() -> Option<super::NetIfId> {
     *PRIMARY_BRIDGE_IF.read()
 }
 
-fn set_primary_bridge_if(if_id: super::NetIfId) {
+fn set_primary_bridge_if_for_virtio(if_id: super::NetIfId, virtio_index: u8) {
     let mut primary = PRIMARY_BRIDGE_IF.write();
-    if primary.is_none() {
+    // Preserve first-registered behavior, but always prefer legacy vnet0 so
+    // single-stack compatibility paths keep using the canonical interface.
+    if primary.is_none() || virtio_index == 0 {
         *primary = Some(if_id);
     }
 }
@@ -320,7 +322,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
     match super::manager::register_virtio_port(0, Some(config)) {
         Ok(if_id) => {
             ensure_bridge_if_state(if_id, Some(0));
-            set_primary_bridge_if(if_id);
+            set_primary_bridge_if_for_virtio(if_id, 0);
         }
         Err(err) => {
             log::warn!("[NET BRIDGE] failed to register primary vnet0 in NetworkManager: {:?}", err);
@@ -409,7 +411,7 @@ pub fn register_virtio_port(
         .map_err(|_| "failed to register virtio port")?;
     ensure_bridge_if_state(if_id, Some(virtio_index));
     let _ = bind_virtio_net_interface(virtio_index, if_id);
-    set_primary_bridge_if(if_id);
+    set_primary_bridge_if_for_virtio(if_id, virtio_index);
     Ok(if_id)
 }
 
@@ -758,6 +760,20 @@ mod tests {
         assert_eq!(s0.virtio_index, Some(0));
         assert_eq!(s1.virtio_index, Some(1));
         assert_eq!(list_bridge_stats().len(), 2);
+    }
+
+    #[test_case]
+    fn test_register_virtio_port_prefers_vnet0_as_primary() {
+        let _guard = BridgeStateGuard::new();
+
+        let if1 = register_virtio_port(1, None).expect("register vnet1");
+        assert_eq!(primary_bridge_if(), Some(if1));
+
+        let if0 = register_virtio_port(0, None).expect("register vnet0");
+        assert_eq!(primary_bridge_if(), Some(if0));
+
+        let _if2 = register_virtio_port(2, None).expect("register vnet2");
+        assert_eq!(primary_bridge_if(), Some(if0));
     }
 }
 
