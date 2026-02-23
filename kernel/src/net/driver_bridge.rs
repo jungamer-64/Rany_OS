@@ -894,24 +894,22 @@ pub(crate) mod tests {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // QEMU deterministic helpers (heap-aware fallback)
+    // ---------------------------------------------------------------------
+
     #[cfg(feature = "qemu-test-export")]
-    pub fn qemu_packet_path_available() -> bool {
-        let _ = mempool::init_net_mempool(1);
-        mempool::alloc_packet().is_some()
+    fn qemu_prepare_zero_copy_env() -> BridgeStateGuard {
+        let guard = BridgeStateGuard::new();
+        stack::stack().clear_poison();
+        guard
     }
 
     #[cfg(feature = "qemu-test-export")]
-    fn qemu_zero_copy_prereq_ipv4_heapless_smoke() -> bool {
-        let _bridge_guard = BridgeStateGuard::new();
-        stack::stack().clear_poison();
-
-        let mut config = super::NetworkConfig::default();
-        config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
-        stack::init(config);
-
-        let local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
-        let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
-
+    fn qemu_insert_established_tcb(
+        local: TcpSocketAddr,
+        remote: TcpSocketAddr,
+    ) -> Option<alloc::sync::Arc<PoisonLock<TcpControlBlock>>> {
         let mut tcb = TcpControlBlock::new(local);
         tcb.remote_addr = Some(remote);
         tcb.state = TcpState::Established;
@@ -920,17 +918,19 @@ pub(crate) mod tests {
 
         match stack::stack().lock() {
             Ok(mut guard) => {
-                if let Some(ref mut s) = *guard {
-                    s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
-                } else {
-                    return false;
-                }
+                let stack = guard.as_mut()?;
+                stack.insert_test_tcp_connection(local, remote, tcb_arc.clone());
+                Some(tcb_arc)
             }
-            Err(_) => return false,
+            Err(_) => None,
         }
+    }
 
+    #[cfg(feature = "qemu-test-export")]
+    fn qemu_zero_copy_prereq_postcheck(
+        tcb_arc: &alloc::sync::Arc<PoisonLock<TcpControlBlock>>,
+    ) -> bool {
         check_batch_timeout(100_000, 1);
-
         match tcb_arc.lock() {
             Ok(guard) => guard.recv_buffer.is_empty() && guard.state == TcpState::Established,
             Err(_) => false,
@@ -938,9 +938,32 @@ pub(crate) mod tests {
     }
 
     #[cfg(feature = "qemu-test-export")]
+    pub fn qemu_packet_path_available() -> bool {
+        let _ = mempool::init_net_mempool(1);
+        mempool::alloc_packet().is_some()
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    fn qemu_zero_copy_prereq_ipv4_heapless_smoke() -> bool {
+        let _bridge_guard = qemu_prepare_zero_copy_env();
+
+        let mut config = super::NetworkConfig::default();
+        config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
+        stack::init(config);
+
+        let local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 1000);
+        let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
+        let tcb_arc = match qemu_insert_established_tcb(local, remote) {
+            Some(tcb) => tcb,
+            None => return false,
+        };
+
+        qemu_zero_copy_prereq_postcheck(&tcb_arc)
+    }
+
+    #[cfg(feature = "qemu-test-export")]
     fn qemu_zero_copy_prereq_ipv6_heapless_smoke() -> bool {
-        let _bridge_guard = BridgeStateGuard::new();
-        stack::stack().clear_poison();
+        let _bridge_guard = qemu_prepare_zero_copy_env();
 
         let mut config = super::NetworkConfig::default();
         config.ipv6 = Some(crate::net::ipv6::Ipv6Config::from_mac(&[
@@ -950,31 +973,15 @@ pub(crate) mod tests {
 
         let local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 1000);
         let remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 2000);
+        let tcb_arc = match qemu_insert_established_tcb(local, remote) {
+            Some(tcb) => tcb,
+            None => return false,
+        };
 
-        let mut tcb = TcpControlBlock::new(local);
-        tcb.remote_addr = Some(remote);
-        tcb.state = TcpState::Established;
-        tcb.rcv_nxt = 1;
-        let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
-
-        match stack::stack().lock() {
-            Ok(mut guard) => {
-                if let Some(ref mut s) = *guard {
-                    s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
-                } else {
-                    return false;
-                }
-            }
-            Err(_) => return false,
-        }
-
-        check_batch_timeout(100_000, 1);
-
-        match tcb_arc.lock() {
-            Ok(guard) => guard.recv_buffer.is_empty() && guard.state == TcpState::Established,
-            Err(_) => false,
-        }
+        qemu_zero_copy_prereq_postcheck(&tcb_arc)
     }
+
+    // Heapless fallback for routing/NAT parity when packet-path allocation is unavailable.
 
     #[cfg(feature = "qemu-test-export")]
     fn qemu_routing_nat_heapless_smoke() -> bool {
@@ -1044,6 +1051,8 @@ pub(crate) mod tests {
         test_nat_gc_expires_idle_entries();
         true
     }
+
+    // Public QEMU smoke entry points used by net peripheral required suite.
 
     #[cfg(feature = "qemu-test-export")]
     pub fn qemu_zero_copy_via_bridge_smoke() -> bool {
