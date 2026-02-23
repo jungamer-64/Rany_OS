@@ -613,6 +613,55 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
         }
     }
 
+    /// Send an ICMP Time Exceeded error (RFC 792).
+    ///
+    /// `original_packet` should be the original IPv4 packet bytes that triggered
+    /// the error (IP header + payload). The builder will quote the IPv4 header
+    /// plus the first 8 bytes of payload as required.
+    pub fn send_icmp_time_exceeded(
+        &mut self,
+        dst_ip: Ipv4Address,
+        code: crate::net::icmp::TimeExceededCode,
+        original_packet: &[u8],
+    ) -> bool {
+        let config = self.config.clone();
+        let current_time = self.current_time();
+
+        let dst_mac = match self.resolve_mac(dst_ip, &config, current_time) {
+            Some(mac) => mac,
+            None => return false,
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) {
+                ip_packet
+                    .init_header()
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Icmp)
+                    .set_ttl(64);
+
+                let ip_payload = ip_packet.payload_mut();
+                if let Some(icmp_len) =
+                    crate::net::icmp::IcmpProcessor::build_time_exceeded(ip_payload, code, original_packet)
+                {
+                    ip_packet.finalize(icmp_len);
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+                    return self.transmit(frame.as_bytes());
+                }
+            }
+        }
+
+        false
+    }
+
     /// Handle ICMP error messages for Path MTU Discovery (RFC 1191)
     ///
     /// When a router cannot forward a packet because it exceeds the next-hop MTU
@@ -743,6 +792,20 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
         dst_port: u16,
         data: &[u8],
     ) -> bool {
+        let src_ip = self.config.ipv4.address;
+        self.send_udp_raw_with_src_ttl(src_ip, src_port, dst_ip, dst_port, data, 64)
+    }
+
+    /// Send a UDP packet with explicit IPv4 source address and TTL.
+    pub fn send_udp_raw_with_src_ttl(
+        &mut self,
+        src_ip: Ipv4Address,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
         let config = self.config.clone();
         let current_time = self.current_time();
 
@@ -768,17 +831,17 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
                 ip_packet
                     .init_header()
-                    .set_source(config.ipv4.address)
+                    .set_source(src_ip)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Udp)
-                    .set_ttl(64);
+                    .set_ttl(ttl);
 
                 let ip_payload = ip_packet.payload_mut();
 
                 // Build UDP packet
                 if let Some(udp_len) = crate::net::udp::UdpProcessor::build_packet(
                     ip_payload,
-                    config.ipv4.address,
+                    src_ip,
                     src_port,
                     dst_ip,
                     dst_port,

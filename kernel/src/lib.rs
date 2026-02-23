@@ -341,6 +341,12 @@ pub mod collections;
 
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod mm;
+// The real `per_cpu` module is not compiled when running tests or benches
+// because we provide a lightweight stub later in this file that satisfies
+// the few symbols needed by unit tests.  Without this guard the crate ends up
+// defining `per_cpu` twice during `cargo test`, which triggers a compile
+// error.
+#[cfg(not(any(test, feature = "bench")))]
 pub mod per_cpu;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub mod io;

@@ -767,6 +767,21 @@ impl NetworkStack {
         self.send_udp_raw(src_port, dst, dst_port, data)
     }
 
+    /// UDP transmit helper with explicit source IPv4 and TTL.
+    /// Interface selection is currently ignored (transitional multi-NIC shim).
+    pub fn send_udp_raw_on_with_src_ttl(
+        &mut self,
+        _if_id: super::NetIfId,
+        src_ip: Ipv4Address,
+        src_port: u16,
+        dst: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
+        self.send_udp_raw_with_src_ttl(src_ip, src_port, dst, dst_port, data, ttl)
+    }
+
     /// Transmit an IPv6 UDP datagram on a specific interface (ignored for now)
     pub fn send_udp_v6_raw_on(
         &mut self,

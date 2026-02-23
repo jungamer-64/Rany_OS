@@ -28,6 +28,18 @@ impl NetworkStack {
         dst_mac: MacAddress,
         src_mac: MacAddress,
     ) -> bool {
+        self.send_tcp_fallback_with_ttl(src_ip, dst_ip, tcp_segment, dst_mac, src_mac, 64)
+    }
+
+    pub(super) fn send_tcp_fallback_with_ttl(
+        &mut self,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+        dst_mac: MacAddress,
+        src_mac: MacAddress,
+        ttl: u8,
+    ) -> bool {
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
             frame
@@ -41,7 +53,7 @@ impl NetworkStack {
                     .set_source(src_ip)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Tcp)
-                    .set_ttl(64);
+                    .set_ttl(ttl);
                 let ip_payload = ip_packet.payload_mut();
                 if ip_payload.len() >= tcp_segment.len() {
                     ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
@@ -62,6 +74,17 @@ impl NetworkStack {
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         tcp_segment: &[u8],
+    ) -> bool {
+        self.send_tcp_with_ttl(src_ip, dst_ip, tcp_segment, 64)
+    }
+
+    /// Send a raw TCP segment with explicit IPv4 TTL.
+    pub fn send_tcp_with_ttl(
+        &mut self,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+        ttl: u8,
     ) -> bool {
         let config = self.config.clone();
         let current_time = self.current_time();
@@ -90,7 +113,7 @@ impl NetworkStack {
                         .set_source(src_ip)
                         .set_destination(dst_ip)
                         .set_protocol(IpProtocol::Tcp)
-                        .set_ttl(64);
+                        .set_ttl(ttl);
 
                     let ip_payload = ip_packet.payload_mut();
 
@@ -124,7 +147,7 @@ impl NetworkStack {
             }
         }
 
-        self.send_tcp_fallback(src_ip, dst_ip, tcp_segment, dst_mac, config.mac)
+        self.send_tcp_fallback_with_ttl(src_ip, dst_ip, tcp_segment, dst_mac, config.mac, ttl)
     }
 
     /// Process retransmission timeouts and attempt to resend timed-out segments.
