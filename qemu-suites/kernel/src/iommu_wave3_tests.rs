@@ -212,6 +212,25 @@ pub(crate) fn test_graphics_framebuffer_wave6_phase_b_exports() -> bool {
     )
 }
 
+pub(crate) fn test_graphics_framebuffer_wave6_bench_exports() -> bool {
+    run_check(
+        "graphics_wave6_bench_draw_image_bulk_smoke",
+        rany_os::qemu_tests::graphics_wave6_bench_draw_image_bulk_smoke,
+    ) && run_check(
+        "graphics_wave6_bench_draw_image_24bit_bulk_smoke",
+        rany_os::qemu_tests::graphics_wave6_bench_draw_image_24bit_bulk_smoke,
+    ) && run_check(
+        "graphics_wave6_bench_draw_image_rgba_bulk_smoke",
+        rany_os::qemu_tests::graphics_wave6_bench_draw_image_rgba_bulk_smoke,
+    ) && run_check(
+        "graphics_wave6_bench_draw_hline_bulk_smoke",
+        rany_os::qemu_tests::graphics_wave6_bench_draw_hline_bulk_smoke,
+    ) && run_check(
+        "graphics_wave6_bench_draw_text_bulk_smoke",
+        rany_os::qemu_tests::graphics_wave6_bench_draw_text_bulk_smoke,
+    )
+}
+
 pub(crate) fn test_mm_wave7_async_swapout_exports() -> bool {
     run_check(
         "mm_wave7_buffer_pool_4k_basic_smoke",

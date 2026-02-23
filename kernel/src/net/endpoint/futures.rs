@@ -383,7 +383,10 @@ pub mod qemu_tests {
         stack::init_default();
         if let Ok(mut guard) = stack::stack().lock() {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_data: &[u8]| true);
+                s.set_transmit_fn(|_if: Option<crate::net::NetIfId>, _data: &[u8]| {
+                    assert!(_if.is_none());
+                    true
+                });
             }
         }
 

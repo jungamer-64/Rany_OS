@@ -28,6 +28,7 @@ use super::tcp::{
 };
 
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
+use super::NetIfId; // required for new transmit callback signature
 
 use crate::sync::PoisonLock;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -121,7 +122,20 @@ impl NetworkStats {
 }
 
 /// Transmit callback function type
-pub type TransmitFn = fn(&[u8]) -> bool;
+/// Transmit callback invoked by the network stack when it needs to send
+/// an Ethernet frame out to the wire.
+///
+/// The `Option<NetIfId>` parameter indicates which logical interface the
+/// packet should be emitted on.  `None` is used when the stack has no
+/// particular interface preference (e.g. legacy single-NIC mode or when the
+/// caller elected not to specify an interface).  This extra metadata allows
+/// the bridge layer to support multiple VirtIO ports and other multi‑NIC
+/// configurations without racing for a single global transmit function.
+///
+/// The callback should return `true` if the packet was successfully queued
+/// for transmission; `false` indicates failure and will usually result in the
+/// stack dropping the packet and recording an error statistic.
+pub type TransmitFn = fn(Option<NetIfId>, &[u8]) -> bool;
 
 /// ICMP Redirect Cache Entry
 /// 

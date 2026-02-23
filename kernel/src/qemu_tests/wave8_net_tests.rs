@@ -644,6 +644,26 @@ pub fn graphics_wave6_packer_env_override_no_std_smoke() -> bool {
     crate::graphics::framebuffer::qemu_tests::wave6_packer_env_override_no_std_smoke()
 }
 
+pub fn graphics_wave6_bench_draw_image_bulk_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_bench_draw_image_bulk_smoke()
+}
+
+pub fn graphics_wave6_bench_draw_image_24bit_bulk_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_bench_draw_image_24bit_bulk_smoke()
+}
+
+pub fn graphics_wave6_bench_draw_image_rgba_bulk_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_bench_draw_image_rgba_bulk_smoke()
+}
+
+pub fn graphics_wave6_bench_draw_hline_bulk_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_bench_draw_hline_bulk_smoke()
+}
+
+pub fn graphics_wave6_bench_draw_text_bulk_smoke() -> bool {
+    crate::graphics::framebuffer::qemu_tests::wave6_bench_draw_text_bulk_smoke()
+}
+
 pub fn iommu_cmdqueue_reclaim_completed_slot_smoke() -> bool {
     crate::io::iommu::qemu_tests::cmdqueue_reclaim_completed_slot_smoke()
 }

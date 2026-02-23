@@ -3,6 +3,8 @@ use super::*;
 
 mod wave6_simd_smoke;
 pub use wave6_simd_smoke::*;
+mod wave6_bench_smoke;
+pub use wave6_bench_smoke::*;
 pub fn wave6_draw_image_24bit_mmio_smoke() -> bool {
     let width = 3u32;
     let height = 2u32;

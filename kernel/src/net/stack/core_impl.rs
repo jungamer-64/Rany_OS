@@ -1,4 +1,5 @@
 use super::*;
+use super::NetIfId;
 
 
 mod global_instance;
@@ -750,6 +751,35 @@ impl NetworkStack {
         false
     }
 
+    /// Transmit a UDP datagram on a given interface (portions of the stack still
+    /// assume a single global configuration, so the interface ID is currently
+    /// ignored).  This shim exists to exercise the new transmit callback
+    /// signature from higher layers.
+    pub fn send_udp_raw_on(
+        &mut self,
+        _if_id: super::NetIfId,
+        src_port: u16,
+        dst: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+    ) -> bool {
+        // FUTURE: consult per-interface configuration before sending
+        self.send_udp_raw(src_port, dst, dst_port, data)
+    }
+
+    /// Transmit an IPv6 UDP datagram on a specific interface (ignored for now)
+    pub fn send_udp_v6_raw_on(
+        &mut self,
+        _if_id: super::NetIfId,
+        src_port: u16,
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        dst_port: u16,
+        data: &[u8],
+    ) -> bool {
+        self.send_udp_v6_raw(src_port, src_ip, dst_ip, dst_port, data)
+    }
+
     /// Send a TCP segment over IPv6 (with NDP resolution)
     pub fn send_tcp_v6_raw(&mut self, src_ip: Ipv6Address, dst: Ipv6Address, tcp_segment: &[u8]) -> bool {
         let config = self.config;
@@ -928,7 +958,7 @@ impl NetworkStack {
 
                         let frame_len = 14 + total_len as usize;
                         if let Some(tx_fn) = self.transmit_fn {
-                            if tx_fn(&buffer[..frame_len]) {
+                            if tx_fn(None, &buffer[..frame_len]) {
                                 self.stats.record_tx(frame_len);
                             }
                         }

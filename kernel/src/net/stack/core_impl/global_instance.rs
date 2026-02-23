@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::NetIfId;
 
 
 /// Global network stack instance
@@ -81,6 +82,25 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
     }
 }
 
+/// Like `send_udp` but routes the datagram on a specific logical interface.
+/// The interface argument is currently ignored but provided as an extension
+/// point for future multi‑NIC behaviour.
+pub fn send_udp_on(if_id: super::NetIfId, src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.send_udp_raw_on(if_id, src_port, dst_ip, dst_port, data)
+            } else {
+                false
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - send_udp_on failed");
+            false
+        }
+    }
+}
+
 /// Send a UDP datagram over IPv6
 pub fn send_udp_v6(src_port: u16, src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
@@ -98,6 +118,30 @@ pub fn send_udp_v6(src_port: u16, src_ip: crate::net::ipv6::Ipv6Address, dst_ip:
     }
 }
 
+/// IPv6 variant that allows specifying an interface (currently ignored)
+pub fn send_udp_v6_on(
+    if_id: super::NetIfId,
+    src_port: u16,
+    src_ip: crate::net::ipv6::Ipv6Address,
+    dst_ip: crate::net::ipv6::Ipv6Address,
+    dst_port: u16,
+    data: &[u8],
+) -> bool {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.send_udp_v6_raw_on(if_id, src_port, src_ip, dst_ip, dst_port, data)
+            } else {
+                false
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - send_udp_v6_on failed");
+            false
+        }
+    }
+}
+
 /// Send a TCP segment (IPv4)
 pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
@@ -110,6 +154,24 @@ pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) ->
         }
         Err(_) => {
             log::error!("[NET] Global Stack poisoned - send_tcp failed");
+            false
+        }
+    }
+}
+
+/// TCP send helper that specifies an output interface (currently ignored)
+pub fn send_tcp_on(if_id: super::NetIfId, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                // interface not yet used
+                stack.send_tcp(src_ip, dst_ip, tcp_segment)
+            } else {
+                false
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - send_tcp_on failed");
             false
         }
     }

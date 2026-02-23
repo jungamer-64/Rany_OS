@@ -37,7 +37,10 @@ pub fn test_send_udp_fallback_zero_copy() {
     init_default();
     if let Ok(mut guard) = stack().lock() {
         if let Some(ref mut s) = *guard {
-            s.set_transmit_fn(|_data: &[u8]| true);
+            s.set_transmit_fn(|_if_id: Option<super::NetIfId>, _data: &[u8]| {
+                assert!(_if_id.is_none());
+                true
+            });
         }
     }
 
@@ -51,7 +54,10 @@ pub fn test_send_icmp_fallback_zero_copy() {
     init_default();
     if let Ok(mut guard) = stack().lock() {
         if let Some(ref mut s) = *guard {
-            s.set_transmit_fn(|_data: &[u8]| true);
+            s.set_transmit_fn(|_if_id: Option<super::NetIfId>, _data: &[u8]| {
+                assert!(_if_id.is_none());
+                true
+            });
             // Pre-populate ARP cache so ping will proceed
             let target = Ipv4Address::new([8, 8, 8, 8]);
             s.arp.cache().insert(
@@ -102,6 +108,41 @@ pub fn test_redirect_cache_expiry() {
     // Expired after TTL
     cache.set_time(REDIRECT_CACHE_TTL + 1);
     assert!(cache.get(dst).is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_transmit_fn_interface_parameter() {
+    // verify that the stack passes the optional interface ID through the
+    // transmit callback.  by default we expect `None` to be delivered.
+    init_default();
+    let seen: core::cell::Cell<Option<NetIfId>> = core::cell::Cell::new(None);
+    if let Ok(mut guard) = stack().lock() {
+        if let Some(ref mut s) = *guard {
+            s.set_transmit_fn(|if_id, _data| {
+                seen.set(if_id);
+                true
+            });
+        }
+    }
+    // perform a simple send which triggers the callback
+    let _ = send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0u8]);
+    assert!(seen.get().is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_on_helpers_exist() {
+    init_default();
+    // no panic means functions compile and can be called
+    let _ = send_udp_on(NetIfId(0), 1234, Ipv4Address::LOOPBACK, 80, &[0u8]);
+    let _ = send_udp_v6_on(
+        NetIfId(0),
+        1234,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        80,
+        &[0u8],
+    );
+    let _ = send_tcp_on(NetIfId(0), Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[]);
 }
 
 #[cfg_attr(test, test_case)]
