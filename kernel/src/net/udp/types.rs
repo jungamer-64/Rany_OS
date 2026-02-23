@@ -149,6 +149,6 @@ impl Default for UdpProcessor {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
-mod tests;
+pub mod tests;

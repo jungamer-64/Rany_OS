@@ -1,7 +1,7 @@
 use super::*;
 
-#[test_case]
-fn test_arp_cache() {
+#[cfg_attr(test, test_case)]
+pub fn test_arp_cache() {
     let cache = ArpCache::new();
     let ip = Ipv4Address::from_octets(192, 168, 1, 1);
     let mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
@@ -17,8 +17,8 @@ fn test_arp_cache() {
     assert!(cache.lookup(ip, ARP_CACHE_TIMEOUT + 200).is_none());
 }
 
-#[test_case]
-fn test_arp_packet() {
+#[cfg_attr(test, test_case)]
+pub fn test_arp_packet() {
     let mut buffer = [0u8; ArpPacket::SIZE];
     let packet = crate::util::get_mut_ref::<ArpPacket>(&mut buffer, 0)
         .expect("Arp packet mutable slice out of bounds");

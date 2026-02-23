@@ -1,26 +1,27 @@
 use super::*;
+use alloc::{format, vec};
 
-#[test_case]
-fn test_ipv4_addr() {
+#[cfg_attr(test, test_case)]
+pub fn test_ipv4_addr() {
     let addr = Ipv4Addr::new(192, 168, 1, 1);
     assert_eq!(addr.octets(), [192, 168, 1, 1]);
     assert_eq!(format!("{}", addr), "192.168.1.1");
 }
 
-#[test_case]
-fn test_socket_addr() {
+#[cfg_attr(test, test_case)]
+pub fn test_socket_addr() {
     let addr = SocketAddr::new(Ipv4Addr::LOCALHOST, 8080);
     assert_eq!(format!("{}", addr), "127.0.0.1:8080");
 }
 
-#[test_case]
-fn test_tcp_state() {
+#[cfg_attr(test, test_case)]
+pub fn test_tcp_state() {
     let tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
     assert_eq!(tcb.state, TcpState::Closed);
 }
 
-#[test_case]
-fn test_process_with_packet_zero_copy() {
+#[cfg_attr(test, test_case)]
+pub fn test_process_with_packet_zero_copy() {
     // Initialize a small mempool for tests
     let _ = crate::net::mempool::init_net_mempool(2);
 
@@ -77,8 +78,8 @@ fn test_process_with_packet_zero_copy() {
     }
 }
 
-#[test_case]
-fn test_can_send_respects_cwnd_bytes() {
+#[cfg_attr(test, test_case)]
+pub fn test_can_send_respects_cwnd_bytes() {
     let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
     let mut tcb = TcpControlBlock::new(local);
     tcb.state = TcpState::Established;
@@ -91,8 +92,8 @@ fn test_can_send_respects_cwnd_bytes() {
     assert!(!tcb.can_send());
 }
 
-#[test_case]
-fn test_send_buffer_bytes_decrement_on_flush() {
+#[cfg_attr(test, test_case)]
+pub fn test_send_buffer_bytes_decrement_on_flush() {
     // Initialize a small mempool for tests
     let _ = crate::net::mempool::init_net_mempool(2);
 
@@ -150,8 +151,8 @@ fn test_send_buffer_bytes_decrement_on_flush() {
     }
 }
 
-#[test_case]
-fn test_three_way_handshake() {
+#[cfg_attr(test, test_case)]
+pub fn test_three_way_handshake() {
     // Initialize mempool for any packet allocations
     let _ = crate::net::mempool::init_net_mempool(4);
 
@@ -268,8 +269,8 @@ fn test_three_way_handshake() {
 }
 
 
-#[test_case]
-fn test_three_way_handshake_v6() {
+#[cfg_attr(test, test_case)]
+pub fn test_three_way_handshake_v6() {
     // IPv6 three-way handshake using TcpProcessor::process_v6
     let _ = crate::net::mempool::init_net_mempool(4);
 
@@ -377,8 +378,8 @@ fn test_three_way_handshake_v6() {
         panic!("Listener backlog poisoned");
     }
 }
-#[test_case]
-fn test_retransmit_on_timeout() {
+#[cfg_attr(test, test_case)]
+pub fn test_retransmit_on_timeout() {
     let _ = crate::net::mempool::init_net_mempool(2);
 
     let mut proc = TcpProcessor::new();
@@ -413,8 +414,8 @@ fn test_retransmit_on_timeout() {
     }
 }
 
-#[test_case]
-fn test_connect_future_wakes_on_established() {
+#[cfg_attr(test, test_case)]
+pub fn test_connect_future_wakes_on_established() {
     use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     use core::pin::Pin;
     use core::task::Poll;
@@ -471,8 +472,8 @@ fn test_connect_future_wakes_on_established() {
     }
 }
 
-#[test_case]
-fn test_record_sent_packet_updates_tcb() {
+#[cfg_attr(test, test_case)]
+pub fn test_record_sent_packet_updates_tcb() {
     // Create processor and register a connection
     let mut proc = TcpProcessor::new();
     let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 7000);
@@ -500,8 +501,8 @@ fn test_record_sent_packet_updates_tcb() {
     }
 }
 
-#[test_case]
-fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
+#[cfg_attr(test, test_case)]
+pub fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
     let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9000));
     tcb.state = TcpState::Established;
 
@@ -522,8 +523,8 @@ fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
     assert_eq!(tcb.outstanding_bytes, 0);
 }
 
-#[test_case]
-fn test_accept_future_returns_on_push_connection() {
+#[cfg_attr(test, test_case)]
+pub fn test_accept_future_returns_on_push_connection() {
     use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     use core::pin::Pin;
     use core::task::Poll;
@@ -573,8 +574,8 @@ fn test_accept_future_returns_on_push_connection() {
     }
 }
 
-#[test_case]
-fn test_connect_timeout_expires() {
+#[cfg_attr(test, test_case)]
+pub fn test_connect_timeout_expires() {
     use core::task::{Context, RawWaker, RawWakerVTable, Waker};
     use core::pin::Pin;
     use core::task::Poll;

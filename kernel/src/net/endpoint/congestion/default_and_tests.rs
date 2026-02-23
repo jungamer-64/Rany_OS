@@ -1,7 +1,7 @@
 use super::*;
 
 
-mod variant_tests;
+pub mod variant_tests;
 pub use variant_tests::*;
 impl Default for CongestionControllerVariant {
     fn default() -> Self {
@@ -13,19 +13,19 @@ impl Default for CongestionControllerVariant {
 // CUBIC テスト
 // =====================================================
 
-#[cfg(test)]
-mod cubic_tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod cubic_tests {
     use super::*;
 
-    #[test_case]
-    pub(super) fn test_cubic_initial_state() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_cubic_initial_state() {
         let cc = CubicController::new();
         assert_eq!(cc.state(), CongestionState::SlowStart);
         assert_eq!(cc.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
     }
 
-    #[test_case]
-    pub(super) fn test_cubic_slow_start() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_cubic_slow_start() {
         let mut cc = CubicController::with_mss(1000);
         let initial = cc.cwnd();
         
@@ -34,8 +34,8 @@ mod cubic_tests {
         assert_eq!(cc.state(), CongestionState::SlowStart);
     }
 
-    #[test_case]
-    pub(super) fn test_cubic_root() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_cubic_root() {
         assert_eq!(CubicController::cubic_root(0), 0);
         assert_eq!(CubicController::cubic_root(1), 1);
         assert_eq!(CubicController::cubic_root(8), 2);
@@ -43,8 +43,8 @@ mod cubic_tests {
         assert_eq!(CubicController::cubic_root(1000), 10);
     }
 
-    #[test_case]
-    pub(super) fn test_cubic_fast_recovery() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_cubic_fast_recovery() {
         let mut cc = CubicController::with_mss(1000);
         cc.base.cwnd = 50000;
         cc.base.bytes_in_flight = 40000;
@@ -650,24 +650,24 @@ pub struct BbrDebugInfo {
 // BBR テスト
 // =====================================================
 
-#[cfg(test)]
-mod bbr_tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod bbr_tests {
     use super::*;
 
-    #[test_case]
-    fn test_bbr_initial_state() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_bbr_initial_state() {
         let bbr = BbrController::new();
         assert_eq!(bbr.state(), BbrState::Startup);
         assert_eq!(bbr.cwnd(), INITIAL_WINDOW * DEFAULT_MSS);
     }
 
-    #[test_case]
-    fn test_bbr_startup_growth() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_bbr_startup_growth() {
         assert!(bbr_startup_growth_check());
     }
 
-    #[test_case]
-    fn test_bbr_rt_prop_tracking() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_bbr_rt_prop_tracking() {
         let mut bbr = BbrController::with_mss(1000);
         
         // First RTT sample
@@ -683,8 +683,8 @@ mod bbr_tests {
         assert_eq!(bbr.rt_prop(), 80);
     }
 
-    #[test_case]
-    fn test_bbr_available_window() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_bbr_available_window() {
         let mut bbr = BbrController::with_mss(1000);
         bbr.cwnd = 10000;
         
@@ -694,8 +694,8 @@ mod bbr_tests {
         assert!(!bbr.can_send(8000));
     }
 
-    #[test_case]
-    fn test_bbr_bdp_calculation() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_bbr_bdp_calculation() {
         let mut bbr = BbrController::with_mss(1000);
         
         // Simulate connection to establish BtlBw and RTprop
@@ -706,8 +706,8 @@ mod bbr_tests {
         assert_eq!(bbr.bdp(), 5000);
     }
 
-    #[test_case]
-    fn test_bbr_startup_to_drain() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_bbr_startup_to_drain() {
         let mut bbr = BbrController::with_mss(1000);
         
         // Simulate bandwidth plateau (3 consecutive rounds without growth)

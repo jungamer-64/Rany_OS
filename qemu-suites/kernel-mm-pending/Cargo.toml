@@ -8,7 +8,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "QEMU no_std MM pending kernel suite"
+description = "QEMU no_std pending suite for kernel MM bench-smoke monitoring"
 
 [dependencies]
 rany_os = { package = "rany_kernel", path = "../../kernel", features = ["qemu-test-export"] }

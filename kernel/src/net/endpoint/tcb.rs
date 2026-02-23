@@ -488,12 +488,12 @@ pub fn tcb_table() -> &'static TcbTable {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_tcp_connection_state() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_connection_state() {
         // 状態遷移の検証
         let state = TcpConnectionState::Closed;
         assert!(matches!(state, TcpConnectionState::Closed));
@@ -503,8 +503,8 @@ mod tests {
         assert!(matches!(state, TcpConnectionState::Established));
     }
 
-    #[test_case]
-    fn test_tcp_control_block_entry() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_control_block_entry() {
         let fd = SocketFd::from_raw(1);
         let local = SocketAddr::new([192, 168, 1, 1], 12345);
         let remote = SocketAddr::new([192, 168, 1, 2], 80);
@@ -520,8 +520,8 @@ mod tests {
         assert_eq!(tcb.snd_una, 1000);
     }
 
-    #[test_case]
-    fn test_tcp_flags() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_flags() {
         assert_eq!(tcp_flags::FIN, 0x01);
         assert_eq!(tcp_flags::SYN, 0x02);
         assert_eq!(tcp_flags::RST, 0x04);

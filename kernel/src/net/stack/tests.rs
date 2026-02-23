@@ -1,7 +1,7 @@
 use super::*;
 
-#[test_case]
-fn test_network_stack_creation() {
+#[cfg_attr(test, test_case)]
+pub fn test_network_stack_creation() {
     let stack = NetworkStack::new_default();
     let config = stack.config();
 
@@ -12,8 +12,8 @@ fn test_network_stack_creation() {
     assert!(config.icmp_echo_enabled);
 }
 
-#[test_case]
-fn test_network_stack_poisoned_runtime_apis_fail() {
+#[cfg_attr(test, test_case)]
+pub fn test_network_stack_poisoned_runtime_apis_fail() {
     use crate::sync::set_panicking;
 
     // Initialize and then poison the global stack lock
@@ -31,8 +31,8 @@ fn test_network_stack_poisoned_runtime_apis_fail() {
     assert!(bind_udp(1234).is_none());
 }
 
-#[test_case]
-fn test_send_udp_fallback_zero_copy() {
+#[cfg_attr(test, test_case)]
+pub fn test_send_udp_fallback_zero_copy() {
     // Initialize stack and set transmit function to always succeed
     init_default();
     if let Ok(mut guard) = stack().lock() {
@@ -45,8 +45,8 @@ fn test_send_udp_fallback_zero_copy() {
     assert!(send_udp(1234, dst, 80, &[1, 2, 3]));
 }
 
-#[test_case]
-fn test_send_icmp_fallback_zero_copy() {
+#[cfg_attr(test, test_case)]
+pub fn test_send_icmp_fallback_zero_copy() {
     // Initialize stack and set transmit function
     init_default();
     if let Ok(mut guard) = stack().lock() {
@@ -66,8 +66,8 @@ fn test_send_icmp_fallback_zero_copy() {
     assert!(res.is_ok());
 }
 
-#[test_case]
-fn test_redirect_cache_basic() {
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_basic() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);
     let gateway = Ipv4Address::new([192, 168, 1, 2]);
@@ -85,8 +85,8 @@ fn test_redirect_cache_basic() {
     assert_eq!(cache.get(dst), Some(new_gateway));
 }
 
-#[test_case]
-fn test_redirect_cache_expiry() {
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_expiry() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);
     let gateway = Ipv4Address::new([192, 168, 1, 2]);
@@ -104,8 +104,8 @@ fn test_redirect_cache_expiry() {
     assert!(cache.get(dst).is_none());
 }
 
-#[test_case]
-fn test_redirect_cache_cleanup() {
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_cleanup() {
     let mut cache = RedirectCache::new();
     let dst1 = Ipv4Address::new([10, 0, 0, 1]);
     let dst2 = Ipv4Address::new([10, 0, 0, 2]);
@@ -128,8 +128,8 @@ fn test_redirect_cache_cleanup() {
     assert_eq!(cache.get(dst2), Some(gateway));
 }
 
-#[test_case]
-fn test_redirect_cache_eviction() {
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_eviction() {
     let mut cache = RedirectCache::new();
     let gateway = Ipv4Address::new([192, 168, 1, 2]);
     

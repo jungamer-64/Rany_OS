@@ -727,18 +727,18 @@ where
 // Tests
 // ============================================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_polling_mode_default() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_polling_mode_default() {
         let poller = AdaptivePoller::new();
         assert_eq!(poller.mode(), PollingMode::InterruptDriven);
     }
 
-    #[test_case]
-    fn test_ring_buffer() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_ring_buffer() {
         let mut ring: RingBuffer<u32> = RingBuffer::new(4);
         assert!(ring.is_empty());
 
@@ -751,8 +751,8 @@ mod tests {
         assert!(ring.is_empty());
     }
 
-    #[test_case]
-    fn test_network_stats() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_network_stats() {
         let stats = NetworkStats::new();
         stats.rx_packets.fetch_add(100, Ordering::Relaxed);
         stats.tx_packets.fetch_add(50, Ordering::Relaxed);

@@ -363,8 +363,8 @@ impl OwnedSocket {
 // Tests for SendFuture
 // ==========================
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {

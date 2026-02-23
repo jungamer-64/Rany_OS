@@ -689,6 +689,6 @@ pub fn data_checksum(data: &[u8], initial: u32) -> u16 {
     !(sum as u16)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
-mod tests;
+pub mod tests;

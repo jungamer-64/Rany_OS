@@ -25,7 +25,7 @@ pub mod segment;
 pub mod socket;
 pub mod tcb;
 pub mod tcp_rx;
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;

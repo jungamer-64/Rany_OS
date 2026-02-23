@@ -1,14 +1,14 @@
 use super::*;
 
-#[test_case]
-fn test_icmp_type() {
+#[cfg_attr(test, test_case)]
+pub fn test_icmp_type() {
     assert_eq!(IcmpType::from(8), IcmpType::EchoRequest);
     assert_eq!(IcmpType::from(0), IcmpType::EchoReply);
     assert_eq!(u8::from(IcmpType::EchoRequest), 8);
 }
 
-#[test_case]
-fn test_echo_builder() {
+#[cfg_attr(test, test_case)]
+pub fn test_echo_builder() {
     let mut buffer = [0u8; 64];
     let mut builder = IcmpEchoBuilder::new(&mut buffer).unwrap();
 

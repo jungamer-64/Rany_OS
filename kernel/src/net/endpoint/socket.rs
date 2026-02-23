@@ -632,12 +632,12 @@ pub fn create_udp_endpoint(addr: SocketAddr) -> SocketResult<OwnedSocket> {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_owned_socket_raii() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_owned_socket_raii() {
         // OwnedSocketはスコープ終了時に自動クローズ
         {
             let _socket = OwnedSocket::new(SocketType::Tcp);

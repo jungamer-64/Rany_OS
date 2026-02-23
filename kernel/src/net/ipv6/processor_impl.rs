@@ -164,6 +164,6 @@ pub fn ipv6_checksum(
 // Tests
 // =====================================================
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
-mod tests;
+pub mod tests;

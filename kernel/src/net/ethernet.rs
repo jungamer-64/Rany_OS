@@ -695,12 +695,12 @@ pub fn strip_vlan_tag(frame: &mut [u8], frame_len: usize) -> Option<(u16, usize)
     Some((vlan_id, new_len))
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_mac_address() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_mac_address() {
         let mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
         assert!(!mac.is_broadcast());
         assert!(mac.is_unicast());
@@ -709,8 +709,8 @@ mod tests {
         assert!(MacAddress::BROADCAST.is_multicast());
     }
 
-    #[test_case]
-    fn test_ether_type() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_ether_type() {
         assert_eq!(EtherType::from(0x0800), EtherType::Ipv4);
         assert_eq!(EtherType::from(0x0806), EtherType::Arp);
         assert_eq!(u16::from(EtherType::Ipv4), 0x0800);

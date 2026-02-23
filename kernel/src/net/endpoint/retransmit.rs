@@ -316,18 +316,18 @@ pub fn check_retransmit_timeouts() {
 // テスト
 // =====================================================
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests {
     use super::*;
 
-    #[test_case]
-    fn test_rto_calculator_initial() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_rto_calculator_initial() {
         let calc = RtoCalculator::new();
         assert_eq!(calc.get_rto(), 1000); // 初期値1秒
     }
 
-    #[test_case]
-    fn test_rto_calculator_update() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_rto_calculator_update() {
         let mut calc = RtoCalculator::new();
 
         // 最初のRTTサンプル
@@ -345,8 +345,8 @@ mod tests {
         assert!(rto2 <= rto1); // 安定してきたらRTOは下がる傾向
     }
 
-    #[test_case]
-    fn test_rto_calculator_backoff() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_rto_calculator_backoff() {
         let mut calc = RtoCalculator::new();
         calc.update(100);
         let rto_before = calc.get_rto();
@@ -359,8 +359,8 @@ mod tests {
         assert!(rto_after >= rto_before);
     }
 
-    #[test_case]
-    fn test_retransmit_queue_push_and_ack() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_retransmit_queue_push_and_ack() {
         let mut queue = RetransmitQueue::new();
         assert!(queue.is_empty());
 
@@ -380,8 +380,8 @@ mod tests {
         assert!(queue.is_empty());
     }
 
-    #[test_case]
-    fn test_retransmit_queue_timeout() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_retransmit_queue_timeout() {
         let mut queue = RetransmitQueue::new();
 
         // セグメント追加（tick=0で送信）
@@ -395,8 +395,8 @@ mod tests {
         assert!(timed_out.is_some());
     }
 
-    #[test_case]
-    fn test_retransmit_queue_retransmit() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_retransmit_queue_retransmit() {
         let mut queue = RetransmitQueue::new();
         let original_data = alloc::vec![1, 2, 3, 4, 5];
 
@@ -412,8 +412,8 @@ mod tests {
         assert!(seg.is_retransmit);
     }
 
-    #[test_case]
-    fn test_retransmit_queue_process_sack() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_retransmit_queue_process_sack() {
         use super::SocketAddr;
         let local = SocketAddr::new([192,168,0,1], 10000);
         let remote = SocketAddr::new([192,168,0,2], 20000);
@@ -433,8 +433,8 @@ mod tests {
         assert_eq!(q.unacked.front().unwrap().seq, 1003);
     }
 
-    #[test_case]
-    fn test_seq_comparison() {
+    #[cfg_attr(test, test_case)]
+    pub fn test_seq_comparison() {
         // シーケンス番号の比較（wrapping考慮）
         assert!(RetransmitQueue::seq_before(1000, 2000));
         assert!(!RetransmitQueue::seq_before(2000, 1000));

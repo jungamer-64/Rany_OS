@@ -442,6 +442,6 @@ pub fn ipv6_multicast_to_mac(addr: &Ipv6Address) -> [u8; 6] {
 // Tests
 // =====================================================
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
-mod tests;
+pub mod tests;

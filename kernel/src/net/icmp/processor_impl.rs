@@ -248,7 +248,7 @@ impl IcmpProcessor {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[path = "tests.rs"]
-mod tests;
+pub mod tests;
 

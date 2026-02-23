@@ -248,6 +248,70 @@ fn run_suite() -> bool {
             "kernel_driver_cell_exports",
             test_kernel_driver_cell_exports,
         )
+// BEGIN NET core required run_suite wiring (90 cases).
+        && run_check(
+            "net_core_adaptive_polling_exports",
+            test_net_core_adaptive_polling_exports,
+        )
+        && run_check(
+            "net_core_mempool_exports",
+            test_net_core_mempool_exports,
+        )
+        && run_check(
+            "net_core_zero_copy_exports",
+            test_net_core_zero_copy_exports,
+        )
+        && run_check(
+            "net_core_ethernet_exports",
+            test_net_core_ethernet_exports,
+        )
+        && run_check(
+            "net_core_arp_exports",
+            test_net_core_arp_exports,
+        )
+        && run_check(
+            "net_core_icmp_exports",
+            test_net_core_icmp_exports,
+        )
+        && run_check(
+            "net_core_udp_exports",
+            test_net_core_udp_exports,
+        )
+        && run_check(
+            "net_core_ipv4_exports",
+            test_net_core_ipv4_exports,
+        )
+        && run_check(
+            "net_core_icmpv6_exports",
+            test_net_core_icmpv6_exports,
+        )
+        && run_check(
+            "net_core_stack_exports",
+            test_net_core_stack_exports,
+        )
+        && run_check(
+            "net_core_ipv6_exports",
+            test_net_core_ipv6_exports,
+        )
+        && run_check(
+            "net_core_ndp_exports",
+            test_net_core_ndp_exports,
+        )
+        && run_check(
+            "net_core_tcp_exports",
+            test_net_core_tcp_exports,
+        )
+// END NET core required run_suite wiring (90 cases).
+// BEGIN re-added local run_suite wiring after origin/master rebase
+        && run_check(
+            "net_endpoint_congestion_cubic_exports",
+            test_net_endpoint_congestion_cubic_exports,
+        )
+        && run_check(
+            "net_endpoint_congestion_bbr_exports",
+            test_net_endpoint_congestion_bbr_exports,
+        )
+// END re-added local run_suite wiring after origin/master rebase
         && run_check(
             "kernel_integration_exports",
             test_kernel_integration_exports,
@@ -358,6 +422,888 @@ fn test_loader_elf_exports() -> bool {
         && rany_os::qemu_tests::loader_elf_aslr_enable_disable_smoke()
         && rany_os::qemu_tests::loader_elf_get_string_zero_copy_smoke()
 }
+
+// BEGIN NET core required suite groups (90 cases).
+
+fn test_net_core_adaptive_polling_exports() -> bool {
+    run_check(
+        "net_core_adaptive_polling_polling_mode_default_smoke",
+        rany_os::qemu_tests::net_core_adaptive_polling_polling_mode_default_smoke,
+    ) && run_check(
+        "net_core_adaptive_polling_ring_buffer_smoke",
+        rany_os::qemu_tests::net_core_adaptive_polling_ring_buffer_smoke,
+    ) && run_check(
+        "net_core_adaptive_polling_network_stats_smoke",
+        rany_os::qemu_tests::net_core_adaptive_polling_network_stats_smoke,
+    )
+}
+
+fn test_net_core_mempool_exports() -> bool {
+    run_check(
+        "net_core_mempool_mempool_poisoned_alloc_fails_smoke",
+        rany_os::qemu_tests::net_core_mempool_mempool_poisoned_alloc_fails_smoke,
+    ) && run_check(
+        "net_core_mempool_mempool_stats_smoke",
+        rany_os::qemu_tests::net_core_mempool_mempool_stats_smoke,
+    )
+}
+
+fn test_net_core_zero_copy_exports() -> bool {
+    run_check(
+        "net_core_zero_copy_pool_id_smoke",
+        rany_os::qemu_tests::net_core_zero_copy_pool_id_smoke,
+    ) && run_check(
+        "net_core_zero_copy_sg_list_smoke",
+        rany_os::qemu_tests::net_core_zero_copy_sg_list_smoke,
+    ) && run_check(
+        "net_core_zero_copy_packet_chain_smoke",
+        rany_os::qemu_tests::net_core_zero_copy_packet_chain_smoke,
+    )
+}
+
+fn test_net_core_ethernet_exports() -> bool {
+    run_check(
+        "net_core_ethernet_mac_address_smoke",
+        rany_os::qemu_tests::net_core_ethernet_mac_address_smoke,
+    ) && run_check(
+        "net_core_ethernet_ether_type_smoke",
+        rany_os::qemu_tests::net_core_ethernet_ether_type_smoke,
+    )
+}
+
+fn test_net_core_arp_exports() -> bool {
+    run_check(
+        "net_core_arp_arp_cache_smoke",
+        rany_os::qemu_tests::net_core_arp_arp_cache_smoke,
+    ) && run_check(
+        "net_core_arp_arp_packet_smoke",
+        rany_os::qemu_tests::net_core_arp_arp_packet_smoke,
+    )
+}
+
+fn test_net_core_icmp_exports() -> bool {
+    run_check(
+        "net_core_icmp_icmp_type_smoke",
+        rany_os::qemu_tests::net_core_icmp_icmp_type_smoke,
+    ) && run_check(
+        "net_core_icmp_echo_builder_smoke",
+        rany_os::qemu_tests::net_core_icmp_echo_builder_smoke,
+    )
+}
+
+fn test_net_core_udp_exports() -> bool {
+    run_check(
+        "net_core_udp_udp_packet_smoke",
+        rany_os::qemu_tests::net_core_udp_udp_packet_smoke,
+    ) && run_check(
+        "net_core_udp_udp_socket_poisoned_methods_return_defaults_smoke",
+        rany_os::qemu_tests::net_core_udp_udp_socket_poisoned_methods_return_defaults_smoke,
+    ) && run_check(
+        "net_core_udp_bind_with_token_reclaim_smoke",
+        rany_os::qemu_tests::net_core_udp_bind_with_token_reclaim_smoke,
+    ) && run_check(
+        "net_core_udp_udp_recv_future_poisoned_returns_closed_smoke",
+        rany_os::qemu_tests::net_core_udp_udp_recv_future_poisoned_returns_closed_smoke,
+    ) && run_check(
+        "net_core_udp_udp_processor_poisoned_bind_and_process_smoke",
+        rany_os::qemu_tests::net_core_udp_udp_processor_poisoned_bind_and_process_smoke,
+    )
+}
+
+fn test_net_core_ipv4_exports() -> bool {
+    run_check(
+        "net_core_ipv4_ipv4_address_smoke",
+        rany_os::qemu_tests::net_core_ipv4_ipv4_address_smoke,
+    ) && run_check(
+        "net_core_ipv4_subnet_smoke",
+        rany_os::qemu_tests::net_core_ipv4_subnet_smoke,
+    ) && run_check(
+        "net_core_ipv4_fragment_key_smoke",
+        rany_os::qemu_tests::net_core_ipv4_fragment_key_smoke,
+    ) && run_check(
+        "net_core_ipv4_fragment_buffer_basic_smoke",
+        rany_os::qemu_tests::net_core_ipv4_fragment_buffer_basic_smoke,
+    ) && run_check(
+        "net_core_ipv4_fragment_reassembly_simple_smoke",
+        rany_os::qemu_tests::net_core_ipv4_fragment_reassembly_simple_smoke,
+    ) && run_check(
+        "net_core_ipv4_pmtu_cache_basic_smoke",
+        rany_os::qemu_tests::net_core_ipv4_pmtu_cache_basic_smoke,
+    ) && run_check(
+        "net_core_ipv4_pmtu_cache_update_smaller_smoke",
+        rany_os::qemu_tests::net_core_ipv4_pmtu_cache_update_smaller_smoke,
+    ) && run_check(
+        "net_core_ipv4_pmtu_cache_minimum_smoke",
+        rany_os::qemu_tests::net_core_ipv4_pmtu_cache_minimum_smoke,
+    )
+}
+
+fn test_net_core_icmpv6_exports() -> bool {
+    run_check(
+        "net_core_icmpv6_icmpv6_type_from_u8_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_icmpv6_type_from_u8_smoke,
+    ) && run_check(
+        "net_core_icmpv6_icmpv6_type_classification_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_icmpv6_type_classification_smoke,
+    ) && run_check(
+        "net_core_icmpv6_echo_reply_build_and_verify_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_echo_reply_build_and_verify_smoke,
+    ) && run_check(
+        "net_core_icmpv6_echo_request_build_and_verify_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_echo_request_build_and_verify_smoke,
+    ) && run_check(
+        "net_core_icmpv6_processor_echo_request_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_processor_echo_request_smoke,
+    ) && run_check(
+        "net_core_icmpv6_processor_echo_disabled_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_processor_echo_disabled_smoke,
+    ) && run_check(
+        "net_core_icmpv6_processor_checksum_error_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_processor_checksum_error_smoke,
+    ) && run_check(
+        "net_core_icmpv6_ndp_delegation_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_ndp_delegation_smoke,
+    ) && run_check(
+        "net_core_icmpv6_header_size_smoke",
+        rany_os::qemu_tests::net_core_icmpv6_header_size_smoke,
+    )
+}
+
+fn test_net_core_stack_exports() -> bool {
+    run_check(
+        "net_core_stack_network_stack_creation_smoke",
+        rany_os::qemu_tests::net_core_stack_network_stack_creation_smoke,
+    ) && run_check(
+        "net_core_stack_network_stack_poisoned_runtime_apis_fail_smoke",
+        rany_os::qemu_tests::net_core_stack_network_stack_poisoned_runtime_apis_fail_smoke,
+    ) && run_check(
+        "net_core_stack_send_udp_fallback_zero_copy_smoke",
+        rany_os::qemu_tests::net_core_stack_send_udp_fallback_zero_copy_smoke,
+    ) && run_check(
+        "net_core_stack_send_icmp_fallback_zero_copy_smoke",
+        rany_os::qemu_tests::net_core_stack_send_icmp_fallback_zero_copy_smoke,
+    ) && run_check(
+        "net_core_stack_redirect_cache_basic_smoke",
+        rany_os::qemu_tests::net_core_stack_redirect_cache_basic_smoke,
+    ) && run_check(
+        "net_core_stack_redirect_cache_expiry_smoke",
+        rany_os::qemu_tests::net_core_stack_redirect_cache_expiry_smoke,
+    ) && run_check(
+        "net_core_stack_redirect_cache_cleanup_smoke",
+        rany_os::qemu_tests::net_core_stack_redirect_cache_cleanup_smoke,
+    ) && run_check(
+        "net_core_stack_redirect_cache_eviction_smoke",
+        rany_os::qemu_tests::net_core_stack_redirect_cache_eviction_smoke,
+    )
+}
+
+fn test_net_core_ipv6_exports() -> bool {
+    run_check(
+        "net_core_ipv6_unspecified_smoke",
+        rany_os::qemu_tests::net_core_ipv6_unspecified_smoke,
+    ) && run_check(
+        "net_core_ipv6_loopback_smoke",
+        rany_os::qemu_tests::net_core_ipv6_loopback_smoke,
+    ) && run_check(
+        "net_core_ipv6_multicast_smoke",
+        rany_os::qemu_tests::net_core_ipv6_multicast_smoke,
+    ) && run_check(
+        "net_core_ipv6_link_local_smoke",
+        rany_os::qemu_tests::net_core_ipv6_link_local_smoke,
+    ) && run_check(
+        "net_core_ipv6_global_smoke",
+        rany_os::qemu_tests::net_core_ipv6_global_smoke,
+    ) && run_check(
+        "net_core_ipv6_eui64_smoke",
+        rany_os::qemu_tests::net_core_ipv6_eui64_smoke,
+    ) && run_check(
+        "net_core_ipv6_solicited_node_smoke",
+        rany_os::qemu_tests::net_core_ipv6_solicited_node_smoke,
+    ) && run_check(
+        "net_core_ipv6_multicast_mac_smoke",
+        rany_os::qemu_tests::net_core_ipv6_multicast_mac_smoke,
+    ) && run_check(
+        "net_core_ipv6_header_size_smoke",
+        rany_os::qemu_tests::net_core_ipv6_header_size_smoke,
+    ) && run_check(
+        "net_core_ipv6_packet_parse_valid_smoke",
+        rany_os::qemu_tests::net_core_ipv6_packet_parse_valid_smoke,
+    ) && run_check(
+        "net_core_ipv6_packet_parse_wrong_version_smoke",
+        rany_os::qemu_tests::net_core_ipv6_packet_parse_wrong_version_smoke,
+    ) && run_check(
+        "net_core_ipv6_packet_parse_too_short_smoke",
+        rany_os::qemu_tests::net_core_ipv6_packet_parse_too_short_smoke,
+    ) && run_check(
+        "net_core_ipv6_packet_mut_build_smoke",
+        rany_os::qemu_tests::net_core_ipv6_packet_mut_build_smoke,
+    ) && run_check(
+        "net_core_ipv6_skip_no_extension_headers_smoke",
+        rany_os::qemu_tests::net_core_ipv6_skip_no_extension_headers_smoke,
+    ) && run_check(
+        "net_core_ipv6_skip_hop_by_hop_smoke",
+        rany_os::qemu_tests::net_core_ipv6_skip_hop_by_hop_smoke,
+    ) && run_check(
+        "net_core_ipv6_skip_fragment_header_smoke",
+        rany_os::qemu_tests::net_core_ipv6_skip_fragment_header_smoke,
+    ) && run_check(
+        "net_core_ipv6_pseudo_header_checksum_smoke",
+        rany_os::qemu_tests::net_core_ipv6_pseudo_header_checksum_smoke,
+    ) && run_check(
+        "net_core_ipv6_display_loopback_smoke",
+        rany_os::qemu_tests::net_core_ipv6_display_loopback_smoke,
+    ) && run_check(
+        "net_core_ipv6_display_link_local_smoke",
+        rany_os::qemu_tests::net_core_ipv6_display_link_local_smoke,
+    ) && run_check(
+        "net_core_ipv6_display_all_nodes_smoke",
+        rany_os::qemu_tests::net_core_ipv6_display_all_nodes_smoke,
+    ) && run_check(
+        "net_core_ipv6_display_full_smoke",
+        rany_os::qemu_tests::net_core_ipv6_display_full_smoke,
+    ) && run_check(
+        "net_core_ipv6_from_u64_pair_smoke",
+        rany_os::qemu_tests::net_core_ipv6_from_u64_pair_smoke,
+    )
+}
+
+fn test_net_core_ndp_exports() -> bool {
+    run_check(
+        "net_core_ndp_neighbor_cache_basic_smoke",
+        rany_os::qemu_tests::net_core_ndp_neighbor_cache_basic_smoke,
+    ) && run_check(
+        "net_core_ndp_neighbor_cache_update_smoke",
+        rany_os::qemu_tests::net_core_ndp_neighbor_cache_update_smoke,
+    ) && run_check(
+        "net_core_ndp_neighbor_cache_expiry_smoke",
+        rany_os::qemu_tests::net_core_ndp_neighbor_cache_expiry_smoke,
+    ) && run_check(
+        "net_core_ndp_parse_slla_option_smoke",
+        rany_os::qemu_tests::net_core_ndp_parse_slla_option_smoke,
+    ) && run_check(
+        "net_core_ndp_parse_prefix_info_option_smoke",
+        rany_os::qemu_tests::net_core_ndp_parse_prefix_info_option_smoke,
+    ) && run_check(
+        "net_core_ndp_build_ns_smoke",
+        rany_os::qemu_tests::net_core_ndp_build_ns_smoke,
+    ) && run_check(
+        "net_core_ndp_build_na_smoke",
+        rany_os::qemu_tests::net_core_ndp_build_na_smoke,
+    ) && run_check(
+        "net_core_ndp_build_rs_smoke",
+        rany_os::qemu_tests::net_core_ndp_build_rs_smoke,
+    ) && run_check(
+        "net_core_ndp_multicast_mac_smoke",
+        rany_os::qemu_tests::net_core_ndp_multicast_mac_smoke,
+    ) && run_check(
+        "net_core_ndp_resolve_multicast_smoke",
+        rany_os::qemu_tests::net_core_ndp_resolve_multicast_smoke,
+    ) && run_check(
+        "net_core_ndp_ns_processing_smoke",
+        rany_os::qemu_tests::net_core_ndp_ns_processing_smoke,
+    )
+}
+
+fn test_net_core_tcp_exports() -> bool {
+    run_check(
+        "net_core_tcp_ipv4_addr_smoke",
+        rany_os::qemu_tests::net_core_tcp_ipv4_addr_smoke,
+    ) && run_check(
+        "net_core_tcp_socket_addr_smoke",
+        rany_os::qemu_tests::net_core_tcp_socket_addr_smoke,
+    ) && run_check(
+        "net_core_tcp_tcp_state_smoke",
+        rany_os::qemu_tests::net_core_tcp_tcp_state_smoke,
+    ) && run_check(
+        "net_core_tcp_process_with_packet_zero_copy_smoke",
+        rany_os::qemu_tests::net_core_tcp_process_with_packet_zero_copy_smoke,
+    ) && run_check(
+        "net_core_tcp_can_send_respects_cwnd_bytes_smoke",
+        rany_os::qemu_tests::net_core_tcp_can_send_respects_cwnd_bytes_smoke,
+    ) && run_check(
+        "net_core_tcp_send_buffer_bytes_decrement_on_flush_smoke",
+        rany_os::qemu_tests::net_core_tcp_send_buffer_bytes_decrement_on_flush_smoke,
+    ) && run_check(
+        "net_core_tcp_three_way_handshake_smoke",
+        rany_os::qemu_tests::net_core_tcp_three_way_handshake_smoke,
+    ) && run_check(
+        "net_core_tcp_retransmit_on_timeout_smoke",
+        rany_os::qemu_tests::net_core_tcp_retransmit_on_timeout_smoke,
+    ) && run_check(
+        "net_core_tcp_connect_future_wakes_on_established_smoke",
+        rany_os::qemu_tests::net_core_tcp_connect_future_wakes_on_established_smoke,
+    ) && run_check(
+        "net_core_tcp_record_sent_packet_updates_tcb_smoke",
+        rany_os::qemu_tests::net_core_tcp_record_sent_packet_updates_tcb_smoke,
+    ) && run_check(
+        "net_core_tcp_ack_segments_removes_unacked_and_reduces_outstanding_smoke",
+        rany_os::qemu_tests::net_core_tcp_ack_segments_removes_unacked_and_reduces_outstanding_smoke,
+    ) && run_check(
+        "net_core_tcp_accept_future_returns_on_push_connection_smoke",
+        rany_os::qemu_tests::net_core_tcp_accept_future_returns_on_push_connection_smoke,
+    ) && run_check(
+        "net_core_tcp_connect_timeout_expires_smoke",
+        rany_os::qemu_tests::net_core_tcp_connect_timeout_expires_smoke,
+    )
+}
+
+// END NET core required suite groups (90 cases).
+
+
+// BEGIN re-added local suite groups after origin/master rebase
+
+fn test_iommu_wave3_pasid_exports() -> bool {
+    run_check(
+        "iommu_wave3_pasid_table_alloc_free_smoke",
+        rany_os::qemu_tests::iommu_wave3_pasid_table_alloc_free_smoke,
+    ) && run_check(
+        "iommu_wave3_pasid_table_multi_domain_smoke",
+        rany_os::qemu_tests::iommu_wave3_pasid_table_multi_domain_smoke,
+    ) && run_check(
+        "iommu_wave3_pasid_table_exhaustion_smoke",
+        rany_os::qemu_tests::iommu_wave3_pasid_table_exhaustion_smoke,
+    )
+}
+
+fn test_iommu_wave3_core_structures_exports() -> bool {
+    run_check(
+        "iommu_wave3_mapping_slab_insert_lookup_remove_smoke",
+        rany_os::qemu_tests::iommu_wave3_mapping_slab_insert_lookup_remove_smoke,
+    ) && run_check(
+        "iommu_wave3_mapping_slab_overlap_detection_smoke",
+        rany_os::qemu_tests::iommu_wave3_mapping_slab_overlap_detection_smoke,
+    ) && run_check(
+        "iommu_wave3_zombie_queue_basic_smoke",
+        rany_os::qemu_tests::iommu_wave3_zombie_queue_basic_smoke,
+    ) && run_check(
+        "iommu_wave3_zombie_queue_failed_cleanup_smoke",
+        rany_os::qemu_tests::iommu_wave3_zombie_queue_failed_cleanup_smoke,
+    ) && run_check(
+        "iommu_wave3_pri_fuel_processing_smoke",
+        rany_os::qemu_tests::iommu_wave3_pri_fuel_processing_smoke,
+    )
+}
+
+fn test_iommu_wave4_amd_exports() -> bool {
+    run_check(
+        "iommu_amd_wave0_alias_devids_for_device_dedup_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_dedup_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_alias_devids_for_device_no_match_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_alias_devids_for_device_no_match_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_ivhd_flags_for_device_combined_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_combined_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_ivhd_flags_for_device_acpi_hid_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_map_ivmd_ranges_exclusion_splits_smoke,
+    ) && run_check(
+        "iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke",
+        rany_os::qemu_tests::iommu_amd_wave0_map_for_device_rejects_exclusion_range_smoke,
+    )
+}
+
+fn test_iommu_wave5_amd_exports() -> bool {
+    // Wave5 required set:
+    // - AMD Wave1 residual parity smokes (5)
+    // - AMD Wave5 interrupt remapping smokes (6)
+    run_check(
+        "iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_map_unmap_with_domain_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_map_device_nonblocking_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_map_device_nonblocking_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_dma_mask_respects_32bit_limit_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_security_notifier_dispatch_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_security_notifier_dispatch_smoke,
+    ) && run_check(
+        "iommu_amd_wave1_cmdqueue_pressure_smoke",
+        rany_os::qemu_tests::iommu_amd_wave1_cmdqueue_pressure_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_entry_construction_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_entry_construction_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_alloc_free_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_alloc_free_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_exhaustion_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_exhaustion_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_irt_invalidation_cmd_format_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_irt_invalidation_cmd_format_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_map_interrupt_returns_handle_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_map_interrupt_returns_handle_smoke,
+    ) && run_check(
+        "iommu_amd_wave5_get_remap_msi_message_format_smoke",
+        rany_os::qemu_tests::iommu_amd_wave5_get_remap_msi_message_format_smoke,
+    )
+}
+
+fn test_graphics_framebuffer_wave6_phase_a_exports() -> bool {
+    run_check(
+        "graphics_wave6_draw_image_32bit_bgra_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_32bit_bgra_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_24bit_bgr_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_24bit_bgr_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_small_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_small_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_large_mmio_full_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_mmio_full_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_large_mmio_full_unaligned_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_mmio_full_unaligned_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_small_mmio_pairs_aligned_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_small_mmio_pairs_aligned_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_small_mmio_generic_unaligned_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_small_mmio_generic_unaligned_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_hline_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_hline_32bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_text_space_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_text_space_32bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_line_matches_naive_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_line_matches_naive_32bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_line_matches_naive_24bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_line_matches_naive_24bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_text_space_24bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_text_space_24bit_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_32bit_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_32bit_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_24bit_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_24bit_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_32bit_mmio_rgba_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_32bit_mmio_rgba_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bytes_mmio_alignment_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bytes_mmio_alignment_smoke,
+    ) && run_check(
+        "graphics_wave6_write_opaque_run_24bit_even_odd_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_opaque_run_24bit_even_odd_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_basic_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_basic_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_scalar_random_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_scalar_random_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_bgra_stream_matches_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_bgra_stream_matches_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_fill_rect_32bit_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_fill_rect_32bit_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_dirty_rect_tracking_smoke",
+        rany_os::qemu_tests::graphics_wave6_dirty_rect_tracking_smoke,
+    ) && run_check(
+        "graphics_wave6_dirty_rect_flush_only_marked_area_smoke",
+        rany_os::qemu_tests::graphics_wave6_dirty_rect_flush_only_marked_area_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke,
+    )
+}
+
+fn test_graphics_framebuffer_wave6_phase_b_exports() -> bool {
+    run_check(
+        "graphics_wave6_write_bgr_run_large_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_write_bgr_run_large_smoke",
+        rany_os::qemu_tests::graphics_wave6_write_bgr_run_large_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_image_24bit_rgb888_backbuffer_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_image_24bit_rgb888_backbuffer_smoke,
+    ) && run_check(
+        "graphics_wave6_draw_hline_24bit_rgb888_mmio_smoke",
+        rany_os::qemu_tests::graphics_wave6_draw_hline_24bit_rgb888_mmio_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke,
+    ) && run_check(
+        "graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke",
+        rany_os::qemu_tests::graphics_wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke,
+    ) && run_check(
+        "graphics_wave6_packer_env_override_no_std_smoke",
+        rany_os::qemu_tests::graphics_wave6_packer_env_override_no_std_smoke,
+    )
+}
+
+fn test_mm_wave7_async_swapout_exports() -> bool {
+    run_check(
+        "mm_wave7_buffer_pool_4k_basic_smoke",
+        rany_os::qemu_tests::mm_wave7_buffer_pool_4k_basic_smoke,
+    ) && run_check(
+        "mm_wave7_buffer_pool_2m_basic_smoke",
+        rany_os::qemu_tests::mm_wave7_buffer_pool_2m_basic_smoke,
+    )
+}
+
+fn test_mm_wave7_async_swapout_phase_e_exports() -> bool {
+    run_check(
+        "mm_wave7_memcg_concurrent_swapout_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_memcg_concurrent_swapout_canonical_smoke,
+    ) && run_check(
+        "mm_wave7_async_swapout_concurrent_dedup_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_async_swapout_concurrent_dedup_canonical_smoke,
+    )
+}
+
+fn test_mm_wave7_async_swapout_phase_f_exports() -> bool {
+    run_check(
+        "mm_wave7_async_swapout_stress_concurrency_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_async_swapout_stress_concurrency_canonical_smoke,
+    ) && run_check(
+        "mm_wave7_async_swapout_heavy_stress_canonical_smoke",
+        rany_os::qemu_tests::mm_wave7_async_swapout_heavy_stress_canonical_smoke,
+    )
+}
+
+fn test_mm_wave7_page_reclaim_exports() -> bool {
+    run_check(
+        "mm_wave7_watermarks_calculation_smoke",
+        rany_os::qemu_tests::mm_wave7_watermarks_calculation_smoke,
+    ) && run_check(
+        "mm_wave7_pressure_level_smoke",
+        rany_os::qemu_tests::mm_wave7_pressure_level_smoke,
+    ) && run_check(
+        "mm_wave7_mglru_list_add_smoke",
+        rany_os::qemu_tests::mm_wave7_mglru_list_add_smoke,
+    ) && run_check(
+        "mm_wave7_blocked_unsafe_requeues_victim_smoke",
+        rany_os::qemu_tests::mm_wave7_blocked_unsafe_requeues_victim_smoke,
+    ) && run_check(
+        "mm_wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke",
+        rany_os::qemu_tests::mm_wave7_blocked_unsafe_requeues_anonymous_dirty_victim_smoke,
+    ) && run_check(
+        "mm_wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke",
+        rany_os::qemu_tests::mm_wave7_file_backed_clean_reclaims_with_unsafe_disabled_smoke,
+    ) && run_check(
+        "mm_wave7_async_success_clears_pending_and_accounts_success_smoke",
+        rany_os::qemu_tests::mm_wave7_async_success_clears_pending_and_accounts_success_smoke,
+    ) && run_check(
+        "mm_wave7_async_failure_requeues_and_clears_pending_smoke",
+        rany_os::qemu_tests::mm_wave7_async_failure_requeues_and_clears_pending_smoke,
+    )
+}
+
+fn test_iommu_wave5_canonical_exports() -> bool {
+    run_check(
+        "iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_cmdqueue_map_unmap_with_domain_canonical_smoke,
+    ) && run_check(
+        "iommu_wave5_map_for_device_async_and_unmap_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_map_for_device_async_and_unmap_canonical_smoke,
+    ) && run_check(
+        "iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_map_for_device_respects_dma_mask_canonical_smoke,
+    ) && run_check(
+        "iommu_wave5_api_security_notifier_registration_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_api_security_notifier_registration_canonical_smoke,
+    ) && run_check(
+        "iommu_wave5_qi_metrics_pressure_canonical_smoke",
+        rany_os::qemu_tests::iommu_wave5_qi_metrics_pressure_canonical_smoke,
+    )
+}
+
+fn test_net_endpoint_congestion_core_exports() -> bool {
+    run_check(
+        "net_endpoint_congestion_core_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_slow_start_growth_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_slow_start_growth_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_transition_to_congestion_avoidance_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_transition_to_congestion_avoidance_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_fast_retransmit_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_fast_retransmit_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_timeout_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_timeout_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_core_available_window_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_core_available_window_smoke,
+    )
+}
+
+fn test_net_endpoint_congestion_cubic_exports() -> bool {
+    run_check(
+        "net_endpoint_congestion_cubic_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_cubic_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_cubic_slow_start_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_cubic_slow_start_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_cubic_root_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_cubic_root_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_cubic_fast_recovery_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_cubic_fast_recovery_smoke,
+    )
+}
+
+fn test_net_endpoint_congestion_bbr_exports() -> bool {
+    run_check(
+        "net_endpoint_congestion_bbr_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_bbr_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_bbr_startup_growth_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_bbr_startup_growth_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_bbr_rt_prop_tracking_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_bbr_rt_prop_tracking_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_bbr_available_window_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_bbr_available_window_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_bbr_bdp_calculation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_bbr_bdp_calculation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_bbr_startup_to_drain_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_bbr_startup_to_drain_smoke,
+    )
+}
+
+fn test_net_endpoint_congestion_variant_exports() -> bool {
+    run_check(
+        "net_endpoint_congestion_variant_from_algorithm_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_from_algorithm_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_with_mss_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_with_mss_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_newreno_ack_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_newreno_ack_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_cubic_ack_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_cubic_ack_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_bbr_ack_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_bbr_ack_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_timeout_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_timeout_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_reset_delegation_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_reset_delegation_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_available_window_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_available_window_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_fast_retransmit_newreno_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_fast_retransmit_newreno_smoke,
+    ) && run_check(
+        "net_endpoint_congestion_variant_default_smoke",
+        rany_os::qemu_tests::net_endpoint_congestion_variant_default_smoke,
+    )
+}
+
+fn test_net_endpoint_flow_control_exports() -> bool {
+    run_check(
+        "net_endpoint_flow_control_initial_state_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_initial_state_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_receive_data_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_receive_data_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_consume_data_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_consume_data_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_zero_window_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_zero_window_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_sws_avoidance_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_sws_avoidance_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_peer_zero_window_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_peer_zero_window_smoke,
+    ) && run_check(
+        "net_endpoint_flow_control_probe_timing_smoke",
+        rany_os::qemu_tests::net_endpoint_flow_control_probe_timing_smoke,
+    )
+}
+
+fn test_net_endpoint_futures_exports() -> bool {
+    run_check(
+        "net_endpoint_futures_sendfuture_wakes_on_send_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_sendfuture_wakes_on_send_smoke,
+    ) && run_check(
+        "net_endpoint_futures_recv_packet_zero_copy_via_owned_socket_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_recv_packet_zero_copy_via_owned_socket_smoke,
+    ) && run_check(
+        "net_endpoint_futures_tcp_packet_stream_multiple_packets_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_tcp_packet_stream_multiple_packets_smoke,
+    ) && run_check(
+        "net_endpoint_futures_udp_packet_stream_delivered_smoke",
+        rany_os::qemu_tests::net_endpoint_futures_udp_packet_stream_delivered_smoke,
+    )
+}
+
+fn test_net_endpoint_handler_exports() -> bool {
+    run_check(
+        "net_endpoint_handler_handle_tx_available_requeues_dataready_smoke",
+        rany_os::qemu_tests::net_endpoint_handler_handle_tx_available_requeues_dataready_smoke,
+    ) && run_check(
+        "net_endpoint_handler_handle_data_ready_retry_when_no_device_smoke",
+        rany_os::qemu_tests::net_endpoint_handler_handle_data_ready_retry_when_no_device_smoke,
+    )
+}
+
+fn test_net_endpoint_inner_exports() -> bool {
+    run_check(
+        "net_endpoint_inner_socket_state_transitions_smoke",
+        rany_os::qemu_tests::net_endpoint_inner_socket_state_transitions_smoke,
+    ) && run_check(
+        "net_endpoint_inner_vecdeque_buffer_smoke",
+        rany_os::qemu_tests::net_endpoint_inner_vecdeque_buffer_smoke,
+    )
+}
+
+fn test_net_endpoint_retransmit_exports() -> bool {
+    run_check(
+        "net_endpoint_retransmit_rto_calculator_initial_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_rto_calculator_initial_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_rto_calculator_update_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_rto_calculator_update_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_rto_calculator_backoff_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_rto_calculator_backoff_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_retransmit_queue_push_and_ack_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_retransmit_queue_push_and_ack_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_retransmit_queue_timeout_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_retransmit_queue_timeout_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_retransmit_queue_retransmit_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_retransmit_queue_retransmit_smoke,
+    ) && run_check(
+        "net_endpoint_retransmit_seq_comparison_smoke",
+        rany_os::qemu_tests::net_endpoint_retransmit_seq_comparison_smoke,
+    )
+}
+
+fn test_net_endpoint_segment_exports() -> bool {
+    run_check(
+        "net_endpoint_segment_tcp_segment_builder_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_segment_builder_smoke,
+    ) && run_check(
+        "net_endpoint_segment_tcp_segment_with_data_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_segment_with_data_smoke,
+    ) && run_check(
+        "net_endpoint_segment_tcp_segment_with_options_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_segment_with_options_smoke,
+    ) && run_check(
+        "net_endpoint_segment_tcp_message_length_field_for_checksum_smoke",
+        rany_os::qemu_tests::net_endpoint_segment_tcp_message_length_field_for_checksum_smoke,
+    )
+}
+
+fn test_net_endpoint_socket_exports() -> bool {
+    run_check(
+        "net_endpoint_socket_owned_socket_raii_smoke",
+        rany_os::qemu_tests::net_endpoint_socket_owned_socket_raii_smoke,
+    )
+}
+
+fn test_net_endpoint_tcb_exports() -> bool {
+    run_check(
+        "net_endpoint_tcb_tcp_connection_state_smoke",
+        rany_os::qemu_tests::net_endpoint_tcb_tcp_connection_state_smoke,
+    ) && run_check(
+        "net_endpoint_tcb_tcp_control_block_entry_smoke",
+        rany_os::qemu_tests::net_endpoint_tcb_tcp_control_block_entry_smoke,
+    ) && run_check(
+        "net_endpoint_tcb_tcp_flags_smoke",
+        rany_os::qemu_tests::net_endpoint_tcb_tcp_flags_smoke,
+    )
+}
+
+fn test_net_endpoint_core_exports() -> bool {
+    run_check(
+        "net_endpoint_core_accepted_connection_smoke",
+        rany_os::qemu_tests::net_endpoint_core_accepted_connection_smoke,
+    ) && run_check(
+        "net_endpoint_core_socket_new_with_fd_smoke",
+        rany_os::qemu_tests::net_endpoint_core_socket_new_with_fd_smoke,
+    ) && run_check(
+        "net_endpoint_core_socket_accept_empty_queue_smoke",
+        rany_os::qemu_tests::net_endpoint_core_socket_accept_empty_queue_smoke,
+    ) && run_check(
+        "net_endpoint_core_socket_accept_with_connection_smoke",
+        rany_os::qemu_tests::net_endpoint_core_socket_accept_with_connection_smoke,
+    ) && run_check(
+        "net_endpoint_core_accept_backlog_limit_smoke",
+        rany_os::qemu_tests::net_endpoint_core_accept_backlog_limit_smoke,
+    )
+}
+
+fn test_net_endpoint_types_exports() -> bool {
+    run_check(
+        "net_endpoint_types_socket_fd_smoke",
+        rany_os::qemu_tests::net_endpoint_types_socket_fd_smoke,
+    ) && run_check(
+        "net_endpoint_types_socket_addr_smoke",
+        rany_os::qemu_tests::net_endpoint_types_socket_addr_smoke,
+    )
+}
+
+fn test_net_endpoint_window_scale_exports() -> bool {
+    run_check(
+        "net_endpoint_window_scale_disabled_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_disabled_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_enabled_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_enabled_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_advertised_window_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_advertised_window_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_option_builder_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_option_builder_smoke,
+    ) && run_check(
+        "net_endpoint_window_scale_option_parser_smoke",
+        rany_os::qemu_tests::net_endpoint_window_scale_option_parser_smoke,
+    )
+}
+
+// END re-added local suite groups after origin/master rebase
 
 fn test_kernel_integration_exports() -> bool {
     rany_os::qemu_tests::kernel_async_swapout_sim_smoke()
