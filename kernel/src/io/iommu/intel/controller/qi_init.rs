@@ -29,11 +29,20 @@ impl IommuController {
     /// command queue is present.
     fn write_reg_or_submit_invalidation(&self, reg: u64, value: u64) {
         if let Some(ref cq) = self.command_queue {
-            let _ =
-                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+            let _ = self.execute_sync_command(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
         } else {
             self.write64(reg, value);
         }
+    }
+
+    pub(crate) fn execute_sync_command(&self, kind: crate::io::iommu::cmdqueue::IommuCommandKind) -> Result<(), ()> {
+        if let Some(ref cq) = self.command_queue {
+            return cq.submit_sync_with_worker(kind, |k| {
+                use crate::io::iommu::intel::controller::dma::DomainManager;
+                self.handle_command_queue_entry(k)
+            });
+        }
+        Err(())
     }
 
     fn process_command_queue_once(&self) {

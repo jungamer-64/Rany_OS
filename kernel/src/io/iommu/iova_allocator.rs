@@ -353,12 +353,23 @@ impl IovaAllocator {
     }
 
     /// Allocate within a limit (e.g. 32-bit address space)
-    pub fn allocate_with_limit(&self, _size: u64, granularity: IovaGranularity, limit: u64) -> Option<u64> {
-        // NOTE: We currently ignore 'size' assuming it matches granularity, consistent with allocate()
-        match granularity {
-            IovaGranularity::Page4K => self.inner.allocate_4k_below(limit),
-            IovaGranularity::Page2M => self.inner.allocate_2m_below(limit),
-            IovaGranularity::Page1G => self.inner.allocate_1g_below(limit),
+    pub fn allocate_with_limit(&self, size: u64, granularity: IovaGranularity, limit: u64) -> Option<u64> {
+        if size > granularity.size_bytes() {
+            // Multi-page: use contiguous allocator with limit check
+            let addr = self.inner.allocate_contiguous(size, granularity.size_bytes())?;
+            if addr.checked_add(size)? <= limit {
+                Some(addr)
+            } else {
+                // Over limit — free and fail
+                let _ = self.inner.free_range_immediate(addr, size);
+                None
+            }
+        } else {
+            match granularity {
+                IovaGranularity::Page4K => self.inner.allocate_4k_below(limit),
+                IovaGranularity::Page2M => self.inner.allocate_2m_below(limit),
+                IovaGranularity::Page1G => self.inner.allocate_1g_below(limit),
+            }
         }
     }
 

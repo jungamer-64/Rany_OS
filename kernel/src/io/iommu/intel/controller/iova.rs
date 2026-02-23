@@ -135,6 +135,7 @@ impl IovaManager for IommuController {
 
         crate::io::log::early_print("[IOMMU] allocate_iova_masked: calling allocate_with_limit\n");
         let res = alloc.allocate_with_limit(size, IovaGranularity::Page4K, mask);
+        crate::io::log::early_print("[IOMMU] allocate_iova_masked: allocate_with_limit returned\n");
         if res.is_none() {
             crate::io::log::early_print("[IOMMU] allocate_iova_masked: allocation returned None (OOM)\n");
             // Print heap diagnostic snapshot
