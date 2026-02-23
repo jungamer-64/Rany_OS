@@ -2,7 +2,7 @@ use super::*;
 
 
 pub mod variant_tests;
-pub use variant_tests::*;
+pub use self::variant_tests::*;
 impl Default for CongestionControllerVariant {
     fn default() -> Self {
         Self::NewReno(CongestionController::new())

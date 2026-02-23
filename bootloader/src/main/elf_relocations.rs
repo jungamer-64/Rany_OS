@@ -1,6 +1,7 @@
 use super::*;
 
 /// Process all ELF RELA relocations
+#[path = "elf_relocations/cr3_jump.rs"]
 mod cr3_jump;
 pub use cr3_jump::*;
 pub(crate) fn process_elf_relocations(

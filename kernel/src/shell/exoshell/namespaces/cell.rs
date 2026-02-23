@@ -6,6 +6,8 @@ use alloc::format;
 use alloc::string::{String, ToString};
 
 use crate::driver_cell;
+#[cfg(feature = "qemu-test-export")]
+use crate::driver_cell::fault::{self, TestFaultKind};
 use crate::driver_cell::hot_swap;
 use crate::driver_cell::lifecycle;
 use crate::driver_cell::DriverCellId;
@@ -25,6 +27,8 @@ impl CellNamespace {
             "update" => Self::dispatch_update(args),
             "rollback" => Self::dispatch_rollback(args),
             "commit" => Self::dispatch_commit(args),
+            #[cfg(feature = "qemu-test-export")]
+            "debug_fault" => Self::dispatch_debug_fault(args),
             "reload" => ExoValue::Error(String::from(
                 "reload() is not implemented for DriverCell API; use update()/rollback()/commit()",
             )),
@@ -34,7 +38,8 @@ impl CellNamespace {
                     method: String::from(method),
                 }
                 .to_string()
-                    + "\nValid methods: list, stats, health, unload, update, rollback, commit",
+                    + "\nValid methods: "
+                    + valid_methods_help(),
             ),
         }
     }
@@ -239,6 +244,69 @@ impl CellNamespace {
             Err(e) => ExoValue::Error(format!("Commit failed: {}", e)),
         }
     }
+
+    #[cfg(feature = "qemu-test-export")]
+    fn dispatch_debug_fault(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let id = match parse_driver_cell_id(args) {
+            Ok(id) => id,
+            Err(e) => return ExoValue::Error(e),
+        };
+
+        let kind = match args.get(1) {
+            None => TestFaultKind::Panic,
+            Some(ExoValue::String(s)) => match TestFaultKind::parse(s.as_ref()) {
+                Some(k) => k,
+                None => {
+                    return ExoValue::Error(String::from(
+                        "Usage: cell.debug_fault(driver_cell_id, \"panic\"|\"timeout\"|\"other\")",
+                    ))
+                }
+            },
+            _ => {
+                return ExoValue::Error(String::from(
+                    "Usage: cell.debug_fault(driver_cell_id, \"panic\"|\"timeout\"|\"other\")",
+                ))
+            }
+        };
+
+        match fault::inject_test_fault(id, kind) {
+            Ok(outcome) => {
+                // Trigger the same polling path immediately to make manual QEMU observation deterministic.
+                crate::loader::live_update::poll_pending_updates();
+                hot_swap::poll_validation_windows();
+
+                let last_health_failure = outcome
+                    .last_health_failure_after
+                    .clone()
+                    .unwrap_or_else(|| String::from("-"));
+
+                ExoValue::String(
+                    format!(
+                        "Injected {} fault into DriverCell {} => action={} state={} hot_swap={} consecutive_faults={} last_health_failure={}",
+                        outcome.requested_kind,
+                        id.as_u64(),
+                        &outcome.action,
+                        outcome.driver_cell_state_after,
+                        outcome.hot_swap_state_after,
+                        outcome.consecutive_faults_after,
+                        last_health_failure
+                    )
+                    .into(),
+                )
+            }
+            Err(e) => ExoValue::Error(format!("Failed to inject debug fault: {}", e)),
+        }
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+const fn valid_methods_help() -> &'static str {
+    "list, stats, health, unload, update, rollback, commit, debug_fault"
+}
+
+#[cfg(not(feature = "qemu-test-export"))]
+const fn valid_methods_help() -> &'static str {
+    "list, stats, health, unload, update, rollback, commit"
 }
 
 fn parse_driver_cell_id(args: &[ExoValue<'static>]) -> Result<DriverCellId, String> {

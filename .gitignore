@@ -14,6 +14,7 @@
 *.log
 *.txt
 *.json
+!x86_64-exorust-cell.json
 /tmp
 /kernel.map
 

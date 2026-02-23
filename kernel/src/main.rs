@@ -6,6 +6,22 @@
 #![feature(alloc_error_handler)]
 #![allow(unsafe_op_in_unsafe_fn)] // Transitional: allows unsafe calls in unsafe fn without block
 
+#[cfg(not(feature = "bench"))]
+macro_rules! println {
+    () => (print!("\n"));
+    ($($arg:tt)*) => ({
+        crate::io::log::print(format_args!("{}\n", format_args!($($arg)*)));
+    });
+}
+
+#[cfg(not(feature = "bench"))]
+macro_rules! eprintln {
+    () => (eprint!("\n"));
+    ($($arg:tt)*) => ({
+        crate::io::log::print(format_args!("{}\n", format_args!($($arg)*)));
+    });
+}
+
 // Include the actual kernel logic only when NOT benchmarking
 #[cfg(not(feature = "bench"))]
 include!("kernel_content.rs");
