@@ -57,6 +57,8 @@ pub mod mdns;
 
 // Integrated network stack
 pub mod stack;
+// Multi-interface manager (transitional groundwork for multi-NIC migration)
+pub mod manager;
 
 // VirtIO-Net driver bridge
 pub mod driver_bridge;
@@ -189,12 +191,24 @@ pub use stack::{
     init_default as init_stack_default, receive, send_tcp, send_udp, stack as global_stack,
 };
 
+// Re-export Network Manager (multi-NIC groundwork)
+#[allow(unused_imports)]
+pub use manager::{
+    Ipv4Route, Ipv6Route, NetIfId, NetworkInterfaceInfo, NetworkManager, RouteFlags,
+    add_ipv4_route, add_ipv6_route, del_ipv4_route, del_ipv6_route, get_interface,
+    init_network_manager, list_interfaces, list_ipv4_routes, list_ipv6_routes,
+    lookup_if_by_virtio_index, lookup_ipv4_route, lookup_ipv6_route, network_manager,
+    register_interface, register_virtio_port, set_default_route_v4, set_default_route_v6,
+    set_interface_config, set_interface_down, set_interface_up,
+};
+
 // Re-export VirtIO-Net driver bridge
 #[allow(unused_imports)]
 pub use driver_bridge::{
-    BridgeStats, get_bridge_stats, get_real_arp_cache, get_real_config, get_real_stats,
-    init_bridge as init_driver_bridge, is_initialized as driver_bridge_initialized,
-    send_real_icmp_echo,
+    BridgeInterfaceStats, BridgeStats, get_bridge_stats, get_bridge_stats_for_interface,
+    get_real_arp_cache, get_real_config, get_real_config_for_interface, get_real_stats,
+    get_real_stats_for_interface, init_bridge as init_driver_bridge,
+    is_initialized as driver_bridge_initialized, list_bridge_stats, send_real_icmp_echo,
 };
 
 // VirtIO Netドライバはio/virtio/net.rsにある

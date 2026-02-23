@@ -13,10 +13,14 @@ use super::ethernet::MacAddress;
 use super::ipv4::{Ipv4Address, Ipv4Config};
 use super::optimization::{BatchConfig, BatchProcessor};
 use super::stack::{self, NetworkConfig, NetworkStack};
-use crate::io::virtio::{VirtioNetDevice, with_virtio_net};
+use crate::io::virtio::{
+    VirtioNetDevice, bind_virtio_net_interface, with_virtio_net, with_virtio_net_at_index,
+};
 use crate::sync::PoisonLock;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use spin::RwLock;
 
 extern crate alloc;
 
@@ -44,6 +48,65 @@ static BATCH_PROCESSOR: BatchProcessor = BatchProcessor::new(BatchConfig {
     adaptive_batching: true,
 });
 
+/// Per-interface bridge stats (transitional; stack path is still single-instance).
+static BRIDGE_IF_STATS: RwLock<BTreeMap<super::NetIfId, BridgeInterfaceStats>> =
+    RwLock::new(BTreeMap::new());
+
+/// Primary interface used by legacy bridge wrappers.
+static PRIMARY_BRIDGE_IF: RwLock<Option<super::NetIfId>> = RwLock::new(None);
+
+fn ensure_bridge_if_state(if_id: super::NetIfId, virtio_index: Option<u8>) {
+    let mut stats = BRIDGE_IF_STATS.write();
+    let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
+        if_id,
+        tx_packets: 0,
+        rx_packets: 0,
+        initialized: false,
+        virtio_index,
+    });
+    if entry.virtio_index.is_none() {
+        entry.virtio_index = virtio_index;
+    }
+    entry.initialized = true;
+}
+
+fn record_bridge_if_tx(if_id: super::NetIfId) {
+    let mut stats = BRIDGE_IF_STATS.write();
+    let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
+        if_id,
+        tx_packets: 0,
+        rx_packets: 0,
+        initialized: true,
+        virtio_index: None,
+    });
+    entry.tx_packets = entry.tx_packets.saturating_add(1);
+    entry.initialized = true;
+}
+
+fn record_bridge_if_rx(if_id: super::NetIfId) {
+    let mut stats = BRIDGE_IF_STATS.write();
+    let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
+        if_id,
+        tx_packets: 0,
+        rx_packets: 0,
+        initialized: true,
+        virtio_index: None,
+    });
+    entry.rx_packets = entry.rx_packets.saturating_add(1);
+    entry.initialized = true;
+}
+
+fn primary_bridge_if() -> Option<super::NetIfId> {
+    *PRIMARY_BRIDGE_IF.read()
+}
+
+fn set_primary_bridge_if(if_id: super::NetIfId) {
+    let mut primary = PRIMARY_BRIDGE_IF.write();
+    if primary.is_none() {
+        *primary = Some(if_id);
+    }
+}
+
 // ============================================================================
 // Transmit Bridge
 // ============================================================================
@@ -51,6 +114,10 @@ static BATCH_PROCESSOR: BatchProcessor = BatchProcessor::new(BatchConfig {
 /// Transmit callback for NetworkStack
 /// This is called when NetworkStack needs to send a packet
 fn virtio_transmit(data: &[u8]) -> bool {
+    if let Some(if_id) = primary_bridge_if() {
+        return send_packet_on_interface(if_id, data);
+    }
+
     // VirtIO-Netデバイスが利用可能か確認
     let result = with_virtio_net(|device| {
         // 簡単な同期送信を試みる
@@ -61,6 +128,9 @@ fn virtio_transmit(data: &[u8]) -> bool {
     match result {
         Some(Ok(())) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+            if let Some(if_id) = primary_bridge_if() {
+                record_bridge_if_tx(if_id);
+            }
             true
         }
         Some(Err(_)) => {
@@ -109,6 +179,37 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
     }
 }
 
+fn lookup_virtio_index_for_interface(if_id: super::NetIfId) -> Option<u8> {
+    super::manager::get_interface(if_id)
+        .ok()
+        .flatten()
+        .and_then(|iface| iface.virtio_index)
+}
+
+fn transmit_packet_for_interface(if_id: super::NetIfId, data: &[u8]) -> Result<(), &'static str> {
+    let virtio_index =
+        lookup_virtio_index_for_interface(if_id).ok_or("VirtIO mapping not found for interface")?;
+    match with_virtio_net_at_index(virtio_index, |device| transmit_packet(device, data)) {
+        Some(result) => result,
+        None => Err("VirtIO-Net device not initialized for interface"),
+    }
+}
+
+/// Explicit TX submit on a logical interface (transitional helper).
+pub fn send_packet_on_interface(if_id: super::NetIfId, data: &[u8]) -> bool {
+    match transmit_packet_for_interface(if_id, data) {
+        Ok(()) => {
+            TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+            record_bridge_if_tx(if_id);
+            true
+        }
+        Err(_) => {
+            log::info!("[NET BRIDGE] Interface transmit error if_id={}", if_id.0);
+            false
+        }
+    }
+}
+
 // ============================================================================
 // Receive Bridge
 // ============================================================================
@@ -122,6 +223,11 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
 
 /// Process a completed RX buffer without copying: use the provided PacketRef (zero-copy)
 pub fn process_received_packet_zero_copy(mut packet: crate::net::PacketRef, header_size: usize, payload_len: usize) {
+    if let Some(if_id) = primary_bridge_if() {
+        process_received_packet_zero_copy_for_interface(if_id, packet, header_size, payload_len);
+        return;
+    }
+
     RX_PACKETS.fetch_add(1, Ordering::Relaxed);
 
     // Ensure view length covers header + payload
@@ -133,6 +239,29 @@ pub fn process_received_packet_zero_copy(mut packet: crate::net::PacketRef, head
     }
 
     // Enqueue to batch processor (zero-copy)
+    if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
+        stack::receive_batch(batch);
+    }
+}
+
+/// Process a completed RX buffer for a specific logical interface (transitional API).
+///
+/// This updates per-interface bridge stats while reusing the existing single global stack path.
+pub fn process_received_packet_zero_copy_for_interface(
+    if_id: super::NetIfId,
+    mut packet: crate::net::PacketRef,
+    header_size: usize,
+    payload_len: usize,
+) {
+    ensure_bridge_if_state(if_id, None);
+    RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+    record_bridge_if_rx(if_id);
+
+    packet.set_len(header_size + payload_len);
+    if header_size > 0 {
+        packet.advance(header_size);
+    }
+
     if let Some(batch) = BATCH_PROCESSOR.enqueue(packet) {
         stack::receive_batch(batch);
     }
@@ -184,6 +313,19 @@ pub fn init_bridge() -> Result<(), &'static str> {
 
     // Initialize the stack
     stack::init(config);
+
+    // Transitional multi-NIC groundwork:
+    // register the legacy bridge path as primary vnet0 in NetworkManager.
+    super::manager::init_network_manager();
+    match super::manager::register_virtio_port(0, Some(config)) {
+        Ok(if_id) => {
+            ensure_bridge_if_state(if_id, Some(0));
+            set_primary_bridge_if(if_id);
+        }
+        Err(err) => {
+            log::warn!("[NET BRIDGE] failed to register primary vnet0 in NetworkManager: {:?}", err);
+        }
+    }
 
     // Set transmit callback
     match stack::stack().lock() {
@@ -245,6 +387,47 @@ pub struct BridgeStats {
     pub initialized: bool,
 }
 
+/// Bridge statistics for a specific logical interface.
+#[derive(Debug, Clone, Copy)]
+pub struct BridgeInterfaceStats {
+    pub if_id: super::NetIfId,
+    pub tx_packets: u64,
+    pub rx_packets: u64,
+    pub initialized: bool,
+    pub virtio_index: Option<u8>,
+}
+
+/// Register (or reuse) a VirtIO-backed interface in the bridge/manager mapping.
+///
+/// This is an opt-in helper for multi-NIC wiring. It does not reconfigure `system_impl`.
+pub fn register_virtio_port(
+    virtio_index: u8,
+    initial_config: Option<NetworkConfig>,
+) -> Result<super::NetIfId, &'static str> {
+    super::manager::init_network_manager();
+    let if_id = super::manager::register_virtio_port(virtio_index, initial_config)
+        .map_err(|_| "failed to register virtio port")?;
+    ensure_bridge_if_state(if_id, Some(virtio_index));
+    let _ = bind_virtio_net_interface(virtio_index, if_id);
+    set_primary_bridge_if(if_id);
+    Ok(if_id)
+}
+
+/// Look up the logical interface id mapped to a VirtIO index.
+pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<super::NetIfId> {
+    super::manager::lookup_if_by_virtio_index(virtio_index)
+}
+
+/// Per-interface bridge stats snapshot.
+pub fn get_bridge_stats_for_interface(if_id: super::NetIfId) -> Option<BridgeInterfaceStats> {
+    BRIDGE_IF_STATS.read().get(&if_id).copied()
+}
+
+/// List all per-interface bridge stats snapshots.
+pub fn list_bridge_stats() -> Vec<BridgeInterfaceStats> {
+    BRIDGE_IF_STATS.read().values().copied().collect()
+}
+
 /// Get real network configuration from NetworkStack
 pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
     match stack::stack().lock() {
@@ -270,6 +453,17 @@ pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
     }
 }
 
+/// Get real network configuration for a specific interface.
+///
+/// Transitional behavior: returns the single global stack config only for the
+/// current primary bridge interface.
+pub fn get_real_config_for_interface(if_id: super::NetIfId) -> Option<super::NetworkConfigSnapshot> {
+    if primary_bridge_if() != Some(if_id) {
+        return None;
+    }
+    get_real_config()
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -277,7 +471,46 @@ mod tests {
     use crate::net::{mempool, stack};
     use crate::net::ipv4::{Ipv4PacketMut, Ipv4Address, IpProtocol};
     use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr};
+    use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
+
+    struct BridgeStateGuard {
+        prev_if_stats: BTreeMap<super::super::NetIfId, BridgeInterfaceStats>,
+        prev_primary_if: Option<super::super::NetIfId>,
+        prev_manager: Option<crate::net::manager::NetworkManager>,
+    }
+
+    impl BridgeStateGuard {
+        fn new() -> Self {
+            let prev_if_stats = core::mem::take(&mut *BRIDGE_IF_STATS.write());
+            let prev_primary_if = {
+                let mut g = PRIMARY_BRIDGE_IF.write();
+                let v = *g;
+                *g = None;
+                v
+            };
+            let prev_manager = {
+                let mut guard = crate::net::manager::NETWORK_MANAGER
+                    .lock_for_init("[TEST][NET BRIDGE] manager snapshot");
+                core::mem::take(&mut *guard)
+            };
+            Self {
+                prev_if_stats,
+                prev_primary_if,
+                prev_manager,
+            }
+        }
+    }
+
+    impl Drop for BridgeStateGuard {
+        fn drop(&mut self) {
+            *BRIDGE_IF_STATS.write() = core::mem::take(&mut self.prev_if_stats);
+            *PRIMARY_BRIDGE_IF.write() = self.prev_primary_if.take();
+            let mut guard = crate::net::manager::NETWORK_MANAGER
+                .lock_for_init("[TEST][NET BRIDGE] manager restore");
+            *guard = self.prev_manager.take();
+        }
+    }
 
     #[test_case]
     fn test_zero_copy_via_bridge() {
@@ -485,6 +718,47 @@ mod tests {
             panic!("TCB lock poisoned in test");
         }
     }
+
+    #[test_case]
+    fn test_per_interface_bridge_stats_are_separated() {
+        let _guard = BridgeStateGuard::new();
+        let if0 = super::super::NetIfId(10);
+        let if1 = super::super::NetIfId(11);
+
+        ensure_bridge_if_state(if0, Some(0));
+        ensure_bridge_if_state(if1, Some(1));
+        record_bridge_if_rx(if0);
+        record_bridge_if_rx(if0);
+        record_bridge_if_tx(if1);
+
+        let s0 = get_bridge_stats_for_interface(if0).expect("if0 stats");
+        let s1 = get_bridge_stats_for_interface(if1).expect("if1 stats");
+        assert_eq!(s0.rx_packets, 2);
+        assert_eq!(s0.tx_packets, 0);
+        assert_eq!(s1.rx_packets, 0);
+        assert_eq!(s1.tx_packets, 1);
+        assert_eq!(list_bridge_stats().len(), 2);
+    }
+
+    #[test_case]
+    fn test_register_virtio_port_is_idempotent_and_records_mapping() {
+        let _guard = BridgeStateGuard::new();
+
+        let if0 = register_virtio_port(0, None).expect("register vnet0");
+        let if0_again = register_virtio_port(0, None).expect("register vnet0 again");
+        let if1 = register_virtio_port(1, None).expect("register vnet1");
+
+        assert_eq!(if0, if0_again);
+        assert_ne!(if0, if1);
+        assert_eq!(lookup_if_by_virtio_index(0), Some(if0));
+        assert_eq!(lookup_if_by_virtio_index(1), Some(if1));
+
+        let s0 = get_bridge_stats_for_interface(if0).expect("if0 stats");
+        let s1 = get_bridge_stats_for_interface(if1).expect("if1 stats");
+        assert_eq!(s0.virtio_index, Some(0));
+        assert_eq!(s1.virtio_index, Some(1));
+        assert_eq!(list_bridge_stats().len(), 2);
+    }
 }
 
 /// Get real network statistics from NetworkStack
@@ -512,6 +786,17 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
             None
         }
     }
+}
+
+/// Get real network statistics for a specific interface.
+///
+/// Transitional behavior: returns the single global stack stats only for the
+/// current primary bridge interface.
+pub fn get_real_stats_for_interface(if_id: super::NetIfId) -> Option<super::NetworkStatsSnapshot> {
+    if primary_bridge_if() != Some(if_id) {
+        return None;
+    }
+    get_real_stats()
 }
 
 /// Send ICMP echo via real NetworkStack

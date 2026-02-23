@@ -54,8 +54,11 @@ pub use virtio_driver::transport::{
 pub use net::{
     NetVirtQueue, VirtioNetConfig, VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VringDesc,
     VirtioNetOps, VIRTIO_NET_IOCTL_RX, VIRTIO_NET_IOCTL_TX, features as net_features,
-    get_poll_handler, handle_virtio_net_interrupt, init_virtio_net, init_virtio_net_for_device,
-    init_virtio_net_with_transport, register_virtio_net_with_io_scheduler, with_virtio_net,
+    bind_virtio_net_interface, for_each_virtio_net, get_poll_handler, handle_all_virtio_net_interrupts,
+    handle_virtio_net_interrupt, handle_virtio_net_interrupt_for_index, init_virtio_net,
+    init_virtio_net_at_index, init_virtio_net_for_device, init_virtio_net_for_device_at_index,
+    init_virtio_net_with_transport, init_virtio_net_with_transport_at_index,
+    register_virtio_net_with_io_scheduler, with_virtio_net, with_virtio_net_at_index,
 };
 
 // Re-exports for VirtIO-Blk

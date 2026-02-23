@@ -92,6 +92,10 @@ pub struct VirtioNetDevice {
     transport: Box<dyn VirtioTransport>,
     /// 設定
     config: VirtioNetConfig,
+    /// VirtIO-Net device index (multi-NIC support)
+    pub(crate) virtio_index: u8,
+    /// Bound logical network interface id (assigned by NetworkManager)
+    pub(crate) net_if_id: Option<crate::net::NetIfId>,
     /// Optional IOMMU device identifier for device-scoped mappings
     iommu_device_id: Option<IommuDeviceId>,
     /// 受信キュー
@@ -125,11 +129,25 @@ impl VirtioNetDevice {
     /// * `transport` - 初期化済みの VirtioTransport 実装（MMIO または PCI）
     ///   トランスポートはmagic/version検証を通過している必要がある
     pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_device(transport, None)
+        Self::new_with_index_and_device(0, transport, None)
     }
 
     /// 新しいデバイスを作成（IOMMUデバイスIDを指定）
     pub fn new_with_device(
+        transport: Box<dyn VirtioTransport>,
+        iommu_device_id: Option<IommuDeviceId>,
+    ) -> Self {
+        Self::new_with_index_and_device(0, transport, iommu_device_id)
+    }
+
+    /// 新しいデバイスを作成（デバイス index 指定）
+    pub fn new_at_index(index: u8, transport: Box<dyn VirtioTransport>) -> Self {
+        Self::new_with_index_and_device(index, transport, None)
+    }
+
+    /// 新しいデバイスを作成（デバイス index + IOMMUデバイスID指定）
+    pub fn new_with_index_and_device(
+        index: u8,
         transport: Box<dyn VirtioTransport>,
         iommu_device_id: Option<IommuDeviceId>,
     ) -> Self {
@@ -140,6 +158,8 @@ impl VirtioNetDevice {
                 max_queues: 1,
                 mtu: 1500,
             },
+            virtio_index: index,
+            net_if_id: None,
             iommu_device_id,
             rx_queue: None,
             tx_queue: None,
@@ -153,6 +173,16 @@ impl VirtioNetDevice {
             tx_packetrefs: Mutex::new(BTreeMap::new()),
             tx_inflight: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Bind this VirtIO device to a logical network interface identifier.
+    pub fn set_net_if_id(&mut self, if_id: crate::net::NetIfId) {
+        self.net_if_id = Some(if_id);
+    }
+
+    /// Return the logical network interface identifier, if assigned.
+    pub fn net_if_id(&self) -> Option<crate::net::NetIfId> {
+        self.net_if_id
     }
 
     /// Validate strict IOMMU policy for VirtIO-Net.

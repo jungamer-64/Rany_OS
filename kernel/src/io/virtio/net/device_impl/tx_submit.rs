@@ -275,7 +275,7 @@ impl VirtioNetDevice {
         // Interrupt-Wakerブリッジに通知（設計書 4.2）
         // RX/TXで待機中のFutureを起床
         crate::task::interrupt_waker::wake_from_interrupt(
-            crate::task::interrupt_waker::InterruptSource::VirtioNet(0),
+            crate::task::interrupt_waker::InterruptSource::VirtioNet(self.virtio_index),
         );
     }
 
@@ -402,7 +402,7 @@ impl VirtioNetDevice {
             self.rx_packets.fetch_add(1, Ordering::Relaxed);
 
             // IoScheduler path: completion belongs to a pending IoRequest.
-            if let Some(handler) = get_poll_handler(0) {
+            if let Some(handler) = get_poll_handler(self.virtio_index) {
                 if let Some((io_id, requested_bytes)) = handler.take_pending_rx(desc_idx) {
                     let result = if let Some(completion_len) = rx_queue.take_completion(desc_idx) {
                         let payload_len =
@@ -419,7 +419,9 @@ impl VirtioNetDevice {
                             crate::io::io_scheduler::IoError::DeviceError,
                         )
                     };
-                    let device_id = crate::io::io_scheduler::DeviceId::VirtioNet { index: 0 };
+                    let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
+                        index: self.virtio_index,
+                    };
                     let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
                     bridge.handle_interrupt(device_id, &[(io_id, result)]);
                     continue;
@@ -445,8 +447,24 @@ impl VirtioNetDevice {
         let payload_len = (len as usize).saturating_sub(header_size);
         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET][RX-COMP] desc={} len={} payload_len={} (packetref)\n", desc_idx, len, payload_len));
 
-        // Pass PacketRef to bridge for zero-copy processing
-        crate::net::driver_bridge::process_received_packet_zero_copy(inflight.packet, header_size, payload_len);
+        // Pass PacketRef to bridge for zero-copy processing (prefer interface-aware path).
+        if let Some(if_id) = self
+            .net_if_id()
+            .or_else(|| crate::net::driver_bridge::lookup_if_by_virtio_index(self.virtio_index))
+        {
+            crate::net::driver_bridge::process_received_packet_zero_copy_for_interface(
+                if_id,
+                inflight.packet,
+                header_size,
+                payload_len,
+            );
+        } else {
+            crate::net::driver_bridge::process_received_packet_zero_copy(
+                inflight.packet,
+                header_size,
+                payload_len,
+            );
+        }
 
         // Re-post a new PacketRef buffer to the queue so we keep a steady supply
         match self.try_post_rx_packet(rx_queue) {
@@ -497,7 +515,19 @@ impl VirtioNetDevice {
         if let Some(mut packet) = crate::net::mempool::alloc_packet() {
             let len_to_copy = core::cmp::min(actual_len, packet.capacity());
             packet.data_mut()[..len_to_copy].copy_from_slice(&payload_slice[..len_to_copy]);
-            crate::net::driver_bridge::process_received_packet_zero_copy(packet, 0, len_to_copy);
+            if let Some(if_id) = self
+                .net_if_id()
+                .or_else(|| crate::net::driver_bridge::lookup_if_by_virtio_index(self.virtio_index))
+            {
+                crate::net::driver_bridge::process_received_packet_zero_copy_for_interface(
+                    if_id,
+                    packet,
+                    0,
+                    len_to_copy,
+                );
+            } else {
+                crate::net::driver_bridge::process_received_packet_zero_copy(packet, 0, len_to_copy);
+            }
         } else {
             #[cfg(debug_assertions)]
             {
@@ -524,7 +554,7 @@ impl VirtioNetDevice {
             log::info!("[VIRTIO-NET][TX-COMP] desc={} len={}", desc_idx, len);
 
             // IoScheduler path: completion belongs to a pending IoRequest.
-            if let Some(handler) = get_poll_handler(0) {
+            if let Some(handler) = get_poll_handler(self.virtio_index) {
                 if let Some((io_id, requested_bytes)) = handler.take_pending_tx(desc_idx) {
                     let result = if tx_queue.take_completion(desc_idx).is_some() {
                         crate::io::io_scheduler::IoResult::Success(requested_bytes)
@@ -537,7 +567,9 @@ impl VirtioNetDevice {
                             crate::io::io_scheduler::IoError::DeviceError,
                         )
                     };
-                    let device_id = crate::io::io_scheduler::DeviceId::VirtioNet { index: 0 };
+                    let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
+                        index: self.virtio_index,
+                    };
                     let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
                     bridge.handle_interrupt(device_id, &[(io_id, result)]);
                     continue;
@@ -611,6 +643,87 @@ mod tests {
         fn transport_type(&self) -> TransportType { TransportType::Mmio }
     }
 
+    fn run_irq_path_completes_scheduler_pending_tx_and_rx(index: u8) {
+        crate::io::io_scheduler::init_io_scheduler();
+        clear_poll_handler_registry_for_tests();
+        clear_virtio_net_devices_for_tests();
+
+        assert!(crate::io::virtio::init_virtio_net_with_transport_at_index(
+            index,
+            Box::new(NoopTransport),
+            None
+        )
+        .is_ok());
+
+        register_virtio_net_with_io_scheduler(index);
+        let handler = get_poll_handler(index).expect("registered poll handler");
+
+        let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
+        let device_id = crate::io::io_scheduler::DeviceId::VirtioNet { index };
+
+        // TX completion with scheduler pending
+        let tx_io_id = IoRequestId(3001);
+        let tx_desc = crate::io::virtio::with_virtio_net_at_index(index, |device| {
+            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let desc = tx_queue
+                .add_tx_buffer_zero_copy(0x8000, 64)
+                .expect("tx submit");
+            unsafe {
+                let used = &mut *tx_queue.used_ring.as_ptr();
+                let slot = (used.idx % tx_queue.size) as usize;
+                used.ring[slot] = VringUsedElem {
+                    id: desc as u32,
+                    len: 64,
+                };
+                used.idx = used.idx.wrapping_add(1);
+            }
+            desc
+        })
+        .expect("device");
+        handler.add_pending_tx(tx_io_id, tx_desc, 64);
+        bridge.register_pending(device_id, tx_io_id);
+
+        crate::io::virtio::with_virtio_net_at_index(index, |device| {
+            device.process_tx_completions();
+        })
+        .expect("device");
+
+        // RX completion with scheduler pending
+        let rx_io_id = IoRequestId(3002);
+        let rx_buf_len = VirtioNetHeader::SIZE + 96;
+        let rx_desc = crate::io::virtio::with_virtio_net_at_index(index, |device| {
+            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+            let desc = rx_queue
+                .add_rx_buffer_zero_copy(0x9000, rx_buf_len)
+                .expect("rx submit");
+            unsafe {
+                let used = &mut *rx_queue.used_ring.as_ptr();
+                let slot = (used.idx % rx_queue.size) as usize;
+                used.ring[slot] = VringUsedElem {
+                    id: desc as u32,
+                    len: (VirtioNetHeader::SIZE + 40) as u32,
+                };
+                used.idx = used.idx.wrapping_add(1);
+            }
+            desc
+        })
+        .expect("device");
+        handler.add_pending_rx(rx_io_id, rx_desc, rx_buf_len);
+        bridge.register_pending(device_id, rx_io_id);
+
+        crate::io::virtio::with_virtio_net_at_index(index, |device| {
+            device.process_rx_completions();
+        })
+        .expect("device");
+
+        let processed = crate::io::io_scheduler::process_deferred_completions_local();
+        assert!(processed >= 2, "expected both TX and RX deferred completions");
+        assert_eq!(bridge.pending_count(device_id), 0);
+
+        clear_virtio_net_devices_for_tests();
+        clear_poll_handler_registry_for_tests();
+    }
+
     #[test_case]
     fn test_complete_rx_packetref_handoff_and_repost() {
         // Ensure mempool is available for PacketRef posting
@@ -671,84 +784,11 @@ mod tests {
 
     #[test_case]
     fn test_irq_path_completes_scheduler_pending_tx_and_rx() {
-        crate::io::io_scheduler::init_io_scheduler();
-        clear_poll_handler_registry_for_tests();
-        *VIRTIO_NET_DEVICE.lock() = None;
+        run_irq_path_completes_scheduler_pending_tx_and_rx(0);
+    }
 
-        let mut dev = VirtioNetDevice::new(Box::new(NoopTransport));
-        assert!(dev.init().is_ok());
-        *VIRTIO_NET_DEVICE.lock() = Some(dev);
-
-        register_virtio_net_with_io_scheduler(0);
-        let handler = get_poll_handler(0).expect("registered poll handler");
-
-        let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
-        let device_id = crate::io::io_scheduler::DeviceId::VirtioNet { index: 0 };
-
-        // TX completion with scheduler pending
-        let tx_io_id = IoRequestId(3001);
-        let tx_desc = {
-            let guard = VIRTIO_NET_DEVICE.lock();
-            let device = guard.as_ref().expect("device");
-            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
-            let desc = tx_queue
-                .add_tx_buffer_zero_copy(0x8000, 64)
-                .expect("tx submit");
-            unsafe {
-                let used = &mut *tx_queue.used_ring.as_ptr();
-                let slot = (used.idx % tx_queue.size) as usize;
-                used.ring[slot] = VringUsedElem {
-                    id: desc as u32,
-                    len: 64,
-                };
-                used.idx = used.idx.wrapping_add(1);
-            }
-            desc
-        };
-        handler.add_pending_tx(tx_io_id, tx_desc, 64);
-        bridge.register_pending(device_id, tx_io_id);
-
-        {
-            let guard = VIRTIO_NET_DEVICE.lock();
-            let device = guard.as_ref().expect("device");
-            device.process_tx_completions();
-        }
-
-        // RX completion with scheduler pending
-        let rx_io_id = IoRequestId(3002);
-        let rx_buf_len = VirtioNetHeader::SIZE + 96;
-        let rx_desc = {
-            let guard = VIRTIO_NET_DEVICE.lock();
-            let device = guard.as_ref().expect("device");
-            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
-            let desc = rx_queue
-                .add_rx_buffer_zero_copy(0x9000, rx_buf_len)
-                .expect("rx submit");
-            unsafe {
-                let used = &mut *rx_queue.used_ring.as_ptr();
-                let slot = (used.idx % rx_queue.size) as usize;
-                used.ring[slot] = VringUsedElem {
-                    id: desc as u32,
-                    len: (VirtioNetHeader::SIZE + 40) as u32,
-                };
-                used.idx = used.idx.wrapping_add(1);
-            }
-            desc
-        };
-        handler.add_pending_rx(rx_io_id, rx_desc, rx_buf_len);
-        bridge.register_pending(device_id, rx_io_id);
-
-        {
-            let guard = VIRTIO_NET_DEVICE.lock();
-            let device = guard.as_ref().expect("device");
-            device.process_rx_completions();
-        }
-
-        let processed = crate::io::io_scheduler::process_deferred_completions_local();
-        assert!(processed >= 2, "expected both TX and RX deferred completions");
-        assert_eq!(bridge.pending_count(device_id), 0);
-
-        *VIRTIO_NET_DEVICE.lock() = None;
-        clear_poll_handler_registry_for_tests();
+    #[test_case]
+    fn test_irq_path_completes_scheduler_pending_tx_and_rx_nonzero_index() {
+        run_irq_path_completes_scheduler_pending_tx_and_rx(1);
     }
 }
