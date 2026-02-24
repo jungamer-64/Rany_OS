@@ -197,6 +197,22 @@ impl SystemIntegration {
 
         // Initialize VirtIO devices
         let virtio_devices = crate::io::pci::find_virtio_devices();
+        self.log(&alloc::format!(
+            "  Found {} virtio device(s) during PCI scan",
+            virtio_devices.len()
+        ));
+        for dev in &virtio_devices {
+            self.log(&alloc::format!(
+                "    virtio candidate {:02x}:{:02x}.{} vendor={:04x} device={:04x} class={:02x}.{:02x}",
+                dev.bdf.bus(),
+                dev.bdf.device(),
+                dev.bdf.function(),
+                dev.vendor_id.0,
+                dev.device_id.0,
+                dev.class_code.class,
+                dev.class_code.subclass,
+            ));
+        }
         for dev in virtio_devices {
             match dev.device_id.0 {
                 0x1001 | 0x1042 => self.init_virtio_blk_device(&dev),

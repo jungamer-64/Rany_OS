@@ -598,6 +598,14 @@ fn build_abi_driver(
     if vtable_ptr.is_null() {
         return Err(DriverError::InvalidState);
     }
+    if (vtable_ptr as usize) % core::mem::align_of::<AbiDriverVTable>() != 0 {
+        log::error!(
+            "[DRIVER] ABI vtable pointer is unaligned: ptr={:#x}, align={}",
+            vtable_ptr as usize,
+            core::mem::align_of::<AbiDriverVTable>()
+        );
+        return Err(DriverError::InvalidState);
+    }
 
     let vtable = unsafe { &*vtable_ptr };
 
@@ -637,6 +645,14 @@ pub(crate) fn prepare_driver_exports(
     call_init: bool,
 ) -> Result<PreparedDriverExports, DriverError> {
     if exports.is_null() {
+        return Err(DriverError::InvalidState);
+    }
+    if (exports as usize) % core::mem::align_of::<DriverExportsV1>() != 0 {
+        log::error!(
+            "[DRIVER] DriverExports pointer is unaligned: ptr={:#x}, align={}",
+            exports as usize,
+            core::mem::align_of::<DriverExportsV1>()
+        );
         return Err(DriverError::InvalidState);
     }
 

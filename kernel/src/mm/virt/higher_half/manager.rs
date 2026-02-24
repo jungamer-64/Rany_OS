@@ -65,6 +65,9 @@ pub fn init(physical_memory_offset: u64) {
     // acceptable to allow boot to continue.
     let mut mgr_guard = HIGHER_HALF_MANAGER.lock_for_init("[MM] Higher Half init");
     *mgr_guard = Some(manager);
+    // Keep the global page-table manager in sync so callers of
+    // global_map_page/global_update_flags work immediately after MM init.
+    init_page_table_manager(physical_memory_offset);
     // log::info!("Higher half kernel initialized with offset {:#x}", physical_memory_offset);
 }
 
@@ -712,4 +715,3 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

@@ -609,13 +609,14 @@ start_qemu() {
 
     # [ExoRust] VirtIO Network with IOMMU Support
     if [[ "$NETWORK" = true ]] && [[ "$NO_NETWORK" != true ]]; then
-        local netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
+        # use alternate port for TCP forward and drop UDP forward to avoid binding errors
+        local netdev_args="user,id=net0,hostfwd=tcp::5556-:80"
         local device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"
         if [[ "$iommu_active" = true ]]; then
             device_args+=",iommu_platform=on,disable-legacy=on"
         fi
         qemu_args+=(-netdev "$netdev_args" -device "$device_args")
-        done_ "[NET] VirtIO-net enabled (hostfwd: 5555->80)"
+        done_ "[NET] VirtIO-net enabled (hostfwd: 5556->80)"
     fi
 
     # NVMe Device

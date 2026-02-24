@@ -402,7 +402,9 @@ pub fn send_packet_on_interface(if_id: super::NetIfId, data: &[u8]) -> bool {
             record_bridge_if_tx(if_id);
             true
         }
-        Err(_) => {
+        Err(e) => {
+            // log the failure reason and interface
+            crate::io::log::early_print(&alloc::format!("[DEBUG] send_packet_on_interface if={} err={:?}\n", if_id.0, e));
             log::info!("[NET BRIDGE] Interface transmit error if_id={}", if_id.0);
             false
         }
@@ -647,7 +649,9 @@ pub fn init_bridge() -> Result<(), &'static str> {
         return Ok(()); // Already initialized
     }
 
-    if with_virtio_net(|_| ()).is_none() {
+    let virtio_present = with_virtio_net(|_| ()).is_some();
+    crate::io::log::early_print(&alloc::format!("[DEBUG] init_bridge virtio_present={}\n", virtio_present));
+    if !virtio_present {
         log::warn!("[NET BRIDGE] VirtIO-Net not initialized; bridge init deferred");
         return Err("VirtIO-Net device not initialized");
     }

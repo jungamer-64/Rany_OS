@@ -55,6 +55,9 @@ impl Driver for VirtioNetDriver {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
+        // debug: show current config (early_print to avoid loss on hang)
+        crate::io::log::early_print(&alloc::format!("[DEBUG] VirtioNetDriver::probe mmio_base={:?} iommu_id={:?}\n", self.mmio_base, self.iommu_id));
+
         // If specific device info is provided, initialize the device first
         if let (Some(base), Some(id)) = (self.mmio_base, self.iommu_id) {
             log::info!(target: "net", "Probing VirtIO-Net at {:#x}", base);
@@ -76,6 +79,9 @@ impl Driver for VirtioNetDriver {
         }
 
         // Initialize the bridge (connects global device to stack)
+        // debug: check presence before calling (early print)
+        let present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+        crate::io::log::early_print(&alloc::format!("[DEBUG] init_bridge: virtio present? {}\n", present));
         match super::driver_bridge::init_bridge() {
             Ok(()) => {
                 self.initialized = true;

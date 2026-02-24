@@ -15,6 +15,7 @@
 *.txt
 *.json
 !x86_64-exorust-cell.json
+!x86_64-exorust.json
 /tmp
 /kernel.map
 

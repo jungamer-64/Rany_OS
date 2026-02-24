@@ -340,8 +340,30 @@ fn parse_iommu_cmdline(boot_info: &ExoBootInfo, phys_mem_offset: u64) -> io::iom
         return config;
     }
 
-    let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
-    let slice = unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+    let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
+        boot_info.cmdline_ptr
+    } else {
+        match phys_mem_offset.checked_add(boot_info.cmdline_ptr) {
+            Some(addr) => addr,
+            None => {
+                warn!(target: "init", "Skipping IOMMU cmdline parse: address overflow");
+                return config;
+            }
+        }
+    };
+    let cmdline_len = match usize::try_from(boot_info.cmdline_len) {
+        Ok(v) => v,
+        Err(_) => {
+            warn!(
+                target: "init",
+                "Skipping IOMMU cmdline parse: invalid length {}",
+                boot_info.cmdline_len
+            );
+            return config;
+        }
+    };
+    let ptr = cmdline_addr as *const u8;
+    let slice = unsafe { core::slice::from_raw_parts(ptr, cmdline_len) };
     let cmdline = match core::str::from_utf8(slice) {
         Ok(s) => s,
         Err(_) => return config,

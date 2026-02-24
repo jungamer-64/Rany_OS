@@ -683,8 +683,15 @@ impl ClassCode {
     }
 
     /// VirtIOデバイスかどうか
+    ///
+    /// The original implementation used the vendor-specific class code of
+    /// `0xFF`.  This is accurate for legacy/fallthrough devices, and the PCI
+    /// transport code verifies the vendor/device ID range before acting, so
+    /// we rely on that in `PciDeviceInfo::is_virtio` rather than duplicating
+    /// the check here.  The class alone is not sufficient, so the helper in
+    /// this struct remains focused on class codes.
     pub fn is_virtio(&self) -> bool {
-        self.class == 0xFF // VirtIO uses vendor-specific class
+        self.class == 0xFF
     }
 
     /// ネットワークコントローラかどうか

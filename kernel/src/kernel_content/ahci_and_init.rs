@@ -193,8 +193,26 @@ pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_m
     }
 
     if boot_info.cmdline_len > 0 {
-        let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
-        let slice = unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+        let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
+            boot_info.cmdline_ptr
+        } else {
+            match phys_mem_offset.checked_add(boot_info.cmdline_ptr) {
+                Some(addr) => addr,
+                None => {
+                    warn!(target: "init", "Skipping cmdline parse: address overflow");
+                    return;
+                }
+            }
+        };
+        let cmdline_len = match usize::try_from(boot_info.cmdline_len) {
+            Ok(v) => v,
+            Err(_) => {
+                warn!(target: "init", "Skipping cmdline parse: invalid length {}", boot_info.cmdline_len);
+                return;
+            }
+        };
+        let ptr = cmdline_addr as *const u8;
+        let slice = unsafe { core::slice::from_raw_parts(ptr, cmdline_len) };
         if let Ok(cmdline) = core::str::from_utf8(slice) {
             if let Some(val) = util::get_cmdline_option(cmdline, "run_integration") {
                 if val == "storage" || val == "1" {
@@ -545,6 +563,16 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         info!(target: "init", "==============================");
     }
 
+    // 3.6. システム統合 (PCI掃描/デバイス初期化) をネットワークより先に行う
+    io::log::early_print("[DEBUG] Before integration::init\n");
+    info!(target: "init", "Initializing system integration");
+    if let Err(e) = integration::init() {
+        warn!(target: "init", "System integration failed: {:?}", e);
+    } else {
+        info!(target: "init", "System integration initialized");
+    }
+    io::log::early_print("[DEBUG] After integration::init\n");
+
     init_network_subsystem();
 
     // 3.7. ファイルシステム（memfs）の初期化
@@ -585,15 +613,15 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Test framework initialized");
     // after test framework init
 
-    // 5.7. システム統合の初期化
-    // before system integration
-    info!(target: "init", "Initializing system integration");
+    // 5.7. システム統合の初期化 (補完用, 本来は 3.6 で実行済み)
+    io::log::early_print("[DEBUG] (late) Before integration::init\n");
+    info!(target: "init", "(late) Initializing system integration");
     if let Err(e) = integration::init() {
-        warn!(target: "init", "System integration failed: {:?}", e);
+        warn!(target: "init", "(late) System integration failed: {:?}", e);
     } else {
-        info!(target: "init", "System integration initialized");
+        info!(target: "init", "(late) System integration initialized");
     }
-    // after system integration
+    io::log::early_print("[DEBUG] (late) After integration::init\n");
 
     // Diagnostic: immediate manual ping attempt to exercise network transmit path
     // manual ping insertion point (network debug)
@@ -620,10 +648,33 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     {
         let mut skip_interrupt_enable = false;
         if boot_info.cmdline_len > 0 {
-            let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
-            let slice =
-                unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
-            if let Ok(cmdline) = core::str::from_utf8(slice) {
+            let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
+                boot_info.cmdline_ptr
+            } else {
+                match phys_mem_offset.checked_add(boot_info.cmdline_ptr) {
+                    Some(addr) => addr,
+                    None => {
+                        warn!(target: "init", "Skipping qemu_no_if parse: address overflow");
+                        0
+                    }
+                }
+            };
+            let cmdline_len = usize::try_from(boot_info.cmdline_len).ok();
+            let slice_opt = if cmdline_addr == 0 {
+                None
+            } else {
+                cmdline_len.map(|len| unsafe {
+                    core::slice::from_raw_parts(cmdline_addr as *const u8, len)
+                })
+            };
+            if cmdline_len.is_none() {
+                warn!(
+                    target: "init",
+                    "Skipping qemu_no_if parse: invalid length {}",
+                    boot_info.cmdline_len
+                );
+            }
+            if let Some(slice) = slice_opt && let Ok(cmdline) = core::str::from_utf8(slice) {
                 if let Some(v) = util::get_cmdline_option(cmdline, "qemu_no_if") {
                     if v == "1" || v == "true" || v == "yes" {
                         skip_interrupt_enable = true;

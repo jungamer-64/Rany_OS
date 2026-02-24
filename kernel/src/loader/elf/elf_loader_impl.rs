@@ -193,6 +193,9 @@ impl<'a> ElfLoader<'a> {
             // グローバルシンボルのみ処理
             if sym.binding() == STB_GLOBAL && sym.st_name != 0 {
                 if let Some(name) = self.get_string(strtab, sym.st_name as usize) {
+                    if name.is_empty() {
+                        continue;
+                    }
                     if sym.st_shndx == 0 {
                         // 未定義シンボル = インポート（ゼロコピー）
                         imports.push(name);
