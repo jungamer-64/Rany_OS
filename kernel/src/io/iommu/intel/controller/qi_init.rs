@@ -161,8 +161,8 @@ impl QIManager for IommuController {
             }
         }
 
-        // Enable QI (GCMD.QIE)
-        self.write32(regs::GCMD, gcmd_bits::GCMD_QIE);
+        // Enable QI (GCMD.QIE) while preserving already-enabled bits.
+        self.write_gcmd_with_state(gcmd_bits::GCMD_QIE);
 
         // Wait for completion
         match self.wait_for_condition(

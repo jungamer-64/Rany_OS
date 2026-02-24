@@ -153,6 +153,7 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 **注意 (2026-01-16)**: `drivers/hid` の PS/2 便利関数 (`ps2::get_key_event`, `ps2::get_mouse_event`, `ps2::get_modifiers`) を削除しました。移行先: `KeyboardStream` または `KeyboardHandler::pop_event()` を使用してください。
 
 **コード統合 (2026-01-21)**: 重複コード削除・統合を実施:
+
 - `kernel/src/fs/block.rs` を削除 → `vfs::block` からの再エクスポートに統合（~607行削減）
 - `libs/sync` クレート作成 → `PoisonLock`/`Backoff` を共通化（FAT32移行済み）
 - `libs/app_sdk` の `Application`/`AppContext` → `kernel_api` からの再エクスポートに統合（~130行削減）
