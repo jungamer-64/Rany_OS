@@ -580,6 +580,85 @@ pub fn dns_resolve(hostname: &str) -> Result<Vec<[u8; 4]>, String> {
     }
 }
 
+/// 情報構造体: DHCP OFFER の基本情報を外部に公開
+#[derive(Debug, Clone)]
+pub struct DhcpOfferInfo {
+    pub server_ip: [u8; 4],
+    pub offered_ip: [u8; 4],
+}
+
+/// 外部API: DHCPDISCOVER を試み、現在保持しているオファーがあれば返す
+pub fn dhcp_discover() -> Option<DhcpOfferInfo> {
+    let now = tcb_table().get_current_tick();
+    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+        if let Some(ref client) = *guard {
+            let _ = client.drive(now, 1000);
+            if let Some(offer) = client.offered_lease() {
+                return Some(DhcpOfferInfo {
+                    server_ip: *offer.server_ip.as_bytes(),
+                    offered_ip: *offer.ip_address.as_bytes(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// 外部API: 単純な DHCPREQUEST を送信
+/// サーバーアドレスと要求する IP アドレスを指定する。
+pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
+    // build minimal DHCPREQUEST packet
+    let mut buf = [0u8; crate::net::dhcp::DHCP_MAX_MESSAGE_SIZE];
+    let xid = tcb_table().get_current_tick() as u32 ^ 0xDEADBEEF;
+    // header
+    buf[0..DhcpHeader::SIZE].fill(0);
+    buf[0] = DhcpOperation::Request as u8;
+    buf[1] = 1; // Ethernet
+    buf[2] = 6; // MAC len
+    buf[3] = 0;
+    buf[4..8].copy_from_slice(&xid.to_be_bytes());
+    buf[8..10].copy_from_slice(&0u16.to_be_bytes()); // secs
+    buf[10..12].copy_from_slice(&0x8000u16.to_be_bytes()); // flags: broadcast
+    // chaddr from current config
+    if let Some(cfg) = get_network_config() {
+        buf[28..34].copy_from_slice(&cfg.mac);
+    }
+    // options
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+    buf[offset] = crate::net::dhcp::DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Request as u8;
+    offset += 3;
+    buf[offset] = crate::net::dhcp::DhcpOption::RequestedIp as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&offered_ip);
+    offset += 6;
+    buf[offset] = crate::net::dhcp::DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&server_ip);
+    offset += 6;
+    buf[offset] = crate::net::dhcp::DhcpOption::End as u8;
+    offset += 1;
+
+    let dst = if server_ip == [0, 0, 0, 0] {
+        Ipv4Address::new([255, 255, 255, 255])
+    } else {
+        Ipv4Address::new(server_ip)
+    };
+    stack::send_udp(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..offset])
+}
+
+/// 外部API: アクティブなリースがあれば RELEASE を送信し状態をリセット
+pub fn dhcp_release() {
+    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+        if let Some(ref client) = *guard {
+            client.release();
+        }
+    }
+}
+
 fn dhcp_v4_state_name(state: DhcpState) -> String {
     String::from(match state {
         DhcpState::Init => "Init",

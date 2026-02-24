@@ -198,6 +198,16 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     assert!(!st.v6_state.is_empty());
 
     assert!(crate::net::dhcp_renew().is_ok());
+
+    // The new public entrypoints should at least compile and return sane defaults.
+    // At the moment no offer exists, so discover should return None.
+    assert!(crate::net::dhcp_discover().is_none());
+
+    // Sending a request with bogus addresses should not panic; result may be false.
+    let _ = crate::net::dhcp_request([0, 0, 0, 0], [0, 0, 0, 0]);
+
+    // Release should be a no-op as well
+    crate::net::dhcp_release();
 }
 
 #[cfg_attr(test, test_case)]

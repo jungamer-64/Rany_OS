@@ -618,4 +618,3 @@ mod tests {
         assert_eq!(stats.misses, 1); // First acquire was a miss
     }
 }
-

@@ -11,7 +11,7 @@ use super::domain::IommuDomain;
 use super::fault_log::FaultRecord;
 use super::page_table_pool::PageTablePool;
 use super::registry::{get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry};
-use super::tables::{HardwareTable, PageTableScope, SlPte};
+use super::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use super::intel::controller::IommuController;
 use super::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
@@ -25,7 +25,7 @@ use crate::io::iommu::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::intel::controller::qi_init::QIManager;
 use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
-use crate::io::iommu::intel::qi::InvalidationQueueEntry;
+use crate::io::iommu::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
 use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -66,6 +66,43 @@ fn test_iommu_domain() {
     // Try to map overlapping region
     let result = domain.map(0x1000, 0x3000, 0x1000, true, false);
     assert_eq!(result, Err(IommuError::AlreadyMapped));
+}
+
+#[test_case]
+fn test_page_table_addr_returns_root_phys() {
+    let domain = IommuDomain::new(
+        10,
+        None,
+        false,
+        false,
+        48,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        PteFormat::Intel,
+    );
+
+    let expected = virt_ptr_to_phys(domain.page_table as *const u8)
+        .expect("failed to translate page table virtual address");
+    assert_eq!(domain.page_table_addr(), expected);
+}
+
+#[test_case]
+fn test_invalidation_queue_uses_physical_addresses_for_hw() {
+    let mut queue = InvalidationQueue::new(8).expect("failed to allocate invalidation queue");
+
+    let queue_virt = queue.queue_virtual_address();
+    let expected_queue_phys = virt_ptr_to_phys(queue_virt as *const u8)
+        .expect("failed to translate queue virtual address");
+    assert_eq!(queue.base_address(), expected_queue_phys);
+    assert_eq!(queue.base_address() & 0xFFF, 0);
+
+    let status_virt = queue.status_virtual_address();
+    let expected_status_phys = virt_ptr_to_phys(status_virt as *const u8)
+        .expect("failed to translate status virtual address");
+    let wait = queue.wait_entry();
+    assert_eq!(wait.hi, expected_status_phys);
+    assert_eq!(wait.hi & 0xFFF, 0);
+    assert_eq!(queue.submit_wait(), status_virt);
 }
 
 unsafe fn is_4k_mapped(domain: &IommuDomain, iova: u64, format: PteFormat) -> bool {

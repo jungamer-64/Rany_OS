@@ -1166,6 +1166,9 @@ pub fn dhcp_discover() -> Option<DhcpOfferInfo>
 pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool
 pub fn dhcp_release()
 
+// 以下は ExoShell からも使えるヘルパーメソッド
+// net.dhcp_discover(), net.dhcp_request(...), net.dhcp_release(), net.dhcp_state(), net.dhcp_renew()
+
 // ARP
 pub fn get_arp_cache() -> Option<alloc::vec::Vec<([u8; 4], [u8; 6])>>
 ```

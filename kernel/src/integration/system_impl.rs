@@ -314,12 +314,19 @@ impl SystemIntegration {
 
     pub(super) fn register_and_start_virtio_net_driver(&mut self, drv: alloc::boxed::Box<crate::net::driver::VirtioNetDriver>) {
         use crate::driver_registry::{register_driver, driver_registry};
+        use crate::net; // for ping test
+
         match register_driver(drv) {
             Ok(handle) => {
                 if let Err(e) = driver_registry().probe_and_start(handle) {
                     self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
                 } else {
                     self.log("    VirtIO-net driver initialized via DriverRegistry");
+                    // Quick sanity ping immediately after driver start.  If the
+                    // global VirtIO device is working the ping should succeed
+                    // (or at least return an I/O error if the network is down).
+                    let ping = net::send_icmp_echo([10, 0, 2, 2], 1);
+                    self.log(&alloc::format!("    [PING TEST] result={:?}", ping));
                 }
             }
             Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),

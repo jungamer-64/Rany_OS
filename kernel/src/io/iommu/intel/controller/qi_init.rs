@@ -25,16 +25,6 @@ pub trait QIManager {
 }
 
 impl IommuController {
-    /// Write a register value, or submit an IOTLB global invalidation if a
-    /// command queue is present.
-    fn write_reg_or_submit_invalidation(&self, reg: u64, value: u64) {
-        if let Some(ref cq) = self.command_queue {
-            let _ = self.execute_sync_command(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
-        } else {
-            self.write64(reg, value);
-        }
-    }
-
     pub(crate) fn execute_sync_command(&self, kind: crate::io::iommu::cmdqueue::IommuCommandKind) -> Result<(), ()> {
         if let Some(ref cq) = self.command_queue {
             return cq.submit_sync_with_worker(kind, |k| {
@@ -117,21 +107,21 @@ impl QIManager for IommuController {
         #[cfg(test)]
         log::info!("[test][IOMMU] writing IQA=0x{:x}", iqa_value);
 
-        self.write_reg_or_submit_invalidation(regs::IQA, iqa_value);
+        self.write64(regs::IQA, iqa_value);
         #[cfg(test)]
         log::info!("[test][IOMMU] wrote IQA");
 
         // Set queue head to 0
         #[cfg(test)]
         log::info!("[test][IOMMU] writing IQH=0");
-        self.write_reg_or_submit_invalidation(regs::IQH, 0);
+        self.write64(regs::IQH, 0);
         #[cfg(test)]
         log::info!("[test][IOMMU] wrote IQH=0");
 
         // Set queue tail to 0
         #[cfg(test)]
         log::info!("[test][IOMMU] writing IQT=0");
-        self.write_reg_or_submit_invalidation(regs::IQT, 0);
+        self.write64(regs::IQT, 0);
         #[cfg(test)]
         log::info!("[test][IOMMU] wrote IQT=0");
 
@@ -171,8 +161,8 @@ impl QIManager for IommuController {
             }
         }
 
-        // Enable QI (GCMD.QIE)
-        self.write32(regs::GCMD, gcmd_bits::GCMD_QIE);
+        // Enable QI (GCMD.QIE) while preserving already-enabled bits.
+        self.write_gcmd_with_state(gcmd_bits::GCMD_QIE);
 
         // Wait for completion
         match self.wait_for_condition(

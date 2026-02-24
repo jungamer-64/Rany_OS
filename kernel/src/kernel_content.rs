@@ -330,6 +330,11 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
 
     pci_driver::init();
     info!(target: "init", "PCI driver initialized");
+    if io::iommu::api::is_iommu_enabled() {
+        let mut devices = pci_driver::scan_all_devices();
+        io::iommu::pci::setup_iommu_for_all_pci_devices(&mut devices);
+        info!(target: "init", "Early IOMMU PCI domain assignment completed");
+    }
     memory::reclaim_acpi_reclaimable(boot_info);
 }
 

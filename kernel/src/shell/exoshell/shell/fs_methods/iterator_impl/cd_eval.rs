@@ -91,12 +91,9 @@ impl ExoShell {
     net.arp()             - Show ARP cache
     net.ping("ip", count) - Send ICMP echo
     net.dhcp_state()      - Show DHCPv4/DHCPv6 state
-    net.dhcp_renew()      - Trigger DHCP renew/restart
-
-  proc.* - Domains/Tasks
-    proc.list()           - List domains
-    proc.info(id)         - Domain details
-
+    net.dhcp_discover()   - Send DHCPDISCOVER and return any offer
+    net.dhcp_request("server","offered") - Send DHCPREQUEST to server
+    net.dhcp_release()    - Send DHCPRELEASE and clear lease
   cap.* - Capability (permissions)
     cap.list()            - List current capabilities
     cap.grant(...)        - Grant permission

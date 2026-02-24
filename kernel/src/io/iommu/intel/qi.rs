@@ -3,6 +3,7 @@
 // ============================================================================
 use alloc::alloc::Layout;
 use alloc::vec::Vec;
+use crate::io::iommu::tables::virt_ptr_to_phys;
 
 /// Mandatory for x2APIC interrupt remapping
 #[repr(C, align(16))]
@@ -218,16 +219,20 @@ pub struct QiStats {
 /// Invalidation Queue Manager
 #[derive(Debug)]
 pub struct InvalidationQueue {
-    /// Base address of the queue (must be 4KB aligned)
-    base: usize,
+    /// Queue base virtual address (CPU writes descriptors here)
+    queue_virt: usize,
+    /// Queue base physical address (programmed to IQA)
+    queue_phys: u64,
     /// Queue size in entries (power of 2, 256 to 64K)
     size: usize,
     /// Current tail (next write position)
     tail: usize,
     /// Cached head (last IQH read, in entries)
     cached_head: usize,
-    /// Status data address for wait descriptors
-    status_addr: usize,
+    /// Wait status virtual address (CPU polls this value)
+    status_virt: usize,
+    /// Wait status physical address (descriptor writes here)
+    status_phys: u64,
     /// Runtime stats for queue pressure/latency
     stats: QiStats,
 }
@@ -262,7 +267,8 @@ impl InvalidationQueue {
             "[test][IOMMU] allocate_zeroed(queue_layout) returned: {:?}",
             base_ptr.map(|p| p.as_ptr() as usize)
         );
-        let base = base_ptr?.as_ptr() as usize;
+        let queue_virt = base_ptr?.as_ptr() as usize;
+        let queue_phys = virt_ptr_to_phys(queue_virt as *const u8).ok()?;
 
         // Allocate status page
         let status_layout = Layout::from_size_align(4096, 4096).ok()?;
@@ -272,27 +278,40 @@ impl InvalidationQueue {
             "[test][IOMMU] allocate_zeroed(status_layout) returned: {:?}",
             status_ptr.map(|p| p.as_ptr() as usize)
         );
-        let status_addr = status_ptr?.as_ptr() as usize;
+        let status_virt = status_ptr?.as_ptr() as usize;
+        let status_phys = virt_ptr_to_phys(status_virt as *const u8).ok()?;
 
         #[cfg(test)]
         log::info!(
             "[test][IOMMU] InvalidationQueue::new success base=0x{:x} status_addr=0x{:x} size={}",
-            base, status_addr, size
+            queue_phys, status_phys, size
         );
 
         Some(Self {
-            base,
+            queue_virt,
+            queue_phys,
             size,
             tail: 0,
             cached_head: 0,
-            status_addr,
+            status_virt,
+            status_phys,
             stats: QiStats::default(),
         })
     }
 
     /// Get the queue base address for IQA register
-    pub fn base_address(&self) -> usize {
-        self.base
+    pub fn base_address(&self) -> u64 {
+        self.queue_phys
+    }
+
+    #[cfg(test)]
+    pub fn queue_virtual_address(&self) -> usize {
+        self.queue_virt
+    }
+
+    #[cfg(test)]
+    pub fn status_virtual_address(&self) -> usize {
+        self.status_virt
     }
 
     /// Get queue size in log2 form for IQA register (bits 2:0)
@@ -357,7 +376,7 @@ impl InvalidationQueue {
     ///
     /// Caller must ensure there is space (queue not full).
     pub fn submit(&mut self, entry: InvalidationQueueEntry) {
-        let ptr = self.base as *mut InvalidationQueueEntry;
+        let ptr = self.queue_virt as *mut InvalidationQueueEntry;
         unsafe {
             *ptr.add(self.tail) = entry;
         }
@@ -368,20 +387,20 @@ impl InvalidationQueue {
     pub fn submit_wait(&mut self) -> usize {
         // Use current tail as unique status data
         let status_data = (self.tail & 0xFFFFFFFF) as u32;
-        let entry = InvalidationQueueEntry::wait(self.status_addr as u64, status_data, false, true);
+        let entry = InvalidationQueueEntry::wait(self.status_phys, status_data, false, true);
         self.submit(entry);
-        self.status_addr
+        self.status_virt
     }
 
     /// Build a wait descriptor without submitting it
     pub fn wait_entry(&self) -> InvalidationQueueEntry {
         let status_data = (self.tail & 0xFFFFFFFF) as u32;
-        InvalidationQueueEntry::wait(self.status_addr as u64, status_data, false, true)
+        InvalidationQueueEntry::wait(self.status_phys, status_data, false, true)
     }
 
     /// Check if a wait has completed (status address updated)
     pub fn check_wait_complete(&self, expected: u32) -> bool {
-        let status = unsafe { core::ptr::read_volatile(self.status_addr as *const u32) };
+        let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
         status == expected
     }
 }

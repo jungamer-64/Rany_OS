@@ -69,6 +69,9 @@ impl NetNamespace {
             "stats" => Self::stats(),
             "arp" => Self::arp_cache(),
             "dhcp_state" => Self::dhcp_state(),
+            "dhcp_discover" => Self::dhcp_discover(),
+            "dhcp_request" => Self::dhcp_request(args),
+            "dhcp_release" => Self::dhcp_release(),
             "dhcp_renew" => Self::dhcp_renew(),
             "bind" => Self::dispatch_bind(args),
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
@@ -233,6 +236,62 @@ impl NetNamespace {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
+    }
+
+    /// Send DHCPDISCOVER and report any currently stored offer
+    pub fn dhcp_discover() -> ExoValue<'static> {
+        if let Some(info) = crate::net::dhcp_discover() {
+            let mut map = BTreeMap::new();
+            map.insert(
+                String::from("server_ip"),
+                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.server_ip[0], info.server_ip[1], info.server_ip[2], info.server_ip[3]))),
+            );
+            map.insert(
+                String::from("offered_ip"),
+                ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", info.offered_ip[0], info.offered_ip[1], info.offered_ip[2], info.offered_ip[3]))),
+            );
+            ExoValue::Map(map)
+        } else {
+            ExoValue::Nil
+        }
+    }
+
+    /// Send DHCPREQUEST to a specific server for a specific offered address.
+    /// Arguments should be two IPv4 address strings (dotted).
+    pub fn dhcp_request(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        fn parse_ip(val: &ExoValue<'static>) -> Option<[u8;4]> {
+            match val {
+                ExoValue::String(s) => {
+                    let parts: Vec<_> = s.split('.').collect();
+                    if parts.len() == 4 {
+                        let mut out = [0u8;4];
+                        for (i,p) in parts.iter().enumerate() {
+                            if let Ok(n) = p.parse::<u8>() {
+                                out[i] = n;
+                            } else {
+                                return None;
+                            }
+                        }
+                        return Some(out);
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+
+        if args.len() < 2 {
+            return ExoValue::Error(String::from("dhcp_request(server_ip, offered_ip) requires two arguments"));
+        }
+        let server = parse_ip(&args[0]).unwrap_or([0,0,0,0]);
+        let offered = parse_ip(&args[1]).unwrap_or([0,0,0,0]);
+        ExoValue::Bool(crate::net::dhcp_request(server, offered))
+    }
+
+    /// Send DHCPRELEASE for current lease (if any)
+    pub fn dhcp_release() -> ExoValue<'static> {
+        crate::net::dhcp_release();
+        ExoValue::Bool(true)
     }
 
     /// ICMP エコー送信（async版 - パケット間でyield）

@@ -371,7 +371,7 @@ impl IommuController {
         }
         self.write64(regs::RTADDR, root_phys);
 
-        self.write32(regs::GCMD, gcmd_bits::GCMD_SRTP);
+        self.write_gcmd_with_state(gcmd_bits::GCMD_SRTP);
 
         use crate::io::iommu::intel::controller::utils::IommuUtils;
         self.wait_for_condition(
@@ -537,8 +537,8 @@ impl IommuController {
 
     /// Enable IOMMU Translation
     pub unsafe fn enable(&self) -> Result<(), IommuError> {
-        // Enable Translation (TE)
-        self.write32(regs::GCMD, gcmd_bits::GCMD_TE);
+        // Enable Translation (TE) while preserving already-enabled control bits.
+        self.write_gcmd_with_state(gcmd_bits::GCMD_TE);
 
         use crate::io::iommu::intel::controller::utils::IommuUtils;
         self.wait_for_condition(
@@ -582,6 +582,26 @@ impl IommuController {
 
     pub(crate) fn write32(&self, offset: u64, value: u32) {
         crate::io::mmio::mmio_write_u32((self.mmio_base + offset) as usize, value)
+    }
+
+    #[inline]
+    pub(crate) fn gcmd_enabled_mask(&self) -> u32 {
+        let mut mask = 0u32;
+        if self.qi_enabled.load(Ordering::Acquire) {
+            mask |= gcmd_bits::GCMD_QIE;
+        }
+        if self.ir_enabled.load(Ordering::Acquire) {
+            mask |= gcmd_bits::GCMD_IRE;
+        }
+        if self.enabled.load(Ordering::Acquire) {
+            mask |= gcmd_bits::GCMD_TE;
+        }
+        mask
+    }
+
+    #[inline]
+    pub(crate) fn write_gcmd_with_state(&self, cmd_bits: u32) {
+        self.write32(regs::GCMD, cmd_bits | self.gcmd_enabled_mask());
     }
 
     pub(crate) fn read64(&self, offset: u64) -> u64 {

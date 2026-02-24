@@ -7,7 +7,13 @@ impl DomainManager for IommuController {
         numa_node: Option<usize>,
         domain_type: IommuDomainType,
     ) -> Result<u16, IommuError> {
+        log::info!(
+            "[IOMMU][TRACE] create_domain enter numa={:?} type={:?}",
+            numa_node,
+            domain_type
+        );
         let id = self.next_domain_id.fetch_add(1, Ordering::Relaxed) as u16;
+        log::info!("[IOMMU][TRACE] create_domain assigned id={}", id);
 
         let supports_2mb = self.supports_2mb_pages();
         let supports_1gb = self.supports_1gb_pages();
@@ -23,6 +29,7 @@ impl DomainManager for IommuController {
             self.page_table_pool.clone(),
             PteFormat::Intel,
         );
+        log::info!("[IOMMU][TRACE] create_domain new() done id={}", id);
         let domain_arc = Arc::new(domain);
         if let Some(notifier) = self.security_notifier.get() {
             let _ = domain_arc.set_security_notifier(Arc::clone(notifier));
@@ -43,6 +50,7 @@ impl DomainManager for IommuController {
             }
         }
 
+        log::info!("[IOMMU][TRACE] create_domain inserted id={}", id);
         #[cfg(test)]
         log::info!("[IOMMU TEST] create_domain done id = {}", id);
 

@@ -40,6 +40,17 @@ impl DhcpClient {
         }
     }
 
+    /// Offer されているリースを取得 (テスト・外部 API 用)
+    pub fn offered_lease(&self) -> Option<DhcpLease> {
+        match self.offered_lease.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => {
+                log::error!("[NET] DHCP Offer lock poisoned (offered_lease) - returning None");
+                None
+            }
+        }
+    }
+
     /// 現在のリースを取得
     pub fn lease(&self) -> Option<DhcpLease> {
         match self.lease.lock() {

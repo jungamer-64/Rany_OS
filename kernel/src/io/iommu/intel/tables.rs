@@ -96,7 +96,8 @@ impl ContextEntry {
     pub fn set_passthrough(&mut self, domain_id: u16) {
         // PT (bit 3:2) = 10b (2). Present (bit 0) = 1.
         self.lo = (2 << 2) | 1;
-        self.hi = (domain_id as u64) << 8;
+        // Keep AGAW aligned with the normal 4-level page-table mode used here.
+        self.hi = ((domain_id as u64) << 8) | 2;
     }
 
     /// Get second level page table address

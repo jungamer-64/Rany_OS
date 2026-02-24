@@ -209,8 +209,8 @@ impl InterruptRemapper for IommuController {
 
         crate::io::mmio::mmio_write_u64(irta_reg as usize, irta_value);
 
-        // Set IRT pointer (GCMD.SIRTP)
-        self.write32(regs::GCMD, gcmd_bits::GCMD_SIRTP);
+        // Set IRT pointer (GCMD.SIRTP) while preserving other enabled bits.
+        self.write_gcmd_with_state(gcmd_bits::GCMD_SIRTP);
 
         // Wait for completion
         match self.wait_for_condition(
@@ -260,8 +260,8 @@ impl InterruptRemapper for IommuController {
             return Err(IommuError::NotPresent);
         }
 
-        // Enable Interrupt Remapping (GCMD.IRE)
-        self.write32(regs::GCMD, gcmd_bits::GCMD_IRE);
+        // Enable Interrupt Remapping (GCMD.IRE) while preserving other enabled bits.
+        self.write_gcmd_with_state(gcmd_bits::GCMD_IRE);
 
         // Wait for completion
         match self.wait_for_condition(

@@ -62,6 +62,7 @@ impl IommuDomain {
             id,
             domain_type,
             page_table,
+            page_table_phys: root_phys,
             shards: shards.into_boxed_slice(),
             mapped_size: AtomicU64::new(0),
             numa_node: RwLock::new(numa_node),
@@ -257,7 +258,7 @@ impl IommuDomain {
 
     /// Get page table physical address
     pub fn page_table_addr(&self) -> u64 {
-        self.page_table as u64
+        self.page_table_phys
     }
 
     /// Get optional NUMA node affinity for this domain

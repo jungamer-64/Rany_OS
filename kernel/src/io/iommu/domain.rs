@@ -708,6 +708,8 @@ pub struct IommuDomain {
     pub(crate) id: u16,
     /// Second-level page table root (PML4)
     pub(crate) page_table: *mut SlPte,
+    /// Second-level page table root physical address
+    pub(crate) page_table_phys: u64,
     /// Mapped regions
     shards: Box<[PoisonLock<DomainShard>]>,
     /// Total mapped size
