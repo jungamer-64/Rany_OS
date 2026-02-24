@@ -135,31 +135,41 @@ pub(crate) fn init_network_subsystem() {
     io::log::early_print("[EPRINT] about to log bridge init status\n");
     info!(target: "init", "Net Bridge initialized: {}", crate::net::driver_bridge::is_initialized());
     io::log::early_print("[EPRINT] about to log virtio-net device presence\n");
-    info!(target: "init", "Global VirtIO-Net device present: {}", crate::io::virtio::with_virtio_net(|_| ()).is_some());
+    let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+    info!(target: "init", "Global VirtIO-Net device present: {}", virtio_net_present);
 
-    // VirtIO-Net driver via DriverRegistry
-    io::log::early_print("[EPRINT] about to log 'Registering VirtIO-Net driver via DriverRegistry'\n");
-    info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
-    {
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use net::driver::VirtioNetDriver;
-
-        let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
-        if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+    if virtio_net_present {
+        // VirtIO-Net driver via DriverRegistry
+        io::log::early_print(
+            "[EPRINT] about to log 'Registering VirtIO-Net driver via DriverRegistry'\n",
+        );
+        info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
         {
-            warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
-        } else {
-            info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
-        }
-    }
+            use alloc::boxed::Box;
+            use driver_registry::register_driver;
+            use net::driver::VirtioNetDriver;
 
-    // quick internal ping check right after stack initialization
-    crate::io::log::early_print("[DEBUG] running inline ping test\n");
-    match crate::net::send_icmp_echo([10, 0, 2, 2], 1) {
-        Ok(rtt) => crate::io::log::early_print("[DEBUG] inline ping succeeded\n"),
-        Err(_) => crate::io::log::early_print("[DEBUG] inline ping failed\n"),
+            let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+            if let Err(e) = driver_registry::driver_registry()
+                .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+            {
+                warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
+            } else {
+                info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
+            }
+        }
+
+        // quick internal ping check right after stack initialization
+        crate::io::log::early_print("[DEBUG] running inline ping test\n");
+        match crate::net::send_icmp_echo([10, 0, 2, 2], 1) {
+            Ok(_) => crate::io::log::early_print("[DEBUG] inline ping succeeded\n"),
+            Err(_) => crate::io::log::early_print("[DEBUG] inline ping failed\n"),
+        }
+    } else {
+        info!(
+            target: "init",
+            "VirtIO-Net device is not initialized yet; deferring network driver startup"
+        );
     }
 }
 

@@ -643,8 +643,17 @@ pub fn process_received_packet_zero_copy_for_interface(
 /// Initialize the network bridge
 /// Connects VirtIO-Net driver to NetworkStack
 pub fn init_bridge() -> Result<(), &'static str> {
-    if BRIDGE_INITIALIZED.swap(true, Ordering::SeqCst) {
+    if BRIDGE_INITIALIZED.load(Ordering::Acquire) {
         return Ok(()); // Already initialized
+    }
+
+    if with_virtio_net(|_| ()).is_none() {
+        log::warn!("[NET BRIDGE] VirtIO-Net not initialized; bridge init deferred");
+        return Err("VirtIO-Net device not initialized");
+    }
+
+    if BRIDGE_INITIALIZED.swap(true, Ordering::SeqCst) {
+        return Ok(());
     }
 
     log::info!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
@@ -675,7 +684,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
             gateway: Ipv4Address::new([10, 0, 2, 2]), // QEMU gateway
             dns: Some(Ipv4Address::new([10, 0, 2, 3])),
         },
-        ipv6: None,
+        ipv6: Some(crate::net::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
         icmp_echo_enabled: true,
     };
 

@@ -583,9 +583,18 @@ impl<'a> ElfLoader<'a> {
             .ok_or_else(|| LoadError::InvalidFormat("Failed to read symbol".into()))?;
 
         if sym.st_shndx == 0 {
+            // ELF symbol index 0 (or unnamed undefined symbols) represent
+            // "no symbol" and must resolve to 0. This is common for
+            // R_X86_64_RELATIVE relocations.
+            if sym.st_name == 0 {
+                return Ok(0);
+            }
             let name = self
                 .get_string(strtab, sym.st_name as usize)
                 .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol name".into()))?;
+            if name.is_empty() {
+                return Ok(0);
+            }
             resolve(name)
                 .ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))
         } else {

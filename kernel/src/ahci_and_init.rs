@@ -132,30 +132,38 @@ pub(crate) fn init_network_subsystem() {
     info!(target: "init", "Network stack initialized");
 
     info!(target: "init", "Net Bridge initialized: {}", crate::net::driver_bridge::is_initialized());
-    info!(target: "init", "Global VirtIO-Net device present: {}", crate::io::virtio::with_virtio_net(|_| ()).is_some());
+    let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
+    info!(target: "init", "Global VirtIO-Net device present: {}", virtio_net_present);
 
-    // VirtIO-Net driver via DriverRegistry
-    info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
-    {
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-        use net::driver::VirtioNetDriver;
-
-        let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
-        if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+    if virtio_net_present {
+        // VirtIO-Net driver via DriverRegistry
+        info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
         {
-            warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
-        } else {
-            info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
-        }
-    }
+            use alloc::boxed::Box;
+            use driver_registry::register_driver;
+            use net::driver::VirtioNetDriver;
 
-    // Diagnostic: attempt a manual ping to exercise the transmit path
-    info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
-    match crate::net::send_icmp_echo([10, 0, 2, 2], 1) {
-        Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
-        Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
+            let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+            if let Err(e) = driver_registry::driver_registry()
+                .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+            {
+                warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
+            } else {
+                info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
+            }
+        }
+
+        // Diagnostic: attempt a manual ping to exercise the transmit path
+        info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
+        match crate::net::send_icmp_echo([10, 0, 2, 2], 1) {
+            Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
+            Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
+        }
+    } else {
+        info!(
+            target: "init",
+            "VirtIO-Net device is not initialized yet; deferring network driver startup"
+        );
     }
 }
 

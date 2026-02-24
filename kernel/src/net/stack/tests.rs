@@ -188,6 +188,19 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_dhcp_runtime_public_apis_smoke() {
+    init_default();
+
+    assert!(crate::net::init_dhcp_runtime().is_ok());
+
+    let st = crate::net::dhcp_state();
+    assert!(!st.v4_state.is_empty());
+    assert!(!st.v6_state.is_empty());
+
+    assert!(crate::net::dhcp_renew().is_ok());
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_redirect_cache_basic() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);
