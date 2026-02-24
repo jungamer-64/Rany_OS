@@ -1,6 +1,7 @@
 use super::*;
 use alloc::sync::Arc;
 use crate::io::virtio::TransportType;
+use crate::util::align_up_usize as align_up;
 
 
 mod graphics_manager;

@@ -504,6 +504,11 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             PER_CPU_DATA[0] = PerCpuData::new(0);
             PER_CPU_DATA[0].set_self_ptr();
 
+            // BISECT: test after PER_CPU writes, before GS/FS base changes
+            crate::io::log::early_print("[BISECT-PCPU] after PER_CPU writes: log::log!\n");
+            log::log!(target: "bisect", log::Level::Info, "after PER_CPU writes");
+            crate::io::log::early_print("[BISECT-PCPU] after PER_CPU writes: OK\n");
+
             // BSPのGsBaseを設定 - PER_CPU_HOT を使用（Phase 3 Hot/Cold最適化）
             let bsp_ptr = &PER_CPU_HOT[0] as *const _ as u64;
             // FSGSBASEが有効な場合は高速版、そうでなければMSR版を使用
@@ -512,6 +517,11 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             } else {
                 write_gs_base_msr(bsp_ptr);
             }
+
+            // BISECT: test after GS base write, before FS base write
+            crate::io::log::early_print("[BISECT-PCPU] after GS base write: log::log!\n");
+            log::log!(target: "bisect", log::Level::Info, "after GS base write");
+            crate::io::log::early_print("[BISECT-PCPU] after GS base write: OK\n");
 
             // 2.5. TLS (Thread Local Storage) の初期化
             // #[thread_local] 属性はFSレジスタを使用する
@@ -544,6 +554,13 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                 }
                 crate::io::log::early_print("\n");
 
+                // Print actual FS base value being set
+                crate::io::log::early_print("[PCPU] TLS tls_start=");
+                crate::io::log::early_print_hex(tls_start);
+                crate::io::log::early_print(" tls_end=");
+                crate::io::log::early_print_hex(tls_end);
+                crate::io::log::early_print("\n");
+
                 // x86_64 TLS では FS ベースは TLS ブロックの終端を指す
                 // 変数は FS:(-offset) でアクセスされる
                 let fs_base = tls_end;
@@ -553,6 +570,12 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                 } else {
                     write_fs_base_msr(fs_base);
                 }
+
+                // BISECT: test after FS base write
+                crate::io::log::early_print("[BISECT-PCPU] after FS base write: log::log!\n");
+                log::log!(target: "bisect", log::Level::Info, "after FS base write");
+                crate::io::log::early_print("[BISECT-PCPU] after FS base write: OK\n");
+
                 crate::io::log::early_print("[PCPU] TLS ok\n");
             }
             #[cfg(any(test, target_os = "windows"))]
@@ -560,6 +583,7 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                 crate::io::log::early_print("[PCPU] TLS skipped in test or Windows build\n");
             }
         }
+
         crate::io::log::early_print("[PCPU] bsp ok\n");
 
         // 3. 残りのCPU（AP）のデータを初期化

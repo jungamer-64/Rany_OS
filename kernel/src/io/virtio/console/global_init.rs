@@ -95,7 +95,6 @@ pub fn get_virtio_console_device() -> Option<Arc<VirtioConsoleDevice>> {
     VIRTIO_CONSOLE_DEVICE.lock().as_ref().cloned()
 }
 
-use crate::util::align_up_usize as align_up;
 
 // ============================================================================
 // Tests

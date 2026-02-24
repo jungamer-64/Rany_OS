@@ -19,6 +19,7 @@
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::util::align_up_usize as align_up;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;

@@ -29,7 +29,6 @@ pub unsafe fn init_virtio_input_with_transport(
     Ok(())
 }
 
-use crate::util::align_up_usize as align_up;
 
 /// Handle VirtIO input device interrupt (called from interrupt handler).
 pub fn handle_virtio_input_interrupt() {

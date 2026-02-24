@@ -461,6 +461,11 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     } else {
         None
     };
+    // Test: log::log! BEFORE memory::init
+    io::log::early_print("[DEBUG] BEFORE memory::init: calling log::log!\n");
+    log::log!(target: "test", log::Level::Info, "log::log! BEFORE memory::init");
+    io::log::early_print("[DEBUG] BEFORE memory::init: log::log! OK\n");
+
     memory::init(
         if boot_info.rsdp_addr > 0 {
             Some(boot_info.rsdp_addr)
@@ -471,8 +476,10 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         Some(boot_info),
     );
     io::log::early_print("[DEBUG] after memory::init return\n");
-    info!(target: "init", "Memory management initialized");
-    io::log::early_print("[DEBUG] after memory init info!\n");
+    // Test: log::log! AFTER memory::init
+    io::log::early_print("[DEBUG] AFTER memory::init: calling log::log!\n");
+    log::log!(target: "test", log::Level::Info, "log::log! AFTER memory::init");
+    io::log::early_print("[DEBUG] AFTER memory::init: log::log! OK\n");
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
     // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ
