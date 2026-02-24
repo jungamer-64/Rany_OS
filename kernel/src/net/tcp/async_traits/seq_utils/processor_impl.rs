@@ -218,7 +218,30 @@ impl TcpProcessor {
         flags: u16,
         window: u16,
     ) -> Option<TcpProcessResult> {
-        let listener_lock = self.listeners.get(&local_addr)?;
+        let listener_addr = if self.listeners.contains_key(&local_addr) {
+            local_addr
+        } else {
+            match local_addr {
+                SocketAddr::V4 { port, .. } => {
+                    let wildcard = SocketAddr::new(Ipv4Addr::UNSPECIFIED, port);
+                    if self.listeners.contains_key(&wildcard) {
+                        wildcard
+                    } else {
+                        return None;
+                    }
+                }
+                SocketAddr::V6 { port, .. } => {
+                    let wildcard = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::UNSPECIFIED, port);
+                    if self.listeners.contains_key(&wildcard) {
+                        wildcard
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        };
+
+        let listener_lock = self.listeners.get(&listener_addr)?;
         let listener = listener_lock.lock().ok()?;
         if listener.state != TcpState::Listen || flags & TcpHeader::FLAG_SYN == 0 {
             return None;
@@ -433,7 +456,16 @@ impl TcpProcessor {
                 TcpProcessResult::None
             }
             TcpState::SynSent => Self::handle_syn_sent_segment(tcb, syn, ack, seq_num, ack_num),
-            TcpState::SynReceived => Self::handle_syn_received_segment(tcb, tcb_arc, ack, ack_num),
+            TcpState::SynReceived => Self::handle_syn_received_segment(
+                tcb,
+                tcb_arc,
+                ack,
+                ack_num,
+                seq_num,
+                header_len,
+                payload,
+                packet_opt,
+            ),
             TcpState::Established => {
                 Self::handle_established_segment(tcb, ack, ack_num, fin, seq_num, payload, header_len, packet_opt)
             }
@@ -491,6 +523,10 @@ impl TcpProcessor {
         tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
         ack: bool,
         ack_num: u32,
+        seq_num: u32,
+        header_len: usize,
+        payload: &[u8],
+        packet_opt: Option<PacketRef>,
     ) -> TcpProcessResult {
         // ACK acknowledging our SYN (snd_una + 1)
         if ack && ack_num == tcb.snd_una.wrapping_add(1) {
@@ -503,6 +539,21 @@ impl TcpProcessor {
 
             if let Some(waker) = tcb.connect_waker.take() {
                 waker.wake();
+            }
+
+            // Some peers send ACK + first data segment immediately after SYN-ACK.
+            // Process that payload instead of dropping it at state transition.
+            if !payload.is_empty() {
+                return Self::handle_established_segment(
+                    tcb,
+                    ack,
+                    ack_num,
+                    false,
+                    seq_num,
+                    payload,
+                    header_len,
+                    packet_opt,
+                );
             }
         }
         TcpProcessResult::None

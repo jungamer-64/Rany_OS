@@ -513,114 +513,122 @@ pub fn process_received_packet_zero_copy_for_interface(
             if eth.ether_type() == crate::net::ethernet::EtherType::Ipv4 {
                 if let Some(ip_pkt) = crate::net::ipv4::Ipv4Packet::parse(eth.payload()) {
                     let dst = ip_pkt.destination();
-                    if !is_local_ipv4(dst) {
+                    let dst_octets = dst.octets();
+                    let is_limited_broadcast = dst_octets == [255, 255, 255, 255];
+                    let is_multicast = (dst_octets[0] & 0xF0) == 0xE0;
+                    let should_consume_locally =
+                        is_local_ipv4(dst) || is_limited_broadcast || is_multicast;
+
+                    if !should_consume_locally {
                         if let Ok(Some(route)) = manager::lookup_ipv4_route(dst) {
-                            // record for tests
-                            #[cfg(any(test, feature = "qemu-test-export"))]
-                            {
-                                let mut ev = FORWARD_EVENTS.write();
-                                ev.push((route.if_id, dst));
-                            }
-                            // apply NAT outbound if necessary
-                            let src = ip_pkt.source();
-                            let proto = ip_pkt.protocol();
-                            let transport = ip_pkt.payload();
-                            // need to parse transport header for ports
-                            let (_new_src, _new_port) = match proto {
-                                crate::net::ipv4::IpProtocol::Udp => {
-                                    if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
+                            if route.if_id != if_id {
+                                // record for tests
+                                #[cfg(any(test, feature = "qemu-test-export"))]
+                                {
+                                    let mut ev = FORWARD_EVENTS.write();
+                                    ev.push((route.if_id, dst));
+                                }
+                                // apply NAT outbound if necessary
+                                let src = ip_pkt.source();
+                                let proto = ip_pkt.protocol();
+                                let transport = ip_pkt.payload();
+                                // need to parse transport header for ports
+                                let (_new_src, _new_port) = match proto {
+                                    crate::net::ipv4::IpProtocol::Udp => {
+                                        if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
+                                            let (ns, np) = nat_translate_out(
+                                                crate::net::ipv4::IpProtocol::Udp,
+                                                src,
+                                                udp.src_port(),
+                                                route.if_id,
+                                            );
+                                            (ns, np)
+                                        } else {
+                                            (src, 0)
+                                        }
+                                    }
+                                    crate::net::ipv4::IpProtocol::Tcp => {
+                                        let tcp_src_port = transport
+                                            .get(..2)
+                                            .map(|port| u16::from_be_bytes([port[0], port[1]]))
+                                            .unwrap_or(0);
                                         let (ns, np) = nat_translate_out(
-                                            crate::net::ipv4::IpProtocol::Udp,
+                                            crate::net::ipv4::IpProtocol::Tcp,
                                             src,
-                                            udp.src_port(),
+                                            tcp_src_port,
                                             route.if_id,
                                         );
                                         (ns, np)
-                                    } else {
-                                        (src, 0)
                                     }
-                                }
-                                crate::net::ipv4::IpProtocol::Tcp => {
-                                    let tcp_src_port = transport
-                                        .get(..2)
-                                        .map(|port| u16::from_be_bytes([port[0], port[1]]))
-                                        .unwrap_or(0);
-                                    let (ns, np) = nat_translate_out(
-                                        crate::net::ipv4::IpProtocol::Tcp,
-                                        src,
-                                        tcp_src_port,
-                                        route.if_id,
-                                    );
-                                    (ns, np)
-                                }
-                                _ => (src, 0),
-                            };
+                                    _ => (src, 0),
+                                };
 
-                            let ttl = ip_pkt.ttl();
-                            if ttl <= 1 {
-                                let original_ip = ip_pkt.as_bytes();
-                                let _ = stack::stack().lock().and_then(|mut g| {
-                                    if let Some(ref mut s) = *g {
-                                        Ok(s.send_icmp_time_exceeded(
-                                            src,
-                                            crate::net::icmp::TimeExceededCode::TtlExceeded,
-                                            original_ip,
-                                        ))
-                                    } else {
-                                        Ok(false)
-                                    }
-                                });
-                            } else {
-                                let next_ttl = ttl - 1;
-                                // build new packet via stack send API
-                                match proto {
-                                    crate::net::ipv4::IpProtocol::Udp => {
-                                        if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
-                                            let payload = udp.payload();
-                                            let src_port = _new_port;
-                                            let dst_port = udp.dst_port();
-                                            // send via stack
+                                let ttl = ip_pkt.ttl();
+                                if ttl <= 1 {
+                                    let original_ip = ip_pkt.as_bytes();
+                                    let _ = stack::stack().lock().and_then(|mut g| {
+                                        if let Some(ref mut s) = *g {
+                                            Ok(s.send_icmp_time_exceeded(
+                                                src,
+                                                crate::net::icmp::TimeExceededCode::TtlExceeded,
+                                                original_ip,
+                                            ))
+                                        } else {
+                                            Ok(false)
+                                        }
+                                    });
+                                } else {
+                                    let next_ttl = ttl - 1;
+                                    // build new packet via stack send API
+                                    match proto {
+                                        crate::net::ipv4::IpProtocol::Udp => {
+                                            if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
+                                                let payload = udp.payload();
+                                                let src_port = _new_port;
+                                                let dst_port = udp.dst_port();
+                                                // send via stack
+                                                let _ = stack::stack().lock().and_then(|mut g| {
+                                                    if let Some(ref mut s) = *g {
+                                                        Ok(s.send_udp_raw_on_with_src_ttl(
+                                                            route.if_id,
+                                                            _new_src,
+                                                            src_port,
+                                                            dst,
+                                                            dst_port,
+                                                            payload,
+                                                            next_ttl,
+                                                        ))
+                                                    } else {
+                                                        Ok(false)
+                                                    }
+                                                });
+                                            }
+                                        }
+                                        crate::net::ipv4::IpProtocol::Tcp => {
+                                            // entire segment including header
+                                            let mut nat_segment = Vec::from(transport);
+                                            if _new_port != 0 && nat_segment.len() >= 18 {
+                                                nat_segment[0..2].copy_from_slice(&_new_port.to_be_bytes());
+                                                recompute_ipv4_transport_checksum(
+                                                    &mut nat_segment,
+                                                    _new_src,
+                                                    dst,
+                                                    crate::net::ipv4::IpProtocol::Tcp,
+                                                );
+                                            }
                                             let _ = stack::stack().lock().and_then(|mut g| {
                                                 if let Some(ref mut s) = *g {
-                                                    Ok(s.send_udp_raw_on_with_src_ttl(
-                                                        route.if_id,
-                                                        _new_src,
-                                                        src_port,
-                                                        dst,
-                                                        dst_port,
-                                                        payload,
-                                                        next_ttl,
-                                                    ))
+                                                    Ok(s.send_tcp_with_ttl(_new_src, dst, &nat_segment, next_ttl))
                                                 } else {
                                                     Ok(false)
                                                 }
                                             });
                                         }
+                                        _ => {}
                                     }
-                                    crate::net::ipv4::IpProtocol::Tcp => {
-                                        // entire segment including header
-                                        let mut nat_segment = Vec::from(transport);
-                                        if _new_port != 0 && nat_segment.len() >= 18 {
-                                            nat_segment[0..2].copy_from_slice(&_new_port.to_be_bytes());
-                                            recompute_ipv4_transport_checksum(
-                                                &mut nat_segment,
-                                                _new_src,
-                                                dst,
-                                                crate::net::ipv4::IpProtocol::Tcp,
-                                            );
-                                        }
-                                        let _ = stack::stack().lock().and_then(|mut g| {
-                                            if let Some(ref mut s) = *g {
-                                                Ok(s.send_tcp_with_ttl(_new_src, dst, &nat_segment, next_ttl))
-                                            } else {
-                                                Ok(false)
-                                            }
-                                        });
-                                    }
-                                    _ => {}
                                 }
+                                forwarded = true;
                             }
-                            forwarded = true;
                         }
                     }
                 }
@@ -1645,21 +1653,24 @@ pub fn get_real_stats_for_interface(if_id: super::NetIfId) -> Option<super::Netw
 
 /// Send ICMP echo via real NetworkStack
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
-    match stack::stack().lock() {
-        Ok(mut guard) => match guard.as_mut() {
-            Some(stack) => {
-                let target_ip = Ipv4Address::new(target);
-                stack
-                    .send_icmp_echo_request(target_ip, seq)
-                    .map_err(|_| "Failed to send ICMP echo request")
+    // Avoid IRQ re-entry deadlock: RX IRQ path also touches the global stack lock.
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        match stack::stack().lock() {
+            Ok(mut guard) => match guard.as_mut() {
+                Some(stack) => {
+                    let target_ip = Ipv4Address::new(target);
+                    stack
+                        .send_icmp_echo_request(target_ip, seq)
+                        .map_err(|_| "Failed to send ICMP echo request")
+                }
+                None => Err("Network stack not initialized"),
+            },
+            Err(_) => {
+                log::error!("[NET BRIDGE] Stack poisoned (send_real_icmp_echo)");
+                Err("Network stack not initialized")
             }
-            None => Err("Network stack not initialized"),
-        },
-        Err(_) => {
-            log::error!("[NET BRIDGE] Stack poisoned (send_real_icmp_echo)");
-            Err("Network stack not initialized")
         }
-    }
+    })
 }
 
 /// Get ARP cache entries from real NetworkStack

@@ -13,6 +13,9 @@ pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor) {
     // Spawn Console Shell Task
     spawn_console_shell(executor);
 
+    // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
+    crate::net::host_http_service::start_once(executor);
+
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
         .expect("create_domain failed");

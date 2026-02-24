@@ -4,9 +4,10 @@ use super::*;
 /// Handle VirtIO block device interrupt
 pub fn handle_virtio_blk_interrupt() {
     if let Some(device) = VIRTIO_BLK_DEVICE.lock().as_ref() {
-        // Ack interrupt with shared reference
         let status = device.transport.get_interrupt_status();
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-BLK] IRQ status read=0x{:x}\n", status));
+        if status == 0 {
+            return;
+        }
         device.transport.ack_interrupt(status);
         device.handle_interrupt();
     }
@@ -71,4 +72,3 @@ mod unit_tests {
         assert_eq!(rref[0], 0xABu8);
     }
 }
-

@@ -466,7 +466,9 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         numa_info,
         Some(boot_info),
     );
+    io::log::early_print("[DEBUG] after memory::init return\n");
     info!(target: "init", "Memory management initialized");
+    io::log::early_print("[DEBUG] after memory init info!\n");
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
     // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ

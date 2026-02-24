@@ -320,7 +320,11 @@ impl VirtioNetDevice {
         desc_idx: u16,
         len: u32,
     ) -> bool {
-        if let Some(inflight) = self.rx_packetrefs.lock().remove(&desc_idx) {
+        let packetref_inflight = {
+            let mut guard = self.rx_packetrefs.lock();
+            guard.remove(&desc_idx)
+        };
+        if let Some(inflight) = packetref_inflight {
             let completion_len = match rx_queue.take_completion(desc_idx) {
                 Some(completion_len) => completion_len,
                 None => {
@@ -335,7 +339,11 @@ impl VirtioNetDevice {
             return true;
         }
 
-        if let Some(inflight) = self.rx_buffers.lock().remove(&desc_idx) {
+        let vbuf_inflight = {
+            let mut guard = self.rx_buffers.lock();
+            guard.remove(&desc_idx)
+        };
+        if let Some(inflight) = vbuf_inflight {
             let completion_len = match rx_queue.take_completion(desc_idx) {
                 Some(completion_len) => completion_len,
                 None => {

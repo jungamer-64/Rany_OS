@@ -560,8 +560,9 @@ pub(crate) fn trim_spaces_before_newline(s: &str) -> String {
 /// ロックなしで直接出力するため、早期ブートやパニック時のみ使用。
 #[inline]
 pub fn early_print(s: &str) {
-    let trimmed = trim_spaces_before_newline(s);
-    KernelLogger::write_raw(&trimmed);
+    // This path must stay allocation-free. It is used in early boot, IRQ, and
+    // panic-adjacent contexts where allocator re-entry can deadlock.
+    KernelLogger::write_raw(s);
 }
 
 /// 早期ブート用の直接シリアル文字出力

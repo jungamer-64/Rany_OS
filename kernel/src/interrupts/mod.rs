@@ -40,6 +40,8 @@ macro_rules! handler_to_x86 {
 static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// VirtIO-Net completion fallback gate (enabled after bridge initialization).
 static VIRTIO_NET_IRQ_FALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Pending flag for deferred VirtIO-Net completion fallback (handled outside ISR).
+static VIRTIO_NET_IRQ_FALLBACK_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// IDTコンテナ（Sync実装のため）
 struct IdtContainer(UnsafeCell<MaybeUninit<InterruptDescriptorTable>>);
@@ -412,12 +414,10 @@ fn init_pic() {
         // ~(0x01 | 0x02 | 0x04 | 0x10) = 0xE8
         crate::io::outb(PIC1_DATA, 0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
 
-        // PIC2: IRQ9, IRQ10, IRQ11, IRQ12 を有効化（PCI デバイス用 + マウス）
-        // IRQ8=RTC, IRQ9, IRQ10, IRQ11, IRQ12=Mouse
-        // ビット1=IRQ9, ビット2=IRQ10, ビット3=IRQ11, ビット4=IRQ12
-        // 0=有効, 1=マスク
-        // ~(0x02 | 0x04 | 0x08) = 0xF1 (Mouse IRQ12/bit4 is now masked: 1)
-        crate::io::outb(PIC2_DATA, 0b11110001); // IRQ9, IRQ10, IRQ11 を有効 (Mouse mask)
+        // PIC2: keep legacy PCI IRQ9/10/11 masked.
+        // Shared INTx ISR paths can re-enter VirtIO locks and deadlock with task-context
+        // DMA/TX paths. VirtIO completion is handled by deferred polling.
+        crate::io::outb(PIC2_DATA, 0b11111111);
     }
 }
 
@@ -516,9 +516,9 @@ define_interrupt!(
         crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
 
         // IRQが届かない環境向けのcompletionフォールバック:
-        // bridge初期化完了後にのみ 4tick ごとに VirtIO-Net 処理を回す。
+        // ISR内では重い処理を行わず、4tickごとに pending フラグのみ立てる。
         if (tick & 0x3) == 0 && VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire) {
-            crate::io::virtio::handle_all_virtio_net_interrupts();
+            VIRTIO_NET_IRQ_FALLBACK_PENDING.store(true, Ordering::Release);
         }
 
         // 5. EOI (End Of Interrupt) を送信
@@ -558,6 +558,13 @@ pub fn poll_timer_events() {
 
         // Interrupt-Wakerブリッジの処理
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
+
+        // Deferred VirtIO-Net completion fallback (non-ISR context).
+        if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
+            && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
+        {
+            crate::io::virtio::handle_all_virtio_net_interrupts();
+        }
 
         // PMMメンテナンス (非ISRコンテキスト)
         crate::mm::phys::frame_allocator::pmm_maintenance_tick(tick);
@@ -765,8 +772,8 @@ fn dispatch_pci_interrupt(irq: u8) {
         crate::io::audio::hda::handle_interrupt();
     }
 
-    // Call VirtIO device interrupt handlers (they will check their own status and do nothing if not pending)
-    crate::io::log::early_print(&alloc::format!("[EARLY][INT] dispatch_pci_interrupt irq={} -> invoking virtio handlers\n", irq));
+    // VirtIO shared IRQ work is deferred to non-ISR context to avoid lock inversion
+    // with driver paths that may hold allocator/device locks while interrupts fire.
     dispatch_shared_pci_handlers();
 
     // 将来的には他の PCI デバイスもここに追加
@@ -775,8 +782,8 @@ fn dispatch_pci_interrupt(irq: u8) {
 
 /// 共有PCIデバイス割り込み処理（VirtIO-Net / VirtIO-Blk）
 pub fn dispatch_shared_pci_handlers() {
-    crate::io::virtio::handle_all_virtio_net_interrupts();
-    crate::io::virtio::handle_virtio_blk_interrupt();
+    // Keep ISR path lock-free and defer shared VirtIO work.
+    VIRTIO_NET_IRQ_FALLBACK_PENDING.store(true, Ordering::Release);
 }
 
 /// Enable timer-driven VirtIO-Net interrupt fallback processing.

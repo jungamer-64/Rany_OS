@@ -1,6 +1,31 @@
 use super::*;
 
 
+#[inline]
+fn is_valid_hot_gs_base(gs_base: u64) -> bool {
+    if gs_base == 0 {
+        return false;
+    }
+
+    let addr = gs_base as usize;
+    let hot_start = core::ptr::addr_of!(PER_CPU_HOT) as usize;
+    let hot_size = core::mem::size_of::<[PerCpuHot; MAX_CPUS]>();
+    let hot_end = hot_start.saturating_add(hot_size);
+    let hot_stride = core::mem::size_of::<PerCpuHot>();
+
+    if hot_stride == 0 {
+        return false;
+    }
+    if addr < hot_start || addr >= hot_end {
+        return false;
+    }
+    if (addr - hot_start) % hot_stride != 0 {
+        return false;
+    }
+    true
+}
+
+
 /// 静的に確保されたPer-CPUデータ配列 (Legacy - for backward compatibility)
 /// 各CPUに対応するデータが格納される
 pub(crate) static mut PER_CPU_DATA: [PerCpuData; MAX_CPUS] = {
@@ -125,7 +150,7 @@ pub unsafe fn get_per_cpu_cold_mut(cpu_id: usize) -> &'static mut PerCpuCold {
 #[inline]
 pub unsafe fn current_per_cpu_hot() -> Option<&'static PerCpuHot> {
     let gs_base = read_gsbase_any();
-    if gs_base == 0 {
+    if !is_valid_hot_gs_base(gs_base) {
         return None;
     }
     let hot = &*(gs_base as *const PerCpuHot);
@@ -143,7 +168,7 @@ pub unsafe fn current_per_cpu_hot() -> Option<&'static PerCpuHot> {
 #[inline]
 pub unsafe fn current_per_cpu_hot_mut() -> Option<&'static mut PerCpuHot> {
     let gs_base = read_gsbase_any();
-    if gs_base == 0 {
+    if !is_valid_hot_gs_base(gs_base) {
         return None;
     }
     let hot = &mut *(gs_base as *mut PerCpuHot);
@@ -660,10 +685,11 @@ pub fn current_cpu_id() -> usize {
     // Use unified helper that handles both FSGSBASE and MSR paths
     let gs_base = unsafe { read_gsbase_any() };
 
-    // GsBaseが0の場合は setup_current_cpu() が呼ばれていない
-    if gs_base == 0 {
+    // GsBaseが無効な場合は setup_current_cpu() が呼ばれていないか破損している
+    if !is_valid_hot_gs_base(gs_base) {
         panic!(
-            "CPU Local Storage not initialized: GsBase is null. Call setup_current_cpu() first."
+            "CPU Local Storage not initialized or invalid GSBase: {:#x}. Call setup_current_cpu() first.",
+            gs_base
         );
     }
 
@@ -689,7 +715,7 @@ pub fn current_cpu_id() -> usize {
 pub fn try_current_cpu_id() -> Option<usize> {
     // Use unified helper - safe even before per-CPU init
     let gs_base = unsafe { read_gsbase_any() };
-    if gs_base == 0 {
+    if !is_valid_hot_gs_base(gs_base) {
         return None;
     }
 
@@ -839,4 +865,3 @@ pub fn exit_interrupt() {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

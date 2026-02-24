@@ -200,13 +200,43 @@ where
 pub fn handle_virtio_net_interrupt_for_index(index: u8) {
     let _ = with_virtio_net_device_at_index(index, |device| {
         let status = device.transport.get_interrupt_status();
-        crate::io::log::early_print(&alloc::format!(
-            "[EARLY][VIRTIO-NET] IRQ status read index={} status=0x{:x}\n",
-            index, status
-        ));
+        if status != 0 {
+            crate::io::log::early_print(&alloc::format!(
+                "[EARLY][VIRTIO-NET] IRQ status read index={} status=0x{:x}\n",
+                index, status
+            ));
+        }
         device.transport.ack_interrupt(status);
         device.handle_interrupt();
     });
+}
+
+/// Acknowledge a VirtIO-Net interrupt without processing queues.
+///
+/// Returns `true` when a non-zero interrupt status was observed.
+pub fn ack_virtio_net_interrupt_for_index(index: u8) -> bool {
+    with_virtio_net_device_at_index(index, |device| {
+        let status = device.transport.get_interrupt_status();
+        if status != 0 {
+            device.transport.ack_interrupt(status);
+            true
+        } else {
+            false
+        }
+    })
+    .unwrap_or(false)
+}
+
+/// Acknowledge all registered VirtIO-Net interrupt sources.
+///
+/// Returns `true` when at least one device reported a pending interrupt.
+pub fn ack_all_virtio_net_interrupts() -> bool {
+    let indices = collect_registered_virtio_net_indices();
+    let mut had_pending = false;
+    for index in indices {
+        had_pending |= ack_virtio_net_interrupt_for_index(index);
+    }
+    had_pending
 }
 
 /// 登録済みの全 VirtIO-Net デバイス割り込みを処理する（共有IRQ向け）。

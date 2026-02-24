@@ -397,7 +397,7 @@ impl NetNamespace {
             // 各パケット送信前にyield（他タスクに機会を与える）
             crate::task::yield_now().await;
 
-            match crate::net::send_icmp_echo(ip, seq) {
+            match crate::net::send_real_icmp_echo(ip, seq) {
                 Ok(rtt) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
@@ -408,7 +408,7 @@ impl NetNamespace {
                 Err(e) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
-                    map.insert(String::from("error"), ExoValue::String(Cow::Owned(e)));
+                    map.insert(String::from("error"), ExoValue::String(Cow::Owned(String::from(e))));
                     map.insert(String::from("success"), ExoValue::Bool(false));
                     results.push(ExoValue::Map(map));
                 }

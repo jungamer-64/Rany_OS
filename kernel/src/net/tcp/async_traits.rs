@@ -143,6 +143,11 @@ impl TcpStream {
         WriteFuture { stream: self, buf }
     }
 
+    /// 送信キューをフラッシュして実際に送信を試行する
+    pub fn flush(&mut self) -> FlushFuture<'_> {
+        FlushFuture { stream: self }
+    }
+
 
     /// 【設計書 6.2】ゼロコピー書き込み
     ///
@@ -531,6 +536,20 @@ impl<'a> Future for WriteFuture<'a> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
         Pin::new(&mut *this.stream).poll_write(cx, this.buf)
+    }
+}
+
+/// Flush Future
+pub(crate) struct FlushFuture<'a> {
+    stream: &'a mut TcpStream,
+}
+
+impl<'a> Future for FlushFuture<'a> {
+    type Output = Result<(), TcpError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        Pin::new(&mut *this.stream).poll_flush(cx)
     }
 }
 

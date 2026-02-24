@@ -224,7 +224,9 @@ impl PacketRef {
                     return &[];
                 }
                 let end = (*offset + *len).min(cap);
-                unsafe { crate::util::raw_ptr_as_slice(buf.ptr.as_ptr(), end - *offset) }
+                unsafe {
+                    crate::util::raw_ptr_as_slice(buf.ptr.as_ptr().add(*offset), end - *offset)
+                }
             }
         }
     }
@@ -247,7 +249,9 @@ impl PacketRef {
                 }
                 let end = (*offset + *len).min(cap);
                 // SAFETY: We hold Arc to owner which keeps memory alive.
-                unsafe { crate::util::raw_ptr_as_slice_mut(buf.ptr.as_ptr(), end - *offset) }
+                unsafe {
+                    crate::util::raw_ptr_as_slice_mut(buf.ptr.as_ptr().add(*offset), end - *offset)
+                }
             }
         }
     }

@@ -139,6 +139,49 @@ struct RingBuffer<const N: usize> {
 
 #[allow(dead_code)]
 impl<const N: usize> RingBuffer<N> {
+    #[inline]
+    fn normalize_index(index: usize) -> usize {
+        if N == 0 {
+            0
+        } else if index < N {
+            index
+        } else {
+            index % N
+        }
+    }
+
+    #[inline]
+    fn normalized_snapshot(&self) -> (usize, usize, bool) {
+        let head = Self::normalize_index(self.head);
+        let tail = Self::normalize_index(self.tail);
+        let full = self.full && head == tail;
+        (head, tail, full)
+    }
+
+    #[inline]
+    fn sanitize_state(&mut self) {
+        if N == 0 {
+            self.head = 0;
+            self.tail = 0;
+            self.full = false;
+            return;
+        }
+
+        if self.head >= N {
+            self.head %= N;
+            self.full = false;
+        }
+
+        if self.tail >= N {
+            self.tail %= N;
+            self.full = false;
+        }
+
+        if self.full && self.head != self.tail {
+            self.full = false;
+        }
+    }
+
     pub const fn new() -> Self {
         Self {
             buf: [0u8; N],
@@ -153,24 +196,33 @@ impl<const N: usize> RingBuffer<N> {
     }
 
     pub fn len(&self) -> usize {
-        if self.full {
+        if N == 0 {
+            return 0;
+        }
+
+        let (head, tail, full) = self.normalized_snapshot();
+        if full {
             N
-        } else if self.tail >= self.head {
-            self.tail - self.head
+        } else if tail >= head {
+            tail - head
         } else {
-            N - self.head + self.tail
+            N - head + tail
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.full && (self.head == self.tail)
+        self.len() == 0
     }
 
     pub fn is_full(&self) -> bool {
-        self.full
+        self.len() == N
     }
 
     pub fn push_byte(&mut self, b: u8) -> bool {
+        if N == 0 {
+            return false;
+        }
+        self.sanitize_state();
         if self.full {
             return false;
         }
@@ -183,8 +235,10 @@ impl<const N: usize> RingBuffer<N> {
     }
 
     pub fn push_bytes(&mut self, src: &[u8]) -> usize {
-        debug_assert!(N > 0);
-        debug_assert!(self.tail < N && self.head < N);
+        if N == 0 {
+            return 0;
+        }
+        self.sanitize_state();
 
         // Calculate available space
         let avail = self.capacity() - self.len();
@@ -197,16 +251,16 @@ impl<const N: usize> RingBuffer<N> {
             return 0;
         }
 
-        // First contiguous chunk (to end of buffer)
-        let first = core::cmp::min(to_write, N - self.tail);
+        let tail = self.tail;
 
-        debug_assert!(first <= to_write && first <= N - self.tail);
+        // First contiguous chunk (to end of buffer)
+        let first = core::cmp::min(to_write, N - tail);
 
         if first > 0 {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     src.as_ptr(),
-                    self.buf.as_mut_ptr().add(self.tail),
+                    self.buf.as_mut_ptr().add(tail),
                     first,
                 );
             }
@@ -214,7 +268,6 @@ impl<const N: usize> RingBuffer<N> {
 
         if to_write > first {
             let second = to_write - first;
-            debug_assert!(second <= N);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     src.as_ptr().add(first),
@@ -234,12 +287,14 @@ impl<const N: usize> RingBuffer<N> {
 
     /// 先頭に1バイト挿入（未使用時にのみ、ISRからの再挿入用）
     pub fn push_front(&mut self, b: u8) -> bool {
-        debug_assert!(N > 0);
+        if N == 0 {
+            return false;
+        }
+        self.sanitize_state();
         if self.full {
             return false;
         }
         self.head = if self.head == 0 { N - 1 } else { self.head - 1 };
-        debug_assert!(self.head < N);
         self.buf[self.head] = b;
         if self.head == self.tail {
             self.full = true;
@@ -248,10 +303,13 @@ impl<const N: usize> RingBuffer<N> {
     }
 
     pub fn pop_one(&mut self) -> Option<u8> {
+        if N == 0 {
+            return None;
+        }
+        self.sanitize_state();
         if self.is_empty() {
             return None;
         }
-        debug_assert!(self.head < N);
         let b = self.buf[self.head];
         self.head = (self.head + 1) % N;
         self.full = false;
@@ -259,22 +317,24 @@ impl<const N: usize> RingBuffer<N> {
     }
 
     pub fn pop_bulk(&mut self, dst: &mut [u8]) -> usize {
-        debug_assert!(N > 0);
-        debug_assert!(self.head < N && self.tail < N);
+        if N == 0 {
+            return 0;
+        }
+        self.sanitize_state();
         let available = self.len();
         if available == 0 || dst.is_empty() {
             return 0;
         }
 
         let to_read = core::cmp::min(available, dst.len());
+        let head = self.head;
 
         // First contiguous chunk
-        let first = core::cmp::min(to_read, N - self.head);
-        debug_assert!(first <= to_read);
+        let first = core::cmp::min(to_read, N - head);
         if first > 0 {
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    self.buf.as_ptr().add(self.head),
+                    self.buf.as_ptr().add(head),
                     dst.as_mut_ptr(),
                     first,
                 );
@@ -283,7 +343,6 @@ impl<const N: usize> RingBuffer<N> {
 
         if to_read > first {
             let second = to_read - first;
-            debug_assert!(second <= N);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     self.buf.as_ptr(),
@@ -303,19 +362,28 @@ impl<const N: usize> RingBuffer<N> {
 
     /// Copy up to dst.len() bytes from the head without advancing it.
     pub fn peek_bulk(&self, dst: &mut [u8]) -> usize {
-        debug_assert!(N > 0);
-        debug_assert!(self.head < N && self.tail < N);
-        let available = self.len();
+        if N == 0 {
+            return 0;
+        }
+
+        let (head, tail, full) = self.normalized_snapshot();
+        let available = if full {
+            N
+        } else if tail >= head {
+            tail - head
+        } else {
+            N - head + tail
+        };
         if available == 0 || dst.is_empty() {
             return 0;
         }
 
         let to_read = core::cmp::min(available, dst.len());
-        let first = core::cmp::min(to_read, N - self.head);
+        let first = core::cmp::min(to_read, N - head);
         if first > 0 {
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    self.buf.as_ptr().add(self.head),
+                    self.buf.as_ptr().add(head),
                     dst.as_mut_ptr(),
                     first,
                 );
@@ -338,9 +406,19 @@ impl<const N: usize> RingBuffer<N> {
 
     /// Advance the head by `n` bytes (must be <= len())
     pub fn advance_head(&mut self, n: usize) {
-        debug_assert!(n <= self.len());
-        self.head = (self.head + n) % N;
-        if n > 0 {
+        if N == 0 || n == 0 {
+            return;
+        }
+
+        self.sanitize_state();
+        let available = self.len();
+        if available == 0 {
+            return;
+        }
+
+        let to_advance = core::cmp::min(n, available);
+        self.head = (self.head + to_advance) % N;
+        if to_advance > 0 {
             self.full = false;
         }
     }
