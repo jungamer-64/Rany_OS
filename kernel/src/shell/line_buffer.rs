@@ -143,3 +143,33 @@ impl Default for LineBuffer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn middle_insert_and_cursor_tracking() {
+        let mut buf = LineBuffer::new();
+        buf.insert('a');
+        buf.insert('b');
+        buf.insert('c');
+        buf.move_left();
+        buf.insert('X');
+        assert_eq!(buf.as_str(), "abXc");
+        assert_eq!(buf.cursor, 3);
+    }
+
+    #[test_case]
+    fn delete_and_backspace_keep_expected_content() {
+        let mut buf = LineBuffer::new();
+        buf.insert_str("abcd");
+        buf.move_left(); // cursor=3
+        buf.backspace(); // remove 'c'
+        assert_eq!(buf.as_str(), "abd");
+        assert_eq!(buf.cursor, 2);
+        buf.delete(); // remove 'd'
+        assert_eq!(buf.as_str(), "ab");
+        assert_eq!(buf.cursor, 2);
+    }
+}

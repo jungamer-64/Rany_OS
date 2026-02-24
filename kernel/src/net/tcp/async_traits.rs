@@ -253,14 +253,27 @@ impl AsyncWrite for TcpStream {
                     return Poll::Pending;
                 }
 
-                // パケットを割り当てて送信キューに追加
+                let len = buf.len().min(1460).min(available); // MSS制限 + available
+                if len == 0 {
+                    tcb.write_waker = Some(cx.waker().clone());
+                    return Poll::Pending;
+                }
+
+                // Prefer mempool packet, but fall back to a DMA-backed packet so
+                // writers don't stall forever when the packet pool is exhausted.
                 if let Some(mut packet) = crate::net::mempool::alloc_packet() {
-                    let len = buf.len().min(1460).min(available); // MSS制限 + available
-                    if len == 0 {
-                        tcb.write_waker = Some(cx.waker().clone());
-                        return Poll::Pending;
-                    }
                     packet.data_mut()[..len].copy_from_slice(&buf[..len]);
+                    packet.set_len(len);
+                    tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_add(len as u32);
+                    tcb.send_buffer.push_back(packet);
+                    tcb.stats.bytes_sent += len as u64;
+                    tcb.stats.packets_sent += 1;
+                    Poll::Ready(Ok(len))
+                } else if let Some(mut dma_buf) =
+                    crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(len)
+                {
+                    dma_buf.as_mut_slice()[..len].copy_from_slice(&buf[..len]);
+                    let mut packet = crate::net::mempool::PacketRef::from_dma_slice(dma_buf);
                     packet.set_len(len);
                     tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_add(len as u32);
                     tcb.send_buffer.push_back(packet);
@@ -540,7 +553,7 @@ impl<'a> Future for WriteFuture<'a> {
 }
 
 /// Flush Future
-pub(crate) struct FlushFuture<'a> {
+pub struct FlushFuture<'a> {
     stream: &'a mut TcpStream,
 }
 

@@ -18,7 +18,8 @@ pub(crate) fn ahci_ensure_mapping(
         let page_size: u64 = 0x1000;
         let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
         let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
-        let mut manager = unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        let mut manager =
+            unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
         let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
         match unsafe {
             manager.map_range(
@@ -43,12 +44,16 @@ pub(crate) fn ahci_ensure_mapping(
                 crate::io::log::early_print_hex(base_phys);
                 crate::io::log::early_print(" err=");
                 let err_str = match e {
-                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => "FrameAllocationFailed",
+                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => {
+                        "FrameAllocationFailed"
+                    }
                     crate::mm::virt::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
                     crate::mm::virt::higher_half::MapError::NotMapped => "NotMapped",
                     crate::mm::virt::higher_half::MapError::InvalidAddress => "InvalidAddress",
                     crate::mm::virt::higher_half::MapError::AlignmentError => "AlignmentError",
-                    crate::mm::virt::higher_half::MapError::ParentEntryHugePage => "ParentEntryHugePage",
+                    crate::mm::virt::higher_half::MapError::ParentEntryHugePage => {
+                        "ParentEntryHugePage"
+                    }
                     crate::mm::virt::higher_half::MapError::HardwareError => "HardwareError",
                 };
                 crate::io::log::early_print(err_str);
@@ -304,7 +309,8 @@ pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_m
                     info!(target: "init", "Running integration tests (driver_cell) as requested by cmdline");
                     #[cfg(feature = "qemu-test-export")]
                     {
-                        let summary = crate::driver_cell::qemu_tests::run_driver_cell_runtime_suite();
+                        let summary =
+                            crate::driver_cell::qemu_tests::run_driver_cell_runtime_suite();
                         info!(
                             target: "init",
                             "driver_cell runtime summary: pass={} fail={} blocked={}",
@@ -473,7 +479,6 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Initializing Interrupt Waker Registry (Pre-allocation)");
     let _ = task::interrupt_waker::interrupt_waker_registry().stats();
 
-
     // 1.5. ACPI & IOMMU Initialization
     // Requires memory management for allocation
     info!(target: "init", "Initializing ACPI...");
@@ -482,8 +487,6 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     io::acpi::set_hhdm_offset(phys_mem_offset);
 
     init_acpi_and_iommu(boot_info, phys_mem_offset);
-
-
 
     // Debug: pinpoint crash location
     io::log::early_print("[DEBUG] After huge_pages::init\n");
@@ -777,7 +780,9 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
                     boot_info.cmdline_len
                 );
             }
-            if let Some(slice) = slice_opt && let Ok(cmdline) = core::str::from_utf8(slice) {
+            if let Some(slice) = slice_opt
+                && let Ok(cmdline) = core::str::from_utf8(slice)
+            {
                 if let Some(v) = util::get_cmdline_option(cmdline, "qemu_no_if") {
                     if v == "1" || v == "true" || v == "yes" {
                         skip_interrupt_enable = true;
@@ -812,8 +817,48 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     let mut executor = task::Executor::new();
     io::log::early_print("[DEBUG] After Executor::new\n");
 
+    let shell_mode = {
+        let mut mode = crate::shell::session::ShellLaunchMode::default();
+        if boot_info.cmdline_len > 0 {
+            let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
+                boot_info.cmdline_ptr
+            } else {
+                match phys_mem_offset.checked_add(boot_info.cmdline_ptr) {
+                    Some(addr) => addr,
+                    None => {
+                        warn!(target: "init", "Skipping shell mode parse: address overflow");
+                        0
+                    }
+                }
+            };
+
+            if cmdline_addr != 0 {
+                match usize::try_from(boot_info.cmdline_len) {
+                    Ok(cmdline_len) => {
+                        let slice = unsafe {
+                            core::slice::from_raw_parts(cmdline_addr as *const u8, cmdline_len)
+                        };
+                        if let Ok(cmdline) = core::str::from_utf8(slice) {
+                            mode = crate::shell::session::parse_shell_launch_mode(Some(cmdline));
+                        }
+                    }
+                    Err(_) => {
+                        warn!(
+                            target: "init",
+                            "Skipping shell mode parse: invalid length {}",
+                            boot_info.cmdline_len
+                        );
+                    }
+                }
+            }
+        }
+
+        info!(target: "init", "Shell launch mode: {:?}", mode);
+        mode
+    };
+
     io::log::early_print("[DEBUG] Before spawn_kernel_tasks\n");
-    spawn_kernel_tasks(&mut executor);
+    spawn_kernel_tasks(&mut executor, shell_mode);
     info!(target: "init", "Kernel tasks spawned");
     io::log::early_print("[DEBUG] After spawn_kernel_tasks\n");
 

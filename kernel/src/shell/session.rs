@@ -12,6 +12,53 @@ use alloc::format;
 
 use crate::shell::exoshell::frontend::ShellFrontend;
 use crate::shell::exoshell::{ExoShell, ExoValue};
+use crate::util;
+
+/// Shell launch mode selected from kernel command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellLaunchMode {
+    Console,
+    Serial,
+    Both,
+    Off,
+}
+
+impl Default for ShellLaunchMode {
+    fn default() -> Self {
+        Self::Console
+    }
+}
+
+/// Parse shell launch mode from kernel cmdline.
+///
+/// Priority:
+/// 1. `shell=...` (canonical)
+/// 2. `console=serial|both` (compat fallback)
+pub fn parse_shell_launch_mode(cmdline: Option<&str>) -> ShellLaunchMode {
+    let Some(cmdline) = cmdline else {
+        return ShellLaunchMode::default();
+    };
+
+    if let Some(shell) = util::get_cmdline_option(cmdline, "shell") {
+        return match shell {
+            "console" => ShellLaunchMode::Console,
+            "serial" => ShellLaunchMode::Serial,
+            "both" => ShellLaunchMode::Both,
+            "off" => ShellLaunchMode::Off,
+            _ => ShellLaunchMode::default(),
+        };
+    }
+
+    if let Some(console) = util::get_cmdline_option(cmdline, "console") {
+        return match console {
+            "serial" => ShellLaunchMode::Serial,
+            "both" => ShellLaunchMode::Both,
+            _ => ShellLaunchMode::default(),
+        };
+    }
+
+    ShellLaunchMode::default()
+}
 
 /// A unified shell session that runs the REPL loop
 pub struct ShellSession<F: ShellFrontend> {
@@ -90,16 +137,18 @@ impl<F: ShellFrontend> ShellSession<F> {
 
 /// Spawn a console shell task
 pub fn spawn_console_shell(executor: &mut crate::task::Executor) {
-    use crate::task::Task;
     use crate::shell::frontend::ConsoleFrontend;
+    use crate::task::Task;
 
     executor.spawn(Task::new(async {
         #[cfg(feature = "qemu-test-export")]
         crate::io::log::early_print("[SHELL] console shell task start\n");
         crate::task::yield_now().await;
+        crate::io::log::set_console_mirror_enabled(false);
         // Wait a bit more for drivers?
         let mut session = ShellSession::new(ConsoleFrontend::new());
         session.run().await;
+        crate::io::log::set_console_mirror_enabled(true);
         #[cfg(feature = "qemu-test-export")]
         crate::io::log::early_print("[SHELL] console shell task exit\n");
     }));
@@ -107,8 +156,8 @@ pub fn spawn_console_shell(executor: &mut crate::task::Executor) {
 
 /// Spawn a serial shell task
 pub fn spawn_serial_shell(executor: &mut crate::task::Executor) {
-    use crate::task::Task;
     use crate::shell::exoshell::frontend::serial::SerialFrontend;
+    use crate::task::Task;
 
     executor.spawn(Task::new(async {
         #[cfg(feature = "qemu-test-export")]
@@ -119,4 +168,51 @@ pub fn spawn_serial_shell(executor: &mut crate::task::Executor) {
         #[cfg(feature = "qemu-test-export")]
         crate::io::log::early_print("[SHELL] serial shell task exit\n");
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn parse_shell_mode_defaults_to_console() {
+        assert_eq!(parse_shell_launch_mode(None), ShellLaunchMode::Console);
+        assert_eq!(parse_shell_launch_mode(Some("")), ShellLaunchMode::Console);
+    }
+
+    #[test_case]
+    fn parse_shell_mode_from_shell_key() {
+        assert_eq!(
+            parse_shell_launch_mode(Some("shell=serial")),
+            ShellLaunchMode::Serial
+        );
+        assert_eq!(
+            parse_shell_launch_mode(Some("shell=both")),
+            ShellLaunchMode::Both
+        );
+        assert_eq!(
+            parse_shell_launch_mode(Some("shell=off")),
+            ShellLaunchMode::Off
+        );
+    }
+
+    #[test_case]
+    fn parse_shell_mode_uses_console_key_as_compat_fallback() {
+        assert_eq!(
+            parse_shell_launch_mode(Some("console=serial")),
+            ShellLaunchMode::Serial
+        );
+        assert_eq!(
+            parse_shell_launch_mode(Some("console=both")),
+            ShellLaunchMode::Both
+        );
+    }
+
+    #[test_case]
+    fn parse_shell_mode_prefers_shell_key_over_console_key() {
+        assert_eq!(
+            parse_shell_launch_mode(Some("shell=console console=serial")),
+            ShellLaunchMode::Console
+        );
+    }
 }

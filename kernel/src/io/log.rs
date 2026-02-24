@@ -110,6 +110,10 @@ static CURRENT_LOG_LEVEL: AtomicU8 = AtomicU8::new(LevelFilter::Info as u8);
 /// ヒープが使用可能かどうか
 static HEAP_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
+/// Whether log messages should be mirrored to the on-screen console.
+/// Serial output remains enabled regardless of this switch.
+static CONSOLE_MIRROR_ENABLED: AtomicBool = AtomicBool::new(true);
+
 /// シリアルポート排他制御用Spinlock
 ///
 /// マルチコア環境や割り込みコンテキストでの同時アクセスを防ぐ。
@@ -456,7 +460,6 @@ const PER_CORE_INIT: IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>> =
     IrqMutex::new(RingBuffer::new());
 static PER_CORE_LOG_BUFFERS: [IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>>; PER_CPU_COUNT] =
     [PER_CORE_INIT; PER_CPU_COUNT];
-
 
 /// 非同期入力バッファ（受信）
 static INPUT_BUFFER: IrqMutex<RingBuffer<INPUT_BUFFER_CAPACITY>> = IrqMutex::new(RingBuffer::new());

@@ -11,6 +11,8 @@
 #   kernel = <filename>     ; Kernel binary (signed ELF)
 #   initramfs = <filename>  ; Optional initramfs archive
 #   cmdline = <arguments>   ; Kernel command line arguments
+#                            ; shell=console|serial|both|off (default: console)
+#                            ; console=serial|both remains supported for compatibility
 
 # Global configuration
 timeout = 5
@@ -21,24 +23,24 @@ default = 0
 name = RanyOS (Default)
 kernel = rany_os
 initramfs = initramfs.tar
-cmdline = loglevel=info console=serial
+cmdline = loglevel=info shell=console
 
 # Debug mode entry
 [entry]
 name = RanyOS (Debug Mode)
 kernel = rany_os
 initramfs = initramfs.tar
-cmdline = loglevel=debug console=serial panic=immediate
+cmdline = loglevel=debug shell=serial panic=immediate
 
 # Recovery entry (no initramfs)
 [entry]
 name = RanyOS (Recovery)
 kernel = rany_os
-cmdline = loglevel=debug console=serial recovery=1
+cmdline = loglevel=debug shell=serial recovery=1
 
 # Alternative kernel for testing
 #[entry]
 #name = RanyOS (Test Kernel)
 #kernel = rany_os_test
 #initramfs = initramfs.tar
-#cmdline = loglevel=debug console=serial test_mode=1
+#cmdline = loglevel=debug shell=serial test_mode=1

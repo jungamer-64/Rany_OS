@@ -27,6 +27,20 @@ Generated artifacts:
 ./scripts/run.sh --serial stdio --monitor --tcg
 ```
 
+Shell mode selection via cmdline:
+
+```bash
+# default (recommended): shell=console
+./scripts/run.sh --serial stdio --monitor --tcg --cmdline "shell=console"
+
+# serial-only interactive shell
+./scripts/run.sh --serial stdio --monitor --tcg --cmdline "shell=serial"
+```
+
+Notes:
+- Canonical key is `shell=console|serial|both|off`.
+- `console=serial|both` is still accepted as a compatibility fallback.
+
 Confirm startup logs mention:
 
 - `Included initramfs.tar`

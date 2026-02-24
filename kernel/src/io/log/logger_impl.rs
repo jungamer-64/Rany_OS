@@ -13,13 +13,6 @@ impl Log for KernelLogger {
     }
 
     fn log(&self, record: &Record) {
-        // diagnostic: print the message content via early_print if heap is available
-        if HEAP_AVAILABLE.load(Ordering::Relaxed) {
-            let msg = alloc::format!("{}", record.args());
-            super::early_print("[LOGDBG] msg=[");
-            super::early_print(&msg);
-            super::early_print("]\n");
-        }
         if !self.enabled(record.metadata()) {
             return;
         }
@@ -46,7 +39,7 @@ impl Log for KernelLogger {
         // 画面への出力（統合実装）
         // パニック中以外、かつロックが取得できた場合のみ出力してデッドロックを回避する
         #[cfg(not(feature = "bench"))]
-        if !is_in_panic() {
+        if !is_in_panic() && console_mirror_enabled() {
             // Helper adapter to use formatting with try_write
             struct ConsoleLogWriter;
             impl core::fmt::Write for ConsoleLogWriter {
@@ -55,7 +48,7 @@ impl Log for KernelLogger {
                     Ok(())
                 }
             }
-            
+
             use core::fmt::Write;
             let _ = write!(ConsoleLogWriter, "{}\n", record.args());
         }
@@ -422,7 +415,6 @@ pub fn log_aggregator_task(_arg: u64) -> ! {
     }
 }
 
-
 /// ロギングシステムを初期化
 ///
 /// カーネル起動の早い段階で呼び出す。ヒープ初期化前でも動作する。
@@ -462,7 +454,6 @@ pub fn exit_panic_mode() {
     IN_PANIC.store(false, Ordering::SeqCst);
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,16 +466,39 @@ mod tests {
         assert_eq!(trim_spaces_before_newline("foo \nbar \n"), "foo\nbar\n");
         assert_eq!(trim_spaces_before_newline("no_spaces"), "no_spaces");
         assert_eq!(trim_spaces_before_newline("trailing "), "trailing");
-        assert_eq!(trim_spaces_before_newline("multi\nlines with space \n"), "multi\nlines with space\n");
+        assert_eq!(
+            trim_spaces_before_newline("multi\nlines with space \n"),
+            "multi\nlines with space\n"
+        );
+    }
+
+    #[test]
+    fn console_mirror_toggle() {
+        set_console_mirror_enabled(true);
+        assert!(console_mirror_enabled());
+        set_console_mirror_enabled(false);
+        assert!(!console_mirror_enabled());
+        set_console_mirror_enabled(true);
+        assert!(console_mirror_enabled());
     }
 }
-
-
 
 /// 実行時にログレベルを変更
 pub fn set_log_level(level: LevelFilter) {
     CURRENT_LOG_LEVEL.store(level as u8, Ordering::SeqCst);
     log::set_max_level(level);
+}
+
+/// Enable/disable mirroring logs to the framebuffer console.
+///
+/// Serial logging is unaffected by this flag.
+pub fn set_console_mirror_enabled(enabled: bool) {
+    CONSOLE_MIRROR_ENABLED.store(enabled, Ordering::SeqCst);
+}
+
+/// Returns whether log mirroring to the framebuffer console is enabled.
+pub fn console_mirror_enabled() -> bool {
+    CONSOLE_MIRROR_ENABLED.load(Ordering::Relaxed)
 }
 
 /// 現在のログレベルを取得
@@ -643,7 +657,6 @@ macro_rules! early_log_no_newline {
     }};
 }
 
-
 // ============================================================================
 // シリアルデバッグコンソール（設計書 §10.2）
 // ============================================================================
@@ -728,13 +741,13 @@ pub(crate) fn print_system_status() {
     early_print("[DEBUG] Log level: ");
     early_print(level_filter_name(current_log_level()));
     early_print("\n");
-    
+
     // タイマーtick
     let tick = crate::task::timer::current_tick();
     early_print("[DEBUG] Timer ticks: ");
     early_print_dec(tick);
     early_print("\n");
-    
+
     // パニック統計
     #[cfg(not(feature = "bench"))]
     {
@@ -743,7 +756,7 @@ pub(crate) fn print_system_status() {
         early_print_dec(panic_stats.total_panics);
         early_print("\n");
     }
-    
+
     early_print("[DEBUG] ======================\n");
 }
 

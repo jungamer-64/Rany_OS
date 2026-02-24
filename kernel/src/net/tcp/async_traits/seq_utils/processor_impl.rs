@@ -221,22 +221,29 @@ impl TcpProcessor {
         let listener_addr = if self.listeners.contains_key(&local_addr) {
             local_addr
         } else {
-            match local_addr {
-                SocketAddr::V4 { port, .. } => {
-                    let wildcard = SocketAddr::new(Ipv4Addr::UNSPECIFIED, port);
-                    if self.listeners.contains_key(&wildcard) {
-                        wildcard
+            let port = local_addr.port();
+
+            // Prefer IPv4 wildcard when the packet address is IPv4-mapped.
+            if local_addr.as_ipv4().is_some() {
+                let wildcard_v4 = SocketAddr::new(Ipv4Addr::UNSPECIFIED, port);
+                if self.listeners.contains_key(&wildcard_v4) {
+                    wildcard_v4
+                } else {
+                    let wildcard_v6 =
+                        SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::UNSPECIFIED, port);
+                    if self.listeners.contains_key(&wildcard_v6) {
+                        wildcard_v6
                     } else {
                         return None;
                     }
                 }
-                SocketAddr::V6 { port, .. } => {
-                    let wildcard = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::UNSPECIFIED, port);
-                    if self.listeners.contains_key(&wildcard) {
-                        wildcard
-                    } else {
-                        return None;
-                    }
+            } else {
+                let wildcard_v6 =
+                    SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::UNSPECIFIED, port);
+                if self.listeners.contains_key(&wildcard_v6) {
+                    wildcard_v6
+                } else {
+                    return None;
                 }
             }
         };

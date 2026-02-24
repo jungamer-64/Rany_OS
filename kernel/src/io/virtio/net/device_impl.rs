@@ -687,22 +687,9 @@ impl VirtioNetDevice {
     /// adding it to the TX queue. The buffer is retained in `tx_inflight` until completion
     /// and freed in the interrupt handler.
     pub(super) fn process_post_notify_completions(&self) {
-        for txq in &self.tx_queues {
-            let completions = txq.process_used();
-            if !completions.is_empty() {
-                crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] post-notify found {} completions\n", completions.len()));
-                for (didx, len) in completions {
-                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] completion desc={} len={}\n", didx, len));
-                    if let Some(_buf) = self.tx_inflight.lock().remove(&didx) {
-                        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] TX-COMP freed buffer for desc={} len={}\n", didx, len));
-                    } else {
-                        crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] TX completion for unknown desc {}\n", didx));
-                    }
-                }
-            } else {
-                crate::io::log::early_print("[EARLY][NET-TX] no completions found after notify\n");
-            }
-        }
+        // Use the normal completion path so descriptor chains are reclaimed via
+        // `take_completion()` and TX rings do not leak into QueueFull.
+        self.process_tx_completions();
     }
 }
 

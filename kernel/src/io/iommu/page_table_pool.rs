@@ -117,13 +117,13 @@
 //! - Acceptable for high-frequency I/O workloads
 //!
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use crate::sync::IrqMutex;
-use hashbrown::HashMap;
 
 use super::tables::{PT_ENTRIES, SlPte};
 use super::types::IommuError;
@@ -134,13 +134,11 @@ use super::types::IommuError;
 
 /// Global registry mapping page table physical addresses to their reference counts.
 /// This replaces the BTreeMap<u64, u16> in IommuDomain with O(1) lookup.
-static PAGE_TABLE_REF_COUNTS: spin::Once<IrqMutex<HashMap<u64, u16>>> = spin::Once::new();
+static PAGE_TABLE_REF_COUNTS: spin::Once<IrqMutex<BTreeMap<u64, u16>>> = spin::Once::new();
 
 /// Get or initialize the page table reference count registry
-fn ref_count_registry() -> &'static IrqMutex<HashMap<u64, u16>> {
-    // Avoid first-time growth under IrqMutex lock in register_page_table().
-    // A modest upfront capacity keeps hot-path inserts allocation-free.
-    PAGE_TABLE_REF_COUNTS.call_once(|| IrqMutex::new(HashMap::with_capacity(4096)))
+fn ref_count_registry() -> &'static IrqMutex<BTreeMap<u64, u16>> {
+    PAGE_TABLE_REF_COUNTS.call_once(|| IrqMutex::new(BTreeMap::new()))
 }
 
 /// Register a page table's physical address in the global registry
@@ -542,7 +540,9 @@ impl PageTablePool {
 
         let mut pool = self.pools[node].lock();
         let available = pc.pt_magazine.available();
-        let transfer_count = available.min(pool.len()).min(crate::per_cpu::PT_MAG_CAPACITY / 2);
+        let transfer_count = available
+            .min(pool.len())
+            .min(crate::per_cpu::PT_MAG_CAPACITY / 2);
 
         for _ in 0..transfer_count {
             if let Some(pt) = pool.pop() {

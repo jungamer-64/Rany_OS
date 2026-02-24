@@ -2,7 +2,6 @@
 // kernel/src/shell/exoshell/frontend/serial.rs
 // ============================================================================
 
-
 use alloc::format;
 use alloc::string::{String, ToString};
 
@@ -28,7 +27,7 @@ mod ansi {
 }
 
 /// Serial Port Frontend
-/// 
+///
 /// Handles input from the serial port with line editing capabilities.
 pub struct SerialFrontend {
     line_buffer: LineBuffer,
@@ -43,34 +42,35 @@ impl SerialFrontend {
         }
     }
 
-    fn clear_line_visual(&self) {
-        // Move to beginning of line (after prompt)
-        // We assume we are at the cursor position
-        let back = self.line_buffer.cursor;
-        for _ in 0..back {
-            crate::console::write("\x08");
-        }
-        // Overwrite with spaces
-        for _ in 0..self.line_buffer.len() {
-            crate::console::write(" ");
-        }
-        // Go back again
-        for _ in 0..self.line_buffer.len() {
-            crate::console::write("\x08");
+    fn write_str(&self, s: &str) {
+        serial::write_str(s);
+    }
+
+    fn redraw_line(&mut self, shell: &ExoShell) {
+        self.write_str("\r\x1b[2K");
+        self.print_prompt(&shell.cwd);
+        self.write_str(self.line_buffer.as_str());
+
+        let diff = self
+            .line_buffer
+            .len()
+            .saturating_sub(self.line_buffer.cursor);
+        if diff > 0 {
+            self.write_str(&format!("\x1b[{}D", diff));
         }
     }
 }
 
 impl ShellFrontend for SerialFrontend {
     fn print_message(&mut self, msg: &str) {
-         crate::console::write(msg);
-         if !msg.ends_with('\n') {
-             crate::console::write("\n");
-         }
+        self.write_str(msg);
+        if !msg.ends_with('\n') {
+            self.write_str("\n");
+        }
     }
 
     fn print_prompt(&mut self, cwd: &str) {
-        crate::console::write(&format!(
+        self.write_str(&format!(
             "{}exo{}:{}{}{} {}>{} ",
             ansi::MAGENTA,
             ansi::RESET,
@@ -85,22 +85,22 @@ impl ShellFrontend for SerialFrontend {
     fn print_result(&mut self, result: &ExoResult<ExoValue<'static>>) {
         match result {
             Ok(val) => {
-                 if let ExoValue::Exit = val {
-                     return;
-                 }
-                 if let ExoValue::Error(e) = val {
-                     crate::console::write(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
-                     return;
-                 }
-                 if let Some(text) = display::format_shell_output(val) {
-                    crate::console::write(&text);
+                if let ExoValue::Exit = val {
+                    return;
+                }
+                if let ExoValue::Error(e) = val {
+                    self.write_str(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
+                    return;
+                }
+                if let Some(text) = display::format_shell_output(val) {
+                    self.write_str(&text);
                     if !text.ends_with('\n') {
-                        crate::console::write("\n");
+                        self.write_str("\n");
                     }
                 }
             }
             Err(e) => {
-                 crate::console::write(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
+                self.write_str(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
             }
         }
     }
@@ -108,28 +108,28 @@ impl ShellFrontend for SerialFrontend {
     async fn read_line(&mut self, shell: &mut ExoShell) -> Option<String> {
         self.line_buffer.clear();
         self.navigator.reset_navigation();
-        
+
         loop {
             let byte = serial::read_byte().await;
 
             match byte {
                 b'\r' | b'\n' => {
-                    crate::console::write("\r\n");
+                    self.write_str("\r\n");
                     let line = self.line_buffer.as_str().to_string();
                     if !line.trim().is_empty() {
-                         shell.add_history(line.clone());
+                        shell.add_history(line.clone());
                     }
                     return Some(line);
                 }
                 0x08 | 0x7F => {
                     if !self.line_buffer.is_empty() && self.line_buffer.cursor > 0 {
                         self.line_buffer.backspace();
-                        crate::console::write("\x08 \x08");
+                        self.redraw_line(shell);
                     }
                 }
                 b'\t' => self.handle_tab(shell),
                 0x03 => {
-                    crate::console::write("^C\n");
+                    self.write_str("^C\n");
                     self.line_buffer.clear();
                     self.navigator.reset_navigation();
                     self.print_prompt(&shell.cwd);
@@ -141,14 +141,14 @@ impl ShellFrontend for SerialFrontend {
                         if b3 == b'3' {
                             let tilde = serial::read_byte().await;
                             if tilde == b'~' {
-                                self.handle_delete_key(&shell.cwd);
+                                self.handle_delete_key(shell);
                             }
                         } else {
                             self.handle_escape_csi(b3, shell);
                         }
                     }
                 }
-                0x20..=0x7E => self.handle_printable(byte, &shell.cwd),
+                0x20..=0x7E => self.handle_printable(byte, shell),
                 _ => {}
             }
         }
@@ -159,94 +159,78 @@ impl SerialFrontend {
     fn handle_tab(&mut self, shell: &ExoShell) {
         let completions = shell.complete(self.line_buffer.as_str());
         if completions.len() == 1 {
-            self.clear_line_visual();
             self.line_buffer.set(&completions[0]);
-            crate::console::write(self.line_buffer.as_str());
+            self.redraw_line(shell);
         } else if completions.len() > 1 {
-            crate::console::write("\r\n");
+            self.write_str("\r\n");
             for c in &completions {
-                crate::console::write(&format!("  {}\n", c));
+                self.write_str(&format!("  {}\n", c));
             }
-            self.print_prompt(&shell.cwd);
-            crate::console::write(self.line_buffer.as_str());
+            self.redraw_line(shell);
         }
     }
 
     fn handle_escape_csi(&mut self, b3: u8, shell: &mut ExoShell) {
         match b3 {
-            b'A' => { // Up
-                if let Some(prev) = self.navigator.prev(shell.history(), self.line_buffer.as_str()) {
-                    self.clear_line_visual();
+            b'A' => {
+                // Up
+                if let Some(prev) = self
+                    .navigator
+                    .prev(shell.history(), self.line_buffer.as_str())
+                {
                     self.line_buffer.set(&prev);
-                    crate::console::write(self.line_buffer.as_str());
+                    self.redraw_line(shell);
                 }
             }
-            b'B' => { // Down
+            b'B' => {
+                // Down
                 if let Some(next) = self.navigator.next(shell.history()) {
-                    self.clear_line_visual();
                     self.line_buffer.set(&next);
-                    crate::console::write(self.line_buffer.as_str());
+                    self.redraw_line(shell);
                 }
             }
-            b'C' => { // Right
+            b'C' => {
+                // Right
                 if self.line_buffer.cursor < self.line_buffer.len() {
                     self.line_buffer.move_right();
-                    crate::console::write("\x1b[C");
+                    self.redraw_line(shell);
                 }
             }
-            b'D' => { // Left
+            b'D' => {
+                // Left
                 if self.line_buffer.cursor > 0 {
                     self.line_buffer.move_left();
-                    crate::console::write("\x1b[D");
+                    self.redraw_line(shell);
                 }
             }
-            b'H' => { // Home
-                let moves = self.line_buffer.cursor;
-                self.line_buffer.move_home();
-                for _ in 0..moves {
-                    crate::console::write("\x1b[D");
+            b'H' => {
+                // Home
+                if self.line_buffer.cursor > 0 {
+                    self.line_buffer.move_home();
+                    self.redraw_line(shell);
                 }
             }
-            b'F' => { // End
-                let moves = self.line_buffer.content.len() - self.line_buffer.cursor;
-                self.line_buffer.move_end();
-                for _ in 0..moves {
-                    crate::console::write("\x1b[C");
+            b'F' => {
+                // End
+                if self.line_buffer.cursor < self.line_buffer.len() {
+                    self.line_buffer.move_end();
+                    self.redraw_line(shell);
                 }
             }
             _ => {}
         }
     }
 
-    fn handle_delete_key(&mut self, cwd: &str) {
+    fn handle_delete_key(&mut self, shell: &ExoShell) {
         if self.line_buffer.cursor < self.line_buffer.len() {
             self.line_buffer.delete();
-            self.clear_line_visual();
-            crate::console::write("\r");
-            self.print_prompt(cwd);
-            crate::console::write(self.line_buffer.as_str());
-            let diff = self.line_buffer.len() - self.line_buffer.cursor;
-            for _ in 0..diff {
-                crate::console::write("\x08");
-            }
+            self.redraw_line(shell);
         }
     }
 
-    fn handle_printable(&mut self, byte: u8, cwd: &str) {
+    fn handle_printable(&mut self, byte: u8, shell: &ExoShell) {
         let c = byte as char;
-        if self.line_buffer.cursor == self.line_buffer.len() {
-            self.line_buffer.insert(c);
-            let mut b = [0u8; 4];
-            crate::console::write(c.encode_utf8(&mut b));
-        } else {
-            self.line_buffer.insert(c);
-            crate::console::write("\r");
-            self.print_prompt(cwd);
-            crate::console::write(self.line_buffer.as_str());
-            let diff = self.line_buffer.len() - self.line_buffer.cursor;
-            for _ in 0..diff {
-                crate::console::write("\x08");
-            }
-        }
+        self.line_buffer.insert(c);
+        self.redraw_line(shell);
     }
 }

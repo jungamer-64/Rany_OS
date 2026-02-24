@@ -12,9 +12,9 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::console::{ConsoleDriver, TerminalBuffer};
 use super::framebuffer::Framebuffer;
 use super::{BitmapFont, Color, Font};
+use crate::console::{ConsoleDriver, TerminalBuffer};
 // ============================================================================
 // Text Console
 // ============================================================================
@@ -47,7 +47,7 @@ impl TextConsole {
         let font = Box::new(BitmapFont::default_8x16());
         let cols = fb.width() / font.width();
         let rows = fb.height() / font.height();
-        
+
         let screen_size = (cols * rows) as usize;
 
         (
@@ -67,8 +67,10 @@ impl TextConsole {
         self.font = font;
         // フォント変更時は画面全体を再描画するため、キャッシュをクリア（リサイズはConsoleManagerが担当）
         // ここでは前回バッファをクリアして不整合を防ぐ
-        self.prev_buffer.clear(); 
-        unsafe { (*self.fb).clear(Color::BLACK); }
+        self.prev_buffer.clear();
+        unsafe {
+            (*self.fb).clear(Color::BLACK);
+        }
     }
 
     /// カーソル移動前の位置を強制再描画が必要なインデックスを計算
@@ -84,6 +86,50 @@ impl TextConsole {
             }
         }
         None
+    }
+
+    fn draw_cell(&mut self, col: usize, row: usize, cell: crate::console::CharCell) {
+        let x = (col as u32 * self.font.width()) as i32;
+        let y = (row as u32 * self.font.height()) as i32;
+
+        let (fg_ansi, bg_ansi) = cell.attr.effective_colors();
+        let fc = fg_ansi.to_rgb();
+        let fg = Color {
+            red: (fc >> 16) as u8,
+            green: (fc >> 8) as u8,
+            blue: fc as u8,
+            alpha: 0xFF,
+        };
+
+        let bc = bg_ansi.to_rgb();
+        let bg = Color {
+            red: (bc >> 16) as u8,
+            green: (bc >> 8) as u8,
+            blue: bc as u8,
+            alpha: 0xFF,
+        };
+
+        unsafe {
+            self.font
+                .draw_char(&mut *self.fb, x, y, cell.ch, fg, Some(bg));
+        }
+    }
+
+    /// Remove previous cursor underline by redrawing the underlying character cell.
+    fn restore_previous_cursor_cell(&mut self, cols: usize, rows: usize) {
+        let Some((old_x, old_y)) = self.prev_cursor else {
+            return;
+        };
+        if old_x >= cols || old_y >= rows {
+            return;
+        }
+        let idx = old_y * cols + old_x;
+        if idx >= self.prev_buffer.len() {
+            return;
+        }
+
+        let cell = self.prev_buffer[idx];
+        self.draw_cell(old_x, old_y, cell);
     }
 
     /// スクロールを検出しハードウェアアクセラレーションで適用
@@ -135,21 +181,7 @@ impl TextConsole {
                 if let Some(cell) = buffer.get_display_cell(col, row) {
                     let is_force_redraw = force_redraw_idx == Some(idx);
                     if is_force_redraw || self.prev_buffer[idx] != cell {
-                        let x = (col as u32 * self.font.width()) as i32;
-                        let y = (row as u32 * self.font.height()) as i32;
-
-                        let (fg_ansi, bg_ansi) = cell.attr.effective_colors();
-
-                        let fc = fg_ansi.to_rgb();
-                        let fg = Color { red: (fc >> 16) as u8, green: (fc >> 8) as u8, blue: fc as u8, alpha: 0xFF };
-
-                        let bc = bg_ansi.to_rgb();
-                        let bg = Color { red: (bc >> 16) as u8, green: (bc >> 8) as u8, blue: bc as u8, alpha: 0xFF };
-
-                        unsafe {
-                             self.font.draw_char(&mut *self.fb, x, y, cell.ch, fg, Some(bg));
-                        }
-
+                        self.draw_cell(col, row, cell);
                         self.prev_buffer[idx] = cell;
                     }
                 }
@@ -183,11 +215,16 @@ impl ConsoleDriver for TextConsole {
         if self.prev_buffer.len() != total_cells {
             self.prev_buffer = vec![crate::console::CharCell::default(); total_cells];
             self.prev_cursor = None;
-            unsafe { (*self.fb).clear(Color::BLACK); }
+            unsafe {
+                (*self.fb).clear(Color::BLACK);
+            }
         }
 
         let (cx, cy) = buffer.cursor();
         let cursor_pos = (cx, cy);
+
+        // Cursor is an overlay; restore previous cell before any scroll/copy optimization.
+        self.restore_previous_cursor_cell(cols, rows);
 
         let force_redraw_idx = self.compute_force_redraw_idx(cursor_pos, cols, rows);
 
@@ -199,5 +236,3 @@ impl ConsoleDriver for TextConsole {
         self.prev_cursor = Some(cursor_pos);
     }
 }
-
-

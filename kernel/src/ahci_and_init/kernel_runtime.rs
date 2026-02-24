@@ -1,17 +1,25 @@
 use super::*;
 
-
 /// カーネルタスクをスポーン
-pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor) {
+pub(crate) fn spawn_kernel_tasks(
+    executor: &mut task::Executor,
+    shell_mode: crate::shell::session::ShellLaunchMode,
+) {
+    use crate::shell::session::{ShellLaunchMode, spawn_console_shell, spawn_serial_shell};
     use ipc::RRef;
     use task::Task;
-    use crate::shell::session::{spawn_console_shell, spawn_serial_shell};
 
-    // Spawn Serial Shell
-    spawn_serial_shell(executor);
-
-    // Spawn Console Shell Task
-    spawn_console_shell(executor);
+    match shell_mode {
+        ShellLaunchMode::Console => spawn_console_shell(executor),
+        ShellLaunchMode::Serial => spawn_serial_shell(executor),
+        ShellLaunchMode::Both => {
+            spawn_serial_shell(executor);
+            spawn_console_shell(executor);
+        }
+        ShellLaunchMode::Off => {
+            info!(target: "init", "Shell launch disabled by cmdline (shell=off)");
+        }
+    }
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
     crate::net::host_http_service::start_once(executor);
@@ -414,5 +422,9 @@ pub(crate) fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
     crate::io::log::early_print("\nLayout Align: ");
     crate::io::log::early_print_dec(layout.align() as u64);
     crate::io::log::early_print("\n");
-    panic!("allocation error: size={} align={}", layout.size(), layout.align())
+    panic!(
+        "allocation error: size={} align={}",
+        layout.size(),
+        layout.align()
+    )
 }

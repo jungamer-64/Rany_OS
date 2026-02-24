@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// 文字列からログレベルを設定
 ///
 /// シェルコマンド等から呼び出される。
@@ -40,8 +39,6 @@ pub fn set_log_level_from_str(level_str: &str) -> Result<LevelFilter, &'static s
 
     Err("Invalid log level. Use: off, error, warn, info, debug, trace")
 }
-
-
 
 /// Prints formatted arguments to the serial port.
 /// Used by println!/eprintln! macros in lib.rs

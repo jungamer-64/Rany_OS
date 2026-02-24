@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl KernelLogger {
     /// シリアルポートに1バイト書き込み（内部用、ロックなし）
     ///
@@ -93,8 +92,6 @@ impl KernelLogger {
         Self::write_byte_raw(c);
     }
 
-
-
     /// ログレベルのプレフィックスを取得
     pub(super) fn level_prefix(level: Level) -> &'static str {
         match level {
@@ -119,7 +116,11 @@ impl KernelLogger {
     }
 
     /// Write a record into an async RingBuffer (generic over its capacity)
-    pub(super) fn write_into_async_buffer<const N: usize>(&self, buf: &mut RingBuffer<N>, record: &Record) {
+    pub(super) fn write_into_async_buffer<const N: usize>(
+        &self,
+        buf: &mut RingBuffer<N>,
+        record: &Record,
+    ) {
         let writer = AsyncLogWriter::<N>::new(buf);
         let mut tracker = LastCharTracker::new(writer);
 

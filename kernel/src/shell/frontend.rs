@@ -10,7 +10,7 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 
-use crate::io::hid::keyboard::{self, KeyCode, KeyState, KeyboardStream, KeyEventExt};
+use crate::io::hid::keyboard::{self, KeyCode, KeyEventExt, KeyState, KeyboardStream};
 use crate::shell::exoshell::display;
 use crate::shell::exoshell::error::ExoResult;
 use crate::shell::exoshell::frontend::ShellFrontend;
@@ -29,7 +29,7 @@ impl ConsoleFrontend {
     pub fn new() -> Self {
         // Try to take the keyboard stream. If failed, it will be None and read_line will fail/exit.
         let input_stream = keyboard::take_stream().ok();
-        
+
         if input_stream.is_none() {
             crate::console::write("[SHELL] Warning: Could not acquire keyboard stream.\n");
         }
@@ -41,31 +41,18 @@ impl ConsoleFrontend {
         }
     }
 
-    fn clear_line_visual(&self) {
-        // Move to beginning of input (assuming we are at cursor)
-        let back = self.line_buffer.cursor;
-        for _ in 0..back {
-            crate::console::write("\x08");
-        }
-        // Overwrite with spaces
-        for _ in 0..self.line_buffer.len() {
-            crate::console::write(" ");
-        }
-        // Go back again
-        for _ in 0..self.line_buffer.len() {
-            crate::console::write("\x08");
-        }
-    }
-
     fn redraw_line(&mut self, shell: &ExoShell) {
-        crate::console::write("\r");
+        // Single-line redraw: clear, reprint prompt+buffer, then restore cursor.
+        crate::console::write("\r\x1b[2K");
         self.print_prompt(&shell.cwd);
         crate::console::write(self.line_buffer.as_str());
-        
-        // Adjust cursor position if it's not at the end
-        let diff = self.line_buffer.len() - self.line_buffer.cursor;
-        for _ in 0..diff {
-            crate::console::write("\x08");
+
+        let diff = self
+            .line_buffer
+            .len()
+            .saturating_sub(self.line_buffer.cursor);
+        if diff > 0 {
+            crate::console::write(&format!("\x1b[{}D", diff));
         }
     }
 }
@@ -86,9 +73,7 @@ impl ShellFrontend for ConsoleFrontend {
 
         crate::console::write(&format!(
             "{}exo{}:{}{}{} {}>{} ",
-            magenta, reset,
-            cyan, cwd, reset,
-            magenta, reset
+            magenta, reset, cyan, cwd, reset, magenta, reset
         ));
     }
 
@@ -120,13 +105,13 @@ impl ShellFrontend for ConsoleFrontend {
 
     async fn read_line(&mut self, shell: &mut ExoShell) -> Option<String> {
         let mut stream = self.input_stream.take()?;
-        
+
         self.line_buffer.clear();
         self.navigator.reset_navigation();
 
         loop {
             let event = stream.read_key().await;
-            
+
             // Ignore key releases, only process presses
             if event.state == KeyState::Released {
                 continue;
@@ -153,7 +138,7 @@ impl ShellFrontend for ConsoleFrontend {
                     self.handle_history_navigation(&event.key, shell);
                 }
                 KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End => {
-                    self.handle_cursor_movement(&event.key);
+                    self.handle_cursor_movement(&event.key, shell);
                 }
                 KeyCode::PageUp => {
                     crate::console::scroll(10);
@@ -177,13 +162,12 @@ impl ConsoleFrontend {
             KeyCode::Backspace => {
                 if !self.line_buffer.is_empty() && self.line_buffer.cursor > 0 {
                     self.line_buffer.backspace();
-                    crate::console::write("\x08 \x08");
+                    self.redraw_line(shell);
                 }
             }
             KeyCode::Delete => {
                 if self.line_buffer.cursor < self.line_buffer.len() {
                     self.line_buffer.delete();
-                    self.clear_line_visual();
                     self.redraw_line(shell);
                 }
             }
@@ -194,7 +178,6 @@ impl ConsoleFrontend {
     fn handle_tab_completion(&mut self, shell: &mut ExoShell) {
         let completions = shell.complete(self.line_buffer.as_str());
         if completions.len() == 1 {
-            self.clear_line_visual();
             self.line_buffer.set(&completions[0]);
             self.redraw_line(shell);
         } else if completions.len() > 1 {
@@ -208,43 +191,42 @@ impl ConsoleFrontend {
 
     fn handle_history_navigation(&mut self, key: &KeyCode, shell: &mut ExoShell) {
         let entry = match key {
-            KeyCode::Up => self.navigator.prev(shell.history(), self.line_buffer.as_str()),
+            KeyCode::Up => self
+                .navigator
+                .prev(shell.history(), self.line_buffer.as_str()),
             KeyCode::Down => self.navigator.next(shell.history()),
             _ => None,
         };
         if let Some(text) = entry {
-            self.clear_line_visual();
             self.line_buffer.set(&text);
             self.redraw_line(shell);
         }
     }
 
-    fn handle_cursor_movement(&mut self, key: &KeyCode) {
+    fn handle_cursor_movement(&mut self, key: &KeyCode, shell: &ExoShell) {
         match key {
             KeyCode::Left => {
                 if self.line_buffer.cursor > 0 {
                     self.line_buffer.move_left();
-                    crate::console::write("\x1b[D");
+                    self.redraw_line(shell);
                 }
             }
             KeyCode::Right => {
                 if self.line_buffer.cursor < self.line_buffer.len() {
                     self.line_buffer.move_right();
-                    crate::console::write("\x1b[C");
+                    self.redraw_line(shell);
                 }
             }
             KeyCode::Home => {
-                let moves = self.line_buffer.cursor;
-                self.line_buffer.move_home();
-                if moves > 0 {
-                    crate::console::write(&format!("\x1b[{}D", moves));
+                if self.line_buffer.cursor > 0 {
+                    self.line_buffer.move_home();
+                    self.redraw_line(shell);
                 }
             }
             KeyCode::End => {
-                let moves = self.line_buffer.content.len() - self.line_buffer.cursor;
-                self.line_buffer.move_end();
-                if moves > 0 {
-                    crate::console::write(&format!("\x1b[{}C", moves));
+                if self.line_buffer.cursor < self.line_buffer.len() {
+                    self.line_buffer.move_end();
+                    self.redraw_line(shell);
                 }
             }
             _ => {}
@@ -262,18 +244,12 @@ impl ConsoleFrontend {
         } else if c == '\x0c' {
             // Ctrl+L (Form Feed) -> Clear Screen
             crate::console::write("\x1b[2J\x1b[H");
-            self.print_prompt(&shell.cwd);
-            crate::console::write(self.line_buffer.as_str());
+            self.redraw_line(shell);
             return;
         }
 
-        if self.line_buffer.cursor == self.line_buffer.len() {
-            self.line_buffer.insert(c);
-            let mut b = [0u8; 4];
-            crate::console::write(c.encode_utf8(&mut b));
-        } else {
-            self.line_buffer.insert(c);
-            self.clear_line_visual();
+        self.line_buffer.insert(c);
+        if self.line_buffer.cursor <= self.line_buffer.len() {
             self.redraw_line(shell);
         }
     }
