@@ -1,5 +1,5 @@
-use crate::*;
 use crate::time::{get_current_dos_date, get_current_dos_time};
+use crate::*;
 
 // DirEntryBuilder - Builder Pattern
 // ============================================================================
@@ -193,4 +193,3 @@ impl DirEntryBuilder {
         self.add_attr(FileAttributes::SYSTEM)
     }
 }
-

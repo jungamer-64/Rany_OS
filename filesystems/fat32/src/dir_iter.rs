@@ -1,5 +1,5 @@
+use crate::sfn::{DirEntryAction, process_dir_entry};
 use crate::*;
-use crate::sfn::{process_dir_entry, DirEntryAction};
 
 /// ディレクトリエントリを遅延評価で読み込むイテレータ
 ///

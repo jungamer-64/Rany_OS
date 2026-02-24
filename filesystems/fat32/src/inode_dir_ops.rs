@@ -221,7 +221,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// LFNパーツからファイル名を解決する。LFNが無効ならショートネームにフォールバック。
-    pub(crate) fn resolve_lfn_name(lfn_parts: &mut Vec<(u8, bool, String, u8)>, raw: &DirEntryRaw) -> String {
+    pub(crate) fn resolve_lfn_name(
+        lfn_parts: &mut Vec<(u8, bool, String, u8)>,
+        raw: &DirEntryRaw,
+    ) -> String {
         if lfn_parts.is_empty() {
             return raw.short_name();
         }
@@ -583,7 +586,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// ショート名でディレクトリエントリを非同期的に検索する。
-    pub(crate) async fn find_raw_entry_by_short_name_async(&self, name: &str) -> FsResult<DirEntryRaw> {
+    pub(crate) async fn find_raw_entry_by_short_name_async(
+        &self,
+        name: &str,
+    ) -> FsResult<DirEntryRaw> {
         let (raw_entry, _, _) = self
             .scan_dir_entries_async(|raw, _| {
                 if raw.is_deleted()
@@ -666,7 +672,11 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// 移動されたディレクトリの ".." エントリを新しい親に更新する（同期版）。
-    pub(crate) fn update_dotdot_entry(&self, cluster: Cluster, new_parent_cluster: Cluster) -> FsResult<()> {
+    pub(crate) fn update_dotdot_entry(
+        &self,
+        cluster: Cluster,
+        new_parent_cluster: Cluster,
+    ) -> FsResult<()> {
         let cluster_size = self.fs.cluster_size();
         let mut buffer =
             PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
@@ -785,7 +795,12 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         Ok(())
     }
 
-    pub(crate) fn rename(&self, old_name: &str, new_dir: &Arc<dyn Inode>, new_name: &str) -> FsResult<()> {
+    pub(crate) fn rename(
+        &self,
+        old_name: &str,
+        new_dir: &Arc<dyn Inode>,
+        new_name: &str,
+    ) -> FsResult<()> {
         validate_path_length(old_name)?;
         validate_path_length(new_name)?;
 
@@ -849,7 +864,11 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// 指定インデックスまでクラスタチェインを辿る（非同期）
-    pub(crate) async fn seek_to_cluster_async(&self, start: Cluster, count: usize) -> FsResult<Cluster> {
+    pub(crate) async fn seek_to_cluster_async(
+        &self,
+        start: Cluster,
+        count: usize,
+    ) -> FsResult<Cluster> {
         let mut current = start;
         for _ in 0..count {
             let next = self.fs.read_fat_entry_async(current).await?;
@@ -958,5 +977,4 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         }
         Ok((last, run_count))
     }
-
 }

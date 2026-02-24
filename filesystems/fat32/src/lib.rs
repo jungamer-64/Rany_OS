@@ -47,33 +47,32 @@ extern crate alloc;
 
 // poison_lockは libs/sync から使用するため、ローカルモジュールを削除
 mod async_mutex;
-mod irq_lock;
-mod error;
-mod types;
-mod time;
-mod cache;
-mod ondisk;
-mod dir_builder;
-mod sfn;
-mod dir_iter;
 mod buffer_pool;
+mod cache;
 mod cluster_chain;
+mod dir_builder;
+mod dir_iter;
+mod error;
+mod irq_lock;
+mod ondisk;
+mod sfn;
+mod time;
+mod types;
 
+mod format;
+mod fs_cluster_io;
 mod fs_core;
 mod fs_mount;
-mod fs_cluster_io;
 mod fs_trait_impl;
+mod fsck;
 mod inode_constructors;
 mod inode_dir_entries;
-mod inode_metadata;
 mod inode_dir_ops;
 mod inode_file_io;
+mod inode_metadata;
 mod inode_vfs_impl;
-mod format;
-mod fsck;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
-
 
 pub use buffer_pool::{
     ClusterBuffer, ClusterBufferAllocator, ClusterBufferPool, PooledClusterBuffer,
@@ -84,16 +83,14 @@ pub use cluster_chain::ClusterChain;
 pub use dir_builder::DirEntryBuilder;
 pub use dir_iter::DirectoryIterator;
 pub use error::{Fat32Error, Fat32Result, ResultExt};
+pub use format::FormatOptions;
+pub use fsck::{FsckIssue, FsckResult};
 pub use ondisk::{
-    BiosParameterBlock, BootSector, DirEntryRaw, Fat32ExtendedBpb, FsInfo, LfnEntry,
-    SafePackedRead,
+    BiosParameterBlock, BootSector, DirEntryRaw, Fat32ExtendedBpb, FsInfo, LfnEntry, SafePackedRead,
 };
 pub use sfn::{DirectoryEntryKind, collect_existing_sfns, generate_unique_sfn, long_name_to_sfn};
 pub use time::{DummyTimeProvider, TimeProvider, dos_to_unix, unix_to_dos};
 pub use types::{ByteCount, Cluster, ClusterExt, FileAttributes, FileOffset, NextCluster, Sector};
-pub use format::FormatOptions;
-pub use fsck::{FsckIssue, FsckResult};
-
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -339,7 +336,6 @@ pub struct Fat32FileSystem<B: ZeroCopyBufferMut + 'static> {
     dir_cache: DirEntryCache,
 }
 
-
 // ============================================================================
 // FAT32 Inode
 // ============================================================================
@@ -430,7 +426,6 @@ struct Fat32InodeInner {
     accessed: u64,
 }
 
-
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -448,15 +443,11 @@ fn try_alloc_vec<T: Clone>(len: usize, value: T) -> FsResult<Vec<T>> {
 // VFS Implementations
 // ============================================================================
 
-
 pub struct Fat32File<B: ZeroCopyBufferMut + 'static> {
     inode: Arc<Fat32Inode<B>>,
     position: u64,
 }
 
-
 pub struct Fat32Directory<B: ZeroCopyBufferMut + 'static> {
     inode: Arc<Fat32Inode<B>>,
 }
-
-

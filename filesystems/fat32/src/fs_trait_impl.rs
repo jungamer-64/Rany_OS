@@ -30,4 +30,3 @@ impl<B: ZeroCopyBufferMut + 'static> fmt::Debug for Fat32FileSystem<B> {
             .finish_non_exhaustive() // "device" フィールドは省略
     }
 }
-

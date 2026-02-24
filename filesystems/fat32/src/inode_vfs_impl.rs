@@ -41,7 +41,6 @@ impl<B: ZeroCopyBufferMut + 'static> Inode for Fat32Inode<B> {
     }
 }
 
-
 impl<B: ZeroCopyBufferMut + 'static> Clone for Fat32Inode<B> {
     fn clone(&self) -> Self {
         Self {
@@ -139,4 +138,3 @@ impl<B: ZeroCopyBufferMut + 'static> Directory for Fat32Directory<B> {
         self.inode.readdir(0)
     }
 }
-

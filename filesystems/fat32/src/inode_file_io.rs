@@ -171,7 +171,11 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// FATチェーンをcountクラスタ分進める（必要に応じて割り当て）
-    pub(crate) fn advance_fat_chain_allocating(&self, mut cluster: Cluster, count: u64) -> FsResult<Cluster> {
+    pub(crate) fn advance_fat_chain_allocating(
+        &self,
+        mut cluster: Cluster,
+        count: u64,
+    ) -> FsResult<Cluster> {
         for _ in 0..count {
             cluster = self.next_or_allocate_cluster(cluster)?;
         }
@@ -357,7 +361,11 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// FATチェーンをcountクラスタ分進める（必要に応じて新クラスタを割り当て）
-    pub(crate) async fn advance_fat_chain_async(&self, start: Cluster, count: u64) -> FsResult<Cluster> {
+    pub(crate) async fn advance_fat_chain_async(
+        &self,
+        start: Cluster,
+        count: u64,
+    ) -> FsResult<Cluster> {
         let mut cluster = start;
         for _ in 0..count {
             cluster = self.advance_or_allocate_next_async(cluster).await?;
@@ -366,7 +374,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// 次のクラスタを取得（未割当てなら新規割り当て）
-    pub(crate) async fn advance_or_allocate_next_async(&self, cluster: Cluster) -> FsResult<Cluster> {
+    pub(crate) async fn advance_or_allocate_next_async(
+        &self,
+        cluster: Cluster,
+    ) -> FsResult<Cluster> {
         let next = self.fs.read_fat_entry_async(cluster).await?;
         if next.is_valid() {
             Ok(next)

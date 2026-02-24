@@ -1,6 +1,5 @@
 use super::*;
 
-
 impl VirtualConsole {
     pub fn new(id: u32, cols: usize, rows: usize) -> Self {
         Self {
@@ -33,11 +32,11 @@ impl VirtualConsole {
             }
             AnsiAction::CursorDown(n) => {
                 let (x, y) = self.buffer.cursor();
-                self.buffer.set_cursor(x, y + n);
+                self.buffer.set_cursor(x, y.saturating_add(n));
             }
             AnsiAction::CursorForward(n) => {
                 let (x, y) = self.buffer.cursor();
-                self.buffer.set_cursor(x + n, y);
+                self.buffer.set_cursor(x.saturating_add(n), y);
             }
             AnsiAction::CursorBack(n) => {
                 let (x, y) = self.buffer.cursor();
@@ -66,9 +65,13 @@ impl VirtualConsole {
             AnsiAction::ReportCursor => {
                 // カーソル位置レポート（エコーバック用）
             }
+            AnsiAction::SetCursorVisible(visible) => {
+                self.buffer.set_cursor_visible(visible);
+            }
             AnsiAction::Reset => {
                 self.buffer.clear();
                 self.buffer.set_attributes(CharAttributes::new());
+                self.buffer.set_cursor_visible(true);
             }
         }
     }
@@ -205,11 +208,10 @@ impl ConsoleManager {
     /// アクティブなコンソールをスクロール
     pub fn scroll_view(&self, delta: isize) {
         let active = self.active.load(Ordering::Acquire);
-         if let Some(console) = self.consoles.get(active as usize) {
+        if let Some(console) = self.consoles.get(active as usize) {
             console.lock().scroll_view(delta);
         }
     }
-
 
     /// コンソールを切り替え
     pub fn switch_to(&self, console_id: u32) {
@@ -306,11 +308,11 @@ pub fn set_driver(driver: Box<dyn ConsoleDriver>) {
 pub fn flush_screen() {
     if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
         if let Some(ref mut driver) = *CONSOLE_DRIVER.lock() {
-             let active = manager.active_console();
-             if let Some(console) = manager.consoles.get(active as usize) {
-                 // Use .buffer() getter as the field is private
-                 driver.flush(console.lock().buffer());
-             }
+            let active = manager.active_console();
+            if let Some(console) = manager.consoles.get(active as usize) {
+                // Use .buffer() getter as the field is private
+                driver.flush(console.lock().buffer());
+            }
         }
     }
 }
@@ -332,7 +334,7 @@ pub fn try_write(s: &str) {
     // Try to lock manager
     if let Some(guard) = CONSOLE_MANAGER.try_lock() {
         if let Some(ref manager) = *guard {
-             manager.try_write(s);
+            manager.try_write(s);
         }
     }
 
@@ -341,13 +343,13 @@ pub fn try_write(s: &str) {
         if let Some(ref manager) = *manager_guard {
             if let Some(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
                 if let Some(ref mut driver) = *driver_guard {
-                     let active = manager.active_console();
-                     if let Some(console) = manager.consoles.get(active as usize) {
-                         // Try lock console
-                         if let Some(locked_console) = console.try_lock() {
-                             driver.flush(locked_console.buffer());
-                         }
-                     }
+                    let active = manager.active_console();
+                    if let Some(console) = manager.consoles.get(active as usize) {
+                        // Try lock console
+                        if let Some(locked_console) = console.try_lock() {
+                            driver.flush(locked_console.buffer());
+                        }
+                    }
                 }
             }
         }
@@ -372,11 +374,11 @@ pub fn switch(console_id: u32) {
 
 /// アクティブなコンソールをスクロール
 pub fn scroll(delta: isize) {
-     if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+    if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
         manager.scroll_view(delta);
     }
     flush_screen();
-} 
+}
 
 // ============================================================================
 // Print Macros
@@ -415,4 +417,3 @@ macro_rules! console_println {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

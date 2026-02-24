@@ -9,6 +9,7 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
+use core::fmt::Write;
 
 use crate::io::hid::keyboard::{self, KeyCode, KeyEventExt, KeyState, KeyboardStream};
 use crate::shell::exoshell::display;
@@ -26,6 +27,18 @@ pub struct ConsoleFrontend {
 }
 
 impl ConsoleFrontend {
+    fn format_prompt(cwd: &str) -> String {
+        // ANSI colors for prompt
+        let magenta = "\x1b[35m";
+        let cyan = "\x1b[36m";
+        let reset = "\x1b[0m";
+
+        format!(
+            "{}exo{}:{}{}{} {}>{} ",
+            magenta, reset, cyan, cwd, reset, magenta, reset
+        )
+    }
+
     pub fn new() -> Self {
         // Try to take the keyboard stream. If failed, it will be None and read_line will fail/exit.
         let input_stream = keyboard::take_stream().ok();
@@ -43,17 +56,19 @@ impl ConsoleFrontend {
 
     fn redraw_line(&mut self, shell: &ExoShell) {
         // Single-line redraw: clear, reprint prompt+buffer, then restore cursor.
-        crate::console::write("\r\x1b[2K");
-        self.print_prompt(&shell.cwd);
-        crate::console::write(self.line_buffer.as_str());
+        let mut out = String::from("\r\x1b[2K");
+        out.push_str(&Self::format_prompt(&shell.cwd));
+        out.push_str(self.line_buffer.as_str());
 
         let diff = self
             .line_buffer
             .len()
             .saturating_sub(self.line_buffer.cursor);
         if diff > 0 {
-            crate::console::write(&format!("\x1b[{}D", diff));
+            let _ = write!(&mut out, "\x1b[{}D", diff);
         }
+
+        crate::console::write(&out);
     }
 }
 
@@ -66,15 +81,7 @@ impl ShellFrontend for ConsoleFrontend {
     }
 
     fn print_prompt(&mut self, cwd: &str) {
-        // ANSI colors for prompt
-        let magenta = "\x1b[35m";
-        let cyan = "\x1b[36m";
-        let reset = "\x1b[0m";
-
-        crate::console::write(&format!(
-            "{}exo{}:{}{}{} {}>{} ",
-            magenta, reset, cyan, cwd, reset, magenta, reset
-        ));
+        crate::console::write(&Self::format_prompt(cwd));
     }
 
     fn print_result(&mut self, result: &ExoResult<ExoValue<'static>>) {
@@ -181,10 +188,11 @@ impl ConsoleFrontend {
             self.line_buffer.set(&completions[0]);
             self.redraw_line(shell);
         } else if completions.len() > 1 {
-            crate::console::write("\r\n");
+            let mut out = String::from("\r\n");
             for c in &completions {
-                crate::console::write(&format!("  {}\n", c));
+                let _ = writeln!(&mut out, "  {}", c);
             }
+            crate::console::write(&out);
             self.redraw_line(shell);
         }
     }

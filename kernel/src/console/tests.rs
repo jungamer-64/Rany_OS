@@ -46,3 +46,37 @@ fn test_virtual_console() {
     // ANSIカラー
     vc.write("\x1b[31mRed\x1b[0m");
 }
+
+#[test_case]
+fn test_csi_cursor_default_param_moves_one() {
+    let mut vc = VirtualConsole::new(0, 20, 5);
+    vc.write("abc\nxyz");
+    assert_eq!(vc.buffer().cursor(), (3, 1));
+
+    // CUU with omitted parameter should behave as 1
+    vc.write("\x1b[A");
+    assert_eq!(vc.buffer().cursor(), (3, 0));
+}
+
+#[test_case]
+fn test_private_mode_cursor_visibility() {
+    let mut vc = VirtualConsole::new(0, 20, 5);
+    vc.write("A\x1b[?25lB");
+
+    assert_eq!(vc.buffer().get_cell(0, 0).map(|c| c.ch), Some('A'));
+    assert_eq!(vc.buffer().get_cell(1, 0).map(|c| c.ch), Some('B'));
+    assert!(!vc.buffer().cursor_visible());
+
+    vc.write("\x1b[?25h");
+    assert!(vc.buffer().cursor_visible());
+}
+
+#[test_case]
+fn test_osc_st_terminator_is_not_rendered() {
+    let mut vc = VirtualConsole::new(0, 40, 5);
+    vc.write("X\x1b]0;title\x1b\\Y");
+
+    assert_eq!(vc.buffer().get_cell(0, 0).map(|c| c.ch), Some('X'));
+    assert_eq!(vc.buffer().get_cell(1, 0).map(|c| c.ch), Some('Y'));
+    assert_eq!(vc.buffer().cursor(), (2, 0));
+}

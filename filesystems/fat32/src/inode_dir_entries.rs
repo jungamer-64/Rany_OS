@@ -289,7 +289,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     ///
     /// # Returns
     /// コールバックが返した値、または走査完了時はNone
-    pub(crate) fn scan_dir_entries<T, F>(&self, mut predicate: F) -> FsResult<Option<(T, Cluster, usize)>>
+    pub(crate) fn scan_dir_entries<T, F>(
+        &self,
+        mut predicate: F,
+    ) -> FsResult<Option<(T, Cluster, usize)>>
     where
         F: FnMut(&DirEntryRaw, usize) -> Option<T>,
     {

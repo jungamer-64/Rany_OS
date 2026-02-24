@@ -142,4 +142,3 @@ impl Fat32FileSystem<DefaultZeroCopyBuffer> {
         Ok(result)
     }
 }
-

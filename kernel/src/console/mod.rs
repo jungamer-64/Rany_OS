@@ -205,6 +205,8 @@ pub struct TerminalBuffer {
     scroll_offset: usize,
     /// 現在の属性
     current_attr: CharAttributes,
+    /// カーソルの可視状態
+    cursor_visible: bool,
 }
 
 impl TerminalBuffer {
@@ -218,6 +220,7 @@ impl TerminalBuffer {
             cursor_y: 0,
             scroll_offset: 0,
             current_attr: CharAttributes::new(),
+            cursor_visible: true,
         }
     }
 
@@ -268,16 +271,16 @@ impl TerminalBuffer {
                 }
             }
             '\x07' => { // Bell
-                // ビープ音を鳴らす（実装依存）
+                 // ビープ音を鳴らす（実装依存）
             }
             _ => {
                 self.write_printable_char(ch);
             }
         }
-        
+
         // Reset scroll on input
         if self.scroll_offset > 0 {
-             self.scroll_offset = 0;
+            self.scroll_offset = 0;
         }
     }
 
@@ -424,21 +427,23 @@ impl TerminalBuffer {
         // The line index `y` relative to the top of the viewing window
         // Viewing window starts at: (Total Rows) - (Screen Rows) - scroll_offset
         // Total logical rows = history_len + self.rows
-        
+
         let total_rows = history_len + self.rows;
         let view_start_row = total_rows.saturating_sub(self.rows + self.scroll_offset);
         let target_abs_row = view_start_row + y;
 
         if target_abs_row < history_len {
             // In history
-            self.scrollback.get(target_abs_row).and_then(|line| line.get(x).copied())
+            self.scrollback
+                .get(target_abs_row)
+                .and_then(|line| line.get(x).copied())
         } else {
             // In active screen
             let screen_y = target_abs_row - history_len;
             if screen_y < self.rows {
-                 Some(self.screen[screen_y * self.cols + x])
+                Some(self.screen[screen_y * self.cols + x])
             } else {
-                 Some(CharCell::default())
+                Some(CharCell::default())
             }
         }
     }
@@ -457,6 +462,16 @@ impl TerminalBuffer {
     /// ビューをリセット（一番下へ）
     pub fn reset_view(&mut self) {
         self.scroll_offset = 0;
+    }
+
+    /// カーソル可視状態を設定
+    pub fn set_cursor_visible(&mut self, visible: bool) {
+        self.cursor_visible = visible;
+    }
+
+    /// カーソル可視状態を取得
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
     }
 }
 
@@ -486,7 +501,11 @@ pub struct AnsiParser {
     state: ParserState,
     params: Vec<u32>,
     current_param: u32,
+    current_param_has_digits: bool,
+    csi_trailing_separator: bool,
+    private_marker: Option<u8>,
     intermediate: Vec<u8>,
+    osc_escape_pending: bool,
 }
 
 impl AnsiParser {
@@ -495,7 +514,11 @@ impl AnsiParser {
             state: ParserState::Normal,
             params: Vec::new(),
             current_param: 0,
+            current_param_has_digits: false,
+            csi_trailing_separator: false,
+            private_marker: None,
             intermediate: Vec::new(),
+            osc_escape_pending: false,
         }
     }
 
@@ -515,11 +538,15 @@ impl AnsiParser {
                     self.state = ParserState::Csi;
                     self.params.clear();
                     self.current_param = 0;
+                    self.current_param_has_digits = false;
+                    self.csi_trailing_separator = false;
+                    self.private_marker = None;
                     self.intermediate.clear();
                     None
                 }
                 ']' => {
                     self.state = ParserState::Osc;
+                    self.osc_escape_pending = false;
                     None
                 }
                 'c' => {
@@ -534,8 +561,18 @@ impl AnsiParser {
             ParserState::Csi => self.parse_csi(ch),
             ParserState::Osc => {
                 // OSCシーケンス（タイトル設定など）
-                if ch == '\x07' || ch == '\x1b' {
+                if self.osc_escape_pending {
+                    self.osc_escape_pending = false;
+                    if ch == '\\' {
+                        self.state = ParserState::Normal;
+                    }
+                    return None;
+                }
+                if ch == '\x07' {
                     self.state = ParserState::Normal;
+                } else if ch == '\x1b' {
+                    // ST (ESC \) の2文字終端を扱う
+                    self.osc_escape_pending = true;
                 }
                 None
             }
@@ -546,21 +583,48 @@ impl AnsiParser {
         match ch {
             '0'..='9' => {
                 self.current_param = self.current_param * 10 + (ch as u32 - '0' as u32);
+                self.current_param_has_digits = true;
+                self.csi_trailing_separator = false;
                 None
             }
             ';' => {
-                self.params.push(self.current_param);
+                self.params.push(if self.current_param_has_digits {
+                    self.current_param
+                } else {
+                    0
+                });
                 self.current_param = 0;
+                self.current_param_has_digits = false;
+                self.csi_trailing_separator = true;
                 None
+            }
+            '?' | '<' | '=' | '>' => {
+                if self.params.is_empty()
+                    && !self.current_param_has_digits
+                    && self.intermediate.is_empty()
+                    && self.private_marker.is_none()
+                {
+                    self.private_marker = Some(ch as u8);
+                    None
+                } else {
+                    self.state = ParserState::Normal;
+                    None
+                }
             }
             ' '..='/' => {
                 self.intermediate.push(ch as u8);
                 None
             }
-            _ => {
-                self.params.push(self.current_param);
+            '\u{40}'..='\u{7E}' => {
+                if self.current_param_has_digits || self.csi_trailing_separator {
+                    self.params.push(self.current_param);
+                }
                 self.state = ParserState::Normal;
                 self.dispatch_csi(ch)
+            }
+            _ => {
+                self.state = ParserState::Normal;
+                None
             }
         }
     }
@@ -568,15 +632,23 @@ impl AnsiParser {
     fn dispatch_csi(&self, final_char: char) -> Option<AnsiAction> {
         let params = &self.params;
         let get = |i: usize, default: u32| params.get(i).copied().unwrap_or(default);
+        let get_nonzero = |i: usize, default: u32| {
+            let val = get(i, default);
+            if val == 0 {
+                default
+            } else {
+                val
+            }
+        };
 
         match final_char {
-            'A' => Some(AnsiAction::CursorUp(get(0, 1) as usize)),
-            'B' => Some(AnsiAction::CursorDown(get(0, 1) as usize)),
-            'C' => Some(AnsiAction::CursorForward(get(0, 1) as usize)),
-            'D' => Some(AnsiAction::CursorBack(get(0, 1) as usize)),
+            'A' => Some(AnsiAction::CursorUp(get_nonzero(0, 1) as usize)),
+            'B' => Some(AnsiAction::CursorDown(get_nonzero(0, 1) as usize)),
+            'C' => Some(AnsiAction::CursorForward(get_nonzero(0, 1) as usize)),
+            'D' => Some(AnsiAction::CursorBack(get_nonzero(0, 1) as usize)),
             'H' | 'f' => Some(AnsiAction::SetCursor {
-                row: get(0, 1).saturating_sub(1) as usize,
-                col: get(1, 1).saturating_sub(1) as usize,
+                row: get_nonzero(0, 1).saturating_sub(1) as usize,
+                col: get_nonzero(1, 1).saturating_sub(1) as usize,
             }),
             'J' => {
                 let mode = match get(0, 0) {
@@ -594,12 +666,25 @@ impl AnsiParser {
                 };
                 Some(AnsiAction::ClearLine(mode))
             }
-            'm' => Some(AnsiAction::SetGraphics(params.clone())),
+            'm' => {
+                if params.is_empty() {
+                    Some(AnsiAction::SetGraphics(vec![0]))
+                } else {
+                    Some(AnsiAction::SetGraphics(params.clone()))
+                }
+            }
             's' => Some(AnsiAction::SaveCursor),
             'u' => Some(AnsiAction::RestoreCursor),
             'n' => {
                 if get(0, 0) == 6 {
                     Some(AnsiAction::ReportCursor)
+                } else {
+                    None
+                }
+            }
+            'h' | 'l' => {
+                if self.private_marker == Some(b'?') && get(0, 0) == 25 {
+                    Some(AnsiAction::SetCursorVisible(final_char == 'h'))
                 } else {
                     None
                 }
@@ -624,6 +709,7 @@ pub enum AnsiAction {
     SaveCursor,
     RestoreCursor,
     ReportCursor,
+    SetCursorVisible(bool),
     Reset,
 }
 

@@ -232,7 +232,9 @@ impl ConsoleDriver for TextConsole {
 
         self.render_changed_cells(buffer, rows, cols, force_redraw_idx);
 
-        self.draw_cursor_underline(cx, cy);
+        if buffer.cursor_visible() {
+            self.draw_cursor_underline(cx, cy);
+        }
         self.prev_cursor = Some(cursor_pos);
     }
 }

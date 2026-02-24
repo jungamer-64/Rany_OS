@@ -140,11 +140,17 @@ impl KeyboardDriver {
     fn update_modifiers_from_scancode(&self, code: u8, extended: bool, pressed: bool) {
         match (code, extended) {
             // Shift
-            (0x2A, false) => self.modifiers.update_bit(ModifierState::LEFT_SHIFT, pressed),
-            (0x36, false) => self.modifiers.update_bit(ModifierState::RIGHT_SHIFT, pressed),
+            (0x2A, false) => self
+                .modifiers
+                .update_bit(ModifierState::LEFT_SHIFT, pressed),
+            (0x36, false) => self
+                .modifiers
+                .update_bit(ModifierState::RIGHT_SHIFT, pressed),
             // Ctrl (E0 1D = right ctrl)
             (0x1D, false) => self.modifiers.update_bit(ModifierState::LEFT_CTRL, pressed),
-            (0x1D, true) => self.modifiers.update_bit(ModifierState::RIGHT_CTRL, pressed),
+            (0x1D, true) => self
+                .modifiers
+                .update_bit(ModifierState::RIGHT_CTRL, pressed),
             // Alt (E0 38 = right alt / AltGr)
             (0x38, false) => self.modifiers.update_bit(ModifierState::LEFT_ALT, pressed),
             (0x38, true) => self.modifiers.update_bit(ModifierState::RIGHT_ALT, pressed),

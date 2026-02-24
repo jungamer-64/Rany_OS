@@ -83,4 +83,3 @@ pub(crate) fn write_kernel_runtime_pending_summaries(
         blocked_count,
     )
 }
-

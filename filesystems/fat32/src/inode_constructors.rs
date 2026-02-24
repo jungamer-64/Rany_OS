@@ -77,7 +77,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
     /// Resolve the effective name of a Standard directory entry, consuming any
     /// accumulated LFN parts. Returns the resolved name and clears `lfn_parts`.
-    pub(crate) fn resolve_entry_name(raw: &DirEntryRaw, lfn_parts: &mut Vec<(u8, String, u8)>) -> String {
+    pub(crate) fn resolve_entry_name(
+        raw: &DirEntryRaw,
+        lfn_parts: &mut Vec<(u8, String, u8)>,
+    ) -> String {
         if !lfn_parts.is_empty() {
             let expected_checksum = raw.calculate_checksum();
             if lfn_parts
@@ -135,7 +138,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
     /// 指定された名前を持つSFNエントリの場所（クラスタとオフセット）を検索します。
     /// このメソッドはロングファイルネームを正しく処理します。
-    pub(crate) fn find_sfn_location(&self, name_to_find: &str) -> FsResult<Option<(Cluster, usize)>> {
+    pub(crate) fn find_sfn_location(
+        &self,
+        name_to_find: &str,
+    ) -> FsResult<Option<(Cluster, usize)>> {
         if self.file_type != FileType::Directory {
             return Err(FsError::NotADirectory);
         }
@@ -179,7 +185,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     }
 
     /// Read the next cluster in the FAT chain, returning `None` at EOF.
-    pub(crate) async fn read_next_cluster_async(&self, current: Cluster) -> FsResult<Option<Cluster>> {
+    pub(crate) async fn read_next_cluster_async(
+        &self,
+        current: Cluster,
+    ) -> FsResult<Option<Cluster>> {
         let next = self.fs.read_fat_entry_async(current).await?;
         if next.is_eof() || !next.is_valid() {
             Ok(None)

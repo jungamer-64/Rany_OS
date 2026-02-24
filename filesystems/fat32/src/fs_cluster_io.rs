@@ -374,7 +374,11 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
     }
 
     /// 非同期でFATエントリを書き込み
-    pub(crate) async fn write_fat_entry_async(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
+    pub(crate) async fn write_fat_entry_async(
+        &self,
+        cluster: Cluster,
+        value: Cluster,
+    ) -> FsResult<()> {
         trace_fat_operation!("write_async", cluster, "value={}", value.0);
         let idx = cluster.0 as usize;
         let sectors = self.fat_size as usize;
@@ -1039,7 +1043,11 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
     }
 
     /// 非同期でキャッシュを使用してセクタを読み取る
-    pub(crate) async fn read_sector_cached_async(&self, sector: u64, buffer: &mut [u8]) -> FsResult<()> {
+    pub(crate) async fn read_sector_cached_async(
+        &self,
+        sector: u64,
+        buffer: &mut [u8],
+    ) -> FsResult<()> {
         if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
             let data = cached_block.data();
             let data_guard = data.read();
@@ -1131,7 +1139,12 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
     }
 
     /// 連続したクラスタを一括書き込み
-    pub(crate) fn write_contiguous_clusters(&self, start: Cluster, count: usize, data: &[u8]) -> FsResult<()> {
+    pub(crate) fn write_contiguous_clusters(
+        &self,
+        start: Cluster,
+        count: usize,
+        data: &[u8],
+    ) -> FsResult<()> {
         let cluster_size = self.cluster_size();
         let expected_size = count * cluster_size;
 

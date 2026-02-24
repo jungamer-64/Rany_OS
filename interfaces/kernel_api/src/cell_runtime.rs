@@ -85,9 +85,7 @@ impl KernelAllocator {
         let payload_size = layout.size().max(1);
         let align = layout.align().max(align_of::<AllocHeader>());
         let header_size = size_of::<AllocHeader>();
-        let total_size = payload_size
-            .checked_add(align)?
-            .checked_add(header_size)?;
+        let total_size = payload_size.checked_add(align)?.checked_add(header_size)?;
         Some((payload_size, align, total_size))
     }
 
