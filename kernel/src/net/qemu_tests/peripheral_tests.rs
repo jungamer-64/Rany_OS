@@ -114,7 +114,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
 
     // manipulate global client directly to produce values
     if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
-        if let Some(client) = *guard {
+        if let Some(ref client) = *guard {
             // simulate lease and then release via public API
             let lease = crate::net::dhcp::DhcpLease {
                 ip_address: crate::net::Ipv4Address::new([1,2,3,4]),
@@ -129,9 +129,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
                 hostname:None,
                 domain_name:None,
             };
-            if let Ok(mut lg) = client.lease.lock() {
-                *lg = Some(lease.clone());
-            }
+            client.set_lease_for_test(lease.clone());
         }
     }
 
@@ -142,7 +140,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
 
     // simulate a decline
     if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
-        if let Some(client) = *guard {
+        if let Some(ref client) = *guard {
             let _ = client.send_decline(crate::net::Ipv4Address::new([5,6,7,8]), None);
         }
     }

@@ -216,7 +216,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     // create a fake client lease to exercise release API
     if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
-            // manually populate lease and then release
+            // manually populate lease and then release via helper
             let lease = crate::net::dhcp::DhcpLease {
                 ip_address: crate::net::Ipv4Address::new([10, 1, 2, 3]),
                 subnet_mask: crate::net::Ipv4Address::new([255, 255, 255, 0]),
@@ -230,9 +230,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
                 hostname: None,
                 domain_name: None,
             };
-            if let Ok(mut lg) = client.lease.lock() {
-                *lg = Some(lease.clone());
-            }
+            client.set_lease_for_test(lease.clone());
         }
     }
     crate::net::dhcp_release();
@@ -242,7 +240,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     let test_ip = [192, 168, 123, 45];
     let server_ip = [192, 168, 123, 1];
     if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
-        if let Some(client) = *guard {
+        if let Some(ref client) = *guard {
             let _ = client.send_decline(crate::net::Ipv4Address::new(test_ip), Some(crate::net::Ipv4Address::new(server_ip)));
         }
     }

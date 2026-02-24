@@ -62,6 +62,16 @@ impl DhcpClient {
         }
     }
 
+    /// **テスト用**: リースを強制的に設定します。
+    ///
+    /// 通常のランタイムでは使用しませんが、ユニット/スモーク
+    /// テストが内部状態を操作するためのAPIとして公開しています。
+    pub fn set_lease_for_test(&self, lease: DhcpLease) {
+        if let Ok(mut guard) = self.lease.lock() {
+            *guard = Some(lease);
+        }
+    }
+
     /// Return last declined IP recorded (if any)
     pub fn last_declined_ip(&self) -> Option<Ipv4Address> {
         let v = self.last_declined.load(Ordering::SeqCst);
