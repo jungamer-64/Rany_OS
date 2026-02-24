@@ -151,7 +151,6 @@ pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor) {
     // タスク (ネットワーク ping テスト): ゲートウェイへの ICMP を試して結果をログ出力
     executor.spawn(Task::new(async {
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
-        task::sleep_ms(2000).await;
 
         crate::io::log::early_print("[NET-PING-MANUAL] sending manual ping now\n");
         info!(target: "net_test", "Sending ICMP echo to 10.0.2.2 seq=1");

@@ -131,7 +131,7 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
-| **VirtIO-Net (7.1)** | ✅ 完了 | `src/io/virtio/net.rs` |
+| **VirtIO-Net (7.1)** | ✅ 完了 (MQ support added) | `src/io/virtio/net.rs` |
 | **VirtIO-Blk (7.1)** | ✅ 完了 | `src/io/virtio/blk.rs` |
 | VirtIO共通 | ✅ 完了 | `src/io/virtio/mod.rs` |
 | **IOMMU (VT-d/AMD-Vi)** | ✅ 完了 | `src/io/iommu/` |

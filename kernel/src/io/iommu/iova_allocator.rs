@@ -361,7 +361,19 @@ impl IovaAllocator {
                 Some(addr)
             } else {
                 // Over limit — free and fail
-                let _ = self.inner.free_range_immediate(addr, size);
+                // Some FastBitmapAllocator shims (test stubs) don't implement
+                // `free_range_immediate`. Fall back to freeing page-by-page
+                // using `free_immediate` (4K granularity) which is available
+                // on both the test shim and the real allocator.
+                {
+                    use crate::mm::phys::fast_allocator::PAGE_SIZE_4K;
+                    let mut p = addr;
+                    let end = addr.saturating_add(size);
+                    while p < end {
+                        let _ = self.inner.free_immediate(p, PageGranularity::Page4K);
+                        p = p.saturating_add(PAGE_SIZE_4K);
+                    }
+                }
                 None
             }
         } else {

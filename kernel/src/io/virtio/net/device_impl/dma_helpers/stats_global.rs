@@ -917,7 +917,7 @@ mod io_scheduler_tests {
 
         let guard = VIRTIO_NET_DEVICE.lock();
         let device = guard.as_ref().expect("device");
-        let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+        let tx_queue = device.first_tx_queue().expect("tx queue");
         assert!(tx_queue.take_completion(desc_id).is_none());
     }
 
@@ -954,7 +954,7 @@ mod io_scheduler_tests {
         let guard = VIRTIO_NET_DEVICE.lock();
         let device = guard.as_ref().expect("device");
         assert!(!device.tx_inflight.lock().contains_key(&desc_id));
-        let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+        let tx_queue = device.first_tx_queue().expect("tx queue");
         assert!(tx_queue.take_completion(desc_id).is_none());
     }
 

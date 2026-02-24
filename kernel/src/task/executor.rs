@@ -413,6 +413,8 @@ impl Executor {
     pub fn run(&mut self) -> ! {
         loop {
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
+            crate::interrupts::poll_timer_events();
+            crate::task::timer::process_pending_timer_wakers();
             crate::task::interrupt_waker::process_interrupt_events();
             crate::io::io_scheduler::process_deferred_completions();
             crate::sync::process_deferred_wakes();

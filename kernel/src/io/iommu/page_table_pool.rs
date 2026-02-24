@@ -418,7 +418,13 @@ impl PageTablePool {
     /// Deallocate a page table
     fn dealloc(pt: PooledPt) {
         // Use the matching dealloc function for allocate_zeroed_on_node
-        crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
+        // Safety: `deallocate_on_node` is unsafe because callers must ensure
+        // the pointer/layout pair is valid and matches a previous allocation.
+        // `PooledPt` was created by `alloc_fresh` which returns a matching
+        // pointer and layout, so this deallocation is safe here.
+        unsafe {
+            crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
+        }
     }
 
     // ========================================================================

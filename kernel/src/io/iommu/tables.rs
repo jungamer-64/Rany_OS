@@ -383,7 +383,9 @@ pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
 pub fn phys_to_virt_usize(phys: u64) -> usize {
     #[cfg(not(any(test, feature = "qemu-test-export")))]
     {
-        crate::mm::virt::higher_half::phys_to_virt(crate::mm::virt::higher_half::PhysAddr::new(phys)).as_u64() as usize
+        // Use the generic HHDM mapper here: this path is used very early during
+        // IOMMU bring-up where HigherHalfManager may not be published yet.
+        crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys)).as_u64() as usize
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]
