@@ -232,6 +232,11 @@ fn main() -> Status {
     info!("Kernel entry (KERNEL_BASE): 0x{:x}", entry_addr);
     info!("Kernel entry (HHDM): 0x{:x}", hhdm_entry);
 
+    // Mark this attempt as successful once we are ready to hand off to kernel.
+    // This prevents false-positive recovery escalation when kernel success
+    // acknowledgement is unavailable.
+    recovery::mark_boot_handoff_success();
+
     // Save boot log before exiting boot services
     boot_logger.info("About to exit boot services and jump to kernel");
     boot_logger.finalize(true);

@@ -187,6 +187,23 @@ pub fn prepare_boot_attempt(state: &mut BootState, selected_entry: u8) -> BootRe
     }
 }
 
+/// Mark the current boot as successfully handed off to the kernel.
+///
+/// NOTE:
+/// - This is called by ExoLoader immediately before `ExitBootServices`.
+/// - Kernel-level "fully booted" acknowledgement is not implemented yet.
+/// - We still keep the pre-boot pessimistic `last_success=0` in
+///   `prepare_boot_attempt()`, so early bootloader failures are tracked.
+pub fn mark_boot_handoff_success() {
+    let vendor = get_vendor();
+
+    // Successful handoff resets recovery pressure.
+    let _ = runtime::set_variable(VAR_LAST_SUCCESS, vendor, VAR_ATTRS, &[1u8]);
+    let _ = runtime::set_variable(VAR_FAILURE_COUNT, vendor, VAR_ATTRS, &[0u8]);
+
+    serial_println!("[Recovery] Boot handoff marked successful");
+}
+
 /// フォールバックカーネルを使用すべきか判定
 pub fn should_use_fallback(state: &BootState) -> bool {
     // 2回以上連続失敗したらフォールバックを試す
