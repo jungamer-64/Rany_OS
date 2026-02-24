@@ -98,10 +98,10 @@ pub struct VirtioNetDevice {
     pub(crate) net_if_id: Option<crate::net::NetIfId>,
     /// Optional IOMMU device identifier for device-scoped mappings
     iommu_device_id: Option<IommuDeviceId>,
-    /// 受信キュー
-    rx_queue: Option<NetVirtQueue>,
-    /// 送信キュー
-    tx_queue: Option<NetVirtQueue>,
+    /// 受信キューリスト (各ペアにつき1つ、インデックス0,2,...)
+    rx_queues: Vec<NetVirtQueue>,
+    /// 送信キューリスト (各ペアにつき1つ、インデックス1,3,...)
+    tx_queues: Vec<NetVirtQueue>,
     /// 初期化済みフラグ
     initialized: AtomicBool,
     /// 統計: 送信パケット数
@@ -161,8 +161,8 @@ impl VirtioNetDevice {
             virtio_index: index,
             net_if_id: None,
             iommu_device_id,
-            rx_queue: None,
-            tx_queue: None,
+            rx_queues: Vec::new(),
+            tx_queues: Vec::new(),
             initialized: AtomicBool::new(false),
             tx_packets: AtomicU32::new(0),
             rx_packets: AtomicU32::new(0),
@@ -173,6 +173,16 @@ impl VirtioNetDevice {
             tx_packetrefs: Mutex::new(BTreeMap::new()),
             tx_inflight: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Return first RX queue (index 0) if present.
+    pub fn first_rx_queue(&self) -> Option<&NetVirtQueue> {
+        self.rx_queues.get(0)
+    }
+
+    /// Return first TX queue (index 1) if present.
+    pub fn first_tx_queue(&self) -> Option<&NetVirtQueue> {
+        self.tx_queues.get(0)
     }
 
     /// Bind this VirtIO device to a logical network interface identifier.
@@ -269,19 +279,33 @@ impl VirtioNetDevice {
         Ok(())
     }
 
-    /// VirtQueueを設定
+    /// VirtQueue を設定。`config.max_queues` に従いキューペアを並列構築する。
     pub(super) fn setup_queues(&mut self) -> Result<(), VirtioNetError> {
-        // RX queue (queue 0)
-        self.setup_single_queue(0)?;
+        // まずマルチキュー機能を読み取るため、config の max_queues を更新
+        if (self.transport.get_device_features_low() & (features::VIRTIO_NET_F_MQ as u32)) != 0 {
+            // Virtio ネットワーク設定空間 offset 8 に max_virtqueue_pairs がある
+            let pairs = self.transport.read_config_u16(8);
+            if pairs > 0 {
+                self.config.max_queues = pairs;
+            }
+        }
 
-        // TX queue (queue 1)
-        self.setup_single_queue(1)?;
+        let pair_count = core::cmp::max(self.config.max_queues as usize, 1);
+        for i in 0..pair_count {
+            let rx_index = (i * 2) as u16;
+            let rxq = self.setup_single_queue(rx_index)?;
+            self.rx_queues.push(rxq);
+
+            let tx_index = rx_index + 1;
+            let txq = self.setup_single_queue(tx_index)?;
+            self.tx_queues.push(txq);
+        }
 
         Ok(())
     }
 
     /// 単一のキューを設定
-    pub(super) fn setup_single_queue(&mut self, queue_index: u16) -> Result<(), VirtioNetError> {
+    pub(super) fn setup_single_queue(&mut self, queue_index: u16) -> Result<NetVirtQueue, VirtioNetError> {
         // キューを選択
         self.transport.select_queue(queue_index);
 
@@ -368,15 +392,14 @@ impl VirtioNetDevice {
             )
         };
 
-        if queue_index == 0 {
-            self.rx_queue = Some(queue);
-            self.pre_allocate_rx_buffers();
-        } else {
-            self.tx_queue = Some(queue);
+        // RXキューの場合は初期バッファを投稿
+        if (queue_index % 2) == 0 {
+            self.pre_allocate_rx_buffers_for_queue(&queue);
         }
+
         self.transport.enable_queue();
 
-        Ok(())
+        Ok(queue)
     }
 
     /// キューのメモリレイアウトを計算する
@@ -392,7 +415,7 @@ impl VirtioNetDevice {
         let header_stride = VirtioNetHeader::SIZE;
         let header_offset = align_up(used_offset + used_size, header_align);
         let header_size = header_stride * queue_size as usize;
-        let total_size = if queue_index == 1 {
+        let total_size = if (queue_index % 2) == 1 {
             header_offset + header_size
         } else {
             used_offset + used_size
@@ -628,12 +651,8 @@ impl VirtioNetDevice {
         }
     }
 
-    /// RXキューにバッファを事前割り当てする
-    pub(super) fn pre_allocate_rx_buffers(&self) {
-        let rxq = match &self.rx_queue {
-            Some(q) => q,
-            None => return,
-        };
+    /// RXキューにバッファを事前割り当てする（特定キュー版）
+    pub(super) fn pre_allocate_rx_buffers_for_queue(&self, rxq: &NetVirtQueue) {
         let mut added = 0usize;
         for _ in 0..8 {
             match self.try_post_rx_packet(rxq) {
@@ -650,6 +669,13 @@ impl VirtioNetDevice {
         log::info!("[VIRTIO-NET] posted {} initial RX buffers", added);
     }
 
+    /// 登録済み全 RX キューにバッファを事前割り当てする
+    pub(super) fn pre_allocate_rx_buffers(&self) {
+        for rxq in &self.rx_queues {
+            self.pre_allocate_rx_buffers_for_queue(rxq);
+        }
+    }
+
     /// デバイスに通知（キュー更新）
     pub fn notify(&mut self, queue_index: u16) {
         self.transport.notify_queue(queue_index);
@@ -659,7 +685,7 @@ impl VirtioNetDevice {
     /// adding it to the TX queue. The buffer is retained in `tx_inflight` until completion
     /// and freed in the interrupt handler.
     pub(super) fn process_post_notify_completions(&self) {
-        if let Some(ref txq) = self.tx_queue {
+        for txq in &self.tx_queues {
             let completions = txq.process_used();
             if !completions.is_empty() {
                 crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] post-notify found {} completions\n", completions.len()));

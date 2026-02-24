@@ -433,7 +433,7 @@ impl PollHandler for VirtioNetPollHandler {
     fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
         self.with_device(|device| {
             let mut results = Vec::new();
-            if let Some(ref rx_queue) = device.rx_queue {
+            if let Some(rx_queue) = device.first_rx_queue() {
                 for (desc_id, len) in rx_queue.process_used() {
                     device.rx_packets.fetch_add(1, Ordering::Relaxed);
 
@@ -452,7 +452,7 @@ impl PollHandler for VirtioNetPollHandler {
             }
 
             let mut tx_completed = false;
-            if let Some(ref tx_queue) = device.tx_queue {
+            if let Some(tx_queue) = device.first_tx_queue() {
                 for (desc_id, len) in tx_queue.process_used() {
                     tx_completed = true;
                     device.tx_packets.fetch_add(1, Ordering::Relaxed);
@@ -528,8 +528,7 @@ impl VirtioNetOps {
                         return Err(crate::io::io_scheduler::IoError::DeviceError);
                     }
                     let tx_queue = device
-                        .tx_queue
-                        .as_ref()
+                        .first_tx_queue()
                         .ok_or(crate::io::io_scheduler::IoError::NoResources)?;
                     let desc_id = tx_queue
                         .add_tx_buffer_zero_copy(buf.iova, buf.len)
@@ -546,8 +545,7 @@ impl VirtioNetOps {
                         return Err(crate::io::io_scheduler::IoError::InvalidParameter);
                     }
                     let rx_queue = device
-                        .rx_queue
-                        .as_ref()
+                        .first_rx_queue()
                         .ok_or(crate::io::io_scheduler::IoError::NoResources)?;
                     let desc_id = rx_queue
                         .add_rx_buffer_zero_copy(buf.iova, buf.len)
@@ -845,7 +843,7 @@ mod io_scheduler_tests {
                 .expect("device index 1");
             let guard = device_lock.lock();
             let device = &*guard;
-            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let tx_queue = device.first_tx_queue().expect("tx queue");
             let desc_id = tx_queue
                 .add_tx_buffer_zero_copy(0x4100, 64)
                 .expect("tx submit");
@@ -894,7 +892,7 @@ mod io_scheduler_tests {
         let desc_id = {
             let guard = VIRTIO_NET_DEVICE.lock();
             let device = guard.as_ref().expect("device");
-            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let tx_queue = device.first_tx_queue().expect("tx queue");
             let desc_id = tx_queue
                 .add_tx_buffer_zero_copy(0x4000, 64)
                 .expect("tx submit");
@@ -931,7 +929,7 @@ mod io_scheduler_tests {
         let desc_id = {
             let guard = VIRTIO_NET_DEVICE.lock();
             let device = guard.as_ref().expect("device");
-            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let tx_queue = device.first_tx_queue().expect("tx queue");
             let desc_id = tx_queue
                 .add_tx_buffer_zero_copy(0x4200, 64)
                 .expect("tx submit");
@@ -971,7 +969,7 @@ mod io_scheduler_tests {
         let desc_id = {
             let guard = VIRTIO_NET_DEVICE.lock();
             let device = guard.as_ref().expect("device");
-            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+            let rx_queue = device.first_rx_queue().expect("rx queue");
             let desc_id = rx_queue
                 .add_rx_buffer_zero_copy(0x5000, total_buf_len)
                 .expect("rx submit");
@@ -996,7 +994,7 @@ mod io_scheduler_tests {
 
         let guard = VIRTIO_NET_DEVICE.lock();
         let device = guard.as_ref().expect("device");
-        let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+        let rx_queue = device.first_rx_queue().expect("rx queue");
         assert!(rx_queue.take_completion(desc_id).is_none());
     }
 
@@ -1012,7 +1010,7 @@ mod io_scheduler_tests {
         let desc_id = {
             let guard = VIRTIO_NET_DEVICE.lock();
             let device = guard.as_ref().expect("device");
-            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+            let rx_queue = device.first_rx_queue().expect("rx queue");
             assert!(device.try_post_rx_packet(rx_queue).expect("post packet"));
             let desc_id = {
                 let map = device.rx_packetrefs.lock();
@@ -1047,7 +1045,7 @@ mod io_scheduler_tests {
         let guard = VIRTIO_NET_DEVICE.lock();
         let device = guard.as_ref().expect("device");
         assert!(!device.rx_packetrefs.lock().contains_key(&desc_id));
-        let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+        let rx_queue = device.first_rx_queue().expect("rx queue");
         assert!(rx_queue.take_completion(desc_id).is_none());
     }
 
@@ -1059,7 +1057,7 @@ mod io_scheduler_tests {
         let desc_id = {
             let guard = VIRTIO_NET_DEVICE.lock();
             let device = guard.as_ref().expect("device");
-            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let tx_queue = device.first_tx_queue().expect("tx queue");
             let desc_id = tx_queue
                 .add_tx_buffer_zero_copy(0x4600, 64)
                 .expect("tx submit");
@@ -1092,7 +1090,7 @@ mod io_scheduler_tests {
         let desc_id = {
             let guard = VIRTIO_NET_DEVICE.lock();
             let device = guard.as_ref().expect("device");
-            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+            let rx_queue = device.first_rx_queue().expect("rx queue");
             let desc_id = rx_queue
                 .add_rx_buffer_zero_copy(0x4800, VirtioNetHeader::SIZE + 64)
                 .expect("rx submit");
@@ -1113,7 +1111,7 @@ mod io_scheduler_tests {
 
         let guard = VIRTIO_NET_DEVICE.lock();
         let device = guard.as_ref().expect("device");
-        let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+        let rx_queue = device.first_rx_queue().expect("rx queue");
         assert!(rx_queue.take_completion(desc_id).is_none());
     }
 

@@ -171,7 +171,7 @@ Hardware Emulation:
   --no-iommu        Disable IOMMU emulation
   --numa            Enable NUMA topology simulation (default: enabled, 2 nodes)
   --no-numa         Disable NUMA topology simulation
-  --network         Enable VirtIO network device (hostfwd: 5555->80) [default]
+  --network         Enable VirtIO network device (hostfwd: tcp 5555->80, udp 5556->80) [default]
   --no-network      Disable VirtIO network device
   --nvme SIZE       Add virtual NVMe device (e.g., "1G", "512M")
 
@@ -609,14 +609,14 @@ start_qemu() {
 
     # [ExoRust] VirtIO Network with IOMMU Support
     if [[ "$NETWORK" = true ]] && [[ "$NO_NETWORK" != true ]]; then
-        # use alternate port for TCP forward and drop UDP forward to avoid binding errors
-        local netdev_args="user,id=net0,hostfwd=tcp::5556-:80"
+        # Keep TCP/UDP hostfwd ports distinct: some QEMU builds reject reuse.
+        local netdev_args="user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"
         local device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"
         if [[ "$iommu_active" = true ]]; then
             device_args+=",iommu_platform=on,disable-legacy=on"
         fi
         qemu_args+=(-netdev "$netdev_args" -device "$device_args")
-        done_ "[NET] VirtIO-net enabled (hostfwd: 5556->80)"
+        done_ "[NET] VirtIO-net enabled (hostfwd: tcp 5555->80, udp 5556->80)"
     fi
 
     # NVMe Device

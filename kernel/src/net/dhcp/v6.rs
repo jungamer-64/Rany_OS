@@ -1,7 +1,6 @@
 use super::*;
 
 use crate::net::ipv6::Ipv6Address;
-use crate::net::stack::send_udp_v6;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -356,7 +355,13 @@ impl DhcpV6Client {
                             if let Some(ref mut stack) = *guard {
                                 if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                     let src_ip = ipv6_cfg.link_local;
-                                    let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src_ip, src, DHCPV6_SERVER_PORT, &buf[..len]);
+                                    let _ = stack.send_udp_v6_raw(
+                                        DHCPV6_CLIENT_PORT,
+                                        src_ip,
+                                        src,
+                                        DHCPV6_SERVER_PORT,
+                                        &buf[..len],
+                                    );
                                 }
                             }
                         }
@@ -409,7 +414,13 @@ impl DhcpV6Client {
                                 let src = ipv6_cfg.link_local;
                                 let dst = crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]); // all DHCP servers/relay
                                 // Send via UDP/IPv6
-                                if send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]) {
+                                if stack.send_udp_v6_raw(
+                                    DHCPV6_CLIENT_PORT,
+                                    src,
+                                    dst,
+                                    DHCPV6_SERVER_PORT,
+                                    &buf[..len],
+                                ) {
                                     *s = DhcpV6State::SolicitSent;
                                     self.state_time.store(current_tick, Ordering::SeqCst);
                                     self.retry_count.store(0, Ordering::SeqCst);
@@ -435,7 +446,13 @@ impl DhcpV6Client {
                                     if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                         let src = ipv6_cfg.link_local;
                                         let dst = crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
-                                        let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);
+                                        let _ = stack.send_udp_v6_raw(
+                                            DHCPV6_CLIENT_PORT,
+                                            src,
+                                            dst,
+                                            DHCPV6_SERVER_PORT,
+                                            &buf[..len],
+                                        );
                                     }
                                 }
                             }
@@ -463,7 +480,13 @@ impl DhcpV6Client {
                                             Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
                                             Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
                                         };
-                                        let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);
+                                        let _ = stack.send_udp_v6_raw(
+                                            DHCPV6_CLIENT_PORT,
+                                            src,
+                                            dst,
+                                            DHCPV6_SERVER_PORT,
+                                            &buf[..len],
+                                        );
                                     }
                                 }
                             }
@@ -507,7 +530,13 @@ impl DhcpV6Client {
                                                 Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
                                                 Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
                                             };
-                                            let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);
+                                            let _ = stack.send_udp_v6_raw(
+                                                DHCPV6_CLIENT_PORT,
+                                                src,
+                                                dst,
+                                                DHCPV6_SERVER_PORT,
+                                                &buf[..len],
+                                            );
                                         }
                                     }
                                 }
@@ -540,7 +569,13 @@ impl DhcpV6Client {
                                         if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                             let src = ipv6_cfg.link_local;
                                             let dst = crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
-                                            let _ = send_udp_v6(DHCPV6_CLIENT_PORT, src, dst, DHCPV6_SERVER_PORT, &buf[..len]);
+                                            let _ = stack.send_udp_v6_raw(
+                                                DHCPV6_CLIENT_PORT,
+                                                src,
+                                                dst,
+                                                DHCPV6_SERVER_PORT,
+                                                &buf[..len],
+                                            );
                                         }
                                     }
                                 }

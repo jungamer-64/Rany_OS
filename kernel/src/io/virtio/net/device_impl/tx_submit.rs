@@ -32,7 +32,7 @@ impl VirtioNetDevice {
         }
         dst[..data_len].copy_from_slice(data);
 
-        if let Some(ref tx_queue) = self.tx_queue {
+        if let Some(tx_queue) = self.first_tx_queue() {
             let phys = buffer.phys_addr().as_u64();
             crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] about to call add_tx_buffer_zero_copy phys=0x{:x} len={}\n", phys, data_len));
             match tx_queue.add_tx_buffer_zero_copy(phys, data_len) {
@@ -104,8 +104,8 @@ impl VirtioNetDevice {
     /// Ownership of `packet` is moved into the device's inflight map; completion will
     /// perform unmap/cleanup and return the buffer to the pool.
     pub fn enqueue_send_zero_copy(&self, packet: crate::net::PacketRef) -> Result<(), VirtioNetError> {
-        let tx_queue = match self.tx_queue {
-            Some(ref q) => q,
+        let tx_queue = match self.first_tx_queue() {
+            Some(q) => q,
             None => return Err(VirtioNetError::NotInitialized),
         };
 
@@ -393,46 +393,44 @@ impl VirtioNetDevice {
 
     /// RXキュー完了を処理し、パケットをスタックに渡す
     pub(super) fn process_rx_completions(&self) {
-        let rx_queue = match self.rx_queue.as_ref() {
-            Some(q) => q,
-            None => return,
-        };
-        let completions = rx_queue.process_used();
-        for (desc_idx, len) in completions {
-            self.rx_packets.fetch_add(1, Ordering::Relaxed);
+        for rx_queue in &self.rx_queues {
+            let completions = rx_queue.process_used();
+            for (desc_idx, len) in completions {
+                self.rx_packets.fetch_add(1, Ordering::Relaxed);
 
-            // IoScheduler path: completion belongs to a pending IoRequest.
-            if let Some(handler) = get_poll_handler(self.virtio_index) {
-                if let Some((io_id, requested_bytes)) = handler.take_pending_rx(desc_idx) {
-                    let result = if let Some(completion_len) = rx_queue.take_completion(desc_idx) {
-                        let payload_len =
-                            (completion_len as usize).saturating_sub(VirtioNetHeader::SIZE);
-                        let payload_cap = requested_bytes.saturating_sub(VirtioNetHeader::SIZE);
-                        let completed = core::cmp::min(payload_len, payload_cap);
-                        crate::io::io_scheduler::IoResult::Success(completed)
-                    } else {
-                        log::warn!(
-                            "[VIRTIO-NET] RX scheduler completion disappeared desc={}",
-                            desc_idx
-                        );
-                        crate::io::io_scheduler::IoResult::Error(
-                            crate::io::io_scheduler::IoError::DeviceError,
-                        )
-                    };
-                    let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
-                        index: self.virtio_index,
-                    };
-                    let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
-                    bridge.handle_interrupt(device_id, &[(io_id, result)]);
+                // IoScheduler path: completion belongs to a pending IoRequest.
+                if let Some(handler) = get_poll_handler(self.virtio_index) {
+                    if let Some((io_id, requested_bytes)) = handler.take_pending_rx(desc_idx) {
+                        let result = if let Some(completion_len) = rx_queue.take_completion(desc_idx) {
+                            let payload_len =
+                                (completion_len as usize).saturating_sub(VirtioNetHeader::SIZE);
+                            let payload_cap = requested_bytes.saturating_sub(VirtioNetHeader::SIZE);
+                            let completed = core::cmp::min(payload_len, payload_cap);
+                            crate::io::io_scheduler::IoResult::Success(completed)
+                        } else {
+                            log::warn!(
+                                "[VIRTIO-NET] RX scheduler completion disappeared desc={}",
+                                desc_idx
+                            );
+                            crate::io::io_scheduler::IoResult::Error(
+                                crate::io::io_scheduler::IoError::DeviceError,
+                            )
+                        };
+                        let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
+                            index: self.virtio_index,
+                        };
+                        let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
+                        bridge.handle_interrupt(device_id, &[(io_id, result)]);
+                        continue;
+                    }
+                }
+
+                if self.handle_legacy_rx_completion(rx_queue, desc_idx, len) {
                     continue;
                 }
-            }
 
-            if self.handle_legacy_rx_completion(rx_queue, desc_idx, len) {
-                continue;
+                self.release_unknown_rx_completion(rx_queue, desc_idx);
             }
-
-            self.release_unknown_rx_completion(rx_queue, desc_idx);
         }
     }
 
@@ -538,55 +536,53 @@ impl VirtioNetDevice {
 
     /// TXキュー完了を処理し、インフライトバッファを解放
     pub(super) fn process_tx_completions(&self) {
-        let tx_queue = match self.tx_queue.as_ref() {
-            Some(q) => q,
-            None => return,
-        };
-        let completions = tx_queue.process_used();
-        if completions.is_empty() {
-            return;
-        }
-
-        for (desc_idx, len) in completions {
-            self.tx_packets.fetch_add(1, Ordering::Relaxed);
-            self.tx_bytes.fetch_add(len, Ordering::Relaxed);
-
-            log::info!("[VIRTIO-NET][TX-COMP] desc={} len={}", desc_idx, len);
-
-            // IoScheduler path: completion belongs to a pending IoRequest.
-            if let Some(handler) = get_poll_handler(self.virtio_index) {
-                if let Some((io_id, requested_bytes)) = handler.take_pending_tx(desc_idx) {
-                    let result = if tx_queue.take_completion(desc_idx).is_some() {
-                        crate::io::io_scheduler::IoResult::Success(requested_bytes)
-                    } else {
-                        log::warn!(
-                            "[VIRTIO-NET] TX scheduler completion disappeared desc={}",
-                            desc_idx
-                        );
-                        crate::io::io_scheduler::IoResult::Error(
-                            crate::io::io_scheduler::IoError::DeviceError,
-                        )
-                    };
-                    let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
-                        index: self.virtio_index,
-                    };
-                    let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
-                    bridge.handle_interrupt(device_id, &[(io_id, result)]);
-                    continue;
-                }
-            }
-
-            if self.handle_legacy_tx_completion(tx_queue, desc_idx, len) {
+        for tx_queue in &self.tx_queues {
+            let completions = tx_queue.process_used();
+            if completions.is_empty() {
                 continue;
             }
 
-            self.release_unknown_tx_completion(tx_queue, desc_idx);
-        }
+            for (desc_idx, len) in completions {
+                self.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.tx_bytes.fetch_add(len, Ordering::Relaxed);
 
-        // Notify network stack that TX resources became available
-        crate::net::endpoint::event::send_event_ignore(
-            crate::net::endpoint::event::NetworkEvent::TxAvailable,
-        );
+                log::info!("[VIRTIO-NET][TX-COMP] desc={} len={}", desc_idx, len);
+
+                // IoScheduler path: completion belongs to a pending IoRequest.
+                if let Some(handler) = get_poll_handler(self.virtio_index) {
+                    if let Some((io_id, requested_bytes)) = handler.take_pending_tx(desc_idx) {
+                        let result = if tx_queue.take_completion(desc_idx).is_some() {
+                            crate::io::io_scheduler::IoResult::Success(requested_bytes)
+                        } else {
+                            log::warn!(
+                                "[VIRTIO-NET] TX scheduler completion disappeared desc={}",
+                                desc_idx
+                            );
+                            crate::io::io_scheduler::IoResult::Error(
+                                crate::io::io_scheduler::IoError::DeviceError,
+                            )
+                        };
+                        let device_id = crate::io::io_scheduler::DeviceId::VirtioNet {
+                            index: self.virtio_index,
+                        };
+                        let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
+                        bridge.handle_interrupt(device_id, &[(io_id, result)]);
+                        continue;
+                    }
+                }
+
+                if self.handle_legacy_tx_completion(tx_queue, desc_idx, len) {
+                    continue;
+                }
+
+                self.release_unknown_tx_completion(tx_queue, desc_idx);
+            }
+
+            // Notify network stack that TX resources became available
+            crate::net::endpoint::event::send_event_ignore(
+                crate::net::endpoint::event::NetworkEvent::TxAvailable,
+            );
+        }
     }
 
     /// 統計を取得
@@ -664,7 +660,7 @@ mod tests {
         // TX completion with scheduler pending
         let tx_io_id = IoRequestId(3001);
         let tx_desc = crate::io::virtio::with_virtio_net_at_index(index, |device| {
-            let tx_queue = device.tx_queue.as_ref().expect("tx queue");
+            let tx_queue = device.first_tx_queue().expect("tx queue");
             let desc = tx_queue
                 .add_tx_buffer_zero_copy(0x8000, 64)
                 .expect("tx submit");
@@ -692,7 +688,7 @@ mod tests {
         let rx_io_id = IoRequestId(3002);
         let rx_buf_len = VirtioNetHeader::SIZE + 96;
         let rx_desc = crate::io::virtio::with_virtio_net_at_index(index, |device| {
-            let rx_queue = device.rx_queue.as_ref().expect("rx queue");
+            let rx_queue = device.first_rx_queue().expect("rx queue");
             let desc = rx_queue
                 .add_rx_buffer_zero_copy(0x9000, rx_buf_len)
                 .expect("rx submit");

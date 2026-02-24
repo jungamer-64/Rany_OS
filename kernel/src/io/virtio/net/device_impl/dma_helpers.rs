@@ -206,7 +206,7 @@ pub struct SendFuture<'a> {
 impl<'a> SendFuture<'a> {
     /// 送信バッファのサブミットを試みる
     pub(super) fn try_submit(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
-        let tx_queue = self.device.tx_queue.as_ref()
+        let tx_queue = self.device.first_tx_queue()
             .ok_or(VirtioNetError::NotInitialized)?;
 
         let data_len = self.len;
@@ -255,7 +255,7 @@ impl<'a> Future for SendFuture<'a> {
         }
 
         // Check for TX completion
-        let tx_queue = match this.device.tx_queue.as_ref() {
+        let tx_queue = match this.device.first_tx_queue() {
             Some(q) => q,
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };
@@ -287,7 +287,7 @@ impl<'a> RecvFuture<'a> {
             return Err(VirtioNetError::BufferTooSmall);
         }
 
-        let rx_queue = self.device.rx_queue.as_ref()
+        let rx_queue = self.device.first_rx_queue()
             .ok_or(VirtioNetError::NotInitialized)?;
 
         let buffer_len = self.buffer.len();
@@ -323,7 +323,7 @@ impl<'a> RecvFuture<'a> {
 
     /// RX完了チェックとペイロード抽出
     pub(super) fn check_rx_completion(&mut self, cx: &mut Context<'_>) -> Poll<Result<usize, VirtioNetError>> {
-        let rx_queue = match self.device.rx_queue.as_ref() {
+        let rx_queue = match self.device.first_rx_queue() {
             Some(q) => q,
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };
@@ -407,7 +407,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
         }
 
         // 完了を確認
-        let tx_queue = match this.device.tx_queue.as_ref() {
+        let tx_queue = match this.device.first_tx_queue() {
             Some(q) => q,
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };
@@ -425,7 +425,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
 
 impl<'a> ZeroCopySendFuture<'a> {
     pub(super) fn submit_zero_copy_tx(&mut self, cx: &mut Context<'_>) -> Result<(), VirtioNetError> {
-        let tx_queue = self.device.tx_queue.as_ref()
+        let tx_queue = self.device.first_tx_queue()
             .ok_or(VirtioNetError::NotInitialized)?;
         let packet = self.packet.as_ref()
             .ok_or(VirtioNetError::BufferTooSmall)?;
@@ -495,7 +495,7 @@ impl<'a> ZeroCopyRecvFuture<'a> {
             return Poll::Ready(Err(err));
         }
 
-        let rx_queue = match self.device.rx_queue.as_ref() {
+        let rx_queue = match self.device.first_rx_queue() {
             Some(q) => q,
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };
@@ -550,7 +550,7 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
             }
         }
 
-        let rx_queue = match this.device.rx_queue.as_ref() {
+        let rx_queue = match this.device.first_rx_queue() {
             Some(q) => q,
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };

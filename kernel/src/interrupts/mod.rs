@@ -245,7 +245,11 @@ pub fn init() {
 /// IDT が初期化されていないと未定義動作
 pub fn enable_interrupts() {
     if !IDT_INITIALIZED.load(Ordering::SeqCst) {
-        panic!("Cannot enable interrupts: IDT not initialized");
+        crate::io::log::early_print(
+            "[INT] WARN: IDT flag was false in enable_interrupts; reloading IDT\n",
+        );
+        init_idt();
+        IDT_INITIALIZED.store(true, Ordering::SeqCst);
     }
     // guarantee some output even if logging backend is unusable
     crate::io::log::early_print("[INT] enable_interrupts() entry\n");
@@ -522,7 +526,7 @@ pub fn poll_timer_events() {
 define_interrupt!(
     fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
         if !KEYBOARD_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-            log::warn!("[INT] keyboard interrupt received");
+            crate::io::log::early_print("[INT] keyboard interrupt received\n");
         }
         // Delegate to the PS/2 controller handler which reads status/data itself.
         crate::io::hid::ps2::keyboard_interrupt_handler();
@@ -573,7 +577,7 @@ define_interrupt!(
 define_interrupt!(
     fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
         if !IOMMU_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-            log::warn!("[INT] IOMMU fault interrupt received");
+            crate::io::log::early_print("[INT] IOMMU fault interrupt received\n");
         }
         // Process faults
         crate::io::iommu::api::handle_fault();
@@ -649,7 +653,7 @@ define_interrupt!(
     fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
         if !SPURIOUS_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
             // log once to avoid flooding
-            log::warn!("[INT] spurious interrupt received");
+            crate::io::log::early_print("[INT] spurious interrupt received\n");
         }
         // 偽割り込みに対してはEOIを送らないのがIntel仕様での推奨
         // (ただし、Local APICのSIVRのビット8がクリアされている場合などは挙動が異なるが、

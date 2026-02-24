@@ -131,11 +131,19 @@ pub(crate) fn init_network_subsystem() {
     net::init_network_shell();
     info!(target: "init", "Network stack initialized");
 
-    info!(target: "init", "Net Bridge initialized: {}", crate::net::driver_bridge::is_initialized());
+    let bridge_initialized = crate::net::driver_bridge::is_initialized();
+    info!(target: "init", "Net Bridge initialized: {}", bridge_initialized);
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
     info!(target: "init", "Global VirtIO-Net device present: {}", virtio_net_present);
 
     if virtio_net_present {
+        if bridge_initialized {
+            info!(
+                target: "init",
+                "VirtIO-Net bridge already initialized; skipping duplicate driver startup"
+            );
+            return;
+        }
         // VirtIO-Net driver via DriverRegistry
         info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
         {
@@ -570,9 +578,11 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // 3.6. システム統合 (PCI掃描/デバイス初期化) をネットワークより先に行う
     io::log::early_print("[DEBUG] Before integration::init\n");
     info!(target: "init", "Initializing system integration");
+    let mut integration_initialized = false;
     if let Err(e) = integration::init() {
         warn!(target: "init", "System integration failed: {:?}", e);
     } else {
+        integration_initialized = true;
         info!(target: "init", "System integration initialized");
     }
     io::log::early_print("[DEBUG] After integration::init\n");
@@ -629,13 +639,21 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // 当初、統合はネットワーク初期化の前に呼ぶべきであるため、
     // 先に呼び出された場合はここでも補完的に実行する。
     io::log::early_print("[DEBUG] (late) Before integration::init\n");
-    info!(target: "init", "(late) Initializing system integration");
-    if let Err(e) = integration::init() {
-        warn!(target: "init", "(late) System integration failed: {:?}", e);
+    if integration_initialized {
+        info!(
+            target: "init",
+            "(late) Skipping system integration: already initialized"
+        );
+        io::log::early_print("[DEBUG] (late) After integration::init (skipped)\n");
     } else {
-        info!(target: "init", "(late) System integration initialized");
+        info!(target: "init", "(late) Initializing system integration");
+        if let Err(e) = integration::init() {
+            warn!(target: "init", "(late) System integration failed: {:?}", e);
+        } else {
+            info!(target: "init", "(late) System integration initialized");
+        }
+        io::log::early_print("[DEBUG] (late) After integration::init\n");
     }
-    io::log::early_print("[DEBUG] (late) After integration::init\n");
 
     // Diagnostic: immediate manual ping attempt to exercise network transmit path
     io::log::early_print("[DEBUG] Manual ping insertion point\n");
