@@ -190,7 +190,8 @@ pub use dns::{
 #[allow(unused_imports)]
 pub use stack::{
     MAX_PACKET_SIZE, MTU, NetworkConfig, NetworkStack, NetworkStats, bind_udp, init as init_stack,
-    init_default as init_stack_default, receive, send_tcp, send_udp, stack as global_stack,
+    init_default as init_stack_default, is_initialized as is_stack_initialized, receive, send_tcp,
+    send_udp, stack as global_stack,
 };
 
 // Re-export Network Manager (multi-NIC groundwork)
@@ -320,6 +321,7 @@ pub use endpoint::{
     get_or_create_retransmit_queue,
     init_network_event_handler,
     init_socket_manager,
+    is_socket_manager_initialized,
     network_event_task,
     process_tcp_segment,
     retransmit_queue_ack,

@@ -376,7 +376,7 @@ impl SystemIntegration {
                     // Quick sanity ping immediately after driver start.  If the
                     // global VirtIO device is working the ping should succeed
                     // (or at least return an I/O error if the network is down).
-                    let ping = net::send_icmp_echo([10, 0, 2, 2], 1);
+                    let ping = net::send_real_icmp_echo([10, 0, 2, 2], 1);
                     self.log(&alloc::format!("    [PING TEST] result={:?}", ping));
                 }
             }

@@ -1,4 +1,6 @@
 use super::*;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 mod level_parse;
 pub use level_parse::*;
@@ -506,7 +508,10 @@ pub fn is_initialized() -> bool {
 /// leaving a visible “bar” (normally rendered as an underscore when the
 /// terminal is in whitespace‑visible mode) if the format string accidentally
 /// ends in a space.
-fn trim_spaces_before_newline(s: &str) -> String {
+///
+/// This helper is `pub(crate)` so that other submodules under `io::log` (e.g.
+/// `serial_output.rs`) can invoke it via `crate::io::log::trim_spaces_before_newline`.
+pub(crate) fn trim_spaces_before_newline(s: &str) -> String {
     // Work on bytes for simplicity.
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

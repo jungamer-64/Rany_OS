@@ -22,6 +22,14 @@ pub fn stack() -> &'static PoisonLock<Option<NetworkStack>> {
     &NETWORK_STACK
 }
 
+/// Returns true when the global network stack has been initialized.
+pub fn is_initialized() -> bool {
+    match NETWORK_STACK.lock() {
+        Ok(guard) => guard.is_some(),
+        Err(_) => false,
+    }
+}
+
 /// Process a received packet
 pub fn receive(data: &[u8]) {
     use crate::net::mempool::alloc_packet;

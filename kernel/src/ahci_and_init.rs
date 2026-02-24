@@ -124,15 +124,50 @@ pub(crate) fn init_hid_and_serial_drivers() {
 pub(crate) fn init_network_subsystem() {
     io::log::early_print("[DEBUG] Network init\n");
     info!(target: "init", "Initializing network subsystem");
-    net::init_stack_default();
-    net::init_socket_manager();
+    let bridge_initialized = crate::net::driver_bridge::is_initialized();
+    let stack_initialized = net::is_stack_initialized();
+    let socket_manager_initialized = net::is_socket_manager_initialized();
+    info!(target: "init", "Net Bridge initialized: {}", bridge_initialized);
+    info!(
+        target: "init",
+        "Network stack initialized: {}",
+        stack_initialized
+    );
+    info!(
+        target: "init",
+        "Socket manager initialized: {}",
+        socket_manager_initialized
+    );
+
+    if bridge_initialized {
+        info!(
+            target: "init",
+            "Bridge already initialized; skipping default stack initialization"
+        );
+    } else if !stack_initialized {
+        net::init_stack_default();
+        info!(target: "init", "Network stack initialized (default)");
+    } else {
+        info!(
+            target: "init",
+            "Network stack already initialized; skipping default init"
+        );
+    }
+
+    if !net::is_socket_manager_initialized() {
+        net::init_socket_manager();
+        info!(target: "init", "Socket manager initialized");
+    } else {
+        info!(
+            target: "init",
+            "Socket manager already initialized; skipping reinit"
+        );
+    }
 
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
-    info!(target: "init", "Network stack initialized");
+    info!(target: "init", "Network shell API initialized");
 
-    let bridge_initialized = crate::net::driver_bridge::is_initialized();
-    info!(target: "init", "Net Bridge initialized: {}", bridge_initialized);
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
     info!(target: "init", "Global VirtIO-Net device present: {}", virtio_net_present);
 
@@ -163,7 +198,7 @@ pub(crate) fn init_network_subsystem() {
 
         // Diagnostic: attempt a manual ping to exercise the transmit path
         info!(target: "init", "Manual network ping attempt to 10.0.2.2 (will trigger ARP)");
-        match crate::net::send_icmp_echo([10, 0, 2, 2], 1) {
+        match manual_ping_before_if_strict([10, 0, 2, 2], 1) {
             Ok(rtt) => info!(target: "init", "Manual ping success rtt={}", rtt),
             Err(e) => warn!(target: "init", "Manual ping failed: {}", e),
         }
@@ -173,6 +208,40 @@ pub(crate) fn init_network_subsystem() {
             "VirtIO-Net device is not initialized yet; deferring network driver startup"
         );
     }
+}
+
+fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
+    const MAX_ATTEMPTS: usize = 12;
+    const PUMP_ROUNDS_PER_ATTEMPT: usize = 8;
+
+    let mut last_err = "Failed to send ICMP echo request";
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match crate::net::send_real_icmp_echo(target, seq) {
+            Ok(rtt) => return Ok(rtt),
+            Err(err) => {
+                last_err = err;
+                warn!(
+                    target: "init",
+                    "Manual ping attempt {}/{} failed before IF: {}",
+                    attempt,
+                    MAX_ATTEMPTS,
+                    err
+                );
+            }
+        }
+
+        if attempt == MAX_ATTEMPTS {
+            break;
+        }
+
+        for _ in 0..PUMP_ROUNDS_PER_ATTEMPT {
+            crate::io::virtio::handle_all_virtio_net_interrupts();
+            crate::net::driver_bridge::check_batch_timeout(100_000, 1);
+        }
+    }
+
+    Err(last_err)
 }
 
 /// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.
@@ -658,8 +727,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // Diagnostic: immediate manual ping attempt to exercise network transmit path
     io::log::early_print("[DEBUG] Manual ping insertion point\n");
     io::log::early_print("[DEBUG] Manual network ping attempt to 10.0.2.2 (will trigger ARP)\n");
-    let ping_res = crate::net::send_real_icmp_echo([10, 0, 2, 2], 1);
-    match ping_res {
+    match manual_ping_before_if_strict([10, 0, 2, 2], 1) {
         Ok(rtt) => {
             info!(target: "init", "Manual ping success rtt={}", rtt);
             io::log::early_print(&alloc::format!("[DEBUG] Manual ping success rtt={}\n", rtt));

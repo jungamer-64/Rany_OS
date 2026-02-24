@@ -159,6 +159,11 @@ pub fn init_socket_manager() {
     *SOCKET_MANAGER.write() = Some(SocketManager::new());
 }
 
+/// ソケットマネージャが初期化済みかを返す
+pub fn is_socket_manager_initialized() -> bool {
+    SOCKET_MANAGER.read().is_some()
+}
+
 /// ソケットマネージャ取得
 pub fn socket_manager() -> Option<&'static RwLock<Option<SocketManager>>> {
     Some(&SOCKET_MANAGER)

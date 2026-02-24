@@ -56,7 +56,9 @@ pub use retransmit::{
 pub use segment::{TcpSegmentBuilder, send_tcp_segment};
 
 // Re-exports: manager
-pub use manager::{SocketManager, init_socket_manager, socket_manager};
+pub use manager::{
+    SocketManager, init_socket_manager, is_socket_manager_initialized, socket_manager,
+};
 
 // Re-exports: socket
 pub use socket::{
