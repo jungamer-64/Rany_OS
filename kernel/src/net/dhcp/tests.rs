@@ -591,3 +591,66 @@ pub fn test_offer_probe_and_decline_flow() {
     // Decline should have been recorded
     assert_eq!(client.last_declined_ip(), Some(Ipv4Address::new([10, 0, 0, 9])));
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_drive_init_sends_discover_and_enters_selecting() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+    assert_eq!(client.state(), DhcpState::Init);
+    client.drive(123, 1).expect("drive failed");
+    assert_eq!(client.state(), DhcpState::Selecting);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_force_renew_or_restart_paths() {
+    let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+    let lease = DhcpLease {
+        ip_address: Ipv4Address::new([192, 168, 1, 10]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Some(Ipv4Address::new([192, 168, 1, 1])),
+        dns_servers: Vec::new(),
+        server_ip: Ipv4Address::new([192, 168, 1, 1]),
+        lease_time: 3600,
+        t1: 1800,
+        t2: 3150,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+
+    {
+        let mut l = client.lease.lock().unwrap();
+        *l = Some(lease);
+    }
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Bound;
+    }
+    client.force_renew_or_restart(100);
+    assert_eq!(client.state(), DhcpState::Renewing);
+    assert!(client.lease().is_some());
+
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Requesting;
+    }
+    {
+        let mut o = client.offered_lease.lock().unwrap();
+        *o = Some(DhcpLease {
+            ip_address: Ipv4Address::new([10, 0, 0, 5]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
+            dns_servers: Vec::new(),
+            server_ip: Ipv4Address::new([10, 0, 0, 1]),
+            lease_time: 1200,
+            t1: 600,
+            t2: 900,
+            obtained_at: 0,
+            hostname: None,
+            domain_name: None,
+        });
+    }
+    client.force_renew_or_restart(200);
+    assert_eq!(client.state(), DhcpState::Init);
+    assert!(client.lease().is_none());
+    assert!(client.offered_lease.lock().unwrap().is_none());
+}

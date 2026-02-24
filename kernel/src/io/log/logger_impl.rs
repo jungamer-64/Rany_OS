@@ -22,7 +22,13 @@ impl Log for KernelLogger {
             return;
         }
 
-        let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed) && !IN_PANIC.load(Ordering::Relaxed);
+        // decide whether we can use the asynchronous path
+        // if interrupts are still disabled, the UART ISR will never run and
+        // any buffered data will be lost, so fall back to synchronous output
+        // until we know that IF has been set.
+        let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed)
+            && !IN_PANIC.load(Ordering::Relaxed)
+            && crate::interrupts::are_interrupts_enabled();
         if use_async {
             if self.try_log_async(record) {
                 start_serial_tx();
@@ -30,6 +36,8 @@ impl Log for KernelLogger {
                 self.log_sync_fallback(record);
             }
         } else {
+            // either heap isn't ready, we're panicking, or interrupts are off
+            // in all of these cases we write synchronously to ensure delivery
             self.log_sync(record);
         }
 

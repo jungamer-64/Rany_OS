@@ -68,6 +68,8 @@ impl NetNamespace {
             "config" => Self::config(),
             "stats" => Self::stats(),
             "arp" => Self::arp_cache(),
+            "dhcp_state" => Self::dhcp_state(),
+            "dhcp_renew" => Self::dhcp_renew(),
             "bind" => Self::dispatch_bind(args),
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
         }
@@ -165,6 +167,71 @@ impl NetNamespace {
             ExoValue::Array(values)
         } else {
             ExoValue::Array(Vec::new())
+        }
+    }
+
+    fn format_ipv6(addr: [u8; 16]) -> String {
+        format!("{}", crate::net::ipv6::Ipv6Address::new(addr))
+    }
+
+    /// DHCP state snapshot (IPv4 + IPv6)
+    pub fn dhcp_state() -> ExoValue<'static> {
+        let state = crate::net::dhcp_state();
+        let mut map = BTreeMap::new();
+        map.insert(
+            String::from("v4_state"),
+            ExoValue::String(Cow::Owned(state.v4_state)),
+        );
+        map.insert(
+            String::from("v4_assigned_ip"),
+            match state.v4_assigned_ip {
+                Some(ip) => ExoValue::String(Cow::Owned(format!(
+                    "{}.{}.{}.{}",
+                    ip[0], ip[1], ip[2], ip[3]
+                ))),
+                None => ExoValue::Nil,
+            },
+        );
+        map.insert(
+            String::from("v4_lease_remaining"),
+            match state.v4_lease_remaining {
+                Some(v) => ExoValue::Int(v as i64),
+                None => ExoValue::Nil,
+            },
+        );
+        map.insert(
+            String::from("v6_state"),
+            ExoValue::String(Cow::Owned(state.v6_state)),
+        );
+        map.insert(
+            String::from("v6_assigned_ip"),
+            match state.v6_assigned_ip {
+                Some(ip) => ExoValue::String(Cow::Owned(Self::format_ipv6(ip))),
+                None => ExoValue::Nil,
+            },
+        );
+        map.insert(
+            String::from("v6_preferred_remaining"),
+            match state.v6_preferred_remaining {
+                Some(v) => ExoValue::Int(v as i64),
+                None => ExoValue::Nil,
+            },
+        );
+        map.insert(
+            String::from("v6_valid_remaining"),
+            match state.v6_valid_remaining {
+                Some(v) => ExoValue::Int(v as i64),
+                None => ExoValue::Nil,
+            },
+        );
+        ExoValue::Map(map)
+    }
+
+    /// Trigger DHCP renew/restart for both DHCPv4 and DHCPv6.
+    pub fn dhcp_renew() -> ExoValue<'static> {
+        match crate::net::dhcp_renew() {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(e),
         }
     }
 
@@ -268,9 +335,11 @@ impl ShellNamespace for NetNamespace {
                 "config" => Self::config(),
                 "stats" => Self::stats(),
                 "arp" => Self::arp_cache(),
+                "dhcp_state" => Self::dhcp_state(),
+                "dhcp_renew" => Self::dhcp_renew(),
                 "bind" => Self::handle_bind(_args),
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, bind",
+                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping, bind, dhcp_state, dhcp_renew",
                     method
                 )),
             }

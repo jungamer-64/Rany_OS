@@ -719,7 +719,9 @@ impl NetworkStack {
         // tick_rate = 1000 (current_time is in milliseconds, DHCP timers are in seconds)
         if let Ok(guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
             if let Some(ref client) = *guard {
-                let _ = client.check_timeout(current_time, 1000);
+                if let Err(e) = client.drive(current_time, 1000) {
+                    log::warn!("[NET] DHCPv4 drive failed: {}", e);
+                }
             }
         }
 

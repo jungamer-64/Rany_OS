@@ -90,6 +90,8 @@ impl ExoShell {
     net.stats()           - Show TX/RX statistics
     net.arp()             - Show ARP cache
     net.ping("ip", count) - Send ICMP echo
+    net.dhcp_state()      - Show DHCPv4/DHCPv6 state
+    net.dhcp_renew()      - Trigger DHCP renew/restart
 
   proc.* - Domains/Tasks
     proc.list()           - List domains
@@ -190,7 +192,7 @@ impl ExoShell {
             "fs" => &[
                 "entries", "read", "stat", "mkdir", "remove", "cd", "pwd", "write",
             ],
-            "net" => &["config", "stats", "arp", "ping"],
+            "net" => &["config", "stats", "arp", "ping", "dhcp_state", "dhcp_renew"],
             "proc" => &["list", "info"],
             "cap" => &["list", "grant", "revoke"],
             "sys" => &[

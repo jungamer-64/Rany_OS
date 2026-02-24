@@ -60,6 +60,8 @@ impl ExoShell {
             "config" => NetNamespace::config(),
             "stats" => NetNamespace::stats(),
             "arp" => NetNamespace::arp_cache(),
+            "dhcp_state" => NetNamespace::dhcp_state(),
+            "dhcp_renew" => NetNamespace::dhcp_renew(),
             "ping" => {
                 let ip_str = match args.first() {
                     Some(ExoValue::String(s)) => s.as_ref().to_string(),
@@ -114,7 +116,7 @@ impl ExoShell {
                     method: name.to_string(),
                 }
                 .to_string()
-                    + "\n有効なメソッド: config, stats, arp, ping",
+                    + "\n有効なメソッド: config, stats, arp, ping, dhcp_state, dhcp_renew",
             ),
         }
     }

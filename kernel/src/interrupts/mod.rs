@@ -262,6 +262,12 @@ pub fn enable_interrupts() {
     // but if execution resumes in this thread we can record that fact.
     crate::io::log::early_print("[INT] after IF set\n");
     log::info!("[INT] enable_interrupts() returned (IF set)");
+
+    // Now that interrupts are enabled, there may be pending serial transmit
+    // work left over from earlier synchronous/asynchronous logging attempts.
+    // Kick the transmitter again to ensure any data buffered before IF was set
+    // actually makes it onto the wire.
+    crate::io::log::start_serial_tx();
 }
 
 /// 割り込みを無効化

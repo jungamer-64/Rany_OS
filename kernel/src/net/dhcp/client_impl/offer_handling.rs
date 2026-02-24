@@ -263,6 +263,104 @@ impl DhcpClient {
         self.offered_probe_at.store(0, Ordering::SeqCst);
     }
 
+    /// Send a DHCPDISCOVER packet for the current state machine cycle.
+    fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
+        let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
+        let len = self.build_discover(&mut buf, current_tick)?;
+        Ok(crate::net::stack::send_udp(
+            DHCP_CLIENT_PORT,
+            Ipv4Address::new([255, 255, 255, 255]),
+            DHCP_SERVER_PORT,
+            &buf[..len],
+        ))
+    }
+
+    /// Resolve DHCPREQUEST destination address from current state.
+    fn request_destination_for_state(&self, state: DhcpState) -> Ipv4Address {
+        match state {
+            DhcpState::Renewing => match self.lease.lock() {
+                Ok(lease) => lease
+                    .as_ref()
+                    .map(|l| l.server_ip)
+                    .unwrap_or(Ipv4Address::new([255, 255, 255, 255])),
+                Err(_) => Ipv4Address::new([255, 255, 255, 255]),
+            },
+            DhcpState::Requesting | DhcpState::Rebinding => Ipv4Address::new([255, 255, 255, 255]),
+            _ => Ipv4Address::new([255, 255, 255, 255]),
+        }
+    }
+
+    /// Send a DHCPREQUEST packet for Requesting/Renewing/Rebinding.
+    fn send_request_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
+        let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
+        let len = self.build_request(&mut buf, current_tick)?;
+        let state = self.state();
+        let dst = self.request_destination_for_state(state);
+        Ok(crate::net::stack::send_udp(
+            DHCP_CLIENT_PORT,
+            dst,
+            DHCP_SERVER_PORT,
+            &buf[..len],
+        ))
+    }
+
+    /// Drive DHCP state machine and emit outbound packets when state changes
+    /// or retransmission timers fire.
+    pub fn drive(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
+        let state_before = self.state();
+
+        // Initial kick: INIT immediately sends DISCOVER.
+        if state_before == DhcpState::Init {
+            let _ = self.send_discover_packet(current_tick)?;
+            return Ok(());
+        }
+
+        let transitioned = self.check_timeout(current_tick, tick_rate);
+        let state_after = self.state();
+
+        // OFFER passed ARP probe and moved into REQUESTING.
+        if state_before == DhcpState::Selecting && state_after == DhcpState::Requesting {
+            let _ = self.send_request_packet(current_tick)?;
+            return Ok(());
+        }
+
+        if transitioned {
+            match state_after {
+                // Selecting retransmit / conflict recovery.
+                DhcpState::Selecting => {
+                    let _ = self.send_discover_packet(current_tick)?;
+                }
+                // Requesting, Renewing, Rebinding retransmits.
+                DhcpState::Requesting | DhcpState::Renewing | DhcpState::Rebinding => {
+                    let _ = self.send_request_packet(current_tick)?;
+                }
+                // Retry budget exhausted and reset to INIT -> restart discovery.
+                DhcpState::Init => {
+                    let _ = self.send_discover_packet(current_tick)?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Force immediate renew (when bound) or restart discovery.
+    pub fn force_renew_or_restart(&self, current_tick: u64) {
+        let state = self.state();
+        match state {
+            DhcpState::Bound | DhcpState::Renewing | DhcpState::Rebinding => {
+                self.transition_state(DhcpState::Renewing);
+            }
+            _ => {
+                self.transition_state(DhcpState::Init);
+                self.clear_all_leases();
+            }
+        }
+        self.state_time.store(current_tick, Ordering::SeqCst);
+        self.retry_count.store(0, Ordering::SeqCst);
+    }
+
     // --- check_timeout helper: transition state with error logging ---
     pub(super) fn transition_state(&self, new_state: DhcpState) {
         match self.state.lock() {

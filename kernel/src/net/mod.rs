@@ -389,28 +389,16 @@ pub struct UdpSocketInfo {
     pub remote_addr: String,
 }
 
-/// DHCP offer info
+/// DHCP runtime state snapshot for shell/API consumers.
 #[derive(Debug, Clone)]
-pub struct DhcpOfferInfo {
-    pub your_ip: [u8; 4],
-    pub server_ip: [u8; 4],
-    pub gateway: Option<[u8; 4]>,
-    pub dns: Option<[u8; 4]>,
-}
-
-/// DHCP ACK info
-#[derive(Debug, Clone)]
-pub struct DhcpAckInfo {
-    pub your_ip: [u8; 4],
-    pub lease_time: u32,
-}
-
-/// DHCP client state
-#[derive(Debug, Clone)]
-pub struct DhcpStateInfo {
-    pub state: String,
-    pub assigned_ip: Option<[u8; 4]>,
-    pub lease_remaining: Option<u32>,
+pub struct DhcpRuntimeState {
+    pub v4_state: String,
+    pub v4_assigned_ip: Option<[u8; 4]>,
+    pub v4_lease_remaining: Option<u32>,
+    pub v6_state: String,
+    pub v6_assigned_ip: Option<[u8; 16]>,
+    pub v6_preferred_remaining: Option<u32>,
+    pub v6_valid_remaining: Option<u32>,
 }
 
 /// ARP cache entry
@@ -422,8 +410,6 @@ pub struct ArpCacheEntry {
 }
 
 // Global network state for shell access
-static NETWORK_CONFIG: Mutex<Option<NetworkConfigSnapshot>> = Mutex::new(None);
-static LAST_DHCP_OFFER: Mutex<Option<DhcpOfferInfo>> = Mutex::new(None);
 static NETWORK_STATS: Mutex<NetworkStatsSnapshot> = Mutex::new(NetworkStatsSnapshot {
     rx_packets: 0,
     tx_packets: 0,
@@ -435,7 +421,21 @@ static NETWORK_STATS: Mutex<NetworkStatsSnapshot> = Mutex::new(NetworkStatsSnaps
 
 /// Get current network configuration
 pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
-    NETWORK_CONFIG.lock().clone()
+    match stack::stack().lock() {
+        Ok(guard) => guard.as_ref().map(|stack_guard| {
+            let cfg = stack_guard.config();
+            NetworkConfigSnapshot {
+                ip: *cfg.ipv4.address.as_bytes(),
+                netmask: *cfg.ipv4.subnet_mask.as_bytes(),
+                gateway: *cfg.ipv4.gateway.as_bytes(),
+                mac: *cfg.mac.as_bytes(),
+            }
+        }),
+        Err(_) => {
+            log::error!("[NET] Stack lock poisoned (get_network_config)");
+            None
+        }
+    }
 }
 
 /// Get network statistics
@@ -580,68 +580,154 @@ pub fn dns_resolve(hostname: &str) -> Result<Vec<[u8; 4]>, String> {
     }
 }
 
-/// DHCP discover
-pub fn dhcp_discover() -> Result<DhcpOfferInfo, String> {
-    // Simulate QEMU's DHCP response
-    let offer = DhcpOfferInfo {
-        your_ip: [10, 0, 2, 15],
-        server_ip: [10, 0, 2, 2],
-        gateway: Some([10, 0, 2, 2]),
-        dns: Some([10, 0, 2, 3]),
-    };
-
-    // Cache the offer
-    *LAST_DHCP_OFFER.lock() = Some(offer.clone());
-
-    Ok(offer)
-}
-
-/// DHCP request (accept offer)
-pub fn dhcp_request() -> Result<DhcpAckInfo, String> {
-    let offer = LAST_DHCP_OFFER.lock().clone();
-
-    match offer {
-        Some(offer_info) => {
-            // Update network config
-            *NETWORK_CONFIG.lock() = Some(NetworkConfigSnapshot {
-                ip: offer_info.your_ip,
-                netmask: [255, 255, 255, 0],
-                gateway: offer_info.gateway.unwrap_or([10, 0, 2, 2]),
-                mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
-            });
-
-            Ok(DhcpAckInfo {
-                your_ip: offer_info.your_ip,
-                lease_time: 86400,
-            })
-        }
-        None => Err(String::from(
-            "No DHCP offer available. Run 'dhcp discover' first.",
-        )),
-    }
-}
-
-/// DHCP release
-pub fn dhcp_release() {
-    *LAST_DHCP_OFFER.lock() = None;
-    *NETWORK_CONFIG.lock() = None;
-}
-
-/// Get DHCP state
-pub fn get_dhcp_state() -> Option<DhcpStateInfo> {
-    let offer = LAST_DHCP_OFFER.lock().clone();
-
-    let (state_str, assigned_ip) = if let Some(offer_info) = offer {
-        ("BOUND", Some(offer_info.your_ip))
-    } else {
-        ("INIT", None)
-    };
-
-    Some(DhcpStateInfo {
-        state: String::from(state_str),
-        assigned_ip,
-        lease_remaining: Some(86400),
+fn dhcp_v4_state_name(state: DhcpState) -> String {
+    String::from(match state {
+        DhcpState::Init => "Init",
+        DhcpState::Selecting => "Selecting",
+        DhcpState::Requesting => "Requesting",
+        DhcpState::Bound => "Bound",
+        DhcpState::Renewing => "Renewing",
+        DhcpState::Rebinding => "Rebinding",
     })
+}
+
+fn dhcp_v6_state_name(state: dhcp::DhcpV6State) -> String {
+    String::from(match state {
+        dhcp::DhcpV6State::Init => "Init",
+        dhcp::DhcpV6State::SolicitSent => "SolicitSent",
+        dhcp::DhcpV6State::Requesting => "Requesting",
+        dhcp::DhcpV6State::Bound => "Bound",
+        dhcp::DhcpV6State::Renewing => "Renewing",
+        dhcp::DhcpV6State::Rebinding => "Rebinding",
+    })
+}
+
+fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u64) -> u32 {
+    let elapsed = (now.saturating_sub(obtained_at)) / tick_rate;
+    total.saturating_sub(core::cmp::min(elapsed, u32::MAX as u64) as u32)
+}
+
+/// Initialize DHCP runtime clients and kick initial solicit/discover sequence.
+pub fn init_dhcp_runtime() -> Result<(), String> {
+    let mac = match stack::stack().lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(stack_guard) => stack_guard.config().mac,
+            None => return Err(String::from("Network stack is not initialized")),
+        },
+        Err(_) => return Err(String::from("Network stack lock poisoned")),
+    };
+
+    dhcp::init(mac);
+    dhcp::init_v6(mac);
+
+    let now = tcb_table().get_current_tick();
+    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+        if let Some(ref client) = *guard {
+            client.drive(now, 1000).map_err(String::from)?;
+        }
+    } else {
+        return Err(String::from("DHCPv4 global client lock poisoned"));
+    }
+
+    if let Ok(guard6) = dhcp::DHCPV6_CLIENT.lock() {
+        if let Some(ref client6) = *guard6 {
+            client6.check_timeout(now, 1000).map_err(String::from)?;
+        }
+    } else {
+        return Err(String::from("DHCPv6 global client lock poisoned"));
+    }
+
+    Ok(())
+}
+
+/// Snapshot DHCP runtime state for v4/v6.
+pub fn dhcp_state() -> DhcpRuntimeState {
+    let now = tcb_table().get_current_tick();
+    let tick_rate = 1000u64;
+
+    let mut out = DhcpRuntimeState {
+        v4_state: String::from("Init"),
+        v4_assigned_ip: None,
+        v4_lease_remaining: None,
+        v6_state: String::from("Init"),
+        v6_assigned_ip: None,
+        v6_preferred_remaining: None,
+        v6_valid_remaining: None,
+    };
+
+    match dhcp::DHCP_CLIENT.lock() {
+        Ok(guard) => {
+            if let Some(ref client) = *guard {
+                out.v4_state = dhcp_v4_state_name(client.state());
+                if let Some(lease) = client.lease() {
+                    out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
+                    out.v4_lease_remaining =
+                        Some(lease_remaining_secs(lease.lease_time, lease.obtained_at, now, tick_rate));
+                }
+            }
+        }
+        Err(_) => out.v4_state = String::from("Poisoned"),
+    }
+
+    match dhcp::DHCPV6_CLIENT.lock() {
+        Ok(guard6) => {
+            if let Some(ref client6) = *guard6 {
+                out.v6_state = dhcp_v6_state_name(client6.state());
+                if let Some(lease6) = client6.lease() {
+                    out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
+                    out.v6_preferred_remaining = Some(lease_remaining_secs(
+                        lease6.preferred_lifetime,
+                        lease6.obtained_at,
+                        now,
+                        tick_rate,
+                    ));
+                    out.v6_valid_remaining = Some(lease_remaining_secs(
+                        lease6.valid_lifetime,
+                        lease6.obtained_at,
+                        now,
+                        tick_rate,
+                    ));
+                }
+            }
+        }
+        Err(_) => out.v6_state = String::from("Poisoned"),
+    }
+
+    out
+}
+
+/// Trigger DHCP renew/restart sequence for both v4 and v6 clients.
+pub fn dhcp_renew() -> Result<(), String> {
+    let now = tcb_table().get_current_tick();
+    let mut touched = false;
+
+    match dhcp::DHCP_CLIENT.lock() {
+        Ok(guard) => {
+            if let Some(ref client) = *guard {
+                client.force_renew_or_restart(now);
+                client.drive(now, 1000).map_err(String::from)?;
+                touched = true;
+            }
+        }
+        Err(_) => return Err(String::from("DHCPv4 global client lock poisoned")),
+    }
+
+    match dhcp::DHCPV6_CLIENT.lock() {
+        Ok(guard6) => {
+            if let Some(ref client6) = *guard6 {
+                client6.force_renew_or_restart(now).map_err(String::from)?;
+                client6.check_timeout(now, 1000).map_err(String::from)?;
+                touched = true;
+            }
+        }
+        Err(_) => return Err(String::from("DHCPv6 global client lock poisoned")),
+    }
+
+    if !touched {
+        return Err(String::from("DHCP runtime is not initialized"));
+    }
+
+    Ok(())
 }
 
 /// Get ARP cache
@@ -675,12 +761,5 @@ pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
 
 /// Initialize network for shell commands
 pub fn init_network_shell() {
-    // Initialize default network config (QEMU user mode networking)
-    let default_config = NetworkConfigSnapshot {
-        ip: [10, 0, 2, 15],
-        netmask: [255, 255, 255, 0],
-        gateway: [10, 0, 2, 2],
-        mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
-    };
-    *NETWORK_CONFIG.lock() = Some(default_config);
+    // no-op: runtime state is sourced from the actual network stack/DHCP clients.
 }

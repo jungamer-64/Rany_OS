@@ -705,6 +705,10 @@ pub fn init_bridge() -> Result<(), &'static str> {
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),
     }
 
+    if let Err(e) = crate::net::init_dhcp_runtime() {
+        log::warn!("[NET BRIDGE] DHCP runtime init failed: {}", e);
+    }
+
     log::info!("[NET BRIDGE] Bridge initialized");
     log::info!(
         "  MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",

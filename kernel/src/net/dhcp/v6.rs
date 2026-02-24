@@ -556,6 +556,42 @@ impl DhcpV6Client {
         }
         Ok(())
     }
+
+    /// Force immediate renew when lease is active, otherwise restart from INIT.
+    pub fn force_renew_or_restart(&self, current_tick: u64) -> Result<(), &'static str> {
+        let restart = match self.state.lock() {
+            Ok(mut state) => match *state {
+                DhcpV6State::Bound | DhcpV6State::Renewing | DhcpV6State::Rebinding => {
+                    *state = DhcpV6State::Renewing;
+                    false
+                }
+                _ => {
+                    *state = DhcpV6State::Init;
+                    true
+                }
+            },
+            Err(_) => return Err("state lock poisoned"),
+        };
+
+        if restart {
+            match self.lease.lock() {
+                Ok(mut lg) => *lg = None,
+                Err(_) => return Err("lease lock poisoned"),
+            }
+            match self.server_duid.lock() {
+                Ok(mut sg) => *sg = None,
+                Err(_) => return Err("server_duid lock poisoned"),
+            }
+            match self.server_addr.lock() {
+                Ok(mut ag) => *ag = None,
+                Err(_) => return Err("server_addr lock poisoned"),
+            }
+        }
+
+        self.state_time.store(current_tick, Ordering::SeqCst);
+        self.retry_count.store(0, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 // Global singleton for DHCPv6 client (optional)
@@ -782,6 +818,29 @@ pub(crate) mod tests {
         let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
         client.check_timeout(now, tick_rate).unwrap();
         assert_eq!(client.state(), DhcpV6State::Init);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_force_renew_or_restart_paths() {
+        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let client = DhcpV6Client::new(mac);
+        let lease = DhcpV6Lease {
+            addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,8]),
+            preferred_lifetime: 3600,
+            valid_lifetime: 7200,
+            obtained_at: 0,
+        };
+
+        if let Ok(mut lg) = client.lease.lock() { *lg = Some(lease.clone()); }
+        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Bound; }
+        client.force_renew_or_restart(100).unwrap();
+        assert_eq!(client.state(), DhcpV6State::Renewing);
+        assert!(client.lease().is_some());
+
+        if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Requesting; }
+        client.force_renew_or_restart(200).unwrap();
+        assert_eq!(client.state(), DhcpV6State::Init);
+        assert!(client.lease().is_none());
     }
 
     #[cfg_attr(test, test_case)]
