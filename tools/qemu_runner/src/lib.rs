@@ -390,6 +390,8 @@ pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
         .arg(format!("{}M", config.memory_mb))
         .arg("-smp")
         .arg(config.smp.to_string())
+        .arg("-nic")
+        .arg("none")
         .arg("-display")
         .arg("none")
         .arg("-serial")

@@ -15,6 +15,7 @@ DISK_IMG := $(BUILD_DIR)/bootimage-$(KERNEL_NAME).bin
 
 # QEMUオプション
 QEMU_OPTS := \
+	-nic none \
 	-drive format=raw,file=$(DISK_IMG) \
 	-serial stdio \
 	-no-reboot \
@@ -61,7 +62,7 @@ run: build
 # リリース版を実行
 run-release: release
 	@echo "Starting ExoRust kernel (release) in QEMU..."
-	$(QEMU) -drive format=raw,file=target/$(TARGET)/release/bootimage-$(KERNEL_NAME).bin \
+	$(QEMU) -nic none -drive format=raw,file=target/$(TARGET)/release/bootimage-$(KERNEL_NAME).bin \
 		-serial stdio -no-reboot -no-shutdown -m 512M
 
 # デバッグ実行（詳細ログ付き）

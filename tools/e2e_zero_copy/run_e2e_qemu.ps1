@@ -27,6 +27,7 @@ $qemuArgs = @(
     "-cpu", "qemu64",
     "-smp", "2",
     "-m", "512M",
+    "-nic", "none",
     "-kernel", $KERNEL,
     "-serial", "stdio",
     "-display", "none",

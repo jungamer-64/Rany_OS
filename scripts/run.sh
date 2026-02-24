@@ -574,6 +574,7 @@ start_qemu() {
         -cpu "$cpu_model"
         -smp "$SMP"
         -m "${MEMORY}M"
+        -nic none
         -serial "$serial_arg"
         -no-reboot
         -no-shutdown

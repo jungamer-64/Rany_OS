@@ -575,6 +575,7 @@ function Start-Qemu {
         "-cpu", $cpuModel,
         "-smp", "$Smp",
         "-m", "${Memory}M",
+        "-nic", "none",
         "-serial", $serialArg,
         "-no-reboot",
         "-no-shutdown",
