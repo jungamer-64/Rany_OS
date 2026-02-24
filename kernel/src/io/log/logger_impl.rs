@@ -461,6 +461,23 @@ pub fn exit_panic_mode() {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_spaces_before_newline_basic() {
+        assert_eq!(trim_spaces_before_newline("foo \n"), "foo\n");
+        assert_eq!(trim_spaces_before_newline("foo   \n"), "foo\n");
+        assert_eq!(trim_spaces_before_newline("foo bar\n"), "foo bar\n");
+        assert_eq!(trim_spaces_before_newline("foo \nbar \n"), "foo\nbar\n");
+        assert_eq!(trim_spaces_before_newline("no_spaces"), "no_spaces");
+        assert_eq!(trim_spaces_before_newline("trailing "), "trailing");
+        assert_eq!(trim_spaces_before_newline("multi\nlines with space \n"), "multi\nlines with space\n");
+    }
+}
+
+
 
 /// 実行時にログレベルを変更
 pub fn set_log_level(level: LevelFilter) {
@@ -484,6 +501,53 @@ pub fn is_initialized() -> bool {
 // 早期ブート用ログ（log::Log trait初期化前に使用）
 // ============================================================================
 
+/// Trim spaces that occur immediately before a newline, as well as any trailing
+/// spaces at the very end of the string.  This prevents log messages from
+/// leaving a visible “bar” (normally rendered as an underscore when the
+/// terminal is in whitespace‑visible mode) if the format string accidentally
+/// ends in a space.
+fn trim_spaces_before_newline(s: &str) -> String {
+    // Work on bytes for simplicity.
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b' ' {
+            // Look ahead to see if this space (or a run of spaces) is followed by
+            // a newline.  If so, drop all of the spaces; otherwise copy the
+            // first space and continue normally.
+            let mut j = i;
+            while j < bytes.len() && bytes[j] == b' ' {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'\n' {
+                // skip all spaces; the next iteration will handle the '\n'
+                i = j;
+                continue;
+            }
+            // not immediately followed by newline, copy one space and advance
+            out.push(b' ');
+            i += 1;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    // if the string ends in spaces that were not followed by newline, drop them
+    while let Some(&b) = out.last() {
+        if b == b' ' {
+            out.pop();
+        } else {
+            break;
+        }
+    }
+
+    // Safe because we only ever push original UTF‑8 bytes.
+    String::from_utf8(out).unwrap()
+}
+
 /// 早期ブート用の直接シリアル出力
 ///
 /// ヒープやログシステム初期化前に使用する。
@@ -491,7 +555,8 @@ pub fn is_initialized() -> bool {
 /// ロックなしで直接出力するため、早期ブートやパニック時のみ使用。
 #[inline]
 pub fn early_print(s: &str) {
-    KernelLogger::write_raw(s);
+    let trimmed = trim_spaces_before_newline(s);
+    KernelLogger::write_raw(&trimmed);
 }
 
 /// 早期ブート用の直接シリアル文字出力

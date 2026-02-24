@@ -45,8 +45,8 @@ const SPURIOUS_VECTOR: u8 = 255;
 
 /// MSI/MSI-X用ベクタ範囲
 pub const NVME_VECTOR: u8 = 48; // NVMe専用ベクタ (0x30)
-const MSI_VECTORS_START: u8 = 49; // NVMeの次から開始
-const MSI_VECTORS_END: u8 = 223;
+pub const MSI_VECTORS_START: u8 = 0x60;
+pub const MSI_VECTORS_END: u8 = 0x6F;
 
 /// レガシー割り込み用ベクタ範囲
 const LEGACY_VECTORS_START: u8 = 32;

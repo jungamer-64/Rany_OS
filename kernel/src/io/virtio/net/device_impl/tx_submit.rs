@@ -19,11 +19,25 @@ impl VirtioNetDevice {
         } else {
             log::info!("[NET-TX] submit_tx len={}", data_len);
         }
-        let mut buffer = crate::io::dma::CoherentDmaBuffer::new(
-            data_len,
-            crate::io::dma::DmaMemoryAttributes::MMIO,
-        )
+        let mut buffer = match self.iommu_device_id {
+            Some(device_id) => crate::io::dma::CoherentDmaBuffer::new_for_device(
+                data_len,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+                &device_id,
+            ),
+            None => crate::io::dma::CoherentDmaBuffer::new(
+                data_len,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+            ),
+        }
         .ok_or(VirtioNetError::DeviceError)?;
+
+        if is_iommu_enabled() && self.iommu_device_id.is_some() && !buffer.is_iommu_mapped() {
+            log::error!(
+                "[NET-TX] IOMMU enabled but TX buffer is not mapped for device DMA; refusing phys fallback"
+            );
+            return Err(VirtioNetError::DeviceError);
+        }
 
         // Copy payload into the DMA buffer
         let dst = unsafe { buffer.as_mut_slice() };
@@ -34,13 +48,31 @@ impl VirtioNetDevice {
 
         if let Some(tx_queue) = self.first_tx_queue() {
             let phys = buffer.phys_addr().as_u64();
-            crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] about to call add_tx_buffer_zero_copy phys=0x{:x} len={}\n", phys, data_len));
-            match tx_queue.add_tx_buffer_zero_copy(phys, data_len) {
+            let device_addr = buffer.device_addr();
+            crate::io::log::early_print(&alloc::format!(
+                "[EARLY][NET-TX] about to call add_tx_buffer_zero_copy phys=0x{:x} device_addr=0x{:x} len={}\n",
+                phys,
+                device_addr,
+                data_len
+            ));
+            match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
                     crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] add_tx_buffer_zero_copy returned desc={}\n", desc_idx));
                     self.tx_inflight.lock().insert(desc_idx, buffer);
-                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] queued desc={} phys=0x{:x} len={}\n", desc_idx, phys, data_len));
-                    log::info!("[NET-TX] queued desc={} phys=0x{:x} len={}", desc_idx, phys, data_len);
+                    crate::io::log::early_print(&alloc::format!(
+                        "[EARLY][NET-TX] queued desc={} phys=0x{:x} device_addr=0x{:x} len={}\n",
+                        desc_idx,
+                        phys,
+                        device_addr,
+                        data_len
+                    ));
+                    log::info!(
+                        "[NET-TX] queued desc={} phys=0x{:x} device_addr=0x{:x} len={}",
+                        desc_idx,
+                        phys,
+                        device_addr,
+                        data_len
+                    );
                     // Diagnostic: read device status/features before notifying
                     let dev_status = self.transport.get_status();
                     crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transport.get_status()=0x{:x}\n", dev_status));
@@ -314,7 +346,7 @@ impl VirtioNetDevice {
                     len
                 }
             };
-            self.complete_rx_vbuf(desc_idx, completion_len, inflight);
+            self.complete_rx_vbuf(rx_queue, desc_idx, completion_len, inflight);
             return true;
         }
 
@@ -472,8 +504,14 @@ impl VirtioNetDevice {
         }
     }
 
-    /// VBuf RX完了: IOMMUアンマップ + 受信完了 + ブリッジ転送
-    pub(super) fn complete_rx_vbuf(&self, desc_idx: u16, len: u32, mut inflight: RxVbufInflight) {
+    /// VBuf RX完了: IOMMUアンマップ + 受信完了 + ブリッジ転送 + 再ポスト
+    pub(super) fn complete_rx_vbuf(
+        &self,
+        rx_queue: &NetVirtQueue,
+        desc_idx: u16,
+        len: u32,
+        mut inflight: RxVbufInflight,
+    ) {
         // Unmap IOMMU mapping if it was active
         if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
             let _ = unmap_for_device(device_id, iova, inflight.iommu_map_len);
@@ -509,10 +547,9 @@ impl VirtioNetDevice {
         }
 
         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] handing payload desc={} payload_len={} to bridge\n", desc_idx, actual_len));
-        // Allocate a PacketRef and delegate to the zero-copy bridge API
-        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
-            let len_to_copy = core::cmp::min(actual_len, packet.capacity());
-            packet.data_mut()[..len_to_copy].copy_from_slice(&payload_slice[..len_to_copy]);
+        // Convert the completed RX DMA buffer into PacketRef (zero-copy handoff).
+        if let Some(cpu_buf) = inflight.vbuf.take_cpu_buffer() {
+            let packet = crate::net::mempool::PacketRef::from_dma_slice(cpu_buf);
             if let Some(if_id) = self
                 .net_if_id()
                 .or_else(|| crate::net::driver_bridge::lookup_if_by_virtio_index(self.virtio_index))
@@ -520,17 +557,33 @@ impl VirtioNetDevice {
                 crate::net::driver_bridge::process_received_packet_zero_copy_for_interface(
                     if_id,
                     packet,
-                    0,
-                    len_to_copy,
+                    header_size,
+                    actual_len,
                 );
             } else {
-                crate::net::driver_bridge::process_received_packet_zero_copy(packet, 0, len_to_copy);
+                crate::net::driver_bridge::process_received_packet_zero_copy(
+                    packet,
+                    header_size,
+                    actual_len,
+                );
             }
         } else {
-            #[cfg(debug_assertions)]
-            {
-                log::warn!("[VIRTIO-NET] OOM allocating packet for rx copy");
-            }
+            log::warn!("[VIRTIO-NET] RX completion missing CPU buffer desc={}", desc_idx);
+        }
+
+        // Keep RX queue depth stable even when PacketRef mempool is unavailable.
+        match self.try_post_rx_packet(rx_queue) {
+            Ok(true) => {}
+            Ok(false) => match self.try_post_rx_vbuf(rx_queue) {
+                Ok(true) => {}
+                Ok(false) => log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx),
+                Err(_) => log::warn!("[VIRTIO-NET] RX repost aborted after desc={}", desc_idx),
+            },
+            Err(_) => match self.try_post_rx_vbuf(rx_queue) {
+                Ok(true) => {}
+                Ok(false) => log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx),
+                Err(_) => log::warn!("[VIRTIO-NET] RX repost aborted after desc={}", desc_idx),
+            },
         }
     }
 

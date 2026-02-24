@@ -38,6 +38,8 @@ macro_rules! handler_to_x86 {
 
 /// IDT初期化完了フラグ
 static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// VirtIO-Net completion fallback gate (enabled after bridge initialization).
+static VIRTIO_NET_IRQ_FALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// IDTコンテナ（Sync実装のため）
 struct IdtContainer(UnsafeCell<MaybeUninit<InterruptDescriptorTable>>);
@@ -173,6 +175,56 @@ fn init_idt() {
         idt[crate::io::interrupt_manager::NVME_VECTOR as u8].set_handler_fn(handler_to_x86!(
             crate::io::interrupt_manager::nvme_entry_point
                 as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+
+        // MSI shared range handlers (0x60..=0x6F)
+        idt[0x60].set_handler_fn(handler_to_x86!(
+            msi_vector_0x60_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x61].set_handler_fn(handler_to_x86!(
+            msi_vector_0x61_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x62].set_handler_fn(handler_to_x86!(
+            msi_vector_0x62_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x63].set_handler_fn(handler_to_x86!(
+            msi_vector_0x63_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x64].set_handler_fn(handler_to_x86!(
+            msi_vector_0x64_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x65].set_handler_fn(handler_to_x86!(
+            msi_vector_0x65_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x66].set_handler_fn(handler_to_x86!(
+            msi_vector_0x66_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x67].set_handler_fn(handler_to_x86!(
+            msi_vector_0x67_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x68].set_handler_fn(handler_to_x86!(
+            msi_vector_0x68_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x69].set_handler_fn(handler_to_x86!(
+            msi_vector_0x69_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x6A].set_handler_fn(handler_to_x86!(
+            msi_vector_0x6a_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x6B].set_handler_fn(handler_to_x86!(
+            msi_vector_0x6b_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x6C].set_handler_fn(handler_to_x86!(
+            msi_vector_0x6c_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x6D].set_handler_fn(handler_to_x86!(
+            msi_vector_0x6d_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x6E].set_handler_fn(handler_to_x86!(
+            msi_vector_0x6e_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+        idt[0x6F].set_handler_fn(handler_to_x86!(
+            msi_vector_0x6f_handler as extern "x86-interrupt" fn(InterruptStackFrame)
         ));
 
         // PIC2 の IRQ ハンドラ（動的デバイス用）
@@ -448,7 +500,7 @@ define_interrupt!(
         }
 
         // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
-        let _tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+        let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
 
         // 2. 軽量なフラグ設定のみ（重い処理は遅延）
         // タイマーイベントペンディングフラグを設定
@@ -462,6 +514,12 @@ define_interrupt!(
 
         // 4.5. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
         crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
+
+        // IRQが届かない環境向けのcompletionフォールバック:
+        // bridge初期化完了後にのみ 4tick ごとに VirtIO-Net 処理を回す。
+        if (tick & 0x3) == 0 && VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire) {
+            crate::io::virtio::handle_all_virtio_net_interrupts();
+        }
 
         // 5. EOI (End Of Interrupt) を送信
         unsafe {
@@ -592,6 +650,41 @@ define_interrupt!(
     }
 );
 
+#[inline]
+fn handle_msi_vector(vector: u8) {
+    if !crate::io::interrupt_manager::try_dispatch_direct(vector) {
+        crate::io::interrupt_manager::push_interrupt_event(vector);
+    }
+    crate::io::interrupt_manager::send_eoi();
+}
+
+macro_rules! define_msi_vector_handler {
+    ($name:ident, $vector:expr) => {
+        define_interrupt!(
+            fn $name(_stack_frame: InterruptStackFrame) {
+                handle_msi_vector($vector);
+            }
+        );
+    };
+}
+
+define_msi_vector_handler!(msi_vector_0x60_handler, 0x60);
+define_msi_vector_handler!(msi_vector_0x61_handler, 0x61);
+define_msi_vector_handler!(msi_vector_0x62_handler, 0x62);
+define_msi_vector_handler!(msi_vector_0x63_handler, 0x63);
+define_msi_vector_handler!(msi_vector_0x64_handler, 0x64);
+define_msi_vector_handler!(msi_vector_0x65_handler, 0x65);
+define_msi_vector_handler!(msi_vector_0x66_handler, 0x66);
+define_msi_vector_handler!(msi_vector_0x67_handler, 0x67);
+define_msi_vector_handler!(msi_vector_0x68_handler, 0x68);
+define_msi_vector_handler!(msi_vector_0x69_handler, 0x69);
+define_msi_vector_handler!(msi_vector_0x6a_handler, 0x6A);
+define_msi_vector_handler!(msi_vector_0x6b_handler, 0x6B);
+define_msi_vector_handler!(msi_vector_0x6c_handler, 0x6C);
+define_msi_vector_handler!(msi_vector_0x6d_handler, 0x6D);
+define_msi_vector_handler!(msi_vector_0x6e_handler, 0x6E);
+define_msi_vector_handler!(msi_vector_0x6f_handler, 0x6F);
+
 // ============================================================================
 // PCI IRQ Handlers (IRQ 9, 10, 11)
 // ============================================================================
@@ -674,11 +767,21 @@ fn dispatch_pci_interrupt(irq: u8) {
 
     // Call VirtIO device interrupt handlers (they will check their own status and do nothing if not pending)
     crate::io::log::early_print(&alloc::format!("[EARLY][INT] dispatch_pci_interrupt irq={} -> invoking virtio handlers\n", irq));
-    crate::io::virtio::handle_all_virtio_net_interrupts();
-    crate::io::virtio::handle_virtio_blk_interrupt();
+    dispatch_shared_pci_handlers();
 
     // 将来的には他の PCI デバイスもここに追加
     // 例: NVMe, ネットワークカードなど
+}
+
+/// 共有PCIデバイス割り込み処理（VirtIO-Net / VirtIO-Blk）
+pub fn dispatch_shared_pci_handlers() {
+    crate::io::virtio::handle_all_virtio_net_interrupts();
+    crate::io::virtio::handle_virtio_blk_interrupt();
+}
+
+/// Enable timer-driven VirtIO-Net interrupt fallback processing.
+pub fn enable_virtio_net_irq_fallback() {
+    VIRTIO_NET_IRQ_FALLBACK_ENABLED.store(true, Ordering::Release);
 }
 
 /// 現在のタイマーティック数を取得

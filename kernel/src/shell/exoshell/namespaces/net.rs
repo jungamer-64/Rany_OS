@@ -175,6 +175,58 @@ impl NetNamespace {
         }
     }
 
+    /// Insert an entry into the network stack's ARP cache.
+    ///
+    /// Takes two arguments: IP address string (e.g. "10.0.2.2") and MAC
+    /// address string (e.g. "52:54:00:12:34:56"). Returns `true` on success.
+    fn arp_insert(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if args.len() != 2 {
+            return ExoValue::Error(String::from("usage: net.arp_insert(ip, mac)"));
+        }
+        let ip = match &args[0] {
+            ExoValue::String(s) => {
+                // simple dotted-decimal parse
+                let nums: Vec<_> = s.split('.').collect();
+                if nums.len() != 4 {
+                    return ExoValue::Error(String::from("invalid IP"));
+                }
+                let mut octets = [0u8; 4];
+                for (i, part) in nums.iter().enumerate() {
+                    if let Ok(v) = part.parse::<u8>() {
+                        octets[i] = v;
+                    } else {
+                        return ExoValue::Error(String::from("invalid IP"));
+                    }
+                }
+                crate::net::ipv4::Ipv4Address::new(octets)
+            }
+            _ => return ExoValue::Error(String::from("ip must be string")),
+        };
+        let mac = match &args[1] {
+            ExoValue::String(s) => {
+                // expected format xx:xx:xx:xx:xx:xx
+                let parts: Vec<_> = s.split(':').collect();
+                if parts.len() != 6 {
+                    return ExoValue::Error(String::from("invalid MAC"));
+                }
+                let mut octets = [0u8; 6];
+                for (i, part) in parts.iter().enumerate() {
+                    if let Ok(v) = u8::from_str_radix(part, 16) {
+                        octets[i] = v;
+                    } else {
+                        return ExoValue::Error(String::from("invalid MAC"));
+                    }
+                }
+                crate::net::ethernet::MacAddress::from_octets(
+                    octets[0], octets[1], octets[2], octets[3], octets[4], octets[5]
+                )
+            }
+            _ => return ExoValue::Error(String::from("mac must be string")),
+        };
+        let ok = crate::net::arp_cache_insert(ip, mac);
+        ExoValue::Bool(ok)
+    }
+
     fn format_ipv6(addr: [u8; 16]) -> String {
         format!("{}", crate::net::ipv6::Ipv6Address::new(addr))
     }

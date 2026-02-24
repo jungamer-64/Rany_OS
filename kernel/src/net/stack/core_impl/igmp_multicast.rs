@@ -626,12 +626,15 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
 
-                // Mark request as sent
-                self.arp.request_sent(target_ip, current_time);
-
-                self.transmit(frame.as_bytes());
-                log::info!("[NET-ARP] ARP request sent for {}.{}.{}.{}",
-                    target_ip.as_bytes()[0], target_ip.as_bytes()[1], target_ip.as_bytes()[2], target_ip.as_bytes()[3]);
+                if self.transmit(frame.as_bytes()) {
+                    // Mark request as sent only when TX succeeded.
+                    self.arp.request_sent(target_ip, current_time);
+                    log::info!("[NET-ARP] ARP request sent for {}.{}.{}.{}",
+                        target_ip.as_bytes()[0], target_ip.as_bytes()[1], target_ip.as_bytes()[2], target_ip.as_bytes()[3]);
+                } else {
+                    log::warn!("[NET-ARP] ARP request transmit failed for {}.{}.{}.{}",
+                        target_ip.as_bytes()[0], target_ip.as_bytes()[1], target_ip.as_bytes()[2], target_ip.as_bytes()[3]);
+                }
             }
         }
     }

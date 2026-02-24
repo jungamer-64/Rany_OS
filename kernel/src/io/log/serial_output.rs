@@ -124,7 +124,14 @@ impl KernelLogger {
         let mut tracker = LastCharTracker::new(writer);
 
         self.print_header(&mut tracker, record);
-        let _ = write!(tracker, "{}", record.args());
+
+        // Format the record arguments into a temporary string so we can strip any
+        // spaces that precede a newline.  This avoids leaving a trailing blank
+        // (rendered as an underscore when spaces are visible) at the end of the
+        // log line.
+        let mut msg = alloc::format!("{}", record.args());
+        msg = crate::io::log::trim_spaces_before_newline(&msg);
+        let _ = write!(tracker, "{}", msg);
 
         if tracker.last_char != b'\n' {
             let _ = tracker.inner.write_str("\r\n");

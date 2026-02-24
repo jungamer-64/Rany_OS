@@ -77,8 +77,12 @@ pub fn physical_memory_offset() -> u64 {
         Ok(g) => g,
         Err(_) => panic!("[MM] Higher Half manager poisoned (physical_memory_offset)"),
     };
-    let manager = guard.as_ref().expect("Higher half not initialized");
-    manager.physical_memory_offset()
+    if let Some(manager) = guard.as_ref() {
+        manager.physical_memory_offset()
+    } else {
+        // Early bootstrap callers may run before higher-half manager init.
+        crate::memory::physical_memory_offset()
+    }
 }
 
 /// 物理アドレスを仮想アドレスに変換
@@ -87,16 +91,28 @@ pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
         Ok(g) => g,
         Err(_) => panic!("[MM] Higher Half manager poisoned (phys_to_virt)"),
     };
-    let manager = guard.as_ref().expect("Higher half not initialized");
-    manager.mapper().phys_to_virt(phys)
+    if let Some(manager) = guard.as_ref() {
+        manager.mapper().phys_to_virt(phys)
+    } else {
+        VirtAddr::new(phys.as_u64().wrapping_add(crate::memory::physical_memory_offset()))
+    }
 }
 
 /// 仮想アドレスを物理アドレスに変換（直接マップ領域）
 pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
     match HIGHER_HALF_MANAGER.lock() {
         Ok(guard) => {
-            let manager = guard.as_ref().expect("Higher half not initialized");
-            manager.mapper().virt_to_phys(virt)
+            if let Some(manager) = guard.as_ref() {
+                manager.mapper().virt_to_phys(virt)
+            } else {
+                let offset = crate::memory::physical_memory_offset();
+                let v = virt.as_u64();
+                if v >= offset {
+                    Some(PhysAddr::new(v - offset))
+                } else {
+                    None
+                }
+            }
         }
         Err(_) => {
             log::error!("[MM] Higher Half manager poisoned (virt_to_phys) - returning None");

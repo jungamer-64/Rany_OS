@@ -143,6 +143,9 @@ impl SystemIntegration {
     pub(super) fn integrate_interrupts(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 3: Interrupt routing configuration");
 
+        // Initialize unified interrupt allocator before MSI/MSI-X vector allocation.
+        crate::io::interrupt_manager::init();
+
         // Configure IOAPIC redirection entries
         let routes = self.interrupt_router.configure_routing();
         self.log(&alloc::format!(
@@ -174,12 +177,60 @@ impl SystemIntegration {
                     })
                     .unwrap_or(false)
                 {
-                    if let Some(vector) = crate::io::pci::allocate_vector(pci_dev.bdf) {
-                        self.interrupt_router.add_msi_route(*dev_id, vector);
+                    if let Some(msi_offset) = pci_dev.msi_cap_offset {
+                        let bdf = pci_dev.bdf.to_u16() as u32;
+                        match crate::io::interrupt_manager::allocate_msi(
+                            bdf,
+                            dev_name.as_str(),
+                            Some(0),
+                        ) {
+                            Ok(allocation) => {
+                                let vector = allocation.vector();
+                                unsafe {
+                                    super::interrupt_routing::program_msi(
+                                        pci_dev.bdf.bus(),
+                                        pci_dev.bdf.device(),
+                                        pci_dev.bdf.function(),
+                                        msi_offset,
+                                        vector,
+                                    );
+                                }
+                                let accessor = crate::io::pci::legacy::LegacyPciAccessor::new();
+                                crate::io::pci::disable_intx(&accessor, pci_dev);
+                                crate::io::interrupt_manager::register_handler(
+                                    vector,
+                                    alloc::boxed::Box::new(|| {
+                                        crate::interrupts::dispatch_shared_pci_handlers();
+                                    }),
+                                );
+                                self.interrupt_router.add_msi_route(*dev_id, vector);
+                                self.log(&alloc::format!(
+                                    "    MSI enabled: {} {:02x}:{:02x}.{} -> vector {}",
+                                    dev_name,
+                                    pci_dev.bdf.bus(),
+                                    pci_dev.bdf.device(),
+                                    pci_dev.bdf.function(),
+                                    vector
+                                ));
+                            }
+                            Err(e) => {
+                                self.log(&alloc::format!(
+                                    "    MSI allocation failed for {} {:02x}:{:02x}.{}: {:?} (legacy IRQ fallback)",
+                                    dev_name,
+                                    pci_dev.bdf.bus(),
+                                    pci_dev.bdf.device(),
+                                    pci_dev.bdf.function(),
+                                    e
+                                ));
+                            }
+                        }
+                    } else {
                         self.log(&alloc::format!(
-                            "    Device {} -> vector {}",
+                            "    Device {} {:02x}:{:02x}.{} has no MSI capability (legacy IRQ fallback)",
                             dev_name,
-                            vector
+                            pci_dev.bdf.bus(),
+                            pci_dev.bdf.device(),
+                            pci_dev.bdf.function()
                         ));
                     }
                     break;

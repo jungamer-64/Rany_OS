@@ -867,6 +867,26 @@ pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     None
 }
 
+/// Insert an entry into the ARP cache of the live network stack.
+///
+/// This is primarily used for diagnostics and test scenarios, and is
+/// exposed via the `net` shell namespace.  It returns `true` on success or
+/// `false` if the stack is not yet initialized.
+///
+/// When `gateway` devices do not respond to ARP (e.g. QEMU user-mode
+/// networking), callers can use this API to seed a static mapping so that
+/// traffic does not repeatedly stall while waiting for a reply.
+pub fn arp_cache_insert(ip: Ipv4Address, mac: MacAddress) -> bool {
+    if let Ok(mut guard) = stack::stack().lock() {
+        if let Some(stack_ref) = guard.as_mut() {
+            let now = crate::time::get_uptime_ms();
+            stack_ref.arp_cache_insert(ip, mac, now);
+            return true;
+        }
+    }
+    false
+}
+
 /// Initialize network for shell commands
 pub fn init_network_shell() {
     // no-op: runtime state is sourced from the actual network stack/DHCP clients.

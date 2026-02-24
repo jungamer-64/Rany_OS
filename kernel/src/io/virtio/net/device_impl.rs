@@ -442,8 +442,24 @@ impl VirtioNetDevice {
 
         if is_iommu_enabled() {
             let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
-            let buffer = CoherentDmaBuffer::new(aligned_len, DmaMemoryAttributes::MMIO)
-                .ok_or(VirtioNetError::DeviceError)?;
+            let device_id = self.iommu_device_id.ok_or_else(|| {
+                log::error!(
+                    "[VIRTIO-NET] queue DMA allocation requires iommu_device_id when IOMMU is enabled"
+                );
+                VirtioNetError::DeviceError
+            })?;
+            let buffer = CoherentDmaBuffer::new_for_device(
+                aligned_len,
+                DmaMemoryAttributes::MMIO,
+                &device_id,
+            )
+            .ok_or(VirtioNetError::DeviceError)?;
+            if !buffer.is_iommu_mapped() {
+                log::error!(
+                    "[VIRTIO-NET] queue DMA buffer was not mapped for device; refusing phys fallback"
+                );
+                return Err(VirtioNetError::DeviceError);
+            }
             Ok((buffer, aligned_len))
         } else {
             let buffer = CoherentDmaBuffer::new(total_size, DmaMemoryAttributes::MMIO)
@@ -456,37 +472,23 @@ impl VirtioNetDevice {
     pub(super) fn setup_iommu_dma_mapping(
         &self,
         buffer: &CoherentDmaBuffer,
-        dma_len: usize,
+        _dma_len: usize,
         phys_base: u64,
     ) -> Result<(u64, Option<IommuMapping>), VirtioNetError> {
         if !is_iommu_enabled() {
             return Ok((phys_base, None));
         }
 
-        let mut rref = match allocate_iommu_bounce_bytes(dma_len) {
-            Ok(r) => r,
-            Err(_) => return Err(VirtioNetError::DeviceError),
-        };
-        // Copy initial contents from the coherent buffer into the bounce buffer
-        let src = unsafe { buffer.as_slice() };
-        rref[..dma_len].copy_from_slice(&src[..dma_len]);
-
-        let handle = match self.iommu_device_id {
-            Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::Bidirectional),
-            None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::Bidirectional),
+        if self.iommu_device_id.is_some() && !buffer.is_iommu_mapped() {
+            log::error!(
+                "[VIRTIO-NET] queue memory is not mapped for device DMA despite IOMMU being enabled"
+            );
+            return Err(VirtioNetError::DeviceError);
         }
-        .map_err(|_| VirtioNetError::DeviceError)?;
 
-        let iova = handle.iova();
-        Ok((
-            iova,
-            Some(IommuMapping {
-                device: self.iommu_device_id,
-                iova,
-                len: dma_len,
-                handle: Some(handle),
-            }),
-        ))
+        // Queue memory must be shared between CPU and device.
+        // Use the same coherent buffer backing with device-visible address.
+        Ok((buffer.device_addr(), None))
     }
 
     /// リングメモリを初期化する

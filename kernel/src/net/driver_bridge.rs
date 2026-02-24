@@ -718,6 +718,9 @@ pub fn init_bridge() -> Result<(), &'static str> {
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),
     }
 
+    // Do not seed gateway ARP with the local NIC MAC.
+    // Let normal ARP resolution discover the peer MAC to avoid self-MAC misrouting.
+
     if let Err(e) = crate::net::init_dhcp_runtime() {
         log::warn!("[NET BRIDGE] DHCP runtime init failed: {}", e);
     }
@@ -733,6 +736,9 @@ pub fn init_bridge() -> Result<(), &'static str> {
         mac.as_bytes()[5]
     );
     log::info!("  IP: 10.0.2.15");
+
+    // Enable timer-based fallback RX/TX completion once the bridge is live.
+    crate::interrupts::enable_virtio_net_irq_fallback();
 
     Ok(())
 }

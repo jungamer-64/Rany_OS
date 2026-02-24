@@ -67,10 +67,10 @@ pub struct InterruptRouter {
 }
 
 impl InterruptRouter {
-    /// First allocatable vector (after exceptions and legacy IRQs)
-    const FIRST_VECTOR: u8 = 48;
-    /// Last allocatable vector
-    const LAST_VECTOR: u8 = 254;
+    /// First allocatable MSI vector (shared MSI range)
+    const FIRST_VECTOR: u8 = 0x60;
+    /// Last allocatable MSI vector
+    const LAST_VECTOR: u8 = 0x6F;
 
     /// Create a new interrupt router
     pub fn new() -> Self {
