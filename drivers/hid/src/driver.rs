@@ -110,6 +110,9 @@ impl KeyboardDriver {
         }
 
         let extended = self.extended_pending.swap(false, Ordering::Relaxed);
+        let pressed = (scancode & SCANCODE_RELEASE_BIT) == 0;
+        let code = scancode & SCANCODE_KEYCODE_MASK;
+        self.update_modifiers_from_scancode(code, extended, pressed);
         let data: u16 = (scancode as u16) | if extended { QUEUE_EXTENDED_FLAG } else { 0 };
 
         if self.queue.push(data) {
@@ -127,6 +130,29 @@ impl KeyboardDriver {
                 });
             // Notify consumer even when queue is full
             self.waker.notify();
+        }
+    }
+
+    /// Update modifier-state bits from a raw set-1 scancode.
+    ///
+    /// This must run on the producer path (IRQ) so that queued key events carry
+    /// the latest modifier snapshot when consumed.
+    fn update_modifiers_from_scancode(&self, code: u8, extended: bool, pressed: bool) {
+        match (code, extended) {
+            // Shift
+            (0x2A, false) => self.modifiers.update_bit(ModifierState::LEFT_SHIFT, pressed),
+            (0x36, false) => self.modifiers.update_bit(ModifierState::RIGHT_SHIFT, pressed),
+            // Ctrl (E0 1D = right ctrl)
+            (0x1D, false) => self.modifiers.update_bit(ModifierState::LEFT_CTRL, pressed),
+            (0x1D, true) => self.modifiers.update_bit(ModifierState::RIGHT_CTRL, pressed),
+            // Alt (E0 38 = right alt / AltGr)
+            (0x38, false) => self.modifiers.update_bit(ModifierState::LEFT_ALT, pressed),
+            (0x38, true) => self.modifiers.update_bit(ModifierState::RIGHT_ALT, pressed),
+            // Locks: toggle on key press only
+            (0x3A, false) if pressed => self.modifiers.toggle_bit(ModifierState::CAPS_LOCK),
+            (0x45, false) if pressed => self.modifiers.toggle_bit(ModifierState::NUM_LOCK),
+            (0x46, false) if pressed => self.modifiers.toggle_bit(ModifierState::SCROLL_LOCK),
+            _ => {}
         }
     }
 

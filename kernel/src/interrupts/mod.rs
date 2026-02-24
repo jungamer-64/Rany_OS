@@ -593,8 +593,8 @@ define_interrupt!(
         if !KEYBOARD_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
             crate::io::log::early_print("[INT] keyboard interrupt received\n");
         }
-        // Delegate to the PS/2 controller handler which reads status/data itself.
-        crate::io::hid::ps2::keyboard_interrupt_handler();
+        // Feed scancodes into the async KeyboardStream driver used by ConsoleFrontend.
+        crate::io::hid::keyboard::keyboard_interrupt_handler();
 
         // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
         crate::task::interrupt_waker::wake_from_interrupt(

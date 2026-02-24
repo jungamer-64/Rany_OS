@@ -143,10 +143,11 @@ pub fn spawn_console_shell(executor: &mut crate::task::Executor) {
     executor.spawn(Task::new(async {
         #[cfg(feature = "qemu-test-export")]
         crate::io::log::early_print("[SHELL] console shell task start\n");
+        // Acquire the keyboard stream before yielding so background services
+        // cannot steal the SPSC stream first.
+        let mut session = ShellSession::new(ConsoleFrontend::new());
         crate::task::yield_now().await;
         crate::io::log::set_console_mirror_enabled(false);
-        // Wait a bit more for drivers?
-        let mut session = ShellSession::new(ConsoleFrontend::new());
         session.run().await;
         crate::io::log::set_console_mirror_enabled(true);
         #[cfg(feature = "qemu-test-export")]

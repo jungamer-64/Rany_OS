@@ -414,6 +414,7 @@ impl Executor {
         loop {
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
             crate::interrupts::poll_timer_events();
+            crate::io::hid::keyboard::process_pending_wakes();
             crate::task::timer::process_pending_timer_wakers();
             crate::task::interrupt_waker::process_interrupt_events();
             crate::io::io_scheduler::process_deferred_completions();

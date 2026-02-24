@@ -400,6 +400,7 @@ impl PerCoreExecutor {
         // ISRからのwake()はイベントキューに積まれているため、
         // ここで実際のwake()を実行する
         // タイマーからの保留Wakerも処理
+        crate::io::hid::keyboard::process_pending_wakes();
         crate::task::timer::process_pending_timer_wakers();
 
         // Drive IoScheduler dispatch/poll        // Process IO and interrupts

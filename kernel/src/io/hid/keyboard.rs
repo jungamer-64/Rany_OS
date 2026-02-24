@@ -81,8 +81,34 @@ pub(crate) static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
 
 // init() function removed - use Ps2KeyboardDriver via DriverRegistry instead
 
-// Legacy `handle_keyboard_interrupt` removed. Register the PS/2 driver's interrupt handler via
-// `driver_registry::register_driver` or use `crate::io::hid::ps2::keyboard_interrupt_handler()`.
+/// IRQ1 handler entry for the async keyboard stream path.
+///
+/// Reads one byte from the PS/2 data port and pushes it to `PS2_KEYBOARD`.
+/// This keeps the IRQ producer aligned with the `KeyboardStream` consumer used by ExoShell.
+pub fn keyboard_interrupt_handler() {
+    let status_val: u8;
+    let data: u8;
+
+    unsafe {
+        core::arch::asm!(
+            "in al, dx",
+            out("al") status_val,
+            in("dx") crate::io::hid::ps2::ports::STATUS,
+            options(nomem, nostack)
+        );
+        if (status_val & crate::io::hid::ps2::status::OUTPUT_FULL) == 0 {
+            return;
+        }
+        core::arch::asm!(
+            "in al, dx",
+            out("al") data,
+            in("dx") crate::io::hid::ps2::ports::DATA,
+            options(nomem, nostack)
+        );
+    }
+
+    PS2_KEYBOARD.handle_scancode(data);
+}
 
 
 /// 保留中のISR通知を処理（Executorから呼び出し）
