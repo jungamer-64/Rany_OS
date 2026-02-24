@@ -29,15 +29,11 @@ use super::dma::DomainManager;
 // use crate::io::acpi::dmar; // For parse_dmar - verified this path exists in kernel/src/io/acpi/dmar.rs
 
 fn align_down(value: u64, align: usize) -> u64 {
-    let align = align as u64;
-    if align == 0 { return value; }
-    value & !(align - 1)
+    crate::util::align_down_u64(value, align as u64)
 }
 
 fn align_up(value: u64, align: usize) -> u64 {
-    let align = align as u64;
-    if align == 0 { return value; }
-    (value + align - 1) & !(align - 1)
+    crate::util::align_up_u64(value, align as u64)
 }
 
 #[cfg(not(test))]

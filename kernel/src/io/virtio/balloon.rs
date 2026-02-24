@@ -766,9 +766,7 @@ pub fn get_virtio_balloon_device() -> Option<Arc<VirtioBalloonDevice>> {
     VIRTIO_BALLOON_DEVICE.lock().as_ref().cloned()
 }
 
-fn align_up(val: usize, align: usize) -> usize {
-    (val + align - 1) & !(align - 1)
-}
+use crate::util::align_up_usize as align_up;
 
 // ============================================================================
 // Tests

@@ -332,7 +332,7 @@ impl ShrinkerManager {
 /// TSC読み取り
 #[inline]
 fn read_tsc() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
+    crate::time::rdtsc_unserialized()
 }
 
 // グローバルマネージャ

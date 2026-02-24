@@ -95,10 +95,7 @@ pub fn get_virtio_console_device() -> Option<Arc<VirtioConsoleDevice>> {
     VIRTIO_CONSOLE_DEVICE.lock().as_ref().cloned()
 }
 
-/// Align `val` up to the nearest multiple of `align`.
-pub(crate) fn align_up(val: usize, align: usize) -> usize {
-    (val + align - 1) & !(align - 1)
-}
+use crate::util::align_up_usize as align_up;
 
 // ============================================================================
 // Tests

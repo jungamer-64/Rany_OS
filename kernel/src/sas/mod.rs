@@ -119,7 +119,7 @@ impl SingleAddressSpaceManager {
         // アドレスを割り当て
         let addr = self
             .next_alloc_addr
-            .fetch_add(align_up(size as u64, PAGE_SIZE), Ordering::SeqCst);
+            .fetch_add(align_up_u64(size as u64, PAGE_SIZE_4K as u64), Ordering::SeqCst);
 
         // 上限チェック
         if addr + size as u64 > SAS_MAX_ADDRESS {
@@ -185,12 +185,11 @@ const KERNEL_BASE: usize = 0x0;
 const KERNEL_SIZE: usize = 16 * 1024 * 1024;
 
 /// ページサイズ
-const PAGE_SIZE: u64 = 4096;
+use crate::mm::types::PAGE_SIZE_4K;
 
 /// アドレスをアラインメント
-const fn align_up(addr: u64, align: u64) -> u64 {
-    (addr + align - 1) & !(align - 1)
-}
+use crate::util::align_up_u64;
+
 
 // ============================================================================
 // エラー型

@@ -442,19 +442,8 @@ impl PmmAllocatorFast {
     }
 }
 
-fn align_down(value: u64, align: u64) -> u64 {
-    if align == 0 {
-        return value;
-    }
-    value & !(align - 1)
-}
+use crate::util::{align_down_u64 as align_down, align_up_u64 as align_up};
 
-fn align_up(value: u64, align: u64) -> u64 {
-    if align == 0 {
-        return value;
-    }
-    value.wrapping_add(align - 1) & !(align - 1)
-}
 
 fn align_size_to_page(size: usize) -> usize {
     if size <= PAGE_SIZE_4K {

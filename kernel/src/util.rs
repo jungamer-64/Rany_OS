@@ -302,3 +302,45 @@ pub fn fnv1a_page_hash(page_data: &[u8]) -> u64 {
 
     hash
 }
+
+// ============================================================================
+// Alignment Utility Functions
+// ============================================================================
+
+/// 値を指定アラインメントに切り上げ (usize版)
+///
+/// `align` は2の冪乗でなければならない（debug_assertで検証）。
+///
+/// # Example
+/// ```ignore
+/// assert_eq!(align_up_usize(5, 4), 8);
+/// assert_eq!(align_up_usize(8, 4), 8);
+/// ```
+#[inline]
+pub const fn align_up_usize(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
+}
+
+/// 値を指定アラインメントに切り下げ (usize版)
+///
+/// `align` は2の冪乗でなければならない。
+#[inline]
+pub const fn align_down_usize(value: usize, align: usize) -> usize {
+    value & !(align - 1)
+}
+
+/// 値を指定アラインメントに切り上げ (u64版)
+///
+/// `align` は2の冪乗でなければならない。
+#[inline]
+pub const fn align_up_u64(value: u64, align: u64) -> u64 {
+    (value + align - 1) & !(align - 1)
+}
+
+/// 値を指定アラインメントに切り下げ (u64版)
+///
+/// `align` は2の冪乗でなければならない。
+#[inline]
+pub const fn align_down_u64(value: u64, align: u64) -> u64 {
+    value & !(align - 1)
+}

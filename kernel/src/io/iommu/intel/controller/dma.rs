@@ -24,15 +24,11 @@ use super::qi_ops::InvalidationOps;
 
 mod domain_manager_impl;
 fn align_down(value: u64, align: usize) -> u64 {
-    let align = align as u64;
-    if align == 0 { return value; }
-    value & !(align - 1)
+    crate::util::align_down_u64(value, align as u64)
 }
 
 fn align_up(value: u64, align: usize) -> u64 {
-    let align = align as u64;
-    if align == 0 { return value; }
-    (value + align - 1) & !(align - 1)
+    crate::util::align_up_u64(value, align as u64)
 }
 
 fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {

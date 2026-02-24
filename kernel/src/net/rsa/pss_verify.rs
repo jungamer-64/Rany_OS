@@ -100,20 +100,7 @@ pub(crate) fn pseudo_random_byte(extra_entropy: u64) -> u8 {
 
 /// TSCを読み取る（x86_64 RDTSC命令）
 pub(crate) fn read_tsc() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let lo: u32;
-        let hi: u32;
-        unsafe {
-            core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nostack, nomem));
-        }
-        ((hi as u64) << 32) | lo as u64
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        // フォールバック: 定数ベース
-        0x123456789ABCDEF0u64.wrapping_add(extra_entropy)
-    }
+    crate::time::rdtsc_unserialized()
 }
 
 // ============================================================================

@@ -618,9 +618,7 @@ pub unsafe fn init_virtio_blk_with_transport(
     Ok(())
 }
 
-pub(crate) fn align_up(val: usize, align: usize) -> usize {
-    (val + align - 1) & !(align - 1)
-}
+use crate::util::align_up_usize as align_up;
 
 /// Get a clone of the global VirtioBlk device Arc if initialized
 pub fn get_virtio_blk_device() -> Option<Arc<VirtioBlkDevice>> {

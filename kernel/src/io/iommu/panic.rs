@@ -66,10 +66,7 @@ static LAST_PANIC_DMA_LEN: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_SIZE: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_VIRT: AtomicU64 = AtomicU64::new(0);
 
-fn align_up(value: u64, align: u64) -> u64 {
-    debug_assert!(align.is_power_of_two());
-    (value + align - 1) & !(align - 1)
-}
+use crate::util::align_up_u64 as align_up;
 
 /// Initialize the panic DMA pool.
 ///

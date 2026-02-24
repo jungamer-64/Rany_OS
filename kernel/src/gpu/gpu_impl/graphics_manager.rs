@@ -115,9 +115,8 @@ pub fn init(transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
     graphics_manager().init(transport)
 }
 
-pub(crate) fn align_up(val: usize, align: usize) -> usize {
-    (val + align - 1) & !(align - 1)
-}
+use crate::util::align_up_usize as align_up;
+
 
 // =============================================================================
 // Tests

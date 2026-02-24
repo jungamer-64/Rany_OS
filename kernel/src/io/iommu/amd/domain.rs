@@ -23,15 +23,11 @@ use super::{AmdIommuDriver, AmdIvmdRange, AmdDomainInfo};
 
 mod ivhd_flags;
 pub(super) fn align_down(value: u64, align: usize) -> u64 {
-    let align = align as u64;
-    if align == 0 { return value; }
-    value & !(align - 1)
+    crate::util::align_down_u64(value, align as u64)
 }
 
 pub(super) fn align_up(value: u64, align: usize) -> u64 {
-    let align = align as u64;
-    if align == 0 { return value; }
-    (value + align - 1) & !(align - 1)
+    crate::util::align_up_u64(value, align as u64)
 }
 
 // ---------------------------------------------------------------------------

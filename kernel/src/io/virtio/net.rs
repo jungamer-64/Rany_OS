@@ -64,13 +64,7 @@ fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
     (addr as u128) <= (mask as u128) && (end as u128) <= limit
 }
 
-fn align_up(value: usize, align: usize) -> usize {
-    if align.is_power_of_two() {
-        (value + align - 1) & !(align - 1)
-    } else {
-        value
-    }
-}
+use crate::util::align_up_usize as align_up;
 
 fn check_device_dma_mask(
     device: Option<IommuDeviceId>,

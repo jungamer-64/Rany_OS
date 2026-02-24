@@ -95,15 +95,7 @@ where
 /// TSCを読み取る
 #[inline]
 pub(crate) fn read_tsc() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::x86_64::_rdtsc()
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        0
-    }
+    crate::time::rdtsc_unserialized()
 }
 
 /// 現在のコアIDを取得

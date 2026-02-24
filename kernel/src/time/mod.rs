@@ -33,7 +33,7 @@ pub const NANOS_PER_MICRO: u64 = 1_000;
 
 /// Read the Time Stamp Counter (TSC) with LFENCE serialization
 #[inline]
-fn rdtsc() -> u64 {
+pub fn rdtsc() -> u64 {
     unsafe {
         // LFENCE ensures all prior instructions complete before reading TSC
         core::arch::x86_64::_mm_lfence();
@@ -43,7 +43,7 @@ fn rdtsc() -> u64 {
 
 /// Read TSC without serialization (for non-critical paths)
 #[inline]
-fn rdtsc_unserialized() -> u64 {
+pub fn rdtsc_unserialized() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
