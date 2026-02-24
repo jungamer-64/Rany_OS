@@ -99,6 +99,60 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         .unwrap_or(true)
 }
 
+// new smoke test exercising public runtime APIs
+pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
+    use crate::net::{dhcp_last_declined, dhcp_last_released};
+    use crate::net::stack;
+
+    stack::init_default();
+    let _ = crate::net::init_dhcp_runtime();
+
+    // initially None
+    if dhcp_last_declined().is_some() || dhcp_last_released().is_some() {
+        return false;
+    }
+
+    // manipulate global client directly to produce values
+    if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+        if let Some(client) = *guard {
+            // simulate lease and then release via public API
+            let lease = crate::net::dhcp::DhcpLease {
+                ip_address: crate::net::Ipv4Address::new([1,2,3,4]),
+                subnet_mask: crate::net::Ipv4Address::new([255,255,255,0]),
+                gateway: None,
+                dns_servers: alloc::vec![],
+                server_ip: crate::net::Ipv4Address::new([1,2,3,1]),
+                lease_time: 0,
+                t1:0,
+                t2:0,
+                obtained_at:0,
+                hostname:None,
+                domain_name:None,
+            };
+            if let Ok(mut lg) = client.lease.lock() {
+                *lg = Some(lease.clone());
+            }
+        }
+    }
+
+    crate::net::dhcp_release();
+    if dhcp_last_released() != Some([1,2,3,4]) {
+        return false;
+    }
+
+    // simulate a decline
+    if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+        if let Some(client) = *guard {
+            let _ = client.send_decline(crate::net::Ipv4Address::new([5,6,7,8]), None);
+        }
+    }
+    if dhcp_last_declined() != Some([5,6,7,8]) {
+        return false;
+    }
+
+    true
+}
+
 pub fn dhcp_v6_build_solicit_min_size_smoke() -> bool {
     run_case!(dhcp::qemu_v6_tests::test_build_solicit_min_size)
 }

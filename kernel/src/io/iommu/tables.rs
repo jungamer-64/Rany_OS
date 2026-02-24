@@ -357,7 +357,17 @@ impl Drop for PageTableScope {
 pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
     #[cfg(not(any(test, feature = "qemu-test-export")))]
     {
-        crate::mm::virt::higher_half::virt_to_phys(crate::mm::virt::higher_half::VirtAddr::new(ptr as u64))
+        let virt = ptr as u64;
+        let hhdm_base = crate::memory::physical_memory_offset();
+        // Most IOMMU structures are allocated from HHDM-backed kernel memory.
+        // Fast-path this region to avoid taking higher-half manager locks.
+        const HHDM_FAST_WINDOW: u64 = 1u64 << 46; // 64 TiB window
+        let hhdm_end = hhdm_base.saturating_add(HHDM_FAST_WINDOW);
+        if virt >= hhdm_base && virt < hhdm_end {
+            return Ok(virt - hhdm_base);
+        }
+
+        crate::mm::virt::higher_half::virt_to_phys(crate::mm::virt::higher_half::VirtAddr::new(virt))
             .ok_or(IommuError::HardwareError)
             .map(|p| p.as_u64())
     }

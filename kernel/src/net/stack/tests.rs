@@ -208,6 +208,50 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 
     // Release should be a no-op as well
     crate::net::dhcp_release();
+
+    // last declined / released are initially None
+    assert!(crate::net::dhcp_last_declined().is_none());
+    assert!(crate::net::dhcp_last_released().is_none());
+
+    // create a fake client lease to exercise release API
+    if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+        if let Some(ref client) = *guard {
+            // manually populate lease and then release
+            let lease = crate::net::dhcp::DhcpLease {
+                ip_address: crate::net::Ipv4Address::new([10, 1, 2, 3]),
+                subnet_mask: crate::net::Ipv4Address::new([255, 255, 255, 0]),
+                gateway: None,
+                dns_servers: alloc::vec![],
+                server_ip: crate::net::Ipv4Address::new([10, 1, 2, 1]),
+                lease_time: 3600,
+                t1: 1800,
+                t2: 3150,
+                obtained_at: 0,
+                hostname: None,
+                domain_name: None,
+            };
+            if let Ok(mut lg) = client.lease.lock() {
+                *lg = Some(lease.clone());
+            }
+        }
+    }
+    crate::net::dhcp_release();
+    assert_eq!(crate::net::dhcp_last_released(), Some([10,1,2,3]));
+
+    // simulate a conflict/decline
+    let test_ip = [192, 168, 123, 45];
+    let server_ip = [192, 168, 123, 1];
+    if let Ok(mut guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+        if let Some(client) = *guard {
+            let _ = client.send_decline(crate::net::Ipv4Address::new(test_ip), Some(crate::net::Ipv4Address::new(server_ip)));
+        }
+    }
+    assert_eq!(crate::net::dhcp_last_declined(), Some(test_ip));
+
+    // verify dhcp_state snapshot reflects the same
+    let snap = crate::net::dhcp_state();
+    assert_eq!(snap.v4_last_declined, Some(test_ip));
+    assert_eq!(snap.v4_last_released, Some([10,1,2,3]));
 }
 
 #[cfg_attr(test, test_case)]

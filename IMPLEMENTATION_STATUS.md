@@ -1165,6 +1165,8 @@ pub fn dns_resolve(hostname: &str) -> Option<[u8; 4]>
 pub fn dhcp_discover() -> Option<DhcpOfferInfo>
 pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool
 pub fn dhcp_release()
+pub fn dhcp_last_declined() -> Option<[u8; 4]>
+pub fn dhcp_last_released() -> Option<[u8; 4]>
 
 // 以下は ExoShell からも使えるヘルパーメソッド
 // net.dhcp_discover(), net.dhcp_request(...), net.dhcp_release(), net.dhcp_state(), net.dhcp_renew()

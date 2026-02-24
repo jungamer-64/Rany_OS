@@ -390,11 +390,15 @@ pub struct UdpSocketInfo {
 }
 
 /// DHCP runtime state snapshot for shell/API consumers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DhcpRuntimeState {
     pub v4_state: String,
     pub v4_assigned_ip: Option<[u8; 4]>,
     pub v4_lease_remaining: Option<u32>,
+    /// Most recently declined address (due to ARP conflict) if any
+    pub v4_last_declined: Option<[u8; 4]>,
+    /// Most recently released address if any
+    pub v4_last_released: Option<[u8; 4]>,
     pub v6_state: String,
     pub v6_assigned_ip: Option<[u8; 16]>,
     pub v6_preferred_remaining: Option<u32>,
@@ -659,6 +663,27 @@ pub fn dhcp_release() {
     }
 }
 
+/// 外部API: 最後に送信されたDECLINEで拒否されたIPを取得
+/// (ARP コンフリクト検知時など)。
+pub fn dhcp_last_declined() -> Option<[u8; 4]> {
+    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+        if let Some(ref client) = *guard {
+            return client.last_declined_ip().map(|ip| *ip.as_bytes());
+        }
+    }
+    None
+}
+
+/// 外部API: 最後にリリースしたIPを取得
+pub fn dhcp_last_released() -> Option<[u8; 4]> {
+    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+        if let Some(ref client) = *guard {
+            return client.last_released_ip().map(|ip| *ip.as_bytes());
+        }
+    }
+    None
+}
+
 fn dhcp_v4_state_name(state: DhcpState) -> String {
     String::from(match state {
         DhcpState::Init => "Init",
@@ -728,6 +753,8 @@ pub fn dhcp_state() -> DhcpRuntimeState {
         v4_state: String::from("Init"),
         v4_assigned_ip: None,
         v4_lease_remaining: None,
+        v4_last_declined: None,
+        v4_last_released: None,
         v6_state: String::from("Init"),
         v6_assigned_ip: None,
         v6_preferred_remaining: None,
@@ -743,6 +770,8 @@ pub fn dhcp_state() -> DhcpRuntimeState {
                     out.v4_lease_remaining =
                         Some(lease_remaining_secs(lease.lease_time, lease.obtained_at, now, tick_rate));
                 }
+                out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
+                out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
             }
         }
         Err(_) => out.v4_state = String::from("Poisoned"),

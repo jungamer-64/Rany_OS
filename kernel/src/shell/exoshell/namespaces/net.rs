@@ -72,6 +72,8 @@ impl NetNamespace {
             "dhcp_discover" => Self::dhcp_discover(),
             "dhcp_request" => Self::dhcp_request(args),
             "dhcp_release" => Self::dhcp_release(),
+            "dhcp_last_declined" => Self::dhcp_last_declined(),
+            "dhcp_last_released" => Self::dhcp_last_released(),
             "dhcp_renew" => Self::dhcp_renew(),
             "bind" => Self::dispatch_bind(args),
             _ => ExoValue::Error(format!("Unknown method 'net.{}'", method)),
@@ -203,6 +205,20 @@ impl NetNamespace {
             },
         );
         map.insert(
+            String::from("v4_last_declined"),
+            match state.v4_last_declined {
+                Some(ip) => ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))),
+                None => ExoValue::Nil,
+            },
+        );
+        map.insert(
+            String::from("v4_last_released"),
+            match state.v4_last_released {
+                Some(ip) => ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))),
+                None => ExoValue::Nil,
+            },
+        );
+        map.insert(
             String::from("v6_state"),
             ExoValue::String(Cow::Owned(state.v6_state)),
         );
@@ -292,6 +308,24 @@ impl NetNamespace {
     pub fn dhcp_release() -> ExoValue<'static> {
         crate::net::dhcp_release();
         ExoValue::Bool(true)
+    }
+
+    /// last declined IP (string or nil)
+    pub fn dhcp_last_declined() -> ExoValue<'static> {
+        if let Some(ip) = crate::net::dhcp_last_declined() {
+            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
+        } else {
+            ExoValue::Nil
+        }
+    }
+
+    /// last released IP (string or nil)
+    pub fn dhcp_last_released() -> ExoValue<'static> {
+        if let Some(ip) = crate::net::dhcp_last_released() {
+            ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
+        } else {
+            ExoValue::Nil
+        }
     }
 
     /// ICMP エコー送信（async版 - パケット間でyield）

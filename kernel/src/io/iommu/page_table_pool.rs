@@ -138,7 +138,9 @@ static PAGE_TABLE_REF_COUNTS: spin::Once<IrqMutex<HashMap<u64, u16>>> = spin::On
 
 /// Get or initialize the page table reference count registry
 fn ref_count_registry() -> &'static IrqMutex<HashMap<u64, u16>> {
-    PAGE_TABLE_REF_COUNTS.call_once(|| IrqMutex::new(HashMap::new()))
+    // Avoid first-time growth under IrqMutex lock in register_page_table().
+    // A modest upfront capacity keeps hot-path inserts allocation-free.
+    PAGE_TABLE_REF_COUNTS.call_once(|| IrqMutex::new(HashMap::with_capacity(4096)))
 }
 
 /// Register a page table's physical address in the global registry

@@ -56,6 +56,7 @@ all_cases=(
   "dhcp_v4:release_clears_lease_and_sets_last_released"
   "dhcp_v4:parse_t1_t2_and_timeout_transitions"
   "dhcp_v4:offer_probe_and_decline_flow"
+  "dhcp_v4:runtime_api_lastfields_smoke"
   "dhcp_v6:build_solicit_min_size"
   "dhcp_v6:parse_reply_with_iaaddr"
   "dhcp_v6:build_request_min_size"
