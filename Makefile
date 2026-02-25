@@ -45,13 +45,15 @@ all: build
 # カーネルをビルド
 build:
 	@echo "Building ExoRust kernel..."
-	$(CARGO) build --target $(TARGET).json
+	rustup run nightly $(CARGO) build --target $(TARGET).json \
+		-Zunstable-options -Zjson-target-spec
 	@echo "Build complete: $(BUILD_DIR)"
 
 # リリースビルド
 release:
 	@echo "Building ExoRust kernel (release)..."
-	$(CARGO) build --target $(TARGET).json --release
+	rustup run nightly $(CARGO) build --target $(TARGET).json --release \
+		-Zunstable-options -Zjson-target-spec
 	@echo "Release build complete"
 
 # カーネルを実行

@@ -440,8 +440,28 @@ unsafe impl<const N: usize> Send for RingBuffer<N> {}
 /// 非同期ログバッファ（送信）
 static LOG_BUFFER: IrqMutex<RingBuffer<LOG_BUFFER_CAPACITY>> = IrqMutex::new(RingBuffer::new());
 
+/// アプリケーションがヒープ利用可能になった後に非同期ログを
+/// 有効化するフラグ。メモリ初期化直後に即座に非同期へ移行すると
+/// バッファが未初期化でクラッシュする可能性があるため、
+/// 安全なポイントまで待ってから手動で切り替える。
+static ASYNC_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
+
 /// 非同期ログで切り捨てられたバイト数
 static DROPPED_LOG_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// 非同期ログを有効化する。
+///
+/// バッファ等の初期化が完了し、メモリシステムに問題がないと
+/// 確認できた後に呼び出すこと。通常はカーネル初期化の後半で
+/// 呼び出される。
+pub fn enable_async_logging() {
+    ASYNC_LOG_ENABLED.store(true, Ordering::SeqCst);
+}
+
+/// 非同期ログが現在有効かどうかを返す
+pub fn async_logging_enabled() -> bool {
+    ASYNC_LOG_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Per-core log buffer capacity (default per-core to 4 KiB)
 const PER_CORE_BUFFER_CAPACITY: usize = 4 * 1024;

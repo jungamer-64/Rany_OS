@@ -21,9 +21,15 @@ impl Log for KernelLogger {
         // if interrupts are still disabled, the UART ISR will never run and
         // any buffered data will be lost, so fall back to synchronous output
         // until we know that IF has been set.
+        // Only take the async path when the heap is available, we're not
+        // panicking, interrupts are enabled **and** the caller has explicitly
+        // enabled async logging.  Early in boot we keep async off to avoid the
+        // kind of page fault that was observed when the heap was first coming
+        // online.
         let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed)
             && !IN_PANIC.load(Ordering::Relaxed)
-            && crate::interrupts::are_interrupts_enabled();
+            && crate::interrupts::are_interrupts_enabled()
+            && crate::io::log::async_logging_enabled();
         if use_async {
             if self.try_log_async(record) {
                 start_serial_tx();

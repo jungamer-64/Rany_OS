@@ -470,6 +470,8 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         numa_info,
         Some(boot_info),
     );
+    // debug hook: verify we returned from memory::init without crashing
+    io::log::early_print("[DEBUG] after memory::init return\n");
     info!(target: "init", "Memory management initialized");
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
@@ -518,6 +520,17 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     io::log::early_print("[DEBUG] Before second info! macro\n");
     info!(target: "init", "KernelServices registered");
     io::log::early_print("[DEBUG] After second info! macro\n");
+
+    // now that the initial synchronous messages have been emitted, enable
+    // asynchronous logging so that later log traffic uses the buffered path.
+    io::log::early_print("[DEBUG] enabling async logging\n");
+    io::log::enable_async_logging();
+
+    // Asynchronous logging can now be turned on safely.  We delay this until
+    // after the initial sequence of early info! calls (which ran synchronously)
+    // so that the first few messages don't trigger the crash seen previously.
+    io::log::early_print("[DEBUG] enabling async logging\n");
+    io::log::enable_async_logging();
 
     // グラフィックスフレームバッファの初期化（ExoLoader経由）
     io::log::early_print("[DEBUG] Before graphics init info!\n");
