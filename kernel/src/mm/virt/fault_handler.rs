@@ -44,7 +44,6 @@ use crate::mm::reclaim::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 mod integration;
-pub use integration::*;
 
 // ============================================================================
 // Anonymous Page Setup Helper

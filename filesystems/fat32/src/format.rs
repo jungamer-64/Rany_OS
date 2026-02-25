@@ -1,4 +1,12 @@
-use crate::*;
+use crate::{
+    Arc,
+    BlockDevice,
+    DefaultZeroCopyBuffer,
+    Fat32FileSystem,
+    FsError,
+    FsResult,
+    FsInfo,
+};
 
 // ============================================================================
 // Format Utility (mkfs.fat32)

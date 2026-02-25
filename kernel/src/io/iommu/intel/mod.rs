@@ -92,7 +92,7 @@ unsafe fn apply_mapping_sync(
     write: bool,
 ) -> Result<u64, IommuError> {
     let domain_id = domain_arc.id();
-    if let Some(ref cq) = controller.command_queue {
+    if let Some(ref _cq) = controller.command_queue {
         crate::io::log::early_print("[DMA] apply_mapping_sync: CQ path, execute_sync_command\n");
         let cmd = IommuCommandKind::MapRegion {
             domain: domain_id,

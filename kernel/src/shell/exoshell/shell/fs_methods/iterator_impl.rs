@@ -1,7 +1,6 @@
 use super::*;
 
 mod cd_eval;
-pub use self::cd_eval::*;
 impl ExoShell {
 
     pub(crate) async fn materialize_iterator(&mut self, iter: ExoIterator) -> ExoValue<'static> {

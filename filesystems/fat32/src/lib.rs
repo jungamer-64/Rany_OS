@@ -100,13 +100,12 @@ use alloc::vec::Vec;
 use async_mutex::AsyncMutex;
 use core::convert::TryFrom;
 use core::fmt;
-use core::ops::{Add, Sub};
 use hashbrown::{HashMap, HashSet};
 use irq_lock::IrqPoisonLock;
 use ondisk::FSINFO_UNKNOWN;
 
 use vfs::block::{
-    BlockDevice, BlockDeviceZeroCopyAdapter, BlockError, OwnedBytes, ZeroCopyBlockDevice,
+    BlockDevice,  BlockError, OwnedBytes, ZeroCopyBlockDevice,
     ZeroCopyBuffer, ZeroCopyBufferMut,
 };
 use vfs::cache::LRUBlockCache;

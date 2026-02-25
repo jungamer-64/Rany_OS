@@ -43,7 +43,6 @@
 //! Zombie handles prevent memory reuse until unmapped. The GC task runs
 //! periodically and on memory pressure to reclaim IOVAs.
 
-use core::alloc::Layout;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;

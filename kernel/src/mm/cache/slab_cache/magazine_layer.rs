@@ -3,7 +3,6 @@ use super::*;
 
 /// Slab統計情報
 mod per_core;
-pub use per_core::*;
 #[derive(Debug, Clone)]
 pub struct SlabStats {
     pub object_size: usize,

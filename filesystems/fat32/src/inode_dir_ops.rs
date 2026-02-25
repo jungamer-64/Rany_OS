@@ -1,4 +1,33 @@
-use crate::*;
+use crate::{
+    Arc,
+    Cluster,
+    DirEntry,
+    DirEntryRaw,
+    DIR_ENTRY_SIZE,
+    END_OF_DIR,
+    Fat32Inode,
+    FileAttributes,
+    FileMode,
+    FileType,
+    FsError,
+    FsResult,
+    HashSet,
+    Inode,
+    DirectoryEntryKind,
+    MAX_CLUSTER_CHAIN,
+    MAX_LFN_PARTS,
+    OpenFlags,
+    PooledClusterBuffer,
+    SafePackedRead,
+    String,
+    Vec,
+    validate_path_length,
+    dos_to_unix,
+    ZeroCopyBufferMut,
+    ZeroCopyRead,
+    ZeroCopySegment,
+};
+
 use vfs::Metadata;
 
 impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {

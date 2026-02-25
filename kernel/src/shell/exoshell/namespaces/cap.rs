@@ -18,7 +18,6 @@ use crate::security::capability::{
 use crate::shell::exoshell::types::*;
 use alloc::boxed::Box;
 mod namespace_impl;
-pub use namespace_impl::*;
 
 #[cfg(feature = "posix-compat")]
 const TRACE_RESOURCE: &str = "/proc/*/trace";

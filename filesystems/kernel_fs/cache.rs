@@ -35,7 +35,6 @@ use super::fs_abstraction::InodeNum;
 
 /// Default page size (4KB)
 pub(crate) mod cached_block_impl;
-pub use cached_block_impl::*;
 pub const PAGE_SIZE: usize = 4096;
 
 /// Default cache size limit (64MB)

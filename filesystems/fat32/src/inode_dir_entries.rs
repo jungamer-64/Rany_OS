@@ -1,4 +1,24 @@
-use crate::*;
+use crate::{
+    Cluster,
+    DELETED_ENTRY,
+    DIR_ENTRY_SIZE,
+    DirEntryRaw,
+    DirectoryIterator,
+    END_OF_DIR,
+    Fat32Inode,
+    FileAttributes,
+    FileType,
+    FsError,
+    FsResult,
+    HashSet,
+    LfnEntry,
+    MAX_CLUSTER_CHAIN,
+    PooledClusterBuffer,
+    SafePackedRead,
+    ZeroCopyBufferMut,
+};
+
+use alloc::vec::Vec;
 
 impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
     /// ディレクトリエントリのイテレータを返す

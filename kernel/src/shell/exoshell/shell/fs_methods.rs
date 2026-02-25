@@ -1,7 +1,6 @@
 use super::*;
 
 mod iterator_impl;
-pub use self::iterator_impl::*;
 impl ExoShell {
 
     /// fs.* メソッド（構造化版）- async版

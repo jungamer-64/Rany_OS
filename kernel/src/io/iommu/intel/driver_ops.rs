@@ -379,7 +379,7 @@ impl IntelIommuDriver {
         iova: u64,
         size: u64,
     ) -> Result<(), IommuError> {
-        if let Some(ref cq) = controller.command_queue {
+        if let Some(ref _cq) = controller.command_queue {
             let domain_id = domain_arc.id();
             let mapping = domain_arc
                 .mapping(iova)
@@ -398,7 +398,7 @@ impl IntelIommuDriver {
         let mapping = domain_arc.unmap(iova)?;
         let domain_id = domain_arc.id();
 
-        if let Some(ref cq) = controller.command_queue {
+        if let Some(ref _cq) = controller.command_queue {
             controller.execute_sync_command(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
                 .map_err(|_| IommuError::HardwareError)?;
         } else {

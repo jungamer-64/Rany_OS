@@ -1,5 +1,23 @@
-use crate::*;
-use vfs::{Directory, File, Metadata, SeekFrom};
+use crate::{
+    Fat32Directory,
+    Fat32File,
+    Fat32Inode,
+    FileMode,
+    FileType,
+    FsError,
+    FsResult,
+    Inode,
+    OpenFlags,
+    Vec,
+    ZeroCopyBufferMut,
+};
+
+use vfs::{Directory, Metadata, SeekFrom, DirEntry, File};
+
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::string::String;
+use crate::async_mutex::AsyncMutex;
 
 impl<B: ZeroCopyBufferMut + 'static> Inode for Fat32Inode<B> {
     fn metadata(&self) -> FsResult<Metadata> {

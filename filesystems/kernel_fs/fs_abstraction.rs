@@ -44,16 +44,8 @@ use spin::RwLock;
 
 /// VFSエラー型（vfsから再エクスポート）
 pub use vfs::VfsError;
-/// VFSファイル属性（vfsから再エクスポート）
-pub use vfs::types::FileAttr as VfsFileAttr;
-/// VFSファイルシステム統計（vfsから再エクスポート）
-pub use vfs::types::FsStats as VfsFsStats;
 /// VFS UNIXファイルモード（vfsから再エクスポート）
 pub use vfs::types::UnixFileMode as VfsUnixFileMode;
-/// VFS OpenFlags（vfsから再エクスポート）
-pub use vfs::types::OpenFlags as VfsOpenFlags;
-/// VFS SeekFrom（vfsから再エクスポート）
-pub use vfs::types::SeekFrom as VfsSeekFrom;
 
 // ============================================================================
 // Error Types (Kernel-specific, with VFS conversion)

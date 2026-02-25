@@ -1,4 +1,17 @@
-use crate::*;
+use crate::{
+    Box,
+    Cluster,
+    String,
+    Fat32FileSystem,
+    Fat32Inode,
+    FsError,
+    FsResult,
+    FileSystem,
+    Inode,
+    ZeroCopyBufferMut,
+};
+
+use core::fmt;
 
 impl<B: ZeroCopyBufferMut + 'static> FileSystem for Fat32FileSystem<B> {
     fn name(&self) -> &str {

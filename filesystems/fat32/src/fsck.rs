@@ -1,4 +1,15 @@
-use crate::*;
+use crate::{
+    Fat32FileSystem,
+    DefaultZeroCopyBuffer,
+    FsResult,
+    Cluster,
+    try_alloc_vec,
+};
+
+use alloc::vec::Vec;
+
+
+
 
 // ============================================================================
 // Filesystem Check (fsck)

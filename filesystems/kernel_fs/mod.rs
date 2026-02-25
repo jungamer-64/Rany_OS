@@ -39,19 +39,8 @@ pub mod block {
     //! ブロックデバイス抽象化（vfsから再エクスポート）
     pub use vfs::block::{
         // Core types
-        BlockDevice, BlockDeviceInfo, BlockError, BlockRequest, BlockResult,
-        RequestState, RequestType,
-        // Zero-copy I/O
-        ZeroCopyBlockDevice, ZeroCopyBuffer, ZeroCopyBufferMut, OwnedBytes,
-        IoBuffer, IoBufferMut, DmaInfo, ZcFuture,
-        // Async futures
-        BlockReadFuture, BlockWriteFuture,
-        // Adapter
-        BlockDeviceZeroCopyAdapter,
-        // RAM disk for testing
-        RamDisk,
-        // Device manager
-        BlockDeviceManager, block_manager,
+        BlockDevice, BlockRequest,
+        RequestType,
     };
 }
 
