@@ -74,38 +74,8 @@ impl GuiServices for ExoKernel {
             InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState,
         };
         use crate::io::hid::keyboard::KeyEventExt;
-        use spin::Mutex;
-        use crate::io::hid::keyboard::KeyboardStream;
-
-
-
-        // Lazy initialization of the global keyboard stream
-        // We use a static Mutex to hold the stream exclusively for GuiServices
-        static KEYBOARD_STREAM: Mutex<Option<KeyboardStream>> = Mutex::new(None);
-
-
-        // Poll Keyboard Stream
-        let hid_event_opt = {
-            let mut stream_guard = KEYBOARD_STREAM.lock();
-            
-            // Initialize if empty
-            if stream_guard.is_none() {
-                 match crate::io::hid::keyboard::take_stream() {
-                    Ok(stream) => *stream_guard = Some(stream),
-                    Err(_) => {
-                        // Stream taken by someone else?
-                        // Just log once or ignore?
-                    }
-                 }
-            }
-
-            if let Some(stream) = stream_guard.as_mut() {
-                // Manually poll the stream using its synchronous interface
-                stream.poll()
-            } else {
-                None
-            }
-        };
+        crate::console::install_keyboard_tap();
+        let hid_event_opt = crate::console::try_pop_key_event();
 
         if let Some(hid_event) = hid_event_opt {
             let kapi_state = match hid_event.state {

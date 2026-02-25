@@ -226,32 +226,16 @@ pub(crate) fn init_post_buddy() {
     crate::io::log::early_print("[HEAP_CHECK] after exchange_heap_init\n");
     verify_buddy_integrity();
 
-    // Bisect probe: log::log! works AFTER exchange heap?
-    crate::io::log::early_print("[BISECT] after exheap: calling log::log!\n");
-    log::log!(target: "bisect", log::Level::Info, "log::log! after exchange heap");
-    crate::io::log::early_print("[BISECT] after exheap: log::log! OK\n");
-
     crate::io::log::early_print("[MEM] percpu init\n");
     unsafe {
         crate::per_cpu::init_per_cpu(1);
     }
     crate::io::log::early_print("[MEM] percpu done\n");
 
-    // Bisect probe: log::log! works AFTER per-cpu init?
-    crate::io::log::early_print("[BISECT] after percpu: calling log::log!\n");
-    log::log!(target: "bisect", log::Level::Info, "log::log! after per-cpu init");
-    crate::io::log::early_print("[BISECT] after percpu: log::log! OK\n");
-
     crate::io::log::early_print("[MEM] slab init\n");
     crate::mm::cache::slab_cache::init_per_core_caches(1);
     crate::io::log::early_print("[MEM] slab done\n");
-
-    // Bisect probe: log::log! works AFTER slab init?
-    crate::io::log::early_print("[BISECT] after slab: calling log::log!\n");
-    log::log!(target: "bisect", log::Level::Info, "log::log! after slab init");
-    crate::io::log::early_print("[BISECT] after slab: log::log! OK\n");
 }
-
 
 /// メモリサブシステムの完全初期化
 ///

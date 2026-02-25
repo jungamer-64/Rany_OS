@@ -461,11 +461,6 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     } else {
         None
     };
-    // Test: log::log! BEFORE memory::init
-    io::log::early_print("[DEBUG] BEFORE memory::init: calling log::log!\n");
-    log::log!(target: "test", log::Level::Info, "log::log! BEFORE memory::init");
-    io::log::early_print("[DEBUG] BEFORE memory::init: log::log! OK\n");
-
     memory::init(
         if boot_info.rsdp_addr > 0 {
             Some(boot_info.rsdp_addr)
@@ -475,11 +470,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
         numa_info,
         Some(boot_info),
     );
-    io::log::early_print("[DEBUG] after memory::init return\n");
-    // Test: log::log! AFTER memory::init
-    io::log::early_print("[DEBUG] AFTER memory::init: calling log::log!\n");
-    log::log!(target: "test", log::Level::Info, "log::log! AFTER memory::init");
-    io::log::early_print("[DEBUG] AFTER memory::init: log::log! OK\n");
+    info!(target: "init", "Memory management initialized");
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
     // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ
@@ -532,6 +523,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     io::log::early_print("[DEBUG] Before graphics init info!\n");
     info!(target: "init", "Initializing graphics framebuffer...");
     io::log::early_print("[DEBUG] After graphics init info!\n");
+    let mut graphics_console_ready = false;
 
     #[cfg(not(any(test, feature = "bench")))]
     {
@@ -544,6 +536,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
             // Initialize Text Console driver
             graphics::init_console();
+            graphics_console_ready = true;
             info!(target: "init", "Text Console driver initialized");
 
             // Initialize Graphical Shell (now that framebuffer is ready)
@@ -860,8 +853,22 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             }
         }
 
-        info!(target: "init", "Shell launch mode: {:?}", mode);
-        mode
+        let adjusted_mode =
+            crate::shell::session::adjust_shell_launch_mode_for_console_availability(
+                mode,
+                graphics_console_ready,
+            );
+        if adjusted_mode != mode {
+            warn!(
+                target: "init",
+                "Framebuffer console unavailable; falling back shell mode {:?} -> {:?}",
+                mode,
+                adjusted_mode
+            );
+        }
+
+        info!(target: "init", "Shell launch mode: {:?}", adjusted_mode);
+        adjusted_mode
     };
 
     io::log::early_print("[DEBUG] Before spawn_kernel_tasks\n");

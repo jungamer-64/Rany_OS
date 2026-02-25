@@ -164,6 +164,13 @@ pub fn take_stream_with_arc_keymap(
     PS2_KEYBOARD.take_stream_with_arc_keymap(keymap)
 }
 
+/// Register or clear an IRQ-side keyboard event tap.
+///
+/// The callback executes in interrupt context and must be non-blocking.
+pub fn set_event_tap(tap: Option<fn(KeyEvent)>) {
+    PS2_KEYBOARD.set_event_tap(tap);
+}
+
 // ============================================================================
 // 内部API（crate内部使用・後方互換性）
 // ============================================================================

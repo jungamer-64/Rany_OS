@@ -231,6 +231,38 @@ impl ConsoleManager {
         }
     }
 
+    /// コンソールを切り替え (best-effort / non-blocking)
+    pub fn try_switch_to(&self, console_id: u32) -> bool {
+        let id = console_id as usize;
+        if id >= self.consoles.len() {
+            return false;
+        }
+
+        let current = self.active.load(Ordering::Acquire) as usize;
+        if current == id {
+            return true;
+        }
+
+        let Some(old_console) = self.consoles.get(current) else {
+            return false;
+        };
+        let Some(new_console) = self.consoles.get(id) else {
+            return false;
+        };
+
+        let Some(old_guard) = old_console.try_lock() else {
+            return false;
+        };
+        let Some(new_guard) = new_console.try_lock() else {
+            return false;
+        };
+
+        old_guard.set_active(false);
+        new_guard.set_active(true);
+        self.active.store(console_id, Ordering::Release);
+        true
+    }
+
     /// 現在のコンソールIDを取得
     pub fn active_console(&self) -> u32 {
         self.active.load(Ordering::Acquire)
@@ -289,6 +321,7 @@ pub(crate) static CONSOLE_DRIVER: Mutex<Option<Box<dyn ConsoleDriver>>> = Mutex:
 
 /// コンソールシステムを初期化
 pub fn init(cols: usize, rows: usize) {
+    install_keyboard_tap();
     *CONSOLE_MANAGER.lock() = Some(ConsoleManager::new(cols, rows));
 }
 
@@ -328,6 +361,22 @@ pub fn write(s: &str) {
     flush_screen();
 }
 
+/// 指定コンソールに書き込む
+pub fn write_to(console_id: u32, s: &str) {
+    let should_flush = {
+        if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+            manager.write_to(console_id, s);
+            manager.active_console() == console_id
+        } else {
+            false
+        }
+    };
+
+    if should_flush {
+        flush_screen();
+    }
+}
+
 /// コンソールに書き込む (Non-blocking / Try Lock)
 /// 割り込みハンドラやロガーからの呼び出し用
 pub fn try_write(s: &str) {
@@ -364,12 +413,51 @@ where
     CONSOLE_MANAGER.lock().as_ref().map(f)
 }
 
+/// 現在のアクティブコンソールIDを取得
+pub fn active_console() -> u32 {
+    with_manager(|m| m.active_console()).unwrap_or(0)
+}
+
 /// コンソールを切り替え
 pub fn switch(console_id: u32) {
     if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
         manager.switch_to(console_id);
     }
     flush_screen();
+}
+
+/// コンソールを切り替え (best-effort / non-blocking)
+pub fn try_switch(console_id: u32) -> bool {
+    let switched = if let Some(manager_guard) = CONSOLE_MANAGER.try_lock() {
+        if let Some(ref manager) = *manager_guard {
+            manager.try_switch_to(console_id)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !switched {
+        return false;
+    }
+
+    if let Some(manager_guard) = CONSOLE_MANAGER.try_lock() {
+        if let Some(ref manager) = *manager_guard {
+            if let Some(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
+                if let Some(ref mut driver) = *driver_guard {
+                    let active = manager.active_console();
+                    if let Some(console) = manager.consoles.get(active as usize) {
+                        if let Some(locked_console) = console.try_lock() {
+                            driver.flush(locked_console.buffer());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    true
 }
 
 /// アクティブなコンソールをスクロール

@@ -30,6 +30,8 @@ use spin::Mutex;
 // ============================================================================
 
 /// 最大仮想コンソール数
+mod input;
+pub use input::*;
 mod impls;
 pub use impls::*;
 const MAX_VIRTUAL_CONSOLES: usize = 8;

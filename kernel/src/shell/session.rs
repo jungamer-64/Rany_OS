@@ -60,6 +60,21 @@ pub fn parse_shell_launch_mode(cmdline: Option<&str>) -> ShellLaunchMode {
     ShellLaunchMode::default()
 }
 
+/// Downgrade shell launch mode when the framebuffer console is unavailable.
+pub fn adjust_shell_launch_mode_for_console_availability(
+    mode: ShellLaunchMode,
+    console_available: bool,
+) -> ShellLaunchMode {
+    if console_available {
+        return mode;
+    }
+
+    match mode {
+        ShellLaunchMode::Console | ShellLaunchMode::Both => ShellLaunchMode::Serial,
+        ShellLaunchMode::Serial | ShellLaunchMode::Off => mode,
+    }
+}
+
 /// A unified shell session that runs the REPL loop
 pub struct ShellSession<F: ShellFrontend> {
     shell: ExoShell,

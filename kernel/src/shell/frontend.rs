@@ -24,6 +24,7 @@ pub struct ConsoleFrontend {
     line_buffer: LineBuffer,
     navigator: HistoryNavigator,
     input_stream: Option<KeyboardStream>,
+    target_vt: u32,
 }
 
 impl ConsoleFrontend {
@@ -40,18 +41,33 @@ impl ConsoleFrontend {
     }
 
     pub fn new() -> Self {
+        let target_vt = crate::console::active_console();
         // Try to take the keyboard stream. If failed, it will be None and read_line will fail/exit.
         let input_stream = keyboard::take_stream().ok();
 
         if input_stream.is_none() {
-            crate::console::write("[SHELL] Warning: Could not acquire keyboard stream.\n");
+            crate::console::write_to(
+                target_vt,
+                "[SHELL] Warning: Could not acquire keyboard stream.\n",
+            );
         }
 
         Self {
             line_buffer: LineBuffer::new(),
             navigator: HistoryNavigator::new(),
             input_stream,
+            target_vt,
         }
+    }
+
+    #[inline]
+    fn console_write(&self, s: &str) {
+        crate::console::write_to(self.target_vt, s);
+    }
+
+    #[inline]
+    fn is_active_vt(&self) -> bool {
+        crate::console::active_console() == self.target_vt
     }
 
     fn redraw_line(&mut self, shell: &ExoShell) {
@@ -68,20 +84,20 @@ impl ConsoleFrontend {
             let _ = write!(&mut out, "\x1b[{}D", diff);
         }
 
-        crate::console::write(&out);
+        self.console_write(&out);
     }
 }
 
 impl ShellFrontend for ConsoleFrontend {
     fn print_message(&mut self, msg: &str) {
-        crate::console::write(msg);
+        self.console_write(msg);
         if !msg.ends_with('\n') {
-            crate::console::write("\n");
+            self.console_write("\n");
         }
     }
 
     fn print_prompt(&mut self, cwd: &str) {
-        crate::console::write(&Self::format_prompt(cwd));
+        self.console_write(&Self::format_prompt(cwd));
     }
 
     fn print_result(&mut self, result: &ExoResult<ExoValue<'static>>) {
@@ -94,18 +110,18 @@ impl ShellFrontend for ConsoleFrontend {
                     return;
                 }
                 if let ExoValue::Error(e) = val {
-                    crate::console::write(&format!("{}Error: {}{}\n", red, e, reset));
+                    self.console_write(&format!("{}Error: {}{}\n", red, e, reset));
                     return;
                 }
                 if let Some(text) = display::format_shell_output(val) {
-                    crate::console::write(&text);
+                    self.console_write(&text);
                     if !text.ends_with('\n') {
-                        crate::console::write("\n");
+                        self.console_write("\n");
                     }
                 }
             }
             Err(e) => {
-                crate::console::write(&format!("{}Error: {}{}\n", red, e, reset));
+                self.console_write(&format!("{}Error: {}{}\n", red, e, reset));
             }
         }
     }
@@ -124,9 +140,13 @@ impl ShellFrontend for ConsoleFrontend {
                 continue;
             }
 
+            if !self.is_active_vt() {
+                continue;
+            }
+
             match event.key {
                 KeyCode::Enter => {
-                    crate::console::write("\r\n");
+                    self.console_write("\r\n");
                     let line = self.line_buffer.as_str().to_string();
                     if !line.trim().is_empty() {
                         shell.add_history(line.clone());
@@ -192,7 +212,7 @@ impl ConsoleFrontend {
             for c in &completions {
                 let _ = writeln!(&mut out, "  {}", c);
             }
-            crate::console::write(&out);
+            self.console_write(&out);
             self.redraw_line(shell);
         }
     }
@@ -244,14 +264,14 @@ impl ConsoleFrontend {
     fn handle_char_input(&mut self, c: char, shell: &ExoShell) {
         // Check for Ctrl+C
         if c == '\x03' {
-            crate::console::write("^C\n");
+            self.console_write("^C\n");
             self.line_buffer.clear();
             self.navigator.reset_navigation();
             self.print_prompt(&shell.cwd);
             return;
         } else if c == '\x0c' {
             // Ctrl+L (Form Feed) -> Clear Screen
-            crate::console::write("\x1b[2J\x1b[H");
+            self.console_write("\x1b[2J\x1b[H");
             self.redraw_line(shell);
             return;
         }

@@ -13,7 +13,7 @@
 //! The driver is designed to be instantiated as a static variable in the kernel.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::Waker;
 
 use crate::keyboard::{IsrSafeWaker, KeyCodeExt, ModifierState};
@@ -69,6 +69,8 @@ pub struct KeyboardDriver {
     stream_taken: AtomicBool,
     /// Dropped events counter (diagnostic)
     dropped_events: AtomicU64,
+    /// Optional IRQ-side observer tap (kernel-owned, best-effort)
+    event_tap: AtomicUsize,
 }
 
 impl KeyboardDriver {
@@ -82,6 +84,7 @@ impl KeyboardDriver {
             waker: IsrSafeWaker::new(),
             stream_taken: AtomicBool::new(false),
             dropped_events: AtomicU64::new(0),
+            event_tap: AtomicUsize::new(0),
         }
     }
 
@@ -114,6 +117,7 @@ impl KeyboardDriver {
         let code = scancode & SCANCODE_KEYCODE_MASK;
         self.update_modifiers_from_scancode(code, extended, pressed);
         let data: u16 = (scancode as u16) | if extended { QUEUE_EXTENDED_FLAG } else { 0 };
+        self.emit_tap_event(data, code, extended, pressed);
 
         if self.queue.push(data) {
             // In ISR: only notify (set flag)
@@ -131,6 +135,32 @@ impl KeyboardDriver {
             // Notify consumer even when queue is full
             self.waker.notify();
         }
+    }
+
+    #[inline]
+    fn emit_tap_event(&self, raw_scancode: u16, code: u8, extended: bool, pressed: bool) {
+        let tap = self.event_tap.load(Ordering::Acquire);
+        if tap == 0 {
+            return;
+        }
+
+        let key = KeyCode::from_scancode(code, extended);
+        let state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
+        let event = KeyEvent {
+            key,
+            state,
+            modifiers: self.modifiers.snapshot(),
+            raw_scancode,
+        };
+
+        // Function pointers are installed by the kernel and read atomically here.
+        // `0` means "no tap". This keeps the ISR path lock-free.
+        let callback: fn(KeyEvent) = unsafe { core::mem::transmute(tap) };
+        callback(event);
     }
 
     /// Update modifier-state bits from a raw set-1 scancode.
@@ -172,6 +202,14 @@ impl KeyboardDriver {
     /// Returns the value before reset.
     pub fn reset_dropped_events(&self) -> u64 {
         self.dropped_events.swap(0, Ordering::Relaxed)
+    }
+
+    /// Register or clear a best-effort IRQ-side event tap.
+    ///
+    /// The callback runs in interrupt context and must not block.
+    pub fn set_event_tap(&self, tap: Option<fn(KeyEvent)>) {
+        let raw = tap.map(|f| f as usize).unwrap_or(0);
+        self.event_tap.store(raw, Ordering::Release);
     }
 
     /// Get next key event (non-blocking, internal)

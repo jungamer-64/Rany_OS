@@ -361,24 +361,23 @@ pub struct ConsoleDevice;
 
 impl DeviceOps for ConsoleDevice {
     fn open(&self) -> Result<(), DevError> {
+        crate::console::install_keyboard_tap();
         Ok(())
     }
     fn close(&self) -> Result<(), DevError> {
         Ok(())
     }
 
-    fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DevError> {
-        // コンソールデバイスの読み取り
-        // キーボード入力は非同期ストリーム経由で取得する必要がある
-        // (KeyboardStreamを使用)
-        // ここでは同期読み取りをサポートしないため0を返す
-        Ok(0)
+    fn read(&self, _offset: usize, buf: &mut [u8]) -> Result<usize, DevError> {
+        crate::console::install_keyboard_tap();
+        Ok(crate::console::read_tty_bytes(buf))
     }
 
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DevError> {
-        // VGAに出力 (簡易実装 - 実際はVGAドライバを呼び出す)
-        // シリアル出力の代替としてバッファに保存するか、無視
-        let _ = core::str::from_utf8(buf);
+        let text = String::from_utf8_lossy(buf);
+        crate::console::write(text.as_ref());
+        #[cfg(not(test))]
+        crate::io::serial::write_str(text.as_ref());
         Ok(buf.len())
     }
 
@@ -712,4 +711,3 @@ impl Drop for DevFileHandle {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
-

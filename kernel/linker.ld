@@ -7,7 +7,6 @@ PHDRS
     rodata          PT_LOAD FLAGS(4);  /* r  */
     data            PT_LOAD FLAGS(6);  /* rw */
     tls             PT_TLS  FLAGS(4);  /* r - Thread Local Storage */
-    metadata        PT_NOTE FLAGS(4); /* Non-loadable metadata (symtab, shstrtab, debug info) */
 }
 
 SECTIONS
@@ -35,12 +34,21 @@ SECTIONS
     .data : {
         *(.data .data.*)
 
+        /* GOT (Global Offset Table): must be in a mapped, writable segment.
+           The LLVM backend may emit @GOTPCREL references for vtable pointer loads
+           even with code-model=kernel + relocation-model=static. If .got is not
+           placed in an output section, the linker creates an orphan section that
+           may land outside mapped memory, causing indirect calls through vtable
+           pointers to jump to garbage addresses (truncated upper bits). */
+        *(.got .got.plt)
+
         /* Place the sections that contain the Limine requests as part of the .data */
         /* output section. */
         KEEP(*(.requests_start_marker))
         KEEP(*(.requests))
         KEEP(*(.requests_end_marker))
     } :data
+
 
     /* Thread Local Storage */
     . = ALIGN(CONSTANT(MAXPAGESIZE));
@@ -85,12 +93,11 @@ SECTIONS
         *(.note.GNU-stack)
     }
 
-    /* Place non-alloc ELF metadata (symbol tables, section name tables, ksymtab, etc.)
-       after the kernel image so they do not overlap with loadable segments' file offsets. */
+    /* Non-alloc ELF metadata: let the linker place these after loadable segments.
+       Do NOT assign a PHDR — they should not appear as loadable segments in the
+       ELF program headers, preventing the bootloader from mapping invalid memory. */
     . = ALIGN(4096);
-    .shstrtab (NOLOAD) : { *(.shstrtab) } :metadata
-    .symtab   : { *(.symtab) }
-    .strtab   : { *(.strtab) }
-    .ksymtab  : { *(.ksymtab) *(.ksymtab.*) }
-    .ksymtab_gpl : { *(.ksymtab_gpl) *(.ksymtab_gpl.*) }
+    .shstrtab (NOLOAD) : { *(.shstrtab) }
+    .ksymtab  (NOLOAD) : { *(.ksymtab) *(.ksymtab.*) }
+    .ksymtab_gpl (NOLOAD) : { *(.ksymtab_gpl) *(.ksymtab_gpl.*) }
 }
