@@ -529,6 +529,7 @@ impl Default for Browser {
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
+    #[allow(clippy::wildcard_imports)]
     use super::*;
 
     pub fn browser_creation_smoke() -> bool {

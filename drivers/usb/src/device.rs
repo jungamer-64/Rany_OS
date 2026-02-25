@@ -333,6 +333,7 @@ impl StandardRequests {
 
 /// ハブクラスリクエスト
 pub mod hub_class {
+    #[allow(clippy::wildcard_imports)]
     use super::*;
 
     /// ハブディスクリプタ

@@ -193,6 +193,8 @@ impl Default for PagedContent {
 // Tests
 // ============================================================================
 
+#[allow(clippy::wildcard_imports)]
+
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;

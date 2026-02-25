@@ -679,4 +679,5 @@ impl Ext2InodeWrapper {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 #[cfg(any(test, feature = "qemu-test-export"))]
+#[allow(clippy::wildcard_imports)]
 pub use tests::*;

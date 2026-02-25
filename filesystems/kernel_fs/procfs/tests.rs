@@ -1,9 +1,8 @@
-use super::*;
 
 
 #[cfg(feature = "std")]
 mod tests {
-    use super::{ProcFs, Pid, ProcError, ProcFileHandle, ProcDirHandle};
+    use crate::filesystems::kernel_fs::procfs::{ProcFs, Pid, ProcError, ProcFileHandle, ProcDirHandle, procfs};
 
     #[cfg_attr(test, test_case)]
     pub(crate) fn test_procfs_read() {
@@ -269,7 +268,7 @@ mod tests {
 
 #[cfg(all(feature = "qemu-test-export", not(feature = "std")))]
 mod qemu_no_std_tests {
-    use super::{ProcFs, Pid, ProcError, ProcFileHandle, ProcDirHandle};
+    use crate::filesystems::kernel_fs::procfs::{ProcFs, Pid, ProcError, ProcFileHandle, ProcDirHandle, procfs};
     use alloc::vec::Vec;
     use kernel_api::{KernelServices, OpenMode};
 

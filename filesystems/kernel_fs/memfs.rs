@@ -15,6 +15,7 @@ use spin::RwLock;
 
 use super::page::PagedContent;
 mod shell_integration;
+#[allow(clippy::wildcard_imports)]
 pub use shell_integration::*;
 
 use super::fs_abstraction::{
@@ -628,4 +629,6 @@ impl Inode for MemoryInode {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 #[cfg(any(test, feature = "qemu-test-export"))]
+#[allow(wildcard_imports)]
+#[allow(clippy::wildcard_imports)]
 pub use tests::*;

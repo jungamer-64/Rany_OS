@@ -728,9 +728,11 @@ pub mod mm {
     // ======================================================================
     pub mod phys {
         pub mod fast_allocator {
+            #[allow(clippy::wildcard_imports)]
             pub use super::super::fast_allocator::*;
         }
         pub mod frame_allocator {
+            #[allow(clippy::wildcard_imports)]
             pub use super::super::frame_allocator::*;
         }
         pub mod buddy_allocator {
@@ -759,15 +761,18 @@ pub mod mm {
 
     pub mod virt {
         pub mod higher_half {
+            #[allow(clippy::wildcard_imports)]
             pub use super::super::higher_half::*;
         }
         pub mod mapping {
+            #[allow(clippy::wildcard_imports)]
             pub use super::super::mapping::*;
         }
     }
 
     pub mod cache {
         pub mod magazine {
+            #[allow(clippy::wildcard_imports)]
             pub use super::super::magazine::*;
         }
     }
@@ -805,6 +810,7 @@ pub mod mm {
 
     pub mod meta {
         pub mod memcg {
+            #[allow(wildcard_imports)]
             pub use super::super::memcg::*;
         }
     }

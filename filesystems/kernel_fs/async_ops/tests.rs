@@ -1,4 +1,4 @@
-use super::*;
+use super::{FileAttr, AsyncFile, SeekFrom, DirectBlockHandle};
 
 #[cfg_attr(test, test_case)]
 pub fn test_async_file_seek() {

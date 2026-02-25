@@ -1,4 +1,6 @@
-use super::*;
+use crate::domain_system::list_domain_snapshots;
+use alloc::string::String;
+use core::sync::atomic::Ordering;
 
 
 pub(crate) fn generate_cpuinfo() -> String {

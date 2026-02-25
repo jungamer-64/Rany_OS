@@ -172,7 +172,8 @@ pub fn grant(
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
-    use super::*;
+    #![allow(clippy::wildcard_imports)]
+use super::*;
 
     pub fn grant_requires_permissions_smoke() -> bool {
         let mut manager = Manager::new();
