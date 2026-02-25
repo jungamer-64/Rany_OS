@@ -519,6 +519,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // preparing graphics init log
     info!(target: "init", "Initializing graphics framebuffer...");
     // graphics info logged
+    let mut graphics_console_ready = false;
 
     #[cfg(not(any(test, feature = "bench")))]
     {
@@ -531,6 +532,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
             // Initialize Text Console driver
             graphics::init_console();
+            graphics_console_ready = true;
             info!(target: "init", "Text Console driver initialized");
 
             // Initialize Graphical Shell (now that framebuffer is ready)
@@ -784,7 +786,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     let mut executor = task::Executor::new();
 
     // spawning kernel tasks
-    spawn_kernel_tasks(&mut executor);
+    spawn_kernel_tasks(&mut executor, graphics_console_ready);
     info!(target: "init", "Kernel tasks spawned");
 
     // =========================================================================

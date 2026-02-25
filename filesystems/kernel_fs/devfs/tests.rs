@@ -151,3 +151,22 @@ pub fn test_find_block_device_by_number() {
     ops.open().unwrap();
     ops.close().unwrap();
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_console_device_read_is_nonblocking_and_uses_shared_input_queue() {
+    crate::console::reset_input_hub_for_tests();
+    crate::console::inject_tty_bytes_for_tests(b"abc");
+
+    let dev = ConsoleDevice;
+    let mut buf = [0u8; 8];
+    assert_eq!(dev.read(0, &mut buf).unwrap(), 3);
+    assert_eq!(&buf[..3], b"abc");
+    assert_eq!(dev.read(0, &mut buf).unwrap(), 0);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_console_device_write_accepts_invalid_utf8_and_reports_len() {
+    let dev = ConsoleDevice;
+    let data = [0xFF, b'h', b'i'];
+    assert_eq!(dev.write(0, &data).unwrap(), data.len());
+}

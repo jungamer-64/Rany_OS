@@ -2,7 +2,7 @@ use super::*;
 
 
 /// カーネルタスクをスポーン
-pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor) {
+pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor, console_available: bool) {
     use ipc::RRef;
     use task::Task;
     use crate::shell::session::{spawn_console_shell, spawn_serial_shell};
@@ -11,7 +11,14 @@ pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor) {
     spawn_serial_shell(executor);
 
     // Spawn Console Shell Task
-    spawn_console_shell(executor);
+    if console_available {
+        spawn_console_shell(executor);
+    } else {
+        warn!(
+            target: "init",
+            "Framebuffer console unavailable; skipping console shell in kernel_content runtime"
+        );
+    }
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
     crate::net::host_http_service::start_once(executor);

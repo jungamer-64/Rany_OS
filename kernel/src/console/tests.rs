@@ -1,4 +1,14 @@
 use super::*;
+use crate::io::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
+
+fn key_event(key: KeyCode, state: KeyState, modifiers: Modifiers) -> KeyEvent {
+    KeyEvent {
+        key,
+        state,
+        modifiers,
+        raw_scancode: 0,
+    }
+}
 
 #[test_case]
 fn test_ansi_color_rgb() {
@@ -79,4 +89,65 @@ fn test_osc_st_terminator_is_not_rendered() {
     assert_eq!(vc.buffer().get_cell(0, 0).map(|c| c.ch), Some('X'));
     assert_eq!(vc.buffer().get_cell(1, 0).map(|c| c.ch), Some('Y'));
     assert_eq!(vc.buffer().cursor(), (2, 0));
+}
+
+#[test_case]
+fn test_console_input_hub_tty_and_gui_paths() {
+    reset_input_hub_for_tests();
+
+    inject_key_event_for_tests(key_event(KeyCode::A, KeyState::Pressed, Modifiers::default()));
+    inject_key_event_for_tests(key_event(KeyCode::Left, KeyState::Pressed, Modifiers::default()));
+
+    let first = try_pop_key_event().expect("first gui event");
+    let second = try_pop_key_event().expect("second gui event");
+    assert_eq!(first.key, KeyCode::A);
+    assert_eq!(second.key, KeyCode::Left);
+
+    let mut buf = [0u8; 8];
+    let n = read_tty_bytes(&mut buf);
+    assert_eq!(&buf[..n], b"a\x1b[D");
+}
+
+#[test_case]
+fn test_console_input_hub_vt_switch_hotkey_is_swallowed() {
+    reset_input_hub_for_tests();
+    init_default();
+    switch(0);
+
+    let hotkey = key_event(
+        KeyCode::F2,
+        KeyState::Pressed,
+        Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Modifiers::default()
+        },
+    );
+    inject_key_event_for_tests(hotkey);
+
+    assert_eq!(active_console(), 1);
+    assert!(try_pop_key_event().is_none());
+
+    let mut buf = [0u8; 4];
+    assert_eq!(read_tty_bytes(&mut buf), 0);
+}
+
+#[test_case]
+fn test_console_input_hub_drop_counters_increment_when_full() {
+    reset_input_hub_for_tests();
+
+    for _ in 0..600 {
+        inject_key_event_for_tests(key_event(KeyCode::A, KeyState::Pressed, Modifiers::default()));
+    }
+
+    let (tty_drops_after_keys, gui_drops_after_keys) = dropped_input_counts();
+    assert!(gui_drops_after_keys > 0);
+    // 600 key presses do not fill the tty buffer yet; queue still may have no drops.
+    assert_eq!(tty_drops_after_keys, 0);
+
+    let bytes = alloc::vec![b'x'; 5000];
+    inject_tty_bytes_for_tests(&bytes);
+    let (tty_drops, gui_drops) = dropped_input_counts();
+    assert!(tty_drops > 0);
+    assert!(gui_drops >= gui_drops_after_keys);
 }

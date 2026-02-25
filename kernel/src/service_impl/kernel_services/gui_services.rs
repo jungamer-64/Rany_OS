@@ -117,6 +117,34 @@ impl GuiServices for ExoKernel {
     }
 }
 
+#[cfg(test)]
+mod gui_input_queue_tests {
+    use super::*;
+    use crate::io::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
+    use kernel_api::gui::{GuiServices, InputEvent, KeyState as KapiKeyState};
+
+    #[test_case]
+    fn poll_input_event_uses_console_shared_queue() {
+        crate::console::reset_input_hub_for_tests();
+        crate::console::inject_key_event_for_tests(KeyEvent {
+            key: KeyCode::A,
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+            raw_scancode: 0x001E,
+        });
+
+        let event = EXOKERNEL.poll_input_event();
+        match event {
+            Some(InputEvent::Key(key)) => {
+                assert_eq!(key.scancode, 0x001E);
+                assert_eq!(key.char_value, b'a');
+                assert_eq!(key.state, KapiKeyState::Pressed);
+            }
+            _ => panic!("expected key event from shared console queue"),
+        }
+    }
+}
+
 // ============================================================================
 // ShellServices Implementation
 // ============================================================================

@@ -29,11 +29,12 @@ use spin::Mutex;
 // Configuration
 // ============================================================================
 
-/// 最大仮想コンソール数
 mod input;
 pub use input::*;
 mod impls;
 pub use impls::*;
+
+/// 最大仮想コンソール数
 const MAX_VIRTUAL_CONSOLES: usize = 8;
 
 /// スクロールバックバッファサイズ（行数）
