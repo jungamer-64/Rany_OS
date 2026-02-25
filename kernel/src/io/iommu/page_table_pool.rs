@@ -143,8 +143,13 @@ fn ref_count_registry() -> &'static IrqMutex<BTreeMap<u64, u16>> {
 
 /// Register a page table's physical address in the global registry
 pub fn register_page_table(phys: u64) {
+    crate::io::log::early_print("[IOMMU] register_page_table: enter phys=");
+    crate::io::log::early_print_hex(phys);
+    crate::io::log::early_print("\n");
     let mut registry = ref_count_registry().lock();
+    crate::io::log::early_print("[IOMMU] register_page_table: acquired registry lock\n");
     registry.entry(phys).or_insert(0);
+    crate::io::log::early_print("[IOMMU] register_page_table: inserted entry\n");
 }
 
 /// Unregister a page table's physical address from the global registry

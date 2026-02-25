@@ -31,6 +31,7 @@ impl DomainManager for IommuController {
         #[cfg(test)]
         log::info!("[IOMMU TEST] create_domain inserting id = {}", id);
 
+        crate::io::log::early_print("[IOMMU] domain_manager_impl.create_domain: acquired lock, inserting domain\n");
         match self.domains.lock() {
             Ok(mut domains) => {
                 #[cfg(test)]
@@ -39,13 +40,14 @@ impl DomainManager for IommuController {
             }
             Err(_) => {
                 log::error!("[IOMMU] Domains map poisoned in create_domain - cannot create domain");
+                crate::io::log::early_print("[IOMMU] domain_manager_impl.create_domain: lock poisoned\n");
                 return Err(IommuError::HardwareError);
             }
         }
 
         #[cfg(test)]
         log::info!("[IOMMU TEST] create_domain done id = {}", id);
-
+        crate::io::log::early_print("[IOMMU] domain_manager_impl.create_domain: returning Ok\n");
         Ok(id)
     }
 

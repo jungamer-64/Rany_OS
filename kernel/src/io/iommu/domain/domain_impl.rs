@@ -31,6 +31,7 @@ impl IommuDomain {
         // But the hardware won't use it if we set TT=Passthrough.
         // Let's allocate it to avoid null pointer checks elsewhere, or make it Option.
         // For now: Allocate it.
+        crate::io::log::early_print("[IOMMU] IommuDomain::new: allocating page table\n");
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("Invalid layout for page table");
@@ -38,17 +39,25 @@ impl IommuDomain {
         let page_table = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node)
             .expect("Failed to allocate IOMMU page table")
             .as_ptr() as *mut SlPte;
+        crate::io::log::early_print("[IOMMU] IommuDomain::new: allocated page table\n");
 
         let root_phys = virt_ptr_to_phys(page_table as *const u8)
             .expect("Failed to get root page table physical address");
+        crate::io::log::early_print("[IOMMU] IommuDomain::new: got root_phys\n");
         register_page_table(root_phys);
+        crate::io::log::early_print("[IOMMU] IommuDomain::new: registered page table\n");
 
         debug_assert_eq!(PT_ENTRIES % DOMAIN_SHARD_COUNT, 0);
         debug_assert!(PML4_ENTRIES_PER_SHARD > 0);
+        crate::io::log::early_print("[IOMMU] IommuDomain::new: creating shards vec\n");
         let mut shards = Vec::with_capacity(DOMAIN_SHARD_COUNT);
-        for _ in 0..DOMAIN_SHARD_COUNT {
+        for i in 0..DOMAIN_SHARD_COUNT {
+            crate::io::log::early_print("[IOMMU] IommuDomain::new: creating shard ");
+            crate::io::log::early_print_dec(i as u64);
+            crate::io::log::early_print("\n");
             shards.push(PoisonLock::new(DomainShard::new()));
         }
+        crate::io::log::early_print("[IOMMU] IommuDomain::new: shards created\n");
 
         let (default_iova_base, default_iova_size) = if cfg!(feature = "qemu-test-export") {
             // Keep qemu migration suites deterministic under their fixed bump allocator.
@@ -58,7 +67,7 @@ impl IommuDomain {
         };
         let per_domain_iova = crate::io::iommu::IovaAllocatorFast::new(default_iova_base, default_iova_size);
 
-        Self {
+        let new_domain = Self {
             id,
             domain_type,
             page_table,
@@ -86,7 +95,9 @@ impl IommuDomain {
             // Uses bitmap-based IovaAllocatorFast with O(1) magazine allocation.
             per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
-        }
+        };
+        crate::io::log::early_print("[IOMMU] IommuDomain::new: constructed domain object, returning\n");
+        new_domain
     }
 
     /// Create a new domain with per-domain IOVA allocator

@@ -317,9 +317,16 @@ fn finalize_iommu_setup(config: &IommuConfig) {
 
     crate::io::log::early_print("[IOMMU] Creating default domain...\n");
     if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
+        crate::io::log::early_print("[IOMMU] about to call driver.create_domain\n");
         match driver.create_domain(None, IommuDomainType::Translated) {
-            Ok(id) => log::info!("IOMMU default domain created: ID={}", id),
-            Err(e) => log::warn!("Failed to create default IOMMU domain: {:?}", e),
+            Ok(id) => {
+                log::info!("IOMMU default domain created: ID={}", id);
+                crate::io::log::early_print("[IOMMU] driver.create_domain returned Ok\n");
+            }
+            Err(e) => {
+                log::warn!("Failed to create default IOMMU domain: {:?}", e);
+                crate::io::log::early_print("[IOMMU] driver.create_domain returned Err\n");
+            }
         }
     }
     crate::io::log::early_print("[IOMMU] Default domain done.\n");
