@@ -1,4 +1,18 @@
-use crate::*;
+use crate::{
+    Cluster,
+    NextCluster,
+    Sector,
+    DirEntryRaw,
+    FileAttributes,
+    FileOffset,
+    ByteCount,
+    BOOT_SECTOR_SIZE,
+    BLOCK_SIZE,
+    FAT_ENTRIES_PER_SECTOR,
+    DefaultFat32FileSystem,
+    FatSectorCache,
+    DirEntryCache,
+};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;

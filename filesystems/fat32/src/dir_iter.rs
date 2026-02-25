@@ -1,5 +1,19 @@
 use crate::sfn::{DirEntryAction, process_dir_entry};
-use crate::*;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use crate::{
+    ZeroCopyBufferMut,
+    Fat32FileSystem,
+    ClusterChain,
+    PooledClusterBuffer,
+    Cluster,
+    FsResult,
+    FsError,
+    DIR_ENTRY_SIZE,
+    DirEntryRaw,
+};
 
 /// ディレクトリエントリを遅延評価で読み込むイテレータ
 ///

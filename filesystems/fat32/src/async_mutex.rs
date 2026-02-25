@@ -207,7 +207,8 @@ impl<T: ?Sized> Drop for AsyncGuard<'_, T> {
 // ========================= QEMU Test Exports =========================
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
-    use super::*;
+    // explicit imports reduce wildcard usage
+    use super::AsyncMutex;
     use core::pin::Pin;
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 

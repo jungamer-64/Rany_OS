@@ -1,4 +1,18 @@
-use crate::*;
+// use hashbrown for collections in no_std
+use alloc::string::String;
+use alloc::vec::Vec;
+use hashbrown::HashSet;
+
+use crate::{
+    FsResult,
+    DirEntryRaw,
+    LfnEntry,
+    FileAttributes,
+    SafePackedRead,
+    END_OF_DIR,
+    DELETED_ENTRY,
+    MAX_LFN_PARTS,
+};
 
 // Short File Name (SFN) Generation with Collision Handling
 // ============================================================================

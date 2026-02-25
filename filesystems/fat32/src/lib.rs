@@ -92,14 +92,11 @@ pub use sfn::{DirectoryEntryKind, collect_existing_sfns, generate_unique_sfn, lo
 pub use time::{DummyTimeProvider, TimeProvider, dos_to_unix, unix_to_dos};
 pub use types::{ByteCount, Cluster, ClusterExt, FileAttributes, FileOffset, NextCluster, Sector};
 
-use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use async_mutex::AsyncMutex;
-use core::convert::TryFrom;
-use core::fmt;
 use hashbrown::{HashMap, HashSet};
 use irq_lock::IrqPoisonLock;
 use ondisk::FSINFO_UNKNOWN;

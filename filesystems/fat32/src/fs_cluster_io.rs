@@ -1,4 +1,22 @@
-use crate::*;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use crate::{
+    Cluster,
+    Sector,
+    FsResult,
+    FsError,
+    BLOCK_SIZE,
+    FAT_ENTRIES_PER_SECTOR,
+    try_alloc_vec,
+    Fat32FileSystem,
+    ZeroCopyBufferMut,
+    FsInfo,
+    FSINFO_UNKNOWN,
+    IrqPoisonLock,
+    MAX_CLUSTER_CHAIN,
+};
 
 #[cfg(feature = "debug-trace")]
 macro_rules! trace_fat_operation {
