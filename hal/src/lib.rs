@@ -7,5 +7,14 @@
 pub mod mmio;
 pub mod port_io;
 
-pub use mmio::*;
-pub use port_io::*;
+// selectively re-export only the symbols actually used outside the submodules
+pub use mmio::{
+    mmio_read_u8, mmio_read_u16, mmio_read_u32, mmio_read_u64,
+    mmio_write_u8, mmio_write_u16, mmio_write_u32, mmio_write_u64,
+    volatile_read, volatile_write, MmioReg,
+};
+
+pub use port_io::{
+    inb, outb, inw, outw, inl, outl, out, inp,
+    IoPort, PortU8, PortU16, PortU32,
+};

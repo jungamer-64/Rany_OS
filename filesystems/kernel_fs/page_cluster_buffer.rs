@@ -126,7 +126,7 @@ impl ClusterBufferAllocator for PageClusterBufferAllocator {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
-    use super::*;
+    use super::{PageClusterBufferAllocator, PageClusterBuffer};
     use alloc::vec::Vec;
     use alloc::vec;
     use vfs::block::{ZeroCopyBuffer, ZeroCopyBufferMut};

@@ -325,7 +325,6 @@ fn log_system_uuid(uuid: &[u8; 16]) {
 }
 
 pub fn log_smbios_info(info: &SmbiosInfo) {
-    use crate::serial_println;
 
     serial_println!("[SMBIOS] Detection results:");
 

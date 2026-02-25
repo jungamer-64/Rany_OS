@@ -44,7 +44,21 @@ use crate::io::io_scheduler::{
 };
 use crate::io::dma::{CpuOwned, DeviceOwned, SgDmaGuard, SliceDmaGuard, TypedDmaSlice, TypedSgList};
 mod cleanup_helpers;
-pub use cleanup_helpers::*;
+
+// re-export only the public types/functions kernel relies on instead of a wildcard
+pub use cleanup_helpers::{
+    AsyncFile,
+    AsyncIoRequest,
+    AsyncIoScheduler,
+    AsyncIoType,
+    DirectBlockHandle,
+    IoSchedulerStats,
+    SgEntry,
+    SgIoFuture,
+    SgIoRequest,
+    async_io_scheduler,
+    // helper APIs that are internal but still referenced by other parts of the crate
+};
 
 const NVME_PAGE_SIZE: usize = 4096;
 const NVME_BLOCK_SIZE: u64 = 512;

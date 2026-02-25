@@ -1,4 +1,16 @@
-use super::*;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use super::{
+    Arc,
+    RwLock,
+    FsResult,
+    FsError,
+    InodeNum,
+    FileType,
+    FileSystem,
+    Inode,
+};
 
 
 // ============================================================================

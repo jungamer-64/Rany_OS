@@ -1,4 +1,4 @@
-use super::*;
+use super::{CachedPage, PageState, PageCache, PAGE_SIZE};
 
 #[cfg_attr(test, test_case)]
 pub fn test_cached_page() {

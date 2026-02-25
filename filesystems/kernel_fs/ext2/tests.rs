@@ -1,4 +1,4 @@
-use super::*;
+use super::{Superblock, Ext2Inode, S_IFREG, S_IFDIR, S_IFLNK, FileType};
 
 #[cfg_attr(test, test_case)]
 pub fn test_superblock_block_size() {

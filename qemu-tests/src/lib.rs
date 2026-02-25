@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod runtime_pending;
-use runtime_pending::*;
+use runtime_pending::write_kernel_runtime_pending_summaries;
 #[derive(Debug, Clone)]
 struct IommuResidualParityItem {
     original_case: String,
