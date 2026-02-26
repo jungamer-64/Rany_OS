@@ -400,28 +400,29 @@ impl NetVirtQueue {
             *header_slot = *header;
 
             // ヘッダーディスクリプタ
-            let desc = &mut *inner.desc_table.add(desc_idx as usize);
-            desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
-            desc.len = VirtioNetHeader::SIZE as u32;
-            desc.flags = VringDesc::VRING_DESC_F_NEXT;
-            desc.next = data_desc_idx;
+            let desc_ptr = inner.desc_table.add(desc_idx as usize);
+            core::ptr::write_volatile(&mut (*desc_ptr).addr, header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64));
+            core::ptr::write_volatile(&mut (*desc_ptr).len, VirtioNetHeader::SIZE as u32);
+            core::ptr::write_volatile(&mut (*desc_ptr).flags, VringDesc::VRING_DESC_F_NEXT);
+            core::ptr::write_volatile(&mut (*desc_ptr).next, data_desc_idx);
 
             // データーディスクリプタ
-            let data_desc = &mut *inner.desc_table.add(data_desc_idx as usize);
-            data_desc.addr = data.as_ptr() as u64;
-            data_desc.len = data.len() as u32;
-            data_desc.flags = 0;
-            data_desc.next = 0;
+            let data_desc_ptr = inner.desc_table.add(data_desc_idx as usize);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).addr, data.as_ptr() as u64);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).len, data.len() as u32);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).flags, 0);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).next, 0);
 
             // Available Ringに追加
             let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
-            avail.ring[(avail_idx % self.size) as usize] = desc_idx;
+            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
+            core::ptr::write_volatile(ring_ptr, desc_idx);
 
             // メモリバリア
             core::sync::atomic::fence(Ordering::Release);
 
-            avail.idx = avail_idx.wrapping_add(1);
+            core::ptr::write_volatile(&mut avail.idx, avail_idx.wrapping_add(1));
         }
 
         log::info!(
@@ -462,18 +463,18 @@ impl NetVirtQueue {
             *header = VirtioNetHeader::new_tx();
 
             // ヘッダーディスクリプタ
-            let desc = &mut *inner.desc_table.add(desc_idx as usize);
-            desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
-            desc.len = VirtioNetHeader::SIZE as u32;
-            desc.flags = VringDesc::VRING_DESC_F_NEXT;
-            desc.next = data_desc_idx;
+            let desc_ptr = inner.desc_table.add(desc_idx as usize);
+            core::ptr::write_volatile(&mut (*desc_ptr).addr, header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64));
+            core::ptr::write_volatile(&mut (*desc_ptr).len, VirtioNetHeader::SIZE as u32);
+            core::ptr::write_volatile(&mut (*desc_ptr).flags, VringDesc::VRING_DESC_F_NEXT);
+            core::ptr::write_volatile(&mut (*desc_ptr).next, data_desc_idx);
 
             // データーディスクリプタ
-            let data_desc = &mut *inner.desc_table.add(data_desc_idx as usize);
-            data_desc.addr = phys_addr;
-            data_desc.len = data_len as u32;
-            data_desc.flags = 0;
-            data_desc.next = 0;
+            let data_desc_ptr = inner.desc_table.add(data_desc_idx as usize);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).addr, phys_addr);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).len, data_len as u32);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).flags, 0);
+            core::ptr::write_volatile(&mut (*data_desc_ptr).next, 0);
 
             crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_zero preparing desc={} phys=0x{:x} len={}\n", desc_idx, phys_addr, data_len));
 
@@ -481,14 +482,15 @@ impl NetVirtQueue {
             let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
             // used idx for diagnostics
-            let used_idx = (*self.used_ring).idx;
+            let used_idx = core::ptr::read_volatile(&(*self.used_ring).idx);
 
-            avail.ring[(avail_idx % self.size) as usize] = desc_idx;
+            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
+            core::ptr::write_volatile(ring_ptr, desc_idx);
 
             // メモリバリア
             core::sync::atomic::fence(Ordering::Release);
 
-            avail.idx = avail_idx.wrapping_add(1);
+            core::ptr::write_volatile(&mut avail.idx, avail_idx.wrapping_add(1));
 
             crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_zero desc={} pre_avail_idx={} post_avail_idx={} ring_slot={} used_idx_before=0x{:x}\n", desc_idx, avail_idx, avail.idx, avail.ring[(avail_idx % self.size) as usize], used_idx));
         }
@@ -511,20 +513,21 @@ impl NetVirtQueue {
 
         unsafe {
             // ディスクリプタを設定（書き込み可能）
-            let desc = &mut *inner.desc_table.add(desc_idx as usize);
-            desc.addr = buffer.as_ptr() as u64;
-            desc.len = buffer.len() as u32;
-            desc.flags = VringDesc::VRING_DESC_F_WRITE;
-            desc.next = 0;
+            let desc_ptr = inner.desc_table.add(desc_idx as usize);
+            core::ptr::write_volatile(&mut (*desc_ptr).addr, buffer.as_ptr() as u64);
+            core::ptr::write_volatile(&mut (*desc_ptr).len, buffer.len() as u32);
+            core::ptr::write_volatile(&mut (*desc_ptr).flags, VringDesc::VRING_DESC_F_WRITE);
+            core::ptr::write_volatile(&mut (*desc_ptr).next, 0);
 
             // Available Ringに追加
             let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
-            avail.ring[(avail_idx % self.size) as usize] = desc_idx;
+            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
+            core::ptr::write_volatile(ring_ptr, desc_idx);
 
             core::sync::atomic::fence(Ordering::Release);
 
-            avail.idx = avail_idx.wrapping_add(1);
+            core::ptr::write_volatile(&mut avail.idx, avail_idx.wrapping_add(1));
         }
 
         log::info!("[VIRTIO-NET] add_rx desc={} ptr=0x{:x} len={}", desc_idx, buffer.as_ptr() as u64, buffer.len());
@@ -545,20 +548,21 @@ impl NetVirtQueue {
 
         unsafe {
             // ディスクリプタを設定（書き込み可能、物理アドレス直接使用）
-            let desc = &mut *inner.desc_table.add(desc_idx as usize);
-            desc.addr = phys_addr;
-            desc.len = buffer_len as u32;
-            desc.flags = VringDesc::VRING_DESC_F_WRITE;
-            desc.next = 0;
+            let desc_ptr = inner.desc_table.add(desc_idx as usize);
+            core::ptr::write_volatile(&mut (*desc_ptr).addr, phys_addr);
+            core::ptr::write_volatile(&mut (*desc_ptr).len, buffer_len as u32);
+            core::ptr::write_volatile(&mut (*desc_ptr).flags, VringDesc::VRING_DESC_F_WRITE);
+            core::ptr::write_volatile(&mut (*desc_ptr).next, 0);
 
             // Available Ringに追加
             let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
-            avail.ring[(avail_idx % self.size) as usize] = desc_idx;
+            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
+            core::ptr::write_volatile(ring_ptr, desc_idx);
 
             core::sync::atomic::fence(Ordering::Release);
 
-            avail.idx = avail_idx.wrapping_add(1);
+            core::ptr::write_volatile(&mut avail.idx, avail_idx.wrapping_add(1));
         }
 
         log::info!("[VIRTIO-NET] add_rx_zero desc={} phys=0x{:x} len={}", desc_idx, phys_addr, buffer_len);
@@ -590,10 +594,10 @@ impl NetVirtQueue {
             let used = &*self.used_ring;
             let mut last_idx = self.last_used_idx.load(Ordering::Acquire);
 
-            while last_idx != used.idx {
-                let elem = &used.ring[(last_idx % self.size) as usize];
-                let desc_idx = elem.id as u16;
-                let len = elem.len;
+            while last_idx != core::ptr::read_volatile(&used.idx) {
+                let elem_ptr = used.ring.as_ptr().add((last_idx % self.size) as usize);
+                let desc_idx = core::ptr::read_volatile(&(*elem_ptr).id) as u16;
+                let len = core::ptr::read_volatile(&(*elem_ptr).len);
                 if let Some(slot) = pending.get_mut(desc_idx as usize) {
                     *slot = Some(len);
                 }
@@ -622,6 +626,12 @@ impl NetVirtQueue {
         self.pending_wakers.lock().push(waker);
     }
 
+    /// 利用可能なディスクリプタ数を取得
+    pub fn available_descriptors(&self) -> usize {
+        self.inner.lock().free_descs.len()
+    }
+
+    /// ポリングで完了を確認
     pub fn take_completion(&self, desc_idx: u16) -> Option<u32> {
         {
             let mut pending = self.pending_completions.lock();

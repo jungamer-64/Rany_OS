@@ -282,7 +282,11 @@ impl VirtioNetDevice {
         }
 
         // 8. キューの設定
-        self.setup_queues()?;
+        if let Err(e) = self.setup_queues() {
+            log::error!("[VIRTIO-NET] Failed to setup queues: {:?}", e);
+            self.mut_transport().set_status(status::VIRTIO_STATUS_FAILED);
+            return Err(e);
+        }
 
         // 9. DRIVER_OK を設定
         self.mut_transport().set_status(
@@ -293,10 +297,32 @@ impl VirtioNetDevice {
         );
 
         // Initialize bounce buffer pools for IOMMU paths (performance optimization)
-        self.init_bounce_pools()?;
+        if let Err(e) = self.init_bounce_pools() {
+            log::error!("[VIRTIO-NET] Failed to init bounce pools: {:?}", e);
+            self.mut_transport().set_status(status::VIRTIO_STATUS_FAILED);
+            return Err(e);
+        }
 
         self.initialized.store(true, Ordering::Release);
         Ok(())
+    }
+
+    /// RXキューが空になっている場合にバッファを補充する（スタベーション回復）
+    pub fn refill_rx_queues(&self) {
+        for rx_queue in &self.rx_queues {
+            let mut count = 0;
+            // API drift fallback: post until the queue rejects new buffers.
+            while count < rx_queue.size {
+                if self.try_post_rx_packet(rx_queue).is_err() {
+                    break;
+                }
+                count += 1;
+            }
+            if count > 0 {
+                log::info!("[VIRTIO-NET] Refilled {} RX buffers for queue {}", count, rx_queue.index);
+                rx_queue.notify();
+            }
+        }
     }
 
     fn init_bounce_pools(&self) -> Result<(), VirtioNetError> {
@@ -406,7 +432,7 @@ impl VirtioNetDevice {
         let layout = Self::compute_queue_memory_layout(queue_index, queue_size);
 
         // DMAバッファを割り当て
-        let (buffer, dma_len) = self.allocate_queue_dma(layout.total_size)?;
+        let (buffer, _dma_len) = self.allocate_queue_dma(layout.total_size)?;
 
         let phys_base = buffer.phys_addr().as_u64();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
@@ -418,7 +444,7 @@ impl VirtioNetDevice {
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // IOMMU DMAマッピングを設定
-        let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, dma_len, phys_base)?;
+        let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, layout.total_size, phys_base)?;
 
         let (tx_headers, tx_header_dma_base) = if queue_index == 1 {
             let header_ptr = unsafe { ptr.add(layout.header_offset) as *mut VirtioNetHeader };
@@ -487,11 +513,11 @@ impl VirtioNetDevice {
 
     /// キューのメモリレイアウトを計算する
     pub(super) fn compute_queue_memory_layout(queue_index: u16, queue_size: u16) -> QueueMemoryLayout {
-        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
+        let desc_size = (core::mem::size_of::<VringDesc>() * queue_size as usize + 63) & !63;
         let avail_size = 6 + 2 * queue_size as usize;
         let used_size = 6 + 8 * queue_size as usize;
 
-        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
+        let used_align = 64usize; // Avoid false sharing with 64-byte alignment
         let used_offset = align_up(desc_size + avail_size, used_align);
 
         let header_align = core::mem::align_of::<VirtioNetHeader>();

@@ -1,8 +1,16 @@
-use super::*;
-
+use super::VirtioNetDevice;
+use x86_64::VirtAddr;
 use crate::io::virtio::transport::VirtioMmioTransport;
+use crate::io::virtio::net::device_impl::VirtioNetError;
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::transport::VirtioTransport;
+use crate::task::{spawn, wait_for_interrupt, InterruptSource};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use alloc::sync::Arc;
 use spin::RwLock;
+use alloc::collections::BTreeMap;
+use crate::sync::PoisonLock;
 
 // ============================================================================
 // Global Device Instance
@@ -27,6 +35,35 @@ fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
             .insert(index, Arc::new(crate::sync::PoisonLock::new(device)));
     }
     VIRTIO_NET_TRANSPORTS.write().insert(index, transport);
+    
+    // ポスト・インタラプト（BH）ワーカータスクを起動
+    spawn_virtio_net_worker(index);
+}
+
+/// VirtIO-Net の割り込み後処理を行うワーカータスクを起動する
+fn spawn_virtio_net_worker(index: u8) {
+    spawn(virtio_net_worker_task(index));
+}
+
+/// VirtIO-Net の割り込み後処理ループ
+async fn virtio_net_worker_task(index: u8) {
+    log::info!("[VIRTIO-NET] Worker task for index {} started", index);
+    loop {
+        // 1. 割り込みを待機
+        wait_for_interrupt(InterruptSource::VirtioNet(index)).await;
+        
+        // 2. デバイスをロックして後処理（非ISRコンテキストなので安全）
+        let result = with_virtio_net_device_at_index(index, |device| {
+            device.handle_interrupt();
+            // スタベーション回復: 不足しているRXバッファを補充
+            device.refill_rx_queues();
+        });
+        
+        if result.is_none() {
+            log::warn!("[VIRTIO-NET] Worker task index {} exiting (device removed)", index);
+            break;
+        }
+    }
 }
 
 pub(crate) fn with_virtio_net_device_at_index<F, R>(index: u8, f: F) -> Option<R>
@@ -77,7 +114,7 @@ pub fn init_virtio_net_at_index(index: u8, base_addr: usize) -> Result<(), Virti
     let transport =
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
-    let mut device = VirtioNetDevice::new_at_index(index, transport);
+    let mut device = VirtioNetDevice::new_at_index(index, Box::new(transport));
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())
@@ -98,7 +135,7 @@ pub fn init_virtio_net_for_device_at_index(
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
     let mut device =
-        VirtioNetDevice::new_with_index_and_device(index, transport, Some(device));
+        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), Some(device));
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())

@@ -40,8 +40,9 @@ pub struct VirtQueue {
 
 unsafe impl Send for VirtQueue {}
 // SAFETY: Methods that mutate the queue state (avail_ring, used_ring, etc.) require `&mut self`.
-// Therefore, concurrent access is prevented by Rust's borrowing rules (e.g., via Mutex),
-// making it safe to share across threads.
+// In ExoRust, `VirtQueue` is typically wrapped in `Arc<PoisonLock<VirtQueue>>` or `Mutex`,
+// which ensures exclusive access for mutable operations. Raw pointers are only 
+// accessed via volatile operations to synchronize with the hardware.
 unsafe impl Sync for VirtQueue {}
 
 impl VirtQueue {
@@ -59,19 +60,18 @@ impl VirtQueue {
         index: u16,
     ) -> Self {
         for i in 0..queue_size {
-            unsafe {
-                (*desc_table.add(i as usize)) = VringDesc::default();
-            }
+            let desc_ptr = desc_table.add(i as usize);
+            core::ptr::write_volatile(desc_ptr, VringDesc::default());
         }
 
         unsafe {
-            (*avail_ring).flags = 0;
-            (*avail_ring).idx = 0;
+            core::ptr::write_volatile(&mut (*avail_ring).flags, 0);
+            core::ptr::write_volatile(&mut (*avail_ring).idx, 0);
         }
 
         unsafe {
-            (*used_ring).flags = 0;
-            (*used_ring).idx = 0;
+            core::ptr::write_volatile(&mut (*used_ring).flags, 0);
+            core::ptr::write_volatile(&mut (*used_ring).idx, 0);
         }
 
         Self {
@@ -93,14 +93,14 @@ impl VirtQueue {
     /// Safely get the current available index
     fn get_avail_idx(&self) -> u16 {
         // SAFETY: The pointer `avail_ring` is guaranteed to be valid and points to the DMA ring.
-        unsafe { (*self.avail_ring).idx }
+        unsafe { core::ptr::read_volatile(&(*self.avail_ring).idx) }
     }
 
     /// Safely set a new available index
     fn set_avail_idx(&mut self, idx: u16) {
         // SAFETY: `&mut self` ensures exclusive access. `avail_ring` is valid.
         unsafe {
-            (*self.avail_ring).idx = idx;
+            core::ptr::write_volatile(&mut (*self.avail_ring).idx, idx);
         }
     }
 
@@ -110,21 +110,21 @@ impl VirtQueue {
         // `&mut self` enforces exclusive access, avoiding data races.
         let ring_ptr = unsafe { (self.avail_ring as *mut u16).add(2) };
         unsafe {
-            *ring_ptr.add(ring_index as usize) = head;
+            core::ptr::write_volatile(ring_ptr.add(ring_index as usize), head);
         }
     }
 
     /// Safely get the current used index
     fn get_used_idx(&self) -> u16 {
         // SAFETY: Read-only access to the device-updated used ring memory.
-        unsafe { (*self.used_ring).idx }
+        unsafe { core::ptr::read_volatile(&(*self.used_ring).idx) }
     }
 
     /// Safely get an element from the used ring
     fn get_used_elem(&self, ring_index: u16) -> VringUsedElem {
         // SAFETY: Pointer arithmetic and reads are within bounds of the used ring array.
         let ring_ptr = unsafe { (self.used_ring as *const u8).add(4) as *const VringUsedElem };
-        unsafe { ring_ptr.add(ring_index as usize).read_unaligned() }
+        unsafe { core::ptr::read_volatile(ring_ptr.add(ring_index as usize)) }
     }
 
     /// Allocate a descriptor from the free list

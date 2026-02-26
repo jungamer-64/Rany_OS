@@ -582,10 +582,21 @@ impl DriverCellManager {
         match self.cells.lock() {
             Ok(cells) => {
                 crate::io::log::early_print("[DCELL-MGR] find_by_name lock ok\n");
-                cells
-                    .iter()
-                    .find(|(_, c)| c.name == name)
-                    .map(|(id, _)| *id)
+                for (id, c) in cells.iter() {
+                    crate::io::log::early_print("[DCELL-MGR] candidate id=");
+                    crate::io::log::early_print_hex(id.as_u64());
+                    crate::io::log::early_print(" name_ptr=");
+                    crate::io::log::early_print_hex(c.name.as_ptr() as usize as u64);
+                    crate::io::log::early_print(" name_len=");
+                    crate::io::log::early_print_hex(c.name.len() as u64);
+                    crate::io::log::early_print("\n");
+                    if c.name == name {
+                        crate::io::log::early_print("[DCELL-MGR] find_by_name hit\n");
+                        return Some(*id);
+                    }
+                }
+                crate::io::log::early_print("[DCELL-MGR] find_by_name miss\n");
+                None
             }
             Err(_) => None,
         }

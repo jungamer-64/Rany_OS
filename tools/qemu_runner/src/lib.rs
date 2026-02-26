@@ -410,7 +410,12 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         path: kernel_elf_path.clone(),
     })?;
     let kernel_fat_root = kernel_out_dir.join("fat_root");
-    let initramfs_src = kernel_fat_root.join("initramfs.tar");
+    let repo_root = workspace_root();
+    let initramfs_src = {
+        let primary = kernel_fat_root.join("initramfs.tar");
+        let fallback = repo_root.join("target").join("initramfs.tar");
+        if primary.exists() { primary } else { fallback }
+    };
     let initramfs_dst = boot_root.join("initramfs.tar");
     let needs_driver_cell_assets = profile_needs_driver_cell_assets(&config.profile);
     let copied_initramfs = if needs_driver_cell_assets {
@@ -429,15 +434,20 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         });
     }
 
+    let cells_src = {
+        let primary = kernel_fat_root.join("cells");
+        let fallback = kernel_out_dir.join("cells");
+        if primary.exists() { primary } else { fallback }
+    };
     let copied_cells = if needs_driver_cell_assets {
-        copy_cells_dir(&kernel_fat_root.join("cells"), &boot_root.join("cells"))?
+        copy_cells_dir(&cells_src, &boot_root.join("cells"))?
     } else {
         0
     };
     if needs_driver_cell_assets && copied_cells == 0 {
         return Err(BuildError::ArtifactMissing {
             step: "copy driver_cell assets into fullboot image",
-            path: kernel_fat_root.join("cells"),
+            path: cells_src,
         });
     }
 

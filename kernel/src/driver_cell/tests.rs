@@ -343,10 +343,22 @@ pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
 fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     runtime_log_line("[driver-cell-runtime] preflight: begin");
     let manager = driver_cell_manager();
-    let driver_cell_id = manager
-        .find_by_name("driver_cell_probe")
-        .ok_or_else(|| RuntimeCaseError::failed("driver_cell_probe is not loaded from initramfs"))?;
-    runtime_log_line("[driver-cell-runtime] preflight: found driver_cell_probe");
+    let running_cells = manager.cells_by_state(DriverCellState::Running);
+    let driver_cell_id = match running_cells.as_slice() {
+        [id] => *id,
+        [] => {
+            return Err(RuntimeCaseError::failed(
+                "no Running DriverCell found (expected driver_cell_probe from initramfs)",
+            ));
+        }
+        many => {
+            return Err(RuntimeCaseError::failed(format!(
+                "multiple Running DriverCells found (expected exactly 1, got {})",
+                many.len()
+            )));
+        }
+    };
+    runtime_log_line("[driver-cell-runtime] preflight: selected running DriverCell");
 
     let (state, hot_swap_state, loader_cell_id) = manager
         .with_cell(driver_cell_id, |cell| (cell.state, cell.hot_swap_state, cell.cell_id))
@@ -653,10 +665,19 @@ fn case_unload(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
         .map_err(|e| RuntimeCaseError::failed(format!("unload failed after restart: {}", e)))?;
     poll_runtime();
 
-    if driver_cell_manager().find_by_name("driver_cell_probe").is_some() {
-        return Err(RuntimeCaseError::failed(
-            "driver_cell_probe still exists after unload",
-        ));
+    match driver_cell_manager().with_cell(ctx.driver_cell_id, |_| ()) {
+        Err(DriverCellError::NotFound(_)) => {}
+        Ok(()) => {
+            return Err(RuntimeCaseError::failed(
+                "DriverCell still exists after unload",
+            ));
+        }
+        Err(e) => {
+            return Err(RuntimeCaseError::failed(format!(
+                "failed to verify unload state: {}",
+                e
+            )));
+        }
     }
 
     Ok(())
