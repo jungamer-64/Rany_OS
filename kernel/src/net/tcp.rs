@@ -509,6 +509,8 @@ pub struct TcpControlBlock {
     /// 統計
     stats: TcpStats,
 
+    /// 接続作成時刻 (tick)
+    created_at: u64,
 }
 
 /// Unacknowledged segment for retransmission (internal queue entry)

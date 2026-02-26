@@ -575,10 +575,10 @@ impl TlsConnection {
         let ciphertext = &ciphertext_with_tag[0..ciphertext_len];
         let auth_tag = &ciphertext_with_tag[ciphertext_len..];
 
-        // キーが設定されていない場合はプレースホルダー動作
+        // Security: Fail securely if keys are not configured.
+        // Returning ciphertext as plaintext allows injection attacks!
         if self.read_key.is_empty() || self.read_iv.len() < 4 {
-            self.read_seq += 1;
-            return Ok(ciphertext.to_vec());
+            return Err(TlsError::DecryptError);
         }
 
         // 12バイトのnonceを構築: implicit_iv(4) || explicit_nonce(8)

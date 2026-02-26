@@ -242,7 +242,7 @@ impl PacketRef {
                 if *offset >= slice.len() {
                     return &[];
                 }
-                let end = (*offset + *len).min(slice.len());
+                let end = offset.saturating_add(*len).min(slice.len());
                 &slice[*offset..end]
             },
             PacketRefKind::Dma { buf, offset, len } => {
@@ -250,7 +250,7 @@ impl PacketRef {
                 if *offset >= cap {
                     return &[];
                 }
-                let end = (*offset + *len).min(cap);
+                let end = offset.saturating_add(*len).min(cap);
                 unsafe {
                     crate::util::raw_ptr_as_slice(buf.ptr.as_ptr().add(*offset), end - *offset)
                 }
@@ -260,7 +260,7 @@ impl PacketRef {
                 if *offset >= *cap {
                     return &[];
                 }
-                let end = (*offset + *len).min(*cap);
+                let end = offset.saturating_add(*len).min(*cap);
                 unsafe { crate::util::raw_ptr_as_slice(ptr.as_ptr().add(*offset), end - *offset) }
             }
         }
@@ -274,7 +274,7 @@ impl PacketRef {
                 if *offset >= slice.len() {
                     return &mut [];
                 }
-                let end = (*offset + *len).min(slice.len());
+                let end = offset.saturating_add(*len).min(slice.len());
                 &mut slice[*offset..end]
             },
             PacketRefKind::Dma { buf, offset, len } => {
@@ -282,7 +282,7 @@ impl PacketRef {
                 if *offset >= cap {
                     return &mut [];
                 }
-                let end = (*offset + *len).min(cap);
+                let end = offset.saturating_add(*len).min(cap);
                 // SAFETY: We hold Arc to owner which keeps memory alive.
                 unsafe {
                     crate::util::raw_ptr_as_slice_mut(buf.ptr.as_ptr().add(*offset), end - *offset)
@@ -293,7 +293,7 @@ impl PacketRef {
                 if *offset >= *cap {
                     return &mut [];
                 }
-                let end = (*offset + *len).min(*cap);
+                let end = offset.saturating_add(*len).min(*cap);
                 unsafe { crate::util::raw_ptr_as_slice_mut(ptr.as_ptr().add(*offset), end - *offset) }
             }
         }

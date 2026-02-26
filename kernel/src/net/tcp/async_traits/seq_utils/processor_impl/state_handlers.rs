@@ -93,21 +93,26 @@ impl TcpProcessor {
         }
     }
 
-    /// Remove closed and expired TIME_WAIT connections
+    /// Remove closed and expired connections
     pub fn cleanup_closed(&mut self) {
         const TWO_MSL_US: u64 = 240_000_000;
+        const HANDSHAKE_TIMEOUT_US: u64 = 60_000_000;
+        let current_time = crate::task::timer::current_tick();
+
         self.connections.retain(|_, tcb_lock| {
             if let Ok(tcb) = tcb_lock.lock() {
                 match tcb.state() {
                     TcpState::Closed => false,
                     TcpState::TimeWait => {
                         // Keep if 2MSL has not yet passed
-                        // Use last_activity_time as fallback if time_wait_entered is 0
                         let entered = tcb.time_wait_entered_or_last_activity();
-                        let elapsed = tcb.last_activity_time()
-                            .max(entered)
-                            .saturating_sub(entered);
+                        let elapsed = current_time.saturating_sub(entered);
                         elapsed < TWO_MSL_US
+                    }
+                    TcpState::SynSent | TcpState::SynReceived => {
+                        // Remove stale handshakes (DoS protection)
+                        let elapsed = current_time.saturating_sub(tcb.created_at());
+                        elapsed < HANDSHAKE_TIMEOUT_US
                     }
                     _ => true,
                 }

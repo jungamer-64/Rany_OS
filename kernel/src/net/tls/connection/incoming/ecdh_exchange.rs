@@ -514,12 +514,21 @@ impl TlsConnection {
         let content_len = padding_result.unwrap_or(0);
         let padding_ok = padding_result.is_some() && content_len >= mac_len;
 
-        let fragment_len = if padding_ok { content_len - mac_len } else { 0 };
-        let fragment = &decrypted[..fragment_len];
+        // Security (Lucky13 mitigation): Always compute MAC over the same amount of data
+        // regardless of whether padding was valid or not. If padding is invalid,
+        // we use a dummy fragment (the entire decrypted data up to where the MAC would be
+        // if padding length was 0) to ensure the HMAC function takes the same time.
+        let safe_content_len = if padding_ok { content_len } else { decrypted.len() };
+        
+        // Prevent underflow if even the "safe" length is too short
+        let safe_fragment_len = safe_content_len.saturating_sub(mac_len);
+        let fragment = &decrypted[..safe_fragment_len];
+
         let received_mac = if padding_ok {
-            &decrypted[fragment_len..content_len]
+            &decrypted[content_len - mac_len..content_len]
         } else {
-            &decrypted[..0]
+            // Dummy MAC for constant time comparison
+            &decrypted[safe_content_len.saturating_sub(mac_len)..safe_content_len]
         };
 
         let expected_mac = compute_tls_mac(
@@ -544,7 +553,7 @@ impl TlsConnection {
             return Err(TlsError::BadRecordMac);
         }
 
-        Ok(fragment_len)
+        Ok(safe_fragment_len)
     }
 
     /// CBCレコード復号 (Decrypt-then-Verify-MAC)

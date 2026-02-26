@@ -3,6 +3,7 @@ use super::*;
 
 impl TcpControlBlock {
     pub fn new(local_addr: SocketAddr) -> Self {
+        let now = crate::task::timer::current_tick();
         Self {
             endpoints: TcpEndpointMeta::new(local_addr),
             state: TcpState::Closed,
@@ -14,7 +15,13 @@ impl TcpControlBlock {
             timers: TcpTimerState::new(),
             waiters: TcpAsyncWaiters::default(),
             stats: TcpStats::default(),
+            created_at: now,
         }
+    }
+
+    /// 接続作成時刻を取得
+    pub fn created_at(&self) -> u64 {
+        self.created_at
     }
 
     /// 受信データがあるか

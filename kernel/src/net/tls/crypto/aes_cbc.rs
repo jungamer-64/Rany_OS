@@ -186,14 +186,24 @@ pub(crate) fn tls_verify_padding(data: &[u8]) -> Option<usize> {
     let pad_byte = data[data.len() - 1];
     let pad_len = pad_byte as usize + 1;
 
-    if pad_len > data.len() || pad_len > 256 {
-        return None;
-    }
-
-    // 定時間検証: 全パディングバイトが同じ値か
+    // Security (POODLE mitigation): Do not early return. Always check up to 256 bytes
+    // in constant time to avoid leaking padding validity or length via timing.
     let mut bad = 0u8;
-    for i in 0..pad_len {
-        bad |= data[data.len() - 1 - i] ^ pad_byte;
+
+    // Out of bounds padding length check (constant time flag)
+    let length_bad = if pad_len > data.len() || pad_len > 256 { 0xFF } else { 0 };
+    bad |= length_bad;
+
+    let max_check = data.len().min(256);
+    for i in 0..max_check {
+        let expected_pad = pad_byte;
+        let actual_byte = data[data.len() - 1 - i];
+
+        // Mask is 0xFF if i < pad_len, 0x00 otherwise
+        let is_padding_byte = if i < pad_len { 0xFF } else { 0x00 };
+        
+        // Only accumulate errors for actual padding bytes
+        bad |= (actual_byte ^ expected_pad) & is_padding_byte;
     }
 
     if bad != 0 {
