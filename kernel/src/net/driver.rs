@@ -7,7 +7,6 @@
 //! This wraps the existing driver_bridge functionality to work with the
 //! unified DriverRegistry system.
 
-use alloc::vec::Vec;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 

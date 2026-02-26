@@ -11,7 +11,7 @@ use super::arp::{ArpProcessor, ArpResult};
 use super::ethernet::{EtherType, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult};
 use super::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode};
 use super::icmpv6::{Icmpv6EchoBuilder, Icmpv6Processor, Icmpv6Result};
-use super::igmp::{IgmpProcessor, IgmpResult, IgmpError, IGMP_PROTOCOL, multicast_ip_to_mac};
+use super::igmp::{IgmpProcessor, IgmpResult, IgmpError, multicast_ip_to_mac};
 use super::ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
 };
@@ -23,8 +23,8 @@ use super::ndp::{NdpProcessor, NdpResult};
 use super::mempool::{PacketPool, PacketRef};
 use super::optimization::PacketBatch;
 use super::tcp::{
-    TcpControlBlock, TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream,
-    SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpHeader,
+    TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream,
+    SocketAddr as TcpSocketAddr, TcpHeader,
 };
 
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
@@ -33,6 +33,7 @@ use super::NetIfId; // required for new transmit callback signature
 use crate::sync::PoisonLock;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
 use alloc::sync::Arc;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 mod core_impl;
@@ -178,59 +179,47 @@ impl RedirectCache {
         self.current_time = time;
     }
 
-    /// Insert or update a redirect entry
+    /// Insert or update a redirect entry using linear search to avoid hash collision DoS.
     fn insert(&mut self, destination: Ipv4Address, gateway: Ipv4Address) {
-        // First, try to find existing entry for this destination
-        for entry in self.entries.iter_mut() {
-            if let Some(e) = entry {
-                if e.destination == destination {
+        let mut first_empty: Option<usize> = None;
+        let mut oldest_idx = 0;
+        let mut oldest_time = u64::MAX;
+
+        for (i, entry) in self.entries.iter_mut().enumerate() {
+            match entry {
+                Some(e) if e.destination == destination => {
+                    // update existing
                     e.gateway = gateway;
                     e.timestamp = self.current_time;
                     return;
                 }
-            }
-        }
-
-        // Find an empty slot or the oldest entry
-        let mut oldest_idx = 0;
-        let mut oldest_time = u64::MAX;
-        
-        for (i, entry) in self.entries.iter().enumerate() {
-            match entry {
-                None => {
-                    // Empty slot - use it immediately
-                    self.entries[i] = Some(RedirectCacheEntry {
-                        destination,
-                        gateway,
-                        timestamp: self.current_time,
-                    });
-                    return;
-                }
                 Some(e) => {
-                    // Check if expired
-                    if self.current_time.saturating_sub(e.timestamp) > REDIRECT_CACHE_TTL {
-                        // Expired entry - can be replaced
-                        self.entries[i] = Some(RedirectCacheEntry {
-                            destination,
-                            gateway,
-                            timestamp: self.current_time,
-                        });
-                        return;
-                    }
+                    // Track oldest entry for potential eviction
                     if e.timestamp < oldest_time {
                         oldest_time = e.timestamp;
                         oldest_idx = i;
                     }
+                    if self.current_time.saturating_sub(e.timestamp) > REDIRECT_CACHE_TTL {
+                        // replace expired entry immediately
+                        *entry = Some(RedirectCacheEntry { destination, gateway, timestamp: self.current_time });
+                        return;
+                    }
+                }
+                None => {
+                    if first_empty.is_none() {
+                        first_empty = Some(i);
+                    }
                 }
             }
         }
 
-        // Replace oldest entry
-        self.entries[oldest_idx] = Some(RedirectCacheEntry {
-            destination,
-            gateway,
-            timestamp: self.current_time,
-        });
+        if let Some(empty_idx) = first_empty {
+            self.entries[empty_idx] = Some(RedirectCacheEntry { destination, gateway, timestamp: self.current_time });
+            return;
+        }
+
+        // Cache is full and no expired slot; replace the one with oldest timestamp
+        self.entries[oldest_idx] = Some(RedirectCacheEntry { destination, gateway, timestamp: self.current_time });
     }
 
     /// Look up a redirect for a destination
@@ -238,9 +227,10 @@ impl RedirectCache {
         for entry in self.entries.iter() {
             if let Some(e) = entry {
                 if e.destination == destination {
-                    // Check if entry is still valid
                     if self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL {
                         return Some(e.gateway);
+                    } else {
+                        return None; // Found but expired
                     }
                 }
             }
@@ -324,23 +314,23 @@ struct PendingIpv6Packet {
 
 /// NDP解決待ちキュー
 struct NdpPendingQueue {
-    packets: Vec<PendingIpv6Packet>,
+    packets: VecDeque<PendingIpv6Packet>,
 }
 
 impl NdpPendingQueue {
     fn new() -> Self {
         Self {
-            packets: Vec::new(),
+            packets: VecDeque::new(),
         }
     }
 
     /// パケットをキューに追加
     fn enqueue(&mut self, src: Ipv6Address, dst: Ipv6Address, icmpv6_data: &[u8], current_time: u64) {
-        // キュー満杯なら最古のエントリを破棄
         if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
-            self.packets.remove(0);
+            // VecDeque provides efficient pop_front
+            self.packets.pop_front();
         }
-        self.packets.push(PendingIpv6Packet {
+        self.packets.push_back(PendingIpv6Packet {
             dst,
             src,
             icmpv6_data: icmpv6_data.to_vec(),
@@ -351,17 +341,19 @@ impl NdpPendingQueue {
     /// 指定アドレス宛のパケットを取り出す
     fn drain_for(&mut self, dst: &Ipv6Address) -> Vec<PendingIpv6Packet> {
         let mut matched = Vec::new();
-        let mut remaining = Vec::new();
-
-        for pkt in self.packets.drain(..) {
-            if pkt.dst == *dst {
-                matched.push(pkt);
-            } else {
-                remaining.push(pkt);
+        let len = self.packets.len();
+        
+        // Rotate elements in-place to avoid new VecDeque allocations
+        for _ in 0..len {
+            if let Some(pkt) = self.packets.pop_front() {
+                if pkt.dst == *dst {
+                    matched.push(pkt);
+                } else {
+                    self.packets.push_back(pkt);
+                }
             }
         }
 
-        self.packets = remaining;
         matched
     }
 

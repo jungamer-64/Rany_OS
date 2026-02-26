@@ -126,9 +126,14 @@ impl ClusterBufferAllocator for PageClusterBufferAllocator {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
-    use super::{PageClusterBufferAllocator, PageClusterBuffer};
+    use super::{
+        ClusterBuffer, PAGE_SIZE_4K, PageClusterBuffer, PageClusterBufferAllocator,
+        alloc_contiguous_frames, dealloc_contiguous_frames,
+    };
+    use alloc::boxed::Box;
     use alloc::vec::Vec;
     use alloc::vec;
+    use fat32::ClusterBufferAllocator;
     use vfs::block::{ZeroCopyBuffer, ZeroCopyBufferMut};
     use crate::mm::virt::mapping::phys_to_virt;
     use x86_64::PhysAddr;
@@ -335,5 +340,3 @@ pub mod tests {
         assert!((*fs).total_sectors() > 0);
     }
 }
-
-

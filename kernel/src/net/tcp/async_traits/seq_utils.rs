@@ -4,7 +4,6 @@ use super::*;
 /// 初期シーケンス番号生成
 /// RFC 6528に従い、タイムスタンプベースで予測困難な値を生成
 mod processor_impl;
-pub use processor_impl::*;
 pub(crate) fn generate_initial_seq() -> u32 {
     // タイムスタンプベースの値（マイクロ秒精度）
     let time_component = crate::task::timer::current_tick() as u32;

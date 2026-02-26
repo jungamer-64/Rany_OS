@@ -248,7 +248,7 @@ pub fn dropped_input_counts() -> (u64, u64) {
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub fn reset_input_hub_for_tests() {
     {
         let mut hub = INPUT_HUB.lock();
@@ -258,12 +258,12 @@ pub fn reset_input_hub_for_tests() {
     DROPPED_GUI_EVENTS.store(0, Ordering::Relaxed);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub fn inject_key_event_for_tests(event: KeyEvent) {
     handle_keyboard_tap_event(event);
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub fn inject_tty_bytes_for_tests(bytes: &[u8]) {
     let mut hub = INPUT_HUB.lock();
     push_tty_bytes(&mut hub, bytes);

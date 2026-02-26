@@ -1,6 +1,5 @@
 // tls/crypto/hkdf.rs - HKDF and TLS 1.3 Key Schedule (RFC 5869 / RFC 8446)
 
-use alloc::vec;
 use alloc::vec::Vec;
 use super::hmac::{hmac_sha256, hmac_sha384, SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 

@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 use super::aes_core::{
-    AesRoundKeySchedule, AES_SBOX, aes_expand_key_schedule,
+    AesRoundKeySchedule, aes_expand_key_schedule,
     aes_encrypt_block_with_schedule, aes_add_round_key, gf_mul,
 };
 

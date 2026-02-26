@@ -78,6 +78,18 @@ pub fn net_tls_wave8_aes_gcm_empty_plaintext_smoke() -> bool {
     crate::net::tls::qemu_tests::wave8_tls_aes_gcm_empty_plaintext_smoke()
 }
 
+pub fn net_tls_wave8_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_key_in_place_roundtrip_smoke()
+}
+
+pub fn net_tls_wave8_aes_gcm_key_invalid_nonce_len_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_key_invalid_nonce_len_smoke()
+}
+
+pub fn net_tls_wave8_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> bool {
+    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke()
+}
+
 pub fn net_tls_wave8_aes_key_expansion_smoke() -> bool {
     crate::net::tls::qemu_tests::wave8_tls_aes_key_expansion_smoke()
 }

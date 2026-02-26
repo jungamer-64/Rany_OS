@@ -84,7 +84,7 @@ impl NdpProcessor {
         &mut self,
         data: &[u8],
         src: Ipv6Address,
-        dst: Ipv6Address,
+        _dst: Ipv6Address,
         current_time: u64,
     ) -> NdpResult {
         if data.len() < NS_MIN_SIZE {
@@ -138,7 +138,7 @@ impl NdpProcessor {
     pub(super) fn process_na(
         &mut self,
         data: &[u8],
-        src: Ipv6Address,
+        _src: Ipv6Address,
         _dst: Ipv6Address,
         current_time: u64,
     ) -> NdpResult {

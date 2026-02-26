@@ -14,7 +14,7 @@ mod ecdh_group;
 pub use ecdh_group::*;
 #[allow(dead_code)]
 pub mod p384 {
-    use alloc::vec::Vec;
+    
 
     /// P-384素数体の元（リトルエンディアン6×u64リム表現）
     ///
@@ -818,4 +818,3 @@ pub mod p384 {
 
 // p384モジュール内の公開関数を p384.rs トップレベルで再エクスポート
 pub use self::p384::ecdsa_p384_verify;
-pub use self::p384::EcdsaError as EcdsaErrorP384;

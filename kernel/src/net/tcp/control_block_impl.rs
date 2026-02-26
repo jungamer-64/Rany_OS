@@ -199,7 +199,7 @@ impl TcpControlBlock {
     /// Implements:
     /// - Slow Start (cwnd < ssthresh): cwnd += mss
     /// - Congestion Avoidance (cwnd >= ssthresh): cwnd += mss*mss/cwnd
-    pub fn on_new_ack(&mut self, bytes_acked: u32) {
+    pub fn on_new_ack(&mut self, _bytes_acked: u32) {
         let mss = self.mss as u32;
         
         // Exit fast recovery on new ACK
@@ -486,7 +486,7 @@ impl TcpControlBlock {
     /// Process incoming timestamp option
     /// 
     /// Updates ts_recent for PAWS and prepares ts_ecr for reply
-    pub fn process_ts_option(&mut self, ts_val: u32, ts_ecr: u32, current_time: u64, seq_num: u32) {
+    pub fn process_ts_option(&mut self, ts_val: u32, _ts_ecr: u32, current_time: u64, seq_num: u32) {
         // Only update ts_recent if segment is in sequence
         if seq_num == self.rcv_nxt || self.ts_recent == 0 {
             self.ts_recent = ts_val;

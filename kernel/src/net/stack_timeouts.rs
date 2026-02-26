@@ -11,8 +11,6 @@
 //! - `KeepaliveTimer`: TCPキープアライブタイマー
 //! - `TimeWaitTimer`: TIME_WAIT (2MSL) タイマー
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};

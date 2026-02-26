@@ -256,7 +256,7 @@ fn run_suite() -> bool {
             "kernel_driver_cell_exports",
             test_kernel_driver_cell_exports,
         )
-// BEGIN NET core required run_suite wiring (90 cases).
+// BEGIN NET core required run_suite wiring (99 cases).
         && run_check(
             "net_core_adaptive_polling_exports",
             test_net_core_adaptive_polling_exports,
@@ -309,7 +309,7 @@ fn run_suite() -> bool {
             "net_core_tcp_exports",
             test_net_core_tcp_exports,
         )
-// END NET core required run_suite wiring (90 cases).
+// END NET core required run_suite wiring (99 cases).
 // BEGIN NET peripheral required run_suite wiring (67 cases).
         && run_check(
             "net_peripheral_dhcp_v4_exports",
@@ -503,7 +503,7 @@ fn test_loader_elf_exports() -> bool {
         && rany_os::qemu_tests::loader_elf_get_string_zero_copy_smoke()
 }
 
-// BEGIN NET core required suite groups (90 cases).
+// BEGIN NET core required suite groups (99 cases).
 
 fn test_net_core_adaptive_polling_exports() -> bool {
     run_check(
@@ -525,6 +525,12 @@ fn test_net_core_mempool_exports() -> bool {
     ) && run_check(
         "net_core_mempool_mempool_stats_smoke",
         rany_os::qemu_tests::net_core_mempool_mempool_stats_smoke,
+    ) && run_check(
+        "net_core_mempool_packet_pool_preallocates_fixed_size_buffers_smoke",
+        rany_os::qemu_tests::net_core_mempool_packet_pool_preallocates_fixed_size_buffers_smoke,
+    ) && run_check(
+        "net_core_mempool_packet_pool_free_restores_size_after_resize_smoke",
+        rany_os::qemu_tests::net_core_mempool_packet_pool_free_restores_size_after_resize_smoke,
     )
 }
 
@@ -587,6 +593,12 @@ fn test_net_core_udp_exports() -> bool {
     ) && run_check(
         "net_core_udp_udp_processor_poisoned_bind_and_process_smoke",
         rany_os::qemu_tests::net_core_udp_udp_processor_poisoned_bind_and_process_smoke,
+    ) && run_check(
+        "net_core_udp_udp_socket_multiple_waiters_woken_on_deliver_smoke",
+        rany_os::qemu_tests::net_core_udp_udp_socket_multiple_waiters_woken_on_deliver_smoke,
+    ) && run_check(
+        "net_core_udp_udp_processor_process_enqueues_zero_copy_packet_smoke",
+        rany_os::qemu_tests::net_core_udp_udp_processor_process_enqueues_zero_copy_packet_smoke,
     )
 }
 
@@ -674,6 +686,12 @@ fn test_net_core_stack_exports() -> bool {
     ) && run_check(
         "net_core_stack_redirect_cache_eviction_smoke",
         rany_os::qemu_tests::net_core_stack_redirect_cache_eviction_smoke,
+    ) && run_check(
+        "net_core_stack_redirect_cache_reuses_expired_slot_before_oldest_smoke",
+        rany_os::qemu_tests::net_core_stack_redirect_cache_reuses_expired_slot_before_oldest_smoke,
+    ) && run_check(
+        "net_core_stack_ndp_pending_queue_drain_for_preserves_order_smoke",
+        rany_os::qemu_tests::net_core_stack_ndp_pending_queue_drain_for_preserves_order_smoke,
     )
 }
 
@@ -744,6 +762,15 @@ fn test_net_core_ipv6_exports() -> bool {
     ) && run_check(
         "net_core_ipv6_from_u64_pair_smoke",
         rany_os::qemu_tests::net_core_ipv6_from_u64_pair_smoke,
+    ) && run_check(
+        "net_core_ipv6_pmtu_cache_evict_oldest_uses_lru_smoke",
+        rany_os::qemu_tests::net_core_ipv6_pmtu_cache_evict_oldest_uses_lru_smoke,
+    ) && run_check(
+        "net_core_ipv6_pmtu_cache_update_moves_lru_timestamp_smoke",
+        rany_os::qemu_tests::net_core_ipv6_pmtu_cache_update_moves_lru_timestamp_smoke,
+    ) && run_check(
+        "net_core_ipv6_pmtu_cache_evict_expired_cleans_entries_and_lru_smoke",
+        rany_os::qemu_tests::net_core_ipv6_pmtu_cache_evict_expired_cleans_entries_and_lru_smoke,
     )
 }
 
@@ -827,7 +854,7 @@ fn test_net_core_tcp_exports() -> bool {
     )
 }
 
-// END NET core required suite groups (90 cases).
+// END NET core required suite groups (99 cases).
 
 // BEGIN re-added local suite groups after origin/master rebase
 

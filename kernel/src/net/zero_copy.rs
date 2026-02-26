@@ -15,7 +15,6 @@
 //! - 散布/収集I/O（Scatter-Gather）
 //! - DMA対応バッファアライメント
 
-#![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;

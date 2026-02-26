@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 use crate::sync::poison_lock::PoisonLock;
 
 use crate::net::tcp::{
-    Ipv4Addr, SocketAddr as TcpSocketAddr, TcpListener as TcpListenerImpl, TcpStream,
+    TcpListener as TcpListenerImpl, TcpStream,
 };
 
 use super::event::{NetworkEvent, send_event, send_event_ignore};

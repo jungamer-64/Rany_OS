@@ -2,7 +2,6 @@ use super::*;
 
 
 pub mod variant_tests;
-pub use self::variant_tests::*;
 impl Default for CongestionControllerVariant {
     fn default() -> Self {
         Self::NewReno(CongestionController::new())
@@ -469,7 +468,7 @@ impl BbrController {
     }
     
     /// Enter ProbeRTT state
-    fn enter_probe_rtt(&mut self, current_time: u64) {
+    fn enter_probe_rtt(&mut self, _current_time: u64) {
         self.prior_cwnd = self.cwnd;
         self.state = BbrState::ProbeRTT;
         self.pacing_gain = bbr_constants::STEADY_GAIN;
@@ -541,7 +540,7 @@ impl BbrController {
         // Calculate delivery rate
         let delivery_interval = current_time.saturating_sub(self.delivered_time);
         if delivery_interval > 0 && bytes_acked > 0 {
-            let delivery_rate = (bytes_acked as u64 * 1000) / delivery_interval; // bytes per second -> bytes per ms
+            let _delivery_rate = (bytes_acked as u64 * 1000) / delivery_interval; // bytes per second -> bytes per ms
             let bw = bytes_acked as u64 / delivery_interval.max(1);
             self.update_btl_bw(bw, current_time);
         }

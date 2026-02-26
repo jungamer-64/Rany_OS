@@ -1,5 +1,9 @@
-use super::{NullDevice, ZeroDevice, RandomDevice};
+use super::{
+    ConsoleDevice, DevError, DevFileHandle, DevFs, DeviceNumber, DeviceOps, NullDevice,
+    RandomDevice, ZeroDevice,
+};
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
 use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
 use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};

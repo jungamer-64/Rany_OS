@@ -42,9 +42,8 @@ impl UdpSocketTable {
 
                 let inner = Arc::new(PoisonLock::new(UdpSocketInner {
                     local_port: port,
-                    rx_queue: VecDeque::new(),
                     rx_packet_queue: VecDeque::new(),
-                    waker: None,
+                    wakers: Vec::new(),
                     closed: false,
                     token,
                 }));
@@ -113,41 +112,8 @@ impl UdpSocketTable {
         }
     }
 
-    /// Deliver a datagram to the appropriate socket
-    pub fn deliver(&self, datagram: UdpDatagram) -> bool {
-        use core::sync::atomic::Ordering;
-
-        if let Some(socket) = self.find(datagram.dst_port) {
-            match socket.lock() {
-                Ok(mut inner) => {
-                    if inner.closed {
-                        self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                        return false;
-                    }
-
-                    inner.rx_queue.push_back(datagram);
-
-                    if let Some(waker) = inner.waker.take() {
-                        waker.wake();
-                    }
-
-                    self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-                    true
-                }
-                Err(_) => {
-                    log::error!("[NET] UDP Socket poisoned during deliver - dropping datagram");
-                    self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                    false
-                }
-            }
-        } else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            false
-        }
-    }
-
     /// Deliver a packet to the appropriate socket using a PacketRef (zero-copy)
-    pub fn deliver_packet(&self, src: UdpAddr, dst_port: u16, packet: PacketRef) -> bool {
+    pub fn deliver(&self, src: UdpAddr, dst_port: u16, packet: PacketRef) -> bool {
         use core::sync::atomic::Ordering;
 
         if let Some(socket) = self.find(dst_port) {
@@ -160,7 +126,7 @@ impl UdpSocketTable {
 
                     inner.rx_packet_queue.push_back((src, packet));
 
-                    if let Some(waker) = inner.waker.take() {
+                    for waker in inner.wakers.drain(..) {
                         waker.wake();
                     }
 
@@ -168,7 +134,7 @@ impl UdpSocketTable {
                     true
                 }
                 Err(_) => {
-                    log::error!("[NET] UDP Socket poisoned during deliver_packet - dropping packet");
+                    log::error!("[NET] UDP Socket poisoned during deliver - dropping packet");
                     self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
                     false
                 }
@@ -202,7 +168,7 @@ impl UdpSocketTable {
                                 if !socket.closed {
                                     result.push(UdpSocketSnapshot {
                                         local_port: socket.local_port,
-                                        rx_queue_len: socket.rx_queue.len() + socket.rx_packet_queue.len(),
+                                        rx_queue_len: socket.rx_packet_queue.len(),
                                     });
                                 }
                             }

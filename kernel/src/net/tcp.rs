@@ -12,7 +12,6 @@
 //! - データコピーなし（ゼロコピー）
 //! - async/await ファースト
 
-#![allow(dead_code)]
 
 use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -32,7 +31,6 @@ use super::mempool::PacketRef;
 mod async_traits;
 pub use async_traits::*;
 mod control_block_impl;
-pub use control_block_impl::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Ipv4Addr(pub [u8; 4]);
 

@@ -6,9 +6,6 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -24,7 +21,6 @@ pub use tcp_constants::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) use tcp_constants::tests;
 mod client_impl;
-pub use client_impl::*;
 pub const DNS_PORT: u16 = 53;
 
 /// DNSクエリタイプ

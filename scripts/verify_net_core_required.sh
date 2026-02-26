@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Validates NET core stack deterministic required wiring (90 cases) for suite_kernel.
+# Validates NET core stack deterministic required wiring (99 cases) for suite_kernel.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NET_EXPORT_FILE="$ROOT_DIR/kernel/src/net/qemu_tests.rs"
@@ -38,6 +38,8 @@ cases=(
   "adaptive_polling_network_stats"
   "mempool_mempool_poisoned_alloc_fails"
   "mempool_mempool_stats"
+  "mempool_packet_pool_preallocates_fixed_size_buffers"
+  "mempool_packet_pool_free_restores_size_after_resize"
   "zero_copy_pool_id"
   "zero_copy_sg_list"
   "zero_copy_packet_chain"
@@ -52,6 +54,8 @@ cases=(
   "udp_bind_with_token_reclaim"
   "udp_udp_recv_future_poisoned_returns_closed"
   "udp_udp_processor_poisoned_bind_and_process"
+  "udp_udp_socket_multiple_waiters_woken_on_deliver"
+  "udp_udp_processor_process_enqueues_zero_copy_packet"
   "ipv4_ipv4_address"
   "ipv4_subnet"
   "ipv4_fragment_key"
@@ -77,6 +81,8 @@ cases=(
   "stack_redirect_cache_expiry"
   "stack_redirect_cache_cleanup"
   "stack_redirect_cache_eviction"
+  "stack_redirect_cache_reuses_expired_slot_before_oldest"
+  "stack_ndp_pending_queue_drain_for_preserves_order"
   "ipv6_unspecified"
   "ipv6_loopback"
   "ipv6_multicast"
@@ -99,6 +105,9 @@ cases=(
   "ipv6_display_all_nodes"
   "ipv6_display_full"
   "ipv6_from_u64_pair"
+  "ipv6_pmtu_cache_evict_oldest_uses_lru"
+  "ipv6_pmtu_cache_update_moves_lru_timestamp"
+  "ipv6_pmtu_cache_evict_expired_cleans_entries_and_lru"
   "ndp_neighbor_cache_basic"
   "ndp_neighbor_cache_update"
   "ndp_neighbor_cache_expiry"
@@ -161,12 +170,12 @@ if [[ "$group_count" != "13" ]]; then
 fi
 
 wrapper_count=$(rg -n "^pub fn net_core_.*_smoke\(" "$KERNEL_WRAPPER_FILE" | wc -l | tr -d " ")
-if [[ "$wrapper_count" != "90" ]]; then
-  echo "[verify_net_core_required] expected 90 net_core wrappers, got $wrapper_count"
+if [[ "$wrapper_count" != "99" ]]; then
+  echo "[verify_net_core_required] expected 99 net_core wrappers, got $wrapper_count"
   violations=$((violations + 1))
 fi
 
-if ! rg -q "NET core stack deterministic set \(90 cases\) is promoted to required suite_kernel" "$PENDING_FILE"; then
+if ! rg -q "NET core stack deterministic set \(99 cases\) is promoted to required suite_kernel" "$PENDING_FILE"; then
   echo "[verify_net_core_required] missing net-core promotion marker in ${PENDING_FILE#$ROOT_DIR/}"
   violations=$((violations + 1))
 fi

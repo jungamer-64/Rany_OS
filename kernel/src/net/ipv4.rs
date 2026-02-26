@@ -13,9 +13,6 @@
 //! - Hole-filling algorithm for efficient reassembly
 //! - Protection against fragment overlap attacks
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use alloc::collections::BTreeMap;
 use alloc::vec;

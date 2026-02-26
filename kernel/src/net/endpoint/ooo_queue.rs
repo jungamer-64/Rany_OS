@@ -12,7 +12,6 @@
 //! - 最大セグメント数制限でメモリ枯渇を防止
 //! - SACKブロック生成をサポート
 
-#![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -85,7 +84,7 @@ impl ConnectionOooQueue {
     /// SACKブロックを生成（最大4ブロック、RFC 2018）
     fn sack_blocks(&self) -> Vec<(u32, u32)> {
         let mut blocks = Vec::new();
-        let iter = self.segments.iter();
+        let _iter = self.segments.iter();
 
         let mut block_start = None;
         let mut block_end = 0u32;

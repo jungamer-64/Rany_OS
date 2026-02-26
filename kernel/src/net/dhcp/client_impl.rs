@@ -2,7 +2,6 @@ use super::*;
 
 
 mod offer_handling;
-pub use offer_handling::*;
 impl DhcpClient {
     /// 最大再試行回数
     pub const MAX_RETRIES: u32 = 4;

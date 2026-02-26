@@ -6,9 +6,6 @@
 //! This module implements zero-copy Ethernet frame handling
 //! as specified in Section 6.2 of the ExoRust specification.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use core::fmt;
 

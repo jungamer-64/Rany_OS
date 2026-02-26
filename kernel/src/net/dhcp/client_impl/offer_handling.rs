@@ -91,7 +91,7 @@ impl DhcpClient {
         buffer: &mut [u8],
         declined_ip: Ipv4Address,
         server_ip: Option<Ipv4Address>,
-        current_tick: u64,
+        _current_tick: u64,
     ) -> Result<usize, &'static str> {
         if buffer.len() < DhcpHeader::SIZE + 64 {
             return Err("Buffer too small");
@@ -163,7 +163,7 @@ impl DhcpClient {
     }
 
     /// Build DHCPRELEASE packet
-    pub fn build_release(&self, buffer: &mut [u8], current_tick: u64) -> Result<usize, &'static str> {
+    pub fn build_release(&self, buffer: &mut [u8], _current_tick: u64) -> Result<usize, &'static str> {
         if buffer.len() < DhcpHeader::SIZE + 64 {
             return Err("Buffer too small");
         }

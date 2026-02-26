@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::vec;
 use super::{Bytes, split_path_async};
 
 #[cfg_attr(test, test_case)]

@@ -268,7 +268,9 @@ mod tests {
 
 #[cfg(all(feature = "qemu-test-export", not(feature = "std")))]
 mod qemu_no_std_tests {
-    use crate::filesystems::kernel_fs::procfs::{ProcFs, Pid, ProcError, ProcFileHandle, ProcDirHandle, procfs};
+    use crate::fs::procfs::{ProcDirHandle, ProcError, ProcFileHandle, ProcFs, Pid, procfs};
+    use alloc::string::String;
+    use alloc::string::ToString;
     use alloc::vec::Vec;
     use kernel_api::{KernelServices, OpenMode};
 

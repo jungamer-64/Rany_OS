@@ -287,8 +287,8 @@ impl UdpPacketStream {
     }
 
     /// 次のパケットを受信するFutureを返す
-    pub fn next_packet(&self) -> crate::net::udp::UdpRecvPacketFuture {
-        self.socket.recv_packet()
+    pub fn next_packet(&self) -> crate::net::udp::UdpRecvFuture {
+        self.socket.recv()
     }
 }
 
@@ -335,14 +335,14 @@ impl OwnedSocket {
     }
 
     /// UDPのゼロコピー受信ヘルパ（内部UDPソケットが設定されている場合にのみ利用可能）
-    pub fn recv_packet_from_udp(&self) -> Option<crate::net::udp::UdpRecvPacketFuture> {
+    pub fn recv_packet_from_udp(&self) -> Option<crate::net::udp::UdpRecvFuture> {
         if self.socket().map(|s| s.socket_type()) != Some(super::types::SocketType::Udp) {
             return None;
         }
         self.socket().and_then(|s| {
             // Clone the optional UdpSocket from the inner state and produce a future
             let opt = s.inner().lock().unwrap_or_else(|e| e.into_inner()).udp_socket.clone();
-            opt.map(|u| u.recv_packet())
+            opt.map(|u| u.recv())
         })
     }
 

@@ -491,6 +491,15 @@ pub(crate) fn test_net_tls_wave8_phase_c_exports() -> bool {
         "net_tls_wave8_aes_gcm_empty_plaintext_smoke",
         rany_os::qemu_tests::net_tls_wave8_aes_gcm_empty_plaintext_smoke,
     ) && run_check(
+        "net_tls_wave8_aes_gcm_key_in_place_roundtrip_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_key_in_place_roundtrip_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_gcm_key_invalid_nonce_len_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_key_invalid_nonce_len_smoke,
+    ) && run_check(
+        "net_tls_wave8_aes_gcm_key_auth_failure_preserves_output_buffer_smoke",
+        rany_os::qemu_tests::net_tls_wave8_aes_gcm_key_auth_failure_preserves_output_buffer_smoke,
+    ) && run_check(
         "net_tls_wave8_aes_key_expansion_smoke",
         rany_os::qemu_tests::net_tls_wave8_aes_key_expansion_smoke,
     ) && run_check(

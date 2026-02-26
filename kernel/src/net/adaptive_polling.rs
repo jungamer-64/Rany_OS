@@ -14,7 +14,6 @@
 //! - 動的閾値調整
 //! - 統計収集
 
-#![allow(dead_code)]
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

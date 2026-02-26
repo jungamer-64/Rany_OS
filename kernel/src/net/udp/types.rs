@@ -61,15 +61,25 @@ impl UdpProcessor {
             return UdpResult::ChecksumError;
         }
 
-        let datagram = UdpDatagram {
-            src: UdpAddr::new(src_ip, packet.src_port()),
-            dst_port: packet.dst_port(),
-            data: packet.payload().to_vec(),
-        };
+        let payload = packet.payload();
+        if let Some(mut pkt_ref) = crate::net::alloc_packet() {
+            let buf = pkt_ref.data_mut();
+            if payload.len() > buf.len() {
+                return UdpResult::Invalid;
+            }
+            buf[..payload.len()].copy_from_slice(payload);
+            pkt_ref.set_len(payload.len());
+            
+            let src = UdpAddr::new(src_ip, packet.src_port());
+            let dst_port = packet.dst_port();
 
-        if self.sockets.deliver(datagram) {
-            UdpResult::Delivered
+            if self.sockets.deliver(src, dst_port, pkt_ref) {
+                UdpResult::Delivered
+            } else {
+                UdpResult::NoSocket
+            }
         } else {
+            // Buffer exhaustion fallback
             UdpResult::NoSocket
         }
     }
@@ -94,7 +104,7 @@ impl UdpProcessor {
         let src = UdpAddr::new(src_ip, packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
-        if self.sockets.deliver_packet(src, dst_port, packet) {
+        if self.sockets.deliver(src, dst_port, packet) {
             UdpResult::Delivered
         } else {
             UdpResult::NoSocket

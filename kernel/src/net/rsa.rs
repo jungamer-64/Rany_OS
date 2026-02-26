@@ -18,7 +18,6 @@
 //! - DigestInfo DERプレフィックスの厳密照合
 //! - パディング構造 0x00 0x01 [0xFF...] 0x00 の完全検証
 
-#![allow(dead_code)]
 
 use alloc::vec;
 use alloc::vec::Vec;

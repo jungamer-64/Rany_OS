@@ -12,11 +12,8 @@
 //! - EUI-64 link-local address generation
 //! - Solicited-node multicast address computation
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -31,7 +28,7 @@ use super::ipv4::IpProtocol;
 mod processor_impl;
 pub mod fragment;
 pub use processor_impl::*;
-pub use fragment::{Ipv6FragmentHeader, Ipv6FragmentReassembler, Ipv6FragmentStats};
+pub use fragment::{Ipv6FragmentHeader, Ipv6FragmentReassembler};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv6Address([u8; 16]);
 
@@ -861,6 +858,8 @@ impl Ipv6PmtuEntry {
 pub struct Ipv6PmtuCache {
     /// PMTU entries keyed by destination IPv6 address
     entries: BTreeMap<Ipv6Address, Ipv6PmtuEntry>,
+    /// O(log N) LRU timestamp tracker for fast eviction DOS protection
+    lru: BTreeSet<(u64, Ipv6Address)>,
     /// Maximum number of entries
     max_entries: usize,
     /// Statistics
@@ -888,6 +887,7 @@ impl Ipv6PmtuCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
             entries: BTreeMap::new(),
+            lru: BTreeSet::new(),
             max_entries,
             stats: Ipv6PmtuStats::default(),
         }
@@ -916,16 +916,21 @@ impl Ipv6PmtuCache {
 
         if let Some(entry) = self.entries.get_mut(&dst) {
             if clamped_mtu < entry.pmtu {
+                self.lru.remove(&(entry.updated_at, dst));
+
                 entry.pmtu = clamped_mtu;
                 entry.updated_at = current_time;
                 entry.next_probe = current_time + Ipv6PmtuEntry::TIMEOUT_MS;
                 self.stats.reductions += 1;
+
+                self.lru.insert((current_time, dst));
             }
         } else {
             if self.entries.len() >= self.max_entries {
                 self.evict_oldest();
             }
             self.entries.insert(dst, Ipv6PmtuEntry::new(clamped_mtu, current_time));
+            self.lru.insert((current_time, dst));
             self.stats.discoveries += 1;
         }
     }
@@ -944,25 +949,26 @@ impl Ipv6PmtuCache {
 
     /// Evict the oldest entry
     fn evict_oldest(&mut self) {
-        let oldest = self
-            .entries
-            .iter()
-            .min_by_key(|(_, e)| e.updated_at)
-            .map(|(k, _)| *k);
-        if let Some(key) = oldest {
-            self.entries.remove(&key);
+        if let Some((_oldest_time, oldest_key)) = self.lru.pop_first() {
+            self.entries.remove(&oldest_key);
         }
     }
 
     /// Evict expired entries
     pub fn evict_expired(&mut self, current_time: u64) {
-        let expired: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|(_, e)| e.is_expired(current_time))
-            .map(|(k, _)| *k)
-            .collect();
-        for key in expired {
+        // Collect expired entries explicitly
+        let mut expired = Vec::new();
+        for (time, key) in self.lru.iter() {
+            if current_time.saturating_sub(*time) > Ipv6PmtuEntry::TIMEOUT_MS {
+                expired.push((*time, *key));
+            } else {
+                // Since lru is sorted by time, once we hit an unexpired one we can stop
+                break;
+            }
+        }
+
+        for (time, key) in expired {
+            self.lru.remove(&(time, key));
             self.entries.remove(&key);
         }
     }

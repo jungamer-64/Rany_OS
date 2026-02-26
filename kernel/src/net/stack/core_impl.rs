@@ -5,7 +5,6 @@ use super::NetIfId;
 mod global_instance;
 pub use global_instance::*;
 mod igmp_multicast;
-pub use igmp_multicast::*;
 impl NetworkStack {
     /// Create a new network stack with configuration
     ///
@@ -539,7 +538,7 @@ impl NetworkStack {
         };
 
         let src = ipv6_config.link_local;
-        let config = self.config;
+        let _config = self.config;
 
         // Build ICMPv6 Echo Reply message (with checksum)
         let icmpv6_msg = Icmpv6EchoBuilder::build_echo_reply(
@@ -937,7 +936,7 @@ impl NetworkStack {
     }
     
     /// Send an IGMP Membership Report
-    pub(super) fn send_igmp_report(&mut self, group_addr: Ipv4Address, current_time: u64) {
+    pub(super) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
         

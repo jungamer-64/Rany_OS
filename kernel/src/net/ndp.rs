@@ -11,16 +11,13 @@
 //! - Router Solicitation (sending only)
 //! - NDP option parsing (Source/Target Link-Layer Address, Prefix Info, MTU)
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::icmpv6::{Icmpv6Type, ICMPV6_HEADER_SIZE};
+use super::icmpv6::Icmpv6Type;
 use super::ipv4::{IpProtocol, data_checksum};
 use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 
@@ -30,7 +27,6 @@ use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 
 /// Minimum Neighbor Solicitation size: ICMPv6 header (4) + reserved (4) + target (16) = 24
 mod processor_impl;
-pub use processor_impl::*;
 pub const NS_MIN_SIZE: usize = 24;
 
 /// Minimum Neighbor Advertisement size: same as NS

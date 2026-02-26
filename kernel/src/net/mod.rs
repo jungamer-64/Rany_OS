@@ -3,9 +3,6 @@
 // 設計書 6.2: ネットワークスタック：真のゼロコピー
 // ============================================================================
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use alloc::format;
 
@@ -167,7 +164,7 @@ pub use icmp::{
 // Re-export UDP
 #[allow(unused_imports)]
 pub use udp::{
-    UdpAddr, UdpDatagram, UdpHeader, UdpPacket, UdpPacketMut, UdpProcessor, UdpResult, UdpSocket,
+    UdpAddr, UdpHeader, UdpPacket, UdpPacketMut, UdpProcessor, UdpResult, UdpSocket,
     UdpSocketSnapshot, UdpSocketTable,
 };
 
@@ -440,7 +437,7 @@ pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
                 mac: *cfg.mac.as_bytes(),
             }
         }),
-        Err(_) => {
+        Err(_poison) => {
             log::error!("[NET] Stack lock poisoned (get_network_config)");
             None
         }
@@ -449,7 +446,6 @@ pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
 
 /// Get network statistics
 pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
-    // Try to get real stats from NetworkStack
     // Try to get real stats from NetworkStack
     match stack::stack().lock() {
         Ok(guard) => {
@@ -465,8 +461,9 @@ pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
                 });
             }
         }
-        Err(_) => {
-            log::error!("[NET] Stack lock poisoned (get_network_stats) - using fallback stats");
+        Err(_poison) => {
+            log::error!("[NET] Stack lock poisoned (get_network_stats)");
+            return None;
         }
     }
 
@@ -587,39 +584,65 @@ pub fn dhcp_discover() -> Option<DhcpOfferInfo> {
 /// 外部API: 単純な DHCPREQUEST を送信
 /// サーバーアドレスと要求する IP アドレスを指定する。
 pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
-    // build minimal DHCPREQUEST packet
+    use crate::net::dhcp::{DhcpHeader, DhcpOperation, DhcpOption, DhcpMessageType};
+
+    // building in-place via the header struct reduces magic number errors
     let mut buf = [0u8; crate::net::dhcp::DHCP_MAX_MESSAGE_SIZE];
     let xid = tcb_table().get_current_tick() as u32 ^ 0xDEADBEEF;
-    // header
-    buf[0..DhcpHeader::SIZE].fill(0);
-    buf[0] = DhcpOperation::Request as u8;
-    buf[1] = 1; // Ethernet
-    buf[2] = 6; // MAC len
-    buf[3] = 0;
-    buf[4..8].copy_from_slice(&xid.to_be_bytes());
-    buf[8..10].copy_from_slice(&0u16.to_be_bytes()); // secs
-    buf[10..12].copy_from_slice(&0x8000u16.to_be_bytes()); // flags: broadcast
-    // chaddr from current config
+
+    // safely write header fields
+    let mut header_struct = DhcpHeader {
+        op: DhcpOperation::Request as u8,
+        htype: 1, // Ethernet
+        hlen: 6,  // MAC length
+        hops: 0,
+        xid: xid.to_be_bytes(),
+        secs: 0u16.to_be_bytes(),
+        flags: 0x8000u16.to_be_bytes(), // broadcast bit
+        ciaddr: [0; 4],
+        yiaddr: [0; 4],
+        siaddr: [0; 4],
+        giaddr: [0; 4],
+        chaddr: [0; 16],
+        sname: [0; 64],
+        file: [0; 128],
+    };
+
+    // insert client MAC address if configured
     if let Some(cfg) = get_network_config() {
-        buf[28..34].copy_from_slice(&cfg.mac);
+        header_struct.chaddr[..6].copy_from_slice(&cfg.mac);
     }
-    // options
+
+    // perform unaligned write safely
+    unsafe {
+        core::ptr::write_unaligned(buf.as_mut_ptr() as *mut DhcpHeader, header_struct);
+    }
+
+    // append options sequentially
     let mut offset = DhcpHeader::SIZE;
-    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
-    offset += 4;
-    buf[offset] = crate::net::dhcp::DhcpOption::MessageType as u8;
+    buf[offset..offset + DHCP_MAGIC_COOKIE.len()].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += DHCP_MAGIC_COOKIE.len();
+
+    // message type
+    buf[offset] = DhcpOption::MessageType as u8;
     buf[offset + 1] = 1;
     buf[offset + 2] = DhcpMessageType::Request as u8;
     offset += 3;
-    buf[offset] = crate::net::dhcp::DhcpOption::RequestedIp as u8;
+
+    // requested IP
+    buf[offset] = DhcpOption::RequestedIp as u8;
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(&offered_ip);
     offset += 6;
-    buf[offset] = crate::net::dhcp::DhcpOption::ServerIdentifier as u8;
+
+    // server identifier
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
     buf[offset + 1] = 4;
     buf[offset + 2..offset + 6].copy_from_slice(&server_ip);
     offset += 6;
-    buf[offset] = crate::net::dhcp::DhcpOption::End as u8;
+
+    // end option
+    buf[offset] = DhcpOption::End as u8;
     offset += 1;
 
     let dst = if server_ip == [0, 0, 0, 0] {
@@ -660,26 +683,26 @@ pub fn dhcp_last_released() -> Option<[u8; 4]> {
     None
 }
 
-fn dhcp_v4_state_name(state: DhcpState) -> String {
-    String::from(match state {
+fn dhcp_v4_state_name(state: DhcpState) -> &'static str {
+    match state {
         DhcpState::Init => "Init",
         DhcpState::Selecting => "Selecting",
         DhcpState::Requesting => "Requesting",
         DhcpState::Bound => "Bound",
         DhcpState::Renewing => "Renewing",
         DhcpState::Rebinding => "Rebinding",
-    })
+    }
 }
 
-fn dhcp_v6_state_name(state: dhcp::DhcpV6State) -> String {
-    String::from(match state {
+fn dhcp_v6_state_name(state: dhcp::DhcpV6State) -> &'static str {
+    match state {
         dhcp::DhcpV6State::Init => "Init",
         dhcp::DhcpV6State::SolicitSent => "SolicitSent",
         dhcp::DhcpV6State::Requesting => "Requesting",
         dhcp::DhcpV6State::Bound => "Bound",
         dhcp::DhcpV6State::Renewing => "Renewing",
         dhcp::DhcpV6State::Rebinding => "Rebinding",
-    })
+    }
 }
 
 fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u64) -> u32 {
@@ -740,7 +763,7 @@ pub fn dhcp_state() -> DhcpRuntimeState {
     match dhcp::DHCP_CLIENT.lock() {
         Ok(guard) => {
             if let Some(ref client) = *guard {
-                out.v4_state = dhcp_v4_state_name(client.state());
+                out.v4_state = String::from(dhcp_v4_state_name(client.state()));
                 if let Some(lease) = client.lease() {
                     out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
                     out.v4_lease_remaining =
@@ -756,7 +779,7 @@ pub fn dhcp_state() -> DhcpRuntimeState {
     match dhcp::DHCPV6_CLIENT.lock() {
         Ok(guard6) => {
             if let Some(ref client6) = *guard6 {
-                out.v6_state = dhcp_v6_state_name(client6.state());
+                out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
                 if let Some(lease6) = client6.lease() {
                     out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
                     out.v6_preferred_remaining = Some(lease_remaining_secs(

@@ -13,9 +13,6 @@
 //! - DNSワイヤーフォーマットのエンコード/デコード
 //! - ラベル圧縮対応の名前解析
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -218,12 +215,12 @@ impl MdnsService {
         }
 
         // Parse DNS header
-        let id = u16::from_be_bytes([data[0], data[1]]);
+        let _id = u16::from_be_bytes([data[0], data[1]]);
         let flags = u16::from_be_bytes([data[2], data[3]]);
         let qdcount = u16::from_be_bytes([data[4], data[5]]);
         let ancount = u16::from_be_bytes([data[6], data[7]]);
-        let nscount = u16::from_be_bytes([data[8], data[9]]);
-        let arcount = u16::from_be_bytes([data[10], data[11]]);
+        let _nscount = u16::from_be_bytes([data[8], data[9]]);
+        let _arcount = u16::from_be_bytes([data[10], data[11]]);
 
         // QR bit: bit 15 of flags
         let is_response = (flags & 0x8000) != 0;
@@ -240,7 +237,7 @@ impl MdnsService {
         &mut self,
         data: &[u8],
         qdcount: u16,
-        src_ip: Ipv4Address,
+        _src_ip: Ipv4Address,
         current_time: u64,
     ) -> MdnsResult {
         let mut offset = DNS_HEADER_SIZE;
@@ -320,7 +317,7 @@ impl MdnsService {
         data: &[u8],
         ancount: u16,
         qdcount: u16,
-        src_ip: Ipv4Address,
+        _src_ip: Ipv4Address,
         current_time: u64,
     ) -> MdnsResult {
         let mut offset = match skip_dns_questions(data, DNS_HEADER_SIZE, qdcount) {

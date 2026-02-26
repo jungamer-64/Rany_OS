@@ -2,7 +2,6 @@
 // tls/connection.rs - TLS Connection State Machine
 // ============================================================================
 
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -13,7 +12,6 @@ use crate::net::ecdh;
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod incoming;
-pub use incoming::*;
 enum TranscriptHash {
     Sha256(crate::loader::sha256::Sha256),
     Sha384(crate::loader::sha384::Sha384),

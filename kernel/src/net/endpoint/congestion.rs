@@ -14,7 +14,6 @@ use core::cmp::{max, min};
 mod default_and_tests;
 pub use default_and_tests::*;
 mod variant_impl;
-pub use variant_impl::*;
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod variant_tests {

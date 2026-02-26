@@ -63,7 +63,7 @@ pub use manager::{
 // Re-exports: socket
 pub use socket::{
     OwnedSocket, Socket, create_tcp_server, create_tcp_socket, create_tcp_socket_with_algorithm,
-    create_udp_socket, open_tcp_connection, create_raw_socket,
+    create_udp_socket, create_raw_socket,
 };
 
 // Re-exports: futures
@@ -76,16 +76,8 @@ pub use handler::{EventHandleResult, NetworkEventHandler, init_network_event_han
 pub use tcp_rx::{network_event_task, process_tcp_segment};
 
 // Re-exports: congestion
-pub use congestion::{
-    BbrController, BbrState, CongestionAlgorithm, CongestionController,
-    CongestionControllerVariant, CongestionState, CubicController, DEFAULT_MSS, INITIAL_WINDOW,
-    MIN_CWND,
-};
+pub use congestion::CongestionAlgorithm;
 
 // Re-exports: window_scale
-pub use window_scale::{
-    TcpOptionBuilder, TcpOptionParser, WindowScaleOption, TimestampsOption, SackOption,
-    tcp_option_kind, MAX_WINDOW_SCALE, DEFAULT_WINDOW_SCALE,
-};
 
 // Re-exports: flow_control

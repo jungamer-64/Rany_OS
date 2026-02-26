@@ -14,9 +14,6 @@
 //! - Parameter Problem
 //! - NDP messages (delegated to ndp.rs)
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -318,7 +315,7 @@ impl Icmpv6Processor {
     }
 
     /// Handle Echo Request → produce Echo Reply
-    fn handle_echo_request(&self, data: &[u8], src: Ipv6Address, dst: Ipv6Address) -> Icmpv6Result {
+    fn handle_echo_request(&self, data: &[u8], src: Ipv6Address, _dst: Ipv6Address) -> Icmpv6Result {
         if !self.echo_enabled {
             return Icmpv6Result::Dropped;
         }

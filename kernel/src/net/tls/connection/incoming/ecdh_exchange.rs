@@ -1,7 +1,6 @@
 use super::*;
 
 mod aes_gcm;
-pub use self::aes_gcm::*;
 impl TlsConnection {
 
     /// NamedGroup値をEcdhGroupに変換する

@@ -2,7 +2,6 @@ use super::*;
 
 
 mod state_handlers;
-pub use state_handlers::*;
 impl TcpProcessor {
     /// Create a new TCP processor
     pub fn new() -> Self {
@@ -161,7 +160,7 @@ impl TcpProcessor {
         dst_ip: crate::net::ipv6::Ipv6Address,
         current_time: u64,
     ) -> TcpProcessResult {
-        use crate::net::ipv6::Ipv6Address as V6;
+        
 
         if data.len() < TcpHeader::MIN_HEADER_LEN {
             return TcpProcessResult::None;
@@ -369,7 +368,7 @@ impl TcpProcessor {
         packet: PacketRef,
         current_time: u64,
     ) -> TcpProcessResult {
-        use crate::net::ipv6::Ipv6Address as V6;
+        
 
         if data.len() < TcpHeader::MIN_HEADER_LEN {
             return TcpProcessResult::None;

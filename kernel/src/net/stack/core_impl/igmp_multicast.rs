@@ -1,11 +1,10 @@
 use super::*;
 
 mod tcp_bind;
-pub use tcp_bind::*;
 impl NetworkStack {
     
     /// Send an IGMP Leave Group message
-    pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, current_time: u64) {
+    pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, _current_time: u64) {
         let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
         
@@ -265,17 +264,24 @@ impl NetworkStack {
 
         // 既存のUDPソケットテーブルにポートベースで配送
         // src IPはIPv4マッピング不可のため0.0.0.0を使用（ソケット側で区別可能）
-        let datagram = crate::net::udp::UdpDatagram {
-            src: crate::net::udp::UdpAddr::new(
-                Ipv4Address::new([0, 0, 0, 0]),
-                src_port,
-            ),
-            dst_port,
-            data: payload.to_vec(),
-        };
-
-        if self.udp.sockets().deliver(datagram) {
-            self.stats.record_rx(data.len());
+        let src_addr = crate::net::udp::UdpAddr::new(
+            Ipv4Address::new([0, 0, 0, 0]),
+            src_port,
+        );
+        
+        if let Some(mut pkt_ref) = crate::net::alloc_packet() {
+            let buf = pkt_ref.data_mut();
+            if payload.len() <= buf.len() {
+                buf[..payload.len()].copy_from_slice(payload);
+                pkt_ref.set_len(payload.len());
+                if self.udp.sockets().deliver(src_addr, dst_port, pkt_ref) {
+                    self.stats.record_rx(data.len());
+                } else {
+                    self.stats.record_dropped();
+                }
+            } else {
+                self.stats.record_dropped();
+            }
         } else {
             self.stats.record_dropped();
         }
@@ -313,8 +319,8 @@ impl NetworkStack {
             return;
         }
 
-        let src_port = u16::from_be_bytes([data[0], data[1]]);
-        let dst_port = u16::from_be_bytes([data[2], data[3]]);
+        let _src_port = u16::from_be_bytes([data[0], data[1]]);
+        let _dst_port = u16::from_be_bytes([data[2], data[3]]);
 
         // If addresses are IPv4-mapped (::ffff:a.b.c.d) we can route to the existing
         // IPv4 TCP processor (partial dual-stack / processor-level support).

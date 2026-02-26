@@ -1,5 +1,4 @@
 use super::*;
-use crate::net::NetIfId;
 
 
 /// Global network stack instance
@@ -168,7 +167,7 @@ pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) ->
 }
 
 /// TCP send helper that specifies an output interface (currently ignored)
-pub fn send_tcp_on(if_id: super::NetIfId, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+pub fn send_tcp_on(_if_id: super::NetIfId, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {

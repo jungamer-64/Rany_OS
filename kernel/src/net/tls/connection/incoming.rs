@@ -1,7 +1,6 @@
 use super::*;
 
 mod ecdh_exchange;
-pub use ecdh_exchange::*;
 impl TlsConnection {
 
     /// データを受信して処理
@@ -383,7 +382,7 @@ impl TlsConnection {
     pub(super) fn process_hello_retry_request(
         &mut self,
         cipher: CipherSuite,
-        server_key_share: &Option<(u16, Vec<u8>)>,
+        _server_key_share: &Option<(u16, Vec<u8>)>,
     ) -> TlsResult<()> {
         // RFC 8446 Section 4.4.1: synthetic message_hash に置き換え
         // MessageHash = Handshake(254, Hash(messages_so_far))

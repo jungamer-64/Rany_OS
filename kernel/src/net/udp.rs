@@ -6,9 +6,6 @@
 //! This module implements zero-copy UDP packet processing
 //! for the ExoRust networking stack.
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use super::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use crate::sync::PoisonLock;
@@ -27,7 +24,6 @@ extern crate alloc;
 mod types;
 pub use types::*;
 mod socket_table_impl;
-pub use socket_table_impl::*;
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct UdpHeader {
@@ -256,27 +252,14 @@ impl UdpAddr {
     }
 }
 
-/// Received UDP datagram
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UdpDatagram {
-    /// Source address
-    pub src: UdpAddr,
-    /// Destination port
-    pub dst_port: u16,
-    /// Payload data
-    pub data: Vec<u8>,
-}
-
 /// UDP socket state
 pub(crate) struct UdpSocketInner {
     /// Local port
     local_port: u16,
-    /// Receive queue (copy-based datagrams)
-    rx_queue: VecDeque<UdpDatagram>,
     /// Receive queue (zero-copy PacketRef)
     rx_packet_queue: VecDeque<(UdpAddr, PacketRef)>,
-    /// Waker for async receive
-    waker: Option<Waker>,
+    /// Wakers for async receive
+    wakers: Vec<Waker>,
     /// Is socket closed
     closed: bool,
     /// Optional associated grant token id used to authorize this binding
@@ -305,9 +288,8 @@ impl UdpSocket {
         UdpSocket {
             inner: Arc::new(PoisonLock::new(UdpSocketInner {
                 local_port,
-                rx_queue: VecDeque::new(),
                 rx_packet_queue: VecDeque::new(),
-                waker: None,
+                wakers: Vec::new(),
                 closed: false,
                 token,
             })),
@@ -325,35 +307,28 @@ impl UdpSocket {
         }
     }
 
-    /// Receive a datagram (async)
+    /// Receive a datagram (async, zero-copy)
     pub fn recv(&self) -> UdpRecvFuture {
         UdpRecvFuture {
             socket: self.inner.clone(),
         }
     }
 
-    /// Receive a datagram as PacketRef (zero-copy)
-    pub fn recv_packet(&self) -> UdpRecvPacketFuture {
-        UdpRecvPacketFuture {
-            socket: self.inner.clone(),
-        }
-    }
-
-    /// Deliver a datagram to this socket (called by the network stack)
-    pub fn deliver(&self, datagram: UdpDatagram) {
+    /// Deliver a packet to this socket (called by the network stack)
+    pub fn deliver(&self, src: UdpAddr, packet: PacketRef) {
         match self.inner.lock() {
             Ok(mut inner) => {
                 if inner.closed {
                     return;
                 }
 
-                inner.rx_queue.push_back(datagram);
+                inner.rx_packet_queue.push_back((src, packet));
 
-                if let Some(waker) = inner.waker.take() {
+                for waker in inner.wakers.drain(..) {
                     waker.wake();
                 }
             }
-            Err(_) => log::error!("[NET] UDP Socket poisoned during deliver - dropping datagram"),
+            Err(_) => log::error!("[NET] UDP Socket poisoned during deliver - dropping packet"),
         }
     }
 
@@ -362,9 +337,9 @@ impl UdpSocket {
         match self.inner.lock() {
             Ok(mut inner) => {
                 inner.closed = true;
-                inner.rx_queue.clear();
+                inner.rx_packet_queue.clear();
 
-                if let Some(waker) = inner.waker.take() {
+                for waker in inner.wakers.drain(..) {
                     waker.wake();
                 }
             }
@@ -386,7 +361,7 @@ impl UdpSocket {
     /// Get receive queue length
     pub fn rx_queue_len(&self) -> usize {
         match self.inner.lock() {
-            Ok(g) => g.rx_queue.len(),
+            Ok(g) => g.rx_packet_queue.len(),
             Err(_) => {
                 log::error!("[NET] UDP Socket poisoned (rx_queue_len)");
                 0
@@ -427,36 +402,6 @@ pub struct UdpRecvFuture {
 }
 
 impl Future for UdpRecvFuture {
-    type Output = Option<UdpDatagram>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.socket.lock() {
-            Ok(mut inner) => {
-                if inner.closed {
-                    return Poll::Ready(None);
-                }
-
-                if let Some(datagram) = inner.rx_queue.pop_front() {
-                    Poll::Ready(Some(datagram))
-                } else {
-                    inner.waker = Some(cx.waker().clone());
-                    Poll::Pending
-                }
-            }
-            Err(_) => {
-                log::error!("[NET] UDP Socket poisoned in recv future - returning closed");
-                Poll::Ready(None)
-            }
-        }
-    }
-}
-
-/// Future for receiving UDP datagrams as PacketRef
-pub struct UdpRecvPacketFuture {
-    socket: Arc<PoisonLock<UdpSocketInner>>,
-}
-
-impl Future for UdpRecvPacketFuture {
     type Output = Option<(UdpAddr, PacketRef)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -469,12 +414,12 @@ impl Future for UdpRecvPacketFuture {
                 if let Some((addr, packet)) = inner.rx_packet_queue.pop_front() {
                     Poll::Ready(Some((addr, packet)))
                 } else {
-                    inner.waker = Some(cx.waker().clone());
+                    inner.wakers.push(cx.waker().clone());
                     Poll::Pending
                 }
             }
             Err(_) => {
-                log::error!("[NET] UDP Socket poisoned in recv_packet future - returning closed");
+                log::error!("[NET] UDP Socket poisoned in recv future - returning closed");
                 Poll::Ready(None)
             }
         }

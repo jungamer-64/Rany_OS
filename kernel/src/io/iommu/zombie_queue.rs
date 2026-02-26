@@ -794,7 +794,7 @@ pub fn qemu_smoke_failed_cleanup() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 fn qemu_alloc_queue_for_smoke() -> Option<alloc::boxed::Box<ZombieQueue>> {
-    let layout = Layout::new::<ZombieQueue>();
+    let layout = core::alloc::Layout::new::<ZombieQueue>();
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) } as *mut ZombieQueue;
     if ptr.is_null() {
         return None;
@@ -804,4 +804,3 @@ fn qemu_alloc_queue_for_smoke() -> Option<alloc::boxed::Box<ZombieQueue>> {
 
 #[cfg(test)]
 mod tests;
-

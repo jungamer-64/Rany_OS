@@ -7,9 +7,6 @@
 //! - Window Scale Option (WSopt)
 //! - 最大1GBのウィンドウサイズをサポート
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 /// 最大ウィンドウスケール値 (2^14 = 16384 まで)
 pub const MAX_WINDOW_SCALE: u8 = 14;
@@ -152,7 +149,7 @@ impl TimestampsOption {
     }
 
     /// 受信したタイムスタンプを処理
-    pub fn process_received(&mut self, ts_val: u32, ts_ecr: u32) {
+    pub fn process_received(&mut self, ts_val: u32, _ts_ecr: u32) {
         if self.enabled {
             self.ts_ecr = ts_val; // 次の送信時にエコーする
         }

@@ -13,9 +13,7 @@
 //! - セッション再開 (TLS 1.2 abbreviated + TLS 1.3 PSK)
 //! - 0-RTT Early Data
 
-#![allow(dead_code)]
 
-use alloc::vec::Vec;
 
 // ── Sub-modules ──────────────────────────────────────────────────────────────
 
@@ -33,52 +31,11 @@ pub mod qemu_tests;
 // ── Re-exports (外部インターフェース維持) ──────────────────────────────────────
 
 pub use types::*;
-pub use error::{TlsError, TlsResult};
-pub use connection::TlsConnection;
 
 // Crypto re-exports (public API)
-pub use crypto::{
-    // HMAC
-    hmac_sha256, hmac_sha384, SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE,
-    // HKDF + TLS 1.3 Key Schedule
-    hkdf_extract, hkdf_expand, hkdf_expand_label,
-    tls13_derive_secret, tls13_early_secret, tls13_handshake_secret,
-    tls13_master_secret, tls13_derive_traffic_keys, tls13_finished_key,
-    tls13_verify_data,
-    // SHA-384 variants
-    hkdf_extract_sha384, hkdf_expand_sha384, hkdf_expand_label_sha384,
-    tls13_derive_secret_sha384, tls13_early_secret_sha384, tls13_handshake_secret_sha384,
-    tls13_master_secret_sha384, tls13_derive_traffic_keys_sha384,
-    tls13_finished_key_sha384, tls13_verify_data_sha384,
-    // TLS 1.2 PRF
-    tls12_prf, derive_master_secret, derive_key_block,
-    derive_key_block_sha384, derive_master_secret_tls10,
-    derive_master_secret_sha384, p_sha384, tls12_prf_sha384,
-    // ChaCha20-Poly1305
-    chacha20_encrypt, chacha20_poly1305_encrypt, chacha20_poly1305_decrypt,
-    poly1305_mac,
-    // Legacy (MD5, SHA-1, TLS 1.0)
-    Md5, md5_compute, Sha1, sha1_compute,
-    hmac_md5, hmac_sha1, tls10_prf,
-};
 
 // Crypto re-exports (crate-internal)
-pub(crate) use crypto::{
-    // AES Core
-    aes_key_expansion, gf_mul, aes_expand_key_schedule,
-    aes_encrypt_block, aes_encrypt_block_with_schedule,
-    aes_ctr_with_schedule, aes_ctr,
-    // AES-GCM
-    gf128_mul, aes_gcm_encrypt, aes_gcm_decrypt,
-    // AES-CBC
-    aes_cbc_encrypt, aes_cbc_decrypt, tls_add_padding, tls_verify_padding,
-    // ChaCha20 internals
-    chacha20_block,
-    // Legacy internals
-    compute_tls_mac,
-    // Random
-    generate_random,
-};
+pub(crate) use crypto::generate_random;
 
 #[cfg(feature = "qemu-test-export")]
 pub use crypto::{qemu_test_set_random_override_seed, qemu_test_clear_random_override};

@@ -11,10 +11,8 @@
 //! - 受信側: HWが検証済みならスキップ (RX offload)
 //! - 送信側: HWに委譲可能ならプレースホルダのみ書き込み (TX offload)
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
 // Offload Capability Flags

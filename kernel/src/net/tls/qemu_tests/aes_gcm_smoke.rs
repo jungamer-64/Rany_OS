@@ -17,6 +17,81 @@ pub fn wave8_tls_aes_gcm_empty_plaintext_smoke() -> bool {
     }
 }
 
+pub fn wave8_tls_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
+    let key = [0x5au8; 16];
+    let nonce = [0x33u8; 12];
+    let aad = b"in-place aad";
+    let plaintext = b"in-place aes-gcm payload";
+
+    let Some(ctx) = crate::net::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
+        return false;
+    };
+
+    let mut ciphertext = alloc::vec![0u8; plaintext.len()];
+    let mut tag = [0u8; 16];
+    if ctx
+        .encrypt_in_place(nonce.as_slice(), aad, plaintext, &mut ciphertext, &mut tag)
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut decrypted = alloc::vec![0u8; plaintext.len()];
+    if ctx
+        .decrypt_in_place(nonce.as_slice(), aad, &ciphertext, &mut decrypted, &tag)
+        .is_err()
+    {
+        return false;
+    }
+
+    decrypted.as_slice() == plaintext
+}
+
+pub fn wave8_tls_aes_gcm_key_invalid_nonce_len_smoke() -> bool {
+    let key = [0x11u8; 16];
+    let Some(ctx) = crate::net::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
+        return false;
+    };
+
+    let bad_nonce = [0x22u8; 11];
+    let mut ciphertext = [0u8; 4];
+    let mut tag = [0u8; 16];
+    let enc_err = ctx.encrypt_in_place(&bad_nonce, b"", b"test", &mut ciphertext, &mut tag);
+
+    let mut plaintext = [0u8; 4];
+    let dec_err = ctx.decrypt_in_place(&bad_nonce, b"", &ciphertext, &mut plaintext, &tag);
+
+    enc_err.is_err() && dec_err.is_err()
+}
+
+pub fn wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> bool {
+    let key = [0x77u8; 16];
+    let nonce = [0x88u8; 12];
+    let aad = b"aad";
+    let plaintext = b"secret";
+
+    let Some(ctx) = crate::net::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
+        return false;
+    };
+
+    let mut ciphertext = alloc::vec![0u8; plaintext.len()];
+    let mut tag = [0u8; 16];
+    if ctx
+        .encrypt_in_place(nonce.as_slice(), aad, plaintext, &mut ciphertext, &mut tag)
+        .is_err()
+    {
+        return false;
+    }
+
+    tag[0] ^= 0xff;
+    let mut out = [0xa5u8; 6];
+    let before = out;
+
+    ctx.decrypt_in_place(nonce.as_slice(), aad, &ciphertext, &mut out, &tag)
+        .is_err()
+        && out == before
+}
+
 pub fn wave8_tls_aes_key_expansion_smoke() -> bool {
     let key: [u8; 16] = [
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,

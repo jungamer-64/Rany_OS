@@ -5,9 +5,6 @@
 //!
 //! SocketFd, SocketType, SocketState, SocketError, SocketAddr, AcceptedConnection等
 
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 use core::sync::atomic::AtomicU32;
 

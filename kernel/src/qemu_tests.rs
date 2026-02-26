@@ -705,7 +705,7 @@ pub fn net_tls_wave8_tls13_finished_key_and_verify_data_smoke() -> bool {
     crate::net::tls::qemu_tests::wave8_tls_tls13_finished_key_and_verify_data_smoke()
 }
 
-// BEGIN NET core required wrappers (90 cases)
+// BEGIN NET core required wrappers (99 cases)
 
 pub fn net_core_adaptive_polling_polling_mode_default_smoke() -> bool {
     crate::net::qemu_tests::adaptive_polling_polling_mode_default_smoke()
@@ -725,6 +725,14 @@ pub fn net_core_mempool_mempool_poisoned_alloc_fails_smoke() -> bool {
 
 pub fn net_core_mempool_mempool_stats_smoke() -> bool {
     crate::net::qemu_tests::mempool_mempool_stats_smoke()
+}
+
+pub fn net_core_mempool_packet_pool_preallocates_fixed_size_buffers_smoke() -> bool {
+    crate::net::qemu_tests::mempool_packet_pool_preallocates_fixed_size_buffers_smoke()
+}
+
+pub fn net_core_mempool_packet_pool_free_restores_size_after_resize_smoke() -> bool {
+    crate::net::qemu_tests::mempool_packet_pool_free_restores_size_after_resize_smoke()
 }
 
 pub fn net_core_zero_copy_pool_id_smoke() -> bool {
@@ -781,6 +789,14 @@ pub fn net_core_udp_udp_recv_future_poisoned_returns_closed_smoke() -> bool {
 
 pub fn net_core_udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
     crate::net::qemu_tests::udp_udp_processor_poisoned_bind_and_process_smoke()
+}
+
+pub fn net_core_udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
+    crate::net::qemu_tests::udp_udp_socket_multiple_waiters_woken_on_deliver_smoke()
+}
+
+pub fn net_core_udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
+    crate::net::qemu_tests::udp_udp_processor_process_enqueues_zero_copy_packet_smoke()
 }
 
 pub fn net_core_ipv4_ipv4_address_smoke() -> bool {
@@ -883,6 +899,14 @@ pub fn net_core_stack_redirect_cache_eviction_smoke() -> bool {
     crate::net::qemu_tests::stack_redirect_cache_eviction_smoke()
 }
 
+pub fn net_core_stack_redirect_cache_reuses_expired_slot_before_oldest_smoke() -> bool {
+    crate::net::qemu_tests::stack_redirect_cache_reuses_expired_slot_before_oldest_smoke()
+}
+
+pub fn net_core_stack_ndp_pending_queue_drain_for_preserves_order_smoke() -> bool {
+    crate::net::qemu_tests::stack_ndp_pending_queue_drain_for_preserves_order_smoke()
+}
+
 pub fn net_core_ipv6_unspecified_smoke() -> bool {
     crate::net::qemu_tests::ipv6_unspecified_smoke()
 }
@@ -969,6 +993,18 @@ pub fn net_core_ipv6_display_full_smoke() -> bool {
 
 pub fn net_core_ipv6_from_u64_pair_smoke() -> bool {
     crate::net::qemu_tests::ipv6_from_u64_pair_smoke()
+}
+
+pub fn net_core_ipv6_pmtu_cache_evict_oldest_uses_lru_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_pmtu_cache_evict_oldest_uses_lru_smoke()
+}
+
+pub fn net_core_ipv6_pmtu_cache_update_moves_lru_timestamp_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_pmtu_cache_update_moves_lru_timestamp_smoke()
+}
+
+pub fn net_core_ipv6_pmtu_cache_evict_expired_cleans_entries_and_lru_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_pmtu_cache_evict_expired_cleans_entries_and_lru_smoke()
 }
 
 pub fn net_core_ndp_neighbor_cache_basic_smoke() -> bool {
@@ -1067,7 +1103,7 @@ pub fn net_core_tcp_connect_timeout_expires_smoke() -> bool {
     crate::net::qemu_tests::tcp_connect_timeout_expires_smoke()
 }
 
-// END NET core required wrappers (90 cases)
+// END NET core required wrappers (99 cases)
 
 // BEGIN re-added local QEMU wrappers after origin/master rebase
 

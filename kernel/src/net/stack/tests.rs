@@ -387,3 +387,58 @@ pub fn test_redirect_cache_eviction() {
     // Oldest entry (10.0.0.0) should be evicted
     assert!(cache.get(Ipv4Address::new([10, 0, 0, 0])).is_none());
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_reuses_expired_slot_before_oldest() {
+    let mut cache = RedirectCache::new();
+    let gateway = Ipv4Address::new([192, 168, 1, 2]);
+
+    for i in 0..REDIRECT_CACHE_SIZE {
+        cache.set_time(1000 + i as u64);
+        cache.insert(Ipv4Address::new([10, 0, 0, i as u8]), gateway);
+    }
+
+    // Refresh one entry so it stays live while the others age out.
+    let refreshed = Ipv4Address::new([10, 0, 0, 0]);
+    cache.set_time(1000 + REDIRECT_CACHE_TTL + 5);
+    cache.insert(refreshed, gateway);
+
+    let replaced_expired = Ipv4Address::new([10, 0, 0, 1]);
+    let new_dst = Ipv4Address::new([10, 0, 1, 99]);
+    cache.set_time(1000 + REDIRECT_CACHE_TTL + 10);
+    cache.insert(new_dst, gateway);
+
+    assert_eq!(cache.get(new_dst), Some(gateway));
+    assert_eq!(cache.get(refreshed), Some(gateway));
+    assert!(cache.get(replaced_expired).is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ndp_pending_queue_drain_for_preserves_order() {
+    let mut queue = NdpPendingQueue::new();
+    let src = Ipv6Address::LOOPBACK;
+    let dst_a = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let dst_b = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let dst_c = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+
+    queue.enqueue(src, dst_a, b"a1", 1);
+    queue.enqueue(src, dst_b, b"b1", 2);
+    queue.enqueue(src, dst_a, b"a2", 3);
+    queue.enqueue(src, dst_c, b"c1", 4);
+
+    let drained_a = queue.drain_for(&dst_a);
+    assert_eq!(drained_a.len(), 2);
+    assert_eq!(drained_a[0].icmpv6_data.as_slice(), b"a1");
+    assert_eq!(drained_a[1].icmpv6_data.as_slice(), b"a2");
+
+    assert_eq!(queue.packets.len(), 2);
+
+    let drained_b = queue.drain_for(&dst_b);
+    assert_eq!(drained_b.len(), 1);
+    assert_eq!(drained_b[0].icmpv6_data.as_slice(), b"b1");
+
+    let drained_c = queue.drain_for(&dst_c);
+    assert_eq!(drained_c.len(), 1);
+    assert_eq!(drained_c[0].icmpv6_data.as_slice(), b"c1");
+    assert!(queue.packets.is_empty());
+}

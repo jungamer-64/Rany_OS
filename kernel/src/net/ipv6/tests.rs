@@ -261,3 +261,62 @@ pub fn test_from_u64_pair() {
     assert!(addr.is_unicast_link_local());
     assert_eq!(addr.as_bytes()[15], 1);
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_pmtu_cache_evict_oldest_uses_lru() {
+    let mut cache = Ipv6PmtuCache::new(2);
+    let dst_a = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let dst_b = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let dst_c = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+
+    cache.update(dst_a, 1400, 10);
+    cache.update(dst_b, 1390, 20);
+    cache.update(dst_c, 1380, 30);
+
+    assert_eq!(cache.len(), 2);
+    assert!(!cache.entries.contains_key(&dst_a));
+    assert!(cache.entries.contains_key(&dst_b));
+    assert!(cache.entries.contains_key(&dst_c));
+    assert_eq!(cache.lru.len(), cache.entries.len());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_pmtu_cache_update_moves_lru_timestamp() {
+    let mut cache = Ipv6PmtuCache::new(2);
+    let dst_a = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xa]);
+    let dst_b = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xb]);
+    let dst_c = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xc]);
+
+    cache.update(dst_a, 1450, 10);
+    cache.update(dst_b, 1440, 20);
+    cache.update(dst_a, 1300, 30); // reduction refreshes LRU timestamp
+    cache.update(dst_c, 1430, 40);
+
+    assert_eq!(cache.len(), 2);
+    assert!(cache.entries.contains_key(&dst_a));
+    assert!(!cache.entries.contains_key(&dst_b));
+    assert!(cache.entries.contains_key(&dst_c));
+    assert!(cache.lru.contains(&(30, dst_a)));
+    assert!(!cache.lru.iter().any(|(_, key)| *key == dst_b));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_pmtu_cache_evict_expired_cleans_entries_and_lru() {
+    let mut cache = Ipv6PmtuCache::new(4);
+    let dst_a = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1a]);
+    let dst_b = Ipv6Address::new([0x20, 1, 0xdb, 0x8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1b]);
+
+    cache.update(dst_a, 1400, 0);
+    cache.update(dst_b, 1390, Ipv6PmtuEntry::TIMEOUT_MS);
+    cache.evict_expired(Ipv6PmtuEntry::TIMEOUT_MS + 1);
+
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.lru.len(), 1);
+    assert!(!cache.entries.contains_key(&dst_a));
+    assert!(cache.entries.contains_key(&dst_b));
+    assert_eq!(
+        cache.get(&dst_a, Ipv6PmtuEntry::TIMEOUT_MS + 1),
+        Ipv6PmtuEntry::DEFAULT_MTU
+    );
+    assert_eq!(cache.get(&dst_b, Ipv6PmtuEntry::TIMEOUT_MS + 1), 1390);
+}

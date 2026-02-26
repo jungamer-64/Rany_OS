@@ -293,7 +293,7 @@ impl NetworkStack {
     /// - `Err(IgmpError::TooManyGroups)` if maximum groups reached
     pub fn join_multicast_group(&mut self, group: Ipv4Address) -> Result<(), IgmpError> {
         self.igmp.join_group(group)?;
-        let current_time = self.current_time();
+        let _current_time = self.current_time();
         self.send_pending_igmp_reports();
         Ok(())
     }
@@ -311,7 +311,7 @@ impl NetworkStack {
     /// - `Err(IgmpError::NotMember)` if not a member of the group
     pub fn leave_multicast_group(&mut self, group: Ipv4Address) -> Result<(), IgmpError> {
         self.igmp.leave_group(group)?;
-        let current_time = self.current_time();
+        let _current_time = self.current_time();
         self.send_pending_igmp_reports();
         Ok(())
     }

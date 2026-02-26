@@ -2,13 +2,11 @@
 // src/net/mempool.rs - Zero-Copy Network Buffer Pool
 // 設計書 6.2: Mempool によるゼロコピーネットワークバッファ管理
 // ============================================================================
-#![allow(dead_code)]
 
 use crate::domain_system::DomainId;
 use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use x86_64::PhysAddr;
@@ -174,6 +172,14 @@ enum PacketRefKind {
         offset: usize,
         len: usize,
     },
+    /// Test-only borrowed packet bytes that avoid heap allocations in long QEMU suites.
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    BorrowedTest {
+        ptr: NonNull<u8>,
+        cap: usize,
+        offset: usize,
+        len: usize,
+    },
 }
 
 pub struct PacketRef {
@@ -207,6 +213,27 @@ impl PacketRef {
         }
     }
 
+    /// Construct a PacketRef borrowing caller-managed storage (no allocation).
+    ///
+    /// # Safety
+    /// Caller must ensure `ptr..ptr+cap` remains valid and uniquely mutable for
+    /// the lifetime of the returned `PacketRef` and any clones created from it.
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub unsafe fn from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> Option<Self> {
+        if cap == 0 {
+            return None;
+        }
+        let ptr = NonNull::new(ptr)?;
+        Some(Self {
+            kind: PacketRefKind::BorrowedTest {
+                ptr,
+                cap,
+                offset: 0,
+                len: 0,
+            },
+        })
+    }
+
     /// データスライスを取得
     pub fn data(&self) -> &[u8] {
         match &self.kind {
@@ -227,6 +254,14 @@ impl PacketRef {
                 unsafe {
                     crate::util::raw_ptr_as_slice(buf.ptr.as_ptr().add(*offset), end - *offset)
                 }
+            }
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { ptr, cap, offset, len } => {
+                if *offset >= *cap {
+                    return &[];
+                }
+                let end = (*offset + *len).min(*cap);
+                unsafe { crate::util::raw_ptr_as_slice(ptr.as_ptr().add(*offset), end - *offset) }
             }
         }
     }
@@ -253,6 +288,14 @@ impl PacketRef {
                     crate::util::raw_ptr_as_slice_mut(buf.ptr.as_ptr().add(*offset), end - *offset)
                 }
             }
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { ptr, cap, offset, len } => {
+                if *offset >= *cap {
+                    return &mut [];
+                }
+                let end = (*offset + *len).min(*cap);
+                unsafe { crate::util::raw_ptr_as_slice_mut(ptr.as_ptr().add(*offset), end - *offset) }
+            }
         }
     }
 
@@ -261,6 +304,8 @@ impl PacketRef {
         match &mut self.kind {
             PacketRefKind::Pooled { len, .. } => *len = len_val,
             PacketRefKind::Dma { len, .. } => *len = len_val,
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { len, .. } => *len = len_val,
         }
     }
 
@@ -269,6 +314,8 @@ impl PacketRef {
         match &self.kind {
             PacketRefKind::Pooled { len, .. } => *len,
             PacketRefKind::Dma { len, .. } => *len,
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { len, .. } => *len,
         }
     }
 
@@ -277,6 +324,8 @@ impl PacketRef {
         match &self.kind {
             PacketRefKind::Pooled { .. } => DEFAULT_BUFFER_SIZE,
             PacketRefKind::Dma { buf, .. } => buf.size,
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { cap, .. } => *cap,
         }
     }
 
@@ -290,6 +339,8 @@ impl PacketRef {
                 let phys = buf.phys_addr;
                 phys + *offset as u64
             }
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { offset, .. } => PhysAddr::new(*offset as u64),
         }
     }
 
@@ -305,6 +356,15 @@ impl PacketRef {
                 }
             }
             PacketRefKind::Dma { offset, len, .. } => {
+                *offset += size;
+                if *len >= size {
+                    *len -= size;
+                } else {
+                    *len = 0;
+                }
+            }
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { offset, len, .. } => {
                 *offset += size;
                 if *len >= size {
                     *len -= size;
@@ -332,6 +392,15 @@ impl PacketRef {
             PacketRefKind::Dma { buf, offset, len } => Self {
                 kind: PacketRefKind::Dma {
                     buf: buf.clone(),
+                    offset: *offset,
+                    len: *len,
+                },
+            },
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { ptr, cap, offset, len } => Self {
+                kind: PacketRefKind::BorrowedTest {
+                    ptr: *ptr,
+                    cap: *cap,
                     offset: *offset,
                     len: *len,
                 },
@@ -371,6 +440,8 @@ impl PacketRef {
                 unsafe { Ok(RRef::from_raw(buffer, target_domain)) }
             }
             PacketRefKind::Dma { .. } => Err(self), // Cannot convert arbitrary DMA buffer to RRef yet
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { .. } => Err(self),
         }
     }
 }
@@ -385,6 +456,10 @@ impl Drop for PacketRef {
             },
             PacketRefKind::Dma { .. } => {
                 // Arc drop will reclaim the TypedDmaSlice when last reference is gone
+            }
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            PacketRefKind::BorrowedTest { .. } => {
+                // Caller-owned test buffer; nothing to reclaim.
             }
         }
     }

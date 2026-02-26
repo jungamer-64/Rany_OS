@@ -43,6 +43,34 @@ pub fn mempool_mempool_stats_smoke() -> bool {
     stats.total_buffers == 0 && stats.free_buffers == 0 && stats.used_buffers == 0
 }
 
+pub fn mempool_packet_pool_preallocates_fixed_size_buffers_smoke() -> bool {
+    let pool = mempool::PacketPool::new(2, 128);
+    let Some(buf1) = pool.alloc() else {
+        return false;
+    };
+    let Some(buf2) = pool.alloc() else {
+        return false;
+    };
+
+    buf1.len() == 128 && buf2.len() == 128 && pool.available() == 0
+}
+
+pub fn mempool_packet_pool_free_restores_size_after_resize_smoke() -> bool {
+    let pool = mempool::PacketPool::new(1, 64);
+    let Some(mut buf) = pool.alloc() else {
+        return false;
+    };
+
+    buf.reserve(64);
+    buf.truncate(3);
+    pool.free(buf);
+
+    let Some(restored) = pool.alloc() else {
+        return false;
+    };
+    restored.len() == 64
+}
+
 pub fn zero_copy_pool_id_smoke() -> bool {
     run_case!(zero_copy::tests::test_pool_id)
 }
@@ -150,6 +178,14 @@ pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
         return false;
     };
     matches!(proc.process(&buffer[..len], src_ip, dst_ip), udp::UdpResult::NoSocket | udp::UdpResult::ChecksumError)
+}
+
+pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
+    run_case!(udp::tests::test_udp_socket_multiple_waiters_woken_on_deliver)
+}
+
+pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
+    run_case!(udp::tests::test_udp_processor_process_enqueues_zero_copy_packet)
 }
 
 pub fn ipv4_ipv4_address_smoke() -> bool {
@@ -279,6 +315,14 @@ pub fn stack_redirect_cache_eviction_smoke() -> bool {
     run_case!(stack::tests::test_redirect_cache_eviction)
 }
 
+pub fn stack_redirect_cache_reuses_expired_slot_before_oldest_smoke() -> bool {
+    run_case!(stack::tests::test_redirect_cache_reuses_expired_slot_before_oldest)
+}
+
+pub fn stack_ndp_pending_queue_drain_for_preserves_order_smoke() -> bool {
+    run_case!(stack::tests::test_ndp_pending_queue_drain_for_preserves_order)
+}
+
 // The following cases exercise the `stack_timeouts` helpers which are used by
 // TCP/UDP internal timers.  Host tests use `#[test_case]` but we need wrappers
 // in the QEMU suite as well so they are tracked by the kernel runner.
@@ -405,6 +449,18 @@ pub fn ipv6_display_full_smoke() -> bool {
 
 pub fn ipv6_from_u64_pair_smoke() -> bool {
     run_case!(ipv6::tests::test_from_u64_pair)
+}
+
+pub fn ipv6_pmtu_cache_evict_oldest_uses_lru_smoke() -> bool {
+    run_case!(ipv6::tests::test_pmtu_cache_evict_oldest_uses_lru)
+}
+
+pub fn ipv6_pmtu_cache_update_moves_lru_timestamp_smoke() -> bool {
+    run_case!(ipv6::tests::test_pmtu_cache_update_moves_lru_timestamp)
+}
+
+pub fn ipv6_pmtu_cache_evict_expired_cleans_entries_and_lru_smoke() -> bool {
+    run_case!(ipv6::tests::test_pmtu_cache_evict_expired_cleans_entries_and_lru)
 }
 
 pub fn ndp_neighbor_cache_basic_smoke() -> bool {

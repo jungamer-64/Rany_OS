@@ -21,9 +21,7 @@
 //! - All Routers Group: 224.0.0.2
 
 use super::ipv4::Ipv4Address;
-use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 extern crate alloc;
 
@@ -271,7 +269,7 @@ impl IgmpProcessor {
         // Parse header
         let msg_type = data[0];
         let max_resp_time = data[1];
-        let checksum = u16::from_be_bytes([data[2], data[3]]);
+        let _checksum = u16::from_be_bytes([data[2], data[3]]);
         let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
 
         // Verify checksum
