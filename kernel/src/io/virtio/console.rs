@@ -198,6 +198,37 @@ impl VirtQueue {
         }
     }
 
+    /// Safely get the current available index
+    fn get_avail_idx(&self) -> u16 {
+        unsafe { (*self.avail_ring).idx }
+    }
+
+    /// Safely set a new available index
+    fn set_avail_idx(&self, idx: u16) {
+        unsafe {
+            (*self.avail_ring).idx = idx;
+        }
+    }
+
+    /// Safely set an entry in the available ring
+    fn set_avail_ring_entry(&self, ring_index: u16, head: u16) {
+        let ring_ptr = unsafe { (self.avail_ring as *mut u16).add(2) }; // Skip flags and idx
+        unsafe {
+            *ring_ptr.add(ring_index as usize) = head;
+        }
+    }
+
+    /// Safely get the current used index
+    fn get_used_idx(&self) -> u16 {
+        unsafe { (*self.used_ring).idx }
+    }
+
+    /// Safely get an element from the used ring
+    fn get_used_elem(&self, ring_index: u16) -> VringUsedElem {
+        let ring_ptr = unsafe { (self.used_ring as *const u8).add(4) as *const VringUsedElem };
+        unsafe { ring_ptr.add(ring_index as usize).read_unaligned() }
+    }
+
     /// Allocate a descriptor from the free list
     pub fn alloc_desc(&self) -> Option<u16> {
         loop {
@@ -243,18 +274,13 @@ impl VirtQueue {
         // Memory barrier before making buffer visible to device
         core::sync::atomic::fence(Ordering::Release);
 
-        let avail_idx = unsafe { (*self.avail_ring).idx };
-        let ring_ptr = unsafe { (self.avail_ring as *mut u16).add(2) }; // Skip flags and idx
-        unsafe {
-            *ring_ptr.add((avail_idx % self.queue_size) as usize) = head;
-        }
+        let avail_idx = self.get_avail_idx();
+        self.set_avail_ring_entry(avail_idx % self.queue_size, head);
 
         // Memory barrier before updating index
         core::sync::atomic::fence(Ordering::Release);
 
-        unsafe {
-            (*self.avail_ring).idx = avail_idx.wrapping_add(1);
-        }
+        self.set_avail_idx(avail_idx.wrapping_add(1));
 
         self.index
     }
@@ -280,14 +306,13 @@ impl VirtQueue {
         // Memory barrier before reading used ring
         core::sync::atomic::fence(Ordering::Acquire);
 
-        let used_idx = unsafe { (*self.used_ring).idx } as u32;
+        let used_idx = self.get_used_idx() as u32;
 
         if last_used == used_idx {
             return None;
         }
 
-        let ring_ptr = unsafe { (self.used_ring as *const u8).add(4) as *const VringUsedElem };
-        let elem = unsafe { *ring_ptr.add((last_used % self.queue_size as u32) as usize) };
+        let elem = self.get_used_elem((last_used % self.queue_size as u32) as u16);
 
         self.last_used_idx
             .store(last_used.wrapping_add(1), Ordering::Release);

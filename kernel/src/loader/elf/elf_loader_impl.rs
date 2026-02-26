@@ -332,6 +332,9 @@ impl<'a> ElfLoader<'a> {
         base_address: usize,
         pkey: u8,
     ) -> Result<(), LoadError> {
+        // Copy/zero all segment contents first, then apply page protections.
+        // Adjacent ELF segments can share a page; applying RX/RO too early can
+        // fault when a later segment still needs to write into that page.
         for segment in &info.segments {
             let dest = base_address + segment.vaddr;
             let src_start = segment.file_offset;
@@ -359,7 +362,11 @@ impl<'a> ElfLoader<'a> {
                 }
             }
 
-            // Apply page flags (may be a no-op in test builds)
+        }
+
+        for segment in &info.segments {
+            let dest = base_address + segment.vaddr;
+            // Apply page flags (may be a no-op in test builds) after all copies complete.
             self.apply_page_flags(dest, segment.mem_size, segment.flags, pkey)?;
         }
         Ok(())

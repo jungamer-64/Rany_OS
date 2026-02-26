@@ -256,12 +256,8 @@ fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
     Ok(copied)
 }
 
-fn build_storage_test_disk(label: &str) -> Result<PathBuf, BuildError> {
-    let root = workspace_root();
-    let disk_path = root
-        .join("target")
-        .join("qemu-boot")
-        .join(format!("fullboot-{label}-storage.img"));
+fn build_storage_test_disk(boot_root: &Path) -> Result<PathBuf, BuildError> {
+    let disk_path = boot_root.join("storage.img");
 
     if let Some(parent) = disk_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| BuildError::Io {
@@ -624,7 +620,7 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     let ovmf_vars_arg = format!("if=pflash,format=raw,file={}", vars_copy_path.display());
     let fat_arg = format!("format=raw,file=fat:rw:{}", image.boot_root.display());
     let storage_disk_path = if profile_needs_storage_disk(&config.profile) {
-        Some(build_storage_test_disk(&label).map_err(RunError::Build)?)
+        Some(build_storage_test_disk(&image.boot_root).map_err(RunError::Build)?)
     } else {
         None
     };

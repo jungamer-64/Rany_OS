@@ -353,11 +353,23 @@ fn load_cell_with_flags(
     signature_verified: bool,
     required_caps: u64,
 ) -> Result<CellId, LoadError> {
+    log::info!("[Loader][DBG] load_cell_with_flags start name={}\n", name);
     validate_cell_requirements(name, elf_data, allow_unsafe, contains_unsafe)?;
+    log::info!("[Loader][DBG] requirements ok name={}\n", name);
 
     // 3. ELFをパース
     let loader = elf::ElfLoader::new(elf_data)?;
+    log::info!("[Loader][DBG] elf loader created name={}\n", name);
     let cell_info = loader.parse()?;
+    log::info!(
+        "[Loader][DBG] parsed name={} mem_size={} align={} segs={} imports={} exports={}\n",
+        name,
+        cell_info.memory_size,
+        cell_info.alignment,
+        cell_info.segments.len(),
+        cell_info.imports.len(),
+        cell_info.exports.len()
+    );
 
     // 4. 依存関係のチェック
     for import in &cell_info.imports {
@@ -365,15 +377,27 @@ fn load_cell_with_flags(
             return Err(LoadError::UnresolvedDependency((*import).to_string()));
         }
     }
+    log::info!("[Loader][DBG] imports resolved name={}\n", name);
 
     // 5. メモリ割り当てとロード
+    log::info!("[Loader][DBG] load segments begin name={}\n", name);
     let loaded = loader.load(&cell_info)?;
+    log::info!(
+        "[Loader][DBG] load segments done name={} base={:#x} size={} entry={:?}\n",
+        name,
+        loaded.base_address,
+        loaded.size,
+        loaded.entry_point
+    );
 
     // 6. リロケーション
     let resolver = |s: &str| with_registry(|r| r.resolve_symbol(s));
+    log::info!("[Loader][DBG] relocate begin name={}\n", name);
     loader.relocate(&loaded, resolver)?;
+    log::info!("[Loader][DBG] relocate done name={}\n", name);
 
     // 6. レジストリに登録
+    log::info!("[Loader][DBG] registry register begin name={}\n", name);
     let id = with_registry_mut(|r| {
         let id = r.allocate_id();
         let entry = CellEntry {
@@ -405,6 +429,7 @@ fn load_cell_with_flags(
         r.register(entry);
         id
     });
+    log::info!("[Loader][DBG] registry register done name={} id={:?}\n", name, id.as_u64());
 
     Ok(id)
 }
