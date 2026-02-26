@@ -222,6 +222,7 @@ impl VirtioBlkDevice {
         };
 
         self.queues.push(Arc::new(Mutex::new(virtqueue)));
+        self.pending_wakers.push(Mutex::new(BTreeMap::new()));
 
         Ok(())
     }
@@ -340,10 +341,11 @@ impl VirtioBlkDevice {
             bridge.handle_interrupt(device_id, &[(io_id, result)]);
         } else {
             // レガシーパス: 既存の Waker を起動
-            let waker_idx = q_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-            let mut wakers = self.pending_wakers.lock();
-            if let Some(waker) = wakers.remove(&waker_idx) {
-                waker.wake();
+            if let Some(queue_wakers) = self.pending_wakers.get(q_idx) {
+                let mut wakers = queue_wakers.lock();
+                if let Some(waker) = wakers.remove(&desc_id) {
+                    waker.wake();
+                }
             }
         }
     }

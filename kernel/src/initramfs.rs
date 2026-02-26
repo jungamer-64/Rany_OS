@@ -211,7 +211,13 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
     for entry in archive.files() {
         #[cfg(feature = "qemu-test-export")]
         if entry.name.starts_with("cells/") && entry.name.ends_with(".cell") {
+            crate::io::log::early_print("[INITRAMFS] fixture cache begin ");
+            crate::io::log::early_print(&entry.name);
+            crate::io::log::early_print("\n");
             crate::driver_cell::qemu_tests::cache_runtime_fixture_cell(&entry.name, entry.data);
+            crate::io::log::early_print("[INITRAMFS] fixture cache done ");
+            crate::io::log::early_print(&entry.name);
+            crate::io::log::early_print("\n");
         }
         // Only autoload driver payloads under /drivers. Other .cell files (e.g.
         // /cells fixtures used by runtime tests) are kept as data artifacts.

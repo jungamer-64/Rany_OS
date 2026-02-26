@@ -46,14 +46,14 @@ all: build
 build:
 	@echo "Building ExoRust kernel..."
 	rustup run nightly $(CARGO) build --target $(TARGET).json \
-		-Zunstable-options -Zjson-target-spec
+		-Zunstable-options -Zjson-target-spec -Zbuild-std=core,alloc
 	@echo "Build complete: $(BUILD_DIR)"
 
 # リリースビルド
 release:
 	@echo "Building ExoRust kernel (release)..."
 	rustup run nightly $(CARGO) build --target $(TARGET).json --release \
-		-Zunstable-options -Zjson-target-spec
+		-Zunstable-options -Zjson-target-spec -Zbuild-std=core,alloc
 	@echo "Release build complete"
 
 # カーネルを実行
@@ -121,12 +121,12 @@ doc-open:
 # 構文チェック
 check:
 	@echo "Checking code..."
-	$(CARGO) check --target $(TARGET).json
+	$(CARGO) check --target $(TARGET).json -Zunstable-options -Zjson-target-spec -Zbuild-std=core,alloc
 
 # Clippy（リンター）
 clippy:
 	@echo "Running clippy..."
-	$(CARGO) clippy --target $(TARGET).json -- -D warnings
+	$(CARGO) clippy --target $(TARGET).json -Zunstable-options -Zjson-target-spec -Zbuild-std=core,alloc -- -D warnings
 
 # コードフォーマット
 fmt:

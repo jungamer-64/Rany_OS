@@ -141,9 +141,10 @@ pub(crate) fn register_desc_waker(
     desc_id: u16,
     waker: &core::task::Waker,
 ) {
-    let waker_idx = queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-    let mut wakers = device.pending_wakers.lock();
-    wakers.insert(waker_idx, waker.clone());
+    if let Some(queue_wakers) = device.pending_wakers.get(queue_idx) {
+        let mut wakers = queue_wakers.lock();
+        wakers.insert(desc_id, waker.clone());
+    }
 }
 
 /// Future for async DMA read operation (uses physical address).

@@ -19,8 +19,16 @@ static RUNTIME_FIXTURE_CELLS: crate::sync::PoisonLock<BTreeMap<String, Vec<u8>>>
 
 #[cfg(feature = "qemu-test-export")]
 pub fn cache_runtime_fixture_cell(path: &str, data: &[u8]) {
+    crate::io::log::early_print("[driver-cell-runtime] fixture-cache: enter ");
+    crate::io::log::early_print(path);
+    crate::io::log::early_print(" len=");
+    crate::io::log::early_print_hex(data.len() as u64);
+    crate::io::log::early_print("\n");
     if let Ok(mut cells) = RUNTIME_FIXTURE_CELLS.lock() {
         cells.insert(String::from(path), data.to_vec());
+        crate::io::log::early_print("[driver-cell-runtime] fixture-cache: inserted\n");
+    } else {
+        crate::io::log::early_print("[driver-cell-runtime] fixture-cache: lock poisoned\n");
     }
 }
 

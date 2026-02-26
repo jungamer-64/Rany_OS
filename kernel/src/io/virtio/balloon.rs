@@ -111,6 +111,8 @@ pub struct VirtioBalloonDevice {
     iommu_device_id: Option<IommuDeviceId>,
     /// Features negotiated
     features: u64,
+    /// Guest page size in bytes (defaults to 4096)
+    guest_page_size: u32,
 }
 
 unsafe impl Send for VirtioBalloonDevice {}
@@ -137,7 +139,13 @@ impl VirtioBalloonDevice {
             ready: AtomicBool::new(false),
             iommu_device_id,
             features: 0,
+            guest_page_size: 4096,
         }
+    }
+
+    /// Set the guest page size for PFN calculations.
+    pub fn set_guest_page_size(&mut self, page_size: u32) {
+        self.guest_page_size = page_size;
     }
 
     /// Initialize the device
@@ -265,6 +273,11 @@ impl VirtioBalloonDevice {
         }
 
         Ok(())
+    }
+
+    /// Calculate PFN for a physical address based on guest_page_size.
+    fn phys_to_pfn(&self, phys_addr: u64) -> u32 {
+        (phys_addr / self.guest_page_size as u64) as u32
     }
 
     /// Submit a PFN array to the specified queue.

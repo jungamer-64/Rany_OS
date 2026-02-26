@@ -110,22 +110,26 @@ impl VirtQueue {
     /// Safely get the current available index
     fn get_avail_idx(&self) -> u16 {
         // SAFETY: The pointer `avail_ring` is guaranteed to be valid and points to the DMA ring.
-        unsafe { core::ptr::read_volatile(&(*self.avail_ring.as_ptr()).idx) }
+        // We use addr_of! to avoid creating an intermediate reference to a field in shared memory.
+        let ptr = self.avail_ring.as_ptr();
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*ptr).idx)) }
     }
 
     /// Safely set a new available index
     fn set_avail_idx(&mut self, idx: u16) {
         // SAFETY: `&mut self` ensures exclusive access. `avail_ring` is valid.
+        let ptr = self.avail_ring.as_ptr();
         unsafe {
-            core::ptr::write_volatile(&mut (*self.avail_ring.as_ptr()).idx, idx);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*ptr).idx), idx);
         }
     }
 
     /// Safely set an entry in the available ring
     fn set_avail_ring_entry(&mut self, ring_index: u16, head: u16) {
         // SAFETY: The pointer arithmetic is within the bounds of the pre-allocated DMA ring.
-        // `&mut self` enforces exclusive access, avoiding data races.
-        let ring_ptr = unsafe { (self.avail_ring.as_ptr() as *mut u16).add(2) };
+        // Available ring structure: [u16 flags, u16 idx, u16 ring[size], u16 used_event]
+        let ptr = self.avail_ring.as_ptr();
+        let ring_ptr = unsafe { (ptr as *mut u16).add(2) };
         unsafe {
             core::ptr::write_volatile(ring_ptr.add(ring_index as usize), head);
         }
@@ -134,13 +138,17 @@ impl VirtQueue {
     /// Safely get the current used index
     fn get_used_idx(&self) -> u16 {
         // SAFETY: Read-only access to the device-updated used ring memory.
-        unsafe { core::ptr::read_volatile(&(*self.used_ring.as_ptr()).idx) }
+        let ptr = self.used_ring.as_ptr();
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*ptr).idx)) }
     }
 
     /// Safely get an element from the used ring
     fn get_used_elem(&self, ring_index: u16) -> VringUsedElem {
         // SAFETY: Pointer arithmetic and reads are within bounds of the used ring array.
-        let ring_ptr = unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
+        // Used ring structure: [u16 flags, u16 idx, VringUsedElem ring[size], u16 avail_event]
+        // Offset 4 bytes (flags and idx)
+        let ptr = self.used_ring.as_ptr();
+        let ring_ptr = unsafe { (ptr as *const u8).add(4) as *const VringUsedElem };
         unsafe { core::ptr::read_volatile(ring_ptr.add(ring_index as usize)) }
     }
 
@@ -159,14 +167,19 @@ impl VirtQueue {
     /// # Safety
     /// Caller must ensure descriptors are properly set up
     pub unsafe fn submit(&mut self, head: u16) -> u16 {
+        // 1. Ensure descriptor table updates are visible before updating available ring
         core::sync::atomic::fence(Ordering::Release);
 
         let avail_idx = self.get_avail_idx();
         self.set_avail_ring_entry(avail_idx % self.queue_size, head);
 
+        // 2. Ensure available ring entry update is visible before updating avail.idx
         core::sync::atomic::fence(Ordering::Release);
 
         self.set_avail_idx(avail_idx.wrapping_add(1));
+
+        // 3. Ensure avail.idx update is visible before the device sees the notification (doorbell)
+        core::sync::atomic::fence(Ordering::Release);
 
         self.index
     }

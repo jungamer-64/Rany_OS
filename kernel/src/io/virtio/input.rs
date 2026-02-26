@@ -133,7 +133,7 @@ pub enum VirtioDeviceStatus {
 // ============================================================================
 
 /// Number of event buffers to pre-allocate and post
-const EVENT_BUFFER_COUNT: usize = 32;
+const EVENT_BUFFER_COUNT: usize = 128;
 
 /// VirtIO input device driver
 ///
@@ -155,6 +155,8 @@ pub struct VirtioInputDevice {
     iommu_device_id: Option<IommuDeviceId>,
     /// User-provided event handler callback
     event_handler: Mutex<Option<fn(VirtioInputEvent)>>,
+    /// Number of events dropped due to buffer allocation failures
+    dropped_events: core::sync::atomic::AtomicU64,
 }
 
 unsafe impl Send for VirtioInputDevice {}
@@ -189,6 +191,7 @@ impl VirtioInputDevice {
             ready: AtomicBool::new(false),
             iommu_device_id,
             event_handler: Mutex::new(None),
+            dropped_events: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -516,8 +519,16 @@ impl VirtioInputDevice {
             drop(eq);
 
             // Repost buffer for this descriptor slot
-            let _ = self.repost_event_buffer(desc_id);
+            if let Err(_) = self.repost_event_buffer(desc_id) {
+                self.dropped_events.fetch_add(1, Ordering::Relaxed);
+                log::warn!("[VIRTIO-INPUT] Failed to repost event buffer for desc {}", desc_id);
+            }
         }
+    }
+
+    /// Get the number of dropped events.
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped_events.load(Ordering::Relaxed)
     }
 
     /// Register a callback to be invoked for each received input event.

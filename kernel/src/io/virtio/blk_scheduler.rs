@@ -52,17 +52,21 @@ struct PendingBlkRequest {
 pub struct VirtioBlkPollHandler {
     /// デバイスインデックス（DeviceId::VirtioBlk { index } 用）
     device_index: u8,
-    /// 保留中リクエスト: (queue_idx, desc_id) -> PendingBlkRequest
-    /// マルチキュー対応のためキーに queue_idx を含める
-    pending: Mutex<BTreeMap<(usize, u16), PendingBlkRequest>>,
+    /// 保留中リクエスト: queue_idx -> { desc_id -> PendingBlkRequest }
+    /// マルチキュー対応のためキューごとに分離してロック競合を回避する
+    pending: Vec<Mutex<BTreeMap<u16, PendingBlkRequest>>>,
 }
 
 impl VirtioBlkPollHandler {
     /// 新しい VirtioBlkPollHandler を作成
-    pub fn new(device_index: u8) -> Self {
+    pub fn new(device_index: u8, queue_count: usize) -> Self {
+        let mut pending = Vec::with_capacity(queue_count);
+        for _ in 0..queue_count {
+            pending.push(Mutex::new(BTreeMap::new()));
+        }
         Self {
             device_index,
-            pending: Mutex::new(BTreeMap::new()),
+            pending,
         }
     }
 
@@ -73,10 +77,14 @@ impl VirtioBlkPollHandler {
         raw_completions: &[(usize, u16, u32)],
     ) -> Vec<(IoRequestId, IoResult)> {
         let mut results = Vec::new();
-        let mut pending = self.pending.lock();
         for &(queue_idx, desc_id, _len) in raw_completions {
-            let key = (queue_idx, desc_id);
-            if let Some(req) = pending.remove(&key) {
+            let mut pending_guard = if let Some(p) = self.pending.get(queue_idx) {
+                p.lock()
+            } else {
+                continue;
+            };
+
+            if let Some(req) = pending_guard.remove(&desc_id) {
                 let status_ok = device
                     .inflight_dma
                     .lock()
@@ -108,15 +116,17 @@ impl VirtioBlkPollHandler {
         desc_id: u16,
         bytes: usize,
     ) {
-        self.pending.lock().insert(
-            (queue_idx, desc_id),
-            PendingBlkRequest {
-                io_id,
-                queue_idx,
+        if let Some(pending_queue) = self.pending.get(queue_idx) {
+            pending_queue.lock().insert(
                 desc_id,
-                bytes,
-            },
-        );
+                PendingBlkRequest {
+                    io_id,
+                    queue_idx,
+                    desc_id,
+                    bytes,
+                },
+            );
+        }
     }
 
     /// 保留リクエストを取り出して削除（割り込みハンドラから使用）
@@ -125,8 +135,9 @@ impl VirtioBlkPollHandler {
     /// `(IoRequestId, bytes)` を返し、pending から削除する。
     pub fn take_pending(&self, queue_idx: usize, desc_id: u16) -> Option<(IoRequestId, usize)> {
         self.pending
+            .get(queue_idx)?
             .lock()
-            .remove(&(queue_idx, desc_id))
+            .remove(&desc_id)
             .map(|req| (req.io_id, req.bytes))
     }
 }
@@ -317,7 +328,9 @@ pub fn register_virtio_blk_with(
     };
 
     // 1. 共有 PollHandler を作成
-    let handler = Arc::new(VirtioBlkPollHandler::new(device_index));
+    let device = get_virtio_blk_device().expect("VirtIO-blk device must be initialized before registration");
+    let queue_count = device.queue_count();
+    let handler = Arc::new(VirtioBlkPollHandler::new(device_index, queue_count));
 
     // 2. PollingExecutor に PollHandler を登録
     coordinator.polling_executor().register_handler(
