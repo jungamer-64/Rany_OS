@@ -107,16 +107,18 @@ def main() -> int:
             return fail(f"duplicate package entry: {key}")
         seen.add(key)
 
-    pure_tests_src = (root / "pure-tests" / "src" / "lib.rs").read_text(encoding="utf-8")
-    migrated_lib_crates = {
-        lib_target_names[e["name"]]
-        for e in pkg_entries
-        if e["name"] != "pure_tests" and e["name"] in lib_target_names
-    }
-    for crate_name in sorted(migrated_lib_crates):
-        needle = f"{crate_name}::qemu_tests::"
-        if needle in pure_tests_src:
-            return fail(f"pure-tests residual must not call migrated wrapper exports: '{needle}'")
+    pure_tests_src_path = root / "pure-tests" / "src" / "lib.rs"
+    if pure_tests_src_path.exists():
+        pure_tests_src = pure_tests_src_path.read_text(encoding="utf-8")
+        migrated_lib_crates = {
+            lib_target_names[e["name"]]
+            for e in pkg_entries
+            if e["name"] != "pure_tests" and e["name"] in lib_target_names
+        }
+        for crate_name in sorted(migrated_lib_crates):
+            needle = f"{crate_name}::qemu_tests::"
+            if needle in pure_tests_src:
+                return fail(f"pure-tests residual must not call migrated wrapper exports: '{needle}'")
 
     print("[verify_pure_tier_map] PASS")
     return 0

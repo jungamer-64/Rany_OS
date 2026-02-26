@@ -723,13 +723,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pure_tests"
-version = "0.1.0"
-dependencies = [
- "cap_harness",
-]
-
-[[package]]
 name = "qemu-tests"
 version = "0.1.0"
 dependencies = [

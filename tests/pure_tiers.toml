@@ -2,7 +2,6 @@ schema_version = 1
 
 [root_default]
 packages = [
-  "pure-tests",
   "libs/boot_config",
   "libs/security",
   "interfaces/kernel_api",
@@ -20,6 +19,7 @@ packages = [
   "drivers/acpi",
   "drivers/time",
   "apps",
+  "tools/cap_harness",
 ]
 
 [[package]]
@@ -159,12 +159,12 @@ exact = true
 serial = false
 
 [[package]]
-name = "pure_tests"
+name = "cap_harness"
 tier = "pr-required"
 root_default = true
 run_ignored = false
-test_filter = "pure_pr_required"
-exact = true
+test_filter = ""
+exact = false
 serial = false
 
 [[package]]

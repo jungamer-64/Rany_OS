@@ -1,8 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    # Test orchestration (2-layer: pure + full-boot QEMU)
-    "pure-tests",
+    # Test orchestration (2-layer: crate-local pure + full-boot QEMU)
     "qemu-tests",
     "tools/qemu_runner",
     # Core
@@ -40,13 +39,13 @@ members = [
     "bootloader",
     # dev tool: symbol lookup helper (not part of standard critical tools)
     # "tools/symlookup",
-    # NOTE: `tools/framebuffer_bench`, `tools/signer`, `tools/cap_harness` and `tools/symlookup` are intentionally not workspace members
+    "tools/cap_harness",
+    # NOTE: `tools/framebuffer_bench`, `tools/signer`, and `tools/symlookup` are intentionally not workspace members
     # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues.
     # They are runnable via their manifest paths.
 ]
-exclude = ["tools/framebuffer_bench", "tools/signer", "tools/cap_harness", "tools/symlookup"]
+exclude = ["tools/framebuffer_bench", "tools/signer", "tools/symlookup"]
 default-members = [
-    "pure-tests",
     "libs/boot_config",
     "libs/security",
     "interfaces/kernel_api",
@@ -64,6 +63,7 @@ default-members = [
     "drivers/acpi",
     "drivers/time",
     "apps",
+    "tools/cap_harness",
 ]
 
 [workspace.package]

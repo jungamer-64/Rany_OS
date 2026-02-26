@@ -10,10 +10,6 @@ keywords = ["os", "kernel", "rust"]
 categories = ["os"]
 description = "Capability Test Harness for RanyOS"
 
-[workspace]
-# This package intentionally declares its own empty workspace so it is
-# independent from the repository workspace and can be built for the host target.
-
 [dependencies]
 
 [features]

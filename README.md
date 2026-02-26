@@ -243,7 +243,7 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 
 補足:
 - pure tier (`pr-required` / `nightly-required`) の真実源は `tests/pure_tiers.toml` です。
-- `pure-tests` は residual（未移行/横断smoke）集約クレートです。
+- `pure-tests` は削除済み。純テストは crate-local `std #[test]` に集約。
 - `pending` / `runtime_pending` スイートは廃止されました。
 - 旧 `qemu-suites/*` からの移行棚卸しは `tests/migration_case_map.toml` を参照してください。
 - `qemu-tests` 実行時のログは `target/qemu-logs/` に出力されます（serial / QEMU stderr）。

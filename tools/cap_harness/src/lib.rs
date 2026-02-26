@@ -173,7 +173,7 @@ pub fn grant(
 #[cfg(test)]
 mod qemu_tests {
     #![allow(clippy::wildcard_imports)]
-use super::*;
+    use super::*;
 
     pub fn grant_requires_permissions_smoke() -> bool {
         let mut manager = Manager::new();
@@ -201,8 +201,21 @@ use super::*;
         }
         manager.has_capability(target, CAP_NET_BIND)
     }
-}
 
+    pub fn cross_grant_smoke() -> bool {
+        let mut manager = Manager::new();
+        let caller = 10u64;
+        let target = 20u64;
+
+        manager.set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+
+        if grant(&mut manager, caller, "/net/bind", &[], target).is_err() {
+            return false;
+        }
+
+        manager.has_capability(target, CAP_NET_BIND)
+    }
+}
 
 #[cfg(test)]
 mod qemu_smoke_tests {
@@ -216,5 +229,10 @@ mod qemu_smoke_tests {
     #[test]
     fn grant_with_permitted_smoke() {
         assert!(qemu_tests::grant_with_permitted_smoke());
+    }
+
+    #[test]
+    fn cross_grant_smoke() {
+        assert!(qemu_tests::cross_grant_smoke());
     }
 }
