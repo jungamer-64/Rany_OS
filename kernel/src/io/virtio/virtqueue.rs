@@ -1,26 +1,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::io::dma::CoherentDmaBuffer;
-
-/// Virtqueue descriptor flags
-pub mod vring_flags {
-    pub const VRING_DESC_F_NEXT: u16 = 1;
-    pub const VRING_DESC_F_WRITE: u16 = 2;
-    pub const VRING_DESC_F_INDIRECT: u16 = 4;
-}
-
-/// Virtqueue descriptor
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VringDesc {
-    /// Guest physical address
-    pub addr: u64,
-    /// Length in bytes
-    pub len: u32,
-    /// Flags
-    pub flags: u16,
-    /// Next descriptor index
-    pub next: u16,
-}
+pub use virtio_driver::defs::{VringDesc, VringUsedElem, VIRTQUEUE_MAX_SIZE, vring_flags};
 
 /// Virtqueue available ring
 #[repr(C)]
@@ -30,14 +10,6 @@ pub struct VringAvail {
     // ring: [u16; queue_size] follows
 }
 
-/// Used element
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VringUsedElem {
-    pub id: u32,
-    pub len: u32,
-}
-
 /// Virtqueue used ring
 #[repr(C)]
 pub struct VringUsed {
@@ -45,9 +17,6 @@ pub struct VringUsed {
     pub idx: u16,
     // ring: [VringUsedElem; queue_size] follows
 }
-
-/// Maximum queue size
-pub const VIRTQUEUE_MAX_SIZE: u16 = 256;
 
 /// VirtQueue management structure
 pub struct VirtQueue {
@@ -60,9 +29,9 @@ pub struct VirtQueue {
     /// Used ring base address
     pub used_ring: *mut VringUsed,
     /// Free descriptor bitmap
-    free_bitmap: AtomicU64,
+    pub free_bitmap: AtomicU64,
     /// Last seen used index
-    last_used_idx: AtomicU32,
+    pub last_used_idx: AtomicU32,
     /// DMA Buffer to keep memory alive (and properly manage ownership)
     dma_buffer: Option<CoherentDmaBuffer>,
     /// Queue index
@@ -82,7 +51,6 @@ impl VirtQueue {
     /// # Safety
     /// Caller must ensure:
     /// - Memory regions are valid and properly aligned
-    /// - Queue size is power of 2 and <= VIRTQUEUE_MAX_SIZE
     pub unsafe fn new(
         queue_size: u16,
         desc_table: *mut VringDesc,

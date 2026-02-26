@@ -45,7 +45,6 @@ pub use virtio_driver::core;
 pub use virtio_driver::defs;
 pub use virtio_driver::transport;
 // Re-export common types
-pub use virtio_driver::core::*;
 pub use virtio_driver::defs::*;
 
 // Re-exports for Transport
@@ -66,9 +65,10 @@ pub use net::{
 };
 
 // Re-exports for VirtIO-Blk
+pub use virtio_driver::defs::VringDesc as BlkVringDesc;
 pub use blk::{
-    AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtQueue as BlkVirtQueue, VirtioBlkDevice,
-    VringDesc as BlkVringDesc, features as blk_features, handle_virtio_blk_interrupt,
+    AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtioBlkDevice,
+    features as blk_features, handle_virtio_blk_interrupt,
     init_virtio_blk, init_virtio_blk_for_device, init_virtio_blk_with_transport,
 };
 pub use blk_driver::VirtioBlkDriver;

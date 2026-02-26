@@ -21,7 +21,8 @@ use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
+use crate::io::virtio::virtqueue::*;
 use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
 
@@ -63,7 +64,7 @@ pub enum VirtioDeviceStatus {
     DeviceNeedsReset = 64,
     /// Driver has given up on the device
     Failed = 128,
-
+}
 
 // ============================================================================
 // Balloon Error Types

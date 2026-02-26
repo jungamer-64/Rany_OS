@@ -25,7 +25,8 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
+use crate::io::virtio::virtqueue::*;
 use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
 
@@ -130,6 +131,9 @@ pub enum VirtioDeviceStatus {
 // ============================================================================
 // VirtIO Input Device
 // ============================================================================
+
+/// Number of event buffers to pre-allocate and post
+const EVENT_BUFFER_COUNT: usize = 32;
 
 /// VirtIO input device driver
 ///
