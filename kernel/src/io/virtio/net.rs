@@ -20,15 +20,14 @@ use x86_64::{PhysAddr, VirtAddr};
 use super::defs::{VirtioDeviceType, status};
 use super::transport::{TransportType, VirtioTransport};
 use crate::io::dma::{
-    allocate_iommu_bounce_bytes, iommu_align_len, CoherentDmaBuffer, CpuOwned, DeviceOwned,
-    DmaMemoryAttributes, IommuBounceAllocError, SliceDmaGuard, TypedDmaSlice,
+    allocate_iommu_bounce_bytes, iommu_align_len, CoherentDmaBuffer,
+    DmaMemoryAttributes, IommuBounceAllocError,
 };
 use crate::io::iommu::api::{
     get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
     unmap_dma, unmap_for_device, DmaDirection, DmaHandle, map_for_device_with_perms,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 // Import PacketRef for zero-copy
 use crate::net::mempool::PacketRef;
 mod device_impl;

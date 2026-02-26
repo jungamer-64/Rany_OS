@@ -1,0 +1,121 @@
+# QEMU suite migration map (wrapper-level)
+# classification: pure | qemu_fullboot | dropped
+# tier: pr-required | nightly-required
+
+version = 1
+strategy = "2-layer"
+
+[[pure]]
+id = "core.capability_set"
+source = "qemu-suites/core"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "core.version_pack_unpack"
+source = "qemu-suites/core"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "core.sync_lock_compiles"
+source = "qemu-suites/core"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "core.bootloader_config_parse"
+source = "qemu-suites/core"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "core.security_extended"
+source = "qemu-suites/core"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "core.bootloader_config_extended"
+source = "qemu-suites/core"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "core.graphic_types"
+source = "qemu-suites/core"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "drivers.*"
+source = "qemu-suites/drivers"
+tier = "pr-required/nightly-required"
+classification = "pure"
+notes = "hda/nvme wrappers are nightly-required; remaining driver wrappers are pr-required"
+
+[[pure]]
+id = "fs.vfs_path"
+source = "qemu-suites/fs"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "fs.fat32_types"
+source = "qemu-suites/fs"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "fs.fat32_extended"
+source = "qemu-suites/fs"
+tier = "nightly-required"
+classification = "pure"
+
+[[pure]]
+id = "graphics.types"
+source = "qemu-suites/graphics"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "graphics.images"
+source = "qemu-suites/graphics"
+tier = "pr-required"
+classification = "pure"
+
+[[pure]]
+id = "graphics.browser"
+source = "qemu-suites/graphics"
+tier = "nightly-required"
+classification = "pure"
+
+[[pure]]
+id = "tools.*"
+source = "qemu-suites/tools"
+tier = "pr-required"
+classification = "pure"
+
+[[qemu_fullboot]]
+id = "boot.smoke_cmdline_dispatch"
+source = "kernel runtime dispatcher"
+profiles = ["boot-smoke", "pr-required", "nightly-required"]
+classification = "qemu_fullboot"
+
+[[qemu_fullboot]]
+id = "storage.integration_suite"
+source = "kernel/src/test/integration.rs"
+profiles = ["storage", "pr-required", "nightly-required"]
+classification = "qemu_fullboot"
+
+[[qemu_fullboot]]
+id = "driver_cell.runtime_suite"
+source = "kernel/src/driver_cell/tests.rs"
+profiles = ["driver_cell", "pr-required", "nightly-required"]
+classification = "qemu_fullboot"
+
+[[dropped]]
+id = "qemu-suites/kernel::manual_run_check_wiring"
+source = "qemu-suites/kernel/src/main.rs"
+classification = "dropped"
+reason = "replaced by kernel runtime dispatcher + pure-tests split"

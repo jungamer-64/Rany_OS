@@ -146,12 +146,13 @@ pub fn test_packet_mut_build() {
     pkt.set_hop_limit(255);
     pkt.finalize(20);
 
-    assert_eq!(pkt.header().version(), 6);
-    assert_eq!(pkt.header().source(), src);
-    assert_eq!(pkt.header().destination(), dst);
-    assert_eq!(pkt.header().next_header(), IpProtocol::Icmpv6);
-    assert_eq!(pkt.header().hop_limit(), 255);
-    assert_eq!(pkt.header().payload_length(), 20);
+    let header = pkt.header().expect("initialized IPv6 packet must have a header");
+    assert_eq!(header.version(), 6);
+    assert_eq!(header.source(), src);
+    assert_eq!(header.destination(), dst);
+    assert_eq!(header.next_header(), IpProtocol::Icmpv6);
+    assert_eq!(header.hop_limit(), 255);
+    assert_eq!(header.payload_length(), 20);
 }
 
 // --- Extension header tests ---

@@ -221,38 +221,29 @@ cargo build --target x86_64-exorust.json
 # 3. QEMUで実行 (UEFIモード推奨)
 ./scripts/run.sh --uefi
 
-# 4. テスト実行（公式入口）
+# 4. テスト実行（純 / host/std, デフォルト）
 cargo test
 
-# 5. 任意: 特定スイートのみ実行
-cargo test -p qemu-tests -- --nocapture suite_core
+# 5. 任意: 純テストの required tier を明示実行
+cargo test -p pure_tests pure_pr_required -- --exact --nocapture
 
-# 6. 任意: pending スイート（移行監視・非必須）
-cargo test -p qemu-tests -- --ignored --nocapture suite_pending
+# 6. 任意: QEMU実 (full-boot, exoloader -> 実kernel)
+cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
-# 7. 任意: runtime pending スイート（非必須・runtime依存監視）
-cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_pending
+# 7. 任意: 夜間拡張 tier（ローカルで明示実行）
+cargo test -p pure_tests pure_nightly_required -- --ignored --exact --nocapture
+cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapture
 
 ```
 
-`cargo test` は `qemu-tests` を入口として、`core/drivers/fs/graphics/kernel/tools` の required suites をQEMU上で実行します。`pending` / `kernel_runtime_pending` は `--ignored` 指定時のみ実行される非必須スイートです（例: `cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_pending`）。
-`suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）に加えて wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）、wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）、wave5 deterministic（canonical 5件 + residual 0件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行します。IOMMU residual canonical pending/parity は `none` 運用で、旧 `wave2` と `wave5_residual` 名は compat alias（required 非使用）として維持します。
+テスト構成は 2 層です。
+- `純` (`pure_tests`): host/std の高速ロジック検証。`cargo test` のデフォルト入口。
+- `QEMU実` (`qemu-tests`): `exoloader -> 実kernel ELF` の full-boot 検証。`run_integration=<profile>` を `exoloader.cmdline` に注入して runtime dispatcher を起動します。
 
-`pending` 運用:
-- 監視項目の管理: `scripts/qemu_pending_cases.lst`
-- IOMMU residual parity マッピング: `scripts/qemu_iommu_residual_parity.lst`
-- 整合ガード: `bash scripts/verify_iommu_residual_parity.sh`
-- AMD Wave4 required 配線ガード: `bash scripts/verify_iommu_amd_wave4_required.sh`
-- AMD Wave5 required 配線ガード: `bash scripts/verify_iommu_amd_wave5_required.sh`
-- IOMMU Wave5 residual/canonical required 配線ガード: `bash scripts/verify_iommu_wave5_residual_canonical_required.sh`
-- Graphics/Framebuffer Wave6 required 配線ガード: `bash scripts/verify_graphics_framebuffer_wave6_required.sh`
-- MM Wave7 required 配線ガード: `bash scripts/verify_mm_wave7_required.sh`
-- NET endpoint required 配線ガード: `bash scripts/verify_net_endpoint_required.sh`
-- NET core stack required 配線ガード: `bash scripts/verify_net_core_required.sh`
-- NET peripheral required 配線ガード: `bash scripts/verify_net_peripheral_required.sh`
-- Storage/FS required 配線ガード: `bash scripts/verify_storage_fs_required.sh`
-- 公式導線 warning ゼロガード: `bash scripts/verify_qemu_official_warning_free.sh`
-- CI warning 専用ジョブ: `warning-free-official`（`target/qemu-logs/warning-check-*.log` を artifact 化）
+補足:
+- `pending` / `runtime_pending` スイートは廃止されました。
+- 旧 `qemu-suites/*` からの移行棚卸しは `tests/migration_case_map.toml` を参照してください。
+- `qemu-tests` 実行時のログは `target/qemu-logs/` に出力されます（serial / QEMU stderr）。
 - CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
 - 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
 - runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`
@@ -279,7 +270,7 @@ cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending s
 - NET core stack residual（pending監視）: `none`。
 - NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
 - NET peripheral residual（pending監視）: `none`。
-- Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（`qemu_suite_kernel` は `posix-compat` 有効）。
+- Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（full-boot runtime では `posix-compat` 有効）。
 - Storage/FS residual（pending監視）: `none`。
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。

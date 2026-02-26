@@ -1,6 +1,0 @@
-# IOMMU residual parity mapping for QEMU migration tracking.
-# Format: original_case|required_smoke_case|status|notes
-# - Empty lines and lines starting with '#' are ignored.
-# - `original_case` must exist in kernel/src/io/iommu/tests.rs.
-# - `required_smoke_case` must exist in kernel/src/io/iommu/qemu_tests.rs and be wired to suite_kernel.
-# none

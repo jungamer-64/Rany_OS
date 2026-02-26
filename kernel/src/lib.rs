@@ -306,8 +306,8 @@ pub fn exit_qemu(code: QemuExitCode) -> ! {
 #[cfg(all(test, not(feature = "full_mm_tests")))]
 pub mod security;
 
-// QEMU suite exports are compiled when `qemu-test-export` is enabled and are
-// consumed by `qemu-suites/*` orchestrators.
+// QEMU test exports are compiled when `qemu-test-export` is enabled and are
+// consumed by host `pure-tests` and the kernel full-boot runtime dispatcher.
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 

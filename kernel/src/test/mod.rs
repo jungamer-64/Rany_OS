@@ -6,6 +6,7 @@
 
 // Integration test suite for comprehensive kernel testing
 pub mod integration;
+pub mod runtime_dispatch;
 
 // Note: Individual test modules are disabled until API stabilization
 // pub mod memory_tests;

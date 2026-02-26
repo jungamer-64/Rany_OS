@@ -17,6 +17,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use vfs::block::BlockDevice;
 
 // --- Existing tests ---
 

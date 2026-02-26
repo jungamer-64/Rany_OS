@@ -381,66 +381,35 @@ cargo build --target x86_64-exorust.json
 # テスト実行
 cargo test
 
-# 任意: 特定スイートのみ実行
-cargo test -p qemu-tests -- --nocapture suite_core
+# 任意: 純テスト required tier（host/std）
+cargo test -p pure_tests pure_pr_required -- --exact --nocapture
 
-# 任意: pending スイート（移行監視・非必須）
-cargo test -p qemu-tests -- --ignored --nocapture suite_pending
+# 任意: QEMU実 required tier（full-boot）
+cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
-# 任意: runtime pending スイート（非必須・runtime依存監視）
-cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending suite_pending
+# 任意: 夜間拡張 tier
+cargo test -p pure_tests pure_nightly_required -- --ignored --exact --nocapture
+cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapture
 ```
 
 補足:
-- `pending` 監視項目は `scripts/qemu_pending_cases.lst` で管理する。
-- IOMMU residual の canonical->required smoke parity は `scripts/qemu_iommu_residual_parity.lst` で管理する。
-- parity の整合チェックは `bash scripts/verify_iommu_residual_parity.sh` で実行する。
-- AMD Wave4 required 配線の整合チェックは `bash scripts/verify_iommu_amd_wave4_required.sh` で実行する。
-- AMD Wave5 required 配線の整合チェックは `bash scripts/verify_iommu_amd_wave5_required.sh` で実行する。
-- IOMMU Wave5 residual/canonical required 配線の整合チェックは `bash scripts/verify_iommu_wave5_residual_canonical_required.sh` で実行する。
-- Graphics/Framebuffer Wave6 required 配線の整合チェックは `bash scripts/verify_graphics_framebuffer_wave6_required.sh` で実行する。
-- MM Wave7 required 配線の整合チェックは `bash scripts/verify_mm_wave7_required.sh` で実行する。
-- NET endpoint required 配線の整合チェックは `bash scripts/verify_net_endpoint_required.sh` で実行する。
-- NET core stack required 配線の整合チェックは `bash scripts/verify_net_core_required.sh` で実行する。
-- NET peripheral required 配線の整合チェックは `bash scripts/verify_net_peripheral_required.sh` で実行する。
-- 公式導線 warning ゼロガードは `bash scripts/verify_qemu_official_warning_free.sh` で実行する。
-- CI warning 専用ジョブ `warning-free-official` は `target/qemu-logs/warning-check-*.log` を artifact 化する。
-- CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
-- `suite_pending` 実行時に `target/qemu-logs/pending-summary.txt` と `target/qemu-logs/pending-summary.json` が生成される。
-- `suite_kernel_runtime_pending` 実行時に `target/qemu-logs/kernel-runtime-pending-summary.txt` と `target/qemu-logs/kernel-runtime-pending-summary.json` が生成される。
-- runtime pending は runtime依存2件（`kernel_net_bridge_zero_copy_integration` / `kernel_bench_framebuffer`）専用の non-blocking 監視として運用する。
-- `kernel-runtime-pending-summary` は `suite`, `passed_count`, `failed_count`, `blocked_count`, `suite_log_path`, `generated_at_utc` を出力する。
-- CI pending ジョブは `suite_kernel_runtime_pending` / `suite_pending` を実行する。required 判定には影響させない（non-blocking）。
-- `suite_kernel` の required IOMMU 実行範囲は `qemu-suites/kernel/src/main.rs` を真実源とし、wave2 deterministic（core + poison/QI + grouping + ats_pri）と wave3 deterministic（scalable: pasid0 fault resolution + detach/attach cycle, pasid_table: alloc/free + multi-domain + exhaustion, mapping_slab, zombie_queue, pri_fuel）に加えて wave4 deterministic（AMD Wave0: alias/flags/ivmd range split/exclusion reject の6件）および wave5 deterministic（canonical 5件 + residual 0件 + AMD Wave1 residual 5件 + AMD Wave5 IRT 6件）を実行する。
-- IOMMU residual は収束済み（required canonical 5件, pending/parity は none）として運用する。
-- IOMMU residual canonical pending: `none`
-- 旧 `iommu_wave2_*` residual 名は compat alias として残置（required の正規導線は `iommu_wave5_*`）
-- IOMMU wave3 pending monitored smoke（required 未投入）: `none`
-- AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
-- AMD-Vi Wave1 required 実行対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`
-- AMD-Vi Wave5 required 実行対象（6件 — IRT）: `irt_entry_construction`, `irt_alloc_free`, `irt_exhaustion`, `irt_invalidation_cmd_format`, `map_interrupt_returns_handle`, `get_remap_msi_message_format`
-- Graphics/Framebuffer Wave6 Phase A required 実行対象（24件）: `draw_image_32bit_bgra_backbuffer`, `draw_image_24bit_bgr_backbuffer`, `write_bgr_run_small_mmio`, `write_bgr_run_large_mmio_full`, `write_bgr_run_large_mmio_full_unaligned`, `write_bgr_run_small_mmio_pairs_aligned`, `write_bgr_run_small_mmio_generic_unaligned`, `draw_hline_32bit_backbuffer`, `draw_text_space_32bit_backbuffer`, `draw_line_matches_naive_32bit_backbuffer`, `draw_line_matches_naive_24bit_backbuffer`, `draw_text_space_24bit_backbuffer`, `draw_image_32bit_mmio`, `draw_image_24bit_mmio`, `draw_image_32bit_mmio_rgba`, `write_bytes_mmio_alignment`, `write_opaque_run_24bit_even_odd_mmio`, `pack_rgba_to_bgra_basic`, `pack_rgba_to_bgra_scalar_random`, `draw_image_bgra_stream_matches_backbuffer`, `fill_rect_32bit_mmio`, `dirty_rect_tracking`, `dirty_rect_flush_only_marked_area`, `draw_text_partial_left_clip_32bit_backbuffer`
-- Graphics/Framebuffer Wave6 Phase B required 実行対象（12件）: `write_bgr_run_large_mmio`, `write_bgr_run_large`, `draw_image_24bit_rgb888_backbuffer`, `draw_hline_24bit_rgb888_mmio`, `pack_rgba_to_bgra_ssse3_matches_scalar`, `pack_rgba_to_bgra_avx2_matches_scalar`, `pack_rgba_to_bgr24_avx2_matches_scalar`, `pack_rgba_to_bgr24_ssse3_matches_scalar`, `pack_rgba_to_bgra_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar_rgb`, `packer_env_override_no_std`（ターゲット未対応SIMDは deterministic skip）
-
-- Graphics/Framebuffer Wave6 bench required 実行対象（5件）: `bench_draw_image_bulk`, `bench_draw_image_24bit_bulk`, `bench_draw_image_rgba_bulk`, `bench_draw_hline_bulk`, `bench_draw_text_bulk`（QEMU required では性能比較ではなく deterministic functional smoke として検証）
-- Graphics/Framebuffer Wave6 residual（pending）: `none`（bench系5件は required で deterministic functional smoke 化済み）
-- MM Wave7 async_swapout required 実行対象（9件）: `buffer_pool_4k_basic`, `buffer_pool_2m_basic`, `memcg_concurrent_swapout_canonical`, `async_swapout_concurrent_dedup_canonical`, `async_swapout_stress_concurrency_canonical`, `async_swapout_heavy_stress_canonical`, `bench_enqueue_pool_effect`, `bench_buffer_pool_2m_reuse`, `bench_buffer_pool_1g_reuse`（bench は性能比較ではなく deterministic functional smoke）
-- MM Wave7 required strict policy: allocation不足は required failure 扱い（OOM-pass fallback を許容しない）。
-- MM Wave7 page_reclaim required 実行対象（8件）: `watermarks_calculation`, `pressure_level`, `mglru_list_add`, `blocked_unsafe_requeues_victim`, `blocked_unsafe_requeues_anonymous_dirty_victim`, `file_backed_clean_reclaims_with_unsafe_disabled`, `async_success_clears_pending_and_accounts_success`, `async_failure_requeues_and_clears_pending`
-- MM Wave7 residual（pending監視）: `none`。
+- テスト構成は `純` (`pure_tests`) と `QEMU実` (`qemu-tests`, full-boot) の2層。
+- `qemu-tests` は `exoloader -> 実kernel ELF` を起動し、`run_integration=<profile>` で kernel runtime dispatcher を呼び出す。
+- `pending` / `kernel_runtime_pending` スイート運用は廃止。tier は `pr-required` / `nightly-required` に再編済み。
+- 移行棚卸しの真実源は `tests/migration_case_map.toml`。
+- `qemu-tests` の serial / QEMU stderr ログは `target/qemu-logs/` に出力される。
 - NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + socket + tcb + core(tests.rs) + types + window_scale。
 - NET endpoint residual（pending監視）: `none`。
 - NET core stack required 実行対象（90件）: L2-L4中心（adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp）。
 - NET core stack residual（pending監視）: `none`。
 - NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
 - NET peripheral residual（pending監視）: `none`。
-- Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（`qemu_suite_kernel` は `posix-compat` 有効）。
+- Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（full-boot runtime では `posix-compat` 有効）。
 - Storage/FS residual（pending監視）: `none`。
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。
 - `scripts/qemu_legacy_test_allowlist.lst` は `#[test]` 例外検出の実装ガード専用。
-- `scripts/qemu_pending_cases.lst` は移行監視の運用可視化リスト専用。
-- `scripts/qemu_iommu_residual_parity.lst` は residual canonical↔required smoke 対応表専用。
+- 移行棚卸しの管理ファイルは `tests/migration_case_map.toml` を参照する。
 
 ### 7.2 プロジェクト構造
 

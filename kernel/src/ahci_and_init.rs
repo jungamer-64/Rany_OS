@@ -251,14 +251,11 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
 
 /// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.
 pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
-    #[cfg(feature = "run-integration-tests")]
-    {
-        info!(target: "init", "Feature run-integration-tests enabled: running integration tests (storage)");
-        let (_passed, failed) = integration::run_all_integration_tests();
+    fn exit_with_runtime_summary(summary: crate::test::runtime_dispatch::RuntimeRunSummary) -> ! {
         use hal::port_io::PortU32;
 
         let mut port = PortU32::new(0xf4);
-        if failed == 0 {
+        if summary.is_success() {
             port.write(0x10u32);
         } else {
             port.write(0x11u32);
@@ -266,6 +263,16 @@ pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_m
         loop {
             x86_64::instructions::hlt();
         }
+    }
+
+    #[cfg(feature = "run-integration-tests")]
+    {
+        info!(
+            target: "init",
+            "Feature run-integration-tests enabled: running runtime test profile 'pr-required'"
+        );
+        let summary = crate::test::runtime_dispatch::run("pr-required", None);
+        exit_with_runtime_summary(summary);
     }
 
     if boot_info.cmdline_len > 0 {
@@ -290,61 +297,23 @@ pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_m
         let ptr = cmdline_addr as *const u8;
         let slice = unsafe { core::slice::from_raw_parts(ptr, cmdline_len) };
         if let Ok(cmdline) = core::str::from_utf8(slice) {
-            if let Some(val) = util::get_cmdline_option(cmdline, "run_integration") {
-                if val == "storage" || val == "1" {
-                    info!(target: "init", "Running integration tests (storage) as requested by cmdline");
-                    let (_passed, failed) = crate::test::integration::run_all_integration_tests();
-                    use hal::port_io::PortU32;
-
-                    let mut port = PortU32::new(0xf4);
-                    if failed == 0 {
-                        port.write(0x10u32);
-                    } else {
-                        port.write(0x11u32);
-                    }
-                    loop {
-                        x86_64::instructions::hlt();
-                    }
-                } else if val == "driver_cell" {
-                    info!(target: "init", "Running integration tests (driver_cell) as requested by cmdline");
-                    #[cfg(feature = "qemu-test-export")]
-                    {
-                        let summary =
-                            crate::driver_cell::qemu_tests::run_driver_cell_runtime_suite();
-                        info!(
-                            target: "init",
-                            "driver_cell runtime summary: pass={} fail={} blocked={}",
-                            summary.passed,
-                            summary.failed,
-                            summary.blocked
-                        );
-                        use hal::port_io::PortU32;
-
-                        let mut port = PortU32::new(0xf4);
-                        if summary.is_success() {
-                            port.write(0x10u32);
-                        } else {
-                            port.write(0x11u32);
-                        }
-                        loop {
-                            x86_64::instructions::hlt();
-                        }
-                    }
-                    #[cfg(not(feature = "qemu-test-export"))]
-                    {
-                        warn!(
-                            target: "init",
-                            "run_integration=driver_cell requires qemu-test-export feature"
-                        );
-                        use hal::port_io::PortU32;
-
-                        let mut port = PortU32::new(0xf4);
-                        port.write(0x11u32);
-                        loop {
-                            x86_64::instructions::hlt();
-                        }
-                    }
+            if let Some(profile) = util::get_cmdline_option(cmdline, "run_integration") {
+                let case_filter = util::get_cmdline_option(cmdline, "run_case");
+                match case_filter {
+                    Some(case_id) => info!(
+                        target: "init",
+                        "Running runtime test profile '{}' case '{}' as requested by cmdline",
+                        profile,
+                        case_id
+                    ),
+                    None => info!(
+                        target: "init",
+                        "Running runtime test profile '{}' as requested by cmdline",
+                        profile
+                    ),
                 }
+                let summary = crate::test::runtime_dispatch::run(profile, case_filter);
+                exit_with_runtime_summary(summary);
             }
         }
     }

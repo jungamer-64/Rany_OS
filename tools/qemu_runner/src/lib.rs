@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
-    pub suite: String,
+    pub profile: String,
+    pub case_filter: Option<String>,
     pub timeout_secs: u64,
     pub memory_mb: u64,
     pub smp: u8,
@@ -18,12 +19,13 @@ pub struct RunConfig {
 
 impl RunConfig {
     #[must_use]
-    pub fn for_suite(suite: impl Into<String>) -> Self {
+    pub fn for_profile(profile: impl Into<String>) -> Self {
         Self {
-            suite: suite.into(),
-            timeout_secs: 60,
-            memory_mb: 512,
-            smp: 1,
+            profile: profile.into(),
+            case_filter: None,
+            timeout_secs: 120,
+            memory_mb: 1024,
+            smp: 2,
             cpu: String::from("qemu64,+rdtscp"),
             extra_args: Vec::new(),
         }
@@ -31,16 +33,8 @@ impl RunConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct Artifact {
-    pub suite: String,
-    pub package: String,
-    pub binary_name: String,
-    pub binary_path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
 pub struct RunReport {
-    pub suite: String,
+    pub profile: String,
     pub artifact_path: PathBuf,
     pub log_path: PathBuf,
     pub qemu_stderr_path: PathBuf,
@@ -49,24 +43,34 @@ pub struct RunReport {
     pub duration: Duration,
 }
 
+#[derive(Debug, Clone)]
+pub struct PackagedImage {
+    pub boot_root: PathBuf,
+    pub kernel_payload_path: PathBuf,
+}
+
 #[derive(Debug)]
 pub enum BuildError {
-    UnknownSuite(String),
-    CargoLaunch(std::io::Error),
-    CargoFailed(i32),
-    ArtifactMissing(PathBuf),
+    CargoLaunch { step: &'static str, source: std::io::Error },
+    CargoFailed { step: &'static str, exit_code: i32 },
+    ArtifactMissing { step: &'static str, path: PathBuf },
+    Io { step: &'static str, source: std::io::Error },
 }
 
 impl fmt::Display for BuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownSuite(suite) => write!(f, "unknown suite: {suite}"),
-            Self::CargoLaunch(err) => write!(f, "failed to launch cargo: {err}"),
-            Self::CargoFailed(code) => {
-                write!(f, "cargo build failed with exit code {code}")
+            Self::CargoLaunch { step, source } => {
+                write!(f, "failed to launch cargo for {step}: {source}")
             }
-            Self::ArtifactMissing(path) => {
-                write!(f, "suite artifact not found: {}", path.display())
+            Self::CargoFailed { step, exit_code } => {
+                write!(f, "cargo step '{step}' failed with exit code {exit_code}")
+            }
+            Self::ArtifactMissing { step, path } => {
+                write!(f, "artifact missing after {step}: {}", path.display())
+            }
+            Self::Io { step, source } => {
+                write!(f, "I/O error during {step}: {source}")
             }
         }
     }
@@ -85,7 +89,7 @@ pub enum RunError {
         log_path: PathBuf,
         qemu_stderr_path: PathBuf,
     },
-    SuiteFailed(RunReport),
+    ProfileFailed(RunReport),
 }
 
 impl fmt::Display for RunError {
@@ -101,14 +105,14 @@ impl fmt::Display for RunError {
                 qemu_stderr_path,
             } => write!(
                 f,
-                "suite timed out after {timeout_secs}s (serial log: {}, qemu stderr log: {})",
+                "full-boot profile timed out after {timeout_secs}s (serial log: {}, qemu stderr log: {})",
                 log_path.display(),
                 qemu_stderr_path.display()
             ),
-            Self::SuiteFailed(report) => write!(
+            Self::ProfileFailed(report) => write!(
                 f,
-                "suite '{}' failed (host exit: {}, serial log: {}, qemu stderr log: {})",
-                report.suite,
+                "full-boot profile '{}' failed (host exit: {}, serial log: {}, qemu stderr log: {})",
+                report.profile,
                 report.host_exit_code,
                 report.log_path.display(),
                 report.qemu_stderr_path.display()
@@ -138,66 +142,189 @@ pub fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| manifest_dir.join("..").join(".."))
 }
 
-fn suite_package_name(suite: &str) -> Option<&'static str> {
-    match suite {
-        "core" => Some("qemu_suite_core"),
-        "drivers" => Some("qemu_suite_drivers"),
-        "fs" => Some("qemu_suite_fs"),
-        "kernel" => Some("qemu_suite_kernel"),
-        "kernel_runtime_pending" => Some("qemu_suite_kernel_runtime_pending"),
-        "tools" => Some("qemu_suite_tools"),
-        "graphics" => Some("qemu_suite_graphics"),
-        "pending" => Some("qemu_suite_pending"),
-        _ => None,
+fn run_cargo(root: &Path, step: &'static str, args: &[&str]) -> Result<(), BuildError> {
+    let status = Command::new("cargo")
+        .current_dir(root)
+        .args(args)
+        .status()
+        .map_err(|source| BuildError::CargoLaunch { step, source })?;
+
+    if status.success() {
+        return Ok(());
     }
+
+    Err(BuildError::CargoFailed {
+        step,
+        exit_code: status.code().unwrap_or(-1),
+    })
 }
 
-/// Build a UEFI suite binary for the given suite name.
-///
-/// # Errors
-///
-/// Returns [`BuildError`] if the suite name is unknown, cargo fails to
-/// launch or exits with a non-zero code, or the expected artifact is
-/// missing after the build.
-pub fn build_suite(suite: &str) -> Result<Artifact, BuildError> {
-    let package = suite_package_name(suite)
-        .ok_or_else(|| BuildError::UnknownSuite(String::from(suite)))?
-        .to_string();
-
-    let root = workspace_root();
-
-    let mut build_cmd = Command::new("cargo");
-    build_cmd
-        .current_dir(&root)
-        .arg("build")
-        .arg("-p")
-        .arg(&package)
-        .arg("--target")
-        .arg("x86_64-unknown-uefi")
-        .arg("-Z")
-        .arg("build-std=core,compiler_builtins,alloc")
-        .arg("-Z")
-        .arg("build-std-features=compiler-builtins-mem");
-
-    let status = build_cmd.status().map_err(BuildError::CargoLaunch)?;
-    if !status.success() {
-        return Err(BuildError::CargoFailed(status.code().unwrap_or(-1)));
+fn slugify(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
     }
+    if out.is_empty() {
+        out.push_str("default");
+    }
+    out
+}
 
-    let binary_path = root
+fn fullboot_label(config: &RunConfig) -> String {
+    let mut label = slugify(&config.profile);
+    if let Some(case) = &config.case_filter {
+        label.push_str("__");
+        label.push_str(&slugify(case));
+    }
+    label
+}
+
+fn kernel_cmdline(config: &RunConfig) -> String {
+    let mut parts = vec![
+        format!("run_integration={}", config.profile),
+        String::from("shell=off"),
+        String::from("qemu_no_if=1"),
+    ];
+    if let Some(case) = &config.case_filter {
+        parts.push(format!("run_case={case}"));
+    }
+    parts.join(" ")
+}
+
+pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
+    let root = workspace_root();
+    run_cargo(
+        &root,
+        "build exoloader",
+        &[
+            "build",
+            "-p",
+            "exoloader",
+            "--target",
+            "x86_64-unknown-uefi",
+            "-Z",
+            "build-std=core,compiler_builtins,alloc",
+            "-Z",
+            "build-std-features=compiler-builtins-mem",
+        ],
+    )?;
+
+    let path = root
         .join("target")
         .join("x86_64-unknown-uefi")
         .join("debug")
-        .join(format!("{package}.efi"));
-    if !binary_path.exists() {
-        return Err(BuildError::ArtifactMissing(binary_path));
+        .join("exoloader.efi");
+
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(BuildError::ArtifactMissing {
+            step: "build exoloader",
+            path,
+        })
+    }
+}
+
+pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
+    let root = workspace_root();
+    run_cargo(
+        &root,
+        "build kernel elf",
+        &[
+            "build",
+            "-p",
+            "rany_kernel",
+            "--target",
+            "x86_64-exorust.json",
+            "--features",
+            "qemu-test-export,posix-compat",
+            "-Z",
+            "json-target-spec",
+            "-Z",
+            "build-std=core,compiler_builtins,alloc",
+            "-Z",
+            "build-std-features=compiler-builtins-mem",
+        ],
+    )?;
+
+    let path = root
+        .join("target")
+        .join("x86_64-exorust")
+        .join("debug")
+        .join("exorust_kernel");
+
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(BuildError::ArtifactMissing {
+            step: "build kernel elf",
+            path,
+        })
+    }
+}
+
+pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, BuildError> {
+    let root = workspace_root();
+    let exoloader_path = build_exoloader_efi()?;
+    let kernel_elf_path = build_kernel_elf()?;
+
+    let label = fullboot_label(config);
+    let boot_root = root.join("target").join("qemu-boot").join(format!("fullboot-{label}"));
+    if boot_root.exists() {
+        std::fs::remove_dir_all(&boot_root).map_err(|source| BuildError::Io {
+            step: "remove old fullboot image",
+            source,
+        })?;
     }
 
-    Ok(Artifact {
-        suite: String::from(suite),
-        package,
-        binary_name: suite_package_name(suite).unwrap_or("unknown").to_string(),
-        binary_path,
+    let efi_boot = boot_root.join("EFI").join("BOOT");
+    std::fs::create_dir_all(&efi_boot).map_err(|source| BuildError::Io {
+        step: "create fullboot EFI directory",
+        source,
+    })?;
+    std::fs::copy(&exoloader_path, efi_boot.join("BOOTX64.EFI")).map_err(|source| {
+        BuildError::Io {
+            step: "copy exoloader.efi",
+            source,
+        }
+    })?;
+
+    let kernel_payload_path = boot_root.join("rany_os");
+    let kernel_bytes = std::fs::read(&kernel_elf_path).map_err(|source| BuildError::Io {
+        step: "read kernel elf",
+        source,
+    })?;
+    let mut payload = Vec::with_capacity(64 + kernel_bytes.len());
+    payload.resize(64, 0);
+    payload.extend_from_slice(&kernel_bytes);
+    std::fs::write(&kernel_payload_path, payload).map_err(|source| BuildError::Io {
+        step: "write signed kernel payload",
+        source,
+    })?;
+
+    let config_text = "timeout=0\ndefault=0\n\n[FullBoot]\nkernel=rany_os\n";
+    std::fs::write(boot_root.join("exoloader.cfg"), config_text).map_err(|source| {
+        BuildError::Io {
+            step: "write exoloader.cfg",
+            source,
+        }
+    })?;
+
+    std::fs::write(boot_root.join("exoloader.cmdline"), format!("{}\n", kernel_cmdline(config)))
+        .map_err(|source| BuildError::Io {
+            step: "write exoloader.cmdline",
+            source,
+        })?;
+
+    Ok(PackagedImage {
+        boot_root,
+        kernel_payload_path,
     })
 }
 
@@ -230,22 +357,20 @@ fn ensure_ovmf_assets(root: &Path) -> Result<(PathBuf, PathBuf), RunError> {
     Ok((code, vars))
 }
 
-fn detect_suite_result(log_path: &Path, suite: &str) -> Option<bool> {
+fn detect_fullboot_result(log_path: &Path) -> Option<bool> {
     let bytes = std::fs::read(log_path).ok()?;
     let serial = String::from_utf8_lossy(&bytes);
-    let pass = format!("[qemu-suite] {suite} pass");
-    if serial.contains(&pass) {
+    if serial.contains("[kernel-test] result pass") {
         return Some(true);
     }
-    let fail = format!("[qemu-suite] {suite} fail");
-    if serial.contains(&fail) {
+    if serial.contains("[kernel-test] result fail") {
         return Some(false);
     }
     None
 }
 
 fn make_report(
-    suite: String,
+    profile: String,
     artifact_path: PathBuf,
     log_path: PathBuf,
     qemu_stderr_path: PathBuf,
@@ -253,7 +378,7 @@ fn make_report(
     duration: Duration,
 ) -> RunReport {
     RunReport {
-        suite,
+        profile,
         artifact_path,
         log_path,
         qemu_stderr_path,
@@ -263,8 +388,6 @@ fn make_report(
     }
 }
 
-/// Shared QEMU execution loop: poll serial log for pass/fail markers and
-/// wait for QEMU to exit within the configured timeout.
 fn poll_qemu(
     config: &RunConfig,
     artifact_path: PathBuf,
@@ -286,12 +409,12 @@ fn poll_qemu(
             });
         }
 
-        if let Some(success) = detect_suite_result(&log_path, &config.suite) {
+        if let Some(success) = detect_fullboot_result(&log_path) {
             let _ = child.kill();
             let _ = child.wait();
             let host_exit_code = if success { 33 } else { 35 };
             let report = make_report(
-                config.suite.clone(),
+                config.profile.clone(),
                 artifact_path,
                 log_path,
                 qemu_stderr_path,
@@ -301,26 +424,25 @@ fn poll_qemu(
             if success {
                 return Ok(report);
             }
-            return Err(RunError::SuiteFailed(report));
+            return Err(RunError::ProfileFailed(report));
         }
 
         match child.try_wait() {
             Ok(Some(status)) => {
                 let host_exit_code = status.code().unwrap_or(-1);
-                let suite_token_result = detect_suite_result(&log_path, &config.suite);
+                let token_result = detect_fullboot_result(&log_path);
                 let report = make_report(
-                    config.suite.clone(),
+                    config.profile.clone(),
                     artifact_path,
                     log_path,
                     qemu_stderr_path,
                     host_exit_code,
                     start.elapsed(),
                 );
-
-                if suite_token_result == Some(true) || report.isa_debug_value == Some(0x10) {
+                if token_result == Some(true) || report.isa_debug_value == Some(0x10) {
                     return Ok(report);
                 }
-                return Err(RunError::SuiteFailed(report));
+                return Err(RunError::ProfileFailed(report));
             }
             Ok(None) => thread::sleep(Duration::from_millis(100)),
             Err(err) => {
@@ -332,44 +454,26 @@ fn poll_qemu(
     }
 }
 
-/// Run a UEFI suite binary via OVMF firmware.
-///
-/// # Errors
-///
-/// Returns [`RunError`] if the build fails, QEMU or OVMF firmware is
-/// not available, QEMU fails to launch, the suite times out, or the
-/// suite reports failure.
 #[allow(clippy::needless_pass_by_value)]
-pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
+pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     ensure_qemu_available()?;
-    let artifact = build_suite(&config.suite).map_err(RunError::Build)?;
+    let image = package_fullboot_image(&config).map_err(RunError::Build)?;
 
     let root = workspace_root();
     let (ovmf_code, ovmf_vars_template) = ensure_ovmf_assets(&root)?;
+
+    let label = fullboot_label(&config);
     let log_dir = root.join("target").join("qemu-logs");
     std::fs::create_dir_all(&log_dir).map_err(RunError::QemuLaunch)?;
-    let log_path = log_dir.join(format!("suite-{}.log", config.suite));
+    let log_path = log_dir.join(format!("fullboot-{label}.log"));
     std::fs::File::create(&log_path).map_err(RunError::QemuLaunch)?;
-    let qemu_stderr_path = log_dir.join(format!("suite-{}-qemu-stderr.log", config.suite));
-    let qemu_stderr_file =
-        std::fs::File::create(&qemu_stderr_path).map_err(RunError::QemuLaunch)?;
-
-    let boot_root = root
-        .join("target")
-        .join("qemu-boot")
-        .join(format!("suite-{}", config.suite));
-    if boot_root.exists() {
-        std::fs::remove_dir_all(&boot_root).map_err(RunError::QemuLaunch)?;
-    }
-    let efi_boot = boot_root.join("EFI").join("BOOT");
-    std::fs::create_dir_all(&efi_boot).map_err(RunError::QemuLaunch)?;
-    std::fs::copy(&artifact.binary_path, efi_boot.join("BOOTX64.EFI"))
-        .map_err(RunError::QemuLaunch)?;
+    let qemu_stderr_path = log_dir.join(format!("fullboot-{label}-qemu-stderr.log"));
+    let qemu_stderr_file = std::fs::File::create(&qemu_stderr_path).map_err(RunError::QemuLaunch)?;
 
     let vars_copy_path = root
         .join("target")
         .join("qemu-boot")
-        .join(format!("suite-{}-OVMF_VARS.fd", config.suite));
+        .join(format!("fullboot-{label}-OVMF_VARS.fd"));
     std::fs::copy(&ovmf_vars_template, &vars_copy_path).map_err(RunError::QemuLaunch)?;
 
     let serial_arg = format!("file:{}", log_path.display());
@@ -378,7 +482,7 @@ pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
         ovmf_code.display()
     );
     let ovmf_vars_arg = format!("if=pflash,format=raw,file={}", vars_copy_path.display());
-    let fat_arg = format!("format=raw,file=fat:rw:{}", boot_root.display());
+    let fat_arg = format!("format=raw,file=fat:rw:{}", image.boot_root.display());
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd
@@ -416,7 +520,7 @@ pub fn run_suite(config: RunConfig) -> Result<RunReport, RunError> {
     let child = qemu_cmd.spawn().map_err(RunError::QemuLaunch)?;
     poll_qemu(
         &config,
-        artifact.binary_path,
+        image.kernel_payload_path,
         log_path,
         qemu_stderr_path,
         child,

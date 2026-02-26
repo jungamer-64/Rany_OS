@@ -188,6 +188,7 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 pub mod qemu_tests {
     // only import what we actually use to avoid wildcard imports
     use super::{IrqPoisonLock, save_and_disable_interrupts, restore_interrupts, TEST_INTERRUPTS_ENABLED};
+    use core::sync::atomic::Ordering;
 
     pub fn basic_locking_smoke() -> bool {
         let lock = IrqPoisonLock::new(5usize);

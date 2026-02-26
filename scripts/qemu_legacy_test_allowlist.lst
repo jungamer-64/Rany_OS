@@ -1,1 +1,6 @@
-# Keep empty: all legacy #[test] were migrated to qemu suites.
+# Keep empty: legacy exceptions only. Official orchestrators are auto-allowed:
+# - qemu-tests/src/lib.rs
+# - pure-tests/src/lib.rs
+
+# Kernel host unit tests (intentional)
+kernel/src/io/log/logger_impl.rs

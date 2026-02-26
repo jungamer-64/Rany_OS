@@ -6,19 +6,15 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch: {}
+  schedule:
+    - cron: "0 3 * * *"
 
 jobs:
-  required-suites:
-    name: Required QEMU suites (${{ matrix.suite }})
+  pure-pr-required:
+    name: Pure tests (PR required)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [core, drivers, fs, graphics, kernel, tools]
-        cpu: ["qemu64,+rdtscp"]
-        memory_mb: [512]
-        smp: [1]
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -28,11 +24,6 @@ jobs:
         with:
           toolchain: nightly-2026-02-01
           components: rust-src, llvm-tools-preview
-
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -48,80 +39,12 @@ jobs:
       - name: Verify legacy #[test] allowlist
         run: bash scripts/verify_qemu_test_only.sh
 
-      - name: Verify IOMMU AMD Wave4 required wiring
-        run: bash scripts/verify_iommu_amd_wave4_required.sh
+      - name: Run pure PR-required tier
+        run: cargo test -p pure_tests pure_pr_required -- --exact --nocapture
 
-      - name: Verify IOMMU AMD Wave5 required wiring
-        run: bash scripts/verify_iommu_amd_wave5_required.sh
-
-      - name: Verify IOMMU Wave5 residual/canonical required wiring
-        run: bash scripts/verify_iommu_wave5_residual_canonical_required.sh
-
-      - name: Verify Graphics Framebuffer Wave6 required wiring
-        run: bash scripts/verify_graphics_framebuffer_wave6_required.sh
-
-      - name: Verify MM Wave7 required wiring
-        run: bash scripts/verify_mm_wave7_required.sh
-
-      - name: Verify driver time/driver_cell required wiring
-        run: bash scripts/verify_driver_time_driver_cell_required.sh
-
-      - name: Verify NET endpoint required wiring
-        run: bash scripts/verify_net_endpoint_required.sh
-
-      - name: Verify NET core required wiring
-        run: bash scripts/verify_net_core_required.sh
-
-      - name: Verify NET peripheral required wiring
-        run: bash scripts/verify_net_peripheral_required.sh
-
-      - name: Verify Storage/FS required wiring
-        run: bash scripts/verify_storage_fs_required.sh
-
-      - name: Verify NET/TLS Wave8 required wiring
-        run: bash scripts/verify_net_tls_wave8_required.sh
-
-      - name: Verify NET/ECDH required wiring
-        run: bash scripts/verify_net_ecdh_required.sh
-
-      - name: Run suite
-        env:
-          QEMU_TEST_CPU: ${{ matrix.cpu }}
-          QEMU_TEST_MEMORY_MB: ${{ matrix.memory_mb }}
-          QEMU_TEST_SMP: ${{ matrix.smp }}
-          QEMU_TEST_TIMEOUT_SECS: 90
-        run: |
-          if [ "${{ matrix.suite }}" = "kernel" ]; then
-            for run in 1 2 3; do
-              echo "kernel stability run ${run}/3"
-              cargo test -p qemu-tests -- --nocapture suite_kernel
-              if [ -f target/qemu-logs/suite-kernel.log ]; then
-                cp target/qemu-logs/suite-kernel.log "target/qemu-logs/suite-kernel-run${run}.log"
-              else
-                echo "missing target/qemu-logs/suite-kernel.log after run ${run}" >&2
-                exit 1
-              fi
-            done
-            for run in 1 2 3; do
-              test -f "target/qemu-logs/suite-kernel-run${run}.log"
-            done
-            ls -1 target/qemu-logs/suite-kernel-run*.log
-          else
-            cargo test -p qemu-tests -- --nocapture suite_${{ matrix.suite }}
-          fi
-
-      - name: Upload QEMU logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: qemu-logs-${{ matrix.suite }}
-          path: |
-            target/qemu-logs
-            scripts/qemu_legacy_test_allowlist.lst
-          if-no-files-found: ignore
-
-  warning-free-official:
-    name: Warning-free official QEMU entrypoint
+  fullboot-pr-required:
+    name: Full-boot QEMU (PR required)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -129,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
           toolchain: nightly-2026-02-01
           components: rust-src, llvm-tools-preview
@@ -150,26 +73,61 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-qemu-
 
-      - name: Verify warning root-cause cleanup
-        run: bash scripts/verify_qemu_warning_root_cause_cleanup.sh
+      - name: Run full-boot PR-required tier
+        env:
+          RUST_TEST_THREADS: 1
+          QEMU_TEST_CPU: qemu64,+rdtscp
+          QEMU_TEST_MEMORY_MB: 512
+          QEMU_TEST_SMP: 1
+          QEMU_TEST_TIMEOUT_SECS: 120
+        run: cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
-      - name: Verify warning-free official entrypoint
-        run: bash scripts/verify_qemu_official_warning_free.sh
-
-      - name: Upload warning check logs
+      - name: Upload full-boot logs (PR required)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qemu-warning-check-logs
+          name: qemu-logs-fullboot-pr-required
           path: |
-            target/qemu-logs/warning-check-*.log
+            target/qemu-logs
           if-no-files-found: ignore
 
-  pending-suite:
-    name: Pending QEMU suite (non-blocking)
+  pure-nightly-required:
+    name: Pure tests (nightly required)
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools-preview
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-qemu-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-qemu-
+
+      - name: Verify legacy #[test] allowlist
+        run: bash scripts/verify_qemu_test_only.sh
+
+      - name: Run pure nightly-required tier
+        run: cargo test -p pure_tests pure_nightly_required -- --ignored --exact --nocapture
+
+  fullboot-nightly-required:
+    name: Full-boot QEMU (nightly required)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -196,41 +154,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-qemu-
 
-      - name: Verify legacy #[test] allowlist
-        run: bash scripts/verify_qemu_test_only.sh
-
-      - name: Verify IOMMU residual parity mapping
-        run: bash scripts/verify_iommu_residual_parity.sh
-
-      - name: Verify IOMMU AMD Wave4 required wiring
-        run: bash scripts/verify_iommu_amd_wave4_required.sh
-
-      - name: Verify IOMMU AMD Wave5 required wiring
-        run: bash scripts/verify_iommu_amd_wave5_required.sh
-
-      - name: Run runtime pending and pending suite
+      - name: Run full-boot nightly-required tier
         env:
+          RUST_TEST_THREADS: 1
           QEMU_TEST_CPU: qemu64,+rdtscp
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
-          QEMU_TEST_TIMEOUT_SECS: 90
-        run: |
-          set -euo pipefail
-          cargo test -p qemu-tests -- --ignored --nocapture suite_kernel_runtime_pending
-          cargo test -p qemu-tests -- --ignored --nocapture suite_pending
+          QEMU_TEST_TIMEOUT_SECS: 180
+        run: cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapture
 
-      - name: Upload pending logs
+      - name: Upload full-boot logs (nightly required)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qemu-logs-pending
+          name: qemu-logs-fullboot-nightly-required
           path: |
             target/qemu-logs
-            target/qemu-logs/pending-summary.txt
-            target/qemu-logs/pending-summary.json
-            target/qemu-logs/kernel-runtime-pending-summary.txt
-            target/qemu-logs/kernel-runtime-pending-summary.json
-            scripts/qemu_pending_cases.lst
-            scripts/qemu_iommu_residual_parity.lst
-            scripts/qemu_legacy_test_allowlist.lst
           if-no-files-found: ignore

@@ -1,16 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    # QEMU-first test orchestration
+    # Test orchestration (2-layer: pure + full-boot QEMU)
+    "pure-tests",
     "qemu-tests",
-    "qemu-suites/core",
-    "qemu-suites/drivers",
-    "qemu-suites/fs",
-    "qemu-suites/kernel",
-    "qemu-suites/kernel-runtime-pending",
-    "qemu-suites/graphics",
-    "qemu-suites/tools",
-    "qemu-suites/pending",
     "tools/qemu_runner",
     # Core
     "kernel",
@@ -51,7 +44,7 @@ members = [
     # They are runnable via their manifest paths.
 ]
 exclude = ["tools/framebuffer_bench", "tools/signer", "tools/cap_harness", "tools/symlookup"]
-default-members = ["qemu-tests"]
+default-members = ["pure-tests"]
 
 [workspace.package]
 edition = "2024"

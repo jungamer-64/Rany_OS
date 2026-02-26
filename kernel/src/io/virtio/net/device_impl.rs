@@ -1,9 +1,13 @@
+use crate::sync::PoisonLock;
 use super::*;
 
 
 mod dma_helpers;
 pub use dma_helpers::*;
-mod tx_submit;
+mod tx;
+mod rx;
+mod irq;
+mod mac;
 impl Drop for NetVirtQueue {
     fn drop(&mut self) {
         if let Some(map) = self.iommu_map.take() {
@@ -113,13 +117,13 @@ pub struct VirtioNetDevice {
     /// 統計: 受信バイト数
     rx_bytes: AtomicU32,
     /// 受信用バッファマップ (desc_idx -> RxVbufInflight)
-    rx_buffers: Mutex<BTreeMap<u16, RxVbufInflight>>,
+    rx_buffers: PoisonLock<BTreeMap<u16, RxVbufInflight>>,
     /// 受信用バッファマップ (desc_idx -> RxPacketInflight) - zero-copy posted buffers from mempool
-    rx_packetrefs: Mutex<BTreeMap<u16, RxPacketInflight>>,
+    rx_packetrefs: PoisonLock<BTreeMap<u16, RxPacketInflight>>,
     /// 送信用 PacketRef インフライトマップ (desc_idx -> TxPacketInflight)
-    tx_packetrefs: Mutex<BTreeMap<u16, TxPacketInflight>>,
+    tx_packetrefs: PoisonLock<BTreeMap<u16, TxPacketInflight>>,
     /// 送信用インフライトバッファ (desc_idx -> CoherentDmaBuffer)
-    tx_inflight: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
+    tx_inflight: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
 }
 
 impl VirtioNetDevice {
@@ -168,10 +172,10 @@ impl VirtioNetDevice {
             rx_packets: AtomicU32::new(0),
             tx_bytes: AtomicU32::new(0),
             rx_bytes: AtomicU32::new(0),
-            rx_buffers: Mutex::new(BTreeMap::new()),
-            rx_packetrefs: Mutex::new(BTreeMap::new()),
-            tx_packetrefs: Mutex::new(BTreeMap::new()),
-            tx_inflight: Mutex::new(BTreeMap::new()),
+            rx_buffers: PoisonLock::new(BTreeMap::new()),
+            rx_packetrefs: PoisonLock::new(BTreeMap::new()),
+            tx_packetrefs: PoisonLock::new(BTreeMap::new()),
+            tx_inflight: PoisonLock::new(BTreeMap::new()),
         }
     }
 
@@ -580,7 +584,8 @@ impl VirtioNetDevice {
                     dma_addr,
                     buf_len
                 );
-                self.rx_packetrefs.lock().insert(desc_idx, RxPacketInflight {
+                let mut guard = self.rx_packetrefs.lock().unwrap_or_else(|e| e.into_inner());
+                guard.insert(desc_idx, RxPacketInflight {
                     packet,
                     iommu_iova,
                     iommu_map_len,
@@ -636,7 +641,8 @@ impl VirtioNetDevice {
                     dma_addr,
                     buf_len
                 );
-                self.rx_buffers.lock().insert(desc_idx, RxVbufInflight {
+                let mut guard = self.rx_buffers.lock().unwrap_or_else(|e| e.into_inner());
+                guard.insert(desc_idx, RxVbufInflight {
                     vbuf,
                     iommu_iova,
                     iommu_map_len,
