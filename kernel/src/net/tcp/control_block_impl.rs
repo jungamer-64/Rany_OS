@@ -551,6 +551,14 @@ impl TcpControlBlock {
             return false;
         }
 
+        // WARNING: this path allocates on the global heap.  In kernel/embedded
+        // builds the allocator may be extremely scarce; enabling the copy-fallback
+        // behaviour (non-zero limit) in production is therefore unsafe and can
+        // lead to OOM kills or heap exhaustion.  We disable the fallback by
+        // default (see `TCP_RECV_COPY_FALLBACK_LIMIT_BYTES`) and the only
+        // remaining callers are tests which explicitly set a limit.  If the
+        // fallback must be re-enabled in future consider using a fixed-size
+        // scratch buffer or a dedicated pool rather than `Vec::to_vec()`.
         self.push_recv_copy_fallback_back_unchecked(payload.to_vec());
         self.stats
             .record_recv_copy_fallback(payload.len(), self.rx.recv_queue_bytes);
@@ -575,18 +583,21 @@ impl TcpControlBlock {
         const MAX_RTO: u64 = 60_000_000; // 60 seconds in microseconds
 
         if let (Some(srtt), Some(rttvar)) = (self.timers.srtt, self.timers.rttvar) {
-            // Subsequent measurements
+            // Subsequent measurements.  Compute with β=1/4 and α=1/8 using
+            // shift operations to avoid repeated integer-division rounding.
             let diff = if rtt_sample > srtt {
                 rtt_sample - srtt
             } else {
                 srtt - rtt_sample
             };
-            self.timers.rttvar = Some(rttvar - rttvar / BETA + diff / BETA);
-            self.timers.srtt = Some(srtt - srtt / ALPHA + rtt_sample / ALPHA);
+            // rttvar = (3/4)*rttvar + (1/4)*diff
+            self.timers.rttvar = Some(rttvar - (rttvar >> 2) + (diff >> 2));
+            // srtt = (7/8)*srtt + (1/8)*rtt_sample
+            self.timers.srtt = Some(srtt - (srtt >> 3) + (rtt_sample >> 3));
         } else {
             // First measurement
             self.timers.srtt = Some(rtt_sample);
-            self.timers.rttvar = Some(rtt_sample / 2);
+            self.timers.rttvar = Some(rtt_sample >> 1);
         }
 
         // RTO = SRTT + max(G, 4 * RTTVAR) where G is clock granularity

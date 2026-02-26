@@ -356,12 +356,12 @@ impl IommuController {
     /// Allocate root table, program its address, and wait for hardware acknowledgment.
     unsafe fn setup_and_program_root_table(&mut self) -> Result<(), IommuError> {
         let root_table = HardwareTable::new(256, None)?;
-        self.hardware.lock().unwrap().root_table = Some(root_table);
+        self.hardware.lock().expect("IOMMU hardware lock poisoned").root_table = Some(root_table);
 
         let mut root_phys = self
             .hardware
             .lock()
-            .unwrap()
+            .expect("IOMMU hardware lock poisoned")
             .root_table
             .as_ref()
             .unwrap()
@@ -389,7 +389,7 @@ impl IommuController {
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
-            let mut hw = self.hardware.lock().unwrap();
+            let mut hw = self.hardware.lock().expect("IOMMU hardware lock poisoned");
             hw.scalable_context_tables = context_tables;
             hw.legacy_context_tables.clear();
         } else {
@@ -397,7 +397,7 @@ impl IommuController {
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
-            let mut hw = self.hardware.lock().unwrap();
+            let mut hw = self.hardware.lock().expect("IOMMU hardware lock poisoned");
             hw.legacy_context_tables = context_tables;
             hw.scalable_context_tables.clear();
         }

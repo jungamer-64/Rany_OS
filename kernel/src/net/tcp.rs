@@ -226,8 +226,16 @@ impl TcpStats {
     }
 }
 
-/// `recv_queue` (Vec fallback) の上限バイト数
-pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 64 * 1024;
+/// `recv_queue` (Vec fallback) の上限バイト数.
+///
+/// **NOTE:** the original design touted "zero copy", but the fallback allowed
+/// `Vec<u8>` copies up to this many bytes.  We are in the process of
+/// deprecating the fallback entirely; setting the constant to `0` causes any
+/// attempt to enqueue data to close the connection instead, forcing callers to
+/// address the condition explicitly.  Eventually the `recv_queue` field will be
+/// removed once the rest of the stack no longer depends on it.
+pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 0; // disabled
+
 
 /// TCP受信状態（バッファ管理）
 struct TcpRxState {
@@ -247,6 +255,7 @@ impl TcpRxState {
             recv_buffer: VecDeque::new(),
             recv_queue: VecDeque::new(),
             recv_queue_bytes: 0,
+            // limit initialized from constant above (currently zero)
             recv_queue_limit_bytes: TCP_RECV_COPY_FALLBACK_LIMIT_BYTES,
         }
     }

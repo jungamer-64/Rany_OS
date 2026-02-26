@@ -16,7 +16,7 @@ impl IommuDomain {
 
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .unwrap();
+                .expect("Failed to create page table layout");
 
         unsafe {
             let pml4_entry = self.page_table.add(pml4_idx);
@@ -120,7 +120,7 @@ impl IommuDomain {
 
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .unwrap();
+                .expect("Failed to create page table layout");
 
         unsafe {
             // Walk down to PT

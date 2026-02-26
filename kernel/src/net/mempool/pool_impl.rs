@@ -12,9 +12,9 @@ impl PacketPool {
         // individual buffer ahead of time to avoid re‑allocations.
         let mut buffers = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            let mut buf = Vec::with_capacity(buffer_size);
-            // initialize length so consumers can treat it as writable
-            unsafe { buf.set_len(buffer_size) }; // safe: capacity >= buffer_size
+            // start with zero-length vector but pre‑allocate capacity
+            // clients will set `len` to the amount of data they write themselves.
+            let buf = Vec::with_capacity(buffer_size);
             buffers.push(buf);
         }
 
@@ -38,15 +38,16 @@ impl PacketPool {
 
     /// Return a buffer to the pool
     pub fn free(&self, mut buffer: Vec<u8>) {
-        // For performance we no longer zero the entire buffer on every free;
-        // callers are responsible for writing the bytes they need when the
-        // buffer is reallocated.  Clearing would have been a major hotspot
-        // for MTU‑sized packets.
+        // For performance we intentionally avoid zeroing here; callers are
+        // expected to overwrite the contents when they reuse the buffer.
+        // The only invariant we maintain is that returned vectors have
+        // `capacity() == self.buffer_size` and `len() == 0`.
         if buffer.capacity() != self.buffer_size {
-            // if the caller resized the vector, shrink it back to the pool size
-            buffer.truncate(self.buffer_size);
-            buffer.reserve(self.buffer_size - buffer.len());
-            unsafe { buffer.set_len(self.buffer_size) };
+            // drop whatever the caller gave us and create a fresh one
+            buffer = Vec::with_capacity(self.buffer_size);
+        } else {
+            // simply reset length to zero; existing capacity stays intact
+            buffer.clear();
         }
 
         match self.buffers.lock() {

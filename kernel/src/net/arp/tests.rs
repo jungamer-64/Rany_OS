@@ -35,3 +35,23 @@ pub fn test_arp_packet() {
     assert_eq!(packet.sender_ip(), sender_ip);
     assert_eq!(packet.target_ip(), target_ip);
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_processor_ignores_unrequested_reply() {
+    // reply from 10.0.0.5 should not populate cache when we never asked
+    let proc = ArpProcessor::new(
+        MacAddress::from_octets(0, 0, 0, 0, 0, 1),
+        Ipv4Address::from_octets(10, 0, 0, 1),
+    );
+    let sender_ip = Ipv4Address::from_octets(10, 0, 0, 5);
+    let sender_mac = MacAddress::from_octets(0xa, 0xb, 0xc, 0xd, 0xe, 0xf);
+
+    let mut buf = [0u8; ArpPacket::SIZE];
+    let packet = crate::util::get_mut_ref::<ArpPacket>(&mut buf, 0)
+        .unwrap();
+    packet.init_reply(sender_mac, sender_ip, MacAddress::BROADCAST, Ipv4Address::ANY);
+
+    let res = proc.process(&buf, 12345);
+    assert_eq!(res, ArpResult::Ignored);
+    assert!(proc.cache().lookup(sender_ip, 12345).is_none());
+}

@@ -180,6 +180,12 @@ impl NetworkManager {
             return Err(NetworkError::InvalidAddress);
         }
         self.routes_v4.push(route);
+        // keep longest-prefix/lowest-metric routes first so lookup can stop early
+        self.routes_v4.sort_unstable_by(|a, b| {
+            b.prefix_len.cmp(&a.prefix_len)
+                .then_with(|| a.metric.cmp(&b.metric))
+                .then_with(|| a.if_id.cmp(&b.if_id))
+        });
         Ok(())
     }
 
@@ -194,25 +200,23 @@ impl NetworkManager {
     }
 
     pub fn lookup_ipv4_route(&self, dst: Ipv4Address) -> RouteLookupResultV4 {
-        let mut best: Option<Ipv4Route> = None;
-        for route in self.routes_v4.iter().copied() {
+        // routes_v4 is sorted by prefix_len/metric/if_id; pick first matching entry
+        for route in &self.routes_v4 {
             if !route.admin_enabled {
                 continue;
             }
-            let Some(iface) = self.interfaces.get(&route.if_id) else {
-                continue;
-            };
-            if !iface.admin_up {
-                continue;
-            }
-            if !ipv4_prefix_match(dst, route.destination, route.prefix_len) {
+            if let Some(iface) = self.interfaces.get(&route.if_id) {
+                if !iface.admin_up {
+                    continue;
+                }
+            } else {
                 continue;
             }
-            if route_is_better_v4(route, best) {
-                best = Some(route);
+            if ipv4_prefix_match(dst, route.destination, route.prefix_len) {
+                return Some(*route);
             }
         }
-        best
+        None
     }
 
     pub fn add_ipv6_route(&mut self, route: Ipv6Route) -> Result<(), NetworkError> {
@@ -223,6 +227,11 @@ impl NetworkManager {
             return Err(NetworkError::InvalidAddress);
         }
         self.routes_v6.push(route);
+        self.routes_v6.sort_unstable_by(|a, b| {
+            b.prefix_len.cmp(&a.prefix_len)
+                .then_with(|| a.metric.cmp(&b.metric))
+                .then_with(|| a.if_id.cmp(&b.if_id))
+        });
         Ok(())
     }
 
@@ -237,25 +246,22 @@ impl NetworkManager {
     }
 
     pub fn lookup_ipv6_route(&self, dst: Ipv6Address) -> RouteLookupResultV6 {
-        let mut best: Option<Ipv6Route> = None;
-        for route in self.routes_v6.iter().copied() {
+        for route in &self.routes_v6 {
             if !route.admin_enabled {
                 continue;
             }
-            let Some(iface) = self.interfaces.get(&route.if_id) else {
-                continue;
-            };
-            if !iface.admin_up {
-                continue;
-            }
-            if !ipv6_prefix_match(dst, route.destination, route.prefix_len) {
+            if let Some(iface) = self.interfaces.get(&route.if_id) {
+                if !iface.admin_up {
+                    continue;
+                }
+            } else {
                 continue;
             }
-            if route_is_better_v6(route, best) {
-                best = Some(route);
+            if ipv6_prefix_match(dst, route.destination, route.prefix_len) {
+                return Some(*route);
             }
         }
-        best
+        None
     }
 
     pub fn set_default_route_v4(

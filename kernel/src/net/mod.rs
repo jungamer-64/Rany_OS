@@ -90,14 +90,12 @@ pub mod checksum_offload;
 pub mod stack_timeouts;
 
 // Re-export mempool
-#[allow(unused_imports)]
 pub use mempool::{
     Mempool, MempoolStats, PacketBuffer, PacketPool, PacketRef, alloc_packet, init_net_mempool,
     net_mempool,
 };
 
 // Re-export TCP
-#[allow(unused_imports)]
 pub use tcp::{
     // トレイト
     AsyncRead,
@@ -115,54 +113,46 @@ pub use tcp::{
 };
 
 // Re-export Ethernet
-#[allow(unused_imports)]
 pub use ethernet::{
     EtherType, EthernetFrame, EthernetFrameMut, EthernetHeader, EthernetProcessor, EthernetStats,
     MacAddress, VlanEthernetFrameMut, VlanTag, insert_vlan_tag, strip_vlan_tag,
 };
 
 // Re-export IPv4
-#[allow(unused_imports)]
 pub use ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4Header, Ipv4Packet, Ipv4PacketMut, Ipv4Processor,
     Ipv4Stats,
 };
 
 // Re-export IPv6
-#[allow(unused_imports)]
 pub use ipv6::{
     Ipv6Address, Ipv6Config, Ipv6Header, Ipv6Packet, Ipv6PacketMut, Ipv6ProcessResult,
     Ipv6Processor, Ipv6Stats,
 };
 
 // Re-export ICMPv6
-#[allow(unused_imports)]
 pub use icmpv6::{
     Icmpv6EchoBuilder, Icmpv6Header, Icmpv6Processor, Icmpv6Result, Icmpv6Stats, Icmpv6Type,
 };
 
 // Re-export NDP
-#[allow(unused_imports)]
 pub use ndp::{
     NdpOption, NdpProcessor, NdpResult, NdpStats, NeighborCache, NeighborEntry, NeighborState,
 };
 
 // Re-export ARP
-#[allow(unused_imports)]
 pub use arp::{
     ArpCache, ArpEntry, ArpEntryState, ArpHardwareType, ArpOperation, ArpPacket, ArpProcessor,
     ArpResult,
 };
 
 // Re-export ICMP
-#[allow(unused_imports)]
 pub use icmp::{
     DestUnreachCode, IcmpBuilder, IcmpEcho, IcmpEchoBuilder, IcmpEchoHeader, IcmpHeader,
     IcmpPacket, IcmpProcessor, IcmpResult, IcmpStats, IcmpType, TimeExceededCode,
 };
 
 // Re-export UDP
-#[allow(unused_imports)]
 pub use udp::{
     UdpAddr, UdpHeader, UdpPacket, UdpPacketMut, UdpProcessor, UdpResult, UdpSocket,
     UdpSocketSnapshot, UdpSocketTable,
@@ -627,39 +617,43 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
         return false;
     }
 
-    // append options sequentially
-    let mut offset = DhcpHeader::SIZE;
-    buf[offset..offset + DHCP_MAGIC_COOKIE.len()].copy_from_slice(&DHCP_MAGIC_COOKIE);
-    offset += DHCP_MAGIC_COOKIE.len();
+    // build options into a temporary vector, which keeps us from
+    // having to hand‑calculate offsets and makes it easy to add/remove
+    // fields without risk of overflowing `buf`.
+    let mut opts = Vec::with_capacity(64);
+    opts.extend_from_slice(&DHCP_MAGIC_COOKIE);
 
     // message type
-    buf[offset] = DhcpOption::MessageType as u8;
-    buf[offset + 1] = 1;
-    buf[offset + 2] = DhcpMessageType::Request as u8;
-    offset += 3;
+    opts.push(DhcpOption::MessageType as u8);
+    opts.push(1);
+    opts.push(DhcpMessageType::Request as u8);
 
     // requested IP
-    buf[offset] = DhcpOption::RequestedIp as u8;
-    buf[offset + 1] = 4;
-    buf[offset + 2..offset + 6].copy_from_slice(&offered_ip);
-    offset += 6;
+    opts.push(DhcpOption::RequestedIp as u8);
+    opts.push(4);
+    opts.extend_from_slice(&offered_ip);
 
     // server identifier
-    buf[offset] = DhcpOption::ServerIdentifier as u8;
-    buf[offset + 1] = 4;
-    buf[offset + 2..offset + 6].copy_from_slice(&server_ip);
-    offset += 6;
+    opts.push(DhcpOption::ServerIdentifier as u8);
+    opts.push(4);
+    opts.extend_from_slice(&server_ip);
 
     // end option
-    buf[offset] = DhcpOption::End as u8;
-    offset += 1;
+    opts.push(DhcpOption::End as u8);
+
+    let total_len = DhcpHeader::SIZE + opts.len();
+    if total_len > buf.len() {
+        // should never happen, but guard against overflow
+        return false;
+    }
+    buf[DhcpHeader::SIZE..DhcpHeader::SIZE + opts.len()].copy_from_slice(&opts);
 
     let dst = if server_ip == [0, 0, 0, 0] {
         Ipv4Address::new([255, 255, 255, 255])
     } else {
         Ipv4Address::new(server_ip)
     };
-    stack::send_udp(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..offset])
+    stack::send_udp(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..total_len])
 }
 
 /// 外部API: アクティブなリースがあれば RELEASE を送信し状態をリセット

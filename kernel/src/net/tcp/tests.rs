@@ -21,6 +21,19 @@ pub fn test_tcp_state() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_send_capacity_respects_scaled_window() {
+    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
+    tcb.enter_established();
+    // peer advertised window = 100 with scale factor 4 -> effective 1600
+    tcb.seq.snd_wnd = 100;
+    tcb.set_peer_wscale(4);
+    tcb.congestion.cwnd = 10_000; // large, not limiting
+
+    assert_eq!(tcb.get_effective_snd_wnd(), 100u32 << 4);
+    assert_eq!(tcb.send_capacity_bytes(), (100u32 << 4) as usize);
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_tcp_stats_rx_wire_and_app_delivery_are_separate() {
     let mut stats = TcpStats::default();
     stats.record_rx_segment(128);
@@ -100,6 +113,9 @@ pub fn test_copy_fallback_queues_payload_and_keeps_connection_alive() {
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
     tcb.enter_established();
+    // since copy-fallback is disabled by default we must give the TCB a
+    // nonzero limit for this test
+    tcb.set_recv_copy_fallback_limit_bytes(64 * 1024);
     tcb.set_rcv_nxt(10);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     processor.connections.insert((local, remote), tcb_arc.clone());
@@ -157,8 +173,9 @@ pub fn test_recv_copy_fallback_overflow_sends_rst_and_closes() {
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
     tcb.enter_established();
-    tcb.set_rcv_nxt(42);
+    // ensure at least some space for payload, overflow will be triggered later
     tcb.set_recv_copy_fallback_limit_bytes(1024);
+    tcb.set_rcv_nxt(42);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     processor.connections.insert((local, remote), tcb_arc.clone());
 
@@ -207,6 +224,8 @@ pub fn test_poll_read_consumes_recv_copy_fallback_queue_with_remainder() {
     let mut tcb = TcpControlBlock::new(local);
     tcb.set_remote_addr(remote);
     tcb.enter_established();
+    // make room for the small queue we will push in
+    tcb.set_recv_copy_fallback_limit_bytes(16);
     assert!(tcb.enqueue_recv_copy_fallback(&[1, 2, 3, 4, 5]));
 
     let tcb_arc = Arc::new(PoisonLock::new(tcb));

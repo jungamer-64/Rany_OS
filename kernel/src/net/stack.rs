@@ -340,20 +340,18 @@ impl NdpPendingQueue {
 
     /// 指定アドレス宛のパケットを取り出す
     fn drain_for(&mut self, dst: &Ipv6Address) -> Vec<PendingIpv6Packet> {
+        // use retain to avoid expensive rotations; this also keeps order for
+        // packets not matching the destination.
         let mut matched = Vec::new();
-        let len = self.packets.len();
-        
-        // Rotate elements in-place to avoid new VecDeque allocations
-        for _ in 0..len {
-            if let Some(pkt) = self.packets.pop_front() {
-                if pkt.dst == *dst {
-                    matched.push(pkt);
-                } else {
-                    self.packets.push_back(pkt);
-                }
+        self.packets.retain(|pkt| {
+            if pkt.dst == *dst {
+                // clone is cheap (~3 words) and PendingIpv6Packet derives Clone
+                matched.push(pkt.clone());
+                false
+            } else {
+                true
             }
-        }
-
+        });
         matched
     }
 

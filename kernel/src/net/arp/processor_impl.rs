@@ -28,9 +28,13 @@ impl ArpProcessor {
             return ArpResult::Invalid;
         }
 
-        // SAFETY: We checked the length. Use centralized helper for bounds/alignment check.
-        let packet =
+        // SAFETY: We checked the length.  Instead of holding a reference to a
+        // packed struct (which may generate unaligned loads), copy the header to
+        // an owned value via `read_unaligned`.  That way we avoid any hardware
+        // alignment faults on platforms like ARM.
+        let packet_ref =
             crate::util::get_ref::<ArpPacket>(data, 0).expect("ARP packet slice out of bounds");
+        let packet: ArpPacket = unsafe { core::ptr::read_unaligned(packet_ref) };
 
         if !packet.is_valid() {
             return ArpResult::Invalid;
@@ -40,11 +44,21 @@ impl ArpProcessor {
         let sender_ip = packet.sender_ip();
         let target_ip = packet.target_ip();
 
-        // Security: Only update cache if it's a direct ARP reply or a request for us.
-        // We avoid caching ARP traffic between other hosts (passive poisoning).
-        let is_relevant = target_ip == self.local_ip || packet.operation() == ArpOperation::Reply;
+        // Decide whether we're allowed to update the cache.  Only accept:
+        //  * requests that target us
+        //  * replies for which we already had a pending/known entry
+        let mut should_update = false;
+        if !sender_ip.is_any() && !sender_mac.is_broadcast() {
+            if target_ip == self.local_ip {
+                should_update = true;
+            } else if packet.operation() == ArpOperation::Reply {
+                if self.cache.lookup(sender_ip, current_time).is_some() {
+                    should_update = true;
+                }
+            }
+        }
 
-        if is_relevant && !sender_ip.is_any() && !sender_mac.is_broadcast() {
+        if should_update {
             self.cache.insert(sender_ip, sender_mac, current_time);
         }
 
@@ -61,8 +75,11 @@ impl ArpProcessor {
                 }
             }
             ArpOperation::Reply => {
-                // We already updated the cache above
-                ArpResult::CacheUpdated
+                if should_update {
+                    ArpResult::CacheUpdated
+                } else {
+                    ArpResult::Ignored
+                }
             }
             _ => ArpResult::Ignored,
         }

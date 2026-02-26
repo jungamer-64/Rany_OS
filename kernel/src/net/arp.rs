@@ -586,6 +586,7 @@ pub struct ArpProcessor {
 }
 
 /// Result of ARP processing
+#[derive(Debug, PartialEq)]
 pub enum ArpResult {
     /// Need to send an ARP reply
     SendReply {
