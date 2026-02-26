@@ -352,7 +352,7 @@ impl VirtioConsoleDevice {
 
             // Configure descriptor: device writes into this buffer
             unsafe {
-                (*queue_guard.desc_table.add(desc_idx as usize)) = VringDesc {
+                (*queue_guard.desc_table.as_ptr().add(desc_idx as usize)) = VringDesc {
                     addr: phys_addr,
                     len: RX_BUFFER_SIZE as u32,
                     flags: vring_flags::VRING_DESC_F_WRITE,
@@ -408,7 +408,7 @@ impl VirtioConsoleDevice {
 
         // Configure descriptor: device reads from this buffer
         unsafe {
-            (*queue_guard.desc_table.add(desc_idx as usize)) = VringDesc {
+            (*queue_guard.desc_table.as_ptr().add(desc_idx as usize)) = VringDesc {
                 addr: phys_addr,
                 len: data.len() as u32,
                 flags: 0, // Device reads (no WRITE flag)
@@ -467,7 +467,7 @@ impl VirtioConsoleDevice {
             let phys_addr = new_buffer.device_addr();
             if let Some(new_desc) = queue_guard.alloc_desc() {
                 unsafe {
-                    (*queue_guard.desc_table.add(new_desc as usize)) = VringDesc {
+                    (*queue_guard.desc_table.as_ptr().add(new_desc as usize)) = VringDesc {
                         addr: phys_addr,
                         len: RX_BUFFER_SIZE as u32,
                         flags: vring_flags::VRING_DESC_F_WRITE,
@@ -525,7 +525,7 @@ impl VirtioConsoleDevice {
             // Peek: check if there are pending completions without consuming them,
             // since read_bytes() will consume them. We just wake the waiters.
             let last_used = queue_guard.last_used_idx.load(Ordering::Acquire);
-            let used_idx = unsafe { (*queue_guard.used_ring).idx } as u32;
+            let used_idx = unsafe { (*queue_guard.used_ring.as_ptr()).idx } as u32;
             if last_used != used_idx {
                 // There are unprocessed RX completions - wake waiters
                 let mut wakers = self.pending_wakers.lock();
@@ -558,12 +558,7 @@ impl VirtioConsoleDevice {
         if self.features & features::VIRTIO_CONSOLE_F_EMERG_WRITE != 0 {
             // emerg_wr is a u32 at config space offset 8.
             // Write the character in the low byte.
-            // Use pointer cast since transport.write_config_u32 requires &mut self
-            // but config writes are atomic MMIO operations safe for shared access.
-            let transport_ptr = &*self.transport as *const dyn VirtioTransport as *mut dyn VirtioTransport;
-            unsafe {
-                (*transport_ptr).write_config_u32(config_offsets::EMERG_WR, c as u32);
-            }
+            self.transport.write_config_u32(config_offsets::EMERG_WR, c as u32);
         }
     }
 }

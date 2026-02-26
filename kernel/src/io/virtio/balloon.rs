@@ -312,7 +312,7 @@ impl VirtioBalloonDevice {
             let desc_table = queue_guard.desc_table;
 
             // Single readable descriptor: device reads PFN array from driver
-            (*desc_table.add(desc_idx as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc_idx as usize)) = VringDesc {
                 addr: phys_addr,
                 len: byte_len as u32,
                 flags: 0, // No WRITE flag = device-readable
@@ -368,18 +368,7 @@ impl VirtioBalloonDevice {
     ///
     /// The driver updates `actual` to report how many pages it currently holds.
     pub fn write_actual(&self, pages: u32) {
-        // Note: write_config_u32 requires &mut self on the transport trait, but our transport
-        // is behind Box<dyn VirtioTransport> which is not &mut. The balloon device needs
-        // to use the transport in a way that is safe for shared access. Since the transport
-        // is only accessed from within VirtioBalloonDevice which is behind Arc<>,
-        // and config writes are atomic MMIO operations, we use a pointer cast here.
-        //
-        // This is the same pattern used by other VirtIO drivers in this codebase where
-        // interrupt handlers need to call transport methods with &self.
-        let transport_ptr = &*self.transport as *const dyn VirtioTransport as *mut dyn VirtioTransport;
-        unsafe {
-            (*transport_ptr).write_config_u32(config_offsets::ACTUAL, pages);
-        }
+        self.transport.write_config_u32(config_offsets::ACTUAL, pages);
     }
 
     /// Handle interrupt from the balloon device.

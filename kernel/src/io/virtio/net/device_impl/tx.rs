@@ -144,13 +144,13 @@ impl VirtioNetDevice {
 
         let data = packet.data();
         let phys_addr = packet.phys_addr();
-        let data_len = core::mem::size_of::<VirtioNetHeader>() + data.len();
+        let payload_len = data.len();
         let phys_addr_val = phys_addr.as_u64();
 
         let (dma_addr, mapped_iova, mapped_len, bounce_buffer) =
-            self.prepare_zero_copy_dma(phys_addr_val, data, data_len)?;
+            self.prepare_zero_copy_dma(phys_addr_val, data, payload_len)?;
 
-        if let Err(err) = check_device_dma_mask(self.iommu_device_id, dma_addr, data_len) {
+        if let Err(err) = check_device_dma_mask(self.iommu_device_id, dma_addr, payload_len) {
             self.cleanup_dma_on_error(bounce_buffer, mapped_iova, mapped_len);
             return Err(err);
         }
@@ -183,12 +183,6 @@ impl VirtioNetDevice {
         data: &[u8],
         data_len: usize,
     ) -> Result<(u64, Option<u64>, usize, Option<crate::io::dma::CoherentDmaBuffer>), VirtioNetError> {
-        let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
-        let page_base = phys_addr_val & !page_mask;
-        let page_offset = (phys_addr_val - page_base) as usize;
-        let map_len = crate::mm::types::PAGE_SIZE_4K;
-        let can_map_page = page_offset + data_len <= map_len;
-
         if !is_iommu_enabled() {
             if is_iommu_required() {
                 return Err(VirtioNetError::DeviceError);
@@ -196,7 +190,38 @@ impl VirtioNetDevice {
             return Ok((phys_addr_val, None, 0, None));
         }
 
-        if !can_map_page {
+        let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
+        let page_base = phys_addr_val & !page_mask;
+        let page_offset = (phys_addr_val - page_base) as usize;
+        let map_len = crate::mm::types::PAGE_SIZE_4K;
+        
+        // Ensure the data fits within the aligned page.
+        // PacketBuffer is designed to be 4K-aligned and contiguous.
+        if page_offset + data_len <= map_len {
+            if let Some(device_id) = self.iommu_device_id.as_ref() {
+                match unsafe {
+                    map_for_device_with_perms(
+                        device_id,
+                        x86_64::PhysAddr::new(page_base),
+                        map_len as u64,
+                        true,
+                        false,
+                    )
+                } {
+                    Ok(iova) => {
+                        let dma_addr = iova + page_offset as u64;
+                        return Ok((dma_addr, Some(iova), map_len, None));
+                    }
+                    Err(e) => {
+                        log::warn!("[VIRTIO-NET] IOMMU map failed for zero-copy: {:?}", e);
+                        // Fallback to bounce buffer
+                    }
+                }
+            }
+        }
+
+        // Fallback to bounce buffer if direct mapping is not possible or failed
+        if page_offset + data_len > map_len {
             self.prepare_bounce_no_page_align(data, data_len)
         } else {
             self.prepare_bounce_page_align(data, data_len, page_offset, map_len)

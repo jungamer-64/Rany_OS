@@ -127,9 +127,15 @@ tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$tmp_dir/drivers"
+mkdir -p "$tmp_dir/cells"
 cp "$DEPLOY_DIR/driver_cell_probe_v1.cell" "$tmp_dir/drivers/driver_cell_probe.cell"
+cp "$DEPLOY_DIR/driver_cell_probe_v1.cell" "$tmp_dir/cells/driver_cell_probe_v1.cell"
+cp "$DEPLOY_DIR/driver_cell_probe_v2.cell" "$tmp_dir/cells/driver_cell_probe_v2.cell"
 rm -f "$INITRAMFS_PATH"
-(cd "$tmp_dir" && tar -cf "$INITRAMFS_PATH" drivers/driver_cell_probe.cell)
+(cd "$tmp_dir" && tar -cf "$INITRAMFS_PATH" \
+    drivers/driver_cell_probe.cell \
+    cells/driver_cell_probe_v1.cell \
+    cells/driver_cell_probe_v2.cell)
 
 echo "[driver_cell_probe_fixtures] wrote $INITRAMFS_PATH"
 echo "[driver_cell_probe_fixtures] run.sh will auto-deploy:"

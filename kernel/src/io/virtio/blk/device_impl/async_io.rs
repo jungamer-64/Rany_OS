@@ -572,7 +572,8 @@ fn install_virtio_blk_device(index: u8, device_arc: Arc<VirtioBlkDevice>) {
 /// Get a shared reference to the VirtIO block device by index.
 pub fn get_virtio_blk_device_at_index(index: u8) -> Option<Arc<VirtioBlkDevice>> {
     if index == 0 {
-        VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+     let device_guard = VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+     device_guard.clone()
     } else {
         VIRTIO_BLK_DEVICES.read().get(&index).cloned()
     }

@@ -395,7 +395,7 @@ impl VirtioBlkDevice {
             let desc_table = queue_guard.desc_table;
 
             // Descriptor 0: Header (device reads from DMA memory)
-            (*desc_table.add(desc0 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc0 as usize)) = VringDesc {
                 addr: req_dma.header_phys,
                 len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
@@ -403,7 +403,7 @@ impl VirtioBlkDevice {
             };
 
             // Descriptor 1: Data buffer (device writes)
-            (*desc_table.add(desc1 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc1 as usize)) = VringDesc {
                 addr: buf_addr,
                 len,
                 flags: vring_flags::VRING_DESC_F_NEXT | vring_flags::VRING_DESC_F_WRITE,
@@ -411,7 +411,7 @@ impl VirtioBlkDevice {
             };
 
             // Descriptor 2: Status byte (device writes to DMA memory)
-            (*desc_table.add(desc2 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc2 as usize)) = VringDesc {
                 addr: req_dma.status_phys,
                 len: 1,
                 flags: vring_flags::VRING_DESC_F_WRITE,
@@ -496,7 +496,7 @@ impl VirtioBlkDevice {
             let desc_table = queue_guard.desc_table;
 
             // Descriptor 0: Header (device reads from DMA memory)
-            (*desc_table.add(desc0 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc0 as usize)) = VringDesc {
                 addr: req_dma.header_phys,
                 len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
@@ -504,7 +504,7 @@ impl VirtioBlkDevice {
             };
 
             // Descriptor 1: Data buffer (device reads)
-            (*desc_table.add(desc1 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc1 as usize)) = VringDesc {
                 addr: buf_addr,
                 len,
                 flags: vring_flags::VRING_DESC_F_NEXT,
@@ -512,7 +512,7 @@ impl VirtioBlkDevice {
             };
 
             // Descriptor 2: Status byte (device writes to DMA memory)
-            (*desc_table.add(desc2 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc2 as usize)) = VringDesc {
                 addr: req_dma.status_phys,
                 len: 1,
                 flags: vring_flags::VRING_DESC_F_WRITE,
@@ -564,7 +564,7 @@ impl VirtioBlkDevice {
             let desc_table = queue_guard.desc_table;
 
             // Descriptor 0: Header (device reads from DMA memory)
-            (*desc_table.add(desc0 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc0 as usize)) = VringDesc {
                 addr: req_dma.header_phys,
                 len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
                 flags: vring_flags::VRING_DESC_F_NEXT,
@@ -572,7 +572,7 @@ impl VirtioBlkDevice {
             };
 
             // Descriptor 1: Status byte (device writes to DMA memory)
-            (*desc_table.add(desc1 as usize)) = VringDesc {
+            (*desc_table.as_ptr().add(desc1 as usize)) = VringDesc {
                 addr: req_dma.status_phys,
                 len: 1,
                 flags: vring_flags::VRING_DESC_F_WRITE,

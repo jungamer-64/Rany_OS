@@ -184,7 +184,7 @@ impl<'a> TarArchive<'a> {
 
 /// Load driver Cells from initramfs
 ///
-/// Parses the initramfs TAR archive and loads all `.cell` files as drivers.
+/// Parses the initramfs TAR archive and loads `drivers/*.cell` files as drivers.
 ///
 /// # Returns
 /// Number of successfully loaded drivers
@@ -209,8 +209,13 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
     let mut loaded = 0;
 
     for entry in archive.files() {
-        // Only load .cell files
-        if entry.name.ends_with(".cell") {
+        #[cfg(feature = "qemu-test-export")]
+        if entry.name.starts_with("cells/") && entry.name.ends_with(".cell") {
+            crate::driver_cell::qemu_tests::cache_runtime_fixture_cell(&entry.name, entry.data);
+        }
+        // Only autoload driver payloads under /drivers. Other .cell files (e.g.
+        // /cells fixtures used by runtime tests) are kept as data artifacts.
+        if entry.name.starts_with("drivers/") && entry.name.ends_with(".cell") {
             info!(
                 target: "initramfs",
                 "Found Cell: {} ({} bytes)",
@@ -262,6 +267,7 @@ pub fn load_cells_from_initramfs(initramfs: &InitramfsModule) -> usize {
     );
     loaded
 }
+
 
 /// Extract driver name from path (e.g., "drivers/nvme.cell" -> "nvme")
 fn extract_driver_name(path: &str) -> String {

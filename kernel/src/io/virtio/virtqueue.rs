@@ -1,4 +1,7 @@
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::ptr::NonNull;
+use spin::Mutex;
+use alloc::vec::Vec;
 use crate::io::dma::CoherentDmaBuffer;
 pub use virtio_driver::defs::{VringDesc, VringUsedElem, VIRTQUEUE_MAX_SIZE, vring_flags};
 
@@ -23,13 +26,13 @@ pub struct VirtQueue {
     /// Queue size (must be power of 2)
     pub queue_size: u16,
     /// Descriptor table base address
-    pub desc_table: *mut VringDesc,
+    pub desc_table: NonNull<VringDesc>,
     /// Available ring base address
-    pub avail_ring: *mut VringAvail,
+    pub avail_ring: NonNull<VringAvail>,
     /// Used ring base address
-    pub used_ring: *mut VringUsed,
-    /// Free descriptor bitmap
-    pub free_bitmap: AtomicU64,
+    pub used_ring: NonNull<VringUsed>,
+    /// Free descriptor list
+    pub free_list: Mutex<Vec<u16>>,
     /// Last seen used index
     pub last_used_idx: AtomicU32,
     /// DMA Buffer to keep memory alive (and properly manage ownership)
@@ -43,6 +46,15 @@ unsafe impl Send for VirtQueue {}
 // In ExoRust, `VirtQueue` is typically wrapped in `Arc<PoisonLock<VirtQueue>>` or `Mutex`,
 // which ensures exclusive access for mutable operations. Raw pointers are only 
 // accessed via volatile operations to synchronize with the hardware.
+// SAFETY: VirtQueue management is now sound because:
+// 1. All methods that modify internal state (submission, cleanup) either:
+//    a) Require `&mut self`, ensuring exclusive access via device-level Mutex.
+//    b) Use internal synchronization (e.g., `free_list` is protected by a Mutex,
+//       `last_used_idx` uses atomic operations).
+// 2. Raw pointers (`desc_table`, `avail_ring`, `used_ring`) are safely encapsulated
+//    and accessed via volatile operations or proper memory barriers (fences).
+// 3. The `used_ring` and `last_used_idx` logic correctly handles the single-writer
+//    (device) and single-reader (driver) pattern common in VirtIO.
 unsafe impl Sync for VirtQueue {}
 
 impl VirtQueue {
@@ -59,9 +71,18 @@ impl VirtQueue {
         dma_buffer: Option<CoherentDmaBuffer>,
         index: u16,
     ) -> Self {
+        let desc_table_ptr = NonNull::new(desc_table).expect("desc_table is null");
+        let avail_ring_ptr = NonNull::new(avail_ring).expect("avail_ring is null");
+        let used_ring_ptr = NonNull::new(used_ring).expect("used_ring is null");
+
         for i in 0..queue_size {
             let desc_ptr = desc_table.add(i as usize);
             core::ptr::write_volatile(desc_ptr, VringDesc::default());
+        }
+
+        let mut free_list = Vec::with_capacity(queue_size as usize);
+        for i in (0..queue_size).rev() {
+            free_list.push(i);
         }
 
         unsafe {
@@ -76,14 +97,10 @@ impl VirtQueue {
 
         Self {
             queue_size,
-            desc_table,
-            avail_ring,
-            used_ring,
-            free_bitmap: AtomicU64::new(if queue_size >= 64 {
-                u64::MAX
-            } else {
-                (1u64 << queue_size) - 1
-            }),
+            desc_table: desc_table_ptr,
+            avail_ring: avail_ring_ptr,
+            used_ring: used_ring_ptr,
+            free_list: Mutex::new(free_list),
             last_used_idx: AtomicU32::new(0),
             dma_buffer,
             index,
@@ -93,14 +110,14 @@ impl VirtQueue {
     /// Safely get the current available index
     fn get_avail_idx(&self) -> u16 {
         // SAFETY: The pointer `avail_ring` is guaranteed to be valid and points to the DMA ring.
-        unsafe { core::ptr::read_volatile(&(*self.avail_ring).idx) }
+        unsafe { core::ptr::read_volatile(&(*self.avail_ring.as_ptr()).idx) }
     }
 
     /// Safely set a new available index
     fn set_avail_idx(&mut self, idx: u16) {
         // SAFETY: `&mut self` ensures exclusive access. `avail_ring` is valid.
         unsafe {
-            core::ptr::write_volatile(&mut (*self.avail_ring).idx, idx);
+            core::ptr::write_volatile(&mut (*self.avail_ring.as_ptr()).idx, idx);
         }
     }
 
@@ -108,7 +125,7 @@ impl VirtQueue {
     fn set_avail_ring_entry(&mut self, ring_index: u16, head: u16) {
         // SAFETY: The pointer arithmetic is within the bounds of the pre-allocated DMA ring.
         // `&mut self` enforces exclusive access, avoiding data races.
-        let ring_ptr = unsafe { (self.avail_ring as *mut u16).add(2) };
+        let ring_ptr = unsafe { (self.avail_ring.as_ptr() as *mut u16).add(2) };
         unsafe {
             core::ptr::write_volatile(ring_ptr.add(ring_index as usize), head);
         }
@@ -117,51 +134,24 @@ impl VirtQueue {
     /// Safely get the current used index
     fn get_used_idx(&self) -> u16 {
         // SAFETY: Read-only access to the device-updated used ring memory.
-        unsafe { core::ptr::read_volatile(&(*self.used_ring).idx) }
+        unsafe { core::ptr::read_volatile(&(*self.used_ring.as_ptr()).idx) }
     }
 
     /// Safely get an element from the used ring
     fn get_used_elem(&self, ring_index: u16) -> VringUsedElem {
         // SAFETY: Pointer arithmetic and reads are within bounds of the used ring array.
-        let ring_ptr = unsafe { (self.used_ring as *const u8).add(4) as *const VringUsedElem };
+        let ring_ptr = unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
         unsafe { core::ptr::read_volatile(ring_ptr.add(ring_index as usize)) }
     }
 
     /// Allocate a descriptor from the free list
     pub fn alloc_desc(&self) -> Option<u16> {
-        loop {
-            let bitmap = self.free_bitmap.load(Ordering::Acquire);
-            if bitmap == 0 {
-                return None;
-            }
-
-            let idx = bitmap.trailing_zeros() as u16;
-            let new_bitmap = bitmap & !(1u64 << idx);
-
-            if self
-                .free_bitmap
-                .compare_exchange(bitmap, new_bitmap, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Some(idx);
-            }
-        }
+        self.free_list.lock().pop()
     }
 
     /// Free a descriptor back to the free list
     pub fn free_desc(&self, idx: u16) {
-        loop {
-            let bitmap = self.free_bitmap.load(Ordering::Acquire);
-            let new_bitmap = bitmap | (1u64 << idx);
-
-            if self
-                .free_bitmap
-                .compare_exchange(bitmap, new_bitmap, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return;
-            }
-        }
+        self.free_list.lock().push(idx);
     }
 
     /// Add a buffer chain to the available ring

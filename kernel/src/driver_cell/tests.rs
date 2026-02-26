@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -11,6 +12,25 @@ use alloc::vec::Vec;
 use super::fault::{FaultKind, RestartPolicy};
 use super::stats::DriverCellStats;
 use super::*;
+
+#[cfg(feature = "qemu-test-export")]
+static RUNTIME_FIXTURE_CELLS: crate::sync::PoisonLock<BTreeMap<String, Vec<u8>>> =
+    crate::sync::PoisonLock::new(BTreeMap::new());
+
+#[cfg(feature = "qemu-test-export")]
+pub fn cache_runtime_fixture_cell(path: &str, data: &[u8]) {
+    if let Ok(mut cells) = RUNTIME_FIXTURE_CELLS.lock() {
+        cells.insert(String::from(path), data.to_vec());
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn cached_runtime_fixture_cell(path: &str) -> Option<Vec<u8>> {
+    RUNTIME_FIXTURE_CELLS
+        .lock()
+        .ok()
+        .and_then(|cells| cells.get(path).cloned())
+}
 
 pub fn driver_cell_state_default_is_created_smoke() -> bool {
     let state = DriverCellState::Created;
@@ -382,10 +402,8 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
         ));
     }
 
-    let v1_cell = crate::fs::read_file_content("/cells/driver_cell_probe_v1.cell", "/")
-        .map_err(|e| RuntimeCaseError::failed(format!("missing /cells/driver_cell_probe_v1.cell: {:?}", e)))?;
-    let v2_cell = crate::fs::read_file_content("/cells/driver_cell_probe_v2.cell", "/")
-        .map_err(|e| RuntimeCaseError::failed(format!("missing /cells/driver_cell_probe_v2.cell: {:?}", e)))?;
+    let v1_cell = read_fixture_cell("/cells/driver_cell_probe_v1.cell")?;
+    let v2_cell = read_fixture_cell("/cells/driver_cell_probe_v2.cell")?;
     runtime_log_line("[driver-cell-runtime] preflight: fixtures loaded");
 
     runtime_log_line("[driver-cell-runtime] preflight: wait_for_tick_progress");
@@ -707,6 +725,28 @@ fn ensure_running_idle(id: DriverCellId) -> Result<(), RuntimeCaseError> {
 fn poll_runtime() {
     crate::loader::live_update::poll_pending_updates();
     super::hot_swap::poll_validation_windows();
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn read_fixture_cell(path: &str) -> Result<Vec<u8>, RuntimeCaseError> {
+    match crate::fs::read_file_content(path, "/") {
+        Ok(data) => Ok(data),
+        Err(fs_err) => {
+            let key = path.strip_prefix('/').unwrap_or(path);
+            if let Some(data) = cached_runtime_fixture_cell(key) {
+                runtime_log_line(&format!(
+                    "[driver-cell-runtime] fixture fallback from initramfs cache: {}",
+                    path
+                ));
+                Ok(data)
+            } else {
+                Err(RuntimeCaseError::failed(format!(
+                    "missing {}: {:?}",
+                    path, fs_err
+                )))
+            }
+        }
+    }
 }
 
 #[cfg(feature = "qemu-test-export")]

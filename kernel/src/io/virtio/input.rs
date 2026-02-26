@@ -349,7 +349,7 @@ impl VirtioInputDevice {
 
             // Setup descriptor: device-writable buffer
             unsafe {
-                let desc = &mut *queue_guard.desc_table.add(desc_idx as usize);
+                let desc = &mut *queue_guard.desc_table.as_ptr().add(desc_idx as usize);
                 desc.addr = phys_addr;
                 desc.len = event_size as u32;
                 desc.flags = vring_flags::VRING_DESC_F_WRITE;
@@ -393,7 +393,7 @@ impl VirtioInputDevice {
 
         // Reconfigure the descriptor
         unsafe {
-            let desc = &mut *queue_guard.desc_table.add(desc_idx as usize);
+            let desc = &mut *queue_guard.desc_table.as_ptr().add(desc_idx as usize);
             desc.addr = phys_addr;
             desc.len = event_size as u32;
             desc.flags = vring_flags::VRING_DESC_F_WRITE;
@@ -425,13 +425,8 @@ impl VirtioInputDevice {
     /// Returns `None` if the device reports size 0 for the given query.
     pub fn query_config(&self, select: u8, subsel: u8) -> Option<Vec<u8>> {
         // Write select and subsel to config space
-        // Use pointer cast since transport.write_config_u8 requires &mut self
-        // but config writes are atomic MMIO operations safe for shared access.
-        let transport_ptr = &*self.transport as *const dyn VirtioTransport as *mut dyn VirtioTransport;
-        unsafe {
-            (*transport_ptr).write_config_u8(config_offsets::SELECT, select);
-            (*transport_ptr).write_config_u8(config_offsets::SUBSEL, subsel);
-        }
+        self.transport.write_config_u8(config_offsets::SELECT, select);
+        self.transport.write_config_u8(config_offsets::SUBSEL, subsel);
 
         // Memory barrier to ensure writes are visible before reading
         core::sync::atomic::fence(Ordering::SeqCst);
