@@ -85,12 +85,18 @@ impl VirtioBlkPollHandler {
             };
 
             if let Some(req) = pending_guard.remove(&desc_id) {
-                let status_ok = device
-                    .inflight_dma
-                    .lock()
-                    .remove(&desc_id)
-                    .map(|dma| dma.status() == VirtioBlkStatus::Ok as u8)
-                    .unwrap_or(true);
+                let status_ok = if let Some(queue_dma) = device.inflight_dma.get(queue_idx) {
+                    if let Ok(mut dmas) = queue_dma.lock() {
+                        dmas.get_mut(desc_id as usize)
+                            .and_then(|slot| slot.take())
+                            .map(|dma| dma.status() == 0) // 0 is VIRTIO_BLK_S_OK
+                            .unwrap_or(true)
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                };
 
                 let result = if status_ok {
                     IoResult::Success(req.bytes)
@@ -99,7 +105,7 @@ impl VirtioBlkPollHandler {
                 };
 
                 if let Some(queue_arc) = device.queue(queue_idx) {
-                    queue_arc.lock().free_desc(desc_id);
+                    queue_arc.lock().expect("VirtQueue lock poisoned").free_desc(desc_id);
                 }
 
                 results.push((req.io_id, result));

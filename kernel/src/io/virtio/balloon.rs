@@ -23,7 +23,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::io::virtio::virtqueue::*;
-use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
 
 // ============================================================================

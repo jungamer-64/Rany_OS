@@ -36,7 +36,7 @@ impl VirtioNetDevice {
 
     /// RXキュー完了を処理し、パケットをスタックに渡す
     pub(super) fn process_rx_completions(&self) {
-        for rx_queue in &self.rx_queues {
+        for (q_idx, rx_queue) in self.rx_queues.iter().enumerate() {
             let completions = rx_queue.process_used();
             for (desc_idx, len) in completions {
                 self.rx_packets.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -68,7 +68,7 @@ impl VirtioNetDevice {
                     }
                 }
 
-                if self.handle_legacy_rx_completion(rx_queue, desc_idx, len) {
+                if self.handle_legacy_rx_completion(rx_queue, q_idx, desc_idx, len) {
                     continue;
                 }
 
@@ -204,13 +204,20 @@ impl VirtioNetDevice {
     pub(super) fn handle_legacy_rx_completion(
         &self,
         rx_queue: &NetVirtQueue,
+        q_idx: usize,
         desc_idx: u16,
         len: u32,
     ) -> bool {
-        let packetref_inflight = {
-            let mut guard = self.rx_packetrefs.lock().unwrap_or_else(|e| e.into_inner());
-            guard.remove(&desc_idx)
+        let packetref_inflight = if let Some(lock) = self.rx_packetrefs.get(q_idx) {
+            if let Ok(mut guard) = lock.lock() {
+                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+            } else {
+                None
+            }
+        } else {
+            None
         };
+
         if let Some(inflight) = packetref_inflight {
             let completion_len = match rx_queue.take_completion(desc_idx) {
                 Some(completion_len) => completion_len,
@@ -226,10 +233,16 @@ impl VirtioNetDevice {
             return true;
         }
 
-        let vbuf_inflight = {
-            let mut guard = self.rx_buffers.lock().unwrap_or_else(|e| e.into_inner());
-            guard.remove(&desc_idx)
+        let vbuf_inflight = if let Some(lock) = self.rx_buffers.get(q_idx) {
+            if let Ok(mut guard) = lock.lock() {
+                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+            } else {
+                None
+            }
+        } else {
+            None
         };
+
         if let Some(inflight) = vbuf_inflight {
             let completion_len = match rx_queue.take_completion(desc_idx) {
                 Some(completion_len) => completion_len,

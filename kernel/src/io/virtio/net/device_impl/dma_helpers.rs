@@ -224,7 +224,7 @@ impl<'a> SendFuture<'a> {
                 self.dma_len = prep.mapped_len;
                 self.pool_bounce_buffer = prep.pool_bounce_buffer;
                 tx_queue.register_waker(cx.waker().clone());
-                tx_queue.notify();
+                tx_queue.notify(self.device.transport.as_ref());
                 Ok(())
             }
             Err(e) => {

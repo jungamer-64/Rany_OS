@@ -164,7 +164,8 @@ impl VirtioNetPollHandler {
         desc_id: u16,
         len: u32,
     ) -> bool {
-        device.handle_legacy_rx_completion(rx_queue, desc_id, len)
+        let q_idx = rx_queue.vq.lock().expect("VirtQueue lock poisoned").index() as usize;
+        device.handle_legacy_rx_completion(rx_queue, q_idx, desc_id, len)
     }
 
     fn route_legacy_tx_completion(
@@ -174,7 +175,8 @@ impl VirtioNetPollHandler {
         desc_id: u16,
         len: u32,
     ) -> bool {
-        device.handle_legacy_tx_completion(tx_queue, desc_id, len)
+        let q_idx = tx_queue.vq.lock().expect("VirtQueue lock poisoned").index() as usize;
+        device.handle_legacy_tx_completion(tx_queue, q_idx, desc_id, len)
     }
 
     fn release_unknown_rx_completion(
@@ -311,7 +313,7 @@ impl VirtioNetOps {
                         .add_tx_buffer_zero_copy(buf.iova, buf.len)
                         .map_err(map_virtio_net_error)?;
                     self.handler.add_pending_tx(io_id, desc_id, buf.len);
-                    tx_queue.notify();
+                    tx_queue.notify(device.transport.as_ref());
                     Ok(())
                 }
                 VIRTIO_NET_IOCTL_RX => {
@@ -328,7 +330,7 @@ impl VirtioNetOps {
                         .add_rx_buffer_zero_copy(buf.iova, buf.len)
                         .map_err(map_virtio_net_error)?;
                     self.handler.add_pending_rx(io_id, desc_id, buf.len);
-                    rx_queue.notify();
+                    rx_queue.notify(device.transport.as_ref());
                     Ok(())
                 }
                 _ => Err(crate::io::io_scheduler::IoError::NotSupported),

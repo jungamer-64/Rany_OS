@@ -1,4 +1,6 @@
 use super::*;
+use crate::io::virtio::virtqueue::vring_flags;
+use crate::io::iommu::types::DmaAddr;
 use crate::util::align_up_usize as align_up;
 
 
@@ -61,7 +63,8 @@ impl VirtioBlkDevice {
                 | features::VIRTIO_BLK_F_SEG_MAX
                 | features::VIRTIO_BLK_F_BLK_SIZE
                 | features::VIRTIO_BLK_F_FLUSH
-                | features::VIRTIO_BLK_F_MQ);
+                | features::VIRTIO_BLK_F_MQ
+                | crate::io::virtio::VIRTIO_F_INDIRECT_DESC);
         self.transport.set_driver_features(driver_features);
         self.features = driver_features;
 
@@ -250,7 +253,7 @@ impl VirtioBlkDevice {
     }
 
     /// 指定インデックスのキューを取得（io_scheduler 統合用）
-    pub(crate) fn queue(&self, idx: usize) -> Option<&Arc<Mutex<VirtQueue>>> {
+    pub(crate) fn queue(&self, idx: usize) -> Option<&Arc<IrqPoisonLock<VirtQueue>>> {
         self.queues.get(idx)
     }
 
@@ -402,61 +405,72 @@ impl VirtioBlkDevice {
             reserved: 0,
             sector,
         };
-        let req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
+        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
+        let mut req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
             .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
-        let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
+        let desc_id = if use_indirect {
+            let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
+            let indirect_phys = req_dma.indirect_table_phys.map(DmaAddr::new).ok_or(BlockError::NotReady)?;
 
-        unsafe {
-            let desc_table = queue_guard.desc_table;
+            unsafe {
+                // Indirect Descriptor 0: Header
+                (*indirect_table.add(0)) = VringDesc {
+                    addr: req_dma.header_phys,
+                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+                    flags: VringDesc::F_NEXT,
+                    next: 1,
+                };
+                // Indirect Descriptor 1: Data
+                (*indirect_table.add(1)) = VringDesc {
+                    addr: buf_addr,
+                    len,
+                    flags: VringDesc::F_NEXT | VringDesc::F_WRITE,
+                    next: 2,
+                };
+                // Indirect Descriptor 2: Status
+                (*indirect_table.add(2)) = VringDesc {
+                    addr: req_dma.status_phys,
+                    len: 1,
+                    flags: VringDesc::F_WRITE,
+                    next: 0,
+                };
 
-            // Descriptor 0: Header (device reads from DMA memory)
-            (*desc_table.as_ptr().add(desc0 as usize)) = VringDesc {
-                addr: req_dma.header_phys,
-                len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
-                flags: vring_flags::VRING_DESC_F_NEXT,
-                next: desc1,
-            };
-
-            // Descriptor 1: Data buffer (device writes)
-            (*desc_table.as_ptr().add(desc1 as usize)) = VringDesc {
-                addr: buf_addr,
-                len,
-                flags: vring_flags::VRING_DESC_F_NEXT | vring_flags::VRING_DESC_F_WRITE,
-                next: desc2,
-            };
-
-            // Descriptor 2: Status byte (device writes to DMA memory)
-            (*desc_table.as_ptr().add(desc2 as usize)) = VringDesc {
-                addr: req_dma.status_phys,
-                len: 1,
-                flags: vring_flags::VRING_DESC_F_WRITE,
-                next: 0,
-            };
-
-            // Submit to available ring
-            log::info!(
-                "[VIRTIO-BLK][DBG] submit_read q={} sector={} len={} descs=[{},{},{}] data_addr=0x{:016x} hdr=0x{:016x} status=0x{:016x}",
-                queue_idx,
-                sector,
-                len,
-                desc0,
-                desc1,
-                desc2,
-                buf_addr,
-                req_dma.header_phys,
-                req_dma.status_phys
-            );
-            queue_guard.submit(desc0);
-        }
+                queue_guard.submit_indirect(indirect_phys, 3).ok_or(BlockError::QueueFull)?
+            }
+        } else {
+            let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
+            unsafe {
+                let desc_table = queue_guard.desc_table.as_ptr();
+                (*desc_table.add(desc0 as usize)) = VringDesc {
+                    addr: req_dma.header_phys,
+                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+                    flags: VringDesc::F_NEXT,
+                    next: desc1,
+                };
+                (*desc_table.add(desc1 as usize)) = VringDesc {
+                    addr: buf_addr,
+                    len,
+                    flags: VringDesc::F_NEXT | VringDesc::F_WRITE,
+                    next: desc2,
+                };
+                (*desc_table.add(desc2 as usize)) = VringDesc {
+                    addr: req_dma.status_phys,
+                    len: 1,
+                    flags: VringDesc::F_WRITE,
+                    next: 0,
+                };
+                queue_guard.submit(desc0)
+            }
+        };
 
         // Retain DMA buffer until completion
         if let Some(inflight_q) = self.inflight_dma.get(queue_idx) {
             if let Ok(mut inflight) = inflight_q.lock() {
-                if let Some(slot) = inflight.get_mut(desc0 as usize) {
+                if let Some(slot) = inflight.get_mut(desc_id as usize) {
                     *slot = Some(req_dma);
                 }
             }
@@ -466,10 +480,10 @@ impl VirtioBlkDevice {
         log::info!(
             "[VIRTIO-BLK][DBG] submit_read notified q={} desc0={}",
             queue_idx,
-            desc0
+            desc_id
         );
 
-        Ok(desc0)
+        Ok(desc_id)
     }
 
     /// Prepare a write request: validate state and create DMA header
@@ -488,7 +502,8 @@ impl VirtioBlkDevice {
             reserved: 0,
             sector,
         };
-        BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
+        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
+        BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
             .ok_or(BlockError::NotReady)
     }
 
@@ -500,57 +515,80 @@ impl VirtioBlkDevice {
         len: u32,
         queue_idx: usize,
     ) -> Result<u16, BlockError> {
-        let req_dma = self.prepare_write_request(sector)?;
+        let mut req_dma = self.prepare_write_request(sector)?;
+        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
-        // Allocate 3 descriptors
-        let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
-        let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
-            queue_guard.free_desc(desc0);
-            BlockError::QueueFull
-        })?;
-        let desc2 = queue_guard.alloc_desc().ok_or_else(|| {
-            queue_guard.free_desc(desc0);
-            queue_guard.free_desc(desc1);
-            BlockError::QueueFull
-        })?;
+        let desc_id = if use_indirect {
+            let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
+            let indirect_phys = req_dma.indirect_table_phys.map(DmaAddr::new).ok_or(BlockError::NotReady)?;
 
-        unsafe {
-            let desc_table = queue_guard.desc_table;
+            unsafe {
+                // Indirect Descriptor 0: Header
+                (*indirect_table.add(0)) = VringDesc {
+                    addr: req_dma.header_phys,
+                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+                    flags: VringDesc::F_NEXT,
+                    next: 1,
+                };
+                // Indirect Descriptor 1: Data
+                (*indirect_table.add(1)) = VringDesc {
+                    addr: buf_addr,
+                    len,
+                    flags: VringDesc::F_NEXT,
+                    next: 2,
+                };
+                // Indirect Descriptor 2: Status
+                (*indirect_table.add(2)) = VringDesc {
+                    addr: req_dma.status_phys,
+                    len: 1,
+                    flags: VringDesc::F_WRITE,
+                    next: 0,
+                };
 
-            // Descriptor 0: Header (device reads from DMA memory)
-            (*desc_table.as_ptr().add(desc0 as usize)) = VringDesc {
-                addr: req_dma.header_phys,
-                len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
-                flags: vring_flags::VRING_DESC_F_NEXT,
-                next: desc1,
-            };
+                queue_guard.submit_indirect(indirect_phys, 3).ok_or(BlockError::QueueFull)?
+            }
+        } else {
+            // Allocate 3 descriptors
+            let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
 
-            // Descriptor 1: Data buffer (device reads)
-            (*desc_table.as_ptr().add(desc1 as usize)) = VringDesc {
-                addr: buf_addr,
-                len,
-                flags: vring_flags::VRING_DESC_F_NEXT,
-                next: desc2,
-            };
+            unsafe {
+                let desc_table = queue_guard.desc_table.as_ptr();
 
-            // Descriptor 2: Status byte (device writes to DMA memory)
-            (*desc_table.as_ptr().add(desc2 as usize)) = VringDesc {
-                addr: req_dma.status_phys,
-                len: 1,
-                flags: vring_flags::VRING_DESC_F_WRITE,
-                next: 0,
-            };
+                // Descriptor 0: Header (device reads from DMA memory)
+                (*desc_table.add(desc0 as usize)) = VringDesc {
+                    addr: req_dma.header_phys,
+                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+                    flags: VringDesc::F_NEXT,
+                    next: desc1,
+                };
 
-            queue_guard.submit(desc0);
-        }
+                // Descriptor 1: Data buffer (device reads)
+                (*desc_table.add(desc1 as usize)) = VringDesc {
+                    addr: buf_addr,
+                    len,
+                    flags: VringDesc::F_NEXT,
+                    next: desc2,
+                };
+
+                // Descriptor 2: Status byte (device writes to DMA memory)
+                (*desc_table.add(desc2 as usize)) = VringDesc {
+                    addr: req_dma.status_phys,
+                    len: 1,
+                    flags: VringDesc::F_WRITE,
+                    next: 0,
+                };
+
+                queue_guard.submit(desc0)
+            }
+        };
 
         // Retain DMA buffer until completion
         if let Some(inflight_q) = self.inflight_dma.get(queue_idx) {
             if let Ok(mut inflight) = inflight_q.lock() {
-                if let Some(slot) = inflight.get_mut(desc0 as usize) {
+                if let Some(slot) = inflight.get_mut(desc_id as usize) {
                     *slot = Some(req_dma);
                 }
             }
@@ -558,7 +596,7 @@ impl VirtioBlkDevice {
 
         queue_guard.notify(&*self.transport);
 
-        Ok(desc0)
+        Ok(desc_id)
     }
 
     /// Submit a flush request (internal)
@@ -578,45 +616,70 @@ impl VirtioBlkDevice {
             reserved: 0,
             sector: 0, // sector is ignored for flush
         };
-        let req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref())
+        let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
+        let mut req_dma = BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
             .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
         let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
-        // Flush only requires 2 descriptors: header and status (no data)
-        let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
-        let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
-            queue_guard.free_desc(desc0);
-            BlockError::QueueFull
-        })?;
+        let desc_id = if use_indirect {
+            let indirect_table = req_dma.indirect_table_mut().ok_or(BlockError::NotReady)?;
+            let indirect_phys = req_dma.indirect_table_phys.map(DmaAddr::new).ok_or(BlockError::NotReady)?;
 
-        unsafe {
-            let desc_table = queue_guard.desc_table;
+            unsafe {
+                // Indirect Descriptor 0: Header
+                (*indirect_table.add(0)) = VringDesc {
+                    addr: req_dma.header_phys,
+                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+                    flags: VringDesc::F_NEXT,
+                    next: 1,
+                };
+                // Indirect Descriptor 1: Status
+                (*indirect_table.add(1)) = VringDesc {
+                    addr: req_dma.status_phys,
+                    len: 1,
+                    flags: VringDesc::F_WRITE,
+                    next: 0,
+                };
 
-            // Descriptor 0: Header (device reads from DMA memory)
-            (*desc_table.as_ptr().add(desc0 as usize)) = VringDesc {
-                addr: req_dma.header_phys,
-                len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
-                flags: vring_flags::VRING_DESC_F_NEXT,
-                next: desc1,
-            };
+                queue_guard.submit_indirect(indirect_phys, 2).ok_or(BlockError::QueueFull)?
+            }
+        } else {
+            // Flush only requires 2 descriptors: header and status (no data)
+            let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
+            let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
+                queue_guard.free_desc(desc0);
+                BlockError::QueueFull
+            })?;
 
-            // Descriptor 1: Status byte (device writes to DMA memory)
-            (*desc_table.as_ptr().add(desc1 as usize)) = VringDesc {
-                addr: req_dma.status_phys,
-                len: 1,
-                flags: vring_flags::VRING_DESC_F_WRITE,
-                next: 0,
-            };
+            unsafe {
+                let desc_table = queue_guard.desc_table.as_ptr();
 
-            queue_guard.submit(desc0);
-        }
+                // Descriptor 0: Header (device reads from DMA memory)
+                (*desc_table.add(desc0 as usize)) = VringDesc {
+                    addr: req_dma.header_phys,
+                    len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+                    flags: vring_flags::VRING_DESC_F_NEXT,
+                    next: desc1,
+                };
+
+                // Descriptor 1: Status byte (device writes to DMA memory)
+                (*desc_table.add(desc1 as usize)) = VringDesc {
+                    addr: req_dma.status_phys,
+                    len: 1,
+                    flags: vring_flags::VRING_DESC_F_WRITE,
+                    next: 0,
+                };
+
+                queue_guard.submit(desc0)
+            }
+        };
 
         // Retain DMA buffer until completion
         if let Some(inflight_q) = self.inflight_dma.get(queue_idx) {
             if let Ok(mut inflight) = inflight_q.lock() {
-                if let Some(slot) = inflight.get_mut(desc0 as usize) {
+                if let Some(slot) = inflight.get_mut(desc_id as usize) {
                     *slot = Some(req_dma);
                 }
             }
@@ -624,7 +687,7 @@ impl VirtioBlkDevice {
 
         queue_guard.notify(&*self.transport);
 
-        Ok(desc0)
+        Ok(desc_id)
     }
 
     // ========================================================================

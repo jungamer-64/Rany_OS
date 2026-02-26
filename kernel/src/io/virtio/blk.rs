@@ -33,7 +33,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::io::virtio::virtqueue::*;
 use core::task::{Context, Poll, Waker};
-use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
 mod device_impl;
 pub use device_impl::*;
@@ -158,27 +158,31 @@ pub struct BlockRequest {
 /// completes the request. This struct allocates a CoherentDmaBuffer to hold
 /// `[VirtioBlkReqHeader | u8 status]` in physically contiguous, uncacheable memory.
 pub(crate) struct BlkRequestDma {
-    /// Coherent DMA buffer holding header + status byte
+    /// Coherent DMA buffer holding header + status byte (+ indirect table)
     buffer: CoherentDmaBuffer,
     /// Physical address of the header (start of buffer)
-    header_phys: u64,
+    pub(crate) header_phys: u64,
     /// Physical address of the status byte
-    status_phys: u64,
+    pub(crate) status_phys: u64,
+    /// Physical address of the indirect table
+    pub(crate) indirect_table_phys: Option<u64>,
 }
 
 impl BlkRequestDma {
     /// Allocate DMA memory and copy the header into it.
     fn new(header: &VirtioBlkReqHeader) -> Option<Self> {
-        Self::new_with_device(header, None)
+        Self::new_with_device(header, None, false)
     }
 
     /// Allocate IOMMU-aware DMA memory and copy the header into it.
-    fn new_with_device(
+    pub(crate) fn new_with_device(
         header: &VirtioBlkReqHeader,
         device_id: Option<&IommuDeviceId>,
+        use_indirect: bool,
     ) -> Option<Self> {
         let header_size = core::mem::size_of::<VirtioBlkReqHeader>();
-        let total = header_size + 1; // header + 1 status byte
+        let indirect_size = if use_indirect { core::mem::size_of::<VringDesc>() * 3 } else { 0 };
+        let total = header_size + 1 + indirect_size; // header + 1 status byte + indirect table
         let mut buffer = match device_id {
             Some(dev_id) => CoherentDmaBuffer::new_for_device(total, DmaMemoryAttributes::MMIO, dev_id)?,
             None => CoherentDmaBuffer::new(total, DmaMemoryAttributes::MMIO)?,
@@ -197,12 +201,20 @@ impl BlkRequestDma {
             buffer,
             header_phys: base_dev,
             status_phys: base_dev + header_size as u64,
+            indirect_table_phys: if use_indirect { Some(base_dev + (header_size + 1) as u64) } else { None },
         })
     }
 
     /// Read the status byte written by the device after completion.
     pub(crate) fn status(&self) -> u8 {
         unsafe { self.buffer.as_slice()[core::mem::size_of::<VirtioBlkReqHeader>()] }
+    }
+    /// Get a mutable pointer to the indirect table in the buffer.
+    pub(crate) fn indirect_table_mut(&mut self) -> Option<*mut VringDesc> {
+        let header_size = core::mem::size_of::<VirtioBlkReqHeader>();
+        self.indirect_table_phys.map(|_| unsafe {
+            self.buffer.as_mut_slice().as_mut_ptr().add(header_size + 1) as *mut VringDesc
+        })
     }
 }
 
@@ -252,7 +264,7 @@ pub struct VirtioBlkDevice {
     /// Optional IOMMU device identifier for device-scoped mappings
     iommu_device_id: Option<IommuDeviceId>,
     /// Transport
-    transport: Box<dyn VirtioTransport>,
+    transport: Box<dyn crate::io::virtio::transport::VirtioTransport>,
     /// Features negotiated
     features: u64,
     /// DMA buffers for inflight requests (header + status), per queue, indexed by descriptor index

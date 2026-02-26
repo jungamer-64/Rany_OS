@@ -46,50 +46,22 @@ impl VirtioNetDevice {
         }
         dst[..data_len].copy_from_slice(data);
 
-        if let Some(tx_queue) = self.first_tx_queue() {
-            let phys = buffer.phys_addr().as_u64();
+        if let Some(tx_queue) = self.tx_queues.first() {
+            let q_idx = 0; // First TX queue index in per-queue vectors
             let device_addr = buffer.device_addr();
-            crate::io::log::early_print(&alloc::format!(
-                "[EARLY][NET-TX] about to call add_tx_buffer_zero_copy phys=0x{:x} device_addr=0x{:x} len={}\n",
-                phys,
-                device_addr,
-                data_len
-            ));
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
                 Ok(desc_idx) => {
-                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] add_tx_buffer_zero_copy returned desc={}\n", desc_idx));
-                    let mut guard = self.tx_inflight.lock().unwrap_or_else(|e| e.into_inner());
-                    guard.insert(desc_idx, buffer);
-                    crate::io::log::early_print(&alloc::format!(
-                        "[EARLY][NET-TX] queued desc={} phys=0x{:x} device_addr=0x{:x} len={}\n",
-                        desc_idx,
-                        phys,
-                        device_addr,
-                        data_len
-                    ));
-                    log::info!(
-                        "[NET-TX] queued desc={} phys=0x{:x} device_addr=0x{:x} len={}",
-                        desc_idx,
-                        phys,
-                        device_addr,
-                        data_len
-                    );
-                    // Diagnostic: read device status/features before notifying
-                    let dev_status = self.transport.get_status();
-                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transport.get_status()=0x{:x}\n", dev_status));
-                    let dev_features = self.transport.get_device_features();
-                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transport.get_device_features()=0x{:x}\n", dev_features));
+                    if let Some(lock) = self.tx_inflight.get(q_idx) {
+                        if let Ok(mut guard) = lock.lock() {
+                            if let Some(slot) = guard.get_mut(desc_idx as usize) {
+                                *slot = Some(buffer);
+                            }
+                        }
+                    }
 
-                    tx_queue.notify();
-                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] notify called for queue={}\n", tx_queue.index));
+                    tx_queue.notify(self.transport.as_ref());
 
-                    // Diagnostic: check device interrupt status and process used ring immediately
-                    let intr_status = self.transport.get_interrupt_status();
-                    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transport.get_interrupt_status()=0x{:x}\n", intr_status));
-
-                    self.process_post_notify_completions();
-
-                    log::info!("[NET-TX] notify called for queue={}", tx_queue.index);
+                    self.process_tx_completions();
                     Ok(())
                 }
                 Err(e) => {
@@ -164,9 +136,17 @@ impl VirtioNetDevice {
                     dma_len: mapped_len,
                     pool_bounce_buffer: bounce_buffer,
                 };
-                let mut guard = self.tx_packetrefs.lock().unwrap_or_else(|e| e.into_inner());
-                guard.insert(desc_idx, entry);
-                tx_queue.notify();
+                
+                let q_idx = 0; // Simplified for first TX queue
+                if let Some(lock) = self.tx_packetrefs.get(q_idx) {
+                    if let Ok(mut guard) = lock.lock() {
+                        if let Some(slot) = guard.get_mut(desc_idx as usize) {
+                            *slot = Some(entry);
+                        }
+                    }
+                }
+                
+                tx_queue.notify(self.transport.as_ref());
                 Ok(())
             }
             Err(e) => {
@@ -280,7 +260,7 @@ impl VirtioNetDevice {
 
     /// TXキュー完了を処理し、インフライトバッファを解放
     pub(super) fn process_tx_completions(&self) {
-        for tx_queue in &self.tx_queues {
+        for (q_idx, tx_queue) in self.tx_queues.iter().enumerate() {
             let completions = tx_queue.process_used();
             if completions.is_empty() {
                 continue;
@@ -315,7 +295,7 @@ impl VirtioNetDevice {
                     }
                 }
 
-                if self.handle_legacy_tx_completion(tx_queue, desc_idx, len) {
+                if self.handle_legacy_tx_completion(tx_queue, q_idx, desc_idx, len) {
                     continue;
                 }
 
@@ -335,13 +315,20 @@ impl VirtioNetDevice {
     pub(super) fn handle_legacy_tx_completion(
         &self,
         tx_queue: &NetVirtQueue,
+        q_idx: usize,
         desc_idx: u16,
         len: u32,
     ) -> bool {
-        let buf = {
-            let mut guard = self.tx_inflight.lock().unwrap_or_else(|e| e.into_inner());
-            guard.remove(&desc_idx)
+        let buf = if let Some(lock) = self.tx_inflight.get(q_idx) {
+            if let Ok(mut guard) = lock.lock() {
+                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+            } else {
+                None
+            }
+        } else {
+            None
         };
+
         if let Some(_buf) = buf {
             if tx_queue.take_completion(desc_idx).is_none() {
                 log::warn!(
@@ -349,18 +336,19 @@ impl VirtioNetDevice {
                     desc_idx
                 );
             }
-            crate::io::log::early_print(&alloc::format!(
-                "[EARLY][VIRTIO-NET] TX-COMP freed buffer for desc={} len={}\n",
-                desc_idx, len
-            ));
-            log::info!("[VIRTIO-NET][TX-COMP] freed buffer for desc={}", desc_idx);
             return true;
         }
 
-        let entry = {
-            let mut guard = self.tx_packetrefs.lock().unwrap_or_else(|e| e.into_inner());
-            guard.remove(&desc_idx)
+        let entry = if let Some(lock) = self.tx_packetrefs.get(q_idx) {
+            if let Ok(mut guard) = lock.lock() {
+                guard.get_mut(desc_idx as usize).and_then(|slot| slot.take())
+            } else {
+                None
+            }
+        } else {
+            None
         };
+
         if let Some(entry) = entry {
             if tx_queue.take_completion(desc_idx).is_none() {
                 log::warn!(
@@ -377,11 +365,6 @@ impl VirtioNetDevice {
             if let Some(iova) = entry.dma_iova {
                 let _ = unmap_iommu_addr(self.iommu_device_id, iova, entry.dma_len);
             }
-            crate::io::log::early_print(&alloc::format!(
-                "[EARLY][VIRTIO-NET] TX-COMP freed PacketRef for desc={} len={}\n",
-                desc_idx, len
-            ));
-            log::info!("[VIRTIO-NET][TX-COMP] freed PacketRef for desc={}", desc_idx);
             return true;
         }
 

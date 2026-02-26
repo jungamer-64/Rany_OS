@@ -40,12 +40,19 @@ pub mod input_driver;
 pub mod balloon;
 pub mod balloon_driver;
 
-// Re-export defs from virtio_driver crate
-pub use virtio_driver::core;
-pub use virtio_driver::defs;
-pub use virtio_driver::transport;
-// Re-export common types
-pub use virtio_driver::defs::*;
+// Re-export common types from virtio_driver, but exclude conflicting ring/desc definitions
+// which are now unified in our local virtqueue.rs
+pub use virtio_driver::defs::{
+    VirtioDeviceType, VirtioDeviceStatus, status,
+};
+pub mod defs {
+    pub use virtio_driver::defs::*;
+    pub use super::virtqueue::{VringDesc, VringAvail, VringUsed};
+}
+
+pub mod transport {
+    pub use virtio_driver::transport::*;
+}
 
 // Re-exports for Transport
 pub use virtio_driver::transport::{
@@ -66,7 +73,7 @@ pub use net::{
 pub use virtqueue::{VringAvail, VringDesc, VringUsed};
 
 // Re-exports for VirtIO-Blk
-pub use virtio_driver::defs::VringDesc as BlkVringDesc;
+pub use virtqueue::VringDesc as BlkVringDesc;
 pub use blk::{
     AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtioBlkDevice,
     features as blk_features, handle_virtio_blk_interrupt,

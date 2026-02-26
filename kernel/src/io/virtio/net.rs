@@ -17,13 +17,14 @@ use spin::{Mutex, MutexGuard};
 use x86_64::{PhysAddr, VirtAddr};
 
 // Import VirtIO common definitions
-use super::defs::{VirtioDeviceType, status};
-use super::transport::{TransportType, VirtioTransport};
-use super::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed};
+use crate::io::virtio::defs::{VirtioDeviceType, status};
+use crate::io::virtio::transport::{TransportType, VirtioTransport};
+use crate::io::virtio::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed, vring_flags};
 use crate::io::dma::{
     iommu_align_len, CoherentDmaBuffer,
     DmaMemoryAttributes,
 };
+use crate::io::iommu::types::DmaAddr;
 use crate::sync::IrqPoisonLock;
 use crate::io::iommu::api::{
     get_device_dma_mask, is_iommu_enabled, is_iommu_required,
@@ -32,6 +33,7 @@ use crate::io::iommu::api::{
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 // Import PacketRef for zero-copy
 use crate::net::mempool::PacketRef;
+
 mod device_impl;
 pub use device_impl::*;
 
@@ -206,31 +208,20 @@ pub struct NetVirtQueueInner {
 
 /// ネットワーク VirtQueue
 pub struct NetVirtQueue {
-    /// キューインデックス (0=RX, 1=TX)
-    pub index: u16,
-    /// キューサイズ
-    pub size: u16,
-    /// Submission side state protected by Mutex to prevent data races and aliasing UB
-    inner: Mutex<NetVirtQueueInner>,
-    /// Used Ring (Device -> Host, read-only for driver)
-    used_ring: *const VringUsed,
-    /// Queue notify address (transport-provided)
-    #[deprecated(since = "0.3.0", note = "Prefer transport-level notify methods and interrupt-driven notifications; avoid per-queue MMIO `notify_addr` when possible.")]
-    notify_addr: Option<u64>,
-    /// Notify width (MMIO uses 32-bit, PCI uses 16-bit)
-    notify_is_32bit: bool,
-    /// 最後に処理した Used インデックス
-    last_used_idx: AtomicU16,
-    /// 完了キャッシュのstale検知回数
-    stale_completion_count: AtomicU64,
+    /// VirtQueue core implementation (descriptor management, etc.)
+    pub vq: IrqPoisonLock<VirtQueue>,
+    /// TX header table (one header per descriptor)
+    pub tx_headers: Option<*mut VirtioNetHeader>,
+    /// TX header table DMA base (IOVA or phys)
+    pub tx_header_dma_base: Option<u64>,
+    /// 最後に処理した Used インデックス (Atomic for non-blocking poll)
+    pub last_used_idx: AtomicU16,
     /// 割り込み待機中のWaker
-    pending_wakers: Mutex<Vec<Waker>>,
+    pub pending_wakers: IrqPoisonLock<Vec<Waker>>,
     /// 完了済みディスクリプタの長さ (desc_id -> used len)
-    pending_completions: Mutex<Vec<Option<u32>>>,
-    /// DMA Buffer to keep memory alive
-    dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
+    pub pending_completions: IrqPoisonLock<Vec<Option<u32>>>,
     /// Optional IOMMU mapping for queue memory
-    iommu_map: Option<IommuMapping>,
+    pub iommu_map: Option<IommuMapping>,
 }
 
 // NetVirtQueueをSend/Syncにする
@@ -258,7 +249,7 @@ impl NetVirtQueue {
         dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
         _notify_addr: Option<u64>,
         _notify_is_32bit: bool,
-        _iommu_map: Option<IommuMapping>,
+        iommu_map: Option<IommuMapping>,
         tx_headers: Option<*mut VirtioNetHeader>,
         tx_header_dma_base: Option<u64>,
         features: u64,
@@ -280,8 +271,10 @@ impl NetVirtQueue {
             vq: IrqPoisonLock::new(vq),
             tx_headers,
             tx_header_dma_base,
+            last_used_idx: AtomicU16::new(0),
             pending_wakers: IrqPoisonLock::new(Vec::new()),
             pending_completions: IrqPoisonLock::new(pending),
+            iommu_map,
         }
     }
 
@@ -304,37 +297,9 @@ impl NetVirtQueue {
     }
 
     /// Notify the device that new buffers are available.
-    #[allow(deprecated)]
-    pub fn notify(&self) {
-        let Some(addr) = self.notify_addr else {
-            return;
-        };
-
-        log::info!(
-            "[VIRTIO-NET] notify called for queue {} addr=0x{:x} is_32bit={}",
-            self.index,
-            addr,
-            self.notify_is_32bit
-        );
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] notify called for queue {} addr=0x{:x} is_32bit={}\n", self.index, addr, self.notify_is_32bit));
-
-        // Diagnostic: show avail and used indices and last ring slot
-        unsafe {
-            let inner = self.inner.lock();
-            let avail = &*inner.avail_ring;
-            let used = &*self.used_ring;
-            let last_slot = if avail.idx == 0 {
-                avail.ring[(avail.idx % self.size) as usize]
-            } else {
-                avail.ring[((avail.idx.wrapping_sub(1)) % self.size) as usize]
-            };
-            crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] notify: avail_idx={} last_ring_slot={} used_idx=0x{:x}\n", avail.idx, last_slot, used.idx));
-        }
-
-        if self.notify_is_32bit {
-            crate::io::mmio::mmio_write_u32(addr as usize, self.index as u32);
-        } else {
-            crate::io::mmio::mmio_write_u16(addr as usize, self.index);
+    pub fn notify(&self, transport: &dyn VirtioTransport) {
+        if let Ok(vq) = self.vq.lock() {
+            vq.notify(transport);
         }
     }
 
@@ -344,94 +309,75 @@ impl NetVirtQueue {
         header: &VirtioNetHeader,
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_buffer called data_ptr=0x{:x} len={}\n", data.as_ptr() as u64, data.len()));
+        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
         
-        let mut inner = self.inner.lock();
-        let (desc_idx, data_desc_idx) = Self::alloc_desc_pair(&mut inner).ok_or(VirtioNetError::QueueFull)?;
-        self.clear_stale_completion(desc_idx);
-        self.clear_stale_completion(data_desc_idx);
-        
-        let (header_ptr, header_dma_base) = match (inner.tx_headers, inner.tx_header_dma_base) {
+        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+        let data_desc_idx = match vq_guard.alloc_desc() {
+            Some(idx) => idx,
+            None => {
+                vq_guard.free_desc(desc_idx);
+                return Err(VirtioNetError::QueueFull);
+            }
+        };
+
+        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
             (Some(ptr), Some(base)) => (ptr, base),
             _ => {
-                inner.free_descs.push(data_desc_idx);
-                inner.free_descs.push(desc_idx);
+                vq_guard.free_desc(data_desc_idx);
+                vq_guard.free_desc(desc_idx);
                 return Err(VirtioNetError::DeviceError);
             }
         };
 
-        // SAFETY: Unique access to the ring and descriptors via Mutex guard.
         unsafe {
             let header_slot = &mut *header_ptr.add(desc_idx as usize);
             *header_slot = *header;
 
+            let desc_table = vq_guard.desc_table.as_ptr();
+
             // ヘッダーディスクリプタ
-            let desc_ptr = inner.desc_table.add(desc_idx as usize);
+            let desc_ptr = desc_table.add(desc_idx as usize);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64));
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), VirtioNetHeader::SIZE as u32);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), VringDesc::VRING_DESC_F_NEXT);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_NEXT);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), data_desc_idx);
 
             // データーディスクリプタ
-            let data_desc_ptr = inner.desc_table.add(data_desc_idx as usize);
+            let data_desc_ptr = desc_table.add(data_desc_idx as usize);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).addr), data.as_ptr() as u64);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).len), data.len() as u32);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).flags), 0);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).next), 0);
 
-            // 1. Descriptor table updates visible before updating Available Ring
-            core::sync::atomic::fence(Ordering::Release);
-
-            // Available Ringに追加
-            let avail = &mut *inner.avail_ring;
-            let avail_idx = avail.idx;
-            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
-            core::ptr::write_volatile(ring_ptr, desc_idx);
-
-            // 2. Ring entry update visible before updating idx
-            core::sync::atomic::fence(Ordering::Release);
-
-            core::ptr::write_volatile(core::ptr::addr_of_mut!(avail.idx), avail_idx.wrapping_add(1));
+            vq_guard.submit(desc_idx);
         }
-
-        log::info!(
-            "[VIRTIO-NET] add_tx desc {} data_ptr=0x{:x} len={}",
-            desc_idx,
-            data.as_ptr() as u64,
-            data.len()
-        );
 
         Ok(desc_idx)
     }
 
-    /// ゼロコピー送信バッファを追加（設計書 6.2準拠）
-    /// 物理アドレスを直接使用し、メモリコピーを回避
-    pub fn add_tx_buffer_zero_copy(
-        &self,
-        phys_addr: u64,
-        data_len: usize,
-    ) -> Result<u16, VirtioNetError> {
-        self.add_tx_buffer_zero_copy_with_header(phys_addr, data_len, VirtioNetHeader::new_tx())
-    }
-
+    /// ゼロコピー送信バッファを追加
     pub fn add_tx_buffer_zero_copy_with_header(
         &self,
         phys_addr: u64,
         data_len: usize,
         header: VirtioNetHeader,
     ) -> Result<u16, VirtioNetError> {
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_buffer_zero_copy called phys=0x{:x} len={}\n", phys_addr, data_len));
+        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
         
-        let mut inner = self.inner.lock();
-        let (desc_idx, data_desc_idx) = Self::alloc_desc_pair(&mut inner).ok_or(VirtioNetError::QueueFull)?;
-        self.clear_stale_completion(desc_idx);
-        self.clear_stale_completion(data_desc_idx);
+        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+        let data_desc_idx = match vq_guard.alloc_desc() {
+            Some(idx) => idx,
+            None => {
+                vq_guard.free_desc(desc_idx);
+                return Err(VirtioNetError::QueueFull);
+            }
+        };
 
-        let (header_ptr, header_dma_base) = match (inner.tx_headers, inner.tx_header_dma_base) {
+        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
             (Some(ptr), Some(base)) => (ptr, base),
             _ => {
-                inner.free_descs.push(data_desc_idx);
-                inner.free_descs.push(desc_idx);
+                vq_guard.free_desc(data_desc_idx);
+                vq_guard.free_desc(desc_idx);
                 return Err(VirtioNetError::DeviceError);
             }
         };
@@ -440,122 +386,106 @@ impl NetVirtQueue {
             let header_slot = &mut *header_ptr.add(desc_idx as usize);
             *header_slot = header;
 
+            let desc_table = vq_guard.desc_table.as_ptr();
+
             // ヘッダーディスクリプタ
-            let desc_ptr = inner.desc_table.add(desc_idx as usize);
+            let desc_ptr = desc_table.add(desc_idx as usize);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64));
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), VirtioNetHeader::SIZE as u32);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), VringDesc::VRING_DESC_F_NEXT);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_NEXT);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), data_desc_idx);
 
             // データーディスクリプタ
-            let data_desc_ptr = inner.desc_table.add(data_desc_idx as usize);
+            let data_desc_ptr = desc_table.add(data_desc_idx as usize);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).addr), phys_addr);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).len), data_len as u32);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).flags), 0);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*data_desc_ptr).next), 0);
 
-            crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_zero preparing desc={} phys=0x{:x} len={}\n", desc_idx, phys_addr, data_len));
-
-            // 1. Descriptor table updates visible before updating Available Ring
-            core::sync::atomic::fence(Ordering::Release);
-
-            // Available Ringに追加
-            let avail = &mut *inner.avail_ring;
-            let avail_idx = avail.idx;
-            // used idx for diagnostics
-            let used_idx = core::ptr::read_volatile(core::ptr::addr_of!(self.used_ring.as_ref().unwrap().idx));
-
-            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
-            core::ptr::write_volatile(ring_ptr, desc_idx);
-
-            // 2. Ring entry update visible before updating idx
-            core::sync::atomic::fence(Ordering::Release);
-
-            core::ptr::write_volatile(core::ptr::addr_of_mut!(avail.idx), avail_idx.wrapping_add(1));
-
-            crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_zero desc={} pre_avail_idx={} post_avail_idx={} ring_slot={} used_idx_before=0x{:x}\n", desc_idx, avail_idx, avail.idx, avail.ring[(avail_idx % self.size) as usize], used_idx));
+            vq_guard.submit(desc_idx);
         }
 
-        log::info!(
-            "[VIRTIO-NET] add_tx_zero desc {} phys=0x{:x} len={}",
-            desc_idx,
-            phys_addr,
-            data_len
-        );
-
         Ok(desc_idx)
+    }
+
+    pub fn add_tx_buffer_zero_copy(
+        &self,
+        phys_addr: u64,
+        data_len: usize,
+    ) -> Result<u16, VirtioNetError> {
+        self.add_tx_buffer_zero_copy_with_header(phys_addr, data_len, VirtioNetHeader::new_tx())
     }
 
     /// 受信バッファを追加
     pub fn add_rx_buffer(&self, buffer: &mut [u8]) -> Result<u16, VirtioNetError> {
-        let mut inner = self.inner.lock();
-        let desc_idx = Self::alloc_desc(&mut inner).ok_or(VirtioNetError::QueueFull)?;
-        self.clear_stale_completion(desc_idx);
+        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
+        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
 
         unsafe {
-            // ディスクリプタを設定（書き込み可能）
-            let desc_ptr = inner.desc_table.add(desc_idx as usize);
+            let desc_ptr = vq_guard.desc_table.as_ptr().add(desc_idx as usize);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), buffer.as_ptr() as u64);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), buffer.len() as u32);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), VringDesc::VRING_DESC_F_WRITE);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_WRITE);
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
 
-            // 1. Descriptor table updates visible before updating Available Ring
-            core::sync::atomic::fence(Ordering::Release);
-
-            // Available Ringに追加
-            let avail = &mut *inner.avail_ring;
-            let avail_idx = avail.idx;
-            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
-            core::ptr::write_volatile(ring_ptr, desc_idx);
-
-            // 2. Ring entry update visible before updating idx
-            core::sync::atomic::fence(Ordering::Release);
-
-            core::ptr::write_volatile(core::ptr::addr_of_mut!(avail.idx), avail_idx.wrapping_add(1));
+            vq_guard.submit(desc_idx);
         }
-
-        log::info!("[VIRTIO-NET] add_rx desc={} ptr=0x{:x} len={}", desc_idx, buffer.as_ptr() as u64, buffer.len());
 
         Ok(desc_idx)
     }
 
-    /// ゼロコピー受信バッファを追加（設計書 6.2準拠）
-    /// Mempool物理アドレスを直接使用
+    /// ゼロコピー受信バッファを追加
     pub fn add_rx_buffer_zero_copy(
         &self,
         phys_addr: u64,
         buffer_len: usize,
     ) -> Result<u16, VirtioNetError> {
-        let mut inner = self.inner.lock();
-        let desc_idx = Self::alloc_desc(&mut inner).ok_or(VirtioNetError::QueueFull)?;
-        self.clear_stale_completion(desc_idx);
+        let mut vq_guard = self.vq.lock().map_err(|_| VirtioNetError::DeviceError)?;
+        let desc_idx = vq_guard.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
 
         unsafe {
-            // ディスクリプタを設定（書き込み可能、物理アドレス直接使用）
-            let desc_ptr = inner.desc_table.add(desc_idx as usize);
-            core::ptr::write_volatile(&mut (*desc_ptr).addr, phys_addr);
-            core::ptr::write_volatile(&mut (*desc_ptr).len, buffer_len as u32);
-            core::ptr::write_volatile(&mut (*desc_ptr).flags, VringDesc::VRING_DESC_F_WRITE);
-            core::ptr::write_volatile(&mut (*desc_ptr).next, 0);
+            let desc_ptr = vq_guard.desc_table.as_ptr().add(desc_idx as usize);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), phys_addr);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), buffer_len as u32);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), vring_flags::VRING_DESC_F_WRITE);
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
 
-            // Available Ringに追加
-            let avail = &mut *inner.avail_ring;
-            let avail_idx = avail.idx;
-            let ring_ptr = avail.ring.as_mut_ptr().add((avail_idx % self.size) as usize);
-            core::ptr::write_volatile(ring_ptr, desc_idx);
-
-            core::sync::atomic::fence(Ordering::Release);
-
-            core::ptr::write_volatile(&mut avail.idx, avail_idx.wrapping_add(1));
+            vq_guard.submit(desc_idx);
         }
-
-        log::info!("[VIRTIO-NET] add_rx_zero desc={} phys=0x{:x} len={}", desc_idx, phys_addr, buffer_len);
 
         Ok(desc_idx)
     }
 
     /// 完了したバッファを処理
+    pub fn process_used_with<F>(&self, mut on_complete: F) -> usize
+    where
+        F: FnMut(u16, u32),
+    {
+        let mut vq_guard = match self.vq.lock() {
+            Ok(guard) => guard,
+            Err(_) => return 0,
+        };
+
+        let count = vq_guard.poll_completions(|desc_idx, len| {
+            if let Ok(mut pending) = self.pending_completions.lock() {
+                if let Some(slot) = pending.get_mut(desc_idx as usize) {
+                    *slot = Some(len);
+                }
+            }
+            on_complete(desc_idx, len);
+        });
+
+        if count > 0 {
+            if let Ok(mut wakers) = self.pending_wakers.lock() {
+                for waker in wakers.drain(..) {
+                    waker.wake();
+                }
+            }
+        }
+
+        count
+    }
+
     pub fn process_used(&self) -> Vec<(u16, u32)> {
         let mut completed = Vec::new();
         let _ = self.process_used_with(|desc_idx, len| {
@@ -564,62 +494,26 @@ impl NetVirtQueue {
         completed
     }
 
-    pub fn process_used_count(&self) -> usize {
-        self.process_used_with(|_, _| {})
-    }
-
-    fn process_used_with<F>(&self, mut on_complete: F) -> usize
-    where
-        F: FnMut(u16, u32),
-    {
-        let mut count = 0;
-        let mut pending = self.pending_completions.lock();
-
-        unsafe {
-            let used = &*self.used_ring;
-            let mut last_idx = self.last_used_idx.load(Ordering::Acquire);
-
-            while last_idx != core::ptr::read_volatile(&used.idx) {
-                let elem_ptr = used.ring.as_ptr().add((last_idx % self.size) as usize);
-                let desc_idx = core::ptr::read_volatile(&(*elem_ptr).id) as u16;
-                let len = core::ptr::read_volatile(&(*elem_ptr).len);
-                if let Some(slot) = pending.get_mut(desc_idx as usize) {
-                    *slot = Some(len);
-                }
-                on_complete(desc_idx, len);
-                count += 1;
-                last_idx = last_idx.wrapping_add(1);
-            }
-
-            self.last_used_idx.store(last_idx, Ordering::Release);
-        }
-
-        drop(pending);
-
-        if count > 0 {
-            let wakers: Vec<Waker> = self.pending_wakers.lock().drain(..).collect();
-            for waker in wakers {
-                waker.wake();
-            }
-        }
-
-        count
-    }
-
     /// Wakerを登録
     pub fn register_waker(&self, waker: Waker) {
-        self.pending_wakers.lock().push(waker);
+        if let Ok(mut wakers) = self.pending_wakers.lock() {
+            wakers.push(waker);
+        }
     }
 
     /// 利用可能なディスクリプタ数を取得
     pub fn available_descriptors(&self) -> usize {
-        self.inner.lock().free_descs.len()
+        if let Ok(vq) = self.vq.lock() {
+            if let Ok(list) = vq.free_list.lock() {
+                return list.len();
+            }
+        }
+        0
     }
 
     /// ポリングで完了を確認
     pub fn take_completion(&self, desc_idx: u16) -> Option<u32> {
-        {
-            let mut pending = self.pending_completions.lock();
+        if let Ok(mut pending) = self.pending_completions.lock() {
             if let Some(slot) = pending.get_mut(desc_idx as usize) {
                 if let Some(len) = slot.take() {
                     drop(pending);
@@ -629,65 +523,49 @@ impl NetVirtQueue {
             }
         }
 
-        let used_idx = unsafe { (*self.used_ring).idx };
-        let last_idx = self.last_used_idx.load(Ordering::Acquire);
-        if used_idx == last_idx {
-            return None;
+        let _ = self.process_used_with(|_, _| {});
+        
+        if let Ok(mut pending) = self.pending_completions.lock() {
+            let len = pending.get_mut(desc_idx as usize).and_then(|slot| slot.take());
+            if len.is_some() {
+                drop(pending);
+                self.free_desc_chain(desc_idx);
+            }
+            len
+        } else {
+            None
         }
-
-        let _ = self.process_used_count();
-        let mut pending = self.pending_completions.lock();
-        let len = pending
-            .get_mut(desc_idx as usize)
-            .and_then(|slot| slot.take());
-        drop(pending);
-        if len.is_some() {
-            self.free_desc_chain(desc_idx);
-        }
-        len
     }
 
     fn free_desc_chain(&self, head: u16) {
-        let mut inner = self.inner.lock();
-        let mut current = head;
-        for _ in 0..self.size {
-            if current >= self.size {
-                break;
-            }
-            inner.free_descs.push(current);
-            let desc = unsafe { &*inner.desc_table.add(current as usize) };
-            if (desc.flags & VringDesc::VRING_DESC_F_NEXT) == 0 {
-                break;
-            }
-            current = desc.next;
-        }
-    }
+        if let Ok(vq) = self.vq.lock() {
+            let mut current = head;
+            let size = vq.queue_size;
+            let desc_table = vq.desc_table.as_ptr();
 
-    fn clear_stale_completion(&self, desc_idx: u16) {
-        let mut pending = self.pending_completions.lock();
-        if let Some(slot) = pending.get_mut(desc_idx as usize) {
-            if slot.is_some() {
-                self.stale_completion_count
-                    .fetch_add(1, Ordering::Relaxed);
-                log::warn!(
-                    "[VIRTIO-NET] stale completion detected for desc {}",
-                    desc_idx
-                );
-                *slot = None;
+            for _ in 0..size {
+                if current >= size {
+                    break;
+                }
+                let desc = unsafe { &*desc_table.add(current as usize) };
+                let next = desc.next;
+                let flags = desc.flags;
+                
+                vq.free_desc(current);
+                
+                if (flags & vring_flags::VRING_DESC_F_NEXT) == 0 {
+                    break;
+                }
+                current = next;
             }
         }
     }
 
-    pub fn stale_completion_count(&self) -> u64 {
-        self.stale_completion_count.load(Ordering::Relaxed)
-    }
-
-    /// ペンディングバッファがあるかチェック
     pub fn has_pending(&self) -> bool {
-        unsafe {
-            let used = &*self.used_ring;
-            let last_idx = self.last_used_idx.load(Ordering::Acquire);
-            last_idx != used.idx
+        if let Ok(vq) = self.vq.lock() {
+             vq.has_pending()
+        } else {
+            false
         }
     }
 }

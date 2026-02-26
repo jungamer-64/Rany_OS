@@ -4,14 +4,38 @@ use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
 use crate::io::dma::CoherentDmaBuffer;
 use crate::io::iommu::types::DmaAddr;
-pub use virtio_driver::defs::{VringDesc, VringUsedElem, VIRTQUEUE_MAX_SIZE, vring_flags};
+pub use virtio_driver::defs::{VringUsedElem, VIRTQUEUE_MAX_SIZE};
+
+/// Virtqueue descriptor
+#[repr(C)]
+#[derive(Default, Clone, Copy, Debug)]
+pub struct VringDesc {
+    pub addr: u64,
+    pub len: u32,
+    pub flags: u16,
+    pub next: u16,
+}
+
+impl VringDesc {
+    pub const F_NEXT: u16 = 0x1;
+    pub const F_WRITE: u16 = 0x2;
+    pub const F_INDIRECT: u16 = 0x4;
+}
+
+pub mod vring_flags {
+    pub const VRING_DESC_F_NEXT: u16 = 0x1;
+    pub const VRING_DESC_F_WRITE: u16 = 0x2;
+    pub const VRING_DESC_F_INDIRECT: u16 = 0x4;
+}
+
+pub const VIRTIO_F_INDIRECT_DESC: u64 = 1 << 28;
 
 /// Virtqueue available ring
 #[repr(C)]
 pub struct VringAvail {
     pub flags: u16,
     pub idx: u16,
-    // ring: [u16; queue_size] follows
+    pub ring: [u16; 32], // Alignment helper, use pointers for real access
 }
 
 /// Virtqueue used ring
@@ -19,10 +43,10 @@ pub struct VringAvail {
 pub struct VringUsed {
     pub flags: u16,
     pub idx: u16,
-    // ring: [VringUsedElem; queue_size] follows
+    pub ring: [VringUsedElem; 32], // Alignment helper
 }
 
-/// VirtQueue management structure
+#[derive(Debug)]
 pub struct VirtQueue {
     /// Queue size (must be power of 2)
     pub queue_size: u16,
@@ -191,9 +215,45 @@ impl VirtQueue {
         self.index
     }
 
-    /// Notify the device that new buffers are available.
+    /// Submit a chain of descriptors as an indirect descriptor.
+    ///
+    /// # Safety
+    /// Caller must ensure:
+    /// - `indirect_table` points to a valid sequence of `VringDesc`
+    /// - `count` is the number of descriptors in the table
+    /// - `indirect_table` memory remains valid until the device processes it
+    pub unsafe fn submit_indirect(&mut self, indirect_table_dma: DmaAddr, count: u16) -> Option<u16> {
+        if (self.features & VIRTIO_F_INDIRECT_DESC) == 0 {
+            return None;
+        }
+
+        let head = self.alloc_desc()?;
+        let desc_ptr = self.desc_table.as_ptr().add(head as usize);
+
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).addr), indirect_table_dma.as_u64());
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).len), (count as usize * core::mem::size_of::<VringDesc>()) as u32);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).flags), VringDesc::F_INDIRECT);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*desc_ptr).next), 0);
+
+        self.submit(head);
+        Some(head)
+    }
+
+    pub fn index(&self) -> u16 {
+        self.index
+    }
+
+    pub fn size(&self) -> u16 {
+        self.queue_size
+    }
+
     pub fn notify(&self, transport: &dyn crate::io::virtio::transport::VirtioTransport) {
         transport.notify_queue(self.index);
+    }
+
+    /// Check if the device has produced any used elements that haven't been processed yet
+    pub fn has_pending(&self) -> bool {
+        self.last_used_idx.load(Ordering::Acquire) != self.get_used_idx() as u32
     }
 
     /// Poll for a single completed request
