@@ -273,14 +273,8 @@ impl TcpProcessor {
     pub fn record_sent_packet(&mut self, local: SocketAddr, remote: SocketAddr, seq: u32, flags: u16, payload: &[u8], current_time: u64) {
         if let Some(tcb_lock) = self.connections.get(&(local, remote)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
-                // Determine how many sequence numbers are consumed
-                let mut consumed: u32 = payload.len() as u32;
-                if flags & TcpHeader::FLAG_SYN != 0 {
-                    consumed = consumed.saturating_add(1);
-                }
-                if flags & TcpHeader::FLAG_FIN != 0 {
-                    consumed = consumed.saturating_add(1);
-                }
+                // Determine how many sequence numbers are consumed.
+                let consumed = TcpControlBlock::seq_space_len_for_len_flags(payload.len(), flags);
 
                 if consumed > 0 {
                     // Queue for retransmission

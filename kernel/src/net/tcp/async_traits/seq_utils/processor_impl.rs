@@ -109,6 +109,10 @@ impl TcpProcessor {
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
+        if header_len < TcpHeader::MIN_HEADER_LEN || header_len > data.len() {
+            return TcpProcessResult::None;
+        }
+
         // Convert to internal address types
         let remote_addr = SocketAddr::new(
             Ipv4Addr::new(
@@ -176,6 +180,10 @@ impl TcpProcessor {
         let flags = data_offset_flags & 0x003F;
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
+
+        if header_len < TcpHeader::MIN_HEADER_LEN || header_len > data.len() {
+            return TcpProcessResult::None;
+        }
 
         // Convert to internal address types (SocketAddr::V6)
         let remote_addr = SocketAddr::new_v6(src_ip, src_port);
@@ -307,6 +315,10 @@ impl TcpProcessor {
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
+        if header_len < TcpHeader::MIN_HEADER_LEN || header_len > data.len() {
+            return TcpProcessResult::None;
+        }
+
         // Convert to internal address types
         let remote_addr = SocketAddr::new(
             Ipv4Addr::new(
@@ -377,6 +389,10 @@ impl TcpProcessor {
         let flags = data_offset_flags & 0x003F;
         let window = u16::from_be_bytes([data[14], data[15]]);
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
+
+        if header_len < TcpHeader::MIN_HEADER_LEN || header_len > data.len() {
+            return TcpProcessResult::None;
+        }
 
         // Convert to internal address types
         let remote_addr = SocketAddr::new_v6(src_ip, src_port);

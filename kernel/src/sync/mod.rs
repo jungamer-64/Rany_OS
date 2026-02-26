@@ -70,6 +70,9 @@ pub use lockfree::{
     InterCoreChannel,
     // Inter-core communication
     InterCoreMessage,
+    // Lock-free index free-list
+    LockFreeIndexStack,
+    LockFreeIndexStackPushError,
     // MPMC Ring Buffer
     MpmcRingBuffer,
     // MPSC Ring Buffer

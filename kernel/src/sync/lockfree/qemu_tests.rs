@@ -71,6 +71,26 @@ pub fn mpmc_try_operations_smoke() -> bool {
     rb.try_push(5).is_ok()
 }
 
+pub fn lock_free_index_stack_smoke() -> bool {
+    let stack = LockFreeIndexStack::new_empty(4);
+
+    if stack.capacity() != 4 { return false; }
+    if !stack.is_empty() { return false; }
+    if stack.len() != 0 { return false; }
+    if stack.pop().is_some() { return false; }
+
+    if stack.push(0).is_err() { return false; }
+    if stack.push(2).is_err() { return false; }
+    if stack.push(4) != Err(LockFreeIndexStackPushError::OutOfRange) { return false; }
+
+    if stack.len() != 2 { return false; }
+    if stack.pop() != Some(2) { return false; }
+    if stack.pop() != Some(0) { return false; }
+    if stack.pop().is_some() { return false; }
+
+    stack.is_empty()
+}
+
 pub fn backoff_smoke() -> bool {
     let mut backoff = Backoff::new();
 

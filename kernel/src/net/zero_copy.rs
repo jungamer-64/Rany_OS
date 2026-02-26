@@ -17,13 +17,14 @@
 
 
 use alloc::sync::Arc;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use crate::sync::PoisonLock;
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
+use crate::sync::{LockFreeIndexStack, MpmcRingBuffer};
 
 // ============================================================================
 // Configuration
@@ -48,10 +49,11 @@ const BUFFER_TAILROOM: usize = 64;
 
 /// Per-CPU ローカルフリーキャッシュ容量
 const LOCAL_FREE_CACHE_CAPACITY: usize = 64;
-/// グローバルフリーリストからの補充バッチ数
+/// 一度にローカルキャッシュに補充するエントリ数
 const LOCAL_FREE_REFILL_BATCH: usize = 16;
-/// ローカルキャッシュ満杯時にグローバルへ戻す最大数
+/// ローカルキャッシュが飽和した際にグローバルへ移すエントリ数
 const LOCAL_FREE_SPILL_BATCH: usize = 16;
+
 
 // ============================================================================
 // Buffer Pool
@@ -115,97 +117,153 @@ struct BufferSlot {
 // の読み取りと `ref_count` の原子的更新だけを共有し、DMAバッファ本体の可変操作は行わない。
 unsafe impl Sync for BufferSlot {}
 
+// Per-CPU local free cache. The hot path is lock-free (`MpmcRingBuffer`).
+struct PerCpuCache {
+    ring: MpmcRingBuffer<u32, LOCAL_FREE_CACHE_CAPACITY>,
+}
+
+impl PerCpuCache {
+    fn new() -> Self {
+        Self {
+            ring: MpmcRingBuffer::new(),
+        }
+    }
+
+    /// Try to pop one index from the local cache.
+    fn try_pop(&self) -> Option<u32> {
+        self.ring.try_pop()
+    }
+
+    /// Push an index into the local cache. Returns `Err(idx)` if the cache is
+    /// full or if `try_push` loses a race.
+    fn try_push(&self, idx: u32) -> Result<(), u32> {
+        self.ring.try_push(idx)?;
+        Ok(())
+    }
+
+    /// Move up to `LOCAL_FREE_REFILL_BATCH` entries from the global pool into the
+    /// local cache.  Called by `alloc_slot_index` when the local cache is empty.
+    fn refill_from_global(&self, global: &LockFreeIndexStack) {
+        for _ in 0..LOCAL_FREE_REFILL_BATCH {
+            let Some(idx) = global.pop() else {
+                break;
+            };
+            if let Err(idx) = self.try_push(idx) {
+                if let Err(err) = global.push(idx) {
+                    log::error!(
+                        "[NET] zero_copy refill failed to return slot {} to global free-list: {:?}",
+                        idx,
+                        err
+                    );
+                    debug_assert!(false, "zero_copy refill return-to-global failed");
+                }
+                break;
+            }
+        }
+    }
+
+    /// Spill a few entries back to the global pool when the local cache is
+    /// excessively full.  Keeps the global list from starving other CPUs.
+    fn spill_to_global(&self, global: &LockFreeIndexStack) {
+        for _ in 0..LOCAL_FREE_SPILL_BATCH {
+            let Some(idx) = self.try_pop() else {
+                break;
+            };
+            if let Err(err) = global.push(idx) {
+                log::error!(
+                    "[NET] zero_copy spill failed to push slot {} to global free-list: {:?}",
+                    idx,
+                    err
+                );
+                debug_assert!(false, "zero_copy spill push-to-global failed");
+                // Best effort: avoid leaking the index if the global push fails.
+                let _ = self.try_push(idx);
+                break;
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.ring.len()
+    }
+}
+
 struct MemoryPoolInner {
     id: PoolId,
     slots: Vec<BufferSlot>,
-    global_free: PoisonLock<Vec<u32>>,
-    local_free: Vec<PoisonLock<Vec<u32>>>,
+    global_free: LockFreeIndexStack,
+    per_cpu: Vec<PerCpuCache>,
     stats: PoolStats,
 }
 
 impl MemoryPoolInner {
-    fn cpu_local_cache_index(&self) -> Option<usize> {
-        let cpu = crate::smp::cpu_index();
-        (cpu < self.local_free.len()).then_some(cpu)
-    }
-
-    fn alloc_slot_index(&self) -> Option<u32> {
-        if let Some(cpu_idx) = self.cpu_local_cache_index() {
-            if let Ok(mut local) = self.local_free[cpu_idx].lock() {
-                if let Some(idx) = local.pop() {
-                    return Some(idx);
-                }
-            }
-
-            let mut batch = Vec::with_capacity(LOCAL_FREE_REFILL_BATCH);
-            if let Ok(mut global) = self.global_free.lock() {
-                for _ in 0..LOCAL_FREE_REFILL_BATCH {
-                    let Some(idx) = global.pop() else {
-                        break;
-                    };
-                    batch.push(idx);
-                }
-            }
-
-            if let Some(idx) = batch.pop() {
-                if !batch.is_empty() {
-                    if let Ok(mut local) = self.local_free[cpu_idx].lock() {
-                        local.extend(batch);
-                    }
-                }
-                return Some(idx);
-            }
+    #[inline]
+    fn current_cpu_cache(&self) -> Option<&PerCpuCache> {
+        if self.per_cpu.is_empty() {
             return None;
         }
 
-        if let Ok(mut global) = self.global_free.lock() {
-            global.pop()
-        } else {
-            None
+        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        if cpu_id < self.per_cpu.len() {
+            return Some(&self.per_cpu[cpu_id]);
         }
+
+        debug_assert!(
+            false,
+            "zero_copy current cpu id {} out of range for per_cpu cache len {}",
+            cpu_id,
+            self.per_cpu.len()
+        );
+        self.per_cpu.get(0)
+    }
+
+    fn alloc_slot_index(&self) -> Option<u32> {
+        // try local cache first
+        if let Some(cache) = self.current_cpu_cache() {
+            if let Some(idx) = cache.try_pop() {
+                return Some(idx);
+            }
+
+            // nothing locally, refill a batch and try again
+            cache.refill_from_global(&self.global_free);
+            if let Some(idx) = cache.try_pop() {
+                return Some(idx);
+            }
+        }
+
+        // fall back to global list
+        self.global_free.pop()
     }
 
     fn return_slot_index(&self, idx: u32) {
-        if let Some(cpu_idx) = self.cpu_local_cache_index() {
-            let spill = {
-                if let Ok(mut local) = self.local_free[cpu_idx].lock() {
-                    if local.len() < LOCAL_FREE_CACHE_CAPACITY {
-                        local.push(idx);
-                        return;
-                    }
-
-                    let mut batch = Vec::with_capacity(LOCAL_FREE_SPILL_BATCH);
-                    batch.push(idx);
-                    while batch.len() < LOCAL_FREE_SPILL_BATCH {
-                        let Some(entry) = local.pop() else {
-                            break;
-                        };
-                        batch.push(entry);
-                    }
-                    batch
-                } else {
-                    Vec::new()
-                }
-            };
-
-            let mut spill = spill;
-            if let Ok(mut global) = self.global_free.lock() {
-                global.append(&mut spill);
+        if let Some(cache) = self.current_cpu_cache() {
+            if cache.try_push(idx).is_ok() {
+                return;
             }
-            return;
+
+            cache.spill_to_global(&self.global_free);
+
+            if cache.try_push(idx).is_ok() {
+                return;
+            }
         }
 
-        if let Ok(mut global) = self.global_free.lock() {
-            global.push(idx);
+        if let Err(err) = self.global_free.push(idx) {
+            log::error!(
+                "[NET] zero_copy return_slot_index failed to push slot {} to global free-list: {:?}",
+                idx,
+                err
+            );
+            debug_assert!(false, "zero_copy return_slot_index global push failed");
         }
     }
 
     fn available(&self) -> usize {
-        let mut total = self.global_free.lock().map(|g| g.len()).unwrap_or(0);
-        for cache in &self.local_free {
-            total += cache.lock().map(|c| c.len()).unwrap_or(0);
+        let mut tot = self.global_free.len();
+        for cache in &self.per_cpu {
+            tot += cache.len();
         }
-        total
+        tot
     }
 
     fn slot(&self, slot_idx: u32) -> &BufferSlot {
@@ -232,7 +290,6 @@ impl MemoryPool {
         let total_size = aligned_size + BUFFER_HEADROOM + BUFFER_TAILROOM;
 
         let mut slots = Vec::with_capacity(count);
-        let mut global_free = Vec::with_capacity(count);
 
         // バッファを事前割り当て (CoherentDmaBuffer経由で正しい物理アドレスを取得)
         for _ in 0..count {
@@ -240,7 +297,6 @@ impl MemoryPool {
                 let virt_ptr = unsafe { buf.as_slice().as_ptr() } as *mut u8;
                 let dev_addr = buf.device_addr();
                 if let Some(nn) = NonNull::new(virt_ptr) {
-                    let slot_idx = slots.len() as u32;
                     slots.push(BufferSlot {
                         _dma: buf,
                         base_ptr: nn,
@@ -248,22 +304,30 @@ impl MemoryPool {
                         payload_capacity: aligned_size,
                         ref_count: AtomicU64::new(0),
                     });
-                    global_free.push(slot_idx);
                 }
             }
         }
 
-        let local_count = (crate::smp::cpu_count() as usize).max(1);
-        let mut local_free = Vec::with_capacity(local_count);
-        for _ in 0..local_count {
-            local_free.push(PoisonLock::new(Vec::with_capacity(LOCAL_FREE_CACHE_CAPACITY)));
+        assert!(
+            slots.len() <= u32::MAX as usize,
+            "zero_copy MemoryPool slots exceed u32::MAX"
+        );
+
+        let global_free = LockFreeIndexStack::new_filled(slots.len());
+
+        // Create a cache for every logical CPU slot to avoid aliasing when APs
+        // come online after the pool is created.
+        let cpu_count = crate::per_cpu::MAX_CPUS;
+        let mut per_cpu = Vec::with_capacity(cpu_count);
+        for _ in 0..cpu_count {
+            per_cpu.push(PerCpuCache::new());
         }
 
         let inner = Arc::new(MemoryPoolInner {
             id,
             slots,
-            global_free: PoisonLock::new(global_free),
-            local_free,
+            global_free,
+            per_cpu,
             stats: PoolStats::default(),
         });
         inner
@@ -332,9 +396,24 @@ impl MemoryPool {
         &self.inner.stats
     }
 
-    /// 空きバッファ数を取得
+    /// 空きバッファ数を取得（並行操作中は概算値、静止時は正確）
     pub fn available(&self) -> usize {
         self.inner.available()
+    }
+
+    // --- test helpers ----------------------------------------------------
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub fn local_cache_len(&self, cpu: usize) -> usize {
+        if cpu < self.inner.per_cpu.len() {
+            self.inner.per_cpu[cpu].len()
+        } else {
+            0
+        }
+    }
+
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub fn global_cache_len(&self) -> usize {
+        self.inner.global_free.len()
     }
 }
 
@@ -463,15 +542,24 @@ impl ZeroCopyBuffer {
     }
 
     /// ヘッドルームを予約（プロトコルヘッダ追加用）
+    /// ヘッドルームを予約（プロトコルヘッダ追加用）
+    ///
+    /// 以前の実装は `len` を増やしていたため、ペイロード容量が
+    /// 一杯の状態では常にエラーが返っていた。 予約はデータを書き込む
+    /// 前の操作であり、`len` はヘッダが実際に書き込まれたときにのみ
+    /// 増加させるべきである。
     pub fn reserve_headroom(&mut self, size: usize) -> Result<(), &'static str> {
         if self.headroom < size {
             return Err("Insufficient headroom");
         }
-        if self.len.saturating_add(size) > self.segment_capacity {
+        let Some(new_capacity) = self.segment_capacity.checked_add(size) else {
             return Err("Out of bounds");
-        }
+        };
+
+        // Preserve the segment tail boundary while moving the data pointer
+        // backwards into available headroom.
         self.headroom -= size;
-        self.len += size;
+        self.segment_capacity = new_capacity;
         Ok(())
     }
 
@@ -480,8 +568,16 @@ impl ZeroCopyBuffer {
         if self.len < size {
             return Err("Insufficient data");
         }
+        if self.segment_capacity < size {
+            return Err("Out of bounds");
+        }
+
+        // Keep the segment tail boundary unchanged while stripping bytes from
+        // the front; otherwise subsequent `set_len` could extend beyond the
+        // original slot span.
         self.headroom += size;
         self.len -= size;
+        self.segment_capacity -= size;
         Ok(())
     }
 
@@ -583,8 +679,14 @@ pub struct SgEntry {
 }
 
 /// Scatter-Gatherリスト
+/// Scatter-Gatherリスト
+///
+/// `SgList` keeps ownership of the underlying `ZeroCopyBuffer` objects so that
+/// DMA drivers may safely use the addresses after the caller drops their
+/// references.  The previous implementation only stored `(addr,len)` tuples and
+/// allowed the buffers to be freed, leading to a use-after-free on the NIC.
 pub struct SgList {
-    entries: Vec<SgEntry>,
+    buffers: Vec<ZeroCopyBuffer>,
     total_len: usize,
 }
 
@@ -592,28 +694,25 @@ impl SgList {
     /// 新しいSGリストを作成
     pub fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            buffers: Vec::new(),
             total_len: 0,
         }
     }
 
-    /// エントリを追加
-    pub fn push(&mut self, buffer: &ZeroCopyBuffer) {
-        self.entries.push(SgEntry {
-            addr: buffer.dma_addr(),
-            len: buffer.len() as u32,
-        });
+    /// エントリを追加（所有権を奪う）
+    pub fn push(&mut self, buffer: ZeroCopyBuffer) {
         self.total_len += buffer.len();
+        self.buffers.push(buffer);
     }
 
     /// エントリ数を取得
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.buffers.len()
     }
 
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.buffers.is_empty()
     }
 
     /// 合計長を取得
@@ -621,9 +720,15 @@ impl SgList {
         self.total_len
     }
 
-    /// エントリのスライスを取得
-    pub fn entries(&self) -> &[SgEntry] {
-        &self.entries
+    /// DMAドライバに渡すためのSgEntry配列を生成
+    pub fn entries(&self) -> Vec<SgEntry> {
+        self.buffers
+            .iter()
+            .map(|buf| SgEntry {
+                addr: buf.dma_addr(),
+                len: buf.len() as u32,
+            })
+            .collect()
     }
 }
 
@@ -639,9 +744,7 @@ impl Default for SgList {
 
 /// パケットチェーン（複数パケットのリンクリスト）
 pub struct PacketChain {
-    head: Option<ZeroCopyBuffer>,
-    tail_ptr: Option<NonNull<ZeroCopyBuffer>>,
-    count: usize,
+    buffers: VecDeque<ZeroCopyBuffer>,
     total_len: usize,
 }
 
@@ -649,9 +752,7 @@ impl PacketChain {
     /// 新しいチェーンを作成
     pub fn new() -> Self {
         Self {
-            head: None,
-            tail_ptr: None,
-            count: 0,
+            buffers: VecDeque::new(),
             total_len: 0,
         }
     }
@@ -659,33 +760,27 @@ impl PacketChain {
     /// パケットを追加
     pub fn push(&mut self, buffer: ZeroCopyBuffer) {
         self.total_len += buffer.len();
-        self.count += 1;
-
-        if self.head.is_none() {
-            self.head = Some(buffer);
-        }
-        // 注：実際の実装ではリンクリストでつなぐ
+        self.buffers.push_back(buffer);
     }
 
-    /// パケットを取得
+    /// パケットを取得（FIFO）
     pub fn pop(&mut self) -> Option<ZeroCopyBuffer> {
-        if let Some(head) = self.head.take() {
-            self.count -= 1;
-            self.total_len -= head.len();
-            Some(head)
+        if let Some(buf) = self.buffers.pop_front() {
+            self.total_len -= buf.len();
+            Some(buf)
         } else {
             None
         }
     }
 
-    /// パケット数を取得
+    /// エントリ数
     pub fn len(&self) -> usize {
-        self.count
+        self.buffers.len()
     }
 
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
-        self.head.is_none()
+        self.buffers.is_empty()
     }
 
     /// 合計長を取得
@@ -878,7 +973,7 @@ use core::task::{Context, Poll, Waker};
 /// 非同期ゼロコピーリーダー
 pub struct ZeroCopyReader {
     pool: Arc<MemoryPool>,
-    pending: Option<ZeroCopyBuffer>,
+    pending: VecDeque<ZeroCopyBuffer>,
     waker: Option<Waker>,
 }
 
@@ -886,7 +981,7 @@ impl ZeroCopyReader {
     pub fn new(pool: Arc<MemoryPool>) -> Self {
         Self {
             pool,
-            pending: None,
+            pending: VecDeque::new(),
             waker: None,
         }
     }
@@ -898,7 +993,7 @@ impl ZeroCopyReader {
 
     /// データが到着した時に呼ばれる
     pub fn on_data(&mut self, buffer: ZeroCopyBuffer) {
-        self.pending = Some(buffer);
+        self.pending.push_back(buffer);
         if let Some(waker) = self.waker.take() {
             waker.wake();
         }
@@ -913,7 +1008,7 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
     type Output = Option<ZeroCopyBuffer>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(buffer) = self.reader.pending.take() {
+        if let Some(buffer) = self.reader.pending.pop_front() {
             Poll::Ready(Some(buffer))
         } else {
             self.reader.waker = Some(cx.waker().clone());

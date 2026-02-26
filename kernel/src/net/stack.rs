@@ -34,6 +34,7 @@ use crate::sync::PoisonLock;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
 use alloc::sync::Arc;
 use alloc::collections::VecDeque;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 mod core_impl;
@@ -138,115 +139,64 @@ impl NetworkStats {
 /// stack dropping the packet and recording an error statistic.
 pub type TransmitFn = fn(Option<NetIfId>, &[u8]) -> bool;
 
-/// ICMP Redirect Cache Entry
-/// 
-/// Stores temporary route overrides received from ICMP Redirect messages.
-/// These entries have limited lifetime and should be aged out periodically.
-#[derive(Debug, Clone, Copy)]
+// ICMP Redirect Cache Entry (map-backed)
+//
+// Only the gateway and timestamp are stored; the map key is the destination
+// address itself.
+#[derive(Debug)]
 struct RedirectCacheEntry {
-    /// Destination address
-    destination: Ipv4Address,
-    /// Gateway to use
     gateway: Ipv4Address,
-    /// Timestamp when entry was created (for aging)
     timestamp: u64,
 }
 
-/// ICMP Redirect Cache
-/// 
-/// A simple fixed-size cache for storing ICMP redirect information.
-/// RFC 792 recommends caching redirects temporarily.
 const REDIRECT_CACHE_SIZE: usize = 32;
-const REDIRECT_CACHE_TTL: u64 = 600_000; // 10 minutes in milliseconds
+const REDIRECT_CACHE_TTL: u64 = 600_000;
 
 #[derive(Debug)]
 struct RedirectCache {
-    entries: [Option<RedirectCacheEntry>; REDIRECT_CACHE_SIZE],
+    map: BTreeMap<Ipv4Address, RedirectCacheEntry>,
     current_time: u64,
 }
 
 impl RedirectCache {
-    /// Create an empty redirect cache
     fn new() -> Self {
         Self {
-            entries: [None; REDIRECT_CACHE_SIZE],
+            map: BTreeMap::new(),
             current_time: 0,
         }
     }
 
-    /// Update the current time for aging
     fn set_time(&mut self, time: u64) {
         self.current_time = time;
+        self.map.retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
     }
 
-    /// Insert or update a redirect entry using linear search to avoid hash collision DoS.
     fn insert(&mut self, destination: Ipv4Address, gateway: Ipv4Address) {
-        let mut first_empty: Option<usize> = None;
-        let mut oldest_idx = 0;
-        let mut oldest_time = u64::MAX;
+        self.map.retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
 
-        for (i, entry) in self.entries.iter_mut().enumerate() {
-            match entry {
-                Some(e) if e.destination == destination => {
-                    // update existing
-                    e.gateway = gateway;
-                    e.timestamp = self.current_time;
-                    return;
-                }
-                Some(e) => {
-                    // Track oldest entry for potential eviction
-                    if e.timestamp < oldest_time {
-                        oldest_time = e.timestamp;
-                        oldest_idx = i;
-                    }
-                    if self.current_time.saturating_sub(e.timestamp) > REDIRECT_CACHE_TTL {
-                        // replace expired entry immediately
-                        *entry = Some(RedirectCacheEntry { destination, gateway, timestamp: self.current_time });
-                        return;
-                    }
-                }
-                None => {
-                    if first_empty.is_none() {
-                        first_empty = Some(i);
-                    }
-                }
-            }
-        }
-
-        if let Some(empty_idx) = first_empty {
-            self.entries[empty_idx] = Some(RedirectCacheEntry { destination, gateway, timestamp: self.current_time });
+        if let Some(e) = self.map.get_mut(&destination) {
+            e.gateway = gateway;
+            e.timestamp = self.current_time;
             return;
         }
 
-        // Cache is full and no expired slot; replace the one with oldest timestamp
-        self.entries[oldest_idx] = Some(RedirectCacheEntry { destination, gateway, timestamp: self.current_time });
+        if self.map.len() >= REDIRECT_CACHE_SIZE {
+            if let Some((oldest, _)) = self.map.iter().min_by_key(|(_, e)| e.timestamp).map(|(k, _)| (*k, ())) {
+                self.map.remove(&oldest);
+            }
+        }
+
+        self.map.insert(destination, RedirectCacheEntry { gateway, timestamp: self.current_time });
     }
 
-    /// Look up a redirect for a destination
     fn get(&self, destination: Ipv4Address) -> Option<Ipv4Address> {
-        for entry in self.entries.iter() {
-            if let Some(e) = entry {
-                if e.destination == destination {
-                    if self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL {
-                        return Some(e.gateway);
-                    } else {
-                        return None; // Found but expired
-                    }
-                }
+        self.map.get(&destination).and_then(|e| {
+            if self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL {
+                Some(e.gateway)
+            } else {
+                None
             }
-        }
-        None
-    }
-
-    /// Remove all expired entries
-    fn cleanup(&mut self) {
-        for entry in self.entries.iter_mut() {
-            if let Some(e) = entry {
-                if self.current_time.saturating_sub(e.timestamp) > REDIRECT_CACHE_TTL {
-                    *entry = None;
-                }
-            }
-        }
+        })
     }
 }
 

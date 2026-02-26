@@ -16,6 +16,7 @@ pub enum RegistryError {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
+    use crate::sas::{DomainId, HeapRegistry};
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
@@ -370,4 +371,3 @@ mod tests {
         assert_eq!(registry.unregister_any(addr), None);
     }
 }
-

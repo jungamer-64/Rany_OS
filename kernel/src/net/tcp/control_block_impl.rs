@@ -488,13 +488,29 @@ impl TcpControlBlock {
     #[inline]
     fn retain_unacked_after_ack_and_count_removed(&mut self, ack_num: u32) -> u32 {
         let mut removed = 0u32;
-        self.timers.unacked_segments.retain(|seg| {
-            let keep = TcpProcessor::seq_after(Self::unacked_end_seq(seg), ack_num);
-            if !keep {
-                removed = removed.saturating_add(Self::unacked_seq_space_len(seg));
+        let mut old_queue = core::mem::take(&mut self.timers.unacked_segments);
+        let mut kept = VecDeque::with_capacity(old_queue.len());
+
+        while let Some(mut seg) = old_queue.pop_front() {
+            let end_seq = Self::unacked_end_seq(&seg);
+
+            // Fully acknowledged: drop segment entirely.
+            if !TcpProcessor::seq_after(end_seq, ack_num) {
+                removed = removed.saturating_add(Self::unacked_seq_space_len(&seg));
+                continue;
             }
-            keep
-        });
+
+            // Partially acknowledged: trim prefix from the retransmit queue entry.
+            if TcpProcessor::seq_after(ack_num, seg.seq) {
+                removed = removed.saturating_add(Self::trim_unacked_segment_prefix_to_ack(
+                    &mut seg, ack_num,
+                ));
+            }
+
+            kept.push_back(seg);
+        }
+
+        self.timers.unacked_segments = kept;
         removed
     }
 
@@ -510,12 +526,35 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    fn first_unsacked_unacked_seq(&self) -> Option<u32> {
-        self.timers
-            .unacked_segments
-            .iter()
-            .find(|seg| !self.is_sacked(seg.seq, seg.data.len() as u32))
-            .map(|seg| seg.seq)
+    fn trim_unacked_segment_prefix_to_ack(seg: &mut UnackedSegment, ack_num: u32) -> u32 {
+        let mut acked = ack_num.wrapping_sub(seg.seq);
+        if acked == 0 {
+            return 0;
+        }
+
+        let original_seq = seg.seq;
+        // Keep sent_time/retransmit_count as-is: the remaining suffix was sent at the same time
+        // and should still participate in timeout/backoff accounting as the oldest outstanding data.
+        seg.seq = ack_num;
+
+        if (seg.flags & TcpHeader::FLAG_SYN) != 0 && acked > 0 {
+            seg.flags &= !TcpHeader::FLAG_SYN;
+            acked -= 1;
+        }
+
+        let payload_trim = core::cmp::min(acked as usize, seg.data.len());
+        if payload_trim > 0 {
+            seg.data.drain(..payload_trim);
+            acked -= payload_trim as u32;
+        }
+
+        if (seg.flags & TcpHeader::FLAG_FIN) != 0 && acked > 0 {
+            seg.flags &= !TcpHeader::FLAG_FIN;
+            acked -= 1;
+        }
+
+        debug_assert_eq!(acked, 0, "partial ACK trim exceeded segment sequence-space");
+        ack_num.wrapping_sub(original_seq)
     }
 
     /// OOMによるパケットドロップを記録する
@@ -614,7 +653,7 @@ impl TcpControlBlock {
     }
 
     #[inline]
-    fn seq_space_len_for_len_flags(data_len: usize, flags: u16) -> u32 {
+    pub(crate) fn seq_space_len_for_len_flags(data_len: usize, flags: u16) -> u32 {
         let mut len = data_len as u32;
         if flags & TcpHeader::FLAG_SYN != 0 {
             len = len.saturating_add(1);
@@ -1081,13 +1120,6 @@ impl TcpControlBlock {
             }
         }
         false
-    }
-
-    /// Get next unsacked segment for retransmission
-    /// 
-    /// Returns Some(seq) of the first segment that needs retransmitting
-    pub fn get_next_unsacked(&self) -> Option<u32> {
-        self.first_unsacked_unacked_seq()
     }
 
     /// Clear SACK scoreboard on new cumulative ACK

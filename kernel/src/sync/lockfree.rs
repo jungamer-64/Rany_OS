@@ -22,9 +22,10 @@
 
 #![allow(dead_code)]
 
+use alloc::{boxed::Box, vec::Vec};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 // ============================================================================
 // 指数バックオフ戦略
@@ -112,6 +113,159 @@ impl Backoff {
 impl Default for Backoff {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// Lock-Free Index Stack (runtime-capacity free-list)
+// ============================================================================
+
+/// Push error for [`LockFreeIndexStack`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockFreeIndexStackPushError {
+    /// `idx` was outside the stack's capacity (`idx >= capacity`).
+    OutOfRange,
+}
+
+/// Lock-free stack specialized for `u32` indices.
+///
+/// This is intended for free-list style ownership transfer where each index is
+/// stored in exactly one place at a time. It uses an ABA-resistant tagged head
+/// pointer (32-bit tag + 32-bit index).
+///
+/// # Contract
+/// - `idx < capacity`
+/// - Pushing the same index twice concurrently (or without an intervening pop)
+///   is a logic error and may corrupt the structure.
+pub struct LockFreeIndexStack {
+    head: CacheLinePadded<AtomicU64>,
+    next: Box<[AtomicU32]>,
+    len: AtomicUsize,
+}
+
+impl LockFreeIndexStack {
+    /// Sentinel value representing an empty head.
+    pub const EMPTY_INDEX: u32 = u32::MAX;
+
+    #[inline]
+    const fn pack_head(tag: u32, idx: u32) -> u64 {
+        ((tag as u64) << 32) | (idx as u64)
+    }
+
+    #[inline]
+    const fn unpack_head(head: u64) -> (u32, u32) {
+        ((head >> 32) as u32, head as u32)
+    }
+
+    fn make_next_array(capacity: usize) -> Box<[AtomicU32]> {
+        let mut next = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            next.push(AtomicU32::new(Self::EMPTY_INDEX));
+        }
+        next.into_boxed_slice()
+    }
+
+    /// Create an empty stack that can store indices in range `[0, capacity)`.
+    pub fn new_empty(capacity: usize) -> Self {
+        assert!(
+            capacity <= u32::MAX as usize,
+            "LockFreeIndexStack capacity exceeds u32::MAX"
+        );
+        Self {
+            head: CacheLinePadded::new(AtomicU64::new(Self::pack_head(0, Self::EMPTY_INDEX))),
+            next: Self::make_next_array(capacity),
+            len: AtomicUsize::new(0),
+        }
+    }
+
+    /// Create a stack pre-filled with all indices in `[0, capacity)`.
+    ///
+    /// Elements are pushed in ascending order, so the first pop returns
+    /// `capacity - 1` (LIFO).
+    pub fn new_filled(capacity: usize) -> Self {
+        let stack = Self::new_empty(capacity);
+        for idx in 0..capacity {
+            let result = stack.push(idx as u32);
+            debug_assert!(result.is_ok(), "new_filled push failed at idx={idx}");
+        }
+        stack
+    }
+
+    /// Push an index onto the stack.
+    pub fn push(&self, idx: u32) -> Result<(), LockFreeIndexStackPushError> {
+        let idx_usize = idx as usize;
+        if idx_usize >= self.next.len() {
+            return Err(LockFreeIndexStackPushError::OutOfRange);
+        }
+
+        let mut backoff = Backoff::new();
+        loop {
+            let head = self.head.load(Ordering::Acquire);
+            let (tag, head_idx) = Self::unpack_head(head);
+
+            // Safe to write before the CAS; if CAS fails we will overwrite `next[idx]`
+            // with the new observed head and retry.
+            self.next[idx_usize].store(head_idx, Ordering::Relaxed);
+
+            let new_head = Self::pack_head(tag.wrapping_add(1), idx);
+            match self.head.compare_exchange_weak(
+                head,
+                new_head,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    self.len.fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err(_) => backoff.snooze(),
+            }
+        }
+    }
+
+    /// Pop an index from the stack.
+    pub fn pop(&self) -> Option<u32> {
+        let mut backoff = Backoff::new();
+        loop {
+            let head = self.head.load(Ordering::Acquire);
+            let (tag, head_idx) = Self::unpack_head(head);
+            if head_idx == Self::EMPTY_INDEX {
+                return None;
+            }
+
+            let next_idx = self.next[head_idx as usize].load(Ordering::Acquire);
+            let new_head = Self::pack_head(tag.wrapping_add(1), next_idx);
+
+            match self.head.compare_exchange_weak(
+                head,
+                new_head,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    let prev = self.len.fetch_sub(1, Ordering::Relaxed);
+                    debug_assert!(prev > 0, "LockFreeIndexStack len underflow");
+                    return Some(head_idx);
+                }
+                Err(_) => backoff.snooze(),
+            }
+        }
+    }
+
+    /// Approximate length under concurrency, exact when quiescent.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.next.len()
     }
 }
 
@@ -474,8 +628,6 @@ pub const fn create_inter_core_channel() -> InterCoreChannel {
 // ============================================================================
 // Bounded Channel (mpsc)
 // ============================================================================
-
-use alloc::boxed::Box;
 
 /// Bounded MPSC チャネル (Arc-free by default)
 ///

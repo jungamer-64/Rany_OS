@@ -1,4 +1,5 @@
 use super::*;
+use alloc::vec::Vec;
 
 #[test_case]
 fn test_spsc_basic() {
@@ -82,6 +83,56 @@ fn test_mpmc_try_operations() {
 
     // Can push again
     assert!(rb.try_push(5).is_ok());
+}
+
+#[test_case]
+fn test_lock_free_index_stack_basic() {
+    let stack = LockFreeIndexStack::new_empty(4);
+
+    assert_eq!(stack.capacity(), 4);
+    assert_eq!(stack.len(), 0);
+    assert!(stack.is_empty());
+    assert_eq!(stack.pop(), None);
+
+    assert_eq!(stack.push(1), Ok(()));
+    assert_eq!(stack.push(3), Ok(()));
+    assert_eq!(stack.len(), 2);
+    assert!(!stack.is_empty());
+
+    assert_eq!(stack.pop(), Some(3));
+    assert_eq!(stack.pop(), Some(1));
+    assert_eq!(stack.pop(), None);
+    assert!(stack.is_empty());
+}
+
+#[test_case]
+fn test_lock_free_index_stack_new_filled_drains_unique() {
+    let cap = 8;
+    let stack = LockFreeIndexStack::new_filled(cap);
+    assert_eq!(stack.capacity(), cap);
+    assert_eq!(stack.len(), cap);
+
+    let mut seen = [false; 8];
+    let mut popped = Vec::new();
+    while let Some(idx) = stack.pop() {
+        popped.push(idx);
+        seen[idx as usize] = true;
+    }
+
+    assert_eq!(popped.len(), cap);
+    assert!(seen.into_iter().all(|v| v));
+    assert_eq!(stack.len(), 0);
+    assert!(stack.is_empty());
+}
+
+#[test_case]
+fn test_lock_free_index_stack_push_out_of_range() {
+    let stack = LockFreeIndexStack::new_empty(2);
+    assert_eq!(
+        stack.push(2),
+        Err(LockFreeIndexStackPushError::OutOfRange)
+    );
+    assert_eq!(stack.len(), 0);
 }
 
 #[test_case]

@@ -702,6 +702,93 @@ pub fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_ack_segments_partial_ack_keeps_later_segments_and_updates_outstanding() {
+    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9002));
+    tcb.enter_established();
+
+    tcb.queue_unacked(10, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    tcb.queue_unacked(14, vec![5, 6, 7], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    assert_eq!(tcb.outstanding_bytes(), 7);
+
+    // ACK only the first segment
+    tcb.ack_segments(14);
+    assert_eq!(tcb.oldest_unacked_seq(), Some(14));
+    assert_eq!(tcb.outstanding_bytes(), 3);
+
+    // ACK the remaining segment
+    tcb.ack_segments(17);
+    assert!(tcb.oldest_unacked_seq().is_none());
+    assert_eq!(tcb.outstanding_bytes(), 0);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ack_segments_partial_within_segment_trims_retransmit_entry() {
+    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9003));
+    tcb.enter_established();
+
+    tcb.queue_unacked(100, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    assert_eq!(tcb.outstanding_bytes(), 4);
+
+    // Partial ACK for first 2 bytes of payload.
+    tcb.ack_segments(102);
+    assert_eq!(tcb.outstanding_bytes(), 2);
+    assert_eq!(tcb.oldest_unacked_seq(), Some(102));
+
+    let (seq, flags, payload) = tcb
+        .clone_oldest_unacked_packet_for_retransmit()
+        .expect("trimmed segment should remain queued");
+    assert_eq!(seq, 102);
+    assert_eq!(flags, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    assert_eq!(payload, vec![3, 4]);
+
+    tcb.ack_segments(104);
+    assert_eq!(tcb.outstanding_bytes(), 0);
+    assert!(tcb.oldest_unacked_seq().is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ack_segments_partial_trims_syn_then_payload() {
+    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9004));
+    tcb.enter_established();
+
+    tcb.queue_unacked(100, vec![10, 11, 12], 0, TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK);
+    assert_eq!(tcb.outstanding_bytes(), 4); // SYN + 3 bytes
+
+    // ACK only the SYN and first payload byte.
+    tcb.ack_segments(102);
+    assert_eq!(tcb.outstanding_bytes(), 2);
+    assert_eq!(tcb.oldest_unacked_seq(), Some(102));
+
+    let (seq, flags, payload) = tcb
+        .clone_oldest_unacked_packet_for_retransmit()
+        .expect("trimmed SYN segment should remain queued");
+    assert_eq!(seq, 102);
+    assert_eq!(flags, TcpHeader::FLAG_ACK); // SYN removed
+    assert_eq!(payload, vec![11, 12]);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ack_segments_partial_trims_payload_but_keeps_fin() {
+    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9005));
+    tcb.enter_established();
+
+    tcb.queue_unacked(200, vec![1, 2, 3], 0, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
+    assert_eq!(tcb.outstanding_bytes(), 4); // 3 bytes + FIN
+
+    // ACK first 2 payload bytes, FIN is still outstanding.
+    tcb.ack_segments(202);
+    assert_eq!(tcb.outstanding_bytes(), 2); // remaining payload byte + FIN
+    assert_eq!(tcb.oldest_unacked_seq(), Some(202));
+
+    let (seq, flags, payload) = tcb
+        .clone_oldest_unacked_packet_for_retransmit()
+        .expect("trimmed FIN segment should remain queued");
+    assert_eq!(seq, 202);
+    assert_eq!(flags, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK); // FIN preserved
+    assert_eq!(payload, vec![3]);
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_unacked_sequence_space_accounts_for_syn_and_fin() {
     let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9001));
     tcb.enter_established();

@@ -346,17 +346,16 @@ pub fn test_redirect_cache_cleanup() {
     let dst1 = Ipv4Address::new([10, 0, 0, 1]);
     let dst2 = Ipv4Address::new([10, 0, 0, 2]);
     let gateway = Ipv4Address::new([192, 168, 1, 2]);
-    
+
     cache.set_time(0);
     cache.insert(dst1, gateway);
-    
+
     cache.set_time(REDIRECT_CACHE_TTL / 2);
     cache.insert(dst2, gateway);
-    
-    // First entry expires, second still valid
+
+    // advance past TTL; set_time automatically purges expired entries
     cache.set_time(REDIRECT_CACHE_TTL + 1);
-    cache.cleanup();
-    
+
     // dst1 should be removed, dst2 still valid
     assert!(cache.get(dst1).is_none());
     // dst2 is still within TTL from its insertion time
