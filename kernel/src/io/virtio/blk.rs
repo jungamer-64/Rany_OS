@@ -237,14 +237,16 @@ impl Default for BlockDeviceConfig {
     }
 }
 
+use crate::sync::IrqPoisonLock;
+
 /// VirtIO block device driver
 pub struct VirtioBlkDevice {
     /// Device configuration
     config: BlockDeviceConfig,
     /// Request queues (one per CPU for multiqueue)
-    queues: Vec<Arc<Mutex<VirtQueue>>>,
-    /// Pending request wakers (one Mutex-protected map per queue)
-    pending_wakers: Vec<Mutex<BTreeMap<u16, Waker>>>,
+    queues: Vec<Arc<IrqPoisonLock<VirtQueue>>>,
+    /// Pending request wakers (one per queue)
+    pending_wakers: Vec<IrqPoisonLock<Vec<Option<Waker>>>>,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
@@ -253,8 +255,8 @@ pub struct VirtioBlkDevice {
     transport: Box<dyn VirtioTransport>,
     /// Features negotiated
     features: u64,
-    /// DMA buffers for inflight requests (header + status), keyed by head descriptor index
-    pub(crate) inflight_dma: Mutex<BTreeMap<u16, BlkRequestDma>>,
+    /// DMA buffers for inflight requests (header + status), per queue, indexed by descriptor index
+    pub(crate) inflight_dma: Vec<IrqPoisonLock<Vec<Option<BlkRequestDma>>>>,
 }
 
 unsafe impl Send for VirtioBlkDevice {}

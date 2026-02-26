@@ -29,12 +29,12 @@ impl VirtioBlkDevice {
         Self {
             config: BlockDeviceConfig::default(),
             queues: Vec::new(),
-            pending_wakers: Mutex::new(BTreeMap::new()),
+            pending_wakers: Vec::new(),
             ready: AtomicBool::new(false),
             iommu_device_id,
             transport,
             features: 0,
-            inflight_dma: Mutex::new(BTreeMap::new()),
+            inflight_dma: Vec::new(),
         }
     }
 
@@ -218,11 +218,18 @@ impl VirtioBlkDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx, // Index
+                self.features,
             )
         };
 
-        self.queues.push(Arc::new(Mutex::new(virtqueue)));
-        self.pending_wakers.push(Mutex::new(BTreeMap::new()));
+        let mut wakers = Vec::with_capacity(queue_size as usize);
+        wakers.resize_with(queue_size as usize, || None);
+        let mut dmas = Vec::with_capacity(queue_size as usize);
+        dmas.resize_with(queue_size as usize, || None);
+
+        self.queues.push(Arc::new(IrqPoisonLock::new(virtqueue)));
+        self.pending_wakers.push(IrqPoisonLock::new(wakers));
+        self.inflight_dma.push(IrqPoisonLock::new(dmas));
 
         Ok(())
     }
@@ -285,9 +292,10 @@ impl VirtioBlkDevice {
     pub fn handle_interrupt(&self) {
         // Process completions on all queues
         for (q_idx, queue) in self.queues.iter().enumerate() {
-            let mut queue_guard = queue.lock();
-            while let Some((desc_id, completed_len)) = queue_guard.poll_completion() {
-                self.process_completion_entry(&queue_guard, q_idx, desc_id, completed_len);
+            if let Ok(mut queue_guard) = queue.lock() {
+                while let Some((desc_id, completed_len)) = queue_guard.poll_completion() {
+                    self.process_completion_entry(&queue_guard, q_idx, desc_id, completed_len);
+                }
             }
         }
 
@@ -312,16 +320,24 @@ impl VirtioBlkDevice {
         );
 
         // DMA バッファからステータスを確認
-        let status_ok = if let Some(req_dma) = self.inflight_dma.lock().remove(&desc_id) {
-            let status = req_dma.status();
-            if status != VirtioBlkStatus::Ok as u8 {
-                log::warn!(
-                    "[VIRTIO-BLK] request {} completed with status {}",
-                    desc_id,
-                    status
-                );
+        let status_ok = if let Some(inflight_q) = self.inflight_dma.get(q_idx) {
+            if let Ok(mut inflight) = inflight_q.lock() {
+                if let Some(req_dma) = inflight.get_mut(desc_id as usize).and_then(|slot| slot.take()) {
+                    let status = req_dma.status();
+                    if status != VirtioBlkStatus::Ok as u8 {
+                        log::warn!(
+                            "[VIRTIO-BLK] request {} completed with status {}",
+                            desc_id,
+                            status
+                        );
+                    }
+                    status == VirtioBlkStatus::Ok as u8
+                } else {
+                    true
+                }
+            } else {
+                true
             }
-            status == VirtioBlkStatus::Ok as u8
         } else {
             true
         };
@@ -341,10 +357,11 @@ impl VirtioBlkDevice {
             bridge.handle_interrupt(device_id, &[(io_id, result)]);
         } else {
             // レガシーパス: 既存の Waker を起動
-            if let Some(queue_wakers) = self.pending_wakers.get(q_idx) {
-                let mut wakers = queue_wakers.lock();
-                if let Some(waker) = wakers.remove(&desc_id) {
-                    waker.wake();
+            if let Some(queue_wakers_lock) = self.pending_wakers.get(q_idx) {
+                if let Ok(mut wakers) = queue_wakers_lock.lock() {
+                    if let Some(waker) = wakers.get_mut(desc_id as usize).and_then(|slot| slot.take()) {
+                        waker.wake();
+                    }
                 }
             }
         }
@@ -389,7 +406,7 @@ impl VirtioBlkDevice {
             .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let mut queue_guard = queue.lock();
+        let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
         let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
 
@@ -437,7 +454,13 @@ impl VirtioBlkDevice {
         }
 
         // Retain DMA buffer until completion
-        self.inflight_dma.lock().insert(desc0, req_dma);
+        if let Some(inflight_q) = self.inflight_dma.get(queue_idx) {
+            if let Ok(mut inflight) = inflight_q.lock() {
+                if let Some(slot) = inflight.get_mut(desc0 as usize) {
+                    *slot = Some(req_dma);
+                }
+            }
+        }
 
         queue_guard.notify(&*self.transport);
         log::info!(
@@ -480,7 +503,7 @@ impl VirtioBlkDevice {
         let req_dma = self.prepare_write_request(sector)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let mut queue_guard = queue.lock();
+        let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
         // Allocate 3 descriptors
         let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
@@ -525,7 +548,13 @@ impl VirtioBlkDevice {
         }
 
         // Retain DMA buffer until completion
-        self.inflight_dma.lock().insert(desc0, req_dma);
+        if let Some(inflight_q) = self.inflight_dma.get(queue_idx) {
+            if let Ok(mut inflight) = inflight_q.lock() {
+                if let Some(slot) = inflight.get_mut(desc0 as usize) {
+                    *slot = Some(req_dma);
+                }
+            }
+        }
 
         queue_guard.notify(&*self.transport);
 
@@ -553,7 +582,7 @@ impl VirtioBlkDevice {
             .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let mut queue_guard = queue.lock();
+        let mut queue_guard = queue.lock().map_err(|_| BlockError::NotReady)?;
 
         // Flush only requires 2 descriptors: header and status (no data)
         let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
@@ -585,7 +614,13 @@ impl VirtioBlkDevice {
         }
 
         // Retain DMA buffer until completion
-        self.inflight_dma.lock().insert(desc0, req_dma);
+        if let Some(inflight_q) = self.inflight_dma.get(queue_idx) {
+            if let Ok(mut inflight) = inflight_q.lock() {
+                if let Some(slot) = inflight.get_mut(desc0 as usize) {
+                    *slot = Some(req_dma);
+                }
+            }
+        }
 
         queue_guard.notify(&*self.transport);
 

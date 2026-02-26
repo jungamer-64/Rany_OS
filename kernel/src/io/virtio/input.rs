@@ -309,6 +309,7 @@ impl VirtioInputDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
+                0,
             )
         };
 

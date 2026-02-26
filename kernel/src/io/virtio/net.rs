@@ -19,10 +19,12 @@ use x86_64::{PhysAddr, VirtAddr};
 // Import VirtIO common definitions
 use super::defs::{VirtioDeviceType, status};
 use super::transport::{TransportType, VirtioTransport};
+use super::virtqueue::{VirtQueue, VringAvail, VringDesc, VringUsed};
 use crate::io::dma::{
     iommu_align_len, CoherentDmaBuffer,
     DmaMemoryAttributes,
 };
+use crate::sync::IrqPoisonLock;
 use crate::io::iommu::api::{
     get_device_dma_mask, is_iommu_enabled, is_iommu_required,
     unmap_dma, unmap_for_device, map_for_device_with_perms,
@@ -178,50 +180,7 @@ impl VirtioNetHeader {
 // VirtQueue for Network
 // ============================================================================
 
-/// VirtQueue ディスクリプタ
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct VringDesc {
-    /// バッファの物理アドレス
-    pub addr: u64,
-    /// バッファの長さ
-    pub len: u32,
-    /// フラグ
-    pub flags: u16,
-    /// 次のディスクリプタのインデックス
-    pub next: u16,
-}
-
-impl VringDesc {
-    /// 書き込み可能フラグ
-    pub const VRING_DESC_F_WRITE: u16 = 2;
-    /// 次のディスクリプタが続くフラグ
-    pub const VRING_DESC_F_NEXT: u16 = 1;
-}
-
-/// VirtQueue Available Ring
-#[repr(C)]
-pub struct VringAvail {
-    pub flags: u16,
-    pub idx: u16,
-    pub ring: [u16; 256],
-}
-
-/// VirtQueue Used Ring Element
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct VringUsedElem {
-    pub id: u32,
-    pub len: u32,
-}
-
-/// VirtQueue Used Ring
-#[repr(C)]
-pub struct VringUsed {
-    pub flags: u16,
-    pub idx: u16,
-    pub ring: [VringUsedElem; 256],
-}
+// Redundant vring and descriptor definitions removed. Uses common definitions from virtqueue module.
 
 // ============================================================================
 // Send-safe pointer wrapper
@@ -290,11 +249,6 @@ pub struct IommuMapping {
 }
 
 impl NetVirtQueue {
-    /// 新しいVirtQueueを作成
-    ///
-    /// # Safety
-    /// desc_table, avail_ring, used_ring は有効なDMA可能メモリを指している必要がある
-    #[allow(deprecated)]
     pub unsafe fn new(
         index: u16,
         size: u16,
@@ -302,41 +256,32 @@ impl NetVirtQueue {
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
         dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
-        notify_addr: Option<u64>,
-        notify_is_32bit: bool,
-        iommu_map: Option<IommuMapping>,
+        _notify_addr: Option<u64>,
+        _notify_is_32bit: bool,
+        _iommu_map: Option<IommuMapping>,
         tx_headers: Option<*mut VirtioNetHeader>,
         tx_header_dma_base: Option<u64>,
+        features: u64,
     ) -> Self {
-        // ペンディングバッファ配列を初期化
-        let mut pending = Vec::with_capacity(size as usize);
-        pending.resize_with(size as usize, || None);
-        let mut free_descs = Vec::with_capacity(size as usize);
-        for idx in (0..size).rev() {
-            free_descs.push(idx);
-        }
-
-        let inner = NetVirtQueueInner {
+        let vq = VirtQueue::new(
+            size,
             desc_table,
             avail_ring,
-            free_descs,
-            tx_headers,
-            tx_header_dma_base,
-        };
+            used_ring,
+            dma_buffer,
+            index,
+            features,
+        );
+
+        let mut pending = Vec::with_capacity(size as usize);
+        pending.resize_with(size as usize, || None);
 
         Self {
-            index,
-            size,
-            inner: Mutex::new(inner),
-            used_ring,
-            notify_addr,
-            notify_is_32bit,
-            last_used_idx: AtomicU16::new(0),
-            stale_completion_count: AtomicU64::new(0),
-            pending_wakers: Mutex::new(Vec::new()),
-            pending_completions: Mutex::new(pending),
-            dma_buffer,
-            iommu_map,
+            vq: IrqPoisonLock::new(vq),
+            tx_headers,
+            tx_header_dma_base,
+            pending_wakers: IrqPoisonLock::new(Vec::new()),
+            pending_completions: IrqPoisonLock::new(pending),
         }
     }
 

@@ -317,6 +317,7 @@ impl VirtioConsoleDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
+                self.features,
             )
         };
 

@@ -1,8 +1,9 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::ptr::NonNull;
-use spin::Mutex;
+use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
 use crate::io::dma::CoherentDmaBuffer;
+use crate::io::iommu::types::DmaAddr;
 pub use virtio_driver::defs::{VringDesc, VringUsedElem, VIRTQUEUE_MAX_SIZE, vring_flags};
 
 /// Virtqueue available ring
@@ -32,13 +33,15 @@ pub struct VirtQueue {
     /// Used ring base address
     pub used_ring: NonNull<VringUsed>,
     /// Free descriptor list
-    pub free_list: Mutex<Vec<u16>>,
+    pub free_list: IrqPoisonLock<Vec<u16>>,
     /// Last seen used index
     pub last_used_idx: AtomicU32,
     /// DMA Buffer to keep memory alive (and properly manage ownership)
     dma_buffer: Option<CoherentDmaBuffer>,
     /// Queue index
     pub index: u16,
+    /// Features negotiated with the device
+    features: u64,
 }
 
 unsafe impl Send for VirtQueue {}
@@ -70,6 +73,7 @@ impl VirtQueue {
         used_ring: *mut VringUsed,
         dma_buffer: Option<CoherentDmaBuffer>,
         index: u16,
+        features: u64,
     ) -> Self {
         let desc_table_ptr = NonNull::new(desc_table).expect("desc_table is null");
         let avail_ring_ptr = NonNull::new(avail_ring).expect("avail_ring is null");
@@ -100,10 +104,11 @@ impl VirtQueue {
             desc_table: desc_table_ptr,
             avail_ring: avail_ring_ptr,
             used_ring: used_ring_ptr,
-            free_list: Mutex::new(free_list),
+            free_list: IrqPoisonLock::new(free_list),
             last_used_idx: AtomicU32::new(0),
             dma_buffer,
             index,
+            features,
         }
     }
 
@@ -154,12 +159,14 @@ impl VirtQueue {
 
     /// Allocate a descriptor from the free list
     pub fn alloc_desc(&self) -> Option<u16> {
-        self.free_list.lock().pop()
+        self.free_list.lock().ok().and_then(|mut list| list.pop())
     }
 
     /// Free a descriptor back to the free list
     pub fn free_desc(&self, idx: u16) {
-        self.free_list.lock().push(idx);
+        if let Ok(mut list) = self.free_list.lock() {
+            list.push(idx);
+        }
     }
 
     /// Add a buffer chain to the available ring
@@ -192,7 +199,8 @@ impl VirtQueue {
     /// Poll for a single completed request
     pub fn poll_completion(&mut self) -> Option<(u16, u32)> {
         let last_used = self.last_used_idx.load(Ordering::Acquire);
-        core::sync::atomic::fence(Ordering::Acquire);
+        // REDUNDANT: load(Ordering::Acquire) already provides required barrier
+        // core::sync::atomic::fence(Ordering::Acquire);
 
         let used_idx = self.get_used_idx() as u32;
         if last_used == used_idx {
@@ -212,7 +220,8 @@ impl VirtQueue {
         F: FnMut(u16, u32),
     {
         let last_used = self.last_used_idx.load(Ordering::Acquire);
-        core::sync::atomic::fence(Ordering::Acquire);
+        // REDUNDANT: load(Ordering::Acquire) already provides required barrier
+        // core::sync::atomic::fence(Ordering::Acquire);
 
         let used_idx = self.get_used_idx() as u32;
         if last_used == used_idx {

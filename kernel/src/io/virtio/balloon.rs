@@ -263,6 +263,7 @@ impl VirtioBalloonDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
+                self.features,
             )
         };
 

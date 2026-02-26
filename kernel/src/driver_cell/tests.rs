@@ -4,7 +4,6 @@
 
 #![allow(dead_code)]
 
-use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -14,8 +13,16 @@ use super::stats::DriverCellStats;
 use super::*;
 
 #[cfg(feature = "qemu-test-export")]
-static RUNTIME_FIXTURE_CELLS: crate::sync::PoisonLock<BTreeMap<String, Vec<u8>>> =
-    crate::sync::PoisonLock::new(BTreeMap::new());
+struct RuntimeFixtureCells {
+    v1: Option<(usize, usize)>,
+    v2: Option<(usize, usize)>,
+}
+
+#[cfg(feature = "qemu-test-export")]
+static RUNTIME_FIXTURE_CELLS: spin::Mutex<RuntimeFixtureCells> = spin::Mutex::new(RuntimeFixtureCells {
+    v1: None,
+    v2: None,
+});
 
 #[cfg(feature = "qemu-test-export")]
 pub fn cache_runtime_fixture_cell(path: &str, data: &[u8]) {
@@ -24,20 +31,35 @@ pub fn cache_runtime_fixture_cell(path: &str, data: &[u8]) {
     crate::io::log::early_print(" len=");
     crate::io::log::early_print_hex(data.len() as u64);
     crate::io::log::early_print("\n");
-    if let Ok(mut cells) = RUNTIME_FIXTURE_CELLS.lock() {
-        cells.insert(String::from(path), data.to_vec());
-        crate::io::log::early_print("[driver-cell-runtime] fixture-cache: inserted\n");
-    } else {
-        crate::io::log::early_print("[driver-cell-runtime] fixture-cache: lock poisoned\n");
+    let mut cells = RUNTIME_FIXTURE_CELLS.lock();
+    match path {
+        "cells/driver_cell_probe_v1.cell" => {
+            cells.v1 = Some((data.as_ptr() as usize, data.len()));
+            crate::io::log::early_print("[driver-cell-runtime] fixture-cache: cached span v1\n");
+        }
+        "cells/driver_cell_probe_v2.cell" => {
+            cells.v2 = Some((data.as_ptr() as usize, data.len()));
+            crate::io::log::early_print("[driver-cell-runtime] fixture-cache: cached span v2\n");
+        }
+        _ => {
+            crate::io::log::early_print("[driver-cell-runtime] fixture-cache: skipped unknown\n");
+        }
     }
 }
 
 #[cfg(feature = "qemu-test-export")]
 fn cached_runtime_fixture_cell(path: &str) -> Option<Vec<u8>> {
-    RUNTIME_FIXTURE_CELLS
-        .lock()
-        .ok()
-        .and_then(|cells| cells.get(path).cloned())
+    let cells = RUNTIME_FIXTURE_CELLS.lock();
+    match path {
+        "cells/driver_cell_probe_v1.cell" => cells.v1,
+        "cells/driver_cell_probe_v2.cell" => cells.v2,
+        _ => None,
+    }
+    .map(|(ptr, len)| {
+        // SAFETY: pointers/lengths are captured from initramfs bytes, which stay
+        // resident for the kernel lifetime in these QEMU test profiles.
+        unsafe { core::slice::from_raw_parts(ptr as *const u8, len) }.to_vec()
+    })
 }
 
 pub fn driver_cell_state_default_is_created_smoke() -> bool {

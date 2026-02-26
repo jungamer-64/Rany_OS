@@ -114,6 +114,34 @@ impl DeviceId {
     }
 }
 
+/// I/O Virtual Address (IOVA) used for DMA operations.
+/// Clearly distinguished from PhysAddr to prevent accidental misuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct DmaAddr(pub u64);
+
+impl DmaAddr {
+    pub const fn new(addr: u64) -> Self {
+        Self(addr)
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for DmaAddr {
+    fn from(val: u64) -> Self {
+        Self(val)
+    }
+}
+
+impl From<DmaAddr> for u64 {
+    fn from(val: DmaAddr) -> u64 {
+        val.0
+    }
+}
+
 /// Represents a unique identifier for an IOMMU Group.
 /// Currently using DeviceId of the "root" of the group (e.g., a bridge or endpoint).
 pub type IommuGroupId = DeviceId;
