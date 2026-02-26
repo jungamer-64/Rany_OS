@@ -50,7 +50,7 @@ impl ExoShell {
         }
     }
 
-    /// Dispatch a `net` or `cell` namespace sub-command.
+    /// Dispatch a legacy `net` namespace sub-command.
     pub(super) fn dispatch_namespace_command(parts: &[&str], namespace: &str) -> ExoValue<'static> {
         if let Some(method) = parts.get(1) {
             let args: Vec<ExoValue> = parts.iter().skip(2)
@@ -58,7 +58,6 @@ impl ExoShell {
                 .collect();
             match namespace {
                 "net" => crate::shell::exoshell::namespaces::net::NetNamespace::dispatch(method, &args),
-                "cell" => crate::shell::exoshell::namespaces::cell::CellNamespace::dispatch(method, &args),
                 _ => ExoValue::String(Cow::Owned(format!("Usage: {} <method> [args...]", namespace))),
             }
         } else {
@@ -119,6 +118,19 @@ impl ExoShell {
     driver.load(path)     - Load driver from ELF file
     driver.unload(id)     - Unload driver by ID
 
+  cell.* - DriverCell / Live Update
+    cell.list()                  - List DriverCells (structured)
+    cell.info(id_or_name)        - DriverCell + loader/live-update details
+    cell.graph()                 - Loaded cell dependency graph
+    cell.inspect_artifact(path)  - Inspect Type ID dependencies in .cell/ELF
+    cell.epoch_status()          - Epoch/validation status
+    cell.wait_quiescent(epoch)   - Wait for quiescent state (admin)
+    cell.load(path, opts?)       - Create and start DriverCell from artifact
+    cell.swap(id_or_name, path)  - Hot-swap DriverCell with new artifact
+    cell.commit(id_or_name)      - Commit validation window
+    cell.rollback(id_or_name)    - Roll back validation window
+    cell.unload(id_or_name)      - Unload DriverCell
+
 [Method Chaining]
   fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")
   proc.list().filter("memory > 1024").sort("tasks", "desc")
@@ -167,7 +179,7 @@ impl ExoShell {
             return completions;
         }
 
-        let namespaces = ["fs", "net", "proc", "cap", "sys", "driver"];
+        let namespaces = ["fs", "net", "proc", "cap", "sys", "driver", "cell"];
 
         if !input.contains('.') {
             return namespaces
@@ -206,6 +218,20 @@ impl ExoShell {
                 "reboot",
             ],
             "driver" => &["list", "stats", "status", "load", "unload"],
+            "cell" => &[
+                "list",
+                "info",
+                "graph",
+                "inspect_artifact",
+                "epoch_status",
+                "wait_quiescent",
+                "load",
+                "swap",
+                "update",
+                "commit",
+                "rollback",
+                "unload",
+            ],
             _ => return Vec::new(),
         };
 

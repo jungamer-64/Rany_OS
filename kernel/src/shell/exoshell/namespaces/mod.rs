@@ -16,6 +16,7 @@ pub mod async_swapout;
 pub mod reclaim;
 
 pub use cap::CapNamespace;
+pub use cell::CellNamespace;
 pub use driver::DriverNamespace;
 pub use fs::FsNamespace;
 pub use net::NetNamespace;

@@ -58,3 +58,27 @@ fn test_break_outside_loop_error() {
     let val = crate::task::block_on(shell.eval("break"));
     assert!(matches!(val, ExoValue::Error(_)));
 }
+
+#[test_case]
+fn test_cell_list_namespace_call_returns_array() {
+    let mut shell = ExoShell::new();
+    let val = crate::task::block_on(shell.eval("cell.list()"));
+    assert!(matches!(val, ExoValue::Array(_)));
+}
+
+#[test_case]
+fn test_legacy_cell_command_syntax_is_rejected() {
+    let mut shell = ExoShell::new();
+    let val = crate::task::block_on(shell.eval("cell list"));
+    match val {
+        ExoValue::Error(s) => assert!(s.contains("Unknown") || s.contains("Command not found")),
+        _ => panic!("expected error"),
+    }
+}
+
+#[test_case]
+fn test_cell_inspect_artifact_missing_file_returns_error() {
+    let mut shell = ExoShell::new();
+    let val = crate::task::block_on(shell.eval("cell.inspect_artifact(\"/no/such/file.cell\")"));
+    assert!(matches!(val, ExoValue::Error(_)));
+}

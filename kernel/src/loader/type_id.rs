@@ -489,6 +489,21 @@ pub fn register_kernel_interface_manual(name: &str, hash: TypeHash, version: Sem
         .register_manual(String::from(name), hash, version);
 }
 
+/// 登録済みカーネルインターフェースを取得（シェル観測用）
+pub fn get_kernel_interface(name: &str) -> Option<TypeIdInfo> {
+    INTERFACE_REGISTRY.lock().interfaces.get(name).cloned()
+}
+
+/// 登録済みカーネルインターフェースを列挙（シェル観測用）
+pub fn list_kernel_interfaces() -> Vec<TypeIdInfo> {
+    INTERFACE_REGISTRY
+        .lock()
+        .interfaces
+        .values()
+        .cloned()
+        .collect()
+}
+
 /// セルの依存関係を検証
 pub fn verify_cell_dependencies(deps: &CellDependencies) -> Result<(), TypeIdError> {
     let registry = INTERFACE_REGISTRY.lock();
@@ -565,6 +580,27 @@ pub fn init_kernel_interfaces() {
     registry.register::<IpcInterface>();
 
     log::info!("[TypeID] Registered {} kernel interfaces\n", registry.len());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn test_get_and_list_kernel_interfaces() {
+        let name = "TypeIdTestManualIface";
+        let hash = 0x1234_5678_9abc_def0;
+        let ver = SemVer::new(9, 1, 2);
+        register_kernel_interface_manual(name, hash, ver);
+
+        let got = get_kernel_interface(name).expect("interface should exist");
+        assert_eq!(got.name, name);
+        assert_eq!(got.hash, hash);
+        assert_eq!(got.version, ver);
+
+        let all = list_kernel_interfaces();
+        assert!(all.iter().any(|i| i.name == name && i.hash == hash));
+    }
 }
 
 

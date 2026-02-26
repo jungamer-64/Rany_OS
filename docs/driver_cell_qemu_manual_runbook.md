@@ -54,94 +54,102 @@ Confirm startup logs mention:
 ```text
 fs.entries("/cells")
 cell.list()
-cell.stats(<dcell_id>)
+cell.info(<dcell_id>)
+cell.graph()
+cell.inspect_artifact("/cells/driver_cell_probe_v1.cell")
+cell.epoch_status()
 ```
 
 Expected:
 - `driver_cell_probe` exists
-- `State: Running`
-- `HotSwap State: Idle`
-- `Loader Cell ID` and `Domain ID` are populated
+- `cell.list()` returns structured `Array<Map>`
+- `cell.info(<dcell_id>)` contains `driver_cell.state = Running`
+- `driver_cell.hot_swap_state = Idle`
+- `driver_cell.loader_cell_id` and `driver_cell.domain_id` are populated
+- `cell.graph()` returns `nodes/edges/stats`
+- `cell.inspect_artifact(...)` returns ABI metadata / dependencies (or `abi_metadata_present=false`)
 
 2. Update -> Validating
 
 ```text
-cell.update(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
-cell.health(<dcell_id>)
+cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
+cell.info(<dcell_id>)
 ```
 
 Expected:
-- `HotSwap State: Validating`
-- `Validation Deadline Tick` is not `-`
+- `driver_cell.hot_swap_state = Validating`
+- `driver_cell.validation_deadline_tick` is populated
 
 3. Manual rollback during validation
 
 ```text
 cell.rollback(<dcell_id>)
-cell.health(<dcell_id>)
-cell.stats(<dcell_id>)
+cell.info(<dcell_id>)
 ```
 
 Expected:
-- `HotSwap State: Idle`
-- `Validation Deadline Tick: -`
-- `Loader Cell ID` returns to previous value
+- `driver_cell.hot_swap_state = Idle`
+- `driver_cell.validation_deadline_tick = nil`
+- `driver_cell.loader_cell_id` returns to previous value
 
 4. Manual commit during validation
 
 ```text
-cell.update(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
+cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
 cell.commit(<dcell_id>)
-cell.health(<dcell_id>)
+cell.info(<dcell_id>)
 ```
 
 Expected:
-- `HotSwap State: Idle`
-- `Validation Deadline Tick: -`
+- `driver_cell.hot_swap_state = Idle`
+- `driver_cell.validation_deadline_tick = nil`
 
 5. Auto-commit after grace window (default ~60s)
 
 ```text
-cell.update(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
-cell.health(<dcell_id>)
+cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
+cell.info(<dcell_id>)
 sys.time()
 ```
 
 Wait until the deadline passes, then run:
 
 ```text
-cell.health(<dcell_id>)
-cell.stats(<dcell_id>)
+cell.info(<dcell_id>)
 ```
 
 Expected:
-- `HotSwap State: Idle`
-- `Validation Deadline Tick: -`
+- `driver_cell.hot_swap_state = Idle`
+- `driver_cell.validation_deadline_tick = nil`
 - no new health failure recorded
 
 6. Auto-rollback via injected panic (requires `qemu-test-export`)
 
 ```text
-cell.update(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
+cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
 cell.debug_fault(<dcell_id>, "panic")
-cell.health(<dcell_id>)
-cell.stats(<dcell_id>)
+cell.info(<dcell_id>)
 ```
 
 Expected:
 - rollback path runs during validation
-- `HotSwap State: Idle`
-- `restart_count` does not increase for this case
+- `driver_cell.hot_swap_state = Idle`
+- `driver_cell.stats.restart_count` does not increase for this case
 
 7. Idle panic -> restart -> unload integrity
 
 ```text
 cell.debug_fault(<dcell_id>, "panic")
-cell.stats(<dcell_id>)
+cell.info(<dcell_id>)
 cell.unload(<dcell_id>)
 ```
 
 Expected:
-- `restart_count` increases
+- `driver_cell.stats.restart_count` increases
 - cell returns to `Running`
 - unload succeeds (loader registry remains consistent)
+
+## Notes
+
+- `cell.update(...)` is kept as a compatibility alias for `cell.swap(...)` in this phase.
+- Legacy `cell <method> ...` command syntax was removed; use `cell.xxx(...)`.

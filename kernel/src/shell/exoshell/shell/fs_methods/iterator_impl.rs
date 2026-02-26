@@ -532,7 +532,7 @@ impl ExoShell {
             "ping" => self.eval_ping(&parts).await,
             "uname" => SysNamespace::info(),
             "free" => SysNamespace::memory(),
-            "net" | "cell" => Self::dispatch_namespace_command(&parts, parts[0]),
+            "net" => Self::dispatch_namespace_command(&parts, parts[0]),
             "uptime" => SysNamespace::time(),
             _ => ExoValue::Error(
 format!(
