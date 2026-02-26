@@ -327,3 +327,6 @@ pub struct UnackedSegment {
     /// Flags associated with the segment (SYN/FIN/PSH/etc)
     pub flags: u16,
 }
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use self::async_traits::tests;

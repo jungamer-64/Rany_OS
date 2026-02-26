@@ -10,6 +10,8 @@ use super::ipv4::{Ipv4Address, data_checksum};
 
 /// ICMP message type
 pub(crate) mod processor_impl;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use self::processor_impl::tests;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum IcmpType {

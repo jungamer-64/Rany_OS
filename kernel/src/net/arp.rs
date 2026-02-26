@@ -13,6 +13,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// ARP hardware type
 pub(crate) mod processor_impl;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use self::processor_impl::tests;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ArpHardwareType {

@@ -276,12 +276,6 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) }
     }
 
-    if crate::net::mempool::init_net_mempool(4).is_err() {
-        // In long QEMU required runs the exchange heap may be exhausted by prior
-        // tests; host/unit runs still exercise the main Delivered path.
-        return;
-    }
-
     let proc = UdpProcessor::new();
     let socket = proc
         .bind_with_token(10000, None)
@@ -293,13 +287,44 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
     let mut buf = [0u8; 64];
     let len = UdpProcessor::build_packet(&mut buf, src_ip, 1234, dst_ip, 10000, payload).unwrap();
 
-    match proc.process(&buf[..len], src_ip, dst_ip) {
-        UdpResult::Delivered => {}
-        UdpResult::NoSocket => {
-            // Environment-dependent mempool exhaustion in long QEMU suites.
-            return;
+    #[cfg(feature = "qemu-test-export")]
+    {
+        use core::ptr::addr_of_mut;
+
+        // QEMU required suite runs without a reliable exchange-heap setup for
+        // mempool growth, so validate the parse+deliver zero-copy path with a
+        // static packet buffer instead of `process()`'s internal allocation.
+        // Force UDP checksum to 0 ("no checksum") so this smoke stays focused
+        // on enqueue/recv behavior; checksum coverage lives in udp packet tests.
+        buf[6] = 0;
+        buf[7] = 0;
+        static mut UDP_PROCESS_TEST_PACKET: [u8; 2] = [0; 2];
+        let mut packet = unsafe {
+            crate::net::mempool::PacketRef::from_static_raw_for_tests(
+                addr_of_mut!(UDP_PROCESS_TEST_PACKET) as *mut u8,
+                payload.len(),
+            )
+            .expect("create static packet for udp zero-copy enqueue test")
+        };
+        packet.set_len(payload.len());
+        packet.data_mut().copy_from_slice(payload);
+
+        assert_eq!(
+            proc.process_with_packet(&buf[..len], src_ip, dst_ip, packet),
+            UdpResult::Delivered
+        );
+    }
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        match crate::net::mempool::net_mempool() {
+            None => crate::net::mempool::init_net_mempool(4)
+                .expect("initialize mempool for udp zero-copy enqueue test"),
+            Some(pool) if pool.stats().free_buffers == 0 => crate::net::mempool::init_net_mempool(1)
+                .expect("top up mempool for udp zero-copy enqueue test"),
+            Some(_) => {}
         }
-        other => panic!("expected Delivered, got {:?}", other),
+
+        assert_eq!(proc.process(&buf[..len], src_ip, dst_ip), UdpResult::Delivered);
     }
 
     let mut fut = socket.recv();

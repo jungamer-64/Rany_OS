@@ -8,6 +8,8 @@ use super::*;
 /// 非同期読み取りトレイト
 mod seq_utils;
 pub use seq_utils::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use self::seq_utils::tests;
 pub trait AsyncRead {
     fn poll_read(
         self: Pin<&mut Self>,
