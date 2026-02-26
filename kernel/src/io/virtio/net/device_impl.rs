@@ -313,14 +313,28 @@ impl VirtioNetDevice {
         for rx_queue in &self.rx_queues {
             let mut count = 0;
             // API drift fallback: post until the queue rejects new buffers.
-            while count < rx_queue.vq.lock().expect("VirtQueue lock poisoned").size() {
+            while count
+                < rx_queue
+                    .vq
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .size()
+            {
                 if self.try_post_rx_packet(rx_queue).is_err() {
                     break;
                 }
                 count += 1;
             }
             if count > 0 {
-                log::info!("[VIRTIO-NET] Refilled {} RX buffers for queue {}", count, rx_queue.vq.lock().expect("VirtQueue lock poisoned").index());
+                log::info!(
+                    "[VIRTIO-NET] Refilled {} RX buffers for queue {}",
+                    count,
+                    rx_queue
+                        .vq
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .index()
+                );
                 rx_queue.notify(self.transport.as_ref());
             }
         }

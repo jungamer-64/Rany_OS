@@ -28,7 +28,7 @@ pub(crate) fn poll_for_completion(
     desc_id: u16,
 ) -> Option<(u16, u32)> {
     let queue = &device.queues[queue_idx];
-    let mut queue_guard = queue.lock().expect("VirtQueue lock poisoned");
+    let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
     let mut target = None;
     while let Some((completed_id, len)) = queue_guard.poll_completion() {
         device.process_completion_entry(&*queue_guard, queue_idx, completed_id, len);
@@ -142,7 +142,7 @@ pub(crate) fn register_desc_waker(
     waker: &core::task::Waker,
 ) {
     if let Some(queue_wakers) = device.pending_wakers.get(queue_idx) {
-        let mut wakers = queue_wakers.lock().expect("Pending wakers lock poisoned");
+        let mut wakers = queue_wakers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(slot) = wakers.get_mut(desc_id as usize) {
             *slot = Some(waker.clone());
         }
@@ -182,7 +182,7 @@ impl<'a> Future for DmaReadFuture<'a> {
 
         if let Some(desc_id) = self.desc_id {
             let queue = &self.device.queues[self.queue_idx];
-            let mut queue_guard = queue.lock().expect("VirtQueue lock poisoned");
+            let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
 
             let mut is_completed = false;
             while let Some((completed_id, len)) = queue_guard.poll_completion() {
@@ -238,12 +238,12 @@ impl<'a> Future for DmaWriteFuture<'a> {
 
         if let Some(desc_id) = self.desc_id {
             let queue = &self.device.queues[self.queue_idx];
-            let mut queue_guard = queue.lock();
+            let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
 
             let mut is_completed = false;
             while let Some((completed_id, len)) = queue_guard.poll_completion() {
                 self.device
-                    .process_completion_entry(&queue_guard, self.queue_idx, completed_id, len);
+                    .process_completion_entry(&*queue_guard, self.queue_idx, completed_id, len);
                 if completed_id == desc_id {
                     is_completed = true;
                 }

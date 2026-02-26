@@ -46,7 +46,6 @@ pub struct VringUsed {
     pub ring: [VringUsedElem; 32], // Alignment helper
 }
 
-#[derive(Debug)]
 pub struct VirtQueue {
     /// Queue size (must be power of 2)
     pub queue_size: u16,
