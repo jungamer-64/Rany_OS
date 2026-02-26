@@ -32,101 +32,35 @@ pub use image::{
     decode_bmp_into,
 };
 
-#[cfg(feature = "qemu-test-export")]
-#[allow(clippy::must_use_candidate)]
-pub mod qemu_tests {
-    pub fn color_ctor_smoke() -> bool {
-        crate::types::qemu_tests::color_ctor_smoke()
-    }
-
-    pub fn color_roundtrip_smoke() -> bool {
-        crate::types::qemu_tests::color_roundtrip_smoke()
-    }
-
-    pub fn rect_intersection_smoke() -> bool {
-        crate::types::qemu_tests::rect_intersection_smoke()
-    }
-
-    pub fn rect_contains_smoke() -> bool {
-        crate::types::qemu_tests::rect_contains_smoke()
-    }
-
-    pub fn pixel_format_bytes_smoke() -> bool {
-        crate::types::qemu_tests::pixel_format_bytes_smoke()
-    }
-
-    pub fn encode_decode_roundtrip_smoke() -> bool {
-        crate::types::qemu_tests::encode_decode_roundtrip_smoke()
-    }
-
-    pub fn point_layout_smoke() -> bool {
-        crate::types::qemu_tests::point_layout_smoke()
-    }
-
-    pub fn rect_layout_smoke() -> bool {
-        crate::types::qemu_tests::rect_layout_smoke()
-    }
-
-    pub fn color_layout_smoke() -> bool {
-        crate::types::qemu_tests::color_layout_smoke()
-    }
-
-    pub fn pixel_format_layout_smoke() -> bool {
-        crate::types::qemu_tests::pixel_format_layout_smoke()
+#[cfg(test)]
+mod qemu_smoke_tests {
+    #[test]
+    fn qemu_smoke_types() {
+        assert!(crate::types::qemu_tests::color_ctor_smoke());
+        assert!(crate::types::qemu_tests::color_roundtrip_smoke());
+        assert!(crate::types::qemu_tests::rect_intersection_smoke());
+        assert!(crate::types::qemu_tests::rect_contains_smoke());
+        assert!(crate::types::qemu_tests::pixel_format_bytes_smoke());
+        assert!(crate::types::qemu_tests::encode_decode_roundtrip_smoke());
+        assert!(crate::types::qemu_tests::point_layout_smoke());
+        assert!(crate::types::qemu_tests::rect_layout_smoke());
+        assert!(crate::types::qemu_tests::color_layout_smoke());
+        assert!(crate::types::qemu_tests::pixel_format_layout_smoke());
     }
 
     #[cfg(feature = "alloc")]
-    pub fn image_try_new_overflow_smoke() -> bool {
-        crate::image::qemu_tests::try_new_overflow_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_try_new_max_size_smoke() -> bool {
-        crate::image::qemu_tests::try_new_max_size_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_try_new_valid_smoke() -> bool {
-        crate::image::qemu_tests::try_new_valid_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_try_filled_overflow_smoke() -> bool {
-        crate::image::qemu_tests::try_filled_overflow_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_view_basic_smoke() -> bool {
-        crate::image::qemu_tests::image_view_basic_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_view_mut_set_pixel_smoke() -> bool {
-        crate::image::qemu_tests::image_view_mut_set_pixel_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_view_mut_fill_rect_smoke() -> bool {
-        crate::image::qemu_tests::image_view_mut_fill_rect_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_view_out_of_bounds_smoke() -> bool {
-        crate::image::qemu_tests::image_view_out_of_bounds_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_view_external_buffer_smoke() -> bool {
-        crate::image::qemu_tests::image_view_external_buffer_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn image_view_stride_smoke() -> bool {
-        crate::image::qemu_tests::image_view_stride_smoke()
-    }
-
-    #[cfg(feature = "alloc")]
-    pub fn max_image_size_constant_smoke() -> bool {
-        crate::image::qemu_tests::max_image_size_constant_smoke()
+    #[test]
+    fn qemu_smoke_images_alloc() {
+        assert!(crate::image::qemu_tests::try_new_overflow_smoke());
+        assert!(crate::image::qemu_tests::try_new_max_size_smoke());
+        assert!(crate::image::qemu_tests::try_new_valid_smoke());
+        assert!(crate::image::qemu_tests::try_filled_overflow_smoke());
+        assert!(crate::image::qemu_tests::image_view_basic_smoke());
+        assert!(crate::image::qemu_tests::image_view_mut_set_pixel_smoke());
+        assert!(crate::image::qemu_tests::image_view_mut_fill_rect_smoke());
+        assert!(crate::image::qemu_tests::image_view_out_of_bounds_smoke());
+        assert!(crate::image::qemu_tests::image_view_external_buffer_smoke());
+        assert!(crate::image::qemu_tests::image_view_stride_smoke());
+        assert!(crate::image::qemu_tests::max_image_size_constant_smoke());
     }
 }

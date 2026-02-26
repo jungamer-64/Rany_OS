@@ -12,6 +12,7 @@ members = [
     # Libs
     "libs/app_sdk",
     "libs/security",
+    "libs/boot_config",
     "libs/graphic_types",
     "filesystems/vfs",
     "libs/sync",
@@ -44,7 +45,26 @@ members = [
     # They are runnable via their manifest paths.
 ]
 exclude = ["tools/framebuffer_bench", "tools/signer", "tools/cap_harness", "tools/symlookup"]
-default-members = ["pure-tests"]
+default-members = [
+    "pure-tests",
+    "libs/boot_config",
+    "libs/security",
+    "interfaces/kernel_api",
+    "libs/sync",
+    "libs/graphic_types",
+    "filesystems/vfs",
+    "filesystems/fat32",
+    "drivers/pci",
+    "drivers/ahci",
+    "drivers/usb",
+    "drivers/nvme",
+    "drivers/hid",
+    "drivers/hda",
+    "drivers/virtio",
+    "drivers/acpi",
+    "drivers/time",
+    "apps",
+]
 
 [workspace.package]
 edition = "2024"

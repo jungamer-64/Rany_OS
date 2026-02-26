@@ -12,7 +12,6 @@ description = "ACPI Driver for RanyOS"
 
 [features]
 default = []
-qemu-test-export = []
 
 [dependencies]
 spin = "0.10"

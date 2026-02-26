@@ -15,6 +15,7 @@ uefi-raw = "0.13"
 log = "0.4"
 xmas-elf = "0.10"
 boot_proto = { path = "../libs/boot_proto" }
+boot_config = { path = "../libs/boot_config" }
 graphic_types = { path = "../libs/graphic_types" }
 # Ed25519 signature verification for secure boot
 # default-features = false disables std and random (RNG) - verification only needs core
@@ -34,4 +35,3 @@ insecure_boot = []
 # 使用例: cargo build --no-default-features --features minimal
 minimal = []
 qemu-test-export = []
-

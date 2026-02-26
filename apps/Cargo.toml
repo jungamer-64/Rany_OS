@@ -20,4 +20,3 @@ graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }
 
 [features]
 default = []
-qemu-test-export = []

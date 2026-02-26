@@ -20,8 +20,8 @@ pub use types::{
     BdlEntry, CodecInfo, HdaError, HdaResult, NodeType, RirbEntry, WidgetCaps, make_corb_entry,
 };
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -171,5 +171,66 @@ pub mod qemu_tests {
             }
         }
         true
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn corb_entry_smoke() {
+        assert!(qemu_tests::corb_entry_smoke());
+    }
+
+    #[test]
+    fn rirb_entry_smoke() {
+        assert!(qemu_tests::rirb_entry_smoke());
+    }
+
+    #[test]
+    fn bdl_entry_smoke() {
+        assert!(qemu_tests::bdl_entry_smoke());
+    }
+
+    #[test]
+    fn detect_codecs_empty_smoke() {
+        assert!(qemu_tests::detect_codecs_empty_smoke());
+    }
+
+    #[test]
+    fn configure_codec_output_smoke() {
+        assert!(qemu_tests::configure_codec_output_smoke());
+    }
+
+    #[test]
+    fn mixer_creation_smoke() {
+        assert!(qemu_tests::mixer_creation_smoke());
+    }
+
+    #[test]
+    fn mixer_add_channel_smoke() {
+        assert!(qemu_tests::mixer_add_channel_smoke());
+    }
+
+    #[test]
+    fn mixer_volume_smoke() {
+        assert!(qemu_tests::mixer_volume_smoke());
+    }
+
+    #[test]
+    fn mixer_pan_smoke() {
+        assert!(qemu_tests::mixer_pan_smoke());
+    }
+
+    #[test]
+    fn mixer_mono_to_stereo_smoke() {
+        assert!(qemu_tests::mixer_mono_to_stereo_smoke());
+    }
+
+    #[test]
+    fn mixer_limiter_smoke() {
+        assert!(qemu_tests::mixer_limiter_smoke());
     }
 }

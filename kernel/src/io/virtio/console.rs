@@ -357,7 +357,7 @@ pub struct VirtioConsoleDevice {
     /// TX DMA buffers awaiting completion keyed by descriptor index
     tx_inflight: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
     /// Pending wakers for async notification
-    pending_wakers: Mutex<Vec<Option<Waker>>>,
+    pending_wakers: Mutex<BTreeMap<usize, Waker>>,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
@@ -368,6 +368,14 @@ pub struct VirtioConsoleDevice {
 
 unsafe impl Send for VirtioConsoleDevice {}
 unsafe impl Sync for VirtioConsoleDevice {}
+
+/// VirtIO Console Configuration space offsets
+pub mod config_offsets {
+    pub const COLS: usize = 0;
+    pub const ROWS: usize = 2;
+    pub const MAX_NR_PORTS: usize = 4;
+    pub const EMERG_WR: usize = 8;
+}
 
 impl VirtioConsoleDevice {
     /// Create a new VirtIO console device (uninitialized)
@@ -389,22 +397,10 @@ impl VirtioConsoleDevice {
             tx_queue: None,
             rx_buffers: Mutex::new(BTreeMap::new()),
             tx_inflight: Mutex::new(BTreeMap::new()),
-            pending_wakers: Mutex::new(Vec::new()),
+            pending_wakers: Mutex::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             iommu_device_id,
             features: 0,
-        }
-    }
-
-    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
-    fn alloc_coherent(
-        &self,
-        size: usize,
-        attrs: DmaMemoryAttributes,
-    ) -> Option<CoherentDmaBuffer> {
-        match &self.iommu_device_id {
-            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
-            None => CoherentDmaBuffer::new(size, attrs),
         }
     }
 
@@ -454,10 +450,7 @@ impl VirtioConsoleDevice {
         self.setup_queue(0)?;
         self.setup_queue(1)?;
 
-        // Initialize pending wakers
-        let mut wakers = self.pending_wakers.lock();
-        wakers.resize(VIRTQUEUE_MAX_SIZE as usize * 2, None);
-        drop(wakers);
+        // pending_wakers is now a BTreeMap, so no resizing is needed.
 
         // Step 8: Driver OK
         self.transport.set_status(
@@ -480,14 +473,14 @@ impl VirtioConsoleDevice {
         // Read cols (u16 at offset 0) and rows (u16 at offset 2)
         // if VIRTIO_CONSOLE_F_SIZE is negotiated
         if self.features & features::VIRTIO_CONSOLE_F_SIZE != 0 {
-            self.config.cols = self.transport.read_config_u16(0);
-            self.config.rows = self.transport.read_config_u16(2);
+            self.config.cols = self.transport.read_config_u16(config_offsets::COLS);
+            self.config.rows = self.transport.read_config_u16(config_offsets::ROWS);
         }
 
         // Read max_nr_ports (u32 at offset 4)
         // if VIRTIO_CONSOLE_F_MULTIPORT is negotiated
         if self.features & features::VIRTIO_CONSOLE_F_MULTIPORT != 0 {
-            self.config.max_nr_ports = self.transport.read_config_u32(4);
+            self.config.max_nr_ports = self.transport.read_config_u32(config_offsets::MAX_NR_PORTS);
         }
 
         Ok(())
@@ -518,9 +511,10 @@ impl VirtioConsoleDevice {
         let total_size = used_offset + used_size;
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
-        let buffer = self.alloc_coherent(
+        let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
         )
         .ok_or(ConsoleError::NotReady)?;
 
@@ -575,8 +569,12 @@ impl VirtioConsoleDevice {
         let queue_guard = rx_queue.lock();
 
         for _ in 0..RX_BUFFER_COUNT {
-            let buffer = self.alloc_coherent(RX_BUFFER_SIZE, DmaMemoryAttributes::MMIO)
-                .ok_or(ConsoleError::NotReady)?;
+            let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
+                RX_BUFFER_SIZE,
+                DmaMemoryAttributes::MMIO,
+                self.iommu_device_id.as_ref(),
+            )
+            .ok_or(ConsoleError::NotReady)?;
             let phys_addr = buffer.device_addr();
 
             // Allocate a descriptor for this RX buffer
@@ -622,8 +620,12 @@ impl VirtioConsoleDevice {
         let queue_guard = tx_queue.lock();
 
         // Allocate a DMA buffer and copy the data (IOMMU-aware)
-        let mut buffer = self.alloc_coherent(data.len(), DmaMemoryAttributes::MMIO)
-            .ok_or(ConsoleError::NotReady)?;
+        let mut buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
+            data.len(),
+            DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
+        )
+        .ok_or(ConsoleError::NotReady)?;
         let phys_addr = buffer.device_addr();
 
         unsafe {
@@ -685,9 +687,13 @@ impl VirtioConsoleDevice {
         drop(buffer);
 
         // Repost a fresh RX buffer (IOMMU-aware)
-        if let Ok(new_buffer) =
-            self.alloc_coherent(RX_BUFFER_SIZE, DmaMemoryAttributes::MMIO).ok_or(())
-        {
+        let new_buffer_opt = crate::io::virtio::dma::alloc_virtio_dma_buffer(
+            RX_BUFFER_SIZE,
+            DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
+        );
+
+        if let Some(new_buffer) = new_buffer_opt {
             let phys_addr = new_buffer.device_addr();
             if let Some(new_desc) = queue_guard.alloc_desc() {
                 unsafe {
@@ -734,7 +740,7 @@ impl VirtioConsoleDevice {
                 // Wake pending future
                 let waker_idx = VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
                 let mut wakers = self.pending_wakers.lock();
-                if let Some(waker) = wakers.get_mut(waker_idx).and_then(|w| w.take()) {
+                if let Some(waker) = wakers.remove(&waker_idx) {
                     waker.wake();
                 }
             }
@@ -753,11 +759,14 @@ impl VirtioConsoleDevice {
             if last_used != used_idx {
                 // There are unprocessed RX completions - wake waiters
                 let mut wakers = self.pending_wakers.lock();
-                for slot in wakers.iter_mut().take(VIRTQUEUE_MAX_SIZE as usize) {
-                    if let Some(waker) = slot.take() {
-                        waker.wake();
+                wakers.retain(|&idx, waker| {
+                    if idx < VIRTQUEUE_MAX_SIZE as usize {
+                        waker.wake_by_ref();
+                        false
+                    } else {
+                        true
                     }
-                }
+                });
             }
         }
     }
@@ -783,7 +792,7 @@ impl VirtioConsoleDevice {
             // but config writes are atomic MMIO operations safe for shared access.
             let transport_ptr = &*self.transport as *const dyn VirtioTransport as *mut dyn VirtioTransport;
             unsafe {
-                (*transport_ptr).write_config_u32(8, c as u32);
+                (*transport_ptr).write_config_u32(config_offsets::EMERG_WR, c as u32);
             }
         }
     }

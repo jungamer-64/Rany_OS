@@ -368,18 +368,6 @@ impl VirtioBalloonDevice {
         }
     }
 
-    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
-    fn alloc_coherent(
-        &self,
-        size: usize,
-        attrs: DmaMemoryAttributes,
-    ) -> Option<CoherentDmaBuffer> {
-        match &self.iommu_device_id {
-            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
-            None => CoherentDmaBuffer::new(size, attrs),
-        }
-    }
-
     /// Initialize the device
     ///
     /// # Safety
@@ -461,9 +449,10 @@ impl VirtioBalloonDevice {
         let total_size = used_offset + used_size;
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
-        let buffer = self.alloc_coherent(
+        let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
         )
         .ok_or(BalloonError::NotReady)?;
 
@@ -528,8 +517,12 @@ impl VirtioBalloonDevice {
         let byte_len = pfns.len() * core::mem::size_of::<u32>();
 
         // Allocate a DMA-safe buffer for the PFN array (IOMMU-aware)
-        let mut dma_buf = self.alloc_coherent(byte_len, DmaMemoryAttributes::MMIO)
-            .ok_or(BalloonError::AllocFailed)?;
+        let mut dma_buf = crate::io::virtio::dma::alloc_virtio_dma_buffer(
+            byte_len,
+            DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
+        )
+        .ok_or(BalloonError::AllocFailed)?;
 
         // Copy PFN data into the DMA buffer
         unsafe {

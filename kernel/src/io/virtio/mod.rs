@@ -28,6 +28,8 @@ pub mod blk;
 pub mod blk_driver;
 pub mod blk_scheduler;
 pub mod net;
+
+pub mod dma;
 pub mod console;
 pub mod console_driver;
 pub mod input;
@@ -39,7 +41,6 @@ pub mod balloon_driver;
 pub use virtio_driver::core;
 pub use virtio_driver::defs;
 pub use virtio_driver::transport;
-
 // Re-export common types
 pub use virtio_driver::core::*;
 pub use virtio_driver::defs::*;

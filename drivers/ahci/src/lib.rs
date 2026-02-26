@@ -93,8 +93,8 @@ pub use types::{
 
 // ATAPI module - import directly via `ahci_driver::atapi::*`
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use crate::atapi::{ReadCapacityResponse, ScsiCdb12, ScsiOpcode, SenseKey};
 
     pub fn scsi_cdb_read10_smoke() -> bool {
@@ -120,5 +120,26 @@ pub mod qemu_tests {
             block_length_be: 0x00000800u32.to_be(),
         };
         response.last_lba() == 0x01020304 && response.block_length() == 2048
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn scsi_cdb_read10_smoke() {
+        assert!(qemu_tests::scsi_cdb_read10_smoke());
+    }
+
+    #[test]
+    fn sense_key_smoke() {
+        assert!(qemu_tests::sense_key_smoke());
+    }
+
+    #[test]
+    fn read_capacity_endianness_smoke() {
+        assert!(qemu_tests::read_capacity_endianness_smoke());
     }
 }

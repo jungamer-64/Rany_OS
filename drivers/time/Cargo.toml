@@ -16,4 +16,3 @@ kernel_api = { path = "../../interfaces/kernel_api" }
 
 [features]
 default = []
-qemu-test-export = []

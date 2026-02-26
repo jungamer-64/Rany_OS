@@ -66,8 +66,8 @@ pub use defs::{
     vring_flags,
 };
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use super::*;
 
     struct MockTransport {
@@ -178,5 +178,16 @@ pub mod qemu_tests {
             Ok(negotiated) => negotiated == 0xFFFF,
             Err(_) => false,
         }
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn transport_init_sequence_smoke() {
+        assert!(qemu_tests::transport_init_sequence_smoke());
     }
 }

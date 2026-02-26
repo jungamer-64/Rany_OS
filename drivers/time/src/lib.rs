@@ -625,5 +625,20 @@ impl Drop for SleepFuture {
 // QEMU Test Exports
 // ============================================================================
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests;
+#[cfg(test)]
+mod qemu_tests;
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn qemu_smoke_suite() {
+        assert!(qemu_tests::tick_increment_smoke());
+        assert!(qemu_tests::timer_registration_smoke());
+        assert!(qemu_tests::cpu_tracker_smoke());
+        assert!(qemu_tests::shard_index_smoke());
+        assert!(qemu_tests::uptime_ns_smoke());
+        assert!(qemu_tests::wall_clock_adjustment_smoke());
+    }
+}

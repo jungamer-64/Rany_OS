@@ -1,0 +1,204 @@
+schema_version = 1
+
+[root_default]
+packages = [
+  "pure-tests",
+  "libs/boot_config",
+  "libs/security",
+  "interfaces/kernel_api",
+  "libs/sync",
+  "libs/graphic_types",
+  "filesystems/vfs",
+  "filesystems/fat32",
+  "drivers/pci",
+  "drivers/ahci",
+  "drivers/usb",
+  "drivers/nvme",
+  "drivers/hid",
+  "drivers/hda",
+  "drivers/virtio",
+  "drivers/acpi",
+  "drivers/time",
+  "apps",
+]
+
+[[package]]
+name = "boot_config"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "security"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = true
+
+[[package]]
+name = "kernel_api"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "exorust_sync"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "hid_driver"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "pci_driver"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "acpi_driver"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "ahci_driver"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "usb_driver"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "virtio_driver"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "time_driver"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = true
+
+[[package]]
+name = "graphic_types"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = "qemu_smoke_tests::qemu_smoke_types"
+exact = true
+serial = false
+
+[[package]]
+name = "graphic_types"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = "qemu_smoke_tests::qemu_smoke_images_alloc"
+exact = true
+serial = false
+features = ["alloc"]
+
+[[package]]
+name = "vfs"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
+exact = true
+serial = false
+
+[[package]]
+name = "fat32"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
+exact = true
+serial = false
+
+[[package]]
+name = "pure_tests"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = "pure_pr_required"
+exact = true
+serial = false
+
+[[package]]
+name = "hda_driver"
+tier = "nightly-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "nvme_driver"
+tier = "nightly-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "exorust_apps"
+tier = "nightly-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "fat32"
+tier = "nightly-required"
+root_default = true
+run_ignored = true
+test_filter = "qemu_smoke_tests::qemu_smoke_nightly_required"
+exact = true
+serial = false

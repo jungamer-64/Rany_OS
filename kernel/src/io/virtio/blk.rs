@@ -471,7 +471,7 @@ pub struct VirtioBlkDevice {
     /// Request queues (one per CPU for multiqueue)
     queues: Vec<Arc<Mutex<VirtQueue>>>,
     /// Pending request wakers
-    pending_wakers: Mutex<Vec<Option<Waker>>>,
+    pending_wakers: Mutex<BTreeMap<usize, Waker>>,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings

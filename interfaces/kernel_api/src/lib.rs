@@ -64,8 +64,8 @@ pub use types::{
     SystemInfo, TaskHandle, TcpEndpoint,
 };
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use crate::{AbiError, DriverContext, pack_version, unpack_version};
 
     pub fn version_pack_unpack_smoke() -> bool {
@@ -89,3 +89,24 @@ pub mod qemu_tests {
             && ctx.reserved == [0; 3]
     }
 }
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn version_pack_unpack_smoke() {
+        assert!(qemu_tests::version_pack_unpack_smoke());
+    }
+
+    #[test]
+    fn abi_error_decode_smoke() {
+        assert!(qemu_tests::abi_error_decode_smoke());
+    }
+
+    #[test]
+    fn driver_context_default_smoke() {
+        assert!(qemu_tests::driver_context_default_smoke());
+    }
+}
+

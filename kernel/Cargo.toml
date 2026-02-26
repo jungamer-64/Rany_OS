@@ -187,4 +187,5 @@ required-features = ["bench"]
 # NOTE:
 # `kernel/tests/*` integration targets are intentionally removed.
 # QEMU migration tests must be exported via `qemu-test-export` and executed
-# through `pure-tests` (host/std) or kernel runtime full-boot (`qemu-tests`).
+# via crate-local host tests / `pure-tests` residuals (host/std) or
+# kernel runtime full-boot (`qemu-tests`).

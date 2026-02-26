@@ -224,31 +224,29 @@ cargo build --target x86_64-exorust.json
 # 4. テスト実行（純 / host/std, デフォルト）
 cargo test
 
-# 5. 任意: 純テストの required tier を明示実行
-cargo test -p pure_tests pure_pr_required -- --exact --nocapture
+# 5. 任意: 純テストの required tier（中央TOML経由）
+python3 scripts/verify_pure_tier_map.py
+python3 scripts/run_pure_tier.py --tier pr-required
 
 # 6. 任意: QEMU実 (full-boot, exoloader -> 実kernel)
 cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
 # 7. 任意: 夜間拡張 tier（ローカルで明示実行）
-cargo test -p pure_tests pure_nightly_required -- --ignored --exact --nocapture
+python3 scripts/run_pure_tier.py --tier nightly-required --include-ignored
 cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapture
 
 ```
 
 テスト構成は 2 層です。
-- `純` (`pure_tests`): host/std の高速ロジック検証。`cargo test` のデフォルト入口。
+- `純` (crate-local `std #[test]`): host/std の高速ロジック検証。`cargo test`（root）は host純全体を実行します。
 - `QEMU実` (`qemu-tests`): `exoloader -> 実kernel ELF` の full-boot 検証。`run_integration=<profile>` を `exoloader.cmdline` に注入して runtime dispatcher を起動します。
 
 補足:
+- pure tier (`pr-required` / `nightly-required`) の真実源は `tests/pure_tiers.toml` です。
+- `pure-tests` は residual（未移行/横断smoke）集約クレートです。
 - `pending` / `runtime_pending` スイートは廃止されました。
 - 旧 `qemu-suites/*` からの移行棚卸しは `tests/migration_case_map.toml` を参照してください。
 - `qemu-tests` 実行時のログは `target/qemu-logs/` に出力されます（serial / QEMU stderr）。
-- CI required の `kernel` ジョブは 3連続実行の各回ログを `target/qemu-logs/suite-kernel-run1.log`〜`suite-kernel-run3.log` として artifact 化する。
-- 実行結果サマリ: `target/qemu-logs/pending-summary.txt`, `target/qemu-logs/pending-summary.json`
-- runtime依存監視サマリ: `target/qemu-logs/kernel-runtime-pending-summary.txt`, `target/qemu-logs/kernel-runtime-pending-summary.json`
-- runtime pending は runtime依存2件（`kernel_net_bridge_zero_copy_integration` / `kernel_bench_framebuffer`）専用の non-blocking 監視
-- `kernel-runtime-pending-summary` は `suite`, `passed_count`, `failed_count`, `blocked_count`, `suite_log_path`, `generated_at_utc` を出力
 - IOMMU residual canonical pending: `none`
 - 旧 `iommu_wave2_*` residual 名は compat alias として残置（required の正規導線は `iommu_wave5_*`）
 - IOMMU wave3 pending monitored smoke（required 未投入）: `none`

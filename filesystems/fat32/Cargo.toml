@@ -22,4 +22,3 @@ hashbrown = "0.16"
 
 [features]
 debug-trace = []
-qemu-test-export = []

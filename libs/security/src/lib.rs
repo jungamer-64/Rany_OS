@@ -348,9 +348,9 @@ impl CapabilityManager {
                 return Err(CapabilityError::NotPermitted);
             }
 
-            #[cfg(any(test, feature = "qemu-test-export"))]
+            #[cfg(test)]
             let now: u64 = 0;
-            #[cfg(not(any(test, feature = "qemu-test-export")))]
+            #[cfg(not(test))]
             let now = 0u64; // host tests don't have timer
 
             if force {
@@ -396,9 +396,9 @@ impl CapabilityManager {
     }
 
     fn expire_grants(&self) {
-        #[cfg(any(test, feature = "qemu-test-export"))]
+        #[cfg(test)]
         let now: u64 = 0;
-        #[cfg(not(any(test, feature = "qemu-test-export")))]
+        #[cfg(not(test))]
         let now = 0u64; // For host tests we don't have a timer - keep simple
 
         let mut expired: Vec<GrantToken> = Vec::new();
@@ -641,9 +641,9 @@ pub fn init() {
     MANAGER.set_capabilities(0, CapabilitySet::full());
 }
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[allow(clippy::must_use_candidate)]
-pub mod qemu_tests {
+mod qemu_tests {
     use super::{
         CAP_NET_BIND, CAP_NET_RAW, CAP_SYS_ADMIN, CapabilityError, CapabilitySet,
         ReclamationStatus, expire_grants_now, manager, reclaim_revoked_now,
@@ -882,5 +882,25 @@ pub mod qemu_tests {
             return false;
         }
         grants[0].revoked
+    }
+}
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn qemu_smoke_suite() {
+        assert!(qemu_tests::capability_set_smoke());
+        assert!(qemu_tests::grant_flow_smoke());
+        assert!(qemu_tests::capability_set_full_smoke());
+        assert!(qemu_tests::raise_not_permitted_smoke());
+        assert!(qemu_tests::grant_requires_permissions_smoke());
+        assert!(qemu_tests::grant_with_permitted_smoke());
+        assert!(qemu_tests::grant_with_options_smoke());
+        assert!(qemu_tests::reclaim_token_smoke());
+        assert!(qemu_tests::in_flight_blocks_reclaim_smoke());
+        assert!(qemu_tests::expire_grants_smoke());
+        assert!(qemu_tests::revoke_grant_smoke());
     }
 }

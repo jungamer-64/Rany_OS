@@ -101,6 +101,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "boot_config"
+version = "0.1.0"
+
+[[package]]
 name = "boot_proto"
 version = "0.1.0"
 dependencies = [
@@ -319,6 +323,7 @@ dependencies = [
 name = "exoloader"
 version = "0.1.0"
 dependencies = [
+ "boot_config",
  "boot_proto",
  "ed25519-compact",
  "graphic_types",
@@ -721,23 +726,7 @@ dependencies = [
 name = "pure_tests"
 version = "0.1.0"
 dependencies = [
- "acpi_driver",
- "ahci_driver",
  "cap_harness",
- "exorust_apps",
- "exorust_sync",
- "fat32",
- "graphic_types",
- "hda_driver",
- "hid_driver",
- "kernel_api",
- "nvme_driver",
- "pci_driver",
- "security",
- "time_driver",
- "usb_driver",
- "vfs",
- "virtio_driver",
 ]
 
 [[package]]

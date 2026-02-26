@@ -28,4 +28,3 @@ log = "0.4"
 
 [features]
 default = []
-qemu-test-export = []

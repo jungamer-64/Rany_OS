@@ -1,121 +1,348 @@
-# QEMU suite migration map (wrapper-level)
-# classification: pure | qemu_fullboot | dropped
+# Test migration map (2-layer v2)
+# destination.kind: crate-test | pure-tests-residual | qemu-fullboot | dropped
 # tier: pr-required | nightly-required
 
-version = 1
+version = 2
 strategy = "2-layer"
+pure_mode = "crate-local-std-tests"
 
-[[pure]]
+[[case]]
 id = "core.capability_set"
 source = "qemu-suites/core"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "security"
+destination.test_filter = ""
 
-[[pure]]
+[[case]]
 id = "core.version_pack_unpack"
 source = "qemu-suites/core"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "kernel_api"
+destination.test_filter = ""
 
-[[pure]]
+[[case]]
 id = "core.sync_lock_compiles"
 source = "qemu-suites/core"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "exorust_sync"
+destination.test_filter = ""
 
-[[pure]]
+[[case]]
 id = "core.bootloader_config_parse"
 source = "qemu-suites/core"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "bootloader parser extracted to libs/boot_config"
+destination.kind = "crate-test"
+destination.package = "boot_config"
+destination.test_filter = ""
 
-[[pure]]
+[[case]]
 id = "core.security_extended"
 source = "qemu-suites/core"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "security"
+destination.test_filter = ""
 
-[[pure]]
+[[case]]
 id = "core.bootloader_config_extended"
 source = "qemu-suites/core"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "bootloader parser extracted to libs/boot_config"
+destination.kind = "crate-test"
+destination.package = "boot_config"
+destination.test_filter = ""
 
-[[pure]]
+[[case]]
 id = "core.graphic_types"
 source = "qemu-suites/core"
-tier = "pr-required"
-classification = "pure"
+classification = "dropped"
+reason = "duplicate coverage of graphics.types + graphics.images residual cases"
+destination.kind = "dropped"
+destination.package = ""
+destination.test_filter = ""
 
-[[pure]]
-id = "drivers.*"
+[[case]]
+id = "drivers.hid_keymap"
 source = "qemu-suites/drivers"
-tier = "pr-required/nightly-required"
 classification = "pure"
-notes = "hda/nvme wrappers are nightly-required; remaining driver wrappers are pr-required"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "hid_driver"
+destination.test_filter = ""
 
-[[pure]]
+[[case]]
+id = "drivers.hid_driver"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "hid_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.hid_keyboard"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "hid_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.hid_keymap_extended"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "hid_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.pci_bdf"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "pci_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.acpi"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "acpi_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.ahci"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "ahci_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.hda"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "nightly-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "hda_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.nvme"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "nightly-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "nvme_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.usb"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "usb_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.virtio"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "virtio_driver"
+destination.test_filter = ""
+
+[[case]]
+id = "drivers.time_driver_exports"
+source = "qemu-suites/drivers"
+classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "time_driver"
+destination.test_filter = ""
+
+[[case]]
 id = "fs.vfs_path"
 source = "qemu-suites/fs"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "vfs"
+destination.test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
 
-[[pure]]
+[[case]]
 id = "fs.fat32_types"
 source = "qemu-suites/fs"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "fat32"
+destination.test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
 
-[[pure]]
+[[case]]
 id = "fs.fat32_extended"
 source = "qemu-suites/fs"
-tier = "nightly-required"
 classification = "pure"
+tier = "nightly-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "fat32"
+destination.test_filter = "qemu_smoke_tests::qemu_smoke_nightly_required"
 
-[[pure]]
+[[case]]
 id = "graphics.types"
 source = "qemu-suites/graphics"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "graphic_types"
+destination.test_filter = "qemu_smoke_tests::qemu_smoke_types"
 
-[[pure]]
+[[case]]
 id = "graphics.images"
 source = "qemu-suites/graphics"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "graphic_types"
+destination.test_filter = "qemu_smoke_tests::qemu_smoke_images_alloc"
 
-[[pure]]
+[[case]]
 id = "graphics.browser"
 source = "qemu-suites/graphics"
+classification = "pure"
 tier = "nightly-required"
-classification = "pure"
+root_default = true
+reason = "migrated to crate-local tests"
+destination.kind = "crate-test"
+destination.package = "exorust_apps"
+destination.test_filter = ""
 
-[[pure]]
-id = "tools.*"
+[[case]]
+id = "tools.cap_harness_grant"
 source = "qemu-suites/tools"
-tier = "pr-required"
 classification = "pure"
+tier = "pr-required"
+root_default = true
+reason = "cross-crate residual smoke kept in pure-tests"
+destination.kind = "pure-tests-residual"
+destination.package = "pure_tests"
+destination.test_filter = "pure_pr_required"
 
-[[qemu_fullboot]]
+[[case]]
+id = "tools.cap_harness_qemu_tests"
+source = "qemu-suites/tools"
+classification = "dropped"
+reason = "replaced by cap_harness crate-local tests"
+destination.kind = "dropped"
+destination.package = ""
+destination.test_filter = ""
+
+[[case]]
+id = "tools.framebuffer_smoke"
+source = "qemu-suites/tools"
+classification = "dropped"
+reason = "duplicate of graphics image residual coverage"
+destination.kind = "dropped"
+destination.package = ""
+destination.test_filter = ""
+
+[[case]]
 id = "boot.smoke_cmdline_dispatch"
 source = "kernel runtime dispatcher"
-profiles = ["boot-smoke", "pr-required", "nightly-required"]
 classification = "qemu_fullboot"
+reason = "runtime profile dispatched inside full-boot kernel"
+profiles = ["boot-smoke", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
-[[qemu_fullboot]]
+[[case]]
 id = "storage.integration_suite"
 source = "kernel/src/test/integration.rs"
-profiles = ["storage", "pr-required", "nightly-required"]
 classification = "qemu_fullboot"
+reason = "runtime profile dispatched inside full-boot kernel"
+profiles = ["storage", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
-[[qemu_fullboot]]
+[[case]]
 id = "driver_cell.runtime_suite"
 source = "kernel/src/driver_cell/tests.rs"
-profiles = ["driver_cell", "pr-required", "nightly-required"]
 classification = "qemu_fullboot"
+reason = "runtime profile dispatched inside full-boot kernel"
+profiles = ["driver_cell", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
-[[dropped]]
+[[case]]
 id = "qemu-suites/kernel::manual_run_check_wiring"
 source = "qemu-suites/kernel/src/main.rs"
 classification = "dropped"
-reason = "replaced by kernel runtime dispatcher + pure-tests split"
+reason = "replaced by kernel runtime dispatcher + crate-local pure tests + residual pure-tests"
+destination.kind = "dropped"
+destination.package = ""
+destination.test_filter = ""

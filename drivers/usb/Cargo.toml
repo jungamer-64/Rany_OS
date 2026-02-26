@@ -29,4 +29,3 @@ vfs_integration = ["vfs"]
 # Enables panic handler and dummy allocator for freestanding build
 standalone = ["export_driver_entry"]
 export_driver_entry = []
-qemu-test-export = []

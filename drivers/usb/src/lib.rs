@@ -597,8 +597,8 @@ pub fn init() {
     // Note: logging handled by caller
 }
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use crate::xhci::{CommandBuilder, DoorbellBatch, DoorbellTarget, TransferBuilder, TrbType};
 
     pub fn doorbell_target_smoke() -> bool {
@@ -650,5 +650,36 @@ pub mod qemu_tests {
         let setup = TransferBuilder::setup_stage(0x80, 0x06, 0x0100, 0, 18, 3);
         let setup_type = (setup.control >> 10) & 0x3F;
         setup_type == TrbType::SetupStage as u32
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn doorbell_target_smoke() {
+        assert!(qemu_tests::doorbell_target_smoke());
+    }
+
+    #[test]
+    fn doorbell_from_endpoint_smoke() {
+        assert!(qemu_tests::doorbell_from_endpoint_smoke());
+    }
+
+    #[test]
+    fn doorbell_batch_smoke() {
+        assert!(qemu_tests::doorbell_batch_smoke());
+    }
+
+    #[test]
+    fn command_builder_smoke() {
+        assert!(qemu_tests::command_builder_smoke());
+    }
+
+    #[test]
+    fn transfer_builder_smoke() {
+        assert!(qemu_tests::transfer_builder_smoke());
     }
 }

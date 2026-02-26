@@ -19,7 +19,6 @@ default = []
 metrics = []
 # Enable full-featured backoff algorithm
 advanced-backoff = []
-qemu-test-export = []
 # Enable log output (requires log crate)
 log = []
 # Enable std support

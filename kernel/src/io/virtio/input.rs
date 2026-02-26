@@ -382,6 +382,14 @@ pub struct VirtioInputDevice {
 unsafe impl Send for VirtioInputDevice {}
 unsafe impl Sync for VirtioInputDevice {}
 
+/// VirtIO Input Device Configuration space offsets
+pub mod config_offsets {
+    pub const SELECT: usize = 0;
+    pub const SUBSEL: usize = 1;
+    pub const SIZE: usize = 2;
+    pub const DATA: usize = 8;
+}
+
 impl VirtioInputDevice {
     /// Create a new VirtIO input device (uninitialized).
     ///
@@ -403,18 +411,6 @@ impl VirtioInputDevice {
             ready: AtomicBool::new(false),
             iommu_device_id,
             event_handler: Mutex::new(None),
-        }
-    }
-
-    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
-    fn alloc_coherent(
-        &self,
-        size: usize,
-        attrs: DmaMemoryAttributes,
-    ) -> Option<CoherentDmaBuffer> {
-        match &self.iommu_device_id {
-            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
-            None => CoherentDmaBuffer::new(size, attrs),
         }
     }
 
@@ -498,8 +494,12 @@ impl VirtioInputDevice {
         let total_size = used_offset + used_size;
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
-        let buffer = self.alloc_coherent(total_size, DmaMemoryAttributes::MMIO)
-            .ok_or(InputError::NotReady)?;
+        let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
+            total_size,
+            DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
+        )
+        .ok_or(InputError::NotReady)?;
 
         let dev_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
@@ -563,8 +563,12 @@ impl VirtioInputDevice {
             };
 
             // Allocate a DMA-safe buffer for one event (IOMMU-aware)
-            let dma_buf = self.alloc_coherent(event_size, DmaMemoryAttributes::MMIO)
-                .ok_or(InputError::IoError)?;
+            let dma_buf = crate::io::virtio::dma::alloc_virtio_dma_buffer(
+                event_size,
+                DmaMemoryAttributes::MMIO,
+                self.iommu_device_id.as_ref(),
+            )
+            .ok_or(InputError::IoError)?;
             let phys_addr = dma_buf.device_addr();
 
             // Setup descriptor: device-writable buffer
@@ -603,8 +607,12 @@ impl VirtioInputDevice {
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
         // Allocate a fresh DMA buffer (IOMMU-aware)
-        let dma_buf = self.alloc_coherent(event_size, DmaMemoryAttributes::MMIO)
-            .ok_or(InputError::IoError)?;
+        let dma_buf = crate::io::virtio::dma::alloc_virtio_dma_buffer(
+            event_size,
+            DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
+        )
+        .ok_or(InputError::IoError)?;
         let phys_addr = dma_buf.device_addr();
 
         // Reconfigure the descriptor
@@ -645,15 +653,15 @@ impl VirtioInputDevice {
         // but config writes are atomic MMIO operations safe for shared access.
         let transport_ptr = &*self.transport as *const dyn VirtioTransport as *mut dyn VirtioTransport;
         unsafe {
-            (*transport_ptr).write_config_u8(0, select);
-            (*transport_ptr).write_config_u8(1, subsel);
+            (*transport_ptr).write_config_u8(config_offsets::SELECT, select);
+            (*transport_ptr).write_config_u8(config_offsets::SUBSEL, subsel);
         }
 
         // Memory barrier to ensure writes are visible before reading
         core::sync::atomic::fence(Ordering::SeqCst);
 
         // Read size from config space offset 2
-        let size = self.transport.read_config_u8(2) as usize;
+        let size = self.transport.read_config_u8(config_offsets::SIZE) as usize;
 
         if size == 0 {
             return None;
@@ -665,7 +673,7 @@ impl VirtioInputDevice {
 
         // Read data bytes from config space starting at offset 8
         for i in 0..read_len {
-            data[i] = self.transport.read_config_u8(8 + i);
+            data[i] = self.transport.read_config_u8(config_offsets::DATA + i);
         }
 
         Some(data)

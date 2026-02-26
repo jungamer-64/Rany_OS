@@ -19,4 +19,3 @@ description = "Capability Test Harness for RanyOS"
 [features]
 default = []
 host-tests = []
-qemu-test-export = []

@@ -455,9 +455,9 @@ pub fn reset_lock_metrics() {
     LOCK_TOTAL_ACQUIRE_TICKS.store(0, Ordering::Relaxed);
 }
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[allow(clippy::must_use_candidate)]
-pub mod qemu_tests {
+mod qemu_tests {
     use super::PoisonLock;
     use core::sync::atomic::Ordering;
 
@@ -507,3 +507,34 @@ pub mod qemu_tests {
         lock.lock().map_or(false, |guard| *guard == 0)
     }
 }
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn basic_lock_smoke() {
+        assert!(qemu_tests::basic_lock_smoke());
+    }
+
+    #[test]
+    fn try_lock_smoke() {
+        assert!(qemu_tests::try_lock_smoke());
+    }
+
+    #[test]
+    fn initial_poison_state_smoke() {
+        assert!(qemu_tests::initial_poison_state_smoke());
+    }
+
+    #[test]
+    fn clear_poison_smoke() {
+        assert!(qemu_tests::clear_poison_smoke());
+    }
+
+    #[test]
+    fn default_lock_smoke() {
+        assert!(qemu_tests::default_lock_smoke());
+    }
+}
+

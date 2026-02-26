@@ -251,8 +251,8 @@ impl Future for CharFutureArc<'_> {
     }
 }
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+pub(crate) mod qemu_tests {
     use super::*;
     use alloc::boxed::Box;
     use core::ptr;
@@ -290,5 +290,16 @@ pub mod qemu_tests {
         driver.handle_scancode(0x1E);
 
         matches!(Pin::new(&mut future).poll(&mut cx), Poll::Ready('a'))
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn char_future_ready_smoke() {
+        assert!(qemu_tests::char_future_ready_smoke());
     }
 }

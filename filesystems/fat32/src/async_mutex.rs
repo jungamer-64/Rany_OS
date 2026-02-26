@@ -205,8 +205,8 @@ impl<T: ?Sized> Drop for AsyncGuard<'_, T> {
 }
 
 // ========================= QEMU Test Exports =========================
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+pub(crate) mod qemu_tests {
     // explicit imports reduce wildcard usage
     use super::AsyncMutex;
     use core::pin::Pin;

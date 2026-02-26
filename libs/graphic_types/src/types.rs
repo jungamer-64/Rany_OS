@@ -393,9 +393,9 @@ impl Rect {
     }
 }
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[allow(clippy::must_use_candidate, clippy::missing_const_for_fn)]
-pub mod qemu_tests {
+pub(crate) mod qemu_tests {
     use super::{Color, PixelFormat, Point, Rect};
 
     pub fn color_ctor_smoke() -> bool {

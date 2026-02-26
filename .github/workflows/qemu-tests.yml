@@ -36,11 +36,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-qemu-
 
-      - name: Verify legacy #[test] allowlist
-        run: bash scripts/verify_qemu_test_only.sh
+      - name: Verify pure tier map
+        run: python3 scripts/verify_pure_tier_map.py
 
       - name: Run pure PR-required tier
-        run: cargo test -p pure_tests pure_pr_required -- --exact --nocapture
+        run: python3 scripts/run_pure_tier.py --tier pr-required
 
   fullboot-pr-required:
     name: Full-boot QEMU (PR required)
@@ -117,11 +117,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-qemu-
 
-      - name: Verify legacy #[test] allowlist
-        run: bash scripts/verify_qemu_test_only.sh
+      - name: Verify pure tier map
+        run: python3 scripts/verify_pure_tier_map.py
 
       - name: Run pure nightly-required tier
-        run: cargo test -p pure_tests pure_nightly_required -- --ignored --exact --nocapture
+        run: python3 scripts/run_pure_tier.py --tier nightly-required --include-ignored
 
   fullboot-nightly-required:
     name: Full-boot QEMU (nightly required)

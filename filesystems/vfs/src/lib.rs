@@ -208,53 +208,32 @@ impl From<block::BlockError> for VfsError {
     }
 }
 
-#[cfg(feature = "qemu-test-export")]
-#[allow(clippy::must_use_candidate)]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_smoke_tests {
     use super::path::Path;
     use super::{block, cache};
 
-    pub fn path_join_smoke() -> bool {
+    #[test]
+    fn qemu_smoke_pr_required() {
         let p = Path::new("/sys");
         let joined = p.join("kernel");
-        joined.as_str() == "/sys/kernel"
-    }
+        assert_eq!(joined.as_str(), "/sys/kernel");
 
-    pub fn path_parent_smoke() -> bool {
         let p = Path::new("/var/log/kmsg");
-        p.parent().is_some_and(|v| v.as_str() == "/var/log")
-    }
+        assert!(p.parent().is_some_and(|v| v.as_str() == "/var/log"));
 
-    pub fn ramdisk_read_write_sync_smoke() -> bool {
-        block::qemu_tests::ramdisk_read_write_sync_smoke()
-    }
+        assert!(block::qemu_tests::ramdisk_read_write_sync_smoke());
+        assert!(block::qemu_tests::ramdisk_read_write_multiple_blocks_smoke());
+        assert!(block::qemu_tests::read_into_buf_invalid_size_smoke());
+        assert!(block::qemu_tests::read_into_buf_default_fallback_smoke());
+        assert!(block::qemu_tests::write_from_buf_default_fallback_smoke());
 
-    pub fn ramdisk_read_write_multiple_blocks_smoke() -> bool {
-        block::qemu_tests::ramdisk_read_write_multiple_blocks_smoke()
-    }
-
-    pub fn borrowed_read_into_invalid_size_smoke() -> bool {
-        block::qemu_tests::read_into_buf_invalid_size_smoke()
-    }
-
-    pub fn borrowed_read_into_fallback_smoke() -> bool {
-        block::qemu_tests::read_into_buf_default_fallback_smoke()
-    }
-
-    pub fn borrowed_write_from_fallback_smoke() -> bool {
-        block::qemu_tests::write_from_buf_default_fallback_smoke()
-    }
-
-    pub fn page_cache_smoke() -> bool {
-        cache::qemu_tests::cached_page_smoke()
-            && cache::qemu_tests::page_pin_smoke()
-            && cache::qemu_tests::page_cache_smoke()
-    }
-
-    pub fn block_cache_smoke() -> bool {
-        cache::qemu_tests::block_cache_basic_smoke()
-            && cache::qemu_tests::block_cache_lru_eviction_smoke()
-            && cache::qemu_tests::block_cache_dirty_tracking_smoke()
-            && cache::qemu_tests::block_cache_flush_smoke()
+        assert!(cache::qemu_tests::cached_page_smoke());
+        assert!(cache::qemu_tests::page_pin_smoke());
+        assert!(cache::qemu_tests::page_cache_smoke());
+        assert!(cache::qemu_tests::block_cache_basic_smoke());
+        assert!(cache::qemu_tests::block_cache_lru_eviction_smoke());
+        assert!(cache::qemu_tests::block_cache_dirty_tracking_smoke());
+        assert!(cache::qemu_tests::block_cache_flush_smoke());
     }
 }

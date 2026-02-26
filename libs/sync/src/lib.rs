@@ -26,11 +26,3 @@ mod poison_lock;
 
 pub use backoff::Backoff;
 pub use poison_lock::{LockResult, PoisonError, PoisonLock, PoisonLockGuard};
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    pub use crate::poison_lock::qemu_tests::{
-        basic_lock_smoke, clear_poison_smoke, default_lock_smoke, initial_poison_state_smoke,
-        try_lock_smoke,
-    };
-}

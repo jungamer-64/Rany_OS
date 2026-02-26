@@ -5,6 +5,14 @@ use crate::util::align_up_usize as align_up;
 mod async_io;
 pub use async_io::*;
 mod dma_dispatch;
+
+/// VirtIO Block Device Configuration space offsets
+pub mod config_offsets {
+    pub const CAPACITY: usize = 0;
+    pub const BLK_SIZE: usize = 20;
+    pub const NUM_QUEUES: usize = 34;
+}
+
 impl VirtioBlkDevice {
     /// Create a new VirtIO block device (uninitialized)
     ///
@@ -21,24 +29,12 @@ impl VirtioBlkDevice {
         Self {
             config: BlockDeviceConfig::default(),
             queues: Vec::new(),
-            pending_wakers: Mutex::new(Vec::new()),
+            pending_wakers: Mutex::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             iommu_device_id,
             transport,
             features: 0,
             inflight_dma: Mutex::new(BTreeMap::new()),
-        }
-    }
-
-    /// IOMMU対応のDMAバッファを割り当てるヘルパー。
-    pub(super) fn alloc_coherent(
-        &self,
-        size: usize,
-        attrs: DmaMemoryAttributes,
-    ) -> Option<CoherentDmaBuffer> {
-        match &self.iommu_device_id {
-            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
-            None => CoherentDmaBuffer::new(size, attrs),
         }
     }
 
@@ -98,10 +94,7 @@ impl VirtioBlkDevice {
             self.setup_queue(i)?;
         }
 
-        // Initialize pending wakers
-        let mut wakers = self.pending_wakers.lock();
-        wakers.resize(VIRTQUEUE_MAX_SIZE as usize * num_queues as usize, None);
-        drop(wakers);
+        // pending_wakers is now a BTreeMap, so no resizing is needed.
 
         // Step 8: Driver OK
         self.transport.set_status(
@@ -121,7 +114,7 @@ impl VirtioBlkDevice {
     /// Read device configuration
     pub(super) fn read_config(&mut self) -> Result<(), BlockError> {
         // Read capacity (8 bytes at offset 0)
-        self.config.capacity = self.transport.read_config_u64(0);
+        self.config.capacity = self.transport.read_config_u64(config_offsets::CAPACITY);
 
         // Read block size if feature supported
         // Read block size if feature supported
@@ -141,8 +134,8 @@ impl VirtioBlkDevice {
             //     u32 blk_size; (20? 16+4+2+4=26? No, geometry is u16 cylinders, u8 heads, u8 sectors = 4 bytes total? 16+4=20)
             //     ...
             // }
-            // Let's assume standard offsets. 0x14 is 20.
-            self.config.block_size = self.transport.read_config_u32(20);
+            // block_size (u32) at 20.
+            self.config.block_size = self.transport.read_config_u32(config_offsets::BLK_SIZE);
         }
 
         // Read num_queues if multiqueue supported
@@ -153,8 +146,8 @@ impl VirtioBlkDevice {
             // writeback?
             // Spec says num_queues is later?
             // Existing code used 0x22 (34).
-            // Let's trust existing offset.
-            self.config.num_queues = self.transport.read_config_u16(34);
+            // Number of queues (u16) at 34.
+            self.config.num_queues = self.transport.read_config_u16(config_offsets::NUM_QUEUES);
         }
 
         // Check read-only
@@ -191,9 +184,10 @@ impl VirtioBlkDevice {
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         // We use Bidirectional as default, allowing device to read/write rings
-        let buffer = self.alloc_coherent(
+        let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
+            self.iommu_device_id.as_ref(),
         )
         .ok_or(BlockError::NotReady)?;
 
@@ -334,7 +328,7 @@ impl VirtioBlkDevice {
                     // レガシーパス: 既存の Waker を起動
                     let waker_idx = q_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
                     let mut wakers = self.pending_wakers.lock();
-                    if let Some(waker) = wakers.get_mut(waker_idx).and_then(|w| w.take()) {
+                    if let Some(waker) = wakers.remove(&waker_idx) {
                         waker.wake();
                     }
                 }

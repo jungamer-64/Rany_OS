@@ -23,4 +23,3 @@ spin = "0.10"
 export_driver_entry = []
 # Enable Cell runtime stubs (allocator, panic handler) for standalone cdylib builds
 cell_runtime = []
-qemu-test-export = []

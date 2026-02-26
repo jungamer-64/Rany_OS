@@ -170,8 +170,8 @@ pub fn grant(
     Ok(cap)
 }
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     #![allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -200,5 +200,21 @@ use super::*;
             return false;
         }
         manager.has_capability(target, CAP_NET_BIND)
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn grant_requires_permissions_smoke() {
+        assert!(qemu_tests::grant_requires_permissions_smoke());
+    }
+
+    #[test]
+    fn grant_with_permitted_smoke() {
+        assert!(qemu_tests::grant_with_permitted_smoke());
     }
 }

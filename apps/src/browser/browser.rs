@@ -527,8 +527,8 @@ impl Default for Browser {
     }
 }
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     #[allow(clippy::wildcard_imports)]
     use super::*;
 
@@ -547,5 +547,21 @@ pub mod qemu_tests {
 
         browser.go_back();
         !browser.can_go_back() && browser.can_go_forward()
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn browser_creation_smoke() {
+        assert!(qemu_tests::browser_creation_smoke());
+    }
+
+    #[test]
+    fn history_smoke() {
+        assert!(qemu_tests::history_smoke());
     }
 }

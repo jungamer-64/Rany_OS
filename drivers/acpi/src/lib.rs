@@ -27,9 +27,9 @@ pub use tables::{
 pub use dmar::DmarInfo;
 pub use ivrs::{IvmdInfo, IvrsInfo};
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[allow(clippy::cast_possible_truncation)]
-pub mod qemu_tests {
+mod qemu_tests {
     use alloc::vec::Vec;
     use core::mem;
 
@@ -369,5 +369,26 @@ pub mod qemu_tests {
         info.rmrr_regions.len() == 1
             && info.drhd_units.is_empty()
             && info.rmrr_regions[0].base == 0x1000
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn ivrs_parse_ivhd_smoke() {
+        assert!(qemu_tests::ivrs_parse_ivhd_smoke());
+    }
+
+    #[test]
+    fn ivrs_parse_ivmd_smoke() {
+        assert!(qemu_tests::ivrs_parse_ivmd_smoke());
+    }
+
+    #[test]
+    fn dmar_parse_minimal_smoke() {
+        assert!(qemu_tests::dmar_parse_minimal_smoke());
     }
 }

@@ -86,8 +86,8 @@ pub use pcie_ext::{
     ext_cap_id, init_pcie_ext, pcie_ext_config, pcie_ext_manager,
 };
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use crate::{DeliveryMode, MsiConfig};
 
     pub fn msi_config_smoke() -> bool {
@@ -97,5 +97,21 @@ pub mod qemu_tests {
 
     pub fn delivery_mode_smoke() -> bool {
         DeliveryMode::Fixed as u32 == 0 && DeliveryMode::LowestPriority as u32 == 1
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn msi_config_smoke() {
+        assert!(qemu_tests::msi_config_smoke());
+    }
+
+    #[test]
+    fn delivery_mode_smoke() {
+        assert!(qemu_tests::delivery_mode_smoke());
     }
 }

@@ -133,7 +133,6 @@ pub(crate) fn validate_dma_buf_size(buf_len: usize) -> Result<u32, BlockError> {
     Ok(buf_len as u32)
 }
 
-/// Wakerをデスクリプタに登録
 pub(crate) fn register_desc_waker(
     device: &VirtioBlkDevice,
     queue_idx: usize,
@@ -142,9 +141,7 @@ pub(crate) fn register_desc_waker(
 ) {
     let waker_idx = queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
     let mut wakers = device.pending_wakers.lock();
-    if let Some(slot) = wakers.get_mut(waker_idx) {
-        *slot = Some(waker.clone());
-    }
+    wakers.insert(waker_idx, waker.clone());
 }
 
 /// Future for async DMA read operation (uses physical address).

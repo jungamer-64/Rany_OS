@@ -1,5 +1,5 @@
 [package]
-name = "security"
+name = "boot_config"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -8,13 +8,6 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Security Primitives for RanyOS"
+description = "Bootloader config parser shared by exoloader and host tests"
 
 [dependencies]
-spin = "0.10"
-log = "0.4"
-
-[features]
-# Default to no-std; enable std explicitly for host tests via `--features std`
-default = []
-std = []

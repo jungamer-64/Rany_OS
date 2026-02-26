@@ -87,8 +87,8 @@ pub use crate::global::{
 // Polling driver exports
 pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use crate::commands::{NvmeCommand, NvmeCompletion};
     use crate::controller::NvmeCapabilities;
     use crate::defs::{AdminOpcode, IoOpcode, PrpList};
@@ -240,5 +240,76 @@ pub mod qemu_tests {
         };
         let nvme_cmd = cmd.to_nvme_command(100, 1);
         nvme_cmd.opcode() == IoOpcode::Read as u8 && nvme_cmd.nsid == 1
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn command_read_smoke() {
+        assert!(qemu_tests::command_read_smoke());
+    }
+
+    #[test]
+    fn command_write_smoke() {
+        assert!(qemu_tests::command_write_smoke());
+    }
+
+    #[test]
+    fn command_create_cq_smoke() {
+        assert!(qemu_tests::command_create_cq_smoke());
+    }
+
+    #[test]
+    fn command_create_sq_smoke() {
+        assert!(qemu_tests::command_create_sq_smoke());
+    }
+
+    #[test]
+    fn completion_status_smoke() {
+        assert!(qemu_tests::completion_status_smoke());
+    }
+
+    #[test]
+    fn completion_error_smoke() {
+        assert!(qemu_tests::completion_error_smoke());
+    }
+
+    #[test]
+    fn io_request_state_smoke() {
+        assert!(qemu_tests::io_request_state_smoke());
+    }
+
+    #[test]
+    fn capabilities_smoke() {
+        assert!(qemu_tests::capabilities_smoke());
+    }
+
+    #[test]
+    fn prp_list_smoke() {
+        assert!(qemu_tests::prp_list_smoke());
+    }
+
+    #[test]
+    fn pending_requests_smoke() {
+        assert!(qemu_tests::pending_requests_smoke());
+    }
+
+    #[test]
+    fn queue_type_traits_smoke() {
+        assert!(qemu_tests::queue_type_traits_smoke());
+    }
+
+    #[test]
+    fn identify_command_smoke() {
+        assert!(qemu_tests::identify_command_smoke());
+    }
+
+    #[test]
+    fn read_command_smoke() {
+        assert!(qemu_tests::read_command_smoke());
     }
 }

@@ -1,46 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# This file is only for legacy #[test] exception control.
-# Migration tracking is managed via tests/migration_case_map.toml.
-ALLOWLIST_FILE="$ROOT_DIR/scripts/qemu_legacy_test_allowlist.lst"
-
-if [[ ! -f "$ALLOWLIST_FILE" ]]; then
-  echo "missing allowlist: $ALLOWLIST_FILE" >&2
-  exit 1
-fi
-
-mapfile -t ALLOWLIST < <(sed -E '/^\s*#/d;/^\s*$/d' "$ALLOWLIST_FILE")
-
-declare -A ALLOWSET
-for item in "${ALLOWLIST[@]}"; do
-  ALLOWSET["$item"]=1
-done
-
-violations=0
-
-while IFS= read -r line; do
-  file="${line%%:*}"
-  file="${file#./}"
-
-  # Official orchestrator test entrypoints are always allowed.
-  if [[ "$file" == "qemu-tests/src/lib.rs" || "$file" == "pure-tests/src/lib.rs" ]]; then
-    continue
-  fi
-
-  if [[ -n "${ALLOWSET[$file]+x}" ]]; then
-    continue
-  fi
-
-  echo "[verify_qemu_test_only] unexpected #[test] detected: $line"
-  violations=$((violations + 1))
-done < <(cd "$ROOT_DIR" && rg -n '^\s*#\[test\]' --glob '**/*.rs' .)
-
-if [[ "$violations" -gt 0 ]]; then
-  echo "[verify_qemu_test_only] FAIL: found $violations unexpected #[test] occurrences"
-  echo "If intentional during migration, add file to scripts/qemu_legacy_test_allowlist.lst"
-  exit 1
-fi
-
-echo "[verify_qemu_test_only] PASS"
+echo "[verify_qemu_test_only] SKIP: crate-local pure #[test] migration active"
+echo "[verify_qemu_test_only] Use scripts/verify_pure_tier_map.py for pure-tier validation"

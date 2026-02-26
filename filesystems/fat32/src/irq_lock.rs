@@ -8,14 +8,14 @@ use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(not(any(test, feature = "qemu-test-export")))]
+#[cfg(not(test))]
 use core::arch::asm;
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 static TEST_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// Save and disable interrupts, returning whether interrupts were enabled before.
-#[cfg(not(any(test, feature = "qemu-test-export")))]
+#[cfg(not(test))]
 #[inline]
 fn save_and_disable_interrupts() -> bool {
     let rflags: u64;
@@ -37,14 +37,14 @@ fn save_and_disable_interrupts() -> bool {
     (rflags & (1 << 9)) != 0
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 #[inline]
 fn save_and_disable_interrupts() -> bool {
     TEST_INTERRUPTS_ENABLED.swap(false, Ordering::SeqCst)
 }
 
 /// Restore interrupts to the previous state.
-#[cfg(not(any(test, feature = "qemu-test-export")))]
+#[cfg(not(test))]
 #[inline]
 fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
@@ -54,7 +54,7 @@ fn restore_interrupts(was_enabled: bool) {
     }
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 #[inline]
 fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
@@ -184,10 +184,10 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 // QEMU Test Exports
 // ============================================================================
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+pub(crate) mod qemu_tests {
     // only import what we actually use to avoid wildcard imports
-    use super::{IrqPoisonLock, save_and_disable_interrupts, restore_interrupts, TEST_INTERRUPTS_ENABLED};
+    use super::{save_and_disable_interrupts, restore_interrupts, IrqPoisonLock, TEST_INTERRUPTS_ENABLED};
     use core::sync::atomic::Ordering;
 
     pub fn basic_locking_smoke() -> bool {

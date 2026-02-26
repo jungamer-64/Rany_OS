@@ -625,9 +625,9 @@ pub fn page_cache() -> &'static PageCache {
     PAGE_CACHE.get().expect("Page cache not initialized")
 }
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[allow(clippy::must_use_candidate)]
-pub mod qemu_tests {
+pub(crate) mod qemu_tests {
     use super::{CachedPage, LRUBlockCache, PAGE_SIZE, PageCache, PageState};
     use alloc::vec::Vec;
 

@@ -1001,9 +1001,9 @@ pub fn block_manager() -> &'static BlockDeviceManager {
     &BLOCK_MANAGER
 }
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[allow(clippy::must_use_candidate)]
-pub mod qemu_tests {
+pub(crate) mod qemu_tests {
     use super::{
         BlockDevice, BlockDeviceInfo, BlockError, BlockResult, OwnedBytes, RamDisk, ZcFuture,
         ZeroCopyBlockDevice,

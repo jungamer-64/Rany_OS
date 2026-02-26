@@ -1579,9 +1579,9 @@ impl IconGenerator {
     }
 }
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[allow(clippy::must_use_candidate)]
-pub mod qemu_tests {
+pub(crate) mod qemu_tests {
     use super::{Color, Image, ImageError, ImageViewMut, MAX_IMAGE_SIZE, PixelFormat, Rect};
     use alloc::vec;
 

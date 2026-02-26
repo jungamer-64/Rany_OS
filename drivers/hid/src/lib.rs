@@ -312,8 +312,8 @@ pub use keymap::{
 // Keyboard helpers - use `hid_driver::keyboard::*` for full access
 pub use keyboard::StreamAlreadyTaken;
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
+#[cfg(test)]
+mod qemu_tests {
     use crate::keymap::{DvorakKeymap, Keymap, UsQwertyKeymap};
     use crate::queue::{DEFAULT_QUEUE_SIZE, ScancodeQueue};
     use crate::{KeyCode, Modifiers};
@@ -622,5 +622,156 @@ pub mod qemu_tests {
         let keymap = UsQwertyKeymap; // gitleaks:allow
         keymap.to_char(KeyCode::NumPad0, &mods(true, false)) == Some('0')
             && keymap.to_char(KeyCode::NumPadPlus, &mods(true, false)) == Some('+')
+    }
+}
+
+
+#[cfg(test)]
+mod qemu_smoke_tests {
+    use super::qemu_tests;
+
+    #[test]
+    fn keymap_smoke() {
+        assert!(qemu_tests::keymap_smoke());
+    }
+
+    #[test]
+    fn keymap_ctrl_smoke() {
+        assert!(qemu_tests::keymap_ctrl_smoke());
+    }
+
+    #[test]
+    fn dvorak_smoke() {
+        assert!(qemu_tests::dvorak_smoke());
+    }
+
+    #[test]
+    fn queue_basic_smoke() {
+        assert!(qemu_tests::queue_basic_smoke());
+    }
+
+    #[test]
+    fn queue_full_smoke() {
+        assert!(qemu_tests::queue_full_smoke());
+    }
+
+    #[test]
+    fn queue_wraparound_smoke() {
+        assert!(qemu_tests::queue_wraparound_smoke());
+    }
+
+    #[test]
+    fn stream_char_future_smoke() {
+        assert!(qemu_tests::stream_char_future_smoke());
+    }
+
+    #[test]
+    fn driver_new_smoke() {
+        assert!(qemu_tests::driver_new_smoke());
+    }
+
+    #[test]
+    fn driver_handle_scancode_smoke() {
+        assert!(qemu_tests::driver_handle_scancode_smoke());
+    }
+
+    #[test]
+    fn driver_extended_scancode_smoke() {
+        assert!(qemu_tests::driver_extended_scancode_smoke());
+    }
+
+    #[test]
+    fn driver_key_release_smoke() {
+        assert!(qemu_tests::driver_key_release_smoke());
+    }
+
+    #[test]
+    fn from_scancode_basic_smoke() {
+        assert!(qemu_tests::from_scancode_basic_smoke());
+    }
+
+    #[test]
+    fn us_qwerty_letters_smoke() {
+        assert!(qemu_tests::us_qwerty_letters_smoke());
+    }
+
+    #[test]
+    fn us_qwerty_numbers_smoke() {
+        assert!(qemu_tests::us_qwerty_numbers_smoke());
+    }
+
+    #[test]
+    fn us_qwerty_special_smoke() {
+        assert!(qemu_tests::us_qwerty_special_smoke());
+    }
+
+    #[test]
+    fn non_printable_keys_smoke() {
+        assert!(qemu_tests::non_printable_keys_smoke());
+    }
+
+    #[test]
+    fn ctrl_characters_smoke() {
+        assert!(qemu_tests::ctrl_characters_smoke());
+    }
+
+    #[test]
+    fn jis_symbols_smoke() {
+        assert!(qemu_tests::jis_symbols_smoke());
+    }
+
+    #[test]
+    fn jis_letters_smoke() {
+        assert!(qemu_tests::jis_letters_smoke());
+    }
+
+    #[test]
+    fn jis_ctrl_smoke() {
+        assert!(qemu_tests::jis_ctrl_smoke());
+    }
+
+    #[test]
+    fn dvorak_home_row_smoke() {
+        assert!(qemu_tests::dvorak_home_row_smoke());
+    }
+
+    #[test]
+    fn dvorak_top_row_smoke() {
+        assert!(qemu_tests::dvorak_top_row_smoke());
+    }
+
+    #[test]
+    fn dvorak_bottom_row_smoke() {
+        assert!(qemu_tests::dvorak_bottom_row_smoke());
+    }
+
+    #[test]
+    fn dvorak_caps_lock_smoke() {
+        assert!(qemu_tests::dvorak_caps_lock_smoke());
+    }
+
+    #[test]
+    fn global_keymap_instances_smoke() {
+        assert!(qemu_tests::global_keymap_instances_smoke());
+    }
+
+    #[test]
+    fn numpad_us_qwerty_smoke() {
+        assert!(qemu_tests::numpad_us_qwerty_smoke());
+    }
+
+    #[test]
+    fn numpad_jis_smoke() {
+        assert!(qemu_tests::numpad_jis_smoke());
+    }
+
+    #[test]
+    fn numpad_dvorak_smoke() {
+        assert!(qemu_tests::numpad_dvorak_smoke());
+    }
+
+    #[test]
+    fn numpad_shift_ignored_smoke() {
+        assert!(qemu_tests::numpad_shift_ignored_smoke());
     }
 }

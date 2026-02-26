@@ -381,20 +381,23 @@ cargo build --target x86_64-exorust.json
 # テスト実行
 cargo test
 
-# 任意: 純テスト required tier（host/std）
-cargo test -p pure_tests pure_pr_required -- --exact --nocapture
+# 任意: 純テスト required tier（host/std, 中央TOML経由）
+python3 scripts/verify_pure_tier_map.py
+python3 scripts/run_pure_tier.py --tier pr-required
 
 # 任意: QEMU実 required tier（full-boot）
 cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
 # 任意: 夜間拡張 tier
-cargo test -p pure_tests pure_nightly_required -- --ignored --exact --nocapture
+python3 scripts/run_pure_tier.py --tier nightly-required --include-ignored
 cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapture
 ```
 
 補足:
-- テスト構成は `純` (`pure_tests`) と `QEMU実` (`qemu-tests`, full-boot) の2層。
+- テスト構成は `純` (crate-local `std #[test]`) と `QEMU実` (`qemu-tests`, full-boot) の2層。
 - `qemu-tests` は `exoloader -> 実kernel ELF` を起動し、`run_integration=<profile>` で kernel runtime dispatcher を呼び出す。
+- pure tier の真実源は `tests/pure_tiers.toml`。`scripts/run_pure_tier.py` が `cargo test -p <pkg>` を順次実行する。
+- `pure-tests` は residual（未移行/横断smoke）専用の一時バッファ。
 - `pending` / `kernel_runtime_pending` スイート運用は廃止。tier は `pr-required` / `nightly-required` に再編済み。
 - 移行棚卸しの真実源は `tests/migration_case_map.toml`。
 - `qemu-tests` の serial / QEMU stderr ログは `target/qemu-logs/` に出力される。
