@@ -7,22 +7,20 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::fault::{FaultKind, RestartPolicy};
 use super::stats::DriverCellStats;
 use super::*;
 
 #[cfg(feature = "qemu-test-export")]
-struct RuntimeFixtureCells {
-    v1: Option<(usize, usize)>,
-    v2: Option<(usize, usize)>,
-}
-
+static RUNTIME_FIXTURE_V1_PTR: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "qemu-test-export")]
-static RUNTIME_FIXTURE_CELLS: spin::Mutex<RuntimeFixtureCells> = spin::Mutex::new(RuntimeFixtureCells {
-    v1: None,
-    v2: None,
-});
+static RUNTIME_FIXTURE_V1_LEN: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "qemu-test-export")]
+static RUNTIME_FIXTURE_V2_PTR: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "qemu-test-export")]
+static RUNTIME_FIXTURE_V2_LEN: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "qemu-test-export")]
 pub fn cache_runtime_fixture_cell(path: &str, data: &[u8]) {
@@ -31,14 +29,15 @@ pub fn cache_runtime_fixture_cell(path: &str, data: &[u8]) {
     crate::io::log::early_print(" len=");
     crate::io::log::early_print_hex(data.len() as u64);
     crate::io::log::early_print("\n");
-    let mut cells = RUNTIME_FIXTURE_CELLS.lock();
-    match path {
-        "cells/driver_cell_probe_v1.cell" => {
-            cells.v1 = Some((data.as_ptr() as usize, data.len()));
+    match fixture_variant(path) {
+        Some(1) => {
+            RUNTIME_FIXTURE_V1_PTR.store(data.as_ptr() as usize, Ordering::Release);
+            RUNTIME_FIXTURE_V1_LEN.store(data.len(), Ordering::Release);
             crate::io::log::early_print("[driver-cell-runtime] fixture-cache: cached span v1\n");
         }
-        "cells/driver_cell_probe_v2.cell" => {
-            cells.v2 = Some((data.as_ptr() as usize, data.len()));
+        Some(2) => {
+            RUNTIME_FIXTURE_V2_PTR.store(data.as_ptr() as usize, Ordering::Release);
+            RUNTIME_FIXTURE_V2_LEN.store(data.len(), Ordering::Release);
             crate::io::log::early_print("[driver-cell-runtime] fixture-cache: cached span v2\n");
         }
         _ => {
@@ -49,10 +48,17 @@ pub fn cache_runtime_fixture_cell(path: &str, data: &[u8]) {
 
 #[cfg(feature = "qemu-test-export")]
 fn cached_runtime_fixture_cell(path: &str) -> Option<Vec<u8>> {
-    let cells = RUNTIME_FIXTURE_CELLS.lock();
-    match path {
-        "cells/driver_cell_probe_v1.cell" => cells.v1,
-        "cells/driver_cell_probe_v2.cell" => cells.v2,
+    match fixture_variant(path) {
+        Some(1) => {
+            let ptr = RUNTIME_FIXTURE_V1_PTR.load(Ordering::Acquire);
+            let len = RUNTIME_FIXTURE_V1_LEN.load(Ordering::Acquire);
+            (ptr != 0 && len != 0).then_some((ptr, len))
+        }
+        Some(2) => {
+            let ptr = RUNTIME_FIXTURE_V2_PTR.load(Ordering::Acquire);
+            let len = RUNTIME_FIXTURE_V2_LEN.load(Ordering::Acquire);
+            (ptr != 0 && len != 0).then_some((ptr, len))
+        }
         _ => None,
     }
     .map(|(ptr, len)| {
@@ -60,6 +66,26 @@ fn cached_runtime_fixture_cell(path: &str) -> Option<Vec<u8>> {
         // resident for the kernel lifetime in these QEMU test profiles.
         unsafe { core::slice::from_raw_parts(ptr as *const u8, len) }.to_vec()
     })
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn fixture_variant(path: &str) -> Option<u8> {
+    let bytes = path.as_bytes();
+    if bytes.len() < 8 {
+        return None;
+    }
+    let n = bytes.len();
+    if bytes[n - 8] != b'_' || bytes[n - 7] != b'v' || bytes[n - 5] != b'.' {
+        return None;
+    }
+    if bytes[n - 4] != b'c' || bytes[n - 3] != b'e' || bytes[n - 2] != b'l' || bytes[n - 1] != b'l' {
+        return None;
+    }
+    match bytes[n - 6] {
+        b'1' => Some(1),
+        b'2' => Some(2),
+        _ => None,
+    }
 }
 
 pub fn driver_cell_state_default_is_created_smoke() -> bool {

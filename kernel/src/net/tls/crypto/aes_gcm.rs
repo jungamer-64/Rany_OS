@@ -48,7 +48,7 @@ impl AesGcmKey {
             return Err(());
         }
         // CTR encrypt
-        let ct = aes_ctr_with_schedule(&self.schedule, nonce, plaintext);
+        let ct = aes_ctr_with_schedule(&self.schedule, nonce, plaintext, 2);
         ciphertext_out[..plaintext.len()].copy_from_slice(&ct);
         let s = ghash(&self.h, aad, &ct);
         let mut y0 = [0u8; 16];
@@ -88,7 +88,7 @@ impl AesGcmKey {
             return Err(());
         }
         // perform decryption now that tag has been verified
-        let pt = aes_ctr_with_schedule(&self.schedule, nonce, ciphertext);
+        let pt = aes_ctr_with_schedule(&self.schedule, nonce, ciphertext, 2);
         plaintext_out[..ciphertext.len()].copy_from_slice(&pt);
         Ok(())
     }

@@ -464,13 +464,13 @@ impl TlsConnection {
 
     /// Certificateを処理
     ///
-    /// 証明書チェーンの最初の証明書をX.509としてパースし、
-    /// サーバー公開鍵を抽出して保存する。
-    pub(super) fn extract_server_public_key(
+    /// 証明書チェーンを抽出し、検証を行う。
+    /// 検証成功後、サーバー公開鍵を保存する。
+    pub(super) fn extract_server_public_key_from_spki(
         &mut self,
-        cert: &crate::net::x509::X509Certificate,
+        spki: crate::net::x509::SubjectPublicKeyInfo<'_>,
     ) -> TlsResult<()> {
-        match &cert.subject_public_key_info {
+        match spki {
             crate::net::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
                 self.server_public_key = Some(ServerPublicKey::Rsa {
                     modulus: modulus.to_vec(),
@@ -496,6 +496,13 @@ impl TlsConnection {
         Ok(())
     }
 
+    pub(super) fn extract_server_public_key(
+        &mut self,
+        cert: &crate::net::x509::X509Certificate,
+    ) -> TlsResult<()> {
+        self.extract_server_public_key_from_spki(cert.subject_public_key_info)
+    }
+
     pub(super) fn process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {
         if data.len() < 3 {
             return Err(TlsError::DecodeError);
@@ -509,26 +516,47 @@ impl TlsConnection {
             return Err(TlsError::CertificateError);
         }
 
-        let cert_chain = &data[3..3 + certs_len];
-        if cert_chain.len() < 3 {
-            return Err(TlsError::DecodeError);
+        let cert_chain_data = &data[3..3 + certs_len];
+        let mut certs = Vec::new();
+        let mut offset = 0;
+
+        // 全ての証明書を抽出
+        while offset + 3 <= cert_chain_data.len() {
+            let cert_len = ((cert_chain_data[offset] as usize) << 16)
+                | ((cert_chain_data[offset + 1] as usize) << 8)
+                | (cert_chain_data[offset + 2] as usize);
+            offset += 3;
+
+            if offset + cert_len > cert_chain_data.len() {
+                return Err(TlsError::DecodeError);
+            }
+
+            certs.push(&cert_chain_data[offset..offset + cert_len]);
+            offset += cert_len;
         }
 
-        let first_cert_len = ((cert_chain[0] as usize) << 16)
-            | ((cert_chain[1] as usize) << 8)
-            | (cert_chain[2] as usize);
-
-        // Security: First certificate must fit in the chain
-        if cert_chain.len() < 3 + first_cert_len || first_cert_len == 0 {
-            return Err(TlsError::DecodeError);
-        }
-
-        let first_cert_der = &cert_chain[3..3 + first_cert_len];
-
-        if let Some(cert) = crate::net::x509::parse_x509(first_cert_der) {
-            self.extract_server_public_key(&cert)?;
-        } else if !self.config.skip_verify {
+        if certs.is_empty() {
             return Err(TlsError::CertificateError);
+        }
+
+        if !self.config.skip_verify {
+            // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致)
+            // NOTE: ルートCAの信頼性検証は将来的に実装予定
+            if let Some(spki) = crate::net::x509::validate_certificate_chain(
+                &certs,
+                self.config.server_name.as_deref(),
+            ) {
+                self.extract_server_public_key_from_spki(spki)?;
+            } else {
+                return Err(TlsError::CertificateError);
+            }
+        } else {
+            // 検証スキップ時は最初の証明書の鍵をそのまま使用
+            if let Some(cert) = crate::net::x509::parse_x509(certs[0]) {
+                self.extract_server_public_key(&cert)?;
+            } else {
+                return Err(TlsError::CertificateError);
+            }
         }
 
         Ok(())

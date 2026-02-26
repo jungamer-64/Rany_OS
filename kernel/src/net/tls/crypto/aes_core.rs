@@ -256,7 +256,12 @@ pub(crate) fn aes_encrypt_block_with_schedule(block: &[u8; 16], schedule: &AesRo
 }
 
 /// AES-CTR with pre-expanded schedule.
-pub(crate) fn aes_ctr_with_schedule(schedule: &AesRoundKeySchedule, nonce: &[u8], data: &[u8]) -> Vec<u8> {
+pub(crate) fn aes_ctr_with_schedule(
+    schedule: &AesRoundKeySchedule,
+    nonce: &[u8],
+    data: &[u8],
+    initial_counter: u32,
+) -> Vec<u8> {
     if nonce.len() != 12 {
         return Vec::new();
     }
@@ -266,7 +271,7 @@ pub(crate) fn aes_ctr_with_schedule(schedule: &AesRoundKeySchedule, nonce: &[u8]
     counter_block[0..12].copy_from_slice(nonce);
 
     for (chunk_idx, chunk) in data.chunks(16).enumerate() {
-        let counter = (chunk_idx as u32 + 1).to_be_bytes();
+        let counter = (chunk_idx as u32).wrapping_add(initial_counter).to_be_bytes();
         counter_block[12..16].copy_from_slice(&counter);
 
         let keystream = aes_encrypt_block_with_schedule(&counter_block, schedule);
@@ -284,5 +289,5 @@ pub(crate) fn aes_ctr(key: &[u8], nonce: &[u8], data: &[u8]) -> Vec<u8> {
     let Some(schedule) = aes_expand_key_schedule(key) else {
         return Vec::new();
     };
-    aes_ctr_with_schedule(&schedule, nonce, data)
+    aes_ctr_with_schedule(&schedule, nonce, data, 1)
 }

@@ -276,10 +276,10 @@ struct TcpSeqState {
 }
 
 impl TcpSeqState {
-    fn new() -> Self {
+    fn new(isn: u32) -> Self {
         Self {
-            snd_nxt: 0,
-            snd_una: 0,
+            snd_nxt: isn,
+            snd_una: isn,
             snd_wnd: 65535,
             rcv_nxt: 0,
             rcv_wnd: 65535,
