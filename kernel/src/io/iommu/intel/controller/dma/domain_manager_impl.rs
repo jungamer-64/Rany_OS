@@ -88,6 +88,23 @@ impl DomainManager for IommuController {
     }
 
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
+        // Security check: Ensure the device is not already attached to a different domain.
+        // Allowing multiple attachments could bypass isolation or cause inconsistent hardware state.
+        {
+            let device_domains = self.device_domains.lock().map_err(|_| IommuError::HardwareError)?;
+            if let Some(&existing_domain_id) = device_domains.get(&device) {
+                if existing_domain_id != domain_id {
+                    log::error!(
+                        "[IOMMU][SECURITY] Attempt to attach device {:?} to domain {}, but it is already attached to domain {}",
+                        device, domain_id, existing_domain_id
+                    );
+                    return Err(IommuError::AlreadyMapped); // Or a more specific error like DeviceAlreadyAttached
+                }
+                // Already attached to the SAME domain, we can either return Ok or proceed to re-program (idempotent)
+                return Ok(());
+            }
+        }
+
         let (domain_type, page_table_addr, bus, devfn) =
             self.resolve_domain_for_attach(domain_id, device)?;
 

@@ -271,6 +271,9 @@ impl AsyncRead for TcpStream {
                         tcb.push_recv_packet_front(rem);
                     }
 
+                    // Update receive window after reading data
+                    tcb.update_window_from_buffer();
+
                     Poll::Ready(Ok(len))
                 } else if let Some(mut queued) = tcb.pop_recv_copy_fallback_front() {
 
@@ -282,6 +285,9 @@ impl AsyncRead for TcpStream {
                         let rem = queued.split_off(len);
                         tcb.push_recv_copy_fallback_front(rem);
                     }
+
+                    // Update receive window after reading data
+                    tcb.update_window_from_buffer();
 
                     Poll::Ready(Ok(len))
                 } else {

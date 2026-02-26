@@ -7,8 +7,9 @@
 #![allow(dead_code)]
 
 use core::alloc::Layout;
+use core::mem::{self, MaybeUninit};
 use core::ops::{Deref, DerefMut};
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 
 // DomainIdはdomain_system.rsから使用
 pub use crate::domain_system::DomainId;
@@ -210,6 +211,14 @@ impl<T: ?Sized> RRef<T> {
         core::mem::forget(self);
         (ptr, owner)
     }
+
+    /// RRef を raw parts に分解する（型消去 / 非同期解放キュー用）
+    pub fn into_raw_parts(self) -> RRefRawParts
+    where
+        T: 'static,
+    {
+        RRefRawParts::from_rref(self)
+    }
 }
 
 impl<T> RRef<[T]> {
@@ -373,12 +382,50 @@ unsafe impl Send for RRefRawParts {}
 unsafe impl Sync for RRefRawParts {}
 
 impl RRefRawParts {
+    #[inline]
+    fn encode_metadata<T: ?Sized>(meta: <T as ptr::Pointee>::Metadata) -> usize {
+        let size = mem::size_of::<<T as ptr::Pointee>::Metadata>();
+        debug_assert!(size <= mem::size_of::<usize>());
+        let mut encoded = 0usize;
+        if size != 0 {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    (&meta as *const <T as ptr::Pointee>::Metadata).cast::<u8>(),
+                    (&mut encoded as *mut usize).cast::<u8>(),
+                    size,
+                );
+            }
+        }
+        encoded
+    }
+
+    #[inline]
+    unsafe fn decode_metadata<T: ?Sized>(encoded: usize) -> <T as ptr::Pointee>::Metadata {
+        let size = mem::size_of::<<T as ptr::Pointee>::Metadata>();
+        debug_assert!(size <= mem::size_of::<usize>());
+        let mut meta = MaybeUninit::<<T as ptr::Pointee>::Metadata>::uninit();
+        if size != 0 {
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    (&encoded as *const usize).cast::<u8>(),
+                    meta.as_mut_ptr().cast::<u8>(),
+                    size,
+                );
+            }
+        } else {
+            unsafe {
+                ptr::write_bytes(meta.as_mut_ptr().cast::<u8>(), 0, 0);
+            }
+        }
+        unsafe { meta.assume_init() }
+    }
+
     /// Decompose an RRef<T> into RRefRawParts (consumes, no Drop)
     ///
     /// # Signature matching RRef API:
     /// - `RRef::into_raw(self) -> (NonNull<T>, DomainId)`
     /// - `RRef::from_raw(ptr: NonNull<T>, owner: DomainId) -> Self`
-    pub fn from_rref<T: Sized + 'static>(rref: RRef<T>) -> Self {
+    pub fn from_rref<T: ?Sized + 'static>(rref: RRef<T>) -> Self {
         #[cfg(debug_assertions)]
         let size = core::mem::size_of_val(&*rref);
         #[cfg(debug_assertions)]
@@ -389,13 +436,12 @@ impl RRefRawParts {
         );
 
         let (ptr, owner) = rref.into_raw();
-        // Simplified: avoid unstable ptr::metadata / from_raw_parts by assuming sized metadata
-        let meta = 0usize;
+        let meta = Self::encode_metadata::<T>(ptr::metadata(ptr.as_ptr()));
 
-        // Embed type-specific drop function (Sized-only for test shim)
-        unsafe fn drop_impl<T: Sized + 'static>(ptr: NonNull<u8>, owner: DomainId, _meta: usize) {
-            // For sized types we can reconstruct the typed pointer directly.
-            let data_ptr = ptr.as_ptr() as *mut T;
+        // Embed type-specific drop function (supports sized + slice metadata)
+        unsafe fn drop_impl<T: ?Sized + 'static>(ptr: NonNull<u8>, owner: DomainId, meta: usize) {
+            let metadata = unsafe { RRefRawParts::decode_metadata::<T>(meta) };
+            let data_ptr = ptr::from_raw_parts_mut::<T>(ptr.as_ptr().cast::<()>(), metadata);
             let rref: RRef<T> = RRef::from_raw(NonNull::new_unchecked(data_ptr), owner);
             drop(rref); // Proper Drop path via Exchange Heap
         }
@@ -614,4 +660,3 @@ mod tests {
         // But for check-only, this is fine.
     }
 }
-

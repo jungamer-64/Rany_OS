@@ -151,6 +151,14 @@ pub(crate) fn generate_random() -> [u8; 32] {
 fn generate_random_fallback() -> [u8; 32] {
     static SEED: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0x1234567890abcdef);
+
+    // Try to mix in some entropy from RDTSC if available
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        SEED.fetch_xor(tsc, AtomicOrdering::Relaxed);
+    }
+
     let mut result = [0u8; 32];
 
     for byte in result.iter_mut() {

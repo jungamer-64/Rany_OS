@@ -236,11 +236,18 @@ impl TcpStats {
 /// removed once the rest of the stack no longer depends on it.
 pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 0; // disabled
 
+/// Zero-copy receive buffer limit (bytes)
+pub const TCP_RECV_BUFFER_LIMIT_DEFAULT: usize = 128 * 1024; // 128 KB
+
 
 /// TCP受信状態（バッファ管理）
 struct TcpRxState {
     /// 受信バッファ (zero-copy when available)
     recv_buffer: VecDeque<PacketRef>,
+    /// `recv_buffer` 内の合計バイト数
+    recv_buffer_bytes: usize,
+    /// `recv_buffer` の総バイト上限 (Security: prevent memory exhaustion)
+    recv_buffer_limit_bytes: usize,
     /// 受信バッファ (コピー版フォールバック)
     recv_queue: VecDeque<Vec<u8>>,
     /// `recv_queue` 内の合計バイト数
@@ -253,6 +260,8 @@ impl TcpRxState {
     fn new() -> Self {
         Self {
             recv_buffer: VecDeque::new(),
+            recv_buffer_bytes: 0,
+            recv_buffer_limit_bytes: TCP_RECV_BUFFER_LIMIT_DEFAULT,
             recv_queue: VecDeque::new(),
             recv_queue_bytes: 0,
             // limit initialized from constant above (currently zero)

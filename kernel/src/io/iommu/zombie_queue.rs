@@ -89,8 +89,8 @@ struct ZombiePayload {
     size: u64,
     /// Domain ID (u16 for IOMMU domain)
     domain_id: u16,
-    /// Padding for alignment
-    _pad1: u16,
+    /// Device BDF (if applicable, else 0xFFFF)
+    device_bdf: u16,
     /// Mapping kind (encoded)
     mapping_kind: u32,
     /// Raw RRef pointer (0 if none)
@@ -279,6 +279,8 @@ pub struct ZombieData {
     pub size: u64,
     /// IOMMU domain ID (u16)
     pub domain_id: u16,
+    /// Optional Device ID
+    pub device_id: Option<super::types::DeviceId>,
     /// Encoded mapping kind (0=Identity, 1=Global, 2=Device, 3=Domain)
     pub mapping_kind: u32,
 }
@@ -340,6 +342,7 @@ impl ZombieQueue {
         iova: u64,
         size: u64,
         domain_id: u16,
+        device_id: Option<super::types::DeviceId>,
         mapping_kind: u32,
         raw: Option<RRefRawParts>,
     ) -> bool {
@@ -365,7 +368,7 @@ impl ZombieQueue {
                         iova,
                         size,
                         domain_id,
-                        _pad1: 0,
+                        device_bdf: device_id.map(|d| d.bdf()).unwrap_or(0xFFFF),
                         mapping_kind,
                         raw_ptr: raw_components.map_or(0, |r| r.ptr),
                         raw_owner: raw_components.map_or(0, |r| r.owner),
@@ -422,6 +425,11 @@ impl ZombieQueue {
             iova: payload.iova,
             size: payload.size,
             domain_id: payload.domain_id,
+            device_id: if payload.device_bdf != 0xFFFF {
+                Some(super::types::DeviceId::from_bdf(payload.device_bdf))
+            } else {
+                None
+            },
             mapping_kind: payload.mapping_kind,
         };
 
@@ -566,10 +574,11 @@ pub fn enqueue_zombie(
     iova: u64,
     size: u64,
     domain_id: u16,
+    device_id: Option<super::types::DeviceId>,
     mapping_kind: u32,
     raw: Option<RRefRawParts>,
 ) -> bool {
-    ZOMBIE_QUEUE.try_enqueue(iova, size, domain_id, mapping_kind, raw)
+    ZOMBIE_QUEUE.try_enqueue(iova, size, domain_id, device_id, mapping_kind, raw)
 }
 
 /// Process pending zombie handles.
@@ -692,16 +701,14 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
                 if let Ok(domain) = driver.get_domain(zombie.domain_id) {
                     let _ = domain.unregister_dma_mapping(zombie.iova);
                 }
-                // Can't fully clean domain mappings without more context
-                // Log and accept the leak
-                log::warn!(
-                    "[ZombieGC] Domain mapping leaked: IOVA=0x{:x}, size={}, domain={}",
-                    zombie.iova,
-                    zombie.size,
-                    zombie.domain_id
-                );
-                // Domain leaks are counted separately if needed
-                return false;
+                
+                // If we have a device ID, we can do a proper IOMMU unmap
+                if let Some(device_id) = zombie.device_id {
+                    driver.unmap_for_device(&device_id, zombie.iova, zombie.size)
+                } else {
+                    // Fallback: Global unmap if no device ID (less precise but better than leak)
+                    driver.unmap_dma(zombie.iova, zombie.size)
+                }
             }
         };
 
@@ -735,7 +742,7 @@ pub fn qemu_smoke_queue_basic() -> bool {
         return false;
     };
 
-    if !queue.try_enqueue(0x1000, 4096, 1u16, 0, None) {
+    if !queue.try_enqueue(0x1000, 4096, 1u16, None, 0, None) {
         return false;
     }
 
@@ -773,10 +780,10 @@ pub fn qemu_smoke_failed_cleanup() -> bool {
         return false;
     };
 
-    if !queue.try_enqueue(0x1000, 4096, 1u16, 0, None) {
+    if !queue.try_enqueue(0x1000, 4096, 1u16, None, 0, None) {
         return false;
     }
-    if !queue.try_enqueue(0x2000, 4096, 2u16, 0, None) {
+    if !queue.try_enqueue(0x2000, 4096, 2u16, None, 0, None) {
         return false;
     }
 

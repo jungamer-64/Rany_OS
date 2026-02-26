@@ -741,7 +741,12 @@ impl TcpProcessor {
         packet_opt: Option<PacketRef>,
         payload_len: usize,
     ) -> bool {
-        if let Some(mut pkt) = packet_opt {
+        // Security: Check if receive buffer is already full
+        if tcb.is_recv_buffer_full() {
+            return false;
+        }
+
+        let success = if let Some(mut pkt) = packet_opt {
             // Ensure header_len is within packet and adjust view to payload
             if header_len <= pkt.len() && payload_len <= pkt.len() - header_len {
                 pkt.advance(header_len);
@@ -755,7 +760,12 @@ impl TcpProcessor {
         } else {
             // No PacketRef available - copy into a new PacketRef when possible
             Self::copy_payload_to_recv(tcb, payload, payload_len)
+        };
+
+        if success {
+            tcb.update_window_from_buffer();
         }
+        success
     }
 
     /// Copy payload into receive buffer (PacketRef優先、失敗時はVecフォールバック)
@@ -772,6 +782,7 @@ impl TcpProcessor {
                 data_slice[..copy_len].copy_from_slice(payload);
                 packet.set_len(copy_len);
                 tcb.push_recv_packet(packet);
+                tcb.update_window_from_buffer();
                 true
             } else {
                 // Payload too large for packet - fall back to copied Vec queue

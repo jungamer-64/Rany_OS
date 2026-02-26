@@ -348,21 +348,41 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
             // we enqueue the handle metadata for async cleanup by the GC task.
             // This ensures Drop completes in O(1) without locks or I/O.
             
+            let device_id = if let MappingKind::Device(dev) = self.mapping {
+                Some(dev)
+            } else {
+                None
+            };
 
-            let _mapping_kind = super::zombie_queue::encode_mapping_kind(&self.mapping);
-            drop(rref);
-            log::debug!("[DmaHandle] Performed synchronous cleanup (IOVA=0x{:x}, size={})", self.iova, self.size);
+            let mapping_kind_encoded = super::zombie_queue::encode_mapping_kind(&self.mapping);
+            
+            let raw_parts = rref.into_raw_parts();
 
-            if true {
-                // Successfully enqueued - RRef will be held until GC completes unmap.
+            if super::zombie_queue::enqueue_zombie(
+                self.iova,
+                self.size,
+                self.domain_id,
+                device_id,
+                mapping_kind_encoded,
+                Some(raw_parts),
+            ) {
+                // Successfully enqueued - RRef ownership transferred to zombie queue.
                 log::debug!(
                     "[DmaHandle] Enqueued zombie for async cleanup (IOVA=0x{:x}, size={})",
                     self.iova,
                     self.size
                 );
             } else {
-                // Queue full - must leak to preserve safety
-                /* queue full handling omitted in test shim: synchronous cleanup used */
+                // Queue full - this is a critical resource exhaustion.
+                // To maintain memory safety (prevent DMA-after-free), we MUST NOT
+                // drop the RRef. We intentionally leak it here.
+                log::error!(
+                    "[IOMMU][CRITICAL] Zombie queue full! Leaking DMA handle to preserve safety (IOVA=0x{:x}, size={})",
+                    self.iova,
+                    self.size
+                );
+                // The RRef is already "forgotten" because we called into_raw_parts()
+                // and we're not reconstructing it.
             }
         }
     }

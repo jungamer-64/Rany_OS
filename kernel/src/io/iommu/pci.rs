@@ -86,23 +86,42 @@ fn get_or_create_ahci_passthrough_domain(
 ///
 /// ACS (Access Control Services) を考慮したIOMMUグループを構築します。
 /// デバイスは、属するIOMMUグループのドメインに割り当てられます。
+///
+/// # Security Note
+/// IOMMU Registry and Group Manager are MANDATORY for secure operation.
+/// Fallback to legacy/no-grouping mode is disabled to prevent spoofing.
 #[cfg(not(test))]
 pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
+    if !is_iommu_enabled() {
+        return None;
+    }
+
+    // AHCI legacy passthrough mode is still supported for specialized hardware.
     if is_ahci_legacy(device) {
         return setup_iommu_for_pci_device_with_driver(device);
     }
 
+    // Critical: Grouping is mandatory for security. Fail if registry or manager are missing.
     let registry = match get_iommu_registry() {
         Some(registry) => registry,
-        None => return setup_iommu_for_pci_device_with_driver(device),
+        None => {
+            log::error!("[IOMMU][SECURITY] Global registry not found - blocking device protection");
+            return None;
+        }
     };
     let iommu_group_manager = match get_iommu_group_manager() {
         Some(manager) => manager,
-        None => return setup_iommu_for_pci_device_with_driver(device),
+        None => {
+            log::error!("[IOMMU][SECURITY] Group manager not found - blocking device protection");
+            return None;
+        }
     };
     let pcie_ext_manager = match pcie_ext_manager() {
         Some(manager) => manager,
-        None => return setup_iommu_for_pci_device_with_driver(device),
+        None => {
+            log::error!("[IOMMU][SECURITY] PCIe ext manager not found - cannot verify ACS topology");
+            return None;
+        }
     };
 
     let device_id = DeviceId::new(

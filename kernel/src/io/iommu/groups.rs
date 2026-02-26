@@ -197,6 +197,11 @@ impl IommuGroupManager {
     ///
     /// グループIDはグループの「ルート」デバイス (分離不可能な最上位) のDeviceId。
     /// ACSで完全分離されたデバイスは自身 (または多機能なら function 0) がグループIDとなる。
+    ///
+    /// # Security Policy
+    /// - 多機能(Multifunction)デバイス内の全ファンクションは、互いに分離不可能であれば同一グループ。
+    /// - ブリッジの下流にあり、ACS Source Validation 等で分離されていないデバイスは同一グループ。
+    /// - パス上の *全ての* ブリッジがACS分離を提供している必要がある。1つでも欠けていれば上位にマージ。
     fn determine_group_id_for_device<P: PciTopologyProvider>(
         device: DeviceId,
         topology: &P,
@@ -206,70 +211,60 @@ impl IommuGroupManager {
         let mut current_func = device.function;
         let mut first_hop = true;
 
-        // 多機能デバイスの全ファンクションは同一グループ (function 0 ベース)
+        // 初期候補: 自身のファンクション 0 (多機能デバイス対応)
         let mut group_root_bus = current_bus;
         let mut group_root_dev = current_dev;
-        let group_root_func: u8 = 0;
 
-        // PCIヒエラルキーを上位方向に走査
+        // PCIヒエラルキーをルートコンプレックスに向かって走査
         loop {
-            // 多機能デバイスの場合、function 0のDeviceIdをグループルート候補とする
-            if current_func != 0 {
-                group_root_bus = current_bus;
-                group_root_dev = current_dev;
-            }
-
-            // ヘッダタイプを読取ってブリッジかどうか確認
+            // 現在のノード情報を読取
             let header_type = match topology.read_header_type(current_bus, current_dev, current_func)
             {
                 Some(header_type) => header_type,
                 None if first_hop => return Err(IommuError::DeviceNotFound),
-                None => {
-                    // 途中ノード情報が欠落している場合は、ここまでに確定した保守的ルートで打ち切る。
-                    break;
-                }
+                None => break, // 情報欠落時は保守的な結果で打ち切り
             };
 
-            let is_pci_to_pci_bridge = (header_type & 0x7F) == 0x01; // Type 1 header
+            let is_bridge = (header_type & 0x7F) == 0x01;
 
-            if is_pci_to_pci_bridge {
-                // ブリッジは function 0 ベースでグループルートを扱う。
-                let candidate_root_bus = current_bus;
-                let candidate_root_dev = current_dev;
-
-                // ACS判定:
-                // - Some(true):  このブリッジで下流が分離されるため、ここではルート昇格しない
-                // - Some(false): 分離不能なのでこのブリッジをグループルートに昇格
-                // - None:        情報不足/非対応は安全側に倒して分離不能扱い
+            if is_bridge {
+                // ブリッジの下流分離を確認 (ACS)
+                // NOTE: P2P通信を防ぐには Downstream Port での ACS が不可欠。
                 match topology.is_acs_isolation_enabled(current_bus, current_dev, current_func) {
                     Some(true) => {
-                        // ACS分離有効 → 下流デバイスは独立グループ
-                        break;
+                        // このブリッジで下流が分離されている。
+                        // ここより下のデバイスは、これ以上上位のグループにマージされる必要はない。
+                        // (ただし、このブリッジより上でもACSが必要な場合があるため、さらに上位を走査して
+                        //  非分離区間があればそちらにマージされる可能性がある。
+                        //  現在は「最初の分離ポイント」が見つかったらそこが境界とみなすロジックだが、
+                        //  正しくは「ルートまで全て分離されているか」を確認する。)
                     }
                     Some(false) | None => {
-                        group_root_bus = candidate_root_bus;
-                        group_root_dev = candidate_root_dev;
+                        // 分離不能ブリッジ → グループのルートをこのブリッジ(のファンクション0)に引き上げる
+                        group_root_bus = current_bus;
+                        group_root_dev = current_dev;
                     }
                 }
+            } else if !first_hop {
+                // ブリッジではないがパスの途中にあるデバイス (通常ありえないが)
+                // 保守的にマージ対象とする
+                group_root_bus = current_bus;
+                group_root_dev = current_dev;
             }
 
-            // バス0に到達 → ルートコンプレックスで分離を仮定
+            // バス0（ルートコンプレックス直下）に到達
             if current_bus == 0 {
                 break;
             }
 
-            // 親ブリッジを検索
+            // 親ブリッジを検索して上位へ
             match topology.find_parent_bridge(current_bus) {
                 Some((parent_bus, parent_dev, parent_func)) => {
                     current_bus = parent_bus;
                     current_dev = parent_dev;
                     current_func = parent_func;
                 }
-                None => {
-                    // 親ブリッジ不在 → ルートコンプレックスデバイスまたはトポロジーエラー
-                    // 既知の情報だけで保守的グループを返す。
-                    break;
-                }
+                None => break,
             }
             first_hop = false;
         }
@@ -278,7 +273,7 @@ impl IommuGroupManager {
             device.segment,
             group_root_bus,
             group_root_dev,
-            group_root_func,
+            0, // Group ID always uses function 0 for the root device
         ))
     }
 

@@ -11,6 +11,7 @@
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(alloc_error_handler))]
 #![feature(format_args_nl)]
+#![feature(ptr_metadata)]
 
 extern crate alloc;
 

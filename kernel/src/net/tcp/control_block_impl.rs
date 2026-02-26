@@ -178,17 +178,41 @@ impl TcpControlBlock {
 
     #[inline]
     pub fn pop_recv_packet(&mut self) -> Option<PacketRef> {
-        self.rx.recv_buffer.pop_front()
+        let packet = self.rx.recv_buffer.pop_front()?;
+        self.rx.recv_buffer_bytes = self.rx.recv_buffer_bytes.saturating_sub(packet.len());
+        Some(packet)
     }
 
     #[inline]
     pub fn push_recv_packet_front(&mut self, packet: PacketRef) {
+        self.rx.recv_buffer_bytes = self.rx.recv_buffer_bytes.saturating_add(packet.len());
         self.rx.recv_buffer.push_front(packet);
     }
 
     #[inline]
     pub fn push_recv_packet(&mut self, packet: PacketRef) {
+        self.rx.recv_buffer_bytes = self.rx.recv_buffer_bytes.saturating_add(packet.len());
         self.rx.recv_buffer.push_back(packet);
+    }
+
+    #[inline]
+    pub fn recv_buffer_bytes(&self) -> usize {
+        self.rx.recv_buffer_bytes
+    }
+
+    #[inline]
+    pub fn recv_buffer_limit_bytes(&self) -> usize {
+        self.rx.recv_buffer_limit_bytes
+    }
+
+    #[inline]
+    pub fn recv_buffer_available_bytes(&self) -> usize {
+        self.rx.recv_buffer_limit_bytes.saturating_sub(self.rx.recv_buffer_bytes)
+    }
+
+    #[inline]
+    pub fn is_recv_buffer_full(&self) -> bool {
+        self.rx.recv_buffer_bytes >= self.rx.recv_buffer_limit_bytes
     }
 
     #[inline]
@@ -990,6 +1014,12 @@ impl TcpControlBlock {
         } else {
             self.seq.rcv_wnd = available_buffer.min(65535) as u16;
         }
+    }
+
+    /// 受信バッファの空き容量に基づいて受信ウィンドウを更新する
+    pub fn update_window_from_buffer(&mut self) {
+        let avail = self.recv_buffer_available_bytes() as u32;
+        self.update_rcv_wnd(avail);
     }
 
     // ========================================================================

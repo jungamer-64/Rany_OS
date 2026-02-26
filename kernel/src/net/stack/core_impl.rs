@@ -121,7 +121,14 @@ impl NetworkStack {
 
         match result {
             ProcessResult::Ipv4(payload) => {
-                let offset = unsafe { payload.as_ptr().offset_from(packet.data().as_ptr()) } as usize;
+                // Safety: Ensure payload is within packet bounds before offset calculation
+                let pkt_data = packet.data();
+                if payload.as_ptr() < pkt_data.as_ptr() || 
+                   payload.as_ptr() as usize + payload.len() > pkt_data.as_ptr() as usize + pkt_data.len() {
+                    self.stats.record_rx_error();
+                    return;
+                }
+                let offset = unsafe { payload.as_ptr().offset_from(pkt_data.as_ptr()) } as usize;
                 let mut ip_packet = packet.clone_ref();
                 ip_packet.advance(offset);
                 self.process_ipv4(payload, current_time, ip_packet);
@@ -143,7 +150,13 @@ impl NetworkStack {
                 // VLAN-tagged frame - process based on inner type
                 // For now, we process the inner payload directly
                 // In a full implementation, we would check VLAN membership
-                let offset = unsafe { payload.as_ptr().offset_from(packet.data().as_ptr()) } as usize;
+                let pkt_data = packet.data();
+                if payload.as_ptr() < pkt_data.as_ptr() || 
+                   payload.as_ptr() as usize + payload.len() > pkt_data.as_ptr() as usize + pkt_data.len() {
+                    self.stats.record_rx_error();
+                    return;
+                }
+                let offset = unsafe { payload.as_ptr().offset_from(pkt_data.as_ptr()) } as usize;
                 let mut inner_packet = packet.clone_ref();
                 inner_packet.advance(offset);
 
@@ -200,6 +213,11 @@ impl NetworkStack {
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip, ttl) => {
+                if payload.as_ptr() < data.as_ptr() || 
+                   payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
+                    self.stats.record_rx_error();
+                    return;
+                }
                 let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
                 let mut p = packet;
                 p.advance(offset);
@@ -209,12 +227,22 @@ impl NetworkStack {
                 self.process_igmp_data(payload, src_ip, ttl);
             }
             Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
+                if payload.as_ptr() < data.as_ptr() || 
+                   payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
+                    self.stats.record_rx_error();
+                    return;
+                }
                 let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
                 let mut p = packet;
                 p.advance(offset);
                 self.process_udp(payload, src_ip, dst_ip, p);
             }
             Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip) => {
+                if payload.as_ptr() < data.as_ptr() || 
+                   payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
+                    self.stats.record_rx_error();
+                    return;
+                }
                 let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
                 let mut p = packet;
                 p.advance(offset);

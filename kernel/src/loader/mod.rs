@@ -157,18 +157,35 @@ impl CellRegistry {
 
     /// セルを登録
     pub fn register(&mut self, entry: CellEntry) {
-        // シンボルテーブルにエクスポートを追加
-        for (_idx, (symbol, addr)) in entry.exports.iter().enumerate() {
-            if self
-                .symbol_table
-                .get(symbol.as_str())
-                .is_some_and(|existing| *existing == *addr)
-            {
-                continue;
-            }
-            self.symbol_table.insert(symbol.clone(), *addr);
+        crate::io::log::early_print("[LDBG] registry.register: begin\n");
+        // Live-update shadow loads can register a second cell with the same logical
+        // name before the swap commit. During this staging phase we don't need to
+        // mutate the global symbol table yet; touching it has been a hot crash point
+        // in the driver_cell runtime path, while per-cell exports remain available
+        // via `entry.exports`.
+        let is_shadow_staging =
+            entry.name.starts_with("update-")
+                || self.cells.values().any(|cell| cell.name == entry.name);
+        if is_shadow_staging {
+            crate::io::log::early_print("[LDBG] registry.register: staging duplicate-name, skip symtab\n");
         }
+        // シンボルテーブルにエクスポートを追加
+        if !is_shadow_staging {
+            for (_idx, (symbol, addr)) in entry.exports.iter().enumerate() {
+                if (_idx & 0x3f) == 0 {
+                    crate::io::log::early_print("[LDBG] registry.register: export idx=");
+                    crate::io::log::early_print_hex(_idx as u64);
+                    crate::io::log::early_print("\n");
+                }
+                if self.symbol_table.contains_key(symbol.as_str()) {
+                    continue;
+                }
+                self.symbol_table.insert(symbol.clone(), *addr);
+            }
+        }
+        crate::io::log::early_print("[LDBG] registry.register: exports done\n");
         self.cells.insert(entry.id, entry);
+        crate::io::log::early_print("[LDBG] registry.register: cells.insert done\n");
     }
 
     /// セルを取得
@@ -391,7 +408,19 @@ fn load_cell_with_flags(
     // 6. レジストリに登録
     crate::io::log::early_print("[LDBG] register\n");
     let id = with_registry_mut(|r| {
+        crate::io::log::early_print("[LDBG] register: alloc_id\n");
         let id = r.allocate_id();
+        crate::io::log::early_print("[LDBG] register: exports collect begin\n");
+        let exports = cell_info
+            .exports
+            .iter()
+            .map(|(n, v)| (n.to_string(), loaded.base_address + *v as usize))
+            .collect();
+        crate::io::log::early_print("[LDBG] register: exports collect done\n");
+        crate::io::log::early_print("[LDBG] register: imports collect begin\n");
+        let imports = cell_info.imports.iter().map(|s| s.to_string()).collect();
+        crate::io::log::early_print("[LDBG] register: imports collect done\n");
+        crate::io::log::early_print("[LDBG] register: entry build begin\n");
         let entry = CellEntry {
             id,
             name: name.into(),
@@ -399,12 +428,8 @@ fn load_cell_with_flags(
             load_address: loaded.base_address,
             load_size: loaded.size,
             entry_point: loaded.entry_point,
-            exports: cell_info
-                .exports
-                .iter()
-                .map(|(n, v)| (n.to_string(), loaded.base_address + *v as usize))
-                .collect(),
-            imports: cell_info.imports.iter().map(|s| s.to_string()).collect(),
+            exports,
+            imports,
             dependencies: Vec::new(),
             is_safe: !contains_unsafe,
             signature_verified,
@@ -418,7 +443,10 @@ fn load_cell_with_flags(
                 ..Default::default()
             },
         };
+        crate::io::log::early_print("[LDBG] register: entry build done\n");
+        crate::io::log::early_print("[LDBG] register: registry insert begin\n");
         r.register(entry);
+        crate::io::log::early_print("[LDBG] register: registry insert done\n");
         id
     });
 

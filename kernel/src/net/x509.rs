@@ -710,16 +710,6 @@ fn verify_chain_links(certs: &[Option<X509Certificate<'_>>], chain_len: usize) -
     Some(())
 }
 
-/// リーフ証明書のsubjectにサーバー名が含まれるか簡易チェック
-fn check_server_name_in_leaf(leaf: &X509Certificate<'_>, server_name: Option<&str>) -> Option<()> {
-    if let Some(name) = server_name {
-        if !contains_bytes(leaf.subject_raw, name.as_bytes()) {
-            return None;
-        }
-    }
-    Some(())
-}
-
 /// 証明書チェーンをパースして配列に格納
 fn parse_chain_to_array<'a>(
     chain: &[&'a [u8]],
@@ -743,26 +733,65 @@ pub fn validate_certificate_chain<'a>(
     parse_chain_to_array(chain, &mut certs)?;
 
     let leaf = certs[0].as_ref()?;
-    check_server_name_in_leaf(leaf, server_name)?;
+    
+    // Security: Secure hostname verification (CN matching)
+    if let Some(name) = server_name {
+        if !match_hostname_in_subject(leaf.subject_raw, name) {
+            return None;
+        }
+    }
 
     if chain.len() > 1 {
         verify_chain_links(&certs, chain.len())?;
+    } else {
+        // Security: Even for a single certificate, ensure it is self-consistent
+        if !verify_signature(leaf, &leaf.subject_public_key_info) {
+            return None;
+        }
     }
 
     Some(leaf.subject_public_key_info)
 }
 
-/// バイト列の中に部分列が含まれるかチェック（簡易バイト検索）
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if needle.len() > haystack.len() {
-        return false;
-    }
-    for i in 0..=(haystack.len() - needle.len()) {
-        if &haystack[i..i + needle.len()] == needle {
-            return true;
+/// Common Name (CN) OID: 2.5.4.3 (06 03 55 04 03)
+const OID_COMMON_NAME: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
+
+/// Subjectの生DERからCommon Name (CN) を探し、ホスト名が一致するか検証する
+fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
+    let mut parser = DerParser::new(subject_der);
+    let content = match parser.read_sequence() {
+        Some(c) => c,
+        None => return false,
+    };
+
+    let mut inner = DerParser::new(content);
+    while !inner.is_empty() {
+        // Name is a SEQUENCE of SETs
+        let rdn_content = match inner.read_tag() {
+            Some(0x31) => { // SET
+                let len = inner.read_length().unwrap_or(0);
+                &inner.remaining()[..len]
+            }
+            _ => break,
+        };
+        inner.skip_tlv(); // Skip the SET we just peeked into
+
+        let mut rdn_parser = DerParser::new(rdn_content);
+        while !rdn_parser.is_empty() {
+            // RelativeDistinguishedName is a SEQUENCE of AttributeTypeAndValue
+            let atv_content = match rdn_parser.read_sequence() {
+                Some(c) => c,
+                None => break,
+            };
+            let mut atv_parser = DerParser::new(atv_content);
+            let oid = atv_parser.read_oid().unwrap_or(&[]);
+            if oid == OID_COMMON_NAME {
+                let (_tag, value) = atv_parser.read_tlv().unwrap_or((0, &[]));
+                // CN can be UTF8String (0x0C), PrintableString (0x13), etc.
+                if value == hostname.as_bytes() {
+                    return true;
+                }
+            }
         }
     }
     false
