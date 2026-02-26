@@ -177,7 +177,16 @@ pub struct TcpStats {
     pub packets_received: u64,
     pub retransmissions: u64,
     pub rtt_us: u64,
+    /// Zero-copy受信に失敗してVecフォールバックした総バイト数
+    pub recv_copy_fallback_bytes: u64,
+    /// Zero-copy受信に失敗してVecフォールバックした総パケット数
+    pub recv_copy_fallback_packets: u64,
+    /// Vecフォールバックキューのピークバイト数
+    pub recv_copy_fallback_peak_bytes: u64,
 }
+
+/// `recv_queue` (Vec fallback) の上限バイト数
+pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 64 * 1024;
 
 // ============================================================================
 // TCP制御ブロック (TCB)
@@ -215,6 +224,10 @@ pub struct TcpControlBlock {
     pub recv_buffer: VecDeque<PacketRef>,
     /// 受信バッファ (コピー版フォールバック)
     pub recv_queue: VecDeque<Vec<u8>>,
+    /// `recv_queue` 内の合計バイト数
+    pub recv_queue_bytes: usize,
+    /// `recv_queue` の総バイト上限
+    pub recv_queue_limit_bytes: usize,
 
     // 輻輳制御
     /// 輻輳ウィンドウ

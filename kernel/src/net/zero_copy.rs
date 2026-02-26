@@ -16,12 +16,11 @@
 //! - DMA対応バッファアライメント
 
 
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::ops::{Deref, DerefMut};
+use core::ops::Deref;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
@@ -46,6 +45,13 @@ const BUFFER_HEADROOM: usize = 128;
 
 /// バッファテールルーム
 const BUFFER_TAILROOM: usize = 64;
+
+/// Per-CPU ローカルフリーキャッシュ容量
+const LOCAL_FREE_CACHE_CAPACITY: usize = 64;
+/// グローバルフリーリストからの補充バッチ数
+const LOCAL_FREE_REFILL_BATCH: usize = 16;
+/// ローカルキャッシュ満杯時にグローバルへ戻す最大数
+const LOCAL_FREE_SPILL_BATCH: usize = 16;
 
 // ============================================================================
 // Buffer Pool
@@ -81,22 +87,126 @@ pub struct PoolStats {
     pub total: AtomicUsize,
 }
 
+/// ZeroCopyBuffer 操作エラー
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZeroCopyError {
+    /// 共有中のバッファに対して可変アクセスを要求した
+    SharedMutationDenied,
+    /// 範囲外アクセス
+    OutOfBounds,
+    /// 参照カウントが上限に達した
+    RefcountOverflow,
+}
+
+struct BufferSlot {
+    /// バッファ実体（DropでDMAメモリを解放）
+    _dma: CoherentDmaBuffer,
+    /// CPU仮想アドレスのベース
+    base_ptr: NonNull<u8>,
+    /// デバイスDMAアドレス (IOVA or physical)
+    device_base_addr: u64,
+    /// ペイロード容量（headroom/tailroom除く）
+    payload_capacity: usize,
+    /// スロット共有参照カウント
+    ref_count: AtomicU64,
+}
+
+// `CoherentDmaBuffer` は `Send` のみだが、ここでは初期化後に `base_ptr`/`device_base_addr`
+// の読み取りと `ref_count` の原子的更新だけを共有し、DMAバッファ本体の可変操作は行わない。
+unsafe impl Sync for BufferSlot {}
+
+struct MemoryPoolInner {
+    id: PoolId,
+    slots: Vec<BufferSlot>,
+    global_free: Mutex<Vec<u32>>,
+    local_free: Vec<Mutex<Vec<u32>>>,
+    stats: PoolStats,
+}
+
+impl MemoryPoolInner {
+    fn cpu_local_cache_index(&self) -> Option<usize> {
+        let cpu = crate::smp::cpu_index();
+        (cpu < self.local_free.len()).then_some(cpu)
+    }
+
+    fn alloc_slot_index(&self) -> Option<u32> {
+        if let Some(cpu_idx) = self.cpu_local_cache_index() {
+            if let Some(idx) = self.local_free[cpu_idx].lock().pop() {
+                return Some(idx);
+            }
+
+            let mut batch = Vec::with_capacity(LOCAL_FREE_REFILL_BATCH);
+            {
+                let mut global = self.global_free.lock();
+                for _ in 0..LOCAL_FREE_REFILL_BATCH {
+                    let Some(idx) = global.pop() else {
+                        break;
+                    };
+                    batch.push(idx);
+                }
+            }
+
+            if let Some(idx) = batch.pop() {
+                if !batch.is_empty() {
+                    let mut local = self.local_free[cpu_idx].lock();
+                    local.extend(batch);
+                }
+                return Some(idx);
+            }
+            return None;
+        }
+
+        self.global_free.lock().pop()
+    }
+
+    fn return_slot_index(&self, idx: u32) {
+        if let Some(cpu_idx) = self.cpu_local_cache_index() {
+            let spill = {
+                let mut local = self.local_free[cpu_idx].lock();
+                if local.len() < LOCAL_FREE_CACHE_CAPACITY {
+                    local.push(idx);
+                    return;
+                }
+
+                let mut batch = Vec::with_capacity(LOCAL_FREE_SPILL_BATCH);
+                batch.push(idx);
+                while batch.len() < LOCAL_FREE_SPILL_BATCH {
+                    let Some(entry) = local.pop() else {
+                        break;
+                    };
+                    batch.push(entry);
+                }
+                batch
+            };
+
+            let mut spill = spill;
+            self.global_free.lock().append(&mut spill);
+            return;
+        }
+
+        self.global_free.lock().push(idx);
+    }
+
+    fn available(&self) -> usize {
+        let mut total = self.global_free.lock().len();
+        for cache in &self.local_free {
+            total += cache.lock().len();
+        }
+        total
+    }
+
+    fn slot(&self, slot_idx: u32) -> &BufferSlot {
+        &self.slots[slot_idx as usize]
+    }
+}
+
 /// メモリプール（事前割り当てバッファのプール）
 ///
 /// DMA-safe なバッファをプールし、ゼロコピーネットワーク I/O を実現する。
 /// 各バッファは `CoherentDmaBuffer` で割り当てられ、正しい物理/デバイスアドレス
 /// が保証される。
 pub struct MemoryPool {
-    /// プールID
-    id: PoolId,
-    /// バッファサイズ
-    buffer_size: usize,
-    /// フリーリスト (virtual address pointers)
-    free_list: Mutex<Vec<NonNull<u8>>>,
-    /// 統計
-    stats: PoolStats,
-    /// DMAバッファストレージ: virt_addr -> (CoherentDmaBuffer, device_base_addr)
-    dma_buffers: Mutex<BTreeMap<usize, (CoherentDmaBuffer, u64)>>,
+    inner: Arc<MemoryPoolInner>,
 }
 
 unsafe impl Send for MemoryPool {}
@@ -108,8 +218,8 @@ impl MemoryPool {
         let aligned_size = (buffer_size + DMA_ALIGNMENT - 1) & !(DMA_ALIGNMENT - 1);
         let total_size = aligned_size + BUFFER_HEADROOM + BUFFER_TAILROOM;
 
-        let mut free_list = Vec::with_capacity(count);
-        let mut dma_buffers = BTreeMap::new();
+        let mut slots = Vec::with_capacity(count);
+        let mut global_free = Vec::with_capacity(count);
 
         // バッファを事前割り当て (CoherentDmaBuffer経由で正しい物理アドレスを取得)
         for _ in 0..count {
@@ -117,86 +227,101 @@ impl MemoryPool {
                 let virt_ptr = unsafe { buf.as_slice().as_ptr() } as *mut u8;
                 let dev_addr = buf.device_addr();
                 if let Some(nn) = NonNull::new(virt_ptr) {
-                    free_list.push(nn);
-                    dma_buffers.insert(virt_ptr as usize, (buf, dev_addr));
+                    let slot_idx = slots.len() as u32;
+                    slots.push(BufferSlot {
+                        _dma: buf,
+                        base_ptr: nn,
+                        device_base_addr: dev_addr,
+                        payload_capacity: aligned_size,
+                        ref_count: AtomicU64::new(0),
+                    });
+                    global_free.push(slot_idx);
                 }
             }
         }
 
-        let pool = Self {
-            id,
-            buffer_size: total_size,
-            free_list: Mutex::new(free_list),
-            stats: PoolStats::default(),
-            dma_buffers: Mutex::new(dma_buffers),
-        };
+        let local_count = (crate::smp::cpu_count() as usize).max(1);
+        let mut local_free = Vec::with_capacity(local_count);
+        for _ in 0..local_count {
+            local_free.push(Mutex::new(Vec::with_capacity(LOCAL_FREE_CACHE_CAPACITY)));
+        }
 
-        pool.stats.total.store(count, Ordering::Release);
-        pool
+        let inner = Arc::new(MemoryPoolInner {
+            id,
+            slots,
+            global_free: Mutex::new(global_free),
+            local_free,
+            stats: PoolStats::default(),
+        });
+        inner
+            .stats
+            .total
+            .store(inner.slots.len(), Ordering::Release);
+        Self { inner }
     }
 
     /// バッファを割り当て
     pub fn alloc(&self) -> Option<ZeroCopyBuffer> {
-        let mut free_list = self.free_list.lock();
+        let Some(slot_idx) = self.inner.alloc_slot_index() else {
+            self.inner
+                .stats
+                .alloc_failures
+                .fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
 
-        if let Some(ptr) = free_list.pop() {
-            self.stats.allocations.fetch_add(1, Ordering::Relaxed);
-            self.stats.in_use.fetch_add(1, Ordering::Relaxed);
-
-            // デバイスアドレスを取得
-            let dev_base = self.dma_buffers.lock()
-                .get(&(ptr.as_ptr() as usize))
-                .map(|(_, dev)| *dev)
-                .unwrap_or(ptr.as_ptr() as u64);
-
-            Some(ZeroCopyBuffer {
-                data: ptr,
-                len: 0,
-                capacity: self.buffer_size - BUFFER_HEADROOM - BUFFER_TAILROOM,
-                headroom: BUFFER_HEADROOM,
-                pool_id: self.id,
-                ref_count: AtomicU32::new(1),
-                device_base_addr: dev_base,
-            })
-        } else {
-            self.stats.alloc_failures.fetch_add(1, Ordering::Relaxed);
-            None
+        let slot = self.inner.slot(slot_idx);
+        match slot
+            .ref_count
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {}
+            Err(prev) => {
+                log::error!(
+                    "[NET] zero_copy alloc got busy slot {} (ref_count={})",
+                    slot_idx,
+                    prev
+                );
+                self.inner.return_slot_index(slot_idx);
+                self.inner
+                    .stats
+                    .alloc_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
         }
+
+        self.inner.stats.allocations.fetch_add(1, Ordering::Relaxed);
+        self.inner.stats.in_use.fetch_add(1, Ordering::Relaxed);
+
+        Some(ZeroCopyBuffer {
+            pool: self.inner.clone(),
+            slot_idx,
+            segment_start: 0,
+            segment_capacity: slot.payload_capacity,
+            headroom: BUFFER_HEADROOM,
+            len: 0,
+        })
     }
 
     /// バッファを解放
     pub fn free(&self, buffer: ZeroCopyBuffer) {
-        // 参照カウントをデクリメント
-        if buffer.ref_count.fetch_sub(1, Ordering::AcqRel) == 1 {
-            let mut free_list = self.free_list.lock();
-            free_list.push(buffer.data);
-            self.stats.frees.fetch_add(1, Ordering::Relaxed);
-            self.stats.in_use.fetch_sub(1, Ordering::Relaxed);
-        }
+        drop(buffer);
     }
 
     /// プールIDを取得
     pub fn id(&self) -> PoolId {
-        self.id
+        self.inner.id
     }
 
     /// 統計を取得
     pub fn stats(&self) -> &PoolStats {
-        &self.stats
+        &self.inner.stats
     }
 
     /// 空きバッファ数を取得
     pub fn available(&self) -> usize {
-        self.free_list.lock().len()
-    }
-}
-
-impl Drop for MemoryPool {
-    fn drop(&mut self) {
-        // CoherentDmaBuffer の Drop が自動的にメモリを解放するため、
-        // フリーリストのポインタは無視し、dma_buffers のドロップに任せる
-        let _ = self.free_list.lock();
-        // dma_buffers はフィールドのDropで自動解放
+        self.inner.available()
     }
 }
 
@@ -206,36 +331,102 @@ impl Drop for MemoryPool {
 
 /// ゼロコピーバッファ
 pub struct ZeroCopyBuffer {
-    /// データポインタ (CPU virtual address)
-    data: NonNull<u8>,
+    /// 親メモリプール（スロット寿命を保持）
+    pool: Arc<MemoryPoolInner>,
+    /// スロットID
+    slot_idx: u32,
+    /// スロットベースから見た、このビューの開始位置
+    segment_start: usize,
     /// 現在のデータ長
     len: usize,
-    /// バッファ容量
-    capacity: usize,
+    /// バッファ容量（このビューの最大データ長）
+    segment_capacity: usize,
     /// ヘッドルームオフセット
     headroom: usize,
-    /// プールID
-    pool_id: PoolId,
-    /// 参照カウント
-    ref_count: AtomicU32,
-    /// ベースデバイスアドレス (IOVA or physical)
-    device_base_addr: u64,
 }
 
 unsafe impl Send for ZeroCopyBuffer {}
 unsafe impl Sync for ZeroCopyBuffer {}
 
 impl ZeroCopyBuffer {
+    fn slot(&self) -> &BufferSlot {
+        self.pool.slot(self.slot_idx)
+    }
+
+    fn data_offset(&self) -> usize {
+        self.segment_start + self.headroom
+    }
+
+    fn try_add_shared_ref(&self) -> Result<(), ZeroCopyError> {
+        let slot = self.slot();
+        let mut current = slot.ref_count.load(Ordering::Acquire);
+        loop {
+            if current == u64::MAX {
+                return Err(ZeroCopyError::RefcountOverflow);
+            }
+            match slot.ref_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
     /// データスライスを取得
     pub fn as_slice(&self) -> &[u8] {
-        // Use central helper to build a slice from NonNull pointer with offset and length.
-        unsafe { crate::util::nonnull_ptr_as_slice(self.data, self.headroom, self.len) }
+        let slot = self.slot();
+        unsafe { crate::util::nonnull_ptr_as_slice(slot.base_ptr, self.data_offset(), self.len) }
+    }
+
+    /// データスライスを取得（可変、排他的所有時のみ）
+    pub fn try_as_mut_slice(&mut self) -> Result<&mut [u8], ZeroCopyError> {
+        let slot = self.slot();
+        if slot.ref_count.load(Ordering::Acquire) != 1 {
+            return Err(ZeroCopyError::SharedMutationDenied);
+        }
+        Ok(unsafe {
+            crate::util::nonnull_ptr_as_slice_mut(slot.base_ptr, self.data_offset(), self.len)
+        })
     }
 
     /// データスライスを取得（可変）
+    ///
+    /// 共有参照がある状態で呼び出すと panic する。
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        // Use central helper to build a mutable slice from NonNull pointer with offset and length.
-        unsafe { crate::util::nonnull_ptr_as_slice_mut(self.data, self.headroom, self.len) }
+        self.try_as_mut_slice()
+            .expect("ZeroCopyBuffer::as_mut_slice requires unique ownership")
+    }
+
+    /// 互換API: データを取得
+    pub fn data(&self) -> &[u8] {
+        self.as_slice()
+    }
+
+    /// 互換API: 可変データを取得（排他的所有時のみ）
+    pub fn data_mut(&mut self) -> Result<&mut [u8], ZeroCopyError> {
+        self.try_as_mut_slice()
+    }
+
+    /// 互換API: データを書き込む（必要に応じて長さを更新）
+    pub fn write(&mut self, data: &[u8]) -> usize {
+        if self.slot().ref_count.load(Ordering::Acquire) != 1 {
+            return 0;
+        }
+
+        self.set_len(data.len());
+        let len = self.len;
+        if len == 0 {
+            return 0;
+        }
+        let dst = self
+            .try_as_mut_slice()
+            .expect("unique ref_count checked above for ZeroCopyBuffer::write");
+        dst[..len].copy_from_slice(&data[..len]);
+        len
     }
 
     /// データ長を取得
@@ -250,18 +441,21 @@ impl ZeroCopyBuffer {
 
     /// 容量を取得
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.segment_capacity
     }
 
     /// データ長を設定
     pub fn set_len(&mut self, len: usize) {
-        self.len = len.min(self.capacity);
+        self.len = len.min(self.segment_capacity);
     }
 
     /// ヘッドルームを予約（プロトコルヘッダ追加用）
     pub fn reserve_headroom(&mut self, size: usize) -> Result<(), &'static str> {
         if self.headroom < size {
             return Err("Insufficient headroom");
+        }
+        if self.len.saturating_add(size) > self.segment_capacity {
+            return Err("Out of bounds");
         }
         self.headroom -= size;
         self.len += size;
@@ -282,25 +476,25 @@ impl ZeroCopyBuffer {
     ///
     /// IOMMU が有効な場合は IOVA、それ以外は物理アドレスを返す。
     pub fn dma_addr(&self) -> u64 {
-        self.device_base_addr + self.headroom as u64
+        self.slot().device_base_addr + self.data_offset() as u64
     }
 
     /// プールIDを取得
     pub fn pool_id(&self) -> PoolId {
-        self.pool_id
+        self.pool.id
     }
 
     /// 参照を追加
     pub fn clone_ref(&self) -> Self {
-        self.ref_count.fetch_add(1, Ordering::AcqRel);
+        self.try_add_shared_ref()
+            .expect("ZeroCopyBuffer::clone_ref refcount overflow");
         Self {
-            data: self.data,
+            pool: self.pool.clone(),
+            slot_idx: self.slot_idx,
+            segment_start: self.segment_start,
             len: self.len,
-            capacity: self.capacity,
+            segment_capacity: self.segment_capacity,
             headroom: self.headroom,
-            pool_id: self.pool_id,
-            ref_count: AtomicU32::new(1), // 新しいバッファは独自のカウント
-            device_base_addr: self.device_base_addr,
         }
     }
 
@@ -309,25 +503,26 @@ impl ZeroCopyBuffer {
         if mid > self.len {
             return None;
         }
+        self.try_add_shared_ref().ok()?;
 
         let second_half = Self {
-            data: NonNull::new(unsafe { self.data.as_ptr().add(self.headroom + mid) })
-                .expect("split pointer resulted in null"),
+            pool: self.pool.clone(),
+            slot_idx: self.slot_idx,
+            segment_start: self.segment_start + self.headroom + mid,
             len: self.len - mid,
-            capacity: self.capacity - mid,
+            segment_capacity: self.segment_capacity.saturating_sub(mid),
             headroom: 0,
-            pool_id: self.pool_id,
-            ref_count: AtomicU32::new(1),
-            device_base_addr: self.device_base_addr + (self.headroom + mid) as u64,
         };
 
         self.len = mid;
-        self.capacity = mid;
-
-        // 参照カウントを増やす（元のプールバッファを共有）
-        self.ref_count.fetch_add(1, Ordering::AcqRel);
+        self.segment_capacity = mid;
 
         Some(second_half)
+    }
+
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub(crate) fn debug_ref_count(&self) -> u64 {
+        self.slot().ref_count.load(Ordering::Acquire)
     }
 }
 
@@ -339,9 +534,25 @@ impl Deref for ZeroCopyBuffer {
     }
 }
 
-impl DerefMut for ZeroCopyBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut_slice()
+impl Drop for ZeroCopyBuffer {
+    fn drop(&mut self) {
+        let slot = self.pool.slot(self.slot_idx);
+        let prev = slot.ref_count.fetch_sub(1, Ordering::AcqRel);
+        if prev == 0 {
+            log::error!(
+                "[NET] zero_copy double-drop/underflow detected: pool={} slot={}",
+                self.pool.id.as_u32(),
+                self.slot_idx
+            );
+            slot.ref_count.store(0, Ordering::Release);
+            return;
+        }
+
+        if prev == 1 {
+            self.pool.stats.frees.fetch_add(1, Ordering::Relaxed);
+            self.pool.stats.in_use.fetch_sub(1, Ordering::Relaxed);
+            self.pool.return_slot_index(self.slot_idx);
+        }
     }
 }
 

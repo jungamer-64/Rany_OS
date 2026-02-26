@@ -44,6 +44,39 @@ pub fn test_check_timeout_poisoned_state_reset_skips() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_dhcp_header_encode_into_serializes_network_order_bytes() {
+    let header = DhcpHeader {
+        op: DhcpOperation::Request as u8,
+        htype: 1,
+        hlen: 6,
+        hops: 0,
+        xid: 0x1122_3344u32.to_be_bytes(),
+        secs: 0x5566u16.to_be_bytes(),
+        flags: 0x7788u16.to_be_bytes(),
+        ciaddr: [1, 2, 3, 4],
+        yiaddr: [5, 6, 7, 8],
+        siaddr: [9, 10, 11, 12],
+        giaddr: [13, 14, 15, 16],
+        chaddr: [0xAA; 16],
+        sname: [0xBB; 64],
+        file: [0xCC; 128],
+    };
+
+    let mut buf = vec![0u8; DhcpHeader::SIZE];
+    header.encode_into(&mut buf).expect("encode_into should succeed");
+
+    assert_eq!(buf.len(), DhcpHeader::SIZE);
+    assert_eq!(&buf[0..4], &[DhcpOperation::Request as u8, 1, 6, 0]);
+    assert_eq!(&buf[4..8], &0x1122_3344u32.to_be_bytes());
+    assert_eq!(&buf[8..10], &0x5566u16.to_be_bytes());
+    assert_eq!(&buf[10..12], &0x7788u16.to_be_bytes());
+    assert_eq!(&buf[12..16], &[1, 2, 3, 4]);
+    assert_eq!(&buf[28..44], &[0xAA; 16]);
+    assert_eq!(&buf[44..108], &[0xBB; 64]);
+    assert_eq!(&buf[108..236], &[0xCC; 128]);
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
     let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
 

@@ -232,7 +232,7 @@ pub use adaptive_polling::{
 #[allow(unused_imports)]
 pub use zero_copy::{
     EthernetHeaderView, Ipv4HeaderView, MemoryPool, PacketChain, PoolId, PoolManager,
-    SgEntry as ZcSgEntry, SgList, ZeroCopyBuffer, ZeroCopyReader, ZeroCopyWriter,
+    SgEntry as ZcSgEntry, SgList, ZeroCopyBuffer, ZeroCopyError, ZeroCopyReader, ZeroCopyWriter,
     init as init_zero_copy,
 };
 
@@ -613,9 +613,8 @@ pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool {
         header_struct.chaddr[..6].copy_from_slice(&cfg.mac);
     }
 
-    // perform unaligned write safely
-    unsafe {
-        core::ptr::write_unaligned(buf.as_mut_ptr() as *mut DhcpHeader, header_struct);
+    if header_struct.encode_into(&mut buf[..DhcpHeader::SIZE]).is_err() {
+        return false;
     }
 
     // append options sequentially

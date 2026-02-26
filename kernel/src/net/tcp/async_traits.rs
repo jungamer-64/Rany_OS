@@ -210,6 +210,7 @@ impl AsyncRead for TcpStream {
 
                     Poll::Ready(Ok(len))
                 } else if let Some(mut vec) = tcb.recv_queue.pop_front() {
+                    tcb.recv_queue_bytes = tcb.recv_queue_bytes.saturating_sub(vec.len());
                     let len = vec.len().min(buf.len());
                     buf[..len].copy_from_slice(&vec[..len]);
                     tcb.stats.bytes_received += len as u64;
@@ -217,6 +218,8 @@ impl AsyncRead for TcpStream {
                     if len < vec.len() {
                         // Push remainder back to the front
                         let remainder = vec.split_off(len);
+                        tcb.recv_queue_bytes =
+                            tcb.recv_queue_bytes.saturating_add(remainder.len());
                         tcb.recv_queue.push_front(remainder);
                     }
 

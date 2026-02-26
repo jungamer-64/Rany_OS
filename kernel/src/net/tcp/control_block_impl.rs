@@ -17,6 +17,8 @@ impl TcpControlBlock {
             outstanding_bytes: 0,
             recv_buffer: VecDeque::new(),
             recv_queue: VecDeque::new(),
+            recv_queue_bytes: 0,
+            recv_queue_limit_bytes: TCP_RECV_COPY_FALLBACK_LIMIT_BYTES,
             cwnd: 10 * 1460, // 初期値: 10 MSS (RFC 6928)
             ssthresh: 65535,
             mss: 1460, // Ethernet MTU - IP/TCP headers
@@ -70,6 +72,44 @@ impl TcpControlBlock {
     /// 受信データがあるか
     pub fn has_data(&self) -> bool {
         !self.recv_buffer.is_empty() || !self.recv_queue.is_empty()
+    }
+
+    /// Vecベース受信フォールバックをキューへ積む（上限超過時はfail-close）
+    pub fn enqueue_recv_copy_fallback(&mut self, payload: &[u8]) -> bool {
+        let new_total = self.recv_queue_bytes.saturating_add(payload.len());
+        if new_total > self.recv_queue_limit_bytes {
+            log::error!(
+                "[TCP] recv fallback queue overflow: {} + {} > {} (closing connection)",
+                self.recv_queue_bytes,
+                payload.len(),
+                self.recv_queue_limit_bytes
+            );
+            self.state = TcpState::Closed;
+            if let Some(waker) = self.read_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = self.write_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = self.connect_waker.take() {
+                waker.wake();
+            }
+            return false;
+        }
+
+        self.recv_queue.push_back(payload.to_vec());
+        self.recv_queue_bytes = new_total;
+        self.stats.recv_copy_fallback_packets =
+            self.stats.recv_copy_fallback_packets.saturating_add(1);
+        self.stats.recv_copy_fallback_bytes = self
+            .stats
+            .recv_copy_fallback_bytes
+            .saturating_add(payload.len() as u64);
+        self.stats.recv_copy_fallback_peak_bytes = self
+            .stats
+            .recv_copy_fallback_peak_bytes
+            .max(self.recv_queue_bytes as u64);
+        true
     }
 
     /// 送信可能か（バイト単位で判定、受信ウィンドウとの最小値を使用）

@@ -158,6 +158,50 @@ impl DhcpHeader {
     /// ヘッダサイズ
     pub const SIZE: usize = 236;
 
+    /// ヘッダをバイト列へシリアライズする。
+    ///
+    /// `DhcpHeader` はネットワークバイトオーダーの byte-array フィールドを保持しており、
+    /// この関数はそのまま順序どおりに書き出す。
+    pub fn encode_into(&self, dst: &mut [u8]) -> Result<(), &'static str> {
+        if dst.len() < Self::SIZE {
+            return Err("Buffer too small");
+        }
+
+        let mut off = 0usize;
+        dst[off] = self.op;
+        off += 1;
+        dst[off] = self.htype;
+        off += 1;
+        dst[off] = self.hlen;
+        off += 1;
+        dst[off] = self.hops;
+        off += 1;
+
+        dst[off..off + 4].copy_from_slice(&self.xid);
+        off += 4;
+        dst[off..off + 2].copy_from_slice(&self.secs);
+        off += 2;
+        dst[off..off + 2].copy_from_slice(&self.flags);
+        off += 2;
+        dst[off..off + 4].copy_from_slice(&self.ciaddr);
+        off += 4;
+        dst[off..off + 4].copy_from_slice(&self.yiaddr);
+        off += 4;
+        dst[off..off + 4].copy_from_slice(&self.siaddr);
+        off += 4;
+        dst[off..off + 4].copy_from_slice(&self.giaddr);
+        off += 4;
+        dst[off..off + 16].copy_from_slice(&self.chaddr);
+        off += 16;
+        dst[off..off + 64].copy_from_slice(&self.sname);
+        off += 64;
+        dst[off..off + 128].copy_from_slice(&self.file);
+        off += 128;
+
+        debug_assert_eq!(off, Self::SIZE);
+        Ok(())
+    }
+
     /// トランザクションIDを取得
     pub fn xid(&self) -> u32 {
         u32::from_be_bytes(self.xid)
@@ -188,6 +232,10 @@ impl DhcpHeader {
         Ipv4Address::new(self.siaddr)
     }
 }
+
+// Compile-time size check: declared DHCP header size must match the packed struct size.
+const _: [(); DhcpHeader::SIZE] = [(); core::mem::size_of::<DhcpHeader>()];
+const _: [(); core::mem::size_of::<DhcpHeader>()] = [(); DhcpHeader::SIZE];
 
 /// 取得したDHCP設定
 #[derive(Debug, Clone)]

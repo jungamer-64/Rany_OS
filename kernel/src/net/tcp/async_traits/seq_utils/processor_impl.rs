@@ -717,19 +717,21 @@ impl TcpProcessor {
         payload: &[u8],
         payload_len: usize,
     ) {
+        let copy_len = payload_len.min(payload.len());
+        let payload = &payload[..copy_len];
         if let Some(mut packet) = crate::net::mempool::alloc_packet() {
             let data_slice = packet.data_mut();
-            if payload_len <= data_slice.len() {
-                data_slice[..payload_len].copy_from_slice(payload);
-                packet.set_len(payload_len);
+            if copy_len <= data_slice.len() {
+                data_slice[..copy_len].copy_from_slice(payload);
+                packet.set_len(copy_len);
                 tcb.recv_buffer.push_back(packet);
             } else {
                 // Payload too large for packet, use Vec fallback
-                tcb.recv_queue.push_back(payload.to_vec());
+                let _ = tcb.enqueue_recv_copy_fallback(payload);
             }
         } else {
             // mempool exhausted - fallback to copy
-            tcb.recv_queue.push_back(payload.to_vec());
+            let _ = tcb.enqueue_recv_copy_fallback(payload);
         }
     }
 
