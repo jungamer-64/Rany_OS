@@ -66,18 +66,21 @@ pub(crate) fn aes_key_expansion(key: &[u8; 16]) -> [[u8; 16]; 11] {
     round_keys
 }
 
-/// GF(2^8) 乗算
+/// GF(2^8) での乗算 (AES 用)
+///
+/// 以前の実装は分岐を伴っておりタイミング攻撃に対して脆弱でした。
+/// この実装はビットマスクを使用し、入力データに依存しない一定の時間で実行されます。
 pub(crate) fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     let mut result = 0u8;
-    while b != 0 {
-        if b & 1 != 0 {
-            result ^= a;
-        }
-        let high_bit = a & 0x80;
-        a <<= 1;
-        if high_bit != 0 {
-            a ^= 0x1b; // AES irreducible polynomial
-        }
+    for _ in 0..8 {
+        // bの最下位ビットが1ならaを加算(XOR)
+        let mask = 0u8.wrapping_sub(b & 1);
+        result ^= a & mask;
+
+        // aを2倍し、溢れたら多項式 0x1b で減算(XOR)
+        let high_bit_mask = 0u8.wrapping_sub(a >> 7);
+        a = (a << 1) ^ (0x1b & high_bit_mask);
+
         b >>= 1;
     }
     result

@@ -678,6 +678,9 @@ impl NetworkStack {
         // Clean up closed and expired TIME_WAIT TCP connections
         self.tcp.cleanup_closed();
 
+        // Process TCP timeouts (retransmissions, keepalives, zero-window probes)
+        self.process_timeouts(current_time);
+
         // Process IGMP timers and send pending reports
         self.igmp.update_time(current_time);
         self.send_pending_igmp_reports();
