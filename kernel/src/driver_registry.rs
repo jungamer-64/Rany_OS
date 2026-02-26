@@ -594,7 +594,12 @@ fn build_abi_driver(
     exports_fini: Option<extern "C" fn() -> i32>,
 ) -> Result<Box<dyn Driver>, DriverError> {
     // Call the entry to get vtable pointer
+    log::info!("[DRIVER][DBG] build_abi_driver: calling entry()\n");
     let vtable_ptr = entry();
+    log::info!(
+        "[DRIVER][DBG] build_abi_driver: entry() returned ptr={:#x}\n",
+        vtable_ptr as usize
+    );
     if vtable_ptr.is_null() {
         return Err(DriverError::InvalidState);
     }
@@ -608,11 +613,13 @@ fn build_abi_driver(
     }
 
     let vtable = unsafe { &*vtable_ptr };
+    log::info!("[DRIVER][DBG] build_abi_driver: vtable ptr deref ok\n");
 
     // Validate ABI version
     if vtable.validate().is_err() {
         return Err(DriverError::InvalidState);
     }
+    log::info!("[DRIVER][DBG] build_abi_driver: vtable validate ok\n");
 
     // Read name
     let name_ptr = (vtable.name)();
@@ -631,6 +638,7 @@ fn build_abi_driver(
         ctx: AbiDriverContext::new(),
         exports_fini,
     });
+    log::info!("[DRIVER][DBG] build_abi_driver: wrapper built\n");
 
     Ok(abi_driver)
 }
@@ -657,6 +665,12 @@ pub(crate) fn prepare_driver_exports(
     }
 
     let exports_ref = unsafe { &*exports };
+    log::info!(
+        "[DRIVER][DBG] prepare_driver_exports: exports={:#x} abi_version={} abi_size={}\n",
+        exports as usize,
+        exports_ref.abi_version,
+        exports_ref.abi_size
+    );
     if exports_ref.abi_version != DRIVER_EXPORTS_ABI_VERSION {
         log::error!(
             "[DRIVER] DriverExports ABI mismatch: expected {}, got {}",
@@ -678,7 +692,12 @@ pub(crate) fn prepare_driver_exports(
 
     if call_init {
         if let Some(init) = exports_ref.init {
+            log::info!("[DRIVER][DBG] prepare_driver_exports: calling exports.init\n");
             let res = init(kernel_api_v1() as *const KernelApiV1);
+            log::info!(
+                "[DRIVER][DBG] prepare_driver_exports: exports.init returned {}\n",
+                res
+            );
             if !AbiErrorCode::from_raw(res).is_success() {
                 log::error!(
                     "[DRIVER] DriverExports init failed: code={}",

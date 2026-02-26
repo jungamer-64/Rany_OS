@@ -48,8 +48,16 @@ fn kernel_phys_range() -> Option<(u64, u64)> {
         return None;
     }
 
-    let start_phys = crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(start))?.as_u64();
-    let end_phys = crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(end - 1))?.as_u64();
+    let start_phys =
+        crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(
+            start,
+        ))?
+        .as_u64();
+    let end_phys =
+        crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(
+            end - 1,
+        ))?
+        .as_u64();
     Some((start_phys, end_phys.saturating_add(1)))
 }
 

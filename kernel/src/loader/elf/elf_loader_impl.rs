@@ -198,10 +198,17 @@ impl<'a> ElfLoader<'a> {
                     }
                     if sym.st_shndx == 0 {
                         // 未定義シンボル = インポート（ゼロコピー）
-                        imports.push(name);
+                        if !imports.iter().any(|existing| *existing == name) {
+                            imports.push(name);
+                        }
                     } else {
                         // 定義済みシンボル = エクスポート（ゼロコピー）
-                        exports.push((name, sym.st_value));
+                        if !exports
+                            .iter()
+                            .any(|(existing, value)| *existing == name && *value == sym.st_value)
+                        {
+                            exports.push((name, sym.st_value));
+                        }
                     }
                 }
             }
@@ -336,6 +343,26 @@ impl<'a> ElfLoader<'a> {
         // Adjacent ELF segments can share a page; applying RX/RO too early can
         // fault when a later segment still needs to write into that page.
         for segment in &info.segments {
+            if segment.file_size > segment.mem_size {
+                return Err(LoadError::InvalidFormat(alloc::format!(
+                    "Segment file_size > mem_size (vaddr={:#x}, file={}, mem={})",
+                    segment.vaddr,
+                    segment.file_size,
+                    segment.mem_size
+                )));
+            }
+            let seg_end = segment
+                .vaddr
+                .checked_add(segment.mem_size)
+                .ok_or_else(|| LoadError::InvalidFormat("Segment range overflow".into()))?;
+            if seg_end > info.memory_size {
+                return Err(LoadError::InvalidFormat(alloc::format!(
+                    "Segment out of bounds (vaddr={:#x}, mem={}, image={})",
+                    segment.vaddr,
+                    segment.mem_size,
+                    info.memory_size
+                )));
+            }
             let dest = base_address + segment.vaddr;
             let src_start = segment.file_offset;
             let src_end = src_start + segment.file_size;
@@ -566,7 +593,7 @@ impl<'a> ElfLoader<'a> {
             sym_value_cache,
         )?;
 
-        self.apply_relocation(&rela, loaded.base_address, sym_value)?;
+        self.apply_relocation(&rela, loaded.base_address, loaded.size, sym_value)?;
         Ok(())
     }
 
