@@ -7,6 +7,8 @@ impl IcmpProcessor {
         IcmpProcessor {
             _local_ip: local_ip,
             stats: IcmpStats::default(),
+            last_echo_reply_time: 0,
+            echo_reply_tokens: 10, // Initial burst capacity
         }
     }
 
@@ -16,7 +18,7 @@ impl IcmpProcessor {
     }
 
     /// Process an incoming ICMP packet
-    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address) -> IcmpResult {
+    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) -> IcmpResult {
         let packet = match IcmpPacket::parse(data) {
             Some(p) => p,
             None => {
@@ -34,6 +36,20 @@ impl IcmpProcessor {
         match packet.icmp_type() {
             IcmpType::EchoRequest => {
                 self.stats.echo_requests_rx += 1;
+
+                // Rate limiting (Token Bucket)
+                // Add 1 token per 100ms
+                let elapsed = current_time.saturating_sub(self.last_echo_reply_time);
+                let new_tokens = (elapsed / 100) as u32;
+                if new_tokens > 0 {
+                    self.echo_reply_tokens = (self.echo_reply_tokens + new_tokens).min(20);
+                    self.last_echo_reply_time = current_time;
+                }
+
+                if self.echo_reply_tokens == 0 {
+                    return IcmpResult::Ignored;
+                }
+                self.echo_reply_tokens -= 1;
 
                 if let Some(echo) = packet.as_echo() {
                     IcmpResult::SendEchoReply {

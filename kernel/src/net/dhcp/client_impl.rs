@@ -392,8 +392,9 @@ impl DhcpClient {
             1 => opts.subnet_mask = Self::parse_ipv4_option(opt_data),
             3 => opts.router = Self::parse_ipv4_option(opt_data),
             6 => {
+                // Limit the number of DNS servers to prevent memory exhaustion
                 for chunk in opt_data.chunks(4) {
-                    if chunk.len() == 4 {
+                    if chunk.len() == 4 && opts.dns_servers.len() < 8 {
                         let mut bytes = [0u8; 4];
                         bytes.copy_from_slice(chunk);
                         opts.dns_servers.push(Ipv4Address::new(bytes));

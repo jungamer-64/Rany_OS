@@ -61,7 +61,7 @@ impl Ipv6Processor {
 
         // Dispatch based on upper-layer protocol
         match final_protocol {
-            IpProtocol::Icmpv6 => Ipv6ProcessResult::Icmpv6(upper_payload, src, dst),
+            IpProtocol::Icmpv6 => Ipv6ProcessResult::Icmpv6(upper_payload, src, dst, packet.hop_limit()),
             IpProtocol::Tcp => Ipv6ProcessResult::Tcp(upper_payload, src, dst),
             IpProtocol::Udp => Ipv6ProcessResult::Udp(upper_payload, src, dst),
             _ => {

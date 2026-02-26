@@ -11,7 +11,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 use super::types::{SocketAddr, SocketFd, SocketType};
 
@@ -49,9 +49,9 @@ pub enum NetworkEvent {
 
 /// イベントキュー（ロックフリーリングバッファ）
 pub struct NetworkEventQueue {
-    events: Mutex<VecDeque<NetworkEvent>>,
+    events: PoisonLock<VecDeque<NetworkEvent>>,
     /// イベント待ちWaker
-    waker: Mutex<Option<core::task::Waker>>,
+    waker: PoisonLock<Option<core::task::Waker>>,
     /// イベントあり通知フラグ
     has_events: AtomicBool,
 }
@@ -63,15 +63,15 @@ impl NetworkEventQueue {
     /// 新規作成
     pub const fn new() -> Self {
         Self {
-            events: Mutex::new(VecDeque::new()),
-            waker: Mutex::new(None),
+            events: PoisonLock::new(VecDeque::new()),
+            waker: PoisonLock::new(None),
             has_events: AtomicBool::new(false),
         }
     }
 
     /// イベント送信（ソケット層から呼ばれる）
     pub fn send(&self, event: NetworkEvent) -> bool {
-        let mut events = self.events.lock();
+        let Ok(mut events) = self.events.lock() else { return false; };
         if events.len() >= Self::CAPACITY {
             return false; // バックプレッシャー
         }
@@ -79,15 +79,17 @@ impl NetworkEventQueue {
         self.has_events.store(true, Ordering::Release);
 
         // 待機中のネットワークタスクを起こす
-        if let Some(waker) = self.waker.lock().take() {
-            waker.wake();
+        if let Ok(mut waker_guard) = self.waker.lock() {
+            if let Some(waker) = waker_guard.take() {
+                waker.wake();
+            }
         }
         true
     }
 
     /// イベント受信（ネットワークタスクから呼ばれる）
     pub fn recv(&self) -> Option<NetworkEvent> {
-        let mut events = self.events.lock();
+        let Ok(mut events) = self.events.lock() else { return None; };
         let event = events.pop_front();
         if events.is_empty() {
             self.has_events.store(false, Ordering::Release);
@@ -97,7 +99,7 @@ impl NetworkEventQueue {
 
     /// 全イベント取得（バッチ処理用）
     pub fn drain_all(&self) -> Vec<NetworkEvent> {
-        let mut events = self.events.lock();
+        let Ok(mut events) = self.events.lock() else { return Vec::new(); };
         self.has_events.store(false, Ordering::Release);
         events.drain(..).collect()
     }
@@ -115,7 +117,7 @@ impl NetworkEventQueue {
 
     /// キュー内イベント数
     pub fn len(&self) -> usize {
-        self.events.lock().len()
+        self.events.lock().map(|g| g.len()).unwrap_or(0)
     }
 
     /// キューが空か
@@ -139,7 +141,9 @@ impl<'a> Future for EventWaitFuture<'a> {
         }
 
         // Wakerを登録
-        *self.queue.waker.lock() = Some(cx.waker().clone());
+        if let Ok(mut w) = self.queue.waker.lock() {
+            *w = Some(cx.waker().clone());
+        }
 
         // 再度チェック（Waker登録中にイベントが来た可能性）
         if let Some(event) = self.queue.recv() {

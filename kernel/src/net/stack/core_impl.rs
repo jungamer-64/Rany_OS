@@ -199,11 +199,14 @@ impl NetworkStack {
         let result = self.ipv4.process_with_time(data, current_time);
 
         match result {
-            Ipv4ProcessResult::Icmp(payload, src_ip) => {
+            Ipv4ProcessResult::Icmp(payload, src_ip, ttl) => {
                 let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
                 let mut p = packet;
                 p.advance(offset);
-                self.process_icmp(payload, src_ip, current_time, p);
+                self.process_icmp(payload, src_ip, ttl, current_time, p);
+            }
+            Ipv4ProcessResult::Igmp(payload, src_ip, ttl) => {
+                self.process_igmp_data(payload, src_ip, ttl);
             }
             Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
                 let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
@@ -247,11 +250,11 @@ impl NetworkStack {
             match packet.protocol() {
                 IpProtocol::Icmp => {
                     // Process ICMP directly without PacketRef
-                    self.process_icmp_data(payload, src, current_time);
+                    self.process_icmp_data(payload, src, packet.ttl(), current_time);
                 }
                 IpProtocol::Igmp => {
                     // Process IGMP for multicast group management
-                    self.process_igmp_data(payload, src);
+                    self.process_igmp_data(payload, src, packet.ttl());
                 }
                 IpProtocol::Udp => {
                     // Process UDP directly without PacketRef
@@ -269,12 +272,12 @@ impl NetworkStack {
     }
 
     /// Process ICMP data (for reassembled packets)
-    pub(super) fn process_icmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
+    pub(super) fn process_icmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, _ttl: u8, current_time: u64) {
         if !self.icmp_echo_enabled() {
             return;
         }
 
-        let result = self.icmp.process(data, src_ip);
+        let result = self.icmp.process(data, src_ip, current_time);
 
         match result {
             IcmpResult::SendEchoReply {
@@ -359,8 +362,8 @@ impl NetworkStack {
         let result = ipv6.process(data);
 
         match result {
-            Ipv6ProcessResult::Icmpv6(payload, src, dst) => {
-                self.process_icmpv6_data(payload, src, dst, current_time);
+            Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
+                self.process_icmpv6_data(payload, src, dst, hop_limit, current_time);
             }
             Ipv6ProcessResult::Tcp(payload, src, dst) => {
                 self.process_tcp_data_v6(payload, src, dst, current_time);
@@ -383,6 +386,7 @@ impl NetworkStack {
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
+        hop_limit: u8,
         current_time: u64,
     ) {
         let icmpv6 = match self.icmpv6 {
@@ -390,7 +394,7 @@ impl NetworkStack {
             None => return,
         };
 
-        let result = icmpv6.process(data, src, dst);
+        let result = icmpv6.process(data, src, dst, hop_limit, current_time);
 
         match result {
             Icmpv6Result::SendEchoReply {
@@ -413,8 +417,9 @@ impl NetworkStack {
                 data: ndp_data,
                 src: ndp_src,
                 dst: ndp_dst,
+                hop_limit,
             } => {
-                self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, current_time);
+                self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, hop_limit, current_time);
             }
             Icmpv6Result::PacketTooBig { mtu } => {
                 log::info!("ICMPv6: Packet Too Big from {}, MTU={}", src, mtu);
@@ -433,8 +438,16 @@ impl NetworkStack {
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
+        hop_limit: u8,
         current_time: u64,
     ) {
+        // Security (RFC 4861 Section 6.1.1): The IP Hop Limit field MUST have a value of 255.
+        // This ensures the packet was not forwarded by a router.
+        if hop_limit != 255 {
+            log::warn!("NDP: Dropping packet with invalid hop limit {}", hop_limit);
+            return;
+        }
+
         let ndp = match self.ndp {
             Some(ref mut ndp) => ndp,
             None => return,
@@ -892,7 +905,21 @@ impl NetworkStack {
     }
 
     /// Process IGMP data for multicast group management
-    pub(super) fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address) {
+    pub(super) fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, ttl: u8) {
+        // Security (RFC 2236 Section 2): all IGMP messages MUST be sent with a IP TTL of 1.
+        if ttl != 1 {
+            log::warn!("IGMP: Dropping packet with invalid TTL {}", ttl);
+            return;
+        }
+
+        // Security: Verify source is on the same subnet
+        let local_ip = self.config.ipv4.address;
+        let subnet_mask = self.config.ipv4.subnet_mask;
+        if local_ip.apply_mask(subnet_mask) != src_ip.apply_mask(subnet_mask) {
+            log::warn!("IGMP: Dropping packet from different subnet {}", src_ip);
+            return;
+        }
+
         let current_time = self.current_time();
         self.igmp.update_time(current_time);
         

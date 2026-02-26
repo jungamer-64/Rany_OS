@@ -88,7 +88,7 @@ impl TcpStream {
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> SocketAddr {
         match self.tcb.lock() {
-            Ok(g) => g.local_addr,
+            Ok(g) => g.local_addr(),
             Err(_) => {
                 log::error!("[NET] TCP TCB poisoned (local_addr)");
                 SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0)
@@ -99,7 +99,7 @@ impl TcpStream {
     /// リモートアドレスを取得
     pub fn peer_addr(&self) -> Option<SocketAddr> {
         match self.tcb.lock() {
-            Ok(g) => g.remote_addr,
+            Ok(g) => g.remote_addr(),
             Err(_) => {
                 log::error!("[NET] TCP TCB poisoned (peer_addr)");
                 None
@@ -110,7 +110,7 @@ impl TcpStream {
     /// 統計を取得
     pub fn stats(&self) -> TcpStats {
         match self.tcb.lock() {
-            Ok(g) => g.stats.clone(),
+            Ok(g) => g.stats_snapshot(),
             Err(_) => {
                 log::error!("[NET] TCP TCB poisoned (stats)");
                 TcpStats::default()
@@ -138,6 +138,69 @@ impl TcpStream {
     /// ```
     pub async fn read_zero_copy(&mut self) -> Option<PacketRef> {
         ZeroCopyReadFuture { stream: self }.await
+    }
+
+    /// ゼロコピー読み取りのPoll実装（内部的なFutureなどのためのAPI）
+    pub fn poll_recv_zero_copy(&self, cx: &mut Context<'_>) -> Poll<Option<PacketRef>> {
+        match self.tcb.lock() {
+            Ok(mut tcb) => {
+                if tcb.is_closed() {
+                    return Poll::Ready(None);
+                }
+
+                if let Some(packet) = tcb.pop_recv_packet() {
+                    let len = packet.data().len();
+                    tcb.record_rx_delivered_stats(len);
+                    return Poll::Ready(Some(packet));
+                }
+
+                if let Some(mut queued) = tcb.pop_recv_copy_fallback_front() {
+
+                    if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+                        let data_slice = packet.data_mut();
+                        let copy_len = queued.len().min(data_slice.len());
+                        data_slice[..copy_len].copy_from_slice(&queued[..copy_len]);
+                        packet.set_len(copy_len);
+
+                        if queued.len() > copy_len {
+                            let rem = queued.split_off(copy_len);
+                            tcb.push_recv_copy_fallback_front(rem);
+                        }
+
+                        tcb.record_rx_delivered_stats(copy_len);
+                        return Poll::Ready(Some(packet));
+                    }
+
+                    if let Some(mut dma_buf) =
+                        crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(queued.len())
+                    {
+                        dma_buf.as_mut_slice().copy_from_slice(&queued);
+                        let mut packet = crate::net::mempool::PacketRef::from_dma_slice(dma_buf);
+                        packet.set_len(queued.len());
+                        tcb.record_rx_delivered_stats(queued.len());
+                        return Poll::Ready(Some(packet));
+                    }
+
+                    // 資源不足で再パッケージできない。順序を保つため先頭へ戻して待機。
+                    tcb.push_recv_copy_fallback_front(queued);
+                }
+
+                tcb.register_read_waker(cx.waker());
+                Poll::Pending
+            }
+            Err(_) => {
+                log::error!("[NET] TCP TCB poisoned (recv_packet) - returning None");
+                Poll::Ready(None)
+            }
+        }
+    }
+
+    /// 初期シーケンス番号を取得する（SYN送信のスタック実装向け）
+    pub(crate) fn initial_seq(&self) -> Result<u32, TcpError> {
+        match self.tcb.lock() {
+            Ok(tcb) => Ok(tcb.snd_nxt()),
+            Err(_) => Err(TcpError::InvalidState),
+        }
     }
 
     /// 書き込み用Future（コピーあり - 互換性用）
@@ -190,42 +253,39 @@ impl AsyncRead for TcpStream {
     ) -> Poll<Result<usize, TcpError>> {
         match self.tcb.lock() {
             Ok(mut tcb) => {
-                if tcb.state == TcpState::Closed {
+                if tcb.is_closed() {
                     return Poll::Ready(Err(TcpError::ConnectionClosed));
                 }
 
-                if let Some(packet) = tcb.recv_buffer.pop_front() {
+                if let Some(packet) = tcb.pop_recv_packet() {
                     let data = packet.data();
                     let len = data.len().min(buf.len());
                     buf[..len].copy_from_slice(&data[..len]);
-                    tcb.stats.bytes_received += len as u64;
+                    tcb.record_rx_delivered_stats(len);
 
                     // If there is remaining payload, create a new PacketRef view and requeue it at the front
                     if data.len() > len {
                         let mut rem = packet.clone_ref();
                         rem.advance(len);
                         rem.set_len(data.len() - len);
-                        tcb.recv_buffer.push_front(rem);
+                        tcb.push_recv_packet_front(rem);
                     }
 
                     Poll::Ready(Ok(len))
-                } else if let Some(mut vec) = tcb.recv_queue.pop_front() {
-                    tcb.recv_queue_bytes = tcb.recv_queue_bytes.saturating_sub(vec.len());
-                    let len = vec.len().min(buf.len());
-                    buf[..len].copy_from_slice(&vec[..len]);
-                    tcb.stats.bytes_received += len as u64;
+                } else if let Some(mut queued) = tcb.pop_recv_copy_fallback_front() {
 
-                    if len < vec.len() {
-                        // Push remainder back to the front
-                        let remainder = vec.split_off(len);
-                        tcb.recv_queue_bytes =
-                            tcb.recv_queue_bytes.saturating_add(remainder.len());
-                        tcb.recv_queue.push_front(remainder);
+                    let len = queued.len().min(buf.len());
+                    buf[..len].copy_from_slice(&queued[..len]);
+                    tcb.record_rx_delivered_stats(len);
+
+                    if queued.len() > len {
+                        let rem = queued.split_off(len);
+                        tcb.push_recv_copy_fallback_front(rem);
                     }
 
                     Poll::Ready(Ok(len))
                 } else {
-                    tcb.read_waker = Some(cx.waker().clone());
+                    tcb.register_read_waker(cx.waker());
                     Poll::Pending
                 }
             }
@@ -245,22 +305,21 @@ impl AsyncWrite for TcpStream {
     ) -> Poll<Result<usize, TcpError>> {
         match self.tcb.lock() {
             Ok(mut tcb) => {
-                if tcb.state != TcpState::Established {
+                if !tcb.is_established() {
                     return Poll::Ready(Err(TcpError::InvalidState));
                 }
 
                 // Compute available bytes (cwnd, snd_wnd) minus outstanding and queued bytes
-                let available = core::cmp::min(tcb.cwnd, tcb.snd_wnd as u32)
-                    .saturating_sub(tcb.outstanding_bytes.saturating_add(tcb.send_buffer_bytes)) as usize;
+                let available = tcb.send_capacity_bytes();
 
                 if available == 0 {
-                    tcb.write_waker = Some(cx.waker().clone());
+                    tcb.register_write_waker(cx.waker());
                     return Poll::Pending;
                 }
 
                 let len = buf.len().min(1460).min(available); // MSS制限 + available
                 if len == 0 {
-                    tcb.write_waker = Some(cx.waker().clone());
+                    tcb.register_write_waker(cx.waker());
                     return Poll::Pending;
                 }
 
@@ -269,10 +328,8 @@ impl AsyncWrite for TcpStream {
                 if let Some(mut packet) = crate::net::mempool::alloc_packet() {
                     packet.data_mut()[..len].copy_from_slice(&buf[..len]);
                     packet.set_len(len);
-                    tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_add(len as u32);
-                    tcb.send_buffer.push_back(packet);
-                    tcb.stats.bytes_sent += len as u64;
-                    tcb.stats.packets_sent += 1;
+                    tcb.enqueue_send_packet(packet);
+                    tcb.record_tx_enqueued_stats(len);
                     Poll::Ready(Ok(len))
                 } else if let Some(mut dma_buf) =
                     crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(len)
@@ -280,13 +337,11 @@ impl AsyncWrite for TcpStream {
                     dma_buf.as_mut_slice()[..len].copy_from_slice(&buf[..len]);
                     let mut packet = crate::net::mempool::PacketRef::from_dma_slice(dma_buf);
                     packet.set_len(len);
-                    tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_add(len as u32);
-                    tcb.send_buffer.push_back(packet);
-                    tcb.stats.bytes_sent += len as u64;
-                    tcb.stats.packets_sent += 1;
+                    tcb.enqueue_send_packet(packet);
+                    tcb.record_tx_enqueued_stats(len);
                     Poll::Ready(Ok(len))
                 } else {
-                    tcb.write_waker = Some(cx.waker().clone());
+                    tcb.register_write_waker(cx.waker());
                     Poll::Pending
                 }
             }
@@ -303,37 +358,38 @@ impl AsyncWrite for TcpStream {
             Ok(mut tcb) => {
                 // Get current time for retransmit tracking (microseconds)
                 let current_time = crate::time::precise_time_nanos() / 1000;
+                let remote = tcb.remote_addr();
                 
                 // 送信バッファ内の全パケットを送信
-                while let Some(packet) = tcb.send_buffer.pop_front() {
-                    if let Some(remote) = tcb.remote_addr {
-                        let data = packet.data();
-                        let len = data.len();
-                        // Decrement send buffer bytes now that we're attempting to send it
-                        tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_sub(len as u32);
-                        let seq = tcb.snd_nxt;
+                while let Some(packet) = tcb.dequeue_send_packet() {
+                    let Some(remote) = remote else {
+                        tcb.requeue_send_packet_front(packet);
+                        break;
+                    };
 
-                        let sent = send_data_packet(
-                            tcb.local_addr,
-                            remote,
-                            seq,
-                            tcb.rcv_nxt,
-                            tcb.rcv_wnd,
-                            data,
-                        );
+                    let data = packet.data();
+                    let len = data.len();
+                    let seq = tcb.snd_nxt();
 
-                        if sent {
-                            // Queue for retransmission (PSH+ACK)
-                            tcb.queue_unacked(seq, data.to_vec(), current_time, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
-                            tcb.last_retransmit_time = current_time;
+                    let sent = send_data_packet(
+                        tcb.local_addr(),
+                        remote,
+                        seq,
+                        tcb.rcv_nxt(),
+                        tcb.rcv_wnd(),
+                        data,
+                    );
 
-                            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(len as u32);
-                        } else {
-                            // Send failed (e.g., ARP unresolved). Requeue packet at front and restore counters
-                            tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_add(len as u32);
-                            tcb.send_buffer.push_front(packet);
-                            break; // stop trying further sends for now
-                        }
+                    if sent {
+                        // Queue for retransmission (PSH+ACK)
+                        tcb.queue_unacked(seq, data.to_vec(), current_time, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+                        tcb.set_last_retransmit_time(current_time);
+
+                        tcb.advance_snd_nxt(len as u32);
+                    } else {
+                        // Send failed (e.g., ARP unresolved). Requeue packet at front and restore counters
+                        tcb.requeue_send_packet_front(packet);
+                        break; // stop trying further sends for now
                     }
                 }
 
@@ -348,19 +404,19 @@ impl AsyncWrite for TcpStream {
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
         match self.tcb.lock() {
-            Ok(mut tcb) => match tcb.state {
+            Ok(mut tcb) => match tcb.state() {
                 TcpState::Established => {
-                    tcb.state = TcpState::FinWait1;
+                    tcb.begin_active_close();
                     // FIN送信
-                    if let Some(remote) = tcb.remote_addr {
+                    if let Some(remote) = tcb.remote_addr() {
                         let current_time = crate::time::precise_time_nanos() / 1000;
-                        let sent = send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
+                        let sent = send_fin_packet(tcb.local_addr(), remote, tcb.snd_nxt(), tcb.rcv_nxt());
                         if sent {
                             // Queue FIN as unacked (FIN consumes 1 seq)
-                            let snd_nxt = tcb.snd_nxt;
+                            let snd_nxt = tcb.snd_nxt();
                             tcb.queue_unacked(snd_nxt, Vec::new(), current_time, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
-                            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                            tcb.last_retransmit_time = current_time;
+                            tcb.advance_snd_nxt(1);
+                            tcb.set_last_retransmit_time(current_time);
                         } else {
                             // Could not send now; leave in queue and rely on process_timeouts to retry
                             log::info!("[NET] FIN send failed (will retry)");
@@ -369,11 +425,11 @@ impl AsyncWrite for TcpStream {
                     Poll::Ready(Ok(()))
                 }
                 TcpState::CloseWait => {
-                    tcb.state = TcpState::LastAck;
+                    tcb.begin_passive_close_reply();
                     // FIN送信
-                    if let Some(remote) = tcb.remote_addr {
-                        send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
-                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                    if let Some(remote) = tcb.remote_addr() {
+                        send_fin_packet(tcb.local_addr(), remote, tcb.snd_nxt(), tcb.rcv_nxt());
+                        tcb.advance_snd_nxt(1);
                     }
                     Poll::Ready(Ok(()))
                 }
@@ -396,9 +452,9 @@ impl AsyncWrite for TcpStream {
 /// 【設計書】POSIXソケットAPIを模倣しない
 /// bind/listen/acceptの代わりにnew/incomingを使用
 pub struct TcpListener {
-    local_addr: SocketAddr,
-    backlog: Arc<PoisonLock<VecDeque<TcpStream>>>,
-    accept_waker: Arc<PoisonLock<Option<Waker>>>,
+    pub(super) local_addr: SocketAddr,
+    pub(super) backlog: Arc<PoisonLock<VecDeque<TcpStream>>>,
+    pub(super) accept_waker: Arc<crate::sync::atomic_waker::AtomicWaker>,
 }
 
 impl TcpListener {
@@ -431,14 +487,7 @@ impl TcpListener {
             Ok(mut backlog) => {
                 backlog.push_back(stream);
 
-                match self.accept_waker.lock() {
-                    Ok(mut wake_opt) => {
-                        if let Some(waker) = wake_opt.take() {
-                            waker.wake();
-                        }
-                    }
-                    Err(_) => log::error!("[NET] TCP Waker poisoned - cannot wake acceptor"),
-                }
+                self.accept_waker.wake();
             }
             Err(_) => log::error!("[NET] TCP Backlog poisoned - cannot push connection"),
         }
@@ -459,11 +508,11 @@ impl Future for ConnectFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.tcb.lock() {
-            Ok(mut tcb) => match tcb.state {
-                TcpState::Established => Poll::Ready(Ok(())),
-                TcpState::Closed => Poll::Ready(Err(TcpError::ConnectionRefused)),
-                TcpState::SynSent | TcpState::SynReceived => {
-                    tcb.connect_waker = Some(cx.waker().clone());
+            Ok(tcb) => match tcb.state() {
+                _ if tcb.is_established() => Poll::Ready(Ok(())),
+                _ if tcb.is_closed() => Poll::Ready(Err(TcpError::ConnectionRefused)),
+                _ if tcb.is_connecting() => {
+                    tcb.register_connect_waker(cx.waker());
                     Poll::Pending
                 }
                 _ => Poll::Ready(Err(TcpError::InvalidState)),
@@ -488,18 +537,18 @@ impl Future for ConnectTimeoutFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.tcb.lock() {
-            Ok(mut tcb) => match tcb.state {
-                TcpState::Established => Poll::Ready(Ok(())),
-                TcpState::Closed => Poll::Ready(Err(TcpError::ConnectionRefused)),
-                TcpState::SynSent | TcpState::SynReceived => {
+            Ok(mut tcb) => match tcb.state() {
+                _ if tcb.is_established() => Poll::Ready(Ok(())),
+                _ if tcb.is_closed() => Poll::Ready(Err(TcpError::ConnectionRefused)),
+                _ if tcb.is_connecting() => {
                     // Register waker
-                    tcb.connect_waker = Some(cx.waker().clone());
+                    tcb.register_connect_waker(cx.waker());
 
                     // Check timeout
                     let now = crate::time::precise_time_nanos() / 1000;
                     if now.saturating_sub(self.start_us) >= self.timeout_us {
                         // Timeout: treat as Timeout error and close TCB
-                        tcb.state = TcpState::Closed;
+                        tcb.close_and_wake();
                         return Poll::Ready(Err(TcpError::Timeout));
                     }
 
@@ -589,10 +638,7 @@ impl<'a> Future for AcceptFuture<'a> {
                     return Poll::Ready(Ok((stream, addr)));
                 }
 
-                match self.listener.accept_waker.lock() {
-                    Ok(mut wake_opt) => *wake_opt = Some(cx.waker().clone()),
-                    Err(_) => log::error!("[NET] TCP Waker poisoned - cannot set waker"),
-                }
+                self.listener.accept_waker.register(cx.waker());
 
                 Poll::Pending
             }
@@ -633,27 +679,7 @@ impl<'a> Future for ZeroCopyReadFuture<'a> {
     type Output = Option<PacketRef>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.stream.tcb.lock() {
-            Ok(mut tcb) => {
-                if tcb.state == TcpState::Closed {
-                    return Poll::Ready(None);
-                }
-
-                if let Some(packet) = tcb.recv_buffer.pop_front() {
-                    let len = packet.data().len();
-                    tcb.stats.bytes_received += len as u64;
-                    // パケットの所有権をそのまま返す（ゼロコピー）
-                    return Poll::Ready(Some(packet));
-                }
-
-                tcb.read_waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            Err(_) => {
-                log::error!("[NET] TCP TCB poisoned (zero-copy read) - returning None");
-                Poll::Ready(None)
-            }
-        }
+        self.stream.poll_recv_zero_copy(cx)
     }
 }
 
@@ -672,16 +698,15 @@ impl<'a> Future for ZeroCopyWriteFuture<'a> {
         let this = &mut *self;
         match this.stream.tcb.lock() {
             Ok(mut tcb) => {
-                if tcb.state != TcpState::Established {
+                if !tcb.is_established() {
                     return Poll::Ready(Err(TcpError::InvalidState));
                 }
 
                 // Compute available bytes
-                let available = core::cmp::min(tcb.cwnd, tcb.snd_wnd as u32)
-                    .saturating_sub(tcb.outstanding_bytes.saturating_add(tcb.send_buffer_bytes)) as usize;
+                let available = tcb.send_capacity_bytes();
 
                 if !tcb.can_send() || available == 0 {
-                    tcb.write_waker = Some(cx.waker().clone());
+                    tcb.register_write_waker(cx.waker());
                     return Poll::Pending;
                 }
 
@@ -690,13 +715,11 @@ impl<'a> Future for ZeroCopyWriteFuture<'a> {
                     if len > available {
                         // Not enough window yet
                         this.packet = Some(packet);
-                        tcb.write_waker = Some(cx.waker().clone());
+                        tcb.register_write_waker(cx.waker());
                         return Poll::Pending;
                     }
-                    tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_add(len as u32);
-                    tcb.send_buffer.push_back(packet);
-                    tcb.stats.bytes_sent += len as u64;
-                    tcb.stats.packets_sent += 1;
+                    tcb.enqueue_send_packet(packet);
+                    tcb.record_tx_enqueued_stats(len);
                     Poll::Ready(Ok(()))
                 } else {
                     Poll::Ready(Err(TcpError::InvalidState))

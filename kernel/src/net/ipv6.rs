@@ -580,6 +580,9 @@ const EXT_HEADER_FRAGMENT: u8 = 44;
 const EXT_HEADER_DESTINATION: u8 = 60;
 const EXT_HEADER_NO_NEXT: u8 = 59;
 
+/// Maximum number of extension headers to traverse in a single packet.
+pub const MAX_EXTENSION_HEADERS: usize = 16;
+
 /// Skip extension headers in a payload and return the final protocol and remaining data
 ///
 /// Extension headers use a common format:
@@ -590,7 +593,14 @@ pub fn skip_extension_headers<'a>(
     mut next_header: IpProtocol,
     mut data: &'a [u8],
 ) -> (IpProtocol, &'a [u8]) {
+    let mut headers_seen = 0;
     loop {
+        headers_seen += 1;
+        if headers_seen > MAX_EXTENSION_HEADERS {
+            // Safety: stop traversal after too many headers
+            return (next_header, data);
+        }
+
         let nh = u8::from(next_header);
 
         match nh {
@@ -659,8 +669,14 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
 
     let mut next_header = raw_packet[6];
     let mut offset = 40usize; // after fixed header
+    let mut headers_seen = 0;
 
     loop {
+        headers_seen += 1;
+        if headers_seen > MAX_EXTENSION_HEADERS {
+            return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
+        }
+
         match next_header {
             EXT_HEADER_HOP_BY_HOP | EXT_HEADER_ROUTING | EXT_HEADER_DESTINATION => {
                 if offset + 2 > raw_packet.len() {
@@ -785,8 +801,8 @@ impl Ipv6Stats {
 
 /// Result of IPv6 packet processing
 pub enum Ipv6ProcessResult<'a> {
-    /// ICMPv6 payload with addresses
-    Icmpv6(&'a [u8], Ipv6Address, Ipv6Address),
+    /// ICMPv6 payload with addresses and hop limit
+    Icmpv6(&'a [u8], Ipv6Address, Ipv6Address, u8),
     /// TCP payload with addresses
     Tcp(&'a [u8], Ipv6Address, Ipv6Address),
     /// UDP payload with addresses

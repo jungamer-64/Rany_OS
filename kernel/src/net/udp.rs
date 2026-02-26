@@ -84,6 +84,7 @@ impl UdpHeader {
 
 /// Zero-copy UDP packet view
 pub struct UdpPacket<'a> {
+    header: &'a UdpHeader,
     /// Raw packet data
     data: &'a [u8],
 }
@@ -91,26 +92,20 @@ pub struct UdpPacket<'a> {
 impl<'a> UdpPacket<'a> {
     /// Parse a UDP packet from raw bytes
     pub fn parse(data: &'a [u8]) -> Option<Self> {
-        if data.len() < UdpHeader::SIZE {
-            return None;
-        }
-
-        let packet = UdpPacket { data };
+        let header = crate::util::get_ref::<UdpHeader>(data, 0)?;
 
         // Verify length field
-        let length = packet.header().length() as usize;
+        let length = header.length() as usize;
         if length < UdpHeader::SIZE || length > data.len() {
             return None;
         }
 
-        Some(packet)
+        Some(UdpPacket { header, data })
     }
 
     /// Get the UDP header
     pub fn header(&self) -> &UdpHeader {
-        // SAFETY: We verified the length in parse(). Use the centralized helper
-        // to obtain a typed reference with bounds & alignment checks.
-        crate::util::get_ref::<UdpHeader>(self.data, 0).expect("UDP header slice out of bounds")
+        self.header
     }
 
     /// Get source port
@@ -172,21 +167,19 @@ impl<'a> UdpPacketMut<'a> {
     }
 
     /// Get mutable header
-    pub fn header_mut(&mut self) -> &mut UdpHeader {
-        // SAFETY: Buffer size checked in new(). Use centralized helper to get a mutable reference.
+    pub fn header_mut(&mut self) -> Option<&mut UdpHeader> {
         crate::util::get_mut_ref::<UdpHeader>(self.buffer, 0)
-            .expect("UDP header slice out of bounds")
     }
 
     /// Set source port
     pub fn set_src_port(&mut self, port: u16) -> &mut Self {
-        self.header_mut().set_src_port(port);
+        if let Some(h) = self.header_mut() { h.set_src_port(port); }
         self
     }
 
     /// Set destination port
     pub fn set_dst_port(&mut self, port: u16) -> &mut Self {
-        self.header_mut().set_dst_port(port);
+        if let Some(h) = self.header_mut() { h.set_dst_port(port); }
         self
     }
 
@@ -213,11 +206,10 @@ impl<'a> UdpPacketMut<'a> {
     pub fn finalize(&mut self, src_ip: Ipv4Address, dst_ip: Ipv4Address) -> usize {
         let total_len = (UdpHeader::SIZE + self.payload_len) as u16;
 
-        // Set length
-        self.header_mut().set_length(total_len);
-
-        // Clear checksum for calculation
-        self.header_mut().set_checksum(0);
+        if let Some(h) = self.header_mut() {
+            h.set_length(total_len);
+            h.set_checksum(0);
+        }
 
         // Calculate checksum with pseudo-header
         let pseudo = pseudo_header_checksum(src_ip, dst_ip, IpProtocol::Udp, total_len);
@@ -225,7 +217,9 @@ impl<'a> UdpPacketMut<'a> {
 
         // Use 0xFFFF instead of 0 (0 means no checksum)
         let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
-        self.header_mut().set_checksum(final_checksum);
+        if let Some(h) = self.header_mut() {
+            h.set_checksum(final_checksum);
+        }
 
         total_len as usize
     }
@@ -288,7 +282,7 @@ impl UdpSocket {
         UdpSocket {
             inner: Arc::new(PoisonLock::new(UdpSocketInner {
                 local_port,
-                rx_packet_queue: VecDeque::new(),
+                rx_packet_queue: VecDeque::with_capacity(64),
                 wakers: Vec::new(),
                 closed: false,
                 token,
@@ -322,10 +316,12 @@ impl UdpSocket {
                     return;
                 }
 
-                inner.rx_packet_queue.push_back((src, packet));
+                if inner.rx_packet_queue.len() < 64 {
+                    inner.rx_packet_queue.push_back((src, packet));
 
-                for waker in inner.wakers.drain(..) {
-                    waker.wake();
+                    for waker in inner.wakers.drain(..) {
+                        waker.wake();
+                    }
                 }
             }
             Err(_) => log::error!("[NET] UDP Socket poisoned during deliver - dropping packet"),

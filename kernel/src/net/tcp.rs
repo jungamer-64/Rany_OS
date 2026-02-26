@@ -19,7 +19,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Poll};
 
 use super::mempool::PacketRef;
 
@@ -172,9 +172,13 @@ pub enum TcpState {
 #[derive(Debug, Default, Clone)]
 pub struct TcpStats {
     pub bytes_sent: u64,
+    /// TCPとして受理した受信バイト数（wire側、再assembly後のpayload単位）
     pub bytes_received: u64,
     pub packets_sent: u64,
+    /// TCPとして受理した受信セグメント数（payload を伴うもの）
     pub packets_received: u64,
+    /// アプリケーションへ実際に引き渡した受信バイト数（read/read_zero_copy）
+    pub app_bytes_delivered: u64,
     pub retransmissions: u64,
     pub rtt_us: u64,
     /// Zero-copy受信に失敗してVecフォールバックした総バイト数
@@ -183,10 +187,291 @@ pub struct TcpStats {
     pub recv_copy_fallback_packets: u64,
     /// Vecフォールバックキューのピークバイト数
     pub recv_copy_fallback_peak_bytes: u64,
+    /// OOMでドロップされた受信パケット数
+    pub oom_dropped_packets: u64,
+    /// OOMでドロップされた受信バイト数
+    pub oom_dropped_bytes: u64,
+}
+
+impl TcpStats {
+    #[inline]
+    pub fn record_tx_enqueued(&mut self, len: usize) {
+        self.bytes_sent = self.bytes_sent.saturating_add(len as u64);
+        self.packets_sent = self.packets_sent.saturating_add(1);
+    }
+
+    #[inline]
+    pub fn record_rx_segment(&mut self, len: usize) {
+        self.bytes_received = self.bytes_received.saturating_add(len as u64);
+        self.packets_received = self.packets_received.saturating_add(1);
+    }
+
+    #[inline]
+    pub fn record_rx_delivered(&mut self, len: usize) {
+        self.app_bytes_delivered = self.app_bytes_delivered.saturating_add(len as u64);
+    }
+
+    #[inline]
+    pub fn record_recv_copy_fallback(&mut self, len: usize, queue_bytes: usize) {
+        self.recv_copy_fallback_bytes = self.recv_copy_fallback_bytes.saturating_add(len as u64);
+        self.recv_copy_fallback_packets = self.recv_copy_fallback_packets.saturating_add(1);
+        self.recv_copy_fallback_peak_bytes =
+            self.recv_copy_fallback_peak_bytes.max(queue_bytes as u64);
+    }
+
+    #[inline]
+    pub fn record_oom_drop(&mut self, len: usize) {
+        self.oom_dropped_packets = self.oom_dropped_packets.saturating_add(1);
+        self.oom_dropped_bytes = self.oom_dropped_bytes.saturating_add(len as u64);
+    }
 }
 
 /// `recv_queue` (Vec fallback) の上限バイト数
 pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 64 * 1024;
+
+/// TCP受信状態（バッファ管理）
+struct TcpRxState {
+    /// 受信バッファ (zero-copy when available)
+    recv_buffer: VecDeque<PacketRef>,
+    /// 受信バッファ (コピー版フォールバック)
+    recv_queue: VecDeque<Vec<u8>>,
+    /// `recv_queue` 内の合計バイト数
+    recv_queue_bytes: usize,
+    /// `recv_queue` の総バイト上限
+    recv_queue_limit_bytes: usize,
+}
+
+impl TcpRxState {
+    fn new() -> Self {
+        Self {
+            recv_buffer: VecDeque::new(),
+            recv_queue: VecDeque::new(),
+            recv_queue_bytes: 0,
+            recv_queue_limit_bytes: TCP_RECV_COPY_FALLBACK_LIMIT_BYTES,
+        }
+    }
+}
+
+/// TCPシーケンス/ウィンドウ状態（基本の送受信番号）
+struct TcpSeqState {
+    /// 送信シーケンス番号（次に送信するバイト）
+    snd_nxt: u32,
+    /// 未確認の最古のシーケンス番号
+    snd_una: u32,
+    /// 送信ウィンドウサイズ
+    snd_wnd: u16,
+    /// 受信シーケンス番号（次に期待するバイト）
+    rcv_nxt: u32,
+    /// 受信ウィンドウサイズ
+    rcv_wnd: u16,
+}
+
+impl TcpSeqState {
+    fn new() -> Self {
+        Self {
+            snd_nxt: 0,
+            snd_una: 0,
+            snd_wnd: 65535,
+            rcv_nxt: 0,
+            rcv_wnd: 65535,
+        }
+    }
+}
+
+/// TCP送信キュー状態（送信バッファ/未確認送信量）
+struct TcpTxState {
+    /// 送信バッファ（ゼロコピー: PacketRefのキュー）
+    send_buffer: VecDeque<PacketRef>,
+    /// 送信バッファ内のバイト数（キューされている未送信バイト）
+    send_buffer_bytes: u32,
+    /// 送信済みだが未確認のバイト数（in-flight）
+    outstanding_bytes: u32,
+}
+
+impl TcpTxState {
+    fn new() -> Self {
+        Self {
+            send_buffer: VecDeque::new(),
+            send_buffer_bytes: 0,
+            outstanding_bytes: 0,
+        }
+    }
+}
+
+/// TCP輻輳制御/送信挙動状態
+struct TcpCongestionState {
+    /// 輻輳ウィンドウ
+    cwnd: u32,
+    /// スロースタート閾値
+    ssthresh: u32,
+    /// Maximum Segment Size (default 1460 for Ethernet)
+    mss: u16,
+    /// Duplicate ACK counter (for fast retransmit)
+    dup_ack_count: u8,
+    /// Last ACK number received
+    last_ack: u32,
+    /// Fast recovery state
+    in_recovery: bool,
+    /// Nagle's algorithm enabled (delays small packets until ACK received)
+    nagle_enabled: bool,
+}
+
+impl TcpCongestionState {
+    fn new() -> Self {
+        Self {
+            cwnd: 10 * 1460, // 初期値: 10 MSS (RFC 6928)
+            ssthresh: 65535,
+            mss: 1460, // Ethernet MTU - IP/TCP headers
+            dup_ack_count: 0,
+            last_ack: 0,
+            in_recovery: false,
+            nagle_enabled: true, // Nagle's algorithm on by default
+        }
+    }
+}
+
+/// TCPオプション拡張状態（WSCALE/TS/SACK）
+struct TcpOptionsState {
+    // TCP Window Scaling (RFC 7323)
+    /// Our window scale factor (0-14)
+    snd_wscale: u8,
+    /// Peer's window scale factor (0-14)
+    rcv_wscale: u8,
+    /// Window scaling enabled (negotiated during SYN)
+    wscale_enabled: bool,
+    /// Actual receive window (scaled: rcv_wnd << rcv_wscale)
+    rcv_wnd_scaled: u32,
+
+    // TCP Timestamps (RFC 7323)
+    /// Timestamps enabled (negotiated during SYN)
+    ts_enabled: bool,
+    /// Our timestamp value (monotonically increasing)
+    ts_val: u32,
+    /// Last received timestamp echo reply
+    ts_ecr: u32,
+    /// Timestamp of last segment for RTT measurement
+    ts_recent: u32,
+    /// Age of ts_recent (for PAWS check)
+    ts_recent_age: u64,
+
+    // TCP SACK (RFC 2018)
+    /// SACK enabled (negotiated during SYN)
+    sack_enabled: bool,
+    /// SACK blocks - received out-of-order segments [(left_edge, right_edge)]
+    sack_blocks: [(u32, u32); 4],
+    /// Number of valid SACK blocks
+    sack_block_count: u8,
+    /// Segments marked as SACKed (for selective retransmit)
+    sack_scoreboard: alloc::vec::Vec<(u32, u32)>,
+}
+
+impl TcpOptionsState {
+    fn new() -> Self {
+        Self {
+            snd_wscale: 7,
+            rcv_wscale: 0, // Set when peer SYN received
+            wscale_enabled: false, // Negotiated during handshake
+            rcv_wnd_scaled: 65535 << 7, // Initial scaled window
+            ts_enabled: false,
+            ts_val: 0,
+            ts_ecr: 0,
+            ts_recent: 0,
+            ts_recent_age: 0,
+            sack_enabled: false,
+            sack_blocks: [(0, 0); 4],
+            sack_block_count: 0,
+            sack_scoreboard: alloc::vec::Vec::new(),
+        }
+    }
+}
+
+/// TCPタイマー/再送/keepalive状態
+struct TcpTimerState {
+    // Retransmission Timer (RFC 6298)
+    /// Smoothed Round-Trip Time (microseconds)
+    srtt: Option<u64>,
+    /// Round-Trip Time Variation (microseconds)
+    rttvar: Option<u64>,
+    /// Retransmission Timeout (microseconds)
+    rto: u64,
+    /// Last retransmit timestamp (tick)
+    last_retransmit_time: u64,
+    /// Retransmission count for current segment
+    retransmit_count: u8,
+    /// Unacknowledged segments queue (for retransmission)
+    unacked_segments: VecDeque<UnackedSegment>,
+
+    // TCP Keepalive
+    /// Keepalive enabled
+    keepalive_enabled: bool,
+    /// Keepalive idle time (microseconds) - time before first probe
+    keepalive_idle: u64,
+    /// Keepalive interval (microseconds) - time between probes
+    keepalive_interval: u64,
+    /// Keepalive probe count before giving up
+    keepalive_count: u8,
+    /// Current keepalive probe count
+    keepalive_probes_sent: u8,
+    /// Last activity timestamp (microseconds) - last data received
+    last_activity_time: u64,
+    /// Timestamp when TIME_WAIT state was entered (microseconds)
+    time_wait_entered: u64,
+
+    // Zero-Window Probe (RFC 1122 Section 4.2.2.17)
+    /// Number of zero-window probes sent since peer window became 0
+    zwp_probes_sent: u8,
+    /// Timestamp of last zero-window probe sent (microseconds)
+    zwp_last_probe_time: u64,
+}
+
+impl TcpTimerState {
+    fn new() -> Self {
+        Self {
+            srtt: None,
+            rttvar: None,
+            rto: 1_000_000, // Initial RTO = 1 second (in microseconds)
+            last_retransmit_time: 0,
+            retransmit_count: 0,
+            unacked_segments: VecDeque::new(),
+            keepalive_enabled: false,
+            keepalive_idle: 7_200_000_000, // 2 hours in microseconds
+            keepalive_interval: 75_000_000, // 75 seconds in microseconds
+            keepalive_count: 9,
+            keepalive_probes_sent: 0,
+            last_activity_time: 0,
+            time_wait_entered: 0,
+            zwp_probes_sent: 0,
+            zwp_last_probe_time: 0,
+        }
+    }
+}
+
+/// TCP接続のエンドポイント情報
+struct TcpEndpointMeta {
+    /// ローカルアドレス
+    local_addr: SocketAddr,
+    /// リモートアドレス
+    remote_addr: Option<SocketAddr>,
+}
+
+impl TcpEndpointMeta {
+    fn new(local_addr: SocketAddr) -> Self {
+        Self {
+            local_addr,
+            remote_addr: None,
+        }
+    }
+}
+
+/// TCP非同期待機状態（waker/backlog）
+#[derive(Default)]
+struct TcpAsyncWaiters {
+    read_waker: crate::sync::atomic_waker::AtomicWaker,
+    write_waker: crate::sync::atomic_waker::AtomicWaker,
+    connect_waker: crate::sync::atomic_waker::AtomicWaker,
+    backlog: Option<Arc<PoisonLock<VecDeque<TcpStream>>>>,
+    accept_waker: Option<Arc<crate::sync::atomic_waker::AtomicWaker>>,
+}
 
 // ============================================================================
 // TCP制御ブロック (TCB)
@@ -194,151 +479,51 @@ pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 64 * 1024;
 
 /// TCP制御ブロック
 pub struct TcpControlBlock {
-    /// ローカルアドレス
-    pub local_addr: SocketAddr,
-    /// リモートアドレス
-    pub remote_addr: Option<SocketAddr>,
+    /// 接続エンドポイント情報
+    endpoints: TcpEndpointMeta,
     /// 現在の状態
-    pub state: TcpState,
+    state: TcpState,
 
     // シーケンス番号管理
-    /// 送信シーケンス番号（次に送信するバイト）
-    pub snd_nxt: u32,
-    /// 未確認の最古のシーケンス番号
-    pub snd_una: u32,
-    /// 送信ウィンドウサイズ
-    pub snd_wnd: u16,
-    /// 受信シーケンス番号（次に期待するバイト）
-    pub rcv_nxt: u32,
-    /// 受信ウィンドウサイズ
-    pub rcv_wnd: u16,
+    /// 基本シーケンス/ウィンドウ状態
+    seq: TcpSeqState,
 
     // バッファ
-    /// 送信バッファ（ゼロコピー: PacketRefのキュー）
-    pub send_buffer: VecDeque<PacketRef>,
-    /// 送信バッファ内のバイト数（キューされている未送信バイト）
-    pub send_buffer_bytes: u32,
-    /// 送信済みだが未確認のバイト数（in-flight）
-    pub outstanding_bytes: u32,
-    /// 受信バッファ (zero-copy when available)
-    pub recv_buffer: VecDeque<PacketRef>,
-    /// 受信バッファ (コピー版フォールバック)
-    pub recv_queue: VecDeque<Vec<u8>>,
-    /// `recv_queue` 内の合計バイト数
-    pub recv_queue_bytes: usize,
-    /// `recv_queue` の総バイト上限
-    pub recv_queue_limit_bytes: usize,
+    /// 送信状態（送信キュー/未確認送信量）
+    tx: TcpTxState,
+    /// 受信バッファ群
+    rx: TcpRxState,
 
     // 輻輳制御
-    /// 輻輳ウィンドウ
-    pub cwnd: u32,
-    /// スロースタート閾値
-    pub ssthresh: u32,
-    /// Maximum Segment Size (default 1460 for Ethernet)
-    pub mss: u16,
-    /// Duplicate ACK counter (for fast retransmit)
-    pub dup_ack_count: u8,
-    /// Last ACK number received
-    pub last_ack: u32,
-    /// Fast recovery state
-    pub in_recovery: bool,
-    /// Nagle's algorithm enabled (delays small packets until ACK received)
-    pub nagle_enabled: bool,
+    congestion: TcpCongestionState,
 
-    // Waker（非同期通知用）
-    pub read_waker: Option<Waker>,
-    pub write_waker: Option<Waker>,
-    pub connect_waker: Option<Waker>,
+    // TCPオプション拡張
+    options: TcpOptionsState,
 
-    // For listening sockets
-    pub backlog: Option<Arc<PoisonLock<VecDeque<TcpStream>>>>,
-    pub accept_waker: Option<Arc<PoisonLock<Option<Waker>>>>,
+    // タイマー/再送/keepalive
+    timers: TcpTimerState,
+
+    // Waker / backlog（非同期通知用）
+    waiters: TcpAsyncWaiters,
 
     /// 統計
-    pub stats: TcpStats,
+    stats: TcpStats,
 
-    // Retransmission Timer (RFC 6298)
-    /// Smoothed Round-Trip Time (microseconds)
-    pub srtt: Option<u64>,
-    /// Round-Trip Time Variation (microseconds)
-    pub rttvar: Option<u64>,
-    /// Retransmission Timeout (microseconds)
-    pub rto: u64,
-    /// Last retransmit timestamp (tick)
-    pub last_retransmit_time: u64,
-    /// Retransmission count for current segment
-    pub retransmit_count: u8,
-    /// Unacknowledged segments queue (for retransmission)
-    pub unacked_segments: VecDeque<UnackedSegment>,
-
-    // TCP Keepalive
-    /// Keepalive enabled
-    pub keepalive_enabled: bool,
-    /// Keepalive idle time (microseconds) - time before first probe
-    pub keepalive_idle: u64,
-    /// Keepalive interval (microseconds) - time between probes
-    pub keepalive_interval: u64,
-    /// Keepalive probe count before giving up
-    pub keepalive_count: u8,
-    /// Current keepalive probe count
-    pub keepalive_probes_sent: u8,
-    /// Last activity timestamp (microseconds) - last data received
-    pub last_activity_time: u64,
-    /// Timestamp when TIME_WAIT state was entered (microseconds)
-    pub time_wait_entered: u64,
-
-    // TCP Window Scaling (RFC 7323)
-    /// Our window scale factor (0-14)
-    pub snd_wscale: u8,
-    /// Peer's window scale factor (0-14)
-    pub rcv_wscale: u8,
-    /// Window scaling enabled (negotiated during SYN)
-    pub wscale_enabled: bool,
-    /// Actual receive window (scaled: rcv_wnd << rcv_wscale)
-    pub rcv_wnd_scaled: u32,
-
-    // TCP Timestamps (RFC 7323)
-    /// Timestamps enabled (negotiated during SYN)
-    pub ts_enabled: bool,
-    /// Our timestamp value (monotonically increasing)
-    pub ts_val: u32,
-    /// Last received timestamp echo reply
-    pub ts_ecr: u32,
-    /// Timestamp of last segment for RTT measurement
-    pub ts_recent: u32,
-    /// Age of ts_recent (for PAWS check)
-    pub ts_recent_age: u64,
-
-    // TCP SACK (RFC 2018)
-    /// SACK enabled (negotiated during SYN)
-    pub sack_enabled: bool,
-    /// SACK blocks - received out-of-order segments [(left_edge, right_edge)]
-    pub sack_blocks: [(u32, u32); 4],
-    /// Number of valid SACK blocks
-    pub sack_block_count: u8,
-    /// Segments marked as SACKed (for selective retransmit)
-    pub sack_scoreboard: alloc::vec::Vec<(u32, u32)>,
-
-    // Zero-Window Probe (RFC 1122 Section 4.2.2.17)
-    /// Number of zero-window probes sent since peer window became 0
-    pub zwp_probes_sent: u8,
-    /// Timestamp of last zero-window probe sent (microseconds)
-    pub zwp_last_probe_time: u64,
 }
 
-/// Unacknowledged segment for retransmission
+/// Unacknowledged segment for retransmission (internal queue entry)
 #[derive(Clone)]
-pub struct UnackedSegment {
+struct UnackedSegment {
     /// Sequence number of first byte
-    pub seq: u32,
+    seq: u32,
     /// Segment data
-    pub data: Vec<u8>,
+    data: Vec<u8>,
     /// Timestamp when sent (tick)
-    pub sent_time: u64,
+    sent_time: u64,
     /// Number of retransmissions
-    pub retransmit_count: u8,
+    retransmit_count: u8,
     /// Flags associated with the segment (SYN/FIN/PSH/etc)
-    pub flags: u16,
+    flags: u16,
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
 use crate::net::tcp::TcpControlBlock;
 
 impl NetworkStack {

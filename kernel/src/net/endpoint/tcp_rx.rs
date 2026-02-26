@@ -550,7 +550,7 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
 
         if tcb.sack_enabled && !sack.is_empty() {
             // NOP+NOP+SACK でアラインメント (RFC 2018 Section 3)
-            builder = builder.nop().nop().sack_blocks(&sack);
+            builder = builder.nop().nop().sack_blocks(sack.as_slice());
         }
 
         if tcb.ts_enabled {
@@ -579,12 +579,9 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         socket.push_data(data);
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
-        let (drained, final_rcv_nxt) =
-            ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt);
-        for (_seg_seq, seg_data) in &drained {
+        new_rcv_nxt = ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_seg_seq, seg_data| {
             socket.push_data(seg_data);
-        }
-        new_rcv_nxt = final_rcv_nxt;
+        });
     }
 
     // TCB更新
@@ -603,7 +600,7 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
     if tcb.sack_enabled {
         let sack = ooo_queue::get_sack_blocks(tcb.local, tcb.remote);
         if !sack.is_empty() {
-            builder = builder.nop().nop().sack_blocks(&sack);
+            builder = builder.nop().nop().sack_blocks(sack.as_slice());
         }
     }
 

@@ -10,9 +10,8 @@ impl TcpProcessor {
     ) -> TcpProcessResult {
         // Waiting for peer's FIN
         if fin {
-            tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
-            tcb.state = TcpState::TimeWait;
-            tcb.time_wait_entered = current_time;
+            tcb.advance_rcv_nxt(1);
+            tcb.enter_time_wait(current_time);
             Self::make_ack_result(tcb)
         } else {
             TcpProcessResult::None
@@ -27,10 +26,9 @@ impl TcpProcessor {
         current_time: u64,
     ) -> TcpProcessResult {
         // Waiting for ACK of our FIN
-        if ack && ack_num == tcb.snd_nxt {
-            tcb.snd_una = ack_num;
-            tcb.state = TcpState::TimeWait;
-            tcb.time_wait_entered = current_time;
+        if ack && ack_num == tcb.snd_nxt() {
+            tcb.set_snd_una(ack_num);
+            tcb.enter_time_wait(current_time);
         }
         TcpProcessResult::None
     }
@@ -42,9 +40,9 @@ impl TcpProcessor {
         ack_num: u32,
     ) -> TcpProcessResult {
         // Waiting for ACK of our FIN
-        if ack && ack_num == tcb.snd_nxt {
-            tcb.snd_una = ack_num;
-            tcb.state = TcpState::Closed;
+        if ack && ack_num == tcb.snd_nxt() {
+            tcb.set_snd_una(ack_num);
+            tcb.close_and_wake();
         }
         TcpProcessResult::None
     }
@@ -57,8 +55,8 @@ impl TcpProcessor {
         // RFC 793: Wait for 2*MSL (Maximum Segment Lifetime) then move to Closed
         // MSL = 120 seconds, 2*MSL = 240 seconds = 240_000_000 microseconds
         const TWO_MSL_US: u64 = 240_000_000;
-        if current_time.saturating_sub(tcb.time_wait_entered) >= TWO_MSL_US {
-            tcb.state = TcpState::Closed;
+        if current_time.saturating_sub(tcb.time_wait_entered_at()) >= TWO_MSL_US {
+            tcb.close_and_wake();
         }
         TcpProcessResult::None
     }
@@ -72,22 +70,22 @@ impl TcpProcessor {
     pub fn close(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) {
         if let Some(tcb_lock) = self.connections.get(&(local_addr, remote_addr)) {
             if let Ok(mut tcb) = tcb_lock.lock() {
-                match tcb.state {
+                match tcb.state() {
                     TcpState::Established => {
-                        let seq = tcb.snd_nxt;
-                        let ack = tcb.rcv_nxt;
-                        tcb.state = TcpState::FinWait1;
+                        let seq = tcb.snd_nxt();
+                        let ack = tcb.rcv_nxt();
+                        tcb.begin_active_close();
                         // Send FIN+ACK
                         send_fin_packet(local_addr, remote_addr, seq, ack);
-                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FIN consumes 1 seq
+                        tcb.advance_snd_nxt(1); // FIN consumes 1 seq
                     }
                     TcpState::CloseWait => {
-                        let seq = tcb.snd_nxt;
-                        let ack = tcb.rcv_nxt;
-                        tcb.state = TcpState::LastAck;
+                        let seq = tcb.snd_nxt();
+                        let ack = tcb.rcv_nxt();
+                        tcb.begin_passive_close_reply();
                         // Send FIN+ACK
                         send_fin_packet(local_addr, remote_addr, seq, ack);
-                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FIN consumes 1 seq
+                        tcb.advance_snd_nxt(1); // FIN consumes 1 seq
                     }
                     _ => {}
                 }
@@ -100,17 +98,13 @@ impl TcpProcessor {
         const TWO_MSL_US: u64 = 240_000_000;
         self.connections.retain(|_, tcb_lock| {
             if let Ok(tcb) = tcb_lock.lock() {
-                match tcb.state {
+                match tcb.state() {
                     TcpState::Closed => false,
                     TcpState::TimeWait => {
                         // Keep if 2MSL has not yet passed
                         // Use last_activity_time as fallback if time_wait_entered is 0
-                        let entered = if tcb.time_wait_entered > 0 {
-                            tcb.time_wait_entered
-                        } else {
-                            tcb.last_activity_time
-                        };
-                        let elapsed = tcb.last_activity_time
+                        let entered = tcb.time_wait_entered_or_last_activity();
+                        let elapsed = tcb.last_activity_time()
                             .max(entered)
                             .saturating_sub(entered);
                         elapsed < TWO_MSL_US
@@ -133,32 +127,24 @@ impl TcpProcessor {
             if let Ok(mut tcb) = tcb_arc.lock() {
                 if tcb.check_retransmit_timeout(current_time) {
                     // Scope the mutable borrow of oldest segment
-                    let packet_data = if let Some(oldest) = tcb.unacked_segments.front_mut() {
-                        // Update retransmit metadata
-                        oldest.sent_time = current_time;
-                        oldest.retransmit_count = oldest.retransmit_count.saturating_add(1);
-                        // Extract data needed for packet creation
-                        Some((oldest.seq, oldest.data.clone()))
-                    } else {
-                        None
-                    };
+                    let packet_data = tcb.touch_oldest_unacked_for_retransmit(current_time);
 
                     if let Some((seq, payload)) = packet_data {
                         tcb.backoff_rto();
-                        tcb.retransmit_count = tcb.retransmit_count.saturating_add(1);
+                        tcb.bump_retransmit_count_counter();
                         
                         // RFC 5681: On RTO, go back to slow start
                         tcb.on_loss();
 
                         // Build a packet resend (PSH+ACK)
-                        if let Some(remote) = tcb.remote_addr {
+                        if let Some(remote) = tcb.remote_addr() {
                             results.push(TcpProcessResult::SendPacket {
-                                local: tcb.local_addr,
+                                local: tcb.local_addr(),
                                 remote,
                                 seq,
-                                ack: tcb.rcv_nxt,
+                                ack: tcb.rcv_nxt(),
                                 flags: TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
-                                window: tcb.rcv_wnd,
+                                window: tcb.rcv_wnd(),
                                 payload,
                             });
                         }
@@ -181,14 +167,14 @@ impl TcpProcessor {
                 match tcb.check_keepalive(current_time) {
                     Some(true) => {
                         // Send keepalive probe: ACK with seq = snd_una - 1
-                        if let Some(remote) = tcb.remote_addr {
+                        if let Some(remote) = tcb.remote_addr() {
                             results.push(TcpProcessResult::SendPacket {
-                                local: tcb.local_addr,
+                                local: tcb.local_addr(),
                                 remote,
-                                seq: tcb.snd_una.wrapping_sub(1),
-                                ack: tcb.rcv_nxt,
+                                seq: tcb.snd_una().wrapping_sub(1),
+                                ack: tcb.rcv_nxt(),
                                 flags: TcpHeader::FLAG_ACK,
-                                window: tcb.rcv_wnd,
+                                window: tcb.rcv_wnd(),
                                 payload: Vec::new(),
                             });
                         }
@@ -208,7 +194,7 @@ impl TcpProcessor {
         for key in dead_connections {
             if let Some(tcb_lock) = self.connections.get(&key) {
                 if let Ok(mut tcb) = tcb_lock.lock() {
-                    tcb.state = TcpState::Closed;
+                    tcb.close_and_wake();
                 }
             }
         }
@@ -228,14 +214,14 @@ impl TcpProcessor {
                     Some(true) => {
                         // Send zero-window probe: ACK with seq = snd_una - 1
                         // This forces the peer to respond with its current window size
-                        if let Some(remote) = tcb.remote_addr {
+                        if let Some(remote) = tcb.remote_addr() {
                             results.push(TcpProcessResult::SendPacket {
-                                local: tcb.local_addr,
+                                local: tcb.local_addr(),
                                 remote,
-                                seq: tcb.snd_una.wrapping_sub(1),
-                                ack: tcb.rcv_nxt,
+                                seq: tcb.snd_una().wrapping_sub(1),
+                                ack: tcb.rcv_nxt(),
                                 flags: TcpHeader::FLAG_ACK,
-                                window: tcb.rcv_wnd,
+                                window: tcb.rcv_wnd(),
                                 payload: Vec::new(),
                             });
                         }
@@ -253,8 +239,8 @@ impl TcpProcessor {
         for key in dead_connections {
             if let Some(tcb_lock) = self.connections.get(&key) {
                 if let Ok(mut tcb) = tcb_lock.lock() {
-                    log::info!("[TCP] Zero-window probe timeout: {} -> {:?}", tcb.local_addr, tcb.remote_addr);
-                    tcb.state = TcpState::Closed;
+                    log::info!("[TCP] Zero-window probe timeout: {} -> {:?}", tcb.local_addr(), tcb.remote_addr());
+                    tcb.close_and_wake();
                 }
             }
         }
@@ -268,12 +254,10 @@ impl TcpProcessor {
     pub fn mark_retransmit_sent(&mut self, local: SocketAddr, remote: SocketAddr, seq: u32, current_time: u64) {
         if let Some(tcb_lock) = self.connections.get(&(local, remote)).cloned() {
             if let Ok(mut tcb) = tcb_lock.lock() {
-                if let Some(seg) = tcb.unacked_segments.iter_mut().find(|s| s.seq == seq) {
-                    seg.sent_time = current_time;
-                    seg.retransmit_count = seg.retransmit_count.saturating_add(1);
+                if tcb.touch_unacked_segment_for_retransmit(seq, current_time) {
                     tcb.backoff_rto();
-                    tcb.retransmit_count = tcb.retransmit_count.saturating_add(1);
-                    tcb.last_retransmit_time = current_time;
+                    tcb.bump_retransmit_count_counter();
+                    tcb.set_last_retransmit_time(current_time);
                 }
             }
         }
@@ -296,9 +280,9 @@ impl TcpProcessor {
                 if consumed > 0 {
                     // Queue for retransmission
                     tcb.queue_unacked(seq, payload.to_vec(), current_time, flags);
-                    tcb.last_retransmit_time = current_time;
+                    tcb.set_last_retransmit_time(current_time);
                     // Advance snd_nxt to reflect the bytes consumed
-                    tcb.snd_nxt = seq.wrapping_add(consumed);
+                    tcb.set_snd_nxt(seq.wrapping_add(consumed));
                 }
             }
         }

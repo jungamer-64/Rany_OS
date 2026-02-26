@@ -17,7 +17,7 @@
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 // ============================================================================
 // Configuration
@@ -618,7 +618,7 @@ impl Default for BusyPollConfig {
 // ============================================================================
 
 /// グローバルな適応的ポーリングマネージャー
-static POLLING_MANAGER: Mutex<Option<PollingManager>> = Mutex::new(None);
+static POLLING_MANAGER: PoisonLock<Option<PollingManager>> = PoisonLock::new(None);
 
 /// ポーリングマネージャー
 pub struct PollingManager {
@@ -655,8 +655,10 @@ impl PollingManager {
 
 /// ポーリングマネージャーを初期化
 pub fn init(num_cores: u32) {
-    let manager = PollingManager::new(num_cores);
-    *POLLING_MANAGER.lock() = Some(manager);
+    if let Ok(mut guard) = POLLING_MANAGER.lock() {
+        let manager = PollingManager::new(num_cores);
+        *guard = Some(manager);
+    }
 }
 
 /// ポーリングマネージャーにアクセス
@@ -664,7 +666,11 @@ pub fn with_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut PollingManager) -> R,
 {
-    POLLING_MANAGER.lock().as_mut().map(f)
+    if let Ok(mut guard) = POLLING_MANAGER.lock() {
+        guard.as_mut().map(f)
+    } else {
+        None
+    }
 }
 
 // ============================================================================
@@ -760,4 +766,3 @@ pub mod tests {
         assert_eq!(pps, 150);
     }
 }
-

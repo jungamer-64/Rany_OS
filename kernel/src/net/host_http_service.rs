@@ -66,16 +66,7 @@ async fn handle_client(mut client: TcpStream) {
         }
     };
     log::info!("[HOST-HTTP] preparing response: {} bytes", response.len());
-    if let Ok(tcb) = client.tcb.lock() {
-        log::info!(
-            "[HOST-HTTP] tcb state={:?} cwnd={} snd_wnd={} out={} sendq={}",
-            tcb.state,
-            tcb.cwnd,
-            tcb.snd_wnd,
-            tcb.outstanding_bytes,
-            tcb.send_buffer_bytes
-        );
-    }
+    log::info!("[HOST-HTTP] connection established, preparing response...");
 
     if let Err(err) = write_response(&mut client, response.as_slice()).await {
         log::warn!("[HOST-HTTP] send error: {}", err);

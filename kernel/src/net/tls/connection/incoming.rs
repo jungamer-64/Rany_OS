@@ -5,6 +5,11 @@ impl TlsConnection {
 
     /// データを受信して処理
     pub fn process_incoming(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+        // Security: Limit receive buffer size to prevent DoS
+        const MAX_RECV_BUFFER: usize = 65536;
+        if self.recv_buffer.len() + data.len() > MAX_RECV_BUFFER {
+            return Err(TlsError::DecodeError);
+        }
         self.recv_buffer.extend_from_slice(data);
 
         let mut plaintext = Vec::new();
@@ -12,6 +17,12 @@ impl TlsConnection {
         while self.recv_buffer.len() >= 5 {
             let content_type = self.recv_buffer[0];
             let length = ((self.recv_buffer[3] as usize) << 8) | self.recv_buffer[4] as usize;
+
+            // Security (RFC 5246 Section 6.2.1): Limit record length.
+            // Max is 2^14 + 2048 = 18432. We use 20KB as a safe bound.
+            if length > 20480 {
+                return Err(TlsError::DecodeError);
+            }
 
             if self.recv_buffer.len() < 5 + length {
                 break; // もっとデータが必要
@@ -174,6 +185,13 @@ impl TlsConnection {
             let length = ((data[offset + 1] as usize) << 16)
                 | ((data[offset + 2] as usize) << 8)
                 | data[offset + 3] as usize;
+
+            // Security: Limit handshake message length to prevent DoS.
+            // Handshake messages (especially certificates) can be large, but 128KB should be plenty.
+            if length > 131072 {
+                return Err(TlsError::DecodeError);
+            }
+
             let body_start = offset + 4;
             let body_end = body_start + length;
             if body_end > data.len() {
@@ -486,7 +504,8 @@ impl TlsConnection {
         let certs_len =
             ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | (data[2] as usize);
 
-        if data.len() < 3 + certs_len || certs_len == 0 {
+        // Security: Limit certificate chain length (e.g. 64KB)
+        if data.len() < 3 + certs_len || certs_len == 0 || certs_len > 65536 {
             return Err(TlsError::CertificateError);
         }
 
@@ -499,7 +518,8 @@ impl TlsConnection {
             | ((cert_chain[1] as usize) << 8)
             | (cert_chain[2] as usize);
 
-        if cert_chain.len() < 3 + first_cert_len {
+        // Security: First certificate must fit in the chain
+        if cert_chain.len() < 3 + first_cert_len || first_cert_len == 0 {
             return Err(TlsError::DecodeError);
         }
 
@@ -519,7 +539,7 @@ impl TlsConnection {
         &self,
         signed_data: &[u8],
         signature: &[u8],
-        use_sha384: bool,
+        alg_selector: u8,
     ) -> TlsResult<()> {
         let pubkey = match &self.server_public_key {
             Some(ServerPublicKey::Rsa { modulus, exponent }) => {
@@ -527,25 +547,30 @@ impl TlsConnection {
             }
             _ => return Err(TlsError::CertificateError),
         };
-        if use_sha384 {
-            let digest = crate::loader::sha384::compute(signed_data);
-            crate::net::rsa::rsa_pkcs1_verify(
-                &pubkey,
-                crate::net::rsa::HashAlgorithm::Sha384,
-                &digest,
-                signature,
-            )
-            .map_err(|_| TlsError::CryptoError)
-        } else {
-            let digest = crate::loader::sha256::compute(signed_data);
-            crate::net::rsa::rsa_pkcs1_verify(
-                &pubkey,
-                crate::net::rsa::HashAlgorithm::Sha256,
-                &digest,
-                signature,
-            )
-            .map_err(|_| TlsError::CryptoError)
-        }
+
+        let (hash_alg, digest) = match alg_selector {
+            1 => {
+                let d = crate::net::tls::crypto::legacy::sha1_compute(signed_data);
+                (crate::net::rsa::HashAlgorithm::Sha1, d.to_vec())
+            }
+            2 => {
+                let d = crate::loader::sha256::compute(signed_data);
+                (crate::net::rsa::HashAlgorithm::Sha256, d.to_vec())
+            }
+            3 => {
+                let d = crate::loader::sha384::compute(signed_data);
+                (crate::net::rsa::HashAlgorithm::Sha384, d.to_vec())
+            }
+            _ => return Err(TlsError::CryptoError),
+        };
+
+        crate::net::rsa::rsa_pkcs1_verify(
+            &pubkey,
+            hash_alg,
+            &digest,
+            signature,
+        )
+        .map_err(|_| TlsError::CryptoError)
     }
 
     /// ECDSA P-256署名でServerKeyExchangeを検証
@@ -572,13 +597,13 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         match sig_algorithm {
             // RSA-PKCS1-SHA256 (0x0401)
-            0x0401 => self.verify_rsa_ske_signature(signed_data, signature, false),
+            0x0401 => self.verify_rsa_ske_signature(signed_data, signature, 2), // 2 = SHA256
             // RSA-PKCS1-SHA384 (0x0501)
-            0x0501 => self.verify_rsa_ske_signature(signed_data, signature, true),
+            0x0501 => self.verify_rsa_ske_signature(signed_data, signature, 3), // 3 = SHA384
             // ECDSA-SECP256R1-SHA256 (0x0403)
             0x0403 => self.verify_ecdsa_ske_signature(signed_data, signature),
-            // RSA-PKCS1-SHA1 (0x0201) — レガシー互換
-            0x0201 => Ok(()),
+            // RSA-PKCS1-SHA1 (0x0201)
+            0x0201 => self.verify_rsa_ske_signature(signed_data, signature, 1), // 1 = SHA1
             _ => Err(TlsError::UnsupportedCipherSuite),
         }
     }

@@ -20,7 +20,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
 // ============================================================================
 
 /// グローバルプールマネージャー
-pub(crate) static POOL_MANAGER: Mutex<Option<PoolManager>> = Mutex::new(None);
+pub(crate) static POOL_MANAGER: crate::sync::PoisonLock<Option<PoolManager>> = crate::sync::PoisonLock::new(None);
 
 pub struct PoolManager {
     pools: Vec<Arc<MemoryPool>>,
@@ -67,7 +67,9 @@ pub fn init() {
     let mut manager = PoolManager::new();
     // デフォルトプールを作成
     manager.create_pool(DEFAULT_BUFFER_SIZE, 1024);
-    *POOL_MANAGER.lock() = Some(manager);
+    if let Ok(mut guard) = POOL_MANAGER.lock() {
+        *guard = Some(manager);
+    }
 }
 
 /// プールマネージャーにアクセス
@@ -75,7 +77,11 @@ pub fn with_pool_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut PoolManager) -> R,
 {
-    POOL_MANAGER.lock().as_mut().map(f)
+    if let Ok(mut guard) = POOL_MANAGER.lock() {
+        guard.as_mut().map(f)
+    } else {
+        None
+    }
 }
 
 /// デフォルトプールからバッファを割り当て

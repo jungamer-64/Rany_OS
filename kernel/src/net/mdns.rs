@@ -202,13 +202,21 @@ impl MdnsService {
     /// # Arguments
     /// - `data` - 受信したUDPペイロード (DNSワイヤーフォーマット)
     /// - `src_ip` - 送信元IPアドレス
+    /// - `ttl` - 受信パケットのIP TTL (255である必要がある)
     /// - `current_time` - 現在時刻 (秒単位)
     pub fn process_packet(
         &mut self,
         data: &[u8],
         src_ip: Ipv4Address,
+        ttl: u8,
         current_time: u64,
     ) -> MdnsResult {
+        // Security (RFC 6762 Section 11): mDNS packets MUST have IP TTL 255.
+        // This ensures the packet originated from the local link.
+        if ttl != 255 {
+            return MdnsResult::Ignored;
+        }
+
         // Minimum packet size: DNS header (12 bytes)
         if data.len() < DNS_HEADER_SIZE {
             return MdnsResult::InvalidPacket;

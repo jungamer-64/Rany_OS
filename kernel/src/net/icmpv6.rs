@@ -17,7 +17,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::ipv4::{IpProtocol, data_checksum};
 use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
@@ -194,6 +194,8 @@ pub enum Icmpv6Result {
         src: Ipv6Address,
         /// Destination address
         dst: Ipv6Address,
+        /// IPv6 hop limit from fixed header
+        hop_limit: u8,
     },
     /// Packet Too Big received (Path MTU Discovery)
     PacketTooBig {
@@ -225,6 +227,8 @@ pub struct Icmpv6Stats {
     pub checksum_errors: AtomicU64,
     /// Total messages transmitted
     pub tx_messages: AtomicU64,
+    /// Total messages dropped due to rate limit
+    pub dropped_rate_limit: AtomicU64,
 }
 
 // =====================================================
@@ -237,6 +241,10 @@ pub struct Icmpv6Processor {
     echo_enabled: bool,
     /// Statistics
     stats: Icmpv6Stats,
+    /// Rate limiting: last time an echo reply was sent (ms)
+    last_echo_reply_time: AtomicU64,
+    /// Rate limiting: tokens for bucket
+    echo_reply_tokens: AtomicU32,
 }
 
 impl Icmpv6Processor {
@@ -245,6 +253,8 @@ impl Icmpv6Processor {
         Self {
             echo_enabled,
             stats: Icmpv6Stats::default(),
+            last_echo_reply_time: AtomicU64::new(0),
+            echo_reply_tokens: AtomicU32::new(10), // Initial burst capacity
         }
     }
 
@@ -258,7 +268,15 @@ impl Icmpv6Processor {
     ///
     /// `data` is the ICMPv6 payload (after IPv6 header + extension headers)
     /// `src` and `dst` are the IPv6 addresses from the enclosing IPv6 header
-    pub fn process(&self, data: &[u8], src: Ipv6Address, dst: Ipv6Address) -> Icmpv6Result {
+    /// `hop_limit` is the IPv6 hop limit from the fixed header
+    pub fn process(
+        &self,
+        data: &[u8],
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        hop_limit: u8,
+        current_time: u64,
+    ) -> Icmpv6Result {
         if data.len() < ICMPV6_HEADER_SIZE {
             return Icmpv6Result::Error;
         }
@@ -277,6 +295,27 @@ impl Icmpv6Processor {
         match msg_type {
             Icmpv6Type::EchoRequest => {
                 self.stats.rx_echo_requests.fetch_add(1, Ordering::Relaxed);
+
+                // Rate limiting (Token Bucket)
+                // Add 1 token per 100ms
+                let last_time = self.last_echo_reply_time.load(Ordering::Relaxed);
+                let elapsed = current_time.saturating_sub(last_time);
+                let new_tokens = (elapsed / 100) as u32;
+                
+                if new_tokens > 0 {
+                    let old_tokens = self.echo_reply_tokens.load(Ordering::Relaxed);
+                    let val = (old_tokens + new_tokens).min(20);
+                    self.echo_reply_tokens.store(val, Ordering::Relaxed);
+                    self.last_echo_reply_time.store(current_time, Ordering::Relaxed);
+                }
+
+                let current_tokens = self.echo_reply_tokens.load(Ordering::Relaxed);
+                if current_tokens == 0 {
+                    self.stats.dropped_rate_limit.fetch_add(1, Ordering::Relaxed);
+                    return Icmpv6Result::Dropped;
+                }
+                self.echo_reply_tokens.fetch_sub(1, Ordering::Relaxed);
+
                 self.handle_echo_request(data, src, dst)
             }
             Icmpv6Type::EchoReply => {
@@ -298,6 +337,7 @@ impl Icmpv6Processor {
                     data: data.to_vec(),
                     src,
                     dst,
+                    hop_limit,
                 }
             }
             _ => {
@@ -558,7 +598,7 @@ pub mod tests {
         let msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 100, 5, &[0xAB]);
 
         // Process it
-        let result = processor.process(&msg, src, dst);
+        let result = processor.process(&msg, src, dst, 64, 100);
         match result {
             Icmpv6Result::SendEchoReply { dst: reply_dst, identifier, sequence, data } => {
                 assert_eq!(reply_dst, src);
@@ -577,7 +617,7 @@ pub mod tests {
         let dst = Ipv6Address::LOOPBACK;
 
         let msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 1, 1, &[]);
-        let result = processor.process(&msg, src, dst);
+        let result = processor.process(&msg, src, dst, 64, 100);
         assert!(matches!(result, Icmpv6Result::Dropped));
     }
 
@@ -591,7 +631,7 @@ pub mod tests {
         let mut msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 1, 1, &[]);
         msg[2] ^= 0xFF; // corrupt checksum
 
-        let result = processor.process(&msg, src, dst);
+        let result = processor.process(&msg, src, dst, 64, 100);
         assert!(matches!(result, Icmpv6Result::Dropped));
     }
 
@@ -616,7 +656,7 @@ pub mod tests {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        let result = processor.process(&msg, src, dst);
+        let result = processor.process(&msg, src, dst, 255, 100);
         match result {
             Icmpv6Result::NdpMessage { msg_type, .. } => {
                 assert_eq!(msg_type, Icmpv6Type::NeighborSolicitation);

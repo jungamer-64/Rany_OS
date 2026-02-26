@@ -167,6 +167,7 @@ impl EthernetHeader {
 
 /// Zero-copy Ethernet frame view
 pub struct EthernetFrame<'a> {
+    header: &'a EthernetHeader,
     /// Raw frame data
     data: &'a [u8],
 }
@@ -181,18 +182,13 @@ impl<'a> EthernetFrame<'a> {
 
     /// Parse an Ethernet frame from raw bytes (zero-copy)
     pub fn parse(data: &'a [u8]) -> Option<Self> {
-        if data.len() < EthernetHeader::SIZE {
-            return None;
-        }
-        Some(EthernetFrame { data })
+        let header = crate::util::get_ref::<EthernetHeader>(data, 0)?;
+        Some(EthernetFrame { header, data })
     }
 
     /// Get the Ethernet header
     pub fn header(&self) -> &EthernetHeader {
-        // SAFETY: We verified the length in parse(). Use the centralized helper
-        // to obtain a typed reference with bounds and alignment checks.
-        crate::util::get_ref::<EthernetHeader>(self.data, 0)
-            .expect("Ethernet header slice out of bounds")
+        self.header
     }
 
     /// Get destination MAC address
@@ -242,27 +238,25 @@ impl<'a> EthernetFrameMut<'a> {
     }
 
     /// Get mutable header
-    pub fn header_mut(&mut self) -> &mut EthernetHeader {
-        // SAFETY: Buffer is large enough (checked in new()). Use centralized helper.
+    pub fn header_mut(&mut self) -> Option<&mut EthernetHeader> {
         crate::util::get_mut_ref::<EthernetHeader>(self.data, 0)
-            .expect("Ethernet header slice out of bounds")
     }
 
     /// Set destination MAC address
     pub fn set_destination(&mut self, mac: MacAddress) -> &mut Self {
-        self.header_mut().set_destination(mac);
+        if let Some(h) = self.header_mut() { h.set_destination(mac); }
         self
     }
 
     /// Set source MAC address
     pub fn set_source(&mut self, mac: MacAddress) -> &mut Self {
-        self.header_mut().set_source(mac);
+        if let Some(h) = self.header_mut() { h.set_source(mac); }
         self
     }
 
     /// Set EtherType
     pub fn set_ether_type(&mut self, ether_type: EtherType) -> &mut Self {
-        self.header_mut().set_ether_type(ether_type);
+        if let Some(h) = self.header_mut() { h.set_ether_type(ether_type); }
         self
     }
 

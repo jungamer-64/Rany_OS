@@ -578,6 +578,10 @@ impl TlsConnection {
         };
 
         let digest = match hash_alg {
+            crate::net::rsa::HashAlgorithm::Sha1 => {
+                let h = crate::net::tls::crypto::legacy::sha1_compute(message);
+                h.to_vec()
+            }
             crate::net::rsa::HashAlgorithm::Sha256 => {
                 let h = crate::loader::sha256::compute(message);
                 h.to_vec()
@@ -614,6 +618,10 @@ impl TlsConnection {
         };
 
         let digest = match hash_alg {
+            crate::net::rsa::HashAlgorithm::Sha1 => {
+                let h = crate::net::tls::crypto::legacy::sha1_compute(message);
+                h.to_vec()
+            }
             crate::net::rsa::HashAlgorithm::Sha256 => {
                 let h = crate::loader::sha256::compute(message);
                 h.to_vec()

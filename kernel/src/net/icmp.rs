@@ -456,6 +456,10 @@ pub struct IcmpProcessor {
     _local_ip: Ipv4Address,
     /// Statistics
     stats: IcmpStats,
+    /// Rate limiting: last time an echo reply was sent (ms)
+    last_echo_reply_time: u64,
+    /// Rate limiting: tokens for bucket
+    echo_reply_tokens: u32,
 }
 
 /// ICMP statistics

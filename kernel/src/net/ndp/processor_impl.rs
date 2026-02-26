@@ -203,6 +203,12 @@ impl NdpProcessor {
         _dst: Ipv6Address,
         current_time: u64,
     ) -> NdpResult {
+        // Security (RFC 4861 Section 6.1.2): Source address MUST be a link-local address.
+        if !src.is_link_local() {
+            log::warn!("NDP: Dropping RA from non-link-local address {}", src);
+            return NdpResult::Error;
+        }
+
         if data.len() < 16 {
             // RA minimum: type(1) + code(1) + checksum(2) + cur_hop_limit(1) +
             // flags(1) + router_lifetime(2) + reachable_time(4) + retrans_timer(4) = 16

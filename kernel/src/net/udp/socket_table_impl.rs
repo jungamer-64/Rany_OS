@@ -42,7 +42,7 @@ impl UdpSocketTable {
 
                 let inner = Arc::new(PoisonLock::new(UdpSocketInner {
                     local_port: port,
-                    rx_packet_queue: VecDeque::new(),
+                    rx_packet_queue: VecDeque::with_capacity(64),
                     wakers: Vec::new(),
                     closed: false,
                     token,
@@ -124,14 +124,19 @@ impl UdpSocketTable {
                         return false;
                     }
 
-                    inner.rx_packet_queue.push_back((src, packet));
+                    if inner.rx_packet_queue.len() < 64 {
+                        inner.rx_packet_queue.push_back((src, packet));
 
-                    for waker in inner.wakers.drain(..) {
-                        waker.wake();
+                        for waker in inner.wakers.drain(..) {
+                            waker.wake();
+                        }
+
+                        self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+                        true
+                    } else {
+                        self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                        false
                     }
-
-                    self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-                    true
                 }
                 Err(_) => {
                     log::error!("[NET] UDP Socket poisoned during deliver - dropping packet");

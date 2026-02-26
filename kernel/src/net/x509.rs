@@ -375,11 +375,12 @@ impl<'a> DerParser<'a> {
     pub fn read_tlv(&mut self) -> Option<(u8, &'a [u8])> {
         let tag = self.read_tag()?;
         let length = self.read_length()?;
-        if self.pos + length > self.data.len() {
+        let end_pos = self.pos.checked_add(length)?;
+        if end_pos > self.data.len() {
             return None;
         }
-        let value = &self.data[self.pos..self.pos + length];
-        self.pos += length;
+        let value = &self.data[self.pos..end_pos];
+        self.pos = end_pos;
         Some((tag, value))
     }
 

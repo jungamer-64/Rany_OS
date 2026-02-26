@@ -438,12 +438,12 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
     }
 
     /// Process ICMP packet
-    pub(super) fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64, _packet: PacketRef) {
+    pub(super) fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, _ttl: u8, current_time: u64, _packet: PacketRef) {
         if !self.icmp_echo_enabled() {
             return;
         }
 
-        let result = self.icmp.process(data, src_ip);
+        let result = self.icmp.process(data, src_ip, current_time);
 
         match result {
             IcmpResult::SendEchoReply {
@@ -815,24 +815,32 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
         // Extract the original destination IP from the embedded IP header
         // The original IP header starts at byte 8 of the ICMP message
         const ORIGINAL_IP_OFFSET: usize = 8;
+        const IP_SRC_OFFSET: usize = 12; // Source IP starts at byte 12 of IP header
         const IP_DST_OFFSET: usize = 16; // Destination IP starts at byte 16 of IP header
-        let total_offset = ORIGINAL_IP_OFFSET + IP_DST_OFFSET;
         
-        if data.len() < total_offset + 4 {
+        if data.len() < ORIGINAL_IP_OFFSET + IP_DST_OFFSET + 4 {
             return;
         }
 
-        let dst_octets = [
-            data[total_offset],
-            data[total_offset + 1],
-            data[total_offset + 2],
-            data[total_offset + 3],
-        ];
+        // Security check: Verify original source matches our address
+        let src_total_offset = ORIGINAL_IP_OFFSET + IP_SRC_OFFSET;
+        let original_src = Ipv4Address::from_octets(
+            data[src_total_offset],
+            data[src_total_offset + 1],
+            data[src_total_offset + 2],
+            data[src_total_offset + 3],
+        );
+        if original_src != self.config.ipv4.address && !original_src.is_any() {
+            // Ignore redirects/errors for packets we didn't send
+            return;
+        }
+
+        let dst_total_offset = ORIGINAL_IP_OFFSET + IP_DST_OFFSET;
         let original_dst = Ipv4Address::from_octets(
-            dst_octets[0],
-            dst_octets[1],
-            dst_octets[2],
-            dst_octets[3],
+            data[dst_total_offset],
+            data[dst_total_offset + 1],
+            data[dst_total_offset + 2],
+            data[dst_total_offset + 3],
         );
 
         // Update the PMTU cache
@@ -1015,12 +1023,7 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
         let stream = self.tcp.connect(local_addr, remote_addr)?;
         
         // Send initial SYN
-        let initial_seq = {
-             match stream.tcb.lock() {
-                Ok(tcb) => tcb.snd_nxt,
-                Err(_) => return Err(TcpError::InvalidState),
-             }
-        };
+        let initial_seq = stream.initial_seq()?;
         
         // crate::net::tcp::send_syn_packet(local_addr, remote_addr, initial_seq);
         // DEADLOCK AVOIDANCE: send_syn_packet locks NETWORK_STACK, but we already hold it.

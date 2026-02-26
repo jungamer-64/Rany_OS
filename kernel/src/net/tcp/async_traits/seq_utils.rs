@@ -7,12 +7,18 @@ mod processor_impl;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) use self::processor_impl::tests;
 pub(crate) fn generate_initial_seq() -> u32 {
+    // RFC 6528: ISN should be unpredictable.
+    // We use the hardware RNG if available, mixed with tick count.
+    let random_bytes = crate::net::tls::crypto::random::generate_random();
+    let secret = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+    
     // タイムスタンプベースの値（マイクロ秒精度）
     let time_component = crate::task::timer::current_tick() as u32;
     // カウンターを追加して同一タイミングでも異なる値に
     let counter = SEQ_COUNTER.fetch_add(64000, Ordering::Relaxed);
-    // XORで混合
-    time_component ^ counter ^ 0x5A5A5A5A
+    
+    // Mix them
+    time_component.wrapping_add(counter).wrapping_add(secret)
 }
 
 /// ポートが使用中か確認
@@ -69,18 +75,19 @@ pub(crate) fn send_tcp_packet(
     }
 
     // チェックサム計算 + 送信 (IPv6対応)
-    if local.is_ipv6() || remote.is_ipv6() {
-        // IPv6 path
-        let src_v6 = local.as_ipv6();
-        let dst_v6 = remote.as_ipv6();
-        calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
-        crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
-    } else {
-        // IPv4 path
-        calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
-        let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
-        let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
-        crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+    match (local.as_ipv4(), remote.as_ipv4()) {
+        (Some(src_v4), Some(dst_v4)) => {
+            calculate_tcp_checksum(&mut segment, src_v4.0, dst_v4.0);
+            let src_ip = crate::net::ipv4::Ipv4Address::new(src_v4.0);
+            let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4.0);
+            crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+        }
+        _ => {
+            let src_v6 = local.as_ipv6();
+            let dst_v6 = remote.as_ipv6();
+            calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
+            crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+        }
     }
 }
 
@@ -247,16 +254,19 @@ pub(crate) fn send_tcp_packet_with_options(
     }
 
     // チェックサム計算 + 送信 (IPv6対応)
-    if local.is_ipv6() || remote.is_ipv6() {
-        let src_v6 = local.as_ipv6();
-        let dst_v6 = remote.as_ipv6();
-        calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
-        crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
-    } else {
-        calculate_tcp_checksum(&mut segment, local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
-        let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap().0);
-        let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap().0);
-        crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+    match (local.as_ipv4(), remote.as_ipv4()) {
+        (Some(src_v4), Some(dst_v4)) => {
+            calculate_tcp_checksum(&mut segment, src_v4.0, dst_v4.0);
+            let src_ip = crate::net::ipv4::Ipv4Address::new(src_v4.0);
+            let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4.0);
+            crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+        }
+        _ => {
+            let src_v6 = local.as_ipv6();
+            let dst_v6 = remote.as_ipv6();
+            calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
+            crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+        }
     }
 }
 
@@ -400,8 +410,10 @@ pub fn process_incoming_packet(packet: PacketRef) {
     }
 
     // Ethernetヘッダ解析
-    let eth_header = crate::util::get_ref::<EthernetHeader>(data, 0)
-        .expect("Ethernet header slice out of bounds");
+    let eth_header = match crate::util::get_ref::<EthernetHeader>(data, 0) {
+        Some(h) => h,
+        None => return,
+    };
 
     let ethertype = u16::from_be(eth_header.ethertype);
     let ip_offset = EthernetHeader::HEADER_LEN;
@@ -429,8 +441,10 @@ pub(crate) fn process_arp_packet(offset: usize, packet: &PacketRef) {
     }
 
     let arp_data = &data[offset..];
-    let arp_packet =
-        crate::util::get_ref::<ArpPacket>(arp_data, 0).expect("ARP packet slice out of bounds");
+    let arp_packet = match crate::util::get_ref::<ArpPacket>(arp_data, 0) {
+        Some(p) => p,
+        None => return,
+    };
 
     // ARPリクエストに応答
     let operation_value = u16::from_be_bytes([arp_packet.operation[0], arp_packet.operation[1]]);
@@ -462,8 +476,10 @@ pub(crate) fn process_ipv4_packet(ip_offset: usize, packet: &PacketRef) {
     }
 
     let ip_data = &data[ip_offset..];
-    let ip_header =
-        crate::util::get_ref::<Ipv4Header>(ip_data, 0).expect("IPv4 header slice out of bounds");
+    let ip_header = match crate::util::get_ref::<Ipv4Header>(ip_data, 0) {
+        Some(h) => h,
+        None => return,
+    };
 
     let header_len = ip_header.header_len();
     let tcp_offset = ip_offset + header_len;

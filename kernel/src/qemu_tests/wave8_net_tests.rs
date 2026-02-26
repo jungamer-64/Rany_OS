@@ -269,9 +269,7 @@ pub fn net_tls_wave8_rsa_biguint_mul_div_smoke() -> bool {
 pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     use crate::net::driver_bridge;
     use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
-    use crate::net::tcp::{
-        Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
-    };
+    use crate::net::tcp::{Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock};
     use crate::net::{self, VirtioNetHeader, mempool, stack};
     use crate::sync::PoisonLock;
 
@@ -285,9 +283,9 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
 
     let mut tcb = TcpControlBlock::new(local);
-    tcb.remote_addr = Some(remote);
-    tcb.state = TcpState::Established;
-    tcb.rcv_nxt = 1;
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
+    tcb.set_rcv_nxt(1);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
 
     match stack::stack().lock() {
@@ -358,11 +356,11 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     driver_bridge::check_batch_timeout(100_000, 1);
 
     if let Ok(guard) = tcb_arc.lock() {
-        if guard.recv_buffer.is_empty() {
+        if guard.recv_buffer_is_empty() {
             return false;
         }
-        if let Some(first) = guard.recv_buffer.front() {
-            first.data() == payload
+        if let Some(first) = guard.recv_buffer_front_data() {
+            first == payload
         } else {
             false
         }
@@ -374,7 +372,7 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
 pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
     use crate::net::driver_bridge;
     use crate::net::ipv6::{Ipv6Address, Ipv6PacketMut};
-    use crate::net::tcp::{SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState};
+    use crate::net::tcp::{SocketAddr as TcpSocketAddr, TcpControlBlock};
     use crate::net::{self, VirtioNetHeader, mempool, stack, IpProtocol};
     use crate::sync::PoisonLock;
 
@@ -388,9 +386,9 @@ pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
     let remote = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK, 2000);
 
     let mut tcb = TcpControlBlock::new(local);
-    tcb.remote_addr = Some(remote);
-    tcb.state = TcpState::Established;
-    tcb.rcv_nxt = 1;
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
+    tcb.set_rcv_nxt(1);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
 
     match stack::stack().lock() {
@@ -454,9 +452,9 @@ pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
     driver_bridge::check_batch_timeout(100_000, 1);
 
     if let Ok(guard) = tcb_arc.lock() {
-        if guard.recv_buffer.is_empty() { return false; }
-        if let Some(first) = guard.recv_buffer.front() {
-            first.data() == payload
+        if guard.recv_buffer_is_empty() { return false; }
+        if let Some(first) = guard.recv_buffer_front_data() {
+            first == payload
         } else {
             false
         }

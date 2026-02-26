@@ -47,7 +47,7 @@ pub use tcb::{TcbTable, TcpConnectionSnapshot, TcpConnectionState, TcpControlBlo
 
 // Re-exports: retransmit
 pub use retransmit::{
-    RetransmitQueue, RtoCalculator, UnackedSegment, check_retransmit_timeouts,
+    RetransmitQueue, RtoCalculator, check_retransmit_timeouts,
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_push,
     retransmit_queue_remove,
 };

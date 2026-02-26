@@ -465,7 +465,11 @@ pub fn process_received_packet_zero_copy_for_interface(
     {
         let data = packet.data_mut();
         if let Some(mut eth) = crate::net::ethernet::EthernetFrameMut::new(data) {
-            if eth.header_mut().ether_type() == crate::net::ethernet::EtherType::Ipv4 {
+            let is_ipv4 = eth
+                .header_mut()
+                .map(|hdr| hdr.ether_type() == crate::net::ethernet::EtherType::Ipv4)
+                .unwrap_or(false);
+            if is_ipv4 {
                 let ip_buf = eth.payload_mut();
                 let parsed = crate::net::ipv4::Ipv4Packet::parse(ip_buf).map(|ip_pkt| {
                     (
@@ -866,7 +870,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::net::{mempool, stack};
     use crate::net::ipv4::{Ipv4PacketMut, Ipv4Address, IpProtocol};
-    use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr};
+    use crate::net::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr};
     use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
     use crate::net::manager;
@@ -939,9 +943,9 @@ pub(crate) mod tests {
         remote: TcpSocketAddr,
     ) -> Option<alloc::sync::Arc<PoisonLock<TcpControlBlock>>> {
         let mut tcb = TcpControlBlock::new(local);
-        tcb.remote_addr = Some(remote);
-        tcb.state = TcpState::Established;
-        tcb.rcv_nxt = 1;
+        tcb.set_remote_addr(remote);
+        tcb.enter_established();
+        tcb.set_rcv_nxt(1);
         let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
 
         match stack::stack().lock() {
@@ -960,7 +964,7 @@ pub(crate) mod tests {
     ) -> bool {
         check_batch_timeout(100_000, 1);
         match tcb_arc.lock() {
-            Ok(guard) => guard.recv_buffer.is_empty() && guard.state == TcpState::Established,
+            Ok(guard) => guard.recv_buffer_is_empty() && guard.is_established(),
             Err(_) => false,
         }
     }
@@ -1130,9 +1134,9 @@ pub(crate) mod tests {
         let remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 2000);
 
         let mut tcb = TcpControlBlock::new(local);
-        tcb.remote_addr = Some(remote);
-        tcb.state = TcpState::Established;
-        tcb.rcv_nxt = 1;
+        tcb.set_remote_addr(remote);
+        tcb.enter_established();
+        tcb.set_rcv_nxt(1);
         let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
 
         // Insert into stack's tcp connections
@@ -1213,9 +1217,8 @@ pub(crate) mod tests {
 
         // Now verify TCB received the payload zero-copy
         if let Ok(guard) = tcb_arc.lock() {
-            assert!(!guard.recv_buffer.is_empty());
-            let first = guard.recv_buffer.front().unwrap();
-            assert_eq!(first.data(), payload);
+            assert!(!guard.recv_buffer_is_empty());
+            assert_eq!(guard.recv_buffer_front_data().unwrap(), payload);
         } else {
             panic!("TCB lock poisoned in test");
         }
@@ -1460,9 +1463,9 @@ pub(crate) mod tests {
         let remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 2000);
 
         let mut tcb = TcpControlBlock::new(local);
-        tcb.remote_addr = Some(remote);
-        tcb.state = TcpState::Established;
-        tcb.rcv_nxt = 1;
+        tcb.set_remote_addr(remote);
+        tcb.enter_established();
+        tcb.set_rcv_nxt(1);
         let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
 
         // Insert into stack's tcp connections
@@ -1538,9 +1541,8 @@ pub(crate) mod tests {
 
         // Now verify TCB received the payload zero-copy
         if let Ok(guard) = tcb_arc.lock() {
-            assert!(!guard.recv_buffer.is_empty());
-            let first = guard.recv_buffer.front().unwrap();
-            assert_eq!(first.data(), payload);
+            assert!(!guard.recv_buffer_is_empty());
+            assert_eq!(guard.recv_buffer_front_data().unwrap(), payload);
         } else {
             panic!("TCB lock poisoned in test");
         }

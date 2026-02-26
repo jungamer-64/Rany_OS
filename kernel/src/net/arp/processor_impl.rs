@@ -40,8 +40,11 @@ impl ArpProcessor {
         let sender_ip = packet.sender_ip();
         let target_ip = packet.target_ip();
 
-        // Update cache with sender info (opportunistic update)
-        if !sender_ip.is_any() && !sender_mac.is_broadcast() {
+        // Security: Only update cache if it's a direct ARP reply or a request for us.
+        // We avoid caching ARP traffic between other hosts (passive poisoning).
+        let is_relevant = target_ip == self.local_ip || packet.operation() == ArpOperation::Reply;
+
+        if is_relevant && !sender_ip.is_any() && !sender_mac.is_broadcast() {
             self.cache.insert(sender_ip, sender_mac, current_time);
         }
 

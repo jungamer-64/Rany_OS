@@ -132,6 +132,9 @@ impl Ipv6FragmentBuffer {
     /// Maximum reassembled payload (just under 64 KB, accounting for headers)
     const MAX_PAYLOAD: usize = 65535;
 
+    /// Maximum number of holes allowed in the reassembly buffer
+    const MAX_HOLES: usize = 64;
+
     /// Timeout for reassembly (RFC 8200 recommends 60 seconds)
     const TIMEOUT_MS: u64 = 60_000;
 
@@ -173,9 +176,26 @@ impl Ipv6FragmentBuffer {
         payload: &[u8],
     ) -> bool {
         let offset = frag.offset_bytes();
-        let end = offset + payload.len() as u32;
+        let payload_len = payload.len() as u32;
+        let end = offset + payload_len;
 
         if end as usize > Self::MAX_PAYLOAD {
+            return false;
+        }
+
+        // RFC 8200 overlap check: if any of the fragments overlap, discard entire datagram.
+        // We detect overlap if the fragment range [offset, end) covers any byte that
+        // is not currently in a hole.
+        let mut covered_hole_bytes: u32 = 0;
+        for hole in &self.holes {
+            let intersection_start = offset.max(hole.first);
+            let intersection_end = end.min(hole.last);
+            if intersection_start < intersection_end {
+                covered_hole_bytes += intersection_end - intersection_start;
+            }
+        }
+        if covered_hole_bytes < payload_len {
+            // Overlap detected with already received data
             return false;
         }
 
@@ -204,6 +224,12 @@ impl Ipv6FragmentBuffer {
 
         // RFC 815 hole-list update
         self.update_holes(offset, end, frag.more_fragments);
+
+        // Check for hole list exhaustion attack
+        if self.holes.len() > Self::MAX_HOLES {
+            return false;
+        }
+
         self.trim_holes();
 
         true

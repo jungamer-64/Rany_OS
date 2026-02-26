@@ -88,7 +88,7 @@ pub fn test_process_query_for_our_hostname() {
     let query_len =
         MdnsService::build_query(&mut query_buf, "myhost.local").expect("build_query");
 
-    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 100);
+    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 255, 100);
 
     match result {
         MdnsResult::SendResponse { name, ip, ttl } => {
@@ -110,7 +110,7 @@ pub fn test_process_query_for_other_hostname() {
     let query_len =
         MdnsService::build_query(&mut query_buf, "otherhost.local").expect("build_query");
 
-    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 100);
+    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 255, 100);
 
     match result {
         MdnsResult::Ignored => {} // expected
@@ -133,7 +133,7 @@ pub fn test_process_response_updates_cache() {
     )
     .expect("build_response");
 
-    let result = service.process_packet(&resp_buf[..resp_len], Ipv4Address::new([10, 0, 0, 42]), 1000);
+    let result = service.process_packet(&resp_buf[..resp_len], Ipv4Address::new([10, 0, 0, 42]), 255, 1000);
 
     match result {
         MdnsResult::Resolved { name, ip } => {
@@ -193,7 +193,7 @@ pub fn test_invalid_packet_too_short() {
 
     // Packet shorter than DNS header
     let short_data = [0u8; 6];
-    let result = service.process_packet(&short_data, Ipv4Address::new([10, 0, 0, 1]), 0);
+    let result = service.process_packet(&short_data, Ipv4Address::new([10, 0, 0, 1]), 0, 0);
 
     match result {
         MdnsResult::InvalidPacket => {} // expected
@@ -269,6 +269,7 @@ pub fn test_roundtrip_query_response() {
     let result = server.process_packet(
         &query_buf[..query_len],
         Ipv4Address::new([192, 168, 1, 20]),
+        255,
         1000,
     );
 
@@ -284,6 +285,7 @@ pub fn test_roundtrip_query_response() {
             let client_result = client.process_packet(
                 &resp_buf[..resp_len],
                 Ipv4Address::new([192, 168, 1, 10]),
+                255,
                 1000,
             );
 
@@ -302,4 +304,19 @@ pub fn test_roundtrip_query_response() {
         }
         _ => panic!("Expected SendResponse"),
     }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_mdns_reject_invalid_ttl() {
+    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut query_buf = [0u8; 256];
+    let query_len = MdnsService::build_query(&mut query_buf, "myhost.local").expect("build_query");
+
+    // TTL 64 should be ignored
+    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 64, 100);
+    assert!(matches!(result, MdnsResult::Ignored));
+
+    // TTL 255 should be accepted
+    let result = service.process_packet(&query_buf[..query_len], Ipv4Address::new([10, 0, 0, 1]), 255, 100);
+    assert!(matches!(result, MdnsResult::SendResponse { .. }));
 }

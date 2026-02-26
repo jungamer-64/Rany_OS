@@ -235,26 +235,7 @@ impl Future for RecvPacketFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
-        match this.stream.tcb.lock() {
-            Ok(mut tcb) => {
-                if tcb.state == crate::net::tcp::TcpState::Closed {
-                    return Poll::Ready(None);
-                }
-
-                if let Some(packet) = tcb.recv_buffer.pop_front() {
-                    let len = packet.data().len();
-                    tcb.stats.bytes_received += len as u64;
-                    return Poll::Ready(Some(packet));
-                }
-
-                tcb.read_waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            Err(_) => {
-                log::error!("[NET] TCP TCB poisoned (recv_packet) - returning None");
-                Poll::Ready(None)
-            }
-        }
+        this.stream.poll_recv_zero_copy(cx)
     }
 }
 
@@ -459,7 +440,7 @@ pub mod qemu_tests {
         use alloc::sync::Arc;
         use crate::sync::PoisonLock;
         use crate::net::tcp::{
-            Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
+            Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock,
             TcpStream,
         };
 
@@ -467,8 +448,8 @@ pub mod qemu_tests {
         let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
 
         let mut tcb = TcpControlBlock::new(t_local);
-        tcb.remote_addr = Some(t_remote);
-        tcb.state = TcpState::Established;
+        tcb.set_remote_addr(t_remote);
+        tcb.enter_established();
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
         let stream = TcpStream { tcb: tcb_arc.clone() };
 
@@ -507,7 +488,7 @@ pub mod qemu_tests {
         use alloc::sync::Arc;
         use crate::sync::PoisonLock;
         use crate::net::tcp::{
-            Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock, TcpState,
+            Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock,
             TcpStream,
         };
 
@@ -515,8 +496,8 @@ pub mod qemu_tests {
         let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
 
         let mut tcb = TcpControlBlock::new(t_local);
-        tcb.remote_addr = Some(t_remote);
-        tcb.state = TcpState::Established;
+        tcb.set_remote_addr(t_remote);
+        tcb.enter_established();
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
         let stream = TcpStream { tcb: tcb_arc.clone() };
 

@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 
@@ -118,8 +118,8 @@ unsafe impl Sync for BufferSlot {}
 struct MemoryPoolInner {
     id: PoolId,
     slots: Vec<BufferSlot>,
-    global_free: Mutex<Vec<u32>>,
-    local_free: Vec<Mutex<Vec<u32>>>,
+    global_free: PoisonLock<Vec<u32>>,
+    local_free: Vec<PoisonLock<Vec<u32>>>,
     stats: PoolStats,
 }
 
@@ -131,13 +131,14 @@ impl MemoryPoolInner {
 
     fn alloc_slot_index(&self) -> Option<u32> {
         if let Some(cpu_idx) = self.cpu_local_cache_index() {
-            if let Some(idx) = self.local_free[cpu_idx].lock().pop() {
-                return Some(idx);
+            if let Ok(mut local) = self.local_free[cpu_idx].lock() {
+                if let Some(idx) = local.pop() {
+                    return Some(idx);
+                }
             }
 
             let mut batch = Vec::with_capacity(LOCAL_FREE_REFILL_BATCH);
-            {
-                let mut global = self.global_free.lock();
+            if let Ok(mut global) = self.global_free.lock() {
                 for _ in 0..LOCAL_FREE_REFILL_BATCH {
                     let Some(idx) = global.pop() else {
                         break;
@@ -148,49 +149,61 @@ impl MemoryPoolInner {
 
             if let Some(idx) = batch.pop() {
                 if !batch.is_empty() {
-                    let mut local = self.local_free[cpu_idx].lock();
-                    local.extend(batch);
+                    if let Ok(mut local) = self.local_free[cpu_idx].lock() {
+                        local.extend(batch);
+                    }
                 }
                 return Some(idx);
             }
             return None;
         }
 
-        self.global_free.lock().pop()
+        if let Ok(mut global) = self.global_free.lock() {
+            global.pop()
+        } else {
+            None
+        }
     }
 
     fn return_slot_index(&self, idx: u32) {
         if let Some(cpu_idx) = self.cpu_local_cache_index() {
             let spill = {
-                let mut local = self.local_free[cpu_idx].lock();
-                if local.len() < LOCAL_FREE_CACHE_CAPACITY {
-                    local.push(idx);
-                    return;
-                }
+                if let Ok(mut local) = self.local_free[cpu_idx].lock() {
+                    if local.len() < LOCAL_FREE_CACHE_CAPACITY {
+                        local.push(idx);
+                        return;
+                    }
 
-                let mut batch = Vec::with_capacity(LOCAL_FREE_SPILL_BATCH);
-                batch.push(idx);
-                while batch.len() < LOCAL_FREE_SPILL_BATCH {
-                    let Some(entry) = local.pop() else {
-                        break;
-                    };
-                    batch.push(entry);
+                    let mut batch = Vec::with_capacity(LOCAL_FREE_SPILL_BATCH);
+                    batch.push(idx);
+                    while batch.len() < LOCAL_FREE_SPILL_BATCH {
+                        let Some(entry) = local.pop() else {
+                            break;
+                        };
+                        batch.push(entry);
+                    }
+                    batch
+                } else {
+                    Vec::new()
                 }
-                batch
             };
 
             let mut spill = spill;
-            self.global_free.lock().append(&mut spill);
+            if let Ok(mut global) = self.global_free.lock() {
+                global.append(&mut spill);
+            }
             return;
         }
 
-        self.global_free.lock().push(idx);
+        if let Ok(mut global) = self.global_free.lock() {
+            global.push(idx);
+        }
     }
 
     fn available(&self) -> usize {
-        let mut total = self.global_free.lock().len();
+        let mut total = self.global_free.lock().map(|g| g.len()).unwrap_or(0);
         for cache in &self.local_free {
-            total += cache.lock().len();
+            total += cache.lock().map(|c| c.len()).unwrap_or(0);
         }
         total
     }
@@ -243,13 +256,13 @@ impl MemoryPool {
         let local_count = (crate::smp::cpu_count() as usize).max(1);
         let mut local_free = Vec::with_capacity(local_count);
         for _ in 0..local_count {
-            local_free.push(Mutex::new(Vec::with_capacity(LOCAL_FREE_CACHE_CAPACITY)));
+            local_free.push(PoisonLock::new(Vec::with_capacity(LOCAL_FREE_CACHE_CAPACITY)));
         }
 
         let inner = Arc::new(MemoryPoolInner {
             id,
             slots,
-            global_free: Mutex::new(global_free),
+            global_free: PoisonLock::new(global_free),
             local_free,
             stats: PoolStats::default(),
         });

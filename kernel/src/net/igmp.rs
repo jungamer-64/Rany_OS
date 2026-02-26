@@ -327,13 +327,15 @@ impl IgmpProcessor {
     }
 
     /// Set response timer for a group
-    fn set_response_timer(current_time: u64, group: &mut MulticastGroup, max_delay_ms: u64) {
+    fn set_response_timer(_current_time: u64, group: &mut MulticastGroup, max_delay_ms: u64) {
         if max_delay_ms == 0 {
             return;
         }
 
-        // Generate random delay (simplified: use current time as seed)
-        let random_delay = (current_time % max_delay_ms) + 1;
+        // Security: Generate better random delay to avoid synchronized multicast storms.
+        let random_bytes = crate::net::tls::crypto::random::generate_random();
+        let rand_val = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+        let random_delay = (rand_val as u64 % max_delay_ms) + 1;
 
         // Only set timer if not already running or new delay is shorter
         if group.state == GroupState::IdleMember || 

@@ -159,6 +159,9 @@ impl FragmentBuffer {
     /// Maximum reassembled packet size (64KB - IP header)
     pub const MAX_DATAGRAM_SIZE: usize = 65535;
 
+    /// Maximum number of holes allowed in the reassembly buffer
+    pub const MAX_HOLES: usize = 64;
+
     /// Fragment timeout in milliseconds (RFC 791 recommends 15-60 seconds)
     pub const TIMEOUT_MS: u64 = 30_000;
 
@@ -223,6 +226,12 @@ impl FragmentBuffer {
 
         // Update hole list (RFC 815 algorithm)
         self.update_holes(fragment_offset, fragment_end, header.more_fragments());
+
+        // Check for hole list exhaustion attack
+        if self.holes.len() > Self::MAX_HOLES {
+            return false;
+        }
+
         self.trim_holes_to_total();
 
         true
@@ -482,8 +491,10 @@ pub struct Ipv4Stats {
 
 /// Result of IPv4 packet processing
 pub enum Ipv4ProcessResult<'a> {
-    /// ICMP packet
-    Icmp(&'a [u8], Ipv4Address),
+    /// ICMP packet with source address and TTL
+    Icmp(&'a [u8], Ipv4Address, u8),
+    /// IGMP packet with source address and TTL
+    Igmp(&'a [u8], Ipv4Address, u8),
     /// TCP packet
     Tcp(&'a [u8], Ipv4Address, Ipv4Address),
     /// UDP packet
@@ -600,7 +611,8 @@ impl Ipv4Processor {
         let payload = packet.payload();
 
         match packet.protocol() {
-            IpProtocol::Icmp => Ipv4ProcessResult::Icmp(payload, src),
+            IpProtocol::Icmp => Ipv4ProcessResult::Icmp(payload, src, packet.ttl()),
+            IpProtocol::Igmp => Ipv4ProcessResult::Igmp(payload, src, packet.ttl()),
             IpProtocol::Tcp => Ipv4ProcessResult::Tcp(payload, src, dst),
             IpProtocol::Udp => Ipv4ProcessResult::Udp(payload, src, dst),
             _ => Ipv4ProcessResult::Dropped,

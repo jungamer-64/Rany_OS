@@ -72,8 +72,9 @@ impl DnsClient {
             return Err("Buffer too small");
         }
 
-        // トランザクションIDを生成
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        // トランザクションIDを生成 (RFC 5452: 予測困難なIDを使用)
+        let random_bytes = crate::net::tls::crypto::random::generate_random();
+        let id = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
 
         // ヘッダを構築
         buffer[0..2].copy_from_slice(&id.to_be_bytes());
@@ -376,7 +377,7 @@ impl DnsClient {
         data: &[u8],
         offset: usize,
         len: u8,
-        original_offset: usize,
+        jump_count: &mut usize,
         jumped: &mut bool,
         final_offset: &mut usize,
     ) -> Result<usize, DnsResponseCode> {
@@ -387,7 +388,8 @@ impl DnsClient {
             *final_offset = offset + 2;
         }
         let pointer = ((len as usize & 0x3F) << 8) | data[offset + 1] as usize;
-        if pointer >= original_offset {
+        *jump_count += 1;
+        if *jump_count > 128 {
             return Err(DnsResponseCode::FormatError);
         }
         *jumped = true;
@@ -402,8 +404,8 @@ impl DnsClient {
     ) -> Result<(String, usize), DnsResponseCode> {
         let mut name = String::new();
         let mut jumped = false;
-        let original_offset = offset;
         let mut final_offset = offset;
+        let mut jump_count = 0;
 
         loop {
             if offset >= data.len() {
@@ -421,7 +423,7 @@ impl DnsClient {
 
             if len & 0xC0 == 0xC0 {
                 offset = self.follow_compression_pointer(
-                    data, offset, len, original_offset, &mut jumped, &mut final_offset,
+                    data, offset, len, &mut jump_count, &mut jumped, &mut final_offset,
                 )?;
                 continue;
             }

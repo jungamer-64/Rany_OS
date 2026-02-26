@@ -15,6 +15,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use crate::net::mempool::{PacketRef, alloc_packet};
 use crate::sync::PoisonLock;
 use super::types::SocketAddr;
 
@@ -36,7 +37,7 @@ struct OooSegment {
 /// 接続ごとのOOOキュー
 struct ConnectionOooQueue {
     /// シーケンス番号順にソートされたセグメント
-    segments: BTreeMap<u32, Vec<u8>>,
+    segments: BTreeMap<u32, PacketRef>,
 }
 
 impl ConnectionOooQueue {
@@ -47,7 +48,7 @@ impl ConnectionOooQueue {
     }
 
     /// セグメントを挿入
-    fn insert(&mut self, seq: u32, data: &[u8]) {
+    fn insert(&mut self, seq: u32, data: PacketRef) {
         if self.segments.len() >= MAX_OOO_SEGMENTS {
             // キュー満杯: 最も遠いセグメントを破棄
             if let Some((&last_key, _)) = self.segments.iter().next_back() {
@@ -59,38 +60,36 @@ impl ConnectionOooQueue {
                 }
             }
         }
-        self.segments.insert(seq, data.to_vec());
+        self.segments.insert(seq, data);
     }
 
     /// rcv_nxtから連続するデータをドレイン
-    ///
-    /// 返却: (ドレインされたデータ列, 新しいrcv_nxt)
-    fn drain_contiguous(&mut self, mut rcv_nxt: u32) -> (Vec<(u32, Vec<u8>)>, u32) {
-        let mut drained = Vec::new();
-
+    /// 提供されたクロージャ f() にセグメントを渡す
+    fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> u32
+    where
+        F: FnMut(u32, &[u8]),
+    {
         loop {
-            if let Some(data) = self.segments.remove(&rcv_nxt) {
+            if let Some(packet) = self.segments.remove(&rcv_nxt) {
+                let data = packet.data();
                 let data_len = data.len() as u32;
-                drained.push((rcv_nxt, data));
+                f(rcv_nxt, data);
                 rcv_nxt = rcv_nxt.wrapping_add(data_len);
             } else {
                 break;
             }
         }
-
-        (drained, rcv_nxt)
+        rcv_nxt
     }
 
     /// SACKブロックを生成（最大4ブロック、RFC 2018）
-    fn sack_blocks(&self) -> Vec<(u32, u32)> {
-        let mut blocks = Vec::new();
-        let _iter = self.segments.iter();
-
+    fn sack_blocks(&self) -> SackBlocks {
+        let mut sack = SackBlocks::new();
         let mut block_start = None;
         let mut block_end = 0u32;
 
-        for (&seq, data) in &self.segments {
-            let seg_end = seq.wrapping_add(data.len() as u32);
+        for (&seq, packet) in &self.segments {
+            let seg_end = seq.wrapping_add(packet.len() as u32);
 
             match block_start {
                 None => {
@@ -103,9 +102,9 @@ impl ConnectionOooQueue {
                         block_end = seg_end;
                     } else {
                         // 非連続 → 現在のブロックを確定
-                        blocks.push((start, block_end));
-                        if blocks.len() >= 4 {
-                            return blocks;
+                        sack.push((start, block_end));
+                        if sack.is_full() {
+                            return sack;
                         }
                         block_start = Some(seq);
                         block_end = seg_end;
@@ -115,10 +114,10 @@ impl ConnectionOooQueue {
         }
 
         if let Some(start) = block_start {
-            blocks.push((start, block_end));
+            sack.push((start, block_end));
         }
 
-        blocks
+        sack
     }
 
     fn is_empty(&self) -> bool {
@@ -127,6 +126,41 @@ impl ConnectionOooQueue {
 
     fn len(&self) -> usize {
         self.segments.len()
+    }
+}
+
+/// 固定サイズのSACKブロック構造体
+#[derive(Clone, Copy)]
+pub struct SackBlocks {
+    pub blocks: [(u32, u32); 4],
+    pub count: usize,
+}
+
+impl SackBlocks {
+    pub fn new() -> Self {
+        Self {
+            blocks: [(0, 0); 4],
+            count: 0,
+        }
+    }
+
+    pub fn push(&mut self, block: (u32, u32)) {
+        if self.count < 4 {
+            self.blocks[self.count] = block;
+            self.count += 1;
+        }
+    }
+
+    pub fn as_slice(&self) -> &[(u32, u32)] {
+        &self.blocks[..self.count]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.count == 4
     }
 }
 
@@ -161,6 +195,17 @@ pub fn insert_ooo_segment(
     seq: u32,
     data: &[u8],
 ) {
+    if data.is_empty() { return; }
+
+    let mut packet = match alloc_packet() {
+        Some(p) => p,
+        None => return, // Mempool枯渇時はOOOセグメントをドロップ
+    };
+
+    let len = data.len().min(packet.data_mut().len());
+    packet.data_mut()[..len].copy_from_slice(&data[..len]);
+    packet.set_len(len);
+
     let Ok(mut guard) = OOO_QUEUES.lock() else { return };
     let queues = guard.get_or_insert_with(BTreeMap::new);
 
@@ -173,34 +218,37 @@ pub fn insert_ooo_segment(
         .entry((local, remote))
         .or_insert_with(ConnectionOooQueue::new);
 
-    conn_queue.insert(seq, data);
+    conn_queue.insert(seq, packet);
 }
 
-/// OOOキューから連続データをドレイン
+/// OOOキューから連続データをクロージャにプッシュしてドレイン
 ///
 /// rcv_nxtが進んだ後に呼び出して、連続するセグメントを回収する。
-/// 返却: (各セグメントの(seq, data), 更新後のrcv_nxt)
-pub fn drain_ooo_contiguous(
+pub fn drain_ooo_contiguous<F>(
     local: SocketAddr,
     remote: SocketAddr,
-    rcv_nxt: u32,
-) -> (Vec<(u32, Vec<u8>)>, u32) {
+    mut rcv_nxt: u32,
+    f: F,
+) -> u32
+where
+    F: FnMut(u32, &[u8]),
+{
     let Ok(mut guard) = OOO_QUEUES.lock() else {
-        return (Vec::new(), rcv_nxt);
+        return rcv_nxt;
     };
     let Some(queues) = guard.as_mut() else {
-        return (Vec::new(), rcv_nxt);
+        return rcv_nxt;
     };
 
     if let Some(conn_queue) = queues.get_mut(&(local, remote)) {
-        let result = conn_queue.drain_contiguous(rcv_nxt);
+        rcv_nxt = conn_queue.drain_contiguous_with(rcv_nxt, f);
         // 空になったキューを削除
         if conn_queue.is_empty() {
             queues.remove(&(local, remote));
         }
-        result
+        rcv_nxt
     } else {
-        (Vec::new(), rcv_nxt)
+        rcv_nxt
     }
 }
 
@@ -208,18 +256,18 @@ pub fn drain_ooo_contiguous(
 pub fn get_sack_blocks(
     local: SocketAddr,
     remote: SocketAddr,
-) -> Vec<(u32, u32)> {
+) -> SackBlocks {
     let Ok(guard) = OOO_QUEUES.lock() else {
-        return Vec::new();
+        return SackBlocks::new();
     };
     let Some(queues) = guard.as_ref() else {
-        return Vec::new();
+        return SackBlocks::new();
     };
 
     if let Some(conn_queue) = queues.get(&(local, remote)) {
         conn_queue.sack_blocks()
     } else {
-        Vec::new()
+        SackBlocks::new()
     }
 }
 

@@ -563,23 +563,23 @@ pub fn tcp_send_buffer_bytes_decrement_on_flush_smoke() -> bool {
     // Validate the flush bookkeeping invariant directly: subtract on send attempt,
     // and restore on send failure, using the same saturating arithmetic as poll_flush().
     let local = tcp::SocketAddr::new(tcp::Ipv4Addr::new(127, 0, 0, 1), 1001);
-    let mut tcb = tcp::TcpControlBlock::new(local);
-    tcb.send_buffer_bytes = 120;
+    let _tcb = tcp::TcpControlBlock::new(local);
+    let mut queued_bytes = 120u32;
     let len = 120u32;
 
-    tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_sub(len);
-    if tcb.send_buffer_bytes != 0 {
+    queued_bytes = queued_bytes.saturating_sub(len);
+    if queued_bytes != 0 {
         return false;
     }
-    tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_add(len);
-    if tcb.send_buffer_bytes != len {
+    queued_bytes = queued_bytes.saturating_add(len);
+    if queued_bytes != len {
         return false;
     }
 
     // Underflow guard parity with saturating_sub used in poll_flush.
-    tcb.send_buffer_bytes = 8;
-    tcb.send_buffer_bytes = tcb.send_buffer_bytes.saturating_sub(64);
-    tcb.send_buffer_bytes == 0
+    queued_bytes = 8;
+    queued_bytes = queued_bytes.saturating_sub(64);
+    queued_bytes == 0
 }
 
 pub fn tcp_three_way_handshake_smoke() -> bool {
@@ -612,7 +612,7 @@ pub fn tcp_connect_timeout_expires_smoke() -> bool {
     // Keep a deterministic smoke for the timeout policy arithmetic and state target.
     let local = tcp::SocketAddr::new(tcp::Ipv4Addr::LOCALHOST, 4001);
     let mut tcb = tcp::TcpControlBlock::new(local);
-    tcb.state = tcp::TcpState::SynSent;
+    tcb.enter_syn_sent();
 
     let start_us = 0u64;
     let timeout_us = 1000u64;
@@ -621,6 +621,6 @@ pub fn tcp_connect_timeout_expires_smoke() -> bool {
     if !expired {
         return false;
     }
-    tcb.state = tcp::TcpState::Closed;
-    tcb.state == tcp::TcpState::Closed
+    tcb.close_and_wake();
+    tcb.is_closed()
 }

@@ -16,7 +16,7 @@
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 use super::mempool::PacketRef;
 
@@ -184,7 +184,7 @@ impl Default for BatchConfig {
 /// バッチプロセッサ
 pub struct BatchProcessor {
     config: BatchConfig,
-    current_batch: Mutex<PacketBatch>,
+    current_batch: PoisonLock<PacketBatch>,
     stats: BatchStats,
     last_flush_tsc: AtomicU64,
     enabled: AtomicBool,
@@ -194,7 +194,7 @@ impl BatchProcessor {
     pub const fn new(config: BatchConfig) -> Self {
         Self {
             config,
-            current_batch: Mutex::new(PacketBatch::new()),
+            current_batch: PoisonLock::new(PacketBatch::new()),
             stats: BatchStats::new(),
             last_flush_tsc: AtomicU64::new(0),
             enabled: AtomicBool::new(true),
@@ -210,7 +210,7 @@ impl BatchProcessor {
             return Some(batch);
         }
 
-        let mut batch_guard = self.current_batch.lock();
+        let Ok(mut batch_guard) = self.current_batch.lock() else { return None; };
         batch_guard.push(packet);
 
         if batch_guard.is_full() {
@@ -230,7 +230,7 @@ impl BatchProcessor {
 
     /// バッチを強制フラッシュ
     pub fn flush(&self) -> Option<PacketBatch> {
-        let mut batch_guard = self.current_batch.lock();
+        let Ok(mut batch_guard) = self.current_batch.lock() else { return None; };
         if batch_guard.is_empty() {
             return None;
         }
@@ -252,7 +252,7 @@ impl BatchProcessor {
         if elapsed_us >= self.config.max_delay_us as u64 {
             self.last_flush_tsc.store(current_tsc, Ordering::Relaxed);
             // タイムアウトしてもバッチが空なら何もしない
-             let mut batch_guard = self.current_batch.lock();
+            let Ok(mut batch_guard) = self.current_batch.lock() else { return None; };
             if !batch_guard.is_empty() {
                 let ready_batch = core::mem::take(&mut *batch_guard);
                 drop(batch_guard);
@@ -342,7 +342,7 @@ impl NumaTopology {
 /// NUMA対応メモリプール
 pub struct NumaMempool {
     /// ノードごとのメモリプール（usizeとして保持）
-    pools: Vec<Mutex<Vec<usize>>>,
+    pools: Vec<PoisonLock<Vec<usize>>>,
     /// バッファサイズ
     buffer_size: usize,
     /// トポロジー参照
@@ -375,7 +375,7 @@ impl NumaMempool {
                 }
             }
 
-            pools.push(Mutex::new(node_pool));
+            pools.push(PoisonLock::new(node_pool));
         }
 
         Self {
@@ -408,7 +408,11 @@ impl NumaMempool {
 
     fn alloc_from_node(&self, node_id: usize) -> Option<*mut u8> {
         if node_id < self.pools.len() {
-            self.pools[node_id].lock().pop().map(|addr| addr as *mut u8)
+            if let Ok(mut pool) = self.pools[node_id].lock() {
+                pool.pop().map(|addr| addr as *mut u8)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -421,7 +425,9 @@ impl NumaMempool {
     pub unsafe fn free(&self, ptr: *mut u8, cpu_id: usize) {
         let node_id = self.topology.cpu_node(cpu_id) as usize;
         if node_id < self.pools.len() {
-            self.pools[node_id].lock().push(ptr as usize);
+            if let Ok(mut pool) = self.pools[node_id].lock() {
+                pool.push(ptr as usize);
+            }
         }
     }
 }

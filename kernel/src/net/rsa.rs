@@ -446,6 +446,8 @@ impl core::fmt::Debug for BigUint {
 /// ハッシュアルゴリズム（署名検証用）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HashAlgorithm {
+    /// SHA-1 (20バイトダイジェスト)
+    Sha1,
     /// SHA-256 (32バイトダイジェスト)
     Sha256,
     /// SHA-384 (48バイトダイジェスト)
@@ -458,6 +460,7 @@ impl HashAlgorithm {
     /// ダイジェスト長（バイト）
     pub fn digest_len(self) -> usize {
         match self {
+            HashAlgorithm::Sha1 => 20,
             HashAlgorithm::Sha256 => 32,
             HashAlgorithm::Sha384 => 48,
             HashAlgorithm::Sha512 => 64,
@@ -483,6 +486,13 @@ pub struct RsaPublicKey<'a> {
 // ============================================================================
 // DigestInfo DER Prefixes (PKCS#1 v1.5)
 // ============================================================================
+
+/// SHA-1 DigestInfo DERプレフィックス (RFC 8017 Section 9.2 Notes 1)
+///
+/// 30 21 30 09 06 05 2b 0e 03 02 1a 05 00 04 14
+const DIGEST_INFO_SHA1_PREFIX: [u8; 15] = [
+    0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
+];
 
 /// SHA-256 DigestInfo DERプレフィックス (RFC 8017 Section 9.2 Notes 1)
 ///
@@ -623,6 +633,7 @@ pub fn rsa_pkcs1_verify(
 
     // DigestInfo DERプレフィックス
     let prefix = match hash_alg {
+        HashAlgorithm::Sha1 => &DIGEST_INFO_SHA1_PREFIX[..],
         HashAlgorithm::Sha256 => &DIGEST_INFO_SHA256_PREFIX[..],
         HashAlgorithm::Sha384 => &DIGEST_INFO_SHA384_PREFIX[..],
         HashAlgorithm::Sha512 => &DIGEST_INFO_SHA512_PREFIX[..],
@@ -695,14 +706,19 @@ pub fn rsa_pkcs1_encrypt(
     em.push(0x02);
 
     // PS: 非ゼロランダムバイト列 (>= 8バイト)
-    // カーネル環境では簡易PRNG (TSCベース) を使用
-    for i in 0..ps_len {
-        // 非ゼロのランダムバイトを生成
-        let mut byte = pseudo_random_byte(i as u64);
-        if byte == 0 {
-            byte = 0x42; // 非ゼロに補正
+    // セキュリティ向上のため、ハードウェア乱数生成器を使用
+    let mut ps_remaining = ps_len;
+    while ps_remaining > 0 {
+        let random_bytes = crate::net::tls::crypto::random::generate_random();
+        for &b in &random_bytes {
+            if b != 0 {
+                em.push(b);
+                ps_remaining -= 1;
+                if ps_remaining == 0 {
+                    break;
+                }
+            }
         }
-        em.push(byte);
     }
 
     em.push(0x00);

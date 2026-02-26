@@ -186,14 +186,14 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
     // Create TCB and attach a TcpStream to the socket
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
+    use crate::net::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
 
     let t_local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
     let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
-    tcb.remote_addr = Some(t_remote);
-    tcb.state = TcpState::Established;
+    tcb.set_remote_addr(t_remote);
+    tcb.enter_established();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
@@ -211,7 +211,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
 
     {
         if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.recv_buffer.push_back(packet);
+            tlock.push_recv_packet(packet);
         } else {
             panic!("TCB lock poisoned");
         }
@@ -265,14 +265,14 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     // Create TCB and attach a TcpStream to the socket (IPv6)
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, TcpStream};
+    use crate::net::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, TcpStream};
 
     let t_local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 12345);
     let t_remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
-    tcb.remote_addr = Some(t_remote);
-    tcb.state = TcpState::Established;
+    tcb.set_remote_addr(t_remote);
+    tcb.enter_established();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
@@ -290,7 +290,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
 
     {
         if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.recv_buffer.push_back(packet);
+            tlock.push_recv_packet(packet);
         } else {
             panic!("TCB lock poisoned");
         }
@@ -341,14 +341,14 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     // Create TCB and attach a TcpStream to the socket
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
+    use crate::net::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr, TcpStream};
 
     let t_local = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 12345);
     let t_remote = TcpSocketAddr::new(TcpIpv4Addr::new(127, 0, 0, 1), 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
-    tcb.remote_addr = Some(t_remote);
-    tcb.state = TcpState::Established;
+    tcb.set_remote_addr(t_remote);
+    tcb.enter_established();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
@@ -371,8 +371,8 @@ pub fn test_tcp_packet_stream_multiple_packets() {
 
     {
         if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.recv_buffer.push_back(p1);
-            tlock.recv_buffer.push_back(p2);
+            tlock.push_recv_packet(p1);
+            tlock.push_recv_packet(p2);
         } else {
             panic!("TCB lock poisoned");
         }
@@ -431,14 +431,14 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     // Create TCB and attach a TcpStream to the socket (IPv6)
     use alloc::sync::Arc;
     use crate::sync::PoisonLock;
-    use crate::net::tcp::{TcpControlBlock, TcpState, SocketAddr as TcpSocketAddr, TcpStream};
+    use crate::net::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, TcpStream};
 
     let t_local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 12345);
     let t_remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 80);
 
     let mut tcb = TcpControlBlock::new(t_local);
-    tcb.remote_addr = Some(t_remote);
-    tcb.state = TcpState::Established;
+    tcb.set_remote_addr(t_remote);
+    tcb.enter_established();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream { tcb: tcb_arc.clone() };
 
@@ -461,8 +461,8 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
 
     {
         if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.recv_buffer.push_back(p1);
-            tlock.recv_buffer.push_back(p2);
+            tlock.push_recv_packet(p1);
+            tlock.push_recv_packet(p2);
         } else {
             panic!("TCB lock poisoned");
         }

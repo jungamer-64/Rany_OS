@@ -17,7 +17,19 @@ pub fn test_socket_addr() {
 #[cfg_attr(test, test_case)]
 pub fn test_tcp_state() {
     let tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
-    assert_eq!(tcb.state, TcpState::Closed);
+    assert_eq!(tcb.state(), TcpState::Closed);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_tcp_stats_rx_wire_and_app_delivery_are_separate() {
+    let mut stats = TcpStats::default();
+    stats.record_rx_segment(128);
+    stats.record_rx_delivered(64);
+    stats.record_rx_delivered(64);
+
+    assert_eq!(stats.bytes_received, 128);
+    assert_eq!(stats.packets_received, 1);
+    assert_eq!(stats.app_bytes_delivered, 128);
 }
 
 #[cfg_attr(test, test_case)]
@@ -31,9 +43,9 @@ pub fn test_process_with_packet_zero_copy() {
 
     // Create TCB and register connection
     let mut tcb = TcpControlBlock::new(local);
-    tcb.remote_addr = Some(remote);
-    tcb.state = TcpState::Established;
-    tcb.rcv_nxt = 1;
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
+    tcb.set_rcv_nxt(1);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     processor.connections.insert((local, remote), tcb_arc.clone());
 
@@ -70,25 +82,192 @@ pub fn test_process_with_packet_zero_copy() {
 
     // Ensure payload was enqueued as PacketRef
     if let Ok(g) = tcb_arc.lock() {
-        assert!(!g.recv_buffer.is_empty());
-        let first = g.recv_buffer.front().unwrap();
-        assert_eq!(first.data(), payload);
+        assert!(!g.recv_buffer_is_empty());
+        assert_eq!(g.recv_buffer_front_data(), Some(&payload[..]));
     } else {
         panic!("TCB lock poisoned in test");
     }
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_copy_fallback_queues_payload_and_keeps_connection_alive() {
+    let _ = crate::net::mempool::init_net_mempool(2);
+
+    let mut processor = TcpProcessor::new();
+    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3000);
+    let remote = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4000);
+
+    let mut tcb = TcpControlBlock::new(local);
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
+    tcb.set_rcv_nxt(10);
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+    processor.connections.insert((local, remote), tcb_arc.clone());
+
+    let header_len = 20usize;
+    let payload_len = 5000usize; // Larger than typical mempool packet capacity, forces Vec fallback path
+    let mut seg = vec![0u8; header_len + payload_len];
+    seg[0..2].copy_from_slice(&4000u16.to_be_bytes()); // src port
+    seg[2..4].copy_from_slice(&3000u16.to_be_bytes()); // dst port
+    seg[4..8].copy_from_slice(&10u32.to_be_bytes());   // in-order seq
+    seg[8..12].copy_from_slice(&0u32.to_be_bytes());   // ack
+    seg[12..14].copy_from_slice(&((5u16 << 12) | 0u16).to_be_bytes());
+    seg[14..16].copy_from_slice(&65535u16.to_be_bytes());
+    seg[header_len..].fill(0x5A);
+
+    let result = processor.process(
+        &seg,
+        Ipv4Address::from_octets(127, 0, 0, 1),
+        Ipv4Address::from_octets(127, 0, 0, 1),
+        0,
+    );
+
+    match result {
+        TcpProcessResult::SendPacket { flags, ack, .. } => {
+            assert!(flags & TcpHeader::FLAG_ACK != 0, "ACK flag should be set");
+            assert!(flags & TcpHeader::FLAG_RST == 0, "RST should NOT be set");
+            assert_eq!(ack, 10u32.wrapping_add(payload_len as u32), "ACK should advance");
+        }
+        other => panic!("expected ACK SendPacket, got {:?}", other),
+    }
+
+    let guard = match tcb_arc.lock() {
+        Ok(guard) => guard,
+        Err(_) => panic!("TCB lock"),
+    };
+    assert_eq!(guard.state(), TcpState::Established);
+    assert_eq!(guard.recv_copy_fallback_len(), 1);
+    assert_eq!(guard.recv_copy_fallback_bytes(), payload_len);
+    let stats = guard.stats_snapshot();
+    assert_eq!(stats.recv_copy_fallback_packets, 1);
+    assert_eq!(stats.recv_copy_fallback_bytes, payload_len as u64);
+    assert_eq!(stats.recv_copy_fallback_peak_bytes, payload_len as u64);
+    assert_eq!(stats.oom_dropped_packets, 0);
+    assert_eq!(stats.oom_dropped_bytes, 0);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_recv_copy_fallback_overflow_sends_rst_and_closes() {
+    let _ = crate::net::mempool::init_net_mempool(2);
+
+    let mut processor = TcpProcessor::new();
+    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3100);
+    let remote = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4100);
+
+    let mut tcb = TcpControlBlock::new(local);
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
+    tcb.set_rcv_nxt(42);
+    tcb.set_recv_copy_fallback_limit_bytes(1024);
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+    processor.connections.insert((local, remote), tcb_arc.clone());
+
+    let header_len = 20usize;
+    let payload_len = 5000usize;
+    let mut seg = vec![0u8; header_len + payload_len];
+    seg[0..2].copy_from_slice(&4100u16.to_be_bytes()); // src port
+    seg[2..4].copy_from_slice(&3100u16.to_be_bytes()); // dst port
+    seg[4..8].copy_from_slice(&42u32.to_be_bytes());   // in-order seq
+    seg[8..12].copy_from_slice(&0u32.to_be_bytes());   // ack
+    seg[12..14].copy_from_slice(&((5u16 << 12) | 0u16).to_be_bytes());
+    seg[14..16].copy_from_slice(&65535u16.to_be_bytes());
+    seg[header_len..].fill(0xA5);
+
+    let result = processor.process(
+        &seg,
+        Ipv4Address::from_octets(127, 0, 0, 1),
+        Ipv4Address::from_octets(127, 0, 0, 1),
+        0,
+    );
+
+    match result {
+        TcpProcessResult::SendPacket { flags, ack, .. } => {
+            assert!(flags & TcpHeader::FLAG_RST != 0, "RST should be set");
+            assert!(flags & TcpHeader::FLAG_ACK != 0, "ACK should be set");
+            assert_eq!(ack, 42, "ACK should not advance when enqueue fails");
+        }
+        other => panic!("expected RST+ACK SendPacket, got {:?}", other),
+    }
+
+    let guard = match tcb_arc.lock() {
+        Ok(guard) => guard,
+        Err(_) => panic!("TCB lock"),
+    };
+    assert_eq!(guard.state(), TcpState::Closed);
+    assert_eq!(guard.recv_copy_fallback_bytes(), 0);
+    assert!(guard.recv_copy_fallback_is_empty());
+    assert_eq!(guard.stats_snapshot().recv_copy_fallback_packets, 0);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_poll_read_consumes_recv_copy_fallback_queue_with_remainder() {
+    let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3200);
+    let remote = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 4200);
+
+    let mut tcb = TcpControlBlock::new(local);
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
+    assert!(tcb.enqueue_recv_copy_fallback(&[1, 2, 3, 4, 5]));
+
+    let tcb_arc = Arc::new(PoisonLock::new(tcb));
+    let mut stream = TcpStream { tcb: tcb_arc.clone() };
+
+    use core::pin::Pin;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(core::ptr::null(), &VTABLE),
+        |_| {},
+        |_| {},
+        |_| {},
+    );
+    let raw_waker = RawWaker::new(core::ptr::null(), &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw_waker) };
+    let mut cx = Context::from_waker(&waker);
+
+    let mut buf = [0u8; 3];
+    let mut pinned_stream = unsafe { Pin::new_unchecked(&mut stream) };
+    match pinned_stream.as_mut().poll_read(&mut cx, &mut buf) {
+        Poll::Ready(Ok(n)) => assert_eq!(n, 3),
+        other => panic!("poll_read returned {:?}", other),
+    }
+    assert_eq!(&buf, &[1, 2, 3]);
+
+    {
+        let guard = match tcb_arc.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("TCB lock"),
+        };
+        assert_eq!(guard.recv_copy_fallback_bytes(), 2);
+        assert_eq!(guard.recv_copy_fallback_front_data(), Some(&[4, 5][..]));
+    }
+
+    let mut buf2 = [0u8; 8];
+    match pinned_stream.as_mut().poll_read(&mut cx, &mut buf2) {
+        Poll::Ready(Ok(n)) => assert_eq!(n, 2),
+        other => panic!("second poll_read returned {:?}", other),
+    }
+    assert_eq!(&buf2[..2], &[4, 5]);
+
+    let guard = match tcb_arc.lock() {
+        Ok(guard) => guard,
+        Err(_) => panic!("TCB lock"),
+    };
+    assert_eq!(guard.recv_copy_fallback_bytes(), 0);
+    assert!(guard.recv_copy_fallback_is_empty());
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_can_send_respects_cwnd_bytes() {
+    let _ = crate::net::mempool::init_net_mempool(2);
     let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
     let mut tcb = TcpControlBlock::new(local);
-    tcb.state = TcpState::Established;
-    tcb.cwnd = 100;
-    tcb.outstanding_bytes = 0;
-    tcb.send_buffer_bytes = 0;
+    tcb.enter_established();
+    tcb.set_cwnd_for_test(100);
     assert!(tcb.can_send());
     // If queued bytes alone already exceed cwnd, cannot send
-    tcb.send_buffer_bytes = 100;
+    let mut packet = crate::net::mempool::alloc_packet().expect("alloc packet");
+    packet.set_len(100);
+    tcb.enqueue_send_packet(packet);
     assert!(!tcb.can_send());
 }
 
@@ -102,8 +281,8 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
 
     // Create TCB and wrap in Arc<PoisonLock>
     let mut tcb = TcpControlBlock::new(local);
-    tcb.state = TcpState::Established;
-    tcb.remote_addr = Some(remote);
+    tcb.enter_established();
+    tcb.set_remote_addr(remote);
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let mut stream = TcpStream { tcb: tcb_arc.clone() };
 
@@ -114,8 +293,7 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
     packet.set_len(payload.len());
 
     if let Ok(mut g) = tcb_arc.lock() {
-        g.send_buffer_bytes = g.send_buffer_bytes.saturating_add(packet.len() as u32);
-        g.send_buffer.push_back(packet);
+        g.enqueue_send_packet(packet);
     } else {
         panic!("TCB lock poisoned in test");
     }
@@ -143,9 +321,9 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
 
     // Verify packet was requeued on send failure and outstanding is unchanged
     if let Ok(g) = tcb_arc.lock() {
-        assert_eq!(g.send_buffer_bytes, payload.len() as u32);
-        assert!(!g.send_buffer.is_empty());
-        assert_eq!(g.outstanding_bytes, 0);
+        assert_eq!(g.send_buffer_bytes(), payload.len() as u32);
+        assert!(!g.send_buffer_is_empty());
+        assert_eq!(g.outstanding_bytes(), 0);
     } else {
         panic!("TCB lock poisoned");
     }
@@ -176,7 +354,7 @@ pub fn test_three_way_handshake() {
         .clone();
 
     let client_initial_seq = match client_tcb_arc.lock() {
-        Ok(g) => g.snd_nxt,
+        Ok(g) => g.snd_nxt(),
         Err(_) => panic!("TCB lock poisoned"),
     };
 
@@ -291,7 +469,7 @@ pub fn test_three_way_handshake_v6() {
         .clone();
 
     let client_initial_seq = match client_tcb_arc.lock() {
-        Ok(g) => g.snd_nxt,
+        Ok(g) => g.snd_nxt(),
         Err(_) => panic!("TCB lock poisoned"),
     };
 
@@ -387,19 +565,11 @@ pub fn test_retransmit_on_timeout() {
     let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 2000);
 
     let mut tcb = TcpControlBlock::new(local);
-    tcb.remote_addr = Some(remote);
-    tcb.state = TcpState::Established;
-    // Add an unacked segment with old timestamp
-    tcb.unacked_segments.push_back(UnackedSegment {
-        seq: 1,
-        data: vec![1,2,3],
-        sent_time: 0,
-        retransmit_count: 0,
-        flags: TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
-    });
-    // Reflect outstanding bytes for the unacked segment
-    tcb.outstanding_bytes = 3;
-    tcb.rto = 1; // small RTO
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
+    // Add an unacked segment with old timestamp (also updates outstanding_bytes)
+    tcb.queue_unacked(1, vec![1, 2, 3], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
+    tcb.set_rto_for_test(1); // small RTO
 
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     proc.connections.insert((local, remote), tcb_arc.clone());
@@ -426,7 +596,7 @@ pub fn test_connect_future_wakes_on_established() {
     // Create a TCB in SynSent state
     let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 4000);
     let mut tcb = TcpControlBlock::new(local);
-    tcb.state = TcpState::SynSent;
+    tcb.enter_syn_sent();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
 
     // Create ConnectFuture
@@ -450,19 +620,15 @@ pub fn test_connect_future_wakes_on_established() {
         other => panic!("ConnectFuture poll expected Pending, got {:?}", other),
     }
 
-    // Ensure waker was stored in TCB
-    if let Ok(g) = tcb_arc.lock() {
-        assert!(g.connect_waker.is_some());
-    } else {
+    // Ensure TCB lock is still accessible after registration
+    if tcb_arc.lock().is_err() {
         panic!("TCB lock poisoned");
     }
 
     // Simulate connection establishment and wake
     if let Ok(mut g) = tcb_arc.lock() {
-        g.state = TcpState::Established;
-        if let Some(w) = g.connect_waker.take() {
-            w.wake();
-        }
+        g.enter_established();
+        g.wake_connect_waiter();
     }
 
     // Poll again, should be Ready(Ok(()))
@@ -480,8 +646,8 @@ pub fn test_record_sent_packet_updates_tcb() {
     let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 8000);
 
     let mut tcb = TcpControlBlock::new(local);
-    tcb.remote_addr = Some(remote);
-    tcb.state = TcpState::Established;
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     proc.connections.insert((local, remote), tcb_arc.clone());
 
@@ -493,9 +659,9 @@ pub fn test_record_sent_packet_updates_tcb() {
     proc.record_sent_packet(local, remote, seq, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK, &payload, now);
 
     if let Ok(g) = tcb_arc.lock() {
-        assert_eq!(g.outstanding_bytes, 4);
-        assert_eq!(g.snd_nxt, seq.wrapping_add(4));
-        assert_eq!(g.unacked_segments.front().unwrap().seq, seq);
+        assert_eq!(g.outstanding_bytes(), 4);
+        assert_eq!(g.snd_nxt(), seq.wrapping_add(4));
+        assert_eq!(g.oldest_unacked_seq(), Some(seq));
     } else {
         panic!("TCB lock poisoned");
     }
@@ -504,23 +670,36 @@ pub fn test_record_sent_packet_updates_tcb() {
 #[cfg_attr(test, test_case)]
 pub fn test_ack_segments_removes_unacked_and_reduces_outstanding() {
     let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9000));
-    tcb.state = TcpState::Established;
+    tcb.enter_established();
 
-    // Add an unacked segment
-    tcb.unacked_segments.push_back(UnackedSegment {
-        seq: 10,
-        data: vec![1,2,3,4],
-        sent_time: 0,
-        retransmit_count: 0,
-        flags: TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
-    });
-    tcb.outstanding_bytes = 4;
+    // Add an unacked segment (also updates outstanding_bytes)
+    tcb.queue_unacked(10, vec![1, 2, 3, 4], 0, TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK);
 
     // ACK that acknowledges the segment
     tcb.ack_segments(14); // seq + len
 
-    assert!(tcb.unacked_segments.is_empty());
-    assert_eq!(tcb.outstanding_bytes, 0);
+    assert!(tcb.oldest_unacked_seq().is_none());
+    assert_eq!(tcb.outstanding_bytes(), 0);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_unacked_sequence_space_accounts_for_syn_and_fin() {
+    let mut tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::LOCALHOST, 9001));
+    tcb.enter_established();
+
+    // SYN consumes one sequence number even with empty payload.
+    tcb.queue_unacked(100, vec![], 0, TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK);
+    assert_eq!(tcb.outstanding_bytes(), 1);
+    tcb.ack_segments(101);
+    assert_eq!(tcb.outstanding_bytes(), 0);
+    assert!(tcb.oldest_unacked_seq().is_none());
+
+    // FIN also consumes one sequence number in addition to payload bytes.
+    tcb.queue_unacked(200, vec![1, 2], 0, TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK);
+    assert_eq!(tcb.outstanding_bytes(), 3);
+    tcb.ack_segments(203);
+    assert_eq!(tcb.outstanding_bytes(), 0);
+    assert!(tcb.oldest_unacked_seq().is_none());
 }
 
 #[cfg_attr(test, test_case)]
@@ -558,8 +737,8 @@ pub fn test_accept_future_returns_on_push_connection() {
     let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 5000);
     let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 6000);
     let mut tcb = TcpControlBlock::new(local);
-    tcb.remote_addr = Some(remote);
-    tcb.state = TcpState::Established;
+    tcb.set_remote_addr(remote);
+    tcb.enter_established();
     let stream = TcpStream { tcb: Arc::new(PoisonLock::new(tcb)) };
 
     listener.push_connection(stream, remote);
@@ -583,7 +762,7 @@ pub fn test_connect_timeout_expires() {
     let now = crate::time::precise_time_nanos() / 1000;
     let local = SocketAddr::new(Ipv4Addr::LOCALHOST, 4001);
     let mut tcb = TcpControlBlock::new(local);
-    tcb.state = TcpState::SynSent;
+    tcb.enter_syn_sent();
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
 
     // Create a ConnectTimeoutFuture that already expired

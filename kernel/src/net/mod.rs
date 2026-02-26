@@ -311,7 +311,6 @@ pub use endpoint::{
     TcpControlBlockEntry,
     TcpSegmentBuilder,
     // 再送タイマー・RTO
-    UnackedSegment,
     check_retransmit_timeouts,
     // ヘルパー
     create_tcp_socket,
@@ -352,7 +351,7 @@ pub use stack_timeouts::{
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 extern crate alloc;
 
@@ -416,7 +415,7 @@ pub struct ArpCacheEntry {
 }
 
 // Global network state for shell access
-static NETWORK_STATS: Mutex<NetworkStatsSnapshot> = Mutex::new(NetworkStatsSnapshot {
+static NETWORK_STATS: PoisonLock<NetworkStatsSnapshot> = PoisonLock::new(NetworkStatsSnapshot {
     rx_packets: 0,
     tx_packets: 0,
     rx_bytes: 0,
@@ -468,7 +467,18 @@ pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
     }
 
     // Fallback to demo stats
-    Some(*NETWORK_STATS.lock())
+    let stats = match NETWORK_STATS.lock() {
+        Ok(guard) => *guard,
+        Err(_) => NetworkStatsSnapshot {
+            rx_packets: 0,
+            tx_packets: 0,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_errors: 0,
+            rx_dropped: 0,
+        },
+    };
+    Some(stats)
 }
 
 /// Send ICMP echo request (ping)

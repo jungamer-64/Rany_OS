@@ -138,3 +138,88 @@ pub fn test_pmtu_cache_minimum() {
     cache.update(dst, 100, 0);
     assert_eq!(cache.get(dst, 0), PmtuEntry::MIN_MTU);
 }
+
+// Additional tests for fragmentation edge cases
+
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_overflow_rejected() {
+    let mut buffer = FragmentBuffer::new(0);
+    let mut header = Ipv4Header {
+        version_ihl: 0x45,
+        dscp_ecn: 0,
+        total_length: [0, 0],
+        identification: [0, 0],
+        flags_fragment: [0x20, 0x00], // MF=1, offset=0
+        ttl: 64,
+        protocol: 17,
+        checksum: [0, 0],
+        src_addr: [10, 0, 0, 1],
+        dst_addr: [10, 0, 0, 2],
+    };
+    // construct payload length that causes overflow
+    let payload = vec![0u8; (FragmentBuffer::MAX_DATAGRAM_SIZE + 1) as usize];
+    // fragment_offset bytes = 0
+    assert!(!buffer.add_fragment(&header, &payload, 0), "overflow should be rejected");
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_overlap_detection() {
+    let mut reassembler = FragmentReassembler::new(4);
+
+    let mut hdr1 = Ipv4Header {
+        version_ihl: 0x45,
+        dscp_ecn: 0,
+        total_length: [0, 40],
+        identification: [0, 1],
+        flags_fragment: [0x20, 0x00], // MF=1, offset=0
+        ttl: 64,
+        protocol: 6,
+        checksum: [0, 0],
+        src_addr: [1, 1, 1, 1],
+        dst_addr: [2, 2, 2, 2],
+    };
+    let p1 = [0u8; 8];
+    let result = reassembler.process_fragment(&hdr1, &p1, 0);
+    assert!(result.is_none());
+
+    // second fragment overlaps first (offset 0)
+    let mut hdr2 = Ipv4Header { flags_fragment: [0x00, 0x00], ..hdr1 };
+    // offset field still 0 (means overlap)
+    let p2 = [0u8; 8];
+    let result2 = reassembler.process_fragment(&hdr2, &p2, 0);
+    // reassembler should drop buffer and return None
+    assert!(result2.is_none());
+    // buffer map should be empty now
+    assert_eq!(reassembler.buffers.len(), 0);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_hole_exhaustion() {
+    let mut buffer = FragmentBuffer::new(0);
+    // artificially create many non-adjacent fragments to grow holes
+    for i in 0..(FragmentBuffer::MAX_HOLES + 5) {
+        let offset = (i as u16) * 8 + 1000;
+        let mut hdr = Ipv4Header {
+            version_ihl: 0x45,
+            dscp_ecn: 0,
+            total_length: [0, 20],
+            identification: [0, 2],
+            flags_fragment: [0x20, 0x00],
+            ttl: 64,
+            protocol: 6,
+            checksum: [0, 0],
+            src_addr: [3, 3, 3, 3],
+            dst_addr: [4, 4, 4, 4],
+        };
+        // manually set fragment offset field (bytes 6-7)
+        let off_val = offset / 8;
+        hdr.flags_fragment = [(hdr.flags_fragment[0] & 0xE0) | ((off_val >> 8) as u8), off_val as u8];
+        let payload = [0u8; 8];
+        let accepted = buffer.add_fragment(&hdr, &payload, 0);
+        if i as usize > FragmentBuffer::MAX_HOLES {
+            assert!(!accepted, "should start rejecting after hole limit");
+            break;
+        }
+    }
+}
+
