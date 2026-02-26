@@ -136,6 +136,31 @@ fn test_lock_free_index_stack_push_out_of_range() {
 }
 
 #[test_case]
+fn test_lock_free_index_stack_push_duplicate_returns_already_present() {
+    let stack = LockFreeIndexStack::new_empty(4);
+
+    assert_eq!(stack.push(1), Ok(()));
+    assert_eq!(
+        stack.push(1),
+        Err(LockFreeIndexStackPushError::AlreadyPresent)
+    );
+    assert_eq!(stack.len(), 1);
+    assert_eq!(stack.pop(), Some(1));
+    assert_eq!(stack.pop(), None);
+}
+
+#[test_case]
+fn test_lock_free_index_stack_pop_then_repush_succeeds() {
+    let stack = LockFreeIndexStack::new_empty(4);
+
+    assert_eq!(stack.push(2), Ok(()));
+    assert_eq!(stack.pop(), Some(2));
+    assert_eq!(stack.push(2), Ok(()));
+    assert_eq!(stack.pop(), Some(2));
+    assert!(stack.is_empty());
+}
+
+#[test_case]
 fn test_backoff() {
     let mut backoff = Backoff::new();
 

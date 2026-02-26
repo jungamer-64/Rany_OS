@@ -25,7 +25,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
 // 指数バックオフ戦略
@@ -33,6 +33,10 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// 指数バックオフのための定数
 mod mpmc;
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests {
+    pub use super::mpmc::qemu_tests::*;
+}
 const BACKOFF_SPIN_LIMIT: u32 = 6;
 const BACKOFF_YIELD_LIMIT: u32 = 10;
 
@@ -125,6 +129,8 @@ impl Default for Backoff {
 pub enum LockFreeIndexStackPushError {
     /// `idx` was outside the stack's capacity (`idx >= capacity`).
     OutOfRange,
+    /// `idx` was already present in the stack (duplicate push).
+    AlreadyPresent,
 }
 
 /// Lock-free stack specialized for `u32` indices.
@@ -136,10 +142,13 @@ pub enum LockFreeIndexStackPushError {
 /// # Contract
 /// - `idx < capacity`
 /// - Pushing the same index twice concurrently (or without an intervening pop)
-///   is a logic error and may corrupt the structure.
+///   returns [`LockFreeIndexStackPushError::AlreadyPresent`]
+/// - Internal invariants may still be violated by memory corruption or misuse
+///   outside this API's contract
 pub struct LockFreeIndexStack {
     head: CacheLinePadded<AtomicU64>,
     next: Box<[AtomicU32]>,
+    present: Box<[AtomicU8]>,
     len: AtomicUsize,
 }
 
@@ -165,6 +174,14 @@ impl LockFreeIndexStack {
         next.into_boxed_slice()
     }
 
+    fn make_present_array(capacity: usize) -> Box<[AtomicU8]> {
+        let mut present = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            present.push(AtomicU8::new(0));
+        }
+        present.into_boxed_slice()
+    }
+
     /// Create an empty stack that can store indices in range `[0, capacity)`.
     pub fn new_empty(capacity: usize) -> Self {
         assert!(
@@ -174,6 +191,7 @@ impl LockFreeIndexStack {
         Self {
             head: CacheLinePadded::new(AtomicU64::new(Self::pack_head(0, Self::EMPTY_INDEX))),
             next: Self::make_next_array(capacity),
+            present: Self::make_present_array(capacity),
             len: AtomicUsize::new(0),
         }
     }
@@ -192,10 +210,21 @@ impl LockFreeIndexStack {
     }
 
     /// Push an index onto the stack.
+    ///
+    /// Returns:
+    /// - [`LockFreeIndexStackPushError::OutOfRange`] if `idx >= capacity`
+    /// - [`LockFreeIndexStackPushError::AlreadyPresent`] if `idx` is already in
+    ///   the stack (duplicate push)
     pub fn push(&self, idx: u32) -> Result<(), LockFreeIndexStackPushError> {
         let idx_usize = idx as usize;
         if idx_usize >= self.next.len() {
             return Err(LockFreeIndexStackPushError::OutOfRange);
+        }
+        if self.present[idx_usize]
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(LockFreeIndexStackPushError::AlreadyPresent);
         }
 
         let mut backoff = Backoff::new();
@@ -243,6 +272,17 @@ impl LockFreeIndexStack {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
+                    let was_present = self.present[head_idx as usize].swap(0, Ordering::AcqRel);
+                    if was_present == 0 {
+                        log::error!(
+                            "[sync::lockfree] LockFreeIndexStack pop saw missing present bit for idx {}",
+                            head_idx
+                        );
+                        debug_assert!(
+                            was_present != 0,
+                            "LockFreeIndexStack present bit missing on pop idx={head_idx}"
+                        );
+                    }
                     let prev = self.len.fetch_sub(1, Ordering::Relaxed);
                     debug_assert!(prev > 0, "LockFreeIndexStack len underflow");
                     return Some(head_idx);

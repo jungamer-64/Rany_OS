@@ -96,6 +96,42 @@ fn run_suite() -> bool {
         )
         && run_check("loader_elf_exports", test_loader_elf_exports)
         && run_check(
+            "sync_lockfree_spsc_basic_smoke",
+            rany_os::qemu_tests::sync_lockfree_spsc_basic_smoke,
+        )
+        && run_check(
+            "sync_lockfree_mpsc_basic_smoke",
+            rany_os::qemu_tests::sync_lockfree_mpsc_basic_smoke,
+        )
+        && run_check(
+            "sync_lockfree_mpmc_basic_smoke",
+            rany_os::qemu_tests::sync_lockfree_mpmc_basic_smoke,
+        )
+        && run_check(
+            "sync_lockfree_mpmc_try_operations_smoke",
+            rany_os::qemu_tests::sync_lockfree_mpmc_try_operations_smoke,
+        )
+        && run_check(
+            "sync_lockfree_index_stack_smoke",
+            rany_os::qemu_tests::sync_lockfree_index_stack_smoke,
+        )
+        && run_check(
+            "sync_lockfree_backoff_smoke",
+            rany_os::qemu_tests::sync_lockfree_backoff_smoke,
+        )
+        && run_check(
+            "sync_lockfree_seqlock_smoke",
+            rany_os::qemu_tests::sync_lockfree_seqlock_smoke,
+        )
+        && run_check(
+            "sync_lockfree_bounded_channel_static_smoke",
+            rany_os::qemu_tests::sync_lockfree_bounded_channel_static_smoke,
+        )
+        && run_check(
+            "sync_lockfree_bounded_channel_new_leak_smoke",
+            rany_os::qemu_tests::sync_lockfree_bounded_channel_new_leak_smoke,
+        )
+        && run_check(
             "iommu_wave2_runtime_readiness",
             report_iommu_wave2_runtime_readiness,
         )

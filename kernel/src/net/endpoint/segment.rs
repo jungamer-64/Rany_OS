@@ -10,6 +10,19 @@ use alloc::vec::Vec;
 use super::tcb::tcp_flags;
 use super::types::SocketAddr;
 
+#[inline]
+fn endpoint_ipv4_pair(local: SocketAddr, remote: SocketAddr) -> Option<([u8; 4], [u8; 4])> {
+    Some((local.as_ipv4()?, remote.as_ipv4()?))
+}
+
+#[inline]
+fn endpoint_is_native_v6_pair(local: SocketAddr, remote: SocketAddr) -> bool {
+    local.is_ipv6()
+        && remote.is_ipv6()
+        && local.as_ipv4().is_none()
+        && remote.as_ipv4().is_none()
+}
+
 /// TCPセグメントビルダー
 pub struct TcpSegmentBuilder {
     src_port: u16,
@@ -312,8 +325,34 @@ impl TcpSegmentBuilder {
 
 /// TCPセグメント送信（IP層に渡す） — IPv4/IPv6 デュアルスタック対応
 pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>) -> bool {
-    // IPv6優先パス
-    if local.is_ipv6() || remote.is_ipv6() {
+    if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
+        let src_ip = crate::net::ipv4::Ipv4Address::new(src_v4);
+        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4);
+
+        // NetworkStack経由で送信
+        let stack = crate::net::stack::stack();
+        match stack.lock() {
+            Ok(mut guard) => {
+                if let Some(ref mut s) = *guard {
+                    if s.send_tcp(src_ip, dst_ip, &segment) {
+                        log::info!("TCP TX: {} -> {} ({} bytes)", local, remote, segment.len());
+                        return true;
+                    } else {
+                        log::info!("TCP TX failed (ARP pending?): {} -> {}", local, remote);
+                        return false;
+                    }
+                } else {
+                    log::info!("TCP TX: Network stack not initialized");
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] Stack poisoned - dropping TCP segment");
+            }
+        }
+        return false;
+    }
+
+    if endpoint_is_native_v6_pair(local, remote) {
         let src_v6 = crate::net::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::ipv6::Ipv6Address::new(remote.as_ipv6());
         let ok = crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment);
@@ -338,43 +377,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
         return ok;
     }
 
-    // IPv4 path (従来通り)
-    let src_ip = crate::net::ipv4::Ipv4Address::new(local.as_ipv4().unwrap());
-    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.as_ipv4().unwrap());
-
-    // NetworkStack経由で送信
-    let stack = crate::net::stack::stack();
-    match stack.lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                if s.send_tcp(src_ip, dst_ip, &segment) {
-                    log::info!(
-                        "TCP TX: {:?}:{} -> {:?}:{} ({} bytes)",
-                        local.as_ipv4().unwrap(),
-                        local.port(),
-                        remote.as_ipv4().unwrap(),
-                        remote.port(),
-                        segment.len()
-                    );
-                    return true;
-                } else {
-                    log::info!(
-                        "TCP TX failed (ARP pending?): {:?}:{} -> {:?}:{}",
-                        local.as_ipv4().unwrap(),
-                        local.port(),
-                        remote.as_ipv4().unwrap(),
-                        remote.port()
-                    );
-                    return false;
-                }
-            } else {
-                log::info!("TCP TX: Network stack not initialized");
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] Stack poisoned - dropping TCP segment");
-        }
-    }
+    log::warn!("[NET][endpoint] mixed TCP address family dropped: {} -> {}", local, remote);
     false
 }
 
@@ -498,6 +501,33 @@ pub mod tests {
         );
         // Checksum field should be non-zero for valid segment
         assert!(segment[16] != 0 || segment[17] != 0);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_send_tcp_segment_rejects_mixed_family() {
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+        let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
+
+        assert!(!send_tcp_segment(local, remote, segment));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_send_tcp_segment_ipv4_no_panic_when_stack_unavailable() {
+        let local = SocketAddr::new([127, 0, 0, 1], 12346);
+        let remote = SocketAddr::new([127, 0, 0, 1], 80);
+        let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
+
+        let _ = send_tcp_segment(local, remote, segment);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_send_tcp_segment_ipv6_no_panic_when_stack_unavailable() {
+        let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12347);
+        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+        let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
+
+        let _ = send_tcp_segment(local, remote, segment);
     }
 }
 

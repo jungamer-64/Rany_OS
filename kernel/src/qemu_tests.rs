@@ -705,6 +705,42 @@ pub fn net_tls_wave8_tls13_finished_key_and_verify_data_smoke() -> bool {
     crate::net::tls::qemu_tests::wave8_tls_tls13_finished_key_and_verify_data_smoke()
 }
 
+pub fn sync_lockfree_spsc_basic_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::spsc_basic_smoke()
+}
+
+pub fn sync_lockfree_mpsc_basic_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::mpsc_basic_smoke()
+}
+
+pub fn sync_lockfree_mpmc_basic_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::mpmc_basic_smoke()
+}
+
+pub fn sync_lockfree_mpmc_try_operations_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::mpmc_try_operations_smoke()
+}
+
+pub fn sync_lockfree_index_stack_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::lock_free_index_stack_smoke()
+}
+
+pub fn sync_lockfree_backoff_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::backoff_smoke()
+}
+
+pub fn sync_lockfree_seqlock_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::seqlock_smoke()
+}
+
+pub fn sync_lockfree_bounded_channel_static_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::bounded_channel_static_smoke()
+}
+
+pub fn sync_lockfree_bounded_channel_new_leak_smoke() -> bool {
+    crate::sync::lockfree::qemu_tests::bounded_channel_new_leak_smoke()
+}
+
 // BEGIN NET core required wrappers (99 cases)
 
 pub fn net_core_adaptive_polling_polling_mode_default_smoke() -> bool {

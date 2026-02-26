@@ -81,10 +81,13 @@ pub fn lock_free_index_stack_smoke() -> bool {
 
     if stack.push(0).is_err() { return false; }
     if stack.push(2).is_err() { return false; }
+    if stack.push(0) != Err(LockFreeIndexStackPushError::AlreadyPresent) { return false; }
     if stack.push(4) != Err(LockFreeIndexStackPushError::OutOfRange) { return false; }
 
     if stack.len() != 2 { return false; }
     if stack.pop() != Some(2) { return false; }
+    if stack.pop() != Some(0) { return false; }
+    if stack.push(0).is_err() { return false; }
     if stack.pop() != Some(0) { return false; }
     if stack.pop().is_some() { return false; }
 

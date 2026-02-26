@@ -437,9 +437,9 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     });
 
     log::info!(
-        "TCP: Server connection established {:?} <- {:?}",
-        tcb.local.as_ipv4().unwrap(),
-        tcb.remote.as_ipv4().unwrap()
+        "TCP: Server connection established {} <- {}",
+        tcb.local,
+        tcb.remote
     );
 
     // 新しい接続用ソケットを作成
@@ -611,10 +611,10 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
 
     let mut ack = builder.build();
 
-    if tcb.local.is_ipv6() || tcb.remote.is_ipv6() {
-        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
+    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
+        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
     } else {
-        TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
     }
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }
@@ -639,10 +639,10 @@ fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
         .window(65535)
         .build();
 
-    if tcb.local.is_ipv6() || tcb.remote.is_ipv6() {
-        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
+    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
+        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
     } else {
-        TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.as_ipv4().unwrap(), tcb.remote.as_ipv4().unwrap());
+        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
     }
     // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack);

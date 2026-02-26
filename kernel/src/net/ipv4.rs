@@ -401,6 +401,7 @@ impl Ipv4Header {
 
 /// Zero-copy IPv4 packet view
 pub struct Ipv4Packet<'a> {
+    header: &'a Ipv4Header,
     /// Raw packet data
     data: &'a [u8],
 }
@@ -412,7 +413,8 @@ impl<'a> Ipv4Packet<'a> {
             return None;
         }
 
-        let packet = Ipv4Packet { data };
+        let header = crate::util::get_ref::<Ipv4Header>(data, 0)?;
+        let packet = Ipv4Packet { header, data };
 
         // Verify version
         if packet.header().version() != 4 {
@@ -436,8 +438,7 @@ impl<'a> Ipv4Packet<'a> {
 
     /// Get the IPv4 header
     pub fn header(&self) -> &Ipv4Header {
-        // SAFETY: We verified the length in parse(). Use centralized helper to get a typed ref.
-        crate::util::get_ref::<Ipv4Header>(self.data, 0).expect("IPv4 header slice out of bounds")
+        self.header
     }
 
     /// Get source address
@@ -509,88 +510,84 @@ impl<'a> Ipv4PacketMut<'a> {
     }
 
     /// Get mutable header
-    pub fn header_mut(&mut self) -> &mut Ipv4Header {
-        // SAFETY: Buffer is large enough; use centralized helper.
+    pub fn header_mut(&mut self) -> Option<&mut Ipv4Header> {
         crate::util::get_mut_ref::<Ipv4Header>(self.data, 0)
-            .expect("IPv4 header slice out of bounds")
     }
 
     /// Initialize header with default values
     pub fn init_header(&mut self) -> &mut Self {
-        let header = self.header_mut();
-        header.version_ihl = 0x45; // IPv4, IHL=5 (20 bytes)
-        header.dscp_ecn = 0;
-        header.total_length = [0, 20]; // Will be updated
-        header.identification = [0, 0];
-        header.flags_fragment = [0x40, 0]; // Don't Fragment
-        header.ttl = 64;
-        header.protocol = 0;
-        header.checksum = [0, 0];
-        header.src_addr = [0; 4];
-        header.dst_addr = [0; 4];
+        if let Some(header) = self.header_mut() {
+            header.version_ihl = 0x45; // IPv4, IHL=5 (20 bytes)
+            header.dscp_ecn = 0;
+            header.total_length = [0, 20]; // Will be updated
+            header.identification = [0, 0];
+            header.flags_fragment = [0x40, 0]; // Don't Fragment
+            header.ttl = 64;
+            header.protocol = 0;
+            header.checksum = [0, 0];
+            header.src_addr = [0; 4];
+            header.dst_addr = [0; 4];
+        }
         self
     }
 
     /// Set source address
     pub fn set_source(&mut self, addr: Ipv4Address) -> &mut Self {
-        self.header_mut().set_source(addr);
+        if let Some(h) = self.header_mut() { h.set_source(addr); }
         self
     }
 
     /// Set destination address
     pub fn set_destination(&mut self, addr: Ipv4Address) -> &mut Self {
-        self.header_mut().set_destination(addr);
+        if let Some(h) = self.header_mut() { h.set_destination(addr); }
         self
     }
 
     /// Set protocol
     pub fn set_protocol(&mut self, protocol: IpProtocol) -> &mut Self {
-        self.header_mut().set_protocol(protocol);
+        if let Some(h) = self.header_mut() { h.set_protocol(protocol); }
         self
     }
 
     /// Set TTL
     pub fn set_ttl(&mut self, ttl: u8) -> &mut Self {
-        self.header_mut().set_ttl(ttl);
+        if let Some(h) = self.header_mut() { h.set_ttl(ttl); }
         self
     }
 
     /// Set version (should be 4 for IPv4)
     pub fn set_version(&mut self, version: u8) -> &mut Self {
-        let header = self.header_mut();
-        header.version_ihl = (version << 4) | (header.version_ihl & 0x0f);
+        if let Some(h) = self.header_mut() { h.version_ihl = (version << 4) | (h.version_ihl & 0x0f); }
         self
     }
 
     /// Set IHL (Internet Header Length in 32-bit words)
     pub fn set_ihl(&mut self, ihl: u8) -> &mut Self {
-        let header = self.header_mut();
-        header.version_ihl = (header.version_ihl & 0xf0) | (ihl & 0x0f);
+        if let Some(h) = self.header_mut() { h.version_ihl = (h.version_ihl & 0xf0) | (ihl & 0x0f); }
         self
     }
 
     /// Set DSCP (Differentiated Services Code Point)
     pub fn set_dscp(&mut self, dscp: u8) -> &mut Self {
-        let header = self.header_mut();
-        header.dscp_ecn = (dscp & 0xfc) | (header.dscp_ecn & 0x03);
+        if let Some(h) = self.header_mut() { h.dscp_ecn = (dscp & 0xfc) | (h.dscp_ecn & 0x03); }
         self
     }
 
     /// Set total length
     pub fn set_total_length(&mut self, len: u16) -> &mut Self {
-        self.header_mut().set_total_length(len);
+        if let Some(h) = self.header_mut() { h.set_total_length(len); }
         self
     }
 
     /// Update checksum
     pub fn update_checksum(&mut self) -> &mut Self {
-        self.header_mut().update_checksum();
+        if let Some(h) = self.header_mut() { h.update_checksum(); }
         self
     }
 
     /// Set identification
     pub fn set_identification(&mut self, id: u16) -> &mut Self {
-        self.header_mut().set_identification(id);
+        if let Some(h) = self.header_mut() { h.set_identification(id); }
         self
     }
 
@@ -602,16 +599,18 @@ impl<'a> Ipv4PacketMut<'a> {
     /// Set total length and update checksum
     pub fn finalize(&mut self, payload_len: usize) {
         let total_len = (Ipv4Header::MIN_SIZE + payload_len) as u16;
-        self.header_mut().set_total_length(total_len);
-        self.header_mut().update_checksum();
+        if let Some(h) = self.header_mut() {
+            h.set_total_length(total_len);
+            h.update_checksum();
+        }
     }
 
     /// Get total packet length
     pub fn total_len(&self) -> usize {
-        // Use safe helper to read header
+        // Use safe helper to read header; buffer length was validated in new()
         crate::util::get_ref::<Ipv4Header>(self.data, 0)
-            .expect("IPv4 header slice out of bounds")
-            .total_length() as usize
+            .map(|h| h.total_length() as usize)
+            .unwrap_or(Ipv4Header::MIN_SIZE)
     }
 
     /// Get packet as bytes

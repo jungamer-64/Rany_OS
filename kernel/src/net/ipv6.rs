@@ -392,6 +392,7 @@ impl Ipv6Header {
 
 /// Zero-copy IPv6 packet view (read-only)
 pub struct Ipv6Packet<'a> {
+    header: &'a Ipv6Header,
     data: &'a [u8],
 }
 
@@ -415,14 +416,14 @@ impl<'a> Ipv6Packet<'a> {
             return None;
         }
 
-        Some(Self { data })
+        let header = crate::util::get_ref::<Ipv6Header>(data, 0)?;
+        Some(Self { header, data })
     }
 
     /// Get header reference (zero-copy)
     #[inline]
     pub fn header(&self) -> &Ipv6Header {
-        // Safety: parse() validated that data.len() >= IPV6_HEADER_SIZE
-        crate::util::get_ref::<Ipv6Header>(self.data, 0).unwrap()
+        self.header
     }
 
     /// Get payload (everything after the 40-byte header)
@@ -500,55 +501,56 @@ impl<'a> Ipv6PacketMut<'a> {
 
     /// Initialize header with defaults (version=6, hop_limit=64)
     pub fn init_header(&mut self) {
-        let header = self.header_mut();
-        header.set_version_tc_fl(6, 0, 0);
-        header.set_payload_length(0);
-        header.set_next_header(IpProtocol::Tcp); // default, caller should override
-        header.set_hop_limit(64);
-        header.src_addr = [0; 16];
-        header.dst_addr = [0; 16];
+        if let Some(header) = self.header_mut() {
+            header.set_version_tc_fl(6, 0, 0);
+            header.set_payload_length(0);
+            header.set_next_header(IpProtocol::Tcp); // default, caller should override
+            header.set_hop_limit(64);
+            header.src_addr = [0; 16];
+            header.dst_addr = [0; 16];
+        }
     }
 
     /// Get mutable header reference
     #[inline]
-    pub fn header_mut(&mut self) -> &mut Ipv6Header {
-        crate::util::get_mut_ref::<Ipv6Header>(self.data, 0).unwrap()
+    pub fn header_mut(&mut self) -> Option<&mut Ipv6Header> {
+        crate::util::get_mut_ref::<Ipv6Header>(self.data, 0)
     }
 
     /// Get immutable header reference
     #[inline]
-    pub fn header(&self) -> &Ipv6Header {
-        crate::util::get_ref::<Ipv6Header>(self.data, 0).unwrap()
+    pub fn header(&self) -> Option<&Ipv6Header> {
+        crate::util::get_ref::<Ipv6Header>(self.data, 0)
     }
 
     /// Set source address
     #[inline]
     pub fn set_source(&mut self, addr: &Ipv6Address) {
-        self.header_mut().set_source(addr);
+        if let Some(h) = self.header_mut() { h.set_source(addr); }
     }
 
     /// Set destination address
     #[inline]
     pub fn set_destination(&mut self, addr: &Ipv6Address) {
-        self.header_mut().set_destination(addr);
+        if let Some(h) = self.header_mut() { h.set_destination(addr); }
     }
 
     /// Set next header (protocol)
     #[inline]
     pub fn set_next_header(&mut self, protocol: IpProtocol) {
-        self.header_mut().set_next_header(protocol);
+        if let Some(h) = self.header_mut() { h.set_next_header(protocol); }
     }
 
     /// Set hop limit
     #[inline]
     pub fn set_hop_limit(&mut self, limit: u8) {
-        self.header_mut().set_hop_limit(limit);
+        if let Some(h) = self.header_mut() { h.set_hop_limit(limit); }
     }
 
     /// Set payload length
     #[inline]
     pub fn set_payload_length(&mut self, len: u16) {
-        self.header_mut().set_payload_length(len);
+        if let Some(h) = self.header_mut() { h.set_payload_length(len); }
     }
 
     /// Get mutable payload slice
@@ -560,12 +562,13 @@ impl<'a> Ipv6PacketMut<'a> {
     /// Get the full buffer as bytes
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.data[..IPV6_HEADER_SIZE + self.header().payload_length() as usize]
+        let payload_len = self.header().map(|h| h.payload_length() as usize).unwrap_or(0);
+        &self.data[..IPV6_HEADER_SIZE + payload_len]
     }
 
     /// Finalize packet (set payload length based on actual data written)
     pub fn finalize(&mut self, payload_len: usize) {
-        self.header_mut().set_payload_length(payload_len as u16);
+        if let Some(h) = self.header_mut() { h.set_payload_length(payload_len as u16); }
     }
 }
 

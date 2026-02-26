@@ -26,6 +26,45 @@ pub enum EventHandleResult {
     Retry,
 }
 
+#[inline]
+fn endpoint_ipv4_pair(local: SocketAddr, remote: SocketAddr) -> Option<([u8; 4], [u8; 4])> {
+    Some((local.as_ipv4()?, remote.as_ipv4()?))
+}
+
+#[inline]
+fn endpoint_is_native_v6_pair(local: SocketAddr, remote: SocketAddr) -> bool {
+    local.is_ipv6()
+        && remote.is_ipv6()
+        && local.as_ipv4().is_none()
+        && remote.as_ipv4().is_none()
+}
+
+fn apply_tcp_checksum_for_addrs(
+    segment: &mut [u8],
+    local: SocketAddr,
+    remote: SocketAddr,
+) -> SocketResult<()> {
+    if let Some((lv4, rv4)) = endpoint_ipv4_pair(local, remote) {
+        TcpSegmentBuilder::calculate_checksum(segment, lv4, rv4);
+        return Ok(());
+    }
+    if endpoint_is_native_v6_pair(local, remote) {
+        TcpSegmentBuilder::calculate_checksum_v6(
+            segment,
+            crate::net::ipv6::Ipv6Address::new(local.as_ipv6()),
+            crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()),
+        );
+        return Ok(());
+    }
+
+    log::warn!(
+        "[NET][endpoint] mixed TCP address family rejected: {} -> {}",
+        local,
+        remote
+    );
+    Err(SocketError::InvalidArgument)
+}
+
 /// ネットワークイベントハンドラ
 /// プロトコルスタック（TCP/UDP）と連携する
 pub struct NetworkEventHandler {
@@ -107,10 +146,8 @@ impl NetworkEventHandler {
             .payload(&data)
             .build();
 
-        if local.is_ipv6() || remote.is_ipv6() {
-            TcpSegmentBuilder::calculate_checksum_v6(&mut segment, crate::net::ipv6::Ipv6Address::new(local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
-        } else {
-            TcpSegmentBuilder::calculate_checksum(&mut segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+        if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
+            return EventHandleResult::ProtocolError(e);
         }
 
         // パケット送信を試みる
@@ -145,6 +182,10 @@ impl NetworkEventHandler {
             Err(SocketError::ResourceExhausted) => {
                 // デバイスまたは ARP 等で送信できない -> 再試行
                 EventHandleResult::Retry
+            }
+            Err(SocketError::InvalidArgument) => {
+                log::info!("TCP: Failed to send data: InvalidArgument (family mismatch)");
+                EventHandleResult::ProtocolError(SocketError::InvalidArgument)
             }
             Err(e) => {
                 log::info!("TCP: Failed to send data: {:?}", e);
@@ -225,16 +266,17 @@ impl NetworkEventHandler {
             .build();
 
         // チェックサム計算 (IPv4/IPv6)
-        if local_addr.is_ipv6() || remote.is_ipv6() {
-            TcpSegmentBuilder::calculate_checksum_v6(&mut syn_segment, crate::net::ipv6::Ipv6Address::new(local_addr.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
-        } else {
-            TcpSegmentBuilder::calculate_checksum(&mut syn_segment, local_addr.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+        if let Err(e) = apply_tcp_checksum_for_addrs(&mut syn_segment, local_addr, remote) {
+            return EventHandleResult::ProtocolError(e);
         }
 
         // パケット送信（IPスタック経由）
         if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
-            return EventHandleResult::ProtocolError(SocketError::Internal);
+            return EventHandleResult::ProtocolError(match e {
+                SocketError::InvalidArgument => SocketError::InvalidArgument,
+                _ => SocketError::Internal,
+            });
         }
 
         log::info!(
@@ -257,6 +299,9 @@ impl NetworkEventHandler {
         dst: SocketAddr,
         segment: Vec<u8>,
     ) -> SocketResult<()> {
+        if endpoint_ipv4_pair(src, dst).is_none() && !endpoint_is_native_v6_pair(src, dst) {
+            return Err(SocketError::InvalidArgument);
+        }
         // Delegate to the module-level `send_tcp_segment` which is IPv4/IPv6-aware.
         // This centralizes IP family handling and ARP/NDP queuing logic.
         if super::segment::send_tcp_segment(src, dst, segment) {
@@ -362,15 +407,16 @@ impl NetworkEventHandler {
                     .window(65535)
                     .build();
 
-                if local.is_ipv6() || remote.is_ipv6() {
-                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, crate::net::ipv6::Ipv6Address::new(local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
-                } else {
-                    TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+                if let Err(e) = apply_tcp_checksum_for_addrs(&mut fin_segment, local, remote) {
+                    return EventHandleResult::ProtocolError(e);
                 }
 
                 if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
-                    return EventHandleResult::ProtocolError(SocketError::Internal);
+                    return EventHandleResult::ProtocolError(match e {
+                        SocketError::InvalidArgument => SocketError::InvalidArgument,
+                        _ => SocketError::Internal,
+                    });
                 }
 
                 log::info!("TCP: FIN sent for fd={}", fd.raw());
@@ -392,10 +438,8 @@ impl NetworkEventHandler {
                     .window(65535)
                     .build();
 
-                if local.is_ipv6() || remote.is_ipv6() {
-                    TcpSegmentBuilder::calculate_checksum_v6(&mut fin_segment, crate::net::ipv6::Ipv6Address::new(local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()));
-                } else {
-                    TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.as_ipv4().unwrap(), remote.as_ipv4().unwrap());
+                if let Err(e) = apply_tcp_checksum_for_addrs(&mut fin_segment, local, remote) {
+                    return EventHandleResult::ProtocolError(e);
                 }
 
                 if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
@@ -469,13 +513,16 @@ impl NetworkEventHandler {
             // UDPパケット送信（IPスタック経由）
             if let Err(e) = self.send_udp_packet(local, remote, udp_packet) {
                 log::info!("UDP: Failed to send packet: {:?}", e);
-                return EventHandleResult::ProtocolError(SocketError::Internal);
+                return EventHandleResult::ProtocolError(match e {
+                    SocketError::InvalidArgument => SocketError::InvalidArgument,
+                    _ => SocketError::Internal,
+                });
             }
 
             log::info!(
-                "UDP: Sent {} bytes to {:?} from port {}",
+                "UDP: Sent {} bytes to {} from port {}",
                 data.len(),
-                remote.as_ipv4().unwrap(),
+                remote,
                 local.port()
             );
 
@@ -498,7 +545,8 @@ impl NetworkEventHandler {
         }
 
         let payload = &packet[8..];
-        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst.as_ipv4().unwrap());
+        let (_, dst_v4) = endpoint_ipv4_pair(src, dst).ok_or(SocketError::InvalidArgument)?;
+        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4);
 
         if crate::net::stack::send_udp(src.port(), dst_ip, dst.port(), payload) {
             Ok(())
@@ -520,7 +568,7 @@ pub mod tests {
     use super::*;
     use crate::net::endpoint::event::{event_queue, NetworkEvent};
     use crate::net::endpoint::manager::init_socket_manager;
-    use crate::net::endpoint::{create_tcp_socket, SocketAddr, SocketState};
+    use crate::net::endpoint::{create_tcp_socket, create_udp_socket, SocketAddr, SocketState};
     use crate::net::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
 
     #[cfg_attr(test, test_case)]
@@ -583,6 +631,63 @@ pub mod tests {
         // Depending on stack transport wiring in test env, this can be Retry (no device)
         // or Success (data drained by a configured transmit fn).
         assert!(matches!(res, EventHandleResult::Retry | EventHandleResult::Success));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_send_udp_packet_rejects_mixed_family() {
+        let handler = NetworkEventHandler::new();
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+
+        assert!(matches!(
+            handler.send_udp_packet(local, remote, alloc::vec![0u8; 8]),
+            Err(SocketError::InvalidArgument)
+        ));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_handle_send_to_ipv6_remote_returns_invalid_argument() {
+        init_socket_manager();
+        let sock = create_udp_socket();
+        let fd = sock.fd();
+
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let local = SocketAddr::new([127, 0, 0, 1], 12345);
+            inner.local_addr = Some(local);
+            inner.udp_socket = Some(crate::net::udp::UdpSocket::new(local.port()));
+            let _ = inner.transition_to(SocketState::Bound);
+        }
+
+        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+        let handler = NetworkEventHandler::new();
+        let res = handler.handle_send_to(fd, remote, alloc::vec![1, 2, 3]);
+        assert!(matches!(
+            res,
+            EventHandleResult::ProtocolError(SocketError::InvalidArgument)
+        ));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_handle_send_to_ipv4_path_not_invalid_argument() {
+        init_socket_manager();
+        let sock = create_udp_socket();
+        let fd = sock.fd();
+
+        if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let local = SocketAddr::new([127, 0, 0, 1], 12346);
+            inner.local_addr = Some(local);
+            inner.udp_socket = Some(crate::net::udp::UdpSocket::new(local.port()));
+            let _ = inner.transition_to(SocketState::Bound);
+        }
+
+        let handler = NetworkEventHandler::new();
+        let res = handler.handle_send_to(fd, SocketAddr::new([127, 0, 0, 1], 8081), alloc::vec![9]);
+        assert!(!matches!(
+            res,
+            EventHandleResult::ProtocolError(SocketError::InvalidArgument)
+        ));
     }
 }
 

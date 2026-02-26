@@ -189,8 +189,8 @@ impl NetworkStack {
                 let checksum = crate::net::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
-            } else {
-                crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.as_ipv4().unwrap().octets(), remote.as_ipv4().unwrap().octets());
+            } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+                crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], lv4.octets(), rv4.octets());
             }
 
             Some((local, remote, seq, total_len))
@@ -209,9 +209,9 @@ impl NetworkStack {
                     let src_v6 = local.as_ipv6();
                     let dst_v6 = remote.as_ipv6();
                     self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
-                } else if local.is_ipv4() && remote.is_ipv4() {
-                    let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                    let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+                    let src_ip_out = Ipv4Address::new(lv4.octets());
+                    let dst_ip_out = Ipv4Address::new(rv4.octets());
                     self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
                 } else {
                     // Mixed family — ignore
@@ -236,9 +236,9 @@ impl NetworkStack {
                     let src_v6 = local.as_ipv6();
                     let dst_v6 = remote.as_ipv6();
                     self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
-                } else if local.is_ipv4() && remote.is_ipv4() {
-                    let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                    let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+                    let src_ip_out = Ipv4Address::new(lv4.octets());
+                    let dst_ip_out = Ipv4Address::new(rv4.octets());
                     self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                 }
             }
@@ -253,9 +253,9 @@ impl NetworkStack {
                     let src_v6 = local.as_ipv6();
                     let dst_v6 = remote.as_ipv6();
                     self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len]);
-                } else if local.is_ipv4() && remote.is_ipv4() {
-                    let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                    let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+                    let src_ip_out = Ipv4Address::new(lv4.octets());
+                    let dst_ip_out = Ipv4Address::new(rv4.octets());
                     self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                 }
             }

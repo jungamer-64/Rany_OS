@@ -115,19 +115,14 @@ impl UdpProcessor {
 
     /// Bind to a port with a capability token
     pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Result<UdpSocket, NetworkError> {
-        // If no token provided, delegate directly to socket table's token-aware bind
-        if token.is_none() {
-            return self.sockets.bind_with_token(port, None).ok_or(NetworkError::PortInUse);
+        if let Some(t) = token {
+            // Token present - validate ownership and capability
+            let caller_domain = crate::task::context::current_subject().domain;
+            if !crate::security::capability::manager().validate_token(caller_domain.as_u64(), t, crate::security::capability::CAP_NET_BIND) {
+                 return Err(NetworkError::PermissionDenied);
+            }
         }
-
-        // Token present - validate ownership and capability
-        let t = token.unwrap();
-        let caller_domain = crate::task::context::current_subject().domain;
-        if !crate::security::capability::manager().validate_token(caller_domain.as_u64(), t, crate::security::capability::CAP_NET_BIND) {
-             return Err(NetworkError::PermissionDenied);
-        }
-        
-        self.sockets.bind_with_token(port, Some(t)).ok_or(NetworkError::PortInUse)
+        self.sockets.bind_with_token(port, token).ok_or(NetworkError::PortInUse)
     }
 
     /// Unbind a socket

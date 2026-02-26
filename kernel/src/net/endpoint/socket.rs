@@ -156,12 +156,13 @@ impl Socket {
             let tcp_addr = if local_addr.is_ipv6() {
                 let v6 = crate::net::ipv6::Ipv6Address::new(local_addr.as_ipv6());
                 crate::net::tcp::SocketAddr::new_v6(v6, local_addr.port())
-            } else {
-                let v4 = local_addr.as_ipv4().unwrap();
+            } else if let Some(v4) = local_addr.as_ipv4() {
                 crate::net::tcp::SocketAddr::new(
                     crate::net::tcp::Ipv4Addr::new(v4[0], v4[1], v4[2], v4[3]),
                     local_addr.port(),
                 )
+            } else {
+                return Err(SocketError::InvalidArgument);
             };
             let listener = TcpListenerImpl::bind(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
             inner.tcp_listener = Some(listener);

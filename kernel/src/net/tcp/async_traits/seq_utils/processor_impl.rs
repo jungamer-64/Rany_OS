@@ -425,9 +425,12 @@ impl TcpProcessor {
 
     /// Create an ACK packet result from current TCB state
     pub(super) fn make_ack_result(tcb: &TcpControlBlock) -> TcpProcessResult {
+        let Some(remote) = tcb.remote_addr() else {
+            return TcpProcessResult::None;
+        };
         TcpProcessResult::SendPacket {
             local: tcb.local_addr(),
-            remote: tcb.remote_addr().unwrap(),
+            remote,
             seq: tcb.snd_nxt(),
             ack: tcb.rcv_nxt(),
             flags: TcpHeader::FLAG_ACK,
@@ -557,9 +560,12 @@ impl TcpProcessor {
             tcb.set_rcv_nxt(seq_num.wrapping_add(1));
             tcb.enter_syn_received();
             // Send SYN-ACK
+            let Some(remote) = tcb.remote_addr() else {
+                return TcpProcessResult::None;
+            };
             TcpProcessResult::SendPacket {
                 local: tcb.local_addr(),
-                remote: tcb.remote_addr().unwrap(),
+                remote,
                 seq: tcb.snd_nxt(),
                 ack: tcb.rcv_nxt(),
                 flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,

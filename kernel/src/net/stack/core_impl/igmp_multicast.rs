@@ -1,6 +1,23 @@
 use super::*;
 
 mod tcp_bind;
+
+#[inline]
+fn tcp_ipv4_pair(
+    local: TcpSocketAddr,
+    remote: TcpSocketAddr,
+) -> Option<(crate::net::tcp::Ipv4Addr, crate::net::tcp::Ipv4Addr)> {
+    Some((local.as_ipv4()?, remote.as_ipv4()?))
+}
+
+#[inline]
+fn tcp_is_native_v6_pair(local: TcpSocketAddr, remote: TcpSocketAddr) -> bool {
+    local.is_ipv6()
+        && remote.is_ipv6()
+        && local.as_ipv4().is_none()
+        && remote.as_ipv4().is_none()
+}
+
 impl NetworkStack {
     
     /// Send an IGMP Leave Group message
@@ -167,14 +184,18 @@ impl NetworkStack {
                     buffer[20..total_len].copy_from_slice(&payload);
                 }
 
+                let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local, remote) else {
+                    log::warn!("[NET] mixed TCP family dropped in IPv4 response path: {} -> {}", local, remote);
+                    return;
+                };
                 crate::net::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
-                    local.as_ipv4().unwrap().octets(),
-                    remote.as_ipv4().unwrap().octets(),
+                    local_v4.octets(),
+                    remote_v4.octets(),
                 );
 
-                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                let src_ip_out = Ipv4Address::new(local_v4.octets());
+                let dst_ip_out = Ipv4Address::new(remote_v4.octets());
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                 let now = self.current_time();
                 if sent {
@@ -359,10 +380,22 @@ impl NetworkStack {
                     }
 
                     // IPv4 TCP checksum (we're sending over IPv4 for mapped addresses)
-                    crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local.as_ipv4().unwrap().0, remote.as_ipv4().unwrap().0);
+                    let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local, remote) else {
+                        log::warn!(
+                            "[NET] mixed TCP family dropped in v4-mapped TCPv6 response path: {} -> {}",
+                            local,
+                            remote
+                        );
+                        return;
+                    };
+                    crate::net::tcp::calculate_tcp_checksum(
+                        &mut buffer[..total_len],
+                        local_v4.0,
+                        remote_v4.0,
+                    );
 
-let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                    let src_ip_out = Ipv4Address::new(local_v4.octets());
+                    let dst_ip_out = Ipv4Address::new(remote_v4.octets());
 
                     let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
                     let now = self.current_time();
@@ -560,16 +593,20 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
                 }
                 
                 // Calculate Checksum
+                let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local, remote) else {
+                    log::warn!("[NET] mixed TCP family dropped in IPv4 send path: {} -> {}", local, remote);
+                    return;
+                };
                 crate::net::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
-                    local.as_ipv4().unwrap().octets(),
-                    remote.as_ipv4().unwrap().octets(),
+                    local_v4.octets(),
+                    remote_v4.octets(),
                 );
                 
                 // Send via IP
                 // Convert TcpIpv4Addr -> Ipv4Address
-                let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
-                let dst_ip_out = Ipv4Address::new(remote.as_ipv4().unwrap().octets());
+                let src_ip_out = Ipv4Address::new(local_v4.octets());
+                let dst_ip_out = Ipv4Address::new(remote_v4.octets());
                 
                 // Send segment via IP
                 let sent = self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len]);
@@ -1055,7 +1092,16 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
             buffer[18..20].fill(0);
             
              // Calculate checksum and send (support IPv4 & IPv6)
-            let sent = if local_addr.is_ipv6() || remote_addr.is_ipv6() {
+            let sent = if let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local_addr, remote_addr) {
+                crate::net::tcp::calculate_tcp_checksum(
+                    &mut buffer[..total_len],
+                    local_v4.octets(),
+                    remote_v4.octets(),
+                );
+                let src_ip_out = Ipv4Address::new(local_v4.octets());
+                let dst_ip_out = Ipv4Address::new(remote_v4.octets());
+                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
+            } else if tcp_is_native_v6_pair(local_addr, remote_addr) {
                 let src_v6 = local_addr.as_ipv6();
                 let dst_v6 = remote_addr.as_ipv6();
                 let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::ipv4::IpProtocol::Tcp, total_len as u32);
@@ -1064,10 +1110,12 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
                 self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
             } else {
-                crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], local_addr.as_ipv4().unwrap().octets(), remote_addr.as_ipv4().unwrap().octets());
-                let src_ip_out = Ipv4Address::new(local_addr.as_ipv4().unwrap().octets());
-                let dst_ip_out = Ipv4Address::new(remote_addr.as_ipv4().unwrap().octets());
-                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
+                log::warn!(
+                    "[NET] mixed TCP family dropped in connect_tcp SYN path: {} -> {}",
+                    local_addr,
+                    remote_addr
+                );
+                false
             };
 
             let now = self.current_time();
@@ -1080,5 +1128,18 @@ let src_ip_out = Ipv4Address::new(local.as_ipv4().unwrap().octets());
         }
 
         Ok(stream)
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+mod family_guard_tests {
+    use super::*;
+
+    #[cfg_attr(test, test_case)]
+    fn tcp_ipv4_pair_rejects_mixed_family() {
+        let local = TcpSocketAddr::new(crate::net::tcp::Ipv4Addr::LOCALHOST, 1234);
+        let remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 80);
+        assert!(tcp_ipv4_pair(local, remote).is_none());
+        assert!(!tcp_is_native_v6_pair(local, remote));
     }
 }
