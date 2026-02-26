@@ -6,7 +6,10 @@
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod variant_tests {
-    use super::*;
+    use crate::net::endpoint::congestion::{
+        CongestionAlgorithm, CongestionControllerVariant, CongestionState, DEFAULT_MSS,
+        INITIAL_WINDOW,
+    };
 
     #[cfg_attr(test, test_case)]
     pub fn test_variant_from_algorithm() {
@@ -127,4 +130,3 @@ pub mod variant_tests {
         assert_eq!(v.algorithm(), CongestionAlgorithm::NewReno);
     }
 }
-

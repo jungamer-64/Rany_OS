@@ -9,7 +9,7 @@
 use super::ipv4::{Ipv4Address, data_checksum};
 
 /// ICMP message type
-mod processor_impl;
+pub(crate) mod processor_impl;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum IcmpType {

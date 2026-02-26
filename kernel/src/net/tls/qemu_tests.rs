@@ -2,6 +2,8 @@
 // tls/qemu_tests.rs - QEMU Integration Tests
 // ============================================================================
 use super::*;
+use crate::net::tls::connection::TlsConnection;
+use crate::net::tls::crypto::*;
 
 mod aes_gcm_smoke;
 pub use aes_gcm_smoke::*;

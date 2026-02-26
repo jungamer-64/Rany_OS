@@ -51,7 +51,7 @@ pub use irq_mutex::{IrqMutex, IrqMutexGuard};
 #[allow(unused_imports)]
 pub use poison_lock::{
     IrqPoisonLock, IrqPoisonLockGuard, LockResult, PoisonError, PoisonLock, PoisonLockGuard,
-    set_panicking,
+    set_panicking, get_current_core_id_for_debug, is_panicking_for_debug,
 };
 
 #[allow(unused_imports)]

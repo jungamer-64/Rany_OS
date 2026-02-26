@@ -14,6 +14,10 @@
 //! - 0-RTT Early Data
 
 
+#[cfg(any(test, feature = "qemu-test-export"))]
+use alloc::vec::Vec;
+#[cfg(any(test, feature = "qemu-test-export"))]
+use self::crypto::tls12_prf;
 
 // ── Sub-modules ──────────────────────────────────────────────────────────────
 

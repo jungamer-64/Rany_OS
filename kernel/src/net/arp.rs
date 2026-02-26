@@ -12,7 +12,7 @@ use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// ARP hardware type
-mod processor_impl;
+pub(crate) mod processor_impl;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ArpHardwareType {

@@ -327,7 +327,8 @@ pub fn wave8_tls_p256_point_on_curve_smoke() -> bool {
 ///
 /// k = 1 -> [1]G = G を検証する。
 pub fn wave8_tls_p256_scalar_mul_base_smoke() -> bool {
-    use crate::net::ecdh::p256::{P256Point, scalar_base_mul};
+    use crate::net::ecdh::p256::P256Point;
+    use crate::net::ecdh::scalar_base_mul;
     let g = P256Point::generator();
     let (gx, gy) = match g.to_affine() {
         Some(v) => v,

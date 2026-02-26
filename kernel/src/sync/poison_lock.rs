@@ -375,6 +375,11 @@ fn is_panicking() -> bool {
     (mask & (1 << core_id)) != 0
 }
 
+pub fn is_panicking_for_debug() -> bool {
+    is_panicking()
+}
+
+
 // ============================================================================
 // Lock acquisition metrics (軽量計測用)
 // - acquire_count: ロック取得呼び出し回数
@@ -427,6 +432,10 @@ pub fn set_panicking(panicking: bool) {
     } else {
         PANICKING_CORES.fetch_and(!bit, Ordering::Release);
     }
+}
+
+pub fn get_current_core_id_for_debug() -> u32 {
+    get_current_core_id()
 }
 
 /// 現在のCPUコアIDを取得
