@@ -173,13 +173,17 @@ impl<'a> ElfLoader<'a> {
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
     ) -> Result<(), LoadError> {
+        crate::io::log::early_print("[LDBG] symtab enter\n");
         let sym_count = sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
         let strtab = self.get_string_table(sh.sh_link as usize)?;
 
         // ある程度の容量を予約して再割り当てを減らす
         let reserve_amount = core::cmp::min(sym_count, MAX_SYMBOLS);
+        crate::io::log::early_print("[LDBG] symtab reserve e\n");
         exports.reserve(reserve_amount);
+        crate::io::log::early_print("[LDBG] symtab reserve i\n");
         imports.reserve(reserve_amount);
+        crate::io::log::early_print("[LDBG] symtab loop\n");
 
         for j in 0..sym_count {
             let sym_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Symbol>();
@@ -214,6 +218,7 @@ impl<'a> ElfLoader<'a> {
             }
         }
 
+        crate::io::log::early_print("[LDBG] symtab done\n");
         Ok(())
     }
 

@@ -157,36 +157,18 @@ impl CellRegistry {
 
     /// セルを登録
     pub fn register(&mut self, entry: CellEntry) {
-        log::info!(
-            "[Loader][DBG] CellRegistry::register start id={} name={} exports={}\n",
-            entry.id.as_u64(),
-            entry.name,
-            entry.exports.len()
-        );
         // シンボルテーブルにエクスポートを追加
-        for (idx, (symbol, addr)) in entry.exports.iter().enumerate() {
-            log::info!(
-                "[Loader][DBG] CellRegistry::register export[{}] {} -> {:#x}\n",
-                idx,
-                symbol,
-                *addr
-            );
+        for (_idx, (symbol, addr)) in entry.exports.iter().enumerate() {
             if self
                 .symbol_table
                 .get(symbol.as_str())
                 .is_some_and(|existing| *existing == *addr)
             {
-                log::info!(
-                    "[Loader][DBG] CellRegistry::register skip duplicate export {} -> {:#x}\n",
-                    symbol,
-                    *addr
-                );
                 continue;
             }
             self.symbol_table.insert(symbol.clone(), *addr);
         }
         self.cells.insert(entry.id, entry);
-        log::info!("[Loader][DBG] CellRegistry::register done\n");
     }
 
     /// セルを取得
@@ -352,7 +334,9 @@ fn validate_cell_requirements(
     if !allow_unsafe && contains_unsafe {
         return Err(LoadError::UnsafeNotAllowed);
     }
+    crate::io::log::early_print("[LDBG] validate deps extract\n");
     if let Some(deps) = type_id::extract_type_ids(elf_data) {
+        crate::io::log::early_print("[LDBG] validate deps verify\n");
         if let Err(e) = type_id::verify_cell_dependencies(&deps) {
             log::info!(
                 "[Loader] Type ID verification failed for '{}': {}\n",
@@ -361,6 +345,7 @@ fn validate_cell_requirements(
             );
             return Err(LoadError::AbiIncompatible(alloc::format!("{}", e)));
         }
+        crate::io::log::early_print("[LDBG] validate deps ok\n");
         log::info!(
             "[Loader] Type ID verified for '{}' ({})\n",
             name,
@@ -378,23 +363,14 @@ fn load_cell_with_flags(
     signature_verified: bool,
     required_caps: u64,
 ) -> Result<CellId, LoadError> {
-    log::info!("[Loader][DBG] load_cell_with_flags start name={}\n", name);
     validate_cell_requirements(name, elf_data, allow_unsafe, contains_unsafe)?;
-    log::info!("[Loader][DBG] requirements ok name={}\n", name);
 
     // 3. ELFをパース
+    crate::io::log::early_print("[LDBG] new\n");
     let loader = elf::ElfLoader::new(elf_data)?;
-    log::info!("[Loader][DBG] elf loader created name={}\n", name);
+    crate::io::log::early_print("[LDBG] parse\n");
     let cell_info = loader.parse()?;
-    log::info!(
-        "[Loader][DBG] parsed name={} mem_size={} align={} segs={} imports={} exports={}\n",
-        name,
-        cell_info.memory_size,
-        cell_info.alignment,
-        cell_info.segments.len(),
-        cell_info.imports.len(),
-        cell_info.exports.len()
-    );
+    crate::io::log::early_print("[LDBG] parsed\n");
 
     // 4. 依存関係のチェック
     for import in &cell_info.imports {
@@ -402,35 +378,20 @@ fn load_cell_with_flags(
             return Err(LoadError::UnresolvedDependency((*import).to_string()));
         }
     }
-    log::info!("[Loader][DBG] imports resolved name={}\n", name);
 
     // 5. メモリ割り当てとロード
-    log::info!("[Loader][DBG] load segments begin name={}\n", name);
+    crate::io::log::early_print("[LDBG] load\n");
     let loaded = loader.load(&cell_info)?;
-    log::info!(
-        "[Loader][DBG] load segments done name={} base={:#x} size={} entry={:?}\n",
-        name,
-        loaded.base_address,
-        loaded.size,
-        loaded.entry_point
-    );
 
     // 6. リロケーション
     let resolver = |s: &str| with_registry(|r| r.resolve_symbol(s));
-    log::info!("[Loader][DBG] relocate begin name={}\n", name);
+    crate::io::log::early_print("[LDBG] relocate\n");
     loader.relocate(&loaded, resolver)?;
-    log::info!("[Loader][DBG] relocate done name={}\n", name);
 
     // 6. レジストリに登録
-    log::info!("[Loader][DBG] registry register begin name={}\n", name);
+    crate::io::log::early_print("[LDBG] register\n");
     let id = with_registry_mut(|r| {
-        log::info!("[Loader][DBG] registry closure allocate_id begin name={}\n", name);
         let id = r.allocate_id();
-        log::info!(
-            "[Loader][DBG] registry closure allocate_id done name={} id={}\n",
-            name,
-            id.as_u64()
-        );
         let entry = CellEntry {
             id,
             name: name.into(),
@@ -457,18 +418,9 @@ fn load_cell_with_flags(
                 ..Default::default()
             },
         };
-        log::info!(
-            "[Loader][DBG] registry closure entry built name={} id={} exports={}\n",
-            name,
-            id.as_u64(),
-            entry.exports.len()
-        );
-        log::info!("[Loader][DBG] registry closure r.register begin name={}\n", name);
         r.register(entry);
-        log::info!("[Loader][DBG] registry closure r.register done name={}\n", name);
         id
     });
-    log::info!("[Loader][DBG] registry register done name={} id={:?}\n", name, id.as_u64());
 
     Ok(id)
 }
@@ -554,10 +506,6 @@ fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
 }
 
 pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
-    log::info!(
-        "[Loader][DBG] register_driver_from_cell start cell_id={}\n",
-        cell_id.as_u64()
-    );
     // Prefer DRIVER_EXPORTS when available
     let exports_addr = with_registry(|r| {
         let cell = r.get(cell_id)?;
@@ -568,21 +516,13 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     });
 
     if let Some(addr) = exports_addr {
-        log::info!(
-            "[Loader][DBG] register_driver_from_cell using DRIVER_EXPORTS cell_id={} addr={:#x}\n",
-            cell_id.as_u64(),
-            addr
-        );
         let exports_ptr = addr as *const DriverExportsV1;
-        log::info!("[Loader][DBG] register_exports_driver begin\n");
         match register_exports_driver(exports_ptr) {
             Ok(handle) => {
-                log::info!("[Loader][DBG] register_exports_driver ok handle={:?}\n", handle);
                 record_driver_handle(cell_id, handle);
                 return Ok(handle);
             }
             Err(_) => {
-                log::info!("[Loader][DBG] register_exports_driver err; unloading cell\n");
                 with_registry_mut(|r| {
                     r.unload(cell_id);
                 });
@@ -620,10 +560,6 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
         unsafe { core::mem::transmute(entry_addr) };
 
     // Register with driver registry
-    log::info!(
-        "[Loader][DBG] register_driver_from_cell fallback DRIVER_ENTRY addr={:#x}\n",
-        entry_addr
-    );
     match register_abi_driver(entry_fn) {
         Ok(handle) => {
             record_driver_handle(cell_id, handle);

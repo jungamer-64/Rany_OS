@@ -29,6 +29,9 @@ pub mod blk_driver;
 pub mod blk_scheduler;
 pub mod net;
 
+pub mod virtqueue;
+pub use virtqueue::*;
+
 pub mod dma;
 pub mod console;
 pub mod console_driver;
