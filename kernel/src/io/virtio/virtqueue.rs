@@ -36,13 +36,12 @@ pub struct VirtQueue {
     dma_buffer: Option<CoherentDmaBuffer>,
     /// Queue index
     pub index: u16,
-    
-    // Kept here for compatibility during Phase 3 transition
-    notify_addr: Option<u64>,
-    notify_is_32bit: bool,
 }
 
 unsafe impl Send for VirtQueue {}
+// SAFETY: Methods that mutate the queue state (avail_ring, used_ring, etc.) require `&mut self`.
+// Therefore, concurrent access is prevented by Rust's borrowing rules (e.g., via Mutex),
+// making it safe to share across threads.
 unsafe impl Sync for VirtQueue {}
 
 impl VirtQueue {
@@ -58,8 +57,6 @@ impl VirtQueue {
         used_ring: *mut VringUsed,
         dma_buffer: Option<CoherentDmaBuffer>,
         index: u16,
-        notify_addr: Option<u64>,
-        notify_is_32bit: bool,
     ) -> Self {
         for i in 0..queue_size {
             unsafe {
@@ -90,25 +87,27 @@ impl VirtQueue {
             last_used_idx: AtomicU32::new(0),
             dma_buffer,
             index,
-            notify_addr,
-            notify_is_32bit,
         }
     }
 
     /// Safely get the current available index
     fn get_avail_idx(&self) -> u16 {
+        // SAFETY: The pointer `avail_ring` is guaranteed to be valid and points to the DMA ring.
         unsafe { (*self.avail_ring).idx }
     }
 
     /// Safely set a new available index
-    fn set_avail_idx(&self, idx: u16) {
+    fn set_avail_idx(&mut self, idx: u16) {
+        // SAFETY: `&mut self` ensures exclusive access. `avail_ring` is valid.
         unsafe {
             (*self.avail_ring).idx = idx;
         }
     }
 
     /// Safely set an entry in the available ring
-    fn set_avail_ring_entry(&self, ring_index: u16, head: u16) {
+    fn set_avail_ring_entry(&mut self, ring_index: u16, head: u16) {
+        // SAFETY: The pointer arithmetic is within the bounds of the pre-allocated DMA ring.
+        // `&mut self` enforces exclusive access, avoiding data races.
         let ring_ptr = unsafe { (self.avail_ring as *mut u16).add(2) };
         unsafe {
             *ring_ptr.add(ring_index as usize) = head;
@@ -117,11 +116,13 @@ impl VirtQueue {
 
     /// Safely get the current used index
     fn get_used_idx(&self) -> u16 {
+        // SAFETY: Read-only access to the device-updated used ring memory.
         unsafe { (*self.used_ring).idx }
     }
 
     /// Safely get an element from the used ring
     fn get_used_elem(&self, ring_index: u16) -> VringUsedElem {
+        // SAFETY: Pointer arithmetic and reads are within bounds of the used ring array.
         let ring_ptr = unsafe { (self.used_ring as *const u8).add(4) as *const VringUsedElem };
         unsafe { ring_ptr.add(ring_index as usize).read_unaligned() }
     }
@@ -167,7 +168,7 @@ impl VirtQueue {
     ///
     /// # Safety
     /// Caller must ensure descriptors are properly set up
-    pub unsafe fn submit(&self, head: u16) -> u16 {
+    pub unsafe fn submit(&mut self, head: u16) -> u16 {
         core::sync::atomic::fence(Ordering::Release);
 
         let avail_idx = self.get_avail_idx();
@@ -181,21 +182,12 @@ impl VirtQueue {
     }
 
     /// Notify the device that new buffers are available.
-    #[allow(deprecated)]
-    pub fn notify(&self) {
-        let Some(addr) = self.notify_addr else {
-            return;
-        };
-
-        if self.notify_is_32bit {
-            crate::io::mmio::mmio_write_u32(addr as usize, self.index as u32);
-        } else {
-            crate::io::mmio::mmio_write_u16(addr as usize, self.index);
-        }
+    pub fn notify(&self, transport: &dyn crate::io::virtio::transport::VirtioTransport) {
+        transport.notify_queue(self.index);
     }
 
     /// Poll for completed requests
-    pub fn poll_completions(&self) -> Option<(u16, u32)> {
+    pub fn poll_completions(&mut self) -> Option<(u16, u32)> {
         let last_used = self.last_used_idx.load(Ordering::Acquire);
         core::sync::atomic::fence(Ordering::Acquire);
 

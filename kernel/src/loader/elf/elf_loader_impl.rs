@@ -1,4 +1,5 @@
 use super::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 
 mod relocation;
@@ -146,7 +147,12 @@ impl<'a> ElfLoader<'a> {
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
     ) -> Result<(), LoadError> {
-        // セクションヘッダーを探索
+        let mut seen_exports: BTreeSet<(&'a str, u64)> = BTreeSet::new();
+        let mut seen_imports: BTreeSet<&'a str> = BTreeSet::new();
+        let mut processed_symtab = false;
+
+        // まず .symtab を優先して処理する。存在する場合は .dynsym をスキップし、
+        // 重複と追加コストを避ける（DriverCellのデバッグビルドでは .symtab が存在する）。
         for i in 0..self.header.e_shnum {
             let sh_offset =
                 self.header.e_shoff as usize + (i as usize * self.header.e_shentsize as usize);
@@ -158,8 +164,40 @@ impl<'a> ElfLoader<'a> {
             };
 
             // シンボルテーブルを処理
-            if sh.sh_type == SHT_SYMTAB || sh.sh_type == SHT_DYNSYM {
-                self.process_symbol_table(&sh, exports, imports)?;
+            if sh.sh_type == SHT_SYMTAB {
+                processed_symtab = true;
+                self.process_symbol_table(
+                    &sh,
+                    exports,
+                    imports,
+                    &mut seen_exports,
+                    &mut seen_imports,
+                )?;
+            }
+        }
+
+        if processed_symtab {
+            return Ok(());
+        }
+
+        // .symtab が無い最小ELF向けフォールバックとして .dynsym を処理。
+        for i in 0..self.header.e_shnum {
+            let sh_offset =
+                self.header.e_shoff as usize + (i as usize * self.header.e_shentsize as usize);
+
+            let sh: Elf64SectionHeader = match crate::util::read_struct(self.data, sh_offset) {
+                Some(sh) => sh,
+                None => continue,
+            };
+
+            if sh.sh_type == SHT_DYNSYM {
+                self.process_symbol_table(
+                    &sh,
+                    exports,
+                    imports,
+                    &mut seen_exports,
+                    &mut seen_imports,
+                )?;
             }
         }
 
@@ -172,6 +210,8 @@ impl<'a> ElfLoader<'a> {
         sh: &Elf64SectionHeader,
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
+        seen_exports: &mut BTreeSet<(&'a str, u64)>,
+        seen_imports: &mut BTreeSet<&'a str>,
     ) -> Result<(), LoadError> {
         crate::io::log::early_print("[LDBG] symtab enter\n");
         let sym_count = sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
@@ -202,15 +242,13 @@ impl<'a> ElfLoader<'a> {
                     }
                     if sym.st_shndx == 0 {
                         // 未定義シンボル = インポート（ゼロコピー）
-                        if !imports.iter().any(|existing| *existing == name) {
+                        if seen_imports.insert(name) {
                             imports.push(name);
                         }
                     } else {
                         // 定義済みシンボル = エクスポート（ゼロコピー）
-                        if !exports
-                            .iter()
-                            .any(|(existing, value)| *existing == name && *value == sym.st_value)
-                        {
+                        let export_key = (name, sym.st_value);
+                        if seen_exports.insert(export_key) {
                             exports.push((name, sym.st_value));
                         }
                     }
@@ -396,10 +434,28 @@ impl<'a> ElfLoader<'a> {
 
         }
 
+        // Apply page permissions after all copies complete. Adjacent ELF segments can
+        // share a page (e.g. text tail + rodata head), so merge flags per page first
+        // to avoid a later non-exec segment clobbering execute permission.
+        let mut page_flags: BTreeMap<usize, u32> = BTreeMap::new();
         for segment in &info.segments {
             let dest = base_address + segment.vaddr;
-            // Apply page flags (may be a no-op in test builds) after all copies complete.
-            self.apply_page_flags(dest, segment.mem_size, segment.flags, pkey)?;
+            let seg_start = dest & !0xfffusize;
+            let seg_end = (dest + segment.mem_size + 0xfffusize) & !0xfffusize;
+            for page_addr in (seg_start..seg_end).step_by(4096) {
+                let merged = page_flags.entry(page_addr).or_insert(0);
+                *merged |= segment.flags;
+            }
+        }
+
+        for (page_addr, flags) in page_flags {
+            if (flags & PF_X) != 0 && (flags & PF_W) != 0 {
+                log::warn!(
+                    "[ELF] Page {:#x} spans writable+executable segments; preferring executable page flags",
+                    page_addr
+                );
+            }
+            self.apply_page_flags(page_addr, 4096, flags, pkey)?;
         }
         Ok(())
     }

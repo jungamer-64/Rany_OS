@@ -258,8 +258,8 @@ impl VirtioInputDevice {
         }
 
         let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
-        let notify_addr = self.transport.get_notify_addr(queue_idx);
-        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+        let _notify_addr = self.transport.get_notify_addr(queue_idx);
+        let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // Allocate queue memory (proper DMA allocation)
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
@@ -306,8 +306,6 @@ impl VirtioInputDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
-                notify_addr,
-                notify_is_32bit,
             )
         };
 
@@ -329,7 +327,7 @@ impl VirtioInputDevice {
     /// We post `EVENT_BUFFER_COUNT` (32) buffers.
     fn post_event_buffers(&self) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
-        let queue_guard = event_queue.lock();
+        let mut queue_guard = event_queue.lock();
         let mut buffers = self.event_buffers.lock();
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
@@ -368,7 +366,7 @@ impl VirtioInputDevice {
         }
 
         // Notify device that buffers are available
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
 
         Ok(())
     }
@@ -379,7 +377,7 @@ impl VirtioInputDevice {
     /// buffers to write new events into.
     fn repost_event_buffer(&self, desc_idx: u16) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
-        let queue_guard = event_queue.lock();
+        let mut queue_guard = event_queue.lock();
         let mut buffers = self.event_buffers.lock();
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
@@ -411,7 +409,7 @@ impl VirtioInputDevice {
         buffers.insert(desc_idx, dma_buf);
 
         // Notify device
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
 
         Ok(())
     }
@@ -489,7 +487,7 @@ impl VirtioInputDevice {
             None => return,
         };
 
-        let queue_guard = event_queue.lock();
+        let mut queue_guard = event_queue.lock();
         let handler = self.event_handler.lock().clone();
 
         // Collect completions while holding the queue lock

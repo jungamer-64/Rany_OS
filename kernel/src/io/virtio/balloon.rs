@@ -207,8 +207,8 @@ impl VirtioBalloonDevice {
         }
 
         let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
-        let notify_addr = self.transport.get_notify_addr(queue_idx);
-        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+        let _notify_addr = self.transport.get_notify_addr(queue_idx);
+        let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // Allocate queue memory (proper DMA allocation)
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
@@ -255,8 +255,6 @@ impl VirtioBalloonDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
-                notify_addr,
-                notify_is_32bit,
             )
         };
 
@@ -305,7 +303,7 @@ impl VirtioBalloonDevice {
 
         let phys_addr = dma_buf.device_addr();
 
-        let queue_guard = queue.lock();
+        let mut queue_guard = queue.lock();
 
         // Allocate a single descriptor for the PFN array (device-readable)
         let desc_idx = queue_guard.alloc_desc().ok_or(BalloonError::QueueFull)?;
@@ -329,7 +327,7 @@ impl VirtioBalloonDevice {
         self.inflight_buffers.lock().insert(desc_idx, dma_buf);
 
         // Notify device
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
 
         Ok(())
     }
@@ -408,7 +406,7 @@ impl VirtioBalloonDevice {
         if queue_interrupt {
             // Process inflate queue completions
             if let Some(ref queue) = self.inflate_queue {
-                let queue_guard = queue.lock();
+                let mut queue_guard = queue.lock();
                 while let Some((desc_id, _len)) = queue_guard.poll_completions() {
                     // Free the inflight DMA buffer
                     self.inflight_buffers.lock().remove(&desc_id);
@@ -419,7 +417,7 @@ impl VirtioBalloonDevice {
 
             // Process deflate queue completions
             if let Some(ref queue) = self.deflate_queue {
-                let queue_guard = queue.lock();
+                let mut queue_guard = queue.lock();
                 while let Some((desc_id, _len)) = queue_guard.poll_completions() {
                     // Free the inflight DMA buffer
                     self.inflight_buffers.lock().remove(&desc_id);

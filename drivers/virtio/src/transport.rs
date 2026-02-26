@@ -133,7 +133,7 @@ pub trait VirtioTransport: Send + Sync {
     fn set_queue_used_addr(&mut self, addr: u64);
 
     /// キューに通知
-    fn notify_queue(&mut self, queue_index: u16);
+    fn notify_queue(&self, queue_index: u16);
 
     /// キューの通知アドレスを取得
     ///
@@ -368,7 +368,7 @@ impl VirtioTransport for VirtioMmioTransport {
         self.write32(mmio_regs::QUEUE_USED_HIGH, (addr >> 32) as u32);
     }
 
-    fn notify_queue(&mut self, queue_index: u16) {
+    fn notify_queue(&self, queue_index: u16) {
         let addr = (self.base + mmio_regs::QUEUE_NOTIFY) as usize;
         log::info!(
             "[EARLY][VIRTIO-MMIO] notify_queue queue={} addr=0x{:x}",
@@ -622,7 +622,7 @@ impl VirtioTransport for VirtioPciTransport {
         self.write_common_u64(pci_common_cfg::QUEUE_USED, addr);
     }
 
-    fn notify_queue(&mut self, queue_index: u16) {
+    fn notify_queue(&self, queue_index: u16) {
         // Select the queue in the device common config
         self.write_common_u16(pci_common_cfg::QUEUE_SELECT, queue_index);
         let notify_off = self.get_queue_notify_offset() as usize;

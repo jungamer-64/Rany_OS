@@ -269,8 +269,8 @@ impl VirtioConsoleDevice {
         }
 
         let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
-        let notify_addr = self.transport.get_notify_addr(queue_idx);
-        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+        let _notify_addr = self.transport.get_notify_addr(queue_idx);
+        let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // Allocate queue memory (proper DMA allocation)
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
@@ -317,8 +317,6 @@ impl VirtioConsoleDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx,
-                notify_addr,
-                notify_is_32bit,
             )
         };
 
@@ -338,7 +336,7 @@ impl VirtioConsoleDevice {
     /// RX_BUFFER_SIZE bytes each.
     fn post_rx_buffers(&self) -> Result<(), ConsoleError> {
         let rx_queue = self.rx_queue.as_ref().ok_or(ConsoleError::NotReady)?;
-        let queue_guard = rx_queue.lock();
+        let mut queue_guard = rx_queue.lock();
 
         for _ in 0..RX_BUFFER_COUNT {
             let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -370,7 +368,7 @@ impl VirtioConsoleDevice {
         }
 
         // Notify device that RX buffers are available
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
 
         Ok(())
     }
@@ -389,7 +387,7 @@ impl VirtioConsoleDevice {
         }
 
         let tx_queue = self.tx_queue.as_ref().ok_or(ConsoleError::NotReady)?;
-        let queue_guard = tx_queue.lock();
+        let mut queue_guard = tx_queue.lock();
 
         // Allocate a DMA buffer and copy the data (IOMMU-aware)
         let mut buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -425,7 +423,7 @@ impl VirtioConsoleDevice {
         self.tx_inflight.lock().insert(desc_idx, buffer);
 
         // Notify device
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
 
         Ok(())
     }
@@ -436,7 +434,7 @@ impl VirtioConsoleDevice {
     /// After reading, reposts a fresh RX buffer to the queue.
     pub fn read_bytes(&self) -> Option<Vec<u8>> {
         let rx_queue = self.rx_queue.as_ref()?;
-        let queue_guard = rx_queue.lock();
+        let mut queue_guard = rx_queue.lock();
 
         // Poll for a completed RX buffer
         let (desc_id, len) = queue_guard.poll_completions()?;
@@ -478,7 +476,7 @@ impl VirtioConsoleDevice {
                     queue_guard.submit(new_desc);
                 }
                 self.rx_buffers.lock().insert(new_desc, new_buffer);
-                queue_guard.notify();
+                queue_guard.notify(&*self.transport);
             }
         }
 
@@ -499,7 +497,7 @@ impl VirtioConsoleDevice {
 
     fn process_tx_completions(&self) {
         if let Some(ref tx_queue) = self.tx_queue {
-            let queue_guard = tx_queue.lock();
+            let mut queue_guard = tx_queue.lock();
             while let Some((desc_id, _len)) = queue_guard.poll_completions() {
                 // Free the inflight DMA buffer
                 if let Some(_buf) = self.tx_inflight.lock().remove(&desc_id) {

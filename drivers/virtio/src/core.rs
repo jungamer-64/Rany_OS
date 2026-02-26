@@ -49,10 +49,6 @@ pub struct VirtQueue {
     free_bitmap_ext3: AtomicU64,
     /// 最後に処理したUsedインデックス
     last_used_idx: AtomicU16,
-    /// 通知アドレス（MMIO/PIO）
-    notify_addr: *mut u16,
-    /// 通知オフセット乗数（PCI用）
-    notify_off_multiplier: u32,
 }
 
 // SAFETY: VirtQueueはMutexで保護されるか、適切な同期メカニズムを使用する。
@@ -73,8 +69,6 @@ impl VirtQueue {
         desc_table: *mut VringDesc,
         avail_ring: *mut VringAvailHeader,
         used_ring: *mut VringUsedHeader,
-        notify_addr: *mut u16,
-        notify_off_multiplier: u32,
     ) -> Result<Self, &'static str> {
         if queue_size == 0 || !queue_size.is_power_of_two() {
             return Err("Queue size must be a power of 2");
@@ -122,8 +116,6 @@ impl VirtQueue {
             free_bitmap_ext2: AtomicU64::new(bitmap2),
             free_bitmap_ext3: AtomicU64::new(bitmap3),
             last_used_idx: AtomicU16::new(0),
-            notify_addr,
-            notify_off_multiplier,
         })
     }
 
@@ -382,11 +374,10 @@ impl VirtQueue {
     }
 
     /// デバイスに通知
-    pub fn notify(&self) {
+    pub fn notify(&self, transport: &dyn crate::transport::VirtioTransport) {
         // メモリバリア: 全ての書き込みが完了してから通知
         core::sync::atomic::fence(Ordering::SeqCst);
-
-        hal::mmio::mmio_write_u16(self.notify_addr as usize, self.queue_index);
+        transport.notify_queue(self.queue_index);
     }
 
     /// 完了したリクエストをポーリング
@@ -470,8 +461,6 @@ impl<T> TrackedVirtQueue<T> {
         desc_table: *mut VringDesc,
         avail_ring: *mut VringAvailHeader,
         used_ring: *mut VringUsedHeader,
-        notify_addr: *mut u16,
-        notify_off_multiplier: u32,
     ) -> Result<Self, &'static str> {
         let inner = unsafe {
             VirtQueue::new(
@@ -480,8 +469,6 @@ impl<T> TrackedVirtQueue<T> {
                 desc_table,
                 avail_ring,
                 used_ring,
-                notify_addr,
-                notify_off_multiplier,
             )?
         };
 
@@ -562,8 +549,8 @@ impl<T> TrackedVirtQueue<T> {
     }
 
     /// デバイスに通知
-    pub fn notify(&self) {
-        self.inner.notify();
+    pub fn notify(&self, transport: &dyn crate::transport::VirtioTransport) {
+        self.inner.notify(transport);
     }
 
     /// キューが空かどうか

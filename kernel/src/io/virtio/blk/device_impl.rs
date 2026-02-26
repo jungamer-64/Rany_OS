@@ -169,8 +169,8 @@ impl VirtioBlkDevice {
         }
 
         let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
-        let notify_addr = self.transport.get_notify_addr(queue_idx);
-        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+        let _notify_addr = self.transport.get_notify_addr(queue_idx);
+        let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // Allocate queue memory (proper DMA allocation)
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
@@ -218,8 +218,6 @@ impl VirtioBlkDevice {
                 used_ring,
                 Some(buffer),
                 queue_idx, // Index
-                notify_addr,
-                notify_is_32bit,
             )
         };
 
@@ -286,7 +284,7 @@ impl VirtioBlkDevice {
     pub fn handle_interrupt(&self) {
         // Process completions on all queues
         for (q_idx, queue) in self.queues.iter().enumerate() {
-            let queue_guard = queue.lock();
+            let mut queue_guard = queue.lock();
             while let Some((desc_id, _len)) = queue_guard.poll_completions() {
                 self.process_completion_entry(&queue_guard, q_idx, desc_id, _len);
             }
@@ -389,7 +387,7 @@ impl VirtioBlkDevice {
             .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let queue_guard = queue.lock();
+        let mut queue_guard = queue.lock();
 
         let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
 
@@ -439,7 +437,7 @@ impl VirtioBlkDevice {
         // Retain DMA buffer until completion
         self.inflight_dma.lock().insert(desc0, req_dma);
 
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
         log::info!(
             "[VIRTIO-BLK][DBG] submit_read notified q={} desc0={}",
             queue_idx,
@@ -480,7 +478,7 @@ impl VirtioBlkDevice {
         let req_dma = self.prepare_write_request(sector)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let queue_guard = queue.lock();
+        let mut queue_guard = queue.lock();
 
         // Allocate 3 descriptors
         let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
@@ -527,7 +525,7 @@ impl VirtioBlkDevice {
         // Retain DMA buffer until completion
         self.inflight_dma.lock().insert(desc0, req_dma);
 
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
 
         Ok(desc0)
     }
@@ -553,7 +551,7 @@ impl VirtioBlkDevice {
             .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
-        let queue_guard = queue.lock();
+        let mut queue_guard = queue.lock();
 
         // Flush only requires 2 descriptors: header and status (no data)
         let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
@@ -587,7 +585,7 @@ impl VirtioBlkDevice {
         // Retain DMA buffer until completion
         self.inflight_dma.lock().insert(desc0, req_dma);
 
-        queue_guard.notify();
+        queue_guard.notify(&*self.transport);
 
         Ok(desc0)
     }

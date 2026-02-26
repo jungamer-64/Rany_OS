@@ -28,7 +28,7 @@ pub(crate) fn poll_for_completion(
     desc_id: u16,
 ) -> Option<(u16, u32)> {
     let queue = &device.queues[queue_idx];
-    let queue_guard = queue.lock();
+    let mut queue_guard = queue.lock();
     while let Some((completed_id, len)) = queue_guard.poll_completions() {
         device.process_completion_entry(&queue_guard, queue_idx, completed_id, len);
         if completed_id == desc_id {
@@ -178,7 +178,7 @@ impl<'a> Future for DmaReadFuture<'a> {
 
         if let Some(desc_id) = self.desc_id {
             let queue = &self.device.queues[self.queue_idx];
-            let queue_guard = queue.lock();
+            let mut queue_guard = queue.lock();
 
             while let Some((completed_id, len)) = queue_guard.poll_completions() {
                 self.device
@@ -230,7 +230,7 @@ impl<'a> Future for DmaWriteFuture<'a> {
 
         if let Some(desc_id) = self.desc_id {
             let queue = &self.device.queues[self.queue_idx];
-            let queue_guard = queue.lock();
+            let mut queue_guard = queue.lock();
 
             while let Some((completed_id, len)) = queue_guard.poll_completions() {
                 self.device
