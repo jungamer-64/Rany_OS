@@ -684,6 +684,18 @@ fn poll_runtime() {
 }
 
 #[cfg(feature = "qemu-test-export")]
+fn maybe_inject_test_tick(stagnant_loops: usize) {
+    // Full-boot QEMU profiles often run with qemu_no_if=1 to avoid unrelated
+    // interrupt-path flakes. When timer ticks stop progressing, inject a
+    // synthetic timer interrupt periodically so runtime validation windows can
+    // advance in polling mode.
+    if stagnant_loops != 0 && (stagnant_loops % 1024) == 0 {
+        crate::task::timer::handle_timer_interrupt();
+        crate::task::timer::process_pending_timer_wakers();
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
 fn wait_for_tick_progress(delta: u64, max_stagnant_loops: usize) -> bool {
     let start = crate::task::timer::current_tick();
     let mut last_tick = start;
@@ -697,6 +709,7 @@ fn wait_for_tick_progress(delta: u64, max_stagnant_loops: usize) -> bool {
             stagnant = 0;
         } else {
             stagnant = stagnant.saturating_add(1);
+            maybe_inject_test_tick(stagnant);
         }
 
         if stagnant >= max_stagnant_loops {
@@ -721,6 +734,7 @@ fn wait_for_tick(target: u64, max_stagnant_loops: usize) -> bool {
             stagnant = 0;
         } else {
             stagnant = stagnant.saturating_add(1);
+            maybe_inject_test_tick(stagnant);
         }
 
         if stagnant >= max_stagnant_loops {

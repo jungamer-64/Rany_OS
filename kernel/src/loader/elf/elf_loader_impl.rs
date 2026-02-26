@@ -524,6 +524,33 @@ impl<'a> ElfLoader<'a> {
 
         for page_addr in (seg_start..seg_end).step_by(4096) {
             let virt = crate::mm::virt::higher_half::VirtAddr::new(page_addr as u64);
+            let updated_current = crate::mm::virt::higher_half::with_current_pte_mut(virt, |pte| {
+                let mut new_flags = if pte.is_huge() {
+                    // The current heap can be backed by 2MiB huge pages. We cannot
+                    // express per-4KiB exec permissions without splitting the huge page,
+                    // so keep the coarse mapping writable and clear NX for the whole
+                    // huge page to avoid flipping the same PDE between exec/non-exec as
+                    // we iterate segment pages.
+                    pte.flags()
+                        .set(PageFlags::PRESENT)
+                        .set(PageFlags::WRITABLE)
+                        .clear(PageFlags::NO_EXECUTE)
+                        .set_pkey(pkey)
+                        .set(PageFlags::HUGE_PAGE)
+                } else {
+                    flags.set(PageFlags::PRESENT)
+                };
+                if pte.is_huge() {
+                    new_flags = new_flags.set(PageFlags::HUGE_PAGE);
+                }
+                pte.set_flags(new_flags);
+            })
+            .is_some();
+            if updated_current {
+                crate::mm::virt::higher_half::invalidate_page(virt);
+                continue;
+            }
+
             unsafe {
                 match crate::mm::virt::higher_half::global_update_flags(virt, flags) {
                     Ok(()) => {}

@@ -475,15 +475,20 @@ impl fmt::Display for DriverError {
 // ============================================================================
 
 extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
+    crate::io::log::early_print("[KAPI] log enter\n");
     if msg_ptr.is_null() || msg_len == 0 {
+        crate::io::log::early_print("[KAPI] log empty\n");
         return;
     }
 
+    crate::io::log::early_print("[KAPI] log slice\n");
     let slice = unsafe { core::slice::from_raw_parts(msg_ptr, msg_len) };
+    crate::io::log::early_print("[KAPI] log utf8\n");
     let msg = match core::str::from_utf8(slice) {
         Ok(s) => s,
         Err(_) => return,
     };
+    crate::io::log::early_print("[KAPI] log utf8 ok\n");
 
     // Avoid potential logger reentrancy/lock issues while DriverExports init runs
     // during early DriverCell startup. Keep output visible via serial early logger.
@@ -494,6 +499,7 @@ extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
     }
     crate::io::log::early_print(msg);
     crate::io::log::early_print("\n");
+    crate::io::log::early_print("[KAPI] log done\n");
 }
 
 extern "C" fn kapi_alloc_dma(size: usize, _align: usize, out: *mut AbiDmaBuffer) -> i32 {
@@ -666,6 +672,21 @@ pub(crate) fn prepare_driver_exports(
     }
 
     let exports_ref = unsafe { &*exports };
+    crate::io::log::early_print("[DRIVER] exports ptr=");
+    crate::io::log::early_print_hex(exports as usize as u64);
+    crate::io::log::early_print(" abi_ver=");
+    crate::io::log::early_print_hex(exports_ref.abi_version as u64);
+    crate::io::log::early_print(" abi_size=");
+    crate::io::log::early_print_hex(exports_ref.abi_size as u64);
+    crate::io::log::early_print("\n");
+    crate::io::log::early_print("[DRIVER] exports entry=");
+    crate::io::log::early_print_hex(exports_ref.entry as usize as u64);
+    crate::io::log::early_print(" init=");
+    crate::io::log::early_print_hex(exports_ref.init.map_or(0, |f| f as usize as u64));
+    crate::io::log::early_print(" fini=");
+    crate::io::log::early_print_hex(exports_ref.fini.map_or(0, |f| f as usize as u64));
+    crate::io::log::early_print("\n");
+
     if exports_ref.abi_version != DRIVER_EXPORTS_ABI_VERSION {
         log::error!(
             "[DRIVER] DriverExports ABI mismatch: expected {}, got {}",
@@ -688,6 +709,36 @@ pub(crate) fn prepare_driver_exports(
     if call_init {
         if let Some(init) = exports_ref.init {
             crate::io::log::early_print("[DRIVER] prepare_exports: init()\n");
+            crate::io::log::early_print("[DRIVER] kernel_api_v1 ptr=");
+            crate::io::log::early_print_hex(kernel_api_v1() as *const KernelApiV1 as usize as u64);
+            crate::io::log::early_print("\n");
+            let init_addr = init as usize;
+            let init_virt = crate::mm::virt::higher_half::VirtAddr::new(init_addr as u64);
+            if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(init_virt) {
+                let pte_raw = pte.as_u64();
+                let pte_flags = pte.flags().as_u64();
+                crate::io::log::early_print("[DRIVER] init pte raw=");
+                crate::io::log::early_print_hex(pte_raw);
+                crate::io::log::early_print(" flags=");
+                crate::io::log::early_print_hex(pte_flags);
+                crate::io::log::early_print(" user=");
+                crate::io::log::early_print(if (pte_flags & crate::mm::virt::higher_half::PageFlags::USER) != 0 {
+                    "1"
+                } else {
+                    "0"
+                });
+                crate::io::log::early_print(" nx=");
+                crate::io::log::early_print(
+                    if (pte_flags & crate::mm::virt::higher_half::PageFlags::NO_EXECUTE) != 0 {
+                        "1"
+                    } else {
+                        "0"
+                    },
+                );
+                crate::io::log::early_print("\n");
+            } else {
+                crate::io::log::early_print("[DRIVER] init pte lookup failed\n");
+            }
             let res = init(kernel_api_v1() as *const KernelApiV1);
             crate::io::log::early_print("[DRIVER] prepare_exports: init done\n");
             if !AbiErrorCode::from_raw(res).is_success() {

@@ -95,7 +95,7 @@ pub(crate) struct QueueMemoryLayout {
 /// VirtIO ネットワークデバイス
 pub struct VirtioNetDevice {
     /// トランスポート層（MMIO/PCI共通インターフェース）
-    transport: Box<dyn VirtioTransport>,
+    pub(crate) transport: alloc::sync::Arc<dyn VirtioTransport>,
     /// 設定
     config: VirtioNetConfig,
     /// VirtIO-Net device index (multi-NIC support)
@@ -162,7 +162,7 @@ impl VirtioNetDevice {
         iommu_device_id: Option<IommuDeviceId>,
     ) -> Self {
         Self {
-            transport,
+            transport: alloc::sync::Arc::from(transport),
             config: VirtioNetConfig {
                 mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
                 max_queues: 1,
@@ -207,6 +207,11 @@ impl VirtioNetDevice {
         self.net_if_id
     }
 
+    pub(crate) fn mut_transport(&mut self) -> &mut dyn VirtioTransport {
+        alloc::sync::Arc::get_mut(&mut self.transport)
+            .expect("Transport must not be shared during init")
+    }
+
     /// Validate strict IOMMU policy for VirtIO-Net.
     ///
     /// In strict mode, when IOMMU translation is active, device-scoped mappings
@@ -235,13 +240,13 @@ impl VirtioNetDevice {
         Self::validate_iommu_device_requirement(is_iommu_enabled(), self.iommu_device_id)?;
 
         // 2. デバイスリセット
-        self.transport.reset();
+        self.mut_transport().reset();
 
         // 3. ACKNOWLEDGE ステータスビットを設定
-        self.transport.set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
+        self.mut_transport().set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
 
         // 4. DRIVER ステータスビットを設定
-        self.transport
+        self.mut_transport()
             .set_status(status::VIRTIO_STATUS_ACKNOWLEDGE | status::VIRTIO_STATUS_DRIVER);
 
         // 5. Feature negotiation
@@ -253,13 +258,13 @@ impl VirtioNetDevice {
             & (features::VIRTIO_NET_F_MAC as u32 | features::VIRTIO_NET_F_CSUM as u32);
         let accepted_features_high = device_features_high;
 
-        self.transport
+        self.mut_transport()
             .set_driver_features_low(accepted_features_low);
-        self.transport
+        self.mut_transport()
             .set_driver_features_high(accepted_features_high);
 
         // 6. FEATURES_OK を設定
-        self.transport.set_status(
+        self.mut_transport().set_status(
             status::VIRTIO_STATUS_ACKNOWLEDGE
                 | status::VIRTIO_STATUS_DRIVER
                 | status::VIRTIO_STATUS_FEATURES_OK,
@@ -267,7 +272,7 @@ impl VirtioNetDevice {
 
         // FEATURES_OK が設定されたか確認
         if (self.transport.get_status() & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
-            self.transport.set_status(status::VIRTIO_STATUS_FAILED);
+            self.mut_transport().set_status(status::VIRTIO_STATUS_FAILED);
             return Err(VirtioNetError::DeviceError);
         }
 
@@ -280,7 +285,7 @@ impl VirtioNetDevice {
         self.setup_queues()?;
 
         // 9. DRIVER_OK を設定
-        self.transport.set_status(
+        self.mut_transport().set_status(
             status::VIRTIO_STATUS_ACKNOWLEDGE
                 | status::VIRTIO_STATUS_DRIVER
                 | status::VIRTIO_STATUS_FEATURES_OK
@@ -385,7 +390,7 @@ impl VirtioNetDevice {
     /// 単一のキューを設定
     pub(super) fn setup_single_queue(&mut self, queue_index: u16) -> Result<NetVirtQueue, VirtioNetError> {
         // キューを選択
-        self.transport.select_queue(queue_index);
+        self.mut_transport().select_queue(queue_index);
 
         // 最大キューサイズを取得
         let max_size = self.transport.get_queue_max_size();
@@ -395,7 +400,7 @@ impl VirtioNetDevice {
 
         // キューサイズを設定（最大256エントリに制限）
         let queue_size = max_size.min(256);
-        self.transport.set_queue_size(queue_size);
+        self.mut_transport().set_queue_size(queue_size);
 
         // メモリレイアウトを計算
         let layout = Self::compute_queue_memory_layout(queue_index, queue_size);
@@ -409,7 +414,7 @@ impl VirtioNetDevice {
         let desc_table = ptr as *mut VringDesc;
         let avail_ring = unsafe { ptr.add(layout.desc_size) as *mut VringAvail };
         let used_ring = unsafe { ptr.add(layout.used_offset) as *mut VringUsed };
-        let notify_addr = self.transport.get_notify_addr(queue_index);
+        let notify_addr = self.mut_transport().get_notify_addr(queue_index);
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // IOMMU DMAマッピングを設定
@@ -442,9 +447,9 @@ impl VirtioNetDevice {
             layout.used_size
         ));
 
-        self.transport.set_queue_desc_addr(desc_addr);
-        self.transport.set_queue_avail_addr(avail_addr);
-        self.transport.set_queue_used_addr(used_addr);
+        self.mut_transport().set_queue_desc_addr(desc_addr);
+        self.mut_transport().set_queue_avail_addr(avail_addr);
+        self.mut_transport().set_queue_used_addr(used_addr);
 
         crate::io::log::early_print(&alloc::format!(
             "[EARLY][VIRTIO-NET] set_queue_desc_addr=0x{:x} avail_addr=0x{:x} used_addr=0x{:x}\n",
@@ -475,7 +480,7 @@ impl VirtioNetDevice {
             self.pre_allocate_rx_buffers_for_queue(&queue);
         }
 
-        self.transport.enable_queue();
+        self.mut_transport().enable_queue();
 
         Ok(queue)
     }
