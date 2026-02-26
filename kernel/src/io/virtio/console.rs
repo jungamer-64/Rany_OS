@@ -506,7 +506,7 @@ impl VirtioConsoleDevice {
         let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
 
         // Align used ring per VirtIO requirements
-        let used_align = core::mem::align_of::<VringUsed>();
+        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 

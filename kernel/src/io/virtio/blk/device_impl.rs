@@ -178,7 +178,7 @@ impl VirtioBlkDevice {
         let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
 
         // Align used ring per VirtIO requirements
-        let used_align = core::mem::align_of::<VringUsed>();
+        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
@@ -288,50 +288,7 @@ impl VirtioBlkDevice {
         for (q_idx, queue) in self.queues.iter().enumerate() {
             let queue_guard = queue.lock();
             while let Some((desc_id, _len)) = queue_guard.poll_completions() {
-                // io_scheduler 管理下のリクエストかチェック
-                let io_sched_req = crate::io::virtio::blk_scheduler::get_poll_handler(0)
-                    .and_then(|handler: alloc::sync::Arc<crate::io::virtio::blk_scheduler::VirtioBlkPollHandler>| handler.take_pending(q_idx, desc_id));
-
-                // DMA バッファからステータスを確認
-                let status_ok = if let Some(req_dma) = self.inflight_dma.lock().remove(&desc_id) {
-                    let status = req_dma.status();
-                    if status != VirtioBlkStatus::Ok as u8 {
-                        log::warn!(
-                            "[VIRTIO-BLK] request {} completed with status {}",
-                            desc_id,
-                            status
-                        );
-                    }
-                    status == VirtioBlkStatus::Ok as u8
-                } else {
-                    true
-                };
-
-                // Free descriptor
-                queue_guard.free_desc(desc_id);
-
-                if let Some((io_id, bytes)) = io_sched_req {
-                    // io_scheduler パス: ISR-safe な遅延完了キューに積む
-                    let result = if status_ok {
-                        crate::io::io_scheduler::IoResult::Success(bytes)
-                    } else {
-                        crate::io::io_scheduler::IoResult::Error(
-                            crate::io::io_scheduler::IoError::DeviceError,
-                        )
-                    };
-                    let device_id =
-                        crate::io::io_scheduler::DeviceId::VirtioBlk { index: 0 };
-                    let bridge =
-                        crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
-                    bridge.handle_interrupt(device_id, &[(io_id, result)]);
-                } else {
-                    // レガシーパス: 既存の Waker を起動
-                    let waker_idx = q_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                    let mut wakers = self.pending_wakers.lock();
-                    if let Some(waker) = wakers.remove(&waker_idx) {
-                        waker.wake();
-                    }
-                }
+                self.process_completion_entry(&queue_guard, q_idx, desc_id, _len);
             }
         }
 
@@ -339,6 +296,58 @@ impl VirtioBlkDevice {
         crate::task::interrupt_waker::wake_from_interrupt(
             crate::task::interrupt_waker::InterruptSource::VirtioBlk(0),
         );
+    }
+
+    pub(super) fn process_completion_entry(
+        &self,
+        queue_guard: &VirtQueue,
+        q_idx: usize,
+        desc_id: u16,
+        completed_len: u32,
+    ) {
+        // io_scheduler 管理下のリクエストかチェック
+        let io_sched_req = crate::io::virtio::blk_scheduler::get_poll_handler(0).and_then(
+            |handler: alloc::sync::Arc<crate::io::virtio::blk_scheduler::VirtioBlkPollHandler>| {
+                handler.take_pending(q_idx, desc_id)
+            },
+        );
+
+        // DMA バッファからステータスを確認
+        let status_ok = if let Some(req_dma) = self.inflight_dma.lock().remove(&desc_id) {
+            let status = req_dma.status();
+            if status != VirtioBlkStatus::Ok as u8 {
+                log::warn!(
+                    "[VIRTIO-BLK] request {} completed with status {}",
+                    desc_id,
+                    status
+                );
+            }
+            status == VirtioBlkStatus::Ok as u8
+        } else {
+            true
+        };
+
+        // Free descriptor
+        queue_guard.free_desc(desc_id);
+
+        if let Some((io_id, _bytes)) = io_sched_req {
+            // io_scheduler パス: ISR-safe な遅延完了キューに積む
+            let result = if status_ok {
+                crate::io::io_scheduler::IoResult::Success(completed_len as usize)
+            } else {
+                crate::io::io_scheduler::IoResult::Error(crate::io::io_scheduler::IoError::DeviceError)
+            };
+            let device_id = crate::io::io_scheduler::DeviceId::VirtioBlk { index: 0 };
+            let bridge = crate::io::io_scheduler::hybrid_coordinator().interrupt_bridge();
+            bridge.handle_interrupt(device_id, &[(io_id, result)]);
+        } else {
+            // レガシーパス: 既存の Waker を起動
+            let waker_idx = q_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+            let mut wakers = self.pending_wakers.lock();
+            if let Some(waker) = wakers.remove(&waker_idx) {
+                waker.wake();
+            }
+        }
     }
 
     /// Submit a read request (internal)
@@ -412,6 +421,18 @@ impl VirtioBlkDevice {
             };
 
             // Submit to available ring
+            log::info!(
+                "[VIRTIO-BLK][DBG] submit_read q={} sector={} len={} descs=[{},{},{}] data_addr=0x{:016x} hdr=0x{:016x} status=0x{:016x}",
+                queue_idx,
+                sector,
+                len,
+                desc0,
+                desc1,
+                desc2,
+                buf_addr,
+                req_dma.header_phys,
+                req_dma.status_phys
+            );
             queue_guard.submit(desc0);
         }
 
@@ -419,6 +440,11 @@ impl VirtioBlkDevice {
         self.inflight_dma.lock().insert(desc0, req_dma);
 
         queue_guard.notify();
+        log::info!(
+            "[VIRTIO-BLK][DBG] submit_read notified q={} desc0={}",
+            queue_idx,
+            desc0
+        );
 
         Ok(desc0)
     }

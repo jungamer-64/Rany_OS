@@ -53,8 +53,22 @@ fn run_required_profile(profile: &str) {
 
 #[test]
 fn fullboot_pr_required() {
+    let only_profile = std::env::var("QEMU_TEST_PROFILE_ONLY").ok();
+    let mut ran_any = false;
     for profile in ["boot-smoke", "storage", "driver_cell"] {
+        if let Some(only) = only_profile.as_deref() {
+            if only != profile {
+                continue;
+            }
+        }
+        ran_any = true;
         run_required_profile(profile);
+    }
+    if !ran_any {
+        panic!(
+            "QEMU_TEST_PROFILE_ONLY={} did not match any profile in fullboot_pr_required",
+            only_profile.unwrap_or_default()
+        );
     }
 }
 

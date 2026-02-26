@@ -49,6 +49,9 @@ pub struct PackagedImage {
     pub kernel_payload_path: PathBuf,
 }
 
+const STORAGE_TEST_DISK_SECTOR_SIZE: usize = 512;
+const STORAGE_TEST_DISK_TOTAL_SECTORS: u32 = 4096;
+
 #[derive(Debug)]
 pub enum BuildError {
     CargoLaunch { step: &'static str, source: std::io::Error },
@@ -197,6 +200,104 @@ fn kernel_cmdline(config: &RunConfig) -> String {
     parts.join(" ")
 }
 
+fn profile_needs_storage_disk(profile: &str) -> bool {
+    matches!(profile, "storage" | "pr-required" | "nightly-required")
+}
+
+fn profile_needs_driver_cell_assets(profile: &str) -> bool {
+    matches!(profile, "driver_cell" | "pr-required" | "nightly-required")
+}
+
+fn copy_file_if_exists(
+    src: &Path,
+    dst: &Path,
+    step: &'static str,
+) -> Result<bool, BuildError> {
+    if !src.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| BuildError::Io { step, source })?;
+    }
+    std::fs::copy(src, dst).map_err(|source| BuildError::Io { step, source })?;
+    Ok(true)
+}
+
+fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
+    if !src_dir.exists() {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(dst_dir).map_err(|source| BuildError::Io {
+        step: "create fullboot cells directory",
+        source,
+    })?;
+    let mut copied = 0usize;
+    for entry in std::fs::read_dir(src_dir).map_err(|source| BuildError::Io {
+        step: "read source cells directory",
+        source,
+    })? {
+        let entry = entry.map_err(|source| BuildError::Io {
+            step: "read source cells directory entry",
+            source,
+        })?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        std::fs::copy(&path, dst_dir.join(file_name)).map_err(|source| BuildError::Io {
+            step: "copy cell asset into fullboot image",
+            source,
+        })?;
+        copied += 1;
+    }
+    Ok(copied)
+}
+
+fn build_storage_test_disk(label: &str) -> Result<PathBuf, BuildError> {
+    let root = workspace_root();
+    let disk_path = root
+        .join("target")
+        .join("qemu-boot")
+        .join(format!("fullboot-{label}-storage.img"));
+
+    if let Some(parent) = disk_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| BuildError::Io {
+            step: "create storage test disk directory",
+            source,
+        })?;
+    }
+
+    let byte_len = (STORAGE_TEST_DISK_TOTAL_SECTORS as usize)
+        .checked_mul(STORAGE_TEST_DISK_SECTOR_SIZE)
+        .ok_or_else(|| BuildError::Io {
+            step: "size storage test disk",
+            source: std::io::Error::other("storage test disk size overflow"),
+        })?;
+    let mut image = vec![0u8; byte_len];
+    let bs = &mut image[..STORAGE_TEST_DISK_SECTOR_SIZE];
+
+    // Minimal FAT32 BPB enough for mount smoke used by kernel integration test.
+    bs[11..13].copy_from_slice(&(STORAGE_TEST_DISK_SECTOR_SIZE as u16).to_le_bytes());
+    bs[13] = 1; // sectors/cluster
+    bs[14..16].copy_from_slice(&32u16.to_le_bytes()); // reserved sectors
+    bs[16] = 2; // FAT count
+    bs[32..36].copy_from_slice(&STORAGE_TEST_DISK_TOTAL_SECTORS.to_le_bytes());
+    bs[36..40].copy_from_slice(&1u32.to_le_bytes()); // sectors/FAT
+    bs[44..48].copy_from_slice(&2u32.to_le_bytes()); // root cluster
+    bs[82..90].copy_from_slice(b"FAT32   ");
+    bs[510] = 0x55;
+    bs[511] = 0xAA;
+
+    std::fs::write(&disk_path, image).map_err(|source| BuildError::Io {
+        step: "write storage test disk image",
+        source,
+    })?;
+    Ok(disk_path)
+}
+
 pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     run_cargo(
@@ -308,7 +409,46 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         source,
     })?;
 
-    let config_text = "timeout=0\ndefault=0\n\n[FullBoot]\nkernel=rany_os\n";
+    let kernel_out_dir = kernel_elf_path.parent().ok_or_else(|| BuildError::ArtifactMissing {
+        step: "locate kernel output directory",
+        path: kernel_elf_path.clone(),
+    })?;
+    let kernel_fat_root = kernel_out_dir.join("fat_root");
+    let initramfs_src = kernel_fat_root.join("initramfs.tar");
+    let initramfs_dst = boot_root.join("initramfs.tar");
+    let needs_driver_cell_assets = profile_needs_driver_cell_assets(&config.profile);
+    let copied_initramfs = if needs_driver_cell_assets {
+        copy_file_if_exists(
+            &initramfs_src,
+            &initramfs_dst,
+            "copy initramfs.tar into fullboot image",
+        )?
+    } else {
+        false
+    };
+    if needs_driver_cell_assets && !copied_initramfs {
+        return Err(BuildError::ArtifactMissing {
+            step: "copy initramfs.tar into fullboot image",
+            path: initramfs_src,
+        });
+    }
+
+    let copied_cells = if needs_driver_cell_assets {
+        copy_cells_dir(&kernel_fat_root.join("cells"), &boot_root.join("cells"))?
+    } else {
+        0
+    };
+    if needs_driver_cell_assets && copied_cells == 0 {
+        return Err(BuildError::ArtifactMissing {
+            step: "copy driver_cell assets into fullboot image",
+            path: kernel_fat_root.join("cells"),
+        });
+    }
+
+    let mut config_text = String::from("timeout=0\ndefault=0\n\n[FullBoot]\nkernel=rany_os\n");
+    if copied_initramfs {
+        config_text.push_str("initramfs=initramfs.tar\n");
+    }
     std::fs::write(boot_root.join("exoloader.cfg"), config_text).map_err(|source| {
         BuildError::Io {
             step: "write exoloader.cfg",
@@ -483,6 +623,11 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     );
     let ovmf_vars_arg = format!("if=pflash,format=raw,file={}", vars_copy_path.display());
     let fat_arg = format!("format=raw,file=fat:rw:{}", image.boot_root.display());
+    let storage_disk_path = if profile_needs_storage_disk(&config.profile) {
+        Some(build_storage_test_disk(&label).map_err(RunError::Build)?)
+    } else {
+        None
+    };
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     qemu_cmd
@@ -512,6 +657,14 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
         .arg(fat_arg)
         .stdout(Stdio::null())
         .stderr(Stdio::from(qemu_stderr_file));
+
+    if let Some(storage_disk) = &storage_disk_path {
+        qemu_cmd
+            .arg("-drive")
+            .arg(format!("file={},if=none,id=storage0,format=raw", storage_disk.display()))
+            .arg("-device")
+            .arg("virtio-blk-pci,drive=storage0");
+    }
 
     for extra in &config.extra_args {
         qemu_cmd.arg(extra);

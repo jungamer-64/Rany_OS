@@ -372,8 +372,9 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
 pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
     use crate::net::driver_bridge;
     use crate::net::ipv6::{Ipv6Address, Ipv6PacketMut};
+    use crate::net::ipv4::IpProtocol;
     use crate::net::tcp::{SocketAddr as TcpSocketAddr, TcpControlBlock};
-    use crate::net::{self, VirtioNetHeader, mempool, stack, IpProtocol};
+    use crate::net::{self, VirtioNetHeader, mempool, stack};
     use crate::sync::PoisonLock;
 
     let _ = mempool::init_net_mempool(4);

@@ -3,7 +3,7 @@ use super::*;
 
 /// Handle VirtIO block device interrupt
 pub fn handle_virtio_blk_interrupt() {
-    if let Some(device) = VIRTIO_BLK_DEVICE.lock().as_ref() {
+    if let Some(device) = get_virtio_blk_device_at_index(0) {
         let status = device.transport.get_interrupt_status();
         if status == 0 {
             return;
@@ -18,7 +18,7 @@ pub fn handle_virtio_blk_interrupt() {
 /// Note: For a proper async implementation, you would need to use
 /// Arc<VirtioBlkDevice> to allow the future to outlive the lock.
 pub fn blk_read_sync(_sector: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
-    let device_guard = VIRTIO_BLK_DEVICE.lock();
+    let device_guard = VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
     let _device = device_guard.as_ref().ok_or(BlockError::NotReady)?;
 
     // Placeholder: In production, this would submit the request and poll for completion

@@ -29,7 +29,8 @@ pub(crate) fn poll_for_completion(
 ) -> Option<(u16, u32)> {
     let queue = &device.queues[queue_idx];
     let queue_guard = queue.lock();
-    if let Some((completed_id, len)) = queue_guard.poll_completions() {
+    while let Some((completed_id, len)) = queue_guard.poll_completions() {
+        device.process_completion_entry(&queue_guard, queue_idx, completed_id, len);
         if completed_id == desc_id {
             return Some((completed_id, len));
         }
@@ -179,7 +180,9 @@ impl<'a> Future for DmaReadFuture<'a> {
             let queue = &self.device.queues[self.queue_idx];
             let queue_guard = queue.lock();
 
-            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
+            while let Some((completed_id, len)) = queue_guard.poll_completions() {
+                self.device
+                    .process_completion_entry(&queue_guard, self.queue_idx, completed_id, len);
                 if completed_id == desc_id {
                     return Poll::Ready(Ok(self.buf.len()));
                 }
@@ -229,7 +232,9 @@ impl<'a> Future for DmaWriteFuture<'a> {
             let queue = &self.device.queues[self.queue_idx];
             let queue_guard = queue.lock();
 
-            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
+            while let Some((completed_id, len)) = queue_guard.poll_completions() {
+                self.device
+                    .process_completion_entry(&queue_guard, self.queue_idx, completed_id, len);
                 if completed_id == desc_id {
                     return Poll::Ready(Ok(self.buf.len()));
                 }
@@ -540,14 +545,32 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
 // Global Device Instance
 // ============================================================================
 
-/// Global VirtIO block device instance (stored in an Arc for async usage)
-pub(crate) static VIRTIO_BLK_DEVICE: Mutex<Option<Arc<VirtioBlkDevice>>> = Mutex::new(None);
+/// Primary (legacy) VirtIO block device slot kept for compatibility (`index=0`).
+pub(crate) static VIRTIO_BLK_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioBlkDevice>>> = crate::sync::PoisonLock::new(None);
 
-/// Initialize the global VirtIO block device
-///
-/// # Safety
-/// Caller must ensure MMIO address is valid and device exists
-pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
+/// Additional VirtIO block devices (`index != 0`).
+pub(crate) static VIRTIO_BLK_DEVICES: spin::RwLock<alloc::collections::BTreeMap<u8, Arc<VirtioBlkDevice>>> =
+    spin::RwLock::new(alloc::collections::BTreeMap::new());
+
+fn install_virtio_blk_device(index: u8, device_arc: Arc<VirtioBlkDevice>) {
+    if index == 0 {
+        *VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+    } else {
+        VIRTIO_BLK_DEVICES.write().insert(index, device_arc);
+    }
+}
+
+/// Get a shared reference to the VirtIO block device by index.
+pub fn get_virtio_blk_device_at_index(index: u8) -> Option<Arc<VirtioBlkDevice>> {
+    if index == 0 {
+        VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    } else {
+        VIRTIO_BLK_DEVICES.read().get(&index).cloned()
+    }
+}
+
+/// Initialize the global VirtIO block device at a specific index.
+pub unsafe fn init_virtio_blk_at_index(index: u8, mmio_base: u64) -> Result<(), BlockError> {
     let transport = unsafe {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
     };
@@ -557,20 +580,27 @@ pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
     let device_arc = Arc::new(dev);
 
     log::info!(
-        "VirtIO-blk initialized: {} sectors, {} bytes/sector\n",
+        "VirtIO-blk index={} initialized: {} sectors, {} bytes/sector\n",
+        index,
         device_arc.config().capacity,
         device_arc.config().block_size
     );
 
-    *VIRTIO_BLK_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    install_virtio_blk_device(index, device_arc);
     Ok(())
 }
 
-/// Initialize the global VirtIO block device with an IOMMU device ID.
+/// Initialize the global VirtIO block device (legacy `index=0`).
 ///
 /// # Safety
-/// Caller must ensure MMIO address is valid and device exists.
-pub unsafe fn init_virtio_blk_for_device(
+/// Caller must ensure MMIO address is valid and device exists
+pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
+    init_virtio_blk_at_index(0, mmio_base)
+}
+
+/// Initialize the global VirtIO block device with an IOMMU device ID at a specific index.
+pub unsafe fn init_virtio_blk_for_device_at_index(
+    index: u8,
     mmio_base: u64,
     device: IommuDeviceId,
 ) -> Result<(), BlockError> {
@@ -583,12 +613,46 @@ pub unsafe fn init_virtio_blk_for_device(
     let device_arc = Arc::new(dev);
 
     log::info!(
-        "VirtIO-blk initialized: {} sectors, {} bytes/sector\n",
+        "VirtIO-blk index={} initialized: {} sectors, {} bytes/sector\n",
+        index,
         device_arc.config().capacity,
         device_arc.config().block_size
     );
 
-    *VIRTIO_BLK_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    install_virtio_blk_device(index, device_arc);
+    Ok(())
+}
+
+/// Initialize the global VirtIO block device with an IOMMU device ID (legacy `index=0`).
+///
+/// # Safety
+/// Caller must ensure MMIO address is valid and device exists.
+pub unsafe fn init_virtio_blk_for_device(
+    mmio_base: u64,
+    device: IommuDeviceId,
+) -> Result<(), BlockError> {
+    init_virtio_blk_for_device_at_index(0, mmio_base, device)
+}
+
+/// Initialize the global VirtIO block device from an existing VirtioTransport at a specific index.
+pub unsafe fn init_virtio_blk_with_transport_at_index(
+    index: u8,
+    transport: Box<dyn VirtioTransport>,
+    iommu_device_id: Option<IommuDeviceId>,
+) -> Result<(), BlockError> {
+    let mut dev = VirtioBlkDevice::new_with_device(transport, iommu_device_id);
+    unsafe { dev.init()? };
+
+    let device_arc = Arc::new(dev);
+
+    log::info!(
+        "VirtIO-blk index={} initialized: {} sectors, {} bytes/sector\n",
+        index,
+        device_arc.config().capacity,
+        device_arc.config().block_size
+    );
+
+    install_virtio_blk_device(index, device_arc);
     Ok(())
 }
 
@@ -600,23 +664,11 @@ pub unsafe fn init_virtio_blk_with_transport(
     transport: Box<dyn VirtioTransport>,
     iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), BlockError> {
-    let mut dev = VirtioBlkDevice::new_with_device(transport, iommu_device_id);
-    unsafe { dev.init()? };
-
-    let device_arc = Arc::new(dev);
-
-    log::info!(
-        "VirtIO-blk initialized: {} sectors, {} bytes/sector\n",
-        device_arc.config().capacity,
-        device_arc.config().block_size
-    );
-
-    *VIRTIO_BLK_DEVICE.lock() = Some(Arc::clone(&device_arc));
-    Ok(())
+    init_virtio_blk_with_transport_at_index(0, transport, iommu_device_id)
 }
 
 
 /// Get a clone of the global VirtioBlk device Arc if initialized
 pub fn get_virtio_blk_device() -> Option<Arc<VirtioBlkDevice>> {
-    VIRTIO_BLK_DEVICE.lock().as_ref().cloned()
+    get_virtio_blk_device_at_index(0)
 }

@@ -1509,7 +1509,7 @@ pub(crate) mod tests {
             ipv6_mut.init_header();
             ipv6_mut.set_source(&crate::net::ipv6::Ipv6Address::LOOPBACK);
             ipv6_mut.set_destination(&crate::net::ipv6::Ipv6Address::LOOPBACK);
-            ipv6_mut.set_next_header(crate::net::IpProtocol::Tcp);
+            ipv6_mut.set_next_header(crate::net::ipv4::IpProtocol::Tcp);
             ipv6_mut.set_payload_length(tcp_len as u16);
         }
 

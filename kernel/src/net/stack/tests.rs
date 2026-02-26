@@ -171,7 +171,7 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     )
     .expect("udp packet");
     ip.finalize(udp_len);
-    eth.set_payload_len(crate::net::Ipv4Header::MIN_SIZE + udp_len);
+    eth.set_payload_len(crate::net::ipv4::Ipv4Header::MIN_SIZE + udp_len);
 
     receive(eth.as_bytes());
 

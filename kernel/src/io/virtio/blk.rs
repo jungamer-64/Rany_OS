@@ -240,7 +240,11 @@ impl VirtQueue {
             desc_table,
             avail_ring,
             used_ring,
-            free_bitmap: AtomicU64::new((1u64 << queue_size.min(64)) - 1),
+            free_bitmap: AtomicU64::new(if queue_size >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << queue_size) - 1
+            }),
             last_used_idx: AtomicU32::new(0),
             dma_buffer,
             index,
@@ -338,7 +342,15 @@ impl VirtQueue {
         }
 
         let ring_ptr = unsafe { (self.used_ring as *const u8).add(4) as *const VringUsedElem };
-        let elem = unsafe { *ring_ptr.add((last_used % self.queue_size as u32) as usize) };
+        let elem = unsafe { ring_ptr.add((last_used % self.queue_size as u32) as usize).read_unaligned() };
+        log::info!(
+            "[VIRTIO-BLK][DBG] completion queue={} last_used={} used_idx={} elem.id={} elem.len={}",
+            self.index,
+            last_used,
+            used_idx,
+            elem.id,
+            elem.len
+        );
 
         self.last_used_idx
             .store(last_used.wrapping_add(1), Ordering::Release);

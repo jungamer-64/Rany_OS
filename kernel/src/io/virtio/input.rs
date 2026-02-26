@@ -489,7 +489,7 @@ impl VirtioInputDevice {
         let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
 
         // Align used ring per VirtIO requirements
-        let used_align = core::mem::align_of::<VringUsed>();
+        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
@@ -764,14 +764,32 @@ impl VirtioInputDevice {
 // Global Device Instance
 // ============================================================================
 
-/// Global VirtIO input device instance (stored in an Arc for shared usage)
-static VIRTIO_INPUT_DEVICE: Mutex<Option<Arc<VirtioInputDevice>>> = Mutex::new(None);
+/// Primary (legacy) VirtIO input device slot kept for compatibility (`index=0`).
+pub(crate) static VIRTIO_INPUT_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioInputDevice>>> = crate::sync::PoisonLock::new(None);
 
-/// Initialize the global VirtIO input device.
-///
-/// # Safety
-/// Caller must ensure MMIO address is valid and device exists.
-pub unsafe fn init_virtio_input(mmio_base: u64) -> Result<(), InputError> {
+/// Additional VirtIO input devices (`index != 0`).
+pub(crate) static VIRTIO_INPUT_DEVICES: spin::RwLock<alloc::collections::BTreeMap<u8, Arc<VirtioInputDevice>>> =
+    spin::RwLock::new(alloc::collections::BTreeMap::new());
+
+pub(crate) fn install_virtio_input_device(index: u8, device_arc: Arc<VirtioInputDevice>) {
+    if index == 0 {
+        *VIRTIO_INPUT_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+    } else {
+        VIRTIO_INPUT_DEVICES.write().insert(index, device_arc);
+    }
+}
+
+/// Get a shared reference to the VirtIO input device by index.
+pub fn get_virtio_input_device_at_index(index: u8) -> Option<Arc<VirtioInputDevice>> {
+    if index == 0 {
+        VIRTIO_INPUT_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    } else {
+        VIRTIO_INPUT_DEVICES.read().get(&index).cloned()
+    }
+}
+
+/// Initialize the global VirtIO input device at a specific index.
+pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<(), InputError> {
     let transport = unsafe {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)?
     };
@@ -783,23 +801,29 @@ pub unsafe fn init_virtio_input(mmio_base: u64) -> Result<(), InputError> {
 
     if let Some(name_bytes) = name {
         if let Ok(name_str) = core::str::from_utf8(&name_bytes) {
-            log::info!("VirtIO-input initialized: \"{}\"\n", name_str);
+            log::info!("VirtIO-input index={} initialized: \"{}\"\n", index, name_str);
         } else {
-            log::info!("VirtIO-input initialized: (non-UTF8 name, {} bytes)\n", name_bytes.len());
+            log::info!("VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n", index, name_bytes.len());
         }
     } else {
-        log::info!("VirtIO-input initialized\n");
+        log::info!("VirtIO-input index={} initialized\n", index);
     }
 
-    *VIRTIO_INPUT_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    install_virtio_input_device(index, device_arc);
     Ok(())
 }
 
-/// Initialize the global VirtIO input device with an IOMMU device ID.
+/// Initialize the global VirtIO input device (legacy `index=0`).
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid and device exists.
-pub unsafe fn init_virtio_input_for_device(
+pub unsafe fn init_virtio_input(mmio_base: u64) -> Result<(), InputError> {
+    init_virtio_input_at_index(0, mmio_base)
+}
+
+/// Initialize the global VirtIO input device with an IOMMU device ID at a specific index.
+pub unsafe fn init_virtio_input_for_device_at_index(
+    index: u8,
     mmio_base: u64,
     device: IommuDeviceId,
 ) -> Result<(), InputError> {
@@ -814,14 +838,25 @@ pub unsafe fn init_virtio_input_for_device(
 
     if let Some(name_bytes) = name {
         if let Ok(name_str) = core::str::from_utf8(&name_bytes) {
-            log::info!("VirtIO-input initialized: \"{}\"\n", name_str);
+            log::info!("VirtIO-input index={} initialized: \"{}\"\n", index, name_str);
         } else {
-            log::info!("VirtIO-input initialized: (non-UTF8 name, {} bytes)\n", name_bytes.len());
+            log::info!("VirtIO-input index={} initialized: (non-UTF8 name, {} bytes)\n", index, name_bytes.len());
         }
     } else {
-        log::info!("VirtIO-input initialized\n");
+        log::info!("VirtIO-input index={} initialized\n", index);
     }
 
-    *VIRTIO_INPUT_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    install_virtio_input_device(index, device_arc);
     Ok(())
+}
+
+/// Initialize the global VirtIO input device with an IOMMU device ID (legacy `index=0`).
+///
+/// # Safety
+/// Caller must ensure MMIO address is valid and device exists.
+pub unsafe fn init_virtio_input_for_device(
+    mmio_base: u64,
+    device: IommuDeviceId,
+) -> Result<(), InputError> {
+    init_virtio_input_for_device_at_index(0, mmio_base, device)
 }

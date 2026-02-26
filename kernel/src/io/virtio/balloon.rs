@@ -444,7 +444,7 @@ impl VirtioBalloonDevice {
         let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
 
         // Align used ring per VirtIO requirements
-        let used_align = core::mem::align_of::<VringUsed>();
+        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
         let used_offset = align_up(desc_size + avail_size, used_align);
         let total_size = used_offset + used_size;
 
@@ -673,14 +673,32 @@ impl VirtioBalloonDevice {
 // Global Device Instance
 // ============================================================================
 
-/// Global VirtIO balloon device instance (stored in an Arc for shared access)
-static VIRTIO_BALLOON_DEVICE: Mutex<Option<Arc<VirtioBalloonDevice>>> = Mutex::new(None);
+/// Primary (legacy) VirtIO balloon device slot kept for compatibility (`index=0`).
+pub(crate) static VIRTIO_BALLOON_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioBalloonDevice>>> = crate::sync::PoisonLock::new(None);
 
-/// Initialize the global VirtIO balloon device
-///
-/// # Safety
-/// Caller must ensure MMIO address is valid and device exists
-pub unsafe fn init_virtio_balloon(mmio_base: u64) -> Result<(), BalloonError> {
+/// Additional VirtIO balloon devices (`index != 0`).
+pub(crate) static VIRTIO_BALLOON_DEVICES: spin::RwLock<alloc::collections::BTreeMap<u8, Arc<VirtioBalloonDevice>>> =
+    spin::RwLock::new(alloc::collections::BTreeMap::new());
+
+fn install_virtio_balloon_device(index: u8, device_arc: Arc<VirtioBalloonDevice>) {
+    if index == 0 {
+        *VIRTIO_BALLOON_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+    } else {
+        VIRTIO_BALLOON_DEVICES.write().insert(index, device_arc);
+    }
+}
+
+/// Get a shared reference to the VirtIO balloon device by index.
+pub fn get_virtio_balloon_device_at_index(index: u8) -> Option<Arc<VirtioBalloonDevice>> {
+    if index == 0 {
+        VIRTIO_BALLOON_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    } else {
+        VIRTIO_BALLOON_DEVICES.read().get(&index).cloned()
+    }
+}
+
+/// Initialize the global VirtIO balloon device at a specific index.
+pub unsafe fn init_virtio_balloon_at_index(index: u8, mmio_base: u64) -> Result<(), BalloonError> {
     let transport = unsafe {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BalloonError::NotReady)?
     };
@@ -690,19 +708,26 @@ pub unsafe fn init_virtio_balloon(mmio_base: u64) -> Result<(), BalloonError> {
     let device_arc = Arc::new(dev);
 
     log::info!(
-        "VirtIO-balloon initialized: target={} pages\n",
+        "VirtIO-balloon index={} initialized: target={} pages\n",
+        index,
         device_arc.read_target()
     );
 
-    *VIRTIO_BALLOON_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    install_virtio_balloon_device(index, device_arc);
     Ok(())
 }
 
-/// Initialize the global VirtIO balloon device with an IOMMU device ID.
+/// Initialize the global VirtIO balloon device (legacy `index=0`)
 ///
 /// # Safety
-/// Caller must ensure MMIO address is valid and device exists.
-pub unsafe fn init_virtio_balloon_for_device(
+/// Caller must ensure MMIO address is valid and device exists
+pub unsafe fn init_virtio_balloon(mmio_base: u64) -> Result<(), BalloonError> {
+    init_virtio_balloon_at_index(0, mmio_base)
+}
+
+/// Initialize the global VirtIO balloon device with an IOMMU device ID at a specific index.
+pub unsafe fn init_virtio_balloon_for_device_at_index(
+    index: u8,
     mmio_base: u64,
     device: IommuDeviceId,
 ) -> Result<(), BalloonError> {
@@ -715,11 +740,44 @@ pub unsafe fn init_virtio_balloon_for_device(
     let device_arc = Arc::new(dev);
 
     log::info!(
-        "VirtIO-balloon initialized: target={} pages\n",
+        "VirtIO-balloon index={} initialized: target={} pages\n",
+        index,
         device_arc.read_target()
     );
 
-    *VIRTIO_BALLOON_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    install_virtio_balloon_device(index, device_arc);
+    Ok(())
+}
+
+/// Initialize the global VirtIO balloon device with an IOMMU device ID (legacy `index=0`).
+///
+/// # Safety
+/// Caller must ensure MMIO address is valid and device exists.
+pub unsafe fn init_virtio_balloon_for_device(
+    mmio_base: u64,
+    device: IommuDeviceId,
+) -> Result<(), BalloonError> {
+    init_virtio_balloon_for_device_at_index(0, mmio_base, device)
+}
+
+/// Initialize the global VirtIO balloon device from an existing VirtioTransport at a specific index.
+pub unsafe fn init_virtio_balloon_with_transport_at_index(
+    index: u8,
+    transport: Box<dyn VirtioTransport>,
+    iommu_device_id: Option<IommuDeviceId>,
+) -> Result<(), BalloonError> {
+    let mut dev = VirtioBalloonDevice::new_with_device(transport, iommu_device_id);
+    unsafe { dev.init()? };
+
+    let device_arc = Arc::new(dev);
+
+    log::info!(
+        "VirtIO-balloon index={} initialized: target={} pages\n",
+        index,
+        device_arc.read_target()
+    );
+
+    install_virtio_balloon_device(index, device_arc);
     Ok(())
 }
 
@@ -731,32 +789,26 @@ pub unsafe fn init_virtio_balloon_with_transport(
     transport: Box<dyn VirtioTransport>,
     iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), BalloonError> {
-    let mut dev = VirtioBalloonDevice::new_with_device(transport, iommu_device_id);
-    unsafe { dev.init()? };
-
-    let device_arc = Arc::new(dev);
-
-    log::info!(
-        "VirtIO-balloon initialized: target={} pages\n",
-        device_arc.read_target()
-    );
-
-    *VIRTIO_BALLOON_DEVICE.lock() = Some(Arc::clone(&device_arc));
-    Ok(())
+    init_virtio_balloon_with_transport_at_index(0, transport, iommu_device_id)
 }
 
-/// Handle VirtIO balloon device interrupt
-pub fn handle_virtio_balloon_interrupt() {
-    if let Some(device) = VIRTIO_BALLOON_DEVICE.lock().as_ref() {
+/// Handle VirtIO balloon device interrupt for a specific index.
+pub fn handle_virtio_balloon_interrupt_for_index(index: u8) {
+    if let Some(device) = get_virtio_balloon_device_at_index(index) {
         let status = device.transport.get_interrupt_status();
         device.transport.ack_interrupt(status);
         device.handle_interrupt();
     }
 }
 
-/// Get a clone of the global VirtioBalloon device Arc if initialized
+/// Handle VirtIO balloon device interrupt.
+pub fn handle_virtio_balloon_interrupt() {
+    handle_virtio_balloon_interrupt_for_index(0);
+}
+
+/// Get a clone of the global VirtioBalloon device Arc if initialized (legacy `index=0`).
 pub fn get_virtio_balloon_device() -> Option<Arc<VirtioBalloonDevice>> {
-    VIRTIO_BALLOON_DEVICE.lock().as_ref().cloned()
+    get_virtio_balloon_device_at_index(0)
 }
 
 use crate::util::align_up_usize as align_up;
