@@ -341,10 +341,12 @@ pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
 
 #[cfg(feature = "qemu-test-export")]
 fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
+    runtime_log_line("[driver-cell-runtime] preflight: begin");
     let manager = driver_cell_manager();
     let driver_cell_id = manager
         .find_by_name("driver_cell_probe")
         .ok_or_else(|| RuntimeCaseError::failed("driver_cell_probe is not loaded from initramfs"))?;
+    runtime_log_line("[driver-cell-runtime] preflight: found driver_cell_probe");
 
     let (state, hot_swap_state, loader_cell_id) = manager
         .with_cell(driver_cell_id, |cell| (cell.state, cell.hot_swap_state, cell.cell_id))
@@ -372,12 +374,15 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
         .map_err(|e| RuntimeCaseError::failed(format!("missing /cells/driver_cell_probe_v1.cell: {:?}", e)))?;
     let v2_cell = crate::fs::read_file_content("/cells/driver_cell_probe_v2.cell", "/")
         .map_err(|e| RuntimeCaseError::failed(format!("missing /cells/driver_cell_probe_v2.cell: {:?}", e)))?;
+    runtime_log_line("[driver-cell-runtime] preflight: fixtures loaded");
 
+    runtime_log_line("[driver-cell-runtime] preflight: wait_for_tick_progress");
     if !wait_for_tick_progress(5, 300_000) {
         return Err(RuntimeCaseError::blocked(
             "timer tick did not advance (try removing qemu_no_if=1)",
         ));
     }
+    runtime_log_line("[driver-cell-runtime] preflight: tick progressed");
 
     Ok(RuntimeContext {
         driver_cell_id,
@@ -690,6 +695,10 @@ fn maybe_inject_test_tick(stagnant_loops: usize) {
     // synthetic timer interrupt periodically so runtime validation windows can
     // advance in polling mode.
     if stagnant_loops != 0 && (stagnant_loops % 1024) == 0 {
+        static LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+            runtime_log_line("[driver-cell-runtime] injecting synthetic timer ticks");
+        }
         crate::task::timer::handle_timer_interrupt();
         crate::task::timer::process_pending_timer_wakers();
     }

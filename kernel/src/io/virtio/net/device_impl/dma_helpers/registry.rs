@@ -13,8 +13,12 @@ pub(crate) static VIRTIO_NET_DEVICE: crate::sync::PoisonLock<Option<VirtioNetDev
 /// Additional VirtIO-Net devices (`index != 0`).
 pub(crate) static VIRTIO_NET_DEVICES: RwLock<BTreeMap<u8, Arc<crate::sync::PoisonLock<VirtioNetDevice>>>> =
     RwLock::new(BTreeMap::new());
+/// ISR-safe access to transport layer for interrupt acknowledgement.
+pub(crate) static VIRTIO_NET_TRANSPORTS: RwLock<BTreeMap<u8, Arc<dyn VirtioTransport>>> =
+    RwLock::new(BTreeMap::new());
 
 fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
+    let transport = device.transport.clone();
     if index == 0 {
         *VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device);
     } else {
@@ -22,6 +26,7 @@ fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
             .write()
             .insert(index, Arc::new(crate::sync::PoisonLock::new(device)));
     }
+    VIRTIO_NET_TRANSPORTS.write().insert(index, transport);
 }
 
 pub(crate) fn with_virtio_net_device_at_index<F, R>(index: u8, f: F) -> Option<R>
@@ -72,7 +77,7 @@ pub fn init_virtio_net_at_index(index: u8, base_addr: usize) -> Result<(), Virti
     let transport =
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
-    let mut device = VirtioNetDevice::new_at_index(index, Box::new(transport));
+    let mut device = VirtioNetDevice::new_at_index(index, transport);
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())
@@ -93,7 +98,7 @@ pub fn init_virtio_net_for_device_at_index(
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
     let mut device =
-        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), Some(device));
+        VirtioNetDevice::new_with_index_and_device(index, transport, Some(device));
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())
@@ -165,32 +170,42 @@ where
 }
 
 /// 指定 index の VirtIO-Net 割り込みを処理する。
+///
+/// 重要: この関数は ISR (Interrupt Service Routine) コンテキストから呼ばれる。
+/// デッドロックを避けるため、デバイス全体のロックを取得してはならない。
 pub fn handle_virtio_net_interrupt_for_index(index: u8) {
-    let _ = with_virtio_net_device_at_index(index, |device| {
-        let status = device.transport.get_interrupt_status();
+    // 1. ISR安全なトランスポートレジストリから取得
+    let transport = VIRTIO_NET_TRANSPORTS.read().get(&index).cloned();
+    
+    if let Some(transport) = transport {
+        // 2. 割り込みステータスを確認してACK（ISR安全）
+        let status = transport.get_interrupt_status();
         if status != 0 {
-            crate::io::log::early_print(&alloc::format!(
-                "[EARLY][VIRTIO-NET] IRQ status read index={} status=0x{:x}\n",
-                index, status
-            ));
+            transport.ack_interrupt(status);
+            
+            // 3. Wakerを叩いてワーカータスクに後処理を委ねる（ISR安全）
+            // これにより、デバイスロック取得に伴うデッドロックを回避する。
+            crate::task::interrupt_waker::wake_from_interrupt(
+                crate::task::interrupt_waker::InterruptSource::VirtioNet(index),
+            );
         }
-        device.transport.ack_interrupt(status);
-        device.handle_interrupt();
-    });
+    }
 }
 
 /// Acknowledge a VirtIO-Net interrupt without processing queues.
 pub fn ack_virtio_net_interrupt_for_index(index: u8) -> bool {
-    with_virtio_net_device_at_index(index, |device| {
-        let status = device.transport.get_interrupt_status();
+    let transport = VIRTIO_NET_TRANSPORTS.read().get(&index).cloned();
+    if let Some(transport) = transport {
+        let status = transport.get_interrupt_status();
         if status != 0 {
-            device.transport.ack_interrupt(status);
+            transport.ack_interrupt(status);
             true
         } else {
             false
         }
-    })
-    .unwrap_or(false)
+    } else {
+        false
+    }
 }
 
 /// Acknowledge all registered VirtIO-Net interrupt sources.

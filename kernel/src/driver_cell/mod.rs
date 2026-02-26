@@ -576,11 +576,17 @@ impl DriverCellManager {
 
     /// 名前からDriverCellを検索
     pub fn find_by_name(&self, name: &str) -> Option<DriverCellId> {
+        crate::io::log::early_print("[DCELL-MGR] find_by_name enter locked=");
+        crate::io::log::early_print(if self.cells.is_locked() { "1" } else { "0" });
+        crate::io::log::early_print("\n");
         match self.cells.lock() {
-            Ok(cells) => cells
-                .iter()
-                .find(|(_, c)| c.name == name)
-                .map(|(id, _)| *id),
+            Ok(cells) => {
+                crate::io::log::early_print("[DCELL-MGR] find_by_name lock ok\n");
+                cells
+                    .iter()
+                    .find(|(_, c)| c.name == name)
+                    .map(|(id, _)| *id)
+            }
             Err(_) => None,
         }
     }
