@@ -79,12 +79,10 @@ impl IommuDomain {
             supports_1gb,
             max_addr_bits: max_addr_bits.clamp(1, 64),
             quarantine: QuarantineQueue::new(),
-            // Pre-allocate flush buffer to avoid dynamic allocation in critical path.
+            // Pre-allocated contexts for zero-allocation flush (Phase 5)
             // CRITICAL: This capacity must never be exceeded. The quarantine's
             // drain_pending_invalidations() asserts this in debug builds.
-            flush_requests: PoisonLock::new(Vec::with_capacity(
-                crate::io::iommu::quarantine::INVALIDATION_CAPACITY,
-            )),
+            flush_context: PoisonLock::new(crate::io::iommu::quarantine::FlushContext::new()),
             page_table_pool,
             pte_format,
             security_notifier: Once::new(),
@@ -372,12 +370,15 @@ impl IommuDomain {
         invalidator: &I,
         context: &dyn IommuHardwareContext,
     ) -> Result<(), IommuError> {
-        // Drain pending invalidations (Round 9: returns DrainResult)
-        let mut requests = self
-            .flush_requests
+        let mut fctx = self
+            .flush_context
             .lock()
             .map_err(|_| IommuError::Poisoned)?;
-        let drained_batch = match self.quarantine.drain_pending_invalidations(&mut requests) {
+            
+        fctx.clear();
+
+        // Drain pending invalidations (Round 9: returns DrainResult)
+        let drained_batch = match self.quarantine.drain_pending_invalidations(&mut fctx.requests) {
             crate::io::iommu::quarantine::DrainResult::NoWork { .. } => return Ok(()),
             crate::io::iommu::quarantine::DrainResult::NotReady { batch: _ } => {
                 // Round 9 Safety: Reserved slots pending.
@@ -392,18 +393,17 @@ impl IommuDomain {
         };
 
         // Skip if nothing to flush (double check, though NoWork covers this)
-        if requests.is_empty() {
+        if fctx.requests.is_empty() {
             return Ok(());
         }
 
         // Process all invalidation requests in a single batch
-        if let Err(err) = invalidator.process_invalidations(requests.as_slice()) {
+        if let Err(err) = invalidator.process_invalidations(fctx.requests.as_slice()) {
             return Err(err);
         }
-        requests.clear();
 
         // Reap and process completed entries for this batch
-        self.quarantine.reap_completed(drained_batch, context);
+        self.quarantine.reap_completed(drained_batch, &mut fctx, context);
 
         Ok(())
     }

@@ -139,6 +139,16 @@ impl IommuGroupManager {
         // 1. デバイスが既にグループに所属しているか確認
         if let Some(group_id) = device_to_group_guard.get(&device) {
             if let Some(group) = groups_guard.get(group_id) {
+                if group.controller_idx != controller_idx {
+                    log::error!(
+                        "[IOMMU] Group {:?} controller mismatch for device {:?}: existing={} requested={}",
+                        group_id,
+                        device,
+                        group.controller_idx,
+                        controller_idx
+                    );
+                    return Err(IommuError::HardwareError);
+                }
                 return Ok((group.clone(), false));
             }
         }
@@ -148,6 +158,16 @@ impl IommuGroupManager {
 
         // 3. 既存グループがあればデバイスを追加して返す
         if let Some(group) = groups_guard.get(&group_id) {
+            if group.controller_idx != controller_idx {
+                log::error!(
+                    "[IOMMU] Group {:?} controller mismatch for device {:?}: existing={} requested={}",
+                    group_id,
+                    device,
+                    group.controller_idx,
+                    controller_idx
+                );
+                return Err(IommuError::HardwareError);
+            }
             device_to_group_guard.insert(device, group.id);
             return Ok((group.clone(), false));
         }
@@ -176,7 +196,7 @@ impl IommuGroupManager {
     /// PCIeヒエラルキーを走査してIOMMUグループIDを決定する。
     ///
     /// グループIDはグループの「ルート」デバイス (分離不可能な最上位) のDeviceId。
-    /// ACSで完全分離されたデバイスは自身のDeviceIdがグループIDとなる。
+    /// ACSで完全分離されたデバイスは自身 (または多機能なら function 0) がグループIDとなる。
     fn determine_group_id_for_device<P: PciTopologyProvider>(
         device: DeviceId,
         topology: &P,
@@ -184,6 +204,7 @@ impl IommuGroupManager {
         let mut current_bus = device.bus;
         let mut current_dev = device.device;
         let mut current_func = device.function;
+        let mut first_hop = true;
 
         // 多機能デバイスの全ファンクションは同一グループ (function 0 ベース)
         let mut group_root_bus = current_bus;
@@ -192,28 +213,43 @@ impl IommuGroupManager {
 
         // PCIヒエラルキーを上位方向に走査
         loop {
-            // 多機能デバイスの場合、function 0のDeviceIdをグループルートとする
+            // 多機能デバイスの場合、function 0のDeviceIdをグループルート候補とする
             if current_func != 0 {
                 group_root_bus = current_bus;
                 group_root_dev = current_dev;
             }
 
             // ヘッダタイプを読取ってブリッジかどうか確認
-            let header_type = topology
-                .read_header_type(current_bus, current_dev, current_func)
-                .ok_or(IommuError::DeviceNotFound)?;
+            let header_type = match topology.read_header_type(current_bus, current_dev, current_func)
+            {
+                Some(header_type) => header_type,
+                None if first_hop => return Err(IommuError::DeviceNotFound),
+                None => {
+                    // 途中ノード情報が欠落している場合は、ここまでに確定した保守的ルートで打ち切る。
+                    break;
+                }
+            };
 
             let is_pci_to_pci_bridge = (header_type & 0x7F) == 0x01; // Type 1 header
 
             if is_pci_to_pci_bridge {
-                // ブリッジのACSケイパビリティを確認
-                if let Some(true) = topology.is_acs_isolation_enabled(
-                    current_bus,
-                    current_dev,
-                    current_func,
-                ) {
-                    // ACS分離有効 → 下流デバイスは独立グループ
-                    break;
+                // ブリッジは function 0 ベースでグループルートを扱う。
+                let candidate_root_bus = current_bus;
+                let candidate_root_dev = current_dev;
+
+                // ACS判定:
+                // - Some(true):  このブリッジで下流が分離されるため、ここではルート昇格しない
+                // - Some(false): 分離不能なのでこのブリッジをグループルートに昇格
+                // - None:        情報不足/非対応は安全側に倒して分離不能扱い
+                match topology.is_acs_isolation_enabled(current_bus, current_dev, current_func) {
+                    Some(true) => {
+                        // ACS分離有効 → 下流デバイスは独立グループ
+                        break;
+                    }
+                    Some(false) | None => {
+                        group_root_bus = candidate_root_bus;
+                        group_root_dev = candidate_root_dev;
+                    }
                 }
             }
 
@@ -231,9 +267,11 @@ impl IommuGroupManager {
                 }
                 None => {
                     // 親ブリッジ不在 → ルートコンプレックスデバイスまたはトポロジーエラー
+                    // 既知の情報だけで保守的グループを返す。
                     break;
                 }
             }
+            first_hop = false;
         }
 
         Ok(DeviceId::new(

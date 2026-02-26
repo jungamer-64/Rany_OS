@@ -46,6 +46,38 @@ pub const QUARANTINE_CAPACITY: usize = 256;
 /// Maximum number of pending invalidation requests
 pub const INVALIDATION_CAPACITY: usize = 64;
 
+/// Pre-allocated context for zero-allocation flushes
+pub struct FlushContext {
+    pub requests: alloc::vec::Vec<InvalidateRequest>,
+    pub to_free_iova: alloc::vec::Vec<(u64, u64)>,
+    pub to_drop: alloc::vec::Vec<RRefRawParts>,
+    pub to_wake: alloc::vec::Vec<core::task::Waker>,
+}
+
+impl Default for FlushContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FlushContext {
+    pub fn new() -> Self {
+        Self {
+            requests: alloc::vec::Vec::with_capacity(INVALIDATION_CAPACITY),
+            to_free_iova: alloc::vec::Vec::with_capacity(QUARANTINE_CAPACITY),
+            to_drop: alloc::vec::Vec::with_capacity(QUARANTINE_CAPACITY),
+            to_wake: alloc::vec::Vec::with_capacity(QUARANTINE_CAPACITY),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.requests.clear();
+        self.to_free_iova.clear();
+        self.to_drop.clear();
+        self.to_wake.clear();
+    }
+}
+
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -291,11 +323,7 @@ impl Drop for QuarantineSlotGuard {
         if self.pte_cleared {
             // Round 13: Use helper to poison and wake everyone
             self.queue.poison_system();
-            debug_assert!(
-                false,
-                "CRITICAL: QuarantineSlotGuard dropped after PTE clear but before commit! Queue POISONED."
-            );
-            return;
+            panic!("CRITICAL: QuarantineSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
         }
 
         self.queue.rollback_slot(self.slot_idx, self.slot_gen);
@@ -358,13 +386,7 @@ impl Drop for InvSlotGuard {
         if self.pte_cleared {
             // Round 13: Use helper to poison and wake everyone
             self.queue.poison_system();
-            // In debug builds, panic to alert the developer.
-            // In release, we just leak the reservation to safeguard consistency.
-            debug_assert!(
-                false,
-                "CRITICAL: InvSlotGuard dropped after PTE clear but before commit! Queue POISONED."
-            );
-            return;
+            panic!("CRITICAL: InvSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
         }
 
         self.queue
@@ -440,19 +462,19 @@ fn scan_entry_for_reap(
 
 /// Process collected reap results outside the lock.
 fn flush_reaped_resources(
-    to_free_iova: alloc::vec::Vec<(u64, u64)>,
-    to_drop: alloc::vec::Vec<RRefRawParts>,
-    to_wake: alloc::vec::Vec<core::task::Waker>,
+    to_free_iova: &mut alloc::vec::Vec<(u64, u64)>,
+    to_drop: &mut alloc::vec::Vec<RRefRawParts>,
+    to_wake: &mut alloc::vec::Vec<core::task::Waker>,
     capacity_waker: Option<Waker>,
     context: &dyn IommuHardwareContext,
 ) {
-    for (iova, size) in to_free_iova {
+    for (iova, size) in to_free_iova.drain(..) {
         let _ = context.free_iova(iova, size);
     }
-    for raw in to_drop {
+    for raw in to_drop.drain(..) {
         unsafe { raw.drop_erased() };
     }
-    for waker in to_wake {
+    for waker in to_wake.drain(..) {
         waker.wake();
     }
     if let Some(waker) = capacity_waker {

@@ -135,6 +135,18 @@ pub fn iommu_wave2_group_acs_isolated_separation_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave2_group_acs_isolated_separation_smoke()
 }
 
+pub fn iommu_wave2_group_non_acs_bridge_shared_group_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_non_acs_bridge_shared_group_smoke()
+}
+
+pub fn iommu_wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke()
+}
+
+pub fn iommu_wave2_group_topology_gap_conservative_fallback_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2_group_topology_gap_conservative_fallback_smoke()
+}
+
 pub fn iommu_wave2_group_reuse_for_same_group_devices_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave2_group_reuse_for_same_group_devices_smoke()
 }

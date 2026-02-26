@@ -148,6 +148,13 @@ pub(crate) unsafe fn map_for_device_with_perms(
 /// Async variant of `map_for_device` that offloads to the controller's CommandQueue
 /// and `await`s completion when configured.
 ///
+/// # Async Behavior
+/// This method does not busy-wait. It submits the mapping request to the hardware's 
+/// Command Queue and yields execution. The hardware generates an MSI/interrupt upon 
+/// completion, which invokes an ISR that pushes an event to a lock-free queue and 
+/// wakes the executor. The executor then resumes this Future, adhering to the 
+/// ExoRust async-first guidelines.
+///
 /// # TOCTOU Safety
 ///
 /// This function is TOCTOU-safe: the backend applies DMA mask constraints
@@ -184,6 +191,11 @@ pub(crate) fn domain_id_for_device(device: &DeviceId) -> Result<u16, IommuError>
 }
 
 /// Async variant of `unmap_for_device` that offloads to CQ and awaits completion
+///
+/// # Async Behavior
+/// Similar to `map_for_device_async`, this method submits the unmap/invalidate
+/// requests to the hardware Command Queue and resolves via interrupt-driven wakers,
+/// avoiding busy-waiting on the CPU.
 pub async fn unmap_for_device_async(
     device: &DeviceId,
     iova: u64,

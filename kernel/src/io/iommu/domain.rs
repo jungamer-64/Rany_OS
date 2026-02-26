@@ -314,15 +314,15 @@ const PML4_ENTRIES_PER_SHARD: usize = PT_ENTRIES / DOMAIN_SHARD_COUNT;
 // DMA Resource Registry (Phase 8: Leak Prevention - Slab-Based)
 // ============================================================================
 
-/// Maximum entries in the DMA resource registry slab.
-/// Power of 2 for efficient hash computation.
-const REGISTRY_SLAB_CAPACITY: usize = 512;
+/// Capacity of a single chunk in the DMA resource registry slab.
+const REGISTRY_CHUNK_CAPACITY: usize = 4096;
 
 /// Number of hash buckets for registry lookups.
-const REGISTRY_HASH_BUCKETS: usize = 1024;
+/// Scaled up to reduce collisions for larger working sets.
+const REGISTRY_HASH_BUCKETS: usize = 4096;
 
 /// Invalid slot index sentinel.
-const REGISTRY_INVALID_INDEX: u16 = u16::MAX;
+const REGISTRY_INVALID_INDEX: u32 = u32::MAX;
 
 /// Entry in the DMA resource registry tracking an active DmaHandle.
 ///
@@ -348,7 +348,7 @@ struct RegistrySlot {
     /// Entry data (valid if in_use is true)
     entry: DmaRegistryEntry,
     /// Next slot in free list or hash chain
-    next: u16,
+    next: u32,
     /// Slot is in use
     in_use: bool,
 }
@@ -368,6 +368,67 @@ impl RegistrySlot {
     }
 }
 
+struct RegistryState {
+    /// Dynamically allocated chunks of slots
+    chunks: Vec<Box<[RegistrySlot; REGISTRY_CHUNK_CAPACITY]>>,
+    /// Hash buckets for O(1) IOVA lookup
+    hash_buckets: Box<[u32]>,
+    /// Head of free slot list
+    free_head: u32,
+}
+
+impl RegistryState {
+    fn new() -> Self {
+        let mut buckets_vec = Vec::with_capacity(REGISTRY_HASH_BUCKETS);
+        for _ in 0..REGISTRY_HASH_BUCKETS {
+            buckets_vec.push(REGISTRY_INVALID_INDEX);
+        }
+        
+        let mut state = Self {
+            chunks: Vec::new(),
+            hash_buckets: buckets_vec.into_boxed_slice(),
+            free_head: REGISTRY_INVALID_INDEX,
+        };
+        // Allocate initial chunk
+        state.allocate_chunk();
+        state
+    }
+
+    fn allocate_chunk(&mut self) {
+        let chunk_idx = self.chunks.len();
+        // If we exceed u32 index space, we essentially panic/fail, but that's 4B * 4K = 16T entries.
+        let base_idx = (chunk_idx * REGISTRY_CHUNK_CAPACITY) as u32;
+
+        let mut chunk = Box::new([RegistrySlot::empty(); REGISTRY_CHUNK_CAPACITY]);
+        
+        // Link all slots in the new chunk to the free list
+        for i in 0..REGISTRY_CHUNK_CAPACITY {
+            chunk[i].next = if i < REGISTRY_CHUNK_CAPACITY - 1 {
+                base_idx + (i + 1) as u32
+            } else {
+                self.free_head
+            };
+        }
+        
+        self.free_head = base_idx;
+        self.chunks.push(chunk);
+    }
+
+    #[inline]
+    fn get_slot_mut(&mut self, idx: u32) -> &mut RegistrySlot {
+        let chunk_idx = (idx as usize) / REGISTRY_CHUNK_CAPACITY;
+        let slot_idx = (idx as usize) % REGISTRY_CHUNK_CAPACITY;
+        &mut self.chunks[chunk_idx][slot_idx]
+    }
+
+    #[inline]
+    fn get_slot(&self, idx: u32) -> &RegistrySlot {
+        let chunk_idx = (idx as usize) / REGISTRY_CHUNK_CAPACITY;
+        let slot_idx = (idx as usize) % REGISTRY_CHUNK_CAPACITY;
+        &self.chunks[chunk_idx][slot_idx]
+    }
+}
+
 /// DMA Resource Registry for tracking active DmaHandles.
 ///
 /// Enables two critical features:
@@ -376,26 +437,10 @@ impl RegistrySlot {
 ///
 /// # Thread Safety
 ///
-/// The registry is protected by `PoisonLock` with shard-level granularity
-/// to reduce contention. Each shard corresponds to a range of IOVAs.
-///
-/// # Performance (Slab-Based Implementation)
-///
-/// | Operation     | Complexity       | Heap Alloc |
-/// |---------------|------------------|------------|
-/// | Insert        | O(1) avg         | None       |
-/// | Remove        | O(1) avg         | None       |
-/// | Lookup        | O(1) avg         | None       |
-/// | Force unmap   | O(n) linear      | None       |
-///
-/// This eliminates the BTreeMap heap allocation bottleneck for 100Gbps+ I/O.
+/// The registry state is protected by a single `PoisonLock`.
 pub struct DmaResourceRegistry {
-    /// Pre-allocated slots (no heap allocation on map/unmap)
-    slots: PoisonLock<Box<[RegistrySlot]>>,
-    /// Hash buckets for O(1) IOVA lookup
-    hash_buckets: PoisonLock<Box<[u16]>>,
-    /// Head of free slot list
-    free_head: PoisonLock<u16>,
+    /// Combined state protected by a single lock to prevent deadlocks
+    state: PoisonLock<RegistryState>,
     /// Total active mappings count
     active_count: AtomicU64,
     /// Total mapped bytes
@@ -405,30 +450,8 @@ pub struct DmaResourceRegistry {
 impl DmaResourceRegistry {
     /// Create a new empty registry with pre-allocated slab
     pub fn new() -> Self {
-        // Initialize slots with free list using Vec to avoid stack overflow
-        let mut slots_vec = Vec::with_capacity(REGISTRY_SLAB_CAPACITY);
-        for i in 0..REGISTRY_SLAB_CAPACITY {
-            let mut slot = RegistrySlot::empty();
-            if i < REGISTRY_SLAB_CAPACITY - 1 {
-                slot.next = (i + 1) as u16;
-            } else {
-                slot.next = REGISTRY_INVALID_INDEX;
-            }
-            slots_vec.push(slot);
-        }
-        let slots = slots_vec.into_boxed_slice();
-
-        // Initialize hash buckets to empty
-        let mut buckets_vec = Vec::with_capacity(REGISTRY_HASH_BUCKETS);
-        for _ in 0..REGISTRY_HASH_BUCKETS {
-            buckets_vec.push(REGISTRY_INVALID_INDEX);
-        }
-        let hash_buckets = buckets_vec.into_boxed_slice();
-
         Self {
-            slots: PoisonLock::new(slots),
-            hash_buckets: PoisonLock::new(hash_buckets),
-            free_head: PoisonLock::new(0),
+            state: PoisonLock::new(RegistryState::new()),
             active_count: AtomicU64::new(0),
             total_bytes: AtomicU64::new(0),
         }
@@ -437,37 +460,33 @@ impl DmaResourceRegistry {
     /// Hash function for IOVA to bucket index
     #[inline]
     fn hash_iova(iova: u64) -> usize {
-        // Use upper bits for better distribution (IOVA is page-aligned)
-        ((iova >> 12) as usize) % REGISTRY_HASH_BUCKETS
+        // Improved hash function to prevent collisions for consecutive pages
+        (((iova >> 12) ^ (iova >> 24) ^ (iova >> 36)) as usize) % REGISTRY_HASH_BUCKETS
     }
 
     /// Register a new DMA mapping
     ///
     /// Called when a DmaHandle is created for this domain.
-    /// O(1) average time, no heap allocation.
+    /// O(1) average time, chunks allocated dynamically.
     pub fn register(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
-        // Allocate slot from free list
-        let mut free_guard = self.free_head.lock().map_err(|_| {
-            log::error!("[IOMMU] DMA registry free_head lock poisoned");
+        let mut state = self.state.lock().map_err(|_| {
+            log::error!("[IOMMU] DMA registry state lock poisoned");
             IommuError::Poisoned
         })?;
 
-        let slot_idx = *free_guard;
-        if slot_idx == REGISTRY_INVALID_INDEX {
-            log::error!("[IOMMU] DMA registry slab exhausted (cap={})", REGISTRY_SLAB_CAPACITY);
-            return Err(IommuError::OutOfMemory);
+        // Refill free list if needed by allocating a new chunk
+        if state.free_head == REGISTRY_INVALID_INDEX {
+            state.allocate_chunk();
         }
 
-        let mut slots_guard = self.slots.lock().map_err(|_| {
-            log::error!("[IOMMU] DMA registry slots lock poisoned");
-            IommuError::Poisoned
-        })?;
+        let slot_idx = state.free_head;
+        let next_free = state.get_slot(slot_idx).next;
+        state.free_head = next_free;
 
-        // Update free list head
-        *free_guard = slots_guard[slot_idx as usize].next;
+        let bucket = Self::hash_iova(iova);
+        let next_in_bucket = state.hash_buckets[bucket];
 
-        // Initialize slot
-        let slot = &mut slots_guard[slot_idx as usize];
+        let slot = state.get_slot_mut(slot_idx);
         slot.entry = DmaRegistryEntry {
             iova,
             phys,
@@ -475,26 +494,11 @@ impl DmaResourceRegistry {
             unmapped: false,
         };
         slot.in_use = true;
-        slot.next = REGISTRY_INVALID_INDEX;
+        slot.next = next_in_bucket;
 
-        drop(slots_guard);
-        drop(free_guard);
+        state.hash_buckets[bucket] = slot_idx;
 
-        // Insert into hash chain
-        let bucket = Self::hash_iova(iova);
-        let mut buckets_guard = self.hash_buckets.lock().map_err(|_| {
-            log::error!("[IOMMU] DMA registry hash lock poisoned");
-            IommuError::Poisoned
-        })?;
-
-        let mut slots_guard = self.slots.lock().map_err(|_| {
-            log::error!("[IOMMU] DMA registry slots lock poisoned");
-            IommuError::Poisoned
-        })?;
-
-        // Prepend to bucket's chain
-        slots_guard[slot_idx as usize].next = buckets_guard[bucket];
-        buckets_guard[bucket] = slot_idx;
+        drop(state);
 
         self.active_count.fetch_add(1, Ordering::Relaxed);
         self.total_bytes.fetch_add(size, Ordering::Relaxed);
@@ -508,44 +512,38 @@ impl DmaResourceRegistry {
     /// O(1) average time.
     pub fn unregister(&self, iova: u64) -> Result<Option<DmaRegistryEntry>, IommuError> {
         let bucket = Self::hash_iova(iova);
+        
+        let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
 
-        let mut buckets_guard = self.hash_buckets.lock().map_err(|_| IommuError::Poisoned)?;
-        let mut slots_guard = self.slots.lock().map_err(|_| IommuError::Poisoned)?;
-
-        // Search hash chain
         let mut prev_idx = REGISTRY_INVALID_INDEX;
-        let mut curr_idx = buckets_guard[bucket];
+        let mut curr_idx = state.hash_buckets[bucket];
 
         while curr_idx != REGISTRY_INVALID_INDEX {
-            let slot = &slots_guard[curr_idx as usize];
+            let slot = state.get_slot(curr_idx);
+            
             if slot.in_use && slot.entry.iova == iova {
-                // Found - remove from hash chain
                 let entry = slot.entry;
                 let next_idx = slot.next;
 
                 if prev_idx == REGISTRY_INVALID_INDEX {
-                    buckets_guard[bucket] = next_idx;
+                    state.hash_buckets[bucket] = next_idx;
                 } else {
-                    slots_guard[prev_idx as usize].next = next_idx;
+                    state.get_slot_mut(prev_idx).next = next_idx;
                 }
 
-                // Clear slot and return to free list
-                slots_guard[curr_idx as usize].in_use = false;
-                slots_guard[curr_idx as usize].entry = DmaRegistryEntry {
+                let free_head = state.free_head;
+                let slot_mut = state.get_slot_mut(curr_idx);
+                slot_mut.in_use = false;
+                slot_mut.entry = DmaRegistryEntry {
                     iova: 0,
                     phys: 0,
                     size: 0,
                     unmapped: false,
                 };
+                slot_mut.next = free_head;
+                state.free_head = curr_idx;
 
-                drop(buckets_guard);
-                drop(slots_guard);
-
-                // Return to free list
-                let mut free_guard = self.free_head.lock().map_err(|_| IommuError::Poisoned)?;
-                let mut slots_guard = self.slots.lock().map_err(|_| IommuError::Poisoned)?;
-                slots_guard[curr_idx as usize].next = *free_guard;
-                *free_guard = curr_idx;
+                drop(state);
 
                 self.active_count.fetch_sub(1, Ordering::Relaxed);
                 self.total_bytes.fetch_sub(entry.size, Ordering::Relaxed);
@@ -553,7 +551,7 @@ impl DmaResourceRegistry {
                 return Ok(Some(entry));
             }
             prev_idx = curr_idx;
-            curr_idx = slot.next;
+            curr_idx = state.get_slot(curr_idx).next;
         }
 
         Ok(None)
@@ -562,13 +560,11 @@ impl DmaResourceRegistry {
     /// Mark an entry as unmapped (lazy tombstone for batch cleanup)
     pub fn mark_unmapped(&self, iova: u64) -> Result<bool, IommuError> {
         let bucket = Self::hash_iova(iova);
+        let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
 
-        let buckets_guard = self.hash_buckets.lock().map_err(|_| IommuError::Poisoned)?;
-        let mut slots_guard = self.slots.lock().map_err(|_| IommuError::Poisoned)?;
-
-        let mut curr_idx = buckets_guard[bucket];
+        let mut curr_idx = state.hash_buckets[bucket];
         while curr_idx != REGISTRY_INVALID_INDEX {
-            let slot = &mut slots_guard[curr_idx as usize];
+            let slot = state.get_slot_mut(curr_idx);
             if slot.in_use && slot.entry.iova == iova {
                 slot.entry.unmapped = true;
                 return Ok(true);
@@ -592,56 +588,48 @@ impl DmaResourceRegistry {
     }
 
     /// Drain all entries for force-unmap on domain destruction
-    ///
-    /// Returns all entries that need to be force-unmapped.
-    /// After this call, the registry is empty.
-    /// Acquire all three locks needed by drain_all.
-    fn lock_all_for_drain(
-        &self,
-    ) -> Result<(
-        crate::sync::PoisonLockGuard<'_, Box<[RegistrySlot]>>,
-        crate::sync::PoisonLockGuard<'_, Box<[u16]>>,
-        crate::sync::PoisonLockGuard<'_, u16>,
-    ), IommuError> {
-        let slots_guard = self.slots.lock().map_err(|_| IommuError::Poisoned)?;
-        let buckets_guard = self.hash_buckets.lock().map_err(|_| IommuError::Poisoned)?;
-        let free_guard = self.free_head.lock().map_err(|_| IommuError::Poisoned)?;
-        Ok((slots_guard, buckets_guard, free_guard))
-    }
-
     pub fn drain_all(&self) -> Result<Vec<DmaRegistryEntry>, IommuError> {
-        let (mut slots_guard, mut buckets_guard, mut free_guard) = self.lock_all_for_drain()?;
+        let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
 
         let mut entries = Vec::new();
 
-        // Scan all slots and collect active entries
-        for i in 0..REGISTRY_SLAB_CAPACITY {
-            let slot = &mut slots_guard[i];
-            if slot.in_use && !slot.entry.unmapped {
-                entries.push(slot.entry);
+        // Scan all slots across all chunks
+        for chunk in state.chunks.iter_mut() {
+            for slot in chunk.iter_mut() {
+                if slot.in_use {
+                    if !slot.entry.unmapped {
+                        entries.push(slot.entry);
+                    }
+                    slot.in_use = false;
+                    slot.entry = DmaRegistryEntry {
+                        iova: 0,
+                        phys: 0,
+                        size: 0,
+                        unmapped: false,
+                    };
+                }
             }
-            // Reset slot
-            slot.in_use = false;
-            slot.entry = DmaRegistryEntry {
-                iova: 0,
-                phys: 0,
-                size: 0,
-                unmapped: false,
-            };
-            slot.next = if i < REGISTRY_SLAB_CAPACITY - 1 {
-                (i + 1) as u16
-            } else {
-                REGISTRY_INVALID_INDEX
-            };
         }
+
+        // Rebuild the free list from scratch
+        state.free_head = REGISTRY_INVALID_INDEX;
+        let mut next_free = REGISTRY_INVALID_INDEX;
+        let mut current_idx = (state.chunks.len() * REGISTRY_CHUNK_CAPACITY) as u32;
+        
+        // Link backwards so free_head is 0
+        for chunk in state.chunks.iter_mut().rev() {
+            for slot in chunk.iter_mut().rev() {
+                current_idx -= 1;
+                slot.next = next_free;
+                next_free = current_idx;
+            }
+        }
+        state.free_head = next_free;
 
         // Reset hash buckets
-        for bucket in buckets_guard.iter_mut() {
+        for bucket in state.hash_buckets.iter_mut() {
             *bucket = REGISTRY_INVALID_INDEX;
         }
-
-        // Reset free list
-        *free_guard = 0;
 
         self.active_count.store(0, Ordering::Relaxed);
         self.total_bytes.store(0, Ordering::Relaxed);
@@ -652,17 +640,13 @@ impl DmaResourceRegistry {
     /// Check if an IOVA is registered
     pub fn contains(&self, iova: u64) -> bool {
         let bucket = Self::hash_iova(iova);
-
-        let Ok(buckets_guard) = self.hash_buckets.lock() else {
-            return false;
-        };
-        let Ok(slots_guard) = self.slots.lock() else {
+        let Ok(state) = self.state.lock() else {
             return false;
         };
 
-        let mut curr_idx = buckets_guard[bucket];
+        let mut curr_idx = state.hash_buckets[bucket];
         while curr_idx != REGISTRY_INVALID_INDEX {
-            let slot = &slots_guard[curr_idx as usize];
+            let slot = state.get_slot(curr_idx);
             if slot.in_use && slot.entry.iova == iova {
                 return true;
             }
@@ -724,8 +708,8 @@ pub struct IommuDomain {
     pub(crate) max_addr_bits: u8,
     /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
     quarantine: Arc<QuarantineQueue>,
-    /// Reused buffer for flush invalidations (avoid per-flush allocations)
-    flush_requests: PoisonLock<Vec<InvalidateRequest>>,
+    /// Pre-allocated contexts for zero-allocation flush (Phase 5)
+    flush_context: PoisonLock<crate::io::iommu::quarantine::FlushContext>,
     /// Phase 6: Page table recycling pool (shared with controller)
     page_table_pool: Arc<super::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)

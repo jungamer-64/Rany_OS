@@ -564,6 +564,84 @@ pub fn wave2_group_acs_isolated_separation_smoke() -> bool {
     created_a && created_b && group_a.id != group_b.id
 }
 
+/// Non-ACS bridge (or ACS unknown) forces downstream endpoints into a shared group.
+pub fn wave2_group_non_acs_bridge_shared_group_smoke() -> bool {
+    let mut topo = MockPciTopology::new();
+    topo.add_bridge(0, 1, 0, None);
+    topo.set_parent_bridge(1, (0, 1, 0));
+    topo.add_endpoint(1, 0, 0);
+    topo.add_endpoint(1, 1, 0);
+
+    let ctrl = IommuController::new(0x0, 0);
+    let mgr = IommuGroupManager::new();
+    let dev_a = DeviceId::new(0, 1, 0, 0);
+    let dev_b = DeviceId::new(0, 1, 1, 0);
+    let expected_group_root = DeviceId::new(0, 0, 1, 0);
+
+    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &ctrl, 0, &topo) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &ctrl, 0, &topo) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    created_a
+        && !created_b
+        && group_a.id == expected_group_root
+        && group_b.id == expected_group_root
+        && group_a.domain_id == group_b.domain_id
+        && mgr.get_group_for_device(&dev_a) == Some(expected_group_root)
+        && mgr.get_group_for_device(&dev_b) == Some(expected_group_root)
+}
+
+/// Non-ACS bridge chain should promote the highest non-isolated ancestor as the group root.
+pub fn wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke() -> bool {
+    let mut topo = MockPciTopology::new();
+    topo.add_bridge(0, 1, 0, Some(false));
+    topo.set_parent_bridge(1, (0, 1, 0));
+    topo.add_bridge(1, 2, 0, Some(false));
+    topo.set_parent_bridge(2, (1, 2, 0));
+    topo.add_endpoint(2, 0, 0);
+
+    let ctrl = IommuController::new(0x0, 0);
+    let mgr = IommuGroupManager::new();
+    let dev = DeviceId::new(0, 2, 0, 0);
+    let highest_non_acs_bridge = DeviceId::new(0, 0, 1, 0);
+    let lower_bridge = DeviceId::new(0, 1, 2, 0);
+
+    let (group, _created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    group.id == highest_non_acs_bridge && group.id != lower_bridge
+}
+
+/// Topology gaps should fall back to the last known conservative (non-ACS) group root.
+pub fn wave2_group_topology_gap_conservative_fallback_smoke() -> bool {
+    let mut topo = MockPciTopology::new();
+    topo.add_bridge(1, 2, 0, None);
+    topo.set_parent_bridge(2, (1, 2, 0));
+    topo.add_endpoint(2, 0, 0);
+    // Intentionally omit parent mapping for bus 1 to simulate topology information gap.
+
+    let ctrl = IommuController::new(0x0, 0);
+    let mgr = IommuGroupManager::new();
+    let dev = DeviceId::new(0, 2, 0, 0);
+    let expected_group_root = DeviceId::new(0, 1, 2, 0);
+
+    let (group, created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    created
+        && group.id == expected_group_root
+        && mgr.get_group_for_device(&dev) == Some(expected_group_root)
+}
+
 /// Calling find_or_create_group twice for the same device reuses the existing group.
 pub fn wave2_group_reuse_for_same_group_devices_smoke() -> bool {
     let mut topo = MockPciTopology::new();

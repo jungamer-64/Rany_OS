@@ -1079,6 +1079,15 @@ fn test_iommu_wave2_grouping_exports() -> bool {
         "iommu_wave2_group_acs_isolated_separation_smoke",
         rany_os::qemu_tests::iommu_wave2_group_acs_isolated_separation_smoke,
     ) && run_check(
+        "iommu_wave2_group_non_acs_bridge_shared_group_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_non_acs_bridge_shared_group_smoke,
+    ) && run_check(
+        "iommu_wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke,
+    ) && run_check(
+        "iommu_wave2_group_topology_gap_conservative_fallback_smoke",
+        rany_os::qemu_tests::iommu_wave2_group_topology_gap_conservative_fallback_smoke,
+    ) && run_check(
         "iommu_wave2_group_reuse_for_same_group_devices_smoke",
         rany_os::qemu_tests::iommu_wave2_group_reuse_for_same_group_devices_smoke,
     ) && run_check(

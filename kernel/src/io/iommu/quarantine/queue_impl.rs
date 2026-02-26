@@ -358,9 +358,8 @@ impl QuarantineQueue {
                     // We also CANNOT safely catch-up because it might violate batch boundaries.
                     // The only safe option is to HALT operations to prevent data corruption.
                     drop(inner); // drop lock before calling helper (avoids recursion if helper took lock)
-                    // limit: poison_system takes lock.
                     self.poison_system();
-                    return Err(QuarantineError::Poisoned);
+                    panic!("CRITICAL: Quarantine batch advanced before commit_invalidation. Queue POISONED.");
                 }
                 *slot = InvSlot::Ready(req);
                 inner.ready_count += 1;
@@ -675,12 +674,7 @@ impl QuarantineQueue {
     /// - Compute scan_threshold = max(old, completed_batch) inside lock
     /// - Zero IOVA on collect (idempotent, prevents double free)
     /// - Heavy operations (free_iova, drop_erased) OUTSIDE lock
-    pub fn reap_completed(&self, completed_batch: u64, context: &dyn IommuHardwareContext) {
-        use alloc::vec::Vec;
-
-        let mut to_wake: Vec<core::task::Waker> = Vec::new();
-        let mut to_free_iova: Vec<(u64, u64)> = Vec::new();
-        let mut to_drop: Vec<RRefRawParts> = Vec::new();
+    pub fn reap_completed(&self, completed_batch: u64, fctx: &mut FlushContext, context: &dyn IommuHardwareContext) {
         let mut capacity_waker: Option<Waker> = None;
         let mut freed_slots = false;
 
@@ -698,9 +692,9 @@ impl QuarantineQueue {
                 if scan_entry_for_reap(
                     &mut inner.entries[slot_idx],
                     scan_threshold,
-                    &mut to_free_iova,
-                    &mut to_wake,
-                    &mut to_drop,
+                    &mut fctx.to_free_iova,
+                    &mut fctx.to_wake,
+                    &mut fctx.to_drop,
                 ) {
                     inner.active_count = inner.active_count.saturating_sub(1);
                     freed_slots = true;
@@ -717,7 +711,7 @@ impl QuarantineQueue {
             }
         }
 
-        flush_reaped_resources(to_free_iova, to_drop, to_wake, capacity_waker, context);
+        flush_reaped_resources(&mut fctx.to_free_iova, &mut fctx.to_drop, &mut fctx.to_wake, capacity_waker, context);
     }
 
     /// Get statistics
