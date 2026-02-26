@@ -285,9 +285,9 @@ impl VirtioBlkDevice {
         // Process completions on all queues
         for (q_idx, queue) in self.queues.iter().enumerate() {
             let mut queue_guard = queue.lock();
-            while let Some((desc_id, _len)) = queue_guard.poll_completions() {
+            queue_guard.poll_completions(|desc_id, _len| {
                 self.process_completion_entry(&queue_guard, q_idx, desc_id, _len);
-            }
+            });
         }
 
         // Interrupt-Wakerブリッジに通知（設計書 4.2）

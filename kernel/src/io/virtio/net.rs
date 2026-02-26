@@ -13,19 +13,19 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 use x86_64::{PhysAddr, VirtAddr};
 
 // Import VirtIO common definitions
 use super::defs::{VirtioDeviceType, status};
 use super::transport::{TransportType, VirtioTransport};
 use crate::io::dma::{
-    allocate_iommu_bounce_bytes, iommu_align_len, CoherentDmaBuffer,
-    DmaMemoryAttributes, IommuBounceAllocError,
+    iommu_align_len, CoherentDmaBuffer,
+    DmaMemoryAttributes,
 };
 use crate::io::iommu::api::{
-    get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
-    unmap_dma, unmap_for_device, DmaDirection, DmaHandle, map_for_device_with_perms,
+    get_device_dma_mask, is_iommu_enabled, is_iommu_required,
+    unmap_dma, unmap_for_device, map_for_device_with_perms,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 // Import PacketRef for zero-copy
@@ -206,32 +206,23 @@ pub struct VringUsed {
 // Send-safe pointer wrapper
 // ============================================================================
 
-/// 生ポインタをSend可能にするラッパー
-///
-/// # Safety
-/// このラッパーを使う側が、ポインタの有効性とスレッド安全性を保証する必要がある
-pub struct SendPtr<T>(*mut T);
+// ============================================================================
+// Internal Mutability and Synchronization
+// ============================================================================
 
-unsafe impl<T> Send for SendPtr<T> {}
-unsafe impl<T> Sync for SendPtr<T> {}
-
-impl<T> SendPtr<T> {
-    fn new(ptr: *mut T) -> Self {
-        Self(ptr)
-    }
-
-    fn as_ptr(&self) -> *mut T {
-        self.0
-    }
+/// ネットワーク VirtQueue の送信/追加（Submission）側状態で、排他制御が必要なものをまとめた構造体
+pub struct NetVirtQueueInner {
+    /// ディスクリプタテーブル
+    desc_table: *mut VringDesc,
+    /// Available Ring
+    avail_ring: *mut VringAvail,
+    /// 空きディスクリプタ (desc_id stack)
+    free_descs: Vec<u16>,
+    /// TX header table (one header per descriptor)
+    tx_headers: Option<*mut VirtioNetHeader>,
+    /// TX header table DMA base (IOVA or phys)
+    tx_header_dma_base: Option<u64>,
 }
-
-impl<T> Clone for SendPtr<T> {
-    fn clone(&self) -> Self {
-        Self(self.0)
-    }
-}
-
-impl<T> Copy for SendPtr<T> {}
 
 /// ネットワーク VirtQueue
 pub struct NetVirtQueue {
@@ -239,12 +230,10 @@ pub struct NetVirtQueue {
     pub index: u16,
     /// キューサイズ
     pub size: u16,
-    /// ディスクリプタテーブル
-    desc_table: SendPtr<VringDesc>,
-    /// Available Ring
-    avail_ring: SendPtr<VringAvail>,
-    /// Used Ring
-    used_ring: SendPtr<VringUsed>,
+    /// Submission side state protected by Mutex to prevent data races and aliasing UB
+    inner: Mutex<NetVirtQueueInner>,
+    /// Used Ring (Device -> Host, read-only for driver)
+    used_ring: *const VringUsed,
     /// Queue notify address (transport-provided)
     #[deprecated(since = "0.3.0", note = "Prefer transport-level notify methods and interrupt-driven notifications; avoid per-queue MMIO `notify_addr` when possible.")]
     notify_addr: Option<u64>,
@@ -254,8 +243,6 @@ pub struct NetVirtQueue {
     last_used_idx: AtomicU16,
     /// 完了キャッシュのstale検知回数
     stale_completion_count: AtomicU64,
-    /// 空きディスクリプタ (desc_id stack)
-    free_descs: Mutex<Vec<u16>>,
     /// 割り込み待機中のWaker
     pending_wakers: Mutex<Vec<Waker>>,
     /// 完了済みディスクリプタの長さ (desc_id -> used len)
@@ -264,13 +251,12 @@ pub struct NetVirtQueue {
     dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
     /// Optional IOMMU mapping for queue memory
     iommu_map: Option<IommuMapping>,
-    /// TX header table (one header per descriptor)
-    tx_headers: Option<SendPtr<VirtioNetHeader>>,
-    /// TX header table DMA base (IOVA or phys)
-    tx_header_dma_base: Option<u64>,
 }
 
 // NetVirtQueueをSend/Syncにする
+// SAFETY: Raw pointers are safely encapsulated. The `inner` state is protected by a Mutex,
+// ensuring no data races or Rust aliasing rules are violated during queue submisson.
+// The `used_ring` is read-only for the driver.
 unsafe impl Send for NetVirtQueue {}
 unsafe impl Sync for NetVirtQueue {}
 
@@ -298,7 +284,7 @@ impl NetVirtQueue {
         notify_addr: Option<u64>,
         notify_is_32bit: bool,
         iommu_map: Option<IommuMapping>,
-        tx_headers: Option<SendPtr<VirtioNetHeader>>,
+        tx_headers: Option<*mut VirtioNetHeader>,
         tx_header_dma_base: Option<u64>,
     ) -> Self {
         // ペンディングバッファ配列を初期化
@@ -309,47 +295,45 @@ impl NetVirtQueue {
             free_descs.push(idx);
         }
 
+        let inner = NetVirtQueueInner {
+            desc_table,
+            avail_ring,
+            free_descs,
+            tx_headers,
+            tx_header_dma_base,
+        };
+
         Self {
             index,
             size,
-            desc_table: SendPtr::new(desc_table),
-            avail_ring: SendPtr::new(avail_ring),
-            used_ring: SendPtr::new(used_ring),
+            inner: Mutex::new(inner),
+            used_ring,
             notify_addr,
             notify_is_32bit,
             last_used_idx: AtomicU16::new(0),
             stale_completion_count: AtomicU64::new(0),
-            free_descs: Mutex::new(free_descs),
             pending_wakers: Mutex::new(Vec::new()),
             pending_completions: Mutex::new(pending),
             dma_buffer,
             iommu_map,
-            tx_headers,
-            tx_header_dma_base,
         }
     }
 
     /// ディスクリプタを割り当て
-    fn alloc_desc(&self) -> Option<u16> {
-        let idx = self.free_descs.lock().pop()?;
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] alloc_desc -> {}\n", idx));
-        self.clear_stale_completion(idx);
+    fn alloc_desc(inner: &mut MutexGuard<NetVirtQueueInner>) -> Option<u16> {
+        let idx = inner.free_descs.pop()?;
         Some(idx)
     }
 
-    fn alloc_desc_pair(&self) -> Option<(u16, u16)> {
-        let mut free_descs = self.free_descs.lock();
-        let first = free_descs.pop()?;
-        let second = match free_descs.pop() {
+    fn alloc_desc_pair(inner: &mut MutexGuard<NetVirtQueueInner>) -> Option<(u16, u16)> {
+        let first = inner.free_descs.pop()?;
+        let second = match inner.free_descs.pop() {
             Some(second) => second,
             None => {
-                free_descs.push(first);
+                inner.free_descs.push(first);
                 return None;
             }
         };
-        drop(free_descs);
-        self.clear_stale_completion(first);
-        self.clear_stale_completion(second);
         Some((first, second))
     }
 
@@ -370,8 +354,9 @@ impl NetVirtQueue {
 
         // Diagnostic: show avail and used indices and last ring slot
         unsafe {
-            let avail = &*self.avail_ring.as_ptr();
-            let used = &*self.used_ring.as_ptr();
+            let inner = self.inner.lock();
+            let avail = &*inner.avail_ring;
+            let used = &*self.used_ring;
             let last_slot = if avail.idx == 0 {
                 avail.ring[(avail.idx % self.size) as usize]
             } else {
@@ -394,32 +379,42 @@ impl NetVirtQueue {
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_buffer called data_ptr=0x{:x} len={}\n", data.as_ptr() as u64, data.len()));
-        let (desc_idx, data_desc_idx) = self.alloc_desc_pair().ok_or(VirtioNetError::QueueFull)?;
-        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
+        
+        let mut inner = self.inner.lock();
+        let (desc_idx, data_desc_idx) = Self::alloc_desc_pair(&mut inner).ok_or(VirtioNetError::QueueFull)?;
+        self.clear_stale_completion(desc_idx);
+        self.clear_stale_completion(data_desc_idx);
+        
+        let (header_ptr, header_dma_base) = match (inner.tx_headers, inner.tx_header_dma_base) {
             (Some(ptr), Some(base)) => (ptr, base),
-            _ => return Err(VirtioNetError::DeviceError),
+            _ => {
+                inner.free_descs.push(data_desc_idx);
+                inner.free_descs.push(desc_idx);
+                return Err(VirtioNetError::DeviceError);
+            }
         };
 
+        // SAFETY: Unique access to the ring and descriptors via Mutex guard.
         unsafe {
-            let header_slot = &mut *header_ptr.as_ptr().add(desc_idx as usize);
+            let header_slot = &mut *header_ptr.add(desc_idx as usize);
             *header_slot = *header;
 
             // ヘッダーディスクリプタ
-            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
+            let desc = &mut *inner.desc_table.add(desc_idx as usize);
             desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
             desc.len = VirtioNetHeader::SIZE as u32;
             desc.flags = VringDesc::VRING_DESC_F_NEXT;
             desc.next = data_desc_idx;
 
             // データーディスクリプタ
-            let data_desc = &mut *self.desc_table.as_ptr().add(data_desc_idx as usize);
+            let data_desc = &mut *inner.desc_table.add(data_desc_idx as usize);
             data_desc.addr = data.as_ptr() as u64;
             data_desc.len = data.len() as u32;
             data_desc.flags = 0;
             data_desc.next = 0;
 
             // Available Ringに追加
-            let avail = &mut *self.avail_ring.as_ptr();
+            let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
 
@@ -447,25 +442,34 @@ impl NetVirtQueue {
         data_len: usize,
     ) -> Result<u16, VirtioNetError> {
         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_buffer_zero_copy called phys=0x{:x} len={}\n", phys_addr, data_len));
-        let (desc_idx, data_desc_idx) = self.alloc_desc_pair().ok_or(VirtioNetError::QueueFull)?;
-        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
+        
+        let mut inner = self.inner.lock();
+        let (desc_idx, data_desc_idx) = Self::alloc_desc_pair(&mut inner).ok_or(VirtioNetError::QueueFull)?;
+        self.clear_stale_completion(desc_idx);
+        self.clear_stale_completion(data_desc_idx);
+
+        let (header_ptr, header_dma_base) = match (inner.tx_headers, inner.tx_header_dma_base) {
             (Some(ptr), Some(base)) => (ptr, base),
-            _ => return Err(VirtioNetError::DeviceError),
+            _ => {
+                inner.free_descs.push(data_desc_idx);
+                inner.free_descs.push(desc_idx);
+                return Err(VirtioNetError::DeviceError);
+            }
         };
 
         unsafe {
-            let header = &mut *header_ptr.as_ptr().add(desc_idx as usize);
+            let header = &mut *header_ptr.add(desc_idx as usize);
             *header = VirtioNetHeader::new_tx();
 
             // ヘッダーディスクリプタ
-            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
+            let desc = &mut *inner.desc_table.add(desc_idx as usize);
             desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
             desc.len = VirtioNetHeader::SIZE as u32;
             desc.flags = VringDesc::VRING_DESC_F_NEXT;
             desc.next = data_desc_idx;
 
             // データーディスクリプタ
-            let data_desc = &mut *self.desc_table.as_ptr().add(data_desc_idx as usize);
+            let data_desc = &mut *inner.desc_table.add(data_desc_idx as usize);
             data_desc.addr = phys_addr;
             data_desc.len = data_len as u32;
             data_desc.flags = 0;
@@ -474,10 +478,10 @@ impl NetVirtQueue {
             crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] add_tx_zero preparing desc={} phys=0x{:x} len={}\n", desc_idx, phys_addr, data_len));
 
             // Available Ringに追加
-            let avail = &mut *self.avail_ring.as_ptr();
+            let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
             // used idx for diagnostics
-            let used_idx = (*self.used_ring.as_ptr()).idx;
+            let used_idx = (*self.used_ring).idx;
 
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
 
@@ -501,18 +505,20 @@ impl NetVirtQueue {
 
     /// 受信バッファを追加
     pub fn add_rx_buffer(&self, buffer: &mut [u8]) -> Result<u16, VirtioNetError> {
-        let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+        let mut inner = self.inner.lock();
+        let desc_idx = Self::alloc_desc(&mut inner).ok_or(VirtioNetError::QueueFull)?;
+        self.clear_stale_completion(desc_idx);
 
         unsafe {
             // ディスクリプタを設定（書き込み可能）
-            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
+            let desc = &mut *inner.desc_table.add(desc_idx as usize);
             desc.addr = buffer.as_ptr() as u64;
             desc.len = buffer.len() as u32;
             desc.flags = VringDesc::VRING_DESC_F_WRITE;
             desc.next = 0;
 
             // Available Ringに追加
-            let avail = &mut *self.avail_ring.as_ptr();
+            let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
 
@@ -533,18 +539,20 @@ impl NetVirtQueue {
         phys_addr: u64,
         buffer_len: usize,
     ) -> Result<u16, VirtioNetError> {
-        let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+        let mut inner = self.inner.lock();
+        let desc_idx = Self::alloc_desc(&mut inner).ok_or(VirtioNetError::QueueFull)?;
+        self.clear_stale_completion(desc_idx);
 
         unsafe {
             // ディスクリプタを設定（書き込み可能、物理アドレス直接使用）
-            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
+            let desc = &mut *inner.desc_table.add(desc_idx as usize);
             desc.addr = phys_addr;
             desc.len = buffer_len as u32;
             desc.flags = VringDesc::VRING_DESC_F_WRITE;
             desc.next = 0;
 
             // Available Ringに追加
-            let avail = &mut *self.avail_ring.as_ptr();
+            let avail = &mut *inner.avail_ring;
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
 
@@ -579,7 +587,7 @@ impl NetVirtQueue {
         let mut pending = self.pending_completions.lock();
 
         unsafe {
-            let used = &*self.used_ring.as_ptr();
+            let used = &*self.used_ring;
             let mut last_idx = self.last_used_idx.load(Ordering::Acquire);
 
             while last_idx != used.idx {
@@ -626,7 +634,7 @@ impl NetVirtQueue {
             }
         }
 
-        let used_idx = unsafe { (*self.used_ring.as_ptr()).idx };
+        let used_idx = unsafe { (*self.used_ring).idx };
         let last_idx = self.last_used_idx.load(Ordering::Acquire);
         if used_idx == last_idx {
             return None;
@@ -645,14 +653,14 @@ impl NetVirtQueue {
     }
 
     fn free_desc_chain(&self, head: u16) {
-        let mut free_descs = self.free_descs.lock();
+        let mut inner = self.inner.lock();
         let mut current = head;
         for _ in 0..self.size {
             if current >= self.size {
                 break;
             }
-            free_descs.push(current);
-            let desc = unsafe { &*self.desc_table.as_ptr().add(current as usize) };
+            inner.free_descs.push(current);
+            let desc = unsafe { &*inner.desc_table.add(current as usize) };
             if (desc.flags & VringDesc::VRING_DESC_F_NEXT) == 0 {
                 break;
             }
@@ -682,7 +690,7 @@ impl NetVirtQueue {
     /// ペンディングバッファがあるかチェック
     pub fn has_pending(&self) -> bool {
         unsafe {
-            let used = &*self.used_ring.as_ptr();
+            let used = &*self.used_ring;
             let last_idx = self.last_used_idx.load(Ordering::Acquire);
             last_idx != used.idx
         }

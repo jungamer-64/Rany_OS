@@ -437,7 +437,7 @@ impl VirtioConsoleDevice {
         let mut queue_guard = rx_queue.lock();
 
         // Poll for a completed RX buffer
-        let (desc_id, len) = queue_guard.poll_completions()?;
+        let (desc_id, len) = queue_guard.poll_completion()?;
 
         // Extract the DMA buffer
         let buffer = self.rx_buffers.lock().remove(&desc_id)?;
@@ -498,7 +498,7 @@ impl VirtioConsoleDevice {
     fn process_tx_completions(&self) {
         if let Some(ref tx_queue) = self.tx_queue {
             let mut queue_guard = tx_queue.lock();
-            while let Some((desc_id, _len)) = queue_guard.poll_completions() {
+            queue_guard.poll_completions(|desc_id, _len| {
                 // Free the inflight DMA buffer
                 if let Some(_buf) = self.tx_inflight.lock().remove(&desc_id) {
                     // Buffer dropped here, freeing the DMA allocation
@@ -513,7 +513,7 @@ impl VirtioConsoleDevice {
                 if let Some(waker) = wakers.remove(&waker_idx) {
                     waker.wake();
                 }
-            }
+            });
         }
     }
 

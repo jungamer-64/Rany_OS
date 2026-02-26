@@ -492,9 +492,9 @@ impl VirtioInputDevice {
 
         // Collect completions while holding the queue lock
         let mut completions: Vec<(u16, u32)> = Vec::new();
-        while let Some((desc_id, len)) = queue_guard.poll_completions() {
+        queue_guard.poll_completions(|desc_id, len| {
             completions.push((desc_id, len));
-        }
+        });
 
         // Release queue lock before processing events
         drop(queue_guard);

@@ -60,6 +60,8 @@ pub(crate) struct TxPacketInflight {
     bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
     dma_iova: Option<u64>,
     dma_len: usize,
+    /// Bounce buffer from the pool, if used.
+    pool_bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
 }
 
 /// In-flight entry for a zero-copy RX PacketRef. Holds IOMMU mapping for cleanup on completion.
@@ -124,6 +126,10 @@ pub struct VirtioNetDevice {
     tx_packetrefs: PoisonLock<BTreeMap<u16, TxPacketInflight>>,
     /// 送信用インフライトバッファ (desc_idx -> CoherentDmaBuffer)
     tx_inflight: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
+    /// プール済み送信用バウンスバッファ
+    tx_bounce_pool: PoisonLock<Vec<CoherentDmaBuffer>>,
+    /// プール済み受信用バウンスバッファ
+    rx_bounce_pool: PoisonLock<Vec<CoherentDmaBuffer>>,
 }
 
 impl VirtioNetDevice {
@@ -176,6 +182,8 @@ impl VirtioNetDevice {
             rx_packetrefs: PoisonLock::new(BTreeMap::new()),
             tx_packetrefs: PoisonLock::new(BTreeMap::new()),
             tx_inflight: PoisonLock::new(BTreeMap::new()),
+            tx_bounce_pool: PoisonLock::new(Vec::new()),
+            rx_bounce_pool: PoisonLock::new(Vec::new()),
         }
     }
 
@@ -279,8 +287,74 @@ impl VirtioNetDevice {
                 | status::VIRTIO_STATUS_DRIVER_OK,
         );
 
+        // Initialize bounce buffer pools for IOMMU paths (performance optimization)
+        self.init_bounce_pools()?;
+
         self.initialized.store(true, Ordering::Release);
         Ok(())
+    }
+
+    fn init_bounce_pools(&self) -> Result<(), VirtioNetError> {
+        // Pre-allocate 128 bounce buffers for TX and RX (4KB each)
+        let pool_size = 128;
+        let buffer_size = 4096;
+        let mut tx_pool = self.tx_bounce_pool.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rx_pool = self.rx_bounce_pool.lock().unwrap_or_else(|e| e.into_inner());
+
+        for _ in 0..pool_size {
+            let tx_buf = match self.iommu_device_id {
+                Some(dev) => CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev),
+                None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
+            }.ok_or(VirtioNetError::DeviceError)?;
+            tx_pool.push(tx_buf);
+
+            let rx_buf = match self.iommu_device_id {
+                Some(dev) => CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev),
+                None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
+            }.ok_or(VirtioNetError::DeviceError)?;
+            rx_pool.push(rx_buf);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn get_tx_bounce_buffer(&self, size: usize) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
+        let mut guard = self.tx_bounce_pool.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(buf) = guard.pop() {
+            if buf.size() >= size {
+                return Ok(buf);
+            }
+            guard.push(buf);
+        }
+        let alloc_size = core::cmp::max(size, 4096);
+        match self.iommu_device_id {
+            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO, &dev),
+            None => crate::io::dma::CoherentDmaBuffer::new(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO),
+        }.ok_or(VirtioNetError::DeviceError)
+    }
+
+    pub(crate) fn return_tx_bounce_buffer(&self, buffer: crate::io::dma::CoherentDmaBuffer) {
+        let mut guard = self.tx_bounce_pool.lock().unwrap_or_else(|e| e.into_inner());
+        guard.push(buffer);
+    }
+
+    pub(crate) fn get_rx_bounce_buffer(&self, size: usize) -> Result<crate::io::dma::CoherentDmaBuffer, VirtioNetError> {
+        let mut guard = self.rx_bounce_pool.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(buf) = guard.pop() {
+            if buf.size() >= size {
+                return Ok(buf);
+            }
+            guard.push(buf);
+        }
+        let alloc_size = core::cmp::max(size, 4096);
+        match self.iommu_device_id {
+            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO, &dev),
+            None => crate::io::dma::CoherentDmaBuffer::new(alloc_size, crate::io::dma::DmaMemoryAttributes::MMIO),
+        }.ok_or(VirtioNetError::DeviceError)
+    }
+
+    pub(crate) fn return_rx_bounce_buffer(&self, buffer: crate::io::dma::CoherentDmaBuffer) {
+        let mut guard = self.rx_bounce_pool.lock().unwrap_or_else(|e| e.into_inner());
+        guard.push(buffer);
     }
 
     /// VirtQueue を設定。`config.max_queues` に従いキューペアを並列構築する。
@@ -344,7 +418,7 @@ impl VirtioNetDevice {
         let (tx_headers, tx_header_dma_base) = if queue_index == 1 {
             let header_ptr = unsafe { ptr.add(layout.header_offset) as *mut VirtioNetHeader };
             let header_dma_base = dma_base + layout.header_offset as u64;
-            (Some(SendPtr::new(header_ptr)), Some(header_dma_base))
+            (Some(header_ptr), Some(header_dma_base))
         } else {
             (None, None)
         };
@@ -501,7 +575,7 @@ impl VirtioNetDevice {
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
         queue_size: u16,
-        tx_headers: Option<SendPtr<VirtioNetHeader>>,
+        tx_headers: Option<*mut VirtioNetHeader>,
     ) {
         for i in 0..queue_size {
             unsafe {
@@ -517,7 +591,7 @@ impl VirtioNetDevice {
         if let Some(header_ptr) = tx_headers {
             for i in 0..queue_size {
                 unsafe {
-                    *header_ptr.as_ptr().add(i as usize) = VirtioNetHeader::default();
+                    *header_ptr.add(i as usize) = VirtioNetHeader::default();
                 }
             }
         }

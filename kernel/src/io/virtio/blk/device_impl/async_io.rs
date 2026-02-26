@@ -29,13 +29,14 @@ pub(crate) fn poll_for_completion(
 ) -> Option<(u16, u32)> {
     let queue = &device.queues[queue_idx];
     let mut queue_guard = queue.lock();
-    while let Some((completed_id, len)) = queue_guard.poll_completions() {
+    let mut target = None;
+    queue_guard.poll_completions(|completed_id, len| {
         device.process_completion_entry(&queue_guard, queue_idx, completed_id, len);
         if completed_id == desc_id {
-            return Some((completed_id, len));
+            target = Some((completed_id, len));
         }
-    }
-    None
+    });
+    target
 }
 
 impl<'a> Future for ReadFuture<'a> {
@@ -180,12 +181,16 @@ impl<'a> Future for DmaReadFuture<'a> {
             let queue = &self.device.queues[self.queue_idx];
             let mut queue_guard = queue.lock();
 
-            while let Some((completed_id, len)) = queue_guard.poll_completions() {
+            let mut is_completed = false;
+            queue_guard.poll_completions(|completed_id, len| {
                 self.device
                     .process_completion_entry(&queue_guard, self.queue_idx, completed_id, len);
                 if completed_id == desc_id {
-                    return Poll::Ready(Ok(self.buf.len()));
+                    is_completed = true;
                 }
+            });
+            if is_completed {
+                return Poll::Ready(Ok(self.buf.len()));
             }
         }
 
@@ -232,12 +237,16 @@ impl<'a> Future for DmaWriteFuture<'a> {
             let queue = &self.device.queues[self.queue_idx];
             let mut queue_guard = queue.lock();
 
-            while let Some((completed_id, len)) = queue_guard.poll_completions() {
+            let mut is_completed = false;
+            queue_guard.poll_completions(|completed_id, len| {
                 self.device
                     .process_completion_entry(&queue_guard, self.queue_idx, completed_id, len);
                 if completed_id == desc_id {
-                    return Poll::Ready(Ok(self.buf.len()));
+                    is_completed = true;
                 }
+            });
+            if is_completed {
+                return Poll::Ready(Ok(self.buf.len()));
             }
         }
 

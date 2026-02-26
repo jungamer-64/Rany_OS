@@ -506,6 +506,7 @@ fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
 }
 
 pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
+    crate::io::log::early_print("[LDR] regdrv: begin\n");
     // Prefer DRIVER_EXPORTS when available
     let exports_addr = with_registry(|r| {
         let cell = r.get(cell_id)?;
@@ -516,9 +517,11 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     });
 
     if let Some(addr) = exports_addr {
+        crate::io::log::early_print("[LDR] regdrv: exports path\n");
         let exports_ptr = addr as *const DriverExportsV1;
         match register_exports_driver(exports_ptr) {
             Ok(handle) => {
+                crate::io::log::early_print("[LDR] regdrv: exports registered\n");
                 record_driver_handle(cell_id, handle);
                 return Ok(handle);
             }
@@ -554,6 +557,7 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
             ));
         }
     };
+    crate::io::log::early_print("[LDR] regdrv: abi path\n");
 
     // Cast address to function pointer
     let entry_fn: kernel_api::driver_abi::DriverEntryFn =
@@ -562,6 +566,7 @@ pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle,
     // Register with driver registry
     match register_abi_driver(entry_fn) {
         Ok(handle) => {
+            crate::io::log::early_print("[LDR] regdrv: abi registered\n");
             record_driver_handle(cell_id, handle);
             Ok(handle)
         }

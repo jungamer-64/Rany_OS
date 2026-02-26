@@ -485,11 +485,15 @@ extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
         Err(_) => return,
     };
 
+    // Avoid potential logger reentrancy/lock issues while DriverExports init runs
+    // during early DriverCell startup. Keep output visible via serial early logger.
     match level {
-        2 => log::error!("{}", msg),
-        1 => log::warn!("{}", msg),
-        _ => log::info!("{}", msg),
+        2 => crate::io::log::early_print("[KAPI][ERR] "),
+        1 => crate::io::log::early_print("[KAPI][WRN] "),
+        _ => crate::io::log::early_print("[KAPI][INF] "),
     }
+    crate::io::log::early_print(msg);
+    crate::io::log::early_print("\n");
 }
 
 extern "C" fn kapi_alloc_dma(size: usize, _align: usize, out: *mut AbiDmaBuffer) -> i32 {
@@ -594,7 +598,9 @@ fn build_abi_driver(
     exports_fini: Option<extern "C" fn() -> i32>,
 ) -> Result<Box<dyn Driver>, DriverError> {
     // Call the entry to get vtable pointer
+    crate::io::log::early_print("[DRIVER] build_abi_driver: entry()\n");
     let vtable_ptr = entry();
+    crate::io::log::early_print("[DRIVER] build_abi_driver: entry done\n");
     if vtable_ptr.is_null() {
         return Err(DriverError::InvalidState);
     }
@@ -610,9 +616,11 @@ fn build_abi_driver(
     let vtable = unsafe { &*vtable_ptr };
 
     // Validate ABI version
+    crate::io::log::early_print("[DRIVER] build_abi_driver: validate\n");
     if vtable.validate().is_err() {
         return Err(DriverError::InvalidState);
     }
+    crate::io::log::early_print("[DRIVER] build_abi_driver: validate done\n");
 
     // Read name
     let name_ptr = (vtable.name)();
@@ -623,6 +631,7 @@ fn build_abi_driver(
         let bytes = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
         alloc::string::String::from_utf8_lossy(bytes).into_owned()
     };
+    crate::io::log::early_print("[DRIVER] build_abi_driver: name done\n");
 
     // Build AbiDriver wrapper
     let abi_driver = Box::new(AbiDriver {
@@ -678,7 +687,9 @@ pub(crate) fn prepare_driver_exports(
 
     if call_init {
         if let Some(init) = exports_ref.init {
+            crate::io::log::early_print("[DRIVER] prepare_exports: init()\n");
             let res = init(kernel_api_v1() as *const KernelApiV1);
+            crate::io::log::early_print("[DRIVER] prepare_exports: init done\n");
             if !AbiErrorCode::from_raw(res).is_success() {
                 log::error!(
                     "[DRIVER] DriverExports init failed: code={}",

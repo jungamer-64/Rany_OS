@@ -145,9 +145,9 @@ impl PollHandler for VirtioBlkPollHandler {
         for q_idx in 0..queue_count {
             if let Some(queue_arc) = device.queue(q_idx) {
                 let mut queue_guard = queue_arc.lock();
-                while let Some((desc_id, len)) = queue_guard.poll_completions() {
+                queue_guard.poll_completions(|desc_id, len| {
                     raw_completions.push((q_idx, desc_id, len));
-                }
+                });
             }
         }
 

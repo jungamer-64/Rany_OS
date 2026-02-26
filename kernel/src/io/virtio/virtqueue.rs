@@ -186,8 +186,8 @@ impl VirtQueue {
         transport.notify_queue(self.index);
     }
 
-    /// Poll for completed requests
-    pub fn poll_completions(&mut self) -> Option<(u16, u32)> {
+    /// Poll for a single completed request
+    pub fn poll_completion(&mut self) -> Option<(u16, u32)> {
         let last_used = self.last_used_idx.load(Ordering::Acquire);
         core::sync::atomic::fence(Ordering::Acquire);
 
@@ -201,5 +201,31 @@ impl VirtQueue {
             .store(last_used.wrapping_add(1), Ordering::Release);
 
         Some((elem.id as u16, elem.len))
+    }
+
+    /// Poll for all completed requests in bulk
+    pub fn poll_completions<F>(&mut self, mut on_complete: F) -> usize
+    where
+        F: FnMut(u16, u32),
+    {
+        let last_used = self.last_used_idx.load(Ordering::Acquire);
+        core::sync::atomic::fence(Ordering::Acquire);
+
+        let used_idx = self.get_used_idx() as u32;
+        if last_used == used_idx {
+            return 0;
+        }
+
+        let mut count = 0;
+        let mut idx = last_used;
+        while idx != used_idx {
+            let elem = self.get_used_elem((idx % self.queue_size as u32) as u16);
+            on_complete(elem.id as u16, elem.len);
+            idx = idx.wrapping_add(1);
+            count += 1;
+        }
+
+        self.last_used_idx.store(idx, Ordering::Release);
+        count
     }
 }

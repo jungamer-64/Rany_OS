@@ -10,7 +10,7 @@ impl VirtioNetDevice {
             desc_idx: 0,
             dma_len: 0,
             dma_iova: None,
-            bounce_handle: None,
+            pool_bounce_buffer: None,
         }
     }
 
@@ -30,7 +30,7 @@ impl VirtioNetDevice {
             desc_idx: 0,
             dma_len: 0,
             dma_iova: None,
-            bounce_handle: None,
+            pool_bounce_buffer: None,
         }
     }
 

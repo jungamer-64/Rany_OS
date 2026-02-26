@@ -18,7 +18,7 @@ pub(crate) struct DmaPrepareResult {
     dma_addr: u64,
     mapped_iova: Option<u64>,
     mapped_len: usize,
-    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pool_bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
 }
 
 /// Fill a bounce buffer region for TX.
@@ -39,30 +39,25 @@ pub(crate) fn fill_bounce_tx(buf: &mut [u8], offset: usize, data: &[u8], total_l
 
 /// IOMMUバウンスバッファのTXマッピングを準備する
 pub(crate) fn prepare_iommu_bounce_tx(
-    device_id: Option<IommuDeviceId>,
+    device: &VirtioNetDevice,
     result: &mut DmaPrepareResult,
     page_offset: usize,
     can_map_page: bool,
     data: &[u8],
     total_len: usize,
 ) -> Result<(), VirtioNetError> {
-    let (alloc_len, offset) = if can_map_page {
-        (crate::mm::types::PAGE_SIZE_4K, page_offset)
+    let alloc_len = if can_map_page { crate::mm::types::PAGE_SIZE_4K } else { total_len };
+    let mut buffer = device.get_tx_bounce_buffer(alloc_len)?;
+    let slice = unsafe { buffer.as_mut_slice() };
+    if can_map_page {
+        fill_bounce_tx(slice, page_offset, data, total_len);
     } else {
-        (total_len, 0)
-    };
-    let mut rref = allocate_iommu_bounce_bytes(alloc_len).map_err(|err| match err {
-        IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
-        IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
-    })?;
-    fill_bounce_tx(&mut rref, offset, data, total_len);
-    let handle = match device_id {
-        Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice),
-        None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
+        fill_bounce_tx(slice, 0, data, total_len);
     }
-    .map_err(|_| VirtioNetError::DeviceError)?;
-    result.dma_addr = handle.iova() + if can_map_page { page_offset as u64 } else { 0 };
-    result.bounce_handle = Some(handle);
+    buffer.prepare_for_device();
+    
+    result.dma_addr = buffer.device_addr() + if can_map_page { page_offset as u64 } else { 0 };
+    result.pool_bounce_buffer = Some(buffer);
     if can_map_page {
         result.mapped_len = crate::mm::types::PAGE_SIZE_4K;
     }
@@ -73,7 +68,7 @@ pub(crate) fn prepare_iommu_bounce_tx(
 ///
 /// Handles IOMMU bounce buffer allocation + data copy + device mapping.
 pub(crate) fn prepare_dma_mapping_tx(
-    device_id: Option<IommuDeviceId>,
+    device: &VirtioNetDevice,
     phys_addr_val: u64,
     data: &[u8],
     total_len: usize,
@@ -87,11 +82,11 @@ pub(crate) fn prepare_dma_mapping_tx(
         dma_addr: phys_addr_val,
         mapped_iova: None,
         mapped_len: 0,
-        bounce_handle: None,
+        pool_bounce_buffer: None,
     };
 
     if is_iommu_enabled() {
-        prepare_iommu_bounce_tx(device_id, &mut result, page_offset, can_map_page, data, total_len)?;
+        prepare_iommu_bounce_tx(device, &mut result, page_offset, can_map_page, data, total_len)?;
     } else if is_iommu_required() {
         return Err(VirtioNetError::DeviceError);
     }
@@ -101,24 +96,17 @@ pub(crate) fn prepare_dma_mapping_tx(
 
 /// IOMMUバウンスバッファのRXマッピングを準備する
 pub(crate) fn prepare_iommu_bounce_rx(
-    device_id: Option<IommuDeviceId>,
+    device: &VirtioNetDevice,
     result: &mut DmaPrepareResult,
     page_offset: usize,
     can_map_page: bool,
     data_len: usize,
 ) -> Result<(), VirtioNetError> {
     let alloc_len = if can_map_page { crate::mm::types::PAGE_SIZE_4K } else { data_len };
-    let rref = allocate_iommu_bounce_bytes(alloc_len).map_err(|err| match err {
-        IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
-        IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
-    })?;
-    let handle = match device_id {
-        Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice),
-        None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice),
-    }
-    .map_err(|_| VirtioNetError::DeviceError)?;
-    result.dma_addr = handle.iova() + if can_map_page { page_offset as u64 } else { 0 };
-    result.bounce_handle = Some(handle);
+    let buffer = device.get_rx_bounce_buffer(alloc_len)?;
+    
+    result.dma_addr = buffer.device_addr() + if can_map_page { page_offset as u64 } else { 0 };
+    result.pool_bounce_buffer = Some(buffer);
     if can_map_page {
         result.mapped_len = crate::mm::types::PAGE_SIZE_4K;
     }
@@ -127,7 +115,7 @@ pub(crate) fn prepare_iommu_bounce_rx(
 
 /// Prepare a DMA mapping for an RX operation (no data copy needed).
 pub(crate) fn prepare_dma_mapping_rx(
-    device_id: Option<IommuDeviceId>,
+    device: &VirtioNetDevice,
     phys_addr_val: u64,
     data_len: usize,
 ) -> Result<DmaPrepareResult, VirtioNetError> {
@@ -140,11 +128,11 @@ pub(crate) fn prepare_dma_mapping_rx(
         dma_addr: phys_addr_val,
         mapped_iova: None,
         mapped_len: 0,
-        bounce_handle: None,
+        pool_bounce_buffer: None,
     };
 
     if is_iommu_enabled() {
-        prepare_iommu_bounce_rx(device_id, &mut result, page_offset, can_map_page, data_len)?;
+        prepare_iommu_bounce_rx(device, &mut result, page_offset, can_map_page, data_len)?;
     } else if is_iommu_required() {
         return Err(VirtioNetError::DeviceError);
     }
@@ -154,43 +142,42 @@ pub(crate) fn prepare_dma_mapping_rx(
 
 /// Clean up DMA resources (bounce handle and IOMMU mapping) on error.
 pub(crate) fn cleanup_dma_resources(
-    device_id: Option<IommuDeviceId>,
-    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    device: &VirtioNetDevice,
+    bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
     mapped_iova: Option<u64>,
     mapped_len: usize,
+    is_rx: bool,
 ) {
-    if let Some(handle) = bounce_handle {
-        if let Err(e) = handle.unmap() {
-            log::warn!("[VIRTIO-NET] failed to unmap bounce buffer: {:?}", e);
+    if let Some(buf) = bounce_buffer {
+        if is_rx {
+            device.return_rx_bounce_buffer(buf);
+        } else {
+            device.return_tx_bounce_buffer(buf);
         }
     }
     if let Some(iova) = mapped_iova {
-        unmap_iommu_addr(device_id, iova, mapped_len);
+        let _ = unmap_iommu_addr(device.iommu_device_id, iova, mapped_len);
     }
 }
 
 /// Unmap bounce handle and IOVA on TX/RX completion, returning error on failure.
 pub(crate) fn unmap_dma_on_completion(
-    device_id: Option<IommuDeviceId>,
-    bounce_handle: &mut Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    device: &VirtioNetDevice,
+    bounce_buffer: &mut Option<crate::io::dma::CoherentDmaBuffer>,
     dma_iova: &mut Option<u64>,
     dma_len: usize,
-) -> Result<Option<crate::ipc::RRef<[u8]>>, VirtioNetError> {
-    let rref = if let Some(handle) = bounce_handle.take() {
-        match handle.unmap() {
-            Ok(rref) => Some(rref),
-            Err(err) => {
-                log::warn!("[VIRTIO-NET] failed to unmap bounce buffer: {:?}", err);
-                return Err(VirtioNetError::DeviceError);
-            }
+    is_rx: bool,
+) {
+    if let Some(buf) = bounce_buffer.take() {
+        if is_rx {
+            device.return_rx_bounce_buffer(buf);
+        } else {
+            device.return_tx_bounce_buffer(buf);
         }
-    } else {
-        None
-    };
-    if let Some(iova) = dma_iova.take() {
-        unmap_iommu_addr(device_id, iova, dma_len);
     }
-    Ok(rref)
+    if let Some(iova) = dma_iova.take() {
+        let _ = unmap_iommu_addr(device.iommu_device_id, iova, dma_len);
+    }
 }
 
 // ============================================================================
@@ -206,7 +193,7 @@ pub struct SendFuture<'a> {
     pub(crate) desc_idx: u16,
     pub(crate) dma_len: usize,
     pub(crate) dma_iova: Option<u64>,
-    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) pool_bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
 }
 
 impl<'a> SendFuture<'a> {
@@ -221,11 +208,11 @@ impl<'a> SendFuture<'a> {
         let data_slice = unsafe { crate::util::raw_ptr_as_slice(data_ptr, data_len) };
 
         let mut prep = prepare_dma_mapping_tx(
-            self.device.iommu_device_id, phys_addr_val, data_slice, data_len,
+            self.device, phys_addr_val, data_slice, data_len,
         )?;
 
         if let Err(err) = check_device_dma_mask(self.device.iommu_device_id, prep.dma_addr, data_len) {
-            cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle.take(), prep.mapped_iova.take(), prep.mapped_len);
+            cleanup_dma_resources(self.device, prep.pool_bounce_buffer.take(), prep.mapped_iova.take(), prep.mapped_len, false);
             return Err(err);
         }
 
@@ -235,13 +222,13 @@ impl<'a> SendFuture<'a> {
                 self.desc_idx = desc_idx;
                 self.dma_iova = prep.mapped_iova;
                 self.dma_len = prep.mapped_len;
-                self.bounce_handle = prep.bounce_handle;
+                self.pool_bounce_buffer = prep.pool_bounce_buffer;
                 tx_queue.register_waker(cx.waker().clone());
                 tx_queue.notify();
                 Ok(())
             }
             Err(e) => {
-                cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
+                cleanup_dma_resources(self.device, prep.pool_bounce_buffer, prep.mapped_iova, prep.mapped_len, false);
                 Err(e)
             }
         }
@@ -266,7 +253,7 @@ impl<'a> Future for SendFuture<'a> {
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };
         if tx_queue.take_completion(this.desc_idx).is_some() {
-            unmap_dma_on_completion(this.device.iommu_device_id, &mut this.bounce_handle, &mut this.dma_iova, this.dma_len)?;
+            unmap_dma_on_completion(this.device, &mut this.pool_bounce_buffer, &mut this.dma_iova, this.dma_len, false);
             Poll::Ready(Ok(this.len))
         } else {
             tx_queue.register_waker(cx.waker().clone());
@@ -283,7 +270,7 @@ pub struct RecvFuture<'a> {
     pub(crate) desc_idx: u16,
     pub(crate) dma_len: usize,
     pub(crate) dma_iova: Option<u64>,
-    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) pool_bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
 }
 
 impl<'a> RecvFuture<'a> {
@@ -300,12 +287,12 @@ impl<'a> RecvFuture<'a> {
         let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(VirtAddr::new(self.buffer.as_ptr() as u64)).as_u64();
 
         let mut prep = prepare_dma_mapping_rx(
-            self.device.iommu_device_id, phys_addr_val, buffer_len,
+            self.device, phys_addr_val, buffer_len,
         )?;
 
-        if prep.bounce_handle.is_none() {
+        if prep.pool_bounce_buffer.is_none() {
             if let Err(err) = check_device_dma_mask(self.device.iommu_device_id, prep.dma_addr, buffer_len) {
-                cleanup_dma_resources(self.device.iommu_device_id, None, prep.mapped_iova.take(), prep.mapped_len);
+                cleanup_dma_resources(self.device, None, prep.mapped_iova.take(), prep.mapped_len, true);
                 return Err(err);
             }
         }
@@ -316,12 +303,12 @@ impl<'a> RecvFuture<'a> {
                 self.desc_idx = desc_idx;
                 self.dma_iova = prep.mapped_iova;
                 self.dma_len = prep.mapped_len;
-                self.bounce_handle = prep.bounce_handle;
+                self.pool_bounce_buffer = prep.pool_bounce_buffer;
                 rx_queue.register_waker(cx.waker().clone());
                 Ok(())
             }
             Err(e) => {
-                cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
+                cleanup_dma_resources(self.device, prep.pool_bounce_buffer, prep.mapped_iova, prep.mapped_len, true);
                 Err(e)
             }
         }
@@ -344,14 +331,12 @@ impl<'a> RecvFuture<'a> {
         let payload_cap = self.buffer.len().saturating_sub(VirtioNetHeader::SIZE);
         let payload_len = core::cmp::min(payload_len, payload_cap);
 
-        let rref = unmap_dma_on_completion(
-            self.device.iommu_device_id, &mut self.bounce_handle, &mut self.dma_iova, self.dma_len,
-        )?;
-
-        if let Some(rref) = rref {
+        if let Some(ref buf) = self.pool_bounce_buffer {
+            buf.finish_from_device();
             if payload_len > 0 {
+                let slice = unsafe { buf.as_slice() };
                 self.buffer[..payload_len].copy_from_slice(
-                    &rref[VirtioNetHeader::SIZE..(VirtioNetHeader::SIZE + payload_len)],
+                    &slice[VirtioNetHeader::SIZE..(VirtioNetHeader::SIZE + payload_len)],
                 );
             }
         } else if payload_len > 0 {
@@ -360,6 +345,10 @@ impl<'a> RecvFuture<'a> {
                 core::ptr::copy(buf_ptr.add(VirtioNetHeader::SIZE), buf_ptr, payload_len);
             }
         }
+        
+        unmap_dma_on_completion(
+            self.device, &mut self.pool_bounce_buffer, &mut self.dma_iova, self.dma_len, true
+        );
 
         Poll::Ready(Ok(payload_len))
     }
@@ -397,7 +386,7 @@ pub struct ZeroCopySendFuture<'a> {
     pub(crate) desc_idx: u16,
     pub(crate) dma_len: usize,
     pub(crate) dma_iova: Option<u64>,
-    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) pool_bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
 }
 
 impl<'a> Future for ZeroCopySendFuture<'a> {
@@ -418,7 +407,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
             None => return Poll::Ready(Err(VirtioNetError::NotInitialized)),
         };
         if tx_queue.take_completion(this.desc_idx).is_some() {
-            unmap_dma_on_completion(this.device.iommu_device_id, &mut this.bounce_handle, &mut this.dma_iova, this.dma_len)?;
+            unmap_dma_on_completion(this.device, &mut this.pool_bounce_buffer, &mut this.dma_iova, this.dma_len, false);
             let packet = this.packet.take();
             let len = packet.map(|p: crate::net::mempool::PacketRef| p.data().len()).unwrap_or(0);
             Poll::Ready(Ok(len))
@@ -441,11 +430,11 @@ impl<'a> ZeroCopySendFuture<'a> {
         let data_len = VirtioNetHeader::SIZE + data.len();
 
         let mut prep = prepare_dma_mapping_tx(
-            self.device.iommu_device_id, phys_addr_val, data, data_len,
+            self.device, phys_addr_val, data, data_len,
         )?;
 
         if let Err(err) = check_device_dma_mask(self.device.iommu_device_id, prep.dma_addr, data_len) {
-            cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle.take(), prep.mapped_iova.take(), prep.mapped_len);
+            cleanup_dma_resources(self.device, prep.pool_bounce_buffer.take(), prep.mapped_iova.take(), prep.mapped_len, false);
             return Err(err);
         }
 
@@ -455,12 +444,12 @@ impl<'a> ZeroCopySendFuture<'a> {
                 self.desc_idx = desc_idx;
                 self.dma_iova = prep.mapped_iova;
                 self.dma_len = prep.mapped_len;
-                self.bounce_handle = prep.bounce_handle;
+                self.pool_bounce_buffer = prep.pool_bounce_buffer;
                 tx_queue.register_waker(cx.waker().clone());
                 Ok(())
             }
             Err(e) => {
-                cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
+                cleanup_dma_resources(self.device, prep.pool_bounce_buffer, prep.mapped_iova, prep.mapped_len, false);
                 Err(e)
             }
         }
@@ -479,7 +468,7 @@ pub struct ZeroCopyRecvFuture<'a> {
     pub(crate) desc_idx: u16,
     pub(crate) dma_len: usize,
     pub(crate) dma_iova: Option<u64>,
-    pub(crate) bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
+    pub(crate) pool_bounce_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
 }
 
 impl<'a> ZeroCopyRecvFuture<'a> {
@@ -490,14 +479,14 @@ impl<'a> ZeroCopyRecvFuture<'a> {
         let buffer_len = packet.capacity();
 
         let mut prep = match prepare_dma_mapping_rx(
-            self.device.iommu_device_id, phys_addr_val, buffer_len,
+            self.device, phys_addr_val, buffer_len,
         ) {
             Ok(p) => p,
             Err(e) => return Poll::Ready(Err(e)),
         };
 
         if let Err(err) = check_device_dma_mask(self.device.iommu_device_id, prep.dma_addr, buffer_len) {
-            cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle.take(), prep.mapped_iova.take(), prep.mapped_len);
+            cleanup_dma_resources(self.device, prep.pool_bounce_buffer.take(), prep.mapped_iova.take(), prep.mapped_len, true);
             return Poll::Ready(Err(err));
         }
 
@@ -512,12 +501,12 @@ impl<'a> ZeroCopyRecvFuture<'a> {
                 self.desc_idx = desc_idx;
                 self.dma_iova = prep.mapped_iova;
                 self.dma_len = prep.mapped_len;
-                self.bounce_handle = prep.bounce_handle;
+                self.pool_bounce_buffer = prep.pool_bounce_buffer;
                 rx_queue.register_waker(cx.waker().clone());
                 Poll::Pending
             }
             Err(e) => {
-                cleanup_dma_resources(self.device.iommu_device_id, prep.bounce_handle, prep.mapped_iova, prep.mapped_len);
+                cleanup_dma_resources(self.device, prep.pool_bounce_buffer, prep.mapped_iova, prep.mapped_len, true);
                 Poll::Ready(Err(e))
             }
         }
@@ -525,18 +514,22 @@ impl<'a> ZeroCopyRecvFuture<'a> {
 
     /// Finalize a completed RX packet: unmap DMA and copy bounce if needed.
     pub(super) fn finalize_packet(&mut self, len: u32) -> Result<PacketRef, VirtioNetError> {
-        let rref = unmap_dma_on_completion(
-            self.device.iommu_device_id, &mut self.bounce_handle, &mut self.dma_iova, self.dma_len,
-        )?;
-
         let mut packet = self.packet.take().ok_or(VirtioNetError::BufferTooSmall)?;
         let copy_len = core::cmp::min(len as usize, packet.capacity() as usize);
-        if let Some(rref) = rref {
+        
+        if let Some(ref buf) = self.pool_bounce_buffer {
+            buf.finish_from_device();
+            let slice = unsafe { buf.as_slice() };
             packet.set_len(copy_len);
-            packet.data_mut()[..copy_len].copy_from_slice(&rref[..copy_len]);
+            packet.data_mut()[..copy_len].copy_from_slice(&slice[..copy_len]);
         } else {
             packet.set_len(copy_len);
         }
+        
+        unmap_dma_on_completion(
+            self.device, &mut self.pool_bounce_buffer, &mut self.dma_iova, self.dma_len, true
+        );
+
         packet.advance(VirtioNetHeader::SIZE);
         Ok(packet)
     }

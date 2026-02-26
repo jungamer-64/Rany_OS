@@ -407,23 +407,23 @@ impl VirtioBalloonDevice {
             // Process inflate queue completions
             if let Some(ref queue) = self.inflate_queue {
                 let mut queue_guard = queue.lock();
-                while let Some((desc_id, _len)) = queue_guard.poll_completions() {
+                queue_guard.poll_completions(|desc_id, _len| {
                     // Free the inflight DMA buffer
                     self.inflight_buffers.lock().remove(&desc_id);
                     // Free descriptor
                     queue_guard.free_desc(desc_id);
-                }
+                });
             }
 
             // Process deflate queue completions
             if let Some(ref queue) = self.deflate_queue {
                 let mut queue_guard = queue.lock();
-                while let Some((desc_id, _len)) = queue_guard.poll_completions() {
+                queue_guard.poll_completions(|desc_id, _len| {
                     // Free the inflight DMA buffer
                     self.inflight_buffers.lock().remove(&desc_id);
                     // Free descriptor
                     queue_guard.free_desc(desc_id);
-                }
+                });
             }
         }
     }

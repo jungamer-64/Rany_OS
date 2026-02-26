@@ -274,6 +274,7 @@ pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
     })?;
 
     // ドライバをCellから登録
+    crate::io::log::early_print("[DCELL] start: register_driver_from_cell begin\n");
     let handle = match crate::loader::register_driver_from_cell(cell_id) {
         Ok(h) => h,
         Err(e) => {
@@ -284,9 +285,11 @@ pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
             return Err(DriverCellError::DriverInitFailed(msg));
         }
     };
+    crate::io::log::early_print("[DCELL] start: register_driver_from_cell done\n");
 
     // ドライバをprobe + start
     let registry = crate::driver_registry::driver_registry();
+    crate::io::log::early_print("[DCELL] start: probe_and_start begin\n");
     if let Err(e) = registry.probe_and_start(handle) {
         let msg = format!("{}", e);
         manager.with_cell_mut(id, |cell| {
@@ -294,11 +297,14 @@ pub fn start(id: DriverCellId) -> Result<Vec<DriverHandle>, DriverCellError> {
         }).ok();
         return Err(DriverCellError::DriverInitFailed(msg));
     }
+    crate::io::log::early_print("[DCELL] start: probe_and_start done\n");
 
     // DomainをRunning状態に
     let domain_id = manager.with_cell(id, |cell| cell.domain_id)?;
     if let Some(did) = domain_id {
+        crate::io::log::early_print("[DCELL] start: domain start begin\n");
         crate::domain_system::start_domain(did).ok();
+        crate::io::log::early_print("[DCELL] start: domain start done\n");
     }
 
     // DriverCellをRunning状態に
