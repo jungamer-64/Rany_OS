@@ -509,7 +509,7 @@ impl AmdIommuDriver {
         let mut irt = irt_lock.lock().map_err(|_| IommuError::Poisoned)?;
         let handle = irt.table.allocate()?;
 
-        let irte = irt::AmdIrte::fixed(vector, dest_id, logical);
+        let irte = irt::AmdIrte::fixed(vector, dest_id, logical, Some(devid));
         if let Err(e) = irt.table.set_entry(handle, irte) {
             let _ = irt.table.free(handle);
             return Err(e);

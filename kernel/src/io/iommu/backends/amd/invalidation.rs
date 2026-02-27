@@ -402,13 +402,10 @@ impl AmdIommuDriver {
 
     /// Invalidate all pages in a domain.
     fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
+        let epoch = self.iova_allocator.advance_epoch();
         for (idx, _unit) in self.units.iter().enumerate() {
             if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
                 // Use invalidate_iommu_pages with size = u64::MAX to invalidate all pages
-                // domain_id: target domain
-                // address: 0 (start from beginning)
-                // size: u64::MAX (entire address space)
-                // pasid: None (no PASID)
                 let command = cmd::AmdCommand::invalidate_iommu_pages(
                     domain_id,
                     0,         // address
@@ -420,6 +417,7 @@ impl AmdIommuDriver {
                 }
             }
         }
+        self.iova_allocator.complete_epoch(epoch);
         Ok(())
     }
 
@@ -429,6 +427,9 @@ impl AmdIommuDriver {
             Ok(device_domains) => device_domains.keys().map(|d| d.bdf()).collect(),
             Err(_) => return Err(IommuError::Poisoned),
         };
+
+        // Advance epoch before global invalidation
+        let epoch = self.iova_allocator.advance_epoch();
 
         for (idx, _unit) in self.units.iter().enumerate() {
             if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
@@ -451,6 +452,56 @@ impl AmdIommuDriver {
                 }
             }
         }
+
+        // Complete epoch after hardware confirmation
+        self.iova_allocator.complete_epoch(epoch);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IommuInvalidator implementation for AmdIommuDriver
+// ---------------------------------------------------------------------------
+
+use crate::io::iommu::core::domain::{IommuInvalidator, InvalidateKind, InvalidateRequest, InvalidateFlags};
+
+impl IommuInvalidator for AmdIommuDriver {
+    fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        // Advance epoch before invalidation
+        let epoch = self.iova_allocator.advance_epoch();
+
+        for req in requests {
+            match req.kind {
+                InvalidateKind::Pages { start_iova, bytes } => {
+                    // AMD-Vi invalidate_domain_pages iterates over all units
+                    self.invalidate_domain_pages(req.domain_id, start_iova, bytes)?;
+                }
+                InvalidateKind::Domain => {
+                    self.invalidate_domain_all(req.domain_id)?;
+                }
+                InvalidateKind::Global => {
+                    self.invalidate_all_entries()?;
+                }
+                InvalidateKind::Context { source_id } => {
+                    let device = Self::device_id_from_devid(0, source_id);
+                    self.invalidate_device_entry(device)?;
+                }
+                _ => {
+                    // IEC, PasidIotlb, etc. are not yet fully supported on AMD backend
+                    // Fall back to global flush for safety if requested and unsupported
+                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                         self.invalidate_all_entries()?;
+                    }
+                }
+            }
+        }
+
+        // Complete epoch after hardware confirmation
+        self.iova_allocator.complete_epoch(epoch);
         Ok(())
     }
 }

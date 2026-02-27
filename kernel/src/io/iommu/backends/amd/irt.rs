@@ -30,7 +30,11 @@ const IRTE_INT_TYPE_MASK: u64 = 0x07 << IRTE_INT_TYPE_SHIFT;
 const IRTE_VECTOR_SHIFT: u32 = 8; // bits [15:8]: Vector
 #[allow(dead_code)]
 const IRTE_VECTOR_MASK: u64 = 0xFF << IRTE_VECTOR_SHIFT;
+const IRTE_SVT_SHIFT: u32 = 16;   // bits [18:16]: Source Validation Type (SVT)
+const IRTE_SQ_SHIFT: u32 = 19;    // bits [20:19]: Source Quantifier (SQ)
 const IRTE_DESTINATION_SHIFT: u32 = 32; // bits [63:32]: Destination (APIC ID)
+
+const IRTE_SID_SHIFT: u32 = 16;   // bits [31:16] of HI: Source Device ID (SID)
 
 /// AMD-Vi IRT size encoding for the table base register.
 /// Stored in bits [3:0] of the IRT Base Address register.
@@ -64,7 +68,8 @@ impl AmdIrte {
     /// `vector`: interrupt vector (0-255).
     /// `dest_id`: APIC destination ID.
     /// `logical`: true for logical destination mode.
-    pub fn fixed(vector: u8, dest_id: u32, logical: bool) -> Self {
+    /// `sid`: optional source device ID (BDF) for validation.
+    pub fn fixed(vector: u8, dest_id: u32, logical: bool, sid: Option<u16>) -> Self {
         let mut lo: u64 = IRTE_REMAP_EN;
         if logical {
             lo |= IRTE_DM_LOGICAL;
@@ -72,7 +77,16 @@ impl AmdIrte {
         // IntType = 0b000 (Fixed) — already zero.
         lo |= (vector as u64) << IRTE_VECTOR_SHIFT;
         lo |= (dest_id as u64) << IRTE_DESTINATION_SHIFT;
-        Self { lo, hi: 0 }
+
+        let mut hi: u64 = 0;
+        if let Some(devid) = sid {
+            // SVT=1 (Exclusive: exact match of BDF)
+            lo |= 1u64 << IRTE_SVT_SHIFT;
+            // SQ=0 (Exact match) - bits 20:19 are already 0
+            hi |= (devid as u64) << IRTE_SID_SHIFT;
+        }
+
+        Self { lo, hi }
     }
 
     /// Build an IRTE with specified delivery mode.
@@ -81,8 +95,9 @@ impl AmdIrte {
         dest_id: u32,
         logical: bool,
         delivery_mode: u8,
+        sid: Option<u16>,
     ) -> Self {
-        let mut entry = Self::fixed(vector, dest_id, logical);
+        let mut entry = Self::fixed(vector, dest_id, logical, sid);
         entry.lo &= !IRTE_INT_TYPE_MASK;
         entry.lo |= ((delivery_mode as u64) & 0x07) << IRTE_INT_TYPE_SHIFT;
         entry

@@ -470,15 +470,36 @@ impl IommuController {
     /// Used for emergency device isolation.
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
-        if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_iotlb_global()?;
-            self.qi_wait_sync()
+        
+        // Advance epoch before global invalidation
+        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
+            guard.as_ref().map(|a| a.advance_epoch())
+        } else {
+            None
+        };
+
+        let res = if self.is_queued_invalidation_enabled() {
+            let res = self.qi_invalidate_iotlb_global();
+            if res.is_ok() {
+                let _ = self.qi_wait_sync();
+            }
+            res
         } else {
             unsafe {
                 self.invalidate_iotlb_global();
             }
             Ok(())
+        };
+
+        // Complete epoch after hardware confirmation
+        if let Some(e) = epoch {
+            if let Ok(guard) = self.iova_allocator.lock() {
+                if let Some(alloc) = guard.as_ref() {
+                    alloc.complete_epoch(e);
+                }
+            }
         }
+        res
     }
 
     /// Invalidate context cache globally (synchronous).
@@ -486,16 +507,37 @@ impl IommuController {
     /// Used for emergency device isolation.
     pub fn invalidate_context_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
-        if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_context_global()?;
-            self.qi_wait_sync()
+
+        // Advance epoch
+        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
+            guard.as_ref().map(|a| a.advance_epoch())
+        } else {
+            None
+        };
+
+        let res = if self.is_queued_invalidation_enabled() {
+            let res = self.qi_invalidate_context_global();
+            if res.is_ok() {
+                let _ = self.qi_wait_sync();
+            }
+            res
         } else {
             // Register-based context invalidation
             unsafe {
                 self.invalidate_context_global_direct();
             }
             Ok(())
+        };
+
+        // Complete epoch
+        if let Some(e) = epoch {
+            if let Ok(guard) = self.iova_allocator.lock() {
+                if let Some(alloc) = guard.as_ref() {
+                    alloc.complete_epoch(e);
+                }
+            }
         }
+        res
     }
 
     /// Register-based global context cache invalidation.

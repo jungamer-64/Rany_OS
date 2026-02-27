@@ -855,7 +855,7 @@ use super::cmd::AmdCommand;
 
 /// Verify AmdIrte bit layout: RemapEn, vector, destination, DM.
 pub fn wave5_irt_entry_construction_smoke() -> bool {
-    let irte = AmdIrte::fixed(0x42, 0x0A, false);
+    let irte = AmdIrte::fixed(0x42, 0x0A, false, None);
     if !irte.is_present() {
         return false;
     }
@@ -869,7 +869,7 @@ pub fn wave5_irt_entry_construction_smoke() -> bool {
         return false;
     }
 
-    let irte_logical = AmdIrte::fixed(0xFF, 0xDEAD, true);
+    let irte_logical = AmdIrte::fixed(0xFF, 0xDEAD, true, None);
     if !irte_logical.is_logical() {
         return false;
     }
@@ -911,7 +911,7 @@ pub fn wave5_irt_alloc_free_smoke() -> bool {
     }
 
     // Write entries
-    let irte = AmdIrte::fixed(0x30, 1, false);
+    let irte = AmdIrte::fixed(0x30, 1, false, None);
     if irt.set_entry(h0, irte).is_err() {
         return false;
     }

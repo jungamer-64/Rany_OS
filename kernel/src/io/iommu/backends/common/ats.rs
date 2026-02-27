@@ -9,6 +9,9 @@
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU64;
 
+// Convenience wrappers for contiguous frame allocation
+use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
+
 // ============================================================================
 // Posted Interrupt Descriptor (PID)
 // ============================================================================
@@ -76,8 +79,8 @@ impl PostedInterruptPool {
         let num_pages = (total_bytes + 4095) / 4096;
 
         // Allocate contiguous physical frames for hardware requirements
-        let frames = crate::mm::phys::frame_allocator::alloc_frames(num_pages, None)?;
-        let phys = frames.start_address().as_u64();
+        let phys = alloc_contiguous_frames(num_pages)?
+            .as_u64();
         let base = crate::io::iommu::core::tables::phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
@@ -150,13 +153,8 @@ impl Drop for PostedInterruptPool {
         if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
             
-            use x86_64::structures::paging::{PhysFrame, Size4KiB};
-            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(phys));
-            let frames = x86_64::structures::paging::frame::PhysFrameRange {
-                start: frame,
-                end: frame + num_pages as u64,
-            };
-            crate::mm::phys::frame_allocator::dealloc_frames(frames);
+            // Free the contiguous region
+            dealloc_contiguous_frames(x86_64::PhysAddr::new(phys), num_pages);
         }
     }
 }
@@ -251,8 +249,8 @@ impl PageRequestQueue {
         let num_pages = (total_bytes + 4095) / 4096;
 
         // Allocate contiguous physical frames for hardware requirements
-        let frames = crate::mm::phys::frame_allocator::alloc_frames(num_pages, None)?;
-        let phys = frames.start_address().as_u64();
+        let phys = alloc_contiguous_frames(num_pages)?
+            .as_u64();
         let base = crate::io::iommu::core::tables::phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
@@ -312,13 +310,8 @@ impl Drop for PageRequestQueue {
         if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
 
-            use x86_64::structures::paging::{PhysFrame, Size4KiB};
-            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(phys));
-            let frames = x86_64::structures::paging::frame::PhysFrameRange {
-                start: frame,
-                end: frame + num_pages as u64,
-            };
-            crate::mm::phys::frame_allocator::dealloc_frames(frames);
+            // free contiguous region
+            dealloc_contiguous_frames(x86_64::PhysAddr::new(phys), num_pages);
         }
     }
 }

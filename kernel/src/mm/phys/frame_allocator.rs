@@ -88,8 +88,17 @@ impl BitmapFrameAllocator {
 
         // 使用可能な領域を空きとしてマーク
         for &(start, size) in usable_regions {
-            let start_frame = FrameIndex::from_phys_addr(start.as_u64());
-            let end_frame = FrameIndex::from_phys_addr(start.as_u64().saturating_add(size));
+            // 脆弱性修正: ページ境界にアライン。開始は切り上げ、終了は切り下げ。
+            // これにより、部分的に予約されているページが空きとしてマークされるのを防ぐ。
+            let start_addr = (start.as_u64() + PAGE_SIZE_4K as u64 - 1) & !(PAGE_SIZE_4K as u64 - 1);
+            let end_addr = (start.as_u64() + size) & !(PAGE_SIZE_4K as u64 - 1);
+            
+            if start_addr >= end_addr {
+                continue;
+            }
+
+            let start_frame = FrameIndex::from_phys_addr(start_addr);
+            let end_frame = FrameIndex::from_phys_addr(end_addr);
 
             for frame_idx in start_frame.as_usize()..end_frame.as_usize() {
                 if frame_idx < MAX_4K_FRAMES {

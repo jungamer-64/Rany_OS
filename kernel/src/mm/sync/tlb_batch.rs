@@ -606,10 +606,12 @@ fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, page
         core::hint::spin_loop();
         spin_count += 1;
         if spin_count > 100_000_000 {
-            // タイムアウト
-            log::warn!("[TLB] Flush IPI timeout (target={}, done={})", 
+            // タイムアウト - メモリ安全性を確保するため、継続せずにパニック
+            // TLBシュートダウンのタイムアウトは、他CPUがハングしているか、
+            // 重大なデッドロックが発生していることを示し、無視するとデータ破損や
+            // Use-After-Free 脆弱性の原因となる。
+            panic!("[TLB] Fatal: Flush IPI timeout (target={}, done={}). System state inconsistent.", 
                 target_count, TLB_FLUSH_DONE_COUNT.load(Ordering::Relaxed));
-            break;
         }
     }
 }
@@ -811,6 +813,8 @@ const ASID_LRU_CAPACITY: usize = 256;
 pub struct AsidLruManager {
     /// ASIDエントリ配列
     entries: [AsidLruEntry; ASID_LRU_CAPACITY],
+    /// 排他制御用ロック（スピンロック）
+    lock: AtomicBool,
     /// 次の検索開始位置
     search_hint: AtomicU16,
     /// 統計: LRU再利用回数
@@ -824,6 +828,7 @@ impl AsidLruManager {
         const EMPTY: AsidLruEntry = AsidLruEntry::new();
         Self {
             entries: [EMPTY; ASID_LRU_CAPACITY],
+            lock: AtomicBool::new(false),
             search_hint: AtomicU16::new(1),
             lru_reuses: AtomicU64::new(0),
             free_slot_uses: AtomicU64::new(0),
@@ -835,6 +840,11 @@ impl AsidLruManager {
     /// 1. 空きスロットを優先使用
     /// 2. 空きがなければLRU（最も古いエントリ）を再利用
     pub fn allocate(&self, process_id: u64) -> u16 {
+        // 脆弱性修正: アトミックな割り当てを保証するためにロックを取得
+        while self.lock.swap(true, Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+
         let hint = self.search_hint.load(Ordering::Relaxed) as usize;
         
         // 第1パス: 空きスロットを検索
@@ -847,6 +857,8 @@ impl AsidLruManager {
                 entry.assign(process_id);
                 self.search_hint.store((idx as u16).wrapping_add(1), Ordering::Relaxed);
                 self.free_slot_uses.fetch_add(1, Ordering::Relaxed);
+                
+                self.lock.store(false, Ordering::Release);
                 return idx as u16;
             }
         }
@@ -870,6 +882,7 @@ impl AsidLruManager {
         self.search_hint.store((oldest_idx as u16).wrapping_add(1), Ordering::Relaxed);
         self.lru_reuses.fetch_add(1, Ordering::Relaxed);
         
+        self.lock.store(false, Ordering::Release);
         oldest_idx as u16
     }
     
@@ -1429,6 +1442,8 @@ pub struct IplFreeFlushQueue {
     pending: [AtomicU64; 4], // [start_addr, page_count_and_asid, epoch, flags]
     /// キューが有効か
     valid: AtomicBool,
+    /// 排他制御用ロック（スピンロック）
+    lock: AtomicBool,
     /// 統計: IPL-Freeフラッシュ回数
     ipl_free_count: AtomicU64,
     /// 統計: ポーリングでの実行回数
@@ -1441,6 +1456,7 @@ impl IplFreeFlushQueue {
         Self {
             pending: [INIT; 4],
             valid: AtomicBool::new(false),
+            lock: AtomicBool::new(false),
             ipl_free_count: AtomicU64::new(0),
             poll_executed: AtomicU64::new(0),
         }
@@ -1452,6 +1468,11 @@ impl IplFreeFlushQueue {
     /// 成功した場合は `true`
     #[inline]
     pub fn enqueue(&self, request: &IplFreeTlbRequest) -> bool {
+        // ロックを取得してアトミックに書き込み
+        while self.lock.swap(true, Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+
         // すでに有効なリクエストがある場合は既存をマージ
         // 簡略化のため、最新のリクエストで上書き
         self.pending[0].store(request.start_addr, Ordering::Relaxed);
@@ -1466,6 +1487,9 @@ impl IplFreeFlushQueue {
         
         self.valid.store(true, Ordering::Release);
         self.ipl_free_count.fetch_add(1, Ordering::Relaxed);
+        
+        // ロックを解放
+        self.lock.store(false, Ordering::Release);
         true
     }
     

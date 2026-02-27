@@ -407,7 +407,7 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode, current_r
             // MemoryRegion相当の情報を渡す必要があるため、handle_file_fault を修正して VmaInfo を受け取るようにする
             return handle_file_fault_info(fault_addr, &vma);
         } else {
-            return handle_demand_paging(fault_addr, error);
+            return handle_demand_paging(fault_addr, error, vma.flags);
         }
     }
     
@@ -571,7 +571,7 @@ fn handle_vma_fault(
         if vma.is_file_backed() {
             return handle_file_fault(fault_addr, vma);
         } else {
-            return handle_demand_paging(fault_addr, error);
+            return handle_demand_paging(fault_addr, error, vma.flags);
         }
     }
     
@@ -591,7 +591,11 @@ fn handle_vma_fault(
 /// Demand Paging フォルトハンドラ
 ///
 /// 初回アクセス時にページを割り当て、ゼロクリアしてマッピングする。
-fn handle_demand_paging(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultResult {
+fn handle_demand_paging(
+    fault_addr: VirtAddr,
+    _error: PageFaultErrorCode,
+    vma_flags: u32,
+) -> FaultResult {
     FAULT_STATS.demand_paging.fetch_add(1, Ordering::Relaxed);
 
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
@@ -608,7 +612,12 @@ fn handle_demand_paging(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> Fau
     // ゼロクリア
     zero_page(setup.frame_phys);
 
-    let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
+    let mut base_flags = PageFlags::PRESENT | PageFlags::USER;
+    if (vma_flags & VmaFlags::Write as u32) != 0 {
+        base_flags |= PageFlags::WRITABLE;
+    }
+    let flags = PageFlags::new(base_flags);
+
     match unsafe { setup.map_and_track(page_addr, flags, LruPageType::Anonymous) } {
         Ok(()) => FaultResult::DemandPaged,
         Err(MapError::AlreadyMapped) => FaultResult::Resolved,
@@ -706,7 +715,11 @@ fn handle_stack_growth(fault_addr: VirtAddr, error: PageFaultErrorCode) -> Fault
     }
 
     // 後続処理は Demand Paging と共通化してリークや不整合を防止
-    handle_demand_paging(fault_addr, error)
+    handle_demand_paging(
+        fault_addr,
+        error,
+        VmaFlags::Read as u32 | VmaFlags::Write as u32,
+    )
 }
 
 // ============================================================================

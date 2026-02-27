@@ -363,17 +363,35 @@ impl IommuDomain {
         // Page-align the size (round up)
         let aligned_size = (size + 4095) & !4095;
 
+        // 1. Monitor page table releases to detect if paging-structure caches need clearing
+        let pts_before = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+
         // Unmap from page tables
         if let Err(e) = self.unmap(iova) {
             return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
         }
 
-        // Invalidate IOTLB
-        let req = InvalidateRequest::pages(self.id, iova, aligned_size).with_ats();
+        let pts_after = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pt_removed = pts_after > pts_before;
+
+        // 2. Invalidate IOTLB
+        let mut req = InvalidateRequest::pages(self.id, iova, aligned_size).with_ats();
+        if pt_removed {
+            // SECURITY: If a page table was removed, we MUST perform a domain-selective
+            // invalidation to clear cached paging-structure entries (Level 2/3/4 caches).
+            // Page-selective invalidation is NOT sufficient for clearing intermediate caches.
+            req = InvalidateRequest::domain(self.id).with_ats();
+        }
+
         if let Err(e) = invalidator.invalidate(req) {
             // IOTLB invalidation failed - this is critical!
             // We can't return the RRef because device may still access it
             return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
+        }
+
+        // 3. If we performed a domain-selective flush, it is safe to release the PTs now
+        if pt_removed {
+            let _ = self.flush(invalidator, context);
         }
 
         // Free IOVA back to domain's per-domain allocator
@@ -426,17 +444,33 @@ impl IommuDomain {
         // Page-align the size (round up)
         let aligned_size = (size + 4095) & !4095;
 
+        // 1. Monitor page table releases
+        let pts_before = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+
         // Unmap from page tables (sync)
         if let Err(e) = self.unmap(iova) {
             return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
         }
 
-        // Invalidate IOTLB asynchronously
-        let req = InvalidateRequest::pages(domain_id, iova, aligned_size).with_ats();
+        let pts_after = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pt_removed = pts_after > pts_before;
+
+        // 2. Invalidate IOTLB asynchronously
+        let mut req = InvalidateRequest::pages(domain_id, iova, aligned_size).with_ats();
+        if pt_removed {
+            // SECURITY: Clear paging-structure entries
+            req = InvalidateRequest::domain(domain_id).with_ats();
+        }
+
         if let Err(e) = invalidator.invalidate_async(req).await {
             // IOTLB invalidation failed - critical!
             // We can't return the RRef because device may still access it
             return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
+        }
+
+        // 3. Cleanup released PTs after confirmed invalidation
+        if pt_removed {
+            let _ = self.flush(invalidator, context);
         }
 
         // Free IOVA back to domain's per-domain allocator
