@@ -15,7 +15,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use crate::sync::IrqMutex;
+use crate::sync::IrqPoisonLock;
 use crate::mm::phys::fast_allocator::{FastBitmapAllocator, PageGranularity};
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
@@ -50,6 +50,7 @@ const BITMAP_WORDS: usize = MAX_4K_FRAMES / 64;
 ///
 /// 注意: 構造体全体がFRAME_ALLOCATOR: Mutex<BitmapFrameAllocator>で保護されるため、
 /// 内部フィールドにAtomicは不要。通常のu64を使用する。
+#[derive(Debug)]
 pub struct BitmapFrameAllocator {
     /// ビットマップ（1 = 使用中, 0 = 空き）
     bitmap: [u64; BITMAP_WORDS],
@@ -160,7 +161,7 @@ impl BitmapFrameAllocator {
 
                 // Mutexで保護されているので通常のビット操作でOK
                 self.bitmap[word_idx] |= 1u64 << bit_idx;
-                self.free_frames -= 1;
+                self.free_frames = self.free_frames.saturating_sub(1);
                 self.next_free_hint = frame.as_usize() as u64 + 1;
 
                 let addr = PhysAddr::new(frame.to_phys_addr());
@@ -206,7 +207,7 @@ impl BitmapFrameAllocator {
                 for i in 0..frame_count {
                     self.mark_frame_used(FrameIndex::new(aligned_start + i));
                 }
-                self.free_frames -= frame_count as u64;
+                self.free_frames = self.free_frames.saturating_sub(frame_count as u64);
 
                 let start_frame = FrameIndex::new(aligned_start);
                 return Some(PhysAddr::new(start_frame.to_phys_addr()));
@@ -529,6 +530,7 @@ fn build_pmm_from_regions(usable_regions: &[(PhysAddr, u64)]) -> Option<PmmAlloc
 
 /// NUMA対応フレームアロケータ
 /// 各NUMAノードごとに独立したビットマップアロケータを持つ
+#[derive(Debug)]
 pub struct NumaFrameAllocator {
     /// 各NUMAノードのアロケータ
     node_allocators: [BitmapFrameAllocator; MAX_NUMA_NODES],

@@ -652,6 +652,9 @@ impl IommuDomain {
             return Err(IommuError::InvalidAddress);
         }
 
+        // SECURITY: Even privileged mappings MUST NOT overlap with critical system memory (kernel)
+        crate::io::iommu::runtime::security::validate_critical_dma_region(phys, size)?;
+
         self.map_internal(iova, phys, size, read, write)
     }
 

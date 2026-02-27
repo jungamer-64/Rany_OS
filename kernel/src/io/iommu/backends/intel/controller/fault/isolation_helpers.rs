@@ -1,4 +1,5 @@
 use super::*;
+use crate::io::iommu::core::types::DeviceId;
 
 
 // ============================================================================
@@ -140,8 +141,9 @@ impl IommuController {
         use crate::io::iommu::runtime::security::SecurityEvent;
 
         // Intel VT-d: After modifying context entry, must invalidate caches
-        // 1. Context Cache Invalidation (global - device-specific requires QI descriptor)
-        // 2. IOTLB Invalidation (domain-specific or global)
+        // 1. Context Cache Invalidation
+        // 2. IOTLB Invalidation
+        // 3. Device-TLB (ATS) Invalidation
         unsafe {
             let use_device_scope = self.is_queued_invalidation_enabled()
                 && (self.ecap & ecap_bits::ECAP_DT != 0)
@@ -158,16 +160,40 @@ impl IommuController {
                 });
             } else {
                 // Global context cache invalidation
-                self.qi_invalidate_context_global().unwrap_or_else(|e| {
-                    log::warn!("[IOMMU] Context invalidation failed: {:?}", e)
-                });
+                if self.is_queued_invalidation_enabled() {
+                    self.qi_invalidate_context_global().unwrap_or_else(|e| {
+                        log::warn!("[IOMMU] Context invalidation failed: {:?}", e)
+                    });
+                } else {
+                    self.invalidate_context_global_direct();
+                }
+            }
+
+            // Sync context invalidation before IOTLB
+            if self.is_queued_invalidation_enabled() {
+                let _ = self.qi_wait_sync();
             }
 
             // IOTLB invalidation: prefer domain-specific if we have domain_id
             if let Some(did) = isolated_domain_id {
                 self.invalidate_iotlb(did);
             } else {
-                self.invalidate_iotlb_global();
+                let _ = self.invalidate_iotlb_global_sync();
+            }
+
+            // 3. Device-TLB (ATS) Invalidation
+            // If the device has ATS enabled, we MUST flush its internal TLB
+            // Convert the requester ID (bus<<8 | devfn) back into a DeviceId.
+            let device_id = DeviceId::from_bus_devfn(
+                self.segment,
+                ((sid >> 8) & 0xff) as u8,
+                (sid & 0xff) as u8,
+            );
+            if self.is_ats_enabled(&device_id) {
+                if self.is_queued_invalidation_enabled() {
+                    let _ = self.qi_invalidate_device_tlb_all(sid);
+                    let _ = self.qi_wait_sync();
+                }
             }
         }
 

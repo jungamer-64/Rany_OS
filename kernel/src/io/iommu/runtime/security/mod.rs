@@ -186,6 +186,24 @@ pub fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> boo
     a_start < b_end && b_start < a_end
 }
 
+/// Validate that a DMA region does not overlap with critical system memory (kernel image).
+///
+/// This is used for privileged mappings like RMRR that are allowed to overlap
+/// with normal "protected" BIOS regions but MUST NOT overlap with the kernel.
+pub fn validate_critical_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
+    if let Some((k_start, k_end)) = kernel_phys_range() {
+        let end = start.saturating_add(size);
+        if start < k_end && k_start < end {
+            log::error!(
+                "[IOMMU][SECURITY] CRITICAL: Attempt to map RMRR overlapping kernel! range={:#x}-{:#x}, kernel={:#x}-{:#x}",
+                start, end, k_start, k_end
+            );
+            return Err(IommuError::InvalidAddress);
+        }
+    }
+    Ok(())
+}
+
 /// Validate that a DMA region does not overlap with the kernel image or other sensitive areas.
 ///
 /// # Returns
@@ -812,6 +830,26 @@ impl IommuSecurityMonitor {
 impl SecurityNotifier for IommuSecurityMonitor {
     fn notify(&self, event: SecurityEvent) {
         self.queue.push(event);
+        // Wake the security monitor task to process the new event
+        SECURITY_MONITOR_WAKER.wake_from_isr();
+    }
+}
+
+/// Future that waits for the security monitor waker to be notified.
+struct SecurityMonitorWaitFuture;
+
+impl core::future::Future for SecurityMonitorWaitFuture {
+    type Output = ();
+    fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<Self::Output> {
+        if SECURITY_MONITOR_WAKER.is_wake_pending() {
+            return core::task::Poll::Ready(());
+        }
+        SECURITY_MONITOR_WAKER.register(cx.waker());
+        if SECURITY_MONITOR_WAKER.is_wake_pending() {
+            core::task::Poll::Ready(())
+        } else {
+            core::task::Poll::Pending
+        }
     }
 }
 
@@ -1088,7 +1126,9 @@ pub async fn security_monitor_task() {
             run_zombie_dma_gc();
         }
 
-        crate::task::sleep_ms(SECURITY_MONITOR_INTERVAL_MS).await;
+        // Wait for next event or timeout
+        // 설계書 4.4: タイムアウト付きFutureによる協調的マルチタスク
+        let _ = crate::task::with_timeout(SecurityMonitorWaitFuture, SECURITY_MONITOR_INTERVAL_MS).await;
     }
 }
 
@@ -1643,6 +1683,9 @@ pub struct EmergencyIsolationStats {
 // Global emergency isolation registry
 static EMERGENCY_REGISTRY: EmergencyIsolationRegistry = EmergencyIsolationRegistry::new();
 
+/// Waker for the security monitor task (signals new events or isolation requests)
+static SECURITY_MONITOR_WAKER: crate::sync::AtomicWaker = crate::sync::AtomicWaker::new();
+
 /// Get the global emergency isolation registry.
 ///
 /// Use this for ISR-context emergency device isolation.
@@ -1659,7 +1702,12 @@ pub fn emergency_isolation_registry() -> &'static EmergencyIsolationRegistry {
 ///
 /// This function is fully ISR-safe (lock-free, bounded time, no allocation).
 pub fn emergency_isolate_device(source_id: u16) -> Result<bool, ()> {
-    EMERGENCY_REGISTRY.request_isolation(source_id)
+    let res = EMERGENCY_REGISTRY.request_isolation(source_id);
+    if res.is_ok() {
+        // Wake the security monitor task to process the isolation immediately
+        SECURITY_MONITOR_WAKER.wake_from_isr();
+    }
+    res
 }
 
 /// Check if a device is in emergency isolation.

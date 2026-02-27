@@ -23,6 +23,7 @@ pub fn alloc_contiguous_frames_aligned_on_node(
 
     FRAME_ALLOCATOR
         .lock()
+        .expect("lock poisoned")
         .allocate_contiguous(frames_needed, align)
 }
 
@@ -51,7 +52,7 @@ pub fn dealloc_contiguous_frames(start: PhysAddr, frames: usize) {
                 pmm.free_4k(frame);
                 continue;
             }
-            FRAME_ALLOCATOR.lock().deallocate_4k_frame(frame);
+            FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_4k_frame(frame);
         }
     }
 }
@@ -89,7 +90,7 @@ pub fn alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
         return pmm.alloc_1g();
     }
 
-    FRAME_ALLOCATOR.lock().allocate_1g_frame()
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_1g_frame()
 }
 
 /// 2MiB フレームを解放
@@ -102,7 +103,7 @@ pub fn dealloc_frame_2m(frame: PhysFrame<Size2MiB>) {
         pmm.free_2m(frame);
         return;
     }
-    FRAME_ALLOCATOR.lock().deallocate_2m_frame(frame);
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_2m_frame(frame);
 }
 
 /// 1GiB フレームを解放
@@ -115,7 +116,7 @@ pub fn dealloc_frame_1g(frame: PhysFrame<Size1GiB>) {
         pmm.free_1g(frame);
         return;
     }
-    FRAME_ALLOCATOR.lock().deallocate_1g_frame(frame);
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_1g_frame(frame);
 }
 
 /// 4KiB フレームを解放（後方互換）
@@ -128,7 +129,7 @@ pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
         pmm.free_4k(frame);
         return;
     }
-    FRAME_ALLOCATOR.lock().deallocate_4k_frame(frame);
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").deallocate_4k_frame(frame);
 }
 
 /// NUMAアロケータでフレームを解放
@@ -149,7 +150,7 @@ pub fn frame_allocator_stats() -> (u64, usize) {
     if let Some(pmm) = pmm_global() {
         return pmm.stats();
     }
-    let allocator = FRAME_ALLOCATOR.lock();
+    let allocator = FRAME_ALLOCATOR.lock().expect("lock poisoned");
     (allocator.free_frame_count(), allocator.total_frame_count())
 }
 
@@ -158,7 +159,7 @@ pub fn numa_frame_allocator_stats() -> NumaAllocatorStats {
     if let Some(numa) = pmm_numa() {
         return numa.stats();
     }
-    NUMA_FRAME_ALLOCATOR.lock().stats()
+    NUMA_FRAME_ALLOCATOR.lock().expect("lock poisoned").stats()
 }
 
 /// 現在のCPUが属するNUMAノードを取得
@@ -166,7 +167,7 @@ pub fn get_cpu_numa_node(cpu_id: u8) -> NumaNodeId {
     if let Some(numa) = pmm_numa() {
         return numa.topology().cpu_to_node(cpu_id);
     }
-    NUMA_FRAME_ALLOCATOR.lock().topology().cpu_to_node(cpu_id)
+    NUMA_FRAME_ALLOCATOR.lock().expect("lock poisoned").topology().cpu_to_node(cpu_id)
 }
 
 /// Check if a range is contained within any NUMA node's memory ranges.

@@ -227,7 +227,7 @@ pub fn memory_pressure_level() -> u8 {
 
     // Calculate usage percentage
     let used = stats.total_frames.saturating_sub(stats.free_frames as usize);
-    let usage_percent = (used * 100 / stats.total_frames) as u8;
+    let usage_percent = ((used as u64).saturating_mul(100) / (stats.total_frames as u64).max(1)) as u8;
 
     // Apply thresholds for more nuanced pressure detection
     // If we have less than 1GB free (262144 4KB frames), increase pressure

@@ -245,7 +245,7 @@ impl NetworkEventHandler {
         };
 
         // TCB（TCP Control Block）を作成
-        let isn = tcb_table().generate_isn();
+        let isn = tcb_table().generate_isn(local_addr, remote);
         let mut tcb = if let Some(algo) = congestion_algo {
             TcpControlBlockEntry::with_algorithm(fd, local_addr, remote, algo)
         } else {

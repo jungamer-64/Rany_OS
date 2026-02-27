@@ -88,12 +88,12 @@ mod tests;
 /// マルチコア環境で共有するにはロックが必要。
 /// カーネルアロケータとして使用する場合、割り込みコンテキストからの呼び出しも
 /// 考慮して `IrqMutex` を使用する。
-pub struct LockedFreeListBuddyAllocator(IrqMutex<FreeListBuddyAllocator>);
+pub struct LockedFreeListBuddyAllocator(IrqPoisonLock<FreeListBuddyAllocator>);
 
 impl LockedFreeListBuddyAllocator {
     /// 新しいロック付きアロケータを作成
     pub const fn new() -> Self {
-        Self(IrqMutex::new(FreeListBuddyAllocator::new()))
+        Self(IrqPoisonLock::new(FreeListBuddyAllocator::new()))
     }
 
     /// メモリマップに基づいて初期化

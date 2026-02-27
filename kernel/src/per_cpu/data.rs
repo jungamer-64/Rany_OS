@@ -1,4 +1,10 @@
 use super::*;
+use alloc::vec::Vec;
+use crate::sync::poison_lock::PoisonLock;
+
+// Required for inline assembly macros and atomic ordering constants
+use core::arch::asm;
+use core::sync::atomic::Ordering;
 
 
 #[inline]
@@ -37,7 +43,7 @@ pub(crate) static mut PER_CPU_DATA: [PerCpuData; MAX_CPUS] = {
 pub(crate) static INITIALIZED: spin::Once<()> = spin::Once::new();
 
 /// 初期化済みCPU数
-pub(crate) static ACTIVE_CPUS: Mutex<usize> = Mutex::new(0);
+pub(crate) static ACTIVE_CPUS: PoisonLock<usize> = PoisonLock::new(0);
 /// Online CPU bitmask (bit N set => CPU N online)
 pub(crate) static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
 
@@ -582,7 +588,7 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
         }
         crate::io::log::early_print("[PCPU] cpus ok\n");
 
-        *ACTIVE_CPUS.lock() = num_cpus;
+        *ACTIVE_CPUS.lock().expect("lock poisoned") = num_cpus;
         mark_cpu_online(0);
         crate::io::log::early_print("[PCPU] done\n");
     });
@@ -641,7 +647,7 @@ pub fn mark_cpu_online(cpu_id: usize) {
     }
     let bit = 1u64 << cpu_id;
     ONLINE_CPU_MASK.fetch_or(bit, Ordering::Release);
-    let mut active = ACTIVE_CPUS.lock();
+    let mut active = ACTIVE_CPUS.lock().expect("lock poisoned");
     if cpu_id + 1 > *active {
         *active = cpu_id + 1;
     }
@@ -785,7 +791,7 @@ pub unsafe fn get_per_cpu(cpu_id: usize) -> Option<&'static PerCpuData> {
         return None;
     }
 
-    let active = *ACTIVE_CPUS.lock();
+    let active = *ACTIVE_CPUS.lock().expect("lock poisoned");
     if cpu_id >= active {
         return None;
     }
@@ -796,7 +802,7 @@ pub unsafe fn get_per_cpu(cpu_id: usize) -> Option<&'static PerCpuData> {
 
 /// アクティブなCPU数を取得
 pub fn active_cpu_count() -> usize {
-    *ACTIVE_CPUS.lock()
+    *ACTIVE_CPUS.lock().expect("lock poisoned")
 }
 
 // ============================================================================

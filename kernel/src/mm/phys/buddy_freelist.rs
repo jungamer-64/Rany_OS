@@ -34,7 +34,7 @@
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use alloc::vec::Vec;
-use crate::sync::IrqMutex;
+use crate::sync::IrqPoisonLock;
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
@@ -255,6 +255,7 @@ pub fn frame_to_color(frame_idx: usize) -> u8 {
 /// 1. **O(1) 割り当て/解放**: ビットスキャン不要
 /// 2. **ページモビリティ**: 断片化防止、THP成功率向上
 /// 3. **キャッシュカラーリング**: L2/L3競合回避
+#[derive(Debug)]
 pub struct FreeListBuddyAllocator {
     /// [モビリティタイプ][オーダー] のフリーエリア
     free_areas: [[FreeArea; MAX_ORDER + 1]; MigrateType::COUNT],

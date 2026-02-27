@@ -42,6 +42,7 @@ pub(crate) const LAZY_COALESCE_THRESHOLD: u64 = 64;
 /// - 解放回数が閾値を超えた場合
 /// - 要求サイズのブロックが見つからない場合（allocate_order内）
 /// - 明示的な `try_coalesce_all` 呼び出し
+#[derive(Debug)]
 pub struct BuddyFrameAllocator {
     /// 各オーダーの空きブロックビット（1 = free）
     free_bits: [u64; TOTAL_DETAIL_WORDS],

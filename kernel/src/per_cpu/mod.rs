@@ -8,10 +8,7 @@
 // - cpu_id引数が不要になり、APIが簡素化
 // ============================================================================
 #![allow(dead_code)]
-use alloc::vec::Vec;
-use core::arch::asm;
-use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use core::sync::atomic::AtomicU64;
 
 // IOVA_MM_MIGRATION_PLAN Phase 1.1: 汎用Magazineを使用
 use crate::mm::cache::magazine::Magazine;

@@ -347,7 +347,8 @@ impl TcbTable {
         let mix_addr = |h: &mut u32, addr: SocketAddr| {
             match addr {
                 SocketAddr::V4 { ip, port } => {
-                    for byte in ip.octets() {
+                    // ip is a [u8;4] array so iterate directly
+                    for &byte in &ip {
                         *h ^= byte as u32;
                         *h = h.wrapping_mul(FNV_PRIME);
                     }
@@ -357,7 +358,8 @@ impl TcbTable {
                     }
                 }
                 SocketAddr::V6 { ip, port } => {
-                    for byte in ip.octets() {
+                    // ip is a [u8;16]
+                    for &byte in &ip {
                         *h ^= byte as u32;
                         *h = h.wrapping_mul(FNV_PRIME);
                     }

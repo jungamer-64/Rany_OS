@@ -287,7 +287,7 @@ impl PerCpuFastMagazine {
             &initial_bits,
         );
 
-        *self.arena_detail.lock().unwrap_or_else(|e| e.into_inner()) = Some(arena);
+        *self.arena_detail.lock().expect("lock poisoned") = Some(arena);
         self.single_writer_enabled.store(true, Ordering::Release);
     }
 }

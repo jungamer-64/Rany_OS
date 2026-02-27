@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// NUMA統計情報
 mod contiguous;
 pub use contiguous::*;
@@ -260,13 +259,13 @@ impl NumaPmmAllocator {
 // ============================================================================
 
 /// グローバルなフレームアロケータ（NUMA非対応版、後方互換用）
-/// 割り込み禁止Mutexで保護（デッドロック防止）
-pub(crate) static FRAME_ALLOCATOR: IrqMutex<BitmapFrameAllocator> = IrqMutex::new(BitmapFrameAllocator::new());
+/// 割り込み禁止PoisonLockで保護
+pub(crate) static FRAME_ALLOCATOR: IrqPoisonLock<BitmapFrameAllocator> = IrqPoisonLock::new(BitmapFrameAllocator::new());
 
 /// NUMA対応グローバルフレームアロケータ
 /// 設計書 5.3: NUMAアーキテクチャへの対応
-pub(crate) static NUMA_FRAME_ALLOCATOR: IrqMutex<NumaFrameAllocator> =
-    IrqMutex::new(NumaFrameAllocator::new());
+pub(crate) static NUMA_FRAME_ALLOCATOR: IrqPoisonLock<NumaFrameAllocator> =
+    IrqPoisonLock::new(NumaFrameAllocator::new());
 
 /// PMM fast allocator (global)
 pub(crate) static PMM_GLOBAL_PTR: AtomicPtr<PmmAllocatorFast> = AtomicPtr::new(ptr::null_mut());
@@ -323,7 +322,7 @@ pub unsafe fn init_frame_allocator(usable_regions: &[(PhysAddr, u64)]) {
 
     // Fallback to legacy bitmap allocator
     unsafe {
-        FRAME_ALLOCATOR.lock().init(usable_regions);
+        FRAME_ALLOCATOR.lock().expect("lock poisoned").init(usable_regions);
     }
 }
 
@@ -483,13 +482,13 @@ pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
     }
 
     // Try legacy bitmap allocator and log diagnostics on failure (helpful for qemu-suite debugging)
-    let res = FRAME_ALLOCATOR.lock().allocate_4k_frame();
+    let res = FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame();
     if res.is_none() {
         // Gather diagnostics (best-effort, may race with other allocs)
         let pmm_init = pmm_initialized();
         let (attempts, successes) = get_frame_local_alloc_metrics();
         let buddy_stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
-        let bitmap_free = crate::mm::phys::frame_allocator::FRAME_ALLOCATOR.lock().free_frame_count();
+        let bitmap_free = crate::mm::phys::frame_allocator::FRAME_ALLOCATOR.lock().expect("lock poisoned").free_frame_count();
         eprintln!("[alloc_frame] FAILED: pmm_initialized={} pmm_numa_exists={} pmm_global_exists={} attempts/successes={}/{}, buddy_free_frames={} total_frames={} bitmap_free_frames={}",
             pmm_init,
             crate::mm::phys::frame_allocator::pmm_numa().is_some(),
@@ -517,7 +516,7 @@ pub fn alloc_frame_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>>
         return pmm.alloc_4k();
     }
 
-    FRAME_ALLOCATOR.lock().allocate_4k_frame()
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame()
 }
 
 /// 現在のCPUのローカルNUMAノードから4KiBフレームを割り当て
@@ -533,7 +532,7 @@ pub fn alloc_frame_local(current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
         return pmm.alloc_4k();
     }
 
-    FRAME_ALLOCATOR.lock().allocate_4k_frame()
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame()
 }
 
 /// 計測値取得（テスト用）
@@ -576,7 +575,7 @@ pub fn alloc_frame_2m() -> Option<PhysFrame<Size2MiB>> {
         return pmm.alloc_2m();
     }
 
-    FRAME_ALLOCATOR.lock().allocate_2m_frame()
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_2m_frame()
 }
 
 /// 指定NUMAノードから2MiBフレームを割り当て
@@ -589,7 +588,7 @@ pub fn alloc_frame_2m_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size2Mi
     if let Some(pmm) = pmm_global() {
         return pmm.alloc_2m();
     }
-    FRAME_ALLOCATOR.lock().allocate_2m_frame()
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_2m_frame()
 }
 
 /// 現在のCPUのローカルNUMAノードから2MiBフレームを割り当て
@@ -602,7 +601,7 @@ pub fn alloc_frame_2m_local(current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
     if let Some(pmm) = pmm_global() {
         return pmm.alloc_2m();
     }
-    FRAME_ALLOCATOR.lock().allocate_2m_frame()
+    FRAME_ALLOCATOR.lock().expect("lock poisoned").allocate_2m_frame()
 }
 
 /// PMM fast が初期化済みかどうか
@@ -655,5 +654,6 @@ pub fn alloc_contiguous_frames_aligned(
 
     FRAME_ALLOCATOR
         .lock()
+        .expect("lock poisoned")
         .allocate_contiguous(frames_needed, align)
 }

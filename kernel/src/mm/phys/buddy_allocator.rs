@@ -17,7 +17,7 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use crate::sync::IrqMutex;
+use crate::sync::IrqPoisonLock;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::PhysAddr;

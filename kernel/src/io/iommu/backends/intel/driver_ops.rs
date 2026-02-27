@@ -297,12 +297,12 @@ impl IntelIommuDriver {
                 Err(err) => {
                     last_err = Some(err);
                     // SECURITY: If one controller fails, we have a partial unmap.
-                    // This is dangerous. We should ideally attempt to restore or
-                    // at least log a critical error.
+                    // This is dangerous. We poison the domain to prevent further use.
                     log::error!(
-                        "[IOMMU][SECURITY] unmap_dma failed on controller {}: {:?}",
+                        "[IOMMU][SECURITY] unmap_dma failed on controller {}: {:?}. Poisoning domain.",
                         idx, err
                     );
+                    domain_arc.poison();
                 }
             }
         }

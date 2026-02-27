@@ -54,6 +54,7 @@ pub(crate) const FRONT_LAYER_HIGH_WATERMARK: usize = 48;
 pub(crate) const FRONT_LAYER_REFILL_BATCH: usize = 32;
 
 /// Per-CPUフレームキャッシュ
+#[derive(Debug)]
 #[repr(align(64))] // キャッシュラインアライン
 pub struct PerCpuFrameCache {
     /// キャッシュされた4KiBフレーム（物理アドレス）
@@ -208,7 +209,7 @@ pub struct PerCpuFrameCacheStats {
 ///
 /// NOTE: Lock-Free Allocator Phase 1
 /// グローバルな `BUDDY_FRONT_LAYER` ロックを廃止し、
-/// `PerCpuData` 内の `frame_cache` (`IrqMutex` protected) を使用する。
+/// `PerCpuData` 内の `frame_cache` (`IrqPoisonLock` protected) を使用する。
 /// これにより、他のCPUとの競合を回避し、キャッシュヒット時のレイテンシを大幅に削減する。
 pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
     // 1. Per-CPUキャッシュからの割り当てを試行
@@ -227,7 +228,7 @@ pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
 
     // 2. キャッシュミス: Buddy Allocatorからリフィル
     // ここで初めてグローバルロックを取得
-    let mut buddy = BUDDY_ALLOCATOR.lock();
+    let mut buddy = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
     
     // 再度キャッシュロックを取得してリフィル
     {
@@ -242,7 +243,7 @@ pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
     }
     
     // 3. フォールバック: 直接割り当て (キャッシュ満杯or空でリフィル失敗時)
-    buddy.allocate_4k_frame()
+    BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame()
 }
 
 /// フロントレイヤーを初期化（CPU起動時）
@@ -263,15 +264,15 @@ pub fn buddy_dealloc_frame_fast(cpu_id: usize, frame: PhysFrame<Size4KiB>) {
         if cache.needs_drain() {
             // ドレインが必要ならBuddyロックを取得
             // デッドロック回避のため、一度キャッシュロックを解放...
-            // しかし、IrqMutexなので再入は安全ではない。
+            // しかし、IrqPoisonLockなので再入は安全ではない。
             // ここではドレインのためにロック順序を守る: Cache -> Buddy (allocと同じ)
-            let mut buddy = BUDDY_ALLOCATOR.lock();
+            let mut buddy = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
             cache.drain(&mut buddy);
         }
     } else {
         // キャッシュ満杯: Buddyに直接返却
         // ロック順序: Cache -> Buddy
-        let mut buddy = BUDDY_ALLOCATOR.lock();
+        let mut buddy = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
         // ドレインしてから追加試行もできるが、直接返却が単純
         buddy.deallocate_4k_frame(frame);
     }
@@ -286,7 +287,7 @@ pub fn buddy_front_layer_stats() -> BuddyFrontLayerStats {
     for i in 0..crate::per_cpu::MAX_CPUS {
         if crate::per_cpu::is_cpu_online(i) {
              let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(i) };
-             let cache = per_cpu.frame_cache.lock().unwrap_or_else(|e| e.into_inner());
+             let cache = per_cpu.frame_cache.lock().expect("lock poisoned");
              // ヒット数等を合算
              total_hits += cache.cache_hits as usize;
              total_misses += cache.cache_misses as usize;
@@ -311,7 +312,7 @@ pub struct BuddyFrontLayerStats {
 
 /// グローバルなBuddy Allocator
 /// 割り込み禁止Mutexで保護（デッドロック防止）
-pub(crate) static BUDDY_ALLOCATOR: IrqMutex<BuddyFrameAllocator> = IrqMutex::new(BuddyFrameAllocator::new());
+pub(crate) static BUDDY_ALLOCATOR: IrqPoisonLock<BuddyFrameAllocator> = IrqPoisonLock::new(BuddyFrameAllocator::new());
 
 /// Buddy Allocatorを初期化
 ///
@@ -319,7 +320,7 @@ pub(crate) static BUDDY_ALLOCATOR: IrqMutex<BuddyFrameAllocator> = IrqMutex::new
 /// カーネル初期化時に一度だけ呼ばれる必要がある
 pub unsafe fn init_buddy_allocator(usable_regions: &[(PhysAddr, u64)]) {
     unsafe {
-        BUDDY_ALLOCATOR.lock().init(usable_regions);
+        BUDDY_ALLOCATOR.lock().expect("lock poisoned").init(usable_regions);
     }
 }
 
@@ -385,35 +386,35 @@ pub fn alloc_huge_frame() -> Option<PhysFrame<Size2MiB>> {
 
 /// 4KiB フレームを割り当て（Buddy版）
 pub fn buddy_alloc_frame() -> Option<PhysFrame<Size4KiB>> {
-    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_4k_frame() {
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame() {
         return Some(frame);
     }
     if borrow_from_pmm_for_order(0, None) {
-        return BUDDY_ALLOCATOR.lock().allocate_4k_frame();
+        return BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame();
     }
     None
 }
 
 /// 2MiB フレームを割り当て（Buddy版）
 pub fn buddy_alloc_frame_2m() -> Option<PhysFrame<Size2MiB>> {
-    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_2m_frame() {
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_2m_frame() {
         return Some(frame);
     }
     let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
     if borrow_from_pmm_for_order(order, None) {
-        return BUDDY_ALLOCATOR.lock().allocate_2m_frame();
+        return BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_2m_frame();
     }
     None
 }
 
 /// 1GiB フレームを割り当て（Buddy版）
 pub fn buddy_alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
-    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_1g_frame() {
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_1g_frame() {
         return Some(frame);
     }
     let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
     if borrow_from_pmm_for_order(order, None) {
-        return BUDDY_ALLOCATOR.lock().allocate_1g_frame();
+        return BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_1g_frame();
     }
     None
 }
@@ -423,39 +424,39 @@ pub fn buddy_alloc_contiguous_frames(frame_count: usize) -> Option<PhysAddr> {
     if frame_count == 0 {
         return None;
     }
-    if let Some(addr) = BUDDY_ALLOCATOR.lock().allocate_contiguous(frame_count) {
+    if let Some(addr) = BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_contiguous(frame_count) {
         return Some(addr);
     }
     let order = BuddyFrameAllocator::frames_to_order(frame_count);
     if borrow_from_pmm_for_order(order, None) {
-        return BUDDY_ALLOCATOR.lock().allocate_contiguous(frame_count);
+        return BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_contiguous(frame_count);
     }
     None
 }
 
 /// 4KiB フレームを解放（Buddy版）
 pub fn buddy_dealloc_frame(frame: PhysFrame<Size4KiB>) {
-    BUDDY_ALLOCATOR.lock().deallocate_4k_frame(frame);
+    BUDDY_ALLOCATOR.lock().expect("lock poisoned").deallocate_4k_frame(frame);
 }
 
 /// 2MiB フレームを解放（Buddy版）
 pub fn buddy_dealloc_frame_2m(frame: PhysFrame<Size2MiB>) {
-    BUDDY_ALLOCATOR.lock().deallocate_2m_frame(frame);
+    BUDDY_ALLOCATOR.lock().expect("lock poisoned").deallocate_2m_frame(frame);
 }
 
 /// 1GiB フレームを解放（Buddy版）
 pub fn buddy_dealloc_frame_1g(frame: PhysFrame<Size1GiB>) {
-    BUDDY_ALLOCATOR.lock().deallocate_1g_frame(frame);
+    BUDDY_ALLOCATOR.lock().expect("lock poisoned").deallocate_1g_frame(frame);
 }
 
 /// Buddy Allocatorの統計を取得
 pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
-    BUDDY_ALLOCATOR.lock().stats()
+    BUDDY_ALLOCATOR.lock().expect("lock poisoned").stats()
 }
 
 /// Register a NUMA region with the global Buddy Allocator
 pub fn buddy_register_numa_region(node: NumaNodeId, start: PhysAddr, size: u64) {
-    let mut allocator = BUDDY_ALLOCATOR.lock();
+    let mut allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
     let start_frame = FrameIndex::from_phys_addr(start.as_u64());
     let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
     allocator.register_numa_region(node, start_frame, end_frame);
@@ -463,35 +464,35 @@ pub fn buddy_register_numa_region(node: NumaNodeId, start: PhysAddr, size: u64) 
 
 /// Allocate a 4KiB frame preferring the given NUMA node (best-effort)
 pub fn buddy_alloc_frame_on_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
-    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_4k_frame_on_node(node) {
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame_on_node(node) {
         return Some(frame);
     }
     if borrow_from_pmm_for_order(0, Some(node)) {
-        return BUDDY_ALLOCATOR.lock().allocate_4k_frame_on_node(node);
+        return BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_4k_frame_on_node(node);
     }
     None
 }
 
 /// Allocate a 2MiB frame preferring the given NUMA node (best-effort)
 pub fn buddy_alloc_frame_2m_on_node(node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
-    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_2m_frame_on_node(node) {
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_2m_frame_on_node(node) {
         return Some(frame);
     }
     let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
     if borrow_from_pmm_for_order(order, Some(node)) {
-        return BUDDY_ALLOCATOR.lock().allocate_2m_frame_on_node(node);
+        return BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_2m_frame_on_node(node);
     }
     None
 }
 
 /// Allocate a 1GiB frame preferring the given NUMA node (best-effort)
 pub fn buddy_alloc_frame_1g_on_node(node: NumaNodeId) -> Option<PhysFrame<Size1GiB>> {
-    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_1g_frame_on_node(node) {
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_1g_frame_on_node(node) {
         return Some(frame);
     }
     let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
     if borrow_from_pmm_for_order(order, Some(node)) {
-        return BUDDY_ALLOCATOR.lock().allocate_1g_frame_on_node(node);
+        return BUDDY_ALLOCATOR.lock().expect("lock poisoned").allocate_1g_frame_on_node(node);
     }
     None
 }
@@ -501,7 +502,7 @@ pub fn buddy_alloc_frame_1g_on_node(node: NumaNodeId) -> Option<PhysFrame<Size1G
 /// 設計書 P2: 統一フレームアロケータのための判定
 /// 注: Buddyアロケータは初期化時に登録された領域のみを管理する
 pub fn is_managed_by_buddy(addr: PhysAddr) -> bool {
-    let allocator = BUDDY_ALLOCATOR.lock();
+    let allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
 
     // If NUMA regions are recorded, check them first
     if let Some(map) = allocator.numa_regions.as_ref() {
@@ -553,7 +554,7 @@ pub fn is_range_managed_by_buddy(start: PhysAddr, size: u64) -> bool {
         return false;
     };
 
-    let allocator = BUDDY_ALLOCATOR.lock();
+    let allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
 
     if let Some(map) = allocator.numa_regions.as_ref() {
         return is_range_in_numa_regions(map, start.as_u64(), end);
@@ -577,7 +578,7 @@ pub fn is_range_managed_by_buddy(start: PhysAddr, size: u64) -> bool {
 /// 空きフレームでない = 割り当て済みとみなす。
 #[inline]
 pub fn is_frame_allocated(frame_idx: usize) -> bool {
-    let allocator = BUDDY_ALLOCATOR.lock();
+    let allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
     
     if frame_idx >= allocator.total_frames {
         return false;
@@ -606,7 +607,7 @@ pub unsafe fn mark_as_huge_page(start_frame: usize) -> bool {
         return false;
     }
     
-    let allocator = BUDDY_ALLOCATOR.lock();
+    let allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
     
     // 全512フレームが割り当て済みかチェック（is_block_free使用）
     for i in 0..PAGES_PER_2MB {

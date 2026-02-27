@@ -152,6 +152,7 @@ impl NumaNode {
 
 /// NUMAトポロジ情報
 /// 設計書 5.3.1: 起動時にACPI SRATから検出
+#[derive(Debug)]
 pub struct NumaTopology {
     /// 各NUMAノードの情報
     pub(crate) nodes: [NumaNode; MAX_NUMA_NODES],
