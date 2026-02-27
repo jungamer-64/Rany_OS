@@ -227,7 +227,7 @@ impl TlsConnection {
 
     /// ServerHelloを処理
     pub(super) fn process_server_hello(&mut self, data: &[u8]) -> TlsResult<()> {
-        if data.len() < 34 {
+        if data.len() < 35 {
             return Err(TlsError::DecodeError);
         }
 

@@ -352,6 +352,7 @@ impl DnsClient {
 
     /// ドメイン名をスキップ
     pub(super) fn skip_name(&self, data: &[u8], mut offset: usize) -> Result<usize, DnsResponseCode> {
+        let mut labels = 0;
         loop {
             if offset >= data.len() {
                 return Err(DnsResponseCode::FormatError);
@@ -366,6 +367,12 @@ impl DnsClient {
             if len & 0xC0 == 0xC0 {
                 // 圧縮ポインター
                 return Ok(offset + 2);
+            }
+
+            // Security: Limit number of labels to prevent CPU exhaustion
+            labels += 1;
+            if labels > 128 {
+                return Err(DnsResponseCode::FormatError);
             }
 
             offset += 1 + len as usize;
@@ -428,6 +435,11 @@ impl DnsClient {
                 continue;
             }
 
+            // RFC 1035: Label length maximum is 63 bytes
+            if len > 63 {
+                return Err(DnsResponseCode::FormatError);
+            }
+
             offset += 1;
 
             if offset + len as usize > data.len() {
@@ -436,6 +448,11 @@ impl DnsClient {
 
             if !name.is_empty() {
                 name.push('.');
+            }
+
+            // RFC 1035: Total name length maximum is 255 bytes (including null)
+            if name.len() + len as usize > 255 {
+                return Err(DnsResponseCode::FormatError);
             }
 
             name.push_str(&String::from_utf8_lossy(

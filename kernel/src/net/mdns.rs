@@ -713,6 +713,10 @@ pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
 
         // Normal label
         let label_len = len_byte as usize;
+        // RFC 1035: Label length max is 63 bytes
+        if label_len > 63 {
+            return None;
+        }
         current += 1;
 
         if current + label_len > data.len() {
@@ -721,6 +725,11 @@ pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
 
         if !name.is_empty() {
             name.push('.');
+        }
+
+        // RFC 1035: Total name length max is 255 bytes (including null)
+        if name.len() + label_len > 255 {
+            return None;
         }
 
         let label_bytes = &data[current..current + label_len];

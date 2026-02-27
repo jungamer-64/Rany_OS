@@ -765,7 +765,7 @@ impl TcpControlBlock {
             // Slow Start: exponential growth
             // Increase cwnd by mss for each ACK (roughly doubles per RTT)
             self.congestion.cwnd = self.congestion.cwnd.saturating_add(mss);
-        } else {
+        } else if self.congestion.cwnd > 0 {
             // Congestion Avoidance: linear growth (AIMD - Additive Increase)
             // cwnd += mss * mss / cwnd (approximately +1 MSS per RTT)
             let increment = (mss as u64 * mss as u64 / self.congestion.cwnd as u64).max(1) as u32;
@@ -1141,7 +1141,10 @@ impl TcpControlBlock {
                 }
             }
             if !merged {
-                self.options.sack_scoreboard.push((left, right));
+                // Security: Limit scoreboard size to prevent memory exhaustion (DoS)
+                if self.options.sack_scoreboard.len() < 64 {
+                    self.options.sack_scoreboard.push((left, right));
+                }
             }
         }
     }
