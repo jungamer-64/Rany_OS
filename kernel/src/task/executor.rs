@@ -289,55 +289,7 @@ fn dispatch_iommu_command(
     ctrl: &crate::io::iommu::backends::intel::controller::IommuController,
     kind: &IommuCommandKind,
 ) -> Result<i32, ()> {
-    match kind {
-        IommuCommandKind::InvalidateIotlbDomain { domain } => {
-            ctrl.invalidate_iotlb(*domain);
-            Ok(0)
-        }
-        IommuCommandKind::InvalidateIotlbGlobal => {
-            let _ = ctrl.invalidate_iotlb_global_sync();
-            Ok(0)
-        }
-        IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
-            dispatch_map_region(ctrl, *domain, *iova, *phys, *size, *read, *write)
-        }
-        IommuCommandKind::UnmapRegion { domain, iova, size: _ } => {
-            dispatch_unmap_region(ctrl, *domain, *iova)
-        }
-        _ => ctrl.handle_command_queue_entry(kind).map_err(|_| ()),
-    }
-}
-
-fn dispatch_map_region(
-    ctrl: &crate::io::iommu::backends::intel::controller::IommuController,
-    domain: u16,
-    iova: u64,
-    phys: u64,
-    size: u64,
-    read: bool,
-    write: bool,
-) -> Result<i32, ()> {
-    let dom_map = ctrl.domains.lock().map_err(|_| ())?;
-    let domain_arc = dom_map.get(&domain).cloned();
-    drop(dom_map);
-    let domain_arc = domain_arc.ok_or(())?;
-    domain_arc.map(iova, phys, size, read, write).map_err(|_| ())?;
-    ctrl.invalidate_iotlb(domain);
-    Ok(0)
-}
-
-fn dispatch_unmap_region(
-    ctrl: &crate::io::iommu::backends::intel::controller::IommuController,
-    domain: u16,
-    iova: u64,
-) -> Result<i32, ()> {
-    let dom_map = ctrl.domains.lock().map_err(|_| ())?;
-    let domain_arc = dom_map.get(&domain).cloned();
-    drop(dom_map);
-    let domain_arc = domain_arc.ok_or(())?;
-    domain_arc.unmap(iova).map_err(|_| ())?;
-    ctrl.invalidate_iotlb(domain);
-    Ok(0)
+    ctrl.handle_command_queue_entry(kind).map_err(|_| ())
 }
 
 /// Drain IOMMU command queues from all registered Intel controllers.

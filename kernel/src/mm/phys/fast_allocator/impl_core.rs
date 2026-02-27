@@ -496,6 +496,7 @@ impl FastBitmapAllocator {
     /// Reserve a range of addresses (mark as allocated)
     ///
     /// Used for marking memory holes, reserved regions, etc.
+    /// Ensures that any page that partially overlaps with the requested range [start, start + size) is reserved.
     pub fn reserve(&self, start: u64, size: u64) -> Result<(), ()> {
         if start < self.base || size == 0 {
             return Err(());
@@ -506,12 +507,16 @@ impl FastBitmapAllocator {
             return Err(());
         }
 
+        // Round down start and round up end to reserve all affected pages
         let start_page = ((start - self.base) / PAGE_SIZE_4K) as usize;
-        let end_page = ((end - self.base) / PAGE_SIZE_4K) as usize;
+        let end_page = ((end - self.base + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K) as usize;
 
         for page_idx in start_page..end_page {
-            self.bitmap.base_bitmap().mark_allocated(page_idx);
-            self.bitmap.on_page_allocated(page_idx);
+            // Only update counts if the page was successfully marked as allocated.
+            // This prevents double-incrementing 'used_count_2m' if 'reserve' is called multiple times.
+            if self.bitmap.base_bitmap().mark_allocated(page_idx) {
+                self.bitmap.on_page_allocated(page_idx);
+            }
         }
 
         Ok(())
@@ -524,14 +529,17 @@ impl FastBitmapAllocator {
             return false;
         }
         for i in 0..pages_needed {
-            if !base_bitmap.mark_allocated(start_page + i) {
-                // Rollback
+            let page_idx = start_page + i;
+            if !base_bitmap.mark_allocated(page_idx) {
+                // Rollback: must undo both bitmap marking and HugePageBitmap counters
                 for j in 0..i {
-                    base_bitmap.mark_free(start_page + j);
+                    let prev_idx = start_page + j;
+                    base_bitmap.mark_free(prev_idx);
+                    self.bitmap.on_page_freed(prev_idx);
                 }
                 return false;
             }
-            self.bitmap.on_page_allocated(start_page + i);
+            self.bitmap.on_page_allocated(page_idx);
         }
         true
     }
@@ -546,6 +554,8 @@ impl FastBitmapAllocator {
 
         // Use checked arithmetic to avoid overflow
         let pages_needed = (size.checked_add(PAGE_SIZE_4K - 1)? / PAGE_SIZE_4K) as usize;
+        // Ensure alignment is at least page-sized and a multiple of PAGE_SIZE_4K for simplicity
+        let align = align.max(PAGE_SIZE_4K);
         let align_pages = (align.checked_add(PAGE_SIZE_4K - 1)? / PAGE_SIZE_4K) as usize;
         
         if align_pages == 0 {
@@ -557,10 +567,11 @@ impl FastBitmapAllocator {
         // Simple linear scan for contiguous free pages
         let mut start_page = 0;
         while start_page < total_pages {
-            // Align start
-            if start_page % align_pages != 0 {
-                // Use checked arithmetic to avoid overflow
-                start_page = (start_page / align_pages).checked_add(1)?.checked_mul(align_pages)?;
+            // Align start address, taking self.base into account
+            let addr = self.base + (start_page as u64) * PAGE_SIZE_4K;
+            if addr % align != 0 {
+                let next_addr = (addr.checked_add(align - 1)?) / align * align;
+                start_page = ((next_addr - self.base) / PAGE_SIZE_4K) as usize;
                 continue;
             }
 
@@ -596,6 +607,8 @@ impl FastBitmapAllocator {
     }
 
     /// Free a range of pages immediately
+    ///
+    /// Only frees pages that are FULLY contained within the specified range [start, start + size).
     pub fn free_range_immediate(&self, start: u64, size: u64) -> Result<(), ()> {
         if start < self.base || size == 0 {
             return Err(());
@@ -606,11 +619,14 @@ impl FastBitmapAllocator {
             return Err(());
         }
 
-        let start_page = ((start - self.base) / PAGE_SIZE_4K) as usize;
+        // Round up start and round down end to find pages fully within range
+        let start_page = ((start - self.base + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K) as usize;
         let end_page = ((end - self.base) / PAGE_SIZE_4K) as usize;
 
-        for page_idx in start_page..end_page {
-            self.bitmap.free_4k(page_idx);
+        if start_page < end_page {
+            for page_idx in start_page..end_page {
+                self.bitmap.free_4k(page_idx);
+            }
         }
 
         Ok(())

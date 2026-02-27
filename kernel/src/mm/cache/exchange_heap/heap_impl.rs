@@ -242,9 +242,23 @@ impl SegregatedFreeListHeap {
     /// 指定サイズクラスから空きブロックを取得
     pub(super) fn pop_free_block(&mut self, class: usize) -> Option<NonNull<FreeBlock>> {
         let block = self.free_lists[class]?;
+        let block_addr = block.as_ptr() as usize;
+
+        // Security check: Validate pointer (High-risk vulnerability fix)
+        if block_addr < self.heap_start || block_addr >= self.heap_end {
+            panic!("[ExHeap] Security Fault: Corrupted free list (head) at class {}", class);
+        }
 
         unsafe {
-            self.free_lists[class] = (*block.as_ptr()).next;
+            let next = (*block.as_ptr()).next;
+            // Security check: Validate next pointer
+            if let Some(next_nn) = next {
+                let next_addr = next_nn.as_ptr() as usize;
+                if next_addr < self.heap_start || next_addr >= self.heap_end {
+                    panic!("[ExHeap] Security Fault: Corrupted free list (next) at class {}", class);
+                }
+            }
+            self.free_lists[class] = next;
         }
 
         // リストが空になったらビットマップをクリア
@@ -325,18 +339,30 @@ impl SegregatedFreeListHeap {
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
         let addr = ptr.as_ptr() as usize;
 
-        // 境界チェック
+        // 境界チェック (Security Check)
         if addr < self.heap_start || addr >= self.heap_end {
-            return;
+            panic!("[ExHeap] Security Fault: deallocate got invalid ptr {:#x} (heap: {:#x}-{:#x})", 
+                addr, self.heap_start, self.heap_end);
+        }
+
+        // アライメントチェック (Security Check)
+        if addr % MIN_BLOCK_SIZE != 0 {
+            panic!("[ExHeap] Security Fault: deallocate got unaligned ptr {:#x}", addr);
+        }
+
+        // Double-free check via boundary tag (Security Check)
+        let footer_addr = addr + size - core::mem::size_of::<BlockFooter>();
+        if footer_addr >= addr && footer_addr + core::mem::size_of::<BlockFooter>() <= self.heap_end {
+            let footer = unsafe { &*(footer_addr as *const BlockFooter) };
+            if footer.is_free {
+                panic!("[ExHeap] Security Fault: Double free detected at {:#x}", addr);
+            }
         }
 
         self.allocated_bytes = self.allocated_bytes.saturating_sub(size);
         self.dealloc_count += 1;
 
-        // 空きブロックとして追加（隣接結合は将来の最適化として保留）
-        // Note: 完全な隣接結合にはブロック境界情報の追跡が必要
-        // 現時点ではシンプルにサイズクラスに追加
-        // self.try_coalesce(addr, size); // TODO: Implement coalescing
+        // 空きブロックとして追加
         self.add_free_block(addr, size);
     }
 

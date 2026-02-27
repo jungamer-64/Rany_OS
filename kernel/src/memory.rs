@@ -173,21 +173,23 @@ impl BuddyHeapAllocator {
 
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
+        // Security check: Range validation
+        if addr < self.heap_start || addr >= self.heap_start.saturating_add(HEAP_SIZE) {
+            panic!("[BUD] Security Fault: add_to_free_list got invalid address {:#x} (heap: {:#x}-{:#x})", 
+                addr, self.heap_start, self.heap_start + HEAP_SIZE);
+        }
+
+        // Security check: Alignment validation
+        let block_size = Self::order_to_size(order);
+        if addr % block_size != 0 {
+            panic!("[BUD] Security Fault: add_to_free_list got unaligned address {:#x} for order {}", 
+                addr, order);
+        }
+
         let old_head = self.free_lists[order].unwrap_or(0);
 
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr_addr = addr as usize;
-
-        // DEBUG: Validate addresses
-        #[cfg(debug_assertions)]
-        if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
-            crate::io::log::early_print("[HEAP] ERROR: add_to_free_list got invalid addr!\n");
-            crate::io::log::early_print("[HEAP] heap_start=");
-            crate::io::log::early_print_hex(self.heap_start as u64);
-            crate::io::log::early_print(" heap_end=");
-            crate::io::log::early_print_hex((self.heap_start + HEAP_SIZE) as u64);
-            crate::io::log::early_print("\n");
-        }
 
         checked_volatile_write_usize(ptr_addr, old_head, "BUD add_to_free_list");
         self.free_lists[order] = Some(addr);
@@ -195,48 +197,25 @@ impl BuddyHeapAllocator {
 
     /// フリーリストからブロックを取得
     fn remove_from_free_list(&mut self, order: usize) -> Option<usize> {
-
-
         self.free_lists[order].take().map(|addr| {
-            // DEBUG: Validate the address being returned
-            #[cfg(debug_assertions)]
-            if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
-                crate::io::log::early_print(
-                    "[HEAP] ERROR: remove_from_free_list returning invalid addr!\n",
-                );
+            // Security check: Validate head pointer
+            if addr < self.heap_start || addr >= self.heap_start.saturating_add(HEAP_SIZE) {
+                panic!("[BUD] Security Fault: Corrupted free list head {:#x} for order {}", addr, order);
+            }
+            if addr % Self::MIN_BLOCK_SIZE != 0 {
+                panic!("[BUD] Security Fault: Unaligned free list head {:#x}", addr);
             }
 
             let ptr_addr = addr as usize;
             let next = crate::io::mmio::volatile_read::<usize>(ptr_addr);
 
-            // DEBUG: Validate next pointer
-            #[cfg(debug_assertions)]
-            if next != 0 && (next < self.heap_start || next >= self.heap_start + HEAP_SIZE) {
-                crate::io::log::early_print("[HEAP] ERROR: next pointer is invalid! Addr=");
-                crate::io::log::early_print_hex(ptr_addr as u64);
-                crate::io::log::early_print(" Next=");
-                crate::io::log::early_print_hex(next as u64);
-                crate::io::log::early_print(" Order=");
-                crate::io::log::early_print_dec(order as u64);
-                crate::io::log::early_print("\n");
-
-                // Capture a lightweight stack backtrace at the point of detection
-                crate::io::log::early_print("[HEAP] Capturing backtrace (invalid next detected)\n");
-                let bt = crate::unwind::Backtrace::capture();
-                for entry in bt.iter() {
-                    crate::io::log::early_print("[HEAP][BT] IP=");
-                    crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
-                    crate::io::log::early_print("\n");
+            // Security check: Validate next pointer
+            if next != 0 {
+                if next < self.heap_start || next >= self.heap_start.saturating_add(HEAP_SIZE) {
+                    panic!("[BUD] Security Fault: Corrupted free list: invalid next pointer {:#x} at {:#x}", next, addr);
                 }
-
-                // Dump current free list heads for all orders to find corrupted entry
-                for i in 0..=Self::MAX_ORDER {
-                    crate::io::log::early_print("[HEAP] free_lists[");
-                    crate::io::log::early_print_dec(i as u64);
-                    crate::io::log::early_print("] = ");
-                    let head = self.free_lists[i].unwrap_or(0);
-                    crate::io::log::early_print_hex(head as u64);
-                    crate::io::log::early_print("\n");
+                if next % Self::MIN_BLOCK_SIZE != 0 {
+                    panic!("[BUD] Security Fault: Unaligned next pointer {:#x} at {:#x}", next, addr);
                 }
             }
 
@@ -530,7 +509,7 @@ fn heap_start() -> u64 {
 /// NOTE: place the Exchange Heap after the global heap to avoid overlap
 /// with the main kernel heap (see bugfix for overlapping regions).
 #[inline]
-fn exchange_heap_start() -> u64 {
+pub(crate) fn exchange_heap_start() -> u64 {
     // heap_start() + HEAP_SIZE (no overlap)
     heap_start().saturating_add(HEAP_SIZE as u64)
 }

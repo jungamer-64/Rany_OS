@@ -128,10 +128,51 @@ pub fn unregister_protected_range(start: u64, size: u64) {
     // If it was potentially in the regions list
     if size > 1024 * 1024 || start >= (PROTECTED_BITMAP_PAGES as u64 * 4096) {
         let mut regions = PROTECTED_REGIONS.write();
-        if let Ok(idx) = regions.binary_search_by(|r| r.start.cmp(&start)) {
-            if regions[idx].end == end {
-                regions.remove(idx);
+        let mut i = 0;
+        while i < regions.len() {
+            let r_start = regions[i].start;
+            let r_end = regions[i].end;
+            let r_name = regions[i].name;
+
+            // No overlap
+            if end <= r_start || start >= r_end {
+                i += 1;
+                continue;
             }
+
+            // Case 1: Unregistered range covers the entire protected region
+            if start <= r_start && end >= r_end {
+                regions.remove(i);
+                // Don't increment i; the next region shifts into this index.
+                continue;
+            }
+
+            // Case 2: Unregistered range overlaps with the start of the region
+            if start <= r_start && end < r_end {
+                regions[i].start = end;
+                i += 1;
+                continue;
+            }
+
+            // Case 3: Unregistered range overlaps with the end of the region
+            if start > r_start && end >= r_end {
+                regions[i].end = start;
+                i += 1;
+                continue;
+            }
+
+            // Case 4: Unregistered range is in the middle of the region - split it
+            if start > r_start && end < r_end {
+                regions[i].end = start;
+                regions.insert(i + 1, ProtectedRegion {
+                    start: end,
+                    end: r_end,
+                    name: r_name,
+                });
+                i += 2;
+                continue;
+            }
+            i += 1;
         }
     }
 

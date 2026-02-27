@@ -322,21 +322,29 @@ pub struct RRefPoolStats {
 /// 
 /// 固定サイズブロックのプールを管理。
 /// スレッドセーフなフリーリストを使用。
+/// 
+/// v0.6.1: ABA問題を回避するため、AtomicUsizeからIrqMutexによる保護へ移行。
 pub struct RRefPool {
     /// 設定
     config: RRefPoolConfig,
+    /// 内部状態
+    inner: IrqMutex<RRefPoolInner>,
+}
+
+/// RRefPoolの内部状態
+struct RRefPoolInner {
     /// フリーリストの先頭
-    free_head: core::sync::atomic::AtomicUsize,
+    free_head: usize,
     /// 空きブロック数
-    free_count: core::sync::atomic::AtomicUsize,
+    free_count: usize,
     /// 総ブロック数
-    total_count: core::sync::atomic::AtomicUsize,
+    total_count: usize,
     /// 統計: 割り当て数
-    alloc_count: core::sync::atomic::AtomicU64,
+    alloc_count: u64,
     /// 統計: 解放数
-    dealloc_count: core::sync::atomic::AtomicU64,
+    dealloc_count: u64,
     /// 統計: 転送数
-    transfer_count: core::sync::atomic::AtomicU64,
+    transfer_count: u64,
 }
 
 impl RRefPool {
@@ -344,12 +352,14 @@ impl RRefPool {
     pub const fn new(config: RRefPoolConfig) -> Self {
         Self {
             config,
-            free_head: core::sync::atomic::AtomicUsize::new(0),
-            free_count: core::sync::atomic::AtomicUsize::new(0),
-            total_count: core::sync::atomic::AtomicUsize::new(0),
-            alloc_count: core::sync::atomic::AtomicU64::new(0),
-            dealloc_count: core::sync::atomic::AtomicU64::new(0),
-            transfer_count: core::sync::atomic::AtomicU64::new(0),
+            inner: IrqMutex::new(RRefPoolInner {
+                free_head: 0,
+                free_count: 0,
+                total_count: 0,
+                alloc_count: 0,
+                dealloc_count: 0,
+                transfer_count: 0,
+            }),
         }
     }
     
@@ -357,31 +367,23 @@ impl RRefPool {
     /// 
     /// フリーリストから取得、なければNoneを返す
     pub fn allocate(&self) -> Option<*mut RRefBlockHeader> {
-        loop {
-            let head = self.free_head.load(core::sync::atomic::Ordering::Acquire);
-            if head == 0 {
-                return None;
-            }
-            
-            let header = head as *mut RRefBlockHeader;
-            let next = unsafe { (*header).next_free };
-            
-            if self.free_head.compare_exchange(
-                head,
-                next,
-                core::sync::atomic::Ordering::AcqRel,
-                core::sync::atomic::Ordering::Relaxed,
-            ).is_ok() {
-                unsafe {
-                    (*header).state.store(RRefBlockState::Allocated as u8, core::sync::atomic::Ordering::Release);
-                    (*header).ref_count.store(1, core::sync::atomic::Ordering::Release);
-                    (*header).next_free = 0;
-                }
-                self.free_count.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
-                self.alloc_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                return Some(header);
-            }
+        let mut inner = self.inner.lock();
+        let head = inner.free_head;
+        if head == 0 {
+            return None;
         }
+        
+        let header = head as *mut RRefBlockHeader;
+        unsafe {
+            inner.free_head = (*header).next_free;
+            (*header).state.store(RRefBlockState::Allocated as u8, core::sync::atomic::Ordering::Release);
+            (*header).ref_count.store(1, core::sync::atomic::Ordering::Release);
+            (*header).next_free = 0;
+        }
+        
+        inner.free_count -= 1;
+        inner.alloc_count += 1;
+        Some(header)
     }
     
     /// ブロックを解放
@@ -394,40 +396,46 @@ impl RRefPool {
         if header.is_null() {
             return;
         }
-        
-        (*header).state.store(RRefBlockState::Free as u8, core::sync::atomic::Ordering::Release);
-        
-        loop {
-            let head = self.free_head.load(core::sync::atomic::Ordering::Acquire);
-            (*header).next_free = head;
-            
-            if self.free_head.compare_exchange(
-                head,
-                header as usize,
-                core::sync::atomic::Ordering::AcqRel,
-                core::sync::atomic::Ordering::Relaxed,
-            ).is_ok() {
-                break;
-            }
+
+        // Security Check: Pointer range validation
+        // RRef blocks must be within the Exchange Heap
+        let addr = header as usize;
+        let ex_start = crate::memory::exchange_heap_start() as usize;
+        let ex_end = ex_start + crate::memory::EXCHANGE_HEAP_SIZE;
+        if addr < ex_start || addr >= ex_end {
+             // In a real system we might panic here, but as it's unsafe deallocate,
+             // we'll just ignore for now to avoid crashing on every minor bug.
+             // However, for security, we MUST NOT add it to our free list.
+             return;
         }
         
-        self.free_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        self.dealloc_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let mut inner = self.inner.lock();
+        
+        unsafe {
+            (*header).state.store(RRefBlockState::Free as u8, core::sync::atomic::Ordering::Release);
+            (*header).next_free = inner.free_head;
+            inner.free_head = header as usize;
+        }
+        
+        inner.free_count += 1;
+        inner.dealloc_count += 1;
     }
     
     /// 転送を記録
     pub fn record_transfer(&self) {
-        self.transfer_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let mut inner = self.inner.lock();
+        inner.transfer_count += 1;
     }
     
     /// 統計を取得
     pub fn stats(&self) -> RRefPoolStats {
+        let inner = self.inner.lock();
         RRefPoolStats {
-            total_blocks: self.total_count.load(core::sync::atomic::Ordering::Relaxed),
-            free_blocks: self.free_count.load(core::sync::atomic::Ordering::Relaxed),
-            allocations: self.alloc_count.load(core::sync::atomic::Ordering::Relaxed),
-            deallocations: self.dealloc_count.load(core::sync::atomic::Ordering::Relaxed),
-            transfers: self.transfer_count.load(core::sync::atomic::Ordering::Relaxed),
+            total_blocks: inner.total_count,
+            free_blocks: inner.free_count,
+            allocations: inner.alloc_count,
+            deallocations: inner.dealloc_count,
+            transfers: inner.transfer_count,
         }
     }
 }
