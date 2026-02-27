@@ -73,16 +73,15 @@ impl PostedInterruptPool {
         let size = num_pids.min(Self::MAX_PIDS);
         // Each PID is 64 bytes
         let total_bytes = size * core::mem::size_of::<PostedInterruptDescriptor>();
+        let num_pages = (total_bytes + 4095) / 4096;
 
-        // Allocate 64-byte aligned memory
-        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 64).ok()?;
-        let base_ptr = crate::util::allocate_zeroed(layout)?;
-        let base = base_ptr.as_ptr() as usize;
+        // Allocate contiguous physical frames for hardware requirements
+        let frames = crate::mm::phys::frame_allocator::alloc_frames(num_pages, None)?;
+        let phys = frames.start_address().as_u64();
+        let base = crate::io::iommu::core::tables::phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
-        if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(base as *const u8) {
-            crate::security::dma::register_protected_range(phys, total_bytes as u64);
-        }
+        crate::security::dma::register_protected_range(phys, total_bytes as u64);
 
         // Bitmap: 64 PIDs per u64
         let bitmap_size = (size + 63) / 64;
@@ -147,13 +146,17 @@ impl PostedInterruptPool {
 impl Drop for PostedInterruptPool {
     fn drop(&mut self) {
         let total_bytes = self.size * core::mem::size_of::<PostedInterruptDescriptor>();
+        let num_pages = (total_bytes + 4095) / 4096;
         if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
-        }
-
-        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 64).unwrap();
-        unsafe {
-            alloc::alloc::dealloc(self.base as *mut u8, layout);
+            
+            use x86_64::structures::paging::{PhysFrame, Size4KiB};
+            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(phys));
+            let frames = x86_64::structures::paging::frame::PhysFrameRange {
+                start: frame,
+                end: frame + num_pages as u64,
+            };
+            crate::mm::phys::frame_allocator::dealloc_frames(frames);
         }
     }
 }
@@ -245,16 +248,15 @@ impl PageRequestQueue {
         // Size must be power of 2
         let size = size.next_power_of_two().min(4096);
         let total_bytes = size * core::mem::size_of::<PageRequestEntry>();
+        let num_pages = (total_bytes + 4095) / 4096;
 
-        // Allocate 4KB aligned memory
-        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).ok()?;
-        let base_ptr = crate::util::allocate_zeroed(layout)?;
-        let base = base_ptr.as_ptr() as usize;
+        // Allocate contiguous physical frames for hardware requirements
+        let frames = crate::mm::phys::frame_allocator::alloc_frames(num_pages, None)?;
+        let phys = frames.start_address().as_u64();
+        let base = crate::io::iommu::core::tables::phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
-        if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(base as *const u8) {
-            crate::security::dma::register_protected_range(phys, total_bytes as u64);
-        }
+        crate::security::dma::register_protected_range(phys, total_bytes as u64);
 
         Some(Self {
             base,
@@ -266,7 +268,7 @@ impl PageRequestQueue {
 
     /// Get the physical base address
     pub fn base_address(&self) -> u64 {
-        self.base as u64
+        crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8).unwrap_or(0)
     }
 
     /// Get the size (number of entries)
@@ -306,13 +308,17 @@ impl PageRequestQueue {
 impl Drop for PageRequestQueue {
     fn drop(&mut self) {
         let total_bytes = self.size * core::mem::size_of::<PageRequestEntry>();
+        let num_pages = (total_bytes + 4095) / 4096;
         if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
-        }
 
-        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).unwrap();
-        unsafe {
-            alloc::alloc::dealloc(self.base as *mut u8, layout);
+            use x86_64::structures::paging::{PhysFrame, Size4KiB};
+            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(phys));
+            let frames = x86_64::structures::paging::frame::PhysFrameRange {
+                start: frame,
+                end: frame + num_pages as u64,
+            };
+            crate::mm::phys::frame_allocator::dealloc_frames(frames);
         }
     }
 }

@@ -323,7 +323,18 @@ impl Drop for QuarantineSlotGuard {
         if self.pte_cleared {
             // Round 13: Use helper to poison and wake everyone
             self.queue.poison_system();
-            panic!("CRITICAL: QuarantineSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
+            
+            // SECURITY: Avoid system-wide panic to prevent DoS.
+            // Poisoning the queue already prevents further operations on this domain.
+            log::error!("CRITICAL: QuarantineSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
+            
+            // Notify security monitor about the potential vulnerability window
+            crate::io::iommu::runtime::security::notify_security_listener(
+                crate::io::iommu::runtime::security::SecurityEvent::QuarantinePoisoned { 
+                    domain_id: 0 // Inferred by monitor
+                }
+            );
+            return;
         }
 
         self.queue.rollback_slot(self.slot_idx, self.slot_gen);
@@ -386,7 +397,17 @@ impl Drop for InvSlotGuard {
         if self.pte_cleared {
             // Round 13: Use helper to poison and wake everyone
             self.queue.poison_system();
-            panic!("CRITICAL: InvSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
+            
+            // SECURITY: Avoid system-wide panic to prevent DoS.
+            log::error!("CRITICAL: InvSlotGuard dropped after PTE clear but before commit! Queue POISONED.");
+            
+            // Notify security monitor about the potential vulnerability window
+            crate::io::iommu::runtime::security::notify_security_listener(
+                crate::io::iommu::runtime::security::SecurityEvent::QuarantinePoisoned { 
+                    domain_id: 0 // Inferred by monitor
+                }
+            );
+            return;
         }
 
         self.queue

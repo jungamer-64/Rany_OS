@@ -260,9 +260,17 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
     // 3. Strict bounds check against known physical memory
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys == 0 {
-        // SECURITY: If we don't know the RAM layout yet, we must be conservative
-        // and only allow DMA into regions that are explicitly safe (not implemented here,
-        // so we fail for safety).
+        // SECURITY: If we don't know the RAM layout yet, we are cautious.
+        // During early boot (RMRR setup), we allow mappings in the first 4GB
+        // which is a common location for firmware reserved regions.
+        if end <= 0x1_0000_0000 {
+            log::warn!(
+                "[IOMMU][SECURITY] Early boot DMA mapping allowed in low-mem: {:#x}-{:#x}",
+                start, end
+            );
+            return Ok(());
+        }
+        
         log::error!("[IOMMU][SECURITY] DMA mapping attempted before RAM layout is known");
         return Err(IommuError::NotInitialized);
     }

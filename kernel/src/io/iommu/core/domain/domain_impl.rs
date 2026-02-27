@@ -438,37 +438,50 @@ impl IommuDomain {
             
         fctx.clear();
 
-        // Drain pending invalidations (Round 9: returns DrainResult)
+        // 1. Drain pending data page invalidations from quarantine
         let drained_batch = match self.quarantine.drain_pending_invalidations(&mut fctx.requests) {
-            crate::io::iommu::runtime::quarantine::DrainResult::NoWork { .. } => return Ok(()),
+            crate::io::iommu::runtime::quarantine::DrainResult::Drained { batch } => Some(batch),
+            crate::io::iommu::runtime::quarantine::DrainResult::NoWork { .. } => None,
             crate::io::iommu::runtime::quarantine::DrainResult::NotReady { batch: _ } => {
-                // Round 9 Safety: Reserved slots pending.
-                // We MUST NOT issue invalidations or reap, as that would
-                // advance the batch prematurely or leave valid PTEs behind.
-                // We can optionally log this or return a special error if needed,
-                // but for now we just skip the flush.
+                // Round 9 Safety: Reserved slots pending. Skip for now.
                 return Ok(());
             }
-            crate::io::iommu::runtime::quarantine::DrainResult::Drained { batch } => batch,
             crate::io::iommu::runtime::quarantine::DrainResult::Poisoned { .. } => return Err(IommuError::Poisoned),
         };
 
-        // Skip if nothing to flush (double check, though NoWork covers this)
-        if fctx.requests.is_empty() {
+        // 2. Check if we have any empty page tables pending release
+        let has_pending_pts = if let Ok(pending) = self.pending_pt_release.lock() {
+            !pending.is_empty()
+        } else {
+            false
+        };
+
+        // Skip if absolutely nothing to do
+        if drained_batch.is_none() && !has_pending_pts {
             return Ok(());
         }
 
-        // Process all invalidation requests in a single batch
-        if let Err(err) = invalidator.process_invalidations(fctx.requests.as_slice()) {
-            return Err(err);
+        // 3. Security: If we are releasing page tables, we MUST perform a domain-selective
+        // IOTLB invalidation to clear any cached paging-structure entries (Level 2/3/4 caches).
+        // Page-selective invalidation is NOT sufficient for clearing intermediate caches.
+        if has_pending_pts {
+            fctx.requests.push(InvalidateRequest::domain(self.id).with_ats());
         }
 
-        // Reap and process completed entries for this batch.
-        // Round 10 Fix: Pass `self` as the context to ensure domain-local IOVA reclamation.
-        self.quarantine.reap_completed(drained_batch, &mut fctx, self);
+        // 4. Process all invalidation requests in a single batch (hardware-optimized)
+        if !fctx.requests.is_empty() {
+            if let Err(err) = invalidator.process_invalidations(fctx.requests.as_slice()) {
+                return Err(err);
+            }
+        }
 
-        // Security: Now that IOTLB invalidation is complete and synchronized,
-        // it is safe to release any empty page tables back to the pool.
+        // 5. Reap and process completed data entries for this batch
+        if let Some(batch) = drained_batch {
+            self.quarantine.reap_completed(batch, &mut fctx, self);
+        }
+
+        // 6. Security: Now that IOTLB (and paging-structure caches) are confirmed clear,
+        // it is safe to release the empty page tables back to the global pool.
         if let Ok(mut pending) = self.pending_pt_release.lock() {
             for pt in pending.drain(..) {
                 self.page_table_pool.release(pt);

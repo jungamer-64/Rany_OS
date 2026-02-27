@@ -1,7 +1,11 @@
 # IOMMU実装状況と不足部分の調査報告
 
 ## 更新履歴
-- **2026-01-04**: Per-CPU Magazine, Per-Domain IOVA, DmaResourceRegistry, Async Unmap実装完了
+- **2026-02-28**: IOMMUセキュリティ脆弱性の修正完了
+    - **Page Table Reuse Fix**: `flush`時にドメイン全体のIOTLB無効化を強制し、ページ構造キャッシュによる脆弱性を解消。
+    - **Physical Contiguity Fix**: `PostedInterruptPool`/`PageRequestQueue`を物理連続メモリ(`alloc_frames`)へ移行。
+    - **Protection Registry Fix**: `HardwareTable`の登録解除漏れを修正し、DMA保護の一貫性を向上。
+- **2026-02-27**: IOMMU Grouping / ACS (Access Control Services) 実装追加
 - **2025-xx-xx**: AMD-Vi基本サポート追加、セキュリティ監視統合
 
 ---

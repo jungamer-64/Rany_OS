@@ -294,29 +294,14 @@ impl IovaAllocator {
             return Ok(());
         }
 
-        // Quarantine full: Try to drain ONLY safe entries (epoch <= completed)
+        // Quarantine full: We MUST NOT force drain here because it bypasses IOTLB consistency (Epochs).
         // Draining without a proper IOTLB flush creates a DMA Use-After-Free window.
-        let completed = self.completed_epoch.load(Ordering::Acquire);
-        let mut batch = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
-        let drained = fb.drain_older_than(completed, FALLBACK_DRAIN_BATCH, &mut batch);
+        //
+        // The caller (IommuDomain) handles this Error by:
+        // 1. Issuing a global IOTLB/Context flush for the domain.
+        // 2. Advancing and completing the epoch (safely draining these rings).
+        // 3. Retrying the free.
         
-        if drained > 0 {
-            for i in 0..drained {
-                let e = batch[i];
-                let g = PageGranularity::from_size_class(e.size_class);
-                let _ = self.inner.free_immediate(e.addr, g);
-            }
-            self.stats.quarantine_forced_drains.fetch_add(drained as u64, Ordering::Relaxed);
-        }
-
-        // Try to push again after drain
-        if fb.push_entry(entry) {
-            self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-            return Ok(());
-        }
-
-        // Still full - must return error for security.
-        // The caller must issue an IOTLB flush and advance/complete the epoch.
         log::warn!(
             "[IOVA][SECURITY] Fallback quarantine full. Rejecting free of 0x{:x} until IOTLB flush.",
             addr
