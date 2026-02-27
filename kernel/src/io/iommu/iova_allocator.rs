@@ -264,25 +264,20 @@ impl IovaAllocator {
             if pushed {
                 self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
                 Ok(())
-            } else if is_memory_pressure_critical() {
-                // Ring full AND memory critical: Force drain as last resort to avoid system stall/panic.
-                // SECURITY WARNING: This bypasses IOTLB consistency for the drained entries!
-                self.drain_quarantine_for_cpu(cpu_id, true);
-                self.stats.quarantine_forced_drains.fetch_add(1, Ordering::Relaxed);
-
-                // Retry push
-                let mut ring = qbox[cpu_id].lock();
-                if ring.push(entry.addr, entry.size_class, entry.epoch) {
-                     self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-                     Ok(())
-                } else {
-                    // Still full after drain? This is bad. Fallback to immediate free.
-                    self.inner.free_immediate(addr, granularity)
-                        .map_err(|_| IommuError::NotMapped)
-                }
             } else {
-                // Ring full but memory NOT critical: Fail the request rather than compromising safety.
-                // The caller (IOMMU driver) should handle this by performing a full IOTLB flush soon.
+                // Ring full: Do NOT force drain here because it bypasses IOTLB consistency (Epochs).
+                // Draining without a proper IOTLB flush creates a DMA Use-After-Free window.
+                //
+                // The caller (IOMMU driver/domain) must handle this Error by:
+                // 1. Advancing the global epoch.
+                // 2. Issuing a global IOTLB/Context flush.
+                // 3. Completing the epoch (which will safely drain these rings).
+                // 4. Retrying the free.
+                
+                log::warn!(
+                    "[IOVA][SECURITY] Quarantine ring full for CPU {}. Rejecting free until IOTLB flush.",
+                    cpu_id
+                );
                 Err(IommuError::OutOfMemory)
             }
         } else {

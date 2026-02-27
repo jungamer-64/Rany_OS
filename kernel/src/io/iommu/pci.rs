@@ -44,36 +44,17 @@ fn is_ahci_legacy(device: &crate::io::pci::PciDeviceInfo) -> bool {
 /// IOMMU Registry and Group Manager are MANDATORY for secure operation.
 /// Fallback to legacy/no-grouping mode is disabled to prevent spoofing.
 #[cfg(not(test))]
-pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
+pub fn setup_iommu_for_pci_device(
+    device: &mut crate::io::pci::PciDeviceInfo,
+) -> Result<u16, super::types::IommuError> {
     if !is_iommu_enabled() {
-        return None;
+        return Err(super::types::IommuError::NotSupported);
     }
 
     // Critical: Grouping is mandatory for security. Fail if driver or manager are missing.
-    let driver = match get_iommu_driver() {
-        Some(driver) => driver,
-        None => {
-            log::error!("[IOMMU][SECURITY] IOMMU driver not found - blocking device protection");
-            return None;
-        }
-    };
-
-    let iommu_group_manager = match get_iommu_group_manager() {
-        Some(manager) => manager,
-        None => {
-            log::error!("[IOMMU][SECURITY] Group manager not found - blocking device protection");
-            return None;
-        }
-    };
-    let pcie_ext_manager = match pcie_ext_manager() {
-        Some(manager) => manager,
-        None => {
-            log::error!(
-                "[IOMMU][SECURITY] PCIe ext manager not found - cannot verify ACS topology"
-            );
-            return None;
-        }
-    };
+    let driver = get_iommu_driver().ok_or(super::types::IommuError::NotInitialized)?;
+    let iommu_group_manager = get_iommu_group_manager().ok_or(super::types::IommuError::NotInitialized)?;
+    let pcie_ext_manager = pcie_ext_manager().ok_or(super::types::IommuError::NotInitialized)?;
 
     let device_id = DeviceId::new(
         device.segment,
@@ -104,23 +85,13 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         crate::io::iommu::IommuBackend::Amd(_) => 0, // AMD driver manages multiple units internally
     };
 
-    let (iommu_group, newly_created) = match iommu_group_manager.find_or_create_group(
+    let (iommu_group, newly_created) = iommu_group_manager.find_or_create_group(
         device_id,
         driver,
         controller_idx,
         &RealPciTopology::new(pcie_ext_manager),
         domain_type,
-    ) {
-        Ok(group_info) => group_info,
-        Err(e) => {
-            log::error!(
-                "[IOMMU] Failed to get/create IOMMU group for device {:?}: {:?}",
-                device_id,
-                e
-            );
-            return None;
-        }
-    };
+    )?;
 
     let domain_id = iommu_group.domain_id;
 
@@ -139,13 +110,13 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
             domain_id,
             e
         );
-        return None;
+        return Err(e);
     }
 
     device.iommu_domain_id = Some(domain_id);
     log_device_protection(device_id, &iommu_group, domain_id, newly_created);
 
-    Some(domain_id)
+    Ok(domain_id)
 }
 
 #[cfg(not(test))]
@@ -287,19 +258,43 @@ pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceI
     }
 
     let mut protected_count = 0;
+    let mut failed_count = 0;
     for device in devices.iter_mut() {
         // ブリッジデバイスはスキップ（ホストブリッジはIOMMUで保護不要）
         if device.is_pci_bridge() {
             continue;
         }
 
-        if setup_iommu_for_pci_device(device).is_some() {
-            protected_count += 1;
+        match setup_iommu_for_pci_device(device) {
+            Ok(_) => {
+                protected_count += 1;
+            }
+            Err(e) => {
+                failed_count += 1;
+                // SECURITY FAIL-SAFE: If IOMMU is enabled but we can't protect the device,
+                // we MUST ensure the device cannot perform DMA (identity mapping attack).
+                log::error!(
+                    "[IOMMU][SECURITY] CRITICAL: Failed to protect PCI device {:?}! Error: {:?}. DISABLING BUS MASTERING.",
+                    device.bdf,
+                    e
+                );
+                device.disable_bus_master();
+                // Ensure it's not marked as having a domain
+                device.iommu_domain_id = None;
+            }
         }
     }
 
-    log::info!(
-        "[IOMMU] Protected {} PCI devices with IOMMU domains\n",
-        protected_count
-    );
+    if failed_count > 0 {
+        log::error!(
+            "[IOMMU][SECURITY] Completed with errors: {} protected, {} DISABLED due to protection failure",
+            protected_count,
+            failed_count
+        );
+    } else {
+        log::info!(
+            "[IOMMU] Protected {} PCI devices with IOMMU domains\n",
+            protected_count
+        );
+    }
 }

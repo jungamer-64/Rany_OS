@@ -340,9 +340,6 @@ fn finalize_iommu_setup(config: &IommuConfig) {
         }
     }
     crate::io::log::early_print("[IOMMU] Default domain done.\n");
-
-    crate::io::log::early_print("[IOMMU] Init Group Manager...\n");
-    IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
 }
 
 /// Initialize the global IOMMU (legacy wrapper)

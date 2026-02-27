@@ -341,17 +341,22 @@ def main() -> int:
         )
 
     # Pure tier regression guard:
-    # root-default pure packages must not reintroduce qemu-test-export wrappers.
-    for member_path in root_default["packages"]:
+    # all pure-tier packages must not reintroduce qemu-test-export wrappers.
+    pure_member_paths = []
+    for member_path, pkg_name in member_path_to_name.items():
+        if pkg_name in pure_package_names:
+            pure_member_paths.append(member_path)
+
+    for member_path in sorted(pure_member_paths):
         pkg_root = (root / member_path).resolve()
         cargo_toml = pkg_root / "Cargo.toml"
         if not cargo_toml.exists():
-            return fail(f"missing Cargo.toml for root_default package path: {member_path}")
+            return fail(f"missing Cargo.toml for pure-tier package path: {member_path}")
 
         cargo_text = cargo_toml.read_text(encoding="utf-8")
         if BANNED_PURE_CARGO_RE.search(cargo_text):
             return fail(
-                f"root_default package '{member_path}' reintroduced banned token "
+                f"pure-tier package '{member_path}' reintroduced banned token "
                 f"'qemu-test-export' in {cargo_toml.relative_to(root)}"
             )
 
@@ -359,7 +364,7 @@ def main() -> int:
             rs_text = rs_path.read_text(encoding="utf-8")
             if BANNED_PURE_RS_RE.search(rs_text):
                 return fail(
-                    f"root_default package '{member_path}' reintroduced banned test wrapper token "
+                    f"pure-tier package '{member_path}' reintroduced banned test wrapper token "
                     f"in {rs_path.relative_to(root)}"
                 )
 

@@ -52,6 +52,12 @@ pub fn register_protected_region(start: u64, size: u64, name: &'static str) {
 
 /// Initialize IOMMU security subsystem with default protected regions.
 pub fn init() {
+    // 0. Initialize IOMMU Group Manager (Global)
+    // This is required by setup_iommu_for_pci_device regardless of the backend.
+    crate::io::iommu::groups::IOMMU_GROUP_MANAGER.call_once(|| {
+        crate::io::iommu::groups::IommuGroupManager::new()
+    });
+
     // 1. Protect Local APIC
     register_protected_region(0xFEE0_0000, 0x1000, "Local APIC");
 
@@ -82,7 +88,53 @@ pub fn protect_kernel_image() {
 }
 
 /// Get the physical address range of the kernel image.
-/// ... (keeping the rest of the function the same) ...
+fn kernel_phys_range() -> Option<(u64, u64)> {
+    unsafe extern "C" {
+        static __kernel_start: u8;
+        static __kernel_end: u8;
+    }
+
+    let (kstart_virt, kend_virt) = unsafe {
+        (
+            crate::mm::virt::higher_half::VirtAddr::new(&__kernel_start as *const u8 as u64),
+            crate::mm::virt::higher_half::VirtAddr::new(&__kernel_end as *const u8 as u64),
+        )
+    };
+    if kend_virt.as_u64() <= kstart_virt.as_u64() {
+        return None;
+    }
+
+    let phys_start = crate::mm::virt::higher_half::global_translate(kstart_virt)
+        .map(|p| p.as_u64())
+        .or_else(|| {
+            // Fallback: direct-map offset based conversion when translation table is not ready.
+            let offset = crate::mm::virt::higher_half::physical_memory_offset();
+            if kstart_virt.as_u64() >= offset {
+                Some(kstart_virt.as_u64().saturating_sub(offset))
+            } else {
+                None
+            }
+        })?;
+
+    // Translate the last byte and reconstruct the exclusive end.
+    let last_virt = crate::mm::virt::higher_half::VirtAddr::new(kend_virt.as_u64().saturating_sub(1));
+    let phys_last = crate::mm::virt::higher_half::global_translate(last_virt)
+        .map(|p| p.as_u64())
+        .or_else(|| {
+            let offset = crate::mm::virt::higher_half::physical_memory_offset();
+            if last_virt.as_u64() >= offset {
+                Some(last_virt.as_u64().saturating_sub(offset))
+            } else {
+                None
+            }
+        })?;
+    let phys_end = phys_last.saturating_add(1);
+
+    if phys_end <= phys_start {
+        return None;
+    }
+    Some((phys_start, phys_end))
+}
 
 /// Check if two memory ranges overlap.
 pub fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
@@ -1765,4 +1817,3 @@ pub(crate) fn notify_security_listener(event: SecurityEvent) {
         notifier.notify(event);
     }
 }
-

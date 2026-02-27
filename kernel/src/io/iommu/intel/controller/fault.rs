@@ -344,8 +344,9 @@ pub fn drain_deferred_faults() -> usize {
 fn process_fault_with_controller(event: &RawFaultEvent, controller: &IommuController) {
     use crate::io::iommu::security::SecurityEvent;
 
+    let record = event.to_fault_record();
     if let Some(log) = controller.fault_log.lock().as_mut() {
-        log.push(event.to_fault_record());
+        log.push(record);
     }
 
     let device_id = device_id_from_source_id(controller.segment, event.source_id);
@@ -358,6 +359,19 @@ fn process_fault_with_controller(event: &RawFaultEvent, controller: &IommuContro
             domain_id_from_scalable_context_entry(controller, device_id, event.pasid)
         })
         .map(u32::from);
+
+    // SECURITY: Automatically isolate the faulting device if required by policy.
+    // This provides active protection beyond just logging.
+    if let Err(e) = controller.isolate_faulting_device(record) {
+        log::error!(
+            "[IOMMU][SECURITY] Failed to isolate faulting device {:?}: {:?}",
+            device_id,
+            e
+        );
+    }
+
+    // Always notify security of the violation itself.
+    // (Isolation notification is handled inside isolate_faulting_device if it occurs)
     controller.notify_security(SecurityEvent::DmaViolation {
         source_id: event.source_id,
         fault_address: event.fault_address,
