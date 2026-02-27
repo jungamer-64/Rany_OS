@@ -629,6 +629,13 @@ impl Ipv4Processor {
         self.stats.rx_packets += 1;
 
         let src = packet.source();
+        
+        // Security: Prevent Source IP spoofing (Martian packets)
+        if src.is_broadcast() || src.is_multicast() || (src.is_loopback() && !self.config.address.is_loopback()) {
+            self.stats.rx_dropped += 1;
+            return Ipv4ProcessResult::Dropped;
+        }
+
         let header = packet.header();
 
         // Check if this is a fragment

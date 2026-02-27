@@ -573,7 +573,7 @@ fn parse_tbs_fields<'a>(
                                     if tag == 0x01 { // cA BOOLEAN
                                         let len = bc_inner.read_length()?;
                                         if len == 1 {
-                                            is_ca = bc_inner.remaining()[0] != 0;
+                                            is_ca = bc_inner.remaining().get(0).copied().unwrap_or(0) != 0;
                                         }
                                     }
                                 }
@@ -950,6 +950,12 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
     // Handle *.domain.com (RFC 6125)
     if pattern.starts_with(b"*.") && pattern.len() > 2 {
         let suffix = &pattern[1..]; // ".domain.com"
+        
+        // Security: Prevent wildcard matches on top-level domains (e.g. *.com)
+        if !suffix[1..].contains(&b'.') {
+            return false;
+        }
+
         if hostname.as_bytes().ends_with(suffix) {
             // Ensure the * only matches one label (not subdomains)
             let prefix_len = hostname.len() - suffix.len();

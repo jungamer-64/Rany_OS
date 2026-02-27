@@ -42,6 +42,13 @@ impl Ipv6Processor {
         self.stats.record_rx();
 
         let src = packet.source();
+        
+        // Security: Drop Martian packets (source IP cannot be multicast)
+        if src.is_multicast() {
+            self.stats.record_dropped();
+            return Ipv6ProcessResult::Dropped;
+        }
+        
         let dst = packet.destination();
 
         // Check if the packet is for us
