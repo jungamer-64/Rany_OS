@@ -224,28 +224,33 @@ impl IommuGroupManager {
         let mut current_func = device.function;
         let mut first_hop = true;
 
-        // 初期候補: 自身のファンクション 0 (多機能デバイス対応)
-        // 多機能デバイス自体がACS分離を提供していない場合、全ファンクションをマージする必要がある。
+        // グループのルート候補を保持
         let mut group_root_bus = current_bus;
         let mut group_root_dev = current_dev;
+        let mut group_root_func = current_func;
 
         // Check if the device itself is a multifunction device and if it lacks ACS isolation
         if let Some(header_type) = topology.read_header_type(current_bus, current_dev, 0) {
             let is_multifunction = (header_type & 0x80) != 0;
             if is_multifunction {
                 match topology.is_acs_isolation_enabled(current_bus, current_dev, 0) {
-                    Some(true) => { /* Functions are isolated, good */ }
+                    Some(true) => {
+                        // Functions are isolated. Group root stays as the device's own function.
+                    }
                     Some(false) | None => {
                         // Functions are NOT isolated - they must share a group (root is func 0)
-                        // This is already the default for group_root_bus/dev
+                        group_root_func = 0;
                     }
                 }
+            } else {
+                // Single function device
+                group_root_func = 0;
             }
         }
 
         // PCIヒエラルキーをルートコンプレックスに向かって走査
         loop {
-            // 現在のノード情報を読取
+            // ... (rest of the loop is correct as it updates bus/dev and resets func to 0 on bridge merge)
             let header_type = match topology.read_header_type(current_bus, current_dev, current_func)
             {
                 Some(header_type) => header_type,
@@ -266,27 +271,23 @@ impl IommuGroupManager {
 
             if is_bridge {
                 // ブリッジの下流分離を確認 (ACS)
-                // P2P通信を防ぐには Downstream Port での ACS (Source Validation, P2P Redirect) が不可欠。
                 match topology.is_acs_isolation_enabled(current_bus, current_dev, current_func) {
                     Some(true) => {
                         // このブリッジで下流が分離されている。
-                        // ただし、さらに上位のブリッジが非分離であれば、そちらのグループにマージされる。
                     }
                     Some(false) | None => {
-                        // 分離不能ブリッジ → グループのルートをこのブリッジ(のファンクション0)に引き上げる。
-                        // これにより、このブリッジの下流にある全デバイスが同一グループにマージされる。
+                        // 分離不能ブリッジ → グループのルートをこのブリッジに引き上げる。
                         group_root_bus = current_bus;
                         group_root_dev = current_dev;
+                        group_root_func = 0; // Bridges are group roots via function 0
                     }
                 }
             }
 
-            // バス0（ルートコンプレックス直下）に到達
             if current_bus == 0 {
                 break;
             }
 
-            // 親ブリッジを検索して上位へ
             match topology.find_parent_bridge(current_bus) {
                 Some((parent_bus, parent_dev, parent_func)) => {
                     current_bus = parent_bus;
@@ -310,7 +311,7 @@ impl IommuGroupManager {
             device.segment,
             group_root_bus,
             group_root_dev,
-            0, // Group ID always uses function 0 for the root device
+            group_root_func,
         ))
     }
 

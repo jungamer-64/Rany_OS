@@ -14,32 +14,32 @@ pub use self::dma::*;
 pub use self::mgmt::*;
 
 // Re-exports from other internal modules (for API compatibility)
-pub use super::irq::{map_interrupt, get_remap_msi_message};
-pub use super::stats::{
+pub use crate::io::iommu::runtime::irq::{map_interrupt, get_remap_msi_message};
+pub use crate::io::iommu::runtime::stats::{
     reset_map_unmap_counts, get_map_count, get_unmap_count,
 };
-pub use super::security::{
+pub use crate::io::iommu::runtime::security::{
     FaultSummary, IsolationDecision, IsolationReason, SecurityEvent, SecurityNotifier,
     set_security_notifier, 
     // set_unsafe_identity_mapping_allowed,
     is_unsafe_identity_mapping_allowed,
     set_global_dma_mapping_allowed, is_global_dma_mapping_allowed,
 };
-pub use super::registry::{
+pub use crate::io::iommu::runtime::registry::{
     is_iommu_enabled, 
     register_device_dma_mask, register_device_dma_width, clear_device_dma_mask, get_device_dma_mask
 };
-pub use super::dma_handle::{
+pub use crate::io::iommu::core::dma::handle::{
     DmaDirection, DmaHandle, MapError, MapErrorKind, UnmapError, UnmapErrorKind,
 };
 
 /// Diagnostics
 pub fn dump_iommu_diagnostics() {
     log::info!("=== IOMMU Diagnostics ===");
-    log::info!("Global map count: {}", super::stats::get_map_count());
-    log::info!("Global unmap count: {}", super::stats::get_unmap_count());
+    log::info!("Global map count: {}", crate::io::iommu::runtime::stats::get_map_count());
+    log::info!("Global unmap count: {}", crate::io::iommu::runtime::stats::get_unmap_count());
 
-    if let Some(driver) = super::registry::get_iommu_driver() {
+    if let Some(driver) = crate::io::iommu::runtime::registry::get_iommu_driver() {
         driver.dump_diagnostics();
     } else {
         log::warn!("IOMMU driver not initialized");

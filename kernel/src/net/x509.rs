@@ -973,15 +973,10 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
     let mut inner = DerParser::new(content);
     while !inner.is_empty() {
         // Name is a SEQUENCE of SETs
-        let rdn_content = match inner.read_tag() {
-            Some(0x31) => { // SET
-                let len = inner.read_length().unwrap_or(0);
-                if len > inner.remaining().len() { break; }
-                &inner.remaining()[..len]
-            }
+        let (tag, rdn_content) = match inner.read_tlv() {
+            Some((0x31, c)) => (0x31, c),
             _ => break,
         };
-        inner.skip_tlv(); // Skip the SET we just peeked into
 
         let mut rdn_parser = DerParser::new(rdn_content);
         while !rdn_parser.is_empty() {

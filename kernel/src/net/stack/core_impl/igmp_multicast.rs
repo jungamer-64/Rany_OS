@@ -682,6 +682,35 @@ impl NetworkStack {
         }
     }
 
+    /// Send an ARP probe (RFC 5227 / RFC 2131 Section 2.2)
+    /// 
+    /// Probes are sent with sender_ip = 0.0.0.0 to detect address conflicts
+    /// without polluting other hosts' ARP caches with unverified information.
+    pub fn send_arp_probe(&mut self, target_ip: Ipv4Address) {
+        let mut buffer = [0u8; 64];
+        let mac = self.mac_address();
+        let current_time = self.current_time();
+
+        // Build Ethernet frame (broadcast)
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(MacAddress::BROADCAST)
+                .set_source(mac)
+                .set_ether_type(EtherType::Arp);
+
+            let payload = frame.payload_mut();
+            if let Some(len) = self.arp.build_probe(payload, target_ip) {
+                frame.set_payload_len(len);
+                frame.pad_to_minimum();
+
+                if self.transmit(frame.as_bytes()) {
+                    self.arp.request_sent(target_ip, current_time);
+                    log::info!("[NET-ARP] ARP probe sent for {}", target_ip);
+                }
+            }
+        }
+    }
+
     /// Resolve an IP address to a MAC from the ARP cache (public wrapper)
     pub fn arp_resolve(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
         self.arp.resolve(ip, current_time)

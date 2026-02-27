@@ -171,6 +171,10 @@ pub struct TlsConnection {
     /// TLS 1.3: server Finishedまでのハンドシェイクメッセージ長
     /// (アプリケーション鍵導出時のトランスクリプト境界として使用)
     server_finished_offset: usize,
+    /// TLS 1.2: 読み取り暗号化が有効か (ChangeCipherSpec受信後)
+    read_encryption_active: bool,
+    /// TLS 1.2: 書き込み暗号化が有効か (ChangeCipherSpec送信後)
+    write_encryption_active: bool,
 }
 
 impl TlsConnection {
@@ -243,6 +247,8 @@ impl TlsConnection {
             client_auth_requested: false,
             certificate_request_context: Vec::new(),
             server_finished_offset: 0,
+            read_encryption_active: false,
+            write_encryption_active: false,
         }
     }
 

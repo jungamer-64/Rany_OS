@@ -13,7 +13,7 @@ impl DhcpClient {
         match crate::net::stack::stack().lock() {
             Ok(mut s) => {
                 if let Some(stack) = s.as_mut() {
-                    stack.send_arp_request(lease.ip_address);
+                    stack.send_arp_probe(lease.ip_address);
                 }
             }
             Err(_) => log::error!("[NET] DHCP Global Stack lock poisoned (process_response Offer) - cannot send ARP probe"),
@@ -402,7 +402,7 @@ impl DhcpClient {
         match crate::net::stack::stack().lock() {
             Ok(mut s) => {
                 if let Some(stack) = s.as_mut() {
-                    stack.send_arp_request(offered_ip);
+                    stack.send_arp_probe(offered_ip);
                     self.offered_probe_at.store(current_tick, Ordering::SeqCst);
                     return false; // wait for probe reply
                 }

@@ -7,7 +7,7 @@ name = "acpi_driver"
 version = "0.1.0"
 dependencies = [
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -16,7 +16,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -56,7 +56,7 @@ dependencies = [
  "hal",
  "kernel_api",
  "log",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -285,9 +285,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "exorust_sync"
+version = "0.1.0"
+dependencies = [
+ "spin",
+]
+
+[[package]]
 name = "fat32"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "hashbrown",
  "log",
  "vfs",
@@ -365,7 +373,7 @@ dependencies = [
  "kernel_api",
  "log",
  "pci_driver",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -382,7 +390,7 @@ dependencies = [
  "hal",
  "kernel_api",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -391,7 +399,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "log",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -442,16 +450,7 @@ dependencies = [
 name = "kernel_api"
 version = "0.1.0"
 dependencies = [
- "spin 0.10.0",
-]
-
-[[package]]
-name = "lazy_static"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-dependencies = [
- "spin 0.9.8",
+ "spin",
 ]
 
 [[package]]
@@ -496,7 +495,8 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "log",
+ "spin",
  "x86_64",
 ]
 
@@ -518,7 +518,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "log",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -577,6 +577,7 @@ dependencies = [
  "apic_driver",
  "bitflags",
  "boot_proto",
+ "criterion",
  "ed25519-compact",
  "fat32",
  "gimli",
@@ -588,14 +589,15 @@ dependencies = [
  "hid_driver",
  "ide_driver",
  "kernel_api",
- "lazy_static",
  "log",
  "nvme_driver",
+ "once_cell",
  "pci_driver",
  "rtc_driver",
  "serial_driver",
  "sha2",
- "spin 0.10.0",
+ "spin",
+ "time_driver",
  "usb_driver",
  "vfs",
  "virtio_driver",
@@ -656,7 +658,7 @@ name = "rtc_driver"
 version = "0.1.0"
 dependencies = [
  "hal",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -735,7 +737,7 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "spin",
  "x86_64",
 ]
 
@@ -749,12 +751,6 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spin"
@@ -774,6 +770,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "time_driver"
+version = "0.1.0"
+dependencies = [
+ "kernel_api",
+ "spin",
 ]
 
 [[package]]
@@ -804,7 +808,8 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "log",
+ "spin",
 ]
 
 [[package]]
@@ -818,7 +823,7 @@ name = "vfs"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "spin 0.10.0",
+ "spin",
 ]
 
 [[package]]
@@ -827,7 +832,8 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
- "spin 0.10.0",
+ "log",
+ "spin",
 ]
 
 [[package]]

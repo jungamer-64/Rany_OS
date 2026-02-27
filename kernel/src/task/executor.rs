@@ -20,7 +20,10 @@
 
 use super::{Task, TaskId, create_waker};
 use crate::sync::PoisonLock;
-use crate::io::iommu::intel::controller::dma::DomainManager;
+use crate::io::iommu::backends::intel::controller::dma::DomainManager;
+use crate::io::iommu::runtime::backend::IommuBackend;
+use crate::io::iommu::runtime::command::queue::IommuCommandKind;
+use crate::io::iommu::runtime::registry::get_iommu_driver;
 use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
@@ -283,10 +286,9 @@ pub fn wake_task(task_id: TaskId) {
 
 /// Dispatch a single IOMMU command to the given controller.
 fn dispatch_iommu_command(
-    ctrl: &crate::io::iommu::intel::controller::IommuController,
-    kind: &crate::io::iommu::cmdqueue::IommuCommandKind,
+    ctrl: &crate::io::iommu::backends::intel::controller::IommuController,
+    kind: &IommuCommandKind,
 ) -> Result<i32, ()> {
-    use crate::io::iommu::cmdqueue::IommuCommandKind;
     match kind {
         IommuCommandKind::InvalidateIotlbDomain { domain } => {
             ctrl.invalidate_iotlb(*domain);
@@ -307,7 +309,7 @@ fn dispatch_iommu_command(
 }
 
 fn dispatch_map_region(
-    ctrl: &crate::io::iommu::intel::controller::IommuController,
+    ctrl: &crate::io::iommu::backends::intel::controller::IommuController,
     domain: u16,
     iova: u64,
     phys: u64,
@@ -325,7 +327,7 @@ fn dispatch_map_region(
 }
 
 fn dispatch_unmap_region(
-    ctrl: &crate::io::iommu::intel::controller::IommuController,
+    ctrl: &crate::io::iommu::backends::intel::controller::IommuController,
     domain: u16,
     iova: u64,
 ) -> Result<i32, ()> {
@@ -341,7 +343,7 @@ fn dispatch_unmap_region(
 /// Drain IOMMU command queues from all registered Intel controllers.
 fn process_iommu_command_queues() {
     // 1. Process Intel-specific controllers if registry is present
-    if let Some(reg) = crate::io::iommu::intel::registry::get_iommu_registry() {
+    if let Some(reg) = crate::io::iommu::backends::intel::registry::get_iommu_registry() {
         for ctrl in &reg.controllers {
             if let Some(ref cq) = ctrl.command_queue {
                 for _ in 0..4 {
@@ -355,8 +357,7 @@ fn process_iommu_command_queues() {
     }
 
     // 2. Process the active global driver (handles AMD-Vi and generic dispatch)
-    if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
-        use crate::io::iommu::IommuBackend;
+    if let Some(driver) = get_iommu_driver() {
         if let IommuBackend::Amd(ref amd_driver) = **driver {
             if let Some(ref cq) = amd_driver.command_queue {
                 for _ in 0..4 {

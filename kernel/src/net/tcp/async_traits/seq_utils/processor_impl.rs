@@ -660,7 +660,8 @@ impl TcpProcessor {
         ack: bool,
         ack_num: u32,
     ) -> TcpProcessResult {
-        if ack && Self::seq_after(ack_num, tcb.snd_una()) {
+        // Security: RFC 793 validation - only accept ACKs for data actually sent
+        if ack && Self::seq_after(ack_num, tcb.snd_una()) && !Self::seq_after(ack_num, tcb.snd_nxt()) {
             // New ACK - calculate bytes acknowledged
             let bytes_acked = ack_num.wrapping_sub(tcb.snd_una());
             tcb.set_last_ack(ack_num);

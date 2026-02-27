@@ -7,12 +7,12 @@
 
 use x86_64::PhysAddr;
 
-use crate::io::iommu::registry::{get_iommu_driver, validate_dma_mask_pre_allocation, is_iommu_enabled};
-use crate::io::iommu::security::is_global_dma_mapping_allowed;
-use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::stats::{inc_map_count, inc_unmap_count};
+use crate::io::iommu::runtime::registry::{get_iommu_driver, validate_dma_mask_pre_allocation, is_iommu_enabled};
+use crate::io::iommu::runtime::security::is_global_dma_mapping_allowed;
+use crate::io::iommu::core::types::{DeviceId, IommuError};
+use crate::io::iommu::runtime::stats::{inc_map_count, inc_unmap_count};
 use crate::ipc::RRef;
-use crate::io::iommu::dma_handle::{DmaDirection, DmaHandle, MapError};
+use crate::io::iommu::core::dma::handle::{DmaDirection, DmaHandle, MapError};
 
 /// Map an `RRef<T>` for DMA access scoped to a specific device.
 ///

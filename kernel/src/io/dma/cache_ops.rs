@@ -439,16 +439,15 @@ impl CoherentDmaBuffer {
                         (Some(iova), Some(*dev))
                     }
                     Err(e) => {
-                        log::warn!(
-                            "[DMA] CoherentDmaBuffer IOMMU map failed: {:?}, falling back to phys_addr",
+                        log::error!(
+                            "[DMA][SECURITY] CoherentDmaBuffer IOMMU map failed: {:?}. Failing allocation to prevent insecure fallback.",
                             e
                         );
-                        // IOMMUマッピング失敗時: IOMMU必須ならバッファ解放して失敗
-                        if crate::io::iommu::api::is_iommu_required() {
-                            unsafe { dealloc(ptr, layout); }
-                            return None;
-                        }
-                        (None, None)
+                        // Security: If IOMMU is enabled but mapping fails, we MUST NOT fall back
+                        // to using physical addresses directly as it would bypass IOMMU protections
+                        // or lead to immediate device faults.
+                        unsafe { dealloc(ptr, layout); }
+                        return None;
                     }
                 }
             } else {

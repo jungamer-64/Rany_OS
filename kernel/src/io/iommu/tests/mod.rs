@@ -6,6 +6,9 @@
 //!
 //! Tests for IOMMU controller functionality, domain management, and invalidation.
 
+#[cfg(feature = "qemu-test-export")]
+pub mod qemu;
+
 use super::config::IommuConfig;
 use super::domain::IommuDomain;
 use super::fault_log::FaultRecord;

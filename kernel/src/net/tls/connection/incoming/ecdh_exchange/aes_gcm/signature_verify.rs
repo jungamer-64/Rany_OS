@@ -537,22 +537,22 @@ impl TlsConnection {
     }
 
     /// レコードを復号
-    pub(crate) fn decrypt_record(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(crate) fn decrypt_record(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         if cipher.is_cbc() {
-            self.decrypt_cbc_record(data, ContentType::ApplicationData as u8)
+            self.decrypt_cbc_record(data, content_type)
         } else if cipher.is_chacha20_poly1305() {
-            self.decrypt_chacha20_poly1305(data)
+            self.decrypt_chacha20_poly1305(data, content_type)
         } else {
-            self.decrypt_aes_gcm(data)
+            self.decrypt_aes_gcm(data, content_type)
         }
     }
 
     /// AES-GCM record decryption (TLS 1.2)
-    pub(super) fn decrypt_aes_gcm(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn decrypt_aes_gcm(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
         // レコード構造:
         // - explicit_nonce (8 bytes, TLS 1.2)
         // - ciphertext (variable)
@@ -589,7 +589,7 @@ impl TlsConnection {
         // AAD: seq_num(8) || type(1) || version(2) || length(2)
         let mut aad = Vec::with_capacity(13);
         aad.extend_from_slice(&self.read_seq.to_be_bytes());
-        aad.push(ContentType::ApplicationData as u8);
+        aad.push(content_type);
         aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
         aad.extend_from_slice(&(ciphertext_len as u16).to_be_bytes());
 
@@ -617,7 +617,7 @@ impl TlsConnection {
     /// Nonce construction (RFC 7905 Section 2):
     /// - Write the sequence number as a 64-bit big-endian value, left-padded with zeros to 12 bytes
     /// - XOR with the IV from key derivation (12 bytes)
-    pub(super) fn decrypt_chacha20_poly1305(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn decrypt_chacha20_poly1305(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
         if data.len() < 16 {
             // Minimum: tag(16), no ciphertext is allowed (empty message)
             return Err(TlsError::DecodeError);
@@ -645,7 +645,7 @@ impl TlsConnection {
         // AAD: seq_num(8) || type(1) || version(2) || length(2)
         let mut aad = Vec::with_capacity(13);
         aad.extend_from_slice(&self.read_seq.to_be_bytes());
-        aad.push(ContentType::ApplicationData as u8);
+        aad.push(content_type);
         aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
         aad.extend_from_slice(&(ciphertext_len as u16).to_be_bytes());
 

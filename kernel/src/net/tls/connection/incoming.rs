@@ -44,25 +44,41 @@ impl TlsConnection {
         payload: &[u8],
         plaintext: &mut Vec<u8>,
     ) -> TlsResult<()> {
-        match ContentType::from_u8(content_type) {
-            Some(ContentType::Handshake) => {
-                self.process_handshake(payload)?;
+        let ct = match ContentType::from_u8(content_type) {
+            Some(c) => c,
+            None => return Err(TlsError::UnexpectedMessage),
+        };
+        
+        // TLS 1.2: 読み取り暗号化が有効な場合、Handshake/Alertレコードも復号が必要
+        let mut decrypted_storage = Vec::new();
+        let final_payload = if !self.is_tls13 && self.read_encryption_active && 
+                               (ct == ContentType::Handshake || ct == ContentType::Alert) {
+            decrypted_storage = self.decrypt_record(payload, content_type)?;
+            &decrypted_storage
+        } else {
+            payload
+        };
+
+        match ct {
+            ContentType::Handshake => {
+                self.process_handshake(final_payload)?;
             }
-            Some(ContentType::ChangeCipherSpec) => {
+            ContentType::ChangeCipherSpec => {
                 // TLS 1.2 略式ハンドシェイク: CCS受信で鍵導出
                 if self.resuming_session && self.state == TlsState::WaitFinishedResumed {
                     self.derive_tls12_keys()?;
                 }
+                // TLS 1.2: CCS受信後は読み取り暗号化を有効化
+                if !self.is_tls13 {
+                    self.read_encryption_active = true;
+                }
                 // TLS 1.3では無視
             }
-            Some(ContentType::Alert) => {
-                self.handle_alert(payload)?;
+            ContentType::Alert => {
+                self.handle_alert(final_payload)?;
             }
-            Some(ContentType::ApplicationData) => {
+            ContentType::ApplicationData => {
                 self.process_app_data(payload, plaintext)?;
-            }
-            _ => {
-                return Err(TlsError::UnexpectedMessage);
             }
         }
         Ok(())
@@ -87,13 +103,14 @@ impl TlsConnection {
     pub(super) fn decrypt_established_data(
         &mut self,
         payload: &[u8],
+        content_type: u8,
         plaintext: &mut Vec<u8>,
     ) -> TlsResult<()> {
         if self.is_tls13 {
             let decrypted = self.tls13_decrypt_record(payload, false)?;
             self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
         } else {
-            let decrypted = self.decrypt_record(payload)?;
+            let decrypted = self.decrypt_record(payload, content_type)?;
             plaintext.extend_from_slice(&decrypted);
         }
         Ok(())
@@ -112,8 +129,8 @@ impl TlsConnection {
             if !app_data.is_empty() {
                 plaintext.extend_from_slice(&app_data);
             }
-        } else if self.state == TlsState::Established {
-            self.decrypt_established_data(payload, plaintext)?;
+        } else if self.state == TlsState::Established || (!self.is_tls13 && self.read_encryption_active) {
+            self.decrypt_established_data(payload, ContentType::ApplicationData as u8, plaintext)?;
         }
         Ok(())
     }

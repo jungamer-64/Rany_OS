@@ -123,7 +123,8 @@ impl TlsConnection {
     ///
     /// RFC 5246 Section 7.1:
     /// ChangeCipherSpec = { type(20), major, minor, length(1), 1 }
-    pub fn build_change_cipher_spec(&self) -> Vec<u8> {
+    pub fn build_change_cipher_spec(&mut self) -> Vec<u8> {
+        self.write_encryption_active = true;
         vec![
             ContentType::ChangeCipherSpec as u8,
             0x03, 0x03, // TLS 1.2

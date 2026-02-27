@@ -491,11 +491,11 @@ pub fn bench_network_processing(runner: &mut BenchmarkRunner) {
 
 /// IOMMU IOVA allocator benchmark (global vs per-core fast path)
 pub fn bench_iommu_iova(runner: &mut BenchmarkRunner) {
-    use crate::io::iommu::intel::controller::iova::IovaManager;
-    use crate::io::iommu::intel::controller::IommuController;
+    use crate::io::iommu::backends::intel::controller::iova::IovaManager;
+    use crate::io::iommu::backends::intel::controller::IommuController;
     use crate::io::iommu::PAGE_SIZE_4K;
-    use crate::io::iommu::registry::{get_iommu_driver, get_iommu_registry};
-    use crate::io::iommu::IommuBackend;
+    use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry};
+    use crate::io::iommu::runtime::backend::IommuBackend;
     use crate::per_cpu::MAX_IOMMU_CONTROLLERS;
 
     let controller = IommuController::new(0, 0);

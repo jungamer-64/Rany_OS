@@ -6,12 +6,11 @@ impl TlsConnection {
     ///
     /// Dispatches between TLS 1.3 record layer and TLS 1.2 cipher suites.
     pub fn encrypt(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
-        if self.state != TlsState::Established {
-            return Err(TlsError::NotConnected);
-        }
-
         // TLS 1.3: inner content type付きでAEAD暗号化
         if self.is_tls13 {
+            if self.state != TlsState::Established && self.state != TlsState::Handshaking {
+                return Err(TlsError::NotConnected);
+            }
             let mut inner_plaintext = Vec::with_capacity(data.len() + 1);
             inner_plaintext.extend_from_slice(data);
             inner_plaintext.push(ContentType::ApplicationData as u8);
@@ -19,14 +18,18 @@ impl TlsConnection {
         }
 
         // TLS 1.2
+        if !self.write_encryption_active && self.state != TlsState::Established {
+            return Err(TlsError::NotConnected);
+        }
+
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         if cipher.is_chacha20_poly1305() {
-            self.encrypt_chacha20_poly1305(data)
+            self.encrypt_chacha20_poly1305(data, ContentType::ApplicationData as u8)
         } else {
-            self.encrypt_aes_gcm(data)
+            self.encrypt_aes_gcm(data, ContentType::ApplicationData as u8)
         }
     }
 
@@ -37,7 +40,7 @@ impl TlsConnection {
     /// - explicit_nonce (8 bytes)
     /// - ciphertext (same length as plaintext)
     /// - auth_tag (16 bytes)
-    pub(super) fn encrypt_aes_gcm(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_aes_gcm(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         // Keys not set — return error (encryption requires valid keys)
@@ -52,7 +55,7 @@ impl TlsConnection {
             // AAD: seq_num(8) || type(1) || version(2) || length(2)
             let mut aad = Vec::with_capacity(13);
             aad.extend_from_slice(&self.write_seq.to_be_bytes());
-            aad.push(ContentType::ApplicationData as u8);
+            aad.push(content_type);
             aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
             aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
 
@@ -63,7 +66,7 @@ impl TlsConnection {
         let record_len = 8 + ciphertext.len() + 16;
 
         let mut record = vec![
-            ContentType::ApplicationData as u8,
+            content_type,
             0x03,
             0x03,
             (record_len >> 8) as u8,
@@ -85,7 +88,7 @@ impl TlsConnection {
     /// - auth_tag (16 bytes)
     ///
     /// Nonce: IV XOR zero-padded sequence number (RFC 7905 Section 2)
-    pub(super) fn encrypt_chacha20_poly1305(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_chacha20_poly1305(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
         // Keys not set — return error (encryption requires valid keys)
         let (ciphertext, auth_tag) =
             if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
@@ -102,7 +105,7 @@ impl TlsConnection {
                 // AAD: seq_num(8) || type(1) || version(2) || length(2)
                 let mut aad = Vec::with_capacity(13);
                 aad.extend_from_slice(&self.write_seq.to_be_bytes());
-                aad.push(ContentType::ApplicationData as u8);
+                aad.push(content_type);
                 aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
                 aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
 
@@ -116,7 +119,7 @@ impl TlsConnection {
         let record_len = ciphertext.len() + 16;
 
         let mut record = vec![
-            ContentType::ApplicationData as u8,
+            content_type,
             0x03,
             0x03,
             (record_len >> 8) as u8,
