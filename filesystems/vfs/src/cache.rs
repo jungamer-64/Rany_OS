@@ -626,37 +626,36 @@ pub fn page_cache() -> &'static PageCache {
 }
 
 #[cfg(test)]
-#[allow(clippy::must_use_candidate)]
-pub(crate) mod qemu_tests {
+mod tests {
     use super::{CachedPage, LRUBlockCache, PAGE_SIZE, PageCache, PageState};
     use alloc::vec::Vec;
 
-    pub fn cached_page_smoke() -> bool {
+    #[test]
+    fn cached_page_smoke() {
         let page = CachedPage::new_empty(0);
-        if page.page_num() != 0 || page.state() != PageState::Clean || page.is_dirty() {
-            return false;
-        }
+        assert_eq!(page.page_num(), 0);
+        assert_eq!(page.state(), PageState::Clean);
+        assert!(!page.is_dirty());
 
         page.mark_dirty();
-        page.is_dirty() && page.state() == PageState::Dirty
+        assert!(page.is_dirty());
+        assert_eq!(page.state(), PageState::Dirty);
     }
 
-    pub fn page_pin_smoke() -> bool {
+    #[test]
+    fn page_pin_smoke() {
         let page = CachedPage::new_empty(0);
-        if page.is_pinned() {
-            return false;
-        }
+        assert!(!page.is_pinned());
 
         page.pin();
-        if !page.is_pinned() {
-            return false;
-        }
+        assert!(page.is_pinned());
 
         page.unpin();
-        !page.is_pinned()
+        assert!(!page.is_pinned());
     }
 
-    pub fn page_cache_smoke() -> bool {
+    #[test]
+    fn page_cache_smoke() {
         let cache = PageCache::new(64 * 1024);
 
         let data = alloc::vec![0x42u8; PAGE_SIZE];
@@ -666,10 +665,14 @@ pub(crate) mod qemu_tests {
         let result = cache.read(1, 0, &mut buf, PAGE_SIZE as u64);
         let stats = cache.stats();
 
-        result == Some(10) && buf == [0x42u8; 10] && stats.hits == 1 && stats.pages == 1
+        assert_eq!(result, Some(10));
+        assert_eq!(buf, [0x42u8; 10]);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.pages, 1);
     }
 
-    pub fn block_cache_basic_smoke() -> bool {
+    #[test]
+    fn block_cache_basic_smoke() {
         let cache = LRUBlockCache::new(512, 4096);
 
         let data1 = alloc::vec![0x11u8; 512];
@@ -681,31 +684,37 @@ pub(crate) mod qemu_tests {
         let result = cache.read(0, 0, 0, &mut buf);
         let stats = cache.stats();
 
-        result == Some(10) && buf == [0x11u8; 10] && stats.hits == 1 && stats.blocks == 2
+        assert_eq!(result, Some(10));
+        assert_eq!(buf, [0x11u8; 10]);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.blocks, 2);
     }
 
-    pub fn block_cache_lru_eviction_smoke() -> bool {
+    #[test]
+    fn block_cache_lru_eviction_smoke() {
         let cache = LRUBlockCache::new(512, 1024);
 
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);
         cache.insert(0, 1, alloc::vec![0x22u8; 512]);
         cache.insert(0, 2, alloc::vec![0x33u8; 512]);
 
-        cache.get(0, 0).is_none() && cache.get(0, 1).is_some() && cache.get(0, 2).is_some()
+        assert!(cache.get(0, 0).is_none());
+        assert!(cache.get(0, 1).is_some());
+        assert!(cache.get(0, 2).is_some());
     }
 
-    pub fn block_cache_dirty_tracking_smoke() -> bool {
+    #[test]
+    fn block_cache_dirty_tracking_smoke() {
         let cache = LRUBlockCache::new(512, 4096);
 
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);
-        if cache.write(0, 0, 0, &[0xFFu8; 10]).is_none() {
-            return false;
-        }
+        assert!(cache.write(0, 0, 0, &[0xFFu8; 10]).is_some());
 
-        cache.get(0, 0).is_some_and(|block| block.is_dirty())
+        assert!(cache.get(0, 0).is_some_and(|block| block.is_dirty()));
     }
 
-    pub fn block_cache_flush_smoke() -> bool {
+    #[test]
+    fn block_cache_flush_smoke() {
         let cache = LRUBlockCache::new(512, 4096);
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);
         let _ = cache.write(0, 0, 0, &[0xFFu8; 10]);
@@ -716,9 +725,9 @@ pub(crate) mod qemu_tests {
             Ok(())
         });
 
-        let flushed = result == Ok(true) && flushed_data.first().copied() == Some(0xFF);
-        let clean = cache.get(0, 0).is_some_and(|block| !block.is_dirty());
-        flushed && clean
+        assert_eq!(result, Ok(true));
+        assert_eq!(flushed_data.first().copied(), Some(0xFF));
+        assert!(cache.get(0, 0).is_some_and(|block| !block.is_dirty()));
     }
 }
 

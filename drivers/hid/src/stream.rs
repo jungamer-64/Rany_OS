@@ -252,7 +252,7 @@ impl Future for CharFutureArc<'_> {
 }
 
 #[cfg(test)]
-pub(crate) mod qemu_tests {
+pub(crate) mod tests {
     use super::*;
     use alloc::boxed::Box;
     use core::ptr;
@@ -275,7 +275,7 @@ pub(crate) mod qemu_tests {
         unsafe { Waker::from_raw(noop_raw_waker()) }
     }
 
-    pub fn char_future_ready_smoke() -> bool {
+    pub(crate) fn char_future_ready_smoke_impl() -> bool {
         let driver: &'static crate::driver::KeyboardDriver =
             Box::leak(Box::new(crate::driver::KeyboardDriver::new()));
         let mut stream = KeyboardStream::new(driver, &crate::keymap::DEFAULT_KEYMAP);
@@ -291,15 +291,8 @@ pub(crate) mod qemu_tests {
 
         matches!(Pin::new(&mut future).poll(&mut cx), Poll::Ready('a'))
     }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
-
     #[test]
-    fn char_future_ready_smoke() {
-        assert!(qemu_tests::char_future_ready_smoke());
+    fn char_future_ready_smoke_test() {
+        assert!(char_future_ready_smoke_impl());
     }
 }

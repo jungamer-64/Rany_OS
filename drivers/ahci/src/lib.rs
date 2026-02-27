@@ -94,52 +94,35 @@ pub use types::{
 // ATAPI module - import directly via `ahci_driver::atapi::*`
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     use crate::atapi::{ReadCapacityResponse, ScsiCdb12, ScsiOpcode, SenseKey};
-
-    pub fn scsi_cdb_read10_smoke() -> bool {
-        let cdb = ScsiCdb12::read10(0x12345678, 256);
-        cdb.opcode == ScsiOpcode::Read10 as u8
-            && cdb.lba_hi == 0x12
-            && cdb.lba_mid_hi == 0x34
-            && cdb.lba_mid_lo == 0x56
-            && cdb.lba_lo == 0x78
-            && cdb.length_mid_lo == 0x01
-            && cdb.length_lo == 0x00
-    }
-
-    pub fn sense_key_smoke() -> bool {
-        SenseKey::from_code(0x00) == SenseKey::NoSense
-            && SenseKey::from_code(0x02) == SenseKey::NotReady
-            && SenseKey::from_code(0x05) == SenseKey::IllegalRequest
-    }
-
-    pub fn read_capacity_endianness_smoke() -> bool {
-        let response = ReadCapacityResponse {
-            last_lba_be: 0x01020304u32.to_be(),
-            block_length_be: 0x00000800u32.to_be(),
-        };
-        response.last_lba() == 0x01020304 && response.block_length() == 2048
-    }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
 
     #[test]
     fn scsi_cdb_read10_smoke() {
-        assert!(qemu_tests::scsi_cdb_read10_smoke());
+        let cdb = ScsiCdb12::read10(0x12345678, 256);
+        assert_eq!(cdb.opcode, ScsiOpcode::Read10 as u8);
+        assert_eq!(cdb.lba_hi, 0x12);
+        assert_eq!(cdb.lba_mid_hi, 0x34);
+        assert_eq!(cdb.lba_mid_lo, 0x56);
+        assert_eq!(cdb.lba_lo, 0x78);
+        assert_eq!(cdb.length_mid_lo, 0x01);
+        assert_eq!(cdb.length_lo, 0x00);
     }
 
     #[test]
     fn sense_key_smoke() {
-        assert!(qemu_tests::sense_key_smoke());
+        assert_eq!(SenseKey::from_code(0x00), SenseKey::NoSense);
+        assert_eq!(SenseKey::from_code(0x02), SenseKey::NotReady);
+        assert_eq!(SenseKey::from_code(0x05), SenseKey::IllegalRequest);
     }
 
     #[test]
     fn read_capacity_endianness_smoke() {
-        assert!(qemu_tests::read_capacity_endianness_smoke());
+        let response = ReadCapacityResponse {
+            last_lba_be: 0x01020304u32.to_be(),
+            block_length_be: 0x00000800u32.to_be(),
+        };
+        assert_eq!(response.last_lba(), 0x01020304);
+        assert_eq!(response.block_length(), 2048);
     }
 }

@@ -185,54 +185,45 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 // ============================================================================
 
 #[cfg(test)]
-pub(crate) mod qemu_tests {
+mod tests {
     // only import what we actually use to avoid wildcard imports
     use super::{save_and_disable_interrupts, restore_interrupts, IrqPoisonLock, TEST_INTERRUPTS_ENABLED};
     use core::sync::atomic::Ordering;
 
-    pub fn basic_locking_smoke() -> bool {
+    #[test]
+    fn basic_locking_smoke() {
         let lock = IrqPoisonLock::new(5usize);
         {
             let mut guard = lock.lock();
-            if *guard != 5 {
-                return false;
-            }
+            assert_eq!(*guard, 5);
             *guard = 7;
         }
         {
             let guard = lock.lock();
-            if *guard != 7 {
-                return false;
-            }
+            assert_eq!(*guard, 7);
         }
-        !lock.is_poisoned()
+        assert!(!lock.is_poisoned());
     }
 
-    pub fn try_lock_contention_smoke() -> bool {
+    #[test]
+    fn try_lock_contention_smoke() {
         let lock = IrqPoisonLock::new(1usize);
         let guard = lock.lock();
-        if lock.try_lock().is_some() {
-            return false;
-        }
+        assert!(lock.try_lock().is_none());
         drop(guard);
-        lock.try_lock().is_some()
+        assert!(lock.try_lock().is_some());
     }
 
-    pub fn irq_restore_smoke() -> bool {
+    #[test]
+    fn irq_restore_smoke() {
         TEST_INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
-        if !TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst) {
-            return false;
-        }
+        assert!(TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst));
 
         let saved = save_and_disable_interrupts();
-        if !saved {
-            return false;
-        }
-        if TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst) {
-            return false;
-        }
+        assert!(saved);
+        assert!(!TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst));
 
         restore_interrupts(saved);
-        TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst)
+        assert!(TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst));
     }
 }

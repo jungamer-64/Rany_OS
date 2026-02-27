@@ -598,88 +598,57 @@ pub fn init() {
 }
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     use crate::xhci::{CommandBuilder, DoorbellBatch, DoorbellTarget, TransferBuilder, TrbType};
-
-    pub fn doorbell_target_smoke() -> bool {
-        DoorbellTarget::CommandRing.target_value() == 0
-            && DoorbellTarget::ControlEndpoint0.target_value() == 1
-            && DoorbellTarget::OutEndpoint(1).target_value() == 2
-            && DoorbellTarget::InEndpoint(1).target_value() == 3
-            && DoorbellTarget::OutEndpoint(2).target_value() == 4
-            && DoorbellTarget::InEndpoint(2).target_value() == 5
-    }
-
-    pub fn doorbell_from_endpoint_smoke() -> bool {
-        DoorbellTarget::from_endpoint(0) == DoorbellTarget::ControlEndpoint0
-            && DoorbellTarget::from_endpoint(1) == DoorbellTarget::OutEndpoint(1)
-            && DoorbellTarget::from_endpoint(0x81) == DoorbellTarget::InEndpoint(1)
-            && DoorbellTarget::from_endpoint(0x82) == DoorbellTarget::InEndpoint(2)
-    }
-
-    pub fn doorbell_batch_smoke() -> bool {
-        let mut batch = DoorbellBatch::new();
-        if !batch.is_empty() {
-            return false;
-        }
-        batch
-            .add(1, DoorbellTarget::ControlEndpoint0)
-            .add(2, DoorbellTarget::InEndpoint(1));
-        if batch.len() != 2 {
-            return false;
-        }
-        if batch.is_empty() {
-            return false;
-        }
-        batch.clear();
-        batch.is_empty()
-    }
-
-    pub fn command_builder_smoke() -> bool {
-        let noop = CommandBuilder::noop();
-        let noop_type = (noop.control >> 10) & 0x3F;
-        if noop_type != TrbType::NoOpCommand as u32 {
-            return false;
-        }
-        let enable = CommandBuilder::enable_slot();
-        let enable_type = (enable.control >> 10) & 0x3F;
-        enable_type == TrbType::EnableSlot as u32
-    }
-
-    pub fn transfer_builder_smoke() -> bool {
-        let setup = TransferBuilder::setup_stage(0x80, 0x06, 0x0100, 0, 18, 3);
-        let setup_type = (setup.control >> 10) & 0x3F;
-        setup_type == TrbType::SetupStage as u32
-    }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
 
     #[test]
     fn doorbell_target_smoke() {
-        assert!(qemu_tests::doorbell_target_smoke());
+        assert_eq!(DoorbellTarget::CommandRing.target_value(), 0);
+        assert_eq!(DoorbellTarget::ControlEndpoint0.target_value(), 1);
+        assert_eq!(DoorbellTarget::OutEndpoint(1).target_value(), 2);
+        assert_eq!(DoorbellTarget::InEndpoint(1).target_value(), 3);
+        assert_eq!(DoorbellTarget::OutEndpoint(2).target_value(), 4);
+        assert_eq!(DoorbellTarget::InEndpoint(2).target_value(), 5);
     }
 
     #[test]
     fn doorbell_from_endpoint_smoke() {
-        assert!(qemu_tests::doorbell_from_endpoint_smoke());
+        assert_eq!(
+            DoorbellTarget::from_endpoint(0),
+            DoorbellTarget::ControlEndpoint0
+        );
+        assert_eq!(DoorbellTarget::from_endpoint(1), DoorbellTarget::OutEndpoint(1));
+        assert_eq!(DoorbellTarget::from_endpoint(0x81), DoorbellTarget::InEndpoint(1));
+        assert_eq!(DoorbellTarget::from_endpoint(0x82), DoorbellTarget::InEndpoint(2));
     }
 
     #[test]
     fn doorbell_batch_smoke() {
-        assert!(qemu_tests::doorbell_batch_smoke());
+        let mut batch = DoorbellBatch::new();
+        assert!(batch.is_empty());
+        batch
+            .add(1, DoorbellTarget::ControlEndpoint0)
+            .add(2, DoorbellTarget::InEndpoint(1));
+        assert_eq!(batch.len(), 2);
+        assert!(!batch.is_empty());
+        batch.clear();
+        assert!(batch.is_empty());
     }
 
     #[test]
     fn command_builder_smoke() {
-        assert!(qemu_tests::command_builder_smoke());
+        let noop = CommandBuilder::noop();
+        let noop_type = (noop.control >> 10) & 0x3F;
+        assert_eq!(noop_type, TrbType::NoOpCommand as u32);
+        let enable = CommandBuilder::enable_slot();
+        let enable_type = (enable.control >> 10) & 0x3F;
+        assert_eq!(enable_type, TrbType::EnableSlot as u32);
     }
 
     #[test]
     fn transfer_builder_smoke() {
-        assert!(qemu_tests::transfer_builder_smoke());
+        let setup = TransferBuilder::setup_stage(0x80, 0x06, 0x0100, 0, 18, 3);
+        let setup_type = (setup.control >> 10) & 0x3F;
+        assert_eq!(setup_type, TrbType::SetupStage as u32);
     }
 }

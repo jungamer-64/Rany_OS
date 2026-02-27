@@ -315,7 +315,8 @@ impl NvmePollingDriver {
     fn alloc_dma_aligned(size: usize, alloc_err: &'static str) -> Result<DmaBuffer, &'static str> {
         let kernel = kernel_api::services::kernel();
         let buffer = kernel.alloc_dma(size).map_err(|_| alloc_err)?;
-        if buffer.physical_address() & 0xFFF != 0 {
+        // Ensure both physical and device addresses are aligned
+        if (buffer.physical_address() & 0xFFF != 0) || (buffer.device_address() & 0xFFF != 0) {
             return Err("DMA buffer not 4KB aligned");
         }
         Ok(buffer)
@@ -328,7 +329,7 @@ impl NvmePollingDriver {
 
         // CQバッファはホストメモリから確保
         let cq_buffer = Self::alloc_dma_aligned(cq_size, "Failed to allocate IO CQ DMA buffer")?;
-        let cq_phys = cq_buffer.physical_address();
+        let cq_phys = cq_buffer.device_address();
         let cq_ptr = cq_buffer.as_ptr() as *mut NvmeCompletion;
 
         // SQはCMB優先（利用不可ならホストメモリ）
@@ -342,7 +343,7 @@ impl NvmePollingDriver {
         }
 
         let sq_buffer = Self::alloc_dma_aligned(sq_size, "Failed to allocate IO SQ DMA buffer")?;
-        let sq_phys = sq_buffer.physical_address();
+        let sq_phys = sq_buffer.device_address();
         let sq_ptr = sq_buffer.as_ptr() as *mut NvmeCommand;
 
         self.create_io_queue_pair_internal(core_id, sq_ptr, cq_ptr, sq_phys, cq_phys, depth)?;
@@ -389,13 +390,13 @@ impl NvmePollingDriver {
         let asq_buffer = kernel
             .alloc_dma(sq_size)
             .map_err(|_| "Failed to allocate ASQ DMA buffer")?;
-        let asq_phys = asq_buffer.physical_address();
+        let asq_phys = asq_buffer.device_address();
         let _asq_ptr = asq_buffer.as_ptr();
 
         let acq_buffer = kernel
             .alloc_dma(cq_size)
             .map_err(|_| "Failed to allocate ACQ DMA buffer")?;
-        let acq_phys = acq_buffer.physical_address();
+        let acq_phys = acq_buffer.device_address();
         let _acq_ptr = acq_buffer.as_ptr();
 
         if asq_phys & 0xFFF != 0 || acq_phys & 0xFFF != 0 {
@@ -439,7 +440,7 @@ impl NvmePollingDriver {
         let identify_buffer = kernel
             .alloc_dma(4096)
             .map_err(|_| "Failed to allocate Identify DMA buffer")?;
-        let buffer_phys = identify_buffer.physical_address();
+        let buffer_phys = identify_buffer.device_address();
 
         let mut cmd = NvmeCommand::default();
         cmd.set_opcode(AdminOpcode::Identify as u8);
@@ -480,7 +481,7 @@ impl NvmePollingDriver {
         let identify_buffer = kernel
             .alloc_dma(4096)
             .map_err(|_| "Failed to allocate Identify Namespace DMA buffer")?;
-        let buffer_phys = identify_buffer.physical_address();
+        let buffer_phys = identify_buffer.device_address();
 
         let cid = admin_queue.sq().tail();
         let cmd = NvmeCommand::identify_namespace(cid, nsid, buffer_phys);

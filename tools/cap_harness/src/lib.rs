@@ -171,11 +171,11 @@ pub fn grant(
 }
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     #![allow(clippy::wildcard_imports)]
     use super::*;
 
-    pub fn grant_requires_permissions_smoke() -> bool {
+    fn grant_requires_permissions_smoke() -> bool {
         let mut manager = Manager::new();
         let caller = 1u64;
         // caller has no capabilities
@@ -185,7 +185,7 @@ mod qemu_tests {
         grant(&mut manager, caller, "/net/bind", &[], target).is_err()
     }
 
-    pub fn grant_with_permitted_smoke() -> bool {
+    fn grant_with_permitted_smoke() -> bool {
         let mut manager = Manager::new();
         let caller = 3u64;
         manager.set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
@@ -202,7 +202,7 @@ mod qemu_tests {
         manager.has_capability(target, CAP_NET_BIND)
     }
 
-    pub fn cross_grant_smoke() -> bool {
+    fn cross_grant_smoke() -> bool {
         let mut manager = Manager::new();
         let caller = 10u64;
         let target = 20u64;
@@ -215,24 +215,18 @@ mod qemu_tests {
 
         manager.has_capability(target, CAP_NET_BIND)
     }
-}
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
-
     #[test]
-    fn grant_requires_permissions_smoke() {
-        assert!(qemu_tests::grant_requires_permissions_smoke());
+    fn grant_requires_permissions_smoke_test() {
+        assert!(grant_requires_permissions_smoke());
     }
 
     #[test]
-    fn grant_with_permitted_smoke() {
-        assert!(qemu_tests::grant_with_permitted_smoke());
+    fn grant_with_permitted_smoke_test() {
+        assert!(grant_with_permitted_smoke());
     }
 
     #[test]
-    fn cross_grant_smoke() {
-        assert!(qemu_tests::cross_grant_smoke());
+    fn cross_grant_smoke_test() {
+        assert!(cross_grant_smoke());
     }
 }

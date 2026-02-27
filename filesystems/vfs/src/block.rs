@@ -1002,8 +1002,7 @@ pub fn block_manager() -> &'static BlockDeviceManager {
 }
 
 #[cfg(test)]
-#[allow(clippy::must_use_candidate)]
-pub(crate) mod qemu_tests {
+mod tests {
     use super::{
         BlockDevice, BlockDeviceInfo, BlockError, BlockResult, OwnedBytes, RamDisk, ZcFuture,
         ZeroCopyBlockDevice,
@@ -1130,37 +1129,40 @@ pub(crate) mod qemu_tests {
         }
     }
 
-    pub fn ramdisk_read_write_sync_smoke() -> bool {
+    #[test]
+    fn ramdisk_read_write_sync_smoke() {
         let disk = RamDisk::new(16, 512);
         let data = [0xABu8; 512];
-        if disk.write_sync(1, &data).ok() != Some(512) {
-            return false;
-        }
+        assert_eq!(disk.write_sync(1, &data).ok(), Some(512));
 
         let mut buf = [0u8; 512];
-        disk.read_sync(1, &mut buf).ok() == Some(512) && buf == data
+        assert_eq!(disk.read_sync(1, &mut buf).ok(), Some(512));
+        assert_eq!(buf, data);
     }
 
-    pub fn ramdisk_read_write_multiple_blocks_smoke() -> bool {
+    #[test]
+    fn ramdisk_read_write_multiple_blocks_smoke() {
         let disk = RamDisk::new(4, 512);
         let data = [0x12u8; 1024];
-        if disk.write_sync(1, &data).ok() != Some(1024) {
-            return false;
-        }
+        assert_eq!(disk.write_sync(1, &data).ok(), Some(1024));
 
         let mut buf = [0u8; 1024];
-        disk.read_sync(1, &mut buf).ok() == Some(1024) && buf == data
+        assert_eq!(disk.read_sync(1, &mut buf).ok(), Some(1024));
+        assert_eq!(buf, data);
     }
 
-    pub fn read_into_buf_invalid_size_smoke() -> bool {
+    #[test]
+    fn read_into_buf_invalid_size_smoke() {
         let dev = MemDev::new(4, 2);
         let mut dst = OwnedBytes::from_vec(vec![0u8; 6]);
 
         let err = run_future(dev.read_into_buf(0, &mut dst)).err();
-        err == Some(BlockError::InvalidBufferSize) && dev.read_calls.load(Ordering::SeqCst) == 0
+        assert_eq!(err, Some(BlockError::InvalidBufferSize));
+        assert_eq!(dev.read_calls.load(Ordering::SeqCst), 0);
     }
 
-    pub fn read_into_buf_default_fallback_smoke() -> bool {
+    #[test]
+    fn read_into_buf_default_fallback_smoke() {
         let dev = MemDev::new(4, 4);
         let expected = [1u8, 2, 3, 4, 5, 6, 7, 8];
         {
@@ -1169,26 +1171,23 @@ pub(crate) mod qemu_tests {
         }
 
         let mut dst = OwnedBytes::from_vec(vec![0u8; 8]);
-        if run_future(dev.read_into_buf(0, &mut dst)).is_err() {
-            return false;
-        }
+        assert!(run_future(dev.read_into_buf(0, &mut dst)).is_ok());
 
-        AsRef::<[u8]>::as_ref(&dst) == expected.as_slice()
-            && dev.read_calls.load(Ordering::SeqCst) == 1
+        assert_eq!(AsRef::<[u8]>::as_ref(&dst), expected.as_slice());
+        assert_eq!(dev.read_calls.load(Ordering::SeqCst), 1);
     }
 
-    pub fn write_from_buf_default_fallback_smoke() -> bool {
+    #[test]
+    fn write_from_buf_default_fallback_smoke() {
         let dev = MemDev::new(4, 4);
         let src = OwnedBytes::from_vec(vec![9u8, 8, 7, 6, 5, 4, 3, 2]);
 
-        if run_future(dev.write_from_buf(0, &src)).is_err() {
-            return false;
-        }
+        assert!(run_future(dev.write_from_buf(0, &src)).is_ok());
 
         let data = dev.data.lock();
-        dev.alloc_calls.load(Ordering::SeqCst) == 1
-            && dev.write_calls.load(Ordering::SeqCst) == 1
-            && &data[..src.len()] == AsRef::<[u8]>::as_ref(&src)
+        assert_eq!(dev.alloc_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(dev.write_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(&data[..src.len()], AsRef::<[u8]>::as_ref(&src));
     }
 }
 

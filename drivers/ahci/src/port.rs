@@ -181,7 +181,7 @@ impl AhciPort {
             header.set_flags(5, false, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.physical_address());
+            header.set_ctba(cmd_table_buf.device_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
@@ -248,7 +248,7 @@ impl AhciPort {
             header.set_flags(5, false, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.physical_address());
+            header.set_ctba(cmd_table_buf.device_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
@@ -311,7 +311,7 @@ impl AhciPort {
             header.set_flags(5, true, false, false); // W=1
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.physical_address());
+            header.set_ctba(cmd_table_buf.device_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
@@ -363,7 +363,7 @@ impl AhciPort {
             header.set_flags(5, false, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.physical_address());
+            header.set_ctba(cmd_table_buf.device_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
@@ -408,7 +408,7 @@ impl AhciPort {
             header.set_flags(5, true, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.physical_address());
+            header.set_ctba(cmd_table_buf.device_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);

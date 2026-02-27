@@ -620,25 +620,65 @@ impl Drop for SleepFuture {
     }
 }
 
-// ============================================================================
-// ============================================================================
-// QEMU Test Exports
-// ============================================================================
-
 #[cfg(test)]
-mod qemu_tests;
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
+mod tests {
+    use super::*;
 
     #[test]
-    fn qemu_smoke_suite() {
-        assert!(qemu_tests::tick_increment_smoke());
-        assert!(qemu_tests::timer_registration_smoke());
-        assert!(qemu_tests::cpu_tracker_smoke());
-        assert!(qemu_tests::shard_index_smoke());
-        assert!(qemu_tests::uptime_ns_smoke());
-        assert!(qemu_tests::wall_clock_adjustment_smoke());
+    fn tick_increment_smoke() {
+        let tm = TimeManagement::new();
+        assert_eq!(tm.current_tick_ms(), 0);
+
+        tm.on_timer_interrupt();
+        assert_eq!(tm.current_tick_ms(), 1);
+
+        tm.on_timer_interrupt();
+        assert_eq!(tm.current_tick_ms(), 2);
+    }
+
+    #[test]
+    fn timer_registration_smoke() {
+        let tm = TimeManagement::new();
+        let waker = core::task::Waker::noop();
+        let handle = tm.register_timer(100, TimerMode::OneShot, waker.clone());
+        assert!(tm.cancel_timer(handle));
+        assert!(!tm.cancel_timer(handle));
+    }
+
+    #[test]
+    fn cpu_tracker_smoke() {
+        let tm = TimeManagement::new();
+        tm.on_timer_interrupt(); // tick=1
+        tm.record_task_start(42);
+        tm.on_timer_interrupt(); // tick=2
+        tm.on_timer_interrupt(); // tick=3
+        tm.record_task_stop(42);
+
+        let stats = tm.task_cpu_stats(42).expect("task stats should exist");
+        assert_eq!(stats.schedule_count, 1);
+        assert!(stats.cpu_time_ns > 0);
+    }
+
+    #[test]
+    fn shard_index_smoke() {
+        assert_eq!(ShardedSleepRegistry::shard_index(0), 0);
+        assert_eq!(ShardedSleepRegistry::shard_index(16), 0);
+        assert_eq!(ShardedSleepRegistry::shard_index(1), 1);
+        assert_eq!(ShardedSleepRegistry::shard_index(15), 15);
+    }
+
+    #[test]
+    fn uptime_ns_smoke() {
+        let tm = TimeManagement::new();
+        tm.on_timer_interrupt();
+        assert_eq!(tm.uptime_ns(), NANOS_PER_MILLI);
+    }
+
+    #[test]
+    fn wall_clock_adjustment_smoke() {
+        let tm = TimeManagement::new();
+        tm.set_boot_timestamp_ms(1_000_000);
+        tm.adjust_wall_clock(500_000_000); // +500ms
+        assert_eq!(tm.unix_timestamp_ms(), 1_000_500);
     }
 }

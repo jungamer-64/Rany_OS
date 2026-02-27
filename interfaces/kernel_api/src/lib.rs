@@ -65,48 +65,30 @@ pub use types::{
 };
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     use crate::{AbiError, DriverContext, pack_version, unpack_version};
-
-    pub fn version_pack_unpack_smoke() -> bool {
-        let packed = pack_version(3, 5, 8);
-        unpack_version(packed) == (3, 5, 8)
-    }
-
-    pub fn abi_error_decode_smoke() -> bool {
-        AbiError::from_raw(-7) == AbiError::Timeout
-            && AbiError::from_raw(-8) == AbiError::IoError
-            && AbiError::from_raw(0).is_success()
-    }
-
-    pub fn driver_context_default_smoke() -> bool {
-        let ctx = DriverContext::new();
-        ctx.device_address == 0
-            && ctx.device_address_secondary == 0
-            && ctx.irq == 0
-            && ctx.flags == 0
-            && ctx.driver_data == 0
-            && ctx.reserved == [0; 3]
-    }
-}
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
 
     #[test]
     fn version_pack_unpack_smoke() {
-        assert!(qemu_tests::version_pack_unpack_smoke());
+        let packed = pack_version(3, 5, 8);
+        assert_eq!(unpack_version(packed), (3, 5, 8));
     }
 
     #[test]
     fn abi_error_decode_smoke() {
-        assert!(qemu_tests::abi_error_decode_smoke());
+        assert_eq!(AbiError::from_raw(-7), AbiError::Timeout);
+        assert_eq!(AbiError::from_raw(-8), AbiError::IoError);
+        assert!(AbiError::from_raw(0).is_success());
     }
 
     #[test]
     fn driver_context_default_smoke() {
-        assert!(qemu_tests::driver_context_default_smoke());
+        let ctx = DriverContext::new();
+        assert_eq!(ctx.device_address, 0);
+        assert_eq!(ctx.device_address_secondary, 0);
+        assert_eq!(ctx.irq, 0);
+        assert_eq!(ctx.flags, 0);
+        assert_eq!(ctx.driver_data, 0);
+        assert_eq!(ctx.reserved, [0; 3]);
     }
 }
-

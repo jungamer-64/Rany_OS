@@ -394,108 +394,113 @@ impl Rect {
 }
 
 #[cfg(test)]
-#[allow(clippy::must_use_candidate, clippy::missing_const_for_fn)]
-pub(crate) mod qemu_tests {
+mod tests {
     use super::{Color, PixelFormat, Point, Rect};
 
-    pub fn color_ctor_smoke() -> bool {
+    #[test]
+    fn color_ctor_smoke() {
         let c = Color::new(255, 128, 64);
-        c.red == 255 && c.green == 128 && c.blue == 64
+        assert_eq!(c.red, 255);
+        assert_eq!(c.green, 128);
+        assert_eq!(c.blue, 64);
     }
 
-    pub fn color_roundtrip_smoke() -> bool {
+    #[test]
+    fn color_roundtrip_smoke() {
         let c = Color::new(255, 128, 64);
         let val = c.to_u32();
         let restored = Color::from_u32(val);
-        c.red == restored.red && c.green == restored.green && c.blue == restored.blue
+        assert_eq!(c.red, restored.red);
+        assert_eq!(c.green, restored.green);
+        assert_eq!(c.blue, restored.blue);
     }
 
-    pub fn rect_intersection_smoke() -> bool {
+    #[test]
+    fn rect_intersection_smoke() {
         let r1 = Rect::new(0, 0, 100, 100);
         let r2 = Rect::new(50, 50, 100, 100);
 
-        if !r1.intersects(&r2) {
-            return false;
-        }
+        assert!(r1.intersects(&r2));
 
-        r1.intersection(&r2).map_or(false, |intersection| {
-            intersection.x == 50
-                && intersection.y == 50
-                && intersection.width == 50
-                && intersection.height == 50
-        })
+        let intersection = r1
+            .intersection(&r2)
+            .expect("intersection should exist for overlapping rects");
+        assert_eq!(intersection.x, 50);
+        assert_eq!(intersection.y, 50);
+        assert_eq!(intersection.width, 50);
+        assert_eq!(intersection.height, 50);
     }
 
-    pub fn rect_contains_smoke() -> bool {
+    #[test]
+    fn rect_contains_smoke() {
         let r = Rect::new(10, 10, 100, 100);
-        r.contains(Point::new(50, 50))
-            && !r.contains(Point::new(5, 5))
-            && !r.contains(Point::new(150, 150))
+        assert!(r.contains(Point::new(50, 50)));
+        assert!(!r.contains(Point::new(5, 5)));
+        assert!(!r.contains(Point::new(150, 150)));
     }
 
-    pub fn pixel_format_bytes_smoke() -> bool {
-        PixelFormat::Rgb888.bytes_per_pixel() == 3
-            && PixelFormat::Bgra8888.bytes_per_pixel() == 4
-            && PixelFormat::Rgb565.bytes_per_pixel() == 2
+    #[test]
+    fn pixel_format_bytes_smoke() {
+        assert_eq!(PixelFormat::Rgb888.bytes_per_pixel(), 3);
+        assert_eq!(PixelFormat::Bgra8888.bytes_per_pixel(), 4);
+        assert_eq!(PixelFormat::Rgb565.bytes_per_pixel(), 2);
     }
 
-    pub fn encode_decode_roundtrip_smoke() -> bool {
+    #[test]
+    fn encode_decode_roundtrip_smoke() {
         let c = Color::with_alpha(0x12, 0x34, 0x56, 0xAA);
 
         let mut buf = [0u8; 4];
         PixelFormat::Bgra8888.encode_color_bytes(c, &mut buf);
-        if buf != [c.blue, c.green, c.red, c.alpha] {
-            return false;
-        }
+        assert_eq!(buf, [c.blue, c.green, c.red, c.alpha]);
         let out = PixelFormat::Bgra8888.decode_color_bytes(&buf);
-        if out.alpha != c.alpha {
-            return false;
-        }
+        assert_eq!(out.alpha, c.alpha);
 
         PixelFormat::Rgba8888.encode_color_bytes(c, &mut buf);
-        if buf != [c.red, c.green, c.blue, c.alpha] {
-            return false;
-        }
+        assert_eq!(buf, [c.red, c.green, c.blue, c.alpha]);
         let out2 = PixelFormat::Rgba8888.decode_color_bytes(&buf);
-        if out2.alpha != c.alpha {
-            return false;
-        }
+        assert_eq!(out2.alpha, c.alpha);
 
         let mut buf3 = [0u8; 3];
         let c2 = Color::new(0x12, 0x34, 0x56);
         PixelFormat::Bgr888.encode_color_bytes(c2, &mut buf3);
-        if buf3 != [c2.blue, c2.green, c2.red] {
-            return false;
-        }
+        assert_eq!(buf3, [c2.blue, c2.green, c2.red]);
         let out3 = PixelFormat::Bgr888.decode_color_bytes(&buf3);
-        if out3 != c2 {
-            return false;
-        }
+        assert_eq!(out3, c2);
 
         let mut buf2 = [0u8; 2];
         PixelFormat::Rgb565.encode_color_bytes(c2, &mut buf2);
         let out4 = PixelFormat::Rgb565.decode_color_bytes(&buf2);
-        out4.red <= c2.red && out4.green <= c2.green && out4.blue <= c2.blue
+        assert!(out4.red <= c2.red);
+        assert!(out4.green <= c2.green);
+        assert!(out4.blue <= c2.blue);
     }
 
-    pub fn point_layout_smoke() -> bool {
+    #[test]
+    fn point_layout_smoke() {
         use core::mem::{align_of, size_of};
-        size_of::<Point>() == 8 && align_of::<Point>() == 4
+        assert_eq!(size_of::<Point>(), 8);
+        assert_eq!(align_of::<Point>(), 4);
     }
 
-    pub fn rect_layout_smoke() -> bool {
+    #[test]
+    fn rect_layout_smoke() {
         use core::mem::{align_of, size_of};
-        size_of::<Rect>() == 16 && align_of::<Rect>() == 4
+        assert_eq!(size_of::<Rect>(), 16);
+        assert_eq!(align_of::<Rect>(), 4);
     }
 
-    pub fn color_layout_smoke() -> bool {
+    #[test]
+    fn color_layout_smoke() {
         use core::mem::{align_of, size_of};
-        size_of::<Color>() == 4 && align_of::<Color>() == 1
+        assert_eq!(size_of::<Color>(), 4);
+        assert_eq!(align_of::<Color>(), 1);
     }
 
-    pub fn pixel_format_layout_smoke() -> bool {
+    #[test]
+    fn pixel_format_layout_smoke() {
         use core::mem::size_of;
         let size = size_of::<PixelFormat>();
-        (1..=8).contains(&size)
+        assert!((1..=8).contains(&size));
     }
 }

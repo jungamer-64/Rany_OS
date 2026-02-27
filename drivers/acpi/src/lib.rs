@@ -29,7 +29,7 @@ pub use ivrs::{IvmdInfo, IvrsInfo};
 
 #[cfg(test)]
 #[allow(clippy::cast_possible_truncation)]
-mod qemu_tests {
+mod tests {
     use alloc::vec::Vec;
     use core::mem;
 
@@ -56,7 +56,7 @@ mod qemu_tests {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn ivrs_parse_ivhd_smoke() -> bool {
+    fn ivrs_parse_ivhd_smoke() -> bool {
         let mut entries = Vec::new();
 
         push_entry(&mut entries, IVHD_DEV_SELECT, 0x0102, 0xaa, None);
@@ -244,7 +244,7 @@ mod qemu_tests {
         true
     }
 
-    pub fn ivrs_parse_ivmd_smoke() -> bool {
+    fn ivrs_parse_ivmd_smoke() -> bool {
         let ivmd = IvmdHeader {
             header: IvrsBlockHeader {
                 block_type: IVMD_TYPE_RANGE,
@@ -310,7 +310,7 @@ mod qemu_tests {
             && ivmd_info.range_length == 0x2000
     }
 
-    pub fn dmar_parse_minimal_smoke() -> bool {
+    fn dmar_parse_minimal_smoke() -> bool {
         let header = AcpiSdtHeader {
             signature: *b"DMAR",
             length: 0, // patch later
@@ -370,25 +370,23 @@ mod qemu_tests {
             && info.drhd_units.is_empty()
             && info.rmrr_regions[0].base == 0x1000
     }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
-
     #[test]
-    fn ivrs_parse_ivhd_smoke() {
-        assert!(qemu_tests::ivrs_parse_ivhd_smoke());
+    fn madt_entry_type_smoke_test() {
+        assert!(madt_entry_type_smoke());
     }
 
     #[test]
-    fn ivrs_parse_ivmd_smoke() {
-        assert!(qemu_tests::ivrs_parse_ivmd_smoke());
+    fn ivrs_parse_ivhd_smoke_test() {
+        assert!(ivrs_parse_ivhd_smoke());
     }
 
     #[test]
-    fn dmar_parse_minimal_smoke() {
-        assert!(qemu_tests::dmar_parse_minimal_smoke());
+    fn ivrs_parse_ivmd_smoke_test() {
+        assert!(ivrs_parse_ivmd_smoke());
+    }
+
+    #[test]
+    fn dmar_parse_minimal_smoke_test() {
+        assert!(dmar_parse_minimal_smoke());
     }
 }

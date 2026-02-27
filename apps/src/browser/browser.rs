@@ -528,16 +528,16 @@ impl Default for Browser {
 }
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     #[allow(clippy::wildcard_imports)]
     use super::*;
 
-    pub fn browser_creation_smoke() -> bool {
+    fn browser_creation_smoke() -> bool {
         let browser = Browser::new();
         browser.state == BrowserState::Idle
     }
 
-    pub fn history_smoke() -> bool {
+    fn history_smoke() -> bool {
         let mut browser = Browser::new();
         browser.navigate("http://example.com");
 
@@ -548,20 +548,13 @@ mod qemu_tests {
         browser.go_back();
         !browser.can_go_back() && browser.can_go_forward()
     }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
-
     #[test]
-    fn browser_creation_smoke() {
-        assert!(qemu_tests::browser_creation_smoke());
+    fn browser_creation_smoke_test() {
+        assert!(browser_creation_smoke());
     }
 
     #[test]
-    fn history_smoke() {
-        assert!(qemu_tests::history_smoke());
+    fn history_smoke_test() {
+        assert!(history_smoke());
     }
 }

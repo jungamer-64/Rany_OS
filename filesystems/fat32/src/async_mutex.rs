@@ -206,25 +206,25 @@ impl<T: ?Sized> Drop for AsyncGuard<'_, T> {
 
 // ========================= QEMU Test Exports =========================
 #[cfg(test)]
-pub(crate) mod qemu_tests {
+mod tests {
     // explicit imports reduce wildcard usage
     use super::AsyncMutex;
     use core::pin::Pin;
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-    pub fn blocking_lock_basic_smoke() -> bool {
+    #[test]
+    fn blocking_lock_basic_smoke() {
         let m = AsyncMutex::new(0usize);
         {
             let mut g = m.blocking_lock();
             *g += 1;
         }
-        match m.try_lock() {
-            Some(g) => *g == 1usize,
-            None => false,
-        }
+        let g = m.try_lock().expect("lock should be available");
+        assert_eq!(*g, 1usize);
     }
 
-    pub fn async_lock_wait_then_acquire_smoke() -> bool {
+    #[test]
+    fn async_lock_wait_then_acquire_smoke() {
         let m = AsyncMutex::new(0usize);
         let held = m.blocking_lock();
 
@@ -232,23 +232,19 @@ pub(crate) mod qemu_tests {
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
 
-        if !matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending) {
-            return false;
-        }
+        assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending));
 
         drop(held);
 
         let mut guard = match Pin::new(&mut fut).poll(&mut cx) {
             Poll::Ready(g) => g,
-            Poll::Pending => return false,
+            Poll::Pending => panic!("future should be ready after lock release"),
         };
         *guard += 1;
         drop(guard);
 
-        match m.try_lock() {
-            Some(g) => *g == 1usize,
-            None => false,
-        }
+        let g = m.try_lock().expect("lock should be available");
+        assert_eq!(*g, 1usize);
     }
 
     fn noop_waker() -> Waker {

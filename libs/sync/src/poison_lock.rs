@@ -457,11 +457,11 @@ pub fn reset_lock_metrics() {
 
 #[cfg(test)]
 #[allow(clippy::must_use_candidate)]
-mod qemu_tests {
+mod tests {
     use super::PoisonLock;
     use core::sync::atomic::Ordering;
 
-    pub fn basic_lock_smoke() -> bool {
+    fn basic_lock_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
         let Ok(guard) = lock.lock() else {
@@ -473,7 +473,7 @@ mod qemu_tests {
         ok && !lock.is_locked() && !lock.is_poisoned()
     }
 
-    pub fn try_lock_smoke() -> bool {
+    fn try_lock_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
         let Some(Ok(guard)) = lock.try_lock() else {
@@ -486,12 +486,12 @@ mod qemu_tests {
         value_ok && contention_ok && lock.try_lock().is_some()
     }
 
-    pub fn initial_poison_state_smoke() -> bool {
+    fn initial_poison_state_smoke() -> bool {
         let lock = PoisonLock::new(0u32);
         !lock.is_poisoned()
     }
 
-    pub fn clear_poison_smoke() -> bool {
+    fn clear_poison_smoke() -> bool {
         let lock = PoisonLock::new(42);
 
         lock.poisoned.store(true, Ordering::Release);
@@ -502,39 +502,33 @@ mod qemu_tests {
         !lock.is_poisoned()
     }
 
-    pub fn default_lock_smoke() -> bool {
+    fn default_lock_smoke() -> bool {
         let lock: PoisonLock<i32> = PoisonLock::default();
         lock.lock().map_or(false, |guard| *guard == 0)
     }
-}
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
 
     #[test]
-    fn basic_lock_smoke() {
-        assert!(qemu_tests::basic_lock_smoke());
+    fn basic_lock_smoke_test() {
+        assert!(basic_lock_smoke());
     }
 
     #[test]
-    fn try_lock_smoke() {
-        assert!(qemu_tests::try_lock_smoke());
+    fn try_lock_smoke_test() {
+        assert!(try_lock_smoke());
     }
 
     #[test]
-    fn initial_poison_state_smoke() {
-        assert!(qemu_tests::initial_poison_state_smoke());
+    fn initial_poison_state_smoke_test() {
+        assert!(initial_poison_state_smoke());
     }
 
     #[test]
-    fn clear_poison_smoke() {
-        assert!(qemu_tests::clear_poison_smoke());
+    fn clear_poison_smoke_test() {
+        assert!(clear_poison_smoke());
     }
 
     #[test]
-    fn default_lock_smoke() {
-        assert!(qemu_tests::default_lock_smoke());
+    fn default_lock_smoke_test() {
+        assert!(default_lock_smoke());
     }
 }
-

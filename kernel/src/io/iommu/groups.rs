@@ -250,7 +250,16 @@ impl IommuGroupManager {
             {
                 Some(header_type) => header_type,
                 None if first_hop => return Err(IommuError::DeviceNotFound),
-                None => break, // 情報欠落時は保守的な結果で打ち切り
+                None => {
+                    log::error!(
+                        "[IOMMU] Topology information missing during grouping for device {:?} at {:02x}:{:02x}.{:x}",
+                        device,
+                        current_bus,
+                        current_dev,
+                        current_func
+                    );
+                    return Err(IommuError::HardwareError);
+                }
             };
 
             let is_bridge = (header_type & 0x7F) == 0x01;
@@ -284,7 +293,15 @@ impl IommuGroupManager {
                     current_dev = parent_dev;
                     current_func = parent_func;
                 }
-                None => break,
+                None if current_bus == 0 => break,
+                None => {
+                    log::error!(
+                        "[IOMMU] Parent bridge not found for bus {} during grouping walk for device {:?}",
+                        current_bus,
+                        device
+                    );
+                    return Err(IommuError::HardwareError);
+                }
             }
             first_hop = false;
         }

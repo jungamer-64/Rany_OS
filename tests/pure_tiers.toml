@@ -126,8 +126,8 @@ name = "graphic_types"
 tier = "pr-required"
 root_default = true
 run_ignored = false
-test_filter = "qemu_smoke_tests::qemu_smoke_types"
-exact = true
+test_filter = ""
+exact = false
 serial = false
 
 [[package]]
@@ -135,8 +135,8 @@ name = "graphic_types"
 tier = "pr-required"
 root_default = true
 run_ignored = false
-test_filter = "qemu_smoke_tests::qemu_smoke_images_alloc"
-exact = true
+test_filter = ""
+exact = false
 serial = false
 features = ["alloc"]
 
@@ -145,8 +145,8 @@ name = "vfs"
 tier = "pr-required"
 root_default = true
 run_ignored = false
-test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
-exact = true
+test_filter = ""
+exact = false
 serial = false
 
 [[package]]
@@ -154,7 +154,7 @@ name = "fat32"
 tier = "pr-required"
 root_default = true
 run_ignored = false
-test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
+test_filter = "tests::pr_required_smoke_suite"
 exact = true
 serial = false
 
@@ -199,6 +199,6 @@ name = "fat32"
 tier = "nightly-required"
 root_default = true
 run_ignored = true
-test_filter = "qemu_smoke_tests::qemu_smoke_nightly_required"
+test_filter = "tests::nightly_required_smoke_suite"
 exact = true
 serial = false

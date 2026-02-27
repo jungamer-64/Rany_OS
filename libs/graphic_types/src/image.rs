@@ -1580,44 +1580,53 @@ impl IconGenerator {
 }
 
 #[cfg(test)]
-#[allow(clippy::must_use_candidate)]
-pub(crate) mod qemu_tests {
+mod tests {
     use super::{Color, Image, ImageError, ImageViewMut, MAX_IMAGE_SIZE, PixelFormat, Rect};
     use alloc::vec;
 
-    pub fn try_new_overflow_smoke() -> bool {
+    #[test]
+    fn try_new_overflow_smoke() {
         let result = Image::try_new(u32::MAX, u32::MAX);
-        matches!(result, Err(ImageError::DimensionsTooLarge))
+        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
     }
 
-    pub fn try_new_max_size_smoke() -> bool {
+    #[test]
+    fn try_new_max_size_smoke() {
         let result = Image::try_new(16384, 16384);
-        matches!(result, Err(ImageError::DimensionsTooLarge))
+        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
     }
 
-    pub fn try_new_valid_smoke() -> bool {
-        Image::try_new(100, 100).map_or(false, |img| img.width() == 100 && img.height() == 100)
+    #[test]
+    fn try_new_valid_smoke() {
+        let img = Image::try_new(100, 100).expect("valid size image should be created");
+        assert_eq!(img.width(), 100);
+        assert_eq!(img.height(), 100);
     }
 
-    pub fn try_filled_overflow_smoke() -> bool {
+    #[test]
+    fn try_filled_overflow_smoke() {
         let result = Image::try_filled(u32::MAX, 2, Color::RED);
-        matches!(result, Err(ImageError::DimensionsTooLarge))
+        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
     }
 
-    pub fn image_view_basic_smoke() -> bool {
+    #[test]
+    fn image_view_basic_smoke() {
         let mut img = Image::new(10, 10);
         img.set_pixel(5, 5, Color::RED);
 
         let view = img.as_view();
-        if view.width() != 10 || view.height() != 10 || view.stride() != 40 {
-            return false;
-        }
+        assert_eq!(view.width(), 10);
+        assert_eq!(view.height(), 10);
+        assert_eq!(view.stride(), 40);
 
         let pixel = view.get_pixel(5, 5);
-        pixel.red == 255 && pixel.green == 0 && pixel.blue == 0
+        assert_eq!(pixel.red, 255);
+        assert_eq!(pixel.green, 0);
+        assert_eq!(pixel.blue, 0);
     }
 
-    pub fn image_view_mut_set_pixel_smoke() -> bool {
+    #[test]
+    fn image_view_mut_set_pixel_smoke() {
         let mut img = Image::new(10, 10);
 
         {
@@ -1626,10 +1635,12 @@ pub(crate) mod qemu_tests {
         }
 
         let pixel = img.get_pixel(3, 3);
-        pixel.blue == 255 && pixel.red == 0
+        assert_eq!(pixel.blue, 255);
+        assert_eq!(pixel.red, 0);
     }
 
-    pub fn image_view_mut_fill_rect_smoke() -> bool {
+    #[test]
+    fn image_view_mut_fill_rect_smoke() {
         let mut img = Image::new(10, 10);
 
         {
@@ -1637,41 +1648,49 @@ pub(crate) mod qemu_tests {
             view.fill_rect(Rect::new(2, 2, 3, 3), Color::GREEN);
         }
 
-        img.get_pixel(3, 3).green == 255 && img.get_pixel(0, 0).green == 0
+        assert_eq!(img.get_pixel(3, 3).green, 255);
+        assert_eq!(img.get_pixel(0, 0).green, 0);
     }
 
-    pub fn image_view_out_of_bounds_smoke() -> bool {
+    #[test]
+    fn image_view_out_of_bounds_smoke() {
         let img = Image::new(10, 10);
         let view = img.as_view();
         let pixel = view.get_pixel(100, 100);
-        pixel.alpha == 0
+        assert_eq!(pixel.alpha, 0);
     }
 
-    pub fn image_view_external_buffer_smoke() -> bool {
+    #[test]
+    fn image_view_external_buffer_smoke() {
         let mut buffer = vec![0u8; 100 * 4];
         let Some(mut view) = ImageViewMut::new(&mut buffer, 10, 10, 40, PixelFormat::Rgba8888)
         else {
-            return false;
+            panic!("view should be created for valid external buffer");
         };
 
         view.set_pixel(0, 0, Color::RED);
 
-        buffer[0] == 255 && buffer[1] == 0 && buffer[2] == 0 && buffer[3] == 255
+        assert_eq!(buffer[0], 255);
+        assert_eq!(buffer[1], 0);
+        assert_eq!(buffer[2], 0);
+        assert_eq!(buffer[3], 255);
     }
 
-    pub fn image_view_stride_smoke() -> bool {
+    #[test]
+    fn image_view_stride_smoke() {
         let mut buffer = vec![0u8; 48 * 10];
         let Some(mut view) = ImageViewMut::new(&mut buffer, 10, 10, 48, PixelFormat::Rgba8888)
         else {
-            return false;
+            panic!("view should be created for valid stride");
         };
 
         view.set_pixel(0, 1, Color::BLUE);
 
-        buffer[48 + 2] == 255
+        assert_eq!(buffer[48 + 2], 255);
     }
 
-    pub fn max_image_size_constant_smoke() -> bool {
-        MAX_IMAGE_SIZE == 256 * 1024 * 1024
+    #[test]
+    fn max_image_size_constant_smoke() {
+        assert_eq!(MAX_IMAGE_SIZE, 256 * 1024 * 1024);
     }
 }

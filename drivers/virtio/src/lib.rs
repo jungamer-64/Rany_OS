@@ -67,7 +67,7 @@ pub use defs::{
 };
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     use super::*;
     use spin::Mutex;
 
@@ -183,24 +183,14 @@ mod qemu_tests {
         }
     }
 
-    pub fn transport_init_sequence_smoke() -> bool {
+    #[test]
+    fn transport_init_sequence_smoke() {
         let mut transport = MockTransport::new();
         let init = VirtioDeviceInit::new(&mut transport);
 
         match init.initialize(0xFFFF) {
-            Ok(negotiated) => negotiated == 0xFFFF,
-            Err(_) => false,
+            Ok(negotiated) => assert_eq!(negotiated, 0xFFFF),
+            Err(err) => panic!("transport_init_sequence_smoke failed: {err:?}"),
         }
-    }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
-
-    #[test]
-    fn transport_init_sequence_smoke() {
-        assert!(qemu_tests::transport_init_sequence_smoke());
     }
 }

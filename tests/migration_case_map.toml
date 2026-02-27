@@ -222,7 +222,7 @@ root_default = true
 reason = "migrated to crate-local tests"
 destination.kind = "crate-test"
 destination.package = "vfs"
-destination.test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
+destination.test_filter = ""
 
 [[case]]
 id = "fs.fat32_types"
@@ -233,7 +233,7 @@ root_default = true
 reason = "migrated to crate-local tests"
 destination.kind = "crate-test"
 destination.package = "fat32"
-destination.test_filter = "qemu_smoke_tests::qemu_smoke_pr_required"
+destination.test_filter = "tests::pr_required_smoke_suite"
 
 [[case]]
 id = "fs.fat32_extended"
@@ -244,7 +244,7 @@ root_default = true
 reason = "migrated to crate-local tests"
 destination.kind = "crate-test"
 destination.package = "fat32"
-destination.test_filter = "qemu_smoke_tests::qemu_smoke_nightly_required"
+destination.test_filter = "tests::nightly_required_smoke_suite"
 
 [[case]]
 id = "graphics.types"
@@ -255,7 +255,7 @@ root_default = true
 reason = "migrated to crate-local tests"
 destination.kind = "crate-test"
 destination.package = "graphic_types"
-destination.test_filter = "qemu_smoke_tests::qemu_smoke_types"
+destination.test_filter = ""
 
 [[case]]
 id = "graphics.images"
@@ -266,7 +266,7 @@ root_default = true
 reason = "migrated to crate-local tests"
 destination.kind = "crate-test"
 destination.package = "graphic_types"
-destination.test_filter = "qemu_smoke_tests::qemu_smoke_images_alloc"
+destination.test_filter = ""
 
 [[case]]
 id = "graphics.browser"

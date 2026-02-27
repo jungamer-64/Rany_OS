@@ -88,7 +88,7 @@ pub use crate::global::{
 pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     use crate::commands::{NvmeCommand, NvmeCompletion};
     use crate::controller::NvmeCapabilities;
     use crate::defs::{AdminOpcode, IoOpcode, PrpList};
@@ -241,75 +241,68 @@ mod qemu_tests {
         let nvme_cmd = cmd.to_nvme_command(100, 1);
         nvme_cmd.opcode() == IoOpcode::Read as u8 && nvme_cmd.nsid == 1
     }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
-
     #[test]
-    fn command_read_smoke() {
-        assert!(qemu_tests::command_read_smoke());
+    fn command_read_smoke_test() {
+        assert!(command_read_smoke());
     }
 
     #[test]
-    fn command_write_smoke() {
-        assert!(qemu_tests::command_write_smoke());
+    fn command_write_smoke_test() {
+        assert!(command_write_smoke());
     }
 
     #[test]
-    fn command_create_cq_smoke() {
-        assert!(qemu_tests::command_create_cq_smoke());
+    fn command_create_cq_smoke_test() {
+        assert!(command_create_cq_smoke());
     }
 
     #[test]
-    fn command_create_sq_smoke() {
-        assert!(qemu_tests::command_create_sq_smoke());
+    fn command_create_sq_smoke_test() {
+        assert!(command_create_sq_smoke());
     }
 
     #[test]
-    fn completion_status_smoke() {
-        assert!(qemu_tests::completion_status_smoke());
+    fn completion_status_smoke_test() {
+        assert!(completion_status_smoke());
     }
 
     #[test]
-    fn completion_error_smoke() {
-        assert!(qemu_tests::completion_error_smoke());
+    fn completion_error_smoke_test() {
+        assert!(completion_error_smoke());
     }
 
     #[test]
-    fn io_request_state_smoke() {
-        assert!(qemu_tests::io_request_state_smoke());
+    fn io_request_state_smoke_test() {
+        assert!(io_request_state_smoke());
     }
 
     #[test]
-    fn capabilities_smoke() {
-        assert!(qemu_tests::capabilities_smoke());
+    fn capabilities_smoke_test() {
+        assert!(capabilities_smoke());
     }
 
     #[test]
-    fn prp_list_smoke() {
-        assert!(qemu_tests::prp_list_smoke());
+    fn prp_list_smoke_test() {
+        assert!(prp_list_smoke());
     }
 
     #[test]
-    fn pending_requests_smoke() {
-        assert!(qemu_tests::pending_requests_smoke());
+    fn pending_requests_smoke_test() {
+        assert!(pending_requests_smoke());
     }
 
     #[test]
-    fn queue_type_traits_smoke() {
-        assert!(qemu_tests::queue_type_traits_smoke());
+    fn queue_type_traits_smoke_test() {
+        assert!(queue_type_traits_smoke());
     }
 
     #[test]
-    fn identify_command_smoke() {
-        assert!(qemu_tests::identify_command_smoke());
+    fn identify_command_smoke_test() {
+        assert!(identify_command_smoke());
     }
 
     #[test]
-    fn read_command_smoke() {
-        assert!(qemu_tests::read_command_smoke());
+    fn read_command_smoke_test() {
+        assert!(read_command_smoke());
     }
 }

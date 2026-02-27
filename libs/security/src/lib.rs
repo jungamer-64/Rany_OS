@@ -643,7 +643,7 @@ pub fn init() {
 
 #[cfg(test)]
 #[allow(clippy::must_use_candidate)]
-mod qemu_tests {
+mod tests {
     use super::{
         CAP_NET_BIND, CAP_NET_RAW, CAP_SYS_ADMIN, CapabilityError, CapabilitySet,
         ReclamationStatus, expire_grants_now, manager, reclaim_revoked_now,
@@ -883,24 +883,18 @@ mod qemu_tests {
         }
         grants[0].revoked
     }
-}
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
-
     #[test]
-    fn qemu_smoke_suite() {
-        assert!(qemu_tests::capability_set_smoke());
-        assert!(qemu_tests::grant_flow_smoke());
-        assert!(qemu_tests::capability_set_full_smoke());
-        assert!(qemu_tests::raise_not_permitted_smoke());
-        assert!(qemu_tests::grant_requires_permissions_smoke());
-        assert!(qemu_tests::grant_with_permitted_smoke());
-        assert!(qemu_tests::grant_with_options_smoke());
-        assert!(qemu_tests::reclaim_token_smoke());
-        assert!(qemu_tests::in_flight_blocks_reclaim_smoke());
-        assert!(qemu_tests::expire_grants_smoke());
-        assert!(qemu_tests::revoke_grant_smoke());
+    fn smoke_suite() {
+        assert!(capability_set_smoke());
+        assert!(grant_flow_smoke());
+        assert!(capability_set_full_smoke());
+        assert!(raise_not_permitted_smoke());
+        assert!(grant_requires_permissions_smoke());
+        assert!(grant_with_permitted_smoke());
+        assert!(grant_with_options_smoke());
+        assert!(reclaim_token_smoke());
+        assert!(in_flight_blocks_reclaim_smoke());
+        assert!(expire_grants_smoke());
+        assert!(revoke_grant_smoke());
     }
 }

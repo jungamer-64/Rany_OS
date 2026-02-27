@@ -72,57 +72,7 @@ mod inode_file_io;
 mod inode_metadata;
 mod inode_vfs_impl;
 #[cfg(test)]
-mod qemu_tests;
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    fn run_pr_smoke() {
-        assert!(crate::qemu_tests::cluster_smoke());
-        assert!(crate::qemu_tests::next_cluster_smoke());
-        assert!(crate::qemu_tests::sector_smoke());
-    }
-
-    #[test]
-    fn qemu_smoke_pr_required() {
-        run_pr_smoke();
-    }
-
-    #[test]
-    #[ignore = "nightly-only pure smoke set"]
-    fn qemu_smoke_nightly_required() {
-        run_pr_smoke();
-
-        assert!(crate::qemu_tests::short_name_smoke());
-        assert!(crate::qemu_tests::checksum_smoke());
-        assert!(crate::qemu_tests::cluster_validation_smoke());
-        assert!(crate::qemu_tests::cluster_special_values_smoke());
-        assert!(crate::qemu_tests::cluster_contiguity_smoke());
-        assert!(crate::qemu_tests::cluster_in_range_smoke());
-        assert!(crate::qemu_tests::file_offset_calculation_smoke());
-        assert!(crate::qemu_tests::file_offset_in_range_smoke());
-        assert!(crate::qemu_tests::file_offset_arithmetic_smoke());
-        assert!(crate::qemu_tests::byte_count_operations_smoke());
-        assert!(crate::qemu_tests::byte_count_saturating_sub_smoke());
-        assert!(crate::qemu_tests::byte_count_empty_smoke());
-        assert!(crate::qemu_tests::next_cluster_from_fat_entry_smoke());
-        assert!(crate::qemu_tests::next_cluster_as_valid_smoke());
-        assert!(crate::qemu_tests::file_attributes_smoke());
-        assert!(crate::qemu_tests::file_attributes_directory_smoke());
-        assert!(crate::qemu_tests::mount_minimal_boot_sector_smoke());
-        assert!(crate::qemu_tests::write_and_flush_fat_entry_smoke());
-        assert!(crate::qemu_tests::file_attributes_lfn_smoke());
-        assert!(crate::qemu_tests::lfn_checksum_smoke());
-        assert!(crate::qemu_tests::fat_sector_cache_update_and_dirty_smoke());
-        assert!(crate::qemu_tests::update_entry_if_smoke());
-        assert!(crate::qemu_tests::dir_entry_cache_arc_smoke());
-        assert!(crate::qemu_tests::cluster_chain_cycle_detection_smoke());
-        assert!(crate::qemu_tests::async_mutex_blocking_lock_basic_smoke());
-        assert!(crate::qemu_tests::async_mutex_wait_then_acquire_smoke());
-        assert!(crate::qemu_tests::irq_poison_lock_basic_smoke());
-        assert!(crate::qemu_tests::irq_try_lock_smoke());
-        assert!(crate::qemu_tests::irq_restore_smoke());
-    }
-}
+mod tests;
 
 pub use buffer_pool::{
     ClusterBuffer, ClusterBufferAllocator, ClusterBufferPool, PooledClusterBuffer,

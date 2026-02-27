@@ -87,31 +87,19 @@ pub use pcie_ext::{
 };
 
 #[cfg(test)]
-mod qemu_tests {
+mod tests {
     use crate::{DeliveryMode, MsiConfig};
-
-    pub fn msi_config_smoke() -> bool {
-        let config = MsiConfig::new(0, 33);
-        config.message_address() == 0xFEE0_0000 && config.message_data() == 33
-    }
-
-    pub fn delivery_mode_smoke() -> bool {
-        DeliveryMode::Fixed as u32 == 0 && DeliveryMode::LowestPriority as u32 == 1
-    }
-}
-
-
-#[cfg(test)]
-mod qemu_smoke_tests {
-    use super::qemu_tests;
 
     #[test]
     fn msi_config_smoke() {
-        assert!(qemu_tests::msi_config_smoke());
+        let config = MsiConfig::new(0, 33);
+        assert_eq!(config.message_address(), 0xFEE0_0000);
+        assert_eq!(config.message_data(), 33);
     }
 
     #[test]
     fn delivery_mode_smoke() {
-        assert!(qemu_tests::delivery_mode_smoke());
+        assert_eq!(DeliveryMode::Fixed as u32, 0);
+        assert_eq!(DeliveryMode::LowestPriority as u32, 1);
     }
 }
