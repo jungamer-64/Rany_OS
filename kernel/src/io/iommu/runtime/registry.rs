@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/registry.rs
+// kernel/src/io/iommu/runtime/registry.rs
 // ============================================================================
 
 //! Global IOMMU Driver Registration

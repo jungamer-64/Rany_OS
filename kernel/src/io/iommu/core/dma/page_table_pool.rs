@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/page_table_pool.rs - NUMA-Aware Page Table Recycling
+// kernel/src/io/iommu/core/dma/page_table_pool.rs - NUMA-Aware Page Table Recycling
 // ============================================================================
+
 //!
 //! # Page Table Pool
 //!

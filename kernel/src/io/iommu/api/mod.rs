@@ -1,6 +1,7 @@
 // ============================================================================
 // kernel/src/io/iommu/api/mod.rs
 // ============================================================================
+
 //! IOMMU Public API
 //!
 //! Global API functions for IOMMU initialization, device protection,

@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/driver.rs
+// kernel/src/io/iommu/backends/amd/driver.rs
 // ============================================================================
+
 //! Driver trait implementation for AMD-Vi IOMMU
 
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};

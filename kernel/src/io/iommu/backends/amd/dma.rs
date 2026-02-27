@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/dma.rs
+// kernel/src/io/iommu/backends/amd/dma.rs
 // ============================================================================
 
 //! AMD-Vi DMA mapping, IOVA allocation, and command queue dispatch.

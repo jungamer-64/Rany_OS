@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/stats.rs
+// kernel/src/io/iommu/runtime/stats.rs
 // ============================================================================
+
 //! IOMMU Statistics & Diagnostics
 //!
 //! Tracks usage counters for IOMMU operations.

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/tables.rs
+// kernel/src/io/iommu/backends/amd/tables.rs
 // ============================================================================
 
 use crate::io::iommu::core::tables::Zeroable;

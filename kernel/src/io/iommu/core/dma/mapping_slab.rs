@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/mapping_slab.rs
+// kernel/src/io/iommu/core/dma/mapping_slab.rs
 // ============================================================================
+
 //! Allocation-Free DMA Mapping Management
 //!
 //! This module provides `MappingSlab`, a pre-allocated pool of mapping slots

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/device_table.rs
+// kernel/src/io/iommu/backends/amd/device_table.rs
 // ============================================================================
 
 //! AMD-Vi Device Table Entry and Device Table management.

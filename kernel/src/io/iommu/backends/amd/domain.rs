@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/domain.rs
+// kernel/src/io/iommu/backends/amd/domain.rs
 // ============================================================================
 
 //! AMD-Vi domain management, device attach/detach, and DTE construction.

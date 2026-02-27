@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/tables.rs
+// kernel/src/io/iommu/core/tables.rs
 // ============================================================================
 
 use crate::io::iommu::core::types::{IommuError, PteFormat};

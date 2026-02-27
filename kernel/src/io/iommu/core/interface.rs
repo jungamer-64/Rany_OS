@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/interface.rs
+// kernel/src/io/iommu/core/interface.rs
 // ============================================================================
+
 //! IOMMU backend interfaces (hardware context/domain).
 
 use crate::io::iommu::core::types::{DmaMapping, IommuDomainType, IommuError};

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/pri.rs
+// kernel/src/io/iommu/backends/intel/controller/pri.rs
 // ============================================================================
 
 //! Page Request Interface (PRI) Methods

@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/common/ats.rs
+// kernel/src/io/iommu/backends/common/ats.rs
 // ============================================================================
+
 //! IOMMU ATS (Address Translation Services) and PRI (Page Request Interface)
 //!
 //! This module contains structures for Posted Interrupt processing and

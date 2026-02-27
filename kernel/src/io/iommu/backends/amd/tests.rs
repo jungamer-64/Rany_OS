@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/tests.rs
+// kernel/src/io/iommu/backends/amd/tests.rs
 // ============================================================================
 
 //! Unit tests for the AMD-Vi IOMMU subsystem.

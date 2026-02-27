@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/init.rs
+// kernel/src/io/iommu/backends/intel/controller/init.rs
 // ============================================================================
 
 //! Controller Initialization and Capability Detection

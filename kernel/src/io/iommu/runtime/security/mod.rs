@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/security.rs
+// kernel/src/io/iommu/runtime/security/mod.rs
 // ============================================================================
 
 //! Security Monitor Integration

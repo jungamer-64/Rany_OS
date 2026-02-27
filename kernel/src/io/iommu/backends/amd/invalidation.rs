@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/invalidation.rs
+// kernel/src/io/iommu/backends/amd/invalidation.rs
 // ============================================================================
 
 //! AMD-Vi command state management and invalidation operations.
@@ -368,11 +368,18 @@ impl AmdIommuDriver {
     pub(crate) fn invalidate_iotlb(
         &self,
         domain_id: u16,
-        _iova: Option<u64>,
+        iova: Option<u64>,
+        any_ats: bool,
     ) -> Result<(), IommuError> {
         // AMD-Vi uses INVALIDATE_IOMMU_PAGES command
         // For emergency isolation, we invalidate all pages in the domain
-        self.invalidate_domain_all(domain_id)
+        self.invalidate_domain_all(domain_id)?;
+        
+        if any_ats {
+            let _ = self.invalidate_domain_device_tlbs(domain_id, iova, None);
+        }
+        
+        Ok(())
     }
 
     /// Invalidate all IOTLB entries globally.
@@ -418,6 +425,30 @@ impl AmdIommuDriver {
             }
         }
         self.iova_allocator.complete_epoch(epoch);
+        Ok(())
+    }
+
+    /// Invalidate Device-TLBs for all devices belonging to a specific domain.
+    fn invalidate_domain_device_tlbs(
+        &self,
+        domain_id: u16,
+        iova: Option<u64>,
+        size: Option<u64>,
+    ) -> Result<(), IommuError> {
+        let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+        for (&device, &did) in device_domains.iter() {
+            if did == domain_id {
+                // For ATS-aware invalidation, we must send INVALIDATE_IOTLB_PAGES to the device
+                match (iova, size) {
+                    (Some(iova_val), Some(size_val)) => {
+                        let _ = self.invalidate_iotlb_pages(device, iova_val, size_val);
+                    }
+                    _ => {
+                        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -479,9 +510,19 @@ impl IommuInvalidator for AmdIommuDriver {
                 InvalidateKind::Pages { start_iova, bytes } => {
                     // AMD-Vi invalidate_domain_pages iterates over all units
                     self.invalidate_domain_pages(req.domain_id, start_iova, bytes)?;
+                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                        let _ = self.invalidate_domain_device_tlbs(
+                            req.domain_id,
+                            Some(start_iova),
+                            Some(bytes),
+                        );
+                    }
                 }
                 InvalidateKind::Domain => {
                     self.invalidate_domain_all(req.domain_id)?;
+                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                        let _ = self.invalidate_domain_device_tlbs(req.domain_id, None, None);
+                    }
                 }
                 InvalidateKind::Global => {
                     self.invalidate_all_entries()?;

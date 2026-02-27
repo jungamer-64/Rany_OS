@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/dma.rs
+// kernel/src/io/iommu/backends/intel/controller/dma.rs
 // ============================================================================
 
 //! Domain and DMA Mapping Management

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/init_global.rs
+// kernel/src/io/iommu/backends/intel/controller/init_global.rs
 // ============================================================================
 
 //! Global Initialization (from ACPI)

@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/irq.rs
+// kernel/src/io/iommu/runtime/irq.rs
 // ============================================================================
+
 //! Interrupt Remapping API
 //!
 //! Provides functions to map interrupts via the IOMMU (Interrupt Remapping/IR).

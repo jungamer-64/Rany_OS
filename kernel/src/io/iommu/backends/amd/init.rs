@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/init.rs
+// kernel/src/io/iommu/backends/amd/init.rs
 // ============================================================================
 
 //! AMD-Vi hardware initialization and IVRS table parsing.

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/mod.rs
+// kernel/src/io/iommu/backends/intel/controller/mod.rs
 // ============================================================================
 
 //! Intel IOMMU Controller Implementation
@@ -460,9 +460,9 @@ impl IommuController {
     }
 
     /// Invalidate IOTLB (Generic: uses QI if enabled, else Direct)
-    pub fn invalidate_iotlb(&self, domain_id: u16) {
+    pub fn invalidate_iotlb(&self, domain_id: u16, any_ats: bool) {
         
-        let _ = self.invalidate_domain(domain_id);
+        let _ = self.invalidate_domain(domain_id, any_ats);
     }
 
     /// Invalidate IOTLB globally (synchronous).

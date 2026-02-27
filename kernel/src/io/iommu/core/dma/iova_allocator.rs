@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/iova_allocator.rs - IOVA-Specific Allocator with Quarantine
+// kernel/src/io/iommu/core/dma/iova_allocator.rs - IOVA-Specific Allocator with Quarantine
 // ============================================================================
+
 //
 // DESIGN: This module implements the IOVA-specific allocator that wraps the generic
 // memory management `FastBitmapAllocator`. It adds:

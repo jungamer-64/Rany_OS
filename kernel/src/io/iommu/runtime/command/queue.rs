@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/cmdqueue.rs
+// kernel/src/io/iommu/runtime/command/queue.rs
 // ============================================================================
+
 //!
 // Command Queue for IOMMU - initial implementation
 // - Per-controller MPSC queue using existing BoundedChannel

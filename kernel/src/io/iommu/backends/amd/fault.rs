@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/fault.rs
+// kernel/src/io/iommu/backends/amd/fault.rs
 // ============================================================================
 
 //! AMD-Vi fault event processing, deferred fault queue, and async fault handler.

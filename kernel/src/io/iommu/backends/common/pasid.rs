@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/common/pasid.rs
+// kernel/src/io/iommu/backends/common/pasid.rs
 // ============================================================================
+
 //! PASID (Process Address Space ID) Support for Scalable Mode
 //!
 //! Canonical PASID table types live in `crate::io::iommu::backends::intel::tables`:

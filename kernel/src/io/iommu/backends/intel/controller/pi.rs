@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/pi.rs
+// kernel/src/io/iommu/backends/intel/controller/pi.rs
 // ============================================================================
 
 //! Posted Interrupts Methods

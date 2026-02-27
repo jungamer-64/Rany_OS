@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/cache.rs - Context Cache
+// kernel/src/io/iommu/core/dma/cache.rs - Context Cache
 // ============================================================================
+
 //! IOMMU Context Cache
 //!
 //! Provides a 2-way set associative context cache with LRU eviction for

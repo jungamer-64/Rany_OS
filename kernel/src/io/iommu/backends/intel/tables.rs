@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/tables.rs
+// kernel/src/io/iommu/backends/intel/tables.rs
 // ============================================================================
 
 use crate::io::iommu::core::tables::{HardwareTable, Zeroable};

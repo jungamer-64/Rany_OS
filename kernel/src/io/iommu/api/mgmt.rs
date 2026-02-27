@@ -1,6 +1,7 @@
 // ============================================================================
 // kernel/src/io/iommu/api/mgmt.rs
 // ============================================================================
+
 //! IOMMU Management & Configuration API
 //!
 //! Initialization, domain management, and global operations.

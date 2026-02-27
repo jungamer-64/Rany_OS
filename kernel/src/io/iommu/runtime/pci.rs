@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/pci.rs
+// kernel/src/io/iommu/runtime/pci.rs
 // ============================================================================
+
 //! PCI device IOMMU integration
 //!
 //! Functions for setting up IOMMU protection for PCI devices.

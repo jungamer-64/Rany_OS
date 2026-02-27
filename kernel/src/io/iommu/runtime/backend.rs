@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/backend.rs
+// kernel/src/io/iommu/runtime/backend.rs
 // ============================================================================
+
 //! IOMMU backend enum dispatch (static, zero-allocation).
 
 use alloc::sync::Arc;
@@ -276,10 +277,11 @@ impl IommuBackend {
         &self,
         domain_id: u16,
         iova: Option<u64>,
+        any_ats: bool,
     ) -> Result<(), IommuError> {
         match self {
-            Self::Intel(driver) => driver.invalidate_iotlb(domain_id, iova),
-            Self::Amd(driver) => driver.invalidate_iotlb(domain_id, iova),
+            Self::Intel(driver) => driver.invalidate_iotlb(domain_id, iova, any_ats),
+            Self::Amd(driver) => driver.invalidate_iotlb(domain_id, iova, any_ats),
         }
     }
 

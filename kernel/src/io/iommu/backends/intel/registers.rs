@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/registers.rs
+// kernel/src/io/iommu/backends/intel/registers.rs
 // ============================================================================
 
 //! IOMMU Register Definitions

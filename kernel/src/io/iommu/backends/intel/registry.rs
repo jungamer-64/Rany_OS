@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/registry.rs
+// kernel/src/io/iommu/backends/intel/registry.rs
 // ============================================================================
 
 //! Intel IOMMU Registry
@@ -12,13 +12,6 @@ use spin::Mutex;
 
 use crate::io::iommu::runtime::config::IommuConfig;
 pub use crate::io::iommu::runtime::config::ReservedMemoryRegion; // Will be moved? RMRR is defined in mod?
-// use crate::io::iommu::IommuController; // Temporarily pointing to mod.rs, will change to super::controller::IommuController
-
-// Needs to point to the location of IommuController.
-// Since we are moving IommuController to intel/controller, we can assume it will be there.
-// But for now, let's use the one in mod.rs and fix imports later, OR move IommuController simultaneously.
-// Actually, if I write this file now, it won't compile until IommuController is available.
-
 use super::controller::IommuController;
 
 /// Intel IOMMU Registry

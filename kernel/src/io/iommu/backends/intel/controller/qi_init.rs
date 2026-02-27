@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/qi_init.rs
+// kernel/src/io/iommu/backends/intel/controller/qi_init.rs
 // ============================================================================
 
 //! Queued Invalidation Initialization Methods

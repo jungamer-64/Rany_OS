@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/mod.rs
+// kernel/src/io/iommu/backends/intel/mod.rs
 // ============================================================================
 
 //! Intel VT-d backend driver (adapter over existing implementation).
@@ -138,7 +138,7 @@ unsafe fn apply_mapping_sync(
         return Err(err);
     }
     crate::io::log::early_print("[DMA] apply_mapping_sync: map OK, calling invalidate\n");
-    controller.invalidate_iotlb(domain_id);
+    controller.invalidate_iotlb(domain_id, false);
     Ok(iova)
 }
 
@@ -186,6 +186,6 @@ async unsafe fn apply_mapping_async(
         }
         return Err(err);
     }
-    controller.invalidate_iotlb(domain_id);
+    controller.invalidate_iotlb(domain_id, false);
     Ok(iova)
 }

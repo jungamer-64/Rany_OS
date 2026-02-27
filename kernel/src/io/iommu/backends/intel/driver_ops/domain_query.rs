@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/backends/intel/driver_ops/domain_query.rs
+// ============================================================================
+
 use super::*;
 
 impl IntelIommuDriver {
@@ -33,11 +37,12 @@ impl IntelIommuDriver {
         &self,
         domain_id: u16,
         _iova: Option<u64>,
+        any_ats: bool,
     ) -> Result<(), IommuError> {
         let registry = self.registry()?;
 
         for controller in &registry.controllers {
-            controller.invalidate_iotlb(domain_id);
+            controller.invalidate_iotlb(domain_id, any_ats);
         }
 
         Ok(())

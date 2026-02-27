@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/qi.rs
+// kernel/src/io/iommu/backends/intel/qi.rs
 // ============================================================================
+
 use alloc::alloc::Layout;
 use alloc::vec::Vec;
 use crate::io::iommu::core::tables::virt_ptr_to_phys;

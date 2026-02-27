@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/quarantine.rs - Zero-Allocation Quarantine for DMA Buffers
+// kernel/src/io/iommu/runtime/quarantine/mod.rs - Zero-Allocation Quarantine for DMA Buffers
 // ============================================================================
+
 //
 // Phase 5: Quarantine (Zero-Allocation)
 //

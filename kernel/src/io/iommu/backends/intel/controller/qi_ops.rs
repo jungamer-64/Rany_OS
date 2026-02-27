@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/intel/controller/qi_ops.rs
+// kernel/src/io/iommu/backends/intel/controller/qi_ops.rs
 // ============================================================================
 
 //! Queued Invalidation Operations
@@ -317,7 +317,7 @@ impl IommuController {
                 start_iova,
                 bytes,
             } => self.invalidate_pages_nosync(req.domain_id, start_iova, bytes, any_ats),
-            InvalidateKind::Domain => self.invalidate_domain_nosync(req.domain_id),
+            InvalidateKind::Domain => self.invalidate_domain_nosync(req.domain_id, any_ats),
             InvalidateKind::Global => self.invalidate_global_nosync(),
             InvalidateKind::Context { source_id } => self.invalidate_context_nosync(source_id),
             InvalidateKind::Iec { global, index } => self.invalidate_iec_nosync(global, index),
@@ -410,18 +410,20 @@ impl IommuController {
         Ok(())
     }
 
-    pub(crate) fn invalidate_domain(&self, domain_id: u16) -> Result<(), IommuError> {
-        self.invalidate_domain_nosync(domain_id)?;
+    pub(crate) fn invalidate_domain(&self, domain_id: u16, any_ats: bool) -> Result<(), IommuError> {
+        self.invalidate_domain_nosync(domain_id, any_ats)?;
         if self.is_queued_invalidation_enabled() {
             self.qi_wait_sync()?;
         }
         Ok(())
     }
 
-    fn invalidate_domain_nosync(&self, domain_id: u16) -> Result<(), IommuError> {
+    fn invalidate_domain_nosync(&self, domain_id: u16, any_ats: bool) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_domain(domain_id)?;
-            let _ = self.invalidate_device_tlbs(domain_id, None, None);
+            if any_ats {
+                let _ = self.invalidate_device_tlbs(domain_id, None, None);
+            }
         } else {
             unsafe { self.invalidate_iotlb_direct(domain_id) };
         }

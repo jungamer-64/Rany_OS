@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/flush.rs
+// kernel/src/io/iommu/core/dma/flush.rs
 // ============================================================================
+
 //!
 //! IOTLB and Context Cache Flush Operations
 //!
@@ -75,9 +76,10 @@ pub fn invalidate_context_device(source_id: u16) -> Result<(), IommuError> {
 /// Invalidate IOTLB entries for a specific domain.
 pub fn invalidate_iotlb_domain(domain_id: u16) -> Result<(), IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    driver.invalidate_iotlb(domain_id, None)?;
+    // For emergency isolation, we MUST invalidate any ATS Device-TLB entries.
+    driver.invalidate_iotlb(domain_id, None, true)?;
 
-    log::debug!("[IOMMU][Flush] Domain {} IOTLB invalidated", domain_id);
+    log::debug!("[IOMMU][Flush] Domain {} IOTLB invalidated (ATS-aware)", domain_id);
 
     Ok(())
 }

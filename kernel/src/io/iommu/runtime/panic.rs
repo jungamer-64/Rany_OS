@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/panic.rs
+// kernel/src/io/iommu/runtime/panic.rs
 // ============================================================================
+
 //! Panic-safe DMA pool for emergency mappings.
 //!
 //! The pool is initialized during boot, mapping a contiguous physical region

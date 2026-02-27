@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/irt.rs
+// kernel/src/io/iommu/backends/amd/irt.rs
 // ============================================================================
 
 //! AMD-Vi Interrupt Remapping Table (IRT) management.

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/event_log.rs
+// kernel/src/io/iommu/backends/amd/event_log.rs
 // ============================================================================
 
 //! AMD-Vi Event Log ring buffer structures.

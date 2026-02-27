@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/amd/qemu_tests.rs
+// kernel/src/io/iommu/backends/amd/qemu_tests.rs
 // ============================================================================
+
 //! AMD-Vi deterministic smoke exports for qemu-test-export.
 
 use alloc::sync::Arc;

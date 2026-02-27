@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel\src\io\iommu\fault_log.rs
+// kernel/src/io/iommu/runtime/fault_log.rs
 // ============================================================================
+
 //! Fault Log - Ring buffer for storing fault records
 //!
 //! Fixed-size buffer to ensure ISR safety (no allocations).
