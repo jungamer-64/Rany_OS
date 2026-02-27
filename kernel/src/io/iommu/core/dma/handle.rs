@@ -473,6 +473,15 @@ impl<T> DmaHandle<T> {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
         }
 
+        // SECURITY: Even in identity/bypass mode, we MUST NOT allow DMA into protected regions.
+        if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
+            log::error!(
+                "[IOMMU][SECURITY] Identity mapping rejected: overlaps protected region {:#x}-{:#x}",
+                phys, phys + size
+            );
+            return Err(MapError::new(rref, MapErrorKind::IommuError(e)));
+        }
+
         // For now, use physical address as IOVA (1:1 mapping)
         let iova = phys;
 

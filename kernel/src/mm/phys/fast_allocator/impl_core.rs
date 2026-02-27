@@ -92,7 +92,7 @@ impl FastBitmapAllocator {
         for cpu_id in 0..MAX_CPUS {
             let magazine = &self.magazines[cpu_id];
             if magazine.is_single_writer_enabled() {
-                let arena_guard = magazine.arena_detail.lock().unwrap_or_else(|e| e.into_inner());
+                let arena_guard = magazine.arena_detail.lock().expect("lock poisoned");
                 if let Some(ref arena) = *arena_guard {
                     arena.sync_to_global(global_detail);
                 }
@@ -109,7 +109,7 @@ impl FastBitmapAllocator {
         if !magazine.is_single_writer_enabled() {
             return None;
         }
-        let mut arena_guard = magazine.arena_detail.lock().unwrap_or_else(|e| e.into_inner());
+        let mut arena_guard = magazine.arena_detail.lock().expect("lock poisoned");
         let arena = arena_guard.as_mut()?;
         if arena.is_frozen() {
             return None;
@@ -138,7 +138,7 @@ impl FastBitmapAllocator {
     /// Per-CPU マガジンから 4KB ページの割り当てを試みる (sub-magazine + magazine)
     pub(super) fn try_magazine_4k(&self, magazine: &PerCpuFastMagazine) -> Option<u64> {
         {
-            let mut sub_mag = magazine.sub_magazine_4k.lock().unwrap_or_else(|e| e.into_inner());
+            let mut sub_mag = magazine.sub_magazine_4k.lock().expect("lock poisoned");
             if sub_mag.has_frames() {
                 if let Some(frame) = sub_mag.allocate() {
                     let addr = frame.start_address().as_u64();
@@ -148,7 +148,7 @@ impl FastBitmapAllocator {
             }
         }
         if let Some(mag_lock) = magazine.get_magazine(0) {
-            let mut mag = mag_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let mut mag = mag_lock.lock().expect("lock poisoned");
             if let Some(addr) = mag.pop() {
                 self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
                 return Some(addr);
@@ -207,7 +207,7 @@ impl FastBitmapAllocator {
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
             if let Some(mag_lock) = magazine.get_magazine(1) {
-                let mut mag = mag_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let mut mag = mag_lock.lock().expect("lock poisoned");
                 if let Some(addr) = mag.pop() {
                     self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(addr);
@@ -324,7 +324,7 @@ impl FastBitmapAllocator {
         if !magazine.is_single_writer_enabled() {
             return false;
         }
-        let mut arena_guard = magazine.arena_detail.lock().unwrap_or_else(|e| e.into_inner());
+        let mut arena_guard = magazine.arena_detail.lock().expect("lock poisoned");
         if let Some(ref mut arena) = *arena_guard {
             if arena.in_current_window(page_idx) && !arena.is_frozen() {
                 if arena.free_page(page_idx) {
@@ -339,7 +339,7 @@ impl FastBitmapAllocator {
     /// Attempt to free a page via the per-CPU magazine.
     pub(super) fn try_free_magazine(magazine: &PerCpuFastMagazine, addr: u64) -> bool {
         if let Some(mag_lock) = magazine.get_magazine(0) {
-            let mut mag = mag_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let mut mag = mag_lock.lock().expect("lock poisoned");
             if !mag.is_full() {
                 if mag.push(addr) {
                     return true;
@@ -361,7 +361,7 @@ impl FastBitmapAllocator {
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
             if let Some(mag_lock) = magazine.get_magazine(1) {
-                let mut mag = mag_lock.lock().unwrap_or_else(|e| e.into_inner());
+                let mut mag = mag_lock.lock().expect("lock poisoned");
                 if !mag.is_full() {
                     if mag.push(addr) {
                         return true;
@@ -482,7 +482,7 @@ impl FastBitmapAllocator {
                 let mag = &mut self.magazines[cpu_id];
                 mag.set_arena(cpu_id, arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
                 mag.single_writer_enabled.store(false, Ordering::Release);
-                *mag.arena_detail.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *mag.arena_detail.lock().expect("lock poisoned") = None;
             }
         }
 

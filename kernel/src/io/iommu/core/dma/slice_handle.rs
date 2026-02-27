@@ -161,10 +161,21 @@ impl<T> DmaHandle<[T]> {
         let virt_ptr = rref.as_ptr() as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
         let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
+        let phys = phys_addr_val.as_u64();
+
+        // SECURITY: Even in identity/bypass mode, we MUST NOT allow DMA into protected regions.
+        if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
+            log::error!(
+                "[IOMMU][SECURITY] Identity slice mapping rejected: overlaps protected region {:#x}-{:#x}",
+                phys, phys + size
+            );
+            return Err(MapError::new(rref, MapErrorKind::IommuError(e)));
+        }
+
         Ok(Self::new_slice(
             rref,
-            phys_addr_val.as_u64(),
-            phys_addr_val.as_u64(),
+            phys,
+            phys,
             size,
             domain_id,
             direction,
@@ -249,7 +260,14 @@ impl<T> DmaHandle<[T]> {
         let virt_ptr = rref.as_ptr() as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
         let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
-        Some((phys_addr_val.as_u64(), phys_addr_val.as_u64(), size, MappingKind::Identity))
+        let phys = phys_addr_val.as_u64();
+
+        // SECURITY: Validate even for identity mapping attempts.
+        if crate::io::iommu::runtime::security::validate_dma_region(phys, size).is_err() {
+            return None;
+        }
+
+        Some((phys, phys, size, MappingKind::Identity))
     }
 
     /// Map an RRef slice for DMA access to a specific device (Safe API)

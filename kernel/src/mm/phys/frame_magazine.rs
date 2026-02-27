@@ -210,6 +210,10 @@ impl SubFrameMagazine {
 
         // Calculate physical address
         let addr = self.base_addr + (bit_idx as u64) * PAGE_SIZE_4K;
+        
+        // Safety check: address must be 4KiB aligned
+        debug_assert_eq!(addr % PAGE_SIZE_4K, 0, "SubFrameMagazine address is not aligned");
+        
         Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) })
     }
 
@@ -561,7 +565,7 @@ impl FrameMagazine {
     /// 複数フレームを一括pop
     pub fn pop_batch(&mut self, count: usize) -> impl Iterator<Item = PhysFrame<Size4KiB>> + '_ {
         let actual_count = count.min(self.count);
-        (0..actual_count).map(move |_| self.pop().unwrap())
+        (0..actual_count).filter_map(move |_| self.pop())
     }
 }
 

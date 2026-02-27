@@ -563,8 +563,27 @@ pub struct StreamingDmaMapping<'a> {
 }
 
 impl<'a> StreamingDmaMapping<'a> {
-    pub fn map(buffer: &'a [u8], direction: DmaDirection) -> Self {
+    /// Map a buffer for streaming DMA.
+    ///
+    /// # Safety
+    ///
+    /// This is legacy and UNSAFE because it does not support IOMMU IOVA allocation.
+    /// It returns a raw physical address which may be blocked by IOMMU or allow
+    /// unauthorized access if IOMMU is disabled/bypassed.
+    ///
+    /// Use `DmaHandle` instead for IOMMU-enabled DMA.
+    pub unsafe fn map(buffer: &'a [u8], direction: DmaDirection) -> Self {
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(buffer.as_ptr() as u64));
+        let phys = phys_addr.as_u64();
+        let size = buffer.len() as u64;
+
+        // SECURITY: Even for streaming mapping, check against protected regions.
+        if size > 0 {
+            if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
+                panic!("[DMA][SECURITY] StreamingDmaMapping overlaps protected region! phys={:#x}, size={}, error={:?}", phys, size, e);
+            }
+        }
+
         match direction {
             DmaDirection::ToDevice | DmaDirection::Bidirectional => {
                 flush_cache_range(buffer.as_ptr(), buffer.len());
