@@ -1,18 +1,18 @@
 // ============================================================================
 // kernel/src/io/iommu/domain.rs
 // ============================================================================
-use super::interface::IommuHardwareContext;
-use super::mapping_slab::MappingSlab;
-use super::page_table_pool::{
-    dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
+use crate::io::iommu::core::interface::IommuHardwareContext;
+use crate::io::iommu::core::dma::mapping_slab::MappingSlab;
+use crate::io::iommu::core::dma::page_table_pool::{
+    self, dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
 };
-use super::quarantine::QuarantineQueue;
-use super::tables::{
+use crate::io::iommu::runtime::quarantine::QuarantineQueue;
+use crate::io::iommu::core::tables::{
     PT_ENTRIES, PT_LEVELS, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
-use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::amd::tables::AmdPte;
-use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
+use crate::io::iommu::core::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::backends::amd::tables::AmdPte;
+use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
