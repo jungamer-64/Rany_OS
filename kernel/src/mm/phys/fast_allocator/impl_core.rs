@@ -8,12 +8,12 @@ impl FastBitmapAllocator {
         let bitmap = HugePageBitmap::new(total_pages);
 
         // Calculate arena sizes
-        let total_words_4k = (total_pages + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let total_words_4k = (total_pages.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
         let total_blocks_2m = total_pages / PAGES_PER_2MB_BLOCK;
 
-        let words_per_cpu = (total_words_4k + MAX_CPUS - 1) / MAX_CPUS;
+        let words_per_cpu = (total_words_4k.saturating_add(MAX_CPUS - 1)) / MAX_CPUS;
         let blocks_2m_per_cpu = if total_blocks_2m >= MAX_CPUS {
-            (total_blocks_2m + MAX_CPUS - 1) / MAX_CPUS
+            (total_blocks_2m.saturating_add(MAX_CPUS - 1)) / MAX_CPUS
         } else {
             1
         };
@@ -473,11 +473,11 @@ impl FastBitmapAllocator {
 
         for (idx, &cpu_id) in cpu_ids.iter().enumerate() {
             if cpu_id < MAX_CPUS {
-                let arena_start_4k = (idx * words_per_cpu).min(total_words_4k);
-                let arena_end_4k = ((idx + 1) * words_per_cpu).min(total_words_4k);
+                let arena_start_4k = (idx.saturating_mul(words_per_cpu)).min(total_words_4k);
+                let arena_end_4k = ((idx + 1).saturating_mul(words_per_cpu)).min(total_words_4k);
 
-                let arena_start_2m = (idx * blocks_2m_per_cpu).min(total_blocks_2m);
-                let arena_end_2m = ((idx + 1) * blocks_2m_per_cpu).min(total_blocks_2m);
+                let arena_start_2m = (idx.saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
+                let arena_end_2m = ((idx + 1).saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
 
                 let mag = &mut self.magazines[cpu_id];
                 mag.set_arena(cpu_id, arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
@@ -501,8 +501,8 @@ impl FastBitmapAllocator {
             return Err(());
         }
 
-        let end = start.saturating_add(size);
-        if end > self.base + self.size {
+        let end = start.checked_add(size).ok_or(())?;
+        if end > self.base.saturating_add(self.size) {
             return Err(());
         }
 
@@ -544,8 +544,14 @@ impl FastBitmapAllocator {
             return None;
         }
 
-        let pages_needed = ((size + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K) as usize;
-        let align_pages = ((align + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K) as usize;
+        // Use checked arithmetic to avoid overflow
+        let pages_needed = (size.checked_add(PAGE_SIZE_4K - 1)? / PAGE_SIZE_4K) as usize;
+        let align_pages = (align.checked_add(PAGE_SIZE_4K - 1)? / PAGE_SIZE_4K) as usize;
+        
+        if align_pages == 0 {
+            return None;
+        }
+
         let total_pages = self.bitmap.total_pages();
 
         // Simple linear scan for contiguous free pages
@@ -553,11 +559,12 @@ impl FastBitmapAllocator {
         while start_page < total_pages {
             // Align start
             if start_page % align_pages != 0 {
-                start_page = ((start_page / align_pages) + 1) * align_pages;
+                // Use checked arithmetic to avoid overflow
+                start_page = (start_page / align_pages).checked_add(1)?.checked_mul(align_pages)?;
                 continue;
             }
 
-            if start_page + pages_needed > total_pages {
+            if start_page.checked_add(pages_needed)? > total_pages {
                 break;
             }
 
@@ -567,7 +574,7 @@ impl FastBitmapAllocator {
                 return Some(addr);
             }
 
-            start_page += 1;
+            start_page = start_page.saturating_add(1);
         }
 
         None

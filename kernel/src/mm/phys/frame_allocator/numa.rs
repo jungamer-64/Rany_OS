@@ -274,6 +274,9 @@ pub(crate) static PMM_GLOBAL_PTR: AtomicPtr<PmmAllocatorFast> = AtomicPtr::new(p
 pub(crate) static PMM_NUMA_PTR: AtomicPtr<NumaPmmAllocator> = AtomicPtr::new(ptr::null_mut());
 pub(crate) static PMM_LAST_SYNC_TICK: AtomicU64 = AtomicU64::new(0);
 
+/// PMM reconfiguration lock (prevents race during arena/topology updates)
+pub(crate) static PMM_RECONFIG_LOCK: IrqPoisonLock<()> = IrqPoisonLock::new(());
+
 pub(crate) fn pmm_global() -> Option<&'static PmmAllocatorFast> {
     let ptr = PMM_GLOBAL_PTR.load(Ordering::Acquire);
     unsafe { ptr.as_ref() }
@@ -309,6 +312,7 @@ pub(crate) fn should_sync_single_writer(tick: u64) -> bool {
 /// # Safety
 /// カーネル初期化時に一度だけ呼ばれる必要がある
 pub unsafe fn init_frame_allocator(usable_regions: &[(PhysAddr, u64)]) {
+    let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     if pmm_global().is_some() || pmm_numa().is_some() {
         return;
     }
@@ -332,6 +336,7 @@ pub unsafe fn init_frame_allocator(usable_regions: &[(PhysAddr, u64)]) {
 /// カーネル初期化時に一度だけ呼ばれる必要がある
 /// ACPI SRATから取得したNUMA情報を渡す
 pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)]) {
+    let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     if pmm_numa().is_some() || pmm_global().is_some() {
         return;
     }
@@ -347,6 +352,7 @@ pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)])
 /// # Safety
 /// カーネル初期化時に一度だけ呼ばれる必要がある
 pub unsafe fn init_numa_frame_allocator_from_info(numa_info: &NumaInfo) -> bool {
+    let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     if pmm_numa().is_some() {
         return true;
     }
@@ -421,6 +427,7 @@ pub(crate) fn reconfigure_numa_node(
 /// # Safety
 /// Call during early boot while no concurrent allocations are running.
 pub unsafe fn pmm_reconfigure_for_cpu_ids(cpu_ids: &[usize]) {
+    let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     let mut allowed = [false; crate::per_cpu::MAX_CPUS];
     for &cpu_id in cpu_ids {
         if cpu_id < allowed.len() {

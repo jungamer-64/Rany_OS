@@ -89,19 +89,19 @@ impl BitmapFrameAllocator {
         // 使用可能な領域を空きとしてマーク
         for &(start, size) in usable_regions {
             let start_frame = FrameIndex::from_phys_addr(start.as_u64());
-            let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
+            let end_frame = FrameIndex::from_phys_addr(start.as_u64().saturating_add(size));
 
             for frame_idx in start_frame.as_usize()..end_frame.as_usize() {
                 if frame_idx < MAX_4K_FRAMES {
                     self.mark_frame_free(FrameIndex::new(frame_idx));
-                    free += 1;
+                    free = free.saturating_add(1);
                 }
             }
 
             total = total.max(end_frame.as_usize());
         }
 
-        self.total_frames = total;
+        self.total_frames = total.min(MAX_4K_FRAMES);
         self.free_frames = free;
     }
 
@@ -162,7 +162,7 @@ impl BitmapFrameAllocator {
                 // Mutexで保護されているので通常のビット操作でOK
                 self.bitmap[word_idx] |= 1u64 << bit_idx;
                 self.free_frames = self.free_frames.saturating_sub(1);
-                self.next_free_hint = frame.as_usize() as u64 + 1;
+                self.next_free_hint = (frame.as_usize() as u64).saturating_add(1);
 
                 let addr = PhysAddr::new(frame.to_phys_addr());
                 return Some(PhysFrame::containing_address(addr));
@@ -178,18 +178,25 @@ impl BitmapFrameAllocator {
         frame_count: usize,
         alignment: usize,
     ) -> Option<PhysAddr> {
+        if frame_count == 0 {
+            return None;
+        }
         // 脆弱性修正: alignmentが0の場合の除算ゼロを防止
         let alignment = alignment.max(PAGE_SIZE_4K);
         let aligned_frames = alignment / PAGE_SIZE_4K;
+        
+        if aligned_frames == 0 {
+            return None;
+        }
 
         for start_word in 0..BITMAP_WORDS {
             let start_frame = start_word * 64;
 
-            // アライメントに合わせる
-            let aligned_start =
-                (start_frame + aligned_frames - 1) / aligned_frames * aligned_frames;
+            // アライメントに合わせる (Checked arithmetic to avoid overflow)
+            let aligned_start = (start_frame.checked_add(aligned_frames)?
+                .saturating_sub(1) / aligned_frames) * aligned_frames;
 
-            if aligned_start + frame_count > self.total_frames {
+            if aligned_start.saturating_add(frame_count) > self.total_frames {
                 break;
             }
 

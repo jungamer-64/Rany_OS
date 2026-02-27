@@ -308,6 +308,7 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
     if size == 0 {
         return 0;
     }
+    let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     let start = start.as_u64();
     let end = start.saturating_add(size);
     let cpu_ids = crate::per_cpu::online_cpu_ids();
