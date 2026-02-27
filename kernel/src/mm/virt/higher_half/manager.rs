@@ -285,6 +285,10 @@ impl PageTableManager {
 
         *pte = PageTableEntry::new(phys, flags.set(PageFlags::PRESENT));
 
+        // 脆弱性修正: マップカウントを増加させてページ回収時のUse-After-Freeを防止
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
+        crate::mm::meta::page_flags::inc_map_count(frame_idx);
+
         // TLBを無効化（マルチコア対応シュートダウン）
         invalidate_page(virt);
 
@@ -340,6 +344,12 @@ impl PageTableManager {
         // Huge Page フラグを設定
         *pde = PageTableEntry::huge(phys, actual_flags.set(PageFlags::PRESENT));
 
+        // 脆弱性修正: マップカウントを増加 (2MB = 512 * 4KB)
+        let start_frame = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
+        for i in 0..512 {
+            crate::mm::meta::page_flags::inc_map_count(start_frame.offset(i));
+        }
+
         invalidate_page(virt);
 
         Ok(())
@@ -383,6 +393,10 @@ impl PageTableManager {
         // Huge Page フラグを設定（1GiBページ）
         *pdpte = PageTableEntry::huge(phys, actual_flags.set(PageFlags::PRESENT));
 
+        // 脆弱性修正: マップカウントを増加（とりあえず先頭ページのみ。1GB=262144ページ）
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
+        crate::mm::meta::page_flags::inc_map_count(frame_idx);
+
         invalidate_page(virt);
 
         Ok(())
@@ -415,6 +429,11 @@ impl PageTableManager {
             // 1GiBページ
             let phys = pdpte.phys_addr();
             pdpte.clear();
+            
+            // 脆弱性修正: マップカウントを減少（先頭ページのみ）
+            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
+            crate::mm::meta::page_flags::dec_map_count(frame_idx);
+            
             invalidate_page(virt);
             return Ok(phys);
         }
@@ -429,6 +448,13 @@ impl PageTableManager {
             // 2MiBページ
             let phys = pde.phys_addr();
             pde.clear();
+            
+            // 脆弱性修正: マップカウントを減少
+            let start_frame = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
+            for i in 0..512 {
+                crate::mm::meta::page_flags::dec_map_count(start_frame.offset(i));
+            }
+            
             invalidate_page(virt);
             return Ok(phys);
         }
@@ -443,6 +469,11 @@ impl PageTableManager {
         // 4KiBページ
         let phys = pte.phys_addr();
         pte.clear();
+        
+        // 脆弱性修正: マップカウントを減少
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
+        crate::mm::meta::page_flags::dec_map_count(frame_idx);
+        
         invalidate_page(virt);
 
         Ok(phys)

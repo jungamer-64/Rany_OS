@@ -176,6 +176,13 @@ impl FrameIndex {
         Self(self.0 + count)
     }
 
+    /// フレーム数を加算（`offset` は旧コードやポインタ風API からの移行用）
+    #[inline]
+    pub const fn offset(self, count: usize) -> Self {
+        // synonym for `add` to match existing caller expectations
+        self.add(count)
+    }
+
     /// フレーム数を減算
     #[inline]
     pub const fn sub(self, count: usize) -> Self {

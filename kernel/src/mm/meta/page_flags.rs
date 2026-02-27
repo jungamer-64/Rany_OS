@@ -22,7 +22,7 @@
 //! ```
 // ============================================================================
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use alloc::vec::Vec;
 use crate::mm::types::FrameIndex;
 
@@ -32,6 +32,8 @@ static mut PAGE_FLAGS: *mut AtomicU8 = core::ptr::null_mut();
 /// Global array of page orders (store allocation order for Folios).
 /// 0 for order-0 pages.
 static mut PAGE_ORDERS: *mut u8 = core::ptr::null_mut();
+/// Global array of map counts (how many page tables map this frame).
+static mut PAGE_MAP_COUNTS: *mut AtomicU32 = core::ptr::null_mut();
 static mut TOTAL_FRAMES: usize = 0;
 
 /// Atomic flags for each page
@@ -85,6 +87,61 @@ pub unsafe fn init_page_flags(total_frames: usize) {
     orders.resize(total_frames, 0);
     let leaked_orders = orders.leak();
     PAGE_ORDERS = leaked_orders.as_mut_ptr();
+
+    // Allocate the map counts array
+    let mut map_counts = Vec::with_capacity(total_frames);
+    map_counts.resize_with(total_frames, || AtomicU32::new(0));
+    let leaked_map_counts = map_counts.leak();
+    PAGE_MAP_COUNTS = leaked_map_counts.as_mut_ptr();
+}
+
+/// Get reference to the atomic map count for a frame.
+#[inline]
+fn get_atomic_map_count(frame: FrameIndex) -> Option<&'static AtomicU32> {
+    let idx = frame.as_usize();
+    unsafe {
+        if idx >= TOTAL_FRAMES || PAGE_MAP_COUNTS.is_null() {
+            return None;
+        }
+        Some(&*PAGE_MAP_COUNTS.add(idx))
+    }
+}
+
+/// Increment the map count for a frame.
+#[inline]
+pub fn inc_map_count(frame: FrameIndex) -> u32 {
+    if let Some(atomic) = get_atomic_map_count(frame) {
+        atomic.fetch_add(1, Ordering::Relaxed) + 1
+    } else {
+        0
+    }
+}
+
+/// Decrement the map count for a frame.
+#[inline]
+pub fn dec_map_count(frame: FrameIndex) -> u32 {
+    if let Some(atomic) = get_atomic_map_count(frame) {
+        let prev = atomic.fetch_sub(1, Ordering::AcqRel);
+        if prev == 0 {
+            // Underflow protection
+            atomic.store(0, Ordering::Release);
+            0
+        } else {
+            prev - 1
+        }
+    } else {
+        0
+    }
+}
+
+/// Get the current map count for a frame.
+#[inline]
+pub fn get_map_count(frame: FrameIndex) -> u32 {
+    if let Some(atomic) = get_atomic_map_count(frame) {
+        atomic.load(Ordering::Acquire)
+    } else {
+        0
+    }
 }
 
 /// Get reference to the atomic flags for a frame.

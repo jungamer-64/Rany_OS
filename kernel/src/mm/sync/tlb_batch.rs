@@ -69,6 +69,54 @@ pub const MAX_CPUS: usize = 256;
 pub const TLB_FLUSH_VECTOR: u8 = 241;
 
 // ============================================================================
+// CPU Mask (Supporting up to MAX_CPUS)
+// ============================================================================
+
+/// CPUビットマスク (256 CPUs = 4 * 64 bits)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuMask {
+    bits: [u64; 4],
+}
+
+impl CpuMask {
+    pub const fn new() -> Self {
+        Self { bits: [0; 4] }
+    }
+    
+    pub const fn all() -> Self {
+        Self { bits: [u64::MAX; 4] }
+    }
+    
+    #[inline]
+    pub fn set(&mut self, cpu_id: usize) {
+        if cpu_id < MAX_CPUS {
+            self.bits[cpu_id / 64] |= 1 << (cpu_id % 64);
+        }
+    }
+    
+    #[inline]
+    pub fn clear(&mut self, cpu_id: usize) {
+        if cpu_id < MAX_CPUS {
+            self.bits[cpu_id / 64] &= !(1 << (cpu_id % 64));
+        }
+    }
+    
+    #[inline]
+    pub fn is_set(&self, cpu_id: usize) -> bool {
+        if cpu_id < MAX_CPUS {
+            (self.bits[cpu_id / 64] & (1 << (cpu_id % 64))) != 0
+        } else {
+            false
+        }
+    }
+    
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bits[0] == 0 && self.bits[1] == 0 && self.bits[2] == 0 && self.bits[3] == 0
+    }
+}
+
+// ============================================================================
 // TLB Flush Batch
 // ============================================================================
 
@@ -93,7 +141,7 @@ pub struct TlbFlushBatch {
     /// 対象のASID/PCID (0 = 全て)
     asid: u16,
     /// フラッシュ対象のCPUマスク
-    cpu_mask: u64,
+    cpu_mask: CpuMask,
     /// 最初のページ追加時刻（Coalescing Window用、TSC）
     first_add_time: Option<u64>,
     /// 統計: バッチフラッシュ回数
@@ -115,7 +163,7 @@ impl TlbFlushBatch {
             need_flush: false,
             flush_all: false,
             asid: 0,
-            cpu_mask: 0,
+            cpu_mask: CpuMask::new(),
             first_add_time: None,
             batch_count: 0,
             single_count: 0,
@@ -132,7 +180,7 @@ impl TlbFlushBatch {
         self.flush_all = false;
         self.asid = 0;
         self.first_add_time = None;
-        self.cpu_mask = 0;
+        self.cpu_mask = CpuMask::new();
     }
     
     /// ページをバッチに追加
@@ -205,15 +253,13 @@ impl TlbFlushBatch {
     /// 対象CPUを追加
     #[inline]
     pub fn add_cpu(&mut self, cpu_id: usize) {
-        if cpu_id < 64 {
-            self.cpu_mask |= 1u64 << cpu_id;
-        }
+        self.cpu_mask.set(cpu_id);
     }
     
     /// 全CPUを対象に
     #[inline]
     pub fn set_all_cpus(&mut self) {
-        self.cpu_mask = u64::MAX;
+        self.cpu_mask = CpuMask::all();
     }
     
     /// ASIDを設定
@@ -249,7 +295,7 @@ impl TlbFlushBatch {
         }
         
         // リモートCPUへIPI（必要な場合）
-        if self.cpu_mask != 0 {
+        if !self.cpu_mask.is_empty() {
             // 現在のCPU以外にIPIを送信
             send_tlb_flush_ipi_all(self.cpu_mask);
         }
@@ -265,7 +311,7 @@ impl TlbFlushBatch {
         }
         
         // リモートCPUへIPI
-        if self.cpu_mask != 0 {
+        if !self.cpu_mask.is_empty() {
             send_tlb_flush_ipi_pages(self.cpu_mask, &self.pages[..self.count]);
         }
     }
@@ -482,12 +528,12 @@ static mut TLB_FLUSH_PAYLOAD: TlbFlushIpiPayload = TlbFlushIpiPayload {
 static TLB_FLUSH_DONE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// 全TLBフラッシュIPIを送信
-fn send_tlb_flush_ipi_all(cpu_mask: u64) {
+fn send_tlb_flush_ipi_all(cpu_mask: CpuMask) {
     send_tlb_flush_ipi_internal(cpu_mask, TlbFlushType::All, &[], 0);
 }
 
 /// 個別ページフラッシュIPIを送信
-fn send_tlb_flush_ipi_pages(cpu_mask: u64, pages: &[u64]) {
+fn send_tlb_flush_ipi_pages(cpu_mask: CpuMask, pages: &[u64]) {
     send_tlb_flush_ipi_internal(cpu_mask, TlbFlushType::Pages, pages, 0);
 }
 
@@ -498,12 +544,13 @@ fn send_tlb_flush_ipi_pages(cpu_mask: u64, pages: &[u64]) {
 /// 3. IPIを送信
 /// 4. 全CPUの完了を待機
 /// 5. ロックを解放
-fn send_tlb_flush_ipi_internal(cpu_mask: u64, flush_type: TlbFlushType, pages: &[u64], asid: u16) {
+fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, pages: &[u64], asid: u16) {
     // 現在のCPUを除外したターゲットマスクを作成
     let current_cpu = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
-    let mut remote_mask = cpu_mask & !(1u64 << current_cpu);
+    let mut remote_mask = cpu_mask;
+    remote_mask.clear(current_cpu);
     
-    if remote_mask == 0 {
+    if remote_mask.is_empty() {
         return;
     }
 
@@ -527,14 +574,14 @@ fn send_tlb_flush_ipi_internal(cpu_mask: u64, flush_type: TlbFlushType, pages: &
     TLB_FLUSH_DONE_COUNT.store(0, Ordering::Release);
     
     // 各ターゲットCPUの状態をチェック
-    for cpu_id in 0..64 {
-        if (remote_mask & (1 << cpu_id)) != 0 {
+    for cpu_id in 0..MAX_CPUS {
+        if remote_mask.is_set(cpu_id) {
             let state = get_cpu_tlb_state(cpu_id);
             
             // Lazyモードのcpuはフラッシュを保留
             if state.get_state() == TlbState::Lazy {
                 state.mark_pending_flush();
-                remote_mask &= !(1 << cpu_id); // IPI送信対象から除外
+                remote_mask.clear(cpu_id); // IPI送信対象から除外
                 continue;
             }
             
@@ -547,8 +594,8 @@ fn send_tlb_flush_ipi_internal(cpu_mask: u64, flush_type: TlbFlushType, pages: &
     }
 
     // アクティブなCPUにIPIを送信
-    for cpu_id in 0..64 {
-        if (remote_mask & (1 << cpu_id)) != 0 {
+    for cpu_id in 0..MAX_CPUS {
+        if remote_mask.is_set(cpu_id) {
             send_tlb_ipi_to_cpu(cpu_id);
         }
     }
@@ -627,7 +674,7 @@ pub fn flush_tlb_immediate(addr: VirtAddr) {
         flush_tlb_page_local(addr);
     }
     // リモートCPUへのIPI
-    send_tlb_flush_ipi_pages(u64::MAX, &[addr.as_u64()]);
+    send_tlb_flush_ipi_pages(CpuMask::all(), &[addr.as_u64()]);
 }
 
 /// 全TLBフラッシュ（全CPU）
@@ -635,7 +682,7 @@ pub fn flush_tlb_all() {
     unsafe {
         flush_tlb_all_local();
     }
-    send_tlb_flush_ipi_all(u64::MAX);
+    send_tlb_flush_ipi_all(CpuMask::all());
 }
 
 // ============================================================================
@@ -1205,11 +1252,11 @@ pub fn exit_lazy_tlb_mode(cpu_id: usize) -> bool {
 /// 
 /// # Returns
 /// - スキップしたCPU数
-pub fn send_tlb_flush_lazy_aware(cpu_mask: u64, asid: u16) -> usize {
+pub fn send_tlb_flush_lazy_aware(cpu_mask: CpuMask, asid: u16) -> usize {
     let mut skipped = 0;
     
     for cpu_id in 0..MAX_CPUS {
-        if cpu_mask & (1 << cpu_id) == 0 {
+        if !cpu_mask.is_set(cpu_id) {
             continue;
         }
         
@@ -1326,9 +1373,9 @@ impl TlbFlushEpoch {
     /// 
     /// # Returns
     /// 全対象CPUが観測済みなら `true`
-    pub fn all_observed(&self, epoch: u64, cpu_mask: u64) -> bool {
+    pub fn all_observed(&self, epoch: u64, cpu_mask: CpuMask) -> bool {
         for cpu_id in 0..MAX_CPUS {
-            if cpu_mask & (1 << cpu_id) == 0 {
+            if !cpu_mask.is_set(cpu_id) {
                 continue;
             }
             if self.cpu_epochs[cpu_id].load(Ordering::Acquire) < epoch {
@@ -1504,7 +1551,7 @@ static IPL_FREE_QUEUES: [IplFreeFlushQueue; MAX_CPUS] = {
 /// # Returns
 /// 新しいエポック番号（完了確認用）
 pub fn request_ipl_free_flush(
-    cpu_mask: u64,
+    cpu_mask: CpuMask,
     start_addr: u64,
     page_count: usize,
     asid: u16,
@@ -1520,7 +1567,7 @@ pub fn request_ipl_free_flush(
     
     // 現在のCPUは直接フラッシュ
     if let Some(current_cpu) = crate::per_cpu::try_current_cpu_id() {
-        if cpu_mask & (1 << current_cpu) != 0 {
+        if cpu_mask.is_set(current_cpu) {
             const PAGE_SIZE: u64 = 4096;
             unsafe {
                 if page_count <= TLB_BATCH_SIZE {
@@ -1538,7 +1585,7 @@ pub fn request_ipl_free_flush(
     
     // 他のCPUにリクエストをキュー
     for cpu_id in 0..MAX_CPUS {
-        if cpu_mask & (1 << cpu_id) == 0 {
+        if !cpu_mask.is_set(cpu_id) {
             continue;
         }
         if Some(cpu_id) == crate::per_cpu::try_current_cpu_id() {
@@ -1576,7 +1623,7 @@ pub fn poll_ipl_free_flush(cpu_id: usize) -> bool {
 /// 
 /// # Returns
 /// 完了した場合は `true`、タイムアウトの場合は `false`
-pub fn wait_ipl_free_flush(epoch: u64, cpu_mask: u64, max_spins: usize) -> bool {
+pub fn wait_ipl_free_flush(epoch: u64, cpu_mask: CpuMask, max_spins: usize) -> bool {
     let mut spins = 0;
     
     loop {

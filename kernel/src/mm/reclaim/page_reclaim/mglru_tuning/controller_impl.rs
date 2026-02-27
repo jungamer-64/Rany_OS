@@ -362,6 +362,15 @@ impl PageReclaimController {
     
     /// ページを実際に回収
     pub(super) fn reclaim_page(&self, entry: &MglruEntry, node_idx: usize) -> ReclaimOutcome {
+        // 脆弱性修正: ページがまだどこかにマップされている場合は回収を拒否
+        // Rany_OSには現在 Reverse Mapping (rmap) が実装されていないため、
+        // マップされたままのページを解放すると Use-After-Free が発生する。
+        let map_count = crate::mm::meta::page_flags::get_map_count(entry.frame);
+        if map_count > 0 {
+            // log::warn!("[MM] Reclaim: Skipping mapped page {:?} (count={})", entry.frame, map_count);
+            return ReclaimOutcome::Requeued;
+        }
+
         let unsafe_eviction = self.unsafe_eviction_enabled();
         if !unsafe_eviction && matches!(entry.page_type, PageType::Anonymous) {
             self.blocked_unsafe.fetch_add(1, Ordering::Relaxed);

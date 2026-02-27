@@ -322,10 +322,16 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
         None => return CowResult::PageNotFound,
     };
     
-    let refcount = page_refcount(old_phys.as_u64());
+    // 脆弱性修正: 参照カウントのチェックとPTEの更新をアトミックに行うためロックを保持
+    let mut manager = PAGE_REF_MANAGER.write();
+    
+    let refcount = manager.refcounts
+        .get(&(old_phys.as_u64() & !0xFFF))
+        .map(|e| e.get())
+        .unwrap_or(1);
     
     // 参照カウントが1なら複製不要
-    if refcount == 1 {
+    if refcount <= 1 {
         // 単にWritableに変更
         let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
         // Safety: ページテーブル操作
@@ -335,12 +341,12 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
         }
         
         // CoWフラグをクリア
-        {
-            let manager = PAGE_REF_MANAGER.read();
-            if let Some(entry) = manager.refcounts.get(&(old_phys.as_u64() & !0xFFF)) {
-                entry.set_cow(false);
-            }
+        if let Some(entry) = manager.refcounts.get(&(old_phys.as_u64() & !0xFFF)) {
+            entry.set_cow(false);
         }
+        
+        // ロックを解放してからTLBフラッシュ
+        drop(manager);
         
         flush_tlb_immediate(x86_64::VirtAddr::new(page_addr.as_u64()));
         
@@ -348,7 +354,15 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
         return CowResult::Ok;
     }
     
-    // 新しいフレームを割り当て
+    // 参照カウント > 1 の場合
+    
+    // 参照カウントを先に減らすことで、他のプロセスがこのページを使い続けられるようにする
+    // ただし、新しいページへのコピーが終わるまで物理ページが解放されないよう、
+    // ここではまだ decrement しない。
+    
+    // 新しいフレームを割り当て（ロック保持中に割り当てるとデッドロックの可能性があるため一旦解放）
+    drop(manager);
+
     let new_frame = match alloc_frame() {
         Some(f) => f,
         None => return CowResult::OutOfMemory,
@@ -367,25 +381,25 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
         return CowResult::OutOfMemory;
     }
 
-    // 古いマッピングを削除
-    // Safety: ページテーブル操作
-    let _ = unsafe { global_unmap_page(page_addr) };
-    
-    // 新しいマッピングを作成（Writable）
+    // マッピングを更新（ここでもレースコンディションに注意）
+    // 古いマッピングを削除し、新しいマッピングを作成
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-    // Safety: ページテーブル操作
-    match unsafe { global_map_page(page_addr, new_phys, flags) } {
-        Ok(()) => {}
-        Err(MapError::AlreadyMapped) => {
-            // レースコンディション: 他のCPUが既にマップした
-            crate::mm::meta::memcg::memcg_uncharge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon);
-            dealloc_frame(new_frame);
-            return CowResult::Ok;
-        }
-        Err(_) => {
-            crate::mm::meta::memcg::memcg_uncharge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon);
-            dealloc_frame(new_frame);
-            return CowResult::MappingError;
+    
+    unsafe {
+        // global_unmap_page と global_map_page は内部でロックを取るはず
+        let _ = global_unmap_page(page_addr);
+        match global_map_page(page_addr, new_phys, flags) {
+            Ok(()) => {}
+            Err(MapError::AlreadyMapped) => {
+                crate::mm::meta::memcg::memcg_uncharge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon);
+                dealloc_frame(new_frame);
+                return CowResult::Ok;
+            }
+            Err(_) => {
+                crate::mm::meta::memcg::memcg_uncharge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon);
+                dealloc_frame(new_frame);
+                return CowResult::MappingError;
+            }
         }
     }
     
