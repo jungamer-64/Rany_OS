@@ -42,6 +42,13 @@ impl HigherHalfManager {
     pub fn allocate_kernel_virt(&self, pages: usize) -> VirtAddr {
         let size = (pages as u64) * PageSize::Size4KiB.as_bytes();
         let addr = self.next_kernel_addr.fetch_add(size, Ordering::SeqCst);
+        
+        // 脆弱性修正: カーネルスタック領域との衝突を防止
+        if addr + size > VirtAddr::KERNEL_STACK_BASE {
+            panic!("[MM] Kernel heap overflow: requested address {:#x} exceeds KERNEL_STACK_BASE {:#x}", 
+                addr + size, VirtAddr::KERNEL_STACK_BASE);
+        }
+        
         VirtAddr::new(addr)
     }
 
@@ -92,7 +99,7 @@ pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
         Err(_) => panic!("[MM] Higher Half manager poisoned (phys_to_virt)"),
     };
     if let Some(manager) = guard.as_ref() {
-        manager.mapper().phys_to_virt(phys)
+        manager.mapper.phys_to_virt(phys)
     } else {
         VirtAddr::new(phys.as_u64().wrapping_add(crate::memory::physical_memory_offset()))
     }
@@ -103,7 +110,7 @@ pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
     match HIGHER_HALF_MANAGER.lock() {
         Ok(guard) => {
             if let Some(manager) = guard.as_ref() {
-                manager.mapper().virt_to_phys(virt)
+                manager.mapper.virt_to_phys(virt)
             } else {
                 let offset = crate::memory::physical_memory_offset();
                 let v = virt.as_u64();
@@ -128,19 +135,19 @@ pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
 /// TLBを無効化（単一アドレス）
 #[inline]
 pub fn invalidate_page(addr: VirtAddr) {
-    unsafe {
-        core::arch::asm!("invlpg [{}]", in(reg) addr.as_u64(), options(nostack, preserves_flags));
-    }
+    // 従来のローカル無効化から、マルチコア対応のシュートダウンへアップグレード
+    // Note: これにより、他CPUの古いTLBエントリによるUse-After-Freeや
+    // 情報漏洩（古い読み込み専用エントリ経由の書き込み等）を防止する。
+    // `flush_tlb_immediate` expects an `x86_64::VirtAddr`, convert from our wrapper.
+    crate::mm::sync::tlb_batch::flush_tlb_immediate(
+        x86_64::VirtAddr::new(addr.as_u64()),
+    );
 }
 
 /// TLBを全無効化
 #[inline]
 pub fn flush_tlb() {
-    unsafe {
-        let cr3: u64;
-        core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
-        core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
-    }
+    crate::mm::sync::tlb_batch::flush_tlb_all();
 }
 
 /// CR3を設定
@@ -224,6 +231,11 @@ impl PageTableManager {
         self.pml4_phys
     }
 
+    /// 使用するPML4を更新（プロセス切り替え等に対応）
+    pub fn set_pml4_phys(&mut self, pml4_phys: PhysAddr) {
+        self.pml4_phys = pml4_phys;
+    }
+
     /// PDPT→PD→PTまでウォークし、PTの物理アドレスを返す
     pub(super) fn walk_to_page_table(
         &mut self,
@@ -273,7 +285,7 @@ impl PageTableManager {
 
         *pte = PageTableEntry::new(phys, flags.set(PageFlags::PRESENT));
 
-        // TLBを無効化
+        // TLBを無効化（マルチコア対応シュートダウン）
         invalidate_page(virt);
 
         Ok(())
@@ -580,7 +592,7 @@ impl PageTableManager {
         &self,
         table: &mut PageTable,
         index: usize,
-        _flags: PageFlags,
+        flags: PageFlags,
     ) -> Result<PhysAddr, MapError> {
         let entry = table.entry_mut(index);
 
@@ -599,8 +611,13 @@ impl PageTableManager {
         new_table.clear();
 
         // エントリを設定（常にWritableを設定して下位テーブルへのアクセスを許可）
-        let entry_flags =
-            PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
+        // 脆弱性修正: USERビットは、要求されたフラグにUSERが含まれている場合のみ設定する。
+        // これにより、カーネル専用領域の中間エントリにUSERビットが立つのを防止し、アイソレーションを強化。
+        let mut entry_flags =
+            PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE);
+        if flags.contains(PageFlags::USER) {
+            entry_flags = entry_flags.set(PageFlags::USER);
+        }
         *entry = PageTableEntry::new(new_table_phys, entry_flags);
 
         Ok(new_table_phys)
@@ -668,6 +685,12 @@ pub unsafe fn global_map_page(
     }
 
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    
+    // 脆弱性修正: 常に現在のCR3を使用するように更新
+    // これにより、プロセスごとのアドレス空間において、間違ったページテーブル（起動時PML4等）に
+    // マッピングが作成されることを防止し、ページフォルト解決の不整合を解消する。
+    manager.set_pml4_phys(get_cr3());
+    
     log::info!("[MM] global_map_page: mapping virt={:#x} phys={:#x} flags={:#x}", virt.as_u64(), phys.as_u64(), flags.as_u64());
     unsafe { manager.map_page(virt, phys, flags) }
 }
@@ -682,15 +705,21 @@ pub unsafe fn global_unmap_page(virt: VirtAddr) -> Result<PhysAddr, MapError> {
         })?;
 
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    
+    // 現在のCR3を使用
+    manager.set_pml4_phys(get_cr3());
+    
     unsafe { manager.unmap_page(virt) }
 }
 
 /// グローバルページテーブルマネージャーで仮想→物理変換
 pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
-    match HIGHER_HALF_MANAGER.lock() {
+    // Lock PAGE_TABLE_MANAGER instead of HIGHER_HALF_MANAGER for consistent synchronization
+    match PAGE_TABLE_MANAGER.lock() {
         Ok(guard) => {
             let manager = guard.as_ref()?;
-            manager.mapper().virt_to_phys(virt)
+            let walker = PageTableWalker::new(get_cr3(), &manager.mapper);
+            walker.translate(virt)
         }
         Err(_) => None,
     }
@@ -698,11 +727,10 @@ pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
 
 /// 仮想アドレスのPTEを取得（現在のCR3を使用）
 pub fn get_current_pte(virt: VirtAddr) -> Option<PageTableEntry> {
-    match HIGHER_HALF_MANAGER.lock() {
+    match PAGE_TABLE_MANAGER.lock() {
         Ok(guard) => {
             let manager = guard.as_ref()?;
-            // Unsafe: Reading CR3 is safe here as we are in kernel mode
-            let walker = unsafe { PageTableWalker::from_current_cr3(manager.mapper()) };
+            let walker = PageTableWalker::new(get_cr3(), &manager.mapper);
             walker.walk(virt)
         }
         Err(_) => None,
@@ -714,14 +742,27 @@ pub fn with_current_pte_mut<F, R>(virt: VirtAddr, f: F) -> Option<R>
 where
     F: FnOnce(&mut PageTableEntry) -> R,
 {
-    match HIGHER_HALF_MANAGER.lock() {
+    // 脆弱性修正: ロックを保持したまま TLB シュートダウン (IPI) を行うと、
+    // 他の CPU が同じロックを待機して割り込み禁止状態でスピンしている場合に
+    // デッドロックが発生する可能性がある。ロック解除後にシュートダウンを行うように変更。
+    let (res, changed) = match PAGE_TABLE_MANAGER.lock() {
         Ok(guard) => {
-            let manager = guard.as_ref()?;
-            let walker = unsafe { PageTableWalker::from_current_cr3(manager.mapper()) };
-            unsafe { walker.walk_mut(virt).map(|pte| f(pte)) }
+            if let Some(manager) = guard.as_ref() {
+                let walker = PageTableWalker::new(get_cr3(), &manager.mapper);
+                let r = unsafe { walker.walk_mut(virt).map(|pte| f(pte)) };
+                let changed = r.is_some();
+                (r, changed)
+            } else {
+                (None, false)
+            }
         }
-        Err(_) => None,
+        Err(_) => (None, false),
+    };
+    
+    if changed {
+        invalidate_page(virt);
     }
+    res
 }
 
 /// グローバルページテーブルマネージャーでページのフラグを更新（MPK PKEY適用用）
@@ -729,6 +770,10 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
     match PAGE_TABLE_MANAGER.lock() {
         Ok(mut guard) => {
             let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+            
+            // 現在のCR3を使用
+            manager.set_pml4_phys(get_cr3());
+            
             unsafe { manager.update_flags(virt, flags) }
         }
         Err(_) => {

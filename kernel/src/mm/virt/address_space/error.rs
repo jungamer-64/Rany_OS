@@ -85,6 +85,11 @@ impl AddressSpaceManager {
         }
     }
     
+    /// アドレス空間のマップを取得
+    pub fn spaces(&self) -> &RwLock<BTreeMap<u64, Box<ProcessAddressSpace>>> {
+        &self.spaces
+    }
+    
     /// アドレス空間を作成
     pub fn create(&self) -> Result<u64, AddressSpaceError> {
         let space = Box::new(ProcessAddressSpace::new());

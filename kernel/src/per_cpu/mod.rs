@@ -448,8 +448,8 @@ pub struct PerCpuHot {
     pub cpu_id: usize,
     /// Interrupt nesting depth (incremented on ISR entry, decremented on exit)
     pub interrupt_depth: core::sync::atomic::AtomicU32,
-    /// Padding to align current_task_ptr to 8 bytes
-    _pad0: u32,
+    /// Recursive page fault detection
+    pub in_page_fault: core::sync::atomic::AtomicBool,
     /// Current task pointer (frequently accessed by scheduler)
     pub current_task_ptr: AtomicU64,
     /// Current task ID
@@ -471,7 +471,7 @@ impl PerCpuHot {
             self_ptr: 0,
             cpu_id,
             interrupt_depth: core::sync::atomic::AtomicU32::new(0),
-            _pad0: 0,
+            in_page_fault: core::sync::atomic::AtomicBool::new(false),
             current_task_ptr: AtomicU64::new(0),
             current_task_id: 0,
             cold: None,

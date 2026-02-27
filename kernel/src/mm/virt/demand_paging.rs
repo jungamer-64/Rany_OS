@@ -36,7 +36,7 @@ use crate::mm::meta::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, Cha
 use crate::mm::types::FrameIndex;
 use super::cow::{cow_map_zero_page, zero_page_phys, CowResult};
 use crate::mm::reclaim::page_reclaim::{lru_add_page, PageType as LruPageType};
-use super::fault_handler::AnonPageSetup;
+use super::fault_handler::PageSetup;
 
 // ============================================================================
 // Demand Paging Configuration
@@ -446,13 +446,13 @@ fn populate_anonymous_page(
         None
     };
 
-    let setup = match AnonPageSetup::allocate(memcg_id) {
+    let setup = match PageSetup::allocate(memcg_id, ChargeType::Anon) {
         Some(s) => s,
         None => return DemandResult::OutOfMemory,
     };
 
     let flags = prot.to_page_flags();
-    match unsafe { setup.map_and_track(page_addr, flags) } {
+    match unsafe { setup.map_and_track(page_addr, flags, LruPageType::Anonymous) } {
         Ok(()) => {
             DEMAND_STATS.zero_fill_pages.fetch_add(1, Ordering::Relaxed);
             DemandResult::Ok

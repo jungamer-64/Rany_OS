@@ -176,36 +176,41 @@ impl HugePageBitmap {
         let old_used = self.used_count_2m[block_2m].fetch_sub(1, Ordering::AcqRel);
         
         if old_used == 1 {
-            // Block is now fully free
+            // Block is now potentially fully free
             let word_idx = block_2m / BITS_PER_WORD;
             let bit_idx = block_2m % BITS_PER_WORD;
             let bit_mask = 1u64 << bit_idx;
             
-            // Clear partial bit
-            self.bitmap_2m_partial[word_idx].fetch_and(!bit_mask, Ordering::AcqRel);
-            self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
-            
-            // Check if demoted
-            let demoted = self.demoted_2m[word_idx].load(Ordering::Acquire);
-            if (demoted & bit_mask) != 0 {
-                // Clear demoted bit and set fully-free
-                self.demoted_2m[word_idx].fetch_and(!bit_mask, Ordering::AcqRel);
-                self.demoted_count_2m.fetch_sub(1, Ordering::Relaxed);
-            }
-            
-            // Set fully-free bit
-            self.bitmap_2m[word_idx].fetch_or(bit_mask, Ordering::AcqRel);
-            self.free_count_2m.fetch_add(1, Ordering::Relaxed);
-            
-            // Update 1GB
-            let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
-            if block_1g < self.used_count_1g.len() {
-                let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
-                if old_1g == 1 {
-                    let w1g = block_1g / BITS_PER_WORD;
-                    let b1g = block_1g % BITS_PER_WORD;
-                    self.bitmap_1g[w1g].fetch_or(1u64 << b1g, Ordering::AcqRel);
-                    self.free_count_1g.fetch_add(1, Ordering::Relaxed);
+            // 脆弱性修正: used_count_2m が 0 であることを確認しながらビットを立てる。
+            // これにより、fetch_sub(1) の直後に別の CPU が 4KB 確保を行った場合に
+            // 誤って bitmap_2m のビットを立ててしまう（二重割当の原因）のを防ぐ。
+            if self.used_count_2m[block_2m].load(Ordering::Acquire) == 0 {
+                // Clear partial bit
+                self.bitmap_2m_partial[word_idx].fetch_and(!bit_mask, Ordering::AcqRel);
+                self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
+                
+                // Check if demoted
+                let demoted = self.demoted_2m[word_idx].load(Ordering::Acquire);
+                if (demoted & bit_mask) != 0 {
+                    // Clear demoted bit and set fully-free
+                    self.demoted_2m[word_idx].fetch_and(!bit_mask, Ordering::AcqRel);
+                    self.demoted_count_2m.fetch_sub(1, Ordering::Relaxed);
+                }
+                
+                // Set fully-free bit
+                self.bitmap_2m[word_idx].fetch_or(bit_mask, Ordering::AcqRel);
+                self.free_count_2m.fetch_add(1, Ordering::Relaxed);
+                
+                // Update 1GB
+                let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
+                if block_1g < self.used_count_1g.len() {
+                    let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
+                    if old_1g == 1 {
+                        let w1g = block_1g / BITS_PER_WORD;
+                        let b1g = block_1g % BITS_PER_WORD;
+                        self.bitmap_1g[w1g].fetch_or(1u64 << b1g, Ordering::AcqRel);
+                        self.free_count_1g.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -474,26 +479,29 @@ impl HugePageBitmap {
             let bbit = block_2m % BITS_PER_WORD;
             let bmask = 1u64 << bbit;
             
-            self.bitmap_2m_partial[bword].fetch_and(!bmask, Ordering::AcqRel);
-            self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
-            
-            let demoted = self.demoted_2m[bword].load(Ordering::Acquire);
-            if (demoted & bmask) != 0 {
-                self.demoted_2m[bword].fetch_and(!bmask, Ordering::AcqRel);
-                self.demoted_count_2m.fetch_sub(1, Ordering::Relaxed);
-            }
-            
-            self.bitmap_2m[bword].fetch_or(bmask, Ordering::AcqRel);
-            self.free_count_2m.fetch_add(1, Ordering::Relaxed);
-            
-            let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
-            if block_1g < self.used_count_1g.len() {
-                let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
-                if old_1g == 1 {
-                    let w1g = block_1g / BITS_PER_WORD;
-                    let b1g = block_1g % BITS_PER_WORD;
-                    self.bitmap_1g[w1g].fetch_or(1u64 << b1g, Ordering::AcqRel);
-                    self.free_count_1g.fetch_add(1, Ordering::Relaxed);
+            // 脆弱性修正: アトミックに 0 であることを再確認
+            if self.used_count_2m[block_2m].load(Ordering::Acquire) == 0 {
+                self.bitmap_2m_partial[bword].fetch_and(!bmask, Ordering::AcqRel);
+                self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
+                
+                let demoted = self.demoted_2m[bword].load(Ordering::Acquire);
+                if (demoted & bmask) != 0 {
+                    self.demoted_2m[bword].fetch_and(!bmask, Ordering::AcqRel);
+                    self.demoted_count_2m.fetch_sub(1, Ordering::Relaxed);
+                }
+                
+                self.bitmap_2m[bword].fetch_or(bmask, Ordering::AcqRel);
+                self.free_count_2m.fetch_add(1, Ordering::Relaxed);
+                
+                let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
+                if block_1g < self.used_count_1g.len() {
+                    let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
+                    if old_1g == 1 {
+                        let w1g = block_1g / BITS_PER_WORD;
+                        let b1g = block_1g % BITS_PER_WORD;
+                        self.bitmap_1g[w1g].fetch_or(1u64 << b1g, Ordering::AcqRel);
+                        self.free_count_1g.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }

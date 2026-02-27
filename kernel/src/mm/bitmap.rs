@@ -85,9 +85,9 @@ impl HierarchicalBitmap {
     pub fn new(total_units: usize) -> Self {
         assert!(total_units > 0, "HierarchicalBitmap: total_units must be > 0");
 
-        let detail_words = (total_units + BITS_PER_WORD - 1) / BITS_PER_WORD;
-        let summary_words = (detail_words + BITS_PER_WORD - 1) / BITS_PER_WORD;
-        let summary_l2_words = (summary_words + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let detail_words = (total_units.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
+        let summary_words = (detail_words.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
+        let summary_l2_words = (summary_words.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
 
         // Calculate last word mask
         let last_bits = total_units % BITS_PER_WORD;
@@ -231,28 +231,40 @@ impl HierarchicalBitmap {
             return None;
         }
 
-        let l1_bit = l1_word.trailing_zeros() as usize;
-        let detail_idx = l1_idx * BITS_PER_WORD + l1_bit;
+        // L1ワード内の全ビットを走査
+        let mut temp_l1 = l1_word;
+        while temp_l1 != 0 {
+            let l1_bit = temp_l1.trailing_zeros() as usize;
+            let detail_idx = l1_idx * BITS_PER_WORD + l1_bit;
 
-        if detail_idx * BITS_PER_WORD >= limit_idx {
-            return None;
-        }
+            if detail_idx * BITS_PER_WORD >= limit_idx {
+                return None;
+            }
 
-        if detail_idx >= self.detail.len() {
-            return None;
-        }
+            if detail_idx >= self.detail.len() {
+                return None;
+            }
 
-        if let Some(unit_idx) = self.try_allocate_from_word(detail_idx) {
-            if unit_idx < limit_idx {
+            // このワード内での制限ビット位置を計算
+            let bit_limit = if (detail_idx + 1) * BITS_PER_WORD <= limit_idx {
+                BITS_PER_WORD
+            } else {
+                limit_idx % BITS_PER_WORD
+            };
+
+            if let Some(unit_idx) = self.try_allocate_from_word_below(detail_idx, bit_limit) {
                 return Some(unit_idx);
             }
+            
+            // 次のビットへ
+            temp_l1 &= !(1u64 << l1_bit);
         }
         None
     }
 
     /// Allocate a single unit below a specific limit index
     ///
-    /// Searches from 0 up to limit, ensuring the allocated index is specificially < limit.
+    /// Searches from 0 up to limit, ensuring the allocated index is specifically < limit.
     pub fn allocate_one_below(&self, limit_idx: usize) -> Option<usize> {
         // Linear scan from 0 to ensure finding first fit below limit
         let l2_limit = (limit_idx + UNITS_PER_L2_BIT - 1) / UNITS_PER_L2_BIT;
@@ -286,16 +298,28 @@ impl HierarchicalBitmap {
     ///
     /// This is public to allow HugePageBitmap to use it for targeted allocation.
     pub fn try_allocate_from_word(&self, word_idx: usize) -> Option<usize> {
+        self.try_allocate_from_word_below(word_idx, BITS_PER_WORD)
+    }
+
+    /// 指定されたビットインデックス未満のユニットを単一ワードから割り当て試行
+    /// 脆弱性修正: limitチェックをCASの前に行うことで、範囲外のビットをリークさせる問題を解消。
+    pub fn try_allocate_from_word_below(&self, word_idx: usize, bit_limit: usize) -> Option<usize> {
         let valid_mask = self.valid_mask(word_idx);
+        let limit_mask = if bit_limit >= BITS_PER_WORD {
+            u64::MAX
+        } else {
+            (1u64 << bit_limit) - 1
+        };
+        let mask = valid_mask & limit_mask;
 
         loop {
             let word = self.detail[word_idx].load(Ordering::Acquire);
-            let available = word & valid_mask;
+            let available = word & mask;
             if available == 0 {
                 return None;
             }
 
-            // Find first free bit
+            // Find first free bit within mask
             let bit_idx = available.trailing_zeros() as usize;
             let bit_mask = 1u64 << bit_idx;
 

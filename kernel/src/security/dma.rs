@@ -186,7 +186,7 @@ fn register_protected_region_internal(start: u64, size: u64, name: &'static str)
             
             // 2. Check if it overlaps with next region(s) and can be merged
             let mut current_end = end;
-            let mut insert_idx = idx;
+            let insert_idx = idx;
             while insert_idx < regions.len() && regions[insert_idx].start <= current_end {
                 current_end = current_end.max(regions[insert_idx].end);
                 regions.remove(insert_idx);

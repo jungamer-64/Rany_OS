@@ -25,7 +25,7 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::InterruptStackFrame;
 
@@ -33,56 +33,54 @@ use crate::mm::sync::rcu::rcu_read_lock;
 use super::rcu_vma::{VmArea, VmaFlags};
 use crate::mm::phys::frame_allocator::alloc_frame;
 use super::higher_half::{
-    global_map_page, global_translate, global_unmap_page, global_update_flags,
-    PageFlags, MapError, VirtAddr, PhysAddr,
+    global_map_page, PageFlags, MapError, VirtAddr, PhysAddr,
 };
-use crate::mm::sync::tlb_batch::flush_tlb_immediate;
 use crate::mm::meta::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, MemcgId};
 use crate::mm::types::FrameIndex;
-use super::cow::{page_refcount, page_put};
 use crate::mm::reclaim::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 mod integration;
 
 // ============================================================================
-// Anonymous Page Setup Helper
+// Page Setup Helper
 // ============================================================================
 
-/// 匿名ページの割り当て→ゼロクリア→memcgチャージ→マッピング→LRU追跡
+/// ページの割り当て→初期化→memcgチャージ→マッピング→LRU追跡
 /// の共通パターンを統合するヘルパー。
 ///
-/// `fault_handler`, `demand_paging`, `stack_growth` の計6箇所で
-/// 同一パターンが繰り返されていたものを統合。
-pub struct AnonPageSetup {
+/// `fault_handler`, `demand_paging`, `stack_growth`, `file_backed` の
+/// 同一パターンを統合し、エラー時のロールバック（リーク防止）を確実にする。
+pub struct PageSetup {
     pub frame: PhysFrame<Size4KiB>,
     pub frame_phys: PhysAddr,
     pub frame_idx: FrameIndex,
+    pub charge_type: ChargeType,
     memcg_id: Option<MemcgId>,
 }
 
-impl AnonPageSetup {
-    /// フレーム割り当て + ゼロクリア + memcgチャージ。
-    ///
-    /// - `memcg_id`: `Some(id)` ならチャージ+追跡、`None` ならスキップ
-    /// - 割り当て失敗またはチャージ失敗時は `None` を返す
-    pub fn allocate(memcg_id: Option<MemcgId>) -> Option<Self> {
+impl PageSetup {
+    /// 新しいフレームを割り当ててチャージする
+    pub fn allocate(memcg_id: Option<MemcgId>, charge_type: ChargeType) -> Option<Self> {
         let frame = alloc_frame()?;
         let frame_phys = PhysAddr::new(frame.start_address().as_u64());
 
-        // ゼロクリア
-        zero_page(frame_phys);
-
         // Memcgチャージ（有効な場合のみ）
         if let Some(id) = memcg_id {
-            if memcg_charge(id, 1, ChargeType::Anon).is_err() {
+            if memcg_charge(id, 1, charge_type).is_err() {
                 crate::mm::phys::frame_allocator::dealloc_frame(frame);
                 return None;
             }
         }
 
         let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
-        Some(Self { frame, frame_phys, frame_idx, memcg_id })
+        Some(Self {
+            frame,
+            frame_phys,
+            frame_idx,
+            charge_type,
+            memcg_id,
+        })
     }
 
     /// ページをマッピングし、LRU + memcg追跡を完了する。
@@ -92,12 +90,17 @@ impl AnonPageSetup {
     ///
     /// # Safety
     /// ページテーブル操作を行うため unsafe。
-    pub unsafe fn map_and_track(self, page_addr: VirtAddr, flags: PageFlags) -> Result<(), MapError> {
+    pub unsafe fn map_and_track(
+        self,
+        page_addr: VirtAddr,
+        flags: PageFlags,
+        lru_type: LruPageType,
+    ) -> Result<(), MapError> {
         match global_map_page(page_addr, self.frame_phys, flags) {
             Ok(()) => {
-                lru_add_page(self.frame, LruPageType::Anonymous);
+                lru_add_page(self.frame, lru_type);
                 if let Some(id) = self.memcg_id {
-                    memcg_track_page(self.frame_idx, id, ChargeType::Anon);
+                    memcg_track_page(self.frame_idx, id, self.charge_type);
                 }
                 Ok(())
             }
@@ -115,7 +118,7 @@ impl AnonPageSetup {
 
     fn rollback_inner(&self) {
         if let Some(id) = self.memcg_id {
-            memcg_uncharge(id, 1, ChargeType::Anon);
+            memcg_uncharge(id, 1, self.charge_type);
         }
         crate::mm::phys::frame_allocator::dealloc_frame(self.frame);
     }
@@ -282,9 +285,6 @@ pub struct FaultContext {
     pub recursive: bool,
 }
 
-/// 再帰フォルト検出用のper-CPUフラグ
-static IN_FAULT_HANDLER: AtomicBool = AtomicBool::new(false);
-
 // ============================================================================
 // Main Fault Handler
 // ============================================================================
@@ -306,11 +306,11 @@ static IN_FAULT_HANDLER: AtomicBool = AtomicBool::new(false);
 ///
 /// この関数は割り込みコンテキストから呼ばれる可能性があるため、
 /// ブロッキング操作を行ってはならない。
-pub fn handle_page_fault(error_code: u64) -> FaultResult {
+pub fn handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> FaultResult {
     // 統計更新
     FAULT_STATS.total.fetch_add(1, Ordering::Relaxed);
     
-    // フォルトアドレス取得（x86_64::VirtAddrからhigher_half::VirtAddrに変換）
+    // フォルトアドレス取得
     let fault_addr = match Cr2::read() {
         Ok(addr) => VirtAddr::new(addr.as_u64()),
         Err(_) => return FaultResult::KernelBug,
@@ -318,21 +318,34 @@ pub fn handle_page_fault(error_code: u64) -> FaultResult {
     
     let error = PageFaultErrorCode::from_bits(error_code);
     
-    // 再帰フォルト検出
-    if IN_FAULT_HANDLER.swap(true, Ordering::SeqCst) {
+    // 再帰フォルト検出（Per-CPU）
+    let recursive = unsafe {
+        if let Some(hot) = crate::per_cpu::current_per_cpu_hot_mut() {
+            hot.in_page_fault.swap(true, Ordering::SeqCst)
+        } else {
+            false
+        }
+    };
+
+    if recursive {
         // 再帰フォルト - 致命的エラー
+        // カーネル内のバグやスタック破損の可能性
         return FaultResult::KernelBug;
     }
     
-    let result = handle_fault_inner(fault_addr, error);
+    let result = handle_fault_inner(fault_addr, error, current_rsp);
     
-    IN_FAULT_HANDLER.store(false, Ordering::SeqCst);
+    unsafe {
+        if let Some(hot) = crate::per_cpu::current_per_cpu_hot_mut() {
+            hot.in_page_fault.store(false, Ordering::SeqCst);
+        }
+    }
     
     result
 }
 
 /// 内部フォルト処理
-fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode) -> FaultResult {
+fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode, current_rsp: VirtAddr) -> FaultResult {
     // Reserved bit violation は常にバグ
     if error.is_reserved_write() {
         return FaultResult::KernelBug;
@@ -342,29 +355,45 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode) -> FaultR
     let _guard = rcu_read_lock();
     
     // 現在のプロセスのVMAリストを取得
-    // TODO: プロセス管理との統合時に実装
-    // let vma_list = current_process().vma_list();
+    let asid = super::address_space::current_asid();
+    let manager = super::address_space::address_space_manager();
     
-    // 仮のVMA検索（グローバルVMAリストがある想定）
-    // let vma = vma_list.find(fault_addr, &_guard);
+    let vma: Option<super::rcu_vma::VmaInfo> = {
+        let spaces_guard = manager.spaces().read();
+        if let Some(space) = spaces_guard.get(&asid) {
+            space.vma_list().find(fault_addr)
+        } else {
+            None
+        }
+    };
     
     // VMAが見つからない場合
-    // スタック領域へのアクセスかチェック
-    if is_potential_stack_access(fault_addr) {
-        return handle_stack_growth(fault_addr, error);
+    if vma.is_none() {
+        // 脆弱性修正: スタック拡張の判定に RSP を使用し、無制限なページ割り当てを防止
+        if is_potential_stack_access(fault_addr, current_rsp) {
+            return handle_stack_growth(fault_addr, error);
+        }
+        
+        FAULT_STATS.no_vma.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::NoVma;
     }
     
-    // 仮実装: VMAなしとして処理
-    // 実際のVMA検索が実装されたら、以下のロジックを使用
-    /*
-    match vma {
-        Some(vma) => handle_vma_fault(fault_addr, error, vma),
-        None => {
-            FAULT_STATS.no_vma.fetch_add(1, Ordering::Relaxed);
-            FaultResult::NoVma
+    let vma = vma.unwrap();
+
+    // 権限チェック
+    if error.is_write() && (vma.flags & VmaFlags::Write as u32 == 0) {
+        // 書き込み不可だが CoW フラグがある場合は CoW ハンドラへ
+        if vma.flags & VmaFlags::CopyOnWrite as u32 != 0 {
+            return handle_cow_fault(fault_addr, error);
         }
+        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::PermissionDenied;
     }
-    */
+
+    if error.is_instruction_fetch() && (vma.flags & VmaFlags::Execute as u32 == 0) {
+        FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::PermissionDenied;
+    }
     
     // Present bit がない場合 = ページが割り当てられていない または NUMA Hint Fault
     if !error.is_present() {
@@ -372,18 +401,76 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode) -> FaultR
         if let Some(res) = handle_numa_hint_fault(fault_addr) {
             return res;
         }
-        return handle_demand_paging(fault_addr, error);
+
+        // ファイルバックか匿名ページか
+        if vma.flags & VmaFlags::FileBacked as u32 != 0 {
+            // MemoryRegion相当の情報を渡す必要があるため、handle_file_fault を修正して VmaInfo を受け取るようにする
+            return handle_file_fault_info(fault_addr, &vma);
+        } else {
+            return handle_demand_paging(fault_addr, error);
+        }
     }
     
     // 書き込みフォルト + Present = Copy-on-Write の可能性
     if error.is_write() && error.is_present() {
-        return handle_cow_fault(fault_addr, error);
+        if vma.flags & VmaFlags::CopyOnWrite as u32 != 0 {
+            return handle_cow_fault(fault_addr, error);
+        }
     }
     
-    // その他は権限違反
     FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
     FaultResult::PermissionDenied
 }
+
+
+/// ファイルバックページのフォルトハンドラ (VmaInfo版)
+fn handle_file_fault_info(fault_addr: VirtAddr, vma: &super::rcu_vma::VmaInfo) -> FaultResult {
+    FAULT_STATS.file_backed.fetch_add(1, Ordering::Relaxed);
+    
+    let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
+    let file_offset = vma.file_offset + (page_addr.as_u64() - vma.start.as_u64());
+    
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    
+    // 脆弱性修正: PageSetupを使用して、不完全なマッピングやリークを防止
+    let setup = match PageSetup::allocate(Some(memcg_id), ChargeType::Cache) {
+        Some(s) => s,
+        None => {
+            FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
+            return FaultResult::OutOfMemory;
+        }
+    };
+    
+    // ファイルシステムからページを読み込む
+    zero_page(setup.frame_phys);
+    let virt = super::mapping::phys_to_virt(x86_64::PhysAddr::new(setup.frame_phys.as_u64()));
+    let buf = unsafe {
+        core::slice::from_raw_parts_mut(virt.as_u64() as *mut u8, crate::mm::types::PAGE_SIZE_4K)
+    };
+    
+    if crate::fs::fs_abstraction::read_inode_by_number(
+        vma.file_inode as crate::fs::InodeNum,
+        file_offset,
+        buf,
+    ).is_err() {
+        setup.rollback();
+        return FaultResult::IoError;
+    }
+    
+    // マッピング作成
+    let mut base_flags = PageFlags::PRESENT | PageFlags::USER;
+    if (vma.flags & VmaFlags::Write as u32) != 0 {
+        base_flags |= PageFlags::WRITABLE;
+    }
+    let flags = PageFlags::new(base_flags);
+
+    match unsafe { setup.map_and_track(page_addr, flags, LruPageType::FileBacked) } {
+        Ok(()) => FaultResult::FilePageLoaded,
+        Err(MapError::AlreadyMapped) => FaultResult::Resolved,
+        Err(_) => FaultResult::KernelBug,
+    }
+}
+
 
 /// NUMA Hint Fault ハンドラ
 fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
@@ -442,8 +529,8 @@ pub extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    let _ = stack_frame;
-    handle_page_fault(error_code.bits());
+    let rsp = VirtAddr::new(stack_frame.stack_pointer.as_u64());
+    handle_page_fault(error_code.bits(), rsp);
 }
 
 /// 権限チェックを実行し、拒否された場合は結果を返す
@@ -510,7 +597,7 @@ fn handle_demand_paging(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> Fau
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
     let memcg_id = crate::task::process::get_current_process_memcg_id();
 
-    let setup = match AnonPageSetup::allocate(Some(memcg_id)) {
+    let setup = match PageSetup::allocate(Some(memcg_id), ChargeType::Anon) {
         Some(s) => s,
         None => {
             FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
@@ -518,8 +605,11 @@ fn handle_demand_paging(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> Fau
         }
     };
 
+    // ゼロクリア
+    zero_page(setup.frame_phys);
+
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-    match unsafe { setup.map_and_track(page_addr, flags) } {
+    match unsafe { setup.map_and_track(page_addr, flags, LruPageType::Anonymous) } {
         Ok(()) => FaultResult::DemandPaged,
         Err(MapError::AlreadyMapped) => FaultResult::Resolved,
         Err(_) => FaultResult::KernelBug,
@@ -547,83 +637,15 @@ fn zero_page(phys_addr: PhysAddr) {
 fn handle_cow_fault(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultResult {
     FAULT_STATS.cow.fetch_add(1, Ordering::Relaxed);
     
-    // ページ境界にアラインメント
-    let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
-    
-    // 現在のマッピングから物理アドレスを取得
-    let old_phys = match global_translate(page_addr) {
-        Some(phys) => phys,
-        None => return FaultResult::KernelBug, // Presentなのにマッピングなしはバグ
-    };
-    
-    // 参照カウントをチェック
-    let refcount = page_refcount(old_phys.as_u64());
-    if refcount == 1 {
-        let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-        match unsafe { global_update_flags(page_addr, flags) } {
-            Ok(()) => {
-                flush_tlb_immediate(x86_64::VirtAddr::new(page_addr.as_u64()));
-                return FaultResult::Resolved;
-            }
-            Err(_) => return FaultResult::KernelBug,
-        }
+    // cow.rs の cow_break を使用して共通化
+    match super::cow::cow_break(fault_addr) {
+        super::cow::CowResult::Ok => FaultResult::CowHandled,
+        super::cow::CowResult::PageNotFound => FaultResult::KernelBug,
+        super::cow::CowResult::OutOfMemory => FaultResult::OutOfMemory,
+        super::cow::CowResult::MappingError => FaultResult::KernelBug,
+        super::cow::CowResult::NotCow => FaultResult::PermissionDenied,
+        super::cow::CowResult::AlreadyWritable => FaultResult::Resolved,
     }
-    
-    // 新しいフレームを割り当て
-    let new_frame = match alloc_frame() {
-        Some(f) => f,
-        None => {
-            FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
-            return FaultResult::OutOfMemory;
-        }
-    };
-    
-    // 物理アドレスをhigher_half型に変換
-    let new_phys = PhysAddr::new(new_frame.start_address().as_u64());
-    
-    // ページ内容をコピー
-    copy_page(old_phys, new_phys);
-    
-    // Memcgチャージ
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
-    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
-        crate::mm::phys::frame_allocator::dealloc_frame(new_frame);
-        FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
-        return FaultResult::OutOfMemory;
-    }
-
-    // 古いマッピングを削除
-    // Safety: ページテーブル操作
-    let _ = unsafe { global_unmap_page(page_addr) };
-    
-    // 新しいマッピングを作成（Writable）
-    let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-    
-    // Safety: ページテーブル操作
-    match unsafe { global_map_page(page_addr, new_phys, flags) } {
-        Ok(()) => {}
-        Err(_) => {
-            // マッピング失敗: チャージを戻してフレーム解放
-            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
-            crate::mm::phys::frame_allocator::dealloc_frame(new_frame);
-            return FaultResult::KernelBug;
-        }
-    }
-    
-    // TLBフラッシュ（x86_64::VirtAddrに変換）
-    flush_tlb_immediate(x86_64::VirtAddr::new(page_addr.as_u64()));
-    
-    // 古いページの参照カウントを減らす
-    let _ = page_put(old_phys.as_u64());
-    
-    // LRUに追加
-    lru_add_page(new_frame, LruPageType::Anonymous);
-
-    // ページとmemcgを追跡
-    let frame_idx = FrameIndex::from_phys_addr(new_phys.as_u64());
-    memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
-    
-    FaultResult::CowHandled
 }
 
 /// ページ内容をコピー
@@ -657,40 +679,34 @@ const USER_STACK_TOP: u64 = 0x0000_7FFF_FFFF_F000;
 const USER_STACK_BOTTOM: u64 = USER_STACK_TOP - MAX_STACK_SIZE;
 
 /// アドレスがスタック拡張の対象か判定
-fn is_potential_stack_access(addr: VirtAddr) -> bool {
+fn is_potential_stack_access(addr: VirtAddr, current_rsp: VirtAddr) -> bool {
     let addr_u64 = addr.as_u64();
+    let rsp_u64 = current_rsp.as_u64();
     
     // ユーザースタック領域内かチェック
-    addr_u64 >= USER_STACK_BOTTOM && addr_u64 < USER_STACK_TOP
+    if addr_u64 < USER_STACK_BOTTOM || addr_u64 >= USER_STACK_TOP {
+        return false;
+    }
+
+    // RSPに近いかチェック（ガードページ超えを防止）
+    // x86_64では128バイトのレッドゾーンを考慮し、かつ1ページ分の余裕を持たせる
+    addr_u64 + 4096 + 128 >= rsp_u64
 }
 
 /// スタック拡張フォルトハンドラ
-fn handle_stack_growth(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultResult {
+fn handle_stack_growth(fault_addr: VirtAddr, error: PageFaultErrorCode) -> FaultResult {
     FAULT_STATS.stack_growth.fetch_add(1, Ordering::Relaxed);
 
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
 
-    // スタック限界チェック
+    // 脆弱性修正: スタック限界チェックの厳格化
+    // アドレスがガードページ領域に入っている場合は StackOverflow
     if page_addr.as_u64() < USER_STACK_BOTTOM + STACK_GUARD_SIZE {
         return FaultResult::StackOverflow;
     }
 
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
-
-    let setup = match AnonPageSetup::allocate(Some(memcg_id)) {
-        Some(s) => s,
-        None => {
-            FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
-            return FaultResult::OutOfMemory;
-        }
-    };
-
-    let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-    match unsafe { setup.map_and_track(page_addr, flags) } {
-        Ok(()) => FaultResult::StackGrown,
-        Err(MapError::AlreadyMapped) => FaultResult::Resolved,
-        Err(_) => FaultResult::KernelBug,
-    }
+    // 後続処理は Demand Paging と共通化してリークや不整合を防止
+    handle_demand_paging(fault_addr, error)
 }
 
 // ============================================================================

@@ -10,6 +10,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 
+// `handle_page_fault` works with our own higher_half `VirtAddr` type
+use crate::mm::virt::higher_half::VirtAddr as HHVirtAddr;
+
 /// 例外統計
 pub struct ExceptionStats {
     pub page_faults: AtomicU64,
@@ -318,54 +321,58 @@ define_interrupt!(
     ) {
         EXCEPTION_STATS.page_faults.fetch_add(1, Ordering::Relaxed);
 
+        // Convert the raw stack pointer into our kernel's higher-half VirtAddr type
+    let rsp: HHVirtAddr = HHVirtAddr::new(stack_frame.stack_pointer.as_u64());
+
+        // 高度なページフォルトハンドラを呼び出し
+        let res = crate::mm::virt::fault_handler::handle_page_fault(error_code.bits(), rsp);
+        
+        if matches!(res, 
+            crate::mm::virt::fault_handler::FaultResult::Resolved | 
+            crate::mm::virt::fault_handler::FaultResult::CowHandled | 
+            crate::mm::virt::fault_handler::FaultResult::DemandPaged |
+            crate::mm::virt::fault_handler::FaultResult::StackGrown |
+            crate::mm::virt::fault_handler::FaultResult::FilePageLoaded) 
+        {
+            // 解決されたので例外から復帰
+            return;
+        }
+
+        // 解決できなかった場合は詳細を表示してパニック
         let fault_addr = Cr2::read().unwrap_or(x86_64::VirtAddr::zero());
 
-        early_print("\n[EXCEPTION] PAGE FAULT (#PF)\n");
+        early_print("\n[EXCEPTION] UNRESOLVED PAGE FAULT (#PF)\n");
         early_print("Faulting Address: ");
         early_print_hex(fault_addr.as_u64());
         early_print("\nError Code: ");
         early_print_hex(error_code.bits() as u64);
+        early_print("\nResult: ");
+        early_print(match res {
+            crate::mm::virt::fault_handler::FaultResult::NoVma => "No VMA found",
+            crate::mm::virt::fault_handler::FaultResult::PermissionDenied => "Permission Denied",
+            crate::mm::virt::fault_handler::FaultResult::OutOfMemory => "Out of Memory",
+            crate::mm::virt::fault_handler::FaultResult::StackOverflow => "Stack Overflow",
+            crate::mm::virt::fault_handler::FaultResult::KernelBug => "Kernel Bug",
+            crate::mm::virt::fault_handler::FaultResult::IoError => "I/O Error",
+            _ => "Unknown Error",
+        });
         early_print("\n");
 
         // エラーコードの詳細解析
         let error_bits = error_code.bits();
         early_print("  Present: ");
-        early_print(if (error_bits & 0x1) != 0 {
-            "true"
-        } else {
-            "false"
-        });
+        early_print(if (error_bits & 0x1) != 0 { "true" } else { "false" });
         early_print("\n  Write: ");
-        early_print(if (error_bits & 0x2) != 0 {
-            "true"
-        } else {
-            "false"
-        });
+        early_print(if (error_bits & 0x2) != 0 { "true" } else { "false" });
         early_print("\n  User Mode: ");
-    early_print(if (error_bits & 0x4) != 0 {
-        "true"
-    } else {
-        "false"
-    });
-    early_print("\n  Reserved Write: ");
-    early_print(if (error_bits & 0x8) != 0 {
-        "true"
-    } else {
-        "false"
-    });
-    early_print("\n  Instruction Fetch: ");
-    early_print(if (error_bits & 0x10) != 0 {
-        "true"
-    } else {
-        "false"
-    });
-    early_print("\n");
+        early_print(if (error_bits & 0x4) != 0 { "true" } else { "false" });
+        early_print("\n");
 
-    early_print("\nStack Frame:\n");
-    dump_stack_frame(&stack_frame);
+        early_print("\nStack Frame:\n");
+        dump_stack_frame(&stack_frame);
 
-    panic!("Page fault at {:#x}", fault_addr.as_u64());
-}
+        panic!("Page fault at {:#x} (Result: {:?})", fault_addr.as_u64(), res);
+    }
 );
 
 /// Alignment Check (#AC)

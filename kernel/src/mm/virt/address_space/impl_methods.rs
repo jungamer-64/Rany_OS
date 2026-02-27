@@ -61,6 +61,11 @@ impl ProcessAddressSpace {
     pub fn page_table_root(&self) -> u64 {
         self.page_table_root.load(Ordering::Acquire)
     }
+
+    /// VMAリストを取得
+    pub fn vma_list(&self) -> &VmaList {
+        &self.vma_list
+    }
     
     // ========================================================================
     // Memory Region Management
@@ -137,19 +142,36 @@ impl ProcessAddressSpace {
             return Err(AddressSpaceError::InvalidSize);
         }
         
-        let size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1); // ページアラインメント
+        // 脆弱性修正: ページアラインメント時の整数オーバーフローを防止
+        let aligned_size = size.checked_add(PAGE_SIZE - 1)
+            .ok_or(AddressSpaceError::InvalidSize)? & !(PAGE_SIZE - 1);
         
         // アドレスを決定
         let start_addr = if let Some(hint) = addr_hint {
-            hint.as_u64()
+            let addr = hint.as_u64();
+            // ヒントがユーザー空間内かチェック
+            if addr < USER_SPACE_START || addr.checked_add(aligned_size).map_or(true, |end| end > USER_SPACE_END) {
+                return Err(AddressSpaceError::InvalidRange);
+            }
+            addr
         } else {
             // mmap領域から割り当て
-            let hint = self.mmap_hint.fetch_add(size, Ordering::Relaxed);
-            hint
+            loop {
+                let hint = self.mmap_hint.load(Ordering::Acquire);
+                let next_hint = hint.checked_add(aligned_size).ok_or(AddressSpaceError::OutOfMemory)?;
+                
+                if next_hint > USER_SPACE_END {
+                    return Err(AddressSpaceError::OutOfMemory);
+                }
+                
+                if self.mmap_hint.compare_exchange_weak(hint, next_hint, Ordering::SeqCst, Ordering::Relaxed).is_ok() {
+                    break hint;
+                }
+            }
         };
         
         let start = VirtAddr::new(start_addr);
-        let end = VirtAddr::new(start_addr + size);
+        let end = VirtAddr::new(start_addr + aligned_size);
         
         // 領域を作成
         let region = MemoryRegion::new(start, end, region_type, prot);
@@ -251,22 +273,29 @@ impl ProcessAddressSpace {
     pub fn set_brk(&self, new_brk: u64) -> Result<u64, AddressSpaceError> {
         let current = self.heap_end.load(Ordering::Acquire);
         
-        if new_brk < DEFAULT_HEAP_START {
+        // 脆弱性修正: ヒープ終了アドレスがユーザー空間内かチェック
+        if new_brk < DEFAULT_HEAP_START || new_brk > DEFAULT_MMAP_BASE {
             return Err(AddressSpaceError::InvalidRange);
         }
-        
+
+        let mut regions = self.regions.write();
+
+        // 脆弱性修正: ヒープ拡張が既存の領域と重ならないかチェック
         if new_brk > current {
-            // ヒープ拡張
+            for (&start, existing) in regions.iter() {
+                if start == DEFAULT_HEAP_START { continue; }
+                if existing.overlaps(VirtAddr::new(DEFAULT_HEAP_START), VirtAddr::new(new_brk)) {
+                    return Err(AddressSpaceError::RegionOverlap);
+                }
+            }
+
+            // ヒープ拡張時の Memcg チャージ
             let size = new_brk - current;
             let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-            
-            // Memcgチャージ
             let pages = aligned_size / PAGE_SIZE;
             if memcg_charge(self.memcg_id, pages, ChargeType::Anon).is_err() {
                 return Err(AddressSpaceError::OutOfMemory);
             }
-            
-            // 実際のページ割り当てはDemand Paging
         } else if new_brk < current {
             // ヒープ縮小
             let size = current - new_brk;
@@ -283,6 +312,21 @@ impl ProcessAddressSpace {
             
             memcg_uncharge(self.memcg_id, pages, ChargeType::Anon);
         }
+
+        // ヒープ VMA を更新（demand paging が機能するように登録）
+        let region = MemoryRegion::new(
+            VirtAddr::new(DEFAULT_HEAP_START),
+            VirtAddr::new(new_brk),
+            RegionType::Heap,
+            Protection::READ_WRITE,
+        );
+        
+        let _ = self.vma_list.remove(VirtAddr::new(DEFAULT_HEAP_START));
+        if new_brk > DEFAULT_HEAP_START {
+            let vma = region.to_vma();
+            self.vma_list.insert(Box::new(vma));
+        }
+        regions.insert(DEFAULT_HEAP_START, Box::new(region));
         
         self.heap_end.store(new_brk, Ordering::Release);
         Ok(new_brk)
@@ -527,60 +571,26 @@ impl ProcessAddressSpace {
 
     /// PTEを更新してNUMAヒントを設定
     pub(super) fn update_pte_for_numa_hint(&self, addr: VirtAddr) -> bool {
-        // ページテーブルをウォークしてPTEを取得
-        let pt_root = self.page_table_root.load(Ordering::Acquire);
-        if pt_root == 0 {
-            return false;
-        }
-
-        let indices = addr.page_table_indices();
-        
-        // Manual four-level walk using phys_to_virt
-        // Level 4 (PML4)
-        let pml4_phys = PhysAddr::new(pt_root);
-        let pml4_ptr = crate::mm::virt::higher_half::phys_to_virt(pml4_phys).as_mut_ptr::<crate::mm::virt::higher_half::PageTable>();
-        let pml4 = unsafe { &mut *pml4_ptr };
-        let pml4e = pml4.entry_mut(indices[0]);
-        if !pml4e.is_present() { return false; }
-
-        // Level 3 (PDPT)
-        let pdpt_phys = pml4e.phys_addr();
-        let pdpt_ptr = crate::mm::virt::higher_half::phys_to_virt(pdpt_phys).as_mut_ptr::<crate::mm::virt::higher_half::PageTable>();
-        let pdpt = unsafe { &mut *pdpt_ptr };
-        let pdpte = pdpt.entry_mut(indices[1]);
-        if !pdpte.is_present() { return false; }
-        if pdpte.is_huge() { return false; } // 1GB pages not supported for auto numa yet
-
-        // Level 2 (PD)
-        let pd_phys = pdpte.phys_addr();
-        let pd_ptr = crate::mm::virt::higher_half::phys_to_virt(pd_phys).as_mut_ptr::<crate::mm::virt::higher_half::PageTable>();
-        let pd = unsafe { &mut *pd_ptr };
-        let pde = pd.entry_mut(indices[2]);
-        if !pde.is_present() { return false; }
-        if pde.is_huge() { return false; } // 2MB pages not supported for auto numa yet
-
-        // Level 1 (PT)
-        let pt_phys = pde.phys_addr();
-        let pt_ptr = crate::mm::virt::higher_half::phys_to_virt(pt_phys).as_mut_ptr::<crate::mm::virt::higher_half::PageTable>();
-        let pt = unsafe { &mut *pt_ptr };
-        let pte = pt.entry_mut(indices[3]);
-
-        // Hint設定
-        if pte.is_present() {
-            let mut flags = pte.flags();
-            // 既にHintが立っている場合はスキップ
-            if flags.contains(PageFlags::NUMA_HINT) {
-                return false;
+        // 脆弱性修正: 手動のページテーブルウォークを with_current_pte_mut に置き換え。
+        // これにより、PAGE_TABLE_MANAGER ロックによる適切な同期が保証され、
+        // マルチコア環境でのデータレースが防止される。
+        crate::mm::virt::higher_half::with_current_pte_mut(addr, |pte| {
+            // Hint設定
+            if pte.is_present() {
+                let mut flags = pte.flags();
+                // 既にHintが立っている場合はスキップ
+                if flags.contains(PageFlags::NUMA_HINT) {
+                    return false;
+                }
+                // Presentを落とし、Hintを立てる
+                flags = flags.clear(PageFlags::PRESENT).set(PageFlags::NUMA_HINT);
+                pte.set_flags(flags);
+                
+                // TLB Invalidation handled by with_current_pte_mut
+                return true;
             }
-            // Presentを落とし、Hintを立てる
-            flags = flags.clear(PageFlags::PRESENT).set(PageFlags::NUMA_HINT);
-            pte.set_flags(flags);
-            
-            // TLB Invalidation handled by caller (usually flush_tlb_local if current, or ignored until next context switch)
-            return true;
-        }
-
-        false
+            false
+        }).unwrap_or(false)
     }
 
     /// THP昇格候補を検索
@@ -638,7 +648,7 @@ impl ProcessAddressSpace {
         // Here we need to check if pages are mapped and present
         let mut used_pages = 0;
         
-        // This is a simplified check. In reality we'd walk the PT.
+        // Use thread-safe global_translate
         for i in 0..512 {
             let addr = VirtAddr::new(start.as_u64() + i * 4096);
             if let Some(_phys) = global_translate(addr) {

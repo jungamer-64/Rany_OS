@@ -27,7 +27,9 @@ use alloc::collections::BTreeMap;
 use spin::RwLock;
 
 use super::higher_half::{PageFlags, MapError, VirtAddr};
-use super::fault_handler::AnonPageSetup;
+use crate::mm::meta::memcg::ChargeType; // for memcg page charges
+use crate::mm::reclaim::page_reclaim::PageType as LruPageType;
+use super::fault_handler::PageSetup;
 
 // ============================================================================
 // Constants
@@ -340,14 +342,14 @@ fn grow_stack_to(stack: &mut StackRegion, target_addr: VirtAddr) -> StackResult 
 fn grow_single_page(page_addr: VirtAddr) -> StackResult {
     let memcg_id = crate::task::process::get_current_process_memcg_id();
 
-    let setup = match AnonPageSetup::allocate(Some(memcg_id)) {
+    let setup = match PageSetup::allocate(Some(memcg_id), ChargeType::Anon) {
         Some(s) => s,
         None => return StackResult::OutOfMemory,
     };
 
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
 
-    match unsafe { setup.map_and_track(page_addr, flags) } {
+    match unsafe { setup.map_and_track(page_addr, flags, LruPageType::Anonymous) } {
         Ok(()) => StackResult::Ok,
         Err(MapError::AlreadyMapped) => StackResult::Ok,
         Err(_) => StackResult::OutOfMemory,

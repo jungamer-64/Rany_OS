@@ -466,60 +466,89 @@ pub enum TlbFlushType {
     Asid = 2,
 }
 
+/// グローバルTLBフラッシュの排他制御
+static TLB_FLUSH_LOCK: crate::sync::irq_mutex::IrqMutex<()> = crate::sync::irq_mutex::IrqMutex::new(());
+
 /// グローバルIPIペイロード（各CPUが参照）
-/// spin::Mutex で保護
-static TLB_FLUSH_PAYLOAD: spin::Mutex<TlbFlushIpiPayload> = spin::Mutex::new(TlbFlushIpiPayload {
+/// TLB_FLUSH_LOCK で保護される。
+static mut TLB_FLUSH_PAYLOAD: TlbFlushIpiPayload = TlbFlushIpiPayload {
     flush_type: TlbFlushType::All,
     pages: [0; TLB_BATCH_SIZE],
     page_count: 0,
     asid: 0,
-});
+};
 
 /// IPIが完了したCPUのカウント
 static TLB_FLUSH_DONE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// 全TLBフラッシュIPIを送信
 fn send_tlb_flush_ipi_all(cpu_mask: u64) {
-    {
-        let mut payload = TLB_FLUSH_PAYLOAD.lock();
-        payload.flush_type = TlbFlushType::All;
-        payload.page_count = 0;
-    }
-    
-    send_tlb_flush_ipi(cpu_mask);
+    send_tlb_flush_ipi_internal(cpu_mask, TlbFlushType::All, &[], 0);
 }
 
 /// 個別ページフラッシュIPIを送信
 fn send_tlb_flush_ipi_pages(cpu_mask: u64, pages: &[u64]) {
-    {
-        let mut payload = TLB_FLUSH_PAYLOAD.lock();
-        payload.flush_type = TlbFlushType::Pages;
-        let count = pages.len().min(TLB_BATCH_SIZE);
-        payload.page_count = count;
-        payload.pages[..count].copy_from_slice(&pages[..count]);
-    }
-    
-    send_tlb_flush_ipi(cpu_mask);
+    send_tlb_flush_ipi_internal(cpu_mask, TlbFlushType::Pages, pages, 0);
 }
 
 /// TLBフラッシュIPIを送信（共通処理）
-fn send_tlb_flush_ipi(cpu_mask: u64) {
-    let target_count = cpu_mask.count_ones() as usize;
+/// 
+/// 1. TLB_FLUSH_LOCK を取得して送信側をシリアライズ
+/// 2. ペイロードを設定
+/// 3. IPIを送信
+/// 4. 全CPUの完了を待機
+/// 5. ロックを解放
+fn send_tlb_flush_ipi_internal(cpu_mask: u64, flush_type: TlbFlushType, pages: &[u64], asid: u16) {
+    // 現在のCPUを除外したターゲットマスクを作成
+    let current_cpu = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let mut remote_mask = cpu_mask & !(1u64 << current_cpu);
+    
+    if remote_mask == 0 {
+        return;
+    }
+
+    // 送信側をシリアライズ（割り込み禁止）
+    let _lock = TLB_FLUSH_LOCK.lock();
+
+    // ペイロードを設定
+    unsafe {
+        TLB_FLUSH_PAYLOAD.flush_type = flush_type;
+        TLB_FLUSH_PAYLOAD.asid = asid;
+        if let TlbFlushType::Pages = flush_type {
+            let count = pages.len().min(TLB_BATCH_SIZE);
+            TLB_FLUSH_PAYLOAD.page_count = count;
+            TLB_FLUSH_PAYLOAD.pages[..count].copy_from_slice(&pages[..count]);
+        } else {
+            TLB_FLUSH_PAYLOAD.page_count = 0;
+        }
+    }
+
+    let mut target_count = 0;
     TLB_FLUSH_DONE_COUNT.store(0, Ordering::Release);
     
     // 各ターゲットCPUの状態をチェック
     for cpu_id in 0..64 {
-        if (cpu_mask & (1 << cpu_id)) != 0 {
+        if (remote_mask & (1 << cpu_id)) != 0 {
             let state = get_cpu_tlb_state(cpu_id);
             
             // Lazyモードのcpuはフラッシュを保留
             if state.get_state() == TlbState::Lazy {
                 state.mark_pending_flush();
-                TLB_FLUSH_DONE_COUNT.fetch_add(1, Ordering::Relaxed);
+                remote_mask &= !(1 << cpu_id); // IPI送信対象から除外
                 continue;
             }
             
-            // アクティブなCPUにはIPIを送信
+            target_count += 1;
+        }
+    }
+    
+    if target_count == 0 {
+        return;
+    }
+
+    // アクティブなCPUにIPIを送信
+    for cpu_id in 0..64 {
+        if (remote_mask & (1 << cpu_id)) != 0 {
             send_tlb_ipi_to_cpu(cpu_id);
         }
     }
@@ -529,9 +558,10 @@ fn send_tlb_flush_ipi(cpu_mask: u64) {
     while TLB_FLUSH_DONE_COUNT.load(Ordering::Acquire) < target_count {
         core::hint::spin_loop();
         spin_count += 1;
-        if spin_count > 10_000_000 {
+        if spin_count > 100_000_000 {
             // タイムアウト
-            log::warn!("[TLB] Flush IPI timeout");
+            log::warn!("[TLB] Flush IPI timeout (target={}, done={})", 
+                target_count, TLB_FLUSH_DONE_COUNT.load(Ordering::Relaxed));
             break;
         }
     }
@@ -542,28 +572,28 @@ fn send_tlb_flush_ipi(cpu_mask: u64) {
 /// # Safety
 /// 
 /// - 割り込みハンドラとして呼び出されること
+/// - 送信側が TLB_FLUSH_LOCK を保持している間のみペイロードが有効
 pub unsafe fn tlb_flush_ipi_handler() {
-    // 割り込みコンテキストでは try_lock を使用
-    // IPIハンドラはsend_tlb_flush_ipi()がロックを解放した後に呼ばれるので、
-    // ここでロックを取得できる
-    let payload = TLB_FLUSH_PAYLOAD.lock();
+    // 送信側がロックを保持しているので、ここではロックを取らずに直接ペイロードを読む
+    // これによりデッドロックを回避する
+    // Rust 2024 では static mut への直接参照は禁止されているため raw pointer を使用
+    let payload_ptr = &raw const TLB_FLUSH_PAYLOAD;
     
-    match payload.flush_type {
+    match (*payload_ptr).flush_type {
         TlbFlushType::All => {
             flush_tlb_all_local();
         }
         TlbFlushType::Pages => {
-            for i in 0..payload.page_count {
-                flush_tlb_page_local(VirtAddr::new(payload.pages[i]));
+            for i in 0..(*payload_ptr).page_count {
+                flush_tlb_page_local(VirtAddr::new((*payload_ptr).pages[i]));
             }
         }
         TlbFlushType::Asid => {
             // INVPCID でASID指定フラッシュ
-            invpcid(payload.asid as u64, 0, invpcid_type::SINGLE_CONTEXT);
+            invpcid((*payload_ptr).asid as u64, 0, invpcid_type::SINGLE_CONTEXT);
         }
     }
     
-    drop(payload); // 明示的にロック解放
     TLB_FLUSH_DONE_COUNT.fetch_add(1, Ordering::Release);
 }
 
@@ -596,8 +626,8 @@ pub fn flush_tlb_immediate(addr: VirtAddr) {
     unsafe {
         flush_tlb_page_local(addr);
     }
-    // リモートCPUへのIPI（全CPUにブロードキャスト）
-    broadcast_tlb_flush_ipi();
+    // リモートCPUへのIPI
+    send_tlb_flush_ipi_pages(u64::MAX, &[addr.as_u64()]);
 }
 
 /// 全TLBフラッシュ（全CPU）

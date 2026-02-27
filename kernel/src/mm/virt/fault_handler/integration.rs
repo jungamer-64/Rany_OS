@@ -35,8 +35,8 @@ pub fn fault_result_str(result: FaultResult) -> &'static str {
 ///
 /// * `true` - フォルト解決成功、例外からのリターンが可能
 /// * `false` - フォルト解決不可、プロセス終了または panic が必要
-pub fn try_handle_page_fault(error_code: u64) -> bool {
-    let result = handle_page_fault(error_code);
+pub fn try_handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> bool {
+    let result = handle_page_fault(error_code, current_rsp);
     
     match result {
         FaultResult::Resolved

@@ -16,12 +16,12 @@ impl HugePageBitmap {
         
         // Calculate block counts
         let complete_2m_blocks = total_pages / PAGES_PER_2MB;
-        let total_2m_blocks = (total_pages + PAGES_PER_2MB - 1) / PAGES_PER_2MB;
+        let total_2m_blocks = (total_pages.saturating_add(PAGES_PER_2MB - 1)) / PAGES_PER_2MB;
         let complete_1g_blocks = complete_2m_blocks / BLOCKS_2MB_PER_1GB;
-        let total_1g_blocks = (total_2m_blocks + BLOCKS_2MB_PER_1GB - 1) / BLOCKS_2MB_PER_1GB;
+        let total_1g_blocks = (total_2m_blocks.saturating_add(BLOCKS_2MB_PER_1GB - 1)) / BLOCKS_2MB_PER_1GB;
         
         // 2MB level
-        let bitmap_2m_words = (total_2m_blocks + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let bitmap_2m_words = (total_2m_blocks.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
         
         // Initialize used_count_2m (all 0 = all free)
         let used_count_2m: Vec<AtomicU16> = (0..total_2m_blocks)
@@ -211,14 +211,20 @@ impl HugePageBitmap {
                     Ok(_) => {
                         let block_idx = word_idx * BITS_PER_WORD + bit_idx;
                         
+                        // 脆弱性修正: used_count_2m が 0 であることをアトミックに確認し、512 に設定する。
+                        // これにより、4KB 割当が同時に行われていた場合に、この 2MB ブロックを
+                        // 誤って確保してしまう（二重割当）を防止する。
+                        if self.used_count_2m[block_idx].compare_exchange(0, PAGES_PER_2MB as u16, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                            // すでに一部が使われているため、このブロックの確保は断念。
+                            // ビットは既にクリアしているので、そのまま次を探す。
+                            continue;
+                        }
+                        
                         // Mark all 512 pages as allocated in base bitmap
                         let page_start = block_idx * PAGES_PER_2MB;
                         for i in 0..PAGES_PER_2MB {
                             self.base.mark_allocated(page_start + i);
                         }
-                        
-                        // Update used count
-                        self.used_count_2m[block_idx].store(PAGES_PER_2MB as u16, Ordering::Release);
                         
                         // Update free word mask
                         self.free_word_mask_2m[block_idx].store(0, Ordering::Release);
@@ -259,10 +265,10 @@ impl HugePageBitmap {
             return false;
         }
         
-        // Check if block is fully allocated
-        let used = self.used_count_2m[block_idx].load(Ordering::Acquire);
-        if used != PAGES_PER_2MB as u16 {
-            return false; // Not fully allocated
+        // 脆弱性修正: used_count_2m が 512 であることをアトミックに確認し、0 に設定する。
+        // これにより、不完全なブロックの解放や二重解放を防止する。
+        if self.used_count_2m[block_idx].compare_exchange(PAGES_PER_2MB as u16, 0, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return false; // 全てが確保されていない、または既に解放処理中
         }
         
         // Mark all pages as free in base bitmap
@@ -270,9 +276,6 @@ impl HugePageBitmap {
         for i in 0..PAGES_PER_2MB {
             self.base.mark_free(page_start + i);
         }
-        
-        // Update used count
-        self.used_count_2m[block_idx].store(0, Ordering::Release);
         
         // Update free word mask
         self.free_word_mask_2m[block_idx].store(0xFF, Ordering::Release);
@@ -350,18 +353,24 @@ impl HugePageBitmap {
                     Ok(_) => {
                         let block_1g_idx = word_idx * BITS_PER_WORD + bit_idx;
                         
+                        // 脆弱性修正: 1GB ブロックの確保時にも used_count_1g のアトミックチェックを行う
+                        if self.used_count_1g[block_1g_idx].compare_exchange(0, BLOCKS_2MB_PER_1GB as u16, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                            // すでに一部の 2MB ブロックが使われている
+                            continue;
+                        }
+
                         // Mark all 512 2MB blocks as allocated
                         let block_2m_start = block_1g_idx * BLOCKS_2MB_PER_1GB;
                         for i in 0..BLOCKS_2MB_PER_1GB {
                             let block_2m = block_2m_start + i;
                             if block_2m < self.total_2m_blocks {
+                                // 脆弱性修正: 各 2MB ブロックの状態も 512 (Full) に更新
+                                self.used_count_2m[block_2m].store(PAGES_PER_2MB as u16, Ordering::Release);
+
                                 // Clear 2MB fully-free bit
                                 let w2m = block_2m / BITS_PER_WORD;
                                 let b2m = block_2m % BITS_PER_WORD;
                                 self.bitmap_2m[w2m].fetch_and(!(1u64 << b2m), Ordering::AcqRel);
-                                
-                                // Update used count
-                                self.used_count_2m[block_2m].store(PAGES_PER_2MB as u16, Ordering::Release);
                                 
                                 // Clear free word mask
                                 self.free_word_mask_2m[block_2m].store(0, Ordering::Release);
@@ -379,7 +388,6 @@ impl HugePageBitmap {
                         }
                         
                         // Update counts
-                        self.used_count_1g[block_1g_idx].store(BLOCKS_2MB_PER_1GB as u16, Ordering::Release);
                         self.free_count_1g.fetch_sub(1, Ordering::Relaxed);
                         self.free_count_2m.fetch_sub(BLOCKS_2MB_PER_1GB.min(self.total_2m_blocks - block_2m_start), Ordering::Relaxed);
                         

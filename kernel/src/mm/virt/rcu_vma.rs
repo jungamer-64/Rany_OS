@@ -487,6 +487,7 @@ pub enum PageSize {
 /// # Returns
 /// 歩行結果、またはPageFaultの場合はNone
 pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResult> {
+    use super::higher_half::{phys_to_virt, PhysAddr};
     let guard = rcu_read_lock();
     
     let addr = virt_addr.as_u64();
@@ -503,7 +504,9 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
     let mut pte_values = [0u64; 4];
     
     // PML4
-    let pml4 = unsafe { &*(pml4_addr as *const PageTable) };
+    // 脆弱性修正: 物理アドレスを直接ポインタにキャストせず、phys_to_virt を使用
+    let pml4_virt = phys_to_virt(PhysAddr::new(pml4_addr));
+    let pml4 = unsafe { &*(pml4_virt.as_ptr::<PageTable>()) };
     let pml4e = pml4.entry(pml4_idx).read(&guard);
     pte_values[0] = pml4e.raw();
     
@@ -512,7 +515,8 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
     }
     
     // PDPT
-    let pdpt = unsafe { &*(pml4e.addr() as *const PageTable) };
+    let pdpt_virt = phys_to_virt(PhysAddr::new(pml4e.addr()));
+    let pdpt = unsafe { &*(pdpt_virt.as_ptr::<PageTable>()) };
     let pdpte = pdpt.entry(pdpt_idx).read(&guard);
     pte_values[1] = pdpte.raw();
     
@@ -531,7 +535,8 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
     }
     
     // PD
-    let pd = unsafe { &*(pdpte.addr() as *const PageTable) };
+    let pd_virt = phys_to_virt(PhysAddr::new(pdpte.addr()));
+    let pd = unsafe { &*(pd_virt.as_ptr::<PageTable>()) };
     let pde = pd.entry(pd_idx).read(&guard);
     pte_values[2] = pde.raw();
     
@@ -550,7 +555,8 @@ pub fn rcu_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResu
     }
     
     // PT
-    let pt = unsafe { &*(pde.addr() as *const PageTable) };
+    let pt_virt = phys_to_virt(PhysAddr::new(pde.addr()));
+    let pt = unsafe { &*(pt_virt.as_ptr::<PageTable>()) };
     let pte = pt.entry(pt_idx).read(&guard);
     pte_values[3] = pte.raw();
     
@@ -598,6 +604,7 @@ fn verify_speculative_result(
 }
 
 pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<PageWalkResult> {
+    use super::higher_half::{phys_to_virt, PhysAddr};
     let addr = virt_addr.as_u64();
     
     let pml4_idx = ((addr >> 39) & 0x1FF) as usize;
@@ -609,7 +616,9 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
     let mut pte_values = [0u64; 4];
     
     // 投機的読み取り（バリアなし）
-    let pml4 = unsafe { &*(pml4_addr as *const PageTable) };
+    // 脆弱性修正: phys_to_virt を使用
+    let pml4_virt = phys_to_virt(PhysAddr::new(pml4_addr));
+    let pml4 = unsafe { &*(pml4_virt.as_ptr::<PageTable>()) };
     let pml4e_val = pml4.entry(pml4_idx).entry.load(Ordering::Relaxed);
     pte_values[0] = pml4e_val;
     
@@ -618,7 +627,8 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
         return None;
     }
     
-    let pdpt = unsafe { &*(pml4e.addr() as *const PageTable) };
+    let pdpt_virt = phys_to_virt(PhysAddr::new(pml4e.addr()));
+    let pdpt = unsafe { &*(pdpt_virt.as_ptr::<PageTable>()) };
     let pdpte_val = pdpt.entry(pdpt_idx).entry.load(Ordering::Relaxed);
     pte_values[1] = pdpte_val;
     
@@ -631,7 +641,8 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
         return verify_speculative_result(pml4, pml4_idx, pml4e_val, pdpte, addr, PageSize::Size1GB, 0x3FFF_FFFF, pte_values);
     }
     
-    let pd = unsafe { &*(pdpte.addr() as *const PageTable) };
+    let pd_virt = phys_to_virt(PhysAddr::new(pdpte.addr()));
+    let pd = unsafe { &*(pd_virt.as_ptr::<PageTable>()) };
     let pde_val = pd.entry(pd_idx).entry.load(Ordering::Relaxed);
     pte_values[2] = pde_val;
     
@@ -644,7 +655,8 @@ pub fn speculative_page_walk(pml4_addr: u64, virt_addr: VirtAddr) -> Option<Page
         return verify_speculative_result(pml4, pml4_idx, pml4e_val, pde, addr, PageSize::Size2MB, 0x1F_FFFF, pte_values);
     }
     
-    let pt = unsafe { &*(pde.addr() as *const PageTable) };
+    let pt_virt = phys_to_virt(PhysAddr::new(pde.addr()));
+    let pt = unsafe { &*(pt_virt.as_ptr::<PageTable>()) };
     let pte_val = pt.entry(pt_idx).entry.load(Ordering::Relaxed);
     pte_values[3] = pte_val;
     

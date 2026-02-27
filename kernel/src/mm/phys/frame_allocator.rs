@@ -242,6 +242,12 @@ impl BitmapFrameAllocator {
     pub fn deallocate_4k_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
+        // 脆弱性修正: 二重解放の防止
+        if self.is_frame_free(frame_idx) {
+            log::warn!("[PMM] Double free detected for 4KiB frame {:#x}", frame.start_address().as_u64());
+            return;
+        }
+
         // Memcg: ページがmemcgでトラックされている場合はuntrackしてチャージを戻す
         crate::mm::meta::memcg::memcg_untrack_and_uncharge(frame_idx, 1);
 
@@ -253,6 +259,12 @@ impl BitmapFrameAllocator {
     pub fn deallocate_2m_frame(&mut self, frame: PhysFrame<Size2MiB>) {
         let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
         let frames_count = PAGE_SIZE_2M / PAGE_SIZE_4K;
+
+        // 脆弱性修正: 二重解放の防止（先頭ページで代表チェック）
+        if self.is_frame_free(start_frame) {
+            log::warn!("[PMM] Double free detected for 2MiB frame {:#x}", frame.start_address().as_u64());
+            return;
+        }
 
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
@@ -267,6 +279,12 @@ impl BitmapFrameAllocator {
     pub fn deallocate_1g_frame(&mut self, frame: PhysFrame<Size1GiB>) {
         let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
         let frames_count = PAGE_SIZE_1G / PAGE_SIZE_4K;
+
+        // 脆弱性修正: 二重解放の防止（先頭ページで代表チェック）
+        if self.is_frame_free(start_frame) {
+            log::warn!("[PMM] Double free detected for 1GiB frame {:#x}", frame.start_address().as_u64());
+            return;
+        }
 
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {

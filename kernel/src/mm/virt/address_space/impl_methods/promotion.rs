@@ -10,7 +10,16 @@ impl ProcessAddressSpace {
         huge_phys_x64: X64PhysAddr,
         protection: Protection
     ) -> bool {
-        use crate::mm::virt::higher_half::{PageTable, PageFlags, PageTableEntry};
+        use crate::mm::virt::higher_half::{PageTable, PageFlags, PageTableEntry, PAGE_TABLE_MANAGER};
+        
+        // 脆弱性修正: プロモーション処理全体を PAGE_TABLE_MANAGER ロックで保護。
+        // これにより、別の CPU が同時に同じ範囲をマップ/アンマップしたり、別の
+        // プロモーションを実行したりすることによる不整合を防止する。
+        let mut _guard = match PAGE_TABLE_MANAGER.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+
         // Convert x86_64::PhysAddr to higher_half::PhysAddr for PT operations
         let huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
         
@@ -83,9 +92,12 @@ impl ProcessAddressSpace {
         frames_to_free: Vec<crate::mm::virt::higher_half::PhysAddr>,
         pt_phys: crate::mm::virt::higher_half::PhysAddr,
     ) {
-        let vaddr = (indices[0] as u64) << 39 | (indices[1] as u64) << 30 | (indices[2] as u64) << 21;
-        let _vaddr_canon = if vaddr & (1 << 47) != 0 { vaddr | 0xFFFF000000000000 } else { vaddr };
-        core::arch::asm!("invlpg [{}]", in(reg) _vaddr_canon);
+        let vaddr_raw = (indices[0] as u64) << 39 | (indices[1] as u64) << 30 | (indices[2] as u64) << 21;
+        let vaddr = VirtAddr::new(vaddr_raw);
+        
+        // 脆弱性修正: ローカルな invlpg から、マルチコア対応のシュートダウンへ
+        crate::mm::virt::higher_half::invalidate_page(vaddr);
+
         for frame in frames_to_free {
             let frame_addr = X64PhysAddr::new(frame.as_u64());
             let phys_frame: PhysFrame<Size4KiB> = PhysFrame::from_start_address(frame_addr).unwrap();

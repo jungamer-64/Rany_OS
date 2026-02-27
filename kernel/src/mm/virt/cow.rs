@@ -360,6 +360,13 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
     // ページ内容をコピー
     copy_page(old_phys, new_phys);
     
+    // Memcgチャージ
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    if crate::mm::meta::memcg::memcg_charge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon).is_err() {
+        dealloc_frame(new_frame);
+        return CowResult::OutOfMemory;
+    }
+
     // 古いマッピングを削除
     // Safety: ページテーブル操作
     let _ = unsafe { global_unmap_page(page_addr) };
@@ -370,11 +377,13 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
     match unsafe { global_map_page(page_addr, new_phys, flags) } {
         Ok(()) => {}
         Err(MapError::AlreadyMapped) => {
-            // レースコンディション
+            // レースコンディション: 他のCPUが既にマップした
+            crate::mm::meta::memcg::memcg_uncharge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon);
             dealloc_frame(new_frame);
             return CowResult::Ok;
         }
         Err(_) => {
+            crate::mm::meta::memcg::memcg_uncharge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon);
             dealloc_frame(new_frame);
             return CowResult::MappingError;
         }
@@ -388,6 +397,10 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
     
     // LRUに追加
     lru_add_page(new_frame, LruPageType::Anonymous);
+    
+    // ページとmemcgを追跡
+    let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(new_phys.as_u64());
+    crate::mm::meta::memcg::memcg_track_page(frame_idx, memcg_id, crate::mm::meta::memcg::ChargeType::Anon);
     
     COW_STATS.breaks.fetch_add(1, Ordering::Relaxed);
     
