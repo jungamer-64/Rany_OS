@@ -60,16 +60,16 @@ FAQ（簡易）
 
 Integration テストはカーネルターゲットと QEMU 上で実行する必要があります。以下の手順はリポジトリの推奨フローです：
 
-1. 公式入口（required suites を実行）:
+1. 公式入口（host純 tier）:
 
    ```bash
    cargo test
    ```
 
-2. カーネル系のみを個別実行:
+2. QEMU実 full-boot（PR required）:
 
    ```bash
-   cargo test -p qemu-tests -- --nocapture suite_kernel
+   cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
    ```
 
 3. 補助 E2E フロー（必要時のみ）:
@@ -79,4 +79,4 @@ Integration テストはカーネルターゲットと QEMU 上で実行する�
 
    - スクリプト側で必要なビルド/起動を実行し、QEMU の Serial 出力上にテストログを出力します。
 
-> 注: 現在の公式テスト入口は `cargo test`（`qemu-tests` 経由）です。補助 E2E スクリプトは詳細検証用の追加手順として利用してください。
+> 注: `cargo test` は host純のみを実行します。QEMU実は `qemu-tests` を明示実行してください。補助 E2E スクリプトは詳細検証用の追加手順として利用してください。

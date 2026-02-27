@@ -6,5 +6,5 @@
 pub mod log;
 
 // Note: IOVA bitmap benchmarks require full mm module dependencies.
-// For IOVA benchmarks, use the QEMU kernel suite:
-//   cargo test -p qemu-tests -- --nocapture suite_kernel
+// For runtime coverage on QEMU, use the full-boot required profile:
+//   cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture

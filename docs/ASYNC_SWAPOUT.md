@@ -118,7 +118,7 @@
 - `TOKEN_REFILL_PER_BATCH = 4`
 - `RESERVED_FILE_SLOTS = 128`
 
-この組合せはホストシミュレーションで 10 回の検証実行を行い、平均 `enq_success = 528`、平均 `processed = 528`（全成功）という良好な結果を示しました。詳細な再現検証は QEMU スイート実行ログ（`cargo test` および `target/qemu-logs`）を基準に確認してください。
+この組合せはホストシミュレーションで 10 回の検証実行を行い、平均 `enq_success = 528`、平均 `processed = 528`（全成功）という良好な結果を示しました。詳細な再現検証は QEMU full-boot 実行ログ（`cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture` と `target/qemu-logs`）を基準に確認してください。
 
 - レイテンシ重視（短時間で anon を積極的に解放したい）: `TOKEN_BUCKET_CAPACITY` を増やし、`TOKEN_REFILL_PER_BATCH` を小さめにする。
 - スループット重視（ファイル書き戻し優先）: `RESERVED_FILE_SLOTS` を増やし、`TOKEN_BUCKET_CAPACITY` を控えめにする。
@@ -127,7 +127,7 @@
 
 1. ベースラインを取得する（5–10分）
    - 概要: 現行パラメータの下で軽負荷→中負荷テストを実行し、メトリクスを収集します。
-   - 実行例: `cargo test -p qemu-tests -- --nocapture suite_kernel`
+   - 実行例: `cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture`
    - 収集対象: `queued_counts()`（総キュー長, fileキュー長）, `token_count()`（トークン残量）, `writeback_skipped`, `enqueue_failures`（QueueFull 発生回数）, ワーカの処理遅延
 
 2. 問題の初期判別と目安
@@ -150,12 +150,12 @@
 
 ### 実践コマンド例（Windows / PowerShell） 🔧
 
-- 全ての QEMU required suite を実行してログを取得:
-  - `cargo test`
+- full-boot QEMU required を実行してログを取得:
+  - `cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture`
 - 1分毎に簡易モニタを回してメトリクスをログに落とす（テスト中別セッションで実行する想定）:
   - powershell -Command "while ($true) { python - <<'PY'
 import time,subprocess,sys
-p=subprocess.run(['cargo','test','-p','qemu-tests','--','--nocapture','suite_kernel'],capture_output=True,text=True)
+p=subprocess.run(['cargo','test','-p','qemu-tests','fullboot_pr_required','--','--exact','--nocapture'],capture_output=True,text=True)
 print(p.stdout)
 time.sleep(60)
 PY
@@ -178,8 +178,8 @@ PY
 
 ### テストとベンチの実行方法
 
-- 単体テスト（軽量、CI向け）: `cargo test`（required suites が QEMU 上で実行されます）
-- カーネルスイート手動実行: `cargo test -p qemu-tests -- --nocapture suite_kernel`
+- 単体テスト（軽量、CI向け）: `cargo test`（host純）
+- QEMU実 full-boot（PR required）: `cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture`
 - モニタリング: `queued_counts()` と `token_count()` を使ってキュー長と anon トークン残量を監視できます（テスト/カーネル両方で対応しています）。
 
 ---

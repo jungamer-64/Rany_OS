@@ -628,7 +628,7 @@ pub fn wave7_bench_buffer_pool_2m_reuse_smoke() -> bool {
 }
 
 pub fn wave7_bench_buffer_pool_1g_reuse_smoke() -> bool {
-    // 1GiB buffers are too large for QEMU suite bump heaps. This smoke keeps
+    // 1GiB buffers are too large for QEMU full-boot bump heaps. This smoke keeps
     // deterministic control-plane coverage without issuing 1GiB allocations.
     buffer_pool_1g_clear();
     buffer_pool_1g_set_capacity(1);

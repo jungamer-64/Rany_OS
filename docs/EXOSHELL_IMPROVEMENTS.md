@@ -67,9 +67,8 @@ CI ワークフロー
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --all-targets -- -D warnings`
-- `cargo test`（公式入口: required suites を QEMU 実行）
-- `cargo test -p qemu-tests -- --nocapture suite_core`
-- `cargo test -p qemu-tests -- --nocapture suite_kernel`
+- `cargo test`（公式入口: host純）
+- `cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture`
 
 CI の audit ステップでは `serena_audit` / `codacy_cli_analyze` の CLI が利用可能であれば実行し、そうでない場合はスキップします。ローカルで同じチェックを実行するには、上の QEMU テストコマンドを使用してください。
 

@@ -176,7 +176,7 @@ enum PacketRefKind {
         offset: usize,
         len: usize,
     },
-    /// Test-only borrowed packet bytes that avoid heap allocations in long QEMU suites.
+    /// Test-only borrowed packet bytes that avoid heap allocations in long QEMU full-boot runs.
     #[cfg(any(test, feature = "qemu-test-export"))]
     BorrowedTest {
         ptr: NonNull<u8>,

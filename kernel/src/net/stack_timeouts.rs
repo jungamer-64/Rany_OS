@@ -425,7 +425,7 @@ impl TimeWaitTimer {
 // Tests
 // ============================================================================
 
-// Export the test helpers when building the QEMU suites so wrapper functions can
+// Export the test helpers when building QEMU full-boot runtime tests so wrapper functions can
 // call them from `kernel/src/net/qemu_tests.rs`.  Other modules already use the
 // `qemu-test-export` feature flag.
 #[cfg(any(test, feature = "qemu-test-export"))]

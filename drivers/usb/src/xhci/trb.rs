@@ -12,7 +12,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use kernel_api::types::DmaBuffer;
 
 use crate::{SetupPacket, SlotId, TransferStatus};

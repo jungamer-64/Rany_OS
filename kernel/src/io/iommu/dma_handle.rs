@@ -617,37 +617,15 @@ impl<T> DmaHandle<T> {
     /// Internal lazy unmap implementation using quarantine
     #[cfg(feature = "async_unmap_default")]
     fn unmap_lazy_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
-        use crate::io::iommu::registry::get_iommu_driver;
-
-        let Some(driver) = get_iommu_driver() else {
-            log::warn!("[DmaHandle] Lazy unmap failed: no IOMMU driver, falling back to sync");
-            return self.unmap_sync_internal();
-        };
-
-        let Some(domain) = driver.get_domain(self.domain_id) else {
-            log::warn!(
-                "[DmaHandle] Lazy unmap failed: domain {} not found, falling back to sync",
-                self.domain_id
-            );
-            return self.unmap_sync_internal();
-        };
-
-        // Try to use quarantine for deferred invalidation
-        match domain.quarantine_queue().try_enqueue(self.iova, self.size) {
-            Ok(()) => {
-                // Successfully queued for lazy invalidation
-                // Mark in registry as unmapped (tombstone)
-                let _ = domain.unregister_dma_mapping(self.iova);
-                Ok(self
-                    .take_rref()
-                    .expect("DmaHandle must have rref for unmap"))
-            }
-            Err(_) => {
-                // Quarantine full, fall back to sync
-                log::debug!("[DmaHandle] Quarantine full, falling back to sync unmap");
-                self.unmap_sync_internal()
-            }
-        }
+        // SECURITY: The current implementation of lazy unmap is insecure because it
+        // returns the RRef to the user IMMEDIATELY, before the IOTLB has been invalidated.
+        // This allows a device to potentially access the memory while the user thinks
+        // it is safe to reuse for other purposes.
+        //
+        // For safety, we fall back to synchronous unmap until a proper async API
+        // (returning a QuarantineTicket) is implemented for all users.
+        log::debug!("[DmaHandle] Lazy unmap requested, but falling back to sync for security");
+        self.unmap_sync_internal()
     }
 
     /// Async variant of `unmap` for device-scoped mappings.

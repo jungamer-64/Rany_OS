@@ -131,6 +131,20 @@ impl InvalidationQueueEntry {
         Self::device_tlb_invalidate(source_id, iova, false)
     }
 
+    /// Create a Range-selective Device-TLB Invalidation
+    pub fn device_tlb_invalidate_range(source_id: u16, iova: u64, am: u8) -> Self {
+        if am == 0 {
+            Self::device_tlb_invalidate_page(source_id, iova)
+        } else {
+            // PCIe ATS range encoding: S=1, and the least-significant zero bit 
+            // in address[63:12] indicates the size (2^(N+1) pages).
+            // For 2^am pages, N = am - 1.
+            let mask = (1u64 << (am - 1)) - 1;
+            let addr = (iova & !((1u64 << am) - 1)) | mask;
+            Self::device_tlb_invalidate(source_id, addr, true)
+        }
+    }
+
     /// Create a PASID Cache Invalidation descriptor (VT-d Spec §6.5.2.7)
     /// Granularity: 1=global, 2=domain, 3=device-selective
     pub fn pasid_cache_invalidate(granularity: u8, domain_id: u16, pasid: u32) -> Self {

@@ -356,11 +356,14 @@ impl FileSystem {
 ## テスト
 
 ```bash
-# 公式入口（required suites）
+# 公式入口（host純 tier）
 cargo test
 
-# ファイルシステム系スイートのみ実行
-cargo test -p qemu-tests -- --nocapture suite_fs
+# Full-boot QEMU（PR required）
+cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
+
+# Storage profile のみ実行
+QEMU_TEST_PROFILE_ONLY=storage cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 ```
 
 ## ベンチマーク

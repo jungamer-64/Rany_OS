@@ -8,7 +8,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Host-side QEMU suite orchestrator"
+description = "Host-side full-boot QEMU orchestrator"
 
 [dependencies]
 qemu_runner = { path = "../tools/qemu_runner" }

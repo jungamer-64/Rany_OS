@@ -539,6 +539,17 @@ extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) ->
         return AbiErrorCode::InvalidParam as i32;
     }
 
+    // Security: Prevent mapping of protected physical regions (Kernel, IOMMU, APIC, etc.)
+    // This is critical for preventing malicious or buggy drivers from corrupting the system.
+    if crate::security::dma::range_overlaps_protected(paddr, size as u64) {
+        log::error!(
+            "[KAPI][SECURITY] Driver attempted to map protected MMIO range: {:#x}-{:#x}",
+            paddr,
+            paddr + size as u64
+        );
+        return AbiErrorCode::PermissionDenied as i32;
+    }
+
     let virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(paddr)).as_u64();
     unsafe {
         *out = AbiMmioHandle { base: virt, size };

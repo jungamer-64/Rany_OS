@@ -8,7 +8,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "QEMU suite build/runner for QEMU-first test orchestration"
+description = "QEMU full-boot build/runner for 2-layer test orchestration"
 
 [lib]
 name = "qemu_runner"

@@ -1,7 +1,7 @@
 //! QEMU-exported NET core stack deterministic checks.
 //!
 //! This module delegates to existing NET core `tests::test_*` implementations
-//! so host `#[test_case]` and QEMU suites stay aligned.
+//! so host `#[test_case]` and QEMU full-boot runtime tests stay aligned.
 
 use super::{adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, stack_timeouts, ipv6, ndp, tcp};
 use super::{dhcp, dns, mdns, igmp, driver_bridge};
@@ -29,7 +29,7 @@ pub fn adaptive_polling_network_stats_smoke() -> bool {
 }
 
 pub fn mempool_mempool_poisoned_alloc_fails_smoke() -> bool {
-    // QEMU suite runs before heap-backed exchange allocator setup in some paths.
+    // QEMU full-boot runs before heap-backed exchange allocator setup in some paths.
     // Keep this smoke deterministic and heap-free while still validating mempool
     // object construction and conservative zero-state stats access.
     let pool = mempool::Mempool::new(1);
@@ -325,7 +325,7 @@ pub fn stack_ndp_pending_queue_drain_for_preserves_order_smoke() -> bool {
 
 // The following cases exercise the `stack_timeouts` helpers which are used by
 // TCP/UDP internal timers.  Host tests use `#[test_case]` but we need wrappers
-// in the QEMU suite as well so they are tracked by the kernel runner.
+// in the QEMU full-boot runtime path as well so they are tracked by the kernel runner.
 pub fn stack_timeout_wheel_basic_smoke() -> bool {
     run_case!(stack_timeouts::tests::test_timeout_wheel_basic)
 }

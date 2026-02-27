@@ -2552,17 +2552,20 @@ test_2mb_allocation_comparison()
 
 ### ベンチマーク実行方法
 
-IOVA Bitmap ベンチマークは QEMU スイート（kernel）経由で実行します：
+IOVA Bitmap ベンチマークは QEMU full-boot 経由で実行します：
 
 ```bash
-# 公式入口（required suites）
+# 公式入口（host純）
 cargo test
 
-# カーネルスイートのみ実行
-cargo test -p qemu-tests -- --nocapture suite_kernel
+# Full-boot QEMU（PR required）
+cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
+
+# Storage profile のみ実行（必要時）
+QEMU_TEST_PROFILE_ONLY=storage cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 ```
 
-観測対象ケース名（`suite_kernel` 内で実行されるテストロジック）:
+観測対象ケース名（runtime dispatcher 経由の full-boot テストロジック）:
 
 - `test_bitmap_throughput_comparison`
 - `test_allocator_simple_backend_comparison`

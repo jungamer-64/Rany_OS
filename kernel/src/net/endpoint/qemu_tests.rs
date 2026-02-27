@@ -1,7 +1,7 @@
 //! QEMU-exported NET endpoint deterministic checks.
 //!
 //! This module delegates to existing endpoint test implementations to keep
-//! behavior aligned between `#[cfg_attr(test, test_case)]` and QEMU suite execution.
+//! behavior aligned between `#[cfg_attr(test, test_case)]` and QEMU full-boot execution.
 
 use super::{
     congestion, flow_control, futures, handler, inner, retransmit, segment, socket, tcb, tests,

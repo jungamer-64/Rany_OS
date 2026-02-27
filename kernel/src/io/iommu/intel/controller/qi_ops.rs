@@ -85,8 +85,19 @@ pub trait InvalidationOps {
     /// Submit a global IEC invalidation via queued invalidation
     fn qi_invalidate_iec_global(&self) -> Result<(), IommuError>;
 
+    /// Submit an indexed IEC invalidation via queued invalidation
+    fn qi_invalidate_iec_indexed(&self, index: u16) -> Result<(), IommuError>;
+
     /// Submit a Device-TLB invalidation via queued invalidation
     fn qi_invalidate_device_tlb_all(&self, source_id: u16) -> Result<(), IommuError>;
+
+    /// Submit a range-selective Device-TLB invalidation
+    fn qi_invalidate_device_tlb_range(
+        &self,
+        source_id: u16,
+        iova: u64,
+        am: u8,
+    ) -> Result<(), IommuError>;
 
     /// Submit a page-selective Device-TLB invalidation
     fn qi_invalidate_device_tlb_page(
@@ -185,6 +196,17 @@ impl InvalidationOps for IommuController {
     #[inline]
     fn qi_invalidate_device_tlb_all(&self, source_id: u16) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::device_tlb_invalidate_all(source_id);
+        self.submit_invalidation(entry)
+    }
+
+    #[inline]
+    fn qi_invalidate_device_tlb_range(
+        &self,
+        source_id: u16,
+        iova: u64,
+        am: u8,
+    ) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::device_tlb_invalidate_range(source_id, iova, am);
         self.submit_invalidation(entry)
     }
 
@@ -351,7 +373,7 @@ impl IommuController {
             }
 
             if any_ats {
-                let _ = self.invalidate_device_tlbs(domain_id, Some(start_iova));
+                let _ = self.invalidate_device_tlbs(domain_id, Some(start_iova), Some(am));
             }
         } else {
             unsafe { self.invalidate_iotlb_direct(domain_id); }
@@ -359,7 +381,12 @@ impl IommuController {
         Ok(())
     }
 
-    fn invalidate_device_tlbs(&self, domain_id: u16, iova: Option<u64>) -> Result<(), IommuError> {
+    fn invalidate_device_tlbs(
+        &self,
+        domain_id: u16,
+        iova: Option<u64>,
+        am: Option<u8>,
+    ) -> Result<(), IommuError> {
         let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
         let ats_devices = self.ats_enabled_devices.lock().map_err(|_| IommuError::Poisoned)?;
         
@@ -367,10 +394,16 @@ impl IommuController {
             if let Some(&did) = device_domains.get(device) {
                 if did == domain_id {
                     let source_id = device.requester_id();
-                    if let Some(iova_val) = iova {
-                        let _ = self.qi_invalidate_device_tlb_page(source_id, iova_val);
-                    } else {
-                        let _ = self.qi_invalidate_device_tlb_all(source_id);
+                    match (iova, am) {
+                        (Some(iova_val), Some(am_val)) => {
+                            let _ = self.qi_invalidate_device_tlb_range(source_id, iova_val, am_val);
+                        }
+                        (Some(iova_val), None) => {
+                            let _ = self.qi_invalidate_device_tlb_page(source_id, iova_val);
+                        }
+                        _ => {
+                            let _ = self.qi_invalidate_device_tlb_all(source_id);
+                        }
                     }
                 }
             }
@@ -389,7 +422,7 @@ impl IommuController {
     fn invalidate_domain_nosync(&self, domain_id: u16) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_domain(domain_id)?;
-            let _ = self.invalidate_device_tlbs(domain_id, None);
+            let _ = self.invalidate_device_tlbs(domain_id, None, None);
         } else {
             unsafe { self.invalidate_iotlb_direct(domain_id) };
         }
@@ -435,7 +468,7 @@ impl IommuController {
         Ok(())
     }
 
-    fn invalidate_iec(&self, global: bool, index: u16) -> Result<(), IommuError> {
+    pub(crate) fn invalidate_iec(&self, global: bool, index: u16) -> Result<(), IommuError> {
         self.invalidate_iec_nosync(global, index)?;
         if self.is_queued_invalidation_enabled() {
             self.qi_wait_sync()?;

@@ -178,15 +178,18 @@ pub fn range_overlaps_protected(start: u64, size: u64) -> bool {
     let end = start.saturating_add(size);
 
     // 1. Check bitmap for pages in range
-    let mut current = (start / 4096) * 4096;
-    while current < end && current < (PROTECTED_BITMAP_PAGES as u64 * 4096) {
-        if is_page_protected(current) {
-            return true;
-        }
-        if let Some(next) = current.checked_add(4096) {
-            current = next;
-        } else {
-            break;
+    let start_page = (start / 4096) as usize;
+    let end_page = ((end.saturating_add(4095)) / 4096) as usize;
+    
+    // Limit check to what the bitmap covers
+    let check_end_page = end_page.min(PROTECTED_BITMAP_PAGES);
+    
+    if start_page < check_end_page {
+        let bitmap = get_protected_bitmap().lock();
+        for page_idx in start_page..check_end_page {
+            if (bitmap[page_idx / 8] & (1 << (page_idx % 8))) != 0 {
+                return true;
+            }
         }
     }
 

@@ -17,15 +17,15 @@ Benchmarks included:
 
 ## IOVA Bitmap Benchmarks
 
-IOVA Bitmap performance tests are migrated into the QEMU suite flow.
-Run the kernel suite through the official QEMU-first entrypoint:
+IOVA Bitmap performance tests are migrated into the QEMU full-boot flow.
+Run through the official 2-layer entrypoints:
 
 ```bash
-# Run all required suites
+# Run host pure tier
 cargo test
 
-# Run only the kernel suite
-cargo test -p qemu-tests -- --nocapture suite_kernel
+# Run full-boot required tier
+cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 ```
 
 These tests compare:

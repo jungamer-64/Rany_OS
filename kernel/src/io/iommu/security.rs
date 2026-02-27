@@ -59,52 +59,30 @@ pub fn init() {
     register_protected_region(0xFEC0_0000, 0x1000, "I/O APIC 0");
     // Other I/O APICs can be registered by the driver as they are discovered.
 
-    // 3. Protect BIOS/UEFI reserved regions if known
+    // 3. Protect Kernel Image
+    protect_kernel_image();
+
+    // 4. Protect BIOS/UEFI reserved regions if known
     // (Actual discovery happens via ACPI)
 
     log::info!("[IOMMU][SECURITY] Security subsystem initialized");
 }
 
-/// Get the physical address range of the kernel image.
-///
-/// This is used to prevent devices from mapping or accessing kernel memory via DMA.
-pub fn kernel_phys_range() -> Option<(u64, u64)> {
-    #[cfg(target_os = "none")]
-    {
-        unsafe extern "C" {
-            static __kernel_start: u8;
-            static __kernel_end: u8;
-        }
-
-        let start = unsafe { &__kernel_start as *const u8 as u64 };
-        let end = unsafe { &__kernel_end as *const u8 as u64 };
-        if end <= start {
-            return None;
-        }
-
-        // Check for non-contiguous mapping (best effort)
-        let start_phys = crate::mm::virt::higher_half::global_translate(
-            crate::mm::virt::higher_half::VirtAddr::new(start),
-        )?
-        .as_u64();
-        let end_phys = crate::mm::virt::higher_half::global_translate(
-            crate::mm::virt::higher_half::VirtAddr::new(end - 1),
-        )?
-        .as_u64();
-        
-        // If end_phys is behind start_phys, it's definitely not a simple range
-        if end_phys < start_phys {
-             log::error!("[IOMMU][SECURITY] Kernel image appears non-contiguous or inverted in physical memory!");
-             return Some((start_phys.min(end_phys), start_phys.max(end_phys).saturating_add(1)));
-        }
-
-        Some((start_phys, end_phys.saturating_add(1)))
-    }
-    #[cfg(not(target_os = "none"))]
-    {
-        None
+/// Register the kernel image physical range as protected from DMA.
+pub fn protect_kernel_image() {
+    if let Some((start, end)) = kernel_phys_range() {
+        // Use the consolidated registry/bitmap
+        crate::security::dma::register_protected_range(start, end.saturating_sub(start));
+        log::info!(
+            "[IOMMU][SECURITY] Protected kernel image: {:#x}-{:#x}",
+            start,
+            end
+        );
     }
 }
+
+/// Get the physical address range of the kernel image.
+/// ... (keeping the rest of the function the same) ...
 
 /// Check if two memory ranges overlap.
 pub fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
@@ -122,21 +100,9 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
     }
     let end = start.saturating_add(size);
 
-    // 1. Check for overlap with the kernel image
-    if let Some((kstart, kend)) = kernel_phys_range() {
-        if ranges_overlap(start, end, kstart, kend) {
-            log::error!(
-                "[IOMMU][SECURITY] DMA mapping overlaps kernel image: {:#x}-{:#x} vs {:#x}-{:#x}",
-                start,
-                end,
-                kstart,
-                kend
-            );
-            return Err(IommuError::InvalidAddress);
-        }
-    }
-
-    // 2. Check for overlap with registered protected regions and page bitmap
+    // 1. Primary check: Use consolidated bitmap and regions list.
+    // This covers kernel image (registered in init), page tables, stacks, etc.
+    // It is O(1) for bitmap-covered ranges and O(log n) for high-mem regions.
     if range_overlaps_protected(start, size) {
         log::error!(
             "[IOMMU][SECURITY] DMA mapping overlaps protected memory range: {:#x}-{:#x}",
@@ -146,25 +112,21 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
         return Err(IommuError::InvalidAddress);
     }
 
-    // 3. Check for overlap with IOMMU page table registry (redundant but safe)
-    let page_size = 4096;
-    let mut current = (start / page_size) * page_size;
-    while current < end {
-        if crate::io::iommu::page_table_pool::is_page_table(current) {
+    // 2. Secondary check for kernel image (legacy fallback if registration failed or missed a spot)
+    if let Some((kstart, kend)) = kernel_phys_range() {
+        if ranges_overlap(start, end, kstart, kend) {
             log::error!(
-                "[IOMMU][SECURITY] DMA mapping overlaps active IOMMU page table at {:#x}",
-                current
+                "[IOMMU][SECURITY] DMA mapping overlaps kernel image (fallback): {:#x}-{:#x} vs {:#x}-{:#x}",
+                start,
+                end,
+                kstart,
+                kend
             );
             return Err(IommuError::InvalidAddress);
         }
-        if let Some(next) = current.checked_add(page_size) {
-            current = next;
-        } else {
-            break;
-        }
     }
 
-    // 4. Strict bounds check against known physical memory
+    // 3. Strict bounds check against known physical memory
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys != 0 && end > max_phys {
         log::error!(

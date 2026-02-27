@@ -653,7 +653,7 @@ pub fn wave7_bench_buffer_pool_2m_reuse_smoke() -> bool {
 }
 
 pub fn wave7_bench_buffer_pool_1g_reuse_smoke() -> bool {
-    // 1GiB実バッファ確保はQEMU suite heap制約に対して過大なため、
+    // 1GiB実バッファ確保はQEMU full-boot heap制約に対して過大なため、
     // pending監視では制御面（capacity/stats/reset）の決定性のみを検証する。
     buffer_pool_1g_clear();
     buffer_pool_1g_set_capacity(1);

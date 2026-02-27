@@ -261,6 +261,16 @@ impl KernelStack {
     }
 }
 
+impl Drop for KernelStack {
+    fn drop(&mut self) {
+        let virt_start = self.memory.as_ptr() as u64;
+        let size = Self::SIZE;
+        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(virt_start)) {
+            crate::security::dma::unregister_protected_range(phys_start.as_u64(), size as u64);
+        }
+    }
+}
+
 impl Default for KernelStack {
     fn default() -> Self {
         Self::new().expect("Failed to allocate kernel stack")
