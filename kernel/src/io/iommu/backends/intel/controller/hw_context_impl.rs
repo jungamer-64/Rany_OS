@@ -63,13 +63,13 @@ impl<'a> Future for InvalidationWaiter<'a> {
             Err(e) => return Poll::Ready(Err(e)),
             Ok(()) => {
                 let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
-                if status == self.expected_data {
+                if status.wrapping_sub(self.expected_data) < (1u32 << 31) {
                     return Poll::Ready(Ok(()));
                 }
                 self.controller.pending_waiters.register(cx.waker());
                 // Double check after registration to avoid lost wakeups
                 let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
-                if status == self.expected_data {
+                if status.wrapping_sub(self.expected_data) < (1u32 << 31) {
                     return Poll::Ready(Ok(()));
                 }
                 Poll::Pending

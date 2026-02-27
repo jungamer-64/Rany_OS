@@ -90,7 +90,9 @@ fn map_unity_segments(
             continue;
         }
         let size = seg_end - seg_start;
-        match domain.map(seg_start, seg_start, size, read, write) {
+        // Security: Unity map (IVMD) regions are trusted system regions.
+        // We use map_privileged to allow mapping BIOS-reserved memory.
+        match unsafe { domain.map_privileged(seg_start, seg_start, size, read, write) } {
             Ok(()) | Err(IommuError::AlreadyMapped) => {}
             Err(err) => return Err(err),
         }

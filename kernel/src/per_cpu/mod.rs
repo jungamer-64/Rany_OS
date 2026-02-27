@@ -22,7 +22,7 @@ use crate::mm::numa::topology::MAX_NUMA_NODES;
 use crate::mm::remote_free::RemoteFreeEntry;
 // Buddy Allocator Cache
 use crate::mm::phys::buddy_allocator::PerCpuFrameCache;
-use crate::sync::IrqMutex;
+use crate::sync::poison_lock::IrqPoisonLock;
 
 /// Cache entry for device to domain mapping
 mod data;
@@ -567,7 +567,7 @@ pub struct PerCpuCold {
     /// Per-CPU RCU State
     pub rcu_state: crate::mm::sync::rcu::PerCpuRcuState,
     /// Per-CPU Frame Cache
-    pub frame_cache: IrqMutex<PerCpuFrameCache>,
+    pub frame_cache: IrqPoisonLock<PerCpuFrameCache>,
 }
 
 impl PerCpuCold {
@@ -584,7 +584,7 @@ impl PerCpuCold {
             local_numa_node: NumaNodeId::new(0),
             remote_free_batch: RemoteFreeBatchBuffer::new(),
             rcu_state: crate::mm::sync::rcu::PerCpuRcuState::new(),
-            frame_cache: IrqMutex::new(PerCpuFrameCache::new(cpu_id)),
+            frame_cache: IrqPoisonLock::new(PerCpuFrameCache::new(cpu_id)),
         }
     }
 
@@ -667,7 +667,7 @@ pub struct PerCpuData {
     /// Per-CPU RCU State (Phase 9)
     pub rcu_state: crate::mm::sync::rcu::PerCpuRcuState,
     /// Per-CPU Frame Cache (Lock-Free Memory Allocator Phase 1)
-    pub frame_cache: IrqMutex<PerCpuFrameCache>,
+    pub frame_cache: IrqPoisonLock<PerCpuFrameCache>,
 }
 
 impl PerCpuData {
@@ -692,7 +692,7 @@ impl PerCpuData {
             // Remote free batch buffer for cross-CPU memory reclamation
             remote_free_batch: RemoteFreeBatchBuffer::new(),
             rcu_state: crate::mm::sync::rcu::PerCpuRcuState::new(),
-            frame_cache: IrqMutex::new(PerCpuFrameCache::new(cpu_id)),
+            frame_cache: IrqPoisonLock::new(PerCpuFrameCache::new(cpu_id)),
         }
     }
 

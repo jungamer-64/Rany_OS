@@ -74,6 +74,51 @@ pub fn init() {
     log::info!("[IOMMU][SECURITY] Security subsystem initialized");
 }
 
+/// Protect BIOS/UEFI reserved memory regions from DMA access.
+///
+/// This iterates over the system memory map and registers all non-RAM regions
+/// (Reserved, Runtime Services, ACPI NVS, etc.) as protected.
+pub fn protect_bios_reserved_regions(boot_info: &boot_proto::ExoBootInfo) {
+    let mmap = &boot_info.memory_map;
+    if mmap.entries.is_null() || mmap.count == 0 {
+        return;
+    }
+
+    let count = mmap.count.min(2048) as usize; // Sanity limit
+    let descriptors = unsafe { core::slice::from_raw_parts(mmap.entries, count) };
+
+    let mut protected_count = 0;
+    let mut protected_bytes = 0u64;
+
+    for desc in descriptors {
+        let ty = desc.r#type;
+        // Skip types that are considered usable RAM or will be reclaimed as such:
+        // 7: EfiConventionalMemory
+        // 3: EfiBootServicesCode
+        // 4: EfiBootServicesData
+        // 9: EfiACPIReclaimMemory
+        if ty == 7 || ty == 3 || ty == 4 || ty == 9 {
+            continue;
+        }
+
+        let start = desc.phys_start;
+        let size = desc.page_count.saturating_mul(4096);
+        if size > 0 {
+            crate::security::dma::register_protected_range(start, size);
+            protected_count += 1;
+            protected_bytes = protected_bytes.saturating_add(size);
+        }
+    }
+
+    if protected_count > 0 {
+        log::info!(
+            "[IOMMU][SECURITY] Protected {} BIOS/UEFI reserved regions ({} KB total)",
+            protected_count,
+            protected_bytes / 1024
+        );
+    }
+}
+
 /// Register the kernel image physical range as protected from DMA.
 pub fn protect_kernel_image() {
     if let Some((start, end)) = kernel_phys_range() {

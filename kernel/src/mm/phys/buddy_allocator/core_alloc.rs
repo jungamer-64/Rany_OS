@@ -1,4 +1,5 @@
 use super::*;
+use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
 
 
 mod trait_impl;
@@ -657,5 +658,19 @@ impl BuddyFrameAllocator {
 
             block_idx += 2;
         }
+    }
+}
+
+impl TypeIdHash for BuddyFrameAllocator {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"BuddyFrameAllocator:v1:free_bits,free_summary,order_free_counts")
+    }
+
+    fn type_name() -> &'static str {
+        "BuddyFrameAllocator"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
     }
 }

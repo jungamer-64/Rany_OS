@@ -28,33 +28,20 @@ fn align_up(value: u64, align: usize) -> u64 {
     crate::util::align_up_u64(value, align as u64)
 }
 
-fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
-    let size = end.saturating_sub(start);
-    if size == 0 {
-        return Ok(());
-    }
-    crate::io::iommu::runtime::security::validate_dma_region(start, size).map_err(|_| IommuError::RmrrMapFailed)?;
-    Ok(())
-}
-
 fn try_map_rmrr_region(
     domain: &IommuDomain,
-    device: DeviceId,
+    _device: DeviceId,
     start: u64,
     size: u64,
 ) -> Result<(), IommuError> {
-    if let Err(e) = validate_rmrr_region(start, start + size) {
-        log::error!(
-            "[IOMMU][CRITICAL] RMRR validation failed for {:?}: {:#x}-{:#x}, error: {:?}",
-            device, start, start + size, e
-        );
-        return Err(IommuError::RmrrMapFailed);
-    }
-
-    match domain.map(start, start, size, true, true) {
+    // Security: RMRR regions are parsed from trusted ACPI tables.
+    // We use map_privileged here because these regions are often located in
+    // BIOS-reserved memory that is protected from general DMA in the
+    // global security monitor.
+    match unsafe { domain.map_privileged(start, start, size, true, true) } {
         Ok(()) => Ok(()),
         Err(IommuError::AlreadyMapped) => Ok(()),
-        Err(_err) => Err(IommuError::RmrrMapFailed)
+        Err(_err) => Err(IommuError::RmrrMapFailed),
     }
 }
 

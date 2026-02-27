@@ -623,7 +623,47 @@ impl IommuDomain {
         write: bool,
     ) -> Result<(), IommuError> {
         self.validate_map_args(iova, phys, size)?;
+        self.map_internal(iova, phys, size, read, write)
+    }
 
+    /// Map a physical range to an IOVA with permissions, bypassing security checks.
+    ///
+    /// # Safety
+    /// This should ONLY be used for trusted system regions like RMRR or IVMD
+    /// that are parsed from ACPI and must be mapped for device functionality.
+    pub unsafe fn map_privileged(
+        &self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(IommuError::Poisoned);
+        }
+
+        // Skip validate_map_args which contains the protected region check.
+        // Still perform basic alignment and width checks for stability.
+        if (iova | phys | size) & (crate::mm::types::PAGE_SIZE_4K as u64 - 1) != 0 {
+            return Err(IommuError::InvalidAlignment);
+        }
+        if !self.within_addr_width(iova, size) || !self.within_addr_width(phys, size) {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        self.map_internal(iova, phys, size, read, write)
+    }
+
+    /// Internal mapping implementation (shared by map and map_privileged)
+    fn map_internal(
+        &self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
         let (start_shard, end_shard) = self.shard_range(iova, size)?;
         let mut guards = self.lock_shards(start_shard, end_shard)?;
 
@@ -642,8 +682,6 @@ impl IommuDomain {
             domain_id_placeholder: self.id,
         };
         for guard in guards.iter_mut() {
-            // Note: insert may fail if slab is full (SLAB_CAPACITY exhausted).
-            // In production, consider returning IommuError::OutOfResources.
             let _ = guard.mappings.insert(mapping.clone());
         }
 

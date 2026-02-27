@@ -15,6 +15,7 @@ use super::frame_allocator::{
     frame_allocator_stats,
 };
 use super::buddy_allocator::buddy_allocator_stats;
+use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
 
 /// フレームアロケータの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +143,20 @@ impl UnifiedFrameAllocator {
             freelist_total: fl_total,
             freelist_free: fl_free,
         }
+    }
+}
+
+impl TypeIdHash for UnifiedFrameAllocator {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"UnifiedFrameAllocator:v1:alloc_4k,alloc_2m,alloc_1g,dealloc_4k,dealloc_2m,dealloc_1g")
+    }
+
+    fn type_name() -> &'static str {
+        "UnifiedFrameAllocator"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
     }
 }
 

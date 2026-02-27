@@ -217,7 +217,7 @@ pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
     
     // Call scope to drop cache lock before potentially locking buddy
     {
-        let mut cache = per_cpu.frame_cache.lock();
+        let mut cache = per_cpu.frame_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(addr) = cache.pop() {
             // キャッシュヒット
             return Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) });
@@ -231,7 +231,7 @@ pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
     
     // 再度キャッシュロックを取得してリフィル
     {
-        let mut cache = per_cpu.frame_cache.lock();
+        let mut cache = per_cpu.frame_cache.lock().unwrap_or_else(|e| e.into_inner());
         // リフィル
         cache.refill(&mut buddy);
         
@@ -255,7 +255,7 @@ pub fn init_buddy_front_layer_for_cpu(_cpu_id: usize) {
 /// フロントレイヤー経由で4KiBフレームを解放
 pub fn buddy_dealloc_frame_fast(cpu_id: usize, frame: PhysFrame<Size4KiB>) {
     let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(cpu_id) };
-    let mut cache = per_cpu.frame_cache.lock();
+    let mut cache = per_cpu.frame_cache.lock().unwrap_or_else(|e| e.into_inner());
     
     // キャッシュへの追加を試行
     if cache.push(frame.start_address().as_u64()) {
@@ -286,7 +286,7 @@ pub fn buddy_front_layer_stats() -> BuddyFrontLayerStats {
     for i in 0..crate::per_cpu::MAX_CPUS {
         if crate::per_cpu::is_cpu_online(i) {
              let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(i) };
-             let cache = per_cpu.frame_cache.lock();
+             let cache = per_cpu.frame_cache.lock().unwrap_or_else(|e| e.into_inner());
              // ヒット数等を合算
              total_hits += cache.cache_hits as usize;
              total_misses += cache.cache_misses as usize;

@@ -17,9 +17,6 @@ use crate::io::iommu::types::{DeviceId, IommuError, IommuDomainType};
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
 
-#[cfg(not(test))]
-use crate::io::iommu::runtime::groups::{IOMMU_GROUP_MANAGER, IommuGroupManager};
-
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
 use super::iova::IovaManager;

@@ -249,6 +249,9 @@ pub struct InvalidationQueue {
     status_virt: usize,
     /// Wait status physical address (descriptor writes here)
     status_phys: u64,
+    /// Current monotonically increasing sequence number for wait descriptors.
+    /// Used instead of `tail` to prevent race conditions and wrap-around issues.
+    next_wait_seq: u32,
     /// Runtime stats for queue pressure/latency
     stats: QiStats,
 }
@@ -311,6 +314,7 @@ impl InvalidationQueue {
             cached_head: 0,
             status_virt,
             status_phys,
+            next_wait_seq: 1, // Start from 1
             stats: QiStats::default(),
         })
     }
@@ -399,27 +403,35 @@ impl InvalidationQueue {
         self.tail = (self.tail + 1) % self.size;
     }
 
-    /// Submit a wait descriptor and return the status address
-    pub fn submit_wait(&mut self) -> usize {
-        // Use current tail as unique status data
-        let status_data = (self.tail & 0xFFFFFFFF) as u32;
-        let entry = InvalidationQueueEntry::wait(self.status_phys, status_data, false, true);
+    /// Submit a wait descriptor and return the status address and expected sequence.
+    pub fn submit_wait(&mut self) -> (usize, u32) {
+        let seq = self.next_wait_seq;
+        self.next_wait_seq = self.next_wait_seq.wrapping_add(1);
+        let entry = InvalidationQueueEntry::wait(self.status_phys, seq, false, true);
         self.submit(entry);
-        self.status_virt
+        (self.status_virt, seq)
     }
 
-    /// Build a wait descriptor without submitting it
-    pub fn wait_entry(&self) -> InvalidationQueueEntry {
-        let status_data = (self.tail & 0xFFFFFFFF) as u32;
-        InvalidationQueueEntry::wait(self.status_phys, status_data, false, true)
+    /// Build a wait descriptor without submitting it.
+    ///
+    /// Returns (entry, expected_seq).
+    /// Advances the internal sequence number.
+    pub fn wait_entry(&mut self) -> (InvalidationQueueEntry, u32) {
+        let seq = self.next_wait_seq;
+        self.next_wait_seq = self.next_wait_seq.wrapping_add(1);
+        (InvalidationQueueEntry::wait(self.status_phys, seq, false, true), seq)
     }
 
-    /// Check if a wait has completed (status address updated)
+    /// Check if a wait has completed (status address updated).
+    ///
+    /// Uses monotonic comparison to handle concurrent requests and wrap-around.
     pub fn check_wait_complete(&self, expected: u32) -> bool {
         let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
-        status == expected
+        // Use wrap-around safe comparison (distance in u32 space)
+        status.wrapping_sub(expected) < (1u32 << 31)
     }
 }
+
 
 /// Batched Invalidation for efficient QI usage
 ///

@@ -44,12 +44,13 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::sync::IrqMutex;
+use crate::sync::poison_lock::IrqPoisonLock;
 use crate::mm::bitmap::HugePageBitmap;
 use crate::mm::cache::magazine::{Magazine, DEFAULT_MAGAZINE_CAPACITY};
 use crate::mm::cache::arena::{PerArenaDetail, ArenaOwnership, MAX_WORDS_PER_ARENA};
 use crate::mm::remote_free::RemoteFreeRing;
 use super::frame_magazine::{SubFrameMagazine, LocalFreeWordStack};
+use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
 
 // ============================================================================
 // Constants
@@ -156,7 +157,7 @@ pub struct PerCpuFastMagazine {
     /// CPU ID for this magazine set
     pub cpu_id: usize,
     /// Magazines indexed by size class (4KB, 2MB, 1GB)
-    magazines: [IrqMutex<FastMagazine>; MAGAZINE_SIZE_CLASSES],
+    magazines: [IrqPoisonLock<FastMagazine>; MAGAZINE_SIZE_CLASSES],
     /// Per-CPU hint for 4KB allocation (word index)
     pub hint_4k: AtomicUsize,
     /// Per-CPU hint for 2MB allocation (block index)
@@ -170,15 +171,15 @@ pub struct PerCpuFastMagazine {
     /// End of this CPU's preferred arena (2MB block index, exclusive)
     pub arena_end_2m: usize,
     /// Per-CPU free word stack for O(1) allocation
-    pub free_word_stack: IrqMutex<LocalFreeWordStack>,
+    pub free_word_stack: IrqPoisonLock<LocalFreeWordStack>,
     /// Per-CPU free page counter delta
     pub free_count_delta_4k: AtomicI64,
     /// Remote free ring: receives frees from other CPUs
     pub remote_free_ring: RemoteFreeRing,
     /// Sub-magazine for claimed word optimization
-    pub sub_magazine_4k: IrqMutex<SubFrameMagazine>,
+    pub sub_magazine_4k: IrqPoisonLock<SubFrameMagazine>,
     /// Single-writer arena detail
-    pub arena_detail: IrqMutex<Option<PerArenaDetail>>,
+    pub arena_detail: IrqPoisonLock<Option<PerArenaDetail>>,
     /// Single-writer mode enabled flag
     pub single_writer_enabled: AtomicBool,
 }
@@ -189,9 +190,9 @@ impl PerCpuFastMagazine {
         Self {
             cpu_id: 0,
             magazines: [
-                IrqMutex::new(FastMagazine::new()),
-                IrqMutex::new(FastMagazine::new()),
-                IrqMutex::new(FastMagazine::new()),
+                IrqPoisonLock::new(FastMagazine::new()),
+                IrqPoisonLock::new(FastMagazine::new()),
+                IrqPoisonLock::new(FastMagazine::new()),
             ],
             hint_4k: AtomicUsize::new(0),
             hint_2m: AtomicUsize::new(0),
@@ -199,11 +200,11 @@ impl PerCpuFastMagazine {
             arena_end_4k: usize::MAX,
             arena_start_2m: 0,
             arena_end_2m: usize::MAX,
-            free_word_stack: IrqMutex::new(LocalFreeWordStack::new()),
+            free_word_stack: IrqPoisonLock::new(LocalFreeWordStack::new()),
             free_count_delta_4k: AtomicI64::new(0),
             remote_free_ring: RemoteFreeRing::new(),
-            sub_magazine_4k: IrqMutex::new(SubFrameMagazine::new()),
-            arena_detail: IrqMutex::new(None),
+            sub_magazine_4k: IrqPoisonLock::new(SubFrameMagazine::new()),
+            arena_detail: IrqPoisonLock::new(None),
             single_writer_enabled: AtomicBool::new(false),
         }
     }
@@ -237,7 +238,7 @@ impl PerCpuFastMagazine {
 
     /// Get magazine for a size class
     #[inline]
-    pub fn get_magazine(&self, size_class: usize) -> Option<&IrqMutex<FastMagazine>> {
+    pub fn get_magazine(&self, size_class: usize) -> Option<&IrqPoisonLock<FastMagazine>> {
         self.magazines.get(size_class)
     }
 
@@ -286,8 +287,22 @@ impl PerCpuFastMagazine {
             &initial_bits,
         );
 
-        *self.arena_detail.lock() = Some(arena);
+        *self.arena_detail.lock().unwrap_or_else(|e| e.into_inner()) = Some(arena);
         self.single_writer_enabled.store(true, Ordering::Release);
+    }
+}
+
+impl TypeIdHash for PerCpuFastMagazine {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"PerCpuFastMagazine:v1:cpu_id,magazines,arena_detail")
+    }
+
+    fn type_name() -> &'static str {
+        "PerCpuFastMagazine"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
     }
 }
 
@@ -365,4 +380,18 @@ pub struct FastBitmapAllocator {
     arena_ownership: ArenaOwnership,
     /// Statistics
     stats: FastAllocatorStats,
+}
+
+impl TypeIdHash for FastBitmapAllocator {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"FastBitmapAllocator:v1:base,size,bitmap,magazines")
+    }
+
+    fn type_name() -> &'static str {
+        "FastBitmapAllocator"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
+    }
 }

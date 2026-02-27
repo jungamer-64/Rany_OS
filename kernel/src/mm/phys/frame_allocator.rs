@@ -23,6 +23,7 @@ use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, 
 // 共通型定義をインポート（IOVA_MM_MIGRATION_PLAN Phase 0.1）
 use crate::mm::numa::topology::{MAX_NUMA_NODES, NumaTopology};
 use crate::mm::types::{FrameIndex, NumaNodeId, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+use crate::loader::type_id::{TypeIdHash, TypeHash, SemVer, const_hash};
 
 // ============================================================================
 // 型安全性: フレーム番号のNewtype
@@ -176,6 +177,8 @@ impl BitmapFrameAllocator {
         frame_count: usize,
         alignment: usize,
     ) -> Option<PhysAddr> {
+        // 脆弱性修正: alignmentが0の場合の除算ゼロを防止
+        let alignment = alignment.max(PAGE_SIZE_4K);
         let aligned_frames = alignment / PAGE_SIZE_4K;
 
         for start_word in 0..BITMAP_WORDS {
@@ -274,6 +277,20 @@ impl BitmapFrameAllocator {
     /// 総フレーム数を取得
     pub fn total_frame_count(&self) -> usize {
         self.total_frames
+    }
+}
+
+impl TypeIdHash for BitmapFrameAllocator {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"BitmapFrameAllocator:v1:total_frames,free_frames")
+    }
+
+    fn type_name() -> &'static str {
+        "BitmapFrameAllocator"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
     }
 }
 
@@ -655,5 +672,19 @@ impl NumaFrameAllocator {
     /// トポロジ情報への参照を取得
     pub fn topology(&self) -> &NumaTopology {
         &self.topology
+    }
+}
+
+impl TypeIdHash for NumaFrameAllocator {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"NumaFrameAllocator:v1:node_allocators,topology")
+    }
+
+    fn type_name() -> &'static str {
+        "NumaFrameAllocator"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
     }
 }

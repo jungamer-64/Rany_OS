@@ -245,17 +245,17 @@ impl InvalidationOps for IommuController {
                 Err(_) => return Err(IommuError::HardwareError),
             };
             let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
-            let data = (iq.tail() & 0xFFFFFFFF) as u32;
+            let (entry, seq) = iq.wait_entry();
             let virt = iq.status_virtual_address();
-            let entry = iq.wait_entry();
             let _ = submit_invalidation_locked(self, iq, entry)?;
-            (virt, data)
+            (virt, seq)
         };
 
         self.wait_for_condition(
             || {
                 let status = unsafe { core::ptr::read_volatile(status_virt as *const u32) };
-                status == expected_data
+                // Use wrap-around safe comparison (distance in u32 space)
+                status.wrapping_sub(expected_data) < (1u32 << 31)
             },
             100_000,
             true,
@@ -266,9 +266,8 @@ impl InvalidationOps for IommuController {
         let result = match self.invalidation_queue.lock() {
             Ok(mut guard) => {
                 if let Some(iq) = guard.as_mut() {
-                    let expected_data = (iq.tail() & 0xFFFFFFFF) as u32;
+                    let (entry, expected_data) = iq.wait_entry();
                     let status_virt = iq.status_virtual_address();
-                    let entry = iq.wait_entry();
                     let submit_result = submit_invalidation_locked(self, iq, entry);
                     Ok((submit_result, status_virt, expected_data))
                 } else {
