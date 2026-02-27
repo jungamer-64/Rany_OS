@@ -247,9 +247,9 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 - `pending` / `runtime_pending` スイートは廃止されました。
 - 旧 `qemu-suites/*` からの移行棚卸しは `tests/migration_case_map.toml` を参照してください。
 - `qemu-tests` 実行時のログは `target/qemu-logs/` に出力されます（serial / QEMU stderr）。
-- IOMMU residual canonical pending: `none`
+- IOMMU residual canonical: `none`
 - 旧 `iommu_wave2_*` residual 名は compat alias として残置（required の正規導線は `iommu_wave5_*`）
-- IOMMU wave3 pending monitored smoke（required 未投入）: `none`
+- IOMMU wave3 residual monitored smoke（required 未投入）: `none`
 - AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
 - AMD-Vi Wave1 required 実行対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`
 - AMD-Vi Wave5 required 実行対象（6件 — IRT）: `irt_entry_construction`, `irt_alloc_free`, `irt_exhaustion`, `irt_invalidation_cmd_format`, `map_interrupt_returns_handle`, `get_remap_msi_message_format`
@@ -260,17 +260,17 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 - MM Wave7 async_swapout required 実行対象（9件）: `buffer_pool_4k_basic`, `buffer_pool_2m_basic`, `memcg_concurrent_swapout_canonical`, `async_swapout_concurrent_dedup_canonical`, `async_swapout_stress_concurrency_canonical`, `async_swapout_heavy_stress_canonical`, `bench_enqueue_pool_effect`, `bench_buffer_pool_2m_reuse`, `bench_buffer_pool_1g_reuse`（bench は性能比較ではなく deterministic functional smoke）
 - MM Wave7 required strict policy: allocation不足は required failure 扱い（OOM-pass fallback を許容しない）
 - MM Wave7 page_reclaim required 実行対象（8件）: `watermarks_calculation`, `pressure_level`, `mglru_list_add`, `blocked_unsafe_requeues_victim`, `blocked_unsafe_requeues_anonymous_dirty_victim`, `file_backed_clean_reclaims_with_unsafe_disabled`, `async_success_clears_pending_and_accounts_success`, `async_failure_requeues_and_clears_pending`
-- Graphics/Framebuffer Wave6 residual（pending）: `none`（bench系5件は required で deterministic functional smoke 化済み）
-- MM Wave7 residual（pending監視）: `none`。
+- Graphics/Framebuffer Wave6 residual: `none`（bench系5件は required で deterministic functional smoke 化済み）
+- MM Wave7 residual（監視）: `none`。
 - NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + socket + tcb + core(tests.rs) + types + window_scale。
-- NET endpoint residual（pending監視）: `none`。
+- NET endpoint residual（監視）: `none`。
 - NET core stack required 実行対象（90件）: L2-L4中心（adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp）。
-- NET core stack residual（pending監視）: `none`。
+- NET core stack residual（監視）: `none`。
 - NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
-- NET peripheral residual（pending監視）: `none`。
+- NET peripheral residual（監視）: `none`。
 - Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（full-boot runtime では `posix-compat` 有効）。
-- Storage/FS residual（pending監視）: `none`。
-- 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
+- Storage/FS residual（監視）: `none`。
+- 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、residual 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。
 
 ## **📄 ライセンス**

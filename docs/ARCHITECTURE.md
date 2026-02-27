@@ -402,14 +402,14 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 - 移行棚卸しの真実源は `tests/migration_case_map.toml`。
 - `qemu-tests` の serial / QEMU stderr ログは `target/qemu-logs/` に出力される。
 - NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + socket + tcb + core(tests.rs) + types + window_scale。
-- NET endpoint residual（pending監視）: `none`。
+- NET endpoint residual（監視）: `none`。
 - NET core stack required 実行対象（90件）: L2-L4中心（adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp）。
-- NET core stack residual（pending監視）: `none`。
+- NET core stack residual（監視）: `none`。
 - NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
-- NET peripheral residual（pending監視）: `none`。
+- NET peripheral residual（監視）: `none`。
 - Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + procfs（full-boot runtime では `posix-compat` 有効）。
-- Storage/FS residual（pending監視）: `none`。
-- 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
+- Storage/FS residual（監視）: `none`。
+- 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、residual 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。
 - 移行棚卸しの管理ファイルは `tests/migration_case_map.toml` を参照する。
 

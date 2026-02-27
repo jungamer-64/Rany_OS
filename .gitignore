@@ -19,6 +19,10 @@
 /tmp
 /kernel.map
 
+# Python cache artifacts
+__pycache__/
+*.pyc
+
 # Secure boot keys - never commit any key material!
 # Contains: kernel.key (secret), kernel_pub.key (public)
 /keys/

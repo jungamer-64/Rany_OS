@@ -514,6 +514,9 @@ impl AmdIommuDriver {
             return Err(e);
         }
 
+        // Security: Invalidate the hardware interrupt table cache to ensure the new mapping is used
+        let _ = self.invalidate_interrupt_table(devid);
+
         Ok(handle)
     }
 

@@ -220,6 +220,16 @@ impl AmdIommuDriver {
         self.invalidate_device_entry(device)
     }
 
+    pub(crate) fn invalidate_interrupt_table(&self, device_id: u16) -> Result<(), IommuError> {
+        let device = Self::device_id_from_devid(0, device_id); // Segment assumed 0 for simple BDF
+        let unit_idx = self
+            .find_unit_index_for_device(device)
+            .ok_or(IommuError::DeviceNotFound)?;
+        self.with_cmd_state(unit_idx, |state| {
+            state.submit_and_wait(cmd::AmdCommand::invalidate_interrupt_table(device_id))
+        })
+    }
+
     fn device_id_from_devid(segment: u16, devid: u16) -> DeviceId {
         let bus = (devid >> 8) as u8;
         let devfn = (devid & 0xff) as u8;

@@ -338,6 +338,9 @@ impl InterruptRemapper for IommuController {
         let entry = InterruptRemapEntry::fixed(vector, dest_id, logical, Some(rid));
         irt.set(index, entry);
 
+        // Security: Invalidate IEC after allocating IRTE to ensure hardware sees the new entry
+        let _ = self.invalidate_iec(false, index);
+
         Ok(index)
     }
 
@@ -351,6 +354,9 @@ impl InterruptRemapper for IommuController {
 
         irt.set(index, InterruptRemapEntry::new());
         irt.free(index);
+
+        // Security: Invalidate IEC after freeing IRTE to prevent stale interrupts
+        let _ = self.invalidate_iec(false, index);
 
         Ok(())
     }
@@ -366,6 +372,9 @@ impl InterruptRemapper for IommuController {
         if !irt.set(index, entry) {
             return Err(IommuError::InvalidAddress);
         }
+
+        // Security: Invalidate IEC after updating IRTE
+        let _ = self.invalidate_iec(false, index);
 
         Ok(())
     }
