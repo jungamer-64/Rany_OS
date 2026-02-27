@@ -15,17 +15,23 @@ use super::types::SECTOR_SIZE;
 pub struct AhciDmaReadBuffer {
     buffer: DmaBuffer,
     sector_count: usize,
+    device_id: Option<u64>,
 }
 
 impl AhciDmaReadBuffer {
     /// Create buffer for specified number of sectors
-    pub fn new(sector_count: usize) -> Option<Self> {
+    pub fn new(sector_count: usize, device_id: Option<u64>) -> Option<Self> {
         let size = sector_count * SECTOR_SIZE;
-        let buffer = kernel().alloc_dma(size).ok()?;
+        let buffer = if let Some(id) = device_id {
+            kernel().alloc_dma_for_device(size, id).ok()?
+        } else {
+            kernel().alloc_dma(size).ok()?
+        };
 
         Some(Self {
             buffer,
             sector_count,
+            device_id,
         })
     }
 
@@ -70,21 +76,27 @@ impl Drop for AhciDmaReadBuffer {
 pub struct AhciDmaWriteBuffer {
     buffer: DmaBuffer,
     sector_count: usize,
+    device_id: Option<u64>,
 }
 
 impl AhciDmaWriteBuffer {
     /// Create buffer with initial data
-    pub fn with_data(data: &[u8]) -> Option<Self> {
+    pub fn with_data(data: &[u8], device_id: Option<u64>) -> Option<Self> {
         let sector_count = (data.len() + SECTOR_SIZE - 1) / SECTOR_SIZE;
         let size = sector_count * SECTOR_SIZE;
 
-        let mut buffer = kernel().alloc_dma(size).ok()?;
+        let mut buffer = if let Some(id) = device_id {
+            kernel().alloc_dma_for_device(size, id).ok()?
+        } else {
+            kernel().alloc_dma(size).ok()?
+        };
 
         unsafe { buffer.as_slice_mut()[..data.len()].copy_from_slice(data) };
 
         Some(Self {
             buffer,
             sector_count,
+            device_id,
         })
     }
 
@@ -113,13 +125,18 @@ impl Drop for AhciDmaWriteBuffer {
 /// Helper for IDENTIFY command buffer
 pub struct AhciIdentifyBuffer {
     buffer: DmaBuffer,
+    device_id: Option<u64>,
 }
 
 impl AhciIdentifyBuffer {
     /// Create 512-byte buffer
-    pub fn new() -> Option<Self> {
-        let buffer = kernel().alloc_dma(512).ok()?;
-        Some(Self { buffer })
+    pub fn new(device_id: Option<u64>) -> Option<Self> {
+        let buffer = if let Some(id) = device_id {
+            kernel().alloc_dma_for_device(512, id).ok()?
+        } else {
+            kernel().alloc_dma(512).ok()?
+        };
+        Some(Self { buffer, device_id })
     }
 
     pub fn device_addr(&self) -> PhysAddr {
@@ -151,6 +168,6 @@ impl Drop for AhciIdentifyBuffer {
 
 impl Default for AhciIdentifyBuffer {
     fn default() -> Self {
-        Self::new().expect("Failed to allocate AHCI identify buffer")
+        Self::new(None).expect("Failed to allocate AHCI identify buffer")
     }
 }

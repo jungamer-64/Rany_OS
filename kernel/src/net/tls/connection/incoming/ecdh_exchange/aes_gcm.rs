@@ -382,15 +382,14 @@ impl TlsConnection {
         Ok(())
     }
 
-    /// TLS 1.3 Certificateメッセージから最初の証明書DERを抽出するヘルパー。
-    /// 空の証明書リストの場合は Ok(None) を返す。
-    pub(super) fn tls13_extract_first_cert<'a>(&self, data: &'a [u8]) -> TlsResult<Option<&'a [u8]>> {
+    /// TLS 1.3 Certificateメッセージから証明書チェーンDERを抽出する。
+    pub(super) fn tls13_extract_cert_chain<'a>(&self, data: &'a [u8]) -> TlsResult<Vec<&'a [u8]>> {
         if data.is_empty() {
             return Err(TlsError::DecodeError);
         }
 
         let ctx_len = data[0] as usize;
-        let offset = 1 + ctx_len;
+        let mut offset = 1 + ctx_len;
 
         if data.len() < offset + 3 {
             return Err(TlsError::DecodeError);
@@ -399,32 +398,45 @@ impl TlsConnection {
         let certs_len = ((data[offset] as usize) << 16)
             | ((data[offset + 1] as usize) << 8)
             | data[offset + 2] as usize;
+        offset += 3;
 
-        if data.len() < offset + 3 + certs_len {
+        if data.len() < offset + certs_len {
             return Err(TlsError::DecodeError);
         }
 
-        if certs_len == 0 {
-            return Ok(None);
+        let cert_list_end = offset + certs_len;
+        let mut certs = Vec::new();
+
+        while offset < cert_list_end {
+            if offset + 3 > cert_list_end {
+                return Err(TlsError::DecodeError);
+            }
+
+            let cert_len = ((data[offset] as usize) << 16)
+                | ((data[offset + 1] as usize) << 8)
+                | data[offset + 2] as usize;
+            offset += 3;
+
+            if offset + cert_len > cert_list_end {
+                return Err(TlsError::DecodeError);
+            }
+
+            certs.push(&data[offset..offset + cert_len]);
+            offset += cert_len;
+
+            // Skip extensions in CertificateEntry
+            if offset + 2 > cert_list_end {
+                return Err(TlsError::DecodeError);
+            }
+            let ext_len = ((data[offset] as usize) << 8) | data[offset + 1] as usize;
+            offset += 2 + ext_len;
+            
+            if offset > cert_list_end {
+                return Err(TlsError::DecodeError);
+            }
         }
 
-        let cert_list = &data[offset + 3..offset + 3 + certs_len];
-        let pos = 0usize;
-
-        if cert_list.len() < pos + 3 {
-            return Err(TlsError::DecodeError);
-        }
-
-        let first_cert_len = ((cert_list[pos] as usize) << 16)
-            | ((cert_list[pos + 1] as usize) << 8)
-            | cert_list[pos + 2] as usize;
-        let pos = pos + 3;
-
-        if cert_list.len() < pos + first_cert_len {
-            return Err(TlsError::DecodeError);
-        }
-
-        Ok(Some(&cert_list[pos..pos + first_cert_len]))
+        Ok(certs)
     }
 
     /// X.509 DERからサーバー公開鍵を抽出して設定する。
@@ -460,28 +472,32 @@ impl TlsConnection {
     }
 
     /// TLS 1.3: Certificate を処理 (RFC 8446 Section 4.4.2)
-    ///
-    /// TLS 1.3 の Certificate 形式:
-    /// - certificate_request_context length (1 byte)
-    /// - certificate_request_context (variable)
-    /// - certificate_list length (3 bytes)
-    /// - certificate_list: CertificateEntry[]
-    ///   - cert_data length (3 bytes)
-    ///   - cert_data (DER encoded X.509)
-    ///   - extensions length (2 bytes)
-    ///   - extensions (variable)
     pub(super) fn tls13_process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {
-        let first_cert = self.tls13_extract_first_cert(data)?;
+        let certs = self.tls13_extract_cert_chain(data)?;
 
-        match first_cert {
-            None => {
-                if !self.config.skip_verify {
-                    return Err(TlsError::CertificateError);
-                }
+        if certs.is_empty() {
+            if !self.config.skip_verify {
+                return Err(TlsError::CertificateError);
             }
-            Some(cert_der) => {
-                self.set_server_public_key_from_cert(cert_der)?;
+            self.state = TlsState::Tls13WaitCertificateVerify;
+            return Ok(());
+        }
+
+        if !self.config.skip_verify {
+            // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
+            let ca_ders: Vec<&[u8]> = self.config.ca_certs.iter().map(|c| c.der.as_slice()).collect();
+            if let Some(spki) = crate::net::x509::validate_certificate_chain(
+                &certs,
+                self.config.server_name.as_deref(),
+                &ca_ders,
+            ) {
+                self.extract_server_public_key_from_spki(spki)?;
+            } else {
+                return Err(TlsError::CertificateError);
             }
+        } else {
+            // 検証スキップ時は最初の証明書の鍵をそのまま使用
+            self.set_server_public_key_from_cert(certs[0])?;
         }
 
         self.state = TlsState::Tls13WaitCertificateVerify;

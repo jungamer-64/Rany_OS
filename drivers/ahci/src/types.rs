@@ -99,6 +99,11 @@ pub const SECTOR_SIZE: usize = 512;
 pub struct PortNumber(pub u8);
 
 impl PortNumber {
+    /// 新しいポート番号を作成
+    pub const fn new(n: u8) -> Self {
+        Self(n)
+    }
+
     /// ポート番号を取得
     pub fn as_u8(&self) -> u8 {
         self.0
@@ -120,6 +125,11 @@ impl PortNumber {
 pub struct SlotNumber(pub u8);
 
 impl SlotNumber {
+    /// 新しいスロット番号を作成
+    pub const fn new(n: u8) -> Self {
+        Self(n)
+    }
+
     /// スロット番号を取得
     pub fn as_u8(&self) -> u8 {
         self.0
@@ -176,6 +186,11 @@ impl SectorCount {
     pub fn to_bytes(&self) -> u32 {
         self.0 as u32 * SECTOR_SIZE as u32
     }
+
+    /// u32として取得
+    pub fn as_u32(&self) -> u32 {
+        self.0 as u32
+    }
 }
 
 // ============================================================================
@@ -228,6 +243,8 @@ pub enum AhciError {
     NoDevice,
     /// 空きコマンドスロットがない
     NoCommandSlot,
+    /// 空きスロットがない
+    NoFreeSlot,
     /// タイムアウト
     Timeout,
     /// タスクファイルエラー
@@ -240,6 +257,8 @@ pub enum AhciError {
     PciError(String),
     /// DMAエラー
     DmaError,
+    /// DMA割り当て失敗
+    DmaAllocationFailed,
     /// 内部エラー
     InternalError,
     /// その他のエラー

@@ -35,18 +35,27 @@ pub struct AhciPort {
     /// Command Tables
     command_tables: [Option<DmaBuffer>; 32],
     active_commands: AtomicU32,
+    device_id: Option<u64>,
 }
 
 impl AhciPort {
     /// Create a new port
-    pub fn new(base: u64, port: PortNumber) -> Option<Self> {
+    pub fn new(base: u64, port: PortNumber, device_id: Option<u64>) -> Option<Self> {
         let port_base = base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64);
 
         // Allocate DMA memory for Command List (32 headers * 32 bytes = 1024 bytes)
-        let command_list = kernel().alloc_dma(1024).ok()?;
+        let command_list = if let Some(id) = device_id {
+            kernel().alloc_dma_for_device(1024, id).ok()?
+        } else {
+            kernel().alloc_dma(1024).ok()?
+        };
 
         // Allocate DMA memory for Received FIS (256 bytes)
-        let received_fis = kernel().alloc_dma(256).ok()?;
+        let received_fis = if let Some(id) = device_id {
+            kernel().alloc_dma_for_device(256, id).ok()?
+        } else {
+            kernel().alloc_dma(256).ok()?
+        };
 
         Some(Self {
             port,
@@ -57,6 +66,7 @@ impl AhciPort {
             received_fis,
             command_tables: Default::default(),
             active_commands: AtomicU32::new(0),
+            device_id,
         })
     }
 
@@ -141,20 +151,17 @@ impl AhciPort {
 
     /// Execute IDENTIFY command
     pub fn identify(&mut self) -> AhciResult<IdentifyData> {
-        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
+        let slot = self.find_slot().ok_or(AhciError::NoFreeSlot)?;
+        let identify_buf = {
+            let device_id = self.device_id;
+            AhciIdentifyBuffer::new(device_id).ok_or(AhciError::DmaAllocationFailed)?
+        };
 
-        // Allocate Command Table
-        let cmd_table_buf = kernel()
-            .alloc_dma(core::mem::size_of::<CommandTable>())
-            .map_err(|_| AhciError::InternalError)?;
-
-        // Setup DMA-safe result buffer
-        let identify_buf = AhciIdentifyBuffer::new().ok_or(AhciError::InternalError)?;
+        let cmd_table = self.get_or_alloc_command_table(slot)?;
         let buffer_phys = identify_buf.device_addr().as_u64();
 
         // Build Command Table in DMA memory
         {
-            let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };
             // Clear
             unsafe { ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1) };
 
@@ -181,10 +188,13 @@ impl AhciPort {
             header.set_flags(5, false, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.device_address());
+            header.set_ctba(
+                self.command_tables[slot.as_usize()]
+                    .as_ref()
+                    .unwrap()
+                    .device_address(),
+            );
         }
-
-        self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
 
         self.write_port(PX_CI, 1 << slot.as_u8());
         self.wait_completion(slot)?;
@@ -205,26 +215,26 @@ impl AhciPort {
         &mut self,
         lba: Lba,
         count: SectorCount,
-        buffer: &mut [u8],
+        buf: &mut [u8],
     ) -> AhciResult<()> {
-        if buffer.len() < count.to_bytes() as usize {
+        if buf.len() < count.to_bytes() as usize {
             return Err(AhciError::InvalidParameter);
         }
 
-        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
+        let slot = self.find_slot().ok_or(AhciError::NoFreeSlot)?;
+        let dma_buf = {
+            let device_id = self.device_id;
+            AhciDmaReadBuffer::new(count.as_u32() as usize, device_id)
+                .ok_or(AhciError::DmaAllocationFailed)?
+        };
 
-        let dma_buf = AhciDmaReadBuffer::new(count.0 as usize).ok_or(AhciError::InternalError)?;
+        let cmd_table = self.get_or_alloc_command_table(slot)?;
         let buffer_phys = dma_buf
             .device_addr()
             .ok_or(AhciError::InternalError)?
             .as_u64();
 
-        let cmd_table_buf = kernel()
-            .alloc_dma(core::mem::size_of::<CommandTable>())
-            .map_err(|_| AhciError::InternalError)?;
-
         {
-            let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };
             unsafe { ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1) };
 
             let fis = FisRegH2D::read_dma_ext(lba, count);
@@ -248,16 +258,19 @@ impl AhciPort {
             header.set_flags(5, false, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.device_address());
+            header.set_ctba(
+                self.command_tables[slot.as_usize()]
+                    .as_ref()
+                    .unwrap()
+                    .device_address(),
+            );
         }
-
-        self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
 
         self.write_port(PX_CI, 1 << slot.as_u8());
         self.wait_completion(slot)?;
 
         // Copy data back
-        buffer.copy_from_slice(dma_buf.data());
+        buf.copy_from_slice(dma_buf.data());
 
         // Free the command table buffer for this slot
         let kernel = kernel_api::services::kernel();
@@ -269,25 +282,24 @@ impl AhciPort {
     }
 
     /// Write sectors
-    pub fn write_sectors(&mut self, lba: Lba, count: SectorCount, buffer: &[u8]) -> AhciResult<()> {
-        if buffer.len() < count.to_bytes() as usize {
+    pub fn write_sectors(&mut self, lba: Lba, count: SectorCount, buf: &[u8]) -> AhciResult<()> {
+        if buf.len() < count.to_bytes() as usize {
             return Err(AhciError::InvalidParameter);
         }
 
-        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
+        let slot = self.find_slot().ok_or(AhciError::NoFreeSlot)?;
+        let dma_buf = {
+            let device_id = self.device_id;
+            AhciDmaWriteBuffer::with_data(buf, device_id).ok_or(AhciError::DmaAllocationFailed)?
+        };
 
-        let dma_buf = AhciDmaWriteBuffer::with_data(buffer).ok_or(AhciError::InternalError)?;
+        let cmd_table = self.get_or_alloc_command_table(slot)?;
         let buffer_phys = dma_buf
             .device_addr()
             .ok_or(AhciError::InternalError)?
             .as_u64();
 
-        let cmd_table_buf = kernel()
-            .alloc_dma(core::mem::size_of::<CommandTable>())
-            .map_err(|_| AhciError::InternalError)?;
-
         {
-            let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };
             unsafe { ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1) };
 
             let fis = FisRegH2D::write_dma_ext(lba, count);
@@ -311,10 +323,13 @@ impl AhciPort {
             header.set_flags(5, true, false, false); // W=1
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.device_address());
+            header.set_ctba(
+                self.command_tables[slot.as_usize()]
+                    .as_ref()
+                    .unwrap()
+                    .device_address(),
+            );
         }
-
-        self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
 
         self.write_port(PX_CI, 1 << slot.as_u8());
         let result = self.wait_completion(slot);
@@ -336,14 +351,10 @@ impl AhciPort {
         dma_addr: u64,
         bytes: u32,
     ) -> AhciResult<SlotNumber> {
-        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
-
-        let cmd_table_buf = kernel()
-            .alloc_dma(core::mem::size_of::<CommandTable>())
-            .map_err(|_| AhciError::InternalError)?;
+        let slot = self.find_slot().ok_or(AhciError::NoFreeSlot)?;
+        let cmd_table = self.get_or_alloc_command_table(slot)?;
 
         unsafe {
-            let cmd_table = &mut *(cmd_table_buf.as_ptr() as *mut CommandTable);
             ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1);
 
             let fis = FisRegH2D::read_dma_ext(lba, count);
@@ -363,10 +374,13 @@ impl AhciPort {
             header.set_flags(5, false, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.device_address());
+            header.set_ctba(
+                self.command_tables[slot.as_usize()]
+                    .as_ref()
+                    .unwrap()
+                    .device_address(),
+            );
         }
-
-        self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
 
         self.write_port(PX_CI, 1 << slot.as_u8());
 
@@ -381,14 +395,10 @@ impl AhciPort {
         dma_addr: u64,
         bytes: u32,
     ) -> AhciResult<SlotNumber> {
-        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
-
-        let cmd_table_buf = kernel()
-            .alloc_dma(core::mem::size_of::<CommandTable>())
-            .map_err(|_| AhciError::InternalError)?;
+        let slot = self.find_slot().ok_or(AhciError::NoFreeSlot)?;
+        let cmd_table = self.get_or_alloc_command_table(slot)?;
 
         unsafe {
-            let cmd_table = &mut *(cmd_table_buf.as_ptr() as *mut CommandTable);
             ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1);
 
             let fis = FisRegH2D::write_dma_ext(lba, count);
@@ -408,10 +418,13 @@ impl AhciPort {
             header.set_flags(5, true, false, false);
             header.prdtl = 1;
             header.prdbc = 0;
-            header.set_ctba(cmd_table_buf.device_address());
+            header.set_ctba(
+                self.command_tables[slot.as_usize()]
+                    .as_ref()
+                    .unwrap()
+                    .device_address(),
+            );
         }
-
-        self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
 
         self.write_port(PX_CI, 1 << slot.as_u8());
 
@@ -443,6 +456,23 @@ impl AhciPort {
         }
 
         Ok(transferred)
+    }
+
+    fn get_or_alloc_command_table(&mut self, slot: SlotNumber) -> AhciResult<&mut CommandTable> {
+        if self.command_tables[slot.as_usize()].is_none() {
+            let buffer = if let Some(id) = self.device_id {
+                kernel().alloc_dma_for_device(core::mem::size_of::<CommandTable>(), id).ok()
+            } else {
+                kernel().alloc_dma(core::mem::size_of::<CommandTable>()).ok()
+            };
+            self.command_tables[slot.as_usize()] = buffer;
+        }
+
+        let cmd_table_buf = self.command_tables[slot.as_usize()]
+            .as_mut()
+            .ok_or(AhciError::DmaAllocationFailed)?;
+
+        Ok(unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) })
     }
 
     pub fn wait_completion(&self, slot: SlotNumber) -> AhciResult<()> {

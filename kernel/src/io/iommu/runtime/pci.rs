@@ -251,14 +251,16 @@ fn log_device_protection(
 ///
 /// PCI初期化後に呼び出して、全デバイスを保護します。
 #[cfg(not(test))]
-pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) {
+pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) -> Result<(), crate::io::iommu::core::types::IommuError> {
     if !is_iommu_enabled() {
         log::info!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
-        return;
+        return Ok(());
     }
 
     let mut protected_count = 0;
     let mut failed_count = 0;
+    let mut last_error = None;
+
     for device in devices.iter_mut() {
         // ブリッジデバイスはスキップ（ホストブリッジはIOMMUで保護不要）
         if device.is_pci_bridge() {
@@ -271,6 +273,7 @@ pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceI
             }
             Err(e) => {
                 failed_count += 1;
+                last_error = Some(e);
                 // SECURITY FAIL-SAFE: If IOMMU is enabled but we can't protect the device,
                 // we MUST ensure the device cannot perform DMA (identity mapping attack).
                 log::error!(
@@ -291,10 +294,12 @@ pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceI
             protected_count,
             failed_count
         );
+        Err(last_error.unwrap_or(crate::io::iommu::core::types::IommuError::HardwareError))
     } else {
         log::info!(
             "[IOMMU] Protected {} PCI devices with IOMMU domains\n",
             protected_count
         );
+        Ok(())
     }
 }

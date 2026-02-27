@@ -85,7 +85,7 @@ impl UdpProcessor {
     }
 
     /// Process an incoming UDP packet with an existing PacketRef (zero-copy)
-    pub fn process_with_packet(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, packet: PacketRef) -> UdpResult {
+    pub fn process_with_packet(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, mut packet: PacketRef) -> UdpResult {
         use core::sync::atomic::Ordering;
 
         let packet_view = match UdpPacket::parse(data) {
@@ -100,6 +100,15 @@ impl UdpProcessor {
                 .fetch_add(1, Ordering::Relaxed);
             return UdpResult::ChecksumError;
         }
+
+        let payload_len = packet_view.payload().len();
+        if packet.len() < UdpHeader::SIZE + payload_len {
+            return UdpResult::Invalid;
+        }
+
+        // Advance PacketRef to skip UDP header for zero-copy delivery
+        packet.advance(UdpHeader::SIZE);
+        packet.set_len(payload_len);
 
         let src = UdpAddr::new(src_ip, packet_view.src_port());
         let dst_port = packet_view.dst_port();

@@ -1890,11 +1890,25 @@ pub fn is_unsafe_identity_mapping_allowed() -> bool {
 #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
 #[inline(always)]
 pub fn is_unsafe_identity_mapping_allowed() -> bool {
-    false // Compile-time constant, enables dead code elimination
+    false
 }
 
 /// Enable/disable global DMA mappings (non device-scoped).
+///
+/// # Safety
+///
+/// Enabling global mappings weakens the security guarantees of the IOMMU
+/// by allowing non-device-scoped DMA mappings. This should only be used
+/// for legacy support or internal kernel debugging.
 pub fn set_global_dma_mapping_allowed(allowed: bool) {
+    if allowed {
+        log::warn!(
+            "[IOMMU][SECURITY] Global DMA mappings ENABLED. \
+             This relaxes device isolation and should not be used in production!"
+        );
+    } else {
+        log::info!("[IOMMU][SECURITY] Global DMA mappings DISABLED.");
+    }
     ALLOW_GLOBAL_MAPPINGS.store(allowed, Ordering::Release);
 }
 

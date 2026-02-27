@@ -1,4 +1,23 @@
 use super::*;
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+
+/// Pack IommuDeviceId into u64 for API boundary
+fn pack_device_id(d: IommuDeviceId) -> u64 {
+    ((d.segment as u64) << 32)
+        | ((d.bus as u64) << 16)
+        | ((d.device as u64) << 8)
+        | (d.function as u64)
+}
+
+/// Unpack u64 into IommuDeviceId
+fn unpack_device_id(id: u64) -> IommuDeviceId {
+    IommuDeviceId {
+        segment: (id >> 32) as u16,
+        bus: (id >> 16) as u8,
+        device: (id >> 8) as u8,
+        function: id as u8,
+    }
+}
 
 
 // SAFETY: ExoKernel is stateless and accesses thread-safe globals
@@ -46,6 +65,22 @@ impl KernelServices for ExoKernel {
                 let dev_addr = buffer.device_addr();
                 let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
                 // Box up the buffer and register by virtual address so it can be freed later
+                let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
+                DMA_REGISTRY.register_with_key(virt_ptr, boxed);
+                Ok(DmaBuffer::new_with_device_addr(phys, dev_addr, virt_ptr as *mut u8, size))
+            }
+            None => Err(KapiError::OutOfMemory),
+        }
+    }
+
+    fn alloc_dma_for_device(&self, size: usize, device_id: u64) -> Result<DmaBuffer, KapiError> {
+        let dev_id = unpack_device_id(device_id);
+        match dma::CoherentDmaBuffer::new_for_device(size, dma::DmaMemoryAttributes::MMIO, &dev_id) {
+            Some(buffer) => {
+                let phys = buffer.phys_addr().as_u64();
+                let dev_addr = buffer.device_addr();
+                let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
+                
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
                 DMA_REGISTRY.register_with_key(virt_ptr, boxed);
                 Ok(DmaBuffer::new_with_device_addr(phys, dev_addr, virt_ptr as *mut u8, size))

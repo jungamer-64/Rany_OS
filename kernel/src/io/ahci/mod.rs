@@ -27,6 +27,9 @@ pub use ahci_driver::identify;
 pub use ahci_driver::port;
 pub use ahci_driver::types;
 
+pub use alloc::sync::Arc;
+pub use spin::Mutex;
+
 // Re-export types from ahci_driver for convenience
 pub use command::{CommandHeader, CommandTable, PhysicalRegionDescriptor, ReceivedFis};
 pub use fis::{
@@ -80,7 +83,22 @@ pub use types::{
 };
 
 // Re-export types from local modules
-pub use controller::{AhciController, init_from_pci};
+pub use controller::{AhciController};
 pub use dma_buffer::{AhciDmaReadBuffer, AhciDmaWriteBuffer, AhciIdentifyBuffer};
 pub use poll_handler::{AhciPollHandler, register_ahci_with_io_scheduler};
 pub use port::AhciPort;
+
+pub fn init_from_pci(
+    base_virt: u64,
+    device_id: Option<crate::io::iommu::core::types::DeviceId>,
+) -> AhciResult<Arc<Mutex<AhciController>>> {
+    let packed_id = device_id.map(|d| {
+        ((d.segment as u64) << 32)
+            | ((d.bus as u64) << 16)
+            | ((d.device as u64) << 8)
+            | (d.function as u64)
+    });
+    let controller = AhciController::new(base_virt, packed_id)?;
+    let arc = Arc::new(Mutex::new(controller));
+    Ok(arc)
+}

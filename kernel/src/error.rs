@@ -475,10 +475,10 @@ impl From<crate::io::ahci::AhciError> for IoError {
         use crate::io::ahci::AhciError as AE;
         match e {
             AE::PortNotAvailable | AE::NoDevice => IoError::DeviceNotFound,
-            AE::NoCommandSlot => IoError::NoResources,
+            AE::NoCommandSlot | AE::NoFreeSlot => IoError::NoResources,
             AE::Timeout => IoError::Timeout,
             AE::TaskFileError(_) => IoError::CommandError,
-            AE::DmaError => IoError::DmaError,
+            AE::DmaError | AE::DmaAllocationFailed => IoError::DmaError,
             AE::InvalidParameter => IoError::InvalidParameter,
             AE::AllocationError => IoError::NoResources,
             AE::PciError(_) => IoError::DeviceNotFound,

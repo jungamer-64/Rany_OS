@@ -1,6 +1,7 @@
 use super::*;
 use crate::io::virtio::virtqueue::vring_flags;
 use crate::io::iommu::types::DmaAddr;
+use crate::io::iommu::runtime::security::is_global_dma_mapping_allowed;
 
 
 mod async_io;
@@ -388,6 +389,13 @@ impl VirtioBlkDevice {
             return Err(BlockError::InvalidSector);
         }
 
+        // SECURITY CHECK: If IOMMU is enabled and global mappings are disallowed,
+        // we cannot trust a raw `buf_addr` unless we know it's an IOVA.
+        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed() {
+            log::error!("[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.", buf_addr);
+            return Err(BlockError::Unsupported);
+        }
+
         let header = VirtioBlkReqHeader {
             req_type: VirtioBlkReqType::In as u32,
             reserved: 0,
@@ -503,6 +511,12 @@ impl VirtioBlkDevice {
         len: u32,
         queue_idx: usize,
     ) -> Result<u16, BlockError> {
+        // SECURITY CHECK: Matches submit_read
+        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed() {
+            log::error!("[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.", buf_addr);
+            return Err(BlockError::Unsupported);
+        }
+
         let mut req_dma = self.prepare_write_request(sector)?;
         let use_indirect = (self.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
 

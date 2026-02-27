@@ -336,7 +336,9 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     info!(target: "init", "PCI driver initialized");
     if io::iommu::api::is_iommu_enabled() {
         let mut devices = pci_driver::scan_all_devices();
-        io::iommu::runtime::pci::setup_iommu_for_all_pci_devices(&mut devices);
+        if let Err(e) = io::iommu::runtime::pci::setup_iommu_for_all_pci_devices(&mut devices) {
+            warn!(target: "init", "PCI IOMMU setup failed for some devices: {:?}", e);
+        }
         info!(target: "init", "Early IOMMU PCI domain assignment completed");
     }
     memory::reclaim_acpi_reclaimable(boot_info);
@@ -580,7 +582,14 @@ fn init_single_ahci_controller(dev: &pci_driver::PciDeviceInfo) {
         crate::io::log::early_print("[AHCI] PTE: not present in page tables\n");
     }
 
-    match crate::io::ahci::init_from_pci(base_virt) {
+    let iommu_device = crate::io::iommu::core::types::DeviceId::new(
+        dev.segment,
+        dev.bdf.bus(),
+        dev.bdf.device(),
+        dev.bdf.function(),
+    );
+
+    match crate::io::ahci::init_from_pci(base_virt, Some(iommu_device)) {
         Ok(controller) => {
             info!(target: "init", "AHCI controller initialized");
             let first_port = controller.lock().get_port_start_index().unwrap_or(0) as u8;

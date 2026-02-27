@@ -53,10 +53,21 @@ pub trait KernelServices: Send + Sync {
     /// - `KapiError::OutOfMemory` if allocation fails
     fn alloc_dma(&self, size: usize) -> KapiResult<DmaBuffer>;
 
+    /// Allocate DMA-capable memory for a specific device (IOMMU-aware)
+    ///
+    /// The `device_id` is a packed PCI BDF (Bus, Device, Function) and segment.
+    /// Implementation should use this to create IOMMU mappings if the device is protected.
+    ///
+    /// # Default Behavior
+    /// Delegates to `alloc_dma` for backward compatibility.
+    fn alloc_dma_for_device(&self, size: usize, _device_id: u64) -> KapiResult<DmaBuffer> {
+        self.alloc_dma(size)
+    }
+
     /// Free DMA memory
     ///
     /// # Safety
-    /// The provided `DmaBuffer` must have been originally allocated by `alloc_dma`.
+    /// The provided `DmaBuffer` must have been originally allocated by `alloc_dma` or `alloc_dma_for_device`.
     fn free_dma(&self, buffer: DmaBuffer);
 
     // ========================================================================
