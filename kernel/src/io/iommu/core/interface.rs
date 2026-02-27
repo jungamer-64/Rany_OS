@@ -55,6 +55,17 @@ pub trait IommuHardwareContext: Send + Sync {
 
     /// Free a previously allocated IOVA range.
     fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError>;
+
+    /// Free a previously allocated IOVA range immediately, bypassing software quarantine.
+    ///
+    /// # Safety
+    /// The caller MUST ensure that all IOTLB entries for this IOVA range have been
+    /// flushed from all relevant hardware units (IOMMUs and Device-TLBs) before
+    /// calling this method.
+    fn free_iova_immediate(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        // Default implementation falls back to normal free (which may quarantine)
+        self.free_iova(iova, size)
+    }
 }
 
 /// IOMMU domain interface (optional higher-level abstraction).

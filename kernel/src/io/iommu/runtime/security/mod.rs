@@ -191,16 +191,32 @@ pub fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> boo
 /// This is used for privileged mappings like RMRR that are allowed to overlap
 /// with normal "protected" BIOS regions but MUST NOT overlap with the kernel.
 pub fn validate_critical_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
+    if size == 0 {
+        return Ok(());
+    }
+    let end = start.saturating_add(size);
+
+    // 1. Check against consolidated protected regions (APIC, IOAPIC, BIOS reserved, etc.)
+    // We use range_overlaps_protected which is the primary defense.
+    if range_overlaps_protected(start, size) {
+        log::error!(
+            "[IOMMU][SECURITY] CRITICAL: Attempt to map privileged region overlapping protected memory! range={:#x}-{:#x}",
+            start, end
+        );
+        return Err(IommuError::InvalidAddress);
+    }
+
+    // 2. Secondary check for kernel image (legacy/explicit fallback)
     if let Some((k_start, k_end)) = kernel_phys_range() {
-        let end = start.saturating_add(size);
         if start < k_end && k_start < end {
             log::error!(
-                "[IOMMU][SECURITY] CRITICAL: Attempt to map RMRR overlapping kernel! range={:#x}-{:#x}, kernel={:#x}-{:#x}",
+                "[IOMMU][SECURITY] CRITICAL: Attempt to map privileged region overlapping kernel image! range={:#x}-{:#x}, kernel={:#x}-{:#x}",
                 start, end, k_start, k_end
             );
             return Err(IommuError::InvalidAddress);
         }
     }
+
     Ok(())
 }
 
@@ -243,7 +259,15 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
 
     // 3. Strict bounds check against known physical memory
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
-    if max_phys != 0 && end > max_phys {
+    if max_phys == 0 {
+        // SECURITY: If we don't know the RAM layout yet, we must be conservative
+        // and only allow DMA into regions that are explicitly safe (not implemented here,
+        // so we fail for safety).
+        log::error!("[IOMMU][SECURITY] DMA mapping attempted before RAM layout is known");
+        return Err(IommuError::NotInitialized);
+    }
+    
+    if end > max_phys {
         log::error!(
             "[IOMMU][SECURITY] DMA mapping outside known RAM: {:#x}-{:#x} (max {:#x})",
             start,

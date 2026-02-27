@@ -61,8 +61,6 @@
 use core::marker::PhantomData;
 
 // use super::IommuController;
-use crate::io::iommu::core::domain::{InvalidateRequest, IommuDomain, IommuInvalidator};
-use crate::io::iommu::core::interface::IommuHardwareContext;
 use crate::io::iommu::core::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
 

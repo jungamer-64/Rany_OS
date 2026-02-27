@@ -265,6 +265,33 @@ impl AmdIommuDriver {
         Ok(domain_id)
     }
 
+    pub(crate) fn destroy_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        // SECURITY: Check if any devices are still attached to this domain
+        {
+            let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+            if device_domains.values().any(|&did| did == domain_id) {
+                return Err(IommuError::AlreadyMapped);
+            }
+        }
+
+        let info = match self.domains.lock() {
+            Ok(mut domains) => domains.remove(&domain_id).ok_or(IommuError::DomainNotFound)?,
+            Err(_) => return Err(IommuError::Poisoned),
+        };
+
+        // SECURITY: Force-unmap all remaining DMA mappings
+        if let Ok(leaked_entries) = info.domain.force_unmap_all_dma() {
+            for entry in leaked_entries {
+                let _ = self.iova_allocator.free(entry.iova, entry.size);
+            }
+        }
+
+        // Invalidate IOTLB for the domain
+        let _ = self.invalidate_domain_pages(domain_id, 0, u64::MAX);
+
+        Ok(())
+    }
+
     /// Rollback device_domains and DTE entries on attach failure.
     pub(super) fn rollback_device_attach(
         &self,

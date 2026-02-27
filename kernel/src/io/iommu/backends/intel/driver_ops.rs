@@ -351,7 +351,7 @@ impl IntelIommuDriver {
         if let Some(ref controller) = self.controller {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(controller, device, size)?;
+                    let iova = allocate_iova_for_device(&domain_arc, device, size)?;
                     return apply_mapping_sync(
                         controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
                     );
@@ -369,7 +369,7 @@ impl IntelIommuDriver {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     crate::io::log::early_print("[DMA] map_for_device: calling allocate_iova\n");
-                    let iova = allocate_iova_for_device(controller, device, size)?;
+                    let iova = allocate_iova_for_device(&domain_arc, device, size)?;
                     crate::io::log::early_print("[DMA] map_for_device: iova allocated, calling apply_mapping_sync\n");
                     return apply_mapping_sync(
                         controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
@@ -397,7 +397,7 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(controller, device, size)?;
+                    let iova = allocate_iova_for_device(&domain_arc, device, size)?;
                     return apply_mapping_async(
                         controller, &domain_arc, iova, phys_addr.as_u64(), size,
                     )
@@ -573,6 +573,26 @@ impl IntelIommuDriver {
             .get(idx)
             .ok_or(IommuError::NotPresent)?;
         controller.create_domain(numa_node, domain_type)
+    }
+
+    pub(crate) fn destroy_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        if let Some(ref controller) = self.controller {
+            return controller.destroy_domain(domain_id);
+        }
+        let registry = self.registry()?;
+        // Try all controllers as the domain could be on any of them
+        let mut found = false;
+        for controller in &registry.controllers {
+            if controller.domain(domain_id).is_some() {
+                controller.destroy_domain(domain_id)?;
+                found = true;
+            }
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(IommuError::DomainNotFound)
+        }
     }
 
     pub(crate) fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {

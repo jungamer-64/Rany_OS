@@ -712,6 +712,26 @@ impl QuarantineQueue {
         flush_reaped_resources(&mut fctx.to_free_iova, &mut fctx.to_drop, &mut fctx.to_wake, capacity_waker, context);
     }
 
+    /// Check if any part of the given IOVA range is currently in the quarantine.
+    pub fn is_range_quarantined(&self, iova: u64, size: u64) -> bool {
+        if size == 0 {
+            return false;
+        }
+        let end = iova.saturating_add(size);
+        let inner = self.inner.lock();
+        
+        for entry in inner.entries.iter() {
+            if entry.in_use && entry.iova != 0 {
+                let entry_end = entry.iova.saturating_add(entry.iova_size);
+                // Check for overlap: [iova, end) and [entry.iova, entry_end)
+                if iova < entry_end && entry.iova < end {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Get statistics
     pub fn stats(&self) -> QuarantineStats {
         let inner = self.inner.lock();

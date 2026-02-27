@@ -4,7 +4,7 @@
 use crate::io::iommu::core::interface::IommuHardwareContext;
 use crate::io::iommu::core::dma::mapping_slab::MappingSlab;
 use crate::io::iommu::core::dma::page_table_pool::{
-    self, dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
+    dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
 };
 use crate::io::iommu::runtime::quarantine::QuarantineQueue;
 use crate::io::iommu::core::tables::{

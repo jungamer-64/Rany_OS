@@ -499,6 +499,9 @@ impl IommuDomain {
             guard.mappings.remove(iova);
         }
 
+        // SECURITY: Unregister from resource registry to maintain consistency.
+        let _ = self.dma_registry.unregister(iova);
+
         if self.domain_type != IommuDomainType::Passthrough {
             self.unmap_range(iova, mapping.size)?;
         }

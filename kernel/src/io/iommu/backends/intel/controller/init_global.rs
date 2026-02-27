@@ -345,6 +345,13 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     let config = IommuConfig::default();
     let mmio_virt = phys_to_virt_usize(mmio_base) as u64;
 
+    // Security: Register IOMMU register range as protected to prevent DMA access
+    crate::io::iommu::runtime::security::register_protected_region(
+        mmio_base,
+        4096, // VT-d registers are at least 4KB
+        "Intel VT-d IOMMU (Legacy)",
+    );
+
     let mut controller = IommuController::new(mmio_virt, 0);
     unsafe {
         controller.init(config.scalable_mode)?;

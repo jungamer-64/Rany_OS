@@ -283,7 +283,61 @@ impl IommuDomain {
     pub fn set_numa_node(&self, numa_node: Option<usize>) {
         *self.numa_node.write() = numa_node;
     }
+}
 
+// ============================================================================
+// Phase 7: IommuHardwareContext implementation for IommuDomain
+// ============================================================================
+
+impl crate::io::iommu::core::interface::IommuHardwareContext for IommuDomain {
+    fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
+        use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
+        
+        // Map alignment to granularity
+        let granularity = if alignment >= 1024 * 1024 * 1024 {
+            PageGranularity::Page1G
+        } else if alignment >= 2 * 1024 * 1024 {
+            PageGranularity::Page2M
+        } else {
+            PageGranularity::Page4K
+        };
+
+        self.per_domain_iova
+            .allocate(size, granularity)
+            .ok_or(IommuError::OutOfIova)
+    }
+
+    fn allocate_iova_masked(
+        &self,
+        size: u64,
+        _alignment: u64,
+        mask: u64,
+    ) -> Result<u64, IommuError> {
+        use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
+        
+        self.per_domain_iova
+            .allocate_with_limit(size, PageGranularity::Page4K, mask)
+            .ok_or(IommuError::OutOfIova)
+    }
+
+    fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        // SECURITY: For domain-local IOVA free, we MUST NOT use immediate free
+        // if this path can be called from outside flush().
+        // However, IommuDomain mostly uses its internal QuarantineQueue for unmaps.
+        // If this is called, we default to the allocator's internal quarantine
+        // to be safe against IOTLB Use-After-Free.
+        self.per_domain_iova.free(iova, size)
+    }
+
+    fn free_iova_immediate(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        // Since caller guarantees IOTLB consistency (flush confirmed),
+        // we can safely bypass the redundant allocator quarantine.
+        // IovaAllocator::free_immediate handles the splitting of ranges.
+        self.per_domain_iova.free_immediate(iova, size)
+    }
+}
+
+impl IommuDomain {
     /// Attach a security notifier for fatal domain errors (best-effort, one-time).
     pub(crate) fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
         let mut set = false;
@@ -344,6 +398,9 @@ impl IommuDomain {
         for guard in guards.iter_mut() {
             guard.mappings.remove(iova);
         }
+
+        // SECURITY: Unregister from resource registry to maintain consistency.
+        let _ = self.dma_registry.unregister(iova);
 
         if self.domain_type != IommuDomainType::Passthrough {
             self.unmap_range(iova, size)?;
@@ -406,8 +463,9 @@ impl IommuDomain {
             return Err(err);
         }
 
-        // Reap and process completed entries for this batch
-        self.quarantine.reap_completed(drained_batch, &mut fctx, context);
+        // Reap and process completed entries for this batch.
+        // Round 10 Fix: Pass `self` as the context to ensure domain-local IOVA reclamation.
+        self.quarantine.reap_completed(drained_batch, &mut fctx, self);
 
         // Security: Now that IOTLB invalidation is complete and synchronized,
         // it is safe to release any empty page tables back to the pool.
@@ -496,15 +554,24 @@ impl IommuDomain {
 
     /// Check that no existing mapping overlaps the given range across all shards.
     pub(super) fn check_no_overlap(
+        &self,
         guards: &[PoisonLockGuard<'_, DomainShard>],
         iova: u64,
         size: u64,
     ) -> Result<(), IommuError> {
+        // 1. Check active mappings
         for guard in guards.iter() {
             if Self::mapping_overlaps(&guard.mappings, iova, size) {
                 return Err(IommuError::AlreadyMapped);
             }
         }
+
+        // 2. SECURITY: Check quarantine queue to prevent IOVA reuse before IOTLB invalidation
+        if self.quarantine.is_range_quarantined(iova, size) {
+            log::warn!("[IOMMU][SECURITY] Attempted to map IOVA range {:#x}-{:#x} that is still in quarantine", iova, iova + size);
+            return Err(IommuError::AlreadyMapped);
+        }
+
         Ok(())
     }
 
@@ -643,16 +710,19 @@ impl IommuDomain {
             return Err(IommuError::Poisoned);
         }
 
-        // Skip validate_map_args which contains the protected region check.
-        // Still perform basic alignment and width checks for stability.
-        if (iova | phys | size) & (crate::mm::types::PAGE_SIZE_4K as u64 - 1) != 0 {
+        // SECURITY: Still perform basic alignment and width checks for stability and safety.
+        // Privileged mappings must still be page-aligned to prevent unexpected hardware behavior.
+        if (iova | phys | size) & 0xFFF != 0 {
+            log::error!("[IOMMU][SECURITY] Unaligned privileged mapping attempt: iova={:#x}, phys={:#x}, size={:#x}", iova, phys, size);
             return Err(IommuError::InvalidAlignment);
         }
         if !self.within_addr_width(iova, size) || !self.within_addr_width(phys, size) {
+            log::error!("[IOMMU][SECURITY] Out-of-bounds privileged mapping attempt: iova={:#x}, phys={:#x}, size={:#x}", iova, phys, size);
             return Err(IommuError::InvalidAddress);
         }
 
-        // SECURITY: Even privileged mappings MUST NOT overlap with critical system memory (kernel)
+        // SECURITY: Even privileged mappings MUST NOT overlap with truly critical system memory.
+        // The improved validate_critical_dma_region now checks all protected regions (APIC, Page Tables, etc.)
         crate::io::iommu::runtime::security::validate_critical_dma_region(phys, size)?;
 
         self.map_internal(iova, phys, size, read, write)
@@ -670,7 +740,7 @@ impl IommuDomain {
         let (start_shard, end_shard) = self.shard_range(iova, size)?;
         let mut guards = self.lock_shards(start_shard, end_shard)?;
 
-        Self::check_no_overlap(&guards, iova, size)?;
+        self.check_no_overlap(&guards, iova, size)?;
 
         if self.domain_type != IommuDomainType::Passthrough {
             self.map_pages_transactional(iova, phys, size, read, write)?;
@@ -686,6 +756,17 @@ impl IommuDomain {
         };
         for guard in guards.iter_mut() {
             let _ = guard.mappings.insert(mapping.clone());
+        }
+
+        // SECURITY: Register the mapping in the resource registry to enable force-unmap
+        // on domain destruction, preventing DMA-after-free leaks.
+        if let Err(e) = self.dma_registry.register(iova, phys, size) {
+            log::error!("[IOMMU] Failed to register DMA mapping in registry: {:?}", e);
+            // Rollback the mapping if registration fails to maintain consistency
+            if self.domain_type != IommuDomainType::Passthrough {
+                let _ = self.unmap_range(iova, size);
+            }
+            return Err(e);
         }
 
         self.mapped_size.fetch_add(size, Ordering::Relaxed);

@@ -41,8 +41,15 @@ impl IcmpProcessor {
                 // Security: Limit map size to prevent memory DoS.
                 const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
                 if self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES && !self.per_ip_rate_limits.contains_key(&src_ip) {
-                    // Evict oldest or just ignore
-                    return IcmpResult::Ignored;
+                    // Evict oldest entry to prevent DoS
+                    let oldest = self.per_ip_rate_limits.iter()
+                        .min_by_key(|(_, (last_time, _))| *last_time)
+                        .map(|(&ip, _)| ip);
+                    if let Some(oldest_ip) = oldest {
+                        self.per_ip_rate_limits.remove(&oldest_ip);
+                    } else {
+                        return IcmpResult::Ignored;
+                    }
                 }
 
                 let (last_time, tokens) = self.per_ip_rate_limits.entry(src_ip).or_insert((current_time, 10));

@@ -596,4 +596,8 @@ impl crate::io::iommu::core::interface::IommuHardwareContext for AmdIommuDriver 
     fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
         self.iova_allocator.free(iova, size)
     }
+
+    fn free_iova_immediate(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        self.iova_allocator.free_immediate(iova, size)
+    }
 }

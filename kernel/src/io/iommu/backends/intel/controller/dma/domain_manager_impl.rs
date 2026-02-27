@@ -1,6 +1,7 @@
 use super::*;
 use crate::io::iommu::core::domain::IommuDomain;
 use crate::io::iommu::backends::intel::controller::init::CapabilityManager;
+use crate::io::iommu::backends::intel::controller::iova::IovaManager;
 
 
 impl DomainManager for IommuController {
@@ -62,6 +63,36 @@ impl DomainManager for IommuController {
             Ok(domains) => domains.get(&id).cloned(),
             Err(_) => None,
         }
+    }
+
+    fn destroy_domain(&self, id: u16) -> Result<(), IommuError> {
+        // SECURITY: Check if any devices are still attached to this domain
+        {
+            let device_domains = self.device_domains.lock().map_err(|_| IommuError::HardwareError)?;
+            if device_domains.values().any(|&did| did == id) {
+                log::error!("[IOMMU] Attempted to destroy domain {} while devices are still attached", id);
+                return Err(IommuError::AlreadyMapped);
+            }
+        }
+
+        let domain_arc = match self.domains.lock() {
+            Ok(mut domains) => domains.remove(&id).ok_or(IommuError::DomainNotFound)?,
+            Err(_) => return Err(IommuError::HardwareError),
+        };
+
+        // SECURITY: Force-unmap all remaining DMA mappings tracked in the registry.
+        // This prevents DMA-after-free and IOTLB inconsistency if some handles were leaked.
+        if let Ok(leaked_entries) = domain_arc.force_unmap_all_dma() {
+            for entry in leaked_entries {
+                // Free the IOVA in the controller context to ensure it can be reused later
+                let _ = self.free_iova(entry.iova, entry.size);
+            }
+        }
+
+        // Invalidate IOTLB for this domain to ensure hardware no longer has cached entries
+        self.invalidate_iotlb(id);
+
+        Ok(())
     }
 
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {

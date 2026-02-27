@@ -290,3 +290,31 @@ pub struct FreeListBuddyAllocator {
     /// 値 = そのブロック内で支配的なMigrateType
     pageblock_flags: Option<Vec<MigrateType>>,
 }
+
+impl TypeIdHash for PageDescriptor {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"PageDescriptor:v1:next,prev,order,migrate_type,flags,refcount,mapcount")
+    }
+
+    fn type_name() -> &'static str {
+        "PageDescriptor"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
+    }
+}
+
+impl TypeIdHash for FreeListBuddyAllocator {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"FreeListBuddyAllocator:v1:free_areas,total_frames,free_frames")
+    }
+
+    fn type_name() -> &'static str {
+        "FreeListBuddyAllocator"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
+    }
+}

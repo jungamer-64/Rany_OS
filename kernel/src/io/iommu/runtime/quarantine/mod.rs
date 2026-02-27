@@ -469,7 +469,8 @@ fn flush_reaped_resources(
     context: &dyn IommuHardwareContext,
 ) {
     for (iova, size) in to_free_iova.drain(..) {
-        let _ = context.free_iova(iova, size);
+        // Safety: reap_completed() is called after IOTLB flush confirmation.
+        let _ = context.free_iova_immediate(iova, size);
     }
     for raw in to_drop.drain(..) {
         unsafe { raw.drop_erased() };
@@ -484,6 +485,5 @@ fn flush_reaped_resources(
 
 /// Maximum number of quarantined entries per queue
 mod queue_impl;
-pub use queue_impl::*;
 mod stats_ticket;
 pub use stats_ticket::*;

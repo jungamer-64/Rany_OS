@@ -42,6 +42,16 @@ impl IommuHardwareContext for IommuController {
         }
     }
 
+    fn free_iova_immediate(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        // Bypass quarantine for already-flushed IOVAs
+        let guard = self
+            .iova_allocator
+            .lock()
+            .map_err(|_| IommuError::HardwareError)?;
+        let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
+        alloc.free_immediate(iova, size)
+    }
+
 }
 
 // ============================================================================

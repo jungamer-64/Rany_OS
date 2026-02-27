@@ -225,6 +225,13 @@ impl IommuBackend {
         }
     }
 
+    pub fn destroy_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        match self {
+            Self::Intel(driver) => driver.destroy_domain(domain_id),
+            Self::Amd(driver) => driver.destroy_domain(domain_id),
+        }
+    }
+
     pub fn set_domain_numa(
         &self,
         domain_id: u16,

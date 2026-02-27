@@ -240,7 +240,7 @@ impl IovaAllocator {
         if cpu_id >= IOVA_ALLOCATOR_MAX_CPUS {
             // Fallback for invalid CPU ID: behave as immediate free? 
             // Or just use CPU 0. Let's use CPU 0 for safety but this shouldn't happen.
-            return self.free_immediate(addr, granularity);
+            return self.free_immediate(addr, granularity.size_bytes());
         }
 
         let epoch = self.current_epoch.load(Ordering::Relaxed);
@@ -287,7 +287,7 @@ impl IovaAllocator {
     }
 
     /// Fallback quarantine path when per-CPU quarantine is unavailable
-    fn free_via_fallback_quarantine(&self, entry: QuarantineEntry, addr: u64, granularity: PageGranularity) -> Result<(), IommuError> {
+    fn free_via_fallback_quarantine(&self, entry: QuarantineEntry, addr: u64, _granularity: PageGranularity) -> Result<(), IommuError> {
         let mut fb = FALLBACK_QUARANTINE.lock();
         if fb.push_entry(entry) {
             self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
@@ -390,9 +390,15 @@ impl IovaAllocator {
     /// Free immediately (Bypass Quarantine)
     ///
     /// Use this only during initialization or teardown when no IOTLB caching is active.
-    pub fn free_immediate(&self, addr: u64, granularity: PageGranularity) -> Result<(), IommuError> {
-        self.inner.free_immediate(addr, granularity)
-            .map_err(|_| IommuError::NotMapped)
+    pub fn free_immediate(&self, mut addr: u64, mut size: u64) -> Result<(), IommuError> {
+        while size > 0 {
+            let (granularity, step) = Self::select_free_granularity(addr, size);
+            self.inner.free_immediate(addr, granularity)
+                .map_err(|_| IommuError::NotMapped)?;
+            addr += step;
+            size -= step;
+        }
+        Ok(())
     }
 
     // ========================================================================

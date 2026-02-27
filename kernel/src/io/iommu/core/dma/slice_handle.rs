@@ -1,12 +1,10 @@
 use crate::io::iommu::core::types::DeviceId;
 use core::marker::PhantomData;
-use core::task::{Context, Poll};
 use crate::ipc::RRef;
 use crate::io::iommu::core::dma::handle::{DmaDirection, DmaHandle, MappingKind, MapError, MapErrorKind, UnmapError, UnmapErrorKind};
 use crate::io::iommu::core::domain::{IommuDomain, IommuInvalidator, InvalidateRequest};
 use crate::io::iommu::core::interface::IommuHardwareContext;
 use crate::io::iommu::core::types::IommuError;
-use crate::io::iommu::runtime::quarantine::QuarantineTicket;
 
 
 impl<T> DmaHandle<[T]> {

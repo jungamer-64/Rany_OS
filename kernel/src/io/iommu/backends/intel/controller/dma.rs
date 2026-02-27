@@ -71,6 +71,7 @@ pub trait DomainManager {
     fn set_domain_numa(&self, domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError>;
     fn get_domain_numa(&self, domain_id: u16) -> Option<usize>;
     fn domain(&self, id: u16) -> Option<Arc<IommuDomain>>;
+    fn destroy_domain(&self, id: u16) -> Result<(), IommuError>;
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError>;
     fn detach_device(&self, device: DeviceId) -> Result<(), IommuError>;
     fn get_domain_for_device(&self, device: DeviceId) -> Result<Option<u16>, IommuError>;

@@ -83,15 +83,15 @@ fn validate_dma_params(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError>
 }
 
 fn allocate_iova_for_device(
-    controller: &Arc<controller::IommuController>,
+    domain: &Arc<IommuDomain>,
     device: &DeviceId,
     size: u64,
 ) -> Result<u64, IommuError> {
+    use crate::io::iommu::core::interface::IommuHardwareContext;
     let mask = crate::io::iommu::api::get_device_dma_mask(device);
     match mask {
-        Some(limit) => controller.allocate_iova_masked(size, limit),
-        None if size == crate::mm::types::PAGE_SIZE_4K as u64 => controller.allocate_iova_fast(size),
-        None => controller.allocate_iova(size),
+        Some(limit) => domain.allocate_iova_masked(size, 4096, limit),
+        None => domain.allocate_iova_aligned(size, 4096),
     }
 }
 

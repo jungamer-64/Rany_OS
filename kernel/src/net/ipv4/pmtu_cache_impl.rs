@@ -199,14 +199,18 @@ impl FragmentBuffer {
         payload: &[u8],
         current_time: u64,
     ) -> bool {
-        let fragment_offset = header.fragment_offset() * 8; // Convert to bytes
-        let fragment_len = payload.len() as u16;
-        let fragment_end = fragment_offset.saturating_add(fragment_len);
+        let fragment_offset = (header.fragment_offset() as u32) * 8; // Convert to bytes
+        let fragment_len = payload.len() as u32;
+        let fragment_end = fragment_offset + fragment_len;
 
         // Check for overflow
-        if fragment_end as usize > Self::MAX_DATAGRAM_SIZE {
+        if fragment_end > Self::MAX_DATAGRAM_SIZE as u32 {
             return false;
         }
+
+        let fragment_offset = fragment_offset as u16;
+        let fragment_end = fragment_end as u16;
+        let fragment_len = fragment_len as u16;
 
         self.last_update = current_time;
 
@@ -411,8 +415,16 @@ impl FragmentReassembler {
         if !self.buffers.contains_key(&key) {
             // Check buffer limit
             if self.buffers.len() >= self.max_buffers {
-                self.stats.dropped_limit += 1;
-                return None;
+                // Evict the oldest buffer to prevent Reassembly Buffer Exhaustion DoS
+                let oldest = self.buffers.iter()
+                    .min_by_key(|(_, buf)| buf.created_at)
+                    .map(|(&k, _)| k);
+                if let Some(oldest_key) = oldest {
+                    self.buffers.remove(&oldest_key);
+                } else {
+                    self.stats.dropped_limit += 1;
+                    return None;
+                }
             }
 
             self.buffers.insert(key, FragmentBuffer::new(current_time));

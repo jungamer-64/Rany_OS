@@ -8,7 +8,7 @@ use x86_64::PhysAddr;
 
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;
 use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::core::dma::iova_allocator::{PageGranularity, IovaGranularity};
+use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
 
 use super::AmdIommuDriver;
 
