@@ -423,12 +423,12 @@ impl Future for UdpRecvFuture {
 }
 
 /// Maximum UDP sockets
-const MAX_UDP_SOCKETS: usize = 256;
+const MAX_UDP_SOCKETS: usize = 1024;
 
 /// UDP socket table
 pub struct UdpSocketTable {
     /// Sockets indexed by local port
-    sockets: PoisonLock<[Option<Arc<PoisonLock<UdpSocketInner>>>; MAX_UDP_SOCKETS]>,
+    sockets: PoisonLock<alloc::collections::BTreeMap<u16, Arc<PoisonLock<UdpSocketInner>>>>,
     /// Statistics
     stats: UdpStats,
 }

@@ -309,6 +309,11 @@ pub struct TcbTable {
     pub current_tick: AtomicU64,
 }
 
+/// 最大TCBエントリ数 (DoS防止)
+const MAX_TCB_ENTRIES: usize = 4096;
+/// SynReceived状態の最大エントリ数 (SYN Flood防止)
+const MAX_SYN_RECEIVED_ENTRIES: usize = 1024;
+
 impl TcbTable {
     /// 新規作成
     pub const fn new() -> Self {
@@ -319,35 +324,57 @@ impl TcbTable {
         }
     }
 
-    /// 初期シーケンス番号生成（RFC 6528準拠の簡易版）
-    /// タイムスタンプとカウンタを組み合わせたハッシュベースの生成
-    pub fn generate_isn(&self) -> u32 {
-        // タイムスタンプ取得（TSC使用）
-        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-
-        // カウンタをインクリメント
-        let counter = self.seq_counter.fetch_add(1, Ordering::Relaxed);
-
-        // 簡易ハッシュ: タイムスタンプとカウンタを組み合わせ
-        // FNV-1aライクなハッシュ関数
-        let mut hash: u32 = 0x811c9dc5; // FNV offset basis
+    /// 初期シーケンス番号生成（RFC 6528準拠）
+    /// 
+    /// 以前の実装はRDTSCのみに依存しており予測可能でしたが、
+    /// この実装は暗号論的に安全な乱数（generate_random）と
+    /// 5-tuple情報を組み合わせることで、シーケンス番号予測攻撃を防ぎます。
+    pub fn generate_isn(&self, local: SocketAddr, remote: SocketAddr) -> u32 {
+        // 暗号論的に安全な乱数を取得
+        let random_bytes = crate::net::tls::generate_random();
+        
+        // FNV-1aハッシュで5-tupleと乱数を混合
+        let mut hash: u32 = 0x811c9dc5;
         const FNV_PRIME: u32 = 0x01000193;
 
-        // タイムスタンプをバイト単位で混合
-        for byte in tsc.to_le_bytes() {
+        // 乱数全体を混合
+        for byte in random_bytes {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
 
-        // カウンタも混合
+        // アドレスとポートを混合 (RFC 6528)
+        let mix_addr = |h: &mut u32, addr: SocketAddr| {
+            match addr {
+                SocketAddr::V4 { ip, port } => {
+                    for byte in ip.octets() {
+                        *h ^= byte as u32;
+                        *h = h.wrapping_mul(FNV_PRIME);
+                    }
+                    for byte in port.to_le_bytes() {
+                        *h ^= byte as u32;
+                        *h = h.wrapping_mul(FNV_PRIME);
+                    }
+                }
+                SocketAddr::V6 { ip, port } => {
+                    for byte in ip.octets() {
+                        *h ^= byte as u32;
+                        *h = h.wrapping_mul(FNV_PRIME);
+                    }
+                    for byte in port.to_le_bytes() {
+                        *h ^= byte as u32;
+                        *h = h.wrapping_mul(FNV_PRIME);
+                    }
+                }
+            }
+        };
+
+        mix_addr(&mut hash, local);
+        mix_addr(&mut hash, remote);
+
+        // カウンタをインクリメントして混合
+        let counter = self.seq_counter.fetch_add(1, Ordering::Relaxed);
         for byte in counter.to_le_bytes() {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-
-        // 現在のtickも混合して更なるエントロピー追加
-        let tick = self.current_tick.load(Ordering::Relaxed);
-        for byte in tick.to_le_bytes() {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
@@ -372,9 +399,29 @@ impl TcbTable {
     }
 
     /// 接続追加
-    pub fn insert(&self, entry: TcpControlBlockEntry) {
+    /// 
+    /// # Returns
+    /// - `Ok(())` : 成功
+    /// - `Err(&'static str)` : テーブル満杯などのエラー
+    pub fn insert(&self, entry: TcpControlBlockEntry) -> Result<(), &'static str> {
+        let mut entries = self.entries.write();
+        
+        // 全体リソース制限
+        if entries.len() >= MAX_TCB_ENTRIES {
+            return Err("TCB table full");
+        }
+
+        // SYN-RECV制限 (SYN Flood攻撃対策)
+        if entry.state == TcpConnectionState::SynReceived {
+            let syn_recv_count = entries.values().filter(|e| e.state == TcpConnectionState::SynReceived).count();
+            if syn_recv_count >= MAX_SYN_RECEIVED_ENTRIES {
+                return Err("Too many SYN-RECV connections");
+            }
+        }
+
         let key = (entry.local, entry.remote);
-        self.entries.write().insert(key, entry);
+        entries.insert(key, entry);
+        Ok(())
     }
 
     /// 接続取得

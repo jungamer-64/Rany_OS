@@ -44,16 +44,21 @@ impl ArpProcessor {
         let sender_ip = packet.sender_ip();
         let target_ip = packet.target_ip();
 
-        // Decide whether we're allowed to update the cache.  Only accept:
-        //  * requests that target us
-        //  * replies for which we already had a pending/known entry
+        // Decide whether we're allowed to update the cache. (Strict ARP logic)
+        // To prevent ARP Poisoning, we only accept:
+        //  1. ARP Requests that target our IP (we need the mapping to reply).
+        //  2. ARP Replies that we are actually waiting for (Incomplete entry exists).
+        //  3. ARP Replies for entries we already have in the cache (updating existing mappings).
         let mut should_update = false;
         if !sender_ip.is_any() && !sender_mac.is_broadcast() {
-            if target_ip == self.local_ip {
+            if packet.operation() == ArpOperation::Request && target_ip == self.local_ip {
                 should_update = true;
             } else if packet.operation() == ArpOperation::Reply {
-                if self.cache.lookup(sender_ip, current_time).is_some() {
+                if self.cache.is_pending(sender_ip, current_time) || 
+                   self.cache.lookup(sender_ip, current_time).is_some() {
                     should_update = true;
+                } else {
+                    log::warn!("[NET] ARP: Dropping unsolicited ARP reply from {} ({})", sender_ip, sender_mac);
                 }
             }
         }

@@ -327,7 +327,7 @@ fn process_tcp_new_connection(
     drop(inner);
 
     // TCB作成
-    let isn = tcb_table().generate_isn();
+    let isn = tcb_table().generate_isn(local, remote);
     let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
     tcb.initialize_seq(isn);
     tcb.rcv_nxt = seq_num.wrapping_add(1);
@@ -341,7 +341,12 @@ fn process_tcp_new_connection(
     if sack_permitted {
         tcb.sack_enabled = true;
     }
-    tcb_table().insert(tcb);
+    
+    // TCBをテーブルに挿入 (リソース制限チェック)
+    if let Err(e) = tcb_table().insert(tcb) {
+        log::warn!("[NET] TCP: Failed to accept new connection from {}: {}", remote, e);
+        return;
+    }
 
     // SYN-ACK送信 (TCPオプション付き)
     // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)

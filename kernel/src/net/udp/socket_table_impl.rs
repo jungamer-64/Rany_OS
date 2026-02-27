@@ -1,12 +1,12 @@
 use super::*;
-
+use alloc::collections::BTreeMap;
+use core::sync::atomic::Ordering;
 
 impl UdpSocketTable {
     /// Create a new UDP socket table
     pub const fn new() -> Self {
-        const NONE: Option<Arc<PoisonLock<UdpSocketInner>>> = None;
         UdpSocketTable {
-            sockets: PoisonLock::new([NONE; MAX_UDP_SOCKETS]),
+            sockets: PoisonLock::new(BTreeMap::new()),
             stats: UdpStats {
                 rx_datagrams: core::sync::atomic::AtomicU64::new(0),
                 tx_datagrams: core::sync::atomic::AtomicU64::new(0),
@@ -16,24 +16,51 @@ impl UdpSocketTable {
         }
     }
 
-    // Legacy `bind(port)` wrapper removed. Use `bind_with_token(port, None)` instead.
+    /// 1024..65535 の範囲からランダムな未使用ポートを選択する
+    fn find_available_port(&self, sockets: &BTreeMap<u16, Arc<PoisonLock<UdpSocketInner>>>) -> Option<u16> {
+        // 暗号論的に安全な乱数から開始ポートを決定 (Source Port Randomization)
+        let random_bytes = crate::net::tls::generate_random();
+        let mut seed = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
+        
+        // エフェメラルポート範囲 (RFC 6056 / IANA)
+        const EPHEMERAL_START: u16 = 49152;
+        const EPHEMERAL_END: u16 = 65535;
+        const RANGE_SIZE: u16 = EPHEMERAL_END - EPHEMERAL_START + 1;
+
+        let start_port = EPHEMERAL_START + (seed % RANGE_SIZE);
+        
+        for i in 0..RANGE_SIZE {
+            let port = EPHEMERAL_START + ((start_port - EPHEMERAL_START + i) % RANGE_SIZE);
+            if !sockets.contains_key(&port) {
+                return Some(port);
+            }
+        }
+        None
+    }
 
     /// Bind a socket to a port and associate it with an optional capability token.
-    /// If `token` is Some(id), this will attempt to increment the token's in-flight
-    /// counter. On failure, bind will return None.
-    pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Option<UdpSocket> {
+    /// If `port` is 0, an available ephemeral port will be automatically assigned.
+    pub fn bind_with_token(&self, mut port: u16, token: Option<u64>) -> Option<UdpSocket> {
         match self.sockets.lock() {
             Ok(mut sockets) => {
-                // Find slot for this port
-                let slot = (port as usize) % MAX_UDP_SOCKETS;
-
-                // Check if already bound
-                if sockets[slot].is_some() {
+                // Check table size limit
+                if sockets.len() >= MAX_UDP_SOCKETS {
+                    log::warn!("[NET] UDP: Socket table full");
                     return None;
                 }
 
-                // If a token was provided, attempt to increment in-flight. If it fails,
-                // abort bind.
+                // Autobind if port is 0
+                if port == 0 {
+                    if let Some(p) = self.find_available_port(&sockets) {
+                        port = p;
+                    } else {
+                        return None;
+                    }
+                } else if sockets.contains_key(&port) {
+                    return None; // Port in use
+                }
+
+                // If a token was provided, attempt to increment in-flight.
                 if let Some(t) = token {
                     if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
                         return None;
@@ -48,13 +75,11 @@ impl UdpSocketTable {
                     token,
                 }));
 
-                sockets[slot] = Some(inner.clone());
-
+                sockets.insert(port, inner.clone());
                 Some(UdpSocket { inner })
             }
             Err(_) => {
                 log::error!("[NET] UDP Table poisoned during bind");
-                // If we incremented in-flight above, roll back
                 if let Some(t) = token {
                     let _ = crate::security::capability::manager().decrement_in_flight(t);
                 }
@@ -63,19 +88,18 @@ impl UdpSocketTable {
         }
     }
 
-    /// Unbind a socket from a port and decrement any associated token in-flight counter
+    /// Unbind a socket from a port
     pub fn unbind(&self, port: u16) {
         match self.sockets.lock() {
             Ok(mut sockets) => {
-                let slot = (port as usize) % MAX_UDP_SOCKETS;
-                if let Some(inner) = sockets[slot].take() {
+                if let Some(inner) = sockets.remove(&port) {
                     match inner.lock() {
                         Ok(mut guard) => {
                             if let Some(t) = guard.token.take() {
                                 let _ = crate::security::capability::manager().decrement_in_flight(t);
                             }
                         }
-                        Err(_) => log::error!("[NET] UDP Socket poisoned during unbind - token cleanup skipped"),
+                        Err(_) => log::error!("[NET] UDP Socket poisoned during unbind"),
                     }
                 }
             }
@@ -87,22 +111,16 @@ impl UdpSocketTable {
     pub(crate) fn find(&self, port: u16) -> Option<Arc<PoisonLock<UdpSocketInner>>> {
         match self.sockets.lock() {
             Ok(sockets) => {
-                let slot = (port as usize) % MAX_UDP_SOCKETS;
-
-                if let Some(ref inner) = sockets[slot] {
+                if let Some(inner) = sockets.get(&port) {
                     match inner.lock() {
                         Ok(socket) => {
-                            if socket.local_port == port && !socket.closed {
+                            if !socket.closed {
                                 return Some(inner.clone());
                             }
                         }
-                        Err(_) => {
-                            log::error!("[NET] UDP Socket poisoned during find");
-                            return None;
-                        }
+                        Err(_) => log::error!("[NET] UDP Socket poisoned during find"),
                     }
                 }
-
                 None
             }
             Err(_) => {
@@ -112,10 +130,8 @@ impl UdpSocketTable {
         }
     }
 
-    /// Deliver a packet to the appropriate socket using a PacketRef (zero-copy)
+    /// Deliver a packet to the appropriate socket
     pub fn deliver(&self, src: UdpAddr, dst_port: u16, packet: PacketRef) -> bool {
-        use core::sync::atomic::Ordering;
-
         if let Some(socket) = self.find(dst_port) {
             match socket.lock() {
                 Ok(mut inner) => {
@@ -126,11 +142,9 @@ impl UdpSocketTable {
 
                     if inner.rx_packet_queue.len() < 64 {
                         inner.rx_packet_queue.push_back((src, packet));
-
                         for waker in inner.wakers.drain(..) {
                             waker.wake();
                         }
-
                         self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
                         true
                     } else {
@@ -139,7 +153,6 @@ impl UdpSocketTable {
                     }
                 }
                 Err(_) => {
-                    log::error!("[NET] UDP Socket poisoned during deliver - dropping packet");
                     self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
                     false
                 }
@@ -150,43 +163,26 @@ impl UdpSocketTable {
         }
     }
 
-    /// Get statistics
-    pub fn stats(&self) -> (u64, u64, u64, u64) {
-        use core::sync::atomic::Ordering;
-        (
-            self.stats.rx_datagrams.load(Ordering::Relaxed),
-            self.stats.tx_datagrams.load(Ordering::Relaxed),
-            self.stats.rx_dropped.load(Ordering::Relaxed),
-            self.stats.checksum_errors.load(Ordering::Relaxed),
-        )
-    }
-
-    /// List all bound UDP sockets (for netstat)
+    /// List all bound UDP sockets
     pub fn list_sockets(&self) -> alloc::vec::Vec<UdpSocketSnapshot> {
         let mut result = alloc::vec::Vec::new();
         match self.sockets.lock() {
             Ok(sockets) => {
-                for slot in sockets.iter() {
-                    if let Some(inner) = slot {
-                        match inner.lock() {
-                            Ok(socket) => {
-                                if !socket.closed {
-                                    result.push(UdpSocketSnapshot {
-                                        local_port: socket.local_port,
-                                        rx_queue_len: socket.rx_packet_queue.len(),
-                                    });
-                                }
-                            }
-                            Err(_) => {
-                                // Skip poisoned sockets
+                for (port, inner) in sockets.iter() {
+                    match inner.lock() {
+                        Ok(socket) => {
+                            if !socket.closed {
+                                result.push(UdpSocketSnapshot {
+                                    local_port: *port,
+                                    rx_queue_len: socket.rx_packet_queue.len(),
+                                });
                             }
                         }
+                        Err(_) => {}
                     }
                 }
             }
-            Err(_) => {
-                log::error!("[NET] UDP Table poisoned during list_sockets");
-            }
+            Err(_) => log::error!("[NET] UDP Table poisoned (list_sockets)"),
         }
         result
     }
@@ -194,8 +190,18 @@ impl UdpSocketTable {
     /// Get number of bound sockets
     pub fn socket_count(&self) -> usize {
         match self.sockets.lock() {
-            Ok(sockets) => sockets.iter().filter(|s| s.is_some()).count(),
+            Ok(sockets) => sockets.len(),
             Err(_) => 0,
         }
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> (u64, u64, u64, u64) {
+        (
+            self.stats.rx_datagrams.load(Ordering::Relaxed),
+            self.stats.tx_datagrams.load(Ordering::Relaxed),
+            self.stats.rx_dropped.load(Ordering::Relaxed),
+            self.stats.checksum_errors.load(Ordering::Relaxed),
+        )
     }
 }
