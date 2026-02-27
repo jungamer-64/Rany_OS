@@ -28,7 +28,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Once;
 
-use crate::io::iommu::fault_log::FaultRecord;
+use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::security::audit::{AuditEvent, AuditEventType};
 pub(crate) use crate::security::dma::{register_protected_page, unregister_protected_page, range_overlaps_protected};
 
@@ -54,8 +54,8 @@ pub fn register_protected_region(start: u64, size: u64, name: &'static str) {
 pub fn init() {
     // 0. Initialize IOMMU Group Manager (Global)
     // This is required by setup_iommu_for_pci_device regardless of the backend.
-    crate::io::iommu::groups::IOMMU_GROUP_MANAGER.call_once(|| {
-        crate::io::iommu::groups::IommuGroupManager::new()
+    crate::io::iommu::runtime::groups::IOMMU_GROUP_MANAGER.call_once(|| {
+        crate::io::iommu::runtime::groups::IommuGroupManager::new()
     });
 
     // 1. Protect Local APIC
@@ -1058,10 +1058,10 @@ pub async fn security_monitor_task() {
 /// the actual unmap operations asynchronously (from GC task context,
 /// not from Drop which must be O(1) and lock-free).
 fn run_zombie_dma_gc() {
-    use super::zombie_queue;
+    use crate::io::iommu::runtime::zombie;
 
     // Always process some zombies if there are any pending
-    let pending = zombie_queue::has_pending_zombies();
+    let pending = zombie::has_pending_zombies();
     let memory_pressure = crate::mm::phys::unified_alloc::memory_pressure_level();
 
     // Determine how many to process based on pressure
@@ -1078,10 +1078,10 @@ fn run_zombie_dma_gc() {
     }
 
     // Process zombies using the zombie_queue API
-    let processed = zombie_queue::run_zombie_gc(max_process);
+    let processed = zombie::run_zombie_gc(max_process);
 
     if processed > 0 {
-        let stats = zombie_queue::zombie_stats();
+        let stats = zombie::zombie_stats();
         log::debug!(
             "[IOMMU][GC] Processed {} zombies (total: enqueued={}, processed={}, dropped={})",
             processed,
@@ -1514,7 +1514,7 @@ impl EmergencyIsolationRegistry {
                 let source_id = slot.source_id.load(Ordering::Acquire) as u16;
 
                 // Perform actual hardware isolation via the driver
-                if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
+                if let Some(driver) = crate::io::iommu::runtime::registry::get_iommu_driver() {
                     let device_id = DeviceId::from_bdf(source_id);
                     if let Err(e) = driver.isolate_device(device_id) {
                         log::error!(
@@ -1627,7 +1627,7 @@ pub fn is_device_emergency_isolated(source_id: u16) -> bool {
 /// This performs device-selective IOTLB invalidation to ensure
 /// the device cannot use any cached translations.
 fn invalidate_device_iotlb(source_id: u16) -> Result<(), IommuError> {
-    use crate::io::iommu::flush;
+    use crate::io::iommu::core::dma::flush;
 
     // Use device-selective invalidation for maximum isolation
     flush::invalidate_iotlb_device(source_id)?;

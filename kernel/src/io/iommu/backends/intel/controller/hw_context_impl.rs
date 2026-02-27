@@ -13,11 +13,11 @@ impl IommuHardwareContext for IommuController {
 
         // Map alignment to granularity
         let granularity = if alignment >= 1024 * 1024 * 1024 {
-            crate::io::iommu::IovaGranularity::Page1G
+            crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page1G
         } else if alignment >= 2 * 1024 * 1024 {
-            crate::io::iommu::IovaGranularity::Page2M
+            crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page2M
         } else {
-            crate::io::iommu::IovaGranularity::Page4K
+            crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page4K
         };
 
         IovaManager::allocate_iova_aligned(self, size, granularity)

@@ -157,7 +157,7 @@ impl IommuDomain {
                 *pd_entry = SlPte::new();
                 
                 // Quarantine PT instead of immediate deallocation
-                if let Some(pt) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pt_phys) {
+                if let Some(pt) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pt_phys) {
                     if let Ok(mut pending) = self.pending_pt_release.lock() {
                         pending.push(pt);
                     }
@@ -169,7 +169,7 @@ impl IommuDomain {
                     *pdp_entry = SlPte::new();
 
                     // Quarantine PD
-                    if let Some(pd) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pd_phys) {
+                    if let Some(pd) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
                         if let Ok(mut pending) = self.pending_pt_release.lock() {
                             pending.push(pd);
                         }
@@ -181,7 +181,7 @@ impl IommuDomain {
                         *pml4_entry = SlPte::new();
 
                         // Quarantine PDP
-                        if let Some(pdp) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                        if let Some(pdp) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
                             if let Ok(mut pending) = self.pending_pt_release.lock() {
                                 pending.push(pdp);
                             }
@@ -281,9 +281,9 @@ impl IommuDomain {
         &self,
         rref: crate::ipc::RRef<T>,
         context: &dyn IommuHardwareContext,
-        direction: crate::io::iommu::dma_handle::DmaDirection,
-    ) -> Result<crate::io::iommu::dma_handle::DmaHandle<T>, crate::io::iommu::dma_handle::MapError<T>> {
-        use crate::io::iommu::dma_handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
+        direction: crate::io::iommu::core::dma::handle::DmaDirection,
+    ) -> Result<crate::io::iommu::core::dma::handle::DmaHandle<T>, crate::io::iommu::core::dma::handle::MapError<T>> {
+        use crate::io::iommu::core::dma::handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
         use x86_64::VirtAddr;
 
         // Get physical address from RRef's virtual pointer
@@ -310,9 +310,9 @@ impl IommuDomain {
 
         // Determine permissions from direction
         let (read, write) = match direction {
-            crate::io::iommu::dma_handle::DmaDirection::ToDevice => (true, false),
-            crate::io::iommu::dma_handle::DmaDirection::FromDevice => (false, true),
-            crate::io::iommu::dma_handle::DmaDirection::Bidirectional => (true, true),
+            crate::io::iommu::core::dma::handle::DmaDirection::ToDevice => (true, false),
+            crate::io::iommu::core::dma::handle::DmaDirection::FromDevice => (false, true),
+            crate::io::iommu::core::dma::handle::DmaDirection::Bidirectional => (true, true),
         };
 
         // Create page table mappings
@@ -351,11 +351,11 @@ impl IommuDomain {
     /// Returns `UnmapError<T>` containing the handle on failure.
     pub fn unmap_buffer<T, I: IommuInvalidator>(
         &self,
-        mut handle: crate::io::iommu::dma_handle::DmaHandle<T>,
+        mut handle: crate::io::iommu::core::dma::handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::dma_handle::UnmapError<T>> {
-        use crate::io::iommu::dma_handle::{UnmapError, UnmapErrorKind};
+    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::core::dma::handle::UnmapError<T>> {
+        use crate::io::iommu::core::dma::handle::{UnmapError, UnmapErrorKind};
 
         let iova = handle.iova();
         let size = handle.size();
@@ -408,11 +408,11 @@ impl IommuDomain {
     /// A future that resolves to `Result<RRef<T>, UnmapError<T>>`
     pub async fn unmap_buffer_async<T, I: IommuInvalidator + Sync>(
         &self,
-        mut handle: crate::io::iommu::dma_handle::DmaHandle<T>,
+        mut handle: crate::io::iommu::core::dma::handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::dma_handle::UnmapError<T>> {
-        use crate::io::iommu::dma_handle::{UnmapError, UnmapErrorKind};
+    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::core::dma::handle::UnmapError<T>> {
+        use crate::io::iommu::core::dma::handle::{UnmapError, UnmapErrorKind};
 
         let iova = handle.iova();
         let size = handle.size();
@@ -537,7 +537,7 @@ impl IommuDomain {
 
                 // Return table to pool (it will unregister if pool is full and truly deallocating)
                 if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
-                    if let Some(pt) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(phys) {
+                    if let Some(pt) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(phys) {
                         self.page_table_pool.release(pt);
                     } else {
                         // Fallback for direct allocations not in registry

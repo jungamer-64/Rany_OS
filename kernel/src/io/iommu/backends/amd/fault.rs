@@ -8,12 +8,12 @@ use core::future::poll_fn;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::Poll;
 
-use crate::io::iommu::tables::phys_to_virt_usize;
+use crate::io::iommu::core::tables::phys_to_virt_usize;
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
-use crate::io::iommu::security::SecurityEvent;
+use crate::io::iommu::runtime::security::SecurityEvent;
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::IommuBackend;
-use crate::io::iommu::registry::get_iommu_driver;
+use crate::io::iommu::runtime::backend::IommuBackend;
+use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::sync::WakerQueue;
 
 use super::event_log::AmdEventEntry;

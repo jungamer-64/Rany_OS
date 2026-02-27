@@ -4,22 +4,19 @@
 
 use alloc::sync::Arc;
 
-pub(crate) use crate::io::iommu::amd;
-pub(crate) use crate::io::iommu::cmdqueue;
-pub(crate) use crate::io::iommu::domain;
-pub(crate) use crate::io::iommu::fault_log;
-pub(crate) use crate::io::iommu::groups;
-pub(crate) use crate::io::iommu::intel;
-pub(crate) use crate::io::iommu::mapping_slab;
-pub(crate) use crate::io::iommu::page_table_pool;
-pub(crate) use crate::io::iommu::security;
-pub(crate) use crate::io::iommu::tables;
-pub(crate) use crate::io::iommu::types;
+pub(crate) use crate::io::iommu::backends::amd as amd_backend;
+pub(crate) use crate::io::iommu::runtime::command::queue as cmdqueue;
+pub(crate) use crate::io::iommu::core::domain;
+pub(crate) use crate::io::iommu::runtime::fault_log;
+pub(crate) use crate::io::iommu::runtime::groups;
+pub(crate) use crate::io::iommu::backends::intel;
+pub(crate) use crate::io::iommu::core::dma::mapping_slab;
+pub(crate) use crate::io::iommu::core::dma::page_table_pool;
+pub(crate) use crate::io::iommu::runtime::security;
+pub(crate) use crate::io::iommu::core::tables;
+pub(crate) use crate::io::iommu::core::types;
 
-mod amd;
-mod wave2;
-mod wave3;
-
-pub use amd::*;
-pub use wave2::*;
-pub use wave3::*;
+pub mod amd;
+pub mod wave2;
+pub mod wave3;
+pub mod group_tests;

@@ -80,7 +80,7 @@ impl PostedInterruptPool {
         let base = base_ptr.as_ptr() as usize;
 
         // Security: Mark the range as protected from DMA
-        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(base as *const u8) {
+        if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(base as *const u8) {
             crate::security::dma::register_protected_range(phys, total_bytes as u64);
         }
 
@@ -147,7 +147,7 @@ impl PostedInterruptPool {
 impl Drop for PostedInterruptPool {
     fn drop(&mut self) {
         let total_bytes = self.size * core::mem::size_of::<PostedInterruptDescriptor>();
-        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(self.base as *const u8) {
+        if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
         }
 
@@ -252,7 +252,7 @@ impl PageRequestQueue {
         let base = base_ptr.as_ptr() as usize;
 
         // Security: Mark the range as protected from DMA
-        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(base as *const u8) {
+        if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(base as *const u8) {
             crate::security::dma::register_protected_range(phys, total_bytes as u64);
         }
 
@@ -306,7 +306,7 @@ impl PageRequestQueue {
 impl Drop for PageRequestQueue {
     fn drop(&mut self) {
         let total_bytes = self.size * core::mem::size_of::<PageRequestEntry>();
-        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(self.base as *const u8) {
+        if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
         }
 

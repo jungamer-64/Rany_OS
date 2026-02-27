@@ -24,7 +24,7 @@ impl IommuDomain {
         supports_1gb: bool,
         max_addr_bits: u8,
         domain_type: IommuDomainType,
-        page_table_pool: Arc<crate::io::iommu::page_table_pool::PageTablePool>,
+        page_table_pool: Arc<crate::io::iommu::core::dma::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
     ) -> Self {
         // Allocate page table on the preferred NUMA node when possible.
@@ -68,7 +68,7 @@ impl IommuDomain {
         } else {
             (0x1_0000_0000, 0x8_0000_0000) // 4GB base, 32GB window
         };
-        let per_domain_iova = crate::io::iommu::IovaAllocatorFast::new(default_iova_base, default_iova_size);
+        let per_domain_iova = crate::io::iommu::core::dma::iova_allocator::IovaAllocator::new(default_iova_base, default_iova_size);
 
         let new_domain = Self {
             id,
@@ -85,7 +85,7 @@ impl IommuDomain {
             // Pre-allocated contexts for zero-allocation flush (Phase 5)
             // CRITICAL: This capacity must never be exceeded. The quarantine's
             // drain_pending_invalidations() asserts this in debug builds.
-            flush_context: PoisonLock::new(crate::io::iommu::quarantine::FlushContext::new()),
+            flush_context: PoisonLock::new(crate::io::iommu::runtime::quarantine::FlushContext::new()),
             page_table_pool,
             pte_format,
             security_notifier: Once::new(),
@@ -141,7 +141,7 @@ impl IommuDomain {
         supports_1gb: bool,
         max_addr_bits: u8,
         domain_type: IommuDomainType,
-        page_table_pool: Arc<crate::io::iommu::page_table_pool::PageTablePool>,
+        page_table_pool: Arc<crate::io::iommu::core::dma::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
         iova_base: u64,
         iova_size: u64,
@@ -158,7 +158,7 @@ impl IommuDomain {
         );
 
         // Override with custom IOVA range
-        domain.per_domain_iova = crate::io::iommu::IovaAllocatorFast::new(iova_base, iova_size);
+        domain.per_domain_iova = crate::io::iommu::core::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size);
 
         log::debug!(
             "[IOMMU] Domain {} initialized with custom IOVA: base=0x{:x}, size=0x{:x}",
@@ -176,11 +176,11 @@ impl IommuDomain {
     /// All domains have their own IOVA allocator, eliminating lock contention.
     #[inline]
     pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
-        use crate::io::iommu::IovaGranularity;
+        use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
         
         // IovaAllocatorFast is internally lock-free for common paths
         self.per_domain_iova
-            .allocate(size, IovaGranularity::Page4K)
+            .allocate(size, PageGranularity::Page4K)
             .ok_or(crate::io::iommu::types::IommuError::OutOfIova)
     }
 
@@ -383,8 +383,8 @@ impl IommuDomain {
 
         // Drain pending invalidations (Round 9: returns DrainResult)
         let drained_batch = match self.quarantine.drain_pending_invalidations(&mut fctx.requests) {
-            crate::io::iommu::quarantine::DrainResult::NoWork { .. } => return Ok(()),
-            crate::io::iommu::quarantine::DrainResult::NotReady { batch: _ } => {
+            crate::io::iommu::runtime::quarantine::DrainResult::NoWork { .. } => return Ok(()),
+            crate::io::iommu::runtime::quarantine::DrainResult::NotReady { batch: _ } => {
                 // Round 9 Safety: Reserved slots pending.
                 // We MUST NOT issue invalidations or reap, as that would
                 // advance the batch prematurely or leave valid PTEs behind.
@@ -392,8 +392,8 @@ impl IommuDomain {
                 // but for now we just skip the flush.
                 return Ok(());
             }
-            crate::io::iommu::quarantine::DrainResult::Drained { batch } => batch,
-            crate::io::iommu::quarantine::DrainResult::Poisoned { .. } => return Err(IommuError::Poisoned),
+            crate::io::iommu::runtime::quarantine::DrainResult::Drained { batch } => batch,
+            crate::io::iommu::runtime::quarantine::DrainResult::Poisoned { .. } => return Err(IommuError::Poisoned),
         };
 
         // Skip if nothing to flush (double check, though NoWork covers this)
@@ -489,7 +489,7 @@ impl IommuDomain {
 
         // Security: Validate that the physical range does not overlap with the kernel image
         // or other protected physical regions (like MMIO).
-        crate::io::iommu::security::validate_dma_region(phys, size)?;
+        crate::io::iommu::runtime::security::validate_dma_region(phys, size)?;
 
         Ok(())
     }
@@ -691,7 +691,7 @@ impl IommuDomain {
                 *pdp_entry = SlPte::new();
 
                 // Quarantine PD
-                if let Some(pd) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pd_phys) {
+                if let Some(pd) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
                     if let Ok(mut pending) = self.pending_pt_release.lock() {
                         pending.push(pd);
                     }
@@ -703,7 +703,7 @@ impl IommuDomain {
                     *pml4_entry = SlPte::new();
 
                     // Quarantine PDP
-                    if let Some(pdp) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                    if let Some(pdp) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
                         if let Ok(mut pending) = self.pending_pt_release.lock() {
                             pending.push(pdp);
                         }
@@ -749,7 +749,7 @@ impl IommuDomain {
                 *pml4_entry = SlPte::new();
 
                 // Quarantine PDP
-                if let Some(pdp) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                if let Some(pdp) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
                     if let Ok(mut pending) = self.pending_pt_release.lock() {
                         pending.push(pdp);
                     }

@@ -7,7 +7,7 @@
 
 use alloc::vec::Vec;
 
-use super::types::DeviceId;
+use crate::io::iommu::core::types::DeviceId;
 
 // ============================================================================
 // Configuration

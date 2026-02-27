@@ -2,4 +2,4 @@
 // kernel/src/io/iommu/tests/qemu/amd.rs
 // ============================================================================
 
-pub use crate::io::iommu::amd::qemu_tests::*;
+pub use crate::io::iommu::backends::amd::qemu_tests::*;

@@ -22,14 +22,14 @@ use self::controller::iova::IovaManager;
 use self::controller::ir::InterruptRemapper;
 use self::controller::qi_ops::InvalidationOps;
 
-use super::domain::IommuDomain;
-use super::IommuBackend;
+use crate::io::iommu::core::domain::IommuDomain;
+use crate::io::iommu::runtime::backend::IommuBackend;
 // Generic registry for registering the driver
-use super::registry::{init_driver, is_iommu_enabled};
-use super::security::SecurityNotifier;
+use crate::io::iommu::runtime::registry::{init_driver, is_iommu_enabled};
+use crate::io::iommu::runtime::security::SecurityNotifier;
 
-use super::cmdqueue::IommuCommandKind;
-use super::types::{DeviceId, IommuDomainType, IommuError};
+use crate::io::iommu::runtime::command::queue::IommuCommandKind;
+use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError};
 
 // Intel-specific registry access
 use self::registry::get_iommu_registry;
@@ -77,7 +77,7 @@ fn validate_dma_params(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError>
     }
 
     // Security: Validate that the physical range does not overlap with the kernel image.
-    crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+    crate::io::iommu::runtime::security::validate_dma_region(phys_addr.as_u64(), size)?;
 
     Ok(())
 }

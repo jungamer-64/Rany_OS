@@ -27,12 +27,12 @@ impl IommuController {
     pub fn enable_ats_for_device(
         &self,
         device: DeviceId,
-        trust_level: crate::io::iommu::security::DeviceTrustLevel,
+        trust_level: crate::io::iommu::runtime::security::DeviceTrustLevel,
     ) -> bool {
-        use crate::io::iommu::security::{
+        use crate::io::iommu::runtime::security::{
             AtsChangeReason, DeviceTrustLevel, SecurityEvent,
         };
-        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+        use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
 
         // Security: ATS requires Queued Invalidation for proper Device-TLB flushing.
         if !self.is_queued_invalidation_enabled() {
@@ -132,10 +132,10 @@ impl IommuController {
     pub fn disable_ats_for_device(
         &self,
         device: DeviceId,
-        reason: crate::io::iommu::security::AtsChangeReason,
+        reason: crate::io::iommu::runtime::security::AtsChangeReason,
     ) {
-        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
-        use crate::io::iommu::security::SecurityEvent;
+        use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
+        use crate::io::iommu::runtime::security::SecurityEvent;
 
         match self.ats_enabled_devices.lock() {
             Ok(mut set) => {

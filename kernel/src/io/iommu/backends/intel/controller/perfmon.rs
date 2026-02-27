@@ -9,7 +9,7 @@
 use super::IommuController;
 use super::init::CapabilityManager;
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::intel::registers::{PerfMonEvent, regs};
+use crate::io::iommu::backends::intel::registers::{PerfMonEvent, regs};
 
 pub trait PerfMonitor {
     /// Configure a performance monitoring counter

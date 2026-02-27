@@ -342,7 +342,7 @@ impl ZombieQueue {
         iova: u64,
         size: u64,
         domain_id: u16,
-        device_id: Option<super::types::DeviceId>,
+        device_id: Option<crate::io::iommu::core::types::DeviceId>,
         mapping_kind: u32,
         raw: Option<RRefRawParts>,
     ) -> bool {

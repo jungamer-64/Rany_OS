@@ -36,12 +36,13 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::sync::IrqMutex;
 
-use crate::mm::phys::fast_allocator::{FastBitmapAllocator, PageGranularity};
+use crate::mm::phys::fast_allocator::FastBitmapAllocator;
+pub use crate::mm::phys::fast_allocator::PageGranularity;
 use crate::mm::remote_free::{QuarantineRing, QuarantineEntry}; // Using generic QuarantineRing
 #[cfg(not(feature = "qemu-test-export"))]
 use crate::per_cpu::MAX_CPUS;
 
-use super::IommuError;
+use crate::io::iommu::core::types::IommuError;
 
 /// Backward compatibility alias
 pub type IovaGranularity = PageGranularity;

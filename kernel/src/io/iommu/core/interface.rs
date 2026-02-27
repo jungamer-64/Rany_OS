@@ -3,7 +3,7 @@
 // ============================================================================
 //! IOMMU backend interfaces (hardware context/domain).
 
-use super::types::{DmaMapping, IommuDomainType, IommuError};
+use crate::io::iommu::core::types::{DmaMapping, IommuDomainType, IommuError};
 
 /// Default IOVA allocation alignment (4KB).
 pub const DEFAULT_IOVA_ALIGNMENT: u64 = 4096;

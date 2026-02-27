@@ -9,10 +9,10 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use crate::io::iommu::domain::{InvalidateFlags, InvalidateRequest, IommuDomain, IommuInvalidator};
-use crate::io::iommu::intel::registry::get_iommu_registry;
-use crate::io::iommu::intel::registers::ecap_bits;
-use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
+use crate::io::iommu::core::domain::{InvalidateFlags, InvalidateRequest, IommuDomain, IommuInvalidator};
+use crate::io::iommu::backends::intel::registry::get_iommu_registry;
+use crate::io::iommu::backends::intel::registers::ecap_bits;
+use crate::io::iommu::backends::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 
 use super::{HardwareContext, IommuController};
@@ -33,7 +33,7 @@ fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
     if size == 0 {
         return Ok(());
     }
-    crate::io::iommu::security::validate_dma_region(start, size).map_err(|_| IommuError::RmrrMapFailed)?;
+    crate::io::iommu::runtime::security::validate_dma_region(start, size).map_err(|_| IommuError::RmrrMapFailed)?;
     Ok(())
 }
 
@@ -65,7 +65,7 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
     let Some(registry) = get_iommu_registry() else {
         return Ok(());
     };
-    let page_size = crate::io::iommu::PAGE_SIZE_4K;
+    let page_size = crate::mm::types::PAGE_SIZE_4K;
     for region in registry.reserved_regions() {
         if region.segment != device.segment || !region.devices.iter().any(|d| *d == device) {
             continue;
@@ -90,7 +90,7 @@ pub trait DomainManager {
     fn map_dma(&self, device: &DeviceId, iova: u64, phys: u64, size: u64, read: bool, write: bool) -> Result<(), IommuError>;
     fn unmap_dma(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError>;
     fn unmap_dma_async(&self, device: &DeviceId, iova: u64) -> impl core::future::Future<Output = Result<DmaMapping, IommuError>> + Send;
-    fn handle_command_queue_entry(&self, kind: &crate::io::iommu::cmdqueue::IommuCommandKind) -> Result<i32, ()>;
+    fn handle_command_queue_entry(&self, kind: &crate::io::iommu::runtime::command::queue::IommuCommandKind) -> Result<i32, ()>;
 }
 
 impl IommuController {
@@ -181,7 +181,7 @@ impl IommuController {
         }
         let req = InvalidateRequest {
             domain_id,
-            kind: crate::io::iommu::domain::InvalidateKind::Pages { start_iova: iova, bytes: size },
+            kind: crate::io::iommu::core::domain::InvalidateKind::Pages { start_iova: iova, bytes: size },
             flags,
         };
         self.process_invalidations(&[req])
@@ -201,7 +201,7 @@ impl IommuController {
             Err(_) => false,
         };
         if ats_was_enabled {
-            self.disable_ats_for_device(device, crate::io::iommu::security::AtsChangeReason::DeviceDetach);
+            self.disable_ats_for_device(device, crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach);
         }
     }
 

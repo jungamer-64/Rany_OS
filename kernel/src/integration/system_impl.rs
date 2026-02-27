@@ -106,7 +106,7 @@ impl SystemIntegration {
 
         #[cfg(not(test))]
         {
-            crate::io::iommu::pci::setup_iommu_for_all_pci_devices(&mut devices);
+            crate::io::iommu::runtime::pci::setup_iommu_for_all_pci_devices(&mut devices);
         }
 
         // Categorize devices

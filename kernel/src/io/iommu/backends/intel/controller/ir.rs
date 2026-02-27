@@ -14,8 +14,8 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::intel::registers::{ecap_bits, gcmd_bits, gsts_bits, regs};
-use crate::io::iommu::tables::{HardwareTable, Zeroable};
+use crate::io::iommu::backends::intel::registers::{ecap_bits, gcmd_bits, gsts_bits, regs};
+use crate::io::iommu::core::tables::{HardwareTable, Zeroable};
 
 /// Interrupt Remapping Entry (128-bit)
 #[repr(C, align(16))]

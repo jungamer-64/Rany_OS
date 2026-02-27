@@ -2,12 +2,12 @@
 // kernel/src/io/iommu/tables.rs
 // ============================================================================
 
-use super::types::{IommuError, PteFormat};
+use crate::io::iommu::core::types::{IommuError, PteFormat};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 // Import architecture specific PTEs for helper functions
-use crate::io::iommu::amd::tables::AmdPte;
+use crate::io::iommu::backends::amd::tables::AmdPte;
 
 // ============================================================================
 // Zeroable Trait - Zero-initialization safety
@@ -197,7 +197,7 @@ pub struct PageTableScope {
     /// Layout for direct deallocation (None if pool-managed)
     layout: Option<alloc::alloc::Layout>,
     /// Pool for release (Some if pool-managed)
-    pool: Option<alloc::sync::Arc<super::page_table_pool::PageTablePool>>,
+    pool: Option<alloc::sync::Arc<crate::io::iommu::core::dma::page_table_pool::PageTablePool>>,
     /// Parent entry pointer that references this table. If set and the scope is not committed,
     /// Drop will clear the parent entry to avoid leaving stale pointers into freed memory.
     parent_entry: Option<*mut SlPte>,
@@ -222,7 +222,7 @@ impl PageTableScope {
         let phys = virt_ptr_to_phys(ptr as *const u8)?;
 
         // Security: Register and protect the page table IMMEDIATELY after allocation.
-        super::page_table_pool::register_page_table(phys, ptr as usize, node);
+        crate::io::iommu::core::dma::page_table_pool::register_page_table(phys, ptr as usize, node);
 
         Ok(Self {
             ptr,
@@ -245,7 +245,7 @@ impl PageTableScope {
     /// * `pool` - The page table pool to acquire from
     /// * `node_hint` - Preferred NUMA node
     pub fn new_with_pool(
-        pool: alloc::sync::Arc<super::page_table_pool::PageTablePool>,
+        pool: alloc::sync::Arc<crate::io::iommu::core::dma::page_table_pool::PageTablePool>,
         node_hint: Option<usize>,
     ) -> Result<Self, IommuError> {
         let pt = pool.acquire(node_hint)?;
@@ -301,7 +301,7 @@ impl PageTableScope {
     pub fn commit(&mut self) {
         // Already registered at allocation time for safety.
         if let Some(parent_phys) = self.parent_phys {
-            super::page_table_pool::inc_ref(parent_phys);
+            crate::io::iommu::core::dma::page_table_pool::inc_ref(parent_phys);
         }
         self.committed = true;
     }
@@ -335,7 +335,7 @@ impl Drop for PageTableScope {
             // Release to pool or direct dealloc
             if let Some(ref pool) = self.pool {
                 // Pool-managed: reconstruct PooledPt and release
-                let pt = super::page_table_pool::PooledPt::new(
+                let pt = crate::io::iommu::core::dma::page_table_pool::PooledPt::new(
                     unsafe { core::ptr::NonNull::new_unchecked(self.ptr) },
                     self.phys,
                     self.node,
@@ -345,7 +345,7 @@ impl Drop for PageTableScope {
             } else if let Some(layout) = self.layout {
                 // Direct allocation: dealloc via NUMA helper
                 // Security: Unregister from DMA protection before deallocation.
-                super::page_table_pool::unregister_page_table(self.phys);
+                crate::io::iommu::core::dma::page_table_pool::unregister_page_table(self.phys);
                 unsafe {
                     crate::mm::numa::topology::deallocate_on_node(
                         core::ptr::NonNull::new_unchecked(self.ptr as *mut u8),

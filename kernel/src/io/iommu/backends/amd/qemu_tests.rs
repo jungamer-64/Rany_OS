@@ -10,12 +10,13 @@ use core::sync::atomic::{AtomicBool, AtomicU64};
 use hashbrown::HashMap;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
-use crate::io::iommu::cmdqueue::{CommandQueue, IommuCommandKind};
-use crate::io::iommu::domain::IommuDomain as DomainState;
-use crate::io::iommu::page_table_pool::PageTablePool;
-use crate::io::iommu::security::SecurityNotifier;
+use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
+use crate::io::iommu::core::domain::IommuDomain as DomainState;
+use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::runtime::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::{IovaAllocatorFast, PAGE_SIZE_4K};
+use crate::mm::types::PAGE_SIZE_4K;
+use crate::io::iommu::core::dma::iova_allocator::IovaAllocator;
 use crate::sync::PoisonLock;
 
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;
@@ -432,7 +433,7 @@ fn make_test_driver() -> AmdIommuDriver {
     };
 
     let page_table_pool = PageTablePool::new(1, 1);
-    let iova_allocator = IovaAllocatorFast::new(
+    let iova_allocator = IovaAllocator::new(
         PAGE_SIZE_4K as u64,
         (1u64 << 20) - PAGE_SIZE_4K as u64,
     );
@@ -474,7 +475,7 @@ fn make_test_driver() -> AmdIommuDriver {
 struct AmdMockNotifier;
 
 impl SecurityNotifier for AmdMockNotifier {
-    fn notify(&self, _event: crate::io::iommu::security::SecurityEvent) {}
+    fn notify(&self, _event: crate::io::iommu::runtime::security::SecurityEvent) {}
 }
 
 fn wave1_cmdqueue_map_unmap_with_domain_fallback_smoke() -> bool {

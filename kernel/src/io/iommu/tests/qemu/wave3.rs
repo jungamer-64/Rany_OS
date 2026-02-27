@@ -1,11 +1,22 @@
-use super::*;
+use crate::io::iommu::backends::intel::controller::dma::DomainManager;
+use crate::io::iommu::runtime::backend::IommuBackend;
 
+use crate::io::iommu::core::types::*;
+use crate::io::iommu::backends::intel::controller::*;
+use crate::io::iommu::runtime::groups::*;
+use crate::io::iommu::backends::intel::tables::*;
+use crate::io::iommu::core::tables::*;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+
+use crate::io::iommu::runtime::command::queue as cmdqueue;
+use crate::io::iommu::runtime::zombie as zombie_queue;
+use crate::io::iommu::core::dma::mapping_slab;
+use crate::io::iommu::backends::common;
 
 /// PASID table alloc/free lifecycle: allocate 3 PASIDs, setup SL entries, verify domain IDs, free all.
-mod group_tests;
-pub use group_tests::*;
 pub fn wave3_pasid_table_alloc_free_smoke() -> bool {
-    use crate::io::iommu::intel::tables::PasidTable;
+    use crate::io::iommu::backends::intel::tables::PasidTable;
 
     let mut table = match PasidTable::new(6) {
         Ok(t) => t,
@@ -77,7 +88,7 @@ pub fn wave3_pasid_table_alloc_free_smoke() -> bool {
 
 /// PASID table multi-domain: two PASIDs with different domain IDs remain isolated.
 pub fn wave3_pasid_table_multi_domain_smoke() -> bool {
-    use crate::io::iommu::intel::tables::PasidTable;
+    use crate::io::iommu::backends::intel::tables::PasidTable;
 
     let mut table = match PasidTable::new(6) {
         Ok(t) => t,
@@ -109,7 +120,7 @@ pub fn wave3_pasid_table_multi_domain_smoke() -> bool {
 
 /// PASID table exhaustion: fill table, verify error, free one, re-allocate succeeds.
 pub fn wave3_pasid_table_exhaustion_smoke() -> bool {
-    use crate::io::iommu::intel::tables::PasidTable;
+    use crate::io::iommu::backends::intel::tables::PasidTable;
 
     // size_log2=2 → size=4. PASID 0 reserved, so 3 allocatable PASIDs (1, 2, 3)
     let mut table = match PasidTable::new(2) {
@@ -151,7 +162,7 @@ pub fn wave3_pasid_table_exhaustion_smoke() -> bool {
 
 /// Scalable mode detach cleans PASID table: attach → verify pasid table → detach → verify removed.
 pub fn wave3_scalable_mode_detach_cleans_pasid_smoke() -> bool {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
     ctrl.set_scalable_mode_enabled(true);
 
     let root_table = match HardwareTable::<RootEntry>::new(256, None) {
@@ -181,7 +192,7 @@ pub fn wave3_scalable_mode_detach_cleans_pasid_smoke() -> bool {
         Ok(id) => id,
         Err(_) => return false,
     };
-    let device = DeviceId::new(0, 0, 1, 0);
+    let device = crate::io::iommu::core::types::DeviceId::new(0, 0, 1, 0);
     if ctrl.attach_device(device, domain_id).is_err() {
         return false;
     }
@@ -210,7 +221,7 @@ pub fn wave3_scalable_mode_detach_cleans_pasid_smoke() -> bool {
 
 /// Scalable mode attach-detach cycle: attach → verify → detach → verify cleared → re-attach → verify.
 pub fn wave3_scalable_mode_attach_detach_cycle_smoke() -> bool {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
     ctrl.set_scalable_mode_enabled(true);
 
     let root_table = match HardwareTable::<RootEntry>::new(256, None) {
@@ -240,7 +251,7 @@ pub fn wave3_scalable_mode_attach_detach_cycle_smoke() -> bool {
         Ok(id) => id,
         Err(_) => return false,
     };
-    let device = DeviceId::new(0, 0, 2, 0);
+    let device = crate::io::iommu::core::types::DeviceId::new(0, 0, 2, 0);
 
     // Cycle 1: attach
     if ctrl.attach_device(device, domain_id).is_err() {
@@ -311,19 +322,19 @@ pub fn wave3_scalable_mode_attach_detach_cycle_smoke() -> bool {
 }
 
 pub fn wave3_mapping_slab_insert_lookup_remove_smoke() -> bool {
-    crate::io::iommu::mapping_slab::qemu_smoke_insert_lookup_remove()
+    crate::io::iommu::core::dma::mapping_slab::qemu_smoke_insert_lookup_remove()
 }
 
 pub fn wave3_mapping_slab_overlap_detection_smoke() -> bool {
-    crate::io::iommu::mapping_slab::qemu_smoke_overlap_detection()
+    crate::io::iommu::core::dma::mapping_slab::qemu_smoke_overlap_detection()
 }
 
 pub fn wave3_zombie_queue_basic_smoke() -> bool {
-    crate::io::iommu::zombie_queue::qemu_smoke_queue_basic()
+    crate::io::iommu::runtime::zombie::qemu_smoke_queue_basic()
 }
 
 pub fn wave3_zombie_queue_failed_cleanup_smoke() -> bool {
-    crate::io::iommu::zombie_queue::qemu_smoke_failed_cleanup()
+    crate::io::iommu::runtime::zombie::qemu_smoke_failed_cleanup()
 }
 
 /// PRI fuel-based processing: create queue, populate entries, verify fuel limit and has_more.
@@ -332,7 +343,7 @@ pub fn wave3_zombie_queue_failed_cleanup_smoke() -> bool {
 /// テストでは backing memory に直接書き込み、update_tail() で tail を進めて
 /// fuel 制限付き pop と has_pending() の正確性を検証する。
 pub fn wave3_pri_fuel_processing_smoke() -> bool {
-    use crate::io::iommu::common::{PageRequestEntry, PageRequestQueue};
+    use crate::io::iommu::backends::common::{PageRequestEntry, PageRequestQueue};
 
     // Create a small queue (size will round up to power of 2)
     let mut prq = match PageRequestQueue::new(8) {
@@ -403,27 +414,27 @@ pub fn wave3_pri_fuel_processing_smoke() -> bool {
 }
 
 pub fn cmdqueue_reclaim_completed_slot_smoke() -> bool {
-    crate::io::iommu::cmdqueue::qemu_smoke_reclaim_completed_slot()
+    crate::io::iommu::runtime::command::queue::qemu_smoke_reclaim_completed_slot()
 }
 
 pub fn cmdqueue_cancel_queued_command_smoke() -> bool {
-    crate::io::iommu::cmdqueue::qemu_smoke_cancel_queued_command()
+    crate::io::iommu::runtime::command::queue::qemu_smoke_cancel_queued_command()
 }
 
 pub fn cmdqueue_drop_triggers_cancel_smoke() -> bool {
-    crate::io::iommu::cmdqueue::qemu_smoke_drop_triggers_cancel()
+    crate::io::iommu::runtime::command::queue::qemu_smoke_drop_triggers_cancel()
 }
 
 pub fn cmdqueue_process_up_to_respects_fuel_smoke() -> bool {
-    crate::io::iommu::cmdqueue::qemu_smoke_process_up_to_respects_fuel()
+    crate::io::iommu::runtime::command::queue::qemu_smoke_process_up_to_respects_fuel()
 }
 
 pub fn cmdqueue_fuel_shim_basic_smoke() -> bool {
-    crate::io::iommu::cmdqueue::qemu_smoke_fuel_shim_basic()
+    crate::io::iommu::runtime::command::queue::qemu_smoke_fuel_shim_basic()
 }
 
 pub fn cmdqueue_metrics_counts_smoke() -> bool {
-    crate::io::iommu::cmdqueue::qemu_smoke_metrics_counts()
+    crate::io::iommu::runtime::command::queue::qemu_smoke_metrics_counts()
 }
 
 // ============================================================================
@@ -490,11 +501,11 @@ pub fn wave2_group_creation_basic_smoke() -> bool {
     let mut topo = MockPciTopology::new();
     topo.add_endpoint(0, 1, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev = DeviceId::new(0, 0, 1, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 1, 0);
 
-    let (group, newly_created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group, newly_created) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(result) => result,
         Err(_) => return false,
     };
@@ -515,16 +526,16 @@ pub fn wave2_group_multifunction_same_group_smoke() -> bool {
     topo.add_endpoint(0, 2, 0);
     topo.add_endpoint(0, 2, 1);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev0 = DeviceId::new(0, 0, 2, 0);
-    let dev1 = DeviceId::new(0, 0, 2, 1);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev0 = crate::io::iommu::core::types::DeviceId::new(0, 0, 2, 0);
+    let dev1 = crate::io::iommu::core::types::DeviceId::new(0, 0, 2, 1);
 
-    let (group0, created0) = match mgr.find_or_create_group(dev0, &ctrl, 0, &topo) {
+    let (group0, created0) = match mgr.find_or_create_group(dev0, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group1, created1) = match mgr.find_or_create_group(dev1, &ctrl, 0, &topo) {
+    let (group1, created1) = match mgr.find_or_create_group(dev1, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -546,16 +557,16 @@ pub fn wave2_group_acs_isolated_separation_smoke() -> bool {
     topo.set_parent_bridge(2, (0, 2, 0));
     topo.add_endpoint(2, 0, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev_a = DeviceId::new(0, 1, 0, 0);
-    let dev_b = DeviceId::new(0, 2, 0, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev_a = crate::io::iommu::core::types::DeviceId::new(0, 1, 0, 0);
+    let dev_b = crate::io::iommu::core::types::DeviceId::new(0, 2, 0, 0);
 
-    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &ctrl, 0, &topo) {
+    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &ctrl, 0, &topo) {
+    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -572,17 +583,17 @@ pub fn wave2_group_non_acs_bridge_shared_group_smoke() -> bool {
     topo.add_endpoint(1, 0, 0);
     topo.add_endpoint(1, 1, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev_a = DeviceId::new(0, 1, 0, 0);
-    let dev_b = DeviceId::new(0, 1, 1, 0);
-    let expected_group_root = DeviceId::new(0, 0, 1, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev_a = crate::io::iommu::core::types::DeviceId::new(0, 1, 0, 0);
+    let dev_b = crate::io::iommu::core::types::DeviceId::new(0, 1, 1, 0);
+    let expected_group_root = crate::io::iommu::core::types::DeviceId::new(0, 0, 1, 0);
 
-    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &ctrl, 0, &topo) {
+    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &ctrl, 0, &topo) {
+    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -605,13 +616,13 @@ pub fn wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke() -> 
     topo.set_parent_bridge(2, (1, 2, 0));
     topo.add_endpoint(2, 0, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev = DeviceId::new(0, 2, 0, 0);
-    let highest_non_acs_bridge = DeviceId::new(0, 0, 1, 0);
-    let lower_bridge = DeviceId::new(0, 1, 2, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 2, 0, 0);
+    let highest_non_acs_bridge = crate::io::iommu::core::types::DeviceId::new(0, 0, 1, 0);
+    let lower_bridge = crate::io::iommu::core::types::DeviceId::new(0, 1, 2, 0);
 
-    let (group, _created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group, _created) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -627,12 +638,12 @@ pub fn wave2_group_topology_gap_conservative_fallback_smoke() -> bool {
     topo.add_endpoint(2, 0, 0);
     // Intentionally omit parent mapping for bus 1 to simulate topology information gap.
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev = DeviceId::new(0, 2, 0, 0);
-    let expected_group_root = DeviceId::new(0, 1, 2, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 2, 0, 0);
+    let expected_group_root = crate::io::iommu::core::types::DeviceId::new(0, 1, 2, 0);
 
-    let (group, created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group, created) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -647,15 +658,15 @@ pub fn wave2_group_reuse_for_same_group_devices_smoke() -> bool {
     let mut topo = MockPciTopology::new();
     topo.add_endpoint(0, 3, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev = DeviceId::new(0, 0, 3, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 3, 0);
 
-    let (group_first, created_first) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group_first, created_first) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group_second, created_second) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group_second, created_second) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -666,10 +677,10 @@ pub fn wave2_group_reuse_for_same_group_devices_smoke() -> bool {
         && group_first.domain_id == group_second.domain_id
 }
 
-/// Poisoned groups lock returns IommuError::Poisoned.
+/// Poisoned groups lock returns crate::io::iommu::core::types::IommuError::Poisoned.
 pub fn wave2_group_poisoned_lock_returns_error_smoke() -> bool {
 
-    let mgr = IommuGroupManager::new();
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
 
     // Poison the groups lock
     crate::sync::set_panicking(true);
@@ -678,10 +689,10 @@ pub fn wave2_group_poisoned_lock_returns_error_smoke() -> bool {
 
     let mut topo = MockPciTopology::new();
     topo.add_endpoint(0, 4, 0);
-    let ctrl = IommuController::new(0x0, 0);
-    let dev = DeviceId::new(0, 0, 4, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 4, 0);
 
-    mgr.find_or_create_group(dev, &ctrl, 0, &topo).err() == Some(IommuError::Poisoned)
+    mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated).err() == Some(crate::io::iommu::core::types::IommuError::Poisoned)
 }
 
 // ============================================================================
@@ -693,12 +704,12 @@ pub fn wave2_group_full_flow_discovery_to_attach_smoke() -> bool {
     let mut topo = MockPciTopology::new();
     topo.add_endpoint(0, 5, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev = DeviceId::new(0, 0, 5, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 5, 0);
 
     // 1. Group discovery creates domain
-    let (group, _) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group, _) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };

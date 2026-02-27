@@ -1,3 +1,4 @@
+#![feature(custom_test_frameworks)]
 #![cfg_attr(not(any(test, feature = "std", feature = "bench")), no_std)]
 #![cfg_attr(not(any(test, feature = "std", feature = "bench")), no_main)]
 #![feature(abi_x86_interrupt)]

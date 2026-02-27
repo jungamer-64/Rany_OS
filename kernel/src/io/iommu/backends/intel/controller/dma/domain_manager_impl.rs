@@ -1,6 +1,6 @@
 use super::*;
-use crate::io::iommu::domain::IommuDomain;
-use crate::io::iommu::intel::controller::init::CapabilityManager;
+use crate::io::iommu::core::domain::IommuDomain;
+use crate::io::iommu::backends::intel::controller::init::CapabilityManager;
 
 
 impl DomainManager for IommuController {
@@ -113,7 +113,7 @@ impl DomainManager for IommuController {
     }
 
     fn map_dma(&self, device: &DeviceId, iova: u64, phys: u64, size: u64, read: bool, write: bool) -> Result<(), IommuError> {
-        crate::io::iommu::security::validate_dma_region(phys, size)?;
+        crate::io::iommu::runtime::security::validate_dma_region(phys, size)?;
         let (_domain_id, domain_arc) = self.resolve_device_domain(device)?;
         domain_arc.map(iova, phys, size, read, write)
     }
@@ -137,18 +137,18 @@ impl DomainManager for IommuController {
         Ok(mapping)
     }
 
-    fn handle_command_queue_entry(&self, kind: &crate::io::iommu::cmdqueue::IommuCommandKind) -> Result<i32, ()> {
-        use crate::io::iommu::cmdqueue::IommuCommandKind;
+    fn handle_command_queue_entry(&self, kind: &crate::io::iommu::runtime::command::queue::IommuCommandKind) -> Result<i32, ()> {
+        use crate::io::iommu::runtime::command::queue::IommuCommandKind;
         match kind {
             IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
-                if crate::io::iommu::security::validate_dma_region(*phys, *size).is_err() { return Err(()); }
+                if crate::io::iommu::runtime::security::validate_dma_region(*phys, *size).is_err() { return Err(()); }
                 let domain_arc = self.domain(*domain).ok_or(())?;
                 domain_arc.map(*iova, *phys, *size, *read, *write).map_err(|_| ())?;
                 self.invalidate_iotlb(*domain);
                 Ok(0)
             },
             IommuCommandKind::MapRegionDevice { device, iova, phys, size, read, write } => {
-                if crate::io::iommu::security::validate_dma_region(*phys, *size).is_err() { return Err(()); }
+                if crate::io::iommu::runtime::security::validate_dma_region(*phys, *size).is_err() { return Err(()); }
                 let (domain_id, domain_arc) = self.resolve_device_domain(device).map_err(|_| ())?;
                 domain_arc.map(*iova, *phys, *size, *read, *write).map_err(|_| ())?;
                 self.invalidate_iotlb(domain_id);

@@ -12,8 +12,8 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::intel::qi::InvalidationQueue;
-use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs};
+use crate::io::iommu::backends::intel::qi::InvalidationQueue;
+use crate::io::iommu::backends::intel::registers::{gcmd_bits, gsts_bits, regs};
 
 pub trait QIManager {
     /// Initialize the Invalidation Queue
@@ -25,10 +25,10 @@ pub trait QIManager {
 }
 
 impl IommuController {
-    pub(crate) fn execute_sync_command(&self, kind: crate::io::iommu::cmdqueue::IommuCommandKind) -> Result<(), ()> {
+    pub(crate) fn execute_sync_command(&self, kind: crate::io::iommu::runtime::command::queue::IommuCommandKind) -> Result<(), ()> {
         if let Some(ref cq) = self.command_queue {
             return cq.submit_sync_with_worker(kind, |k| {
-                use crate::io::iommu::intel::controller::dma::DomainManager;
+                use crate::io::iommu::backends::intel::controller::dma::DomainManager;
                 self.handle_command_queue_entry(k)
             });
         }

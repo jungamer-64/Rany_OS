@@ -80,6 +80,10 @@ impl TlsConnection {
             ContentType::ApplicationData => {
                 self.process_app_data(payload, plaintext)?;
             }
+            ContentType::Heartbeat => {
+                // Heartbeat is not fully implemented, ignore for now
+                log::debug!("[TLS] Heartbeat received, ignoring");
+            }
         }
         Ok(())
     }

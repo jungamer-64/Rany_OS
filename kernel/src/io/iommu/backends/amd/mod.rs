@@ -33,19 +33,20 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
-use crate::io::iommu::cmdqueue::CommandQueue;
-use crate::io::iommu::tables::phys_to_virt_usize;
+use crate::io::iommu::runtime::command::queue::CommandQueue;
+use crate::io::iommu::core::tables::phys_to_virt_usize;
 use crate::io::mmio::{mmio_read_u64, mmio_write_u64};
-use crate::io::iommu::{IovaAllocatorFast, PAGE_SIZE_4K};
-use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
+use crate::io::iommu::core::dma::iova_allocator::IovaAllocator;
+use crate::mm::types::PAGE_SIZE_4K;
+use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
 
-use super::domain::IommuDomain as DomainState;
-use super::IommuBackend;
-use super::page_table_pool::PageTablePool;
-use super::registry::{get_iommu_driver, init_driver};
-use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::core::domain::IommuDomain as DomainState;
+use crate::io::iommu::runtime::backend::IommuBackend;
+use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::runtime::registry::{get_iommu_driver, init_driver};
+use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 
 use self::device_table::AmdDeviceTable;
 use self::domain::align_down;
@@ -191,7 +192,7 @@ pub struct AmdIommuDriver {
     pub(super) next_domain_id: AtomicU64,
     pub(super) page_table_pool: Arc<PageTablePool>,
     pub command_queue: Option<CommandQueue>,
-    pub(super) iova_allocator: IovaAllocatorFast,
+    pub(super) iova_allocator: IovaAllocator,
     pub(super) enabled: AtomicBool,
     pub(super) security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
     pub(super) max_addr_bits: u8,
@@ -227,7 +228,7 @@ impl AmdIommuDriver {
         let iova_base: u64 = PAGE_SIZE_4K as u64;
         let iova_limit = 1u64 << iova_bits;
         let iova_size = iova_limit.saturating_sub(iova_base);
-        let iova_allocator = IovaAllocatorFast::new(iova_base, iova_size);
+        let iova_allocator = IovaAllocator::new(iova_base, iova_size);
         let alloc_base = iova_allocator.base();
         let alloc_end = alloc_base.saturating_add(iova_allocator.size());
 
@@ -559,7 +560,7 @@ impl AmdIommuDriver {
 // IommuHardwareContext trait impl
 // ---------------------------------------------------------------------------
 
-impl super::interface::IommuHardwareContext for AmdIommuDriver {
+impl crate::io::iommu::core::interface::IommuHardwareContext for AmdIommuDriver {
     fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
         if alignment <= PAGE_SIZE_4K as u64 {
             return self
@@ -588,7 +589,7 @@ impl super::interface::IommuHardwareContext for AmdIommuDriver {
         mask: u64,
     ) -> Result<u64, IommuError> {
         self.iova_allocator
-            .allocate_with_limit(size, crate::io::iommu::IovaGranularity::Page4K, mask)
+            .allocate_with_limit(size, crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page4K, mask)
             .ok_or(IommuError::OutOfIova)
     }
 

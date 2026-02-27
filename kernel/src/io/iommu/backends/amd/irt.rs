@@ -14,7 +14,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::io::iommu::tables::{HardwareTable, Zeroable};
+use crate::io::iommu::core::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
 
 // ---------------------------------------------------------------------------

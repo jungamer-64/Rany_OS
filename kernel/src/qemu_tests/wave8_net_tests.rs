@@ -678,81 +678,81 @@ pub fn graphics_wave6_bench_draw_text_bulk_smoke() -> bool {
 }
 
 pub fn iommu_cmdqueue_reclaim_completed_slot_smoke() -> bool {
-    crate::io::iommu::qemu_tests::cmdqueue_reclaim_completed_slot_smoke()
+    crate::io::iommu::qemu_tests::wave3::cmdqueue_reclaim_completed_slot_smoke()
 }
 
 pub fn iommu_cmdqueue_cancel_queued_command_smoke() -> bool {
-    crate::io::iommu::qemu_tests::cmdqueue_cancel_queued_command_smoke()
+    crate::io::iommu::qemu_tests::wave3::cmdqueue_cancel_queued_command_smoke()
 }
 
 pub fn iommu_cmdqueue_drop_triggers_cancel_smoke() -> bool {
-    crate::io::iommu::qemu_tests::cmdqueue_drop_triggers_cancel_smoke()
+    crate::io::iommu::qemu_tests::wave3::cmdqueue_drop_triggers_cancel_smoke()
 }
 
 pub fn iommu_cmdqueue_process_up_to_respects_fuel_smoke() -> bool {
-    crate::io::iommu::qemu_tests::cmdqueue_process_up_to_respects_fuel_smoke()
+    crate::io::iommu::qemu_tests::wave3::cmdqueue_process_up_to_respects_fuel_smoke()
 }
 
 pub fn iommu_cmdqueue_fuel_shim_basic_smoke() -> bool {
-    crate::io::iommu::qemu_tests::cmdqueue_fuel_shim_basic_smoke()
+    crate::io::iommu::qemu_tests::wave3::cmdqueue_fuel_shim_basic_smoke()
 }
 
 pub fn iommu_cmdqueue_metrics_counts_smoke() -> bool {
-    crate::io::iommu::qemu_tests::cmdqueue_metrics_counts_smoke()
+    crate::io::iommu::qemu_tests::wave3::cmdqueue_metrics_counts_smoke()
 }
 
 pub fn iommu_wave2_device_id_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_device_id_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_device_id_smoke()
 }
 
 pub fn iommu_wave2_sl_pte_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_sl_pte_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_sl_pte_smoke()
 }
 
 pub fn iommu_wave2_iommu_domain_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_iommu_domain_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_iommu_domain_smoke()
 }
 
 pub fn iommu_wave2_map_rollback_hidden_mapping_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_map_rollback_hidden_mapping_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_map_rollback_hidden_mapping_smoke()
 }
 
 pub fn iommu_wave2_map_rollback_hidden_mapping_amd_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_map_rollback_hidden_mapping_amd_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_map_rollback_hidden_mapping_amd_smoke()
 }
 
 pub fn iommu_wave2_map_rollback_superpage_2mb_collision_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_map_rollback_superpage_2mb_collision_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_map_rollback_superpage_2mb_collision_smoke()
 }
 
 pub fn iommu_wave2_create_domain_with_numa_hint_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_create_domain_with_numa_hint_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_create_domain_with_numa_hint_smoke()
 }
 
 pub fn iommu_wave2_iova_allocator_basic_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_iova_allocator_basic_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_iova_allocator_basic_smoke()
 }
 
 pub fn iommu_wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_map_for_dma_alloc_non_identity_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_map_for_dma_alloc_non_identity_smoke()
 }
 
 pub fn iommu_wave2_unmap_reclaims_empty_tables_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_unmap_reclaims_empty_tables_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_unmap_reclaims_empty_tables_smoke()
 }
 
 pub fn iommu_wave2_unmap_partial_keeps_tables_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_unmap_partial_keeps_tables_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_unmap_partial_keeps_tables_smoke()
 }
 
 pub fn iommu_wave2_unmap_mixed_superpages_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_unmap_mixed_superpages_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_unmap_mixed_superpages_smoke()
 }
 
 pub fn iommu_wave2_page_table_scope_commit_preserves_counts_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_page_table_scope_commit_preserves_counts_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_page_table_scope_commit_preserves_counts_smoke()
 }
 
 pub fn iommu_wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2_page_table_scope_drop_rolls_back_parent_smoke()
+    crate::io::iommu::qemu_tests::wave2::wave2_page_table_scope_drop_rolls_back_parent_smoke()
 }

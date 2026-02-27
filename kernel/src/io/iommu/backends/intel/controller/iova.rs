@@ -6,12 +6,12 @@
 //!
 //! This module contains IOVA allocation and management methods for `IommuController` via `IovaManager` trait.
 //!
-//! The underlying `IovaAllocatorFast` is a lock-free bitmap-based allocator with
+//! The underlying `IovaAllocator` is a lock-free bitmap-based allocator with
 //! per-CPU magazine caching, providing O(1) allocation/free for 4KB/2MB/1GB pages.
 
 use super::IommuController;
-use crate::io::iommu::{IovaAllocatorFast, IovaGranularity};
-use crate::io::iommu::types::IommuError;
+use crate::io::iommu::core::dma::iova_allocator::{IovaAllocator, PageGranularity};
+use crate::io::iommu::core::types::IommuError;
 
 pub trait IovaManager {
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError>;
@@ -22,7 +22,7 @@ pub trait IovaManager {
     fn allocate_iova_aligned(
         &self,
         size: u64,
-        granularity: IovaGranularity,
+        granularity: PageGranularity,
     ) -> Result<u64, IommuError>;
     fn free_iova(&self, addr: u64, size: u64) -> Result<(), IommuError>;
     fn reserve_iova(&self, addr: u64, size: u64) -> Result<(), IommuError>;
@@ -52,14 +52,14 @@ impl IovaManager for IommuController {
         let mut guard = self
             .iova_allocator
             .lock_for_init("[IOMMU] iova_allocator init");
-        *guard = Some(IovaAllocatorFast::new(base, size));
+        *guard = Some(IovaAllocator::new(base, size));
         crate::io::log::early_print("[IOMMU] init_iova: IovaAllocator initialized\n");
         Ok(())
     }
 
     /// Allocate I/O virtual address (Fast path with per-CPU magazine)
     ///
-    /// IovaAllocatorFast already provides O(1) allocation with per-CPU magazine,
+    /// IovaAllocator already provides O(1) allocation with per-CPU magazine,
     /// so this delegates directly.
     fn allocate_iova_fast(&self, size: u64) -> Result<u64, IommuError> {
         self.allocate_iova(size)
@@ -67,7 +67,7 @@ impl IovaManager for IommuController {
 
     /// Free IOVA (Fast path with per-CPU magazine)
     ///
-    /// IovaAllocatorFast already provides O(1) free with per-CPU magazine,
+    /// IovaAllocator already provides O(1) free with per-CPU magazine,
     /// so this delegates directly.
     fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError> {
         self.free_iova(iova, size)
@@ -87,7 +87,7 @@ impl IovaManager for IommuController {
 
         if let Some(alloc) = guard.as_ref() {
             alloc
-                .allocate(size, IovaGranularity::Page4K)
+                .allocate(size, PageGranularity::Page4K)
                 .ok_or(IommuError::OutOfMemory)
         } else {
             Err(IommuError::NotInitialized)
@@ -98,7 +98,7 @@ impl IovaManager for IommuController {
     fn allocate_iova_aligned(
         &self,
         size: u64,
-        granularity: IovaGranularity,
+        granularity: PageGranularity,
     ) -> Result<u64, IommuError> {
         let guard = self
             .iova_allocator
@@ -134,7 +134,7 @@ impl IovaManager for IommuController {
         let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
 
         crate::io::log::early_print("[IOMMU] allocate_iova_masked: calling allocate_with_limit\n");
-        let res = alloc.allocate_with_limit(size, IovaGranularity::Page4K, mask);
+        let res = alloc.allocate_with_limit(size, PageGranularity::Page4K, mask);
         crate::io::log::early_print("[IOMMU] allocate_iova_masked: allocate_with_limit returned\n");
         if res.is_none() {
             crate::io::log::early_print("[IOMMU] allocate_iova_masked: allocation returned None (OOM)\n");

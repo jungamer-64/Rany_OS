@@ -45,7 +45,7 @@
 //!     crate::mm::types::PAGE_SIZE_4K,
 //! )
 //! .expect("alloc rref slice");
-//! let handle = crate::io::iommu::dma_handle::DmaHandle::map_rref_slice(
+//! let handle = crate::io::iommu::core::dma::handle::DmaHandle::map_rref_slice(
 //!     rref,
 //!     0,
 //!     DmaDirection::ToDevice,
@@ -61,9 +61,9 @@
 use core::marker::PhantomData;
 
 // use super::IommuController;
-use super::domain::{InvalidateRequest, IommuDomain, IommuInvalidator};
-use super::interface::IommuHardwareContext;
-use super::types::{DeviceId, IommuError};
+use crate::io::iommu::core::domain::{InvalidateRequest, IommuDomain, IommuInvalidator};
+use crate::io::iommu::core::interface::IommuHardwareContext;
+use crate::io::iommu::core::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
 
 // ============================================================================
@@ -71,7 +71,6 @@ use crate::ipc::RRef;
 // ============================================================================
 
 /// DMA transfer direction
-mod slice_handle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaDirection {
     /// CPU writes, device reads (e.g., TX buffer)
@@ -239,21 +238,21 @@ impl<T: ?Sized + 'static> UnmapError<T> {
 #[derive(Debug)]
 pub struct DmaHandle<T: ?Sized + 'static> {
     /// The underlying data (ownership held until unmap)
-    rref: Option<RRef<T>>,
+    pub(crate) rref: Option<RRef<T>>,
     /// IOVA address assigned by IOMMU
-    iova: u64,
+    pub(crate) iova: u64,
     /// Physical address of the buffer
-    phys: u64,
+    pub(crate) phys: u64,
     /// Size in bytes
-    size: u64,
+    pub(crate) size: u64,
     /// Domain ID this handle belongs to
-    domain_id: u16,
+    pub(crate) domain_id: u16,
     /// Mapping scope (global/device/domain/identity)
-    mapping: MappingKind,
+    pub(crate) mapping: MappingKind,
     /// DMA direction
-    direction: DmaDirection,
+    pub(crate) direction: DmaDirection,
     /// Marker for T
-    _marker: PhantomData<T>,
+    pub(crate) _marker: PhantomData<T>,
 }
 
 // SAFETY: DmaHandle is Send if T is Send
@@ -354,11 +353,11 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
                 None
             };
 
-            let mapping_kind_encoded = super::zombie_queue::encode_mapping_kind(&self.mapping);
+            let mapping_kind_encoded = crate::io::iommu::runtime::zombie::encode_mapping_kind(&self.mapping);
             
             let raw_parts = rref.into_raw_parts();
 
-            if super::zombie_queue::enqueue_zombie(
+            if crate::io::iommu::runtime::zombie::enqueue_zombie(
                 self.iova,
                 self.size,
                 self.domain_id,
@@ -400,7 +399,7 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
     /// is not accessible. The registry entry will be cleaned up when
     /// the domain is destroyed.
     fn try_unregister_from_domain(&self) {
-        use crate::io::iommu::registry::get_iommu_driver;
+        use crate::io::iommu::runtime::registry::get_iommu_driver;
 
         let Some(driver) = get_iommu_driver() else {
             return;
@@ -697,10 +696,10 @@ impl<T> DmaHandle<T> {
     ///     crate::ipc::DomainId::KERNEL,
     ///     DmaPage([0u8; 4096]),
     /// );
-    /// let handle = crate::io::iommu::dma_handle::DmaHandle::map_rref(
+    /// let handle = crate::io::iommu::core::dma::handle::DmaHandle::map_rref(
     ///     rref,
     ///     0,
-    ///     crate::io::iommu::dma_handle::DmaDirection::ToDevice,
+    ///     crate::io::iommu::core::dma::handle::DmaDirection::ToDevice,
     /// )?;
     /// // Use handle.iova() for device programming
     /// let returned_rref = handle.unmap()?;

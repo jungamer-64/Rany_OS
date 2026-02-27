@@ -8,7 +8,7 @@
 //! ACS (Access Control Services) 対応ブリッジによるデバイス分離を検出し、
 //! 分離不可能なデバイス群を同一IOMMUドメインに割り当てる。
 
-use crate::io::iommu::IommuBackend;
+use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::types::{IommuGroup, IommuGroupId};
 use crate::sync::PoisonLock;

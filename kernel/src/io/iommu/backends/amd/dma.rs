@@ -6,9 +6,9 @@
 
 use x86_64::PhysAddr;
 
-use crate::io::iommu::cmdqueue::IommuCommandKind;
+use crate::io::iommu::runtime::command::queue::IommuCommandKind;
 use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::IovaGranularity;
+use crate::io::iommu::core::dma::iova_allocator::{PageGranularity, IovaGranularity};
 
 use super::AmdIommuDriver;
 
@@ -22,8 +22,8 @@ impl AmdIommuDriver {
     /// The IovaAllocatorFast is lock-free internally with per-CPU magazine caching.
     pub(super) fn allocate_iova(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
         let iova = match mask {
-            Some(limit) => self.iova_allocator.allocate_with_limit(size, IovaGranularity::Page4K, limit),
-            None => self.iova_allocator.allocate(size, IovaGranularity::Page4K),
+            Some(limit) => self.iova_allocator.allocate_with_limit(size, PageGranularity::Page4K, limit),
+            None => self.iova_allocator.allocate(size, PageGranularity::Page4K),
         };
         iova.ok_or(IommuError::OutOfMemory)
     }
@@ -76,7 +76,7 @@ impl AmdIommuDriver {
         Self::validate_dma_alignment(phys_addr, size)?;
 
         // Security: Validate that the physical range does not overlap with the kernel image.
-        crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+        crate::io::iommu::runtime::security::validate_dma_region(phys_addr.as_u64(), size)?;
 
         let iova = self.allocate_iova_fast(size, None)?;
         let domain = self.domain_for_id(0)?;
@@ -127,7 +127,7 @@ impl AmdIommuDriver {
         }
 
         // Security: Validate that the physical range does not overlap with the kernel image.
-        crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+        crate::io::iommu::runtime::security::validate_dma_region(phys_addr.as_u64(), size)?;
 
         let domain_id = self.domain_id_for_device(*device)?;
         self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
@@ -244,9 +244,9 @@ impl AmdIommuDriver {
     /// コマンドキュー経由で同期アンマップを実行する
     fn unmap_via_command_queue(
         &self,
-        cq: &crate::io::iommu::cmdqueue::CommandQueue,
+        cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
         device: &DeviceId,
-        domain: &crate::io::iommu::domain::IommuDomain,
+        domain: &crate::io::iommu::core::domain::IommuDomain,
         iova: u64,
     ) -> Result<(), IommuError> {
         let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
@@ -287,9 +287,9 @@ impl AmdIommuDriver {
     /// コマンドキュー経由で非同期アンマップを実行する
     async fn unmap_via_command_queue_async(
         &self,
-        cq: &crate::io::iommu::cmdqueue::CommandQueue,
+        cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
         device: &DeviceId,
-        domain: &crate::io::iommu::domain::IommuDomain,
+        domain: &crate::io::iommu::core::domain::IommuDomain,
         iova: u64,
     ) -> Result<(), IommuError> {
         let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
@@ -375,7 +375,7 @@ impl AmdIommuDriver {
         }
 
         // Security: Validate that the physical range does not overlap with the kernel image.
-        if crate::io::iommu::security::validate_dma_region(phys, size).is_err() {
+        if crate::io::iommu::runtime::security::validate_dma_region(phys, size).is_err() {
             let _ = self.free_iova_fast(iova, size);
             return Err(());
         }

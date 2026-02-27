@@ -15,8 +15,8 @@ impl IommuController {
         bus: u8,
         dev: u8,
         func: u8,
-    ) -> Option<crate::io::iommu::security::IsolationReason> {
-        use crate::io::iommu::security::{FaultSummary, IsolationDecision};
+    ) -> Option<crate::io::iommu::runtime::security::IsolationReason> {
+        use crate::io::iommu::runtime::security::{FaultSummary, IsolationDecision};
 
         let summary = FaultSummary::from(fault);
         let decision = if let Some(notifier) = self.security_notifier.get() {
@@ -135,9 +135,9 @@ impl IommuController {
         &self,
         sid: u16,
         isolated_domain_id: Option<u16>,
-        isolation_reason: crate::io::iommu::security::IsolationReason,
+        isolation_reason: crate::io::iommu::runtime::security::IsolationReason,
     ) {
-        use crate::io::iommu::security::SecurityEvent;
+        use crate::io::iommu::runtime::security::SecurityEvent;
 
         // Intel VT-d: After modifying context entry, must invalidate caches
         // 1. Context Cache Invalidation (global - device-specific requires QI descriptor)

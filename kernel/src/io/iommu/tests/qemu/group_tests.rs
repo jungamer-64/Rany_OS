@@ -1,22 +1,31 @@
+use crate::io::iommu::backends::intel::controller::dma::DomainManager;
+use crate::io::iommu::runtime::backend::IommuBackend;
+
+use crate::io::iommu::core::types::*;
+use crate::io::iommu::backends::intel::controller::*;
+use crate::io::iommu::runtime::groups::*;
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+
 use super::*;
 
 
 /// Shared domain: multiple devices in same group map DMA independently.
 pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
-    let mut topo = MockPciTopology::new();
+    let mut topo = crate::io::iommu::tests::qemu::wave2::MockPciTopology::new();
     topo.add_endpoint(0, 6, 0);
     topo.add_endpoint(0, 6, 1);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev0 = DeviceId::new(0, 0, 6, 0);
-    let dev1 = DeviceId::new(0, 0, 6, 1);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev0 = crate::io::iommu::core::types::DeviceId::new(0, 0, 6, 0);
+    let dev1 = crate::io::iommu::core::types::DeviceId::new(0, 0, 6, 1);
 
-    let (group0, _) = match mgr.find_or_create_group(dev0, &ctrl, 0, &topo) {
+    let (group0, _) = match mgr.find_or_create_group(dev0, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group1, _) = match mgr.find_or_create_group(dev1, &ctrl, 0, &topo) {
+    let (group1, _) = match mgr.find_or_create_group(dev1, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -43,14 +52,14 @@ pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
 
 /// Device detach: domain and group persist after single device detach.
 pub fn wave2_group_device_detach_smoke() -> bool {
-    let mut topo = MockPciTopology::new();
+    let mut topo = crate::io::iommu::tests::qemu::wave2::MockPciTopology::new();
     topo.add_endpoint(0, 7, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
-    let mgr = IommuGroupManager::new();
-    let dev = DeviceId::new(0, 0, 7, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 7, 0);
 
-    let (group, _) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group, _) = match mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -71,15 +80,15 @@ pub fn wave2_group_device_detach_smoke() -> bool {
 
 /// Poisoned device_to_group lock returns error.
 pub fn wave2_group_poisoned_device_to_group_returns_error_smoke() -> bool {
-    let mgr = IommuGroupManager::new();
+    let mgr = crate::io::iommu::runtime::groups::IommuGroupManager::new();
 
     // First, create a valid group so device_to_group has data
-    let mut topo = MockPciTopology::new();
+    let mut topo = crate::io::iommu::tests::qemu::wave2::MockPciTopology::new();
     topo.add_endpoint(0, 8, 0);
-    let ctrl = IommuController::new(0x0, 0);
-    let dev = DeviceId::new(0, 0, 8, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 8, 0);
 
-    if mgr.find_or_create_group(dev, &ctrl, 0, &topo).is_err() {
+    if mgr.find_or_create_group(dev, &IommuBackend::Intel(crate::io::iommu::backends::intel::IntelIommuDriver::with_controller(Arc::clone(&ctrl))), 0, &topo, IommuDomainType::Translated).is_err() {
         return false;
     }
 
@@ -97,10 +106,10 @@ pub fn wave2_group_poisoned_device_to_group_returns_error_smoke() -> bool {
 
 /// ATS enable/disable lifecycle: enable → verify → disable → verify.
 pub fn wave2_ats_enable_disable_lifecycle_smoke() -> bool {
-    use crate::io::iommu::security::DeviceTrustLevel;
+    use crate::io::iommu::runtime::security::DeviceTrustLevel;
 
-    let ctrl = IommuController::new(0x0, 0);
-    let dev = DeviceId::new(0, 0, 1, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 1, 0);
 
     // Enable ATS for trusted device
     if !ctrl.enable_ats_for_device(dev, DeviceTrustLevel::Trusted) {
@@ -113,7 +122,7 @@ pub fn wave2_ats_enable_disable_lifecycle_smoke() -> bool {
     }
 
     // Disable ATS
-    ctrl.disable_ats_for_device(dev, crate::io::iommu::security::AtsChangeReason::AdminRequest);
+    ctrl.disable_ats_for_device(dev, crate::io::iommu::runtime::security::AtsChangeReason::AdminRequest);
 
     // Verify disabled
     !ctrl.is_ats_enabled(&dev)
@@ -121,10 +130,10 @@ pub fn wave2_ats_enable_disable_lifecycle_smoke() -> bool {
 
 /// ATS blocked for untrusted device.
 pub fn wave2_ats_block_untrusted_smoke() -> bool {
-    use crate::io::iommu::security::DeviceTrustLevel;
+    use crate::io::iommu::runtime::security::DeviceTrustLevel;
 
-    let ctrl = IommuController::new(0x0, 0);
-    let dev = DeviceId::new(0, 0, 2, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 2, 0);
 
     // Enable ATS for untrusted device should be blocked
     let result = ctrl.enable_ats_for_device(dev, DeviceTrustLevel::Untrusted);
@@ -135,13 +144,13 @@ pub fn wave2_ats_block_untrusted_smoke() -> bool {
 
 /// Detach disables ATS automatically.
 pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
-    use crate::io::iommu::security::DeviceTrustLevel;
+    use crate::io::iommu::runtime::security::DeviceTrustLevel;
 
-    let ctrl = IommuController::new(0x0, 0);
-    let dev = DeviceId::new(0, 0, 3, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
+    let dev = crate::io::iommu::core::types::DeviceId::new(0, 0, 3, 0);
 
     // Create domain and attach device
-    let domain_id = match ctrl.create_domain(None, IommuDomainType::Translated) {
+    let domain_id = match ctrl.create_domain(None, crate::io::iommu::core::types::IommuDomainType::Translated) {
         Ok(id) => id,
         Err(_) => return false,
     };
@@ -155,7 +164,7 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
         if !ctrl.is_ats_enabled(&dev) {
             return false;
         }
-        ctrl.disable_ats_for_device(dev, crate::io::iommu::security::AtsChangeReason::DeviceDetach);
+        ctrl.disable_ats_for_device(dev, crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach);
         return !ctrl.is_ats_enabled(&dev);
     }
 
@@ -182,14 +191,14 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
 /// CQ map/unmap with domain: single-thread sequential submit → process → verify.
 /// Migrated from test_cmdqueue_map_unmap_with_domain (removed std::thread).
 pub(crate) fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
-    use crate::io::iommu::cmdqueue::{CommandQueue, IommuCommandKind};
-    use crate::io::iommu::intel::controller::dma::DomainManager;
+    use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
+    use crate::io::iommu::backends::intel::controller::dma::DomainManager;
 
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
     let cq = CommandQueue::new();
 
     // Create domain
-    let domain_id = match ctrl.create_domain(None, IommuDomainType::Translated) {
+    let domain_id = match ctrl.create_domain(None, crate::io::iommu::core::types::IommuDomainType::Translated) {
         Ok(id) => id,
         Err(_) => return false,
     };
@@ -253,11 +262,11 @@ pub(crate) fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
 /// use map_for_device_async/unmap_for_device_async with deterministic no-CQ setup.
 pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
-    use crate::io::iommu::config::IommuConfig;
-    use crate::io::iommu::intel::controller::dma::DomainManager;
-    use crate::io::iommu::intel::controller::iova::IovaManager;
-    use crate::io::iommu::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
-    use crate::io::iommu::registry::get_iommu_driver;
+    use crate::io::iommu::runtime::config::IommuConfig;
+    use crate::io::iommu::backends::intel::controller::dma::DomainManager;
+    use crate::io::iommu::backends::intel::controller::iova::IovaManager;
+    use crate::io::iommu::backends::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
+    use crate::io::iommu::runtime::registry::get_iommu_driver;
 
     let controller = if let Some(registry) = get_iommu_registry() {
         match registry.controllers.get(0).cloned() {
@@ -265,7 +274,7 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
             None => return false,
         }
     } else {
-        let ctrl = Arc::new(IommuController::new(0x0, 0));
+        let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
         let registry = IommuRegistry::new(
             alloc::vec![ctrl.clone()],
             alloc::vec::Vec::new(),
@@ -276,13 +285,13 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     };
 
     if get_iommu_driver().is_none() {
-        crate::io::iommu::intel::IntelIommuDriver::register_driver();
+        crate::io::iommu::backends::intel::IntelIommuDriver::register_driver();
     }
 
     let Some(driver) = get_iommu_driver() else {
         return false;
     };
-    if !matches!(driver.as_ref(), crate::io::iommu::IommuBackend::Intel(_)) {
+    if !matches!(driver.as_ref(), crate::io::iommu::runtime::backend::IommuBackend::Intel(_)) {
         return false;
     }
 
@@ -293,7 +302,7 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
         return false;
     }
 
-    let domain_id = match controller.create_domain(None, IommuDomainType::Translated) {
+    let domain_id = match controller.create_domain(None, crate::io::iommu::core::types::IommuDomainType::Translated) {
         Ok(id) => id,
         Err(_) => return false,
     };
@@ -302,7 +311,7 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
         None => return false,
     };
 
-    let device = DeviceId::new(0, 0, 1, 0);
+    let device = crate::io::iommu::core::types::DeviceId::new(0, 0, 1, 0);
     match controller.device_domains.lock() {
         Ok(mut dmap) => {
             dmap.insert(device, domain_id);
@@ -361,19 +370,19 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_residual_impl() -> bool {
 /// DMA mask validation: register 32-bit mask → allocate IOVA → verify within mask bounds.
 /// Migrated from test_map_for_device_respects_dma_mask (removed global singleton dependency).
 pub(crate) fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
-    use crate::io::iommu::intel::controller::iova::IovaManager;
-    use crate::io::iommu::registry::{register_device_dma_mask, clear_device_dma_mask};
+    use crate::io::iommu::backends::intel::controller::iova::IovaManager;
+    use crate::io::iommu::runtime::registry::{register_device_dma_mask, clear_device_dma_mask};
 
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = Arc::new(crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0));
     // Initialize IOVA space starting high (above 32-bit boundary)
     if ctrl.init_iova(0x1000, 0x2_0000_0000 - 0x1000).is_err() {
         return false;
     }
 
-    let device = DeviceId::new(0, 0, 2, 0);
+    let device = crate::io::iommu::core::types::DeviceId::new(0, 0, 2, 0);
     let mask_32bit: u64 = 0xFFFF_FFFF;
 
-    struct DmaMaskGuard(DeviceId);
+    struct DmaMaskGuard(crate::io::iommu::core::types::DeviceId);
     impl Drop for DmaMaskGuard {
         fn drop(&mut self) {
             clear_device_dma_mask(self.0);
@@ -385,7 +394,7 @@ pub(crate) fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
     let _mask_guard = DmaMaskGuard(device);
 
     // Validate mask pre-allocation
-    let mask_check = crate::io::iommu::registry::validate_dma_mask_pre_allocation(&device, 0x1000);
+    let mask_check = crate::io::iommu::runtime::registry::validate_dma_mask_pre_allocation(&device, 0x1000);
     let mask_ok = match mask_check {
         Ok(Some(m)) => m == mask_32bit,
         _ => false,
@@ -417,17 +426,17 @@ pub(crate) fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {
 /// Canonical parity path for test_api_security_notifier_registration.
 pub(crate) fn wave5_api_security_notifier_registration_canonical_impl() -> bool {
     // Canonical API parity path: clear global notifier state before/after each run.
-    crate::io::iommu::security::qemu_test_clear_security_notifier();
+    crate::io::iommu::runtime::security::qemu_test_clear_security_notifier();
 
     struct SecurityNotifierGuard;
     impl Drop for SecurityNotifierGuard {
         fn drop(&mut self) {
-            crate::io::iommu::security::qemu_test_clear_security_notifier();
+            crate::io::iommu::runtime::security::qemu_test_clear_security_notifier();
         }
     }
     let _guard = SecurityNotifierGuard;
 
-    let notifier1 = Arc::new(MockSecurityNotifier::new());
+    let notifier1 = Arc::new(crate::io::iommu::tests::MockSecurityNotifier::new());
     let first = match crate::io::iommu::api::set_security_notifier(notifier1) {
         Ok(v) => v,
         Err(_) => return false,
@@ -436,7 +445,7 @@ pub(crate) fn wave5_api_security_notifier_registration_canonical_impl() -> bool 
         return false;
     }
 
-    let notifier2 = Arc::new(MockSecurityNotifier::new());
+    let notifier2 = Arc::new(crate::io::iommu::tests::MockSecurityNotifier::new());
     let second = match crate::io::iommu::api::set_security_notifier(notifier2) {
         Ok(v) => v,
         Err(_) => return false,
@@ -448,12 +457,12 @@ pub(crate) fn wave5_api_security_notifier_registration_canonical_impl() -> bool 
 /// QI metrics under pressure: fill ring → verify stats (submits, full_checks, timeouts).
 /// Migrated from test_qi_metrics_pressure (no actual std dependency).
 pub(crate) fn wave5_qi_metrics_pressure_canonical_impl() -> bool {
-    use crate::io::iommu::intel::controller::qi_init::QIManager;
-    use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
-    use crate::io::iommu::intel::qi::InvalidationQueueEntry;
-    use crate::io::iommu::intel::registers::ecap_bits;
+    use crate::io::iommu::backends::intel::controller::qi_init::QIManager;
+    use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
+    use crate::io::iommu::backends::intel::qi::InvalidationQueueEntry;
+    use crate::io::iommu::backends::intel::registers::ecap_bits;
 
-    let mut ctrl = IommuController::new(0x0, 0);
+    let mut ctrl = crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0);
     ctrl.ecap = ecap_bits::ECAP_QI;
     if ctrl.init_queued_invalidation(8).is_err() {
         return false;
@@ -573,69 +582,69 @@ pub fn wave2_qi_metrics_pressure_smoke() -> bool {
 }
 
 pub fn amd_wave0_alias_devids_for_device_dedup_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave0_alias_devids_for_device_dedup_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave0_alias_devids_for_device_dedup_smoke()
 }
 
 pub fn amd_wave0_alias_devids_for_device_no_match_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave0_alias_devids_for_device_no_match_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave0_alias_devids_for_device_no_match_smoke()
 }
 
 pub fn amd_wave0_ivhd_flags_for_device_combined_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave0_ivhd_flags_for_device_combined_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave0_ivhd_flags_for_device_combined_smoke()
 }
 
 pub fn amd_wave0_ivhd_flags_for_device_acpi_hid_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave0_ivhd_flags_for_device_acpi_hid_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave0_ivhd_flags_for_device_acpi_hid_smoke()
 }
 
 pub fn amd_wave0_map_ivmd_ranges_exclusion_splits_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave0_map_ivmd_ranges_exclusion_splits_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave0_map_ivmd_ranges_exclusion_splits_smoke()
 }
 
 pub fn amd_wave0_map_for_device_rejects_exclusion_range_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave0_map_for_device_rejects_exclusion_range_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave0_map_for_device_rejects_exclusion_range_smoke()
 }
 
 pub fn amd_wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave1_cmdqueue_map_unmap_with_domain_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave1_cmdqueue_map_unmap_with_domain_smoke()
 }
 
 pub fn amd_wave1_map_device_nonblocking_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave1_map_device_nonblocking_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave1_map_device_nonblocking_smoke()
 }
 
 pub fn amd_wave1_dma_mask_respects_32bit_limit_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave1_dma_mask_respects_32bit_limit_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave1_dma_mask_respects_32bit_limit_smoke()
 }
 
 pub fn amd_wave1_security_notifier_dispatch_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave1_security_notifier_dispatch_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave1_security_notifier_dispatch_smoke()
 }
 
 pub fn amd_wave1_cmdqueue_pressure_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave1_cmdqueue_pressure_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave1_cmdqueue_pressure_smoke()
 }
 
 pub fn amd_wave5_irt_entry_construction_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave5_irt_entry_construction_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave5_irt_entry_construction_smoke()
 }
 
 pub fn amd_wave5_irt_alloc_free_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave5_irt_alloc_free_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave5_irt_alloc_free_smoke()
 }
 
 pub fn amd_wave5_irt_exhaustion_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave5_irt_exhaustion_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave5_irt_exhaustion_smoke()
 }
 
 pub fn amd_wave5_irt_invalidation_cmd_format_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave5_irt_invalidation_cmd_format_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave5_irt_invalidation_cmd_format_smoke()
 }
 
 pub fn amd_wave5_map_interrupt_returns_handle_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave5_map_interrupt_returns_handle_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave5_map_interrupt_returns_handle_smoke()
 }
 
 pub fn amd_wave5_get_remap_msi_message_format_smoke() -> bool {
-    crate::io::iommu::amd::qemu_tests::wave5_get_remap_msi_message_format_smoke()
+    crate::io::iommu::backends::amd::qemu_tests::wave5_get_remap_msi_message_format_smoke()
 }

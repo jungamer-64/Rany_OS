@@ -412,7 +412,7 @@ impl CoherentDmaBuffer {
 
         // IOMMUマッピング（デバイスID指定時かつIOMMU有効時）
         let (iova, iommu_device) = if let Some(dev) = device {
-            if crate::io::iommu::registry::is_iommu_enabled() {
+            if crate::io::iommu::runtime::registry::is_iommu_enabled() {
                 // ページアライメントされたサイズでマッピング（4K境界）
                 let aligned_size = iommu_align_len(size).unwrap_or(size);
                 let (read, write) = match attributes.direction {

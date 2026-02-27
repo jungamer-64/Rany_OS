@@ -21,7 +21,7 @@
 //!
 //! This ensures the device cannot use any cached translations.
 
-use crate::io::iommu::registry::get_iommu_driver;
+use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::io::iommu::types::IommuError;
 
 /// Invalidate IOTLB entries for a specific device.

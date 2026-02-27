@@ -1,8 +1,6 @@
 use super::*;
 
 
-mod stats_ticket;
-pub use stats_ticket::*;
 impl QuarantineQueue {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {

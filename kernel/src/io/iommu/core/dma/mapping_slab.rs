@@ -36,7 +36,7 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use super::types::DmaMapping;
+use crate::io::iommu::core::types::DmaMapping;
 
 // ============================================================================
 // Configuration

@@ -493,7 +493,7 @@ pub fn bench_network_processing(runner: &mut BenchmarkRunner) {
 pub fn bench_iommu_iova(runner: &mut BenchmarkRunner) {
     use crate::io::iommu::backends::intel::controller::iova::IovaManager;
     use crate::io::iommu::backends::intel::controller::IommuController;
-    use crate::io::iommu::PAGE_SIZE_4K;
+    use crate::mm::types::PAGE_SIZE_4K;
     use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry};
     use crate::io::iommu::runtime::backend::IommuBackend;
     use crate::per_cpu::MAX_IOMMU_CONTROLLERS;

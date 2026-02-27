@@ -17,9 +17,9 @@
 use super::dma::DomainManager;
 use super::{HardwareContext, IommuController};
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
-use crate::io::iommu::intel::registers::{ecap_bits, fsts_bits, regs};
-use crate::io::iommu::intel::tables::{ContextEntry, ScalableContextEntry};
-use crate::io::iommu::fault_log::{FaultLog, FaultRecord};
+use crate::io::iommu::backends::intel::registers::{ecap_bits, fsts_bits, regs};
+use crate::io::iommu::backends::intel::tables::{ContextEntry, ScalableContextEntry};
+use crate::io::iommu::runtime::fault_log::{FaultLog, FaultRecord};
 use crate::io::iommu::types::{DeviceId, IommuError};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -342,7 +342,7 @@ pub fn drain_deferred_faults() -> usize {
 
 /// Process a single non-overflow fault event with controller
 fn process_fault_with_controller(event: &RawFaultEvent, controller: &IommuController) {
-    use crate::io::iommu::security::SecurityEvent;
+    use crate::io::iommu::runtime::security::SecurityEvent;
 
     let record = event.to_fault_record();
     if let Some(log) = controller.fault_log.lock().as_mut() {
@@ -406,7 +406,7 @@ fn log_critical_qi_stats(controller: &IommuController) {
 ///
 /// When controller is provided, also updates fault_log and notifies security.
 pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuController>) -> usize {
-    use crate::io::iommu::security::SecurityEvent;
+    use crate::io::iommu::runtime::security::SecurityEvent;
 
     let mut count = 0;
     let mut _overflow_cleared = false;

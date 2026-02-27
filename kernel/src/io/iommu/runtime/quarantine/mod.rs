@@ -30,17 +30,14 @@ use core::task::{Context, Poll, Waker};
 use crate::ipc::rref::{RRef, RRefRawParts, RawPartsError};
 use crate::sync::IrqMutex;
 
-use super::domain::InvalidateRequest;
-use super::interface::IommuHardwareContext;
-use super::types::IommuError;
+use crate::io::iommu::core::domain::InvalidateRequest;
+use crate::io::iommu::core::interface::IommuHardwareContext;
+use crate::io::iommu::core::types::IommuError;
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/// Maximum number of quarantined entries per queue
-mod queue_impl;
-pub use queue_impl::*;
 pub const QUARANTINE_CAPACITY: usize = 256;
 
 /// Maximum number of pending invalidation requests
@@ -484,3 +481,9 @@ fn flush_reaped_resources(
         waker.wake();
     }
 }
+
+/// Maximum number of quarantined entries per queue
+mod queue_impl;
+pub use queue_impl::*;
+mod stats_ticket;
+pub use stats_ticket::*;

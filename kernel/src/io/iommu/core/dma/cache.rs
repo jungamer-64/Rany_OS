@@ -6,7 +6,7 @@
 //! Provides a 2-way set associative context cache with LRU eviction for
 //! optimizing repeated context table lookups while handling hash collisions.
 
-use crate::io::iommu::intel::tables::ContextEntry;
+use crate::io::iommu::backends::intel::tables::ContextEntry;
 
 // ============================================================================
 // Context Cache Entry

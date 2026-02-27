@@ -6,8 +6,8 @@
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use crate::io::iommu::config::IommuConfig;
-use crate::io::iommu::intel::controller::init_global::init_iommu_from_acpi;
+use crate::io::iommu::runtime::config::IommuConfig;
+use crate::io::iommu::backends::intel::controller::init_global::init_iommu_from_acpi;
 
 /// Intel VT-d Driver Wrapper
 pub struct IntelVtDDriver {

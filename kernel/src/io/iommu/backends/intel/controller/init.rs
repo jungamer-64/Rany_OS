@@ -8,7 +8,7 @@
 
 use super::IommuController;
 use crate::io::iommu::types::IommuCapabilities;
-use crate::io::iommu::intel::registers::{cap_bits, ecap_bits};
+use crate::io::iommu::backends::intel::registers::{cap_bits, ecap_bits};
 
 pub trait CapabilityManager {
     /// Check if Queued Invalidation is supported

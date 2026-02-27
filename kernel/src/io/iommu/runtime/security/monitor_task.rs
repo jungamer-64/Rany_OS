@@ -87,7 +87,7 @@ pub async fn security_monitor_task() {
 /// the actual unmap operations asynchronously (from GC task context,
 /// not from Drop which must be O(1) and lock-free).
 pub(crate) fn run_zombie_dma_gc() {
-    use crate::io::iommu::zombie_queue;
+    use crate::io::iommu::runtime::zombie;
 
     // Always process some zombies if there are any pending
     let pending = zombie_queue::has_pending_zombies();

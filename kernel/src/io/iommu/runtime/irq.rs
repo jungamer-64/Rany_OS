@@ -6,7 +6,7 @@
 //! Provides functions to map interrupts via the IOMMU (Interrupt Remapping/IR).
 
 use super::registry::get_iommu_driver;
-use super::types::IommuError;
+use crate::io::iommu::core::types::IommuError;
 
 // ============================================================================
 // MSI/MSI-X Constants (x86 Format)

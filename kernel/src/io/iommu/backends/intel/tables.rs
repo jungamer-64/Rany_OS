@@ -2,7 +2,7 @@
 // kernel/src/io/iommu/intel/tables.rs
 // ============================================================================
 
-use crate::io::iommu::tables::{HardwareTable, Zeroable};
+use crate::io::iommu::core::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
 use alloc::vec::Vec;
 

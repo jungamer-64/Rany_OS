@@ -125,8 +125,8 @@ use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use crate::sync::IrqMutex;
 
-use super::tables::{PT_ENTRIES, SlPte};
-use super::types::IommuError;
+use crate::io::iommu::core::tables::{PT_ENTRIES, SlPte};
+use crate::io::iommu::core::types::IommuError;
 
 // ============================================================================
 // Page Table Reference Count Registry
@@ -164,7 +164,7 @@ pub fn register_page_table(phys: u64, virt: usize, node: usize) {
     crate::io::log::early_print("[IOMMU] register_page_table: inserted entry\n");
     
     // Security: Mark the page table as protected from DMA
-    crate::io::iommu::security::register_protected_page(phys);
+    crate::io::iommu::runtime::security::register_protected_page(phys);
 }
 
 /// Unregister a page table's metadata from the global registry
@@ -173,7 +173,7 @@ pub fn unregister_page_table(phys: u64) {
     registry.remove(&phys);
 
     // Security: Unregister from DMA protection
-    crate::io::iommu::security::unregister_protected_page(phys);
+    crate::io::iommu::runtime::security::unregister_protected_page(phys);
 }
 
 /// Increment reference count for a page table
@@ -443,7 +443,7 @@ impl PageTablePool {
             .ok_or(IommuError::OutOfMemory)?;
 
         // Get physical address
-        let phys = super::tables::virt_ptr_to_phys(ptr.as_ptr())?;
+        let phys = crate::io::iommu::core::tables::virt_ptr_to_phys(ptr.as_ptr())?;
 
         // Note: The allocator may have fallen back to a different node.
         // In a real NUMA-aware allocator, we would query the actual node.

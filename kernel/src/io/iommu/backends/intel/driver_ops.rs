@@ -144,7 +144,7 @@ impl IntelIommuDriver {
         }
 
         // Security: Validate that the physical range does not overlap with the kernel image.
-        crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+        crate::io::iommu::runtime::security::validate_dma_region(phys_addr.as_u64(), size)?;
 
         Ok(())
     }
@@ -458,7 +458,7 @@ impl IntelIommuDriver {
 
     /// コマンドキュー経由で非同期 UnmapRegionDevice を実行する
     pub(super) async fn try_cq_unmap_device_async(
-        cq: &crate::io::iommu::cmdqueue::CommandQueue,
+        cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
         domain_arc: &Arc<IommuDomain>,
         controller: &controller::IommuController,
         device: &DeviceId,
@@ -629,7 +629,7 @@ impl IntelIommuDriver {
                 controller.perform_isolation_invalidation(
                     device.requester_id(),
                     domain_id,
-                    crate::io::iommu::security::IsolationReason::PolicyViolation,
+                    crate::io::iommu::runtime::security::IsolationReason::PolicyViolation,
                 );
             }
             Ok(())

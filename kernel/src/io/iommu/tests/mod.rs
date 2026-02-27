@@ -9,28 +9,28 @@
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu;
 
-use super::config::IommuConfig;
-use super::domain::IommuDomain;
-use super::fault_log::FaultRecord;
-use super::page_table_pool::PageTablePool;
-use super::registry::{get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry};
-use super::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
-use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
-use super::intel::controller::IommuController;
-use super::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
+use crate::io::iommu::runtime::config::IommuConfig;
+use crate::io::iommu::core::domain::IommuDomain;
+use crate::io::iommu::runtime::fault_log::FaultRecord;
+use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry};
+use crate::io::iommu::core::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
+use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::backends::intel::controller::IommuController;
+use crate::io::iommu::backends::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
 use alloc::sync::Arc;
-use crate::io::iommu::intel::controller::dma::DomainManager;
-use crate::io::iommu::intel::controller::fault::{
+use crate::io::iommu::backends::intel::controller::dma::DomainManager;
+use crate::io::iommu::backends::intel::controller::fault::{
     drain_deferred_faults_with_controller, push_deferred_fault_for_test, RawFaultEvent,
 };
-use crate::io::iommu::intel::controller::iova::IovaManager;
-use crate::io::iommu::intel::controller::ir::InterruptRemapper;
-use crate::io::iommu::intel::controller::pri::PageRequestManager;
-use crate::io::iommu::intel::controller::qi_init::QIManager;
-use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
-use crate::io::iommu::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
-use crate::io::iommu::intel::registers::ecap_bits;
-use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
+use crate::io::iommu::backends::intel::controller::iova::IovaManager;
+use crate::io::iommu::backends::intel::controller::ir::InterruptRemapper;
+use crate::io::iommu::backends::intel::controller::pri::PageRequestManager;
+use crate::io::iommu::backends::intel::controller::qi_init::QIManager;
+use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
+use crate::io::iommu::backends::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
+use crate::io::iommu::backends::intel::registers::ecap_bits;
+use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 #[test_case]
@@ -713,7 +713,7 @@ fn test_map_for_dma_alloc_non_identity() {
 fn test_cmdqueue_map_unmap_with_domain() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let mut ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.command_queue = Some(crate::io::iommu::cmdqueue::CommandQueue::new());
+    ctrl_local.command_queue = Some(crate::io::iommu::runtime::command::queue::CommandQueue::new());
 
     // Leak so we can reference it from threads in test
     let ctrl: &'static IommuController = Box::leak(Box::new(ctrl_local));
@@ -725,7 +725,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
         .expect("create domain");
 
     // Worker thread: act like executor and service mapping/unmapping commands
-    let worker_cq: &'static crate::io::iommu::cmdqueue::CommandQueue = cq;
+    let worker_cq: &'static crate::io::iommu::runtime::command::queue::CommandQueue = cq;
     let worker_ctrl: &'static IommuController = ctrl;
     let worker = std::thread::spawn(move || {
         let mut map_done = false;
@@ -734,7 +734,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
         while !(map_done && unmap_done) {
             eprintln!("[test][CQ] worker loop attempt {}", attempts);
             let processed = worker_cq.process_once(|k| match k {
-                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegion { .. } => {
                     eprintln!("[test][CQ] handling MapRegion");
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => {
@@ -744,8 +744,8 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
-                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegion { .. } => {
                     eprintln!("[test][CQ] handling UnmapRegion");
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => {
@@ -755,14 +755,14 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
-                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbGlobal => {
                     match worker_ctrl.handle_command_queue_entry(k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
@@ -783,7 +783,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
     });
 
     // Submit MapRegion (blocking until worker processes)
-    let map_cmd = crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion {
+    let map_cmd = crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegion {
         domain: domain_id,
         iova: 0x1000,
         phys: 0x2000,
@@ -798,7 +798,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
     assert!(domain_arc.mapping(0x1000).is_some());
 
     // Submit UnmapRegion
-    let unmap_cmd = crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion {
+    let unmap_cmd = crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegion {
         domain: domain_id,
         iova: 0x1000,
         size: 0x1000,
@@ -814,7 +814,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
 fn test_map_for_device_async_and_unmap() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let mut ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.command_queue = Some(crate::io::iommu::cmdqueue::CommandQueue::new());
+    ctrl_local.command_queue = Some(crate::io::iommu::runtime::command::queue::CommandQueue::new());
 
     // Instead of leaking, wrap the controller in an Arc and register it in the global registry
     use alloc::sync::Arc as AllocArc;
@@ -831,7 +831,7 @@ fn test_map_for_device_async_and_unmap() {
         .init_iova(0x1000, 0x1_0000_0000 - 0x1000)
         .expect("init_iova");
     if get_iommu_driver().is_none() {
-        super::intel::IntelIommuDriver::register_driver();
+        crate::io::iommu::backends::intel::IntelIommuDriver::register_driver();
     }
 
     // Obtain controller Arc for worker
@@ -867,29 +867,29 @@ fn test_map_for_device_async_and_unmap() {
                         .expect("cq present")
                         .process_once(|k| {
                             match k {
-                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegion { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(0) => { map_done = true; Ok(0) },
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
-                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegion { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(0) => { unmap_done = true; Ok(0) },
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
-                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                crate::io::iommu::runtime::command::queue::IommuCommandKind::InvalidateIotlbGlobal => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
@@ -954,7 +954,7 @@ fn test_map_for_device_respects_dma_mask() {
     };
 
     if get_iommu_driver().is_none() {
-        super::intel::IntelIommuDriver::register_driver();
+        crate::io::iommu::backends::intel::IntelIommuDriver::register_driver();
     }
 
     let _ = controller.init_iova(0x1000, 0x1_0000_0000 - 0x1000);
@@ -1234,11 +1234,11 @@ fn test_page_table_scope_commit_preserves_counts() {
     let scope_phys = scope.phys();
     let parent_phys = 0xDEADBEEF;
 
-    super::page_table_pool::register_page_table(scope_phys, 0, 0);
+    crate::io::iommu::core::dma::page_table_pool::register_page_table(scope_phys, 0, 0);
     for _ in 0..42 {
-        super::page_table_pool::inc_ref(scope_phys);
+        crate::io::iommu::core::dma::page_table_pool::inc_ref(scope_phys);
     }
-    super::page_table_pool::register_page_table(parent_phys, 0, 0);
+    crate::io::iommu::core::dma::page_table_pool::register_page_table(parent_phys, 0, 0);
 
     // Create a fake parent entry and attach
     let mut parent_entry = SlPte::new();
@@ -1252,11 +1252,11 @@ fn test_page_table_scope_commit_preserves_counts() {
     // Commit should not overwrite existing count for scope.phys(), but should increment parent
     scope.commit();
 
-    assert_eq!(super::page_table_pool::get_ref_count(scope_phys), 42);
-    assert_eq!(super::page_table_pool::get_ref_count(parent_phys), 1);
+    assert_eq!(crate::io::iommu::core::dma::page_table_pool::get_ref_count(scope_phys), 42);
+    assert_eq!(crate::io::iommu::core::dma::page_table_pool::get_ref_count(parent_phys), 1);
 
-    super::page_table_pool::unregister_page_table(parent_phys);
-    super::page_table_pool::unregister_page_table(scope_phys);
+    crate::io::iommu::core::dma::page_table_pool::unregister_page_table(parent_phys);
+    crate::io::iommu::core::dma::page_table_pool::unregister_page_table(scope_phys);
 }
 
 #[test_case]
@@ -1286,10 +1286,11 @@ fn test_page_table_scope_drop_rolls_back_parent() {
 // ============================================================================
 
 /// Mock SecurityNotifier for testing (alloc-free, fixed-size ring)
+#[derive(Debug)]
 struct MockSecurityNotifier {
-    events: spin::Mutex<[Option<super::security::SecurityEvent>; 16]>,
+    events: spin::Mutex<[Option<crate::io::iommu::runtime::security::SecurityEvent>; 16]>,
     event_count: core::sync::atomic::AtomicUsize,
-    isolation_decision: super::security::IsolationDecision,
+    isolation_decision: crate::io::iommu::runtime::security::IsolationDecision,
 }
 
 impl MockSecurityNotifier {
@@ -1297,11 +1298,11 @@ impl MockSecurityNotifier {
         Self {
             events: spin::Mutex::new([None; 16]),
             event_count: core::sync::atomic::AtomicUsize::new(0),
-            isolation_decision: super::security::IsolationDecision::default(),
+            isolation_decision: crate::io::iommu::runtime::security::IsolationDecision::default(),
         }
     }
 
-    fn with_decision(decision: super::security::IsolationDecision) -> Self {
+    fn with_decision(decision: crate::io::iommu::runtime::security::IsolationDecision) -> Self {
         Self {
             events: spin::Mutex::new([None; 16]),
             event_count: core::sync::atomic::AtomicUsize::new(0),
@@ -1313,7 +1314,7 @@ impl MockSecurityNotifier {
         self.event_count.load(core::sync::atomic::Ordering::Relaxed)
     }
 
-    fn last_event(&self) -> Option<super::security::SecurityEvent> {
+    fn last_event(&self) -> Option<crate::io::iommu::runtime::security::SecurityEvent> {
         let count = self.received_count();
         if count == 0 {
             return None;
@@ -1323,8 +1324,8 @@ impl MockSecurityNotifier {
     }
 }
 
-impl super::security::SecurityNotifier for MockSecurityNotifier {
-    fn notify(&self, event: super::security::SecurityEvent) {
+impl crate::io::iommu::runtime::security::SecurityNotifier for MockSecurityNotifier {
+    fn notify(&self, event: crate::io::iommu::runtime::security::SecurityEvent) {
         let idx = self
             .event_count
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
@@ -1332,14 +1333,14 @@ impl super::security::SecurityNotifier for MockSecurityNotifier {
         self.events.lock()[idx] = Some(event);
     }
 
-    fn decide(&self, _fault: &super::security::FaultSummary) -> super::security::IsolationDecision {
+    fn decide(&self, _fault: &crate::io::iommu::runtime::security::FaultSummary) -> crate::io::iommu::runtime::security::IsolationDecision {
         self.isolation_decision
     }
 }
 
 #[test_case]
 fn test_security_notifier_registration() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0);
     let notifier = Arc::new(MockSecurityNotifier::new());
 
     // First registration should succeed
@@ -1352,6 +1353,11 @@ fn test_security_notifier_registration() {
 
 #[test_case]
 fn test_api_security_notifier_registration() {
+    use crate::io::iommu::backends::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
+    use crate::io::iommu::runtime::registry::get_iommu_driver;
+    use crate::io::iommu::runtime::config::IommuConfig;
+    use crate::io::iommu::backends::intel::controller::IommuController;
+
     if get_iommu_registry().is_none() {
         let ctrl = IommuController::new(0x0, 0);
         let registry =
@@ -1360,21 +1366,21 @@ fn test_api_security_notifier_registration() {
     }
 
     if get_iommu_driver().is_none() {
-        super::intel::IntelIommuDriver::register_driver();
+        crate::io::iommu::backends::intel::IntelIommuDriver::register_driver();
     }
 
     let notifier = Arc::new(MockSecurityNotifier::new());
-    let first = super::api::set_security_notifier(notifier).expect("set notifier");
+    let first = crate::io::iommu::api::set_security_notifier(notifier).expect("set notifier");
     assert!(first);
 
     let notifier2 = Arc::new(MockSecurityNotifier::new());
-    let second = super::api::set_security_notifier(notifier2).expect("set notifier");
+    let second = crate::io::iommu::api::set_security_notifier(notifier2).expect("set notifier");
     assert!(!second);
 }
 
 #[test_case]
 fn test_security_event_types_are_copy() {
-    use super::security::{IsolationReason, SecurityEvent};
+    use crate::io::iommu::runtime::security::{IsolationReason, SecurityEvent};
 
     // Verify SecurityEvent is Copy by assignment
     let event1 = SecurityEvent::DmaViolation {
@@ -1411,7 +1417,7 @@ fn test_security_event_types_are_copy() {
 
 #[test_case]
 fn test_fault_summary_from_fault_record() {
-    use super::security::FaultSummary;
+    use crate::io::iommu::runtime::security::FaultSummary;
 
     // Create a mock FaultRecord
     let record = FaultRecord {
@@ -1427,7 +1433,7 @@ fn test_fault_summary_from_fault_record() {
 
 #[test_case]
 fn test_isolation_decision_default() {
-    use super::security::{IsolationDecision, IsolationReason};
+    use crate::io::iommu::runtime::security::{IsolationDecision, IsolationReason};
 
     let decision = IsolationDecision::default();
     match decision {
@@ -1557,7 +1563,7 @@ fn test_ats_enable_requires_qi() {
     
     // 1. Try to enable ATS without QI enabled
     ctrl.qi_enabled.store(false, Ordering::Release);
-    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::security::DeviceTrustLevel::Trusted);
+    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted);
     assert!(!success, "ATS should not be enabled if QI is disabled");
     
     // 2. Enable QI support (mock)
@@ -1565,7 +1571,7 @@ fn test_ats_enable_requires_qi() {
     ctrl.qi_enabled.store(true, Ordering::Release);
     
     // Now it should succeed
-    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::security::DeviceTrustLevel::Trusted);
+    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted);
     assert!(success, "ATS should be enabled if QI is enabled and device is trusted");
     assert!(ctrl.is_ats_enabled(&device));
 }

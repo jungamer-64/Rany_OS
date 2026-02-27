@@ -10,15 +10,15 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::io::iommu::config::{IommuConfig, ReservedMemoryRegion};
-use crate::io::iommu::tables::phys_to_virt_usize;
+use crate::io::iommu::runtime::config::{IommuConfig, ReservedMemoryRegion};
+use crate::io::iommu::core::tables::phys_to_virt_usize;
 use crate::io::iommu::types::{DeviceId, IommuError, IommuDomainType};
 // Intel-specific imports
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
 
 #[cfg(not(test))]
-use crate::io::iommu::groups::{IOMMU_GROUP_MANAGER, IommuGroupManager};
+use crate::io::iommu::runtime::groups::{IOMMU_GROUP_MANAGER, IommuGroupManager};
 
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
@@ -76,7 +76,7 @@ pub unsafe fn init_iommu_from_acpi(
     }
 
     // Initialize security subsystem (protected regions like APIC)
-    crate::io::iommu::security::init();
+    crate::io::iommu::runtime::security::init();
 
     // Parse DMAR using canonical ACPI parser from drivers/acpi
     let dmar_info = match unsafe { crate::io::acpi::dmar::parse_dmar(dmar_addr) } {
@@ -153,7 +153,7 @@ unsafe fn init_controllers_from_drhd(
         let mut controller = IommuController::new(mmio_virt, unit.segment);
 
         // Security: Register IOMMU register range as protected to prevent DMA access
-        crate::io::iommu::security::register_protected_region(
+        crate::io::iommu::runtime::security::register_protected_region(
             unit.register_base,
             4096, // VT-d registers are at least 4KB
             "Intel VT-d IOMMU",
@@ -171,7 +171,7 @@ unsafe fn init_controllers_from_drhd(
         }
 
         controller.command_queue =
-            Some(crate::io::iommu::cmdqueue::CommandQueue::new_with_numa(None));
+            Some(crate::io::iommu::runtime::command::queue::CommandQueue::new_with_numa(None));
 
         controllers.push(Arc::new(controller));
         if unit.include_all {
@@ -193,7 +193,7 @@ unsafe fn init_controllers_from_drhd(
 /// Initialize IOVA allocator for a single controller (cap at 36 bits).
 unsafe fn init_controller_iova(controller: &mut IommuController) {
     let iova_bits = controller.max_guest_address_width().min(36).max(12);
-    let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
+    let iova_base: u64 = crate::mm::types::PAGE_SIZE_4K as u64;
     let iova_limit = 1u64 << iova_bits;
     let iova_size = iova_limit.saturating_sub(iova_base);
     if iova_size == 0 {
@@ -245,7 +245,7 @@ fn build_rmrr_regions(dmar_info: &crate::io::acpi::dmar::DmarInfo) -> Vec<Reserv
 /// Apply RMRR reservations to IOVA allocators on all controllers.
 fn apply_rmrr_reservations(registry: &IommuRegistry) {
     crate::io::log::early_print("[IOMMU] Processing RMRR...\n");
-    let page_size = crate::io::iommu::PAGE_SIZE_4K;
+    let page_size = crate::mm::types::PAGE_SIZE_4K;
 
     for region in &registry.reserved_regions {
         let start = align_down(region.base, page_size);
@@ -326,7 +326,7 @@ fn finalize_iommu_setup(config: &IommuConfig) {
     crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
 
     crate::io::log::early_print("[IOMMU] Creating default domain...\n");
-    if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
+    if let Some(driver) = crate::io::iommu::runtime::registry::get_iommu_driver() {
         crate::io::log::early_print("[IOMMU] about to call driver.create_domain\n");
         match driver.create_domain(None, IommuDomainType::Translated) {
             Ok(id) => {
@@ -354,7 +354,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     }
 
     let iova_bits = controller.max_guest_address_width().min(36).max(12);
-    let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
+    let iova_base: u64 = crate::mm::types::PAGE_SIZE_4K as u64;
     let iova_limit = 1u64 << iova_bits;
     let iova_size = iova_limit.saturating_sub(iova_base);
     if iova_size == 0 {
@@ -366,7 +366,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     log::info!("IOMMU initialized at 0x{:X}\n", mmio_base);
 
     controller.command_queue =
-        Some(crate::io::iommu::cmdqueue::CommandQueue::new_with_numa(None));
+        Some(crate::io::iommu::runtime::command::queue::CommandQueue::new_with_numa(None));
     let controller = Arc::new(controller);
 
     #[cfg(not(test))]

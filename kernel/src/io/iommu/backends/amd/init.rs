@@ -13,14 +13,14 @@ use x86_64::PhysAddr;
 use hashbrown::HashMap;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
-use crate::io::iommu::PAGE_SIZE_4K;
-use crate::io::iommu::IommuBackend;
-use crate::io::iommu::config::IommuConfig;
-use crate::io::iommu::registry::get_iommu_driver;
+use crate::mm::types::PAGE_SIZE_4K;
+use crate::io::iommu::runtime::backend::IommuBackend;
+use crate::io::iommu::runtime::config::IommuConfig;
+use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::io::iommu::types::IommuError;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::virt::mapping::phys_to_virt;
-use crate::io::iommu::tables::phys_to_virt_usize;
+use crate::io::iommu::core::tables::phys_to_virt_usize;
 use crate::sync::PoisonLock;
 
 use super::cmd;
@@ -265,7 +265,7 @@ pub unsafe fn init_iommu_from_ivrs(
     }
 
     // Initialize security subsystem (protected regions like APIC)
-    crate::io::iommu::security::init();
+    crate::io::iommu::runtime::security::init();
 
     let ivrs_info = match unsafe { crate::io::acpi::ivrs::parse_ivrs(ivrs_addr) } {
         Ok(info) => info,
@@ -282,7 +282,7 @@ pub unsafe fn init_iommu_from_ivrs(
 
     // Security: Register IOMMU register ranges as protected
     for unit in &units {
-        crate::io::iommu::security::register_protected_region(
+        crate::io::iommu::runtime::security::register_protected_region(
             unit.base_addr,
             0x10000, // AMD-Vi registers are 64KB
             "AMD-Vi IOMMU",

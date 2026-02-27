@@ -1,4 +1,12 @@
-use super::*;
+use crate::io::iommu::core::types::DeviceId;
+use core::marker::PhantomData;
+use core::task::{Context, Poll};
+use crate::ipc::RRef;
+use crate::io::iommu::core::dma::handle::{DmaDirection, DmaHandle, MappingKind, MapError, MapErrorKind, UnmapError, UnmapErrorKind};
+use crate::io::iommu::core::domain::{IommuDomain, IommuInvalidator, InvalidateRequest};
+use crate::io::iommu::core::interface::IommuHardwareContext;
+use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::runtime::quarantine::QuarantineTicket;
 
 
 impl<T> DmaHandle<[T]> {
@@ -397,11 +405,11 @@ impl<T> DmaHandle<T> {
         mut self,
         domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
-    ) -> Result<crate::io::iommu::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
+    ) -> Result<crate::io::iommu::runtime::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
     where
         T: 'static,
     {
-        use crate::io::iommu::quarantine::QuarantineError;
+        use crate::io::iommu::runtime::quarantine::QuarantineError;
         use crate::ipc::rref::RRefRawParts;
 
         // Get the quarantine queue from the domain
@@ -481,7 +489,7 @@ impl<T> DmaHandle<T> {
             .expect("Quarantine commit failed despite reservation");
 
         // Step 7: Create and return ticket
-        Ok(crate::io::iommu::quarantine::QuarantineTicket::new(
+        Ok(crate::io::iommu::runtime::quarantine::QuarantineTicket::new(
             queue.clone(),
             slot_idx,
             slot_gen,
@@ -503,7 +511,7 @@ impl<T> DmaHandle<T> {
         domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::io::iommu::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
+    ) -> Result<crate::io::iommu::runtime::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
     where
         T: 'static,
     {
@@ -521,7 +529,7 @@ impl<T> DmaHandle<T> {
         domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::io::iommu::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
+    ) -> Result<crate::io::iommu::runtime::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
     where
         T: 'static,
     {
@@ -529,7 +537,7 @@ impl<T> DmaHandle<T> {
         let stats = domain.quarantine_queue().stats();
         if stats.pending_invalidations > 0 {
             const QUARANTINE_FLUSH_THRESHOLD: usize =
-                crate::io::iommu::quarantine::QUARANTINE_CAPACITY * 3 / 4;
+                crate::io::iommu::runtime::quarantine::QUARANTINE_CAPACITY * 3 / 4;
             if stats.active_count as usize >= QUARANTINE_FLUSH_THRESHOLD {
                 if let Err(err) = domain.flush(invalidator, context) {
                     return Err(QuarantineLazyUnmapError {
@@ -564,7 +572,7 @@ pub(crate) enum QuarantineLazyUnmapErrorKind {
     /// Quarantine queue is full
     QueueFull,
     /// Quarantine error
-    Quarantine(crate::io::iommu::quarantine::QuarantineError),
+    Quarantine(crate::io::iommu::runtime::quarantine::QuarantineError),
     /// IOMMU error
     IommuError(IommuError),
 }

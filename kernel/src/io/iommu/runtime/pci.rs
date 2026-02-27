@@ -6,15 +6,15 @@
 //! Functions for setting up IOMMU protection for PCI devices.
 
 #[cfg(not(test))]
-use super::api::is_iommu_enabled;
+use crate::io::iommu::api::is_iommu_enabled;
 #[cfg(not(test))]
-use super::groups::{get_iommu_group_manager, RealPciTopology};
+use crate::io::iommu::runtime::groups::{get_iommu_group_manager, RealPciTopology};
 #[cfg(not(test))]
-use super::registry::get_iommu_driver;
+use crate::io::iommu::runtime::registry::get_iommu_driver;
 #[cfg(not(test))]
-use super::types::{DeviceId, IommuDomainType};
-use crate::io::iommu::intel::registers::ecap_bits;
-use crate::io::iommu::intel::registry::get_iommu_registry;
+use crate::io::iommu::core::types::{DeviceId, IommuDomainType};
+use crate::io::iommu::backends::intel::registers::ecap_bits;
+use crate::io::iommu::backends::intel::registry::get_iommu_registry;
 #[cfg(not(test))]
 use spin::Mutex;
 
@@ -46,15 +46,15 @@ fn is_ahci_legacy(device: &crate::io::pci::PciDeviceInfo) -> bool {
 #[cfg(not(test))]
 pub fn setup_iommu_for_pci_device(
     device: &mut crate::io::pci::PciDeviceInfo,
-) -> Result<u16, super::types::IommuError> {
+) -> Result<u16, crate::io::iommu::core::types::IommuError> {
     if !is_iommu_enabled() {
-        return Err(super::types::IommuError::NotSupported);
+        return Err(crate::io::iommu::core::types::IommuError::NotSupported);
     }
 
     // Critical: Grouping is mandatory for security. Fail if driver or manager are missing.
-    let driver = get_iommu_driver().ok_or(super::types::IommuError::NotInitialized)?;
-    let iommu_group_manager = get_iommu_group_manager().ok_or(super::types::IommuError::NotInitialized)?;
-    let pcie_ext_manager = pcie_ext_manager().ok_or(super::types::IommuError::NotInitialized)?;
+    let driver = get_iommu_driver().ok_or(crate::io::iommu::core::types::IommuError::NotInitialized)?;
+    let iommu_group_manager = get_iommu_group_manager().ok_or(crate::io::iommu::core::types::IommuError::NotInitialized)?;
+    let pcie_ext_manager = pcie_ext_manager().ok_or(crate::io::iommu::core::types::IommuError::NotInitialized)?;
 
     let device_id = DeviceId::new(
         device.segment,
@@ -70,7 +70,7 @@ pub fn setup_iommu_for_pci_device(
 
     // Resolve controller index (relevant for Intel multi-IOMMU systems)
     let controller_idx = match **driver {
-        crate::io::iommu::IommuBackend::Intel(_) => {
+        crate::io::iommu::runtime::backend::IommuBackend::Intel(_) => {
             let registry =
                 get_iommu_registry().expect("Intel registry must exist if backend is Intel");
             registry
@@ -82,7 +82,7 @@ pub fn setup_iommu_for_pci_device(
                 )
                 .unwrap_or(0)
         }
-        crate::io::iommu::IommuBackend::Amd(_) => 0, // AMD driver manages multiple units internally
+        crate::io::iommu::runtime::backend::IommuBackend::Amd(_) => 0, // AMD driver manages multiple units internally
     };
 
     let (iommu_group, newly_created) = iommu_group_manager.find_or_create_group(
@@ -96,7 +96,7 @@ pub fn setup_iommu_for_pci_device(
     let domain_id = iommu_group.domain_id;
 
     // ATS support check (Intel specific for now in this function, but safe to call)
-    if let crate::io::iommu::IommuBackend::Intel(ref _intel_ctrl) = **driver {
+    if let crate::io::iommu::runtime::backend::IommuBackend::Intel(ref _intel_ctrl) = **driver {
         let registry = get_iommu_registry().expect("Intel registry must exist");
         if let Some(controller) = registry.controllers.get(controller_idx) {
             try_enable_ats(controller, pcie_ext_manager, device, device_id);
@@ -121,7 +121,7 @@ pub fn setup_iommu_for_pci_device(
 
 #[cfg(not(test))]
 fn try_enable_ats(
-    controller: &alloc::sync::Arc<crate::io::iommu::intel::controller::IommuController>,
+    controller: &alloc::sync::Arc<crate::io::iommu::backends::intel::controller::IommuController>,
     pcie_ext_manager: &'static pci_driver::PcieExtManager,
     device: &crate::io::pci::PciDeviceInfo,
     device_id: DeviceId,
@@ -153,7 +153,7 @@ fn try_enable_ats(
 
     let trust_level = determine_trust_level(pcie_ext_manager, device);
 
-    if trust_level == crate::io::iommu::security::DeviceTrustLevel::Untrusted {
+    if trust_level == crate::io::iommu::runtime::security::DeviceTrustLevel::Untrusted {
         log::warn!(
             "[IOMMU][SECURITY] ATS disabled for UNTRUSTED device {:?}",
             device_id
@@ -185,10 +185,10 @@ fn try_enable_ats(
 fn determine_trust_level(
     pcie_ext_manager: &'static pci_driver::PcieExtManager,
     device: &crate::io::pci::PciDeviceInfo,
-) -> crate::io::iommu::security::DeviceTrustLevel {
-    use crate::io::iommu::security::DeviceTrustLevel;
+) -> crate::io::iommu::runtime::security::DeviceTrustLevel {
+    use crate::io::iommu::runtime::security::DeviceTrustLevel;
     use pci_driver::HotPlugController;
-    use super::groups::PciTopologyProvider;
+    use crate::io::iommu::runtime::groups::PciTopologyProvider;
 
     let topology = RealPciTopology::new(pcie_ext_manager);
     let mut current_bus = device.bdf.bus();

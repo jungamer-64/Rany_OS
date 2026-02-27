@@ -6,8 +6,8 @@
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use crate::io::iommu::config::IommuConfig;
-use crate::io::iommu::amd::init_iommu_from_ivrs;
+use crate::io::iommu::runtime::config::IommuConfig;
+use crate::io::iommu::backends::amd::init_iommu_from_ivrs;
 
 /// AMD-Vi Driver Wrapper
 pub struct AmdViDriver {

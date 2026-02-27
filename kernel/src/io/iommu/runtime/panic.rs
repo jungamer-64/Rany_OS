@@ -12,7 +12,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Once;
 use x86_64::PhysAddr;
 
-use super::types::IommuError;
+use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::api;
 
 /// Default panic DMA pool size (bytes).
 pub const PANIC_DMA_POOL_BYTES: usize = 256 * 1024;
@@ -85,7 +86,7 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
 
     let phys = crate::mm::phys::frame_allocator::alloc_contiguous_frames(frames).ok_or(IommuError::OutOfMemory)?;
     let phys_addr = PhysAddr::new(phys.as_u64());
-    let iova = match unsafe { super::api::map_for_dma(phys_addr, size) } {
+    let iova = match unsafe { api::map_for_dma(phys_addr, size) } {
         Ok(iova) => iova,
         Err(err) => {
             crate::mm::phys::frame_allocator::dealloc_contiguous_frames(phys, frames);
