@@ -22,6 +22,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::sync::{PoisonLock, PoisonLockGuard};
 use spin::{Once, RwLock};
 mod domain_impl;
+mod mapping;
+mod paging;
+mod identity_mapping;
+mod unmap_ops;
 
 // ============================================================================
 // Invalidation Request Pattern

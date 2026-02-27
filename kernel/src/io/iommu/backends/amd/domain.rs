@@ -21,7 +21,7 @@ use super::{AmdIommuDriver, AmdIvmdRange, AmdDomainInfo};
 // Alignment helpers
 // ---------------------------------------------------------------------------
 
-mod ivhd_flags;
+mod driver_ops;
 pub(super) fn align_down(value: u64, align: usize) -> u64 {
     crate::util::align_down_u64(value, align as u64)
 }
@@ -127,12 +127,12 @@ pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> 
 // ---------------------------------------------------------------------------
 
 /// デバイスIDが範囲内にあるかチェックする
-fn devid_in_range(devid: u16, start: u16, end: u16) -> bool {
+pub(super) fn devid_in_range(devid: u16, start: u16, end: u16) -> bool {
     devid >= start && devid <= end
 }
 
 /// Check if an IVHD device entry matches a given device ID and return its flags.
-fn ivhd_entry_flags_for_devid(entry: &IvhdDeviceEntry, devid: u16) -> u8 {
+pub(super) fn ivhd_entry_flags_for_devid(entry: &IvhdDeviceEntry, devid: u16) -> u8 {
     match entry {
         IvhdDeviceEntry::All { flags } => *flags,
         IvhdDeviceEntry::Select { devid: e, flags }

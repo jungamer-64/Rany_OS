@@ -12,7 +12,7 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::ir::InterruptRemapEntry;
 use crate::io::iommu::backends::common::{PostedInterruptDescriptor, PostedInterruptPool};
-use crate::io::iommu::types::IommuError;
+use crate::io::iommu::types::{DeviceId, IommuError};
 
 pub trait PostedInterruptManager {
     /// Initialize the Posted Interrupt Descriptor pool
@@ -21,6 +21,7 @@ pub trait PostedInterruptManager {
     /// Allocate a Posted Interrupt Descriptor and configure an IRTE in posted mode
     fn allocate_posted_irte(
         &mut self,
+        device: DeviceId,
         notification_vector: u8,
         notification_dest: u32,
     ) -> Result<(u16, u16), IommuError>;
@@ -85,6 +86,7 @@ impl PostedInterruptManager for IommuController {
 
     fn allocate_posted_irte(
         &mut self,
+        device: DeviceId,
         notification_vector: u8,
         notification_dest: u32,
     ) -> Result<(u16, u16), IommuError> {
@@ -114,9 +116,13 @@ impl PostedInterruptManager for IommuController {
         // Allocate an IRTE
         let irte_index = irt.allocate().ok_or(IommuError::HardwareError)?;
 
-        // Configure IRTE for posted mode
-        let entry = InterruptRemapEntry::posted(pid_addr);
+        // Configure IRTE for posted mode with source validation
+        let rid = device.requester_id();
+        let entry = InterruptRemapEntry::posted(pid_addr, Some(rid));
         irt.set(irte_index, entry);
+
+        // Security: Invalidate IEC after allocating IRTE
+        let _ = self.invalidate_iec(false, irte_index);
 
         Ok((irte_index, pid_index))
     }

@@ -106,10 +106,25 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
         buffer.enable();
     }
 
+    // Security: Register command buffer and sync page as protected from DMA.
+    // This prevents malicious devices from tampering with invalidation commands
+    // or spoofing completion status.
+    crate::io::iommu::runtime::security::register_protected_region(
+        phys_base.as_u64(),
+        (frame_count * PAGE_SIZE_4K as usize) as u64,
+        "AMD-Vi Command Buffer",
+    );
+    crate::io::iommu::runtime::security::register_protected_region(
+        sync_phys.as_u64(),
+        PAGE_SIZE_4K as u64,
+        "AMD-Vi Sync Page",
+    );
+
     let mut state = AmdCommandState {
         buffer,
         sync_ptr,
         sync_phys: sync_phys.as_u64(),
+        frame_count,
         seq: AtomicU64::new(0),
     };
 

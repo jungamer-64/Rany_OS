@@ -32,6 +32,30 @@ pub trait PciTopologyProvider {
     /// ACSケイパビリティがない場合は None を返す。
     fn is_acs_isolation_enabled(&self, bus: u8, device: u8, function: u8) -> Option<bool>;
 
+    /// 指定デバイス(bus:device)の全ての機能でACS分離が有効かを確認する。
+    /// 一つでも無効またはケイパビリティがない場合は false を返す。
+    fn has_acs_on_all_functions(&self, bus: u8, device: u8) -> bool {
+        // First check if it's a multifunction device at function 0
+        let ht = self.read_header_type(bus, device, 0).unwrap_or(0);
+        let is_multifunction = (ht & 0x80) != 0;
+
+        if !is_multifunction {
+            // Not multifunction, just check function 0
+            return self.is_acs_isolation_enabled(bus, device, 0).unwrap_or(false);
+        }
+
+        // Multifunction device: all existing functions MUST have ACS enabled for isolation.
+        // We check all 8 possible functions.
+        for func in 0..8 {
+            if let Some(_) = self.read_header_type(bus, device, func) {
+                if !self.is_acs_isolation_enabled(bus, device, func).unwrap_or(false) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// `child_bus` を所有する親ブリッジを検索する。
     /// 見つかった場合は (bus, device, function) を返す。
     /// ルートバス (bus 0) の場合は None を返す。
@@ -230,22 +254,11 @@ impl IommuGroupManager {
         let mut group_root_func = current_func;
 
         // Check if the device itself is a multifunction device and if it lacks ACS isolation
-        if let Some(header_type) = topology.read_header_type(current_bus, current_dev, 0) {
-            let is_multifunction = (header_type & 0x80) != 0;
-            if is_multifunction {
-                match topology.is_acs_isolation_enabled(current_bus, current_dev, 0) {
-                    Some(true) => {
-                        // Functions are isolated. Group root stays as the device's own function.
-                    }
-                    Some(false) | None => {
-                        // Functions are NOT isolated - they must share a group (root is func 0)
-                        group_root_func = 0;
-                    }
-                }
-            } else {
-                // Single function device
-                group_root_func = 0;
-            }
+        if !topology.has_acs_on_all_functions(current_bus, current_dev) {
+            // Either multifunction without ACS or single-function without ACS.
+            // In both cases, if the device isn't isolated from its peers or its own functions,
+            // we group it by its base device (function 0).
+            group_root_func = 0;
         }
 
         // PCIヒエラルキーをルートコンプレックスに向かって走査
@@ -271,16 +284,12 @@ impl IommuGroupManager {
 
             if is_bridge {
                 // ブリッジの下流分離を確認 (ACS)
-                match topology.is_acs_isolation_enabled(current_bus, current_dev, current_func) {
-                    Some(true) => {
-                        // このブリッジで下流が分離されている。
-                    }
-                    Some(false) | None => {
-                        // 分離不能ブリッジ → グループのルートをこのブリッジに引き上げる。
-                        group_root_bus = current_bus;
-                        group_root_dev = current_dev;
-                        group_root_func = 0; // Bridges are group roots via function 0
-                    }
+                // Note: Multi-function bridges must also be fully isolated at all functions.
+                if !topology.has_acs_on_all_functions(current_bus, current_dev) {
+                    // 分離不能ブリッジ → グループのルートをこのブリッジに引き上げる。
+                    group_root_bus = current_bus;
+                    group_root_dev = current_dev;
+                    group_root_func = 0; // Bridges are group roots via function 0
                 }
             }
 

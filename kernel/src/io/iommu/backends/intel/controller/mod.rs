@@ -460,9 +460,8 @@ impl IommuController {
     }
 
     /// Invalidate IOTLB (Generic: uses QI if enabled, else Direct)
-    pub fn invalidate_iotlb(&self, domain_id: u16, any_ats: bool) {
-        
-        let _ = self.invalidate_domain(domain_id, any_ats);
+    pub fn invalidate_iotlb(&self, domain_id: u16, any_ats: bool) -> Result<(), IommuError> {
+        self.invalidate_domain(domain_id, any_ats)
     }
 
     /// Invalidate IOTLB globally (synchronous).

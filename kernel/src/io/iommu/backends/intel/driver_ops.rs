@@ -6,6 +6,7 @@ use super::*;
 
 
 mod domain_query;
+mod invalidation;
 impl IntelIommuDriver {
     pub(crate) fn is_enabled(&self) -> bool {
         if self.controller.is_some() {

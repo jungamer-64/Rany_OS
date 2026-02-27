@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/domain/ivhd_flags.rs
+// kernel/src/io/iommu/backends/amd/domain/driver_ops.rs
 // ============================================================================
 
 use super::*;

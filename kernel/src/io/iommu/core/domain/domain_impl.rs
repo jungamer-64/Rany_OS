@@ -5,8 +5,7 @@
 use super::*;
 
 
-#[path = "identity_mapping.rs"]
-mod identity_mapping;
+
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
 

@@ -59,10 +59,18 @@ impl InterruptRemapEntry {
         Self { lo, hi }
     }
 
-    pub fn posted(pid_addr: u64) -> Self {
+    pub fn posted(pid_addr: u64, sid: Option<u16>) -> Self {
         // P=1 (bit 0), IM=1 (bit 4)
         let lo = (pid_addr & !0xF) | (1 << 4) | 1;
-        Self { lo, hi: 0 }
+        let mut hi = 0;
+        if let Some(rid) = sid {
+            // SVT=1 (Source Validation Type: Verify SID) - bits 64-65 of IRTE (bits 0-1 of hi)
+            hi |= 1;
+            // SQ=0 (Source-id Qualifier: Exact match) - bits 66-67 of IRTE (bits 2-3 of hi)
+            // SID (Source ID) - bits 80-95 of IRTE (bits 16-31 of hi)
+            hi |= (rid as u64) << 16;
+        }
+        Self { lo, hi }
     }
 }
 

@@ -94,7 +94,11 @@ impl DomainManager for IommuController {
         }
 
         // Invalidate IOTLB for this domain to ensure hardware no longer has cached entries
-        self.invalidate_iotlb(id, true);
+        if let Err(err) = self.invalidate_iotlb(id, true) {
+            log::error!("[IOMMU] Critical: Failed to invalidate IOTLB during domain {} destruction: {:?}", id, err);
+            domain_arc.poison();
+            return Err(err);
+        }
 
         Ok(())
     }
@@ -119,8 +123,8 @@ impl DomainManager for IommuController {
             Self::attach_device_legacy(&mut *hw_guard, bus, devfn, domain_type, page_table_addr, domain_id)?;
         }
 
-        let _ = self.invalidate_context_global_sync();
-        self.invalidate_iotlb(domain_id, true);
+        self.invalidate_context_global_sync()?;
+        self.invalidate_iotlb(domain_id, true)?;
 
         self.device_domains.lock().map_err(|_| IommuError::HardwareError)?.insert(device, domain_id);
         Ok(())
@@ -134,9 +138,9 @@ impl DomainManager for IommuController {
         let domain_id = self.device_domains.lock().map_err(|_| IommuError::HardwareError)?.get(&device).copied();
         self.clear_hw_context_entry(bus, devfn, device)?;
 
-        let _ = self.invalidate_context_global_sync();
+        self.invalidate_context_global_sync()?;
         if let Some(did) = domain_id {
-            self.invalidate_iotlb(did, true);
+            self.invalidate_iotlb(did, true)?;
         }
 
         self.device_domains.lock().map_err(|_| IommuError::HardwareError)?.remove(&device);
@@ -179,14 +183,14 @@ impl DomainManager for IommuController {
                 if crate::io::iommu::runtime::security::validate_dma_region(*phys, *size).is_err() { return Err(()); }
                 let domain_arc = self.domain(*domain).ok_or(())?;
                 domain_arc.map(*iova, *phys, *size, *read, *write).map_err(|_| ())?;
-                self.invalidate_iotlb(*domain, false);
+                self.invalidate_iotlb(*domain, false).map_err(|_| ())?;
                 Ok(0)
             },
             IommuCommandKind::MapRegionDevice { device, iova, phys, size, read, write } => {
                 if crate::io::iommu::runtime::security::validate_dma_region(*phys, *size).is_err() { return Err(()); }
                 let (domain_id, domain_arc) = self.resolve_device_domain(device).map_err(|_| ())?;
                 domain_arc.map(*iova, *phys, *size, *read, *write).map_err(|_| ())?;
-                self.invalidate_iotlb(domain_id, false);
+                self.invalidate_iotlb(domain_id, false).map_err(|_| ())?;
                 if self.should_invalidate_device_tlb(device) {
                     let _ = self.qi_invalidate_device_tlb_all(device.requester_id());
                 }
@@ -195,7 +199,7 @@ impl DomainManager for IommuController {
             IommuCommandKind::UnmapRegion { domain, iova, .. } => {
                 let domain_arc = self.domain(*domain).ok_or(())?;
                 domain_arc.unmap(*iova).map_err(|_| ())?;
-                self.invalidate_iotlb(*domain, true);
+                self.invalidate_iotlb(*domain, true).map_err(|_| ())?;
                 Ok(0)
             },
             IommuCommandKind::UnmapRegionDevice { device, iova, .. } => {

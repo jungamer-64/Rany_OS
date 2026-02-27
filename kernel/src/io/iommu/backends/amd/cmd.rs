@@ -133,12 +133,12 @@ impl AmdCommand {
 }
 
 pub struct AmdCommandBuffer {
-    mmio_base: u64,
-    phys_base: u64,
-    entries: NonNull<AmdCommand>,
-    entry_count: usize,
-    buffer_bytes: u32,
-    tail: u32,
+    pub(crate) mmio_base: u64,
+    pub(crate) phys_base: u64,
+    pub(crate) entries: NonNull<AmdCommand>,
+    pub(crate) entry_count: usize,
+    pub(crate) buffer_bytes: u32,
+    pub(crate) tail: u32,
 }
 
 impl core::fmt::Debug for AmdCommandBuffer {

@@ -307,6 +307,12 @@ impl InvalidationQueue {
             queue_phys, status_phys, size
         );
 
+        // Security: Register the queue and status page as protected from DMA.
+        // This prevents malicious devices from tampering with invalidation commands
+        // or spoofing completion status.
+        crate::security::dma::register_protected_range(queue_phys, total_bytes as u64);
+        crate::security::dma::register_protected_range(status_phys, 4096);
+
         Some(Self {
             queue_virt,
             queue_phys,
@@ -319,7 +325,31 @@ impl InvalidationQueue {
             stats: QiStats::default(),
         })
     }
+}
 
+impl Drop for InvalidationQueue {
+    fn drop(&mut self) {
+        // Security: Unregister from DMA protection
+        let total_bytes = self.size * core::mem::size_of::<InvalidationQueueEntry>();
+        crate::security::dma::unregister_protected_range(self.queue_phys, total_bytes as u64);
+        crate::security::dma::unregister_protected_range(self.status_phys, 4096);
+
+        // Free memory (RAII)
+        let layout = Layout::from_size_align(total_bytes, 4096).ok();
+        let status_layout = Layout::from_size_align(4096, 4096).ok();
+
+        unsafe {
+            if let Some(l) = layout {
+                alloc::alloc::dealloc(self.queue_virt as *mut u8, l);
+            }
+            if let Some(l) = status_layout {
+                alloc::alloc::dealloc(self.status_virt as *mut u8, l);
+            }
+        }
+    }
+}
+
+impl InvalidationQueue {
     /// Get the queue base address for IQA register
     pub fn base_address(&self) -> u64 {
         self.queue_phys
