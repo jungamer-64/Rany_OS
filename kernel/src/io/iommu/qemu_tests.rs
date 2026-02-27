@@ -16,6 +16,7 @@ use super::intel::controller::pri::PageRequestManager;
 use super::intel::controller::qi_init::QIManager;
 use super::intel::controller::qi_ops::InvalidationOps;
 use super::intel::controller::IommuController;
+use super::intel::IntelIommuDriver;
 use super::intel::qi::InvalidationQueueEntry;
 use super::intel::registers::ecap_bits;
 use super::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
@@ -28,6 +29,7 @@ use super::security::{
 use super::tables::{HardwareTable, PageTableScope, SlPte};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 
+#[derive(Debug)]
 struct MockSecurityNotifier {
     events: spin::Mutex<[Option<SecurityEvent>; 16]>,
     event_count: AtomicUsize,
@@ -493,11 +495,11 @@ pub fn wave2_page_table_scope_commit_preserves_counts_smoke() -> bool {
     let scope_phys = scope.phys();
     let parent_phys = 0xDEADBEEF;
 
-    register_page_table(scope_phys);
+    register_page_table(scope_phys, 0, 0);
     for _ in 0..42 {
         let _ = inc_ref(scope_phys);
     }
-    register_page_table(parent_phys);
+    register_page_table(parent_phys, 0, 0);
 
     let mut parent_entry = SlPte::new();
     scope.attach_to_parent(
@@ -937,6 +939,7 @@ pub fn wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
 }
 
 pub fn wave3_scalable_mode_pasid0_fault_resolution_smoke() -> bool {
+    #[derive(Debug)]
     struct Wave3Notifier {
         seen: AtomicBool,
         domain_id: AtomicU32,
@@ -1778,11 +1781,11 @@ pub fn wave2_group_full_flow_discovery_to_attach_smoke() -> bool {
     let mut topo = MockPciTopology::new();
     topo.add_endpoint(0, 5, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = Arc::new(IommuController::new(0x0, 0));
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 5, 0);
 
-    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let backend = crate::io::iommu::IommuBackend::Intel(IntelIommuDriver::with_controller(ctrl.clone()));
     // 1. Group discovery creates domain
     let (group, _) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
@@ -1809,12 +1812,12 @@ pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
     topo.add_endpoint(0, 6, 0);
     topo.add_endpoint(0, 6, 1);
 
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = Arc::new(IommuController::new(0x0, 0));
     let mgr = IommuGroupManager::new();
     let dev0 = DeviceId::new(0, 0, 6, 0);
     let dev1 = DeviceId::new(0, 0, 6, 1);
 
-    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let backend = crate::io::iommu::IommuBackend::Intel(IntelIommuDriver::with_controller(ctrl.clone()));
     let (group0, _) = match mgr.find_or_create_group(dev0, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
@@ -1849,12 +1852,12 @@ pub fn wave2_group_device_detach_smoke() -> bool {
     let mut topo = MockPciTopology::new();
     topo.add_endpoint(0, 7, 0);
 
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = Arc::new(IommuController::new(0x0, 0));
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 7, 0);
 
-    let backend = crate::io::iommu::IommuBackend::Intel(IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
-    let (group, _) = match mgr.find_or_create_group(&backend, &dev, IommuDomainType::Translated) {
+    let backend = crate::io::iommu::IommuBackend::Intel(IntelIommuDriver::with_controller(ctrl.clone()));
+    let (group, _) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };

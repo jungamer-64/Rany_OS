@@ -112,6 +112,28 @@ pub fn register_protected_range(start: u64, size: u64) {
     }
 }
 
+/// Unregister a physical memory range from protection.
+pub fn unregister_protected_range(start: u64, size: u64) {
+    if size == 0 { return; }
+    let end = start.saturating_add(size);
+
+    // If it was potentially in the regions list
+    if size > 1024 * 1024 || start >= (PROTECTED_BITMAP_PAGES as u64 * 4096) {
+        let mut regions = PROTECTED_REGIONS.write();
+        regions.retain(|r| r.start != start || r.end != end);
+    }
+
+    let mut current = (start / 4096) * 4096;
+    while current < end && current < (PROTECTED_BITMAP_PAGES as u64 * 4096) {
+        unregister_protected_page(current);
+        if let Some(next) = current.checked_add(4096) {
+            current = next;
+        } else {
+            break;
+        }
+    }
+}
+
 /// Internal helper to register a protected region.
 fn register_protected_region_internal(start: u64, size: u64, name: &'static str) {
     let end = start.saturating_add(size);

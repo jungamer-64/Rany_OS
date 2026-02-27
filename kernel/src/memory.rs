@@ -419,15 +419,6 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
                     Self::dump_alloc_failure(&*guard, layout, size);
                 }
                 
-                // Debug print
-                let core_id = crate::sync::get_current_core_id_for_debug();
-                let is_pnk = crate::sync::is_panicking_for_debug();
-                crate::io::log::early_print("[ALLOC] lock dropping. core_id=");
-                crate::io::log::early_print_dec(core_id as u64);
-                crate::io::log::early_print(" is_panicking=");
-                crate::io::log::early_print_dec(if is_pnk { 1 } else { 0 });
-                crate::io::log::early_print("\n");
-                
                 ptr
             }
             Err(poisoned) => {

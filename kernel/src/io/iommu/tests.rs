@@ -1231,11 +1231,11 @@ fn test_page_table_scope_commit_preserves_counts() {
     let scope_phys = scope.phys();
     let parent_phys = 0xDEADBEEF;
 
-    super::page_table_pool::register_page_table(scope_phys);
+    super::page_table_pool::register_page_table(scope_phys, 0, 0);
     for _ in 0..42 {
         super::page_table_pool::inc_ref(scope_phys);
     }
-    super::page_table_pool::register_page_table(parent_phys);
+    super::page_table_pool::register_page_table(parent_phys, 0, 0);
 
     // Create a fake parent entry and attach
     let mut parent_entry = SlPte::new();

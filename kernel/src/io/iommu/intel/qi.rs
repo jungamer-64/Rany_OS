@@ -55,11 +55,21 @@ impl InvalidationQueueEntry {
     /// Create an IOTLB Invalidation descriptor
     /// Granularity: 0=reserved, 1=global, 2=domain, 3=page
     pub fn iotlb_invalidate(granularity: u8, domain_id: u16, hint: bool, address: u64, am: u8) -> Self {
-        let lo = qi_desc_type::IOTLB_INV |
+        let mut lo = qi_desc_type::IOTLB_INV |
                  ((granularity as u64 & 0x3) << 4) |
                  ((domain_id as u64) << 16) |
                  ((am as u64 & 0x3F) << 48) |
                  (if hint { 1u64 << 63 } else { 0 }); // IH (Invalidation Hint)
+        
+        // Security: Set DW (Drain Writes) and DR (Drain Reads) bits (Bits 6 and 7).
+        // This ensures all pending memory operations are completed before invalidation finishes.
+        lo |= (1 << 6) | (1 << 7);
+
+        // Security: Ensure PSCP (Paging-Structure Cache Preserve) is 0 (Bit 9).
+        // This ensures that intermediate page table caches are also invalidated,
+        // preventing Use-After-Free attacks on page tables.
+        lo &= !(1 << 9);
+
         let hi = address & !0xFFF; // Page-aligned address for page-selective
         Self { lo, hi }
     }

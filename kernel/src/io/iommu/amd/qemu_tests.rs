@@ -470,6 +470,7 @@ fn make_test_driver() -> AmdIommuDriver {
     }
 }
 
+#[derive(Debug)]
 struct AmdMockNotifier;
 
 impl SecurityNotifier for AmdMockNotifier {

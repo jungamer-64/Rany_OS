@@ -44,7 +44,9 @@ impl IommuDomain {
         let root_phys = virt_ptr_to_phys(page_table as *const u8)
             .expect("Failed to get root page table physical address");
         crate::io::log::early_print("[IOMMU] IommuDomain::new: got root_phys\n");
-        register_page_table(root_phys);
+
+        // Security: Register and protect the root page table IMMEDIATELY after allocation.
+        register_page_table(root_phys, page_table as usize, numa_node.unwrap_or(0));
         crate::io::log::early_print("[IOMMU] IommuDomain::new: registered page table\n");
 
         debug_assert_eq!(PT_ENTRIES % DOMAIN_SHARD_COUNT, 0);
@@ -93,6 +95,7 @@ impl IommuDomain {
             // Uses bitmap-based IovaAllocatorFast with O(1) magazine allocation.
             per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
+            pending_pt_release: PoisonLock::new(Vec::new()),
         };
         crate::io::log::early_print("[IOMMU] IommuDomain::new: constructed domain object, returning\n");
         new_domain
@@ -405,6 +408,14 @@ impl IommuDomain {
         // Reap and process completed entries for this batch
         self.quarantine.reap_completed(drained_batch, &mut fctx, context);
 
+        // Security: Now that IOTLB invalidation is complete and synchronized,
+        // it is safe to release any empty page tables back to the pool.
+        if let Ok(mut pending) = self.pending_pt_release.lock() {
+            for pt in pending.drain(..) {
+                self.page_table_pool.release(pt);
+            }
+        }
+
         Ok(())
     }
 
@@ -646,7 +657,7 @@ impl IommuDomain {
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
 
-        let layout =
+        let _layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("Failed to create page table layout");
 
@@ -675,17 +686,27 @@ impl IommuDomain {
 
             // Decrement PD count
             if dec_ref(pd_phys) {
-                // Free PD
+                // Remove PD from hierarchy
                 *pdp_entry = SlPte::new();
-                alloc::alloc::dealloc(pd_table as *mut u8, layout);
-                unregister_page_table(pd_phys);
+
+                // Quarantine PD
+                if let Some(pd) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pd_phys) {
+                    if let Ok(mut pending) = self.pending_pt_release.lock() {
+                        pending.push(pd);
+                    }
+                }
 
                 // Decrement PDP count
                 if dec_ref(pdp_phys) {
-                    // Free PDP
+                    // Remove PDP from hierarchy
                     *pml4_entry = SlPte::new();
-                    alloc::alloc::dealloc(pdp_table as *mut u8, layout);
-                    unregister_page_table(pdp_phys);
+
+                    // Quarantine PDP
+                    if let Some(pdp) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                        if let Ok(mut pending) = self.pending_pt_release.lock() {
+                            pending.push(pdp);
+                        }
+                    }
 
                     // Decrement PML4 count (root)
                     let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
@@ -701,7 +722,7 @@ impl IommuDomain {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
 
-        let layout =
+        let _layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("Failed to create page table layout");
 
@@ -723,10 +744,15 @@ impl IommuDomain {
 
             // Decrement PDP count
             if dec_ref(pdp_phys) {
-                // Free PDP
+                // Remove PDP from hierarchy
                 *pml4_entry = SlPte::new();
-                alloc::alloc::dealloc(pdp_table as *mut u8, layout);
-                unregister_page_table(pdp_phys);
+
+                // Quarantine PDP
+                if let Some(pdp) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                    if let Ok(mut pending) = self.pending_pt_release.lock() {
+                        pending.push(pdp);
+                    }
+                }
 
                 // Decrement PML4 count (root)
                 let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;

@@ -132,32 +132,44 @@ use super::types::IommuError;
 // Page Table Reference Count Registry
 // ============================================================================
 
-/// Global registry mapping page table physical addresses to their reference counts.
-/// This replaces the BTreeMap<u64, u16> in IommuDomain with O(1) lookup.
-static PAGE_TABLE_REF_COUNTS: spin::Once<IrqMutex<BTreeMap<u64, u16>>> = spin::Once::new();
-
-/// Get or initialize the page table reference count registry
-fn ref_count_registry() -> &'static IrqMutex<BTreeMap<u64, u16>> {
-    PAGE_TABLE_REF_COUNTS.call_once(|| IrqMutex::new(BTreeMap::new()))
+/// Global registry entry for a page table
+#[derive(Debug, Clone, Copy)]
+struct PageTableRegistryEntry {
+    ref_count: u16,
+    virt: usize,
+    node: u8,
 }
 
-/// Register a page table's physical address in the global registry
-pub fn register_page_table(phys: u64) {
+/// Global registry mapping page table physical addresses to their metadata.
+/// This replaces the BTreeMap<u64, u16> in IommuDomain with O(1) lookup.
+static PAGE_TABLE_REGISTRY: spin::Once<IrqMutex<BTreeMap<u64, PageTableRegistryEntry>>> = spin::Once::new();
+
+/// Get or initialize the page table registry
+fn page_table_registry() -> &'static IrqMutex<BTreeMap<u64, PageTableRegistryEntry>> {
+    PAGE_TABLE_REGISTRY.call_once(|| IrqMutex::new(BTreeMap::new()))
+}
+
+/// Register a page table's metadata in the global registry
+pub fn register_page_table(phys: u64, virt: usize, node: usize) {
     crate::io::log::early_print("[IOMMU] register_page_table: enter phys=");
     crate::io::log::early_print_hex(phys);
     crate::io::log::early_print("\n");
-    let mut registry = ref_count_registry().lock();
+    let mut registry = page_table_registry().lock();
     crate::io::log::early_print("[IOMMU] register_page_table: acquired registry lock\n");
-    registry.entry(phys).or_insert(0);
+    registry.insert(phys, PageTableRegistryEntry {
+        ref_count: 0,
+        virt,
+        node: node as u8,
+    });
     crate::io::log::early_print("[IOMMU] register_page_table: inserted entry\n");
     
     // Security: Mark the page table as protected from DMA
     crate::io::iommu::security::register_protected_page(phys);
 }
 
-/// Unregister a page table's physical address from the global registry
+/// Unregister a page table's metadata from the global registry
 pub fn unregister_page_table(phys: u64) {
-    let mut registry = ref_count_registry().lock();
+    let mut registry = page_table_registry().lock();
     registry.remove(&phys);
 
     // Security: Unregister from DMA protection
@@ -167,20 +179,22 @@ pub fn unregister_page_table(phys: u64) {
 /// Increment reference count for a page table
 /// Returns the new count
 pub fn inc_ref(phys: u64) -> u16 {
-    let mut registry = ref_count_registry().lock();
-    let count = registry.entry(phys).or_insert(0);
-    *count += 1;
-    *count
+    let mut registry = page_table_registry().lock();
+    if let Some(entry) = registry.get_mut(&phys) {
+        entry.ref_count += 1;
+        return entry.ref_count;
+    }
+    0
 }
 
 /// Decrement reference count for a page table
 /// Returns true if count reached zero (table can be reclaimed)
 pub fn dec_ref(phys: u64) -> bool {
-    let mut registry = ref_count_registry().lock();
-    if let Some(count) = registry.get_mut(&phys) {
-        if *count > 0 {
-            *count -= 1;
-            return *count == 0;
+    let mut registry = page_table_registry().lock();
+    if let Some(entry) = registry.get_mut(&phys) {
+        if entry.ref_count > 0 {
+            entry.ref_count -= 1;
+            return entry.ref_count == 0;
         }
     }
     false
@@ -188,17 +202,22 @@ pub fn dec_ref(phys: u64) -> bool {
 
 /// Get current reference count for a page table
 pub fn get_ref_count(phys: u64) -> u16 {
-    let registry = ref_count_registry().lock();
-    registry.get(&phys).copied().unwrap_or(0)
+    let registry = page_table_registry().lock();
+    registry.get(&phys).map(|e| e.ref_count).unwrap_or(0)
 }
 
 /// Check if a physical address is a registered IOMMU page table.
-///
-/// This is used by the security monitor to prevent devices from
-/// mapping and writing to the IOMMU's own page tables.
 pub fn is_page_table(phys: u64) -> bool {
-    let registry = ref_count_registry().lock();
+    let registry = page_table_registry().lock();
     registry.contains_key(&phys)
+}
+
+/// Reconstruct a PooledPt from its physical address using the registry.
+pub fn reconstruct_pooled_pt(phys: u64) -> Option<PooledPt> {
+    let registry = page_table_registry().lock();
+    let entry = registry.get(&phys)?;
+    let ptr = NonNull::new(entry.virt as *mut SlPte)?;
+    Some(PooledPt::new(ptr, phys, entry.node as usize))
 }
 
 // ============================================================================
@@ -432,19 +451,22 @@ impl PageTablePool {
         // TODO: Query actual allocation node when allocator supports it.
         let actual_node = node;
 
+        // Security: Register and protect the page table IMMEDIATELY after allocation.
+        // This ensures it is protected from DMA even before it's used in any domain.
+        register_page_table(phys, ptr.as_ptr() as usize, actual_node);
+
         Ok(PooledPt::new(ptr.cast(), phys, actual_node))
     }
 
     /// Deallocate a page table
     fn dealloc(pt: PooledPt) {
+        // Security: Unregister from DMA protection before deallocation.
+        unregister_page_table(pt.phys);
+
         // Use the matching dealloc function for allocate_zeroed_on_node
-        // Safety: `deallocate_on_node` is unsafe because callers must ensure
-        // the pointer/layout pair is valid and matches a previous allocation.
-        // `PooledPt` was created by `alloc_fresh` which returns a matching
-        // pointer and layout, so this deallocation is safe here.
-        unsafe {
-            crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
-        }
+        // Safety: `deallocate_on_node` is safe because PooledPt was created
+        // by `alloc_fresh` which returns a matching pointer and layout.
+        crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
     }
 
     // ========================================================================

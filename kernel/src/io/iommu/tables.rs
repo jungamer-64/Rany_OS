@@ -221,6 +221,9 @@ impl PageTableScope {
 
         let phys = virt_ptr_to_phys(ptr as *const u8)?;
 
+        // Security: Register and protect the page table IMMEDIATELY after allocation.
+        super::page_table_pool::register_page_table(phys, ptr as usize, node);
+
         Ok(Self {
             ptr,
             phys,
@@ -246,6 +249,8 @@ impl PageTableScope {
         node_hint: Option<usize>,
     ) -> Result<Self, IommuError> {
         let pt = pool.acquire(node_hint)?;
+
+        // Note: pt is already registered by the pool (in alloc_fresh or when released)
 
         Ok(Self {
             ptr: pt.ptr.as_ptr(),
@@ -294,7 +299,7 @@ impl PageTableScope {
     /// Commit the allocation into the page table accounting structures.
     /// This registers the table and increments the parent's usage count.
     pub fn commit(&mut self) {
-        super::page_table_pool::register_page_table(self.phys);
+        // Already registered at allocation time for safety.
         if let Some(parent_phys) = self.parent_phys {
             super::page_table_pool::inc_ref(parent_phys);
         }
@@ -335,9 +340,12 @@ impl Drop for PageTableScope {
                     self.phys,
                     self.node,
                 );
+                // Note: We keep it registered while in the pool!
                 pool.release(pt);
             } else if let Some(layout) = self.layout {
                 // Direct allocation: dealloc via NUMA helper
+                // Security: Unregister from DMA protection before deallocation.
+                super::page_table_pool::unregister_page_table(self.phys);
                 unsafe {
                     crate::mm::numa::topology::deallocate_on_node(
                         core::ptr::NonNull::new_unchecked(self.ptr as *mut u8),

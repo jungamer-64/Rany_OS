@@ -583,40 +583,55 @@ impl IommuDomain {
         &self,
         pml4_entry: *mut SlPte,
         pdp_entry: *mut SlPte,
-        pdp_table: *mut SlPte,
+        _pdp_table: *mut SlPte,
         pdp_phys: u64,
         pd_entry: *mut SlPte,
-        pd_table: *mut SlPte,
+        _pd_table: *mut SlPte,
         pd_phys: u64,
-        pt_table: *mut SlPte,
+        _pt_table: *mut SlPte,
         pt_phys: u64,
-        layout: alloc::alloc::Layout,
+        _layout: alloc::alloc::Layout,
     ) {
         if get_ref_count(pt_phys) != 0 {
             return;
         }
-        unsafe {
-            *pd_entry = SlPte::new();
-            alloc::alloc::dealloc(pt_table as *mut u8, layout);
-            unregister_page_table(pt_phys);
+
+        // Remove PT from hierarchy
+        unsafe { *pd_entry = SlPte::new(); }
+
+        // Quarantine PT instead of immediate deallocation
+        if let Some(pt) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pt_phys) {
+            if let Ok(mut pending) = self.pending_pt_release.lock() {
+                pending.push(pt);
+            }
         }
 
         if !dec_ref(pd_phys) {
             return;
         }
-        unsafe {
-            *pdp_entry = SlPte::new();
-            alloc::alloc::dealloc(pd_table as *mut u8, layout);
-            unregister_page_table(pd_phys);
+
+        // Remove PD from hierarchy
+        unsafe { *pdp_entry = SlPte::new(); }
+
+        // Quarantine PD
+        if let Some(pd) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pd_phys) {
+            if let Ok(mut pending) = self.pending_pt_release.lock() {
+                pending.push(pd);
+            }
         }
 
         if !dec_ref(pdp_phys) {
             return;
         }
-        unsafe {
-            *pml4_entry = SlPte::new();
-            alloc::alloc::dealloc(pdp_table as *mut u8, layout);
-            unregister_page_table(pdp_phys);
+
+        // Remove PDP from hierarchy
+        unsafe { *pml4_entry = SlPte::new(); }
+
+        // Quarantine PDP
+        if let Some(pdp) = crate::io::iommu::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+            if let Ok(mut pending) = self.pending_pt_release.lock() {
+                pending.push(pdp);
+            }
         }
 
         let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)

@@ -243,9 +243,8 @@ fn update_driver_handles_after_swap(
 pub fn rollback(id: DriverCellId) -> Result<(), DriverCellError> {
     let manager = driver_cell_manager();
 
-    let (driver_state, hot_swap_state, current_cell_id) = manager.with_cell(id, |cell| {
-        (cell.state, cell.hot_swap_state, cell.cell_id)
-    })?;
+    let (hot_swap_state, current_cell_id) =
+        manager.with_cell(id, |cell| (cell.hot_swap_state, cell.cell_id))?;
 
     if hot_swap_state != HotSwapState::Validating && hot_swap_state != HotSwapState::Error {
         return Err(DriverCellError::HotSwapFailed(
@@ -279,9 +278,10 @@ pub fn rollback(id: DriverCellId) -> Result<(), DriverCellError> {
         cell.cell_id = Some(CellId::from_u64(transition.old_cell_id));
         cell.hot_swap_state = HotSwapState::Idle;
         cell.validation_deadline_tick = None;
-        if driver_state != DriverCellState::Faulted {
-            cell.transition_to(DriverCellState::Running);
-        }
+        // Successful rollback restores the previously known-good cell, so the
+        // DriverCell should return to Running even when the trigger fault
+        // temporarily moved state to Faulted.
+        cell.transition_to(DriverCellState::Running);
     })?;
 
     if let Some(crate::loader::live_update::CompletedUpdateOutcome::RolledBack { reason, .. }) =

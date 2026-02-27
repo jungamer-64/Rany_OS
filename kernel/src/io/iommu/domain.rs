@@ -748,4 +748,9 @@ pub struct IommuDomain {
     /// - `unregister()`: Called when DmaHandle is unmapped
     /// - `drain_all()`: Called on domain destruction for force-unmap
     dma_registry: DmaResourceRegistry,
+    /// Quarantined page tables waiting for IOTLB invalidation before reuse.
+    ///
+    /// When a page table becomes empty during unmap, it is moved here.
+    /// The next flush() operation will return them to the page_table_pool.
+    pub(crate) pending_pt_release: PoisonLock<Vec<super::page_table_pool::PooledPt>>,
 }

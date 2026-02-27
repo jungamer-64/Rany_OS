@@ -144,7 +144,7 @@ pub fn test_pmtu_cache_minimum() {
 #[cfg_attr(test, test_case)]
 pub fn test_fragment_overflow_rejected() {
     let mut buffer = FragmentBuffer::new(0);
-    let mut _header = Ipv4Header {
+    let mut header = Ipv4Header {
         version_ihl: 0x45,
         dscp_ecn: 0,
         total_length: [0, 0],
@@ -166,7 +166,7 @@ pub fn test_fragment_overflow_rejected() {
 pub fn test_fragment_overlap_detection() {
     let mut reassembler = FragmentReassembler::new(4);
 
-    let mut _hdr1 = Ipv4Header {
+    let mut hdr1 = Ipv4Header {
         version_ihl: 0x45,
         dscp_ecn: 0,
         total_length: [0, 40],
@@ -183,7 +183,7 @@ pub fn test_fragment_overlap_detection() {
     assert!(result.is_none());
 
     // second fragment overlaps first (offset 0)
-    let mut _hdr2 = Ipv4Header { flags_fragment: [0x00, 0x00], .._hdr1 };
+    let mut hdr2 = Ipv4Header { flags_fragment: [0x00, 0x00], ..hdr1 };
     // offset field still 0 (means overlap)
     let p2 = [0u8; 8];
     let result2 = reassembler.process_fragment(&hdr2, &p2, 0);
@@ -222,4 +222,3 @@ pub fn test_fragment_hole_exhaustion() {
         }
     }
 }
-

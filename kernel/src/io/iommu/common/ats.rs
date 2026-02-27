@@ -76,7 +76,13 @@ impl PostedInterruptPool {
 
         // Allocate 64-byte aligned memory
         let layout = alloc::alloc::Layout::from_size_align(total_bytes, 64).ok()?;
-        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+        let base_ptr = crate::util::allocate_zeroed(layout)?;
+        let base = base_ptr.as_ptr() as usize;
+
+        // Security: Mark the range as protected from DMA
+        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(base as *const u8) {
+            crate::security::dma::register_protected_range(phys, total_bytes as u64);
+        }
 
         // Bitmap: 64 PIDs per u64
         let bitmap_size = (size + 63) / 64;
@@ -134,6 +140,20 @@ impl PostedInterruptPool {
             )
         } else {
             None
+        }
+    }
+}
+
+impl Drop for PostedInterruptPool {
+    fn drop(&mut self) {
+        let total_bytes = self.size * core::mem::size_of::<PostedInterruptDescriptor>();
+        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(self.base as *const u8) {
+            crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
+        }
+
+        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 64).unwrap();
+        unsafe {
+            alloc::alloc::dealloc(self.base as *mut u8, layout);
         }
     }
 }
@@ -228,7 +248,13 @@ impl PageRequestQueue {
 
         // Allocate 4KB aligned memory
         let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).ok()?;
-        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+        let base_ptr = crate::util::allocate_zeroed(layout)?;
+        let base = base_ptr.as_ptr() as usize;
+
+        // Security: Mark the range as protected from DMA
+        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(base as *const u8) {
+            crate::security::dma::register_protected_range(phys, total_bytes as u64);
+        }
 
         Some(Self {
             base,
@@ -274,5 +300,19 @@ impl PageRequestQueue {
     /// Get current head index (for writing to hardware)
     pub fn head(&self) -> usize {
         self.head
+    }
+}
+
+impl Drop for PageRequestQueue {
+    fn drop(&mut self) {
+        let total_bytes = self.size * core::mem::size_of::<PageRequestEntry>();
+        if let Ok(phys) = crate::io::iommu::tables::virt_ptr_to_phys(self.base as *const u8) {
+            crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
+        }
+
+        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).unwrap();
+        unsafe {
+            alloc::alloc::dealloc(self.base as *mut u8, layout);
+        }
     }
 }
