@@ -452,7 +452,24 @@ fn spin_wait_ticks(delay_ticks: u64) {
         return;
     }
     let start = crate::task::timer::current_tick();
+    let mut last_tick = start;
+    let mut stagnant_loops = 0usize;
     while crate::task::timer::current_tick().saturating_sub(start) < delay_ticks {
+        let now = crate::task::timer::current_tick();
+        if now > last_tick {
+            last_tick = now;
+            stagnant_loops = 0;
+        } else {
+            stagnant_loops = stagnant_loops.saturating_add(1);
+            #[cfg(feature = "qemu-test-export")]
+            if stagnant_loops != 0 && (stagnant_loops % 1024) == 0 {
+                // Full-boot tests run with qemu_no_if=1, so timer IRQs may not
+                // advance. Inject synthetic ticks to avoid deadlocking fault
+                // backoff waits in restart paths.
+                crate::task::timer::handle_timer_interrupt();
+                crate::task::timer::process_pending_timer_wakers();
+            }
+        }
         core::hint::spin_loop();
     }
 }

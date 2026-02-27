@@ -359,6 +359,8 @@ struct RuntimeContext {
 pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
     let mut summary = DriverCellRuntimeSuiteSummary::new();
     runtime_log_line("[driver-cell-runtime] start");
+    let old_aslr = crate::loader::elf::is_aslr_enabled();
+    crate::loader::elf::set_aslr_enabled(false);
 
     let mut ctx = match preflight() {
         Ok(ctx) => {
@@ -370,12 +372,14 @@ pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
             summary.failed += 1;
             log_case("preflight", "fail", &reason);
             log_summary(&summary);
+            crate::loader::elf::set_aslr_enabled(old_aslr);
             return summary;
         }
         Err(RuntimeCaseError::Blocked(reason)) => {
             summary.blocked += 1;
             log_case("preflight", "blocked", &reason);
             log_summary(&summary);
+            crate::loader::elf::set_aslr_enabled(old_aslr);
             return summary;
         }
     };
@@ -411,6 +415,7 @@ pub fn run_driver_cell_runtime_suite() -> DriverCellRuntimeSuiteSummary {
     run_case(&mut summary, "unload_after_restart", case_unload(&mut ctx));
 
     crate::loader::live_update::set_rollback_grace_period_for_test(old_grace);
+    crate::loader::elf::set_aslr_enabled(old_aslr);
     log_summary(&summary);
     summary
 }

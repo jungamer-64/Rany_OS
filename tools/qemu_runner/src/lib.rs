@@ -56,6 +56,16 @@ const STORAGE_TEST_DISK_TOTAL_SECTORS: u32 = 4096;
 pub enum BuildError {
     CargoLaunch { step: &'static str, source: std::io::Error },
     CargoFailed { step: &'static str, exit_code: i32 },
+    CommandLaunch {
+        step: &'static str,
+        program: &'static str,
+        source: std::io::Error,
+    },
+    CommandFailed {
+        step: &'static str,
+        program: &'static str,
+        exit_code: i32,
+    },
     ArtifactMissing { step: &'static str, path: PathBuf },
     Io { step: &'static str, source: std::io::Error },
 }
@@ -68,6 +78,20 @@ impl fmt::Display for BuildError {
             }
             Self::CargoFailed { step, exit_code } => {
                 write!(f, "cargo step '{step}' failed with exit code {exit_code}")
+            }
+            Self::CommandLaunch {
+                step,
+                program,
+                source,
+            } => {
+                write!(f, "failed to launch {program} for {step}: {source}")
+            }
+            Self::CommandFailed {
+                step,
+                program,
+                exit_code,
+            } => {
+                write!(f, "{program} step '{step}' failed with exit code {exit_code}")
             }
             Self::ArtifactMissing { step, path } => {
                 write!(f, "artifact missing after {step}: {}", path.display())
@@ -158,6 +182,33 @@ fn run_cargo(root: &Path, step: &'static str, args: &[&str]) -> Result<(), Build
 
     Err(BuildError::CargoFailed {
         step,
+        exit_code: status.code().unwrap_or(-1),
+    })
+}
+
+fn run_command(
+    root: &Path,
+    step: &'static str,
+    program: &'static str,
+    args: &[&str],
+) -> Result<(), BuildError> {
+    let status = Command::new(program)
+        .current_dir(root)
+        .args(args)
+        .status()
+        .map_err(|source| BuildError::CommandLaunch {
+            step,
+            program,
+            source,
+        })?;
+
+    if status.success() {
+        return Ok(());
+    }
+
+    Err(BuildError::CommandFailed {
+        step,
+        program,
         exit_code: status.code().unwrap_or(-1),
     })
 }
@@ -254,6 +305,37 @@ fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
         copied += 1;
     }
     Ok(copied)
+}
+
+fn ensure_driver_cell_fixture_assets(root: &Path) -> Result<(), BuildError> {
+    let initramfs_path = root.join("target").join("initramfs.tar");
+    let cells_dir = root
+        .join("target")
+        .join("x86_64-exorust")
+        .join("release")
+        .join("cells");
+    let cell_v1 = cells_dir.join("driver_cell_probe_v1.cell");
+    let cell_v2 = cells_dir.join("driver_cell_probe_v2.cell");
+    let have_assets = initramfs_path.exists() && cell_v1.exists() && cell_v2.exists();
+    if have_assets {
+        return Ok(());
+    }
+
+    run_command(
+        root,
+        "build driver_cell probe fixtures",
+        "bash",
+        &["scripts/build_driver_cell_probe_fixtures.sh", "--profile", "release"],
+    )?;
+
+    if initramfs_path.exists() && cell_v1.exists() && cell_v2.exists() {
+        Ok(())
+    } else {
+        Err(BuildError::ArtifactMissing {
+            step: "build driver_cell probe fixtures",
+            path: initramfs_path,
+        })
+    }
 }
 
 fn build_storage_test_disk(boot_root: &Path) -> Result<PathBuf, BuildError> {
@@ -410,6 +492,10 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         path: kernel_elf_path.clone(),
     })?;
     let kernel_fat_root = kernel_out_dir.join("fat_root");
+    let needs_driver_cell_assets = profile_needs_driver_cell_assets(&config.profile);
+    if needs_driver_cell_assets {
+        ensure_driver_cell_fixture_assets(&root)?;
+    }
     let repo_root = workspace_root();
     let initramfs_src = {
         let primary = kernel_fat_root.join("initramfs.tar");
@@ -417,7 +503,6 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
         if primary.exists() { primary } else { fallback }
     };
     let initramfs_dst = boot_root.join("initramfs.tar");
-    let needs_driver_cell_assets = profile_needs_driver_cell_assets(&config.profile);
     let copied_initramfs = if needs_driver_cell_assets {
         copy_file_if_exists(
             &initramfs_src,
@@ -436,8 +521,19 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
 
     let cells_src = {
         let primary = kernel_fat_root.join("cells");
-        let fallback = kernel_out_dir.join("cells");
-        if primary.exists() { primary } else { fallback }
+        let release_cells = root
+            .join("target")
+            .join("x86_64-exorust")
+            .join("release")
+            .join("cells");
+        let debug_cells = kernel_out_dir.join("cells");
+        if primary.exists() {
+            primary
+        } else if release_cells.exists() {
+            release_cells
+        } else {
+            debug_cells
+        }
     };
     let copied_cells = if needs_driver_cell_assets {
         copy_cells_dir(&cells_src, &boot_root.join("cells"))?

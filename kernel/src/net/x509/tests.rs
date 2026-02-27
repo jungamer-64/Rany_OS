@@ -231,36 +231,57 @@ fn test_parse_x509_invalid_input() {
     );
 }
 
-/// 証明書チェーン検証テスト（自己署名証明書1枚）
+/// 証明書チェーン検証テスト（自己署名証明書1枚、未信頼）
 #[test_case]
-fn test_validate_chain_single_cert() {
-    // 自己署名証明書 — 公開鍵が返されること
+fn test_validate_chain_single_cert_untrusted() {
+    // 信頼されたルートに含まれていない自己署名証明書1枚は拒否される
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
-    let result = validate_certificate_chain(chain, None);
-    assert!(result.is_some());
+    let result = validate_certificate_chain(chain, None, &[]);
+    assert!(result.is_none(), "untrusted self-signed cert should be rejected");
+}
+
+/// 証明書チェーン検証テスト（自己署名証明書1枚、信頼済み）
+#[test_case]
+fn test_validate_chain_single_cert_trusted() {
+    // 信頼されたルートに含まれていれば、自己署名証明書1枚でも成功する
+    let chain: &[&[u8]] = &[&TEST_CERT_DER];
+    let trusted: &[&[u8]] = &[&TEST_CERT_DER];
+    let result = validate_certificate_chain(chain, None, trusted);
+    assert!(result.is_some(), "trusted self-signed cert should be accepted");
 }
 
 /// 証明書チェーン検証テスト（空チェーン）
 #[test_case]
 fn test_validate_chain_empty() {
     let chain: &[&[u8]] = &[];
-    let result = validate_certificate_chain(chain, None);
+    let result = validate_certificate_chain(chain, None, &[]);
     assert!(result.is_none(), "empty chain must return None");
 }
 
-/// 証明書チェーン検証テスト（サーバー名一致）
+/// 証明書チェーン検証テスト（サーバー名一致、信頼済み）
 #[test_case]
-fn test_validate_chain_server_name_match() {
-    // TEST_CERT_DERのsubjectは CN=Test なので "Test" を含む
+fn test_validate_chain_server_name_match_trusted() {
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
-    let result = validate_certificate_chain(chain, Some("Test"));
-    assert!(result.is_some(), "server name 'Test' should match");
+    let trusted: &[&[u8]] = &[&TEST_CERT_DER];
+    let result = validate_certificate_chain(chain, Some("Test"), trusted);
+    assert!(result.is_some(), "trusted cert with matching hostname should be accepted");
 }
 
-/// 証明書チェーン検証テスト（サーバー名不一致）
+/// 証明書チェーン検証テスト（サーバー名不一致、信頼済み）
 #[test_case]
-fn test_validate_chain_server_name_mismatch() {
+fn test_validate_chain_server_name_mismatch_trusted() {
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
-    let result = validate_certificate_chain(chain, Some("example.com"));
+    let trusted: &[&[u8]] = &[&TEST_CERT_DER];
+    let result = validate_certificate_chain(chain, Some("example.com"), trusted);
     assert!(result.is_none(), "server name 'example.com' should not match");
+}
+
+/// ワイルドカード照合テスト
+#[test_case]
+fn test_wildcard_matching() {
+    assert!(match_wildcard(b"*.google.com", "www.google.com"));
+    assert!(match_wildcard(b"*.google.com", "google.com") == false); // Should not match
+    assert!(match_wildcard(b"*.google.com", "a.b.google.com") == false); // Only one label
+    assert!(match_wildcard(b"www.google.com", "www.google.com"));
+    assert!(match_wildcard(b"google.com", "www.google.com") == false);
 }

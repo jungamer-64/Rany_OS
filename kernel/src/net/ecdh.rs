@@ -265,6 +265,17 @@ pub mod p256 {
             }
             out
         }
+
+        /// Constant-time selection: returns `a` if `condition == 0`, `b` if `condition == 1`.
+        /// `condition` MUST be 0 or 1.
+        pub fn ct_select(a: &Self, b: &Self, condition: u8) -> Self {
+            let mask = 0u64.wrapping_sub(condition as u64);
+            let mut limbs = [0u64; 4];
+            for i in 0..4 {
+                limbs[i] = a.limbs[i] ^ ((a.limbs[i] ^ b.limbs[i]) & mask);
+            }
+            Self { limbs }
+        }
     }
 
     /// i64アキュムレータから4個のu64リムへ変換（キャリー伝搬付き）
@@ -574,25 +585,32 @@ pub mod p256 {
             }
         }
 
-        /// スカラー倍算 [k]P
+        /// Constant-time selection: returns `a` if `condition == 0`, `b` if `condition == 1`.
+        pub fn ct_select(a: &Self, b: &Self, condition: u8) -> Self {
+            Self {
+                x: P256FieldElement::ct_select(&a.x, &b.x, condition),
+                y: P256FieldElement::ct_select(&a.y, &b.y, condition),
+                z: P256FieldElement::ct_select(&a.z, &b.z, condition),
+            }
+        }
+
+        /// スカラー倍算 [k]P (Constant-time implementation)
         ///
-        /// 左からのdouble-and-addアルゴリズム。
-        /// MSBからLSBに向かって各ビットを処理する。
+        /// 固定回数 (256) のループと条件付き選択 (ct_select) を使用し、
+        /// スカラーの値に依存しない定時間で演算を行う。
         pub fn scalar_mul(&self, scalar: &[u8; 32]) -> Self {
             let mut result = Self::identity();
-            let mut found_one = false;
 
-            // ビッグエンディアンバイト列のMSBから処理
-            for &byte in scalar.iter() {
-                for bit_pos in (0..8).rev() {
-                    if found_one {
-                        result = result.double();
-                    }
-                    if (byte >> bit_pos) & 1 == 1 {
-                        found_one = true;
-                        result = result.add(self);
-                    }
-                }
+            // 固定回数ループにより、鍵長や上位ビットの0の数によるタイミング漏洩を防止。
+            // 常に 256 回の double と 256 回の add を実行する。
+            for i in (0..256).rev() {
+                let byte_idx = i / 8;
+                let bit_idx = i % 8;
+                let bit = (scalar[31 - byte_idx] >> bit_idx) & 1;
+
+                result = result.double();
+                let added = result.add(self);
+                result = Self::ct_select(&result, &added, bit as u8);
             }
 
             result

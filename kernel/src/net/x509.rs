@@ -49,6 +49,12 @@ const OID_SECP256R1: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
 /// secp384r1 (1.3.132.0.34)
 const OID_SECP384R1: &[u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
 
+/// Basic Constraints (2.5.29.19)
+const OID_BASIC_CONSTRAINTS: &[u8] = &[0x55, 0x1D, 0x13];
+
+/// Subject Alternative Name (2.5.29.17)
+const OID_SUBJECT_ALT_NAME: &[u8] = &[0x55, 0x1D, 0x11];
+
 /// id-RSASSA-PSS (1.2.840.113549.1.1.10)
 const OID_RSA_PSS: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
 
@@ -151,6 +157,10 @@ pub struct X509Certificate<'a> {
     pub not_before: u64,
     /// 有効期間終了（UNIXタイムスタンプ秒、パース失敗時はu64::MAX）
     pub not_after: u64,
+    /// CA（Certificate Authority）ビットがセットされているか
+    pub is_ca: bool,
+    /// Subject Alternative Name (SAN) 拡張の生データ
+    pub san_raw: Option<&'a [u8]>,
 }
 
 impl<'a> X509Certificate<'a> {
@@ -281,9 +291,9 @@ fn parse_validity(tbs: &mut DerParser<'_>) -> (u64, u64) {
         Some((not_before, not_after))
     })();
 
-    // パース失敗時は安全なデフォルト（常に無効）ではなく
-    // 互換性のため（0, u64::MAX）を返す
-    result.unwrap_or((0, u64::MAX))
+    // パース失敗時は安全なデフォルト（常に無効）として
+    // (u64::MAX, 0) を返す
+    result.unwrap_or((u64::MAX, 0))
 }
 
 // ============================================================================
@@ -495,7 +505,20 @@ fn parse_tbs_preamble(tbs: &mut DerParser<'_>) -> Option<SignatureAlgorithmId> {
 }
 
 /// TBSCertificateフィールドを解析
-fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, usize, usize, usize, usize, SubjectPublicKeyInfo<'a>, u64, u64)> {
+fn parse_tbs_fields<'a>(
+    tbs_content: &'a [u8],
+) -> Option<(
+    SignatureAlgorithmId,
+    usize,
+    usize,
+    usize,
+    usize,
+    SubjectPublicKeyInfo<'a>,
+    u64,
+    u64,
+    bool, // is_ca
+    Option<&'a [u8]>, // san_raw
+)> {
     let mut tbs = DerParser::new(tbs_content);
 
     let signature_algorithm = parse_tbs_preamble(&mut tbs)?;
@@ -517,7 +540,65 @@ fn parse_tbs_fields<'a>(tbs_content: &'a [u8]) -> Option<(SignatureAlgorithmId, 
     let spki_content = tbs.read_sequence()?;
     let subject_public_key_info = parse_spki(spki_content)?;
 
-    Some((signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info, not_before, not_after))
+    // Extensions [3] EXPLICIT SEQUENCE (optional)
+    let mut is_ca = false;
+    let mut san_raw = None;
+    while let Some((tag, content)) = tbs.read_tlv() {
+        // Tag 0xA3 = [3] Context-specific EXPLICIT
+        if tag == 0xA3 {
+            let mut ext_parser = DerParser::new(content);
+            if let Some(ext_seq_content) = ext_parser.read_sequence() {
+                let mut seq_parser = DerParser::new(ext_seq_content);
+                while let Some(ext_item_content) = seq_parser.read_sequence() {
+                    let mut item_parser = DerParser::new(ext_item_content);
+                    let oid = item_parser.read_oid()?;
+                    
+                    // Skip optional BOOLEAN critical field if present
+                    if let Some(peek_tag) = item_parser.read_tag() {
+                        if peek_tag == 0x01 { // BOOLEAN
+                            let _len = item_parser.read_length()?;
+                            item_parser.pos += _len;
+                        } else {
+                            // Rewind if it was actually the OCTET STRING tag (0x04)
+                            item_parser.pos -= 1;
+                        }
+                    }
+
+                    if let Some(val) = item_parser.read_octet_string() {
+                        if oid == OID_BASIC_CONSTRAINTS {
+                            let mut bc_parser = DerParser::new(val);
+                            if let Some(bc_seq) = bc_parser.read_sequence() {
+                                let mut bc_inner = DerParser::new(bc_seq);
+                                if let Some(tag) = bc_inner.read_tag() {
+                                    if tag == 0x01 { // cA BOOLEAN
+                                        let len = bc_inner.read_length()?;
+                                        if len == 1 {
+                                            is_ca = bc_inner.remaining()[0] != 0;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if oid == OID_SUBJECT_ALT_NAME {
+                            san_raw = Some(val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Some((
+        signature_algorithm,
+        issuer_start,
+        issuer_end,
+        subject_start,
+        subject_end,
+        subject_public_key_info,
+        not_before,
+        not_after,
+        is_ca,
+        san_raw,
+    ))
 }
 
 pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
@@ -533,8 +614,18 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
     let tbs_end = parser.position();
     let raw_tbs = &cert_content[tbs_start..tbs_end];
 
-    let (signature_algorithm, issuer_start, issuer_end, subject_start, subject_end, subject_public_key_info, not_before, not_after) =
-        parse_tbs_fields(tbs_content)?;
+    let (
+        signature_algorithm,
+        issuer_start,
+        issuer_end,
+        subject_start,
+        subject_end,
+        subject_public_key_info,
+        not_before,
+        not_after,
+        is_ca,
+        san_raw,
+    ) = parse_tbs_fields(tbs_content)?;
 
     let issuer_raw = &tbs_content[issuer_start..issuer_end];
     let subject_raw = &tbs_content[subject_start..subject_end];
@@ -554,6 +645,8 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
         signature_value,
         not_before,
         not_after,
+        is_ca,
+        san_raw,
     })
 }
 
@@ -700,6 +793,11 @@ fn verify_chain_links(certs: &[Option<X509Certificate<'_>>], chain_len: usize) -
         let current = certs[i].as_ref()?;
         let issuer = certs[i + 1].as_ref()?;
 
+        // Security: The issuer must be a CA to sign other certificates.
+        if !issuer.is_ca {
+            return None;
+        }
+
         if current.issuer_raw != issuer.subject_raw {
             return None;
         }
@@ -724,6 +822,7 @@ fn parse_chain_to_array<'a>(
 pub fn validate_certificate_chain<'a>(
     chain: &[&'a [u8]],
     server_name: Option<&str>,
+    trusted_roots: &[&[u8]],
 ) -> Option<SubjectPublicKeyInfo<'a>> {
     if chain.is_empty() || chain.len() > 8 {
         return None;
@@ -732,20 +831,64 @@ pub fn validate_certificate_chain<'a>(
     let mut certs: [Option<X509Certificate<'_>>; 8] = [None, None, None, None, None, None, None, None];
     parse_chain_to_array(chain, &mut certs)?;
 
+    // Get current time for validity check
+    let now = crate::time::now();
+
+    // Verify all certificates in the chain are currently valid
+    for i in 0..chain.len() {
+        if let Some(ref cert) = certs[i] {
+            if !cert.is_valid_at(now) {
+                return None;
+            }
+        }
+    }
+
     let leaf = certs[0].as_ref()?;
     
-    // Security: Secure hostname verification (CN matching)
+    // Security: Secure hostname verification (CN and SAN matching with wildcards)
     if let Some(name) = server_name {
-        if !match_hostname_in_subject(leaf.subject_raw, name) {
+        if !match_hostname(leaf, name) {
             return None;
         }
     }
 
     if chain.len() > 1 {
         verify_chain_links(&certs, chain.len())?;
+        
+        // Security: The root of the chain (last cert) must be trusted.
+        let root = certs[chain.len() - 1].as_ref()?;
+        
+        // Check if the root is in the trusted_roots set
+        let mut trusted = false;
+        for &trust_der in trusted_roots {
+            if let Some(trust_cert) = parse_x509(trust_der) {
+                if root.subject_raw == trust_cert.subject_raw && 
+                   root.subject_public_key_info == trust_cert.subject_public_key_info {
+                    // Found a matching trust anchor. Now verify the root's signature
+                    // (if it's not the same cert, though usually root CAs are self-signed).
+                    if verify_signature(root, &trust_cert.subject_public_key_info) {
+                        trusted = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !trusted {
+            return None;
+        }
     } else {
-        // Security: Even for a single certificate, ensure it is self-consistent
-        if !verify_signature(leaf, &leaf.subject_public_key_info) {
+        // Security: Single certificate must be directly trusted
+        let leaf_der = chain[0];
+        let mut trusted = false;
+        for &trust_der in trusted_roots {
+            if leaf_der == trust_der {
+                trusted = true;
+                break;
+            }
+        }
+        
+        if !trusted {
             return None;
         }
     }
@@ -755,6 +898,69 @@ pub fn validate_certificate_chain<'a>(
 
 /// Common Name (CN) OID: 2.5.4.3 (06 03 55 04 03)
 const OID_COMMON_NAME: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
+
+/// Hostname verification (checks SAN first, then CN)
+fn match_hostname(cert: &X509Certificate<'_>, hostname: &str) -> bool {
+    // 1. Check SAN (Subject Alternative Name) first (preferred)
+    if let Some(san_der) = cert.san_raw {
+        if match_hostname_in_san(san_der, hostname) {
+            return true;
+        }
+    }
+    // 2. Fallback to CN (Common Name)
+    match_hostname_in_subject(cert.subject_raw, hostname)
+}
+
+/// SAN (Subject Alternative Name) matching
+fn match_hostname_in_san(san_der: &[u8], hostname: &str) -> bool {
+    let mut parser = DerParser::new(san_der);
+    let mut inner = match parser.read_sequence() {
+        Some(c) => DerParser::new(c),
+        None => return false,
+    };
+
+    while !inner.is_empty() {
+        let tag = match inner.read_tag() {
+            Some(t) => t,
+            None => break,
+        };
+        let len = inner.read_length().unwrap_or(0);
+        if len > inner.remaining().len() {
+            break;
+        }
+        let value = &inner.remaining()[..len];
+        inner.pos += len;
+
+        // GeneralName [2] dNSName (Context-specific tag 0x82)
+        if tag == 0x82 {
+            if match_wildcard(value, hostname) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Wildcard matching (*.example.com)
+fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
+    if pattern == hostname.as_bytes() {
+        return true;
+    }
+
+    // Handle *.domain.com (RFC 6125)
+    if pattern.starts_with(b"*.") && pattern.len() > 2 {
+        let suffix = &pattern[1..]; // ".domain.com"
+        if hostname.as_bytes().ends_with(suffix) {
+            // Ensure the * only matches one label (not subdomains)
+            let prefix_len = hostname.len() - suffix.len();
+            let prefix = &hostname.as_bytes()[..prefix_len];
+            if prefix.len() > 0 && !prefix.contains(&b'.') {
+                return true;
+            }
+        }
+    }
+    false
+}
 
 /// Subjectの生DERからCommon Name (CN) を探し、ホスト名が一致するか検証する
 fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
@@ -770,6 +976,7 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
         let rdn_content = match inner.read_tag() {
             Some(0x31) => { // SET
                 let len = inner.read_length().unwrap_or(0);
+                if len > inner.remaining().len() { break; }
                 &inner.remaining()[..len]
             }
             _ => break,
@@ -787,8 +994,8 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
             let oid = atv_parser.read_oid().unwrap_or(&[]);
             if oid == OID_COMMON_NAME {
                 let (_tag, value) = atv_parser.read_tlv().unwrap_or((0, &[]));
-                // CN can be UTF8String (0x0C), PrintableString (0x13), etc.
-                if value == hostname.as_bytes() {
+                // Use wildcard matching for CN as well (legacy support)
+                if match_wildcard(value, hostname) {
                     return true;
                 }
             }

@@ -182,8 +182,19 @@ impl BlkRequestDma {
         use_indirect: bool,
     ) -> Option<Self> {
         let header_size = core::mem::size_of::<VirtioBlkReqHeader>();
-        let indirect_size = if use_indirect { core::mem::size_of::<VringDesc>() * 3 } else { 0 };
-        let total = header_size + 1 + indirect_size; // header + 1 status byte + indirect table
+        let status_offset = header_size;
+        let indirect_align = core::mem::align_of::<VringDesc>();
+        let indirect_offset = crate::util::align_up_usize(status_offset + 1, indirect_align);
+        let indirect_size = if use_indirect {
+            core::mem::size_of::<VringDesc>() * 3
+        } else {
+            0
+        };
+        let total = if use_indirect {
+            indirect_offset + indirect_size
+        } else {
+            status_offset + 1
+        };
         let mut buffer = match device_id {
             Some(dev_id) => CoherentDmaBuffer::new_for_device(total, DmaMemoryAttributes::MMIO, dev_id)?,
             None => CoherentDmaBuffer::new(total, DmaMemoryAttributes::MMIO)?,
@@ -195,14 +206,18 @@ impl BlkRequestDma {
             let src = header as *const VirtioBlkReqHeader as *const u8;
             core::ptr::copy_nonoverlapping(src, slice.as_mut_ptr(), header_size);
             // Sentinel status: 0xFF means "not yet completed"
-            slice[header_size] = 0xFF;
+            slice[status_offset] = 0xFF;
         }
 
         Some(Self {
             buffer,
             header_phys: base_dev,
-            status_phys: base_dev + header_size as u64,
-            indirect_table_phys: if use_indirect { Some(base_dev + (header_size + 1) as u64) } else { None },
+            status_phys: base_dev + status_offset as u64,
+            indirect_table_phys: if use_indirect {
+                Some(base_dev + indirect_offset as u64)
+            } else {
+                None
+            },
         })
     }
 
@@ -213,8 +228,13 @@ impl BlkRequestDma {
     /// Get a mutable pointer to the indirect table in the buffer.
     pub(crate) fn indirect_table_mut(&mut self) -> Option<*mut VringDesc> {
         let header_size = core::mem::size_of::<VirtioBlkReqHeader>();
+        let indirect_offset =
+            crate::util::align_up_usize(header_size + 1, core::mem::align_of::<VringDesc>());
         self.indirect_table_phys.map(|_| unsafe {
-            self.buffer.as_mut_slice().as_mut_ptr().add(header_size + 1) as *mut VringDesc
+            self.buffer
+                .as_mut_slice()
+                .as_mut_ptr()
+                .add(indirect_offset) as *mut VringDesc
         })
     }
 }

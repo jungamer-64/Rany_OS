@@ -540,11 +540,12 @@ impl TlsConnection {
         }
 
         if !self.config.skip_verify {
-            // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致)
-            // NOTE: ルートCAの信頼性検証は将来的に実装予定
+            // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
+            let ca_ders: Vec<&[u8]> = self.config.ca_certs.iter().map(|c| c.der.as_slice()).collect();
             if let Some(spki) = crate::net::x509::validate_certificate_chain(
                 &certs,
                 self.config.server_name.as_deref(),
+                &ca_ders,
             ) {
                 self.extract_server_public_key_from_spki(spki)?;
             } else {
