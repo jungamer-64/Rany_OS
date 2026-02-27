@@ -69,8 +69,15 @@ pub use defs::{
 #[cfg(test)]
 mod qemu_tests {
     use super::*;
+    use spin::Mutex;
 
+    #[derive(Debug)]
     struct MockTransport {
+        state: Mutex<MockTransportState>,
+    }
+
+    #[derive(Debug)]
+    struct MockTransportState {
         status: u8,
         device_features: u64,
         driver_features: u64,
@@ -81,11 +88,13 @@ mod qemu_tests {
     impl MockTransport {
         fn new() -> Self {
             Self {
-                status: 0,
-                device_features: 0xFFFFFFFF,
-                driver_features: 0,
-                queue_sizes: [256; 8],
-                selected_queue: 0,
+                state: Mutex::new(MockTransportState {
+                    status: 0,
+                    device_features: 0xFFFF_FFFF,
+                    driver_features: 0,
+                    queue_sizes: [256; 8],
+                    selected_queue: 0,
+                }),
             }
         }
     }
@@ -96,57 +105,61 @@ mod qemu_tests {
         }
 
         fn get_status(&self) -> u8 {
-            self.status
+            self.state.lock().status
         }
 
-        fn set_status(&mut self, status: u8) {
-            self.status = status;
+        fn set_status(&self, status: u8) {
+            self.state.lock().status = status;
         }
 
         fn get_device_features_low(&self) -> u32 {
-            self.device_features as u32
+            self.state.lock().device_features as u32
         }
 
         fn get_device_features_high(&self) -> u32 {
-            (self.device_features >> 32) as u32
+            (self.state.lock().device_features >> 32) as u32
         }
 
-        fn set_driver_features_low(&mut self, features: u32) {
-            self.driver_features = (self.driver_features & 0xFFFFFFFF00000000) | features as u64;
+        fn set_driver_features_low(&self, features: u32) {
+            let mut s = self.state.lock();
+            s.driver_features = (s.driver_features & 0xFFFF_FFFF_0000_0000) | features as u64;
         }
 
-        fn set_driver_features_high(&mut self, features: u32) {
-            self.driver_features =
-                (self.driver_features & 0x00000000FFFFFFFF) | ((features as u64) << 32);
+        fn set_driver_features_high(&self, features: u32) {
+            let mut s = self.state.lock();
+            s.driver_features = (s.driver_features & 0x0000_0000_FFFF_FFFF) | ((features as u64) << 32);
         }
 
         fn get_num_queues(&self) -> u16 {
             8
         }
 
-        fn select_queue(&mut self, queue_index: u16) {
-            self.selected_queue = queue_index;
+        fn select_queue(&self, queue_index: u16) {
+            self.state.lock().selected_queue = queue_index;
         }
 
         fn get_queue_max_size(&self) -> u16 {
-            self.queue_sizes[self.selected_queue as usize]
+            let s = self.state.lock();
+            s.queue_sizes[s.selected_queue as usize]
         }
 
-        fn set_queue_size(&mut self, size: u16) {
-            self.queue_sizes[self.selected_queue as usize] = size;
+        fn set_queue_size(&self, size: u16) {
+            let mut s = self.state.lock();
+            let idx = s.selected_queue as usize;
+            s.queue_sizes[idx] = size;
         }
 
         fn is_queue_ready(&self) -> bool {
             false
         }
 
-        fn enable_queue(&mut self) {}
-        fn disable_queue(&mut self) {}
-        fn set_queue_desc_addr(&mut self, _addr: u64) {}
-        fn set_queue_avail_addr(&mut self, _addr: u64) {}
-        fn set_queue_used_addr(&mut self, _addr: u64) {}
-        fn notify_queue(&mut self, _queue_index: u16) {}
-        fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+        fn enable_queue(&self) {}
+        fn disable_queue(&self) {}
+        fn set_queue_desc_addr(&self, _addr: u64) {}
+        fn set_queue_avail_addr(&self, _addr: u64) {}
+        fn set_queue_used_addr(&self, _addr: u64) {}
+        fn notify_queue(&self, _queue_index: u16) {}
+        fn get_notify_addr(&self, _queue_index: u16) -> Option<u64> {
             None
         }
         fn get_interrupt_status(&self) -> u32 {
@@ -162,9 +175,9 @@ mod qemu_tests {
         fn read_config_u32(&self, _offset: usize) -> u32 {
             0
         }
-        fn write_config_u8(&mut self, _offset: usize, _value: u8) {}
-        fn write_config_u16(&mut self, _offset: usize, _value: u16) {}
-        fn write_config_u32(&mut self, _offset: usize, _value: u32) {}
+        fn write_config_u8(&self, _offset: usize, _value: u8) {}
+        fn write_config_u16(&self, _offset: usize, _value: u16) {}
+        fn write_config_u32(&self, _offset: usize, _value: u32) {}
         fn transport_type(&self) -> TransportType {
             TransportType::Mmio
         }
@@ -172,7 +185,7 @@ mod qemu_tests {
 
     pub fn transport_init_sequence_smoke() -> bool {
         let mut transport = MockTransport::new();
-        let mut init = VirtioDeviceInit::new(&mut transport);
+        let init = VirtioDeviceInit::new(&mut transport);
 
         match init.initialize(0xFFFF) {
             Ok(negotiated) => negotiated == 0xFFFF,

@@ -64,8 +64,8 @@ impl AhciPort {
     pub fn init(&mut self) -> AhciResult<()> {
         self.stop()?;
 
-        let clb = self.command_list.physical_address();
-        let fb = self.received_fis.physical_address();
+        let clb = self.command_list.device_address();
+        let fb = self.received_fis.device_address();
 
         self.write_port(PX_CLB, clb as u32);
         self.write_port(PX_CLBU, (clb >> 32) as u32);

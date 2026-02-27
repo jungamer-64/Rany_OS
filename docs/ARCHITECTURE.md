@@ -411,7 +411,6 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 - Storage/FS residual（pending監視）: `none`。
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、pending 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。
-- `scripts/qemu_legacy_test_allowlist.lst` は `#[test]` 例外検出の実装ガード専用。
 - 移行棚卸しの管理ファイルは `tests/migration_case_map.toml` を参照する。
 
 ### 7.2 プロジェクト構造
