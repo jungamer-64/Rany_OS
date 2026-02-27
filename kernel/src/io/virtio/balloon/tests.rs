@@ -170,8 +170,7 @@ fn make_test_device(transport: NoopTransport) -> (VirtioBalloonDevice, TestQueue
             inflate_used_ptr,
             None,
             0,
-            None,
-            false,
+            0,
         )
     };
 
@@ -193,14 +192,13 @@ fn make_test_device(transport: NoopTransport) -> (VirtioBalloonDevice, TestQueue
             deflate_used_ptr,
             None,
             1,
-            None,
-            false,
+            0,
         )
     };
 
     let mut dev = VirtioBalloonDevice::new(Box::new(transport));
-    dev.inflate_queue = Some(Arc::new(Mutex::new(inflate_vq)));
-    dev.deflate_queue = Some(Arc::new(Mutex::new(deflate_vq)));
+    dev.inflate_queue = Some(Arc::new(crate::sync::PoisonLock::new(inflate_vq)));
+    dev.deflate_queue = Some(Arc::new(crate::sync::PoisonLock::new(deflate_vq)));
     dev.ready.store(true, Ordering::Release);
 
     let queues = TestQueues {

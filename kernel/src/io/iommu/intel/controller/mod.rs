@@ -463,13 +463,7 @@ impl IommuController {
     /// Invalidate IOTLB (Generic: uses QI if enabled, else Direct)
     pub fn invalidate_iotlb(&self, domain_id: u16) {
         use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
-        if self.is_queued_invalidation_enabled() {
-            let _ = self.qi_invalidate_iotlb_domain(domain_id, true);
-        } else {
-            unsafe {
-                self.invalidate_iotlb_direct(domain_id);
-            }
-        }
+        let _ = self.invalidate_domain(domain_id);
     }
 
     /// Invalidate IOTLB globally (synchronous).
@@ -478,7 +472,7 @@ impl IommuController {
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
         if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_iotlb_global(true)
+            self.qi_invalidate_iotlb_global()
         } else {
             unsafe {
                 self.invalidate_iotlb_global();

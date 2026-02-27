@@ -75,6 +75,9 @@ impl AmdIommuDriver {
     ) -> Result<u64, IommuError> {
         Self::validate_dma_alignment(phys_addr, size)?;
 
+        // Security: Validate that the physical range does not overlap with the kernel image.
+        crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+
         let iova = self.allocate_iova_fast(size, None)?;
         let domain = self.domain_for_id(0)?;
         if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, read, write) {
@@ -122,6 +125,10 @@ impl AmdIommuDriver {
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
         }
+
+        // Security: Validate that the physical range does not overlap with the kernel image.
+        crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+
         let domain_id = self.domain_id_for_device(*device)?;
         self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
         let mask = crate::io::iommu::api::get_device_dma_mask(device);
@@ -363,6 +370,12 @@ impl AmdIommuDriver {
             || (phys & (align - 1) != 0)
             || (size & (align - 1) != 0)
         {
+            let _ = self.free_iova_fast(iova, size);
+            return Err(());
+        }
+
+        // Security: Validate that the physical range does not overlap with the kernel image.
+        if crate::io::iommu::security::validate_dma_region(phys, size).is_err() {
             let _ = self.free_iova_fast(iova, size);
             return Err(());
         }

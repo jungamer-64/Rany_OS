@@ -149,7 +149,7 @@ impl IommuController {
 
                     // Issue Device-TLB invalidation to clear stale entries
                     // Note: This is best-effort since the device may not respond
-                    let _ = self.qi_invalidate_device_tlb(device.requester_id(), 0);
+                    let _ = self.qi_invalidate_device_tlb_all(device.requester_id());
                 }
             }
             Err(_) => {

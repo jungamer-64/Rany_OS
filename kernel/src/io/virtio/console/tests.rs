@@ -122,11 +122,11 @@ fn test_console_write_empty_data() {
     let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
     let vq = unsafe {
-        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 1, None, false)
+        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 1, 0)
     };
 
     let mut dev = VirtioConsoleDevice::new(Box::new(NoopTransport));
-    dev.tx_queue = Some(Arc::new(spin::Mutex::new(vq)));
+    dev.tx_queue = Some(Arc::new(crate::sync::PoisonLock::new(vq)));
     dev.ready.store(true, Ordering::Release);
 
     // Writing empty data should succeed immediately
@@ -170,7 +170,7 @@ fn test_virtqueue_alloc_free_desc() {
     let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
     let vq = unsafe {
-        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, None, false)
+        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0)
     };
 
     // Allocate all descriptors

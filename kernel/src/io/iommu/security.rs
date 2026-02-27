@@ -30,6 +30,211 @@ use spin::Once;
 
 use crate::io::iommu::fault_log::FaultRecord;
 use crate::security::audit::{AuditEvent, AuditEventType};
+use crate::security::dma::{is_page_protected, register_protected_page, unregister_protected_page};
+use x86_64::PhysAddr;
+
+// ============================================================================
+// Kernel Protection & DMA Validation
+// ============================================================================
+
+/// Maximum number of protected physical memory regions.
+/// Increased from 16 to 1024 to support multiple IOMMUs, APICs, and dynamic page tables.
+const MAX_PROTECTED_REGIONS: usize = 1024;
+
+struct ProtectedRegion {
+    start: u64,
+    end: u64,
+    name: &'static str,
+}
+
+static PROTECTED_REGIONS: RwLock<alloc::vec::Vec<ProtectedRegion>> = RwLock::new(alloc::vec::Vec::with_capacity(32));
+
+/// Register a physical memory region that should be protected from DMA access.
+///
+/// This is used to protect MMIO regions like IOMMU registers, APIC, etc.
+pub fn register_protected_region(start: u64, size: u64, name: &'static str) {
+    let end = start.saturating_add(size);
+    
+    // Also mark in global bitmap for O(1) check of small regions
+    let mut current = (start / 4096) * 4096;
+    while current < end {
+        register_protected_page(current);
+        if let Some(next) = current.checked_add(4096) {
+            current = next;
+        } else {
+            break;
+        }
+    }
+
+    let mut regions = PROTECTED_REGIONS.write();
+    if regions.len() < MAX_PROTECTED_REGIONS {
+        regions.push(ProtectedRegion { start, end, name });
+        log::info!(
+            "[IOMMU][SECURITY] Registered protected region '{}': {:#x}-{:#x}",
+            name,
+            start,
+            end
+        );
+    } else {
+        log::error!(
+            "[IOMMU][SECURITY] Failed to register protected region '{}': too many regions (max {})",
+            name,
+            MAX_PROTECTED_REGIONS
+        );
+    }
+}
+
+/// Initialize IOMMU security subsystem with default protected regions.
+pub fn init() {
+    // 1. Protect Local APIC
+    register_protected_region(0xFEE0_0000, 0x1000, "Local APIC");
+
+    // 2. Protect I/O APICs (common locations)
+    register_protected_region(0xFEC0_0000, 0x1000, "I/O APIC 0");
+    // Other I/O APICs can be registered by the driver as they are discovered.
+
+    // 3. Protect BIOS/UEFI reserved regions if known
+    // (Actual discovery happens via ACPI)
+
+    log::info!("[IOMMU][SECURITY] Security subsystem initialized");
+}
+
+/// Get the physical address range of the kernel image.
+///
+/// This is used to prevent devices from mapping or accessing kernel memory via DMA.
+pub fn kernel_phys_range() -> Option<(u64, u64)> {
+    #[cfg(target_os = "none")]
+    {
+        unsafe extern "C" {
+            static __kernel_start: u8;
+            static __kernel_end: u8;
+        }
+
+        let start = unsafe { &__kernel_start as *const u8 as u64 };
+        let end = unsafe { &__kernel_end as *const u8 as u64 };
+        if end <= start {
+            return None;
+        }
+
+        // Check for non-contiguous mapping (best effort)
+        let start_phys = crate::mm::virt::higher_half::global_translate(
+            crate::mm::virt::higher_half::VirtAddr::new(start),
+        )?
+        .as_u64();
+        let end_phys = crate::mm::virt::higher_half::global_translate(
+            crate::mm::virt::higher_half::VirtAddr::new(end - 1),
+        )?
+        .as_u64();
+        
+        // If end_phys is behind start_phys, it's definitely not a simple range
+        if end_phys < start_phys {
+             log::error!("[IOMMU][SECURITY] Kernel image appears non-contiguous or inverted in physical memory!");
+             return Some((start_phys.min(end_phys), start_phys.max(end_phys).saturating_add(1)));
+        }
+
+        Some((start_phys, end_phys.saturating_add(1)))
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        None
+    }
+}
+
+/// Check if two memory ranges overlap.
+pub fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+    a_start < b_end && b_start < a_end
+}
+
+/// Validate that a DMA region does not overlap with the kernel image or other sensitive areas.
+///
+/// # Returns
+/// - `Ok(())` if the region is safe for DMA mapping
+/// - `Err(IommuError::InvalidAddress)` if the region overlaps with protected memory
+pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
+    if size == 0 {
+        return Ok(());
+    }
+    let end = start.saturating_add(size);
+
+    // 1. Check for overlap with the kernel image
+    if let Some((kstart, kend)) = kernel_phys_range() {
+        if ranges_overlap(start, end, kstart, kend) {
+            log::error!(
+                "[IOMMU][SECURITY] DMA mapping overlaps kernel image: {:#x}-{:#x} vs {:#x}-{:#x}",
+                start,
+                end,
+                kstart,
+                kend
+            );
+            return Err(IommuError::InvalidAddress);
+        }
+    }
+
+    // 2. Check for overlap with registered protected regions and page bitmap
+    let page_size = 4096;
+    let mut current = (start / page_size) * page_size;
+    while current < end {
+        // Fast O(1) check via bitmap (for regions < 64GB)
+        if is_page_protected(current) {
+            log::error!(
+                "[IOMMU][SECURITY] DMA mapping overlaps protected physical page at {:#x}",
+                current
+            );
+            return Err(IommuError::InvalidAddress);
+        }
+
+        // Check for overlap with IOMMU page table registry (redundant but safe)
+        if crate::io::iommu::page_table_pool::is_page_table(current) {
+            log::error!(
+                "[IOMMU][SECURITY] DMA mapping overlaps active IOMMU page table at {:#x}",
+                current
+            );
+            return Err(IommuError::InvalidAddress);
+        }
+
+        if let Some(next) = current.checked_add(page_size) {
+            current = next;
+        } else {
+            break;
+        }
+    }
+
+    // 3. Fallback for regions above 64GB (unlikely but supported)
+    {
+        let regions = PROTECTED_REGIONS.read();
+        for region in regions.iter() {
+            if ranges_overlap(start, end, region.start, region.end) {
+                log::error!(
+                    "[IOMMU][SECURITY] DMA mapping overlaps protected region '{}': {:#x}-{:#x} vs {:#x}-{:#x}",
+                    region.name,
+                    start,
+                    end,
+                    region.start,
+                    region.end
+                );
+                return Err(IommuError::InvalidAddress);
+            }
+        }
+    }
+
+    // 4. Best-effort bounds check against known physical memory
+    let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
+    if max_phys != 0 && end > max_phys {
+        // Use saturating_add to prevent overflow during check
+        let threshold = max_phys.saturating_add(1024 * 1024 * 1024); // 1GB beyond managed RAM
+        if end > threshold {
+            log::error!(
+                "[IOMMU][SECURITY] DMA mapping too far outside known RAM: {:#x}-{:#x} (max {:#x})",
+                start,
+                end,
+                max_phys
+            );
+            return Err(IommuError::InvalidAddress);
+        }
+    }
+
+    Ok(())
+}
 
 // ============================================================================
 // ISR-Safe Numeric Formatting (Allocation-Free)
@@ -326,6 +531,7 @@ const MAX_AGGREGATE_BUCKETS: usize = 32;
 ///
 /// Uses a simple array-based structure to avoid allocation on hot path.
 /// When capacity is exceeded, the oldest entries are evicted.
+#[derive(Debug)]
 pub struct EventAggregator {
     /// Array of (key, aggregate) pairs
     buckets: [(Option<EventAggregateKey>, EventAggregate); MAX_AGGREGATE_BUCKETS],
@@ -470,7 +676,7 @@ impl From<&FaultRecord> for FaultSummary {
 ///     }
 /// }
 /// ```
-pub trait SecurityNotifier: Send + Sync {
+pub trait SecurityNotifier: Send + Sync + core::fmt::Debug {
     /// Receive a security event notification
     ///
     /// # Safety Contract
@@ -500,6 +706,7 @@ pub trait SecurityNotifier: Send + Sync {
 
 const SECURITY_EVENT_QUEUE_SIZE: usize = 256;
 
+#[derive(Debug)]
 struct SecurityEventQueue {
     events: [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE],
     head: AtomicUsize,
@@ -566,6 +773,7 @@ impl SecurityEventQueue {
 }
 
 /// Default IOMMU security monitor that buffers events in a lock-free ring.
+#[derive(Debug)]
 pub struct IommuSecurityMonitor {
     queue: SecurityEventQueue,
 }
@@ -816,6 +1024,21 @@ pub async fn security_monitor_task() {
     loop {
         // 1. Drain security events with aggregation
         let _ = monitor.drain_events(SECURITY_MONITOR_BATCH, |event| {
+            // Fault storm protection: Track DMA violations
+            if let SecurityEvent::DmaViolation { source_id, .. } = event {
+                let current_time = current_time_ms_approx();
+                if let Some(_reason) = fault_rate_limiter().record_fault(source_id, current_time) {
+                    // Trigger emergency isolation for the offending device
+                    let _ = emergency_isolate_device(source_id);
+                    
+                    // Notify about the isolation
+                    monitor.notify(SecurityEvent::DeviceIsolated {
+                        source_id,
+                        reason: IsolationReason::FaultStorm,
+                    });
+                }
+            }
+
             // Log immediately for first occurrence, aggregate duplicates
             let is_first = aggregator.record(event);
             if is_first {
@@ -1333,6 +1556,18 @@ impl EmergencyIsolationRegistry {
             if slot.status() == 1 {
                 let source_id = slot.source_id.load(Ordering::Acquire) as u16;
 
+                // Perform actual hardware isolation via the driver
+                if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
+                    let device_id = DeviceId::from_bdf(source_id);
+                    if let Err(e) = driver.isolate_device(device_id) {
+                        log::error!(
+                            "[IOMMU][Emergency] Hardware isolation failed for device 0x{:x}: {:?}",
+                            source_id,
+                            e
+                        );
+                    }
+                }
+
                 // Perform IOTLB flush for this device
                 if let Err(e) = invalidate_device_iotlb(source_id) {
                     log::error!(
@@ -1348,7 +1583,7 @@ impl EmergencyIsolationRegistry {
                 processed += 1;
 
                 log::info!(
-                    "[IOMMU][Emergency] Device 0x{:x} fully isolated (IOTLB flushed)",
+                    "[IOMMU][Emergency] Device 0x{:x} fully isolated (hardware disabled & IOTLB flushed)",
                     source_id
                 );
             }

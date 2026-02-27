@@ -29,6 +29,7 @@
 // Submodules
 pub mod audit;
 pub mod capability;
+pub mod dma; // 新: DMA セキュリティ (設計書 9.2.3)
 pub mod mac;
 pub mod mpk; // 新: MPK/PKU セキュリティ (設計書 9.2.2)
 pub mod policy;

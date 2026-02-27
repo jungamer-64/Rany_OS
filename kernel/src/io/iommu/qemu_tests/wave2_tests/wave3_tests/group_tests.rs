@@ -474,7 +474,7 @@ pub(crate) fn wave5_qi_metrics_pressure_canonical_impl() -> bool {
 
     // Fill the ring
     for _ in 0..safe_submissions {
-        let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+        let desc = InvalidationQueueEntry::iotlb_invalidate_global();
         if ctrl.submit_invalidation(desc).is_err() {
             return false;
         }
@@ -493,7 +493,7 @@ pub(crate) fn wave5_qi_metrics_pressure_canonical_impl() -> bool {
     }
 
     // One more should fail (ring full, hardware head at 0)
-    let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+    let desc = InvalidationQueueEntry::iotlb_invalidate_global();
     if ctrl.submit_invalidation(desc).is_ok() {
         return false; // Should have failed
     }

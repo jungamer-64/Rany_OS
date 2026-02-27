@@ -136,7 +136,7 @@ fn test_virtqueue_alloc_free_desc() {
     let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
     let vq = unsafe {
-        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, None, false)
+        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0)
     };
 
     // Allocate all descriptors

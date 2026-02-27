@@ -141,6 +141,16 @@ pub struct AmdCommandBuffer {
     tail: u32,
 }
 
+impl core::fmt::Debug for AmdCommandBuffer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AmdCommandBuffer")
+            .field("phys_base", &self.phys_base)
+            .field("entry_count", &self.entry_count)
+            .field("tail", &self.tail)
+            .finish()
+    }
+}
+
 unsafe impl Send for AmdCommandBuffer {}
 unsafe impl Sync for AmdCommandBuffer {}
 

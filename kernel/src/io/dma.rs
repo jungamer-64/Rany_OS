@@ -94,10 +94,12 @@ pub(crate) fn allocate_iommu_bounce_bytes(
 
 /// CPU所有状態マーカー
 /// この状態ではCPUからのアクセスが可能
+#[derive(Debug)]
 pub struct CpuOwned;
 
 /// デバイス所有状態マーカー
 /// この状態ではCPUからのアクセスが禁止
+#[derive(Debug)]
 pub struct DeviceOwned;
 
 /// 状態マーカートレイト（シールド）
@@ -129,6 +131,7 @@ impl DmaState for DeviceOwned {}
 ///
 /// `State` パラメータで現在の所有状態を型レベルで追跡し、
 /// 不正なアクセスをコンパイル時に検出する。
+#[derive(Debug)]
 pub struct TypedDmaBuffer<T, State: DmaState> {
     /// バッファへのポインタ
     ptr: NonNull<T>,
@@ -247,6 +250,7 @@ impl<T, State: DmaState> Drop for TypedDmaBuffer<T, State> {
 /// 注意: この構造体は自動同期を行いません。
 /// `complete()` を必ず呼んでください。
 #[must_use = "DMA in-flight guard must be completed; dropping leaks in release / panics in debug"]
+#[derive(Debug)]
 pub struct TypedDmaGuard<T> {
     ptr: NonNull<T>,
     phys_addr: PhysAddr,
@@ -311,6 +315,7 @@ impl<T> Drop for TypedDmaGuard<T> {
 /// - debug: panic（バグ検出）
 /// - release: warn + メモリリーク（DMA安全優先）
 #[must_use = "DMA in-flight guard must be completed; dropping leaks in release / panics in debug"]
+#[derive(Debug)]
 pub struct SliceDmaGuard {
     ptr: NonNull<u8>,
     phys_addr: PhysAddr,
@@ -377,6 +382,7 @@ unsafe impl Send for SliceDmaGuard {}
 // ============================================================================
 
 /// 型状態付きDMAスライスバッファ
+#[derive(Debug)]
 pub struct TypedDmaSlice<State: DmaState> {
     ptr: NonNull<u8>,
     phys_addr: PhysAddr,
@@ -523,6 +529,7 @@ pub struct SgEntry {
 }
 
 /// Scatter-Gather DMAリスト（型安全版）
+#[derive(Debug)]
 pub struct TypedSgList<State: DmaState> {
     entries: alloc::vec::Vec<SgEntry>,
     buffers: alloc::vec::Vec<TypedDmaSlice<State>>,

@@ -384,6 +384,7 @@ impl ArenaOwnership {
 /// Each window covers up to 64 words (4096 pages = 16MB).
 /// The `summary` field provides O(1) lookup for non-empty words.
 #[repr(C, align(64))]
+#[derive(Debug)]
 pub struct PerArenaDetail {
     /// Non-atomic bitmap words (owner-only access)
     /// bits[i] corresponds to global word index (window_base_word + i)

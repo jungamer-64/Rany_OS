@@ -28,7 +28,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::io::virtio::virtqueue::*;
 use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 // ============================================================================
 // VirtIO Input Config Select Constants
@@ -140,21 +140,22 @@ const EVENT_BUFFER_COUNT: usize = 128;
 /// Manages two virtqueues:
 /// - eventq (index 0): device writes input events to pre-posted guest buffers
 /// - statusq (index 1): guest writes LED/force-feedback status to device
+#[derive(Debug)]
 pub struct VirtioInputDevice {
     /// Transport layer (MMIO or PCI)
     transport: Box<dyn VirtioTransport>,
     /// Event queue (index 0)
-    event_queue: Option<Arc<Mutex<VirtQueue>>>,
+    event_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// Status queue (index 1)
-    status_queue: Option<Arc<Mutex<VirtQueue>>>,
+    status_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// DMA buffers for inflight event reads, keyed by descriptor index
-    event_buffers: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
+    event_buffers: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
     iommu_device_id: Option<IommuDeviceId>,
     /// User-provided event handler callback
-    event_handler: Mutex<Option<fn(VirtioInputEvent)>>,
+    event_handler: PoisonLock<Option<fn(VirtioInputEvent)>>,
     /// Number of events dropped due to buffer allocation failures
     dropped_events: core::sync::atomic::AtomicU64,
 }
@@ -187,19 +188,16 @@ impl VirtioInputDevice {
             transport,
             event_queue: None,
             status_queue: None,
-            event_buffers: Mutex::new(BTreeMap::new()),
+            event_buffers: PoisonLock::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             iommu_device_id,
-            event_handler: Mutex::new(None),
+            event_handler: PoisonLock::new(None),
             dropped_events: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
     /// Initialize the device following the standard VirtIO initialization sequence.
-    ///
-    /// # Safety
-    /// Caller must ensure the MMIO address backing the transport is valid.
-    pub unsafe fn init(&mut self) -> Result<(), InputError> {
+    pub fn init(&mut self) -> Result<(), InputError> {
         // Step 1: Reset device
         self.transport.set_status(0);
 
@@ -264,15 +262,8 @@ impl VirtioInputDevice {
         let _notify_addr = self.transport.get_notify_addr(queue_idx);
         let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
-        // Allocate queue memory (proper DMA allocation)
-        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
-        let avail_size = 6 + 2 * queue_size as usize; // flags + idx + ring + used_event
-        let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
-
-        // Align used ring per VirtIO requirements
-        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
-        let used_offset = align_up(desc_size + avail_size, used_align);
-        let total_size = used_offset + used_size;
+        // Standardized layout calculation
+        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -300,7 +291,6 @@ impl VirtioInputDevice {
         // Activate queue
         self.transport.enable_queue();
 
-        // Create VirtQueue instance with transport-provided notify address
         let virtqueue = unsafe {
             VirtQueue::new(
                 queue_size,
@@ -313,7 +303,7 @@ impl VirtioInputDevice {
             )
         };
 
-        let arc_queue = Arc::new(Mutex::new(virtqueue));
+        let arc_queue = Arc::new(PoisonLock::new(virtqueue));
 
         match queue_idx {
             0 => self.event_queue = Some(arc_queue),
@@ -331,8 +321,8 @@ impl VirtioInputDevice {
     /// We post `EVENT_BUFFER_COUNT` (32) buffers.
     fn post_event_buffers(&self) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
-        let mut queue_guard = event_queue.lock();
-        let mut buffers = self.event_buffers.lock();
+        let mut queue_guard = event_queue.lock().expect("eventq lock poisoned");
+        let mut buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
@@ -353,7 +343,8 @@ impl VirtioInputDevice {
 
             // Setup descriptor: device-writable buffer
             unsafe {
-                let desc = &mut *queue_guard.desc_table.as_ptr().add(desc_idx as usize);
+                let desc_table = queue_guard.desc_table_ptr();
+                let desc = &mut *desc_table.add(desc_idx as usize);
                 desc.addr = phys_addr;
                 desc.len = event_size as u32;
                 desc.flags = vring_flags::VRING_DESC_F_WRITE;
@@ -381,8 +372,8 @@ impl VirtioInputDevice {
     /// buffers to write new events into.
     fn repost_event_buffer(&self, desc_idx: u16) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
-        let mut queue_guard = event_queue.lock();
-        let mut buffers = self.event_buffers.lock();
+        let mut queue_guard = event_queue.lock().expect("event_queue lock poisoned");
+        let mut buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
 
@@ -397,7 +388,8 @@ impl VirtioInputDevice {
 
         // Reconfigure the descriptor
         unsafe {
-            let desc = &mut *queue_guard.desc_table.as_ptr().add(desc_idx as usize);
+            let desc_table = queue_guard.desc_table_ptr();
+            let desc = &mut *desc_table.add(desc_idx as usize);
             desc.addr = phys_addr;
             desc.len = event_size as u32;
             desc.flags = vring_flags::VRING_DESC_F_WRITE;
@@ -469,7 +461,7 @@ impl VirtioInputDevice {
     /// 3. Repost the buffer so the device can write new events
     /// DMAバッファから入力イベントを抽出する
     fn extract_input_event(&self, desc_id: u16, len: u32) -> Option<VirtioInputEvent> {
-        let buffers = self.event_buffers.lock();
+        let buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
         let dma_buf = buffers.get(&desc_id)?;
         let event_size = core::mem::size_of::<VirtioInputEvent>();
         if (len as usize) < event_size {
@@ -486,8 +478,8 @@ impl VirtioInputDevice {
             None => return,
         };
 
-        let mut queue_guard = event_queue.lock();
-        let handler = self.event_handler.lock().clone();
+        let mut queue_guard = event_queue.lock().expect("event_queue lock poisoned");
+        let handler = self.event_handler.lock().expect("event_handler lock poisoned").clone();
 
         // Collect completions while holding the queue lock
         let mut completions: Vec<(u16, u32)> = Vec::new();
@@ -508,14 +500,14 @@ impl VirtioInputDevice {
 
             // Remove old buffer and free descriptor before reposting
             {
-                let mut buffers = self.event_buffers.lock();
+                let mut buffers = self.event_buffers.lock().expect("event_buffers lock poisoned");
                 buffers.remove(&desc_id);
             }
             let event_queue = match self.event_queue.as_ref() {
                 Some(q) => q,
                 None => continue,
             };
-            let eq = event_queue.lock();
+            let eq = event_queue.lock().expect("event_queue lock poisoned");
             eq.free_desc(desc_id);
             drop(eq);
 
@@ -534,7 +526,7 @@ impl VirtioInputDevice {
 
     /// Register a callback to be invoked for each received input event.
     pub fn set_event_handler(&self, handler: fn(VirtioInputEvent)) {
-        *self.event_handler.lock() = Some(handler);
+        *self.event_handler.lock().expect("event_handler lock poisoned") = Some(handler);
     }
 
     /// Check if the device is initialized and ready.
@@ -556,7 +548,7 @@ pub(crate) static VIRTIO_INPUT_DEVICES: spin::RwLock<alloc::collections::BTreeMa
 
 pub(crate) fn install_virtio_input_device(index: u8, device_arc: Arc<VirtioInputDevice>) {
     if index == 0 {
-        *VIRTIO_INPUT_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+        *VIRTIO_INPUT_DEVICE.lock().expect("VIRTIO_INPUT_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_INPUT_DEVICES.write().insert(index, device_arc);
     }
@@ -565,7 +557,7 @@ pub(crate) fn install_virtio_input_device(index: u8, device_arc: Arc<VirtioInput
 /// Get a shared reference to the VirtIO input device by index.
 pub fn get_virtio_input_device_at_index(index: u8) -> Option<Arc<VirtioInputDevice>> {
     if index == 0 {
-        VIRTIO_INPUT_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        VIRTIO_INPUT_DEVICE.lock().expect("VIRTIO_INPUT_DEVICE lock poisoned").clone()
     } else {
         VIRTIO_INPUT_DEVICES.read().get(&index).cloned()
     }
@@ -577,7 +569,7 @@ pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<()
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)?
     };
     let mut dev = VirtioInputDevice::new(Box::new(transport));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let name = dev.device_name();
     let device_arc = Arc::new(dev);
@@ -614,7 +606,7 @@ pub unsafe fn init_virtio_input_for_device_at_index(
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)?
     };
     let mut dev = VirtioInputDevice::new_with_device(Box::new(transport), Some(device));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let name = dev.device_name();
     let device_arc = Arc::new(dev);

@@ -179,6 +179,7 @@ impl AmdIvmdRange {
 // Driver struct
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct AmdIommuDriver {
     pub(super) units: Vec<AmdIommuUnit>,
     pub(super) ivmd_ranges: Vec<AmdIvmdRange>,
@@ -189,7 +190,7 @@ pub struct AmdIommuDriver {
     pub(super) device_domains: PoisonLock<HashMap<DeviceId, u16>>,
     pub(super) next_domain_id: AtomicU64,
     pub(super) page_table_pool: Arc<PageTablePool>,
-    pub(super) command_queue: Option<CommandQueue>,
+    pub command_queue: Option<CommandQueue>,
     pub(super) iova_allocator: IovaAllocatorFast,
     pub(super) enabled: AtomicBool,
     pub(super) security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
@@ -197,7 +198,7 @@ pub struct AmdIommuDriver {
     pub(super) interrupt_remap_tables: Vec<Option<PoisonLock<AmdUnitIrt>>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(super) struct AmdDomainInfo {
     pub(super) domain: Arc<DomainState>,
 }
@@ -518,6 +519,36 @@ impl AmdIommuDriver {
 
     pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
         irt::encode_remap_msi(handle)
+    }
+
+    pub fn lookup_device_domain(&self, source_id: u16) -> Option<u16> {
+        let device_domains = self.device_domains.lock().ok()?;
+        // AMD doesn't have segment in source_id (it's 16-bit BDF).
+        // We assume segment 0 for this simple lookup, or we need more info.
+        // Actually, DeviceId includes segment.
+        for (device, domain_id) in device_domains.iter() {
+            if device.requester_id() == source_id {
+                return Some(*domain_id);
+            }
+        }
+        None
+    }
+
+    pub fn isolate_device(&self, device: DeviceId) -> Result<(), IommuError> {
+        let devid = device.requester_id();
+        let table = self
+            .device_tables
+            .get(&device.segment)
+            .ok_or(IommuError::DeviceNotFound)?;
+
+        // Disable device in the Device Table
+        table.clear_entry(devid)?;
+
+        // Invalidate IOMMU caches
+        let _ = self.invalidate_domain_pages(0, 0, u64::MAX); // Global domain invalidation for safety
+        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+
+        Ok(())
     }
 }
 

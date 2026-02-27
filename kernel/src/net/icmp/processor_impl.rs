@@ -7,8 +7,7 @@ impl IcmpProcessor {
         IcmpProcessor {
             _local_ip: local_ip,
             stats: IcmpStats::default(),
-            last_echo_reply_time: 0,
-            echo_reply_tokens: 10, // Initial burst capacity
+            per_ip_rate_limits: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -37,19 +36,27 @@ impl IcmpProcessor {
             IcmpType::EchoRequest => {
                 self.stats.echo_requests_rx += 1;
 
-                // Rate limiting (Token Bucket)
-                // Add 1 token per 100ms
-                let elapsed = current_time.saturating_sub(self.last_echo_reply_time);
-                let new_tokens = (elapsed / 100) as u32;
-                if new_tokens > 0 {
-                    self.echo_reply_tokens = (self.echo_reply_tokens + new_tokens).min(20);
-                    self.last_echo_reply_time = current_time;
-                }
-
-                if self.echo_reply_tokens == 0 {
+                // Rate limiting (Per-IP Token Bucket)
+                // Add 1 token per 100ms, max 20 tokens.
+                // Security: Limit map size to prevent memory DoS.
+                const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
+                if self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES && !self.per_ip_rate_limits.contains_key(&src_ip) {
+                    // Evict oldest or just ignore
                     return IcmpResult::Ignored;
                 }
-                self.echo_reply_tokens -= 1;
+
+                let (last_time, tokens) = self.per_ip_rate_limits.entry(src_ip).or_insert((current_time, 10));
+                let elapsed = current_time.saturating_sub(*last_time);
+                let new_tokens = (elapsed / 100) as u32;
+                if new_tokens > 0 {
+                    *tokens = (*tokens + new_tokens).min(20);
+                    *last_time = current_time;
+                }
+
+                if *tokens == 0 {
+                    return IcmpResult::Ignored;
+                }
+                *tokens -= 1;
 
                 if let Some(echo) = packet.as_echo() {
                     IcmpResult::SendEchoReply {

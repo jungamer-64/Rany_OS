@@ -360,6 +360,7 @@ pub enum RawPartsError {
 /// - `owner` is the DomainId that owns the data
 /// - `drop_fn` correctly drops the data as type T
 /// - Either `into_rref()` or `drop_erased()` must be called exactly once
+#[derive(Debug)]
 pub struct RRefRawParts {
     /// Pointer to data on Exchange Heap
     ptr: NonNull<u8>,

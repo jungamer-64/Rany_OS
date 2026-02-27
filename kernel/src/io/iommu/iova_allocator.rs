@@ -68,6 +68,7 @@ const FALLBACK_DRAIN_BATCH: usize = 32;
 // ============================================================================
 
 /// IOVA Allocator with Epoch-based Quarantine
+#[derive(Debug)]
 pub struct IovaAllocator {
     /// Generic Fast Bitmap Allocator (providing core allocation/free logic)
     inner: FastBitmapAllocator,
@@ -96,6 +97,12 @@ pub struct IovaAllocatorStats {
     pub quarantine_pushes: AtomicU64,
     pub quarantine_drains: AtomicU64,
     pub quarantine_forced_drains: AtomicU64,
+}
+
+/// Check if system memory pressure is critical
+fn is_memory_pressure_critical() -> bool {
+    // Current threshold: > 90% physical memory usage
+    crate::mm::phys::unified_alloc::memory_pressure_level() >= 90
 }
 
 impl IovaAllocator {
@@ -257,9 +264,9 @@ impl IovaAllocator {
             if pushed {
                 self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
                 Ok(())
-            } else {
-                // Ring full: Force drain this ring to make space, then try push again
-                // This is a "forced drain" - potentially expensive but prevents failure
+            } else if is_memory_pressure_critical() {
+                // Ring full AND memory critical: Force drain as last resort to avoid system stall/panic.
+                // SECURITY WARNING: This bypasses IOTLB consistency for the drained entries!
                 self.drain_quarantine_for_cpu(cpu_id, true);
                 self.stats.quarantine_forced_drains.fetch_add(1, Ordering::Relaxed);
 
@@ -270,13 +277,13 @@ impl IovaAllocator {
                      Ok(())
                 } else {
                     // Still full after drain? This is bad. Fallback to immediate free.
-                    // NOTE: Immediate free bypasses quarantine safety! 
-                    // Only safe if we assume IOTLB flush happens immediately after this call (which it usually doesn't).
-                    // But dropping the free is worse (leak).
-                    // A better approach might be to wait/spin, but we are in kernel context.
                     self.inner.free_immediate(addr, granularity)
                         .map_err(|_| IommuError::NotMapped)
                 }
+            } else {
+                // Ring full but memory NOT critical: Fail the request rather than compromising safety.
+                // The caller (IOMMU driver) should handle this by performing a full IOTLB flush soon.
+                Err(IommuError::OutOfMemory)
             }
         } else {
             self.free_via_fallback_quarantine(entry, addr, granularity)

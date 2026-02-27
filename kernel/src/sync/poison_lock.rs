@@ -498,6 +498,9 @@ impl<T> IrqPoisonLock<T> {
             data: UnsafeCell::new(data),
         }
     }
+}
+
+impl<T: ?Sized> IrqPoisonLock<T> {
 
     /// ロックを取得（割り込み禁止付き）
     pub fn lock(&self) -> LockResult<IrqPoisonLockGuard<'_, T>> {
@@ -571,5 +574,31 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 
         // 割り込み状態を復元
         super::irq_mutex::restore_interrupts(self.irq_was_enabled);
+    }
+}
+impl<T: fmt::Debug + ?Sized> fmt::Debug for IrqPoisonLockGuard<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: fmt::Display + ?Sized> fmt::Display for IrqPoisonLockGuard<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&**self, f)
+    }
+}
+impl<T: fmt::Debug + ?Sized> fmt::Debug for IrqPoisonLock<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("IrqPoisonLock");
+        d.field("poisoned", &self.is_poisoned());
+        // We use load to check if it's locked to avoid deadlocks in Debug
+        if self.locked.load(Ordering::Relaxed) {
+             d.field("data", &"<locked>");
+        } else if let Ok(guard) = self.lock() {
+             d.field("data", &&*guard);
+        } else {
+             d.field("data", &"<locked or poisoned>");
+        }
+        d.finish()
     }
 }

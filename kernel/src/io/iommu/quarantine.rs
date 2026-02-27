@@ -47,6 +47,7 @@ pub const QUARANTINE_CAPACITY: usize = 256;
 pub const INVALIDATION_CAPACITY: usize = 64;
 
 /// Pre-allocated context for zero-allocation flushes
+#[derive(Debug)]
 pub struct FlushContext {
     pub requests: alloc::vec::Vec<InvalidateRequest>,
     pub to_free_iova: alloc::vec::Vec<(u64, u64)>,
@@ -136,7 +137,7 @@ impl From<RawPartsError> for QuarantineError {
 ///
 /// Round 12: Simplified InvSlot
 /// Note: Generation token is stored in inner.inv_generations array, avoiding redundancy.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum InvSlot {
     /// Slot is empty
     Empty,
@@ -153,6 +154,7 @@ enum InvSlot {
 /// A single entry in the quarantine queue
 ///
 /// The queue owns the RRefRawParts; tickets only hold keys.
+#[derive(Debug)]
 struct QuarantineEntry {
     /// RRef raw parts (owned by queue)
     raw: Option<RRefRawParts>,
@@ -205,6 +207,7 @@ impl QuarantineEntry {
 // ============================================================================
 
 /// Inner state protected by IrqMutex
+#[derive(Debug)]
 struct QuarantineQueueInner {
     /// Fixed-size entry array
     entries: [QuarantineEntry; QUARANTINE_CAPACITY],
@@ -266,7 +269,7 @@ impl QuarantineQueueInner {
 /// Manages lazy unmapping and IOTLB invalidation invalidation handling.
 ///
 /// Thread-safe (internally uses Mutex).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct QuarantineQueue {
     inner: Arc<IrqMutex<QuarantineQueueInner>>,
     /// Completed batch ID (can be read without lock for fast path)

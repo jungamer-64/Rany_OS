@@ -75,6 +75,9 @@ pub unsafe fn init_iommu_from_acpi(
         return Err(IommuError::NotPresent);
     }
 
+    // Initialize security subsystem (protected regions like APIC)
+    crate::io::iommu::security::init();
+
     // Parse DMAR using canonical ACPI parser from drivers/acpi
     let dmar_info = match unsafe { crate::io::acpi::dmar::parse_dmar(dmar_addr) } {
         Ok(info) => info,
@@ -148,6 +151,13 @@ unsafe fn init_controllers_from_drhd(
         );
 
         let mut controller = IommuController::new(mmio_virt, unit.segment);
+
+        // Security: Register IOMMU register range as protected to prevent DMA access
+        crate::io::iommu::security::register_protected_region(
+            unit.register_base,
+            4096, // VT-d registers are at least 4KB
+            "Intel VT-d IOMMU",
+        );
 
         unsafe {
             if let Err(e) = controller.init(config.scalable_mode) {

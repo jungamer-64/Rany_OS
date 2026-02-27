@@ -609,16 +609,26 @@ impl PageTableManager {
     /// 新しいページテーブル用のフレームを割り当て
     pub(super) fn alloc_page_table(&self) -> Result<PhysAddr, MapError> {
         // まず現在のCPUのローカルNUMAノードから割り当てを試みる（優先）
-        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        let phys = if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
             if let Some(frame) = crate::mm::phys::frame_allocator::alloc_frame_local(cpu_id as u8) {
-                return Ok(PhysAddr::new(frame.start_address().as_u64()));
+                Some(PhysAddr::new(frame.start_address().as_u64()))
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
-        // フォールバック: PMMグローバルを使用
-        crate::mm::phys::frame_allocator::alloc_frame()
-            .map(|frame| PhysAddr::new(frame.start_address().as_u64()))
-            .ok_or(MapError::FrameAllocationFailed)
+        let phys = phys.or_else(|| {
+            // フォールバック: PMMグローバルを使用
+            crate::mm::phys::frame_allocator::alloc_frame()
+                .map(|frame| PhysAddr::new(frame.start_address().as_u64()))
+        }).ok_or(MapError::FrameAllocationFailed)?;
+
+        // Security: Register the new CPU page table as protected from DMA
+        crate::security::dma::register_protected_page(phys.as_u64());
+
+        Ok(phys)
     }
 }
 

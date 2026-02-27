@@ -317,7 +317,7 @@ impl VirtioNetDevice {
         tx_queue: &NetVirtQueue,
         q_idx: usize,
         desc_idx: u16,
-        len: u32,
+        _len: u32,
     ) -> bool {
         let buf = if let Some(lock) = self.tx_inflight.get(q_idx) {
             if let Ok(mut guard) = lock.lock() {

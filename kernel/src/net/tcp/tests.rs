@@ -85,7 +85,7 @@ pub fn test_process_with_packet_zero_copy() {
 
     // Call process_with_packet (zero-copy path)
     let data = alloc::vec::Vec::from(packet.data());
-    let res = processor.process_with_packet(
+    let _res = processor.process_with_packet(
         &data,
         Ipv4Address::from_octets(127, 0, 0, 1),
         Ipv4Address::from_octets(127, 0, 0, 1),
@@ -363,7 +363,7 @@ pub fn test_three_way_handshake() {
     let listener = server.bind(server_addr).expect("bind");
 
     // Client initiates connection (sets up a SynSent TCB)
-    let client_stream = client.connect(client_addr, server_addr).expect("connect");
+    let _client_stream = client.connect(client_addr, server_addr).expect("connect");
 
     // Grab client's initial sequence number
     let client_tcb_arc = client

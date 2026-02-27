@@ -10,12 +10,12 @@ use core::sync::atomic::Ordering;
 
 use super::utils::IommuUtils;
 use super::{InvalidationWaiter, IommuController};
-use crate::io::iommu::types::IommuError;
+use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::io::iommu::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
 use crate::io::iommu::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
-use crate::io::iommu::intel::registers::regs; // for wait_for_condition
+use crate::io::iommu::intel::registers::regs;
 
 fn submit_invalidation_locked(
     controller: &IommuController,
@@ -63,17 +63,17 @@ pub trait InvalidationOps {
     fn submit_invalidation(&self, entry: InvalidationQueueEntry) -> Result<(), IommuError>;
 
     /// Submit a global IOTLB invalidation via queued invalidation
-    fn qi_invalidate_iotlb_global(&self, drain: bool) -> Result<(), IommuError>;
+    fn qi_invalidate_iotlb_global(&self) -> Result<(), IommuError>;
 
     /// Submit a domain IOTLB invalidation via queued invalidation
-    fn qi_invalidate_iotlb_domain(&self, domain_id: u16, drain: bool) -> Result<(), IommuError>;
+    fn qi_invalidate_iotlb_domain(&self, domain_id: u16) -> Result<(), IommuError>;
 
     /// Submit a page-selective IOTLB invalidation via queued invalidation
     fn qi_invalidate_iotlb_page(
         &self,
         domain_id: u16,
         addr: u64,
-        drain: bool,
+        am: u8,
     ) -> Result<(), IommuError>;
 
     /// Submit a global context-cache invalidation via queued invalidation
@@ -86,15 +86,13 @@ pub trait InvalidationOps {
     fn qi_invalidate_iec_global(&self) -> Result<(), IommuError>;
 
     /// Submit a Device-TLB invalidation via queued invalidation
-    fn qi_invalidate_device_tlb(&self, source_id: u16, domain_id: u16) -> Result<(), IommuError>;
+    fn qi_invalidate_device_tlb_all(&self, source_id: u16) -> Result<(), IommuError>;
 
     /// Submit a page-selective Device-TLB invalidation
     fn qi_invalidate_device_tlb_page(
         &self,
         source_id: u16,
-        domain_id: u16,
         iova: u64,
-        size: u8,
     ) -> Result<(), IommuError>;
 
     /// Submit a global PASID cache invalidation
@@ -104,7 +102,7 @@ pub trait InvalidationOps {
     fn qi_invalidate_pasid_cache_domain(&self, domain_id: u16) -> Result<(), IommuError>;
 
     /// Submit a PASID-based IOTLB invalidation
-    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32, drain: bool) -> Result<(), IommuError>;
+    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32) -> Result<(), IommuError>;
 
     /// Submit a wait descriptor and synchronize
     fn qi_wait_sync(&self) -> Result<(), IommuError>;
@@ -123,13 +121,10 @@ impl InvalidationOps for IommuController {
     }
 
     fn submit_invalidation(&self, entry: InvalidationQueueEntry) -> Result<(), IommuError> {
-        // Acquire the invalidation queue
         let mut guard = match self.invalidation_queue.lock() {
             Ok(g) => g,
             Err(_) => {
-                log::error!(
-                    "[IOMMU] invalidation_queue lock poisoned while submitting invalidation"
-                );
+                log::error!("[IOMMU] invalidation_queue lock poisoned");
                 return Err(IommuError::HardwareError);
             }
         };
@@ -140,14 +135,14 @@ impl InvalidationOps for IommuController {
     }
 
     #[inline]
-    fn qi_invalidate_iotlb_global(&self, drain: bool) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::iotlb_invalidate_global(drain);
+    fn qi_invalidate_iotlb_global(&self) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::iotlb_invalidate_global();
         self.submit_invalidation(entry)
     }
 
     #[inline]
-    fn qi_invalidate_iotlb_domain(&self, domain_id: u16, drain: bool) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::iotlb_invalidate_domain(domain_id, drain);
+    fn qi_invalidate_iotlb_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::iotlb_invalidate_domain(domain_id);
         self.submit_invalidation(entry)
     }
 
@@ -156,10 +151,9 @@ impl InvalidationOps for IommuController {
         &self,
         domain_id: u16,
         addr: u64,
-        drain: bool,
+        am: u8,
     ) -> Result<(), IommuError> {
-        // AM (Address Mask) = 0 for 4KB page
-        let entry = InvalidationQueueEntry::iotlb_invalidate(3, domain_id, drain, addr);
+        let entry = InvalidationQueueEntry::iotlb_invalidate(3, domain_id, false, addr, am);
         self.submit_invalidation(entry)
     }
 
@@ -182,8 +176,8 @@ impl InvalidationOps for IommuController {
     }
 
     #[inline]
-    fn qi_invalidate_device_tlb(&self, source_id: u16, domain_id: u16) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::device_tlb_invalidate_device(source_id, domain_id);
+    fn qi_invalidate_device_tlb_all(&self, source_id: u16) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::device_tlb_invalidate_all(source_id);
         self.submit_invalidation(entry)
     }
 
@@ -191,12 +185,9 @@ impl InvalidationOps for IommuController {
     fn qi_invalidate_device_tlb_page(
         &self,
         source_id: u16,
-        domain_id: u16,
         iova: u64,
-        size: u8,
     ) -> Result<(), IommuError> {
-        let entry =
-            InvalidationQueueEntry::device_tlb_invalidate_page(source_id, domain_id, iova, size);
+        let entry = InvalidationQueueEntry::device_tlb_invalidate_page(source_id, iova);
         self.submit_invalidation(entry)
     }
 
@@ -213,97 +204,90 @@ impl InvalidationOps for IommuController {
     }
 
     #[inline]
-    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32, drain: bool) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::pasid_iotlb_invalidate(domain_id, pasid, drain);
+    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::pasid_iotlb_invalidate(domain_id, pasid);
         self.submit_invalidation(entry)
     }
 
     fn qi_wait_sync(&self) -> Result<(), IommuError> {
-        // Debug check: warn if called from ISR context (blocking waits are dangerous)
-        #[cfg(debug_assertions)]
-        {
-            if crate::per_cpu::in_interrupt_context() {
-                log::warn!(
-                    "[IOMMU] qi_wait_sync() called from ISR context - \
-                     this may cause system instability!"
-                );
-            }
-        }
-
-        let mut guard = match self.invalidation_queue.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("[IOMMU] invalidation_queue lock poisoned during qi_wait_sync");
-                return Err(IommuError::HardwareError);
-            }
-        };
-
-        let expected_tail = {
+        let (status_virt, expected_data) = {
+            let mut guard = match self.invalidation_queue.lock() {
+                Ok(g) => g,
+                Err(_) => return Err(IommuError::HardwareError),
+            };
             let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
+            let data = (iq.tail() & 0xFFFFFFFF) as u32;
+            let virt = iq.status_virtual_address();
             let entry = iq.wait_entry();
-            submit_invalidation_locked(self, iq, entry)?
+            let _ = submit_invalidation_locked(self, iq, entry)?;
+            (virt, data)
         };
 
-        // Wait for hardware head to catch up (all descriptors processed)
-        // This is a critical wait, use longer timeout
         self.wait_for_condition(
-            || (self.read64(regs::IQH) >> 4) == expected_tail,
-            100_000, // 100ms
-            true,    // Safe to yield
+            || {
+                let status = unsafe { core::ptr::read_volatile(status_virt as *const u32) };
+                status == expected_data
+            },
+            100_000,
+            true,
         )
     }
 
     fn qi_wait_async<'a>(&'a self) -> InvalidationWaiter<'a> {
-        // Submit wait descriptor first. Treat poisoned lock as a hardware error
-        // and return a waiter which will immediately resolve to Err.
-        let submit_result = match self.invalidation_queue.lock() {
+        let result = match self.invalidation_queue.lock() {
             Ok(mut guard) => {
                 if let Some(iq) = guard.as_mut() {
+                    let expected_data = (iq.tail() & 0xFFFFFFFF) as u32;
+                    let status_virt = iq.status_virtual_address();
                     let entry = iq.wait_entry();
-                    submit_invalidation_locked(self, iq, entry)
+                    let submit_result = submit_invalidation_locked(self, iq, entry);
+                    Ok((submit_result, status_virt, expected_data))
                 } else {
                     Err(IommuError::NotPresent)
                 }
             }
-            Err(_) => {
-                log::error!("[IOMMU] invalidation_queue lock poisoned during qi_wait_async");
-                Err(IommuError::HardwareError)
-            }
+            Err(_err) => Err(IommuError::HardwareError) // Changed to _err and kept original error type
         };
 
-        InvalidationWaiter {
-            controller: self,
-            submit_result,
+        match result {
+            Ok((submit_result, status_virt, expected_data)) => InvalidationWaiter {
+                controller: self,
+                submit_result: submit_result.map(|_| ()),
+                status_virt,
+                expected_data,
+            },
+            Err(e) => InvalidationWaiter {
+                controller: self,
+                submit_result: Err(e),
+                status_virt: 0,
+                expected_data: 0,
+            },
         }
     }
 
     fn wake_invalidation_waiter(&self) {
-        // ISR-safe: enqueue deferred wake for ALL waiting tasks
         self.pending_waiters.wake_all_from_isr();
     }
 }
 
-// 無効化処理のヘルパーメソッド
 impl IommuController {
-    /// 単一の無効化リクエストを処理する
     fn process_single_invalidation(
         &self,
         req: &InvalidateRequest,
         any_ats: bool,
-        drain: bool,
     ) -> Result<(), IommuError> {
         match req.kind {
             InvalidateKind::Pages {
                 start_iova,
-                bytes: _,
-            } => self.invalidate_pages(req.domain_id, start_iova, any_ats, drain),
-            InvalidateKind::Domain => self.invalidate_domain(req.domain_id, drain),
-            InvalidateKind::Global => self.invalidate_global(drain),
+                bytes,
+            } => self.invalidate_pages(req.domain_id, start_iova, bytes, any_ats),
+            InvalidateKind::Domain => self.invalidate_domain(req.domain_id),
+            InvalidateKind::Global => self.invalidate_global(),
             InvalidateKind::Context { source_id } => self.invalidate_context(source_id),
             InvalidateKind::Iec { global, index } => self.invalidate_iec(global, index),
             InvalidateKind::PasidIotlb { pasid } => {
                 if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_pasid_iotlb(req.domain_id, pasid, drain)?;
+                    self.qi_invalidate_pasid_iotlb(req.domain_id, pasid)?;
                 }
                 Ok(())
             }
@@ -316,136 +300,99 @@ impl IommuController {
         }
     }
 
-    /// ページ選択的IOTLB無効化
     fn invalidate_pages(
         &self,
         domain_id: u16,
         start_iova: u64,
+        size: u64,
         any_ats: bool,
-        drain: bool,
     ) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_iotlb_page(domain_id, start_iova, drain)?;
+            let num_pages = (size + 4095) / 4096;
+            let am = if num_pages > 1 {
+                64 - (num_pages - 1).leading_zeros() as u8
+            } else {
+                0
+            };
+            
+            if am > 6 || (start_iova & ((4096 << am) - 1)) != 0 {
+                self.qi_invalidate_iotlb_domain(domain_id)?;
+            } else {
+                self.qi_invalidate_iotlb_page(domain_id, start_iova, am)?;
+            }
+
             if any_ats {
-                log::trace!(
-                    "[IOMMU] ATS Page invalidation requested but source_id not available"
-                );
+                let _ = self.invalidate_device_tlbs(domain_id, Some(start_iova));
             }
         } else {
-            unsafe { self.invalidate_iotlb_direct(domain_id) };
+            unsafe { self.invalidate_iotlb_direct(domain_id); }
         }
         Ok(())
     }
 
-    /// ドメイン全体のIOTLB無効化
-    fn invalidate_domain(&self, domain_id: u16, drain: bool) -> Result<(), IommuError> {
+    fn invalidate_device_tlbs(&self, domain_id: u16, iova: Option<u64>) -> Result<(), IommuError> {
+        let device_domains = self.device_domains.lock().map_err(|_| IommuError::Poisoned)?;
+        let ats_devices = self.ats_enabled_devices.lock().map_err(|_| IommuError::Poisoned)?;
+        
+        for device in ats_devices.iter() {
+            if let Some(&did) = device_domains.get(device) {
+                if did == domain_id {
+                    let source_id = device.requester_id();
+                    if let Some(iova_val) = iova {
+                        let _ = self.qi_invalidate_device_tlb_page(source_id, iova_val);
+                    } else {
+                        let _ = self.qi_invalidate_device_tlb_all(source_id);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn invalidate_domain(&self, domain_id: u16) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_iotlb_domain(domain_id, drain)?;
+            self.qi_invalidate_iotlb_domain(domain_id)?;
+            let _ = self.invalidate_device_tlbs(domain_id, None);
         } else {
             unsafe { self.invalidate_iotlb_direct(domain_id) };
         }
         Ok(())
     }
 
-    /// グローバルIOTLB無効化
-    fn invalidate_global(&self, drain: bool) -> Result<(), IommuError> {
+    fn invalidate_global(&self) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_iotlb_global(drain)?;
+            self.qi_invalidate_iotlb_global()?;
+            // For global, we should ideally invalidate ALL Device-TLBs, 
+            // but usually a global IOTLB flush is enough if followed by domain flushes.
+            // To be safe, iterate over all ATS devices.
+            let ats_devices = self.ats_enabled_devices.lock().map_err(|_| IommuError::Poisoned)?;
+            for device in ats_devices.iter() {
+                let _ = self.qi_invalidate_device_tlb_all(device.requester_id());
+            }
         } else {
             unsafe { self.invalidate_iotlb_global() };
         }
         Ok(())
     }
 
-    /// コンテキストキャッシュ無効化
-    fn invalidate_context(&self, source_id: u16) -> Result<(), IommuError> {
+    fn invalidate_context(&self, _source_id: u16) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_context_global()?;
         }
-        log::trace!(
-            "[IOMMU] Context invalidation for source_id {:04x}",
-            source_id
-        );
         Ok(())
     }
 
-    /// 割り込みエントリキャッシュ無効化
-    fn invalidate_iec(&self, global: bool, index: u16) -> Result<(), IommuError> {
+    fn invalidate_iec(&self, global: bool, _index: u16) -> Result<(), IommuError> {
         if global {
             self.qi_invalidate_iec_global()?;
         } else {
-            log::trace!("[IOMMU] Indexed IEC invalidation for index {}", index);
-            self.qi_invalidate_iec_global()?; // Fall back to global
+            self.qi_invalidate_iec_global()?; 
         }
         Ok(())
-    }
-
-    /// Dispatch a single invalidation command based on its kind
-    fn dispatch_invalidation_kind(&self, request: &InvalidateRequest, drain: bool) -> Result<(), IommuError> {
-        match request.kind {
-            InvalidateKind::Pages {
-                start_iova,
-                bytes: _,
-            } => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_iotlb_page(request.domain_id, start_iova, drain)
-                } else {
-                    unsafe { self.invalidate_iotlb_direct(request.domain_id) };
-                    Ok(())
-                }
-            }
-            InvalidateKind::Domain => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_iotlb_domain(request.domain_id, drain)
-                } else {
-                    unsafe { self.invalidate_iotlb_direct(request.domain_id) };
-                    Ok(())
-                }
-            }
-            InvalidateKind::Global => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_iotlb_global(drain)
-                } else {
-                    unsafe { self.invalidate_iotlb_global() };
-                    Ok(())
-                }
-            }
-            InvalidateKind::Context { source_id: _ } => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_context_global()
-                } else {
-                    Ok(())
-                }
-            }
-            InvalidateKind::Iec {
-                global: _,
-                index: _,
-            } => self.qi_invalidate_iec_global(),
-            InvalidateKind::PasidIotlb { pasid } => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_pasid_iotlb(request.domain_id, pasid, drain)
-                } else {
-                    Ok(())
-                }
-            }
-            InvalidateKind::PasidCache { pasid } => {
-                if self.is_queued_invalidation_enabled() {
-                    match pasid {
-                        Some(_) => self.qi_invalidate_pasid_cache_domain(request.domain_id),
-                        None => self.qi_invalidate_pasid_cache_domain(request.domain_id),
-                    }
-                } else {
-                    Ok(())
-                }
-            }
-        }
     }
 }
 
 impl IommuInvalidator for IommuController {
-    // Note: This impl block now calls methods from InvalidationOps
-    // Since IommuController implements InvalidationOps, `self.method()` works.
-
     fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {
         if requests.is_empty() {
             return Ok(());
@@ -454,16 +401,11 @@ impl IommuInvalidator for IommuController {
         let any_ats = requests
             .iter()
             .any(|r| r.flags.contains(InvalidateFlags::ATS_AWARE));
-        let drain = requests.iter().any(|r| {
-            r.flags
-                .intersects(InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE)
-        });
 
         for req in requests {
-            self.process_single_invalidation(req, any_ats, drain)?;
+            self.process_single_invalidation(req, any_ats)?;
         }
 
-        // Perform synchronous wait to ensure completion
         if self.is_queued_invalidation_enabled() {
             self.qi_wait_sync()?;
         }
@@ -471,19 +413,12 @@ impl IommuInvalidator for IommuController {
         Ok(())
     }
 
-    /// Optimized async invalidation using QI wait
-    fn invalidate_async(&self, request: InvalidateRequest) -> impl Future<Output = Result<(), IommuError>> + Send {
+    fn invalidate_async(&self, request: InvalidateRequest) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
+        let any_ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
+        let res = self.process_single_invalidation(&request, any_ats);
+        
         async move {
-            // Submit the invalidation request first (sync part)
-            let drain = request
-                .flags
-                .intersects(InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE);
-
-            let submit_result = self.dispatch_invalidation_kind(&request, drain);
-
-            submit_result?;
-
-            // If QI is enabled, use async wait; otherwise we're done
+            res?;
             if self.is_queued_invalidation_enabled() {
                 self.qi_wait_async().await
             } else {

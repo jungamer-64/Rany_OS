@@ -111,11 +111,11 @@ fn test_submit_read_uses_dma_addr() {
     let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
     let vq = unsafe {
-        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, None, false)
+        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0)
     };
 
     let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
-    dev.queues.push(Arc::new(spin::Mutex::new(vq)));
+    dev.queues.push(Arc::new(crate::sync::PoisonLock::new(vq)));
     dev.ready.store(true, Ordering::Release);
     dev.config.capacity = 1024;
 
@@ -168,11 +168,11 @@ fn test_submit_write_uses_dma_addr() {
     let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
     let vq = unsafe {
-        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, None, false)
+        VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0)
     };
 
     let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
-    dev.queues.push(Arc::new(spin::Mutex::new(vq)));
+    dev.queues.push(Arc::new(crate::sync::PoisonLock::new(vq)));
     dev.ready.store(true, Ordering::Release);
     dev.config.capacity = 1024;
 

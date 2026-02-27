@@ -140,6 +140,7 @@ pub type FastMagazine = Magazine<FastMagazineEntry, DEFAULT_MAGAZINE_CAPACITY>;
 
 /// Per-CPU magazine set for fast allocator
 #[repr(C, align(128))] // Two cache lines to avoid false sharing
+#[derive(Debug)]
 pub struct PerCpuFastMagazine {
     /// CPU ID for this magazine set
     pub cpu_id: usize,
@@ -290,6 +291,7 @@ impl Default for PerCpuFastMagazine {
 // ============================================================================
 
 /// Statistics for the fast allocator
+#[derive(Debug)]
 pub struct FastAllocatorStats {
     /// Magazine hits (fast path)
     pub magazine_hits: AtomicU64,
@@ -338,6 +340,7 @@ impl FastAllocatorStats {
 ///
 /// Combines per-CPU magazines, single-writer arenas, and hierarchical bitmap
 /// for extremely fast allocation with minimal contention.
+#[derive(Debug)]
 pub struct FastBitmapAllocator {
     /// Base address
     base: u64,

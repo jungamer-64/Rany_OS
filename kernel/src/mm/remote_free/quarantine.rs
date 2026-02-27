@@ -79,6 +79,17 @@ pub struct QuarantineRing<const N: usize = DEFAULT_QUARANTINE_CAPACITY> {
     count: usize,
 }
 
+impl<const N: usize> core::fmt::Debug for QuarantineRing<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("QuarantineRing")
+            .field("capacity", &N)
+            .field("count", &self.count)
+            .field("head", &self.head)
+            .field("tail", &self.tail)
+            .finish()
+    }
+}
+
 impl<const N: usize> QuarantineRing<N> {
     /// Create an empty quarantine ring
     pub const fn new() -> Self {

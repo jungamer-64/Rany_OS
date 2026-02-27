@@ -8,7 +8,7 @@ pub unsafe fn init_virtio_input_with_transport_at_index(
     iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), InputError> {
     let mut dev = VirtioInputDevice::new_with_device(transport, iommu_device_id);
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let name = dev.device_name();
     let device_arc = Arc::new(dev);

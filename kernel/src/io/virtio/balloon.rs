@@ -24,7 +24,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::io::virtio::virtqueue::*;
 use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 // ============================================================================
 // VirtIO Balloon Feature Bits
@@ -96,15 +96,16 @@ mod config_offsets {
 }
 
 /// VirtIO balloon device driver
+#[derive(Debug)]
 pub struct VirtioBalloonDevice {
     /// Transport layer (MMIO or PCI)
     transport: Box<dyn VirtioTransport>,
     /// Inflate virtqueue (queue 0) - driver sends PFN arrays to host to return pages
-    inflate_queue: Option<Arc<Mutex<VirtQueue>>>,
+    inflate_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// Deflate virtqueue (queue 1) - driver sends PFN arrays to host to reclaim pages
-    deflate_queue: Option<Arc<Mutex<VirtQueue>>>,
+    deflate_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// DMA buffers for inflight requests, keyed by head descriptor index
-    inflight_buffers: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
+    inflight_buffers: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
@@ -135,7 +136,7 @@ impl VirtioBalloonDevice {
             transport,
             inflate_queue: None,
             deflate_queue: None,
-            inflight_buffers: Mutex::new(BTreeMap::new()),
+            inflight_buffers: PoisonLock::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             iommu_device_id,
             features: 0,
@@ -149,10 +150,7 @@ impl VirtioBalloonDevice {
     }
 
     /// Initialize the device
-    ///
-    /// # Safety
-    /// Caller must ensure MMIO address is valid
-    pub unsafe fn init(&mut self) -> Result<(), BalloonError> {
+    pub fn init(&mut self) -> Result<(), BalloonError> {
         // Step 1: Reset device
         self.transport.set_status(0);
 
@@ -218,15 +216,8 @@ impl VirtioBalloonDevice {
         let _notify_addr = self.transport.get_notify_addr(queue_idx);
         let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
-        // Allocate queue memory (proper DMA allocation)
-        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
-        let avail_size = 6 + 2 * queue_size as usize; // flags + idx + ring + used_event
-        let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
-
-        // Align used ring per VirtIO requirements
-        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
-        let used_offset = align_up(desc_size + avail_size, used_align);
-        let total_size = used_offset + used_size;
+        // Standardized layout calculation
+        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -268,8 +259,8 @@ impl VirtioBalloonDevice {
         };
 
         match queue_idx {
-            0 => self.inflate_queue = Some(Arc::new(Mutex::new(virtqueue))),
-            1 => self.deflate_queue = Some(Arc::new(Mutex::new(virtqueue))),
+            0 => self.inflate_queue = Some(Arc::new(PoisonLock::new(virtqueue))),
+            1 => self.deflate_queue = Some(Arc::new(PoisonLock::new(virtqueue))),
             _ => {} // Ignore unknown queue indices (e.g. statsq not yet supported)
         }
 
@@ -287,7 +278,7 @@ impl VirtioBalloonDevice {
     /// submits a single readable descriptor to the queue, and notifies the device.
     fn submit_pfns(
         &self,
-        queue: &Arc<Mutex<VirtQueue>>,
+        queue: &Arc<PoisonLock<VirtQueue>>,
         pfns: &[u32],
     ) -> Result<(), BalloonError> {
         if !self.is_ready() {
@@ -317,16 +308,16 @@ impl VirtioBalloonDevice {
 
         let phys_addr = dma_buf.device_addr();
 
-        let mut queue_guard = queue.lock();
+        let mut queue_guard = queue.lock().expect("virtqueue lock poisoned");
 
         // Allocate a single descriptor for the PFN array (device-readable)
         let desc_idx = queue_guard.alloc_desc().ok_or(BalloonError::QueueFull)?;
 
         unsafe {
-            let desc_table = queue_guard.desc_table;
+            let desc_table = queue_guard.desc_table_ptr();
 
             // Single readable descriptor: device reads PFN array from driver
-            (*desc_table.as_ptr().add(desc_idx as usize)) = VringDesc {
+            (*desc_table.add(desc_idx as usize)) = VringDesc {
                 addr: phys_addr,
                 len: byte_len as u32,
                 flags: 0, // No WRITE flag = device-readable
@@ -338,7 +329,7 @@ impl VirtioBalloonDevice {
         }
 
         // Retain DMA buffer until completion
-        self.inflight_buffers.lock().insert(desc_idx, dma_buf);
+        self.inflight_buffers.lock().expect("inflight_buffers lock poisoned").insert(desc_idx, dma_buf);
 
         // Notify device
         queue_guard.notify(&*self.transport);
@@ -409,10 +400,10 @@ impl VirtioBalloonDevice {
         if queue_interrupt {
             // Process inflate queue completions
             if let Some(ref queue) = self.inflate_queue {
-                let mut queue_guard = queue.lock();
+                let mut queue_guard = queue.lock().expect("inflate_queue lock poisoned");
                 while let Some((desc_id, _len)) = queue_guard.poll_completion() {
                     // Free the inflight DMA buffer
-                    self.inflight_buffers.lock().remove(&desc_id);
+                    self.inflight_buffers.lock().expect("inflight_buffers lock poisoned").remove(&desc_id);
                     // Free descriptor
                     queue_guard.free_desc(desc_id);
                 }
@@ -420,10 +411,10 @@ impl VirtioBalloonDevice {
 
             // Process deflate queue completions
             if let Some(ref queue) = self.deflate_queue {
-                let mut queue_guard = queue.lock();
+                let mut queue_guard = queue.lock().expect("deflate_queue lock poisoned");
                 while let Some((desc_id, _len)) = queue_guard.poll_completion() {
                     // Free the inflight DMA buffer
-                    self.inflight_buffers.lock().remove(&desc_id);
+                    self.inflight_buffers.lock().expect("inflight_buffers lock poisoned").remove(&desc_id);
                     // Free descriptor
                     queue_guard.free_desc(desc_id);
                 }
@@ -455,7 +446,7 @@ pub(crate) static VIRTIO_BALLOON_DEVICES: spin::RwLock<alloc::collections::BTree
 
 fn install_virtio_balloon_device(index: u8, device_arc: Arc<VirtioBalloonDevice>) {
     if index == 0 {
-        *VIRTIO_BALLOON_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+        *VIRTIO_BALLOON_DEVICE.lock().expect("VIRTIO_BALLOON_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_BALLOON_DEVICES.write().insert(index, device_arc);
     }
@@ -464,7 +455,7 @@ fn install_virtio_balloon_device(index: u8, device_arc: Arc<VirtioBalloonDevice>
 /// Get a shared reference to the VirtIO balloon device by index.
 pub fn get_virtio_balloon_device_at_index(index: u8) -> Option<Arc<VirtioBalloonDevice>> {
     if index == 0 {
-        VIRTIO_BALLOON_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        VIRTIO_BALLOON_DEVICE.lock().expect("VIRTIO_BALLOON_DEVICE lock poisoned").clone()
     } else {
         VIRTIO_BALLOON_DEVICES.read().get(&index).cloned()
     }
@@ -476,7 +467,7 @@ pub unsafe fn init_virtio_balloon_at_index(index: u8, mmio_base: u64) -> Result<
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BalloonError::NotReady)?
     };
     let mut dev = VirtioBalloonDevice::new(Box::new(transport));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 
@@ -508,7 +499,7 @@ pub unsafe fn init_virtio_balloon_for_device_at_index(
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BalloonError::NotReady)?
     };
     let mut dev = VirtioBalloonDevice::new_with_device(Box::new(transport), Some(device));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 
@@ -540,7 +531,7 @@ pub unsafe fn init_virtio_balloon_with_transport_at_index(
     iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), BalloonError> {
     let mut dev = VirtioBalloonDevice::new_with_device(transport, iommu_device_id);
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 
@@ -584,7 +575,7 @@ pub fn get_virtio_balloon_device() -> Option<Arc<VirtioBalloonDevice>> {
     get_virtio_balloon_device_at_index(0)
 }
 
-use crate::util::align_up_usize as align_up;
+
 
 // ============================================================================
 // Tests

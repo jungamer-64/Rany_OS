@@ -301,4 +301,15 @@ impl IommuBackend {
             Self::Amd(driver) => driver.lookup_device_domain(source_id),
         }
     }
+
+    /// Isolate a device from accessing any more memory via DMA.
+    ///
+    /// This should be called when a device is detected to be malicious or
+    /// malfunctioning.
+    pub fn isolate_device(&self, device: DeviceId) -> Result<(), IommuError> {
+        match self {
+            Self::Intel(driver) => driver.isolate_device(device),
+            Self::Amd(driver) => driver.isolate_device(device),
+        }
+    }
 }

@@ -200,6 +200,14 @@ impl KernelStack {
         // SAFETY: ptr は適切なサイズとアラインメントで割り当てられている
         let memory = unsafe { raw::box_from_raw(ptr as *mut [u8; Self::SIZE]) };
 
+        // Security: Register kernel stack as protected from DMA
+        // We translate the virtual address to physical address for registration.
+        let virt_start = ptr as u64;
+        let size = Self::SIZE;
+        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(x86_64::VirtAddr::new(virt_start)) {
+            crate::security::dma::register_protected_range(phys_start.as_u64(), size as u64);
+        }
+
         let mut stack = Self { 
             memory,
             guard_page_set: false,

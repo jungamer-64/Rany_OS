@@ -109,6 +109,7 @@ impl AmdIrte {
 // AMD Interrupt Remapping Table
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct AmdInterruptRemapTable {
     table: HardwareTable<AmdIrte>,
     bitmap: Vec<u64>,
@@ -238,6 +239,7 @@ pub fn encode_remap_msi(handle: u16) -> (u64, u32) {
 // ---------------------------------------------------------------------------
 
 /// Per-unit IRT state stored in the driver.
+#[derive(Debug)]
 pub struct AmdUnitIrt {
     pub(super) table: AmdInterruptRemapTable,
     pub(super) size_log2: u8,

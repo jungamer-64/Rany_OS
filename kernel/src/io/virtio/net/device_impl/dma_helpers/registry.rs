@@ -28,7 +28,7 @@ pub(crate) static VIRTIO_NET_TRANSPORTS: RwLock<BTreeMap<u8, Arc<dyn VirtioTrans
 fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
     let transport = device.transport.clone();
     if index == 0 {
-        *VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device);
+        *VIRTIO_NET_DEVICE.lock().expect("VIRTIO_NET_DEVICE lock poisoned") = Some(device);
     } else {
         VIRTIO_NET_DEVICES
             .write()
@@ -71,11 +71,11 @@ where
     F: FnOnce(&VirtioNetDevice) -> R,
 {
     if index == 0 {
-        return VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(f);
+        return VIRTIO_NET_DEVICE.lock().expect("VIRTIO_NET_DEVICE lock poisoned").as_ref().map(f);
     }
 
     let device = VIRTIO_NET_DEVICES.read().get(&index).cloned()?;
-    let guard = device.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = device.lock().expect("virtqueue lock poisoned");
     Some(f(&guard))
 }
 
@@ -84,25 +84,25 @@ where
     F: FnOnce(&mut VirtioNetDevice) -> R,
 {
     if index == 0 {
-        let mut guard = VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = VIRTIO_NET_DEVICE.lock().expect("VIRTIO_NET_DEVICE lock poisoned");
         return guard.as_mut().map(f);
     }
 
     let device = VIRTIO_NET_DEVICES.read().get(&index).cloned()?;
-    let mut guard = device.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = device.lock().expect("virtqueue lock poisoned");
     Some(f(&mut guard))
 }
 
 pub(crate) fn has_virtio_net_device(index: u8) -> bool {
     if index == 0 {
-        return VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        return VIRTIO_NET_DEVICE.lock().expect("VIRTIO_NET_DEVICE lock poisoned").is_some();
     }
     VIRTIO_NET_DEVICES.read().contains_key(&index)
 }
 
 fn collect_registered_virtio_net_indices() -> Vec<u8> {
     let mut indices = Vec::new();
-    if VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+    if VIRTIO_NET_DEVICE.lock().expect("VIRTIO_NET_DEVICE lock poisoned").is_some() {
         indices.push(0);
     }
     indices.extend(VIRTIO_NET_DEVICES.read().keys().copied());
@@ -270,6 +270,6 @@ pub fn handle_virtio_net_interrupt() {
 
 #[cfg(test)]
 pub(crate) fn clear_virtio_net_devices_for_tests() {
-    *VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *VIRTIO_NET_DEVICE.lock().expect("VIRTIO_NET_DEVICE lock poisoned") = None;
     VIRTIO_NET_DEVICES.write().clear();
 }

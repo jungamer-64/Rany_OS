@@ -54,24 +54,24 @@ impl InvalidationQueueEntry {
 
     /// Create an IOTLB Invalidation descriptor
     /// Granularity: 0=reserved, 1=global, 2=domain, 3=page
-    pub fn iotlb_invalidate(granularity: u8, domain_id: u16, drain: bool, address: u64) -> Self {
+    pub fn iotlb_invalidate(granularity: u8, domain_id: u16, hint: bool, address: u64, am: u8) -> Self {
         let lo = qi_desc_type::IOTLB_INV |
                  ((granularity as u64 & 0x3) << 4) |
-                 (if drain { 1 << 6 } else { 0 }) | // DW (Drain Writes)
-                 (if drain { 1 << 7 } else { 0 }) | // DR (Drain Reads)
-                 ((domain_id as u64) << 16);
+                 ((domain_id as u64) << 16) |
+                 ((am as u64 & 0x3F) << 48) |
+                 (if hint { 1u64 << 63 } else { 0 }); // IH (Invalidation Hint)
         let hi = address & !0xFFF; // Page-aligned address for page-selective
         Self { lo, hi }
     }
 
     /// Create a Global IOTLB Invalidation descriptor
-    pub fn iotlb_invalidate_global(drain: bool) -> Self {
-        Self::iotlb_invalidate(1, 0, drain, 0)
+    pub fn iotlb_invalidate_global() -> Self {
+        Self::iotlb_invalidate(1, 0, false, 0, 0)
     }
 
     /// Create a Domain IOTLB Invalidation descriptor
-    pub fn iotlb_invalidate_domain(domain_id: u16, drain: bool) -> Self {
-        Self::iotlb_invalidate(2, domain_id, drain, 0)
+    pub fn iotlb_invalidate_domain(domain_id: u16) -> Self {
+        Self::iotlb_invalidate(2, domain_id, false, 0, 0)
     }
 
     /// Create an Interrupt Entry Cache Invalidation descriptor
@@ -100,31 +100,25 @@ impl InvalidationQueueEntry {
     /// * `domain_id` - Domain ID for domain-selective invalidation
     pub fn device_tlb_invalidate(
         source_id: u16,
-        global: bool,
         iova: u64,
-        size: u8,
-        domain_id: u16,
+        size_s: bool,
     ) -> Self {
         let lo = qi_desc_type::DEV_TLB_INV
-            | ((source_id as u64) << 32)
-            | ((domain_id as u64) << 16)
-            | if global { 1 << 4 } else { 0 }; // G bit
-        let hi = if global {
-            0
-        } else {
-            (iova & !0xFFF) | ((size as u64) & 0x3F)
-        };
+            | ((source_id as u64) << 16)
+            | if size_s { 1u64 << 48 } else { 0 }; // S bit
+        let hi = iova & !0xFFF;
         Self { lo, hi }
     }
 
-    /// Create a Global Device-TLB Invalidation for a specific device
-    pub fn device_tlb_invalidate_device(source_id: u16, domain_id: u16) -> Self {
-        Self::device_tlb_invalidate(source_id, true, 0, 0, domain_id)
+    /// Create a Global Device-TLB Invalidation for a specific device (all entries)
+    pub fn device_tlb_invalidate_all(source_id: u16) -> Self {
+        // To invalidate all, set S=1 and Address[63:12] = all 1s
+        Self::device_tlb_invalidate(source_id, !0u64, true)
     }
 
     /// Create a Page-selective Device-TLB Invalidation
-    pub fn device_tlb_invalidate_page(source_id: u16, domain_id: u16, iova: u64, size: u8) -> Self {
-        Self::device_tlb_invalidate(source_id, false, iova, size, domain_id)
+    pub fn device_tlb_invalidate_page(source_id: u16, iova: u64) -> Self {
+        Self::device_tlb_invalidate(source_id, iova, false)
     }
 
     /// Create a PASID Cache Invalidation descriptor (VT-d Spec §6.5.2.7)
@@ -148,12 +142,10 @@ impl InvalidationQueueEntry {
     }
 
     /// Create a PASID-based IOTLB Invalidation descriptor (VT-d Spec §6.5.2.6)
-    pub fn pasid_iotlb_invalidate(domain_id: u16, pasid: u32, drain: bool) -> Self {
+    pub fn pasid_iotlb_invalidate(domain_id: u16, pasid: u32) -> Self {
         let lo = qi_desc_type::PASID_IOTLB_INV
-            | (if drain { 1 << 6 } else { 0 }) // DW (Drain Writes)
-            | (if drain { 1 << 7 } else { 0 }) // DR (Drain Reads)
             | ((domain_id as u64) << 16);
-        let hi = (pasid as u64) & 0xFFFFF;
+        let hi = (pasid as u64) & 0xFFFFF; // PASID is 20 bits
         Self { lo, hi }
     }
 
@@ -192,8 +184,8 @@ impl InvalidationQueueEntry {
     /// Used to signal completion of previous descriptors
     pub fn wait(status_addr: u64, status_data: u32, interrupt: bool, fence: bool) -> Self {
         let lo = qi_desc_type::WAIT |
-                 (if fence { 1 << 5 } else { 0 }) |     // IF (Invalidation Fence)
-                 (if interrupt { 1 << 4 } else { 0 }) | // FN (Fence Notify)
+                 (if fence { 1 << 4 } else { 0 }) |     // IF (Invalidation Fence)
+                 (if interrupt { 1 << 6 } else { 0 }) | // FN (Fence Notify)
                  (1 << 5) |                              // SW (Status Write)
                  ((status_data as u64) << 32);
         let hi = status_addr;
@@ -309,8 +301,8 @@ impl InvalidationQueue {
         self.queue_virt
     }
 
-    #[cfg(test)]
-    pub fn status_virtual_address(&self) -> usize {
+    /// Get the status virtual address (for memory polling)
+    pub(crate) fn status_virtual_address(&self) -> usize {
         self.status_virt
     }
 

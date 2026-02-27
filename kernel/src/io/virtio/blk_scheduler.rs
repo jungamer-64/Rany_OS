@@ -107,7 +107,7 @@ impl VirtioBlkPollHandler {
                 if let Some(queue_arc) = device.queue(queue_idx) {
                     queue_arc
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .expect("lock poisoned")
                         .free_desc(desc_id);
                 }
 
@@ -164,7 +164,7 @@ impl PollHandler for VirtioBlkPollHandler {
         let queue_count = device.queue_count();
         for q_idx in 0..queue_count {
             if let Some(queue_arc) = device.queue(q_idx) {
-                let mut queue_guard = queue_arc.lock().unwrap_or_else(|e| e.into_inner());
+                let mut queue_guard = queue_arc.lock().expect("lock poisoned");
                 queue_guard.poll_completions(|desc_id, len| {
                     raw_completions.push((q_idx, desc_id, len));
                 });

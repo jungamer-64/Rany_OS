@@ -347,7 +347,9 @@ impl RRefDmaBytes {
 ///
 /// IOMMU有効時は `new_for_device()` で作成すると自動的にIOMMUマッピングが行われ、
 /// `device_addr()` でデバイスに渡すアドレス（IOVA）を取得できる。
+/// RAII handle for a physically contiguous, cache-coherent DMA buffer.
 /// Drop時にIOMMUマッピングは自動的に解除される。
+#[derive(Debug)]
 pub struct CoherentDmaBuffer {
     ptr: NonNull<u8>,
     size: usize,

@@ -164,6 +164,7 @@ impl Default for AdaptiveBatchConfig {
 /// 3. When `bits == 0`, claim another word or fall back to magazine
 /// 4. On CPU idle/shutdown, return remaining bits to bitmap
 #[repr(C)]
+#[derive(Debug)]
 pub struct SubFrameMagazine {
     /// Bit mask of available frames (1 = free, 0 = allocated)
     /// When empty (0), need to claim a new word
@@ -281,6 +282,7 @@ impl Default for SubFrameMagazine {
 const LOCAL_FREE_WORD_STACK_CAPACITY: usize = 32;
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct LocalFreeWordStack {
     /// Word indices (LIFO order)
     entries: [usize; LOCAL_FREE_WORD_STACK_CAPACITY],

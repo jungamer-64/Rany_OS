@@ -20,7 +20,8 @@ use crate::io::dma::{
     iommu_needs_bounce,
 };
 use crate::io::iommu::api::{
-    DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
+    DmaDirection, DmaHandle, map_rref_slice_for_device,
+    is_iommu_enabled, is_iommu_required,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
@@ -34,7 +35,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::io::virtio::virtqueue::*;
 use core::task::{Context, Poll, Waker};
 use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
-use spin::Mutex;
 mod device_impl;
 pub use device_impl::*;
 use vfs::block::{
@@ -157,6 +157,7 @@ pub struct BlockRequest {
 /// Both header and status must remain valid and DMA-accessible until the device
 /// completes the request. This struct allocates a CoherentDmaBuffer to hold
 /// `[VirtioBlkReqHeader | u8 status]` in physically contiguous, uncacheable memory.
+#[derive(Debug)]
 pub(crate) struct BlkRequestDma {
     /// Coherent DMA buffer holding header + status byte (+ indirect table)
     buffer: CoherentDmaBuffer,
@@ -252,6 +253,7 @@ impl Default for BlockDeviceConfig {
 use crate::sync::IrqPoisonLock;
 
 /// VirtIO block device driver
+#[derive(Debug)]
 pub struct VirtioBlkDevice {
     /// Device configuration
     config: BlockDeviceConfig,

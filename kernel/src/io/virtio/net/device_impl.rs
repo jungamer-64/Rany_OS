@@ -56,6 +56,7 @@ impl Default for VirtioNetConfig {
 }
 
 /// In-flight entry for a zero-copy TX packet. Holds cleanup handles for unmapping when completed.
+#[derive(Debug)]
 pub(crate) struct TxPacketInflight {
     packet: crate::net::PacketRef,
     bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
@@ -66,6 +67,7 @@ pub(crate) struct TxPacketInflight {
 }
 
 /// In-flight entry for a zero-copy RX PacketRef. Holds IOMMU mapping for cleanup on completion.
+#[derive(Debug)]
 pub(crate) struct RxPacketInflight {
     packet: crate::net::PacketRef,
     /// IOVA mapped through IOMMU for this buffer (None when IOMMU is inactive)
@@ -75,6 +77,7 @@ pub(crate) struct RxPacketInflight {
 }
 
 /// In-flight entry for a VirtioNetRxDmaBuffer. Holds IOMMU mapping for cleanup on completion.
+#[derive(Debug)]
 pub(crate) struct RxVbufInflight {
     vbuf: VirtioNetRxDmaBuffer,
     /// IOVA mapped through IOMMU for this buffer (None when IOMMU is inactive)
@@ -94,6 +97,7 @@ pub(crate) struct QueueMemoryLayout {
 }
 
 /// VirtIO ネットワークデバイス
+#[derive(Debug)]
 pub struct VirtioNetDevice {
     /// トランスポート層（MMIO/PCI共通インターフェース）
     pub(crate) transport: alloc::sync::Arc<dyn VirtioTransport>,
@@ -317,7 +321,7 @@ impl VirtioNetDevice {
                 < rx_queue
                     .vq
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .expect("virtqueue lock poisoned")
                     .size()
             {
                 if self.try_post_rx_packet(rx_queue).is_err() {
@@ -332,7 +336,7 @@ impl VirtioNetDevice {
                     rx_queue
                         .vq
                         .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                        .expect("virtqueue lock poisoned")
                         .index()
                 );
                 rx_queue.notify(self.transport.as_ref());
@@ -445,27 +449,38 @@ impl VirtioNetDevice {
         let queue_size = max_size.min(256);
         self.mut_transport().set_queue_size(queue_size);
 
-        // メモリレイアウトを計算
-        let layout = Self::compute_queue_memory_layout(queue_index, queue_size);
+        // Standardized layout calculation
+        let (desc_size, avail_size, used_offset, vring_total_size) = VirtQueue::calculate_layout(queue_size);
+        
+        // Add space for network headers if this is a TX queue
+        let header_align = core::mem::align_of::<VirtioNetHeader>();
+        let header_offset = (vring_total_size + header_align - 1) & !(header_align - 1);
+        let header_table_size = VirtioNetHeader::SIZE * queue_size as usize;
+        
+        let total_size = if (queue_index % 2) == 1 {
+            header_offset + header_table_size
+        } else {
+            vring_total_size
+        };
 
         // DMAバッファを割り当て
-        let (buffer, _dma_len) = self.allocate_queue_dma(layout.total_size)?;
+        let (buffer, _dma_len) = self.allocate_queue_dma(total_size)?;
 
-        let phys_base = buffer.phys_addr().as_u64();
+        let phys_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
-        let avail_ring = unsafe { ptr.add(layout.desc_size) as *mut VringAvail };
-        let used_ring = unsafe { ptr.add(layout.used_offset) as *mut VringUsed };
+        let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
+        let used_ring = unsafe { ptr.add(used_offset) as *mut VringUsed };
         let notify_addr = self.mut_transport().get_notify_addr(queue_index);
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
         // IOMMU DMAマッピングを設定
-        let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, layout.total_size, phys_base)?;
+        let (dma_base, iommu_map) = self.setup_iommu_dma_mapping(&buffer, total_size, phys_base)?;
 
-        let (tx_headers, tx_header_dma_base) = if queue_index == 1 {
-            let header_ptr = unsafe { ptr.add(layout.header_offset) as *mut VirtioNetHeader };
-            let header_dma_base = dma_base + layout.header_offset as u64;
+        let (tx_headers, tx_header_dma_base) = if (queue_index % 2) == 1 {
+            let header_ptr = unsafe { ptr.add(header_offset) as *mut VirtioNetHeader };
+            let header_dma_base = dma_base + header_offset as u64;
             (Some(header_ptr), Some(header_dma_base))
         } else {
             (None, None)
@@ -476,18 +491,18 @@ impl VirtioNetDevice {
 
         // デバイスにアドレスを設定
         let desc_addr = dma_base;
-        let avail_addr = dma_base + layout.desc_size as u64;
-        let used_addr = dma_base + layout.used_offset as u64;
+        let avail_addr = dma_base + desc_size as u64;
+        let used_addr = dma_base + used_offset as u64;
 
         crate::io::log::early_print(&alloc::format!(
-            "[EARLY][VIRTIO-NET] queue {}: dma_base=0x{:x} desc_size={} avail_size={} used_offset={} used_addr=0x{:x} used_size={}\n",
+            "[EARLY][VIRTIO-NET] queue {}: dma_base=0x{:x} desc_size={} avail_size={} used_offset={} used_addr=0x{:x} vring_total_size={}\n",
             queue_index,
             dma_base,
-            layout.desc_size,
-            layout.avail_size,
-            layout.used_offset,
+            desc_size,
+            avail_size,
+            used_offset,
             used_addr,
-            layout.used_size
+            vring_total_size
         ));
 
         self.mut_transport().set_queue_desc_addr(desc_addr);

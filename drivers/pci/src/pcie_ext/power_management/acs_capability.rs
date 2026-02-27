@@ -83,7 +83,7 @@ impl AcsController {
         Ok(())
     }
 
-    /// Check if ACS isolation is enabled (basic check)
+    /// Check if ACS isolation is enabled (strict check for IOMMU grouping)
     pub fn is_isolation_enabled(&self) -> bool {
         let Some(cap) = self.capability.as_ref() else {
             return false;
@@ -93,12 +93,19 @@ impl AcsController {
             return false;
         };
 
-        // Check essential isolation bits if supported
-        let sv_ok = !cap.source_validation || (ctrl & 0x01) != 0;
-        let rr_ok = !cap.p2p_request_redirect || (ctrl & 0x04) != 0;
-        let uf_ok = !cap.upstream_forwarding || (ctrl & 0x10) != 0;
+        // Strict security policy:
+        // For a bridge to provide isolation, it MUST support and enable:
+        // 1. Source Validation (SV): Prevents device spoofing of requester IDs.
+        // 2. P2P Request Redirect (RR): Forces P2P requests to go upstream to IOMMU.
+        // 3. P2P Completion Redirect (CR): Forces P2P completions to go upstream.
+        // 4. Upstream Forwarding (UF): Prevents direct P2P bypass of IOMMU.
+        
+        let sv_ok = cap.source_validation && (ctrl & 0x01) != 0;
+        let rr_ok = cap.p2p_request_redirect && (ctrl & 0x04) != 0;
+        let cr_ok = cap.p2p_completion_redirect && (ctrl & 0x08) != 0;
+        let uf_ok = cap.upstream_forwarding && (ctrl & 0x10) != 0;
 
-        sv_ok && rr_ok && uf_ok
+        sv_ok && rr_ok && cr_ok && uf_ok
     }
 }
 

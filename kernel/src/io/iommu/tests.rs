@@ -1197,7 +1197,7 @@ fn test_qi_metrics_pressure() {
     let safe_submissions = ring_capacity - 1;
 
     for _ in 0..safe_submissions {
-        let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+        let desc = InvalidationQueueEntry::iotlb_invalidate_global();
         ctrl.submit_invalidation(desc)
             .expect("submit should succeed");
     }
@@ -1210,7 +1210,7 @@ fn test_qi_metrics_pressure() {
     assert_eq!(stats.full_checks, 0);
     assert_eq!(stats.wait_timeouts, 0);
 
-    let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+    let desc = InvalidationQueueEntry::iotlb_invalidate_global();
     let res = ctrl.submit_invalidation(desc);
     assert!(res.is_err());
 

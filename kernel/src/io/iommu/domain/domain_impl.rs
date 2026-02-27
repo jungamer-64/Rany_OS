@@ -475,6 +475,10 @@ impl IommuDomain {
             return Err(IommuError::InvalidAddress);
         }
 
+        // Security: Validate that the physical range does not overlap with the kernel image
+        // or other protected physical regions (like MMIO).
+        crate::io::iommu::security::validate_dma_region(phys, size)?;
+
         Ok(())
     }
 

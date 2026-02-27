@@ -26,6 +26,7 @@ const CACHE_LINE_SIZE: usize = 64;
 
 /// パケットバッファのメタデータ
 #[repr(C)]
+#[derive(Debug)]
 struct PacketBufferMeta {
     /// 使用中のデータ長
     len: AtomicUsize,
@@ -51,6 +52,7 @@ const DEFAULT_BUFFER_SIZE: usize =
 /// パケットバッファ
 /// 設計書 6.2: NICのDMAエンジンは、事前に割り当てられた固定サイズのバッファプールに直接パケットを書き込む
 #[repr(C, align(4096))] // DMAページ境界にアライン
+#[derive(Debug)]
 pub struct PacketBuffer {
     /// データ領域
     data: [u8; DEFAULT_BUFFER_SIZE],
@@ -125,6 +127,7 @@ use spin::Mutex as SpinMutex;
 use crate::io::dma::{TypedDmaSlice, CpuOwned};
 
 /// 内部で DMA バッファを保持するためのラッパ
+#[derive(Debug)]
 struct DmaBuffer {
     pub(super) ptr: NonNull<u8>,
     pub(super) phys_addr: PhysAddr,
@@ -158,6 +161,7 @@ impl DmaBuffer {
 }
 
 /// PacketRef の内部バリアント
+#[derive(Debug)]
 enum PacketRefKind {
     /// 既存の Mempool バッファを指す標準バリアント
     Pooled {
@@ -182,6 +186,7 @@ enum PacketRefKind {
     },
 }
 
+#[derive(Debug)]
 pub struct PacketRef {
     kind: PacketRefKind,
 }
@@ -470,6 +475,7 @@ unsafe impl Send for PacketRef {}
 
 /// メモリプール
 /// 設計書 6.2: バッファ管理
+#[derive(Debug)]
 pub struct Mempool {
     /// プールID
     id: u32,
@@ -669,6 +675,7 @@ pub struct MempoolStats {
 
 /// コアローカルなメモリプールキャッシュ
 /// 設計書 4.3: コアごとの独立性
+#[derive(Debug)]
 pub struct PerCoreMempoolCache {
     /// ローカルキャッシュ
     local_cache: PoisonLock<Vec<NonNull<PacketBuffer>>>,
@@ -735,6 +742,7 @@ impl PerCoreMempoolCache {
 
 /// Simple packet pool for transmit buffers
 /// Used by the network stack for building outgoing packets
+#[derive(Debug)]
 pub struct PacketPool {
     /// Pre-allocated buffers
     buffers: PoisonLock<Vec<Vec<u8>>>,

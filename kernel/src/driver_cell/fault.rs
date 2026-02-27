@@ -197,6 +197,7 @@ pub fn handle_fault(
     id: DriverCellId,
     fault_kind: FaultKind,
 ) -> Result<FaultAction, DriverCellError> {
+    crate::io::log::early_print("[DCF] handle_fault: enter\n");
     let manager = driver_cell_manager();
 
     // 障害情報を記録
@@ -221,6 +222,7 @@ pub fn handle_fault(
     super::stats::global_stats().on_fault();
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
+    crate::io::log::early_print("[DCF] handle_fault: recorded\n");
 
     log::info!(
         "[DriverCell] Fault in '{}': {} (consecutive: {})\n",
@@ -231,27 +233,38 @@ pub fn handle_fault(
 
     // ドメインのリソースを回収
     if let Some(did) = domain_id {
+        crate::io::log::early_print("[DCF] handle_fault: domain panic begin\n");
         crate::domain_system::handle_domain_panic(
             did,
             format!("DriverCell fault: {}", fault_kind),
         );
+        crate::io::log::early_print("[DCF] handle_fault: domain panic done\n");
     }
 
     // ドライバを停止（可能なら）
+    crate::io::log::early_print("[DCF] handle_fault: stop drivers begin\n");
     stop_drivers_for_cell(id);
+    crate::io::log::early_print("[DCF] handle_fault: stop drivers done\n");
 
     // ホットスワップ検証中の障害は、再起動より先にロールバックを優先
     if hot_swap_state == HotSwapState::Validating {
+        crate::io::log::early_print("[DCF] handle_fault: validating rollback path\n");
         if let Some(cid) = cell_id {
+            crate::io::log::early_print("[DCF] handle_fault: mark health failure\n");
             let _ = crate::loader::live_update::live_update_manager().mark_health_failure(
                 cid.as_u64(),
                 format!("Fault during validation: {}", fault_kind),
             );
         }
 
+        crate::io::log::early_print("[DCF] handle_fault: rollback begin\n");
         match super::hot_swap::rollback(id) {
-            Ok(()) => return Ok(FaultAction::RolledBack),
+            Ok(()) => {
+                crate::io::log::early_print("[DCF] handle_fault: rollback ok\n");
+                return Ok(FaultAction::RolledBack);
+            }
             Err(e) => {
+                crate::io::log::early_print("[DCF] handle_fault: rollback err\n");
                 log::warn!("[DriverCell] Validation rollback failed: {}\n", e);
                 return Ok(FaultAction::RollbackFailed(format!("{}", e)));
             }
@@ -526,24 +539,40 @@ pub fn inject_test_fault(
     id: DriverCellId,
     kind: TestFaultKind,
 ) -> Result<TestFaultOutcome, DriverCellError> {
+    crate::io::log::early_print("[DCF] inject_test_fault: enter\n");
     let manager = driver_cell_manager();
     let domain_id = manager.with_cell(id, |cell| cell.domain_id)?;
+    crate::io::log::early_print("[DCF] inject_test_fault: got domain\n");
 
     let action = match kind {
         TestFaultKind::Panic => {
+            crate::io::log::early_print("[DCF] inject_test_fault: panic path\n");
             if let Some(did) = domain_id {
+                crate::io::log::early_print("[DCF] inject_test_fault: notify_domain_panic_inner begin\n");
                 match notify_domain_panic_inner(did, format!("qemu-test injected panic for {}", id.as_u64()))? {
-                    Some(a) => a,
+                    Some(a) => {
+                        crate::io::log::early_print("[DCF] inject_test_fault: notify_domain_panic_inner handled\n");
+                        a
+                    }
                     None => handle_fault(
                         id,
                         FaultKind::Panic(format!("qemu-test injected panic for {}", id.as_u64())),
-                    )?,
+                    )
+                    .map(|a| {
+                        crate::io::log::early_print("[DCF] inject_test_fault: direct handle_fault done\n");
+                        a
+                    })?,
                 }
             } else {
+                crate::io::log::early_print("[DCF] inject_test_fault: no domain direct handle_fault\n");
                 handle_fault(
                     id,
                     FaultKind::Panic(format!("qemu-test injected panic for {}", id.as_u64())),
-                )?
+                )
+                .map(|a| {
+                    crate::io::log::early_print("[DCF] inject_test_fault: direct handle_fault done\n");
+                    a
+                })?
             }
         }
         TestFaultKind::Timeout => handle_fault(id, FaultKind::Timeout)?,
@@ -562,6 +591,7 @@ pub fn inject_test_fault(
                 cell.last_health_failure.clone(),
             )
         })?;
+    crate::io::log::early_print("[DCF] inject_test_fault: snapshot done\n");
 
     Ok(TestFaultOutcome {
         requested_kind: kind,

@@ -74,6 +74,7 @@ pub struct IommuCommand {
 }
 
 /// Completion slot for commands
+#[derive(Debug)]
 pub struct CompletionSlot {
     /// 0 = free, 1 = pending, 2 = done
     state: AtomicU8,
@@ -277,6 +278,7 @@ impl core::future::Future for CommandCompletion {
 }
 
 /// CommandQueue holds sender/receiver and completion slots
+#[derive(Debug)]
 pub struct CommandQueue {
     sender: BoundedSender<IommuCommand, DEFAULT_QUEUE_SIZE>,
     receiver: Mutex<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,

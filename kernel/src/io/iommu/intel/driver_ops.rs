@@ -81,7 +81,7 @@ impl IntelIommuDriver {
             return Err(IommuError::NotSupported);
         }
 
-        controller.allocate_irte(vector, dest_id, logical)
+        controller.allocate_irte(segment, bus, device, function, vector, dest_id, logical)
     }
 
     pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
@@ -126,6 +126,10 @@ impl IntelIommuDriver {
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
         }
+
+        // Security: Validate that the physical range does not overlap with the kernel image.
+        crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+
         Ok(())
     }
 
@@ -267,7 +271,13 @@ impl IntelIommuDriver {
             };
             match domain_arc.unmap(iova) {
                 Ok(mapping) => {
-                    let _ = controller.free_iova(iova, mapping.size);
+                    controller.invalidate_iotlb(0); // Domain 0 for DMA mappings
+                    if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
+                        // Quarantine full: Force a global IOTLB flush and try immediate free.
+                        // This is safe because we just performed a flush.
+                        let _ = self.invalidate_iotlb_global();
+                        let _ = controller.free_iova_fast(iova, mapping.size);
+                    }
                 }
                 Err(err) => {
                     last_err = Some(err);
@@ -405,7 +415,11 @@ impl IntelIommuDriver {
             controller.invalidate_iotlb(domain_id);
         }
 
-        let _ = controller.free_iova(iova, mapping.size);
+        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
+            // Quarantine full: Force global flush and immediate free
+            let _ = unsafe { controller.invalidate_iotlb_global() };
+            let _ = controller.free_iova_fast(iova, mapping.size);
+        }
         Ok(())
     }
 
@@ -450,7 +464,12 @@ impl IntelIommuDriver {
         } else {
             controller.invalidate_iotlb(domain_id);
         }
-        let _ = controller.free_iova(iova, mapping.size);
+        
+        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
+            // Quarantine full: Force global flush and immediate free
+            let _ = unsafe { controller.invalidate_iotlb_global() };
+            let _ = controller.free_iova_fast(iova, mapping.size);
+        }
         Ok(())
     }
 
@@ -543,5 +562,35 @@ impl IntelIommuDriver {
             }
         }
         Err(IommuError::DomainNotFound)
+    }
+
+    pub fn isolate_device(&self, device: DeviceId) -> Result<(), IommuError> {
+        let registry = self.registry()?;
+        let controller_idx = registry
+            .find_controller_index_for_device(
+                device.segment,
+                device.bus,
+                device.device,
+                device.function,
+            )
+            .unwrap_or(0);
+
+        if let Some(controller) = registry.controllers.get(controller_idx) {
+            // Disable context entry in hardware tables
+            let (need_invalidation, domain_id) =
+                controller.disable_device_context_entry(device.bus, device.device, device.function);
+
+            if need_invalidation {
+                // Perform necessary invalidations (IOTLB, context cache) and notify security
+                controller.perform_isolation_invalidation(
+                    device.requester_id(),
+                    domain_id,
+                    crate::io::iommu::security::IsolationReason::PolicyViolation,
+                );
+            }
+            Ok(())
+        } else {
+            Err(IommuError::HardwareError)
+        }
     }
 }

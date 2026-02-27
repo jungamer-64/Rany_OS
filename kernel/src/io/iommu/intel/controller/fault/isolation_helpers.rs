@@ -52,7 +52,7 @@ impl IommuController {
     ///
     /// Handles both normal and poisoned lock states.
     /// Returns `(need_invalidation, isolated_domain_id)`.
-    pub(super) fn disable_device_context_entry(
+    pub(crate) fn disable_device_context_entry(
         &self,
         bus: u8,
         dev: u8,
@@ -131,7 +131,7 @@ impl IommuController {
     }
 
     /// Perform cache invalidation and security notification after device isolation.
-    pub(super) fn perform_isolation_invalidation(
+    pub(crate) fn perform_isolation_invalidation(
         &self,
         sid: u16,
         isolated_domain_id: Option<u16>,

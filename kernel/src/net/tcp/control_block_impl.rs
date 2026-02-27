@@ -404,6 +404,13 @@ impl TcpControlBlock {
     ) {
         if let Some(backlog_lock) = &self.waiters.backlog {
             if let Ok(mut backlog) = backlog_lock.lock() {
+                // Security: Limit backlog size to prevent SYN flood memory exhaustion
+                const TCP_BACKLOG_LIMIT: usize = 128;
+                if backlog.len() >= TCP_BACKLOG_LIMIT {
+                    log::warn!("[NET] TCP Backlog full - dropping new connection");
+                    return;
+                }
+
                 backlog.push_back(TcpStream { tcb: tcb_arc.clone() });
                 if let Some(accept_waker) = &self.waiters.accept_waker {
                     accept_waker.wake();

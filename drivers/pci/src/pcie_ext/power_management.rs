@@ -272,9 +272,28 @@ impl HotPlugController {
         })
     }
 
-    /// ホットプラグがサポートされているか
+    /// ホットプラグがサポートされているか（スロットが実装されているか）
     pub fn is_supported(&self) -> bool {
         self.slot_implemented
+    }
+
+    /// スロットがホットプラグ可能か
+    pub fn is_hotplug_capable(&self) -> bool {
+        if !self.slot_implemented {
+            return false;
+        }
+
+        let Some(offset) = self.pcie_offset else {
+            return false;
+        };
+
+        // Slot Capabilities Register (offset 14h in PCIe capability)
+        // Bit 6: Hot-Plug Capable
+        let slot_caps = self
+            .config
+            .read32(self.bdf, offset as u16 + 0x14)
+            .unwrap_or(0);
+        (slot_caps & (1 << 6)) != 0
     }
 
     /// スロットステータスを読み取り

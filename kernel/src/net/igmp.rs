@@ -578,7 +578,7 @@ pub(crate) mod tests {
     pub fn test_igmp_checksum() {
         // IGMP message: Query for all groups
         let message = [0x11, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let checksum = compute_igmp_checksum(&message);
+        let _checksum = compute_igmp_checksum(&message);
         
         // Checksum of valid packet should be 0
         let mut valid_message = message;

@@ -8,6 +8,7 @@
 #![cfg_attr(test, test_runner(crate::test_runner))]
 #![reexport_test_harness_main = "test_main"]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), allow(unsafe_op_in_unsafe_fn))]
+#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(const_heap))]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(alloc_error_handler))]
 #![feature(format_args_nl)]

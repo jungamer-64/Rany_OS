@@ -150,12 +150,18 @@ pub fn register_page_table(phys: u64) {
     crate::io::log::early_print("[IOMMU] register_page_table: acquired registry lock\n");
     registry.entry(phys).or_insert(0);
     crate::io::log::early_print("[IOMMU] register_page_table: inserted entry\n");
+    
+    // Security: Mark the page table as protected from DMA
+    crate::io::iommu::security::register_protected_page(phys);
 }
 
 /// Unregister a page table's physical address from the global registry
 pub fn unregister_page_table(phys: u64) {
     let mut registry = ref_count_registry().lock();
     registry.remove(&phys);
+
+    // Security: Unregister from DMA protection
+    crate::io::iommu::security::unregister_protected_page(phys);
 }
 
 /// Increment reference count for a page table
@@ -186,6 +192,15 @@ pub fn get_ref_count(phys: u64) -> u16 {
     registry.get(&phys).copied().unwrap_or(0)
 }
 
+/// Check if a physical address is a registered IOMMU page table.
+///
+/// This is used by the security monitor to prevent devices from
+/// mapping and writing to the IOMMU's own page tables.
+pub fn is_page_table(phys: u64) -> bool {
+    let registry = ref_count_registry().lock();
+    registry.contains_key(&phys)
+}
+
 // ============================================================================
 // PooledPt - Owned page table with NUMA node
 // ============================================================================
@@ -194,6 +209,7 @@ pub fn get_ref_count(phys: u64) -> u16 {
 ///
 /// Contains the actual NUMA node where the page was allocated.
 /// This prevents cross-node mixing on release.
+#[derive(Debug)]
 pub struct PooledPt {
     /// Virtual pointer to the page table (512 entries)
     pub ptr: NonNull<SlPte>,
@@ -283,6 +299,7 @@ pub struct PoolStats {
 ///
 /// - `release()` never reallocates (capacity checked before push)
 /// - All vectors are pre-allocated with `with_capacity(max_per_node)`
+#[derive(Debug)]
 pub struct PageTablePool {
     /// Per-NUMA-node pools of recycled page tables
     pools: Vec<IrqMutex<Vec<PooledPt>>>,

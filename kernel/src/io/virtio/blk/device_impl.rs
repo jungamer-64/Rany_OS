@@ -41,10 +41,7 @@ impl VirtioBlkDevice {
     }
 
     /// Initialize the device
-    ///
-    /// # Safety
-    /// Caller must ensure MMIO address is valid
-    pub unsafe fn init(&mut self) -> Result<(), BlockError> {
+    pub fn init(&mut self) -> Result<(), BlockError> {
         // Step 1: Reset device
         self.transport.set_status(0);
 
@@ -172,18 +169,10 @@ impl VirtioBlkDevice {
         }
 
         let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
-        let _notify_addr = self.transport.get_notify_addr(queue_idx);
-        let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+        let _ = self.transport.get_notify_addr(queue_idx);
 
-        // Allocate queue memory (proper DMA allocation)
-        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
-        let avail_size = 6 + 2 * queue_size as usize; // flags + idx + ring + used_event
-        let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
-
-        // Align used ring per VirtIO requirements
-        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
-        let used_offset = align_up(desc_size + avail_size, used_align);
-        let total_size = used_offset + used_size;
+        // Standardized layout calculation
+        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         // We use Bidirectional as default, allowing device to read/write rings
@@ -212,7 +201,7 @@ impl VirtioBlkDevice {
         // Activate queue
         self.transport.enable_queue();
 
-        // Create VirtQueue instance with transport-provided notify address
+        // Create VirtQueue instance (safe because buffer ensures memory validity)
         let virtqueue = unsafe {
             VirtQueue::new(
                 queue_size,
@@ -220,7 +209,7 @@ impl VirtioBlkDevice {
                 avail_ring,
                 used_ring,
                 Some(buffer),
-                queue_idx, // Index
+                queue_idx,
                 self.features,
             )
         };
@@ -444,7 +433,7 @@ impl VirtioBlkDevice {
         } else {
             let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
             unsafe {
-                let desc_table = queue_guard.desc_table.as_ptr();
+                let desc_table = queue_guard.desc_table_ptr();
                 (*desc_table.add(desc0 as usize)) = VringDesc {
                     addr: req_dma.header_phys,
                     len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
@@ -555,7 +544,7 @@ impl VirtioBlkDevice {
             let (desc0, desc1, desc2) = Self::alloc_three_descriptors(&queue_guard)?;
 
             unsafe {
-                let desc_table = queue_guard.desc_table.as_ptr();
+                let desc_table = queue_guard.desc_table_ptr();
 
                 // Descriptor 0: Header (device reads from DMA memory)
                 (*desc_table.add(desc0 as usize)) = VringDesc {
@@ -654,7 +643,7 @@ impl VirtioBlkDevice {
             })?;
 
             unsafe {
-                let desc_table = queue_guard.desc_table.as_ptr();
+                let desc_table = queue_guard.desc_table_ptr();
 
                 // Descriptor 0: Header (device reads from DMA memory)
                 (*desc_table.add(desc0 as usize)) = VringDesc {

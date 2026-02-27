@@ -539,31 +539,17 @@ impl<T> DmaHandle<T> {
     ///
     /// For domain-managed mappings, use `unmap_with_domain` instead.
     ///
-    /// # Performance Note
+    /// # Security Note
     ///
-    /// This method performs **synchronous** IOTLB invalidation, which blocks
-    /// until hardware completion (typically several microseconds). For high-
-    /// throughput paths, prefer `unmap_async()` or `try_unmap_lazy()` if you
-    /// have domain context.
+    /// This method performs **synchronous** IOTLB invalidation by default to
+    /// prevent DMA-after-free vulnerabilities where the returned `RRef<T>`
+    /// could be reused before the IOMMU translation is fully invalidated.
     ///
-    /// See module documentation for planned API evolution toward async-first design.
-    ///
-    /// # Async-First Mode
-    ///
-    /// When the `async_unmap_default` feature is enabled, this method internally
-    /// uses lazy unmap via the quarantine system, deferring IOTLB invalidation
-    /// for better throughput. Use `unmap_sync()` if you need immediate completion.
+    /// For background cleanup of leaked handles, `Drop` uses the asynchronous
+    /// zombie queue.
     pub fn unmap(self) -> Result<RRef<T>, UnmapError<T>> {
         if self.rref.is_none() {
             return Err(UnmapError::new(self, UnmapErrorKind::InvalidIova));
-        }
-
-        // With async_unmap_default feature, use lazy unmap for non-identity mappings
-        #[cfg(feature = "async_unmap_default")]
-        {
-            if !matches!(self.mapping, MappingKind::Identity) {
-                return self.unmap_lazy_internal();
-            }
         }
 
         self.unmap_sync_internal()

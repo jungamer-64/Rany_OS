@@ -207,8 +207,16 @@ impl CellRegistry {
     pub fn unload(&mut self, id: CellId) -> Option<CellEntry> {
         if let Some(entry) = self.cells.remove(&id) {
             // シンボルテーブルからエクスポートを削除
-            for (symbol, _) in &entry.exports {
-                self.symbol_table.remove(symbol);
+            let live_update_shadow_involved = entry.name.starts_with("update-")
+                || self.cells.values().any(|cell| cell.name.starts_with("update-"));
+            if live_update_shadow_involved {
+                crate::io::log::early_print(
+                    "[LDBG] registry.unload: live-update shadow involved, skip symtab remove\n",
+                );
+            } else {
+                for (symbol, _) in &entry.exports {
+                    self.symbol_table.remove(symbol);
+                }
             }
             Some(entry)
         } else {
@@ -651,6 +659,11 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
         id.as_u64(),
         old_epoch
     );
+
+    // Unload runs outside the code being reclaimed; mark the current core as
+    // quiescent before waiting so we don't self-deadlock if the caller forgot
+    // to exit a live-update critical section.
+    live_update::enter_quiescent_state();
 
     // 全コアがQuiescent Stateに到達するまで待機
     live_update::wait_for_quiescent_state(old_epoch);

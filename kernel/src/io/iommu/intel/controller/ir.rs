@@ -30,28 +30,33 @@ impl InterruptRemapEntry {
         Self { lo: 0, hi: 0 }
     }
 
-    pub fn fixed(vector: u8, dest_id: u32, logical: bool, _redacted: bool) -> Self {
+    pub fn fixed(
+        vector: u8,
+        dest_id: u32,
+        logical: bool,
+        sid: Option<u16>, // RID/BDF
+    ) -> Self {
         // P=1 (bit 0)
         let mut lo = 1;
         // DM (bit 2)
         if logical {
             lo |= 1 << 2;
         }
-        // DestID (bits 32-63) - assuming xAPIC/x2APIC format
-        lo |= (dest_id as u64) << 32;
-        // Note: Vector might be in data field for Posted Interrupts, but for Remapping
-        // the index implies the vector if using certain modes, or vector is in lo/hi?
-        // VT-d spec:
-        // Lower 64:
-        // 16-47: Destination ID
-        // 48-63: Vector ?? (Reserved/Avail?)
-        // Actually for Remapped Interrupts, the Vector is provided by the device (Message Data)
-        // OR remapped here.
-        // Bit 23 of 'lo' in x2APIC mode?
-        // We'll store vector in top of lo for now to preserve it.
+        // Vector (bits 16-23)
         lo |= (vector as u64) << 16;
+        // DestID (bits 32-63)
+        lo |= (dest_id as u64) << 32;
 
-        Self { lo, hi: 0 }
+        let mut hi = 0;
+        if let Some(rid) = sid {
+            // SVT=1 (Source Validation Type: Verify SID) - bits 64-65 of IRTE (bits 0-1 of hi)
+            hi |= 1;
+            // SQ=0 (Source-id Qualifier: Exact match) - bits 66-67 of IRTE (bits 2-3 of hi)
+            // SID (Source ID) - bits 80-95 of IRTE (bits 16-31 of hi)
+            hi |= (rid as u64) << 16;
+        }
+
+        Self { lo, hi }
     }
 
     pub fn posted(pid_addr: u64) -> Self {
@@ -142,7 +147,16 @@ pub trait InterruptRemapper {
     /// Check if interrupt remapping is enabled
     fn is_interrupt_remapping_enabled(&self) -> bool;
     /// Allocate an IRTE for a device interrupt
-    fn allocate_irte(&self, vector: u8, dest_id: u32, logical: bool) -> Result<u16, IommuError>;
+    fn allocate_irte(
+        &self,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+        vector: u8,
+        dest_id: u32,
+        logical: bool,
+    ) -> Result<u16, IommuError>;
     /// Free an IRTE
     fn free_irte(&self, index: u16) -> Result<(), IommuError>;
     /// Update an existing IRTE
@@ -302,7 +316,16 @@ impl InterruptRemapper for IommuController {
     }
 
     /// Allocate an IRTE for a device interrupt
-    fn allocate_irte(&self, vector: u8, dest_id: u32, logical: bool) -> Result<u16, IommuError> {
+    fn allocate_irte(
+        &self,
+        _segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+        vector: u8,
+        dest_id: u32,
+        logical: bool,
+    ) -> Result<u16, IommuError> {
         let mut guard = self
             .interrupt_remap_table
             .lock()
@@ -311,7 +334,8 @@ impl InterruptRemapper for IommuController {
 
         let index = irt.allocate().ok_or(IommuError::HardwareError)?;
 
-        let entry = InterruptRemapEntry::fixed(vector, dest_id, logical, false);
+        let rid = ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16);
+        let entry = InterruptRemapEntry::fixed(vector, dest_id, logical, Some(rid));
         irt.set(index, entry);
 
         Ok(index)

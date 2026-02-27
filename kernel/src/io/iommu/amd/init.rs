@@ -264,6 +264,9 @@ pub unsafe fn init_iommu_from_ivrs(
         return Err(IommuError::NotPresent);
     }
 
+    // Initialize security subsystem (protected regions like APIC)
+    crate::io::iommu::security::init();
+
     let ivrs_info = match unsafe { crate::io::acpi::ivrs::parse_ivrs(ivrs_addr) } {
         Ok(info) => info,
         Err(e) => {
@@ -275,6 +278,15 @@ pub unsafe fn init_iommu_from_ivrs(
     let units = collect_ivhd_units(&ivrs_info);
     if units.is_empty() {
         return Err(IommuError::NotPresent);
+    }
+
+    // Security: Register IOMMU register ranges as protected
+    for unit in &units {
+        crate::io::iommu::security::register_protected_region(
+            unit.base_addr,
+            0x10000, // AMD-Vi registers are 64KB
+            "AMD-Vi IOMMU",
+        );
     }
 
     let ivmd_ranges = collect_ivmd_ranges(&ivrs_info);

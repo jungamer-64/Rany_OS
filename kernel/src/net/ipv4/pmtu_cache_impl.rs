@@ -221,6 +221,33 @@ impl FragmentBuffer {
             self.data.resize(fragment_end as usize, 0);
         }
 
+        // Security: Check for inconsistent overlaps (RFC 1858 / RFC 3128)
+        // If this fragment overlaps with data we already have, it MUST be identical.
+        // We use a simple bitset or just check against existing data if it's not a hole.
+        let mut overlap_checked = false;
+        for hole in &self.holes {
+            if fragment_offset >= hole.first && fragment_end <= hole.last {
+                // Completely within a hole, no overlap with existing data
+                overlap_checked = true;
+                break;
+            }
+        }
+
+        if !overlap_checked {
+            // Potential overlap with existing data. Check consistency.
+            // (Note: This is a simplified check. A full check would track exactly which
+            // bytes have been written. Here we check against current buffer content
+            // which is initialized to 0, but could contain previous fragments.)
+            for i in 0..fragment_len as usize {
+                let pos = fragment_offset as usize + i;
+                let is_in_hole = self.holes.iter().any(|h| pos >= h.first as usize && pos < h.last as usize);
+                if !is_in_hole && self.data[pos] != payload[i] {
+                    // Inconsistent overlap detected - SECURITY RISK (NIDS evasion)
+                    return false;
+                }
+            }
+        }
+
         // Copy fragment data
         self.data[fragment_offset as usize..fragment_end as usize].copy_from_slice(payload);
 

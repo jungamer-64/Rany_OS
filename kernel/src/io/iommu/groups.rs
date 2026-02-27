@@ -8,8 +8,7 @@
 //! ACS (Access Control Services) 対応ブリッジによるデバイス分離を検出し、
 //! 分離不可能なデバイス群を同一IOMMUドメインに割り当てる。
 
-use crate::io::iommu::intel::controller::dma::DomainManager;
-use crate::io::iommu::intel::controller::IommuController;
+use crate::io::iommu::IommuBackend;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::types::{IommuGroup, IommuGroupId};
 use crate::sync::PoisonLock;
@@ -117,7 +116,7 @@ impl IommuGroupManager {
     ///
     /// # Arguments
     /// * `device` - グルーピング対象のPCI DeviceId。
-    /// * `controller` - デバイスを管理するIOMMUコントローラ。
+    /// * `backend` - IOMMUバックエンドドライバ。
     /// * `controller_idx` - コントローラのインデックス (グループ構造体に格納)。
     /// * `topology` - PCIeトポロジー問い合わせプロバイダ。
     ///
@@ -126,9 +125,10 @@ impl IommuGroupManager {
     pub fn find_or_create_group<P: PciTopologyProvider>(
         &self,
         device: DeviceId,
-        controller: &IommuController,
+        backend: &IommuBackend,
         controller_idx: usize,
         topology: &P,
+        domain_type: IommuDomainType,
     ) -> Result<(IommuGroup, bool), IommuError> {
         let mut groups_guard = self.groups.lock().map_err(|_| IommuError::Poisoned)?;
         let mut device_to_group_guard = self
@@ -148,6 +148,18 @@ impl IommuGroupManager {
                         controller_idx
                     );
                     return Err(IommuError::HardwareError);
+                }
+                // Check if the domain type matches
+                let domain = backend.get_domain(group.domain_id)?;
+                if domain.domain_type() != domain_type {
+                    log::warn!(
+                        "[IOMMU] Domain type mismatch for group {:?} (device {:?}): existing={:?} requested={:?}",
+                        group_id,
+                        device,
+                        domain.domain_type(),
+                        domain_type
+                    );
+                    // Use existing domain type (group policy takes precedence)
                 }
                 return Ok((group.clone(), false));
             }
@@ -173,7 +185,7 @@ impl IommuGroupManager {
         }
 
         // 4. 新しいIOMMUグループを作成してドメインを割当
-        let domain_id = controller.create_domain(None, IommuDomainType::Translated)?;
+        let domain_id = backend.create_domain(None, domain_type)?;
         let new_group = IommuGroup {
             id: group_id,
             domain_id,
@@ -184,9 +196,10 @@ impl IommuGroupManager {
         device_to_group_guard.insert(device, group_id);
 
         log::info!(
-            "[IOMMU] Created new group {:?} with domain {} for device {:?}",
+            "[IOMMU] Created new group {:?} with domain {} ({:?}) for device {:?}",
             group_id,
             domain_id,
+            domain_type,
             device
         );
 

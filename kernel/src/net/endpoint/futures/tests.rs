@@ -174,7 +174,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket() {
     stack::init_default();
 
     let sock = create_tcp_socket();
-    let fd = sock.fd();
+    let _fd = sock.fd();
     let local = SocketAddr::new([127, 0, 0, 1], 12345);
     let remote = SocketAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
@@ -253,7 +253,7 @@ pub fn test_recv_packet_zero_copy_via_owned_socket_v6() {
     stack::init_default();
 
     let sock = create_tcp_socket();
-    let fd = sock.fd();
+    let _fd = sock.fd();
     let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
     let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
     if let Some(s) = sock.socket() {
@@ -329,7 +329,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     stack::init_default();
 
     let sock = create_tcp_socket();
-    let fd = sock.fd();
+    let _fd = sock.fd();
     let local = SocketAddr::new([127, 0, 0, 1], 12345);
     let remote = SocketAddr::new([127, 0, 0, 1], 80);
     if let Some(s) = sock.socket() {
@@ -419,7 +419,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     stack::init_default();
 
     let sock = create_tcp_socket();
-    let fd = sock.fd();
+    let _fd = sock.fd();
     let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
     let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
     if let Some(s) = sock.socket() {
@@ -509,7 +509,7 @@ pub fn test_udp_packet_stream_delivered() {
     // Use a UdpProcessor instance and bind a socket to a port
     let proc = crate::net::udp::UdpProcessor::new();
     let port = 40000u16;
-    let u = proc.bind_with_token(port, None).expect("bind failed");
+    let _u = proc.bind_with_token(port, None).expect("bind failed");
 
     // Create an OwnedSocket and attach the UdpSocket instance to its inner state
     let sock = create_udp_socket();

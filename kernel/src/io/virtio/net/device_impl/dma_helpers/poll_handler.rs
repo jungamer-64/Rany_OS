@@ -70,7 +70,7 @@ impl VirtioNetPollHandler {
 
     /// RX リクエストを追加
     pub fn add_pending_rx(&self, id: IoRequestId, desc_id: u16, requested_bytes: usize) {
-        self.pending_rx.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        self.pending_rx.lock().expect("lock poisoned").insert(
             desc_id,
             PendingNetRequest {
                 io_id: id,
@@ -81,7 +81,7 @@ impl VirtioNetPollHandler {
 
     /// TX リクエストを追加
     pub fn add_pending_tx(&self, id: IoRequestId, desc_id: u16, requested_bytes: usize) {
-        self.pending_tx.lock().unwrap_or_else(|e| e.into_inner()).insert(
+        self.pending_tx.lock().expect("lock poisoned").insert(
             desc_id,
             PendingNetRequest {
                 io_id: id,
@@ -93,7 +93,7 @@ impl VirtioNetPollHandler {
     /// IRQパス向けに pending RX を取り出して削除
     pub fn take_pending_rx(&self, desc_id: u16) -> Option<(IoRequestId, usize)> {
         self.pending_rx
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock().expect("lock poisoned")
             .remove(&desc_id)
             .map(|req| (req.io_id, req.requested_bytes))
     }
@@ -101,7 +101,7 @@ impl VirtioNetPollHandler {
     /// IRQパス向けに pending TX を取り出して削除
     pub fn take_pending_tx(&self, desc_id: u16) -> Option<(IoRequestId, usize)> {
         self.pending_tx
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock().expect("lock poisoned")
             .remove(&desc_id)
             .map(|req| (req.io_id, req.requested_bytes))
     }
@@ -111,7 +111,7 @@ impl VirtioNetPollHandler {
         rx_queue: &NetVirtQueue,
         desc_id: u16,
     ) -> Option<(IoRequestId, IoResult)> {
-        let pending = self.pending_rx.lock().unwrap_or_else(|e| e.into_inner()).remove(&desc_id);
+        let pending = self.pending_rx.lock().expect("lock poisoned").remove(&desc_id);
         let Some(req) = pending else { return None };
 
         let completion_len = match rx_queue.take_completion(desc_id) {
@@ -140,7 +140,7 @@ impl VirtioNetPollHandler {
         tx_queue: &NetVirtQueue,
         desc_id: u16,
     ) -> Option<(IoRequestId, IoResult)> {
-        let pending = self.pending_tx.lock().unwrap_or_else(|e| e.into_inner()).remove(&desc_id);
+        let pending = self.pending_tx.lock().expect("lock poisoned").remove(&desc_id);
         let Some(req) = pending else { return None };
 
         if tx_queue.take_completion(desc_id).is_none() {
@@ -167,7 +167,7 @@ impl VirtioNetPollHandler {
         let q_idx = rx_queue
             .vq
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("lock poisoned")
             .index() as usize;
         device.handle_legacy_rx_completion(rx_queue, q_idx, desc_id, len)
     }
@@ -182,7 +182,7 @@ impl VirtioNetPollHandler {
         let q_idx = tx_queue
             .vq
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("lock poisoned")
             .index() as usize;
         device.handle_legacy_tx_completion(tx_queue, q_idx, desc_id, len)
     }
@@ -207,12 +207,12 @@ impl VirtioNetPollHandler {
 
     #[cfg(test)]
     pub fn pending_rx_len(&self) -> usize {
-        self.pending_rx.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.pending_rx.lock().expect("lock poisoned").len()
     }
 
     #[cfg(test)]
     pub fn pending_tx_len(&self) -> usize {
-        self.pending_tx.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.pending_tx.lock().expect("lock poisoned").len()
     }
 }
 

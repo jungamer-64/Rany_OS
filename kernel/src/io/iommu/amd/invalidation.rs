@@ -79,6 +79,7 @@ impl AmdCommandWaitToken {
 // AmdCommandState
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub(crate) struct AmdCommandState {
     pub(super) buffer: cmd::AmdCommandBuffer,
     pub(super) sync_ptr: NonNull<u64>,

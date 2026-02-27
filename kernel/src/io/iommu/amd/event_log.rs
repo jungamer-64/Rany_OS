@@ -48,6 +48,7 @@ impl AmdEventEntry {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct AmdEventLog {
     phys_base: u64,
     virt_base: NonNull<u32>,

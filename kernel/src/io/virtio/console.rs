@@ -17,7 +17,6 @@
 
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::util::align_up_usize as align_up;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -26,7 +25,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::io::virtio::virtqueue::*;
 use core::task::Waker;
 use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 // ============================================================================
 // VirtIO Common Definitions
@@ -115,21 +114,22 @@ const RX_BUFFER_COUNT: usize = 16;
 const RX_BUFFER_SIZE: usize = 4096;
 
 /// VirtIO console device driver
+#[derive(Debug)]
 pub struct VirtioConsoleDevice {
     /// Transport layer (MMIO or PCI)
     transport: Box<dyn VirtioTransport>,
     /// Device configuration
     config: VirtioConsoleConfig,
     /// Receive queue (queue 0)
-    rx_queue: Option<Arc<Mutex<VirtQueue>>>,
+    rx_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// Transmit queue (queue 1)
-    tx_queue: Option<Arc<Mutex<VirtQueue>>>,
+    tx_queue: Option<Arc<PoisonLock<VirtQueue>>>,
     /// Pre-posted RX DMA buffers keyed by descriptor index
-    rx_buffers: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
+    rx_buffers: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
     /// TX DMA buffers awaiting completion keyed by descriptor index
-    tx_inflight: Mutex<BTreeMap<u16, CoherentDmaBuffer>>,
+    tx_inflight: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
     /// Pending wakers for async notification
-    pending_wakers: Mutex<BTreeMap<usize, Waker>>,
+    pending_wakers: PoisonLock<BTreeMap<usize, Waker>>,
     /// Device ready flag
     ready: AtomicBool,
     /// Optional IOMMU device identifier for device-scoped mappings
@@ -167,9 +167,9 @@ impl VirtioConsoleDevice {
             config: VirtioConsoleConfig::default(),
             rx_queue: None,
             tx_queue: None,
-            rx_buffers: Mutex::new(BTreeMap::new()),
-            tx_inflight: Mutex::new(BTreeMap::new()),
-            pending_wakers: Mutex::new(BTreeMap::new()),
+            rx_buffers: PoisonLock::new(BTreeMap::new()),
+            tx_inflight: PoisonLock::new(BTreeMap::new()),
+            pending_wakers: PoisonLock::new(BTreeMap::new()),
             ready: AtomicBool::new(false),
             iommu_device_id,
             features: 0,
@@ -177,10 +177,7 @@ impl VirtioConsoleDevice {
     }
 
     /// Initialize the device following the VirtIO initialization sequence.
-    ///
-    /// # Safety
-    /// Caller must ensure MMIO address is valid and device exists.
-    pub unsafe fn init(&mut self) -> Result<(), ConsoleError> {
+    pub fn init(&mut self) -> Result<(), ConsoleError> {
         // Step 1: Reset device
         self.transport.set_status(0);
 
@@ -272,15 +269,8 @@ impl VirtioConsoleDevice {
         let _notify_addr = self.transport.get_notify_addr(queue_idx);
         let _notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
-        // Allocate queue memory (proper DMA allocation)
-        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
-        let avail_size = 6 + 2 * queue_size as usize; // flags + idx + ring + used_event
-        let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
-
-        // Align used ring per VirtIO requirements
-        let used_align = 4usize; // VirtIO spec: used ring must be aligned to 4 bytes
-        let used_offset = align_up(desc_size + avail_size, used_align);
-        let total_size = used_offset + used_size;
+        // Standardized layout calculation
+        let (desc_size, _avail_size, used_offset, total_size) = VirtQueue::calculate_layout(queue_size);
 
         // Use CoherentDmaBuffer for shared queue memory (IOMMU-aware)
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -308,7 +298,6 @@ impl VirtioConsoleDevice {
         // Activate queue
         self.transport.enable_queue();
 
-        // Create VirtQueue instance with transport-provided notify address
         let virtqueue = unsafe {
             VirtQueue::new(
                 queue_size,
@@ -321,7 +310,7 @@ impl VirtioConsoleDevice {
             )
         };
 
-        let queue_arc = Arc::new(Mutex::new(virtqueue));
+        let queue_arc = Arc::new(PoisonLock::new(virtqueue));
 
         if queue_idx == 0 {
             self.rx_queue = Some(queue_arc);
@@ -337,7 +326,7 @@ impl VirtioConsoleDevice {
     /// RX_BUFFER_SIZE bytes each.
     fn post_rx_buffers(&self) -> Result<(), ConsoleError> {
         let rx_queue = self.rx_queue.as_ref().ok_or(ConsoleError::NotReady)?;
-        let mut queue_guard = rx_queue.lock();
+        let mut queue_guard = rx_queue.lock().expect("rx_queue lock poisoned");
 
         for _ in 0..RX_BUFFER_COUNT {
             let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -353,7 +342,8 @@ impl VirtioConsoleDevice {
 
             // Configure descriptor: device writes into this buffer
             unsafe {
-                (*queue_guard.desc_table.as_ptr().add(desc_idx as usize)) = VringDesc {
+                let desc_table = queue_guard.desc_table_ptr();
+                (*desc_table.add(desc_idx as usize)) = VringDesc {
                     addr: phys_addr,
                     len: RX_BUFFER_SIZE as u32,
                     flags: vring_flags::VRING_DESC_F_WRITE,
@@ -365,7 +355,7 @@ impl VirtioConsoleDevice {
             }
 
             // Track the DMA buffer
-            self.rx_buffers.lock().insert(desc_idx, buffer);
+            self.rx_buffers.lock().expect("rx_buffers lock poisoned").insert(desc_idx, buffer);
         }
 
         // Notify device that RX buffers are available
@@ -388,7 +378,7 @@ impl VirtioConsoleDevice {
         }
 
         let tx_queue = self.tx_queue.as_ref().ok_or(ConsoleError::NotReady)?;
-        let mut queue_guard = tx_queue.lock();
+        let mut queue_guard = tx_queue.lock().expect("tx_queue lock poisoned");
 
         // Allocate a DMA buffer and copy the data (IOMMU-aware)
         let mut buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
@@ -409,7 +399,8 @@ impl VirtioConsoleDevice {
 
         // Configure descriptor: device reads from this buffer
         unsafe {
-            (*queue_guard.desc_table.as_ptr().add(desc_idx as usize)) = VringDesc {
+            let desc_table = queue_guard.desc_table_ptr();
+            (*desc_table.add(desc_idx as usize)) = VringDesc {
                 addr: phys_addr,
                 len: data.len() as u32,
                 flags: 0, // Device reads (no WRITE flag)
@@ -421,7 +412,7 @@ impl VirtioConsoleDevice {
         }
 
         // Track the inflight TX buffer
-        self.tx_inflight.lock().insert(desc_idx, buffer);
+        self.tx_inflight.lock().expect("tx_inflight lock poisoned").insert(desc_idx, buffer);
 
         // Notify device
         queue_guard.notify(&*self.transport);
@@ -435,13 +426,13 @@ impl VirtioConsoleDevice {
     /// After reading, reposts a fresh RX buffer to the queue.
     pub fn read_bytes(&self) -> Option<Vec<u8>> {
         let rx_queue = self.rx_queue.as_ref()?;
-        let mut queue_guard = rx_queue.lock();
+        let mut queue_guard = rx_queue.lock().expect("rx_queue lock poisoned");
 
         // Poll for a completed RX buffer
         let (desc_id, len) = queue_guard.poll_completion()?;
 
         // Extract the DMA buffer
-        let buffer = self.rx_buffers.lock().remove(&desc_id)?;
+        let buffer = self.rx_buffers.lock().expect("rx_buffers lock poisoned").remove(&desc_id)?;
 
         // Copy received data out
         let received_len = len as usize;
@@ -468,7 +459,8 @@ impl VirtioConsoleDevice {
             let phys_addr = new_buffer.device_addr();
             if let Some(new_desc) = queue_guard.alloc_desc() {
                 unsafe {
-                    (*queue_guard.desc_table.as_ptr().add(new_desc as usize)) = VringDesc {
+                    let desc_table = queue_guard.desc_table_ptr();
+                    (*desc_table.add(new_desc as usize)) = VringDesc {
                         addr: phys_addr,
                         len: RX_BUFFER_SIZE as u32,
                         flags: vring_flags::VRING_DESC_F_WRITE,
@@ -476,7 +468,7 @@ impl VirtioConsoleDevice {
                     };
                     queue_guard.submit(new_desc);
                 }
-                self.rx_buffers.lock().insert(new_desc, new_buffer);
+                self.rx_buffers.lock().expect("rx_buffers lock poisoned").insert(new_desc, new_buffer);
                 queue_guard.notify(&*self.transport);
             }
         }
@@ -498,10 +490,10 @@ impl VirtioConsoleDevice {
 
     fn process_tx_completions(&self) {
         if let Some(ref tx_queue) = self.tx_queue {
-            let mut queue_guard = tx_queue.lock();
+            let mut queue_guard = tx_queue.lock().expect("tx_queue lock poisoned");
             while let Some((desc_id, _len)) = queue_guard.poll_completion() {
                 // Free the inflight DMA buffer
-                if let Some(_buf) = self.tx_inflight.lock().remove(&desc_id) {
+                if let Some(_buf) = self.tx_inflight.lock().expect("tx_inflight lock poisoned").remove(&desc_id) {
                     // Buffer dropped here, freeing the DMA allocation
                 }
 
@@ -510,7 +502,7 @@ impl VirtioConsoleDevice {
 
                 // Wake pending future
                 let waker_idx = VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
-                let mut wakers = self.pending_wakers.lock();
+                let mut wakers = self.pending_wakers.lock().expect("pending_wakers lock poisoned");
                 if let Some(waker) = wakers.remove(&waker_idx) {
                     waker.wake();
                 }
@@ -522,14 +514,12 @@ impl VirtioConsoleDevice {
         // Note: RX completions are typically consumed via read_bytes(), but
         // we also wake any async waiters here so they can poll.
         if let Some(ref rx_queue) = self.rx_queue {
-            let queue_guard = rx_queue.lock();
+            let queue_guard = rx_queue.lock().expect("rx_queue lock poisoned");
             // Peek: check if there are pending completions without consuming them,
             // since read_bytes() will consume them. We just wake the waiters.
-            let last_used = queue_guard.last_used_idx.load(Ordering::Acquire);
-            let used_idx = unsafe { (*queue_guard.used_ring.as_ptr()).idx } as u32;
-            if last_used != used_idx {
+            if queue_guard.has_pending() {
                 // There are unprocessed RX completions - wake waiters
-                let mut wakers = self.pending_wakers.lock();
+                let mut wakers = self.pending_wakers.lock().expect("pending_wakers lock poisoned");
                 wakers.retain(|&idx, waker| {
                     if idx < VIRTQUEUE_MAX_SIZE as usize {
                         waker.wake_by_ref();

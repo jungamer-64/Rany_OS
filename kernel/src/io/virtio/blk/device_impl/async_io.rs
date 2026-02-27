@@ -28,7 +28,7 @@ pub(crate) fn poll_for_completion(
     desc_id: u16,
 ) -> Option<(u16, u32)> {
     let queue = &device.queues[queue_idx];
-    let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queue_guard = queue.lock().expect("virtqueue lock poisoned");
     let mut target = None;
     while let Some((completed_id, len)) = queue_guard.poll_completion() {
         device.process_completion_entry(&*queue_guard, queue_idx, completed_id, len);
@@ -142,7 +142,7 @@ pub(crate) fn register_desc_waker(
     waker: &core::task::Waker,
 ) {
     if let Some(queue_wakers) = device.pending_wakers.get(queue_idx) {
-        let mut wakers = queue_wakers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut wakers = queue_wakers.lock().expect("pending_wakers lock poisoned");
         if let Some(slot) = wakers.get_mut(desc_id as usize) {
             *slot = Some(waker.clone());
         }
@@ -182,7 +182,7 @@ impl<'a> Future for DmaReadFuture<'a> {
 
         if let Some(desc_id) = self.desc_id {
             let queue = &self.device.queues[self.queue_idx];
-            let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
+            let mut queue_guard = queue.lock().expect("virtqueue lock poisoned");
 
             let mut is_completed = false;
             while let Some((completed_id, len)) = queue_guard.poll_completion() {
@@ -238,7 +238,7 @@ impl<'a> Future for DmaWriteFuture<'a> {
 
         if let Some(desc_id) = self.desc_id {
             let queue = &self.device.queues[self.queue_idx];
-            let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
+            let mut queue_guard = queue.lock().expect("virtqueue lock poisoned");
 
             let mut is_completed = false;
             while let Some((completed_id, len)) = queue_guard.poll_completion() {
@@ -566,7 +566,7 @@ pub(crate) static VIRTIO_BLK_DEVICES: spin::RwLock<alloc::collections::BTreeMap<
 
 fn install_virtio_blk_device(index: u8, device_arc: Arc<VirtioBlkDevice>) {
     if index == 0 {
-        *VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+        *VIRTIO_BLK_DEVICE.lock().expect("VIRTIO_BLK_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_BLK_DEVICES.write().insert(index, device_arc);
     }
@@ -575,7 +575,7 @@ fn install_virtio_blk_device(index: u8, device_arc: Arc<VirtioBlkDevice>) {
 /// Get a shared reference to the VirtIO block device by index.
 pub fn get_virtio_blk_device_at_index(index: u8) -> Option<Arc<VirtioBlkDevice>> {
     if index == 0 {
-     let device_guard = VIRTIO_BLK_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+     let device_guard = VIRTIO_BLK_DEVICE.lock().expect("VIRTIO_BLK_DEVICE lock poisoned");
      device_guard.clone()
     } else {
         VIRTIO_BLK_DEVICES.read().get(&index).cloned()
@@ -588,7 +588,7 @@ pub unsafe fn init_virtio_blk_at_index(index: u8, mmio_base: u64) -> Result<(), 
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
     };
     let mut dev = VirtioBlkDevice::new(Box::new(transport));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 
@@ -621,7 +621,7 @@ pub unsafe fn init_virtio_blk_for_device_at_index(
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
     };
     let mut dev = VirtioBlkDevice::new_with_device(Box::new(transport), Some(device));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 
@@ -654,7 +654,7 @@ pub unsafe fn init_virtio_blk_with_transport_at_index(
     iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), BlockError> {
     let mut dev = VirtioBlkDevice::new_with_device(transport, iommu_device_id);
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 

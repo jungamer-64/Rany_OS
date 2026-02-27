@@ -62,7 +62,7 @@ pub type TransportResult<T> = Result<T, TransportError>;
 ///
 /// MMIOとPCIの両方のトランスポートを抽象化する。
 /// デバイスドライバはこのトレイトを通じてVirtIOデバイスにアクセスする。
-pub trait VirtioTransport: Send + Sync {
+pub trait VirtioTransport: Send + Sync + core::fmt::Debug {
     /// デバイスタイプを取得
     fn device_type(&self) -> VirtioDeviceType;
 
@@ -228,6 +228,7 @@ mod mmio_regs {
 }
 
 /// VirtIO MMIO トランスポート
+#[derive(Debug)]
 pub struct VirtioMmioTransport {
     /// MMIOベースアドレス
     base: usize,
@@ -450,6 +451,7 @@ mod pci_common_cfg {
 }
 
 /// VirtIO PCI トランスポート (Modern)
+#[derive(Debug)]
 pub struct VirtioPciTransport {
     /// BDF (Bus/Device/Function) アドレス
     bdf: u32,

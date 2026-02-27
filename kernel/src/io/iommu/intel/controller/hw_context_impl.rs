@@ -41,6 +41,7 @@ impl IommuHardwareContext for IommuController {
             IovaManager::free_iova(self, iova, size)
         }
     }
+
 }
 
 // ============================================================================
@@ -49,7 +50,9 @@ impl IommuHardwareContext for IommuController {
 
 pub struct InvalidationWaiter<'a> {
     pub(crate) controller: &'a IommuController,
-    pub(crate) submit_result: Result<u64, IommuError>,
+    pub(crate) submit_result: Result<(), IommuError>,
+    pub(crate) status_virt: usize,
+    pub(crate) expected_data: u32,
 }
 
 impl<'a> Future for InvalidationWaiter<'a> {
@@ -58,12 +61,17 @@ impl<'a> Future for InvalidationWaiter<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.submit_result {
             Err(e) => return Poll::Ready(Err(e)),
-            Ok(expected_tail) => {
-                let head = self.controller.read64(IQH) >> 4;
-                if head == expected_tail {
+            Ok(()) => {
+                let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
+                if status == self.expected_data {
                     return Poll::Ready(Ok(()));
                 }
                 self.controller.pending_waiters.register(cx.waker());
+                // Double check after registration to avoid lost wakeups
+                let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
+                if status == self.expected_data {
+                    return Poll::Ready(Ok(()));
+                }
                 Poll::Pending
             }
         }

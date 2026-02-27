@@ -207,6 +207,7 @@ pub struct NetVirtQueueInner {
 }
 
 /// ネットワーク VirtQueue
+#[derive(Debug)]
 pub struct NetVirtQueue {
     /// VirtQueue core implementation (descriptor management, etc.)
     pub vq: IrqPoisonLock<VirtQueue>,
@@ -231,6 +232,7 @@ pub struct NetVirtQueue {
 unsafe impl Send for NetVirtQueue {}
 unsafe impl Sync for NetVirtQueue {}
 
+#[derive(Debug)]
 pub struct IommuMapping {
     device: Option<IommuDeviceId>,
     iova: u64,

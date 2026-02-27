@@ -42,6 +42,7 @@ use core::mem::MaybeUninit;
 /// The structure is aligned to 64 bytes (typical cache line size) to prevent
 /// false sharing when multiple CPUs access their respective magazines.
 #[repr(C, align(64))]
+#[derive(Debug)]
 pub struct Magazine<T: Copy, const N: usize> {
     /// Storage for cached elements (stack-like, top at count-1)
     /// Using MaybeUninit to avoid requiring Default trait

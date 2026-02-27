@@ -14,6 +14,7 @@ pub(crate) const VIRTIO_NET_MTU: usize = 1514;
 /// VirtIO ネットワーク受信用DMAバッファ
 ///
 /// 型状態パターンで DMA 転送中の不正アクセスを防止
+#[derive(Debug)]
 pub struct VirtioNetRxDmaBuffer {
     /// CPU所有状態のバッファ
     buffer: Option<TypedDmaSlice<CpuOwned>>,
@@ -93,6 +94,7 @@ impl Default for VirtioNetRxDmaBuffer {
 }
 
 /// VirtIO ネットワーク送信用DMAバッファ
+#[derive(Debug)]
 pub struct VirtioNetTxDmaBuffer {
     buffer: Option<TypedDmaSlice<CpuOwned>>,
     inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
@@ -164,6 +166,7 @@ impl VirtioNetTxDmaBuffer {
 /// コヒーレントDMAバッファを使用したVirtQueue
 ///
 /// VirtQueueの記述子テーブル、Availableリング、Usedリングに使用
+#[derive(Debug)]
 pub struct VirtQueueDmaBuffers {
     /// 記述子テーブル
     pub desc_table: CoherentDmaBuffer,

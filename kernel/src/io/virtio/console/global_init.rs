@@ -14,7 +14,7 @@ pub(crate) static VIRTIO_CONSOLE_DEVICES: spin::RwLock<alloc::collections::BTree
 
 fn install_virtio_console_device(index: u8, device_arc: Arc<VirtioConsoleDevice>) {
     if index == 0 {
-        *VIRTIO_CONSOLE_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device_arc);
+        *VIRTIO_CONSOLE_DEVICE.lock().expect("VIRTIO_CONSOLE_DEVICE lock poisoned") = Some(device_arc);
     } else {
         VIRTIO_CONSOLE_DEVICES.write().insert(index, device_arc);
     }
@@ -23,7 +23,7 @@ fn install_virtio_console_device(index: u8, device_arc: Arc<VirtioConsoleDevice>
 /// Get a shared reference to the VirtIO console device by index.
 pub fn get_virtio_console_device_at_index(index: u8) -> Option<Arc<VirtioConsoleDevice>> {
     if index == 0 {
-        VIRTIO_CONSOLE_DEVICE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        VIRTIO_CONSOLE_DEVICE.lock().expect("VIRTIO_CONSOLE_DEVICE lock poisoned").clone()
     } else {
         VIRTIO_CONSOLE_DEVICES.read().get(&index).cloned()
     }
@@ -35,7 +35,7 @@ pub unsafe fn init_virtio_console_at_index(index: u8, mmio_base: u64) -> Result<
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| ConsoleError::NotReady)?
     };
     let mut dev = VirtioConsoleDevice::new(Box::new(transport));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 
@@ -65,7 +65,7 @@ pub unsafe fn init_virtio_console_for_device_at_index(
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| ConsoleError::NotReady)?
     };
     let mut dev = VirtioConsoleDevice::new_with_device(Box::new(transport), Some(device));
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 
@@ -95,7 +95,7 @@ pub unsafe fn init_virtio_console_with_transport_at_index(
     iommu_device_id: Option<IommuDeviceId>,
 ) -> Result<(), ConsoleError> {
     let mut dev = VirtioConsoleDevice::new_with_device(transport, iommu_device_id);
-    unsafe { dev.init()? };
+    dev.init()?;
 
     let device_arc = Arc::new(dev);
 

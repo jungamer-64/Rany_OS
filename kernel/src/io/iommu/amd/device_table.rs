@@ -63,6 +63,7 @@ impl Default for AmdDeviceTableEntry {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct AmdDeviceTable {
     pub(super) segment: u16,
     phys_base: u64,

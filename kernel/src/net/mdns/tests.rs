@@ -47,7 +47,7 @@ pub fn test_encode_decode_dns_name() {
 #[cfg_attr(test, test_case)]
 pub fn test_build_query() {
     let mut buffer = [0u8; 256];
-    let len = MdnsService::build_query(&mut buffer, "test.local").expect("build_query should succeed");
+    let _len = MdnsService::build_query(&mut buffer, "test.local").expect("build_query should succeed");
 
     // Check header
     assert_eq!(u16::from_be_bytes([buffer[0], buffer[1]]), 0); // ID = 0

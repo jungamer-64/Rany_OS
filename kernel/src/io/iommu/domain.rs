@@ -36,7 +36,7 @@ mod domain_impl;
 ///
 /// domain側で生成され、controller側の `process_invalidations()` で処理される。
 /// controller は cap/ecap に応じて最適な descriptor に変換する。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidateRequest {
     /// Domain ID for this invalidation
     pub domain_id: u16,
@@ -328,8 +328,7 @@ const REGISTRY_INVALID_INDEX: u32 = u32::MAX;
 ///
 /// This is stored in a per-domain registry to enable force-unmap on
 /// domain destruction, preventing resource leaks in SAS environments.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DmaRegistryEntry {
     /// IOVA address of this mapping
     pub iova: u64,
@@ -342,7 +341,7 @@ pub struct DmaRegistryEntry {
 }
 
 /// Slot in the DMA resource registry slab.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct RegistrySlot {
     /// Entry data (valid if in_use is true)
@@ -368,6 +367,7 @@ impl RegistrySlot {
     }
 }
 
+#[derive(Debug)]
 struct RegistryState {
     /// Dynamically allocated chunks of slots
     chunks: Vec<Box<[RegistrySlot; REGISTRY_CHUNK_CAPACITY]>>,
@@ -438,6 +438,7 @@ impl RegistryState {
 /// # Thread Safety
 ///
 /// The registry state is protected by a single `PoisonLock`.
+#[derive(Debug)]
 pub struct DmaResourceRegistry {
     /// Combined state protected by a single lock to prevent deadlocks
     state: PoisonLock<RegistryState>,
@@ -685,6 +686,7 @@ impl DomainShard {
     }
 }
 
+#[derive(Debug)]
 pub struct IommuDomain {
     /// Domain Type
     pub(crate) domain_type: IommuDomainType,

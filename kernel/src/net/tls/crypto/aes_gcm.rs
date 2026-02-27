@@ -135,32 +135,30 @@ fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
 }
 
 /// GF(2^128) 乗算 (GHASH用)
+/// NIST SP 800-38D, Algorithm 1 (GCM Multiplication)
 pub(crate) fn gf128_mul(x: &[u8; 16], h: &[u8; 16]) -> [u8; 16] {
-    // constant‑time implementation of GHASH field multiplication.
-    // eliminate data‑dependent branches by using bit masks.
     let mut z = [0u8; 16];
     let mut v = *h;
 
     for i in 0..128 {
-        let byte_idx = i >> 3;                   // i/8
-        let bit_idx = 7 - (i & 7);               // 7 - (i%8)
-        let bit = (x[byte_idx] >> bit_idx) & 1;
-        // mask is 0xFF if bit == 1, 0x00 otherwise
-        let mask = 0u8.wrapping_sub(bit);        
+        // If i-th bit of x is 1, Z = Z XOR V
+        let bit = (x[i / 8] >> (7 - (i % 8))) & 1;
+        let mask = 0u8.wrapping_sub(bit);
         for j in 0..16 {
             z[j] ^= v[j] & mask;
         }
 
-        // V = V >> 1 in GF(2^128) with reduction
+        // V = V >> 1 (in GCM's polynomial representation)
         let carry = v[15] & 1;
-        // shift right by one bit
         for j in (1..16).rev() {
             v[j] = (v[j] >> 1) | ((v[j - 1] & 1) << 7);
         }
         v[0] >>= 1;
-        // conditional xor with R constant without branching
+
+        // If carry, V = V XOR R
+        // R = 0xe100...0000 (standard GCM reduction polynomial)
         let carry_mask = 0u8.wrapping_sub(carry);
-        v[0] ^= 0xe1 & carry_mask; // R = 0xe1 << 120
+        v[0] ^= 0xe1 & carry_mask;
     }
 
     z

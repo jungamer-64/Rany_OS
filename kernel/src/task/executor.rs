@@ -340,16 +340,30 @@ fn dispatch_unmap_region(
 
 /// Drain IOMMU command queues from all registered Intel controllers.
 fn process_iommu_command_queues() {
-    let reg = match crate::io::iommu::intel::registry::get_iommu_registry() {
-        Some(r) => r,
-        None => return,
-    };
-    for ctrl in &reg.controllers {
-        if let Some(ref cq) = ctrl.command_queue {
-            for _ in 0..4 {
-                let processed = cq.process_once(|kind| dispatch_iommu_command(ctrl, kind));
-                if processed == 0 {
-                    break;
+    // 1. Process Intel-specific controllers if registry is present
+    if let Some(reg) = crate::io::iommu::intel::registry::get_iommu_registry() {
+        for ctrl in &reg.controllers {
+            if let Some(ref cq) = ctrl.command_queue {
+                for _ in 0..4 {
+                    let processed = cq.process_once(|kind| dispatch_iommu_command(ctrl, kind));
+                    if processed == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Process the active global driver (handles AMD-Vi and generic dispatch)
+    if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
+        use crate::io::iommu::IommuBackend;
+        if let IommuBackend::Amd(ref amd_driver) = **driver {
+            if let Some(ref cq) = amd_driver.command_queue {
+                for _ in 0..4 {
+                    let processed = cq.process_once(|kind| amd_driver.handle_command_queue_entry(kind));
+                    if processed == 0 {
+                        break;
+                    }
                 }
             }
         }

@@ -10,10 +10,20 @@
 
 ### 1. デュアルバックエンド対応 ✅
 - **Intel VT-d**: フル機能対応
-- **AMD-Vi**: 基本機能対応 (`kernel/src/io/iommu/amd/mod.rs`)
+- **AMD-Vi**: フル機能対応 (`kernel/src/io/iommu/amd/mod.rs`)
 - **IommuBackend enum**: 静的ディスパッチによるゼロアロケーション
 
-### 2. ページテーブル管理 ✅
+### 2. IOMMU Grouping / ACS (Access Control Services) ✅ (2026-02-27追加)
+PCIeトポロジーに基づいた **IOMMU Grouping** ロジックの実装完了。
+- **ACS Isolation**: PCIeブリッジのACSケイパビリティをチェックし、分離不可能なデバイスを同一グループにマージ
+- **Multifunction Grouping**: 多機能デバイスのファンクション間でのアイソレーションが不完全な場合の自動グルーピング
+- **Generic Backend Support**: Intel VT-d / AMD-Vi の両方でグルーピングをサポート
+
+### 3. セキュリティ強化: カーネル保護 ✅ (2026-02-27追加)
+- **Kernel Image Protection**: すべてのDMAマッピング要求（Intel/AMD両対応）に対し、カーネル物理アドレス範囲との重複を厳格にチェック
+- **Security Module Integration**: `security.rs` への保護ロジックの集約と一貫したバリデーションの適用
+
+### 4. ページテーブル管理 ✅
 - **PageTablePool**: NUMA-awareなページテーブルリサイクル
 - **Per-CPU Magazine** (2026-01-04追加): O(1)ロックフリー割り当て
   - 3層アーキテクチャ: Per-CPU Magazine → NUMA Depot → Physical Allocator
@@ -51,14 +61,7 @@
 
 ## 未実装・改善が必要な機能
 
-### 1. IOMMU Grouping / ACS (Access Control Services) ⚠️ (セキュリティリスク)
-PCIeデバイスのトポロジーに基づいた **IOMMU Grouping** のロジックが実装されていません。
-
-*   **現状:** `setup_iommu_for_pci_device` 関数にて、検出された全てのPCIデバイスに対して個別に新しいIOMMUドメイン（`IommuDomain`）を作成・割り当てています。
-*   **問題点:** PCIeスイッチやブリッジの下にあるデバイスが **ACS (Access Control Services)** をサポートしていない場合、P2P通信などでトランザクションの発信元ID（Requester ID）が正しく分離されず、同一のドメインに所属させる必要があります（IOMMU Group）。
-*   **リスク:** 適切にグルーピングを行わずに個別のドメインを割り当てると、あるデバイスが別のデバイスのIDを偽装してメモリにアクセスする（DMAエイリアシング攻撃）可能性があり、セキュリティ上の分離が不完全になります。
-
-### 2. BTreeMapからRadix Treeへの移行 📋 (パフォーマンス)
+### 1. BTreeMapからRadix Treeへの移行 📋 (パフォーマンス)
 - **現状**: IOVA範囲管理に`BTreeMap`を使用
 - **問題**: IOMMUワークロードではキャッシュミス率が高い
 - **計画**: 専用のRadix Tree実装への移行

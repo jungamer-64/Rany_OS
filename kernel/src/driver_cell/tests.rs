@@ -628,17 +628,27 @@ fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
 #[cfg(feature = "qemu-test-export")]
 fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     ensure_running_idle(ctx.driver_cell_id)?;
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: hot_swap begin");
     let update = super::hot_swap::hot_swap(ctx.driver_cell_id, &ctx.v2_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: hot_swap done");
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime begin");
     poll_runtime();
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime done");
 
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: read stats begin");
     let (restart_before, fault_before) = driver_cell_manager()
         .with_cell(ctx.driver_cell_id, |cell| (cell.stats.restart_count, cell.stats.fault_count))
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read stats: {}", e)))?;
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: read stats done");
 
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: inject panic begin");
     let outcome = super::fault::inject_test_fault(ctx.driver_cell_id, super::fault::TestFaultKind::Panic)
         .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: inject panic done");
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime2 begin");
     poll_runtime();
+    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime2 done");
 
     if outcome.action != super::fault::FaultAction::RolledBack {
         return Err(RuntimeCaseError::failed(format!(

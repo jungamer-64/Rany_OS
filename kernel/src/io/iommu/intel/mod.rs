@@ -66,6 +66,10 @@ fn validate_dma_params(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError>
     if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
         return Err(IommuError::InvalidAlignment);
     }
+
+    // Security: Validate that the physical range does not overlap with the kernel image.
+    crate::io::iommu::security::validate_dma_region(phys_addr.as_u64(), size)?;
+
     Ok(())
 }
 
@@ -104,7 +108,12 @@ unsafe fn apply_mapping_sync(
         };
         if controller.execute_sync_command(cmd).is_err() {
             crate::io::log::early_print("[DMA] apply_mapping_sync: execute_sync_command FAILED\n");
-            let _ = controller.free_iova(iova, size);
+            if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
+                // If the normal free fails because quarantine is full, we must
+                // force a global flush and do an immediate free to avoid leaking IOVA.
+                let _ = controller.invalidate_iotlb_global_sync();
+                let _ = controller.free_iova_fast(iova, size);
+            }
             return Err(IommuError::HardwareError);
         }
         crate::io::log::early_print("[DMA] apply_mapping_sync: execute_sync_command OK\n");
@@ -113,10 +122,14 @@ unsafe fn apply_mapping_sync(
     crate::io::log::early_print("[DMA] apply_mapping_sync: direct map path\n");
     if let Err(err) = domain_arc.map(iova, phys, size, read, write) {
         crate::io::log::early_print("[DMA] apply_mapping_sync: map FAILED\n");
-        let _ = controller.free_iova(iova, size);
+        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
+            let _ = controller.invalidate_iotlb_global_sync();
+            let _ = controller.free_iova_fast(iova, size);
+        }
         return Err(err);
     }
-    crate::io::log::early_print("[DMA] apply_mapping_sync: map OK\n");
+    crate::io::log::early_print("[DMA] apply_mapping_sync: map OK, calling invalidate\n");
+    controller.invalidate_iotlb(domain_id);
     Ok(iova)
 }
 
@@ -140,7 +153,10 @@ async unsafe fn apply_mapping_async(
         let comp = match cq.submit_async(cmd).await {
             Ok(comp) => comp,
             Err(_) => {
-                let _ = controller.free_iova(iova, size);
+                if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
+                    let _ = controller.invalidate_iotlb_global_sync();
+                    let _ = controller.free_iova_fast(iova, size);
+                }
                 return Err(IommuError::HardwareError);
             }
         };
@@ -148,12 +164,19 @@ async unsafe fn apply_mapping_async(
         if rc == 0 {
             return Ok(iova);
         }
-        let _ = controller.free_iova(iova, size);
+        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
+            let _ = controller.invalidate_iotlb_global_sync();
+            let _ = controller.free_iova_fast(iova, size);
+        }
         return Err(IommuError::HardwareError);
     }
     if let Err(err) = domain_arc.map(iova, phys, size, true, true) {
-        let _ = controller.free_iova(iova, size);
+        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
+            let _ = controller.invalidate_iotlb_global_sync();
+            let _ = controller.free_iova_fast(iova, size);
+        }
         return Err(err);
     }
+    controller.invalidate_iotlb(domain_id);
     Ok(iova)
 }

@@ -16,6 +16,7 @@ use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::fmt;
 
 // テスト環境で特権命令 (CLI/STI) を実行できないため、テスト用の割り込み状態を模擬する
 #[cfg(test)]
@@ -113,6 +114,9 @@ impl<T> IrqMutex<T> {
             data: UnsafeCell::new(data),
         }
     }
+}
+
+impl<T: ?Sized> IrqMutex<T> {
 
     /// ロックを取得
     ///
@@ -302,3 +306,14 @@ mod tests {
     }
 }
 
+impl<T: ?Sized + fmt::Debug> fmt::Debug for IrqMutex<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("IrqMutex");
+        if let Some(guard) = self.try_lock() {
+            d.field("data", &&*guard);
+        } else {
+            d.field("data", &"<locked>");
+        }
+        d.finish()
+    }
+}

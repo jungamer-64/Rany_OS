@@ -1572,7 +1572,7 @@ pub fn wave2_group_creation_basic_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 1, 0);
 
-    let (group, newly_created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group, newly_created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo, IommuBackend::IntelVtd, IommuDomainType::Translated) {
         Ok(result) => result,
         Err(_) => return false,
     };
@@ -1598,11 +1598,11 @@ pub fn wave2_group_multifunction_same_group_smoke() -> bool {
     let dev0 = DeviceId::new(0, 0, 2, 0);
     let dev1 = DeviceId::new(0, 0, 2, 1);
 
-    let (group0, created0) = match mgr.find_or_create_group(dev0, &ctrl, 0, &topo) {
+    let (group0, created0) = match mgr.find_or_create_group(dev0, &ctrl, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group1, created1) = match mgr.find_or_create_group(dev1, &ctrl, 0, &topo) {
+    let (group1, created1) = match mgr.find_or_create_group(dev1, &ctrl, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -2250,7 +2250,7 @@ fn wave5_qi_metrics_pressure_canonical_impl() -> bool {
     let safe_submissions = ring_capacity - 1;
 
     for _ in 0..safe_submissions {
-        let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+        let desc = InvalidationQueueEntry::iotlb_invalidate_global();
         if ctrl.submit_invalidation(desc).is_err() {
             return false;
         }
@@ -2267,7 +2267,7 @@ fn wave5_qi_metrics_pressure_canonical_impl() -> bool {
         return false;
     }
 
-    let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+    let desc = InvalidationQueueEntry::iotlb_invalidate_global();
     if ctrl.submit_invalidation(desc).is_ok() {
         return false;
     }

@@ -202,6 +202,17 @@ pub struct RemoteFreeRing<const N: usize = DEFAULT_REMOTE_FREE_CAPACITY> {
     overflow: Mutex<FixedVec<RemoteFreeEntry, MAX_OVERFLOW_ENTRIES>>,
 }
 
+impl<const N: usize> core::fmt::Debug for RemoteFreeRing<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RemoteFreeRing")
+            .field("capacity", &N)
+            .field("head", &self.head.load(Ordering::Relaxed))
+            .field("tail", &self.tail.load(Ordering::Relaxed))
+            .field("overflow_count", &self.overflow_count.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
 impl<const N: usize> RemoteFreeRing<N> {
     /// Create a new empty remote free ring (Vyukov MPSC)
     ///
