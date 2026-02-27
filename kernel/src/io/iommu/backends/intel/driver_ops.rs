@@ -274,7 +274,10 @@ impl IntelIommuDriver {
         }
 
         let mut last_err = None;
-        for controller in &registry.controllers {
+        let mut mapping_size = 0;
+        let mut unmapped_controllers = alloc::vec::Vec::with_capacity(registry.controllers.len());
+
+        for (idx, controller) in registry.controllers.iter().enumerate() {
             let domain_arc = {
                 let domains_guard = controller
                     .domains
@@ -288,24 +291,42 @@ impl IntelIommuDriver {
             match domain_arc.unmap(iova) {
                 Ok(mapping) => {
                     controller.invalidate_iotlb(0); // Domain 0 for DMA mappings
-                    if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
-                        // Quarantine full: Force a global IOTLB flush and try immediate free.
-                        // This is safe because we just performed a flush.
-                        let _ = self.invalidate_iotlb_global();
-                        let _ = controller.free_iova_fast(iova, mapping.size);
-                    }
+                    mapping_size = mapping.size;
+                    unmapped_controllers.push(idx);
                 }
                 Err(err) => {
                     last_err = Some(err);
+                    // SECURITY: If one controller fails, we have a partial unmap.
+                    // This is dangerous. We should ideally attempt to restore or
+                    // at least log a critical error.
+                    log::error!(
+                        "[IOMMU][SECURITY] unmap_dma failed on controller {}: {:?}",
+                        idx, err
+                    );
                 }
             }
         }
 
         if let Some(err) = last_err {
-            Err(err)
-        } else {
-            Ok(())
+            // Partial unmap occurred. We do NOT free the IOVA to prevent reuse of
+            // potentially still-mapped addresses on other controllers.
+            // Mark domain as poisoned if needed?
+            return Err(err);
         }
+
+        // All controllers unmapped successfully. Now safe to free IOVA.
+        if mapping_size > 0 {
+            for idx in unmapped_controllers {
+                let controller = &registry.controllers[idx];
+                if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping_size) {
+                    // Quarantine full: Force a global IOTLB flush and try immediate free.
+                    let _ = self.invalidate_iotlb_global();
+                    let _ = controller.free_iova_fast(iova, mapping_size);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub(crate) unsafe fn map_for_device(

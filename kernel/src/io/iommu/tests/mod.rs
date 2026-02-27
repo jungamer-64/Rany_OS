@@ -1575,3 +1575,50 @@ fn test_ats_enable_requires_qi() {
     assert!(success, "ATS should be enabled if QI is enabled and device is trusted");
     assert!(ctrl.is_ats_enabled(&device));
 }
+
+#[test_case]
+fn test_iova_quarantine_and_epoch_drain() {
+    let ctrl = IommuController::new(0x0, 0);
+    // Initialize with a small space
+    ctrl.init_iova(0x1000_0000, 0x10000).expect("init_iova");
+
+    let iova = ctrl.allocate_iova(4096).expect("alloc");
+    
+    // Advance epoch so the free will be associated with a new epoch
+    let epoch = if let Ok(guard) = ctrl.iova_allocator.lock() {
+        guard.as_ref().unwrap().advance_epoch()
+    } else {
+        panic!("lock failed");
+    };
+
+    // Free the IOVA - it should go to quarantine
+    ctrl.free_iova(iova, 4096).expect("free");
+
+    // Try to allocate the SAME IOVA immediately - it should NOT be available yet
+    // (Bitmap might find another slot if available, but if we exhaust space...)
+    // Let's exhaust most of the space first.
+    let mut allocated = alloc::vec::Vec::new();
+    while let Ok(addr) = ctrl.allocate_iova(4096) {
+        allocated.push(addr);
+    }
+    
+    // Now space is exhausted. If we complete the epoch, `iova` should become available.
+    if let Ok(guard) = ctrl.iova_allocator.lock() {
+        guard.as_ref().unwrap().complete_epoch(epoch);
+    }
+
+    // Now it should be available again
+    let iova_again = ctrl.allocate_iova(4096).expect("should be available after epoch completion");
+    assert_eq!(iova, iova_again);
+}
+
+#[test_case]
+fn test_invalidate_request_ats_flag() {
+    use crate::io::iommu::core::domain::{InvalidateRequest, InvalidateFlags};
+    
+    let req = InvalidateRequest::pages(1, 0x1000, 0x1000).with_ats();
+    assert!(req.flags.contains(InvalidateFlags::ATS_AWARE));
+    
+    let req_no_ats = InvalidateRequest::pages(1, 0x1000, 0x1000);
+    assert!(!req_no_ats.flags.contains(InvalidateFlags::ATS_AWARE));
+}

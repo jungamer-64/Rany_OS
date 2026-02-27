@@ -492,6 +492,13 @@ impl IommuInvalidator for IommuController {
             return Ok(());
         }
 
+        // Advance epoch before invalidation to mark current quarantine entries
+        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
+            guard.as_ref().map(|a| a.advance_epoch())
+        } else {
+            None
+        };
+
         let any_ats = requests
             .iter()
             .any(|r| r.flags.contains(InvalidateFlags::ATS_AWARE));
@@ -504,20 +511,46 @@ impl IommuInvalidator for IommuController {
             self.qi_wait_sync()?;
         }
 
+        // Complete epoch after invalidation is confirmed by hardware.
+        // This safely drains the quarantine rings.
+        if let Some(e) = epoch {
+            if let Ok(guard) = self.iova_allocator.lock() {
+                if let Some(alloc) = guard.as_ref() {
+                    alloc.complete_epoch(e);
+                }
+            }
+        }
+
         Ok(())
     }
 
     fn invalidate_async(&self, request: InvalidateRequest) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
         let any_ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
+        
+        // Advance epoch before invalidation
+        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
+            guard.as_ref().map(|a| a.advance_epoch())
+        } else {
+            None
+        };
+
         let res = self.process_single_invalidation_nosync(&request, any_ats);
         
         async move {
             res?;
             if self.is_queued_invalidation_enabled() {
-                self.qi_wait_async().await
-            } else {
-                Ok(())
+                self.qi_wait_async().await?;
             }
+            
+            // Complete epoch after async invalidation finishes
+            if let Some(e) = epoch {
+                if let Ok(guard) = self.iova_allocator.lock() {
+                    if let Some(alloc) = guard.as_ref() {
+                        alloc.complete_epoch(e);
+                    }
+                }
+            }
+            Ok(())
         }
     }
 }

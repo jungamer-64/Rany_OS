@@ -369,7 +369,7 @@ impl IommuDomain {
         }
 
         // Invalidate IOTLB
-        let req = InvalidateRequest::pages(self.id, iova, aligned_size);
+        let req = InvalidateRequest::pages(self.id, iova, aligned_size).with_ats();
         if let Err(e) = invalidator.invalidate(req) {
             // IOTLB invalidation failed - this is critical!
             // We can't return the RRef because device may still access it
@@ -377,9 +377,14 @@ impl IommuDomain {
         }
 
         // Free IOVA back to domain's per-domain allocator
-        if let Err(e) = self.free_iova(iova, aligned_size) {
-            // IOVA free failed - log but continue since mapping is already removed
-            log::warn!("[IommuDomain] IOVA free failed for 0x{:x}: {:?}", iova, e);
+        if let Err(IommuError::OutOfMemory) = self.free_iova(iova, aligned_size) {
+            // Quarantine full: Force a global IOTLB flush for this domain and retry.
+            // This advances the epoch and drains the ring.
+            log::warn!("[IommuDomain] IOVA quarantine full for domain {}, forcing flush", self.id);
+            let _ = invalidator.invalidate(InvalidateRequest::domain(self.id));
+            if let Err(e) = self.free_iova(iova, aligned_size) {
+                log::error!("[IommuDomain] IOVA free failed even after flush for 0x{:x}: {:?}", iova, e);
+            }
         }
         let _ = context; // context kept for API compatibility
 
@@ -427,16 +432,22 @@ impl IommuDomain {
         }
 
         // Invalidate IOTLB asynchronously
-        let req = InvalidateRequest::pages(domain_id, iova, aligned_size);
+        let req = InvalidateRequest::pages(domain_id, iova, aligned_size).with_ats();
         if let Err(e) = invalidator.invalidate_async(req).await {
             // IOTLB invalidation failed - critical!
             // We can't return the RRef because device may still access it
             return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
         }
 
-        // Free IOVA
-        if let Err(e) = context.free_iova(iova, aligned_size) {
-            log::warn!("[IommuDomain] IOVA free failed for 0x{:x}: {:?}", iova, e);
+        // Free IOVA back to domain's per-domain allocator
+        if let Err(IommuError::OutOfMemory) = self.free_iova(iova, aligned_size) {
+            // Quarantine full: Force an async global IOTLB flush for this domain and retry.
+            // This advances the epoch and drains the ring.
+            log::warn!("[IommuDomain] IOVA quarantine full for domain {}, forcing async flush", domain_id);
+            let _ = invalidator.invalidate_async(InvalidateRequest::domain(domain_id)).await;
+            if let Err(e) = self.free_iova(iova, aligned_size) {
+                log::error!("[IommuDomain] IOVA async free failed even after flush for 0x{:x}: {:?}", iova, e);
+            }
         }
 
         // Take the RRef from the handle (marks it as unmapped)

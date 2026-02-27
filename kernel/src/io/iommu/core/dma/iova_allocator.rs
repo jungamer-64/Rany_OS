@@ -288,41 +288,40 @@ impl IovaAllocator {
 
     /// Fallback quarantine path when per-CPU quarantine is unavailable
     fn free_via_fallback_quarantine(&self, entry: QuarantineEntry, addr: u64, granularity: PageGranularity) -> Result<(), IommuError> {
-        {
-            let mut fb = FALLBACK_QUARANTINE.lock();
-            if fb.push(entry.addr, entry.size_class, entry.epoch) {
-                self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-                crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE\n");
-                return Ok(());
-            }
-
-            crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE full, forcing drain\n");
-            let mut batch = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
-            let drained = fb.drain_all(&mut batch);
-            if drained > 0 {
-                for i in 0..drained {
-                    let e = batch[i];
-                    let g = match e.size_class {
-                        0 => PageGranularity::Page4K,
-                        1 => PageGranularity::Page2M,
-                        2 => PageGranularity::Page1G,
-                        _ => PageGranularity::Page4K,
-                    };
-                    let _ = self.inner.free_immediate(e.addr, g);
-                }
-                self.stats.quarantine_forced_drains.fetch_add(drained as u64, Ordering::Relaxed);
-            }
-
-            if fb.push(entry.addr, entry.size_class, entry.epoch) {
-                self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
-                crate::io::log::early_print("[IOVA] free_with_granularity: pushed to FALLBACK_QUARANTINE after drain\n");
-                return Ok(());
-            }
-            crate::io::log::early_print("[IOVA] free_with_granularity: FALLBACK_QUARANTINE still full, will immediate free\n");
+        let mut fb = FALLBACK_QUARANTINE.lock();
+        if fb.push_entry(entry) {
+            self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
         }
 
-        self.inner.free_immediate(addr, granularity)
-            .map_err(|_| IommuError::NotMapped)
+        // Quarantine full: Try to drain ONLY safe entries (epoch <= completed)
+        // Draining without a proper IOTLB flush creates a DMA Use-After-Free window.
+        let completed = self.completed_epoch.load(Ordering::Acquire);
+        let mut batch = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
+        let drained = fb.drain_older_than(completed, FALLBACK_DRAIN_BATCH, &mut batch);
+        
+        if drained > 0 {
+            for i in 0..drained {
+                let e = batch[i];
+                let g = PageGranularity::from_size_class(e.size_class);
+                let _ = self.inner.free_immediate(e.addr, g);
+            }
+            self.stats.quarantine_forced_drains.fetch_add(drained as u64, Ordering::Relaxed);
+        }
+
+        // Try to push again after drain
+        if fb.push_entry(entry) {
+            self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+
+        // Still full - must return error for security.
+        // The caller must issue an IOTLB flush and advance/complete the epoch.
+        log::warn!(
+            "[IOVA][SECURITY] Fallback quarantine full. Rejecting free of 0x{:x} until IOTLB flush.",
+            addr
+        );
+        Err(IommuError::OutOfMemory)
     }
 
     /// アドレスとサイズから最適な解放粒度とステップサイズを選択

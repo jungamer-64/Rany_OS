@@ -96,12 +96,23 @@ impl AmdIommuDriver {
         let domain = self.domain_for_id(0)?;
         let mapping = domain.unmap(iova)?;
         let mapped_size = mapping.size;
+        
+        // Invalidate domain pages across all units
         if let Err(err) = self.invalidate_domain_pages(0, iova, mapped_size) {
             if err != IommuError::NotSupported {
                 return Err(err);
             }
         }
-        let _ = self.free_iova_fast(iova, mapped_size);
+
+        // Free IOVA back to allocator. 
+        // Note: invalidate_domain_pages already advanced and completed the epoch.
+        if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapped_size) {
+            // Quarantine still full or per-CPU magazine full: 
+            // Force global invalidation and retry.
+            log::warn!("[IOMMU][AMD-Vi] IOVA quarantine full in unmap_dma, forcing global flush");
+            let _ = self.invalidate_all_entries();
+            let _ = self.free_iova(iova, mapped_size);
+        }
         Ok(())
     }
 
@@ -280,7 +291,11 @@ impl AmdIommuDriver {
 
         self.invalidate_iommu_pages(*device, domain_id, iova, mapping.size)?;
         self.invalidate_iotlb_pages(*device, iova, mapping.size)?;
-        let _ = self.free_iova_fast(iova, mapping.size);
+        
+        if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapping.size) {
+            let _ = self.invalidate_all_entries();
+            let _ = self.free_iova(iova, mapping.size);
+        }
         Ok(())
     }
 
@@ -326,7 +341,11 @@ impl AmdIommuDriver {
             .await?;
         self.invalidate_iotlb_pages_async(*device, iova, mapping.size)
             .await?;
-        let _ = self.free_iova_fast(iova, mapping.size);
+        
+        if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapping.size) {
+            let _ = self.invalidate_all_entries();
+            let _ = self.free_iova(iova, mapping.size);
+        }
         Ok(())
     }
 

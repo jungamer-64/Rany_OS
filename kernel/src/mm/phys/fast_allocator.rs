@@ -122,6 +122,17 @@ impl PageGranularity {
             PageGranularity::Page1G => 2,
         }
     }
+
+    /// From size class index
+    #[inline]
+    pub const fn from_size_class(idx: u8) -> Self {
+        match idx {
+            0 => PageGranularity::Page4K,
+            1 => PageGranularity::Page2M,
+            2 => PageGranularity::Page1G,
+            _ => PageGranularity::Page4K,
+        }
+    }
 }
 
 // ============================================================================

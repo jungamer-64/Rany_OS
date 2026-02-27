@@ -176,6 +176,9 @@ impl AmdIommuDriver {
             .and_then(|state| state.as_ref())
             .ok_or(IommuError::NotSupported)?;
 
+        // Advance epoch before invalidation
+        let epoch = self.iova_allocator.advance_epoch();
+
         let token = {
             let mut guard = match state.lock() {
                 Ok(guard) => guard,
@@ -184,11 +187,19 @@ impl AmdIommuDriver {
             guard.submit_and_wait_token(cmd, true)?
         };
 
-        token.wait_async().await
+        let res = token.wait_async().await;
+        
+        // Complete epoch after async invalidation finishes
+        self.iova_allocator.complete_epoch(epoch);
+        res
     }
 
     pub(super) fn invalidate_all_entries(&self) -> Result<(), IommuError> {
         let mut has_state = false;
+        
+        // Advance epoch before global invalidation
+        let epoch = self.iova_allocator.advance_epoch();
+
         for idx in 0..self.cmd_states.len() {
             if self.cmd_states[idx].is_none() {
                 continue;
@@ -198,6 +209,9 @@ impl AmdIommuDriver {
                 state.submit_and_wait(cmd::AmdCommand::invalidate_all())
             })?;
         }
+
+        // Complete epoch after hardware confirmation
+        self.iova_allocator.complete_epoch(epoch);
 
         if !has_state {
             return Err(IommuError::NotSupported);
@@ -248,11 +262,15 @@ impl AmdIommuDriver {
             .find_unit_index_for_device(device)
             .ok_or(IommuError::DeviceNotFound)?;
         let devid = device.requester_id();
-        self.with_cmd_state(unit_idx, |state| {
+        
+        let epoch = self.iova_allocator.advance_epoch();
+        let res = self.with_cmd_state(unit_idx, |state| {
             state.submit_and_wait(cmd::AmdCommand::invalidate_iotlb_pages(
                 devid, 0, iova, size, None,
             ))
-        })
+        });
+        self.iova_allocator.complete_epoch(epoch);
+        res
     }
 
     pub(super) fn invalidate_iommu_pages(
@@ -265,11 +283,15 @@ impl AmdIommuDriver {
         let unit_idx = self
             .find_unit_index_for_device(device)
             .ok_or(IommuError::DeviceNotFound)?;
-        self.with_cmd_state(unit_idx, |state| {
+        
+        let epoch = self.iova_allocator.advance_epoch();
+        let res = self.with_cmd_state(unit_idx, |state| {
             state.submit_and_wait(cmd::AmdCommand::invalidate_iommu_pages(
                 domain_id, iova, size, None,
             ))
-        })
+        });
+        self.iova_allocator.complete_epoch(epoch);
+        res
     }
 
     pub(super) async fn invalidate_iotlb_pages_async(
@@ -313,6 +335,10 @@ impl AmdIommuDriver {
         size: u64,
     ) -> Result<(), IommuError> {
         let mut has_state = false;
+        
+        // Advance epoch before domain invalidation
+        let epoch = self.iova_allocator.advance_epoch();
+
         for idx in 0..self.cmd_states.len() {
             if self.cmd_states[idx].is_none() {
                 continue;
@@ -324,6 +350,9 @@ impl AmdIommuDriver {
                 ))
             })?;
         }
+
+        // Complete epoch after invalidation confirmed on all units
+        self.iova_allocator.complete_epoch(epoch);
 
         if !has_state {
             return Err(IommuError::NotSupported);
