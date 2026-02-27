@@ -7,13 +7,12 @@
 
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::{Context, Poll, Waker};
-use spin::{Mutex, MutexGuard};
+use spin::MutexGuard;
 use x86_64::{PhysAddr, VirtAddr};
 
 // Import VirtIO common definitions
@@ -24,7 +23,6 @@ use crate::io::dma::{
     iommu_align_len, CoherentDmaBuffer,
     DmaMemoryAttributes,
 };
-use crate::io::iommu::types::DmaAddr;
 use crate::sync::IrqPoisonLock;
 use crate::io::iommu::api::{
     get_device_dma_mask, is_iommu_enabled, is_iommu_required,

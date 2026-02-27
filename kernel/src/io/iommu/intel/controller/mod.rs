@@ -36,7 +36,6 @@ use crate::io::iommu::common::{PageRequestQueue, PostedInterruptPool};
 use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::fault_log::FaultLog;
 use crate::io::iommu::intel::qi::{InvalidationQueue, QiStats};
-use crate::io::iommu::intel::registers::regs::IQH;
 use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs, rtaddr_bits};
 use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
 use crate::io::iommu::interface::IommuHardwareContext;
@@ -462,7 +461,7 @@ impl IommuController {
 
     /// Invalidate IOTLB (Generic: uses QI if enabled, else Direct)
     pub fn invalidate_iotlb(&self, domain_id: u16) {
-        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+        
         let _ = self.invalidate_domain(domain_id);
     }
 

@@ -309,8 +309,8 @@ pub fn exit_qemu(code: QemuExitCode) -> ! {
 pub mod security;
 
 // QEMU test exports are compiled when `qemu-test-export` is enabled and are
-// consumed by host residual `pure-tests` cases and the kernel full-boot runtime
-// dispatcher. Pure host tests should prefer crate-local `#[cfg(test)]`.
+// consumed by the kernel full-boot runtime dispatcher. Pure host tests should
+// prefer crate-local `#[cfg(test)]`.
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 

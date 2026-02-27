@@ -25,7 +25,6 @@ use crate::io::iommu::api::{
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -34,7 +33,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::io::virtio::virtqueue::*;
 use core::task::{Context, Poll, Waker};
-use crate::io::virtio::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
+use crate::io::virtio::transport::{VirtioMmioTransport, VirtioTransport};
 mod device_impl;
 pub use device_impl::*;
 use vfs::block::{

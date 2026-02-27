@@ -9,7 +9,6 @@
 //! from accessing sensitive memory like page tables, kernel stacks, etc.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{Ordering};
 use spin::{Once, RwLock};
 use crate::sync::IrqMutex;
 

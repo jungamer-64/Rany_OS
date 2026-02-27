@@ -10,7 +10,7 @@ use core::sync::atomic::Ordering;
 
 use super::utils::IommuUtils;
 use super::{InvalidationWaiter, IommuController};
-use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::types::IommuError;
 use crate::io::iommu::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };

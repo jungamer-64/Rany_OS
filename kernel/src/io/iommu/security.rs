@@ -30,8 +30,7 @@ use spin::Once;
 
 use crate::io::iommu::fault_log::FaultRecord;
 use crate::security::audit::{AuditEvent, AuditEventType};
-pub(crate) use crate::security::dma::{is_page_protected, register_protected_page, unregister_protected_page, range_overlaps_protected};
-use x86_64::PhysAddr;
+pub(crate) use crate::security::dma::{register_protected_page, unregister_protected_page, range_overlaps_protected};
 
 // ============================================================================
 // Kernel Protection & DMA Validation

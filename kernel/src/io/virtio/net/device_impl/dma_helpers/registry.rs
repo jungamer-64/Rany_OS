@@ -1,8 +1,6 @@
 use super::VirtioNetDevice;
-use x86_64::VirtAddr;
 use crate::io::virtio::transport::VirtioMmioTransport;
 use crate::io::virtio::net::device_impl::VirtioNetError;
-use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::transport::VirtioTransport;
 use crate::task::{spawn, wait_for_interrupt, InterruptSource};
 use alloc::boxed::Box;
@@ -10,7 +8,6 @@ use alloc::vec::Vec;
 use alloc::sync::Arc;
 use spin::RwLock;
 use alloc::collections::BTreeMap;
-use crate::sync::PoisonLock;
 
 // ============================================================================
 // Global Device Instance

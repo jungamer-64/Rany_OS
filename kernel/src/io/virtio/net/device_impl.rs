@@ -1,4 +1,3 @@
-use crate::sync::PoisonLock;
 use super::*;
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 

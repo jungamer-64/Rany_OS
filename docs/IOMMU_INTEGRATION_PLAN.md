@@ -134,7 +134,7 @@
 ### タスク
 
 - [ ] `phys_addr()` をデバイスアドレスとして使用している全箇所の最終確認
-- [ ] QEMU IOMMUテスト追加 (`qemu-suites/`)
+- [ ] QEMU IOMMUテスト追加（`qemu-tests` full-boot profile）
 - [ ] IOMMU有効環境でのFAT32読み書き統合テスト
 - [ ] IOMMU有効環境でのネットワーク通信テスト
 - [ ] IOMMU有効環境でのGPUフレームバッファ描画テスト

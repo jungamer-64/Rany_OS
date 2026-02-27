@@ -218,7 +218,7 @@ impl TcpProcessor {
         remote_addr: SocketAddr,
         seq_num: u32,
         flags: u16,
-        window: u16,
+        _window: u16,
     ) -> Option<TcpProcessResult> {
         let listener_addr = if self.listeners.contains_key(&local_addr) {
             local_addr

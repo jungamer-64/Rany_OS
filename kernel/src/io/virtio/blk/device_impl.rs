@@ -1,7 +1,6 @@
 use super::*;
 use crate::io::virtio::virtqueue::vring_flags;
 use crate::io::iommu::types::DmaAddr;
-use crate::util::align_up_usize as align_up;
 
 
 mod async_io;

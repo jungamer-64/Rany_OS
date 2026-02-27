@@ -73,14 +73,28 @@ def main() -> int:
         return fail(str(e))
 
     package_names = {pkg["name"] for pkg in md["packages"]}
-    lib_target_names = {}
+    workspace_root = Path(md["workspace_root"]).resolve()
+    workspace_member_ids = set(md.get("workspace_members", []))
+    member_path_to_name = {}
     for pkg in md["packages"]:
-        for target in pkg.get("targets", []):
-            if "lib" in target.get("kind", []):
-                lib_target_names[pkg["name"]] = target["name"]
-                break
+        if pkg["id"] not in workspace_member_ids:
+            continue
+        manifest_path = Path(pkg["manifest_path"]).resolve()
+        try:
+            member_rel = manifest_path.parent.relative_to(workspace_root).as_posix()
+        except ValueError:
+            continue
+        member_path_to_name[member_rel] = pkg["name"]
+
+    root_default_name_set = set()
+    for member_path in root_default["packages"]:
+        pkg_name = member_path_to_name.get(member_path)
+        if pkg_name is None:
+            return fail(f"root_default.packages contains unknown workspace member path: {member_path}")
+        root_default_name_set.add(pkg_name)
 
     seen = set()
+    root_default_entry_names = set()
     for idx, entry in enumerate(pkg_entries):
         entry_keys = set(entry.keys())
         missing = REQUIRED_PACKAGE_KEYS - entry_keys
@@ -93,6 +107,12 @@ def main() -> int:
             return fail(f"package[{idx}] invalid tier: {entry['tier']}")
         if entry["name"] not in package_names:
             return fail(f"package[{idx}] unknown package name: {entry['name']}")
+        if entry["root_default"] and entry["name"] not in root_default_name_set:
+            return fail(
+                f"package[{idx}] has root_default=true but package '{entry['name']}' is not in root_default.packages"
+            )
+        if entry["root_default"]:
+            root_default_entry_names.add(entry["name"])
         features = entry.get("features", [])
         if not isinstance(features, list) or not all(isinstance(v, str) and v for v in features):
             return fail(f"package[{idx}] features must be a list of non-empty strings")
@@ -107,18 +127,12 @@ def main() -> int:
             return fail(f"duplicate package entry: {key}")
         seen.add(key)
 
-    pure_tests_src_path = root / "pure-tests" / "src" / "lib.rs"
-    if pure_tests_src_path.exists():
-        pure_tests_src = pure_tests_src_path.read_text(encoding="utf-8")
-        migrated_lib_crates = {
-            lib_target_names[e["name"]]
-            for e in pkg_entries
-            if e["name"] != "pure_tests" and e["name"] in lib_target_names
-        }
-        for crate_name in sorted(migrated_lib_crates):
-            needle = f"{crate_name}::qemu_tests::"
-            if needle in pure_tests_src:
-                return fail(f"pure-tests residual must not call migrated wrapper exports: '{needle}'")
+    missing_root_default_entries = sorted(root_default_name_set - root_default_entry_names)
+    if missing_root_default_entries:
+        return fail(
+            "root_default.packages contain packages without any root_default=true [[package]] entry: "
+            + ", ".join(missing_root_default_entries)
+        )
 
     print("[verify_pure_tier_map] PASS")
     return 0

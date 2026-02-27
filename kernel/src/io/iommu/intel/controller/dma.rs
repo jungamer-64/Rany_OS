@@ -14,7 +14,6 @@ use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
-use x86_64::PhysAddr;
 
 use super::{HardwareContext, IommuController};
 use super::qi_ops::InvalidationOps;

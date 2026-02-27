@@ -23,7 +23,7 @@ use crate::io::io_scheduler::{
     hybrid_coordinator, io_scheduler,
 };
 
-use super::blk::{BlockError, VirtioBlkStatus, get_virtio_blk_device};
+use super::blk::{BlockError, get_virtio_blk_device};
 
 // ============================================================================
 // Pending Request Tracking
