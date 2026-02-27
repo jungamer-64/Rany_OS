@@ -204,7 +204,7 @@ impl KernelStack {
         // We translate the virtual address to physical address for registration.
         let virt_start = ptr as u64;
         let size = Self::SIZE;
-        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(x86_64::VirtAddr::new(virt_start)) {
+        if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(crate::mm::virt::higher_half::VirtAddr::new(virt_start)) {
             crate::security::dma::register_protected_range(phys_start.as_u64(), size as u64);
         }
 

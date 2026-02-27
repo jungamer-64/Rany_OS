@@ -1546,3 +1546,23 @@ fn test_mapping_iova_phys_distinct() {
     ctrl.free_iova(iova, size).expect("free");
 }
 
+
+#[test_case]
+fn test_ats_enable_requires_qi() {
+    let ctrl = IommuController::new(0x0, 0);
+    let device = DeviceId::new(0, 0, 1, 0);
+    
+    // 1. Try to enable ATS without QI enabled
+    ctrl.qi_enabled.store(false, Ordering::Release);
+    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::security::DeviceTrustLevel::Trusted);
+    assert!(!success, "ATS should not be enabled if QI is disabled");
+    
+    // 2. Enable QI support (mock)
+    ctrl.ecap |= ecap_bits::ECAP_QI;
+    ctrl.qi_enabled.store(true, Ordering::Release);
+    
+    // Now it should succeed
+    let success = ctrl.enable_ats_for_device(device, crate::io::iommu::security::DeviceTrustLevel::Trusted);
+    assert!(success, "ATS should be enabled if QI is enabled and device is trusted");
+    assert!(ctrl.is_ats_enabled(&device));
+}

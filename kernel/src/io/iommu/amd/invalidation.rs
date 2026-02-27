@@ -360,14 +360,6 @@ impl AmdIommuDriver {
         self.invalidate_all_device_entries()
     }
 
-    /// Lookup the domain ID for a device.
-    pub(crate) fn lookup_device_domain(&self, source_id: u16) -> Option<u16> {
-        let device_id = DeviceId::from_bdf(source_id);
-        match self.device_domains.lock() {
-            Ok(device_domains) => device_domains.get(&device_id).copied(),
-            Err(_) => None,
-        }
-    }
 
     /// Invalidate all pages in a domain.
     fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
@@ -402,17 +394,21 @@ impl AmdIommuDriver {
         for (idx, _unit) in self.units.iter().enumerate() {
             if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
                 if let Ok(mut state) = cmd_state.lock() {
+                    let sync_phys = state.sync_phys;
                     for devid in &device_ids {
                         let command = cmd::AmdCommand::invalidate_device_entry(*devid);
                         let _ = state.submit(command);
                     }
-                    // Submit a completion wait to flush all pending commands
-                    let completion = cmd::AmdCommand::completion_wait(
-                        state.sync_phys,
-                        state.seq.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1,
+                    // Submit a completion wait and wait for it
+                    let token = state.submit_and_wait_token(
+                        cmd::AmdCommand::completion_wait(
+                            sync_phys,
+                            0, // Dummy, submit_and_wait_token will override it
+                            false,
+                        ),
                         false,
-                    );
-                    let _ = state.submit(completion);
+                    )?;
+                    token.wait_blocking()?;
                 }
             }
         }

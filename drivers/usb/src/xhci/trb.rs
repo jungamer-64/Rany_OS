@@ -13,7 +13,6 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
-use alloc::vec;
 use kernel_api::types::DmaBuffer;
 
 use crate::{SetupPacket, SlotId, TransferStatus};
@@ -471,7 +470,7 @@ pub struct TrbRing {
     /// リングのエントリ数
     ring_size: usize,
     /// DMAバッファ (所有権保持用; dropで自動解放)
-    _dma_buf: Option<DmaBuffer>,
+    dma_buf: DmaBuffer,
     /// 現在のエンキュー位置
     pub(crate) enqueue_index: usize,
     /// 現在のデキュー位置
@@ -479,7 +478,7 @@ pub struct TrbRing {
     /// サイクルビット状態
     pub(crate) cycle_bit: bool,
     /// デバイス可視アドレス (IOMMU有効時はIOVA, それ以外は物理アドレス)
-    pub(crate) phys_addr: u64,
+    pub(crate) device_addr: u64,
 }
 
 // Safety: TrbRing のポインタはDMAバッファの寿命内で有効
@@ -487,6 +486,10 @@ unsafe impl Send for TrbRing {}
 
 impl TrbRing {
     /// 新しいリングを作成 (kernel_api DMAバッファ経由)
+    ///
+    /// # Security Note
+    /// ヒープ割り当てによるフォールバックは、IOMMU環境下で物理アドレスを
+    /// 取得できないため、セキュリティ上の理由から削除されました。
     pub fn new(size: usize) -> Self {
         let byte_size = size * core::mem::size_of::<Trb>();
         match kernel_api::services::kernel().alloc_dma(byte_size) {
@@ -509,37 +512,15 @@ impl TrbRing {
                 Self {
                     trb_ptr: virt_ptr,
                     ring_size: size,
-                    _dma_buf: Some(dma_buf),
+                    dma_buf,
                     enqueue_index: 0,
                     dequeue_index: 0,
                     cycle_bit: true,
-                    phys_addr: device_addr,
+                    device_addr,
                 }
             }
             Err(_) => {
-                // Fallback: ヒープ割り当て (DMAが利用不可の場合)
-                // 注意: これはIOMMU非対応・identity mappingの場合のみ安全
-                let trbs = vec![Trb::default(); size].into_boxed_slice();
-                let phys_addr = trbs.as_ptr() as u64;
-                let trb_ptr = Box::into_raw(trbs) as *mut Trb;
-
-                let last_idx = size - 1;
-                unsafe {
-                    core::ptr::write_volatile(
-                        trb_ptr.add(last_idx),
-                        Trb::link(phys_addr, true, false),
-                    );
-                }
-
-                Self {
-                    trb_ptr,
-                    ring_size: size,
-                    _dma_buf: None,
-                    enqueue_index: 0,
-                    dequeue_index: 0,
-                    cycle_bit: true,
-                    phys_addr,
-                }
+                panic!("[XHCI] Failed to allocate DMA for TRB Ring (size={})", size);
             }
         }
     }
@@ -576,7 +557,7 @@ impl TrbRing {
         trb.set_cycle_bit(self.cycle_bit);
         self.trbs_mut()[idx] = trb;
 
-        let trb_addr = self.phys_addr + (idx * 16) as u64;
+        let trb_addr = self.device_addr + (idx * 16) as u64;
         self.enqueue_index = idx + 1;
 
         Some(trb_addr)
@@ -584,12 +565,12 @@ impl TrbRing {
 
     /// 現在のエンキューポインタを取得
     pub fn enqueue_ptr(&self) -> u64 {
-        self.phys_addr + (self.enqueue_index * 16) as u64
+        self.device_addr + (self.enqueue_index * 16) as u64
     }
 
     /// リングのデバイス可視アドレスを取得
-    pub fn physical_address(&self) -> u64 {
-        self.phys_addr
+    pub fn device_address(&self) -> u64 {
+        self.device_addr
     }
 
     /// 現在のサイクルビットを取得

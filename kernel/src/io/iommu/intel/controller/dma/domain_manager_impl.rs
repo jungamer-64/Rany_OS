@@ -1,5 +1,5 @@
 use super::*;
-use crate::io::iommu::api::IommuDomain;
+use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::intel::controller::init::CapabilityManager;
 
 
@@ -84,7 +84,7 @@ impl DomainManager for IommuController {
             Self::attach_device_legacy(&mut *hw_guard, bus, devfn, domain_type, page_table_addr, domain_id)?;
         }
 
-        let _ = self.qi_invalidate_context_global();
+        let _ = self.invalidate_context_global_sync();
         self.invalidate_iotlb(domain_id);
 
         self.device_domains.lock().map_err(|_| IommuError::HardwareError)?.insert(device, domain_id);
@@ -99,7 +99,7 @@ impl DomainManager for IommuController {
         let domain_id = self.device_domains.lock().map_err(|_| IommuError::HardwareError)?.get(&device).copied();
         self.clear_hw_context_entry(bus, devfn, device)?;
 
-        let _ = self.qi_invalidate_context_global();
+        let _ = self.invalidate_context_global_sync();
         if let Some(did) = domain_id {
             self.invalidate_iotlb(did);
         }

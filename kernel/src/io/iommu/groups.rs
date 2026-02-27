@@ -225,8 +225,23 @@ impl IommuGroupManager {
         let mut first_hop = true;
 
         // 初期候補: 自身のファンクション 0 (多機能デバイス対応)
+        // 多機能デバイス自体がACS分離を提供していない場合、全ファンクションをマージする必要がある。
         let mut group_root_bus = current_bus;
         let mut group_root_dev = current_dev;
+
+        // Check if the device itself is a multifunction device and if it lacks ACS isolation
+        if let Some(header_type) = topology.read_header_type(current_bus, current_dev, 0) {
+            let is_multifunction = (header_type & 0x80) != 0;
+            if is_multifunction {
+                match topology.is_acs_isolation_enabled(current_bus, current_dev, 0) {
+                    Some(true) => { /* Functions are isolated, good */ }
+                    Some(false) | None => {
+                        // Functions are NOT isolated - they must share a group (root is func 0)
+                        // This is already the default for group_root_bus/dev
+                    }
+                }
+            }
+        }
 
         // PCIヒエラルキーをルートコンプレックスに向かって走査
         loop {
@@ -242,27 +257,19 @@ impl IommuGroupManager {
 
             if is_bridge {
                 // ブリッジの下流分離を確認 (ACS)
-                // NOTE: P2P通信を防ぐには Downstream Port での ACS が不可欠。
+                // P2P通信を防ぐには Downstream Port での ACS (Source Validation, P2P Redirect) が不可欠。
                 match topology.is_acs_isolation_enabled(current_bus, current_dev, current_func) {
                     Some(true) => {
                         // このブリッジで下流が分離されている。
-                        // ここより下のデバイスは、これ以上上位のグループにマージされる必要はない。
-                        // (ただし、このブリッジより上でもACSが必要な場合があるため、さらに上位を走査して
-                        //  非分離区間があればそちらにマージされる可能性がある。
-                        //  現在は「最初の分離ポイント」が見つかったらそこが境界とみなすロジックだが、
-                        //  正しくは「ルートまで全て分離されているか」を確認する。)
+                        // ただし、さらに上位のブリッジが非分離であれば、そちらのグループにマージされる。
                     }
                     Some(false) | None => {
-                        // 分離不能ブリッジ → グループのルートをこのブリッジ(のファンクション0)に引き上げる
+                        // 分離不能ブリッジ → グループのルートをこのブリッジ(のファンクション0)に引き上げる。
+                        // これにより、このブリッジの下流にある全デバイスが同一グループにマージされる。
                         group_root_bus = current_bus;
                         group_root_dev = current_dev;
                     }
                 }
-            } else if !first_hop {
-                // ブリッジではないがパスの途中にあるデバイス (通常ありえないが)
-                // 保守的にマージ対象とする
-                group_root_bus = current_bus;
-                group_root_dev = current_dev;
             }
 
             // バス0（ルートコンプレックス直下）に到達

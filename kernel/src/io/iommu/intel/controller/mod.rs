@@ -472,7 +472,8 @@ impl IommuController {
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
         if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_iotlb_global()
+            self.qi_invalidate_iotlb_global()?;
+            self.qi_wait_sync()
         } else {
             unsafe {
                 self.invalidate_iotlb_global();
@@ -487,7 +488,8 @@ impl IommuController {
     pub fn invalidate_context_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
         if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_context_global()
+            self.qi_invalidate_context_global()?;
+            self.qi_wait_sync()
         } else {
             // Register-based context invalidation
             unsafe {

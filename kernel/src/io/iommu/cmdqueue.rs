@@ -74,7 +74,7 @@ pub struct IommuCommand {
 }
 
 /// Completion slot for commands
-#[derive(Debug)]
+/// Completion slot for commands
 pub struct CompletionSlot {
     /// 0 = free, 1 = pending, 2 = done
     state: AtomicU8,
@@ -83,6 +83,17 @@ pub struct CompletionSlot {
     /// cancellation flag (0 = normal, 1 = canceled)
     canceled: AtomicU8,
     waker: AtomicWaker,
+}
+
+impl core::fmt::Debug for CompletionSlot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CompletionSlot")
+            .field("state", &self.state.load(Ordering::Relaxed))
+            .field("result", &self.result.load(Ordering::Relaxed))
+            .field("canceled", &self.canceled.load(Ordering::Relaxed))
+            .field("waker", &"<AtomicWaker>")
+            .finish()
+    }
 }
 
 // Result codes
@@ -278,7 +289,7 @@ impl core::future::Future for CommandCompletion {
 }
 
 /// CommandQueue holds sender/receiver and completion slots
-#[derive(Debug)]
+/// CommandQueue holds sender/receiver and completion slots
 pub struct CommandQueue {
     sender: BoundedSender<IommuCommand, DEFAULT_QUEUE_SIZE>,
     receiver: Mutex<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,
@@ -298,6 +309,18 @@ pub struct CommandQueue {
     cancel_attempts: AtomicUsize,
     reclaimed_count: AtomicUsize,
     send_backpressure_count: AtomicUsize,
+}
+
+impl core::fmt::Debug for CommandQueue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CommandQueue")
+            .field("next_alloc", &self.next_alloc.load(Ordering::Relaxed))
+            .field("numa_node", &self.numa_node)
+            .field("processed_count", &self.processed_count.load(Ordering::Relaxed))
+            .field("cancelled_count", &self.cancelled_count.load(Ordering::Relaxed))
+            .field("reclaimed_count", &self.reclaimed_count.load(Ordering::Relaxed))
+            .finish()
+    }
 }
 
 impl CommandQueue {

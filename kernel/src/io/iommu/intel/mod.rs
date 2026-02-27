@@ -38,12 +38,21 @@ use self::registry::get_iommu_registry;
 
 
 mod driver_ops;
-#[derive(Default)]
-pub struct IntelIommuDriver;
+#[derive(Default, Clone)]
+pub struct IntelIommuDriver {
+    /// Optional specific controller (used for tests/mocking)
+    controller: Option<Arc<controller::IommuController>>,
+}
 
 impl IntelIommuDriver {
     pub fn new() -> Self {
-        Self
+        Self { controller: None }
+    }
+
+    pub fn with_controller(controller: Arc<controller::IommuController>) -> Self {
+        Self {
+            controller: Some(controller),
+        }
     }
 
     pub fn register_driver() {

@@ -30,58 +30,25 @@ use spin::Once;
 
 use crate::io::iommu::fault_log::FaultRecord;
 use crate::security::audit::{AuditEvent, AuditEventType};
-use crate::security::dma::{is_page_protected, register_protected_page, unregister_protected_page};
+pub(crate) use crate::security::dma::{is_page_protected, register_protected_page, unregister_protected_page, range_overlaps_protected};
 use x86_64::PhysAddr;
 
 // ============================================================================
 // Kernel Protection & DMA Validation
 // ============================================================================
 
-/// Maximum number of protected physical memory regions.
-/// Increased from 16 to 1024 to support multiple IOMMUs, APICs, and dynamic page tables.
-const MAX_PROTECTED_REGIONS: usize = 1024;
-
-struct ProtectedRegion {
-    start: u64,
-    end: u64,
-    name: &'static str,
-}
-
-static PROTECTED_REGIONS: RwLock<alloc::vec::Vec<ProtectedRegion>> = RwLock::new(alloc::vec::Vec::with_capacity(32));
-
 /// Register a physical memory region that should be protected from DMA access.
 ///
 /// This is used to protect MMIO regions like IOMMU registers, APIC, etc.
 pub fn register_protected_region(start: u64, size: u64, name: &'static str) {
-    let end = start.saturating_add(size);
-    
-    // Also mark in global bitmap for O(1) check of small regions
-    let mut current = (start / 4096) * 4096;
-    while current < end {
-        register_protected_page(current);
-        if let Some(next) = current.checked_add(4096) {
-            current = next;
-        } else {
-            break;
-        }
-    }
-
-    let mut regions = PROTECTED_REGIONS.write();
-    if regions.len() < MAX_PROTECTED_REGIONS {
-        regions.push(ProtectedRegion { start, end, name });
-        log::info!(
-            "[IOMMU][SECURITY] Registered protected region '{}': {:#x}-{:#x}",
-            name,
-            start,
-            end
-        );
-    } else {
-        log::error!(
-            "[IOMMU][SECURITY] Failed to register protected region '{}': too many regions (max {})",
-            name,
-            MAX_PROTECTED_REGIONS
-        );
-    }
+    // Delegates to security::dma which now manages the consolidated registry
+    crate::security::dma::register_protected_range(start, size);
+    log::info!(
+        "[IOMMU][SECURITY] Registered protected region '{}': {:#x}-{:#x}",
+        name,
+        start,
+        start.saturating_add(size)
+    );
 }
 
 /// Initialize IOMMU security subsystem with default protected regions.
@@ -171,19 +138,19 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
     }
 
     // 2. Check for overlap with registered protected regions and page bitmap
+    if range_overlaps_protected(start, size) {
+        log::error!(
+            "[IOMMU][SECURITY] DMA mapping overlaps protected memory range: {:#x}-{:#x}",
+            start,
+            end
+        );
+        return Err(IommuError::InvalidAddress);
+    }
+
+    // 3. Check for overlap with IOMMU page table registry (redundant but safe)
     let page_size = 4096;
     let mut current = (start / page_size) * page_size;
     while current < end {
-        // Fast O(1) check via bitmap (for regions < 64GB)
-        if is_page_protected(current) {
-            log::error!(
-                "[IOMMU][SECURITY] DMA mapping overlaps protected physical page at {:#x}",
-                current
-            );
-            return Err(IommuError::InvalidAddress);
-        }
-
-        // Check for overlap with IOMMU page table registry (redundant but safe)
         if crate::io::iommu::page_table_pool::is_page_table(current) {
             log::error!(
                 "[IOMMU][SECURITY] DMA mapping overlaps active IOMMU page table at {:#x}",
@@ -191,7 +158,6 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
             );
             return Err(IommuError::InvalidAddress);
         }
-
         if let Some(next) = current.checked_add(page_size) {
             current = next;
         } else {
@@ -199,38 +165,16 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
         }
     }
 
-    // 3. Fallback for regions above 64GB (unlikely but supported)
-    {
-        let regions = PROTECTED_REGIONS.read();
-        for region in regions.iter() {
-            if ranges_overlap(start, end, region.start, region.end) {
-                log::error!(
-                    "[IOMMU][SECURITY] DMA mapping overlaps protected region '{}': {:#x}-{:#x} vs {:#x}-{:#x}",
-                    region.name,
-                    start,
-                    end,
-                    region.start,
-                    region.end
-                );
-                return Err(IommuError::InvalidAddress);
-            }
-        }
-    }
-
-    // 4. Best-effort bounds check against known physical memory
+    // 4. Strict bounds check against known physical memory
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys != 0 && end > max_phys {
-        // Use saturating_add to prevent overflow during check
-        let threshold = max_phys.saturating_add(1024 * 1024 * 1024); // 1GB beyond managed RAM
-        if end > threshold {
-            log::error!(
-                "[IOMMU][SECURITY] DMA mapping too far outside known RAM: {:#x}-{:#x} (max {:#x})",
-                start,
-                end,
-                max_phys
-            );
-            return Err(IommuError::InvalidAddress);
-        }
+        log::error!(
+            "[IOMMU][SECURITY] DMA mapping outside known RAM: {:#x}-{:#x} (max {:#x})",
+            start,
+            end,
+            max_phys
+        );
+        return Err(IommuError::InvalidAddress);
     }
 
     Ok(())
@@ -1684,7 +1628,7 @@ fn invalidate_device_iotlb(source_id: u16) -> Result<(), IommuError> {
     Ok(())
 }
 
-use crate::io::iommu::types::IommuError;
+use crate::io::iommu::types::{DeviceId, IommuError};
 
 // ============================================================================
 // Identity Mapping & Global Controls

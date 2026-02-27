@@ -32,6 +32,16 @@ impl IommuController {
         use crate::io::iommu::security::{
             AtsChangeReason, DeviceTrustLevel, SecurityEvent,
         };
+        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+
+        // Security: ATS requires Queued Invalidation for proper Device-TLB flushing.
+        if !self.is_queued_invalidation_enabled() {
+            log::error!(
+                "[IOMMU] Blocked ATS for device {:04X}:{:02X}.{:X} - QI is disabled",
+                device.bus, device.device, device.function
+            );
+            return false;
+        }
 
         // Block ATS for untrusted devices
         if trust_level == DeviceTrustLevel::Untrusted {

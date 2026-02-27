@@ -674,6 +674,7 @@ impl Default for DmaResourceRegistry {
 /// No heap allocation on hot path (map/unmap).
 ///
 /// See [MappingSlab] documentation for implementation details.
+#[derive(Debug)]
 struct DomainShard {
     mappings: MappingSlab,
 }

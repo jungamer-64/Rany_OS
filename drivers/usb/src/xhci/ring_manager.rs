@@ -99,8 +99,8 @@ impl ManagedRing {
     }
 
     /// 物理アドレスを取得
-    pub fn physical_address(&self) -> u64 {
-        self.ring.physical_address()
+    pub fn device_address(&self) -> u64 {
+        self.ring.device_address()
     }
 
     /// TRBをエンキュー
@@ -114,7 +114,7 @@ impl ManagedRing {
         }
 
         // TRBを書き込み
-        let trb_addr = self.ring.physical_address() + (self.enqueue_index as u64) * 16;
+        let trb_addr = self.ring.device_address() + (self.enqueue_index as u64) * 16;
 
         let trb_ptr = trb_addr as *mut Trb;
         let mut trb_with_cycle = trb;
@@ -136,7 +136,7 @@ impl ManagedRing {
 
     /// TRBをデキュー（イベントリング用）
     pub fn dequeue(&mut self) -> Option<Trb> {
-        let trb_addr = self.ring.physical_address() + (self.dequeue_index as u64) * 16;
+        let trb_addr = self.ring.device_address() + (self.dequeue_index as u64) * 16;
 
         let trb_ptr = trb_addr as *const Trb;
         let trb = hal::mmio::volatile_read::<Trb>(trb_ptr as usize);
@@ -159,12 +159,12 @@ impl ManagedRing {
     /// リンクTRBを設定
     fn set_link_trb(&mut self) {
         let link_trb = Trb {
-            parameter: self.ring.physical_address(),
+            parameter: self.ring.device_address(),
             status: 0,
             control: (TrbType::Link as u32) << 10 | if self.cycle_bit { 1 } else { 0 } | (1 << 1), // Toggle Cycle
         };
 
-        let link_addr = self.ring.physical_address() + ((self.size - 1) as u64) * 16;
+        let link_addr = self.ring.device_address() + ((self.size - 1) as u64) * 16;
         let trb_ptr = link_addr as *mut Trb;
         hal::mmio::volatile_write::<Trb>(trb_ptr as usize, link_trb);
     }
@@ -182,12 +182,12 @@ impl ManagedRing {
 
     /// 現在のデキューポインタを取得
     pub fn dequeue_pointer(&self) -> u64 {
-        self.ring.physical_address() + (self.dequeue_index as u64) * 16
+        self.ring.device_address() + (self.dequeue_index as u64) * 16
     }
 
     /// 現在のエンキューポインタを取得
     pub fn enqueue_pointer(&self) -> u64 {
-        self.ring.physical_address() + (self.enqueue_index as u64) * 16
+        self.ring.device_address() + (self.enqueue_index as u64) * 16
     }
 
     /// サイクルビットを取得
@@ -207,7 +207,7 @@ impl XhciRingManager {
 
         // ERSTを作成
         let mut erst = vec![ErstEntry::default(); 1].into_boxed_slice();
-        erst[0].ring_segment_base = event_ring.physical_address();
+        erst[0].ring_segment_base = event_ring.device_address();
         erst[0].ring_segment_size = EVENT_RING_SIZE as u16;
 
         // 転送リングの初期化（遅延割り当て）
@@ -231,7 +231,7 @@ impl XhciRingManager {
 
     /// コマンドリングの物理アドレスを取得
     pub fn command_ring_address(&self) -> u64 {
-        self.command_ring.lock().physical_address()
+        self.command_ring.lock().device_address()
     }
 
     /// コマンドリングのサイクルビットを取得
@@ -250,7 +250,7 @@ impl XhciRingManager {
 
     /// イベントリングの物理アドレスを取得
     pub fn event_ring_address(&self) -> u64 {
-        self.event_ring.lock().physical_address()
+        self.event_ring.lock().device_address()
     }
 
     /// ERSTの物理アドレスを取得
@@ -292,12 +292,12 @@ impl XhciRingManager {
             // 既存のリングの物理アドレスを返す
             return rings[slot_index][ep_index]
                 .as_ref()
-                .map(|r| r.physical_address());
+                .map(|r| r.device_address());
         }
 
         // 新しい転送リングを作成
         let ring = Box::new(ManagedRing::new(TRANSFER_RING_SIZE, RingType::Transfer));
-        let addr = ring.physical_address();
+        let addr = ring.device_address();
         rings[slot_index][ep_index] = Some(ring);
 
         Some(addr)
@@ -314,7 +314,7 @@ impl XhciRingManager {
 
         self.transfer_rings.lock()[slot_index][ep_index]
             .as_ref()
-            .map(|r| r.physical_address())
+            .map(|r| r.device_address())
     }
 
     /// 転送TRBをエンキュー

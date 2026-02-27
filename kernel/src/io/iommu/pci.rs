@@ -13,14 +13,14 @@ use super::groups::{get_iommu_group_manager, RealPciTopology};
 use super::registry::get_iommu_driver;
 #[cfg(not(test))]
 use super::types::{DeviceId, IommuDomainType};
-#[cfg(not(test))]
-use spin::Mutex;
 use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::intel::registry::get_iommu_registry;
+#[cfg(not(test))]
+use spin::Mutex;
 
 #[cfg(not(test))]
 #[allow(unused_imports)]
-use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
+use pci_driver::{pcie_ext_config, pcie_ext_manager, AtsController, PcieBdf};
 
 #[cfg(not(test))]
 static AHCI_PASSTHROUGH_DOMAIN: Mutex<Option<u16>> = Mutex::new(None);
@@ -30,51 +30,6 @@ fn is_ahci_legacy(device: &crate::io::pci::PciDeviceInfo) -> bool {
     device.class_code.class == 0x01 && device.class_code.subclass == 0x06
 }
 
-#[cfg(not(test))]
-fn desired_domain_type(device: &crate::io::pci::PciDeviceInfo) -> IommuDomainType {
-    if is_ahci_legacy(device) {
-        IommuDomainType::Passthrough
-    } else {
-        IommuDomainType::Translated
-    }
-}
-
-#[cfg(not(test))]
-fn domain_type_str(domain_type: IommuDomainType) -> &'static str {
-    match domain_type {
-        IommuDomainType::Translated => "Translated",
-        IommuDomainType::Passthrough => "Passthrough",
-    }
-}
-
-#[cfg(not(test))]
-fn get_or_create_ahci_passthrough_domain(
-    driver: &alloc::sync::Arc<crate::io::iommu::IommuBackend>,
-) -> Option<u16> {
-    {
-        let guard = AHCI_PASSTHROUGH_DOMAIN.lock();
-        if let Some(domain_id) = *guard {
-            return Some(domain_id);
-        }
-    }
-
-    match driver.create_domain(None, IommuDomainType::Passthrough) {
-        Ok(domain_id) => {
-            let mut guard = AHCI_PASSTHROUGH_DOMAIN.lock();
-            if guard.is_none() {
-                *guard = Some(domain_id);
-            }
-            Some((*guard).unwrap_or(domain_id))
-        }
-        Err(e) => {
-            log::error!(
-                "[IOMMU] Failed to create AHCI passthrough domain: {:?}",
-                e
-            );
-            None
-        }
-    }
-}
 // ============================================================================
 // 【設計書 7.2】PCIデバイスへのIOMMU自動設定
 // ============================================================================
@@ -113,7 +68,9 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     let pcie_ext_manager = match pcie_ext_manager() {
         Some(manager) => manager,
         None => {
-            log::error!("[IOMMU][SECURITY] PCIe ext manager not found - cannot verify ACS topology");
+            log::error!(
+                "[IOMMU][SECURITY] PCIe ext manager not found - cannot verify ACS topology"
+            );
             return None;
         }
     };
@@ -126,61 +83,53 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     );
 
     // SECURITY: Use Translation by default for all devices.
-    // AHCI devices may use Passthrough for legacy compatibility, but ONLY if they are Trusted.
-    let mut domain_type = IommuDomainType::Translated;
-    if is_ahci_legacy(device) {
-        let trust_level = determine_trust_level(pcie_ext_manager, device);
-        if trust_level == crate::io::iommu::security::DeviceTrustLevel::Trusted {
-            domain_type = IommuDomainType::Passthrough;
-        } else {
-             log::warn!(
-                "[IOMMU][SECURITY] Untrusted AHCI device {:?} - forcing Translation for safety",
-                device_id
-            );
-        }
-    }
+    // AHCI devices NO LONGER use Passthrough even if trusted, to prevent DMA attacks
+    // from compromised storage controllers.
+    let domain_type = IommuDomainType::Translated;
 
     // Resolve controller index (relevant for Intel multi-IOMMU systems)
     let controller_idx = match **driver {
         crate::io::iommu::IommuBackend::Intel(_) => {
-            let registry = get_iommu_registry().expect("Intel registry must exist if backend is Intel");
-            registry.find_controller_index_for_device(
-                device_id.segment,
-                device_id.bus,
-                device_id.device,
-                device_id.function,
-            ).unwrap_or(0)
+            let registry =
+                get_iommu_registry().expect("Intel registry must exist if backend is Intel");
+            registry
+                .find_controller_index_for_device(
+                    device_id.segment,
+                    device_id.bus,
+                    device_id.device,
+                    device_id.function,
+                )
+                .unwrap_or(0)
         }
         crate::io::iommu::IommuBackend::Amd(_) => 0, // AMD driver manages multiple units internally
     };
 
-    let (iommu_group, newly_created) =
-        match iommu_group_manager.find_or_create_group(
-            device_id,
-            driver,
-            controller_idx,
-            &RealPciTopology::new(pcie_ext_manager),
-            domain_type,
-        ) {
-            Ok(group_info) => group_info,
-            Err(e) => {
-                log::error!(
-                    "[IOMMU] Failed to get/create IOMMU group for device {:?}: {:?}",
-                    device_id,
-                    e
-                );
-                return None;
-            }
-        };
+    let (iommu_group, newly_created) = match iommu_group_manager.find_or_create_group(
+        device_id,
+        driver,
+        controller_idx,
+        &RealPciTopology::new(pcie_ext_manager),
+        domain_type,
+    ) {
+        Ok(group_info) => group_info,
+        Err(e) => {
+            log::error!(
+                "[IOMMU] Failed to get/create IOMMU group for device {:?}: {:?}",
+                device_id,
+                e
+            );
+            return None;
+        }
+    };
 
     let domain_id = iommu_group.domain_id;
 
     // ATS support check (Intel specific for now in this function, but safe to call)
     if let crate::io::iommu::IommuBackend::Intel(ref _intel_ctrl) = **driver {
-         let registry = get_iommu_registry().expect("Intel registry must exist");
-         if let Some(controller) = registry.controllers.get(controller_idx) {
-             try_enable_ats(controller, pcie_ext_manager, device, device_id);
-         }
+        let registry = get_iommu_registry().expect("Intel registry must exist");
+        if let Some(controller) = registry.controllers.get(controller_idx) {
+            try_enable_ats(controller, pcie_ext_manager, device, device_id);
+        }
     }
 
     if let Err(e) = driver.attach_device(device_id, domain_id) {
@@ -242,9 +191,7 @@ fn try_enable_ats(
     }
 
     if let Some(config) = pcie_ext_config() {
-        if let Ok(ats_ctrl) =
-            AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf))
-        {
+        if let Ok(ats_ctrl) = AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf)) {
             if let Err(e) = ats_ctrl.enable_ats(0) {
                 log::warn!(
                     "[IOMMU] Failed to enable ATS for device {:?}: {:?}",
@@ -252,7 +199,11 @@ fn try_enable_ats(
                     e
                 );
             } else {
-                log::info!("[IOMMU] Enabled ATS for device {:?} (Trust: {:?})", device_id, trust_level);
+                log::info!(
+                    "[IOMMU] Enabled ATS for device {:?} (Trust: {:?})",
+                    device_id,
+                    trust_level
+                );
                 controller.enable_ats_for_device(device_id, trust_level);
             }
         }
@@ -323,89 +274,6 @@ fn log_device_protection(
             domain_id
         );
     }
-}
-
-#[cfg(not(test))]
-fn setup_iommu_for_pci_device_with_driver(
-    device: &mut crate::io::pci::PciDeviceInfo,
-) -> Option<u16> {
-    if !is_iommu_enabled() {
-        return None;
-    }
-
-    let driver = get_iommu_driver()?;
-    let domain_type = desired_domain_type(device);
-    let device_id = DeviceId::new(
-        device.segment,
-        device.bdf.bus(),
-        device.bdf.device(),
-        device.bdf.function(),
-    );
-
-    if let Some(existing) = device.iommu_domain_id {
-        if driver.attach_device(device_id, existing).is_ok() {
-            return Some(existing);
-        }
-    }
-
-    if domain_type == IommuDomainType::Translated {
-        let default_domain = 0u16;
-        if driver.attach_device(device_id, default_domain).is_ok() {
-            device.iommu_domain_id = Some(default_domain);
-            log::info!(
-                "[IOMMU] Protected PCI device {:?} in default domain {} ({} / no ACS grouping)",
-                device_id,
-                default_domain,
-                domain_type_str(domain_type)
-            );
-            return Some(default_domain);
-        }
-    } else if let Some(domain_id) = get_or_create_ahci_passthrough_domain(driver) {
-        if driver.attach_device(device_id, domain_id).is_ok() {
-            device.iommu_domain_id = Some(domain_id);
-            log::info!(
-                "[IOMMU] Protected PCI device {:?} in shared domain {} ({} / AHCI legacy)",
-                device_id,
-                domain_id,
-                domain_type_str(domain_type)
-            );
-            return Some(domain_id);
-        }
-    }
-
-    let domain_id = match driver.create_domain(None, domain_type) {
-        Ok(domain_id) => domain_id,
-        Err(e) => {
-            log::error!(
-                "[IOMMU] Failed to create {} domain for device {:?}: {:?}",
-                domain_type_str(domain_type),
-                device_id,
-                e
-            );
-            return None;
-        }
-    };
-
-    if let Err(e) = driver.attach_device(device_id, domain_id) {
-        log::error!(
-            "[IOMMU] Attach failed for device {:?} to domain {} ({}): {:?}",
-            device_id,
-            domain_id,
-            domain_type_str(domain_type),
-            e
-        );
-        return None;
-    }
-
-    device.iommu_domain_id = Some(domain_id);
-    log::info!(
-        "[IOMMU] Protected PCI device {:?} in per-device domain {} ({} / no ACS grouping)",
-        device_id,
-        domain_id,
-        domain_type_str(domain_type)
-    );
-
-    Some(domain_id)
 }
 
 /// すべてのPCIデバイスにIOMMUドメインを設定

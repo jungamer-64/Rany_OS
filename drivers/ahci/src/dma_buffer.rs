@@ -29,9 +29,9 @@ impl AhciDmaReadBuffer {
         })
     }
 
-    /// Get physical address
-    pub fn phys_addr(&self) -> Option<PhysAddr> {
-        Some(PhysAddr::new_truncate(self.buffer.physical_address()))
+    /// Get device-visible address (IOVA)
+    pub fn device_addr(&self) -> Option<PhysAddr> {
+        Some(PhysAddr::new_truncate(self.buffer.device_address()))
     }
 
     /// Prepare for DMA transfer (invalidate cache if needed)
@@ -88,9 +88,9 @@ impl AhciDmaWriteBuffer {
         })
     }
 
-    /// Get physical address
-    pub fn phys_addr(&self) -> Option<PhysAddr> {
-        Some(PhysAddr::new_truncate(self.buffer.physical_address()))
+    /// Get device-visible address (IOVA)
+    pub fn device_addr(&self) -> Option<PhysAddr> {
+        Some(PhysAddr::new_truncate(self.buffer.device_address()))
     }
 
     /// Prepare transfer
@@ -122,8 +122,8 @@ impl AhciIdentifyBuffer {
         Some(Self { buffer })
     }
 
-    pub fn phys_addr(&self) -> PhysAddr {
-        PhysAddr::new_truncate(self.buffer.physical_address())
+    pub fn device_addr(&self) -> PhysAddr {
+        PhysAddr::new_truncate(self.buffer.device_address())
     }
 
     pub fn finish_and_get_words(&self) -> [u16; 256] {

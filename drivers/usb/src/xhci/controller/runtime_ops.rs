@@ -116,7 +116,7 @@ impl XhciController {
         }
 
         let ring = Box::new(TrbRing::new(TRANSFER_RING_SIZE));
-        let ring_addr = ring.physical_address();
+        let ring_addr = ring.device_address();
 
         let mut transfer_rings = self.transfer_rings.lock();
         if let Some(slot_rings) = transfer_rings.get_mut(slot_id.as_usize()) {

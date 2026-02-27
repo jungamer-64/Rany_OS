@@ -19,9 +19,16 @@ PCIeトポロジーに基づいた **IOMMU Grouping** ロジックの実装完�
 - **Multifunction Grouping**: 多機能デバイスのファンクション間でのアイソレーションが不完全な場合の自動グルーピング
 - **Generic Backend Support**: Intel VT-d / AMD-Vi の両方でグルーピングをサポート
 
-### 3. セキュリティ強化: カーネル保護 ✅ (2026-02-27追加)
-- **Kernel Image Protection**: すべてのDMAマッピング要求（Intel/AMD両対応）に対し、カーネル物理アドレス範囲との重複を厳格にチェック
-- **Security Module Integration**: `security.rs` への保護ロジックの集約と一貫したバリデーションの適用
+### 3. セキュリティ強化: カーネル・リソース保護 ✅ (2026-02-27更新)
+- **Kernel Image Protection**: すべてのDMAマッピング要求に対し、カーネル物理アドレス範囲との重複を厳格にチェック。非連続マッピングへの対応を強化。
+- **Dynamic Resource Protection**:
+  - **IOMMU Page Tables**: `PageTablePool`経由で割り当てられたすべてのページテーブルを自動的にDMA保護
+  - **CPU Page Tables**: `PageTableManager`経由で割り当てられたすべてのページテーブルを自動的にDMA保護
+  - **Kernel Stacks**: タスク作成時に割り当てられたカーネルスタックを自動的にDMA保護
+  - **Hardware Tables**: Root Table, Context Table, Interrupt Remapping Tableを自動的にDMA保護
+- **Bitmap-based Validation**: 物理ページビットマップ（最大64GB対応）によるO(1)の高速DMAバリデーション
+- **Interrupt Remapping Security**: Source ID検証（SVT/SQ）により、デバイスによる他デバイス割り込みの偽装を防止
+- **Security Module Integration**: `security::dma` モジュールへの保護ロジックの集約と一貫したバリデーションの適用
 
 ### 4. ページテーブル管理 ✅
 - **PageTablePool**: NUMA-awareなページテーブルリサイクル

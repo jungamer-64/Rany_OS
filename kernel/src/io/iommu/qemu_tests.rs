@@ -1572,7 +1572,8 @@ pub fn wave2_group_creation_basic_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 1, 0);
 
-    let (group, newly_created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo, IommuBackend::IntelVtd, IommuDomainType::Translated) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group, newly_created) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(result) => result,
         Err(_) => return false,
     };
@@ -1598,11 +1599,12 @@ pub fn wave2_group_multifunction_same_group_smoke() -> bool {
     let dev0 = DeviceId::new(0, 0, 2, 0);
     let dev1 = DeviceId::new(0, 0, 2, 1);
 
-    let (group0, created0) = match mgr.find_or_create_group(dev0, &ctrl, 0, &topo, IommuDomainType::Translated) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group0, created0) = match mgr.find_or_create_group(dev0, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group1, created1) = match mgr.find_or_create_group(dev1, &ctrl, 0, &topo, IommuDomainType::Translated) {
+    let (group1, created1) = match mgr.find_or_create_group(dev1, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1629,11 +1631,12 @@ pub fn wave2_group_acs_isolated_separation_smoke() -> bool {
     let dev_a = DeviceId::new(0, 1, 0, 0);
     let dev_b = DeviceId::new(0, 2, 0, 0);
 
-    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &ctrl, 0, &topo) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &ctrl, 0, &topo) {
+    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1656,11 +1659,12 @@ pub fn wave2_group_non_acs_bridge_shared_group_smoke() -> bool {
     let dev_b = DeviceId::new(0, 1, 1, 0);
     let expected_group_root = DeviceId::new(0, 0, 1, 0);
 
-    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &ctrl, 0, &topo) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group_a, created_a) = match mgr.find_or_create_group(dev_a, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &ctrl, 0, &topo) {
+    let (group_b, created_b) = match mgr.find_or_create_group(dev_b, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1689,7 +1693,8 @@ pub fn wave2_group_non_acs_chain_promotes_highest_nonisolated_bridge_smoke() -> 
     let highest_non_acs_bridge = DeviceId::new(0, 0, 1, 0);
     let lower_bridge = DeviceId::new(0, 1, 2, 0);
 
-    let (group, _created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group, _created) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1710,7 +1715,8 @@ pub fn wave2_group_topology_gap_conservative_fallback_smoke() -> bool {
     let dev = DeviceId::new(0, 2, 0, 0);
     let expected_group_root = DeviceId::new(0, 1, 2, 0);
 
-    let (group, created) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group, created) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1729,11 +1735,12 @@ pub fn wave2_group_reuse_for_same_group_devices_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 3, 0);
 
-    let (group_first, created_first) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group_first, created_first) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group_second, created_second) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group_second, created_second) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1758,8 +1765,8 @@ pub fn wave2_group_poisoned_lock_returns_error_smoke() -> bool {
     topo.add_endpoint(0, 4, 0);
     let ctrl = IommuController::new(0x0, 0);
     let dev = DeviceId::new(0, 0, 4, 0);
-
-    mgr.find_or_create_group(dev, &ctrl, 0, &topo).err() == Some(IommuError::Poisoned)
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated).err() == Some(IommuError::Poisoned)
 }
 
 // ============================================================================
@@ -1775,8 +1782,9 @@ pub fn wave2_group_full_flow_discovery_to_attach_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 5, 0);
 
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
     // 1. Group discovery creates domain
-    let (group, _) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let (group, _) = match mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1806,11 +1814,12 @@ pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
     let dev0 = DeviceId::new(0, 0, 6, 0);
     let dev1 = DeviceId::new(0, 0, 6, 1);
 
-    let (group0, _) = match mgr.find_or_create_group(dev0, &ctrl, 0, &topo) {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group0, _) = match mgr.find_or_create_group(dev0, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
-    let (group1, _) = match mgr.find_or_create_group(dev1, &ctrl, 0, &topo) {
+    let (group1, _) = match mgr.find_or_create_group(dev1, &backend, 0, &topo, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1844,7 +1853,8 @@ pub fn wave2_group_device_detach_smoke() -> bool {
     let mgr = IommuGroupManager::new();
     let dev = DeviceId::new(0, 0, 7, 0);
 
-    let (group, _) = match mgr.find_or_create_group(dev, &ctrl, 0, &topo) {
+    let backend = crate::io::iommu::IommuBackend::Intel(IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    let (group, _) = match mgr.find_or_create_group(&backend, &dev, IommuDomainType::Translated) {
         Ok(r) => r,
         Err(_) => return false,
     };
@@ -1873,7 +1883,8 @@ pub fn wave2_group_poisoned_device_to_group_returns_error_smoke() -> bool {
     let ctrl = IommuController::new(0x0, 0);
     let dev = DeviceId::new(0, 0, 8, 0);
 
-    if mgr.find_or_create_group(dev, &ctrl, 0, &topo).is_err() {
+    let backend = crate::io::iommu::IommuBackend::Intel(crate::io::iommu::intel::IntelIommuDriver::with_controller(alloc::sync::Arc::new(ctrl)));
+    if mgr.find_or_create_group(dev, &backend, 0, &topo, IommuDomainType::Translated).is_err() {
         return false;
     }
 

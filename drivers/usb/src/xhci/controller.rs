@@ -13,7 +13,6 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Waker;
@@ -203,21 +202,15 @@ impl XhciController {
                     let dev_addr = dma_buf.device_address();
                     unsafe {
                         let entry = &mut *ptr;
-                        entry.ring_segment_base = event_ring.physical_address();
+                        entry.ring_segment_base = event_ring.device_address();
                         entry.ring_segment_size = EVENT_RING_SIZE as u16;
                         entry.reserved = [0u8; 6];
                     }
                     (ptr, dev_addr, Some(dma_buf))
                 }
                 Err(_) => {
-                    // Fallback: ヒープ割り当て
-                    let mut erst = vec![ErstEntry::default(); 1].into_boxed_slice();
-                    erst[0].ring_segment_base = event_ring.physical_address();
-                    erst[0].ring_segment_size = EVENT_RING_SIZE as u16;
-                    let ptr = erst.as_mut_ptr();
-                    let addr = ptr as u64;
-                    core::mem::forget(erst);
-                    (ptr, addr, None)
+                    log::error!("[XHCI] Failed to allocate DMA for ERST");
+                    return Err(UsbError::Other("Failed to allocate DMA for ERST".into()));
                 }
             };
 
@@ -235,12 +228,8 @@ impl XhciController {
                     (ptr, dev_addr, Some(dma_buf))
                 }
                 Err(_) => {
-                    // Fallback: ヒープ割り当て
-                    let dcbaa = vec![0u64; dcbaa_entries].into_boxed_slice();
-                    let ptr = dcbaa.as_ptr() as *mut u64;
-                    let addr = ptr as u64;
-                    core::mem::forget(dcbaa);
-                    (ptr, addr, None)
+                    log::error!("[XHCI] Failed to allocate DMA for DCBAA");
+                    return Err(UsbError::Other("Failed to allocate DMA for DCBAA".into()));
                 }
             };
 
@@ -295,7 +284,7 @@ impl XhciController {
 
         // コマンドリングを設定
         let cmd_ring = self.command_ring.lock();
-        let crcr_val = cmd_ring.physical_address() | 1; // RCS = 1
+        let crcr_val = cmd_ring.device_address() | 1; // RCS = 1
         drop(cmd_ring);
         self.write_op_64(CRCR, crcr_val);
 
@@ -306,7 +295,7 @@ impl XhciController {
         self.write_runtime(ERSTSZ, 1);
 
         // ERDP
-        self.write_runtime_64(ERDP, event_ring.physical_address());
+        self.write_runtime_64(ERDP, event_ring.device_address());
 
         // ERSTBA (デバイス可視アドレスで)
         self.write_runtime_64(ERSTBA, self.erst_device_addr);
@@ -585,7 +574,7 @@ impl XhciController {
         }
 
         // ERDPを更新
-        let dequeue_ptr = event_ring.phys_addr + (event_ring.dequeue_index * 16) as u64;
+        let dequeue_ptr = event_ring.device_addr + (event_ring.dequeue_index * 16) as u64;
         drop(event_ring);
         self.write_runtime_64(ERDP, dequeue_ptr | 0x8); // EHB
     }

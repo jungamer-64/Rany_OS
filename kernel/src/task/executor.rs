@@ -293,7 +293,7 @@ fn dispatch_iommu_command(
             Ok(0)
         }
         IommuCommandKind::InvalidateIotlbGlobal => {
-            unsafe { ctrl.invalidate_iotlb_global(); }
+            let _ = ctrl.invalidate_iotlb_global_sync();
             Ok(0)
         }
         IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {

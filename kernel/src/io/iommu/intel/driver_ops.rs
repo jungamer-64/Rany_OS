@@ -4,10 +4,16 @@ use super::*;
 mod domain_query;
 impl IntelIommuDriver {
     pub(crate) fn is_enabled(&self) -> bool {
+        if self.controller.is_some() {
+            return true;
+        }
         get_iommu_registry().map_or(false, |r| !r.controllers.is_empty())
     }
 
     pub(crate) fn enable(&self) -> Result<(), IommuError> {
+        if let Some(ref controller) = self.controller {
+            unsafe { return controller.enable(); }
+        }
         let registry = self.registry()?;
         for (_idx, controller) in registry.controllers.iter().enumerate() {
             unsafe {
@@ -18,6 +24,9 @@ impl IntelIommuDriver {
     }
 
     pub(crate) fn disable(&self) -> Result<(), IommuError> {
+        if let Some(ref controller) = self.controller {
+            unsafe { return controller.disable(); }
+        }
         let registry = self.registry()?;
         for (_idx, controller) in registry.controllers.iter().enumerate() {
             unsafe {
@@ -28,6 +37,10 @@ impl IntelIommuDriver {
     }
 
     pub(crate) fn handle_fault(&self) {
+        if let Some(ref controller) = self.controller {
+            controller.process_faults();
+            return;
+        }
         if let Ok(registry) = self.registry() {
             for controller in &registry.controllers {
                 controller.process_faults();
@@ -97,6 +110,9 @@ impl IntelIommuDriver {
     }
 
     pub(crate) fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {
+        if let Some(ref controller) = self.controller {
+            return controller.get_domain_for_device(*device).map(|d| d.unwrap_or(0));
+        }
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
             return Err(IommuError::NotPresent);
@@ -311,6 +327,18 @@ impl IntelIommuDriver {
     ) -> Result<u64, IommuError> {
         validate_dma_params(phys_addr, size)?;
 
+        if let Some(ref controller) = self.controller {
+            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
+                if let Some(domain_arc) = controller.domain(domain_id) {
+                    let iova = allocate_iova_for_device(controller, device, size)?;
+                    return apply_mapping_sync(
+                        controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
+                    );
+                }
+            }
+            return Err(IommuError::DomainNotFound);
+        }
+
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
             return Err(IommuError::NotPresent);
@@ -366,6 +394,15 @@ impl IntelIommuDriver {
         iova: u64,
         size: u64,
     ) -> Result<(), IommuError> {
+        if let Some(ref controller) = self.controller {
+            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
+                if let Some(domain_arc) = controller.domain(domain_id) {
+                    return Self::perform_unmap(controller, &domain_arc, iova, size);
+                }
+            }
+            return Err(IommuError::DomainNotFound);
+        }
+
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
             return Err(IommuError::NotPresent);
@@ -507,6 +544,9 @@ impl IntelIommuDriver {
         numa_node: Option<usize>,
         domain_type: IommuDomainType,
     ) -> Result<u16, IommuError> {
+        if let Some(ref controller) = self.controller {
+            return controller.create_domain(numa_node, domain_type);
+        }
         let registry = self.registry()?;
         let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
         let controller = registry
@@ -517,6 +557,9 @@ impl IntelIommuDriver {
     }
 
     pub(crate) fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
+        if let Some(ref controller) = self.controller {
+            return controller.attach_device(device, domain_id);
+        }
         let registry = self.registry()?;
         let controller_idx = registry
             .find_controller_index_for_device(
@@ -534,6 +577,9 @@ impl IntelIommuDriver {
     }
 
     pub(crate) fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
+        if let Some(ref controller) = self.controller {
+            return controller.detach_device(device);
+        }
         let registry = self.registry()?;
         let controller_idx = registry
             .find_controller_index_for_device(

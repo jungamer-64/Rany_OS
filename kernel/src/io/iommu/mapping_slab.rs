@@ -57,6 +57,7 @@ const INVALID_INDEX: u16 = u16::MAX;
 // ============================================================================
 
 /// A single mapping slot in the slab.
+#[derive(Debug)]
 #[repr(C)]
 pub struct MappingSlot {
     /// The actual mapping data.
@@ -120,7 +121,7 @@ impl MappingSlot {
 // ============================================================================
 
 /// Runtime statistics for monitoring slab utilization.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct SlabStats {
     /// Current number of active mappings.
     pub active: AtomicU32,
@@ -172,6 +173,7 @@ impl SlabStats {
 ///
 /// Provides O(1) average insert/lookup/remove operations without
 /// heap allocation during hot paths.
+#[derive(Debug)]
 pub struct MappingSlab {
     /// Pre-allocated slot array.
     slots: Box<[MappingSlot; SLAB_CAPACITY]>,

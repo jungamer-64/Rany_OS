@@ -53,7 +53,6 @@ const UNITS_PER_L2_BIT: usize = BITS_PER_WORD * BITS_PER_WORD;
 /// # Thread Safety
 /// All operations are lock-free using atomic operations.
 /// Summary levels are maintained conservatively (may have false positives).
-#[repr(C)]
 pub struct HierarchicalBitmap {
     /// Level 0: Detail bitmap (1 bit per unit)
     detail: Box<[AtomicU64]>,
@@ -624,7 +623,6 @@ pub const WORDS_PER_2MB: usize = PAGES_PER_2MB / BITS_PER_WORD;
 ///     // Allocated from partial block
 /// }
 /// ```
-#[repr(C)]
 pub struct HugePageBitmap {
     /// Base 4KB hierarchical bitmap
     base: HierarchicalBitmap,
@@ -663,4 +661,26 @@ pub struct HugePageBitmap {
     total_1g_blocks: usize,
     /// Free 1GB block count
     free_count_1g: AtomicUsize,
+}
+
+impl core::fmt::Debug for HierarchicalBitmap {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HierarchicalBitmap")
+            .field("total_units", &self.total_units)
+            .field("free_count", &self.free_count.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+impl core::fmt::Debug for HugePageBitmap {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HugePageBitmap")
+            .field("base", &self.base)
+            .field("total_2m_blocks", &self.total_2m_blocks)
+            .field("free_count_2m", &self.free_count_2m.load(Ordering::Relaxed))
+            .field("partial_count_2m", &self.partial_count_2m.load(Ordering::Relaxed))
+            .field("total_1g_blocks", &self.total_1g_blocks)
+            .field("free_count_1g", &self.free_count_1g.load(Ordering::Relaxed))
+            .finish()
+    }
 }

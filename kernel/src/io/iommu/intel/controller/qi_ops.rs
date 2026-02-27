@@ -276,15 +276,23 @@ impl IommuController {
         req: &InvalidateRequest,
         any_ats: bool,
     ) -> Result<(), IommuError> {
+        self.process_single_invalidation_nosync(req, any_ats)
+    }
+
+    fn process_single_invalidation_nosync(
+        &self,
+        req: &InvalidateRequest,
+        any_ats: bool,
+    ) -> Result<(), IommuError> {
         match req.kind {
             InvalidateKind::Pages {
                 start_iova,
                 bytes,
-            } => self.invalidate_pages(req.domain_id, start_iova, bytes, any_ats),
-            InvalidateKind::Domain => self.invalidate_domain(req.domain_id),
-            InvalidateKind::Global => self.invalidate_global(),
-            InvalidateKind::Context { source_id } => self.invalidate_context(source_id),
-            InvalidateKind::Iec { global, index } => self.invalidate_iec(global, index),
+            } => self.invalidate_pages_nosync(req.domain_id, start_iova, bytes, any_ats),
+            InvalidateKind::Domain => self.invalidate_domain_nosync(req.domain_id),
+            InvalidateKind::Global => self.invalidate_global_nosync(),
+            InvalidateKind::Context { source_id } => self.invalidate_context_nosync(source_id),
+            InvalidateKind::Iec { global, index } => self.invalidate_iec_nosync(global, index),
             InvalidateKind::PasidIotlb { pasid } => {
                 if self.is_queued_invalidation_enabled() {
                     self.qi_invalidate_pasid_iotlb(req.domain_id, pasid)?;
@@ -301,6 +309,20 @@ impl IommuController {
     }
 
     fn invalidate_pages(
+        &self,
+        domain_id: u16,
+        start_iova: u64,
+        size: u64,
+        any_ats: bool,
+    ) -> Result<(), IommuError> {
+        self.invalidate_pages_nosync(domain_id, start_iova, size, any_ats)?;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_wait_sync()?;
+        }
+        Ok(())
+    }
+
+    fn invalidate_pages_nosync(
         &self,
         domain_id: u16,
         start_iova: u64,
@@ -350,6 +372,14 @@ impl IommuController {
     }
 
     pub(crate) fn invalidate_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        self.invalidate_domain_nosync(domain_id)?;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_wait_sync()?;
+        }
+        Ok(())
+    }
+
+    fn invalidate_domain_nosync(&self, domain_id: u16) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_domain(domain_id)?;
             let _ = self.invalidate_device_tlbs(domain_id, None);
@@ -360,6 +390,14 @@ impl IommuController {
     }
 
     fn invalidate_global(&self) -> Result<(), IommuError> {
+        self.invalidate_global_nosync()?;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_wait_sync()?;
+        }
+        Ok(())
+    }
+
+    fn invalidate_global_nosync(&self) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_global()?;
             // For global, we should ideally invalidate ALL Device-TLBs, 
@@ -375,14 +413,30 @@ impl IommuController {
         Ok(())
     }
 
-    fn invalidate_context(&self, _source_id: u16) -> Result<(), IommuError> {
+    fn invalidate_context(&self, source_id: u16) -> Result<(), IommuError> {
+        self.invalidate_context_nosync(source_id)?;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_wait_sync()?;
+        }
+        Ok(())
+    }
+
+    fn invalidate_context_nosync(&self, _source_id: u16) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_context_global()?;
         }
         Ok(())
     }
 
-    fn invalidate_iec(&self, global: bool, _index: u16) -> Result<(), IommuError> {
+    fn invalidate_iec(&self, global: bool, index: u16) -> Result<(), IommuError> {
+        self.invalidate_iec_nosync(global, index)?;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_wait_sync()?;
+        }
+        Ok(())
+    }
+
+    fn invalidate_iec_nosync(&self, global: bool, _index: u16) -> Result<(), IommuError> {
         if global {
             self.qi_invalidate_iec_global()?;
         } else {
@@ -403,7 +457,7 @@ impl IommuInvalidator for IommuController {
             .any(|r| r.flags.contains(InvalidateFlags::ATS_AWARE));
 
         for req in requests {
-            self.process_single_invalidation(req, any_ats)?;
+            self.process_single_invalidation_nosync(req, any_ats)?;
         }
 
         if self.is_queued_invalidation_enabled() {
@@ -415,7 +469,7 @@ impl IommuInvalidator for IommuController {
 
     fn invalidate_async(&self, request: InvalidateRequest) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
         let any_ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
-        let res = self.process_single_invalidation(&request, any_ats);
+        let res = self.process_single_invalidation_nosync(&request, any_ats);
         
         async move {
             res?;

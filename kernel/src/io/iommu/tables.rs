@@ -516,6 +516,10 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             .as_ptr();
         let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
         let phys = virt_ptr_to_phys(raw_ptr as *const u8)?;
+
+        // Security: Register the hardware table as protected from DMA
+        crate::security::dma::register_protected_range(phys, alloc_bytes as u64);
+
         Ok(Self {
             ptr,
             phys,
@@ -546,6 +550,9 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
         }
 
         let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
+
+        // Security: Register the hardware table as protected from DMA
+        crate::security::dma::register_protected_range(phys, alloc_bytes as u64);
 
         Ok(Self {
             ptr,
@@ -670,6 +677,18 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
 
 impl<T: Sized + Copy> Drop for HardwareTable<T> {
     fn drop(&mut self) {
+        // Security: Unregister from DMA protection
+        let mut current = (self.phys / 4096) * 4096;
+        let end = self.phys.saturating_add(self.alloc_bytes as u64);
+        while current < end {
+            crate::security::dma::unregister_protected_page(current);
+            if let Some(next) = current.checked_add(4096) {
+                current = next;
+            } else {
+                break;
+            }
+        }
+
         if self.heap_backed {
             if let Ok(layout) = alloc::alloc::Layout::from_size_align(
                 self.alloc_bytes,

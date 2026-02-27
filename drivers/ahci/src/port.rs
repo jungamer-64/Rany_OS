@@ -150,7 +150,7 @@ impl AhciPort {
 
         // Setup DMA-safe result buffer
         let identify_buf = AhciIdentifyBuffer::new().ok_or(AhciError::InternalError)?;
-        let buffer_phys = identify_buf.phys_addr().as_u64();
+        let buffer_phys = identify_buf.device_addr().as_u64();
 
         // Build Command Table in DMA memory
         {
@@ -215,7 +215,7 @@ impl AhciPort {
 
         let dma_buf = AhciDmaReadBuffer::new(count.0 as usize).ok_or(AhciError::InternalError)?;
         let buffer_phys = dma_buf
-            .phys_addr()
+            .device_addr()
             .ok_or(AhciError::InternalError)?
             .as_u64();
 
@@ -278,7 +278,7 @@ impl AhciPort {
 
         let dma_buf = AhciDmaWriteBuffer::with_data(buffer).ok_or(AhciError::InternalError)?;
         let buffer_phys = dma_buf
-            .phys_addr()
+            .device_addr()
             .ok_or(AhciError::InternalError)?
             .as_u64();
 
