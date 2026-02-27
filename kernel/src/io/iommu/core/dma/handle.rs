@@ -330,63 +330,139 @@ impl<T> DmaHandle<T> {
     pub fn is_unmapped(&self) -> bool {
         self.rref.is_none()
     }
+
+    /// Internal synchronous unmap implementation
+    fn unmap_sync_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
+        match self.mapping {
+            MappingKind::Identity => Ok(self
+                .take_rref()
+                .expect("DmaHandle must have rref for unmap")),
+            MappingKind::Domain => Err(UnmapError::new(self, UnmapErrorKind::InvalidContext)),
+            MappingKind::Global => {
+                if let Err(e) = crate::io::iommu::api::unmap_dma(self.iova, self.size) {
+                    return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
+                }
+                // Unregister from domain registry
+                self.try_unregister_from_domain();
+                Ok(self
+                    .take_rref()
+                    .expect("DmaHandle must have rref for unmap"))
+            }
+            MappingKind::Device(device) => {
+                if let Err(e) =
+                    crate::io::iommu::api::unmap_for_device(&device, self.iova, self.size)
+                {
+                    return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
+                }
+                // Unregister from domain registry
+                self.try_unregister_from_domain();
+                Ok(self
+                    .take_rref()
+                    .expect("DmaHandle must have rref for unmap"))
+            }
+        }
+    }
+
+    /// Internal lazy unmap implementation using quarantine
+    #[cfg(feature = "async_unmap_default")]
+    fn unmap_lazy_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
+        // SECURITY: The current implementation of lazy unmap is insecure because it
+        // returns the RRef to the user IMMEDIATELY, before the IOTLB has been invalidated.
+        // This allows a device to potentially access the memory while the user thinks
+        // it is safe to reuse for other purposes.
+        //
+        // For safety, we fall back to synchronous unmap until a proper async API
+        // (returning a QuarantineTicket) is implemented for all users.
+        log::debug!("[DmaHandle] Lazy unmap requested, but falling back to sync for security");
+        self.unmap_sync_internal()
+    }
 }
 
 impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
     fn drop(&mut self) {
-        if let Some(rref) = self.rref.take() {
+        if self.rref.is_some() {
             // Identity mappings don't need cleanup - just drop the RRef
             if matches!(self.mapping, MappingKind::Identity) {
-                drop(rref);
+                drop(self.rref.take());
                 return;
             }
 
-            // === ASYNC-FIRST: Enqueue to Zombie Queue ===
-            // Instead of synchronous unmap (which can block the executor or ISR),
-            // we enqueue the handle metadata for async cleanup by the GC task.
-            // This ensures Drop completes in O(1) without locks or I/O.
-            
             let device_id = if let MappingKind::Device(dev) = self.mapping {
                 Some(dev)
             } else {
                 None
             };
-
             let mapping_kind_encoded = crate::io::iommu::runtime::zombie::encode_mapping_kind(&self.mapping);
-            
-            let raw_parts = rref.into_raw_parts();
 
-            if crate::io::iommu::runtime::zombie::enqueue_zombie(
-                self.iova,
-                self.size,
-                self.domain_id,
-                device_id,
-                mapping_kind_encoded,
-                Some(raw_parts),
-            ) {
-                // Successfully enqueued - RRef ownership transferred to zombie queue.
+            // Attempt to enqueue to zombie queue for async cleanup
+            // We take the RRef only if enqueue succeeds
+            let success = if let Some(rref) = self.rref.take() {
+                let raw_parts = rref.into_raw_parts();
+                if crate::io::iommu::runtime::zombie::enqueue_zombie(
+                    self.iova,
+                    self.size,
+                    self.domain_id,
+                    device_id,
+                    mapping_kind_encoded,
+                    Some(raw_parts),
+                ) {
+                    true
+                } else {
+                    // Failed to enqueue - put RRef back for fallback or leak
+                    self.rref = Some(unsafe { RRef::from_raw_parts_for_zombie(raw_parts) });
+                    false
+                }
+            } else {
+                false
+            };
+
+            if success {
                 log::debug!(
                     "[DmaHandle] Enqueued zombie for async cleanup (IOVA=0x{:x}, size={})",
                     self.iova,
                     self.size
                 );
+            } else if !crate::per_cpu::in_interrupt_context() {
+                // Queue full, but we're in a thread context - try SYNC unmap as fallback.
+                log::warn!(
+                    "[IOMMU][SECURITY] Zombie queue full - performing synchronous unmap fallback for IOVA=0x{:x}",
+                    self.iova
+                );
+                
+                // Perform synchronous unmap by taking ownership
+                let _ = self.unmap_sync_internal_in_drop();
             } else {
-                // Queue full - this is a critical resource exhaustion.
-                // To maintain memory safety (prevent DMA-after-free), we MUST NOT
-                // drop the RRef. We intentionally leak it here.
+                // Queue full AND in ISR - leak to preserve safety
                 log::error!(
-                    "[IOMMU][CRITICAL] Zombie queue full! Leaking DMA handle to preserve safety (IOVA=0x{:x}, size={})",
+                    "[IOMMU][CRITICAL] Zombie queue full in ISR! Leaking DMA handle to preserve safety (IOVA=0x{:x}, size={})",
                     self.iova,
                     self.size
                 );
-                // The RRef is already "forgotten" because we called into_raw_parts()
-                // and we're not reconstructing it.
+                // We don't take the RRef, so it will be leaked as self.rref is dropped
+                core::mem::forget(self.rref.take());
             }
         }
     }
 }
 
 impl<T: ?Sized + 'static> DmaHandle<T> {
+    /// Internal synchronous unmap implementation specifically for use within Drop.
+    /// Does not consume self.
+    fn unmap_sync_internal_in_drop(&mut self) -> Result<(), IommuError> {
+        let result = match self.mapping {
+            MappingKind::Identity => Ok(()),
+            MappingKind::Domain => Err(IommuError::InvalidAddress),
+            MappingKind::Global => crate::io::iommu::api::unmap_dma(self.iova, self.size),
+            MappingKind::Device(device) => crate::io::iommu::api::unmap_for_device(&device, self.iova, self.size),
+        };
+
+        if result.is_ok() {
+            self.try_unregister_from_domain();
+            drop(self.rref.take());
+        }
+        result
+    }
+
     /// Attempt to unmap the DMA buffer during drop.
     ///
     // Removed: `try_cleanup_on_drop` (was deprecated). Drop uses the `zombie_queue`-based
@@ -586,52 +662,6 @@ impl<T> DmaHandle<T> {
             );
             return Err(UnmapError::new(self, UnmapErrorKind::CalledFromIsr));
         }
-        self.unmap_sync_internal()
-    }
-
-    /// Internal synchronous unmap implementation
-    fn unmap_sync_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
-        match self.mapping {
-            MappingKind::Identity => Ok(self
-                .take_rref()
-                .expect("DmaHandle must have rref for unmap")),
-            MappingKind::Domain => Err(UnmapError::new(self, UnmapErrorKind::InvalidContext)),
-            MappingKind::Global => {
-                if let Err(e) = crate::io::iommu::api::unmap_dma(self.iova, self.size) {
-                    return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
-                }
-                // Unregister from domain registry
-                self.try_unregister_from_domain();
-                Ok(self
-                    .take_rref()
-                    .expect("DmaHandle must have rref for unmap"))
-            }
-            MappingKind::Device(device) => {
-                if let Err(e) =
-                    crate::io::iommu::api::unmap_for_device(&device, self.iova, self.size)
-                {
-                    return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
-                }
-                // Unregister from domain registry
-                self.try_unregister_from_domain();
-                Ok(self
-                    .take_rref()
-                    .expect("DmaHandle must have rref for unmap"))
-            }
-        }
-    }
-
-    /// Internal lazy unmap implementation using quarantine
-    #[cfg(feature = "async_unmap_default")]
-    fn unmap_lazy_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
-        // SECURITY: The current implementation of lazy unmap is insecure because it
-        // returns the RRef to the user IMMEDIATELY, before the IOTLB has been invalidated.
-        // This allows a device to potentially access the memory while the user thinks
-        // it is safe to reuse for other purposes.
-        //
-        // For safety, we fall back to synchronous unmap until a proper async API
-        // (returning a QuarantineTicket) is implemented for all users.
-        log::debug!("[DmaHandle] Lazy unmap requested, but falling back to sync for security");
         self.unmap_sync_internal()
     }
 

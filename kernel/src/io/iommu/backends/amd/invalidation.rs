@@ -257,8 +257,8 @@ impl AmdIommuDriver {
         self.invalidate_device_entry(device)
     }
 
-    pub(crate) fn invalidate_interrupt_table(&self, device_id: u16) -> Result<(), IommuError> {
-        let device = Self::device_id_from_devid(0, device_id); // Segment assumed 0 for simple BDF
+    pub(crate) fn invalidate_interrupt_table(&self, segment: u16, device_id: u16) -> Result<(), IommuError> {
+        let device = Self::device_id_from_devid(segment, device_id);
         let unit_idx = self
             .find_unit_index_for_device(device)
             .ok_or(IommuError::DeviceNotFound)?;
@@ -399,9 +399,9 @@ impl AmdIommuDriver {
         self.invalidate_domain_all(domain_id)?;
         
         if any_ats {
-            let _ = self.invalidate_domain_device_tlbs(domain_id, iova, None);
+            self.invalidate_domain_device_tlbs(domain_id, iova, None)?;
         }
-        
+
         Ok(())
     }
 
@@ -533,21 +533,20 @@ impl IommuInvalidator for AmdIommuDriver {
                 InvalidateKind::Pages { start_iova, bytes } => {
                     // AMD-Vi invalidate_domain_pages iterates over all units
                     self.invalidate_domain_pages(req.domain_id, start_iova, bytes)?;
-                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
-                        let _ = self.invalidate_domain_device_tlbs(
-                            req.domain_id,
-                            Some(start_iova),
-                            Some(bytes),
-                        );
-                    }
-                }
-                InvalidateKind::Domain => {
-                    self.invalidate_domain_all(req.domain_id)?;
-                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
-                        let _ = self.invalidate_domain_device_tlbs(req.domain_id, None, None);
-                    }
-                }
-                InvalidateKind::Global => {
+                                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                                        self.invalidate_domain_device_tlbs(
+                                            req.domain_id,
+                                            Some(start_iova),
+                                            Some(bytes),
+                                        )?;
+                                    }
+                                }
+                                InvalidateKind::Domain => {
+                                    self.invalidate_domain_all(req.domain_id)?;
+                                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                                        self.invalidate_domain_device_tlbs(req.domain_id, None, None)?;
+                                    }
+                                }                InvalidateKind::Global => {
                     self.invalidate_all_entries()?;
                 }
                 InvalidateKind::Context { source_id } => {

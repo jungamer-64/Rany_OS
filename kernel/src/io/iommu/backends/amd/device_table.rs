@@ -107,6 +107,14 @@ impl AmdDeviceTable {
             ptr::write_bytes(virt_base.as_u64() as *mut u8, 0, size_bytes as usize);
         }
 
+        // Security: Register the device table as protected from DMA.
+        // This prevents malicious devices from tampering with their own domain/IRT assignments.
+        crate::io::iommu::runtime::security::register_protected_region(
+            phys_base.as_u64(),
+            size_bytes,
+            "AMD-Vi Device Table",
+        );
+
         Ok(Self {
             segment,
             phys_base: phys_base.as_u64(),

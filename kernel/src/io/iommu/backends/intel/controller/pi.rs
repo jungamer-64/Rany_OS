@@ -121,8 +121,9 @@ impl PostedInterruptManager for IommuController {
         let entry = InterruptRemapEntry::posted(pid_addr, Some(rid));
         irt.set(irte_index, entry);
 
-        // Security: Invalidate IEC after allocating IRTE
-        let _ = self.invalidate_iec(false, irte_index);
+        // Security: Invalidate IEC after allocating IRTE.
+        // Propagation of invalidation errors is critical for security and consistency.
+        self.invalidate_iec(false, irte_index)?;
 
         Ok((irte_index, pid_index))
     }

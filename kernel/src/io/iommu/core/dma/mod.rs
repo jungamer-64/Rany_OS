@@ -2,7 +2,7 @@
 // kernel/src/io/iommu/core/dma/mod.rs
 // ============================================================================
 
-pub(crate) mod cache;
+
 pub(crate) mod flush;
 pub(crate) mod handle;
 pub(crate) mod iova_allocator;

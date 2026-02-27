@@ -515,8 +515,9 @@ impl AmdIommuDriver {
             return Err(e);
         }
 
-        // Security: Invalidate the hardware interrupt table cache to ensure the new mapping is used
-        let _ = self.invalidate_interrupt_table(devid);
+        // Security: Invalidate the hardware interrupt table cache to ensure the new mapping is used.
+        // Propagation of invalidation errors is critical for security and consistency.
+        self.invalidate_interrupt_table(segment, devid)?;
 
         Ok(handle)
     }
@@ -548,9 +549,11 @@ impl AmdIommuDriver {
         // Disable device in the Device Table
         table.clear_entry(devid)?;
 
-        // Invalidate IOMMU caches
-        let _ = self.invalidate_domain_pages(0, 0, u64::MAX); // Global domain invalidation for safety
-        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+        // Security: Invalidate IOMMU caches.
+        // It is CRITICAL that these invalidations succeed during isolation to prevent 
+        // a compromised or faulting device from continuing DMA using cached entries.
+        self.invalidate_domain_pages(0, 0, u64::MAX)?; // Global domain invalidation for safety
+        self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
 
         Ok(())
     }

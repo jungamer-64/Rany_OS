@@ -11,6 +11,7 @@ pub mod dma;
 pub mod fault;
 pub mod init;
 pub mod init_global;
+pub mod invalidation;
 pub mod iova;
 pub mod ir;
 pub mod perfmon;

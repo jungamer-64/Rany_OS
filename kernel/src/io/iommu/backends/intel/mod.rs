@@ -38,6 +38,8 @@ use self::registry::get_iommu_registry;
 
 
 mod driver_ops;
+mod diagnostics;
+
 #[derive(Default, Clone)]
 pub struct IntelIommuDriver {
     /// Optional specific controller (used for tests/mocking)

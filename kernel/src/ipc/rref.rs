@@ -202,6 +202,20 @@ impl<T: ?Sized> RRef<T> {
         RRef { ptr, owner }
     }
 
+    /// Reconstruct an RRef from its raw components (internal for zombie queue).
+    ///
+    /// # Safety
+    /// ptr and meta must match the original type T.
+    pub(crate) unsafe fn from_raw_parts_for_zombie(parts: RRefRawParts) -> Self {
+        let (ptr, owner, meta, _drop_fn) = parts.into_components();
+        let metadata = RRefRawParts::decode_metadata::<T>(meta);
+        let data_ptr = ptr::from_raw_parts_mut::<T>(ptr.as_ptr().cast::<()>(), metadata);
+        RRef {
+            ptr: NonNull::new_unchecked(data_ptr),
+            owner,
+        }
+    }
+
     /// RRefを消費して生ポインタと所有権を放棄する
     /// Exchange Heapからの解放は行われない
     /// 再度 from_raw で RRef に戻すか、適切に処理する必要がある
@@ -360,7 +374,7 @@ pub enum RawPartsError {
 /// - `owner` is the DomainId that owns the data
 /// - `drop_fn` correctly drops the data as type T
 /// - Either `into_rref()` or `drop_erased()` must be called exactly once
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct RRefRawParts {
     /// Pointer to data on Exchange Heap
     ptr: NonNull<u8>,

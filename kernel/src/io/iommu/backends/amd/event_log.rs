@@ -74,6 +74,15 @@ impl AmdEventLog {
             ptr::write_bytes(virt_base.as_u64() as *mut u8, 0, size_bytes as usize);
         }
 
+        // Security: Register the event log as protected from DMA.
+        // This prevents malicious devices from tampering with error event logs
+        // or spoofing hardware status.
+        crate::io::iommu::runtime::security::register_protected_region(
+            phys_base.as_u64(),
+            size_bytes,
+            "AMD-Vi Event Log",
+        );
+
         Ok(Self {
             phys_base: phys_base.as_u64(),
             virt_base: entry_ptr,
