@@ -180,7 +180,7 @@ impl IommuController {
 
             // IOTLB invalidation: prefer domain-specific if we have domain_id
             if let Some(did) = isolated_domain_id {
-                self.invalidate_iotlb(did);
+                self.invalidate_iotlb(did, true);
             } else {
                 let _ = self.invalidate_iotlb_global_sync();
             }

@@ -294,7 +294,7 @@ impl IntelIommuDriver {
             };
             match domain_arc.unmap(iova) {
                 Ok(mapping) => {
-                    controller.invalidate_iotlb(0); // Domain 0 for DMA mappings
+                    controller.invalidate_iotlb(0, true); // Domain 0 for DMA mappings
                     mapping_size = mapping.size;
                     unmapped_controllers.push(idx);
                 }
