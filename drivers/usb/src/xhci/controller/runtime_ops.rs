@@ -177,8 +177,6 @@ impl XhciController {
         let completion = self.wait_command_completion(trb_addr).await?;
 
         if completion.completion_code == CompletionCode::Success {
-            // DMAバッファを保持（ドロップ防止）
-            core::mem::forget(input_dma_buf);
             Ok(())
         } else {
             Err(UsbError::XhciError(alloc::format!(
@@ -274,8 +272,6 @@ impl XhciController {
         let completion = self.wait_command_completion(trb_addr).await?;
 
         if completion.completion_code == CompletionCode::Success {
-            // DMAバッファを保持 (ドロップ防止)
-            core::mem::forget(input_dma_buf);
             Ok(())
         } else {
             Err(UsbError::XhciError(alloc::format!(

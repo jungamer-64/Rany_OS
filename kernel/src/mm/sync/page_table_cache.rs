@@ -486,6 +486,9 @@ pub fn alloc_page_table_page() -> Option<PhysFrame<Size4KiB>> {
 ///
 /// RCU猶予期間後に再利用可能になる。
 pub fn free_page_table_page(frame: PhysFrame<Size4KiB>) {
+    // 解放前にDMA保護を解除
+    crate::security::dma::unregister_protected_page(frame.start_address().as_u64());
+
     // 現時点ではBuddyに直接返却
     // 将来的にはPer-CPU Quicklistに追加
     buddy_allocator::buddy_dealloc_frame(frame);

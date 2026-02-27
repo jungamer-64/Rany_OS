@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -18,6 +19,8 @@ REQUIRED_PACKAGE_KEYS = {
     "serial",
 }
 OPTIONAL_PACKAGE_KEYS = {"features"}
+BANNED_PURE_RS_RE = re.compile(r"\b(qemu_tests|qemu_smoke_tests)\b")
+BANNED_PURE_CARGO_RE = re.compile(r"\bqemu-test-export\b")
 
 
 def repo_root() -> Path:
@@ -133,6 +136,29 @@ def main() -> int:
             "root_default.packages contain packages without any root_default=true [[package]] entry: "
             + ", ".join(missing_root_default_entries)
         )
+
+    # Pure tier regression guard:
+    # root-default pure packages must not reintroduce qemu-test-export wrappers.
+    for member_path in root_default["packages"]:
+        pkg_root = (root / member_path).resolve()
+        cargo_toml = pkg_root / "Cargo.toml"
+        if not cargo_toml.exists():
+            return fail(f"missing Cargo.toml for root_default package path: {member_path}")
+
+        cargo_text = cargo_toml.read_text(encoding="utf-8")
+        if BANNED_PURE_CARGO_RE.search(cargo_text):
+            return fail(
+                f"root_default package '{member_path}' reintroduced banned token "
+                f"'qemu-test-export' in {cargo_toml.relative_to(root)}"
+            )
+
+        for rs_path in pkg_root.rglob("*.rs"):
+            rs_text = rs_path.read_text(encoding="utf-8")
+            if BANNED_PURE_RS_RE.search(rs_text):
+                return fail(
+                    f"root_default package '{member_path}' reintroduced banned test wrapper token "
+                    f"in {rs_path.relative_to(root)}"
+                )
 
     print("[verify_pure_tier_map] PASS")
     return 0

@@ -3,7 +3,7 @@
 use qemu_runner::{RunConfig, run_fullboot};
 use std::sync::{Mutex, OnceLock};
 
-fn suite_lock() -> &'static Mutex<()> {
+fn qemu_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -33,7 +33,7 @@ fn base_config(profile: &str) -> RunConfig {
 }
 
 fn run_required_profile(profile: &str) {
-    let guard = suite_lock().lock().expect("qemu suite lock poisoned");
+    let guard = qemu_lock().lock().expect("qemu lock poisoned");
     let cfg = base_config(profile);
     let result = run_fullboot(cfg);
     drop(guard);

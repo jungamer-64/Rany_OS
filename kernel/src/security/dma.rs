@@ -30,10 +30,8 @@ pub struct ProtectedRegion {
 
 /// Global registry of protected physical memory regions.
 /// Used for regions above 1TB or large contiguous regions.
+/// Sorted by start address for O(log n) lookup.
 static PROTECTED_REGIONS: RwLock<Vec<ProtectedRegion>> = RwLock::new(Vec::new());
-
-/// Maximum number of protected physical memory regions.
-const MAX_PROTECTED_REGIONS: usize = 1024;
 
 fn get_protected_bitmap() -> &'static IrqMutex<Vec<u8>> {
     PROTECTED_PAGE_BITMAP.call_once(|| {
@@ -62,10 +60,14 @@ pub fn unregister_protected_page(phys: u64) {
         let mut bitmap = get_protected_bitmap().lock();
         bitmap[page_idx / 8] &= !(1 << (page_idx % 8));
     } else {
-        // Remove from protected regions list (best effort)
-        let mut regions = PROTECTED_REGIONS.write();
+        // Remove from protected regions list
         let end = phys.saturating_add(4096);
-        regions.retain(|r| r.start != phys || r.end != end);
+        let mut regions = PROTECTED_REGIONS.write();
+        if let Ok(idx) = regions.binary_search_by(|r| r.start.cmp(&phys)) {
+            if regions[idx].end == end {
+                regions.remove(idx);
+            }
+        }
     }
 }
 
@@ -76,14 +78,20 @@ pub fn is_page_protected(phys: u64) -> bool {
         let bitmap = get_protected_bitmap().lock();
         (bitmap[page_idx / 8] & (1 << (page_idx % 8))) != 0
     } else {
-        // Fallback for pages above 1TB: check protected regions list
+        // Fallback for pages above 1TB: check protected regions list via binary search
         let regions = PROTECTED_REGIONS.read();
-        for region in regions.iter() {
-            if phys >= region.start && phys < region.end {
-                return true;
+        match regions.binary_search_by(|r| {
+            if phys < r.start {
+                core::cmp::Ordering::Greater
+            } else if phys >= r.end {
+                core::cmp::Ordering::Less
+            } else {
+                core::cmp::Ordering::Equal
             }
+        }) {
+            Ok(_) => true,
+            Err(_) => false,
         }
-        false
     }
 }
 
@@ -119,7 +127,11 @@ pub fn unregister_protected_range(start: u64, size: u64) {
     // If it was potentially in the regions list
     if size > 1024 * 1024 || start >= (PROTECTED_BITMAP_PAGES as u64 * 4096) {
         let mut regions = PROTECTED_REGIONS.write();
-        regions.retain(|r| r.start != start || r.end != end);
+        if let Ok(idx) = regions.binary_search_by(|r| r.start.cmp(&start)) {
+            if regions[idx].end == end {
+                regions.remove(idx);
+            }
+        }
     }
 
     let mut current = (start / 4096) * 4096;
@@ -137,10 +149,25 @@ pub fn unregister_protected_range(start: u64, size: u64) {
 fn register_protected_region_internal(start: u64, size: u64, name: &'static str) {
     let end = start.saturating_add(size);
     let mut regions = PROTECTED_REGIONS.write();
-    if regions.len() < MAX_PROTECTED_REGIONS {
-        // Check for duplicates
-        if !regions.iter().any(|r| r.start == start && r.end == end) {
-            regions.push(ProtectedRegion { start, end, name });
+    
+    match regions.binary_search_by(|r| r.start.cmp(&start)) {
+        Ok(idx) => {
+            // Already exists or overlaps at start
+            if regions[idx].end < end {
+                regions[idx].end = end; // Extend existing
+            }
+        }
+        Err(idx) => {
+            // Insert at idx to keep sorted
+            regions.insert(idx, ProtectedRegion { start, end, name });
+            
+            // Scalability Warning: If we have too many regions, it impacts performance
+            if regions.len() > 2048 && regions.len() % 1024 == 0 {
+                log::warn!(
+                    "[DMA][SECURITY] Large number of protected regions: {}. Performance may degrade.",
+                    regions.len()
+                );
+            }
         }
     }
 }
@@ -163,13 +190,19 @@ pub fn range_overlaps_protected(start: u64, size: u64) -> bool {
         }
     }
 
-    // 2. Check regions list
+    // 2. Check regions list via binary search for overlap
     let regions = PROTECTED_REGIONS.read();
-    for region in regions.iter() {
-        if start < region.end && region.start < end {
-            return true;
+    // Find the first region that could possibly overlap (start < r.end)
+    match regions.binary_search_by(|r| {
+        if end <= r.start {
+            core::cmp::Ordering::Greater
+        } else if start >= r.end {
+            core::cmp::Ordering::Less
+        } else {
+            core::cmp::Ordering::Equal
         }
+    }) {
+        Ok(_) => true,
+        Err(_) => false,
     }
-    
-    false
 }

@@ -6,7 +6,7 @@ Guidelines for NVMe driver development:
 
 - The driver uses the `kernel_api` crate for kernel-provided services like DMA allocation and syscalls.
 - Prefer `kernel_api::services::kernel().alloc_dma(size)` to allocate DMA buffers.
-- Use the returned `kernel_api::DmaBuffer` to obtain physical addresses (`physical_address()`), and virtual pointers (`as_ptr()`).
+- Use the returned `kernel_api::DmaBuffer` to obtain device-visible addresses (`device_address()`), and virtual pointers (`as_ptr()`).
 - Avoid using kernel-internal DMA types (e.g., `TypedDmaBuffer`) directly — those are kernel internal and do not exist in a module-based driver.
 - Use the `Driver` trait from `kernel_api::driver::Driver` to expose your driver as a kernel driver.
 
@@ -17,7 +17,7 @@ Allocating DMA memory:
 ```rust
 let kernel = kernel_api::services::kernel();
 let dma_buf = kernel.alloc_dma(sq_size)?; // returns DmaBuffer
-let phys = dma_buf.physical_address();
+let dev_addr = dma_buf.device_address(); // Use for IOMMU compatibility
 let virt_ptr = dma_buf.as_ptr();
 ```
 

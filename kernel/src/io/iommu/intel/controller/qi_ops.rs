@@ -176,6 +176,13 @@ impl InvalidationOps for IommuController {
     }
 
     #[inline]
+    fn qi_invalidate_iec_indexed(&self, index: u16) -> Result<(), IommuError> {
+        // Use mask 0 for exact index match (one entry)
+        let entry = InvalidationQueueEntry::iec_invalidate(1, index, 0);
+        self.submit_invalidation(entry)
+    }
+
+    #[inline]
     fn qi_invalidate_device_tlb_all(&self, source_id: u16) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::device_tlb_invalidate_all(source_id);
         self.submit_invalidation(entry)
@@ -436,11 +443,11 @@ impl IommuController {
         Ok(())
     }
 
-    fn invalidate_iec_nosync(&self, global: bool, _index: u16) -> Result<(), IommuError> {
+    fn invalidate_iec_nosync(&self, global: bool, index: u16) -> Result<(), IommuError> {
         if global {
             self.qi_invalidate_iec_global()?;
         } else {
-            self.qi_invalidate_iec_global()?; 
+            self.qi_invalidate_iec_indexed(index)?; 
         }
         Ok(())
     }
