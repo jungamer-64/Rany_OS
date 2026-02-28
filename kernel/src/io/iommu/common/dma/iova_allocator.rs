@@ -396,15 +396,17 @@ impl IovaAllocator {
     /// Advance the global epoch (Start of IOTLB Invalidation)
     ///
     /// Call this *before* issuing IOTLB invalidation commands.
-    /// Returns the new epoch value.
+    /// Returns the epoch value that was active BEFORE advancing. Use this value
+    /// with `complete_epoch` to safely reclaim only those entries that were
+    /// quarantined prior to this invalidation.
     pub fn advance_epoch(&self) -> u32 {
-        self.current_epoch.fetch_add(1, Ordering::AcqRel) + 1
+        self.current_epoch.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Complete an epoch (End of IOTLB Invalidation)
     ///
     /// Call this *after* generic IOTLB invalidation completion is confirmed.
-    /// This allows quarantined items from `epoch` to be freed.
+    /// This allows quarantined items stamped with an epoch <= `epoch` to be freed.
     pub fn complete_epoch(&self, epoch: u32) {
         // Monotonic update: only forward
         let _ = self.completed_epoch.fetch_max(epoch, Ordering::Release);

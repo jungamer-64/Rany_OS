@@ -295,9 +295,17 @@ impl IntelIommuDriver {
             };
             match domain_arc.unmap(iova) {
                 Ok(mapping) => {
-                    controller.invalidate_iotlb(0, true); // Domain 0 for DMA mappings
-                    mapping_size = mapping.size;
-                    unmapped_controllers.push(idx);
+                    if let Err(err) = controller.invalidate_iotlb(0, true) {
+                         log::error!(
+                            "[IOMMU][SECURITY] unmap_dma invalidation failed on controller {}: {:?}. Poisoning domain.",
+                            idx, err
+                        );
+                        domain_arc.poison();
+                        last_err = Some(err);
+                    } else {
+                        mapping_size = mapping.size;
+                        unmapped_controllers.push(idx);
+                    }
                 }
                 Err(err) => {
                     last_err = Some(err);

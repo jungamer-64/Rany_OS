@@ -582,6 +582,7 @@ impl TlsConnection {
             }
         } else {
             // 検証スキップ時は最初の証明書の鍵をそのまま使用
+            log::warn!("[TLS] Security: Certificate verification skipped. This connection is vulnerable to Man-in-the-Middle attacks!");
             if let Some(cert) = crate::net::x509::parse_x509(certs[0]) {
                 self.extract_server_public_key(&cert)?;
             } else {

@@ -192,7 +192,8 @@ impl DomainManager for IommuController {
                 domain_arc.map(*iova, *phys, *size, *read, *write).map_err(|_| ())?;
                 self.invalidate_iotlb(domain_id, false).map_err(|_| ())?;
                 if self.should_invalidate_device_tlb(device) {
-                    let _ = self.qi_invalidate_device_tlb_all(device.requester_id());
+                    self.qi_invalidate_device_tlb_all(device.requester_id()).map_err(|_| ())?;
+                    self.qi_wait_sync().map_err(|_| ())?;
                 }
                 Ok(0)
             },
@@ -209,12 +210,10 @@ impl DomainManager for IommuController {
                 Ok(0)
             },
             IommuCommandKind::InvalidateIotlbDomain { domain } => {
-                self.invalidate_iotlb(*domain, true);
-                Ok(0)
+                self.invalidate_iotlb(*domain, true).map(|_| 0).map_err(|_| ())
             },
             IommuCommandKind::InvalidateIotlbGlobal => {
-                let _ = self.invalidate_iotlb_global_sync();
-                Ok(0)
+                self.invalidate_iotlb_global_sync().map(|_| 0).map_err(|_| ())
             }
         }
     }
