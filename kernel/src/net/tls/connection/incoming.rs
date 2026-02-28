@@ -5,8 +5,9 @@ impl TlsConnection {
 
     /// データを受信して処理
     pub fn process_incoming(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
-        // Security: Limit receive buffer size to prevent DoS
-        const MAX_RECV_BUFFER: usize = 65536;
+        // Security: Limit receive buffer size to prevent DoS.
+        // Handshake messages can be up to 128KB, so we allow 128KB + overhead.
+        const MAX_RECV_BUFFER: usize = 131072 + 2048;
         if self.recv_buffer.len() + data.len() > MAX_RECV_BUFFER {
             return Err(TlsError::DecodeError);
         }

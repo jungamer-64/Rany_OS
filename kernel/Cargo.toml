@@ -56,6 +56,9 @@ boot_proto = { path = "../libs/boot_proto" }
 # Hardware Abstraction Layer (MMIO/Port I/O wrappers)
 hal = { path = "../hal" }
 
+# Security primitives (root certificates, capabilities, etc.)
+security = { path = "../libs/security" }
+
 # x86_64アーキテクチャサポート
 x86_64 = "0.15"
 

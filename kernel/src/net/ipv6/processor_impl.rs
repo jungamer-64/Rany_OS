@@ -43,9 +43,12 @@ impl Ipv6Processor {
 
         let src = packet.source();
         
-        // Security: Drop Martian packets (source IP cannot be multicast)
-        if src.is_multicast() {
+        // Security: Drop Martian packets
+        // 1. Source IP cannot be multicast (RFC 4291 Section 2.7)
+        // 2. Source IP cannot be the loopback address unless it's truly a loopback packet
+        if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
             self.stats.record_dropped();
+            log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
             return Ipv6ProcessResult::Dropped;
         }
         

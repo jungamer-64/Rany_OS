@@ -61,6 +61,57 @@ impl DhcpClient {
         }
     }
 
+    /// Acquire the current DHCP state (internal helper)
+    fn lock_dhcp_state(&self) -> Result<DhcpState, &'static str> {
+        match self.state.lock() {
+            Ok(g) => Ok(*g),
+            Err(_) => {
+                log::error!("[NET] DHCP State lock poisoned (lock_dhcp_state)");
+                Err("State lock poisoned")
+            }
+        }
+    }
+
+    /// Determine which lease should be used when constructing a REQUEST packet.
+    ///
+    /// Returns `(lease, is_renewal)` where `is_renewal` is true if the client
+    /// is in the `Renewing` state.  For non‑renewal requests we use the
+    /// offered lease (if available) when not already bound.
+    fn get_lease_for_request(
+        &self,
+        current_state: DhcpState,
+    ) -> Result<(DhcpLease, bool), &'static str> {
+        // If we're renewing, or already bound/rebinding/requesting, use the
+        // active lease.  Otherwise fall back to the offered lease.
+        if current_state == DhcpState::Renewing
+            || current_state == DhcpState::Bound
+            || current_state == DhcpState::Rebinding
+            || current_state == DhcpState::Requesting
+        {
+            let lease_opt = match self.lease.lock() {
+                Ok(g) => g.clone(),
+                Err(_) => return Err("Lease lock poisoned"),
+            };
+            if let Some(l) = lease_opt {
+                let is_renewal = current_state == DhcpState::Renewing;
+                Ok((l, is_renewal))
+            } else {
+                Err("No active lease available")
+            }
+        } else {
+            // not bound yet; use offered_lease
+            let offer_opt = match self.offered_lease.lock() {
+                Ok(g) => g.clone(),
+                Err(_) => return Err("Offer lock poisoned"),
+            };
+            if let Some(l) = offer_opt {
+                Ok((l, false))
+            } else {
+                Err("No offered lease available")
+            }
+        }
+    }
+
     /// **テスト用**: リースを強制的に設定します。
     ///
     /// 通常のランタイムでは使用しませんが、ユニット/スモーク
@@ -97,8 +148,8 @@ impl DhcpClient {
         buffer: &mut [u8],
         current_tick: u64,
     ) -> Result<usize, &'static str> {
-        if buffer.len() < DhcpHeader::SIZE + 64 {
-            return Err("Buffer too small");
+        if buffer.len() < DHCP_MAX_MESSAGE_SIZE {
+            return Err("Buffer too small (need DHCP_MAX_MESSAGE_SIZE)");
         }
 
         // Acquire state and only generate a new XID when starting a new discovery
@@ -116,7 +167,7 @@ impl DhcpClient {
         }
         let xid = self.xid.load(Ordering::SeqCst);
 
-        // ヘッダを構築
+        // ヘッダを構築 (236 bytes)
         buffer[0..DhcpHeader::SIZE].fill(0);
         buffer[0] = DhcpOperation::Request as u8;
         buffer[1] = 1; // Ethernet
@@ -128,151 +179,60 @@ impl DhcpClient {
         // ciaddr, yiaddr, siaddr, giaddr = 0
         buffer[28..34].copy_from_slice(self.mac_address.as_bytes());
 
-        // オプション開始
+        // オプション開始 (Magic Cookie 4 bytes)
         let mut offset = DhcpHeader::SIZE;
-
-        // マジッククッキー
         buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
         offset += 4;
 
-        // メッセージタイプ: DISCOVER
-        buffer[offset] = DhcpOption::MessageType as u8;
-        buffer[offset + 1] = 1;
-        buffer[offset + 2] = DhcpMessageType::Discover as u8;
-        offset += 3;
+        // Helper to safely append options
+        let mut append_opt = |opt: u8, data: &[u8]| -> Result<(), &'static str> {
+            if offset + 2 + data.len() > buffer.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buffer[offset] = opt;
+            buffer[offset + 1] = data.len() as u8;
+            buffer[offset + 2..offset + 2 + data.len()].copy_from_slice(data);
+            offset += 2 + data.len();
+            Ok(())
+        };
 
-        // パラメータ要求リスト (SubnetMask, Router, DNS, DomainName, LeaseTime, ServerIdentifier, Renewal (T1), Rebinding (T2))
-        buffer[offset] = DhcpOption::ParameterRequestList as u8;
-        buffer[offset + 1] = 8;
-        buffer[offset + 2] = DhcpOption::SubnetMask as u8;
-        buffer[offset + 3] = DhcpOption::Router as u8;
-        buffer[offset + 4] = DhcpOption::DnsServer as u8;
-        buffer[offset + 5] = DhcpOption::DomainName as u8;
-        buffer[offset + 6] = DhcpOption::LeaseTime as u8;
-        buffer[offset + 7] = DhcpOption::ServerIdentifier as u8;
-        buffer[offset + 8] = DhcpOption::RenewalTime as u8;
-        buffer[offset + 9] = DhcpOption::RebindingTime as u8;
-        offset += 10;
+        // メッセージタイプ: DISCOVER
+        append_opt(DhcpOption::MessageType as u8, &[DhcpMessageType::Discover as u8])?;
+
+        // パラメータ要求リスト
+        append_opt(DhcpOption::ParameterRequestList as u8, &[
+            DhcpOption::SubnetMask as u8,
+            DhcpOption::Router as u8,
+            DhcpOption::DnsServer as u8,
+            DhcpOption::DomainName as u8,
+            DhcpOption::LeaseTime as u8,
+            DhcpOption::ServerIdentifier as u8,
+            DhcpOption::RenewalTime as u8,
+            DhcpOption::RebindingTime as u8,
+        ])?;
 
         // クライアント識別子
-        buffer[offset] = DhcpOption::ClientIdentifier as u8;
-        buffer[offset + 1] = 7;
-        buffer[offset + 2] = 1; // Ethernet
-        buffer[offset + 3..offset + 9].copy_from_slice(self.mac_address.as_bytes());
-        offset += 9;
+        let mut client_id = [0u8; 7];
+        client_id[0] = 1; // Ethernet
+        client_id[1..7].copy_from_slice(self.mac_address.as_bytes());
+        append_opt(DhcpOption::ClientIdentifier as u8, &client_id)?;
 
         // ホスト名 (Option 12)
-        {
-            let hostname = b"ranyos";
-            buffer[offset] = DhcpOption::Hostname as u8;
-            buffer[offset + 1] = hostname.len() as u8;
-            buffer[offset + 2..offset + 2 + hostname.len()].copy_from_slice(hostname);
-            offset += 2 + hostname.len();
-        }
+        append_opt(DhcpOption::Hostname as u8, b"ranyos")?;
 
         // 終端
+        if offset >= buffer.len() {
+            return Err("Buffer overflow at End option");
+        }
         buffer[offset] = DhcpOption::End as u8;
         offset += 1;
 
-        // 状態を更新 (we already hold the lock)
+        // 状態を更新
         *state_guard = DhcpState::Selecting;
         drop(state_guard);
 
         self.state_time.store(current_tick, Ordering::SeqCst);
-
         Ok(offset)
-    }
-
-    /// Acquire the current DHCP state (helper for lock + error handling).
-    pub(super) fn lock_dhcp_state(&self) -> Result<DhcpState, &'static str> {
-        match self.state.lock() {
-            Ok(g) => Ok(*g),
-            Err(_) => {
-                log::error!("[NET] DHCP State lock poisoned");
-                Err("State lock poisoned")
-            }
-        }
-    }
-
-    /// Retrieve the lease corresponding to the current DHCP state for REQUEST building.
-    pub(super) fn get_lease_for_request(&self, state: DhcpState) -> Result<(DhcpLease, bool), &'static str> {
-        match state {
-            DhcpState::Requesting => {
-                let offered = match self.offered_lease.lock() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        log::error!("[NET] DHCP Offer lock poisoned (build_request)");
-                        return Err("Offer lock poisoned");
-                    }
-                };
-                Ok((offered.clone().ok_or("No offer available")?, false))
-            }
-            DhcpState::Renewing | DhcpState::Rebinding => {
-                let l = match self.lease.lock() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        log::error!("[NET] DHCP Lease lock poisoned (build_request)");
-                        return Err("Lease lock poisoned");
-                    }
-                };
-                Ok((l.clone().ok_or("No active lease")?, true))
-            }
-            _ => Err("Invalid state for building request"),
-        }
-    }
-
-    /// Write DHCP REQUEST options into `buffer` starting at `offset`, returning new offset.
-    pub(super) fn write_request_options(
-        &self,
-        buffer: &mut [u8],
-        mut offset: usize,
-        lease: &DhcpLease,
-        is_renewal: bool,
-    ) -> usize {
-        // マジッククッキー
-        buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
-        offset += 4;
-
-        // メッセージタイプ: REQUEST
-        buffer[offset] = DhcpOption::MessageType as u8;
-        buffer[offset + 1] = 1;
-        buffer[offset + 2] = DhcpMessageType::Request as u8;
-        offset += 3;
-
-        if !is_renewal {
-            buffer[offset] = DhcpOption::RequestedIp as u8;
-            buffer[offset + 1] = 4;
-            buffer[offset + 2..offset + 6].copy_from_slice(lease.ip_address.as_bytes());
-            offset += 6;
-
-            buffer[offset] = DhcpOption::ServerIdentifier as u8;
-            buffer[offset + 1] = 4;
-            buffer[offset + 2..offset + 6].copy_from_slice(lease.server_ip.as_bytes());
-            offset += 6;
-        }
-
-        buffer[offset] = DhcpOption::ParameterRequestList as u8;
-        buffer[offset + 1] = 8;
-        buffer[offset + 2] = DhcpOption::SubnetMask as u8;
-        buffer[offset + 3] = DhcpOption::Router as u8;
-        buffer[offset + 4] = DhcpOption::DnsServer as u8;
-        buffer[offset + 5] = DhcpOption::DomainName as u8;
-        buffer[offset + 6] = DhcpOption::LeaseTime as u8;
-        buffer[offset + 7] = DhcpOption::ServerIdentifier as u8;
-        buffer[offset + 8] = DhcpOption::RenewalTime as u8;
-        buffer[offset + 9] = DhcpOption::RebindingTime as u8;
-        offset += 10;
-
-        buffer[offset] = DhcpOption::ClientIdentifier as u8;
-        buffer[offset + 1] = 7;
-        buffer[offset + 2] = 1; // Ethernet
-        buffer[offset + 3..offset + 9].copy_from_slice(self.mac_address.as_bytes());
-        offset += 9;
-
-        buffer[offset] = DhcpOption::End as u8;
-        offset += 1;
-
-        offset
     }
 
     /// DHCPREQUEST メッセージを構築
@@ -281,8 +241,8 @@ impl DhcpClient {
         buffer: &mut [u8],
         current_tick: u64,
     ) -> Result<usize, &'static str> {
-        if buffer.len() < DhcpHeader::SIZE + 64 {
-            return Err("Buffer too small");
+        if buffer.len() < DHCP_MAX_MESSAGE_SIZE {
+            return Err("Buffer too small (need DHCP_MAX_MESSAGE_SIZE)");
         }
 
         let current_state = self.lock_dhcp_state()?;
@@ -313,10 +273,54 @@ impl DhcpClient {
         buffer[28..34].copy_from_slice(self.mac_address.as_bytes());
 
         // オプション書き込み
-        let offset = self.write_request_options(buffer, DhcpHeader::SIZE, &lease, is_renewal);
+        // マジッククッキー
+        let mut offset = DhcpHeader::SIZE;
+        buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+        offset += 4;
+
+        // Helper to safely append options
+        let mut append_opt = |opt: u8, data: &[u8]| -> Result<(), &'static str> {
+            if offset + 2 + data.len() > buffer.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buffer[offset] = opt;
+            buffer[offset + 1] = data.len() as u8;
+            buffer[offset + 2..offset + 2 + data.len()].copy_from_slice(data);
+            offset += 2 + data.len();
+            Ok(())
+        };
+
+        // メッセージタイプ: REQUEST
+        append_opt(DhcpOption::MessageType as u8, &[DhcpMessageType::Request as u8])?;
+
+        if !is_renewal {
+            append_opt(DhcpOption::RequestedIp as u8, lease.ip_address.as_bytes())?;
+            append_opt(DhcpOption::ServerIdentifier as u8, lease.server_ip.as_bytes())?;
+        }
+
+        append_opt(DhcpOption::ParameterRequestList as u8, &[
+            DhcpOption::SubnetMask as u8,
+            DhcpOption::Router as u8,
+            DhcpOption::DnsServer as u8,
+            DhcpOption::DomainName as u8,
+            DhcpOption::LeaseTime as u8,
+            DhcpOption::ServerIdentifier as u8,
+            DhcpOption::RenewalTime as u8,
+            DhcpOption::RebindingTime as u8,
+        ])?;
+
+        let mut client_id = [0u8; 7];
+        client_id[0] = 1; // Ethernet
+        client_id[1..7].copy_from_slice(self.mac_address.as_bytes());
+        append_opt(DhcpOption::ClientIdentifier as u8, &client_id)?;
+
+        if offset >= buffer.len() {
+            return Err("Buffer overflow at End option");
+        }
+        buffer[offset] = DhcpOption::End as u8;
+        offset += 1;
 
         self.state_time.store(current_tick, Ordering::SeqCst);
-
         Ok(offset)
     }
 

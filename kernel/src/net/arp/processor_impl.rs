@@ -23,7 +23,7 @@ impl ArpProcessor {
     }
 
     /// Process an incoming ARP packet
-    pub fn process(&self, data: &[u8], current_time: u64) -> ArpResult {
+    pub fn process(&self, data: &[u8], current_time: u64, src_mac: MacAddress) -> ArpResult {
         if data.len() < ArpPacket::SIZE {
             return ArpResult::Invalid;
         }
@@ -41,6 +41,19 @@ impl ArpProcessor {
         }
 
         let sender_mac = packet.sender_mac();
+
+        // Security: Verify that the sender MAC address in the ARP packet matches
+        // the source MAC address in the Ethernet header. If they don't match,
+        // it's a strong indicator of ARP spoofing/poisoning.
+        if sender_mac != src_mac {
+            log::warn!(
+                "[NET-ARP] Possible spoofing detected: ARP sender MAC {} does not match Ethernet source MAC {}",
+                sender_mac,
+                src_mac
+            );
+            return ArpResult::Invalid;
+        }
+
         let sender_ip = packet.sender_ip();
         let target_ip = packet.target_ip();
 

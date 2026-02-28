@@ -288,6 +288,13 @@ impl Ipv6FragmentBuffer {
         let nh = self.next_header?;
         let unfrag = self.unfragmentable_part.as_ref()?;
 
+        // Check if reassembled length fits in IPv6 Payload Length field (16 bits)
+        // RFC 8200: Payload Length excludes the 40-byte fixed header.
+        if (unfrag.len() + total).saturating_sub(40) > 65535 {
+            log::warn!("[NET-IPV6] Reassembled packet too large for u16 Payload Length: {} bytes (Jumbo Payloads not supported)", unfrag.len() + total);
+            return None;
+        }
+
         // Build result: unfragmentable part + full payload
         let mut packet = Vec::with_capacity(unfrag.len() + total);
         packet.extend_from_slice(unfrag);

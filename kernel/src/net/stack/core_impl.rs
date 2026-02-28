@@ -120,7 +120,7 @@ impl NetworkStack {
         let result = self.ethernet.process(packet.data());
 
         match result {
-            ProcessResult::Ipv4(payload) => {
+            ProcessResult::Ipv4(payload, src_mac) => {
                 // Safety: Ensure payload is within packet bounds before offset calculation
                 let pkt_data = packet.data();
                 if payload.as_ptr() < pkt_data.as_ptr() || 
@@ -131,22 +131,22 @@ impl NetworkStack {
                 let offset = unsafe { payload.as_ptr().offset_from(pkt_data.as_ptr()) } as usize;
                 let mut ip_packet = packet.clone_ref();
                 ip_packet.advance(offset);
-                self.process_ipv4(payload, current_time, ip_packet);
+                self.process_ipv4(payload, current_time, ip_packet, src_mac);
                 self.stats.record_rx(pkt_len);
             }
-            ProcessResult::Arp(payload) => {
-                self.process_arp(payload, current_time);
+            ProcessResult::Arp(payload, src_mac) => {
+                self.process_arp(payload, current_time, src_mac);
                 self.stats.record_rx(pkt_len);
             }
-            ProcessResult::Ipv6(payload) => {
+            ProcessResult::Ipv6(payload, src_mac) => {
                 if self.ipv6.is_some() {
-                    self.process_ipv6_data(payload, current_time);
+                    self.process_ipv6_data(payload, current_time, src_mac);
                     self.stats.record_rx(pkt_len);
                 } else {
                     self.stats.record_dropped();
                 }
             }
-            ProcessResult::VlanTagged { vlan_id, pcp: _, dei: _, inner_type, payload } => {
+            ProcessResult::VlanTagged { vlan_id, pcp: _, dei: _, inner_type, payload, src_mac } => {
                 // VLAN-tagged frame - process based on inner type
                 // For now, we process the inner payload directly
                 // In a full implementation, we would check VLAN membership
@@ -162,16 +162,16 @@ impl NetworkStack {
 
                 match inner_type {
                     EtherType::Ipv4 => {
-                        self.process_ipv4(payload, current_time, inner_packet);
+                        self.process_ipv4(payload, current_time, inner_packet, src_mac);
                         self.stats.record_rx(pkt_len);
                     }
                     EtherType::Arp => {
-                        self.process_arp(payload, current_time);
+                        self.process_arp(payload, current_time, src_mac);
                         self.stats.record_rx(pkt_len);
                     }
                     EtherType::Ipv6 => {
                         if self.ipv6.is_some() {
-                            self.process_ipv6_data(payload, current_time);
+                            self.process_ipv6_data(payload, current_time, src_mac);
                             self.stats.record_rx(pkt_len);
                         } else {
                             self.stats.record_dropped();
@@ -208,7 +208,7 @@ impl NetworkStack {
     }
 
     /// Process IPv4 packet
-    pub(super) fn process_ipv4(&mut self, data: &[u8], current_time: u64, packet: PacketRef) {
+    pub(super) fn process_ipv4(&mut self, data: &[u8], current_time: u64, packet: PacketRef, _src_mac: MacAddress) {
         let result = self.ipv4.process_with_time(data, current_time);
 
         match result {
@@ -251,7 +251,7 @@ impl NetworkStack {
             Ipv4ProcessResult::Reassembled(reassembled_data) => {
                 // Process reassembled packet recursively
                 // The reassembled data is a complete IP packet
-                self.process_reassembled_packet(&reassembled_data, current_time);
+                self.process_reassembled_packet(&reassembled_data, current_time, _src_mac);
             }
             Ipv4ProcessResult::FragmentPending => {
                 // Fragment received, waiting for more fragments
@@ -268,7 +268,7 @@ impl NetworkStack {
     }
 
     /// Process a reassembled IP packet
-    pub(super) fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64) {
+    pub(super) fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64, _src_mac: MacAddress) {
         // Parse the reassembled packet
         if let Some(packet) = Ipv4Packet::parse(data) {
             let src = packet.source();
@@ -342,7 +342,7 @@ impl NetworkStack {
     // =========================================================================
 
     /// Process IPv6 packet data
-    pub(super) fn process_ipv6_data(&mut self, data: &[u8], current_time: u64) {
+    pub(super) fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress) {
         let ipv6 = match self.ipv6 {
             Some(ref ipv6) => ipv6,
             None => return,
@@ -378,7 +378,7 @@ impl NetworkStack {
                     current_time,
                 ) {
                     // Recursively process the reassembled (non-fragmented) packet
-                    self.process_ipv6_data(&reassembled, current_time);
+                    self.process_ipv6_data(&reassembled, current_time, src_mac);
                 }
                 return;
             }

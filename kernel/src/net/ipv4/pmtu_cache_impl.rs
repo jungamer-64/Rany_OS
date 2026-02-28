@@ -214,8 +214,20 @@ impl FragmentBuffer {
 
         self.last_update = current_time;
 
+        // Security: Check for consistent total length (RFC 791)
         if !header.more_fragments() {
+            if let Some(existing_total) = self.total_len {
+                if existing_total != fragment_end {
+                    log::warn!("[NET-IPV4] Inconsistent total length in fragments: expected {}, got {}", existing_total, fragment_end);
+                    return false;
+                }
+            }
             self.total_len = Some(fragment_end);
+        } else if let Some(total) = self.total_len {
+            if fragment_end > total {
+                log::warn!("[NET-IPV4] Fragment beyond end of datagram: {} > {}", fragment_end, total);
+                return false;
+            }
         }
 
         self.store_first_header_if_needed(header, fragment_offset);
@@ -227,27 +239,28 @@ impl FragmentBuffer {
 
         // Security: Check for inconsistent overlaps (RFC 1858 / RFC 3128)
         // If this fragment overlaps with data we already have, it MUST be identical.
-        // We use a simple bitset or just check against existing data if it's not a hole.
-        let mut overlap_checked = false;
+        // We detect overlap by checking if the fragment range [offset, end) 
+        // covers any byte that is not currently in a hole.
+        let mut covered_hole_bytes: u32 = 0;
         for hole in &self.holes {
-            if fragment_offset >= hole.first && fragment_end <= hole.last {
-                // Completely within a hole, no overlap with existing data
-                overlap_checked = true;
-                break;
+            let intersection_start = fragment_offset.max(hole.first);
+            let intersection_end = fragment_end.min(hole.last);
+            if intersection_start < intersection_end {
+                covered_hole_bytes += (intersection_end - intersection_start) as u32;
             }
         }
 
-        if !overlap_checked {
+        if covered_hole_bytes < fragment_len as u32 {
             // Potential overlap with existing data. Check consistency.
-            // (Note: This is a simplified check. A full check would track exactly which
-            // bytes have been written. Here we check against current buffer content
-            // which is initialized to 0, but could contain previous fragments.)
+            // We only need to check bytes that are NOT in holes.
             for i in 0..fragment_len as usize {
                 let pos = fragment_offset as usize + i;
                 let is_in_hole = self.holes.iter().any(|h| pos >= h.first as usize && pos < h.last as usize);
-                if !is_in_hole && self.data[pos] != payload[i] {
-                    // Inconsistent overlap detected - SECURITY RISK (NIDS evasion)
-                    return false;
+                if !is_in_hole {
+                    if pos < self.data.len() && self.data[pos] != payload[i] {
+                        log::warn!("[NET-IPV4] Inconsistent fragment overlap at offset {}", pos);
+                        return false;
+                    }
                 }
             }
         }

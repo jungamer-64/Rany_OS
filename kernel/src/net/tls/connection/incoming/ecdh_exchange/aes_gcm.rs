@@ -567,8 +567,8 @@ impl TlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         match sig_algorithm {
-            0x0401 => self.verify_rsa_pkcs1_signature(content, signature, crate::net::rsa::HashAlgorithm::Sha256),
-            0x0501 => self.verify_rsa_pkcs1_signature(content, signature, crate::net::rsa::HashAlgorithm::Sha384),
+            // RFC 8446 Section 4.2.3: RSASSA-PKCS1-v1_5 (0x0*01) is NOT supported for CertificateVerify in TLS 1.3.
+            // Only PSS (0x0804) or ECDSA are allowed for RSA/EC keys.
             0x0804 => self.verify_rsa_pss_signature(content, signature, crate::net::rsa::HashAlgorithm::Sha256),
             0x0403 => self.verify_ecdsa_p256_signature(content, signature),
             0x0503 => self.verify_ecdsa_p384_signature(content, signature),

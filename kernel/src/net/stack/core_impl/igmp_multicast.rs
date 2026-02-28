@@ -453,8 +453,8 @@ impl NetworkStack {
     }
 
     /// Process ARP packet
-    pub(super) fn process_arp(&mut self, data: &[u8], current_time: u64) {
-        let result = self.arp.process(data, current_time);
+    pub(super) fn process_arp(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress) {
+        let result = self.arp.process(data, current_time, src_mac);
 
         match result {
             ArpResult::SendReply {

@@ -332,13 +332,13 @@ pub struct EthernetStats {
 /// Result of processing an Ethernet frame
 pub enum ProcessResult<'a> {
     /// IPv4 packet to process
-    Ipv4(&'a [u8]),
+    Ipv4(&'a [u8], MacAddress),
     /// IPv6 packet to process
-    Ipv6(&'a [u8]),
+    Ipv6(&'a [u8], MacAddress),
     /// ARP packet to process
-    Arp(&'a [u8]),
+    Arp(&'a [u8], MacAddress),
     /// VLAN tagged frame - contains (VLAN ID, inner payload, inner EtherType)
-    VlanTagged { vlan_id: u16, pcp: u8, dei: bool, inner_type: EtherType, payload: &'a [u8] },
+    VlanTagged { vlan_id: u16, pcp: u8, dei: bool, inner_type: EtherType, payload: &'a [u8], src_mac: MacAddress },
     /// Frame was dropped (not for us)
     Dropped,
     /// Frame was invalid
@@ -396,17 +396,18 @@ impl EthernetProcessor {
         self.stats.rx_bytes += data.len() as u64;
 
         // Dispatch by EtherType
+        let src_mac = frame.source();
         match frame.ether_type() {
-            EtherType::Ipv4 => ProcessResult::Ipv4(frame.payload()),
-            EtherType::Ipv6 => ProcessResult::Ipv6(frame.payload()),
-            EtherType::Arp => ProcessResult::Arp(frame.payload()),
-            EtherType::Vlan => self.process_vlan_tag(frame.payload()),
+            EtherType::Ipv4 => ProcessResult::Ipv4(frame.payload(), src_mac),
+            EtherType::Ipv6 => ProcessResult::Ipv6(frame.payload(), src_mac),
+            EtherType::Arp => ProcessResult::Arp(frame.payload(), src_mac),
+            EtherType::Vlan => self.process_vlan_tag(frame.payload(), src_mac),
             _ => ProcessResult::Dropped,
         }
     }
 
     /// Process a VLAN-tagged frame (802.1Q)
-    fn process_vlan_tag<'a>(&mut self, payload: &'a [u8]) -> ProcessResult<'a> {
+    fn process_vlan_tag<'a>(&mut self, payload: &'a [u8], src_mac: MacAddress) -> ProcessResult<'a> {
         // VLAN tag is 4 bytes: TPID (2) + TCI (2)
         // After VLAN tag, we have the inner EtherType (2 bytes) + inner payload
         if payload.len() < 4 {
@@ -429,9 +430,9 @@ impl EthernetProcessor {
         // Return the VLAN tagged result or process the inner frame directly
         // For simple cases, we can directly dispatch the inner frame
         match inner_type {
-            EtherType::Ipv4 => ProcessResult::Ipv4(inner_payload),
-            EtherType::Ipv6 => ProcessResult::Ipv6(inner_payload),
-            EtherType::Arp => ProcessResult::Arp(inner_payload),
+            EtherType::Ipv4 => ProcessResult::Ipv4(inner_payload, src_mac),
+            EtherType::Ipv6 => ProcessResult::Ipv6(inner_payload, src_mac),
+            EtherType::Arp => ProcessResult::Arp(inner_payload, src_mac),
             EtherType::Vlan => {
                 // Nested VLAN (Q-in-Q) - return as VlanTagged for caller to handle
                 ProcessResult::VlanTagged {
@@ -440,6 +441,7 @@ impl EthernetProcessor {
                     dei,
                     inner_type,
                     payload: inner_payload,
+                    src_mac,
                 }
             }
             _ => ProcessResult::VlanTagged {
@@ -448,6 +450,7 @@ impl EthernetProcessor {
                 dei,
                 inner_type,
                 payload: inner_payload,
+                src_mac,
             },
         }
     }

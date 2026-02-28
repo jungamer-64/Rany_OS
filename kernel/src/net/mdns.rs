@@ -274,14 +274,22 @@ impl MdnsService {
             // Check if this is an A record query for our hostname
             if qtype == DNS_TYPE_A && qclass_masked == DNS_CLASS_IN {
                 if names_equal(&name, &our_fqdn) {
-                    // This query is for us - queue a pending report
-                    self.pending_reports.push(MdnsReport {
-                        name: our_fqdn.clone(),
-                        ip: Some(self.local_ip),
-                        ttl: MDNS_DEFAULT_TTL,
-                        is_response: true,
-                        timestamp: current_time,
-                    });
+                    // Security: Limit pending reports to prevent memory DoS.
+                    const MAX_PENDING_REPORTS: usize = 32;
+                    if self.pending_reports.len() < MAX_PENDING_REPORTS {
+                        // Check for duplicate pending reports to avoid redundant work
+                        if !self.pending_reports.iter().any(|r| r.name == our_fqdn && r.is_response) {
+                            self.pending_reports.push(MdnsReport {
+                                name: our_fqdn.clone(),
+                                ip: Some(self.local_ip),
+                                ttl: MDNS_DEFAULT_TTL,
+                                is_response: true,
+                                timestamp: current_time,
+                            });
+                        }
+                    } else {
+                        log::warn!("[NET] mDNS: Too many pending reports - dropping response for {}", our_fqdn);
+                    }
 
                     return MdnsResult::SendResponse {
                         name: our_fqdn,

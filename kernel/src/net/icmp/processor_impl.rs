@@ -233,28 +233,11 @@ impl IcmpProcessor {
 
     /// Process an ICMP Redirect packet.
     pub(super) fn process_redirect(&self, packet: &IcmpPacket<'_>) -> IcmpResult {
-        let payload = packet.payload();
-        if payload.len() < 4 + 20 {
-            return IcmpResult::Invalid;
-        }
-        let gateway = Ipv4Address::from_octets(
-            payload[0], payload[1], payload[2], payload[3],
-        );
-        let dst_offset = 4 + 16;
-        if payload.len() < dst_offset + 4 {
-            return IcmpResult::Invalid;
-        }
-        let destination = Ipv4Address::from_octets(
-            payload[dst_offset],
-            payload[dst_offset + 1],
-            payload[dst_offset + 2],
-            payload[dst_offset + 3],
-        );
-        IcmpResult::Redirect {
-            code: RedirectCode::from(packet.code()),
-            gateway,
-            destination,
-        }
+        // Security: ICMP Redirects are dangerous and can be used for MitM attacks.
+        // We ignore them by default unless the system is specifically configured to
+        // trust them and they come from the current gateway.
+        log::warn!("[NET] ICMP: Ignoring Redirect message (Security: disabled by default)");
+        IcmpResult::Ignored
     }
 
     /// Process an ICMP Timestamp Request packet.

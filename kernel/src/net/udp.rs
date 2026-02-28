@@ -190,7 +190,12 @@ impl<'a> UdpPacketMut<'a> {
 
     /// Write payload
     pub fn write_payload(&mut self, data: &[u8]) -> usize {
-        let max = self.buffer.len() - UdpHeader::SIZE;
+        let max_buffer = self.buffer.len() - UdpHeader::SIZE;
+        // RFC 768: UDP length is 16-bit, so total length (header+payload) <= 65535.
+        // Payload max = 65535 - 8 = 65527.
+        let max_udp = 65527;
+        let max = max_buffer.min(max_udp);
+
         let len = data.len().min(max);
         self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + len].copy_from_slice(&data[..len]);
         self.payload_len = len;
@@ -199,7 +204,8 @@ impl<'a> UdpPacketMut<'a> {
 
     /// Set payload length
     pub fn set_payload_len(&mut self, len: usize) {
-        self.payload_len = len.min(self.buffer.len() - UdpHeader::SIZE);
+        let max_udp = 65527;
+        self.payload_len = len.min(self.buffer.len() - UdpHeader::SIZE).min(max_udp);
     }
 
     /// Finalize the packet (compute checksum)

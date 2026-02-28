@@ -1024,7 +1024,7 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
     let mut inner = DerParser::new(content);
     while !inner.is_empty() {
         // Name is a SEQUENCE of SETs
-        let (tag, rdn_content) = match inner.read_tlv() {
+        let (_tag, rdn_content) = match inner.read_tlv() {
             Some((0x31, c)) => (0x31, c),
             _ => break,
         };

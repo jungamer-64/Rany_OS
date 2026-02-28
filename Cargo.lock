@@ -768,6 +768,7 @@ dependencies = [
  "once_cell",
  "pci_driver",
  "rtc_driver",
+ "security",
  "serial_driver",
  "sha2",
  "spin",
