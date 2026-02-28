@@ -650,15 +650,16 @@ pub(crate) static HYBRID_COORDINATOR: spin::Once<Arc<HybridIoCoordinator>> = spi
 
 /// I/Oスケジューラを初期化
 pub fn init_io_scheduler() {
-    IO_SCHEDULER.call_once(|| Arc::new(IoScheduler::new()));
-    HYBRID_COORDINATOR.call_once(|| Arc::new(HybridIoCoordinator::new(io_scheduler())));
+    let _ = io_scheduler();
+    let _ = hybrid_coordinator();
     hybrid_coordinator().set_global_mode(IoMode::Polling);
 }
 
 /// グローバルI/Oスケジューラを取得
 pub fn io_scheduler() -> Arc<IoScheduler> {
+    IO_SCHEDULER.call_once(|| Arc::new(IoScheduler::new()));
     IO_SCHEDULER
         .get()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(IoScheduler::new()))
+        .expect("IO_SCHEDULER must be initialized")
+        .clone()
 }

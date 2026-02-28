@@ -3,10 +3,11 @@ use super::*;
 
 /// ハイブリッドコーディネーターを取得
 pub fn hybrid_coordinator() -> Arc<HybridIoCoordinator> {
+    HYBRID_COORDINATOR.call_once(|| Arc::new(HybridIoCoordinator::new(io_scheduler())));
     HYBRID_COORDINATOR
         .get()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(HybridIoCoordinator::new(io_scheduler())))
+        .expect("HYBRID_COORDINATOR must be initialized")
+        .clone()
 }
 
 // ============================================================================
@@ -58,4 +59,3 @@ pub async fn async_flush(device: DeviceId) -> Result<usize, IoError> {
 #[cfg(test)]
 #[path = "../../tests.rs"]
 mod tests;
-
