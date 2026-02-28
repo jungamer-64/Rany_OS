@@ -631,6 +631,15 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
 
+    // 3.8. WAL/PMEM/GDB スタブ初期化
+    info!(target: "init", "Initializing durability + debug subsystems");
+    storage::init();
+    let _ = storage::wal::replay(|_tx_id, _op| {
+        // Storage drivers can hook replay application in their own mount path.
+    });
+    let _ = debug::gdb_stub::init_gdb_stub();
+    info!(target: "init", "Durability + debug subsystems initialized");
+
     // 4. タスクスケジューラの初期化
     info!(target: "init", "Initializing task scheduler");
     #[cfg(feature = "legacy-scheduler")]

@@ -17,6 +17,8 @@ mod epoch;
 mod error;
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 mod fs;
+mod storage;
+mod debug;
 mod ahci_and_init;
 pub use ahci_and_init::*;
 #[macro_use]
@@ -312,8 +314,11 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     };
     info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
+    // Security baseline: IOMMU is mandatory for DMA isolation.
+    io::iommu::api::set_iommu_required(true);
     let iommu_config = parse_iommu_cmdline(boot_info, phys_mem_offset);
     init_iommu_driver(&parser, &iommu_config);
+    io::iommu::api::enforce_iommu_requirement();
 
     if io::iommu::api::is_iommu_enabled() {
         // Security: Protect BIOS/UEFI reserved regions from DMA.

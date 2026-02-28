@@ -16,11 +16,9 @@ pub mod fuel;
 pub mod interrupt_waker;
 pub mod per_core_executor;
 pub mod preemption;
-pub(crate) mod process;
 pub mod io;
 #[cfg(feature = "legacy-scheduler")]
 pub mod scheduler; 
-pub(crate) mod signal;
 pub mod timer;
 mod work_stealing;
 
@@ -88,25 +86,6 @@ pub use work_stealing_advanced::{
     StealableTask, TaskId as WsTaskId, TaskState as WsTaskState, WorkStealingDeque, WorkerStats,
     init as init_work_stealing, schedule as ws_schedule, spawn as ws_spawn,
 };
-
-#[cfg(feature = "posix-compat")]
-pub mod compat {
-    pub mod process {
-        pub use super::super::process::{
-            Credentials, ProcessId, ProcessInfo, ProcessManager, ProcessState, ResourceLimits,
-            ThreadId, exit as process_exit, getgid, getpid, getppid, getpriority, getuid,
-            process_manager, setpriority, spawn as spawn_process, waitpid,
-        };
-    }
-
-    pub mod signal {
-        pub use super::super::signal::{
-            Signal, SignalAction, SignalContext, SignalFuture, SignalHandler, SignalManager,
-            SignalMask, SignalQueue, kill, sigignore, signal as set_signal, signal_manager,
-        };
-    }
-
-}
 
 // ============================================================================
 // Timeout Support (設計書 4.4)

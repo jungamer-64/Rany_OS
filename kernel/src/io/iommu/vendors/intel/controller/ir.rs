@@ -42,18 +42,22 @@ impl InterruptRemapEntry {
         if logical {
             lo |= 1 << 2;
         }
-        // Vector (bits 16-23)
+        // E (Extended Interrupt Mode) = 1 (bit 15)
+        // This is required for 32-bit destination ID support (x2APIC).
+        lo |= 1 << 15;
+        // Vector (bits 31:16)
         lo |= (vector as u64) << 16;
-        // DestID (bits 32-63)
+        // DestID (bits 63:32)
         lo |= (dest_id as u64) << 32;
 
         let mut hi = 0;
         if let Some(rid) = sid {
-            // SVT=1 (Source Validation Type: Verify SID) - bits 64-65 of IRTE (bits 0-1 of hi)
-            hi |= 1;
-            // SQ=0 (Source-id Qualifier: Exact match) - bits 66-67 of IRTE (bits 2-3 of hi)
-            // SID (Source ID) - bits 80-95 of IRTE (bits 16-31 of hi)
-            hi |= (rid as u64) << 16;
+            // SVT=1 (Source Validation Type: Verify SID) - bits 81:80 of IRTE (bits 17:16 of hi)
+            hi |= 1 << 16;
+            // SQ=0 (Source-id Qualifier: Exact match) - bits 83:82 of IRTE (bits 19:18 of hi)
+            // (hi |= 0 << 18 is implicit)
+            // SID (Source ID) - bits 79:64 of IRTE (bits 15:0 of hi)
+            hi |= rid as u64;
         }
 
         Self { lo, hi }
@@ -61,14 +65,16 @@ impl InterruptRemapEntry {
 
     pub fn posted(pid_addr: u64, sid: Option<u16>) -> Self {
         // P=1 (bit 0), IM=1 (bit 4)
-        let lo = (pid_addr & !0xF) | (1 << 4) | 1;
+        // PID address (PDA) must be 4KB aligned, bits 63:12 are used.
+        let lo = (pid_addr & !0xFFF) | (1 << 4) | 1;
         let mut hi = 0;
         if let Some(rid) = sid {
-            // SVT=1 (Source Validation Type: Verify SID) - bits 64-65 of IRTE (bits 0-1 of hi)
-            hi |= 1;
-            // SQ=0 (Source-id Qualifier: Exact match) - bits 66-67 of IRTE (bits 2-3 of hi)
-            // SID (Source ID) - bits 80-95 of IRTE (bits 16-31 of hi)
-            hi |= (rid as u64) << 16;
+            // SVT=1 (Source Validation Type: Verify SID) - bits 81:80 of IRTE (bits 17:16 of hi)
+            hi |= 1 << 16;
+            // SQ=0 (Source-id Qualifier: Exact match) - bits 83:82 of IRTE (bits 19:18 of hi)
+            hi |= 0 << 18; // explicit for clarity
+            // SID (Source ID) - bits 79:64 of IRTE (bits 15:0 of hi)
+            hi |= rid as u64;
         }
         Self { lo, hi }
     }

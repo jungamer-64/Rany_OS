@@ -128,7 +128,6 @@ task = []
 legacy-scheduler = []
 force_vga = []
 gimli_unwind = []
-posix-compat = []
 
 # Test-only feature: enable PKEY allocation behavior inside tests so we can
 # exercise loader->mpk integration without requiring a full kernel runtime.

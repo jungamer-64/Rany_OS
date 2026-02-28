@@ -187,11 +187,11 @@ impl AtomicWaker {
 
     /// Wake from ISR context.
     ///
-    /// This is functionally identical to `wake()` since the implementation
-    /// is already lock-free and ISR-safe.
+    /// ISRでは直接 `wake()` を実行せず、deferred queue に積む。
     #[inline]
     pub fn wake_from_isr(&self) {
-        self.wake_impl(true);
+        let ptr = self as *const Self as usize;
+        let _ = DEFERRED_ATOMIC_WAKER_QUEUE.push_once(ptr);
     }
 
     /// Internal wake implementation
@@ -330,13 +330,19 @@ impl Default for AtomicWaker {
 /// Legacy type alias for backwards compatibility
 pub type LockFreeAtomicWaker = AtomicWaker;
 
-/// Process all deferred wakes (no-op for lock-free implementation)
-/// 
-/// This function exists for API compatibility. The lock-free AtomicWaker
-/// implementation wakes directly from ISR context without deferral.
+/// Process all deferred `AtomicWaker` wakes in non-ISR context.
+///
+/// ISR側で蓄積した AtomicWaker 通知を non-ISR コンテキストで処理する。
 #[inline]
 pub fn process_deferred_wakes() {
-    // No-op: Lock-free implementation wakes directly
+    while let Some(ptr) = DEFERRED_ATOMIC_WAKER_QUEUE.pop() {
+        if ptr == 0 {
+            continue;
+        }
+        // SAFETY: pointer must refer to a long-lived AtomicWaker.
+        let aw = unsafe { &*(ptr as *const AtomicWaker) };
+        aw.wake();
+    }
 }
 
 
@@ -411,21 +417,8 @@ impl WakerQueue {
 
     /// ISR-safe wake-all: enqueue for deferred processing
     ///
-    /// If the lock can be acquired immediately, wakes all directly.
-    /// Otherwise, sets the pending flag and enqueues for deferred processing.
+    /// Direct wakeは行わず、必ずdeferred処理へ委譲する。
     pub fn wake_all_from_isr(&self) {
-        // Fast path: try to get lock immediately
-        if let Some(mut guard) = self.wakers.try_lock() {
-            let wakers: Vec<Waker> = guard.drain(..).collect();
-            drop(guard);
-            self.wake_requested.store(false, Ordering::Release);
-            for w in wakers {
-                w.wake();
-            }
-            return;
-        }
-
-        // Fallback: mark pending and enqueue for deferred processing
         self.wake_requested.store(true, Ordering::Release);
         let ptr = self as *const Self as usize;
         let _ = DEFERRED_WAKER_QUEUE_QUEUE.push_once(ptr);
@@ -456,6 +449,7 @@ impl Default for WakerQueue {
 
 // Separate deferred queue for WakerQueue (to distinguish from AtomicWaker)
 static DEFERRED_WAKER_QUEUE_QUEUE: DeferredWakerQueue = DeferredWakerQueue::new();
+static DEFERRED_ATOMIC_WAKER_QUEUE: DeferredWakerQueue = DeferredWakerQueue::new();
 
 /// Process all deferred WakerQueue wakes; call from non-ISR context
 pub fn process_deferred_waker_queue_wakes() {
@@ -639,4 +633,3 @@ mod tests {
         assert!(!atomic_waker.has_waker());
     }
 }
-

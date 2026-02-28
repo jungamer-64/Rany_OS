@@ -81,14 +81,21 @@ impl IommuController {
                 0
             };
             
-            if am > 6 || (start_iova & ((4096 << am) - 1)) != 0 {
+            let fallback_to_domain = am > 6 || (start_iova & ((4096 << am) - 1)) != 0;
+
+            if fallback_to_domain {
                 self.qi_invalidate_iotlb_domain(domain_id)?;
             } else {
                 self.qi_invalidate_iotlb_page(domain_id, start_iova, am)?;
             }
 
             if any_ats {
-                self.invalidate_device_tlbs(domain_id, Some(start_iova), Some(am))?;
+                if fallback_to_domain {
+                    // SECURITY: If we fell back for IOTLB, we MUST fall back for Device-TLB too
+                    self.invalidate_device_tlbs(domain_id, None, None)?;
+                } else {
+                    self.invalidate_device_tlbs(domain_id, Some(start_iova), Some(am))?;
+                }
             }
         } else {
             unsafe { self.invalidate_iotlb_direct(domain_id); }

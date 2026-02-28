@@ -19,17 +19,8 @@ use crate::shell::exoshell::types::*;
 use alloc::boxed::Box;
 mod namespace_impl;
 
-#[cfg(feature = "posix-compat")]
-const TRACE_RESOURCE: &str = "/proc/*/trace";
-#[cfg(not(feature = "posix-compat"))]
 const TRACE_RESOURCE: &str = "/sys/cell/*/trace";
-#[cfg(feature = "posix-compat")]
-const SIGNAL_RESOURCE: &str = "/proc/*/signal";
-#[cfg(not(feature = "posix-compat"))]
 const SIGNAL_RESOURCE: &str = "/sys/cell/*/signal";
-#[cfg(feature = "posix-compat")]
-const PRIORITY_RESOURCE: &str = "/proc/*/priority";
-#[cfg(not(feature = "posix-compat"))]
 const PRIORITY_RESOURCE: &str = "/sys/cell/*/priority";
 
 /// Capability 名前空間（権限管理）
@@ -335,12 +326,6 @@ impl CapNamespace {
             "/sys/cell/*/trace" => CAP_SYS_PTRACE,
             "/sys/cell/*/signal" => CAP_KILL,
             "/sys/cell/*/priority" => CAP_SYS_NICE,
-            #[cfg(feature = "posix-compat")]
-            "/proc/*/trace" => CAP_SYS_PTRACE,
-            #[cfg(feature = "posix-compat")]
-            "/proc/*/signal" => CAP_KILL,
-            #[cfg(feature = "posix-compat")]
-            "/proc/*/priority" => CAP_SYS_NICE,
             "/identity/uid" => CAP_SETUID,
             "/identity/gid" => CAP_SETGID,
             "/fs/*/owner" => CAP_CHOWN,

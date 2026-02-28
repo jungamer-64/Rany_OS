@@ -54,16 +54,22 @@ struct FileHandleEntry {
 }
 
 // Channel Registry for IPC
-use crate::ipc::pipe::{PipeReader, PipeWriter};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChannelRole {
+    Sender,
+    Receiver,
+}
 
-enum ChannelEntry {
-    Reader(PipeReader),
-    Writer(PipeWriter),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChannelEntry {
+    channel_id: u64,
+    role: ChannelRole,
 }
 
 struct ChannelRegistry {
     channels: Mutex<BTreeMap<u64, ChannelEntry>>,
     next_id: AtomicU64,
+    next_channel_id: AtomicU64,
 }
 
 impl ChannelRegistry {
@@ -71,7 +77,12 @@ impl ChannelRegistry {
         Self {
             channels: Mutex::new(BTreeMap::new()),
             next_id: AtomicU64::new(1),
+            next_channel_id: AtomicU64::new(1),
         }
+    }
+
+    fn allocate_channel_id(&self) -> u64 {
+        self.next_channel_id.fetch_add(1, Ordering::Relaxed)
     }
 
     fn register(&self, entry: ChannelEntry) -> u64 {

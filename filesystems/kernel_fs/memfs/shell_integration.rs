@@ -22,8 +22,6 @@ pub fn init_shell_fs() {
             let _ = root.mkdir("etc", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("home", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("sys", FileMode::DEFAULT_DIR);
-            #[cfg(feature = "posix-compat")]
-            let _ = root.mkdir("proc", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("tmp", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("var", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("drivers", FileMode::DEFAULT_DIR); // For dynamic driver loading

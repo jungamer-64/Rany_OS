@@ -59,8 +59,9 @@ impl SlPte {
     pub const SUPER_PAGE: u64 = 1 << 7;
     /// Snoop behavior
     pub const SNOOP: u64 = 1 << 11;
-    /// Transient mapping hint
-    pub const TRANSIENT: u64 = 1 << 62;
+
+    /// Physical address mask (bits 51:12)
+    const PHYS_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
     /// Create a new entry
     pub const fn new() -> Self {
@@ -76,13 +77,14 @@ impl SlPte {
         if write {
             flags |= Self::WRITE;
         }
-        Self((phys_addr & !0xFFF) | flags)
+        // Mask to 52-bit physical address and ensure 4KB alignment
+        Self((phys_addr & Self::PHYS_MASK) | flags)
     }
 
     /// Create a 2MB super-page entry (used at PD level)
     /// phys_addr must be 2MB-aligned
     pub fn super_page_2mb(phys_addr: u64, read: bool, write: bool) -> Self {
-        const MASK_2MB: u64 = (2 * 1024 * 1024) - 1; // 0x1F_FFFF
+        const MASK_2MB: u64 = (2 * 1024 * 1024) - 1;
         let mut flags = Self::SUPER_PAGE;
         if read {
             flags |= Self::READ;
@@ -90,13 +92,14 @@ impl SlPte {
         if write {
             flags |= Self::WRITE;
         }
-        Self((phys_addr & !MASK_2MB) | flags)
+        // Mask to 52-bit physical address and ensure 2MB alignment
+        Self((phys_addr & Self::PHYS_MASK & !MASK_2MB) | flags)
     }
 
     /// Create a 1GB super-page entry (used at PDP level)
     /// phys_addr must be 1GB-aligned
     pub fn super_page_1gb(phys_addr: u64, read: bool, write: bool) -> Self {
-        const MASK_1GB: u64 = (1024 * 1024 * 1024) - 1; // 0x3FFF_FFFF
+        const MASK_1GB: u64 = (1024 * 1024 * 1024) - 1;
         let mut flags = Self::SUPER_PAGE;
         if read {
             flags |= Self::READ;
@@ -104,7 +107,8 @@ impl SlPte {
         if write {
             flags |= Self::WRITE;
         }
-        Self((phys_addr & !MASK_1GB) | flags)
+        // Mask to 52-bit physical address and ensure 1GB alignment
+        Self((phys_addr & Self::PHYS_MASK & !MASK_1GB) | flags)
     }
 
     /// Check if this is a super-page entry
@@ -128,9 +132,7 @@ impl SlPte {
 
     /// Get physical address
     pub fn phys_addr(&self) -> u64 {
-        // Mask out flags (low 12 bits) and high flags (52-63)
-        // Intel/AMD physical address typically in 12-51 range
-        self.0 & 0x000F_FFFF_FFFF_F000
+        self.0 & Self::PHYS_MASK
     }
 
     /// Check read permission

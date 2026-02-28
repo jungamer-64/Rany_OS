@@ -34,26 +34,44 @@ pub trait PciTopologyProvider {
 
     /// 指定デバイス(bus:device)の全ての機能でACS分離が有効かを確認する。
     /// 一つでも無効またはケイパビリティがない場合は false を返す。
+    ///
+    /// # Security Policy
+    /// 多機能デバイスの場合、全ファンクションがACS対応で分離されている必要がある。
+    /// また、一部のデバイスは多機能ビットを偽装する場合があるため、常に全ファンクションをスキャンする。
     fn has_acs_on_all_functions(&self, bus: u8, device: u8) -> bool {
-        // First check if it's a multifunction device at function 0
-        let ht = self.read_header_type(bus, device, 0).unwrap_or(0);
-        let is_multifunction = (ht & 0x80) != 0;
+        let mut found_multifunction = false;
+        let mut all_acs_enabled = true;
+        let mut any_function_exists = false;
 
-        if !is_multifunction {
-            // Not multifunction, just check function 0
-            return self.is_acs_isolation_enabled(bus, device, 0).unwrap_or(false);
-        }
-
-        // Multifunction device: all existing functions MUST have ACS enabled for isolation.
-        // We check all 8 possible functions.
+        // Check all 8 possible functions.
         for func in 0..8 {
-            if let Some(_) = self.read_header_type(bus, device, func) {
+            if let Some(ht) = self.read_header_type(bus, device, func) {
+                any_function_exists = true;
+                if func > 0 || (ht & 0x80) != 0 {
+                    found_multifunction = true;
+                }
+                
                 if !self.is_acs_isolation_enabled(bus, device, func).unwrap_or(false) {
-                    return false;
+                    all_acs_enabled = false;
+                    // If any function lacks ACS, we can stop early if it's already known to be multifunction.
+                    if found_multifunction {
+                        return false;
+                    }
                 }
             }
         }
-        true
+
+        if !any_function_exists {
+            return false;
+        }
+
+        // If it's a multifunction device, all functions MUST have ACS enabled.
+        if found_multifunction {
+            return all_acs_enabled;
+        }
+
+        // Single-function device: just check function 0's ACS (for P2P isolation if it's a bridge).
+        all_acs_enabled
     }
 
     /// `child_bus` を所有する親ブリッジを検索する。

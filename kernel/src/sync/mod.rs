@@ -44,6 +44,7 @@ pub use atomic_waker::WakerQueue;
 
 // Process deferred wake notifications (ISR -> Executor deferred wake queue)
 pub use atomic_waker::process_deferred_wakes;
+pub use atomic_waker::process_deferred_waker_queue_wakes;
 
 #[allow(unused_imports)]
 pub use irq_mutex::{IrqMutex, IrqMutexGuard};

@@ -439,14 +439,6 @@ impl DevFs {
         // /dev/console
         self.register_char_device("console", DeviceNumber::CONSOLE, Arc::new(ConsoleDevice));
 
-        // /dev/stdin -> /proc/self/fd/0 (POSIX互換時のみ)
-        #[cfg(feature = "posix-compat")]
-        {
-            self.create_symlink("stdin", "/proc/self/fd/0");
-            self.create_symlink("stdout", "/proc/self/fd/1");
-            self.create_symlink("stderr", "/proc/self/fd/2");
-        }
-
         // /dev/fd ディレクトリ
         self.create_directory("fd");
 

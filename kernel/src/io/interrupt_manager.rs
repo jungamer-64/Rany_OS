@@ -67,7 +67,7 @@ const IPI_VECTOR_BASE: u8 = 241;
 pub enum InterruptSourceType {
     /// レガシーIOAPIC割り込み
     LegacyIoApic { gsi: u32 },
-    /// MSI (Message Signaled Interrupt)
+    /// MSI (Message-based Interrupt)
     Msi { device_bdf: u32 },
     /// MSI-X
     MsiX { device_bdf: u32, table_index: u16 },

@@ -43,7 +43,7 @@ pub const CAP_SYS_TIME: Capability = 1 << 4;
 pub const CAP_SYS_PTRACE: Capability = 1 << 5;
 /// File: Override DAC restrictions
 pub const CAP_DAC_OVERRIDE: Capability = 1 << 6;
-/// Signal: Send signals to any process
+/// Control: Terminate other domains/tasks
 pub const CAP_KILL: Capability = 1 << 7;
 /// Identity: Change UID
 pub const CAP_SETUID: Capability = 1 << 8;

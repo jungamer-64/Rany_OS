@@ -745,12 +745,15 @@ impl KernelServices for ExoKernel {
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
-        // Create a new pipe
-        let pipe = crate::ipc::pipe::pipe();
-
-        // Register reader and writer
-        let reader_id = CHANNEL_REGISTRY.register(ChannelEntry::Reader(pipe.reader));
-        let writer_id = CHANNEL_REGISTRY.register(ChannelEntry::Writer(pipe.writer));
+        let channel_id = CHANNEL_REGISTRY.allocate_channel_id();
+        let writer_id = CHANNEL_REGISTRY.register(ChannelEntry {
+            channel_id,
+            role: ChannelRole::Sender,
+        });
+        let reader_id = CHANNEL_REGISTRY.register(ChannelEntry {
+            channel_id,
+            role: ChannelRole::Receiver,
+        });
 
         Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id))) // Return (Sender, Receiver)
     }

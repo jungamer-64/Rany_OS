@@ -32,6 +32,6 @@ pub(crate) mod qemu_tests {
 // ============================================================================
 
 /// IOMMU Check Required
-pub(crate) static IOMMU_REQUIRED: AtomicBool = AtomicBool::new(false);
+pub(crate) static IOMMU_REQUIRED: AtomicBool = AtomicBool::new(true);
 
 // End of file

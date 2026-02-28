@@ -51,7 +51,6 @@ pub mod memfs;
 pub mod async_memfs;
 pub mod page;
 pub mod sysfs;
-#[cfg(feature = "posix-compat")]
 pub mod procfs;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
@@ -97,7 +96,6 @@ pub use memfs::{
     make_directory, move_file, read_file_content, remove_directory, remove_file, resolve_path,
     shell_fs, stat_file, touch_file, write_file_content,
 };
-#[cfg(feature = "posix-compat")]
 #[allow(unused_imports)]
 pub use procfs::{
     Pid as ProcPid, ProcEntry, ProcError, ProcFileHandle, ProcFileType, ProcFs, ProcInode, procfs,

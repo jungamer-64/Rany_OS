@@ -422,7 +422,7 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
             "--target",
             "x86_64-exorust.json",
             "--features",
-            "qemu-test-export,posix-compat",
+            "qemu-test-export",
             "-Z",
             "json-target-spec",
             "-Z",

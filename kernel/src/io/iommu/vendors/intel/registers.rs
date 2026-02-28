@@ -136,21 +136,21 @@ pub mod ccmd_bits {
 /// Root table address register bits
 pub mod rtaddr_bits {
     /// Scalable Mode Translation enable (RTT/SMT)
-    pub const RTADDR_SMT: u64 = 1 << 10;
+    pub const RTADDR_SMT: u64 = 1 << 11;
 }
 
 /// Capability register bits
 pub mod cap_bits {
+    /// Snoop control (if supported in CAP)
+    pub const CAP_SC: u64 = 1 << 3;
     /// Required write-buffer flushing
     pub const CAP_RWBF: u64 = 1 << 4;
     /// Page-level memory introspection
     pub const CAP_PLMR: u64 = 1 << 5;
     /// Pass through support
     pub const CAP_PT: u64 = 1 << 6;
-    /// Snoop control
-    pub const CAP_SC: u64 = 1 << 7;
-    /// Invalidation Register Offset (bits 8-11)
-    pub const CAP_IRO_MASK: u64 = 0xF << 8;
+    /// Caching mode
+    pub const CAP_CM: u64 = 1 << 7;
     /// Supported Adjusted Guest Address Widths (bits 8-12)
     pub const CAP_SAGAW_MASK: u64 = 0x1F << 8;
     /// Maximum Guest Address Width (bits 16-21)
@@ -167,8 +167,6 @@ pub mod cap_bits {
     pub const CAP_SLLPS_1G: u64 = 1 << 35;
     /// Page walk coherency
     pub const CAP_PWC: u64 = 1 << 38;
-    /// Caching mode
-    pub const CAP_CM: u64 = 1 << 7;
 }
 
 /// Extended capability register bits

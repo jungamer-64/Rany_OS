@@ -12,14 +12,20 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::domain_system::DomainId;
-use crate::task::process::{ProcessId, process_manager};
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;
-#[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "../../../kernel/src/compat/posix/procfs_pid.rs"]
-mod pid;
-pub use pid::Pid;
+/// Process-like identifier for procfs path compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct Pid(u32);
+
+impl Pid {
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
 
 /// inode番号 (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -370,9 +376,8 @@ fn resolve_fd_entry(
         .parse::<u32>()
         .map_err(|_| ProcError::InvalidArgument)?;
     let pid = Pid::new(pid_num);
-    let proc_id = ProcessId::new(pid.as_u32() as u64);
-    let proc_domain: DomainId = proc_id.into();
-    if process_manager().get(proc_id).is_none() {
+    let proc_domain = DomainId::new(pid.as_u32() as u64);
+    if crate::domain_system::get_domain_snapshot(proc_domain).is_none() {
         return Err(ProcError::NotFound);
     }
     if !check_fd_access_permission(caller, proc_domain, token) {
@@ -535,9 +540,8 @@ impl ProcDirHandle {
         let pid_comp = comps[comps.len() - 2];
         let pid_num = pid_comp.parse::<u32>().map_err(|_| ProcError::InvalidArgument)?;
         let pid = Pid::new(pid_num);
-        let proc_id = ProcessId::new(pid.as_u32() as u64);
-        let proc_domain: DomainId = proc_id.into();
-        if process_manager().get(proc_id).is_none() {
+        let proc_domain = DomainId::new(pid.as_u32() as u64);
+        if crate::domain_system::get_domain_snapshot(proc_domain).is_none() {
             return Err(ProcError::NotFound);
         }
 

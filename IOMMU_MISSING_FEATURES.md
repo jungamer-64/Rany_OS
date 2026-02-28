@@ -1,6 +1,11 @@
 # IOMMU実装状況と不足部分の調査報告
 
 ## 更新履歴
+- **2026-03-01**: IOMMUセキュリティ基盤の再強化とバグ修正
+    - **Intel IRTE Bits Fix**: Intel VT-dにおいてVector, SVT, SQのビットオフセットが誤っていた問題を修正。割り込みスプーフィングの脆弱性を解消。
+    - **AMD-Vi IRTE SID Fix**: AMD-ViにおいてSID (Source ID) のビット位置が誤っていた問題を修正し、割り込み検証を正常化。
+    - **Robust Grouping**: 多機能ビットの有無に関わらず全ファンクションをスキャンするようにグルーピングロジックを強化。
+    - **VT-d Reg Protection**: Intel VT-dのレジスタ保護範囲を4KBから8KBに拡大し、拡張レジスタセットをカバー。
 - **2026-02-28**: IOMMUセキュリティ脆弱性の修正完了
     - **Multifunction ACS Fix**: 多機能デバイスの全ての機能でACSをチェックするようにグルーピングロジックを強化。
     - **Posted Interrupt SID Fix**: Intel Posted IRTEにSource ID検証(SVT/SQ)を追加し、割り込みスプーフィングを防止。

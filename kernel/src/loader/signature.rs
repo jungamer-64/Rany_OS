@@ -39,6 +39,10 @@ const ED25519_SIGNATURE_SIZE: usize = 64;
 /// Ed25519公開鍵サイズ
 const ED25519_PUBLIC_KEY_SIZE: usize = 32;
 
+/// Built-in trusted key for production verification.
+const BUILTIN_TRUSTED_KEY: [u8; ED25519_PUBLIC_KEY_SIZE] =
+    *include_bytes!("../../../keys/kernel_pub.key");
+
 // ============================================================================
 // 署名情報
 // ============================================================================
@@ -185,7 +189,7 @@ impl SignatureVerifier {
     pub fn new() -> Self {
         Self {
             trusted_keys: Vec::new(),
-            allow_dev_mode: true,
+            allow_dev_mode: false,
             stats: VerifierStats::default(),
         }
     }
@@ -237,8 +241,12 @@ impl SignatureVerifier {
             return Err(VerificationError::MalformedSignature);
         }
 
-        // 2. 公開鍵の信頼チェック
-        if !self.trusted_keys.is_empty() && !self.is_trusted_key(&signature.public_key) {
+        // 2. 公開鍵の信頼チェック（trusted keyが必須）
+        if self.trusted_keys.is_empty() {
+            self.stats.failed_verifications += 1;
+            return Err(VerificationError::UntrustedKey);
+        }
+        if !self.is_trusted_key(&signature.public_key) {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::UntrustedKey);
         }
@@ -507,7 +515,9 @@ static GLOBAL_VERIFIER: Mutex<Option<SignatureVerifier>> = Mutex::new(None);
 pub fn init_verifier() {
     let mut verifier = GLOBAL_VERIFIER.lock();
     if verifier.is_none() {
-        *verifier = Some(SignatureVerifier::new());
+        let mut v = SignatureVerifier::new();
+        v.add_trusted_key(BUILTIN_TRUSTED_KEY);
+        *verifier = Some(v);
         log::info!("[SIGNATURE] Signature verifier initialized\n");
     }
 }
@@ -515,7 +525,9 @@ pub fn init_verifier() {
 /// グローバル検証器を本番モードで初期化
 pub fn init_verifier_production() {
     let mut verifier = GLOBAL_VERIFIER.lock();
-    *verifier = Some(SignatureVerifier::production());
+    let mut v = SignatureVerifier::production();
+    v.add_trusted_key(BUILTIN_TRUSTED_KEY);
+    *verifier = Some(v);
     log::info!("[SIGNATURE] Signature verifier initialized (production mode)\n");
 }
 
@@ -531,9 +543,11 @@ pub fn add_trusted_key(key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
 pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
     let mut verifier_guard = GLOBAL_VERIFIER.lock();
 
-    // 未初期化の場合は自動初期化
+    // 未初期化の場合は本番モードで自動初期化
     if verifier_guard.is_none() {
-        *verifier_guard = Some(SignatureVerifier::new());
+        let mut v = SignatureVerifier::production();
+        v.add_trusted_key(BUILTIN_TRUSTED_KEY);
+        *verifier_guard = Some(v);
     }
 
     if let Some(verifier) = verifier_guard.as_mut() {
@@ -553,5 +567,4 @@ pub fn verify_cell(elf_data: &[u8]) -> Result<bool, LoadError> {
 pub fn get_verifier_stats() -> Option<VerifierStats> {
     GLOBAL_VERIFIER.lock().as_ref().map(|v| v.stats().clone())
 }
-
 

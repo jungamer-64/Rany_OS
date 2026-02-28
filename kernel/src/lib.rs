@@ -342,6 +342,20 @@ pub static __tls_end: u8 = 0;
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 pub mod fs;
 
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod storage;
+
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod debug;
+
 // Intrusive collections for kernel use (always available)
 pub mod collections;
 
@@ -1739,89 +1753,6 @@ pub mod task {
             }
         }
     }
-    // Minimal process manager stub for tests (provides `process_manager()` and types used by `procfs` tests)
-    #[cfg(feature = "posix-compat")]
-    pub mod process {
-        use alloc::sync::Arc;
-        use alloc::vec::Vec;
-        use alloc::string::String;
-        use core::sync::atomic::{AtomicU64, Ordering};
-        use spin::RwLock;
-
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub struct ProcessId(u64);
-        impl ProcessId {
-            pub const KERNEL: Self = Self(0);
-            pub const INIT: Self = Self(1);
-            pub const fn new(id: u64) -> Self { Self(id) }
-            pub fn as_u64(&self) -> u64 { self.0 }
-        }
-
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum ProcessState { Running, Blocked, Ready, Stopped, Zombie, Dead, Creating }
-
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub struct UserId(u32);
-        impl UserId { pub fn as_u32(&self) -> u32 { self.0 } }
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub struct GroupId(u32);
-        impl GroupId { pub fn as_u32(&self) -> u32 { self.0 } }
-
-        #[derive(Clone, Debug)]
-        pub struct Credentials { pub uid: UserId, pub gid: GroupId }
-
-        #[derive(Clone, Debug)]
-        pub struct ProcessInner {
-            pub name: String,
-            pub state: ProcessState,
-            pub ppid: ProcessId,
-            pub credentials: Credentials,
-            pub threads: Vec<u64>,
-            pub priority: Priority,
-            pub cmdline: Vec<String>,
-            pub memcg_id: crate::mm::meta::memcg::MemcgId,
-            pub exit_code: Option<u64>,
-        }
-
-        impl ProcessInner {
-            pub fn threads(&self) -> &Vec<u64> { &self.threads }
-        }
-
-        #[derive(Clone, Copy, Debug)]
-        pub struct Priority(i8);
-        impl Priority { pub fn as_i8(&self) -> i8 { self.0 } }
-
-        pub type Process = Arc<RwLock<ProcessInner>>;
-
-        pub struct ProcessManager;
-        impl ProcessManager {
-            pub fn count(&self) -> usize { 0 }
-            pub fn get(&self, _pid: ProcessId) -> Option<Process> { None }
-            pub fn create(&self, _ppid: ProcessId, _name: &str) -> Result<ProcessId, ()> { Err(()) }
-        }
-
-        static PROCESS_MANAGER: ProcessManager = ProcessManager;
-        pub fn process_manager() -> &'static ProcessManager { &PROCESS_MANAGER }
-
-        /// Minimal process info type used by some subsystems
-        #[derive(Debug)]
-        pub struct ProcessInfo {
-            pub pid: ProcessId,
-            pub numa_scan_addr: core::sync::atomic::AtomicU64,
-        }
-
-        pub fn get_current_process() -> ProcessId { ProcessId::new(1) }
-
-        // Helper to return current process memcg id (used by some tests)
-        pub fn get_current_process_memcg_id() -> crate::mm::meta::memcg::MemcgId { crate::mm::meta::memcg::MemcgId::ROOT }
-
-        // Re-export the minimal io::nvme driver for compatibility with code that
-        // expects `crate::io::nvme` in test builds. This points at `crate::task::io::nvme`.
-        pub mod nvme {
-            pub use crate::task::io::nvme::*;
-        }
-    }
-
     // Test shim removed: tests and benches should use the canonical
     // `crate::task::TaskId` directly. If you see failures related to TaskId
     // field access, please update tests to use `as_u64()` accessor.

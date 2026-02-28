@@ -445,7 +445,7 @@ fn verify_and_split_signed_kernel(signed_kernel_data: &[u8]) -> Result<&[u8], St
 
     let (signature_bytes, kernel_elf_data) = signed_kernel_data.split_at(SIG_SIZE);
 
-    let verification_enabled = !(cfg!(debug_assertions) || cfg!(feature = "insecure_boot"));
+    let verification_enabled = !cfg!(feature = "insecure_boot");
     if verification_enabled {
         info!("Verifying Kernel Signature...");
         if let Err(e) = verify_kernel(signature_bytes, kernel_elf_data) {
@@ -459,7 +459,7 @@ fn verify_and_split_signed_kernel(signed_kernel_data: &[u8]) -> Result<&[u8], St
         }
         info!("Signature Verification PASSED! Booting trusted kernel...");
     } else {
-        info!("Signature verification skipped (debug/insecure build)");
+        info!("Signature verification skipped (insecure_boot feature)");
     }
 
     Ok(kernel_elf_data)

@@ -30,11 +30,11 @@ const IRTE_INT_TYPE_MASK: u64 = 0x07 << IRTE_INT_TYPE_SHIFT;
 const IRTE_VECTOR_SHIFT: u32 = 8; // bits [15:8]: Vector
 #[allow(dead_code)]
 const IRTE_VECTOR_MASK: u64 = 0xFF << IRTE_VECTOR_SHIFT;
-const IRTE_SVT_SHIFT: u32 = 16;   // bits [18:16]: Source Validation Type (SVT)
-const IRTE_SQ_SHIFT: u32 = 19;    // bits [20:19]: Source Quantifier (SQ)
+const IRTE_SVT_SHIFT: u32 = 11;   // bits [13:11] of HI: Source Validation Type (SVT) (IRTE bits 77:75)
+const IRTE_SQ_SHIFT: u32 = 14;    // bits [15:14] of HI: Source Quantifier (SQ) (IRTE bits 79:78)
 const IRTE_DESTINATION_SHIFT: u32 = 32; // bits [63:32]: Destination (APIC ID)
 
-const IRTE_SID_SHIFT: u32 = 16;   // bits [31:16] of HI: Source Device ID (SID)
+const IRTE_SID_SHIFT: u32 = 16;   // bits [31:16] of HI: Source Device ID (SID) (IRTE bits 95:80)
 
 /// AMD-Vi IRT size encoding for the table base register.
 /// Stored in bits [3:0] of the IRT Base Address register.
@@ -80,9 +80,10 @@ impl AmdIrte {
 
         let mut hi: u64 = 0;
         if let Some(devid) = sid {
-            // SVT=1 (Exclusive: exact match of BDF)
-            lo |= 1u64 << IRTE_SVT_SHIFT;
-            // SQ=0 (Exact match) - bits 20:19 are already 0
+            // SVT=1 (Exclusive: exact match of BDF) - bits 13:11 of HI
+            hi |= 1u64 << IRTE_SVT_SHIFT;
+            // SQ=0 (Exact match) - bits 15:14 of HI are already 0
+            // SID (Source Device ID) - bits 31:16 of HI
             hi |= (devid as u64) << IRTE_SID_SHIFT;
         }
 

@@ -15,6 +15,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
+use core::sync::atomic::AtomicUsize;
 
 
 
@@ -87,6 +88,8 @@ impl InterruptSource {
 
 /// 最大インデックスサイズ（配列サイズ）
 const MAX_INTERRUPT_INDICES: usize = 2048;
+const INTERRUPT_EVENT_QUEUE_SIZE: usize = 1024;
+const INTERRUPT_EVENT_QUEUE_MASK: usize = INTERRUPT_EVENT_QUEUE_SIZE - 1;
 
 // ============================================================================
 // Atomic Waker - ISR-safe Waker storage
@@ -107,6 +110,8 @@ pub struct InterruptWakerRegistry {
     interrupt_count: AtomicU64,
     /// 統計: Wake回数
     wake_count: AtomicU64,
+    /// ISRから投入される遅延Wakeイベントキュー
+    event_queue: InterruptEventQueue,
 }
 
 impl InterruptWakerRegistry {
@@ -116,6 +121,7 @@ impl InterruptWakerRegistry {
             wakers: spin::Once::new(),
             interrupt_count: AtomicU64::new(0),
             wake_count: AtomicU64::new(0),
+            event_queue: InterruptEventQueue::new(),
         }
     }
 
@@ -140,11 +146,10 @@ impl InterruptWakerRegistry {
         self.get_wakers()[idx].register(waker);
     }
 
-    /// 割り込みソースのWakerを起動（ISRから呼ばれる）
+    /// 割り込みソースのWakerを起動要求（ISRから呼ばれる）
     ///
-    /// 【改善版】直接Wake方式:
-    /// AtomicWakerはISR安全なので、イベントキューを介さずに直接wake()を呼び出す。
-    /// これにより遅延を解消し、ロックも不要となる。
+    /// 2段階Wake方式:
+    /// ISRではイベントキューに積むのみ。実際のwake()は非ISR側で実行する。
     pub fn wake(&self, source: InterruptSource) {
         self.interrupt_count.fetch_add(1, Ordering::Relaxed);
 
@@ -154,9 +159,9 @@ impl InterruptWakerRegistry {
         }
 
         // spin::Onceが初期化済みかチェック（初期化前はwake不可）
-        if let Some(wakers) = self.wakers.get() {
-            wakers[idx].wake();
-            self.wake_count.fetch_add(1, Ordering::Relaxed);
+        if self.wakers.get().is_some() {
+            // +1 して 0 を空スロットに使う
+            let _ = self.event_queue.push_once(idx + 1);
         }
     }
 
@@ -165,28 +170,37 @@ impl InterruptWakerRegistry {
         self.interrupt_count
             .fetch_add(sources.len() as u64, Ordering::Relaxed);
 
-        if let Some(wakers) = self.wakers.get() {
+        if self.wakers.get().is_some() {
             for source in sources {
                 let idx = source.to_index();
                 if idx < MAX_INTERRUPT_INDICES {
-                    wakers[idx].wake();
-                    self.wake_count.fetch_add(1, Ordering::Relaxed);
+                    let _ = self.event_queue.push_once(idx + 1);
                 }
             }
         }
     }
 
     /// イベントキューから保留中の割り込みイベントを処理
-    ///
-    /// 【Deprecated】直接Wake方式に移行したため、何もしない。
-    /// 互換性のために残している。
     pub fn process_pending_events(&self) {
-        // No-op
+        let Some(wakers) = self.wakers.get() else {
+            return;
+        };
+        while let Some(encoded_idx) = self.event_queue.pop() {
+            if encoded_idx == 0 {
+                continue;
+            }
+            let idx = encoded_idx - 1;
+            if idx >= MAX_INTERRUPT_INDICES {
+                continue;
+            }
+            wakers[idx].wake();
+            self.wake_count.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// 保留中のイベント数を取得
     pub fn pending_event_count(&self) -> usize {
-        0 // No pending events scheme anymore
+        self.event_queue.len()
     }
 
     /// 割り込みソースの登録を解除
@@ -230,6 +244,85 @@ impl InterruptWakerRegistry {
             wake_count: self.wake_count.load(Ordering::Relaxed),
             registered_sources: registered,
         }
+    }
+}
+
+#[repr(C, align(64))]
+struct InterruptEventQueue {
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    buffer: [AtomicUsize; INTERRUPT_EVENT_QUEUE_SIZE],
+}
+
+impl InterruptEventQueue {
+    const fn new() -> Self {
+        const ZERO: AtomicUsize = AtomicUsize::new(0);
+        Self {
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            buffer: [ZERO; INTERRUPT_EVENT_QUEUE_SIZE],
+        }
+    }
+
+    #[inline]
+    fn push_once(&self, value: usize) -> bool {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        if head.wrapping_sub(tail) >= INTERRUPT_EVENT_QUEUE_SIZE {
+            return false;
+        }
+        let idx = head & INTERRUPT_EVENT_QUEUE_MASK;
+        if self
+            .head
+            .compare_exchange_weak(
+                head,
+                head.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            self.buffer[idx].store(value, Ordering::Release);
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    fn pop(&self) -> Option<usize> {
+        loop {
+            let tail = self.tail.load(Ordering::Relaxed);
+            let head = self.head.load(Ordering::Acquire);
+            if tail == head {
+                return None;
+            }
+
+            let idx = tail & INTERRUPT_EVENT_QUEUE_MASK;
+            if self
+                .tail
+                .compare_exchange_weak(
+                    tail,
+                    tail.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                let value = self.buffer[idx].load(Ordering::Acquire);
+                self.buffer[idx].store(0, Ordering::Release);
+                return Some(value);
+            }
+
+            core::hint::spin_loop();
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        let head = self.head.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Acquire);
+        head.wrapping_sub(tail)
     }
 }
 
@@ -400,4 +493,3 @@ mod tests {
         );
     }
 }
-

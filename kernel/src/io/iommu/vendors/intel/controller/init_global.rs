@@ -152,7 +152,7 @@ unsafe fn init_controllers_from_drhd(
         // Security: Register IOMMU register range as protected to prevent DMA access
         crate::io::iommu::runtime::security::register_protected_region(
             unit.register_base,
-            4096, // VT-d registers are at least 4KB
+            8192, // VT-d registers are at least 4KB, but can be 8KB with extended caps
             "Intel VT-d IOMMU",
         );
 
@@ -348,7 +348,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     // Security: Register IOMMU register range as protected to prevent DMA access
     crate::io::iommu::runtime::security::register_protected_region(
         mmio_base,
-        4096, // VT-d registers are at least 4KB
+        8192, // VT-d registers are at least 4KB, but can be 8KB with extended caps
         "Intel VT-d IOMMU (Legacy)",
     );
 

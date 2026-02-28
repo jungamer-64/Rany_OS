@@ -408,8 +408,25 @@ impl IovaAllocator {
     /// Call this *after* generic IOTLB invalidation completion is confirmed.
     /// This allows quarantined items stamped with an epoch <= `epoch` to be freed.
     pub fn complete_epoch(&self, epoch: u32) {
-        // Monotonic update: only forward
-        let _ = self.completed_epoch.fetch_max(epoch, Ordering::Release);
+        // Monotonic update: only forward (with wrap-around support)
+        // Using compare_exchange loop because fetch_max uses unsigned comparison
+        // which breaks when the 32-bit epoch wraps around.
+        let mut current = self.completed_epoch.load(Ordering::Acquire);
+        loop {
+            // Check if 'epoch' is ahead of 'current' in a wrap-around safe way
+            if (epoch.wrapping_sub(current) as i32) <= 0 {
+                break;
+            }
+            match self.completed_epoch.compare_exchange_weak(
+                current,
+                epoch,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(new) => current = new,
+            }
+        }
         
         // Opportunistic drain: Try to reclaim memory from current CPU's ring
         if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {

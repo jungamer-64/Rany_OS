@@ -339,6 +339,7 @@ impl Executor {
             crate::task::interrupt_waker::process_interrupt_events();
             crate::io::io_scheduler::process_deferred_completions();
             crate::sync::process_deferred_wakes();
+            crate::sync::process_deferred_waker_queue_wakes();
             crate::io::io_scheduler::hybrid_coordinator().tick(|| {
                 crate::task::interrupt_waker::process_interrupt_events();
             });

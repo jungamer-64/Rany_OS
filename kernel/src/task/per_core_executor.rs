@@ -402,6 +402,9 @@ impl PerCoreExecutor {
         // タイマーからの保留Wakerも処理
         crate::io::hid::keyboard::process_pending_wakes();
         crate::task::timer::process_pending_timer_wakers();
+        crate::task::interrupt_waker::process_interrupt_events();
+        crate::sync::process_deferred_wakes();
+        crate::sync::process_deferred_waker_queue_wakes();
 
         // Drive IoScheduler dispatch/poll        // Process IO and interrupts
         crate::io::io_scheduler::hybrid_coordinator().tick(|| {
