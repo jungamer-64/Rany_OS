@@ -15,13 +15,21 @@ use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
-use crate::io::iommu::vendors::intel::registers::regs;
+use crate::io::iommu::vendors::intel::registers::{regs, fsts_bits};
 
 fn submit_invalidation_locked(
     controller: &IommuController,
     iq: &mut InvalidationQueue,
     entry: InvalidationQueueEntry,
 ) -> Result<u64, IommuError> {
+    // Security: Check for existing hardware faults before submitting new commands.
+    // If the queue is in an error state (IQE/ICE/ITE), it will not process new entries.
+    let fsts = controller.read32(regs::FSTS);
+    if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
+        log::error!("[IOMMU][QI] Cannot submit: hardware fault detected in FSTS: {:#x}", fsts);
+        return Err(IommuError::HardwareError);
+    }
+
     if iq.is_full() {
         iq.record_full_check();
         let head = (controller.read64(regs::IQH) >> 4) as usize;
@@ -253,20 +261,46 @@ impl InvalidationOps for IommuController {
 
         self.wait_for_condition(
             || {
+                // Security: Check for hardware faults during wait.
+                // If an error occurs, the wait will never complete successfully.
+                let fsts = self.read32(regs::FSTS);
+                if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
+                    return true; // Stop waiting, the check below will fail
+                }
+
                 let status = unsafe { core::ptr::read_volatile(status_virt as *const u32) };
                 // Use wrap-around safe comparison (distance in u32 space)
                 status.wrapping_sub(expected_data) < (1u32 << 31)
             },
             100_000,
             true,
-        )
+        )?;
+
+        // Final validation: Ensure it actually completed and didn't just exit due to a fault.
+        let fsts = self.read32(regs::FSTS);
+        if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
+            log::error!("[IOMMU][QI] Wait failed: hardware fault detected in FSTS: {:#x}", fsts);
+            return Err(IommuError::HardwareError);
+        }
+
+        let status = unsafe { core::ptr::read_volatile(status_virt as *const u32) };
+        if status.wrapping_sub(expected_data) < (1u32 << 31) {
+            Ok(())
+        } else {
+            Err(IommuError::Timeout)
+        }
     }
 
     fn qi_wait_async<'a>(&'a self) -> InvalidationWaiter<'a> {
         let result = match self.invalidation_queue.lock() {
             Ok(mut guard) => {
                 if let Some(iq) = guard.as_mut() {
-                    let (entry, expected_data) = iq.wait_entry();
+                    // Security: Use interrupts for async wait to ensure waker is called.
+                    // This requires setting `interrupt=true` in the wait descriptor.
+                    let (mut entry, expected_data) = iq.wait_entry();
+                    // Set FN (Fence Notify) bit (bit 6 of lo)
+                    entry.lo |= 1 << 6; 
+
                     let status_virt = iq.status_virtual_address();
                     let submit_result = submit_invalidation_locked(self, iq, entry);
                     Ok((submit_result, status_virt, expected_data))
@@ -274,7 +308,7 @@ impl InvalidationOps for IommuController {
                     Err(IommuError::NotPresent)
                 }
             }
-            Err(_err) => Err(IommuError::HardwareError) // Changed to _err and kept original error type
+            Err(_err) => Err(IommuError::HardwareError)
         };
 
         match result {

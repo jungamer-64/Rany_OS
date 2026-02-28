@@ -22,6 +22,8 @@ pub trait QIManager {
     unsafe fn enable_queued_invalidation(&self) -> Result<(), IommuError>;
     /// Disable Queued Invalidation
     unsafe fn disable_queued_invalidation(&self) -> Result<(), IommuError>;
+    /// Enable Invalidation Completion Interrupts
+    fn enable_queued_invalidation_interrupt(&self, vector: u8);
 }
 
 
@@ -177,5 +179,30 @@ impl QIManager for IommuController {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Enable Invalidation Completion Interrupts
+    ///
+    /// # Arguments
+    /// * `vector` - IDT vector to use for invalidation completion interrupts
+    fn enable_queued_invalidation_interrupt(&self, vector: u8) {
+        // 1. Configure Invalidation Event Data (IED)
+        let ie_data: u32 = vector as u32;
+        self.write32(regs::IEDATA, ie_data);
+
+        // 2. Configure Invalidation Event Address (IEADDR)
+        // Standard MSI target address for Local APIC
+        let ie_addr: u32 = 0xFEE0_0000;
+        self.write32(regs::IEADDR, ie_addr);
+
+        // 3. Configure Invalidation Event Upper Address (IEUADDR)
+        self.write32(regs::IEUADDR, 0);
+
+        // 4. Unmask Invalidation Completion Interrupts in IECTL
+        // Clear IM bit (31) to unmask
+        let iectl = self.read32(regs::IECTL);
+        self.write32(regs::IECTL, iectl & !0x8000_0000);
+
+        log::info!("[IOMMU] Invalidation Completion Interrupts enabled (Vector: {:#x})", vector);
     }
 }

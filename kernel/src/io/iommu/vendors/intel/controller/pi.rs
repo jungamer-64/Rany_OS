@@ -118,7 +118,7 @@ impl PostedInterruptManager for IommuController {
 
         // Configure IRTE for posted mode with source validation
         let rid = device.requester_id();
-        let entry = InterruptRemapEntry::posted(pid_addr, Some(rid));
+        let entry = InterruptRemapEntry::posted(pid_addr, notification_vector, Some(rid));
         irt.set(irte_index, entry);
 
         // Security: Invalidate IEC after allocating IRTE.

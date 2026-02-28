@@ -37,6 +37,14 @@ pub mod regs {
     pub const IQT: u64 = 0x88;
     /// Invalidation queue address register
     pub const IQA: u64 = 0x90;
+    /// Invalidation event control register
+    pub const IECTL: u64 = 0xA0;
+    /// Invalidation event data register
+    pub const IEDATA: u64 = 0xA4;
+    /// Invalidation event address register
+    pub const IEADDR: u64 = 0xA8;
+    /// Invalidation event upper address register
+    pub const IEUADDR: u64 = 0xAC;
     /// Performance Monitoring Control register
     pub const PERMON_CTL: u64 = 0x200;
     /// Performance Monitoring Counter 0

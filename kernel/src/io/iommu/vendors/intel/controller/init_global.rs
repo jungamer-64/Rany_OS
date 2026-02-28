@@ -208,6 +208,9 @@ unsafe fn init_controller_qi(controller: &mut IommuController) {
         } else if let Err(e) = controller.enable_queued_invalidation() {
             log::warn!("Failed to enable Queued Invalidation: {:?}", e);
         } else {
+            // Security: Enable completion interrupts for async invalidation support.
+            // Using vector 0x50 to match the fault handler's expected vector.
+            controller.enable_queued_invalidation_interrupt(0x50);
             log::info!("Queued Invalidation enabled for controller");
         }
     }

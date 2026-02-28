@@ -63,11 +63,15 @@ impl InterruptRemapEntry {
         Self { lo, hi }
     }
 
-    pub fn posted(pid_addr: u64, sid: Option<u16>) -> Self {
+    pub fn posted(pid_addr: u64, vector: u8, sid: Option<u16>) -> Self {
         // P=1 (bit 0), IM=1 (bit 4)
         // PID address (PDA) must be 4KB aligned, bits 63:12 are used.
         let lo = (pid_addr & !0xFFF) | (1 << 4) | 1;
         let mut hi = 0;
+        
+        // Notification Vector (bits 111:104 of IRTE, bits 47:40 of hi)
+        hi |= (vector as u64) << 40;
+
         if let Some(rid) = sid {
             // SVT=1 (Source Validation Type: Verify SID) - bits 81:80 of IRTE (bits 17:16 of hi)
             hi |= 1 << 16;

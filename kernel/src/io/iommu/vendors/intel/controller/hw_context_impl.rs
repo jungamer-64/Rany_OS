@@ -76,6 +76,15 @@ impl<'a> Future for InvalidationWaiter<'a> {
         match self.submit_result {
             Err(e) => return Poll::Ready(Err(e)),
             Ok(()) => {
+                // Security: Check for hardware faults during poll.
+                let fsts = self.controller.read32(crate::io::iommu::vendors::intel::registers::regs::FSTS);
+                if (fsts & (crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_IQE | 
+                           crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ICE | 
+                           crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ITE)) != 0 {
+                    log::error!("[IOMMU][QI] Async wait failed: hardware fault detected in FSTS: {:#x}", fsts);
+                    return Poll::Ready(Err(IommuError::HardwareError));
+                }
+
                 let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
                 if status.wrapping_sub(self.expected_data) < (1u32 << 31) {
                     return Poll::Ready(Ok(()));

@@ -103,6 +103,12 @@ impl IommuController {
         context_entry.set_pasid_enable();
         context_entry.set_fault_enable();
         context_entry.set_present();
+
+        // Security: Enable Device-TLB (ATS) support in the context entry if enabled for this device.
+        if self.should_invalidate_device_tlb(&device) {
+            context_entry.set_dte();
+        }
+
         self.device_pasid_tables.lock().map_err(|_| IommuError::HardwareError)?.insert(device, pasid_table);
         Ok(())
     }
