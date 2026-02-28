@@ -264,104 +264,14 @@ pub(crate) fn print_system_stats() {
 /// カーネルシンボルを登録（セルローダー用）
 pub(crate) fn register_kernel_symbols() {
     loader::with_registry_mut(|registry| {
-        // システムコールシンボルを登録
         registry.symbol_table.insert(
-            alloc::string::String::from("sys_log"),
-            sys_log as *const () as usize,
-        );
-
-        registry.symbol_table.insert(
-            alloc::string::String::from("sys_alloc"),
-            sys_alloc as *const () as usize,
-        );
-
-        registry.symbol_table.insert(
-            alloc::string::String::from("sys_dealloc"),
-            sys_dealloc as *const () as usize,
-        );
-
-        registry.symbol_table.insert(
-            alloc::string::String::from("sys_sleep"),
-            sys_sleep as *const () as usize,
-        );
-
-        registry.symbol_table.insert(
-            alloc::string::String::from("sys_panic"),
-            sys_panic as *const () as usize,
+            alloc::string::String::from(kernel_api::driver_abi::KERNEL_API_SYMBOL),
+            crate::driver_registry::kernel_api_v1() as *const kernel_api::driver_abi::KernelApiV1
+                as usize,
         );
     });
 
-    debug!(target: "loader", "Kernel symbols registered (5 syscalls)");
-}
-
-/// システムコール: ログ出力
-#[unsafe(no_mangle)]
-pub extern "C" fn sys_log(msg: *const u8, len: usize) {
-    if msg.is_null() || len == 0 {
-        return;
-    }
-
-    let slice = unsafe { core::slice::from_raw_parts(msg, len) };
-    if let Ok(s) = core::str::from_utf8(slice) {
-        info!(target: "cell", "{}", s);
-    }
-}
-
-/// システムコール: メモリ割り当て
-#[unsafe(no_mangle)]
-pub extern "C" fn sys_alloc(size: usize) -> *mut u8 {
-    use core::alloc::Layout;
-
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-
-    let layout = match Layout::from_size_align(size, 8) {
-        Ok(l) => l,
-        Err(_) => return core::ptr::null_mut(),
-    };
-
-    unsafe { alloc::alloc::alloc(layout) }
-}
-
-/// システムコール: スリープ
-#[unsafe(no_mangle)]
-pub extern "C" fn sys_sleep(ms: u64) {
-    // 注意: extern "C" から async 関数を呼べないため、
-    // ここではブロッキングスリープをシミュレート
-    let target = task::current_tick() + ms;
-    while task::current_tick() < target {
-        core::hint::spin_loop();
-    }
-}
-
-/// システムコール: メモリ解放
-#[unsafe(no_mangle)]
-pub extern "C" fn sys_dealloc(ptr: *mut u8, size: usize) {
-    use core::alloc::Layout;
-
-    if ptr.is_null() || size == 0 {
-        return;
-    }
-
-    let layout = match Layout::from_size_align(size, 8) {
-        Ok(l) => l,
-        Err(_) => return,
-    };
-
-    unsafe { alloc::alloc::dealloc(ptr, layout) }
-}
-
-/// システムコール: パニック（Cellからの呼び出し用）
-#[unsafe(no_mangle)]
-pub extern "C" fn sys_panic(msg: *const u8, len: usize) -> ! {
-    if !msg.is_null() && len > 0 {
-        let slice = unsafe { core::slice::from_raw_parts(msg, len) };
-        if let Ok(s) = core::str::from_utf8(slice) {
-            log::error!(target: "cell", "Cell panic: {}", s);
-        }
-    }
-    panic!("Cell panic - aborting");
+    debug!(target: "loader", "Kernel API symbol registered for cell loader");
 }
 
 /// ExoRustロゴを表示

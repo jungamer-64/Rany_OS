@@ -569,6 +569,46 @@ extern "C" fn kapi_irq_unbind(_irq: u32) -> i32 {
     AbiErrorCode::NotSupported as i32
 }
 
+extern "C" fn kapi_heap_alloc(size: usize) -> *mut u8 {
+    use core::alloc::Layout;
+
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+
+    let layout = match Layout::from_size_align(size, 8) {
+        Ok(l) => l,
+        Err(_) => return core::ptr::null_mut(),
+    };
+
+    unsafe { alloc::alloc::alloc(layout) }
+}
+
+extern "C" fn kapi_heap_dealloc(ptr: *mut u8, size: usize) {
+    use core::alloc::Layout;
+
+    if ptr.is_null() || size == 0 {
+        return;
+    }
+
+    let layout = match Layout::from_size_align(size, 8) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+
+    unsafe { alloc::alloc::dealloc(ptr, layout) }
+}
+
+extern "C" fn kapi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
+    if !msg_ptr.is_null() && msg_len > 0 {
+        let slice = unsafe { core::slice::from_raw_parts(msg_ptr, msg_len) };
+        if let Ok(s) = core::str::from_utf8(slice) {
+            log::error!(target: "cell", "Cell panic: {}", s);
+        }
+    }
+    panic!("Cell panic - aborting");
+}
+
 static KERNEL_API_V1: KernelApiV1 = KernelApiV1 {
     abi_version: KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV1>() as u32,
@@ -579,6 +619,9 @@ static KERNEL_API_V1: KernelApiV1 = KernelApiV1 {
     unmap_mmio: kapi_unmap_mmio,
     irq_bind: kapi_irq_bind,
     irq_unbind: kapi_irq_unbind,
+    heap_alloc: Some(kapi_heap_alloc),
+    heap_dealloc: Some(kapi_heap_dealloc),
+    panic_abort: Some(kapi_panic_abort),
     reserved: [0; 8],
 };
 

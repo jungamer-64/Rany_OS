@@ -9,6 +9,34 @@ fn test_set_and_get_domain_numa() {
 }
 
 #[test_case]
+fn test_quota_sync_and_unregister_on_terminate() {
+    use crate::domain::quota::{DomainPriority, quota_manager};
+
+    let id = create_domain(String::from("quota_sync")).expect("create_domain failed");
+
+    let initial = quota_manager()
+        .get_stats(id)
+        .expect("quota should be registered on create");
+    assert_eq!(initial.priority, DomainPriority::Normal);
+
+    set_domain_priority(id, DomainPriority::Low).expect("set_domain_priority failed");
+    set_domain_resource_limits(id, 50, 2 * 1024 * 1024, 4 * 1024 * 1024)
+        .expect("set_domain_resource_limits failed");
+
+    let updated = quota_manager()
+        .get_stats(id)
+        .expect("quota should be present after updates");
+    assert_eq!(updated.priority, DomainPriority::Low);
+    assert_eq!(updated.memory_limit, 2 * 1024 * 1024);
+
+    terminate_domain(id).expect("terminate_domain failed");
+    assert!(
+        quota_manager().get_stats(id).is_none(),
+        "quota must be removed on terminate"
+    );
+}
+
+#[test_case]
 fn test_domain_poisoned_readers_return_defaults() {
     use crate::sync::set_panicking;
 

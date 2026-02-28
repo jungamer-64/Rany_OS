@@ -900,18 +900,26 @@ pub fn validate_certificate_chain<'a>(
             }
         }
 
-        // Security: The root of the chain (last cert) must be trusted.
-        let root = certs[chain.len() - 1].as_ref()?;
+        // Security: The root of the chain (last cert) must be issued by a trusted anchor,
+        // or be a trusted anchor itself.
+        let chain_tip = certs[chain.len() - 1].as_ref()?;
         
-        // Check if the root is in the trusted_roots set
         let mut trusted = false;
         for &trust_der in trusted_roots {
             if let Some(trust_cert) = parse_x509(trust_der) {
-                if root.subject_raw == trust_cert.subject_raw && 
-                   root.subject_public_key_info == trust_cert.subject_public_key_info {
-                    // Found a matching trust anchor. Now verify the root's signature
-                    // (if it's not the same cert, though usually root CAs are self-signed).
-                    if verify_signature(root, &trust_cert.subject_public_key_info) {
+                // Case 1: The chain tip was issued by this trust anchor
+                if chain_tip.issuer_raw == trust_cert.subject_raw {
+                    if verify_signature(chain_tip, &trust_cert.subject_public_key_info) {
+                        trusted = true;
+                        break;
+                    }
+                }
+                
+                // Case 2: The chain tip IS this trust anchor (exact match)
+                if chain_tip.subject_raw == trust_cert.subject_raw && 
+                   chain_tip.subject_public_key_info == trust_cert.subject_public_key_info {
+                    // Usually self-signed, verify it anyway to be sure
+                    if verify_signature(chain_tip, &trust_cert.subject_public_key_info) {
                         trusted = true;
                         break;
                     }
@@ -923,13 +931,24 @@ pub fn validate_certificate_chain<'a>(
             return None;
         }
     } else {
-        // Security: Single certificate must be directly trusted
-        let leaf_der = chain[0];
+        // Security: Single certificate must be directly trusted or issued by a trust anchor
+        let leaf = certs[0].as_ref()?;
         let mut trusted = false;
         for &trust_der in trusted_roots {
-            if leaf_der == trust_der {
-                trusted = true;
-                break;
+            if let Some(trust_cert) = parse_x509(trust_der) {
+                // Issued by trust anchor
+                if leaf.issuer_raw == trust_cert.subject_raw {
+                    if verify_signature(leaf, &trust_cert.subject_public_key_info) {
+                        trusted = true;
+                        break;
+                    }
+                }
+                // Exact match
+                if leaf.subject_raw == trust_cert.subject_raw && 
+                   leaf.subject_public_key_info == trust_cert.subject_public_key_info {
+                    trusted = true;
+                    break;
+                }
             }
         }
         

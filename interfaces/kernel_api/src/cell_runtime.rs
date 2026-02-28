@@ -7,9 +7,9 @@
 //! Provides runtime stubs for Cells (dynamically loaded drivers/services)
 //! when compiled as standalone cdylib. Includes:
 //!
-//! - Global allocator delegating to kernel's `sys_alloc`/`sys_dealloc`
-//! - Panic handler calling kernel's `sys_panic`
-//! - Logging via `sys_log`
+//! - Global allocator delegating to kernel's `KernelApiV1` table
+//! - Panic handler calling kernel panic abort hook
+//! - Logging via kernel API table
 //!
 //! ## Usage
 //!
@@ -27,40 +27,72 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::{align_of, size_of};
 use core::ptr;
+use crate::driver_abi::{KERNEL_API_SYMBOL, KernelApiV1};
 
 // ============================================================================
-// External Kernel Syscalls
+// External Kernel API Symbol
 // ============================================================================
 //
-// These symbols are provided by the kernel and resolved at load time
-// by the ELF loader via the symbol table.
+// This symbol is provided by the kernel and resolved at load time by the ELF
+// loader via the symbol table.
 
 unsafe extern "C" {
-    /// Allocate memory from kernel heap
-    ///
-    /// # Arguments
-    /// * `size` - Size in bytes to allocate
-    ///
-    /// # Returns
-    /// Pointer to allocated memory, or null on failure
-    fn sys_alloc(size: usize) -> *mut u8;
+    static __exorust_kernel_api_v1: KernelApiV1;
+}
 
-    /// Deallocate memory to kernel heap
-    ///
-    /// # Arguments
-    /// * `ptr` - Pointer previously returned by sys_alloc
-    /// * `size` - Original allocation size
-    fn sys_dealloc(ptr: *mut u8, size: usize);
+#[inline]
+fn kernel_api() -> &'static KernelApiV1 {
+    // SAFETY: The kernel always exports this symbol before loading standalone
+    // cells, and the table is immutable after publication.
+    unsafe { &__exorust_kernel_api_v1 }
+}
 
-    /// Log a message to kernel log
-    ///
-    /// # Arguments
-    /// * `msg` - Pointer to UTF-8 message bytes
-    /// * `len` - Length of message in bytes
-    fn sys_log(msg: *const u8, len: usize);
+#[inline]
+fn has_runtime_entries(api: &KernelApiV1) -> bool {
+    (api.abi_size as usize) >= core::mem::size_of::<KernelApiV1>()
+}
 
-    /// Panic handler - does not return
-    fn sys_panic(msg: *const u8, len: usize) -> !;
+#[inline]
+fn call_heap_alloc(size: usize) -> *mut u8 {
+    let api = kernel_api();
+    if !has_runtime_entries(api) {
+        return ptr::null_mut();
+    }
+    match api.heap_alloc {
+        Some(f) => f(size),
+        None => ptr::null_mut(),
+    }
+}
+
+#[inline]
+fn call_heap_dealloc(ptr: *mut u8, size: usize) {
+    let api = kernel_api();
+    if !has_runtime_entries(api) {
+        return;
+    }
+    if let Some(f) = api.heap_dealloc {
+        f(ptr, size);
+    }
+}
+
+#[inline]
+fn call_log(msg: &[u8]) {
+    if msg.is_empty() {
+        return;
+    }
+    let api = kernel_api();
+    (api.log)(0, msg.as_ptr(), msg.len());
+}
+
+#[inline]
+fn call_panic_abort(msg: &[u8]) -> ! {
+    let api = kernel_api();
+    if has_runtime_entries(api) {
+        if let Some(f) = api.panic_abort {
+            f(msg.as_ptr(), msg.len());
+        }
+    }
+    panic!("Kernel API panic entry missing ({})", KERNEL_API_SYMBOL);
 }
 
 // ============================================================================
@@ -69,7 +101,7 @@ unsafe extern "C" {
 
 /// Kernel-backed allocator for standalone Cells
 ///
-/// Delegates all allocations to the kernel via `sys_alloc`/`sys_dealloc`.
+/// Delegates all allocations to the kernel via `KernelApiV1`.
 /// This is only used when the Cell is loaded as a standalone cdylib;
 /// when statically linked with the kernel, the kernel's allocator is used.
 pub struct KernelAllocator;
@@ -95,7 +127,7 @@ impl KernelAllocator {
             None => return ptr::null_mut(),
         };
 
-        let base = unsafe { sys_alloc(total_size) };
+        let base = call_heap_alloc(total_size);
         if base.is_null() {
             return ptr::null_mut();
         }
@@ -134,7 +166,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
             return;
         }
         let header = unsafe { Self::read_header(ptr) };
-        unsafe { sys_dealloc(header.base_ptr, header.alloc_size) }
+        call_heap_dealloc(header.base_ptr, header.alloc_size);
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
@@ -203,21 +235,20 @@ macro_rules! register_cell_runtime {
 /// Log panic information to kernel
 pub fn log_panic(file: &str, line: u32) {
     // Build a simple panic message
+    let _ = line;
     let prefix = b"Cell panic at ";
     let suffix = b"\n";
 
-    unsafe {
-        sys_log(prefix.as_ptr(), prefix.len());
-        sys_log(file.as_ptr(), file.len());
-        // For line number, we'd need to format - skip for simplicity
-        sys_log(suffix.as_ptr(), suffix.len());
-    }
+    call_log(prefix);
+    call_log(file.as_bytes());
+    // For line number, we'd need to format - skip for simplicity
+    call_log(suffix);
 }
 
 /// Abort after panic - never returns
 pub fn panic_abort() -> ! {
     let msg = b"Cell panic - aborting";
-    unsafe { sys_panic(msg.as_ptr(), msg.len()) }
+    call_panic_abort(msg)
 }
 
 // ============================================================================
@@ -231,7 +262,5 @@ pub fn panic_abort() -> ! {
 /// kernel_api::cell_runtime::log("NVMe Cell initialized");
 /// ```
 pub fn log(msg: &str) {
-    unsafe {
-        sys_log(msg.as_ptr(), msg.len());
-    }
+    call_log(msg.as_bytes());
 }

@@ -193,11 +193,15 @@ impl OomKiller {
 
         // ドメインを登録解除
         self.unregister_domain(victim.domain_id);
-
-        // TODO: 実際のドメイン終了処理
-        // - タスクの強制終了
-        // - リソースの解放
-        // - パニックハンドラの呼び出し
+        if let Err(e) =
+            crate::domain_system::terminate_domain(crate::domain_system::DomainId::new(victim.domain_id))
+        {
+            log::warn!(
+                "[OOM] Domain {} termination hook failed: {}\n",
+                victim.domain_id,
+                e
+            );
+        }
 
         log::info!(
             "[OOM] Domain '{}' killed, freed {}KB\n",
@@ -413,4 +417,3 @@ mod tests {
         set_panicking(false);
     }
 }
-

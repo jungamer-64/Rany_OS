@@ -61,6 +61,8 @@ include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
 pub const DRIVER_ENTRY_SYMBOL: &str = "_exorust_driver_entry";
 /// The symbol name for the driver exports table.
 pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
+/// The symbol name for the kernel API function table.
+pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v1";
 /// ABI version for the KernelApiV1 table.
 pub const KERNEL_API_ABI_VERSION: u32 = 1;
 /// ABI version for the DriverExportsV1 header.
@@ -393,7 +395,8 @@ pub struct AbiMmioHandle {
 /// Kernel API function table for drivers.
 ///
 /// Drivers must validate `abi_version` and `abi_size` before using optional
-/// entries in this table.
+/// entries in this table. Older drivers may use only the prefix fields and
+/// ignore optional tail entries introduced in later revisions.
 #[repr(C)]
 pub struct KernelApiV1 {
     pub abi_version: u32,
@@ -409,6 +412,13 @@ pub struct KernelApiV1 {
 
     pub irq_bind: extern "C" fn(irq: u32, cookie: u64) -> i32,
     pub irq_unbind: extern "C" fn(irq: u32) -> i32,
+
+    /// Optional heap allocator for standalone cell runtime.
+    pub heap_alloc: Option<extern "C" fn(size: usize) -> *mut u8>,
+    /// Optional heap deallocator paired with `heap_alloc`.
+    pub heap_dealloc: Option<extern "C" fn(ptr: *mut u8, size: usize)>,
+    /// Optional panic abort hook for standalone cell runtime.
+    pub panic_abort: Option<extern "C" fn(msg_ptr: *const u8, msg_len: usize) -> !>,
 
     pub reserved: [u64; 8],
 }

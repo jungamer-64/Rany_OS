@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 // 【設計書 8.1】PoisonLock使用 - パニック時自動毒入れ
-use crate::domain::quota::DomainPriority;
+use crate::domain::quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, quota_manager};
 use crate::error::{DomainErrorKind, KernelError};
 use crate::security::CapabilitySet;
 use crate::sync::PoisonLock;
@@ -352,6 +352,51 @@ impl Domain {
     }
 }
 
+const BYTES_PER_MB: u64 = 1024 * 1024;
+
+#[inline]
+fn bytes_to_mb_ceil(bytes: u64) -> u64 {
+    bytes.div_ceil(BYTES_PER_MB).max(1)
+}
+
+fn sync_domain_quota(
+    id: DomainId,
+    priority: DomainPriority,
+    cpu_limit_percent: u64,
+    memory_limit_bytes: u64,
+    io_bandwidth_limit: u64,
+) {
+    if id == DomainId::KERNEL {
+        quota_manager().register(DomainQuota::kernel());
+        return;
+    }
+
+    let mut quota = DomainQuota::new(id, priority).with_cpu_limit(cpu_limit_percent.min(100), 100);
+
+    quota.memory = if memory_limit_bytes == 0 || memory_limit_bytes == u64::MAX {
+        MemoryQuota::unlimited()
+    } else {
+        MemoryQuota::new(bytes_to_mb_ceil(memory_limit_bytes))
+    };
+
+    if io_bandwidth_limit == 0 || io_bandwidth_limit == u64::MAX {
+        quota.network_io = IoQuota::unlimited();
+        quota.storage_io = IoQuota::unlimited();
+    } else {
+        let mbps = bytes_to_mb_ceil(io_bandwidth_limit);
+        quota.network_io = IoQuota::new(mbps, mbps);
+        quota.storage_io = IoQuota::new(mbps, mbps);
+    }
+
+    quota_manager().register(quota);
+}
+
+fn unregister_domain_quota(id: DomainId) {
+    if id != DomainId::KERNEL {
+        quota_manager().unregister(id);
+    }
+}
+
 // ============================================================================
 // ドメインレジストリ
 // ============================================================================
@@ -398,6 +443,9 @@ static REGISTRY: PoisonLock<DomainRegistry> = PoisonLock::new(DomainRegistry::ne
 
 /// ドメインシステムを初期化（カーネルドメインを作成）
 pub fn init() {
+    // Ensure quota manager is initialized before any non-kernel domain is created.
+    crate::domain::quota::init();
+
     crate::io::log::early_print("[DOM] lock\n");
     // 初期化時は毒入れされていないはず
     let mut registry = REGISTRY
@@ -411,6 +459,13 @@ pub fn init() {
     kernel.state = DomainState::Running;
     crate::io::log::early_print("[DOM] insert\n");
     registry.domains.push(kernel);
+    sync_domain_quota(
+        DomainId::KERNEL,
+        DomainPriority::Critical,
+        100,
+        u64::MAX,
+        u64::MAX,
+    );
     crate::io::log::early_print("[DOM] done\n");
 }
 
@@ -430,6 +485,13 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
             // Log before consuming `name` to avoid an extra clone
             log::info!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
             let domain = Domain::new(id, name);
+            sync_domain_quota(
+                id,
+                domain.priority,
+                domain.cpu_limit_percent,
+                domain.memory_limit_bytes,
+                domain.io_bandwidth_limit,
+            );
             registry.domains.push(domain);
             Ok(id)
         }
@@ -600,6 +662,17 @@ pub fn set_domain_state(id: DomainId, state: DomainState) {
                 let old_state = domain.state;
                 domain.state = state;
                 log::info!("[DOMAIN] {} state: {:?} -> {:?}\n", id, old_state, state);
+                if state == DomainState::Terminated {
+                    unregister_domain_quota(id);
+                } else {
+                    sync_domain_quota(
+                        id,
+                        domain.priority,
+                        domain.cpu_limit_percent,
+                        domain.memory_limit_bytes,
+                        domain.io_bandwidth_limit,
+                    );
+                }
             }
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (set_domain_state) - no-op"),
@@ -665,6 +738,13 @@ pub fn set_domain_priority(id: DomainId, priority: DomainPriority) -> Result<(),
         Ok(mut guard) => {
             if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
                 domain.set_priority(priority);
+                sync_domain_quota(
+                    id,
+                    domain.priority,
+                    domain.cpu_limit_percent,
+                    domain.memory_limit_bytes,
+                    domain.io_bandwidth_limit,
+                );
                 Ok(())
             } else {
                 Err("Domain not found")
@@ -691,6 +771,13 @@ pub fn set_domain_resource_limits(
                     cpu_limit_percent,
                     memory_limit_bytes,
                     io_bandwidth_limit,
+                );
+                sync_domain_quota(
+                    id,
+                    domain.priority,
+                    domain.cpu_limit_percent,
+                    domain.memory_limit_bytes,
+                    domain.io_bandwidth_limit,
                 );
                 Ok(())
             } else {
@@ -798,6 +885,7 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
 
     // リソース回収（ロックを解放してから）
     reclaim_domain_resources(id);
+    unregister_domain_quota(id);
 
     // 依存するドメインに通知
     {

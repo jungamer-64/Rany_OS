@@ -50,8 +50,9 @@ pub(crate) fn send_tcp_packet(
     segment[4..8].copy_from_slice(&seq.to_be_bytes());
     // ACK number (4バイト)
     segment[8..12].copy_from_slice(&ack.to_be_bytes());
-    // Data offset (4bit) + Reserved (4bit) + Flags (8bit)
-    let data_off_flags = ((data_offset as u16) << 12) | (flags & 0x3F);
+    // Data offset (4bit) + Reserved (3bit) + Flags (9bit)
+    // Offset is 5 (20 bytes), flags are passed in (including NS, CWR, ECE, etc.)
+    let data_off_flags = ((data_offset as u16) << 12) | (flags & 0x01FF);
     segment[12..14].copy_from_slice(&data_off_flags.to_be_bytes());
     // Window (2バイト)
     segment[14..16].copy_from_slice(&window.to_be_bytes());
@@ -437,6 +438,9 @@ impl TcpHeader {
     pub const FLAG_PSH: u16 = 0x0008;
     pub const FLAG_ACK: u16 = 0x0010;
     pub const FLAG_URG: u16 = 0x0020;
+    pub const FLAG_ECE: u16 = 0x0040;
+    pub const FLAG_CWR: u16 = 0x0080;
+    pub const FLAG_NS: u16 = 0x0100;
     pub const MIN_HEADER_LEN: usize = 20;
 
     pub fn data_offset(&self) -> usize {
@@ -444,7 +448,7 @@ impl TcpHeader {
     }
 
     pub fn flags(&self) -> u16 {
-        u16::from_be(self.data_offset_flags) & 0x003F
+        u16::from_be(self.data_offset_flags) & 0x01FF
     }
 }
 

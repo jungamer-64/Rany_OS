@@ -1,0 +1,270 @@
+# カーネル実装 計画準拠監査レポート（設計優先・全計画）
+
+作成日: 2026-03-01
+対象リポジトリ: `Rany_OS`
+基準文書: `Rustカーネル設計案作成.md`
+
+## 1. 監査条件
+
+- 判定方針: 設計優先（SAS/SPL/Async に反する実装は互換目的でも「思想的に不要」）
+- 評価範囲: 全計画（将来フェーズを含む）
+- 分類: `準拠` / `思想的に不要` / `不足（部分準拠含む）`
+- 根拠要件: 各分類項目に「設計書根拠 + 実装根拠」を必須付与
+
+## 2. 監査サマリ
+
+- 総分類数: 12
+- 準拠: 5
+- 解消済み: 1
+- 思想的に不要: 1
+- 不足: 5
+
+### 2.1 分類サマリ表
+
+| ID | 区分 | 項目 | 影響度 | 優先度 |
+|---|---|---|---|---|
+| C-01 | 準拠 | IOMMU必須化と起動時強制 | Security: High | - |
+| C-02 | 準拠 | Async実行基盤（Executor/Fuel/Interrupt-Waker） | Runtime: High | - |
+| C-03 | 準拠 | ゼロコピー/メモリプール/適応ポーリング | Performance: High | - |
+| C-04 | 準拠 | WAL + PMEM 永続化補助 | Durability: Medium | - |
+| C-05 | 準拠 | セルローダ/ライブ更新/Epoch回収 | Availability: Medium | - |
+| U-01 | 思想的に不要 | POSIX互換残存（`legacy-posix`, pipe/shm/mmap系） | Conceptual debt: High | P1 |
+| U-02 | 解消済み | `sys_*` エクスポートによる syscall 的境界の残存 | Architecture contradiction: Resolved | 完了 |
+| M-01 | 不足 | 4.4.2 ループ境界の静的証明の実装本体欠落 | Scheduling assurance: Medium | P1 |
+| M-02 | 不足 | 4d 実NIC（XL710/E810）未実装 | Roadmap completeness: High | P2 |
+| M-03 | 不足 | SR-IOV/オフロードの実NIC統合未達 | Throughput scalability: High | P2 |
+| M-04 | 不足 | 永続CoW FS の snapshot/rollback 未達（メモリ内CoW中心） | Durability: High | P1 |
+| M-05 | 不足 | QoS/Quota/OOM の実執行連携不足（メタデータ/TODO残） | Stability/Fairness: Critical | P0 |
+
+## 3. 詳細分類（設計要件ID付き）
+
+## C-01 準拠: IOMMU必須化と起動時強制
+
+- 設計要件ID: `REQ-5.4.1-IOMMU-MANDATORY`
+- 現状: 起動時に IOMMU 必須フラグを立て、初期化後に未有効なら panic で停止。
+- 乖離内容: なし（要件適合）。
+- 推奨アクション: 現状維持。`IOMMU_REQUIRED=false` 迂回パスは開発専用に限定。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:395`
+  - `Rustカーネル設計案作成.md:401`
+- 実装根拠:
+  - `kernel/src/kernel_content.rs:317`
+  - `kernel/src/io/iommu/api/mgmt.rs:31`
+
+## C-02 準拠: Async実行基盤（Executor/Fuel/Interrupt-Waker）
+
+- 設計要件ID: `REQ-4.x-ASYNC-FIRST`
+- 現状: Executor/Fuel/ISR-Waker ブリッジを実装し、協調スケジューリングと starvation 緩和を提供。
+- 乖離内容: 4.4.2 の「静的ループ証明」は別項目 M-01 で未達。
+- 推奨アクション: Fuel運用と静的証明の責務分離を維持。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:38`
+  - `Rustカーネル設計案作成.md:273`
+- 実装根拠:
+  - `kernel/src/task/executor.rs:3`
+  - `kernel/src/task/fuel.rs:1`
+  - `kernel/src/task/interrupt_waker.rs:3`
+
+## C-03 準拠: ゼロコピー/メモリプール/適応ポーリング
+
+- 設計要件ID: `REQ-6.1-6.2-ZEROCOPY-POLLING`
+- 現状: Mempool と zero-copy datapath、適応ポーリング、virtio-net TX zero-copy 経路を確認。
+- 乖離内容: 実NIC向け最適化（4d）は M-02/M-03 で未達。
+- 推奨アクション: virtio 経路を基準実装として維持し、4d実装へ展開。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:412`
+  - `Rustカーネル設計案作成.md:418`
+- 実装根拠:
+  - `kernel/src/net/datapath/zero_copy/mod.rs:7`
+  - `kernel/src/net/datapath/mempool/mod.rs:3`
+  - `kernel/src/net/datapath/adaptive_polling/mod.rs:7`
+  - `kernel/src/io/virtio/net/device/tx.rs:141`
+
+## C-04 準拠: WAL + PMEM 永続化補助
+
+- 設計要件ID: `REQ-6.4.1-WAL`, `REQ-6.4.3-PMEM`
+- 現状: WAL マネージャ、PMEM flush/order (`CLWB`/`SFENCE`) 補助を実装。
+- 乖離内容: CoW永続FSの snapshot/rollback は M-04 で未達。
+- 推奨アクション: WAL+PMEM を永続CoW FS の下位層へ再利用。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:438`
+  - `Rustカーネル設計案作成.md:449`
+- 実装根拠:
+  - `kernel/src/storage/mod.rs:1`
+  - `kernel/src/storage/wal/mod.rs:1`
+  - `kernel/src/storage/pmem/mod.rs:1`
+
+## C-05 準拠: セルローダ/ライブ更新/Epoch回収
+
+- 設計要件ID: `REQ-3.5-LIVE-UPDATE-EPOCH`
+- 現状: ホットスワップ、quiescent state、epoch ベース回収、rollback経路を保持。
+- 乖離内容: なし（当該要件は実装確認済み）。
+- 推奨アクション: validation/rollback の自動テスト運用を継続。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:161`
+  - `Rustカーネル設計案作成.md:179`
+  - `Rustカーネル設計案作成.md:217`
+- 実装根拠:
+  - `kernel/src/loader/mod.rs:3`
+  - `kernel/src/loader/live_update.rs:3`
+  - `kernel/src/driver_cell/hot_swap.rs:6`
+
+## U-01 思想的に不要: POSIX互換残存（`legacy-posix`, pipe/shm/mmap系）
+
+- 設計要件ID: `REQ-1.3-NO-POSIX`, `REQ-2.1-SAS`, `REQ-2.2-SPL`
+- 現状: `legacy-posix` feature と POSIX由来 API が残存。
+- 乖離内容: 「POSIX排除」方針と整合しない互換面が継続。
+- 推奨アクション: feature を段階廃止し、`RRef/Exchange Heap/SAS mapping` へ全面移行。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:34`
+  - `Rustカーネル設計案作成.md:36`
+  - `Rustカーネル設計案作成.md:60`
+- 実装根拠:
+  - `kernel/Cargo.toml:105`
+  - `kernel/src/ipc/mod.rs:28`
+  - `kernel/src/ipc/shared_mem.rs:6`
+  - `kernel/src/mm/virt/mmap.rs:6`
+
+## U-02 解消済み: `sys_*` エクスポートによる syscall 的境界の残存
+
+- 設計要件ID: `REQ-2.2-SPL-NO-TRADITIONAL-SYSCALL`
+- 現状: `cell_runtime` は `KernelApiV1` シンボル参照に移行し、`register_kernel_symbols()` の `sys_*` 登録を削除済み。
+- 乖離内容: なし（解消済み）。
+- 推奨アクション: `sys_*` 境界を再導入しないことを CI で静的検証する。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:56`
+  - `Rustカーネル設計案作成.md:60`
+- 実装根拠:
+  - `interfaces/kernel_api/src/driver_abi.rs:65`
+  - `interfaces/kernel_api/src/cell_runtime.rs:39`
+  - `kernel/src/ahci_and_init/kernel_runtime.rs:265`
+  - `kernel/src/kernel_content/ahci_and_init/kernel_runtime.rs:264`
+
+## M-01 不足: 4.4.2 ループ境界静的証明の実装本体欠落
+
+- 設計要件ID: `REQ-4.4.2-LOOP-BOUNDARY-PROOF`
+- 現状: 設計例ファイルは存在するが、`kernel/src/task` 側に静的証明機構（コンパイラプラグイン/解析器）未実装。
+- 乖離内容: 設計要求は compile-time 証明だが、現状は runtime fuel 中心。
+- 推奨アクション: untrustedセル向けに「証明不能ループ拒否/警告」をビルドゲートとして実装。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:291`
+  - `Rustカーネル設計案作成.md:299`
+- 実装根拠:
+  - `docs/exorust_design/scheduler/loop_boundary.rs:1`
+  - `kernel/src/task/fuel.rs:1`
+
+## M-02 不足: 4d 実NIC（XL710/E810）未実装
+
+- 設計要件ID: `REQ-ROADMAP-4D-REAL-NIC`
+- 現状: workspace に実NICドライバクレート未搭載（virtio中心）。
+- 乖離内容: 4d 目標（実機10Gbps, XL710/E810）が未着手。
+- 推奨アクション: `drivers/intel_xl710` または `drivers/intel_e810` クレートを追加し、最小RX/TXから段階導入。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:900`
+  - `Rustカーネル設計案作成.md:930`
+- 実装根拠:
+  - `Cargo.toml:21`
+  - `drivers/`（該当NIC名実装なし）
+
+## M-03 不足: SR-IOV/オフロードの実NIC統合未達
+
+- 設計要件ID: `REQ-ROADMAP-4D-SRIOV-OFFLOAD`
+- 現状: PCI層に SR-IOV ケーパビリティ検出・制御はあるが、実NICデータパス統合がない。
+- 乖離内容: 実機向け SR-IOV + checksum/TSO ハードオフロード統合がロードマップ未達。
+- 推奨アクション: 実NICドライバに VF/queue 初期化 + offload feature negotiation を接続。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:931`
+  - `Rustカーネル設計案作成.md:932`
+- 実装根拠:
+  - `drivers/pci/src/pcie_ext.rs:250`
+  - `drivers/pci/src/traits.rs:388`
+  - `docs/NETWORK_ANALYSIS.md:109`
+
+## M-04 不足: 永続CoW FSの snapshot/rollback 未達（メモリ内CoW中心）
+
+- 設計要件ID: `REQ-6.4.2-COW-FS-SNAPSHOT`
+- 現状: memfs/page 層の CoW はあるが、永続ストレージ上の CoW FS スナップショット/ロールバックが未確認。
+- 乖離内容: 設計要件は durable CoW filesystem、現状は主にメモリ内CoWとWAL補助。
+- 推奨アクション: WALトランザクションと連動した persistent snapshot metadata 層を新設。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:444`
+  - `Rustカーネル設計案作成.md:447`
+- 実装根拠:
+  - `filesystems/kernel_fs/page.rs:11`
+  - `filesystems/kernel_fs/memfs/shell_integration.rs:246`
+  - `kernel/src/storage/wal/mod.rs:406`
+
+## M-05 不足: QoS/Quota/OOMの実執行連携不足
+
+- 設計要件ID: `REQ-9.3-QOS-ACCOUNTING`
+- 現状: quota API と domain metadata は存在するが、`future enforcement hook` 記載・OOM kill実処理 TODO が残存。
+- 乖離内容: 設計は「超過時スケジューリング低下/サスペンド」「OOMで実終了」だが、実行経路統合が未完。
+- 推奨アクション: scheduler/allocator/OOM ハンドラへ domain quota enforcement を接続し、TODO を除去。
+- 設計根拠:
+  - `Rustカーネル設計案作成.md:628`
+  - `Rustカーネル設計案作成.md:632`
+  - `Rustカーネル設計案作成.md:644`
+- 実装根拠:
+  - `kernel/src/domain_system.rs:332`
+  - `kernel/src/domain_system.rs:680`
+  - `kernel/src/memory/oom_killer.rs:197`
+
+## 4. 優先度再分類（P0/P1/P2）
+
+### P0
+
+- `M-05` QoS/Quota/OOM 実執行未統合（安定性・公平性リスク）
+
+### P1
+
+- `U-01` POSIX互換残存
+- `M-01` ループ境界静的証明未実装
+- `M-04` 永続CoW FS snapshot/rollback 未達
+
+### P2
+
+- `M-02` 実NIC XL710/E810 未実装（ロードマップ4d）
+- `M-03` SR-IOV/オフロード実NIC統合未達
+
+## 5. P0項目の最短ルート（1項目1手順）
+
+- `U-02` 最短ルート（完了）:
+  - `interfaces/kernel_api/src/cell_runtime.rs` の `extern "C" sys_*` 依存を `KernelApiV1` 参照へ置換し、`kernel_runtime.rs` の `sys_*` シンボル登録・実装を削除。
+
+- `M-05` 最短ルート:
+  - `domain_system` の `set_domain_priority/set_domain_resource_limits` を scheduler/allocator/OOM 経路へ直結し、`oom_killer.rs` の TODO 箇所を実終了処理に置換。
+
+## 6. 即時着手バックログ（最大10件）
+
+1. `P0` `sys_*` 依存除去設計: `cell_runtime` から KAPI 直呼びへの移行差分を確定。
+2. `P0` `register_kernel_symbols()` から `sys_*` エントリを削除する変更を完了。
+3. `P0` OOM kill 実処理（タスク停止 + ドメイン遷移 + リソース回収）を `domain_system` API で実装。
+4. `P0` quota 超過時の scheduler 連携（優先度降格/一時停止）を導入。
+5. `P1` `legacy-posix` feature の段階的無効化マップを作成。
+6. `P1` ループ境界静的証明の最小版（untrustedセルを警告/拒否）をビルドパイプラインに導入。
+7. `P1` 永続CoW FS向け snapshot metadata と rollback エントリ形式を定義。
+8. `P2` 実NICドライバ候補（XL710/E810）の crate 骨格を作成。
+9. `P2` SR-IOV VF 初期化と queue 割当の実NIC統合ポイントを定義。
+10. `P2` checksum/TSO HW offload の feature negotiation と fallback を共通化。
+
+## 7. 公開API/インターフェース影響
+
+- 本監査フェーズはコード変更なし。公開API変更なし。
+- 次フェーズ候補（削除対象）:
+  - `legacy-posix` 依存 API 群
+  - （更新）`sys_*` シンボル境界は本フェーズで削除済み
+
+## 8. テストケース/検証シナリオ
+
+1. 分類整合性検証: 全項目が「設計根拠 + 実装根拠」を満たすこと。
+2. 思想的に不要検証: `rg "legacy-posix|sys_"` 結果が `U-01/U-02` と一致すること。
+3. 不足検証: 設計要件に対し、実装不在または未接続の証拠が示されること。
+4. 再現性検証: 同一revisionで再監査時に同分類・同優先度が再現されること。
+
+## 9. 検証ログ（実コマンド）
+
+- `rg -n "legacy-posix" kernel interfaces docs | wc -l` -> `13`
+- `rg -n "\\bsys_(log|alloc|dealloc|sleep|panic)\\b" kernel interfaces | wc -l` -> `46`
+- `rg -n "XL710|E810|\\bi40e\\b|\\bice\\b|\\bixgbe\\b" drivers kernel Cargo.toml docs README.md` -> `0 hit`
+- `rg -n "loop_boundary|ExactSizeIterator" kernel/src/task docs/exorust_design/scheduler` -> 設計例のみヒット
+- `rg -n "set_domain_priority|set_domain_resource_limits|TODO: 実際のドメイン終了処理" ...` -> enforcement hook/TODO の残存を確認
