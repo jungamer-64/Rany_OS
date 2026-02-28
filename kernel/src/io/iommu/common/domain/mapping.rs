@@ -290,6 +290,8 @@ impl IommuDomain {
             return Err(IommuError::Poisoned);
         }
 
+        let _paging_guard = self.paging_lock.lock();
+
         let start_shard = Self::shard_for_iova(iova);
         let guard = self.shards[start_shard]
             .lock()

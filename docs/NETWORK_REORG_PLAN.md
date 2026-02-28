@@ -64,4 +64,4 @@
 - `cargo test -p rany_kernel io::virtio::net -- --test-threads=1 --nocapture`: **pass**
 - `python3 scripts/run_pure_tier.py --tier pr-required`: **pass**
 - `QEMU_TEST_PROFILE_ONLY=boot-smoke cargo test -p qemu-tests fullboot_pr_required -- --nocapture`: **pass**
-- `QEMU_TEST_PROFILE_ONLY=storage cargo test -p qemu-tests fullboot_pr_required -- --nocapture`: **timeout after 120s (failed, retried twice)**
+- `QEMU_TEST_PROFILE_ONLY=storage cargo test -p qemu-tests fullboot_pr_required -- --nocapture`: **pass** (31.38s, 2026-03-01 rerun)

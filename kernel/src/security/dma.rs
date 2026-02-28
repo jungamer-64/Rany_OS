@@ -55,20 +55,7 @@ pub fn register_protected_page(phys: u64) {
 
 /// Unregister a physical page from protection.
 pub fn unregister_protected_page(phys: u64) {
-    let page_idx = (phys / 4096) as usize;
-    if page_idx < PROTECTED_BITMAP_PAGES {
-        let mut bitmap = get_protected_bitmap().lock();
-        bitmap[page_idx / 8] &= !(1 << (page_idx % 8));
-    } else {
-        // Remove from protected regions list
-        let end = phys.saturating_add(4096);
-        let mut regions = PROTECTED_REGIONS.write();
-        if let Ok(idx) = regions.binary_search_by(|r| r.start.cmp(&phys)) {
-            if regions[idx].end == end {
-                regions.remove(idx);
-            }
-        }
-    }
+    unregister_protected_range(phys, 4096);
 }
 
 /// Check if a physical page is registered as protected.
@@ -76,22 +63,24 @@ pub fn is_page_protected(phys: u64) -> bool {
     let page_idx = (phys / 4096) as usize;
     if page_idx < PROTECTED_BITMAP_PAGES {
         let bitmap = get_protected_bitmap().lock();
-        (bitmap[page_idx / 8] & (1 << (page_idx % 8))) != 0
-    } else {
-        // Fallback for pages above 1TB: check protected regions list via binary search
-        let regions = PROTECTED_REGIONS.read();
-        match regions.binary_search_by(|r| {
-            if phys < r.start {
-                core::cmp::Ordering::Greater
-            } else if phys >= r.end {
-                core::cmp::Ordering::Less
-            } else {
-                core::cmp::Ordering::Equal
-            }
-        }) {
-            Ok(_) => true,
-            Err(_) => false,
+        if (bitmap[page_idx / 8] & (1 << (page_idx % 8))) != 0 {
+            return true;
         }
+    }
+
+    // Fallback: always check protected regions list if not in bitmap (or if above bitmap range)
+    let regions = PROTECTED_REGIONS.read();
+    match regions.binary_search_by(|r| {
+        if phys < r.start {
+            core::cmp::Ordering::Greater
+        } else if phys >= r.end {
+            core::cmp::Ordering::Less
+        } else {
+            core::cmp::Ordering::Equal
+        }
+    }) {
+        Ok(_) => true,
+        Err(_) => false,
     }
 }
 
@@ -128,8 +117,9 @@ pub fn unregister_protected_range(start: u64, size: u64) {
     let end = start.saturating_add(size);
     let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
 
-    // If it was potentially in the regions list
-    if size > 1024 * 1024 || end > boundary {
+    // Always check the regions list to ensure consistency, 
+    // as even small ranges could be part of a larger region in the list.
+    {
         let mut regions = PROTECTED_REGIONS.write();
         let mut i = 0;
         while i < regions.len() {

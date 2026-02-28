@@ -352,6 +352,29 @@ pub fn test_storage() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("Storage");
 
     suite.add_result(run_test("virtio_blk_zero_copy_mount", || {
+        // fullboot required profiles often run with qemu_no_if=1, which keeps IRQs
+        // disabled to avoid unrelated flakes. In that mode, async mount futures can
+        // stall forever because completion wakeups are interrupt-driven.
+        if !crate::interrupts::are_interrupts_enabled() {
+            return if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device() {
+                let info = dev.info();
+                if info.block_size > 0 && info.total_blocks > 0 {
+                    Ok(alloc::format!(
+                        "IRQ disabled; mount skipped (virtio-blk present: {} blocks x {} bytes)",
+                        info.total_blocks, info.block_size
+                    ))
+                } else {
+                    Err(String::from(
+                        "IRQ disabled and virtio-blk info invalid (block_size or total_blocks is zero)",
+                    ))
+                }
+            } else {
+                Err(String::from(
+                    "IRQ disabled and no VirtIO-blk device found for storage profile",
+                ))
+            };
+        }
+
         if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device() {
             // Wrap the global virtio device with a Page-backed adapter and mount
             let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));

@@ -100,6 +100,7 @@ impl IommuDomain {
             per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
             pending_pt_release: PoisonLock::new(Vec::new()),
+            paging_lock: IrqMutex::new(()),
         };
         crate::io::log::early_print("[IOMMU] IommuDomain::new: constructed domain object, returning\n");
         new_domain
@@ -753,6 +754,7 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
+        let _paging_guard = self.paging_lock.lock();
         let (start_shard, end_shard) = self.shard_range(iova, size)?;
         let mut guards = self.lock_shards(start_shard, end_shard)?;
 
@@ -904,6 +906,14 @@ impl IommuDomain {
 
 impl Drop for IommuDomain {
     fn drop(&mut self) {
+        // 1. Release any page tables waiting in the quarantine
+        if let Ok(mut pending) = self.pending_pt_release.lock() {
+            for pt in pending.drain(..) {
+                self.page_table_pool.release(pt);
+            }
+        }
+
+        // 2. Iteratively deallocate the main page table hierarchy
         if !self.page_table.is_null() {
             unsafe {
                 self.deallocate_page_tables_iterative();

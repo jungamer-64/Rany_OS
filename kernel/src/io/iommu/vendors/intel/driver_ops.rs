@@ -461,6 +461,9 @@ impl IntelIommuDriver {
         iova: u64,
         size: u64,
     ) -> Result<(), IommuError> {
+        // 1. Monitor page table releases to detect if paging-structure caches need clearing
+        let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+
         if let Some(ref _cq) = controller.command_queue {
             let cmd = IommuCommandKind::UnmapRegionDevice {
                 device: *device,
@@ -468,17 +471,31 @@ impl IntelIommuDriver {
                 size,
             };
             controller.execute_sync_command(cmd).map_err(|_| IommuError::HardwareError)?;
+            
+            // Check if unmap removed a PT (via mapping lookups since CQ is used)
+            let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+            if pts_after > pts_before {
+                // SECURITY: If a page table was removed, we MUST perform a domain-wide
+                // invalidation. CQ UnmapRegionDevice only does page-level invalidation.
+                controller.execute_sync_command(IommuCommandKind::InvalidateIotlbDomain { domain: domain_arc.id() })
+                    .map_err(|_| IommuError::HardwareError)?;
+                let _ = domain_arc.flush(controller, controller);
+            }
             return Ok(())
         }
 
         let mapping = domain_arc.unmap(iova)?;
         let domain_id = domain_arc.id();
 
-        if let Some(ref _cq) = controller.command_queue {
-            controller.execute_sync_command(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
-                .map_err(|_| IommuError::HardwareError)?;
+        let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pt_removed = pts_after > pts_before;
+
+        if pt_removed {
+            // SECURITY: Domain-wide invalidation to clear paging-structure caches.
+            controller.invalidate_iotlb(domain_id, true)?;
+            let _ = domain_arc.flush(controller, controller);
         } else {
-            // Synchronous invalidation with ATS awareness
+            // Page-selective invalidation with ATS awareness
             controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
         }
 
@@ -518,11 +535,23 @@ impl IntelIommuDriver {
         device: &DeviceId,
         iova: u64,
     ) -> Result<(), IommuError> {
+        // 1. Monitor page table releases
+        let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+
         let mapping = domain_arc.unmap(iova)?;
         let domain_id = domain_arc.id();
+
+        let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pt_removed = pts_after > pts_before;
+
         if let Some(ref cq) = controller.command_queue {
+            let kind = if pt_removed {
+                IommuCommandKind::InvalidateIotlbDomain { domain: domain_id }
+            } else {
+                IommuCommandKind::InvalidateIotlbDomain { domain: domain_id } // FIXME: should be page invalidation if possible
+            };
             let comp = cq
-                .submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
+                .submit_async(kind)
                 .await
                 .map_err(|_| IommuError::HardwareError)?;
             let rc = comp.await;
@@ -530,10 +559,18 @@ impl IntelIommuDriver {
                 return Err(IommuError::HardwareError);
             }
         } else {
-            // ATS-aware invalidation
-            controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
+            if pt_removed {
+                controller.invalidate_iotlb(domain_id, true)?;
+            } else {
+                // ATS-aware invalidation
+                controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
+            }
         }
         
+        if pt_removed {
+            let _ = domain_arc.flush(controller, controller);
+        }
+
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
             // Quarantine full: Force global flush and immediate free
             unsafe { controller.invalidate_iotlb_global_sync() }?;
