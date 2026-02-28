@@ -88,6 +88,42 @@ jobs:
       run: cargo build -p rany_kernel --no-default-features --target x86_64-exorust.json
 
   # ============================================================================
+  # Reproducible Build Check
+  # ============================================================================
+  reproducible-build:
+    name: Reproducible Build
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      with:
+        components: rust-src, llvm-tools-preview
+
+    - name: Build release (run A)
+      env:
+        CARGO_TARGET_DIR: target/repro-a
+      run: cargo build --target x86_64-exorust.json --release
+
+    - name: Build release (run B)
+      env:
+        CARGO_TARGET_DIR: target/repro-b
+      run: cargo build --target x86_64-exorust.json --release
+
+    - name: Compare SHA-256
+      run: |
+        set -euo pipefail
+        KERNEL_A=target/repro-a/x86_64-exorust/release/exorust_kernel
+        KERNEL_B=target/repro-b/x86_64-exorust/release/exorust_kernel
+        SHA_A="$(sha256sum "$KERNEL_A" | awk '{print $1}')"
+        SHA_B="$(sha256sum "$KERNEL_B" | awk '{print $1}')"
+        echo "run A: $SHA_A"
+        echo "run B: $SHA_B"
+        test "$SHA_A" = "$SHA_B"
+
+  # ============================================================================
   # Lint Job
   # ============================================================================
   lint:
