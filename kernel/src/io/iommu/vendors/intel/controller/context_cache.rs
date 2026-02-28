@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/context_cache.rs
+// kernel/src/io/iommu/vendors/intel/controller/context_cache.rs
 // ============================================================================
 
 //! IOMMU context entry cache
@@ -13,7 +13,7 @@
 //! looking up a device's context entry during domain attach/detach and other
 //! controller operations.
 
-use crate::io::iommu::backends::intel::tables::ContextEntry;
+use crate::io::iommu::vendors::intel::tables::ContextEntry;
 
 // ============================================================================
 // Context Cache Entry

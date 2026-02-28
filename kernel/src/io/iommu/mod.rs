@@ -12,21 +12,19 @@ use ::core::sync::atomic::AtomicBool;
 
 // Public API surface
 pub mod api;
-pub mod types {
-    pub use super::core::types::*;
-}
+pub mod types;
 
 // Layered module namespaces
-pub(crate) mod backends;
-pub(crate) mod core;
+pub(crate) mod common;
 pub(crate) mod runtime;
+pub(crate) mod vendors;
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) mod tests;
+pub(crate) mod testkit;
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) mod qemu_tests {
-    pub use super::tests::qemu::*;
+    pub use super::testkit::qemu::*;
 }
 
 // ============================================================================

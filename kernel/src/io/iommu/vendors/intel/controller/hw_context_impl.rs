@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/hw_context_impl.rs
+// kernel/src/io/iommu/vendors/intel/controller/hw_context_impl.rs
 // ============================================================================
 
 use super::*;
@@ -17,11 +17,11 @@ impl IommuHardwareContext for IommuController {
 
         // Map alignment to granularity
         let granularity = if alignment >= 1024 * 1024 * 1024 {
-            crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page1G
+            crate::io::iommu::common::dma::iova_allocator::PageGranularity::Page1G
         } else if alignment >= 2 * 1024 * 1024 {
-            crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page2M
+            crate::io::iommu::common::dma::iova_allocator::PageGranularity::Page2M
         } else {
-            crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page4K
+            crate::io::iommu::common::dma::iova_allocator::PageGranularity::Page4K
         };
 
         IovaManager::allocate_iova_aligned(self, size, granularity)

@@ -174,14 +174,28 @@ impl DnsClient {
 
     /// DNSレコードをキャッシュに追加する
     pub(super) fn cache_dns_records(&self, records: &[DnsRecord], current_tick: u64) {
-        if !records.is_empty() {
-            if let Some(first) = records.first() {
-                match self.cache.lock() {
-                    Ok(mut cache) => {
-                        cache.insert(first.name.clone(), records.to_vec(), current_tick);
-                    }
-                    Err(_) => log::error!("[NET] DNS Cache lock poisoned (parse_response) - skipping cache insert"),
+        if records.is_empty() {
+            return;
+        }
+
+        match self.cache.lock() {
+            Ok(mut cache) => {
+                // 各レコードを個別にキャッシュに追加する
+                // 同じ名前を持つレコードはグループ化して一つのエントリにする
+                let mut groups: BTreeMap<String, Vec<DnsRecord>> = BTreeMap::new();
+                for record in records {
+                    groups
+                        .entry(record.name.clone())
+                        .or_insert_with(Vec::new)
+                        .push(record.clone());
                 }
+
+                for (name, group_records) in groups {
+                    cache.insert(name, group_records, current_tick);
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] DNS Cache lock poisoned (cache_dns_records) - skipping cache insert")
             }
         }
     }

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/ats_control.rs
+// kernel/src/io/iommu/vendors/intel/controller/ats_control.rs
 // ============================================================================
 
 use super::*;
@@ -36,7 +36,7 @@ impl IommuController {
         use crate::io::iommu::runtime::security::{
             AtsChangeReason, DeviceTrustLevel, SecurityEvent,
         };
-        use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
+        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 
         // Security: ATS requires Queued Invalidation for proper Device-TLB flushing.
         if !self.is_queued_invalidation_enabled() {
@@ -138,7 +138,7 @@ impl IommuController {
         device: DeviceId,
         reason: crate::io::iommu::runtime::security::AtsChangeReason,
     ) {
-        use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
+        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
         use crate::io::iommu::runtime::security::SecurityEvent;
 
         match self.ats_enabled_devices.lock() {

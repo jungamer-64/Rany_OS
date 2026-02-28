@@ -2,8 +2,8 @@
 // enable the standard library so benchmark harnesses (Criterion) and
 // alloc-dependent graphics helpers can build and run under the host test
 // runner.
-#![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(all(test, not(feature = "std")), no_main)]
+#![cfg_attr(all(not(feature = "std"), not(all(test, target_os = "linux"))), no_std)]
+#![cfg_attr(all(test, not(feature = "std"), not(target_os = "linux")), no_main)]
 #![feature(custom_test_frameworks)]
 #![cfg_attr(test, test_runner(crate::test_runner))]
 #![reexport_test_harness_main = "test_main"]
@@ -126,7 +126,7 @@ pub extern "C" fn _start() -> ! {
     exit_qemu(QemuExitCode::Success);
 }
 
-#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
+#[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std"), not(target_os = "linux")))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe {
@@ -140,7 +140,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     exit_qemu(QemuExitCode::Failed);
 }
 
-#[cfg(all(test, feature = "full_mm_tests", not(feature = "std")))]
+#[cfg(all(test, feature = "full_mm_tests", not(feature = "std"), not(target_os = "linux")))]
 #[panic_handler]
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
     crate::panic_handler::panic(info)
@@ -305,7 +305,11 @@ pub fn exit_qemu(code: QemuExitCode) -> ! {
 // point. This keeps most of the kernel as a binary-only crate while still
 // allowing targeted library-style tests (e.g. security/capability) to run
 // under `cargo test --lib` without pulling the entire binary test harness.
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
+))]
 pub mod security;
 
 // QEMU test exports are compiled when `qemu-test-export` is enabled and are
@@ -336,72 +340,172 @@ pub static __tls_end: u8 = 0;
 
 // Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
 // without pulling in the full memory subsystem and its heavy dependencies.
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 pub mod fs;
 
 // Intrusive collections for kernel use (always available)
 pub mod collections;
 
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod mm;
 // The real `per_cpu` module is not compiled when running tests or benches
 // because we provide a lightweight stub later in this file that satisfies
 // the few symbols needed by unit tests.  Without this guard the crate ends up
 // defining `per_cpu` twice during `cargo test`, which triggers a compile
 // error.
-#[cfg(not(any(test, feature = "bench")))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "qemu-test-export"
+))]
 pub mod per_cpu;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod io;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod task;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod sync;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod ipc;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod net;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod domain;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod security;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod service_impl;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod util;
 #[cfg(any(not(test), test, feature = "full_mm_tests"))]
 pub mod time;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod unwind;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod error;
 pub mod memory;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod smp;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod interrupts;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod sas;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod panic_handler;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod thermal;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod monitor;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod watchdog;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod power;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod loader;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod driver_cell;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod console;
 
 #[cfg(not(feature = "full_mm_tests"))]
 #[cfg(any(test, feature = "bench"))]
+#[cfg(not(feature = "qemu-test-export"))]
 pub mod mm {
     use alloc::alloc::{Layout, alloc_zeroed, dealloc};
     use core::ptr::NonNull;
@@ -465,6 +569,7 @@ pub mod mm {
 
         use core::sync::atomic::{AtomicU64, Ordering};
 
+        #[derive(Debug)]
         pub struct FastBitmapAllocator {
             base: u64,
             size: u64,
@@ -541,13 +646,14 @@ pub mod mm {
     pub mod remote_free {
         use alloc::collections::VecDeque;
 
-        #[derive(Clone, Copy, Default)]
+        #[derive(Debug, Clone, Copy, Default)]
         pub struct QuarantineEntry {
             pub addr: u64,
             pub epoch: u32,
             pub size_class: u8,
         }
 
+        #[derive(Debug)]
         pub struct QuarantineRing<const CAP: usize> {
             buf: VecDeque<QuarantineEntry>,
         }
@@ -560,6 +666,10 @@ pub mod mm {
                     self.buf.push_back(QuarantineEntry { addr, epoch, size_class });
                     true
                 }
+            }
+
+            pub fn push_entry(&mut self, entry: QuarantineEntry) -> bool {
+                self.push(entry.addr, entry.size_class, entry.epoch)
             }
 
             pub fn drain_older_than(&mut self, completed_epoch: u32, limit: usize, out: &mut [QuarantineEntry]) -> usize {
@@ -822,6 +932,7 @@ pub mod mm {
 // Minimal per-CPU stubs for tests (crate-root level to match new module hierarchy).
 #[cfg(not(feature = "full_mm_tests"))]
 #[cfg(any(test, feature = "bench"))]
+#[cfg(not(feature = "qemu-test-export"))]
 pub mod per_cpu {
     use core::array;
 
@@ -1002,7 +1113,11 @@ pub mod per_cpu {
 }
 
 // Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
+))]
 pub mod ipc {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     #[repr(transparent)]
@@ -1038,6 +1153,15 @@ pub mod ipc {
                 let boxed = Box::new(val);
                 let ptr = NonNull::new(Box::into_raw(boxed)).expect("RRef Box pointer is null");
                 Self { ptr, owner }
+            }
+
+            pub fn into_raw_parts(self) -> RRefRawParts {
+                RRefRawParts::from_rref(self)
+            }
+
+            pub unsafe fn from_raw_parts_for_zombie(parts: RRefRawParts) -> Self {
+                // Test shim only supports sized types; panic on mismatch in debug mode.
+                unsafe { parts.into_rref::<T>().expect("RRefRawParts type mismatch in test shim") }
             }
         }
 
@@ -1085,6 +1209,7 @@ pub mod ipc {
             SizeMismatch,
         }
 
+        #[derive(Debug)]
         pub struct RRefRawParts {
             ptr: NonNull<u8>,
             owner: DomainId,
@@ -1179,7 +1304,14 @@ pub mod ipc {
 }
 
 // Minimal task/time shims for tests and benches
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub mod task {
     pub mod timer {
         /// Return current tick in milliseconds (test stub)
@@ -1721,7 +1853,12 @@ pub mod task {
 
 pub mod pcid_support;
 
-#[cfg(all(test, not(feature = "bench"), not(feature = "full_mm_tests")))]
+#[cfg(all(
+    test,
+    not(feature = "bench"),
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
+))]
 pub mod io {
     // Include only the IOMMU implementation for test builds to avoid
     // pulling in the whole I/O subsystem and its wide dependency graph.
@@ -1951,20 +2088,52 @@ pub mod io;
 pub use hal;
 
 
-#[cfg(all(test, not(feature = "full_mm_tests")))]
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
+))]
 pub mod unwind;
 
 #[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
 pub mod driver_registry;
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub mod loader;
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub mod sync;
 
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub mod sas;
 
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub mod util;
 
 #[cfg(any(test, feature = "bench"))]
@@ -1975,16 +2144,48 @@ pub mod nvme {
 // Re-export task-scoped shims at crate root so modules that reference
 // `crate::memory`, `crate::smp`, `crate::interrupts`, and
 // `crate::domain_system` compile in test builds without changes.
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 // pub use crate::task::memory as memory;
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub use crate::task::smp as smp;
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub use crate::task::interrupts as interrupts;
-#[cfg(any(all(test, not(feature = "full_mm_tests")), feature = "bench"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub use crate::task::domain_system as domain_system;
 
-#[cfg(any(not(test), feature = "full_mm_tests"))]
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod domain_system;
 
 #[cfg(all(test, feature = "std", not(target_os = "none")))]

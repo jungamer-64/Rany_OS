@@ -21,10 +21,61 @@ use super::types::{
 };
 use super::window_scale::TcpOptionParser;
 
-/// TCPタイムスタンプ値を生成（10ms粒度、RFC 7323準拠）
+/// RFC 7323準拠のTCPタイムスタンプ生成
 fn generate_tcp_timestamp() -> u32 {
     let ms = tcb_table().get_current_tick();
     (ms / 10) as u32
+}
+
+/// RFC 793 Step 1: 受信セグメントのシーケンス番号妥当性を検証
+fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, payload_len: usize) -> bool {
+    let rcv_nxt = tcb.rcv_nxt;
+    let rcv_wnd = tcb.effective_recv_window();
+    
+    if payload_len == 0 {
+        if rcv_wnd == 0 {
+            seq_num == rcv_nxt
+        } else {
+            // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd
+            let diff = seq_num.wrapping_sub(rcv_nxt);
+            diff < rcv_wnd
+        }
+    } else {
+        if rcv_wnd == 0 {
+            false
+        } else {
+            // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd OR
+            // rcv_nxt <= seq_num + payload_len - 1 < rcv_nxt + rcv_wnd
+            let diff_start = seq_num.wrapping_sub(rcv_nxt);
+            let diff_end = seq_num.wrapping_add(payload_len as u32).wrapping_sub(1).wrapping_sub(rcv_nxt);
+            diff_start < rcv_wnd || diff_end < rcv_wnd
+        }
+    }
+}
+
+/// チャレンジACK（シーケンス番号エラー時の応答）を送信
+fn send_challenge_ack(tcb: &TcpControlBlockEntry) {
+    let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
+        .seq(tcb.snd_nxt)
+        .ack(tcb.rcv_nxt)
+        .ack_flag()
+        .window(u16::try_from(tcb.advertised_recv_window()).unwrap_or(u16::MAX));
+
+    if tcb.ts_enabled {
+        builder = builder.nop().nop().timestamp(generate_tcp_timestamp(), tcb.ts_ecr);
+    }
+
+    let mut ack = builder.build();
+    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
+        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
+    } else {
+        TcpSegmentBuilder::calculate_checksum_v6(
+            &mut ack,
+            crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
+            crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
+        );
+    }
+    send_tcp_segment(tcb.local, tcb.remote, ack);
 }
 
 /// TCPセグメント受信処理
@@ -50,6 +101,15 @@ pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
 
     // TCBを検索
     if let Some(tcb) = tcb_table().get(local, remote) {
+        // RFC 793 Step 1: Check sequence number acceptability
+        let payload_len = if segment.len() > data_offset { segment.len() - data_offset } else { 0 };
+        if !is_acceptable_sequence(&tcb, seq_num, payload_len) {
+            let is_rst = (flags & tcp_flags::RST) != 0;
+            if !is_rst {
+                send_challenge_ack(&tcb);
+            }
+            return;
+        }
         process_tcp_with_tcb(tcb, flags, seq_num, ack_num, urgent_ptr, segment, data_offset);
     } else {
         // 新規接続要求の可能性（LISTENソケット検索）
@@ -342,6 +402,9 @@ fn process_tcp_new_connection(
         tcb.sack_enabled = true;
     }
     
+    // TCB更新: SYN-ACKは1シーケンス番号を消費する (RFC 793)
+    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+
     // TCBをテーブルに挿入 (リソース制限チェック)
     if let Err(e) = tcb_table().insert(tcb) {
         log::warn!("[NET] TCP: Failed to accept new connection from {}: {}", remote, e);

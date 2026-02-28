@@ -13,9 +13,9 @@ use crate::io::iommu::runtime::groups::{get_iommu_group_manager, RealPciTopology
 #[cfg(not(test))]
 use crate::io::iommu::runtime::registry::get_iommu_driver;
 #[cfg(not(test))]
-use crate::io::iommu::core::types::{DeviceId, IommuDomainType};
-use crate::io::iommu::backends::intel::registers::ecap_bits;
-use crate::io::iommu::backends::intel::registry::get_iommu_registry;
+use crate::io::iommu::types::{DeviceId, IommuDomainType};
+use crate::io::iommu::vendors::intel::registers::ecap_bits;
+use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 #[cfg(not(test))]
 use spin::Mutex;
 
@@ -47,15 +47,15 @@ fn is_ahci_legacy(device: &crate::io::pci::PciDeviceInfo) -> bool {
 #[cfg(not(test))]
 pub fn setup_iommu_for_pci_device(
     device: &mut crate::io::pci::PciDeviceInfo,
-) -> Result<u16, crate::io::iommu::core::types::IommuError> {
+) -> Result<u16, crate::io::iommu::types::IommuError> {
     if !is_iommu_enabled() {
-        return Err(crate::io::iommu::core::types::IommuError::NotSupported);
+        return Err(crate::io::iommu::types::IommuError::NotSupported);
     }
 
     // Critical: Grouping is mandatory for security. Fail if driver or manager are missing.
-    let driver = get_iommu_driver().ok_or(crate::io::iommu::core::types::IommuError::NotInitialized)?;
-    let iommu_group_manager = get_iommu_group_manager().ok_or(crate::io::iommu::core::types::IommuError::NotInitialized)?;
-    let pcie_ext_manager = pcie_ext_manager().ok_or(crate::io::iommu::core::types::IommuError::NotInitialized)?;
+    let driver = get_iommu_driver().ok_or(crate::io::iommu::types::IommuError::NotInitialized)?;
+    let iommu_group_manager = get_iommu_group_manager().ok_or(crate::io::iommu::types::IommuError::NotInitialized)?;
+    let pcie_ext_manager = pcie_ext_manager().ok_or(crate::io::iommu::types::IommuError::NotInitialized)?;
 
     let device_id = DeviceId::new(
         device.segment,
@@ -122,7 +122,7 @@ pub fn setup_iommu_for_pci_device(
 
 #[cfg(not(test))]
 fn try_enable_ats(
-    controller: &alloc::sync::Arc<crate::io::iommu::backends::intel::controller::IommuController>,
+    controller: &alloc::sync::Arc<crate::io::iommu::vendors::intel::controller::IommuController>,
     pcie_ext_manager: &'static pci_driver::PcieExtManager,
     device: &crate::io::pci::PciDeviceInfo,
     device_id: DeviceId,
@@ -252,7 +252,7 @@ fn log_device_protection(
 ///
 /// PCI初期化後に呼び出して、全デバイスを保護します。
 #[cfg(not(test))]
-pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) -> Result<(), crate::io::iommu::core::types::IommuError> {
+pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) -> Result<(), crate::io::iommu::types::IommuError> {
     if !is_iommu_enabled() {
         log::info!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
         return Ok(());
@@ -295,7 +295,7 @@ pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceI
             protected_count,
             failed_count
         );
-        Err(last_error.unwrap_or(crate::io::iommu::core::types::IommuError::HardwareError))
+        Err(last_error.unwrap_or(crate::io::iommu::types::IommuError::HardwareError))
     } else {
         log::info!(
             "[IOMMU] Protected {} PCI devices with IOMMU domains\n",

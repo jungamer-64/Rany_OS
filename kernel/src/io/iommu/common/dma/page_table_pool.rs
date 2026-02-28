@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/dma/page_table_pool.rs - NUMA-Aware Page Table Recycling
+// kernel/src/io/iommu/common/dma/page_table_pool.rs - NUMA-Aware Page Table Recycling
 // ============================================================================
 
 //!
@@ -126,8 +126,8 @@ use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use crate::sync::IrqMutex;
 
-use crate::io::iommu::core::tables::{PT_ENTRIES, SlPte};
-use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::common::tables::{PT_ENTRIES, SlPte};
+use crate::io::iommu::types::IommuError;
 
 // ============================================================================
 // Page Table Reference Count Registry
@@ -444,7 +444,7 @@ impl PageTablePool {
             .ok_or(IommuError::OutOfMemory)?;
 
         // Get physical address
-        let phys = crate::io::iommu::core::tables::virt_ptr_to_phys(ptr.as_ptr())?;
+        let phys = crate::io::iommu::common::tables::virt_ptr_to_phys(ptr.as_ptr())?;
 
         // Note: The allocator may have fallen back to a different node.
         // In a real NUMA-aware allocator, we would query the actual node.
@@ -467,7 +467,9 @@ impl PageTablePool {
         // Use the matching dealloc function for allocate_zeroed_on_node
         // Safety: `deallocate_on_node` is safe because PooledPt was created
         // by `alloc_fresh` which returns a matching pointer and layout.
-        crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
+        unsafe {
+            crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
+        }
     }
 
     // ========================================================================

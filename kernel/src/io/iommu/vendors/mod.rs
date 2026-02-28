@@ -1,7 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/mod.rs
+// kernel/src/io/iommu/vendors/mod.rs
 // ============================================================================
 
 pub(crate) mod amd;
-pub(crate) mod common;
 pub(crate) mod intel;
+pub(crate) mod shared;

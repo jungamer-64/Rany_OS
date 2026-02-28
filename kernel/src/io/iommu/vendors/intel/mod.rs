@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/mod.rs
+// kernel/src/io/iommu/vendors/intel/mod.rs
 // ============================================================================
 
 //! Intel VT-d backend driver (adapter over existing implementation).
@@ -22,14 +22,14 @@ use self::controller::iova::IovaManager;
 use self::controller::ir::InterruptRemapper;
 use self::controller::qi_ops::InvalidationOps;
 
-use crate::io::iommu::core::domain::IommuDomain;
+use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::runtime::backend::IommuBackend;
 // Generic registry for registering the driver
 use crate::io::iommu::runtime::registry::{init_driver, is_iommu_enabled};
 use crate::io::iommu::runtime::security::SecurityNotifier;
 
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;
-use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 
 // Intel-specific registry access
 use self::registry::get_iommu_registry;
@@ -89,7 +89,7 @@ fn allocate_iova_for_device(
     device: &DeviceId,
     size: u64,
 ) -> Result<u64, IommuError> {
-    use crate::io::iommu::core::interface::IommuHardwareContext;
+    use crate::io::iommu::common::interface::IommuHardwareContext;
     let mask = crate::io::iommu::api::get_device_dma_mask(device);
     match mask {
         Some(limit) => domain.allocate_iova_masked(size, 4096, limit),

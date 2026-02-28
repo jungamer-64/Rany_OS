@@ -1,11 +1,11 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/dma/domain_manager_impl.rs
+// kernel/src/io/iommu/vendors/intel/controller/dma/domain_manager_impl.rs
 // ============================================================================
 
 use super::*;
-use crate::io::iommu::core::domain::IommuDomain;
-use crate::io::iommu::backends::intel::controller::init::CapabilityManager;
-use crate::io::iommu::backends::intel::controller::iova::IovaManager;
+use crate::io::iommu::common::domain::IommuDomain;
+use crate::io::iommu::vendors::intel::controller::init::CapabilityManager;
+use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 
 
 impl DomainManager for IommuController {

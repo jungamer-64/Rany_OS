@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/domain/identity_mapping.rs
+// kernel/src/io/iommu/common/domain/identity_mapping.rs
 // ============================================================================
 
 use super::*;

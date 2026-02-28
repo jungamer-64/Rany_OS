@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/common/ats.rs
+// kernel/src/io/iommu/vendors/common/ats.rs
 // ============================================================================
 
 //! IOMMU ATS (Address Translation Services) and PRI (Page Request Interface)
@@ -107,7 +107,7 @@ impl PageRequestQueue {
         // Allocate contiguous physical frames for hardware requirements
         let phys = alloc_contiguous_frames(num_pages)?
             .as_u64();
-        let base = crate::io::iommu::core::tables::phys_to_virt_usize(phys);
+        let base = crate::io::iommu::common::tables::phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
         crate::security::dma::register_protected_range(phys, total_bytes as u64);
@@ -122,7 +122,7 @@ impl PageRequestQueue {
 
     /// Get the physical base address
     pub fn base_address(&self) -> u64 {
-        crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8).unwrap_or(0)
+        crate::io::iommu::common::tables::virt_ptr_to_phys(self.base as *const u8).unwrap_or(0)
     }
 
     /// Get the size (number of entries)
@@ -163,7 +163,7 @@ impl Drop for PageRequestQueue {
     fn drop(&mut self) {
         let total_bytes = self.size * core::mem::size_of::<PageRequestEntry>();
         let num_pages = (total_bytes + 4095) / 4096;
-        if let Ok(phys) = crate::io::iommu::core::tables::virt_ptr_to_phys(self.base as *const u8) {
+        if let Ok(phys) = crate::io::iommu::common::tables::virt_ptr_to_phys(self.base as *const u8) {
             crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
 
             // free contiguous region

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/domain/domain_impl.rs
+// kernel/src/io/iommu/common/domain/domain_impl.rs
 // ============================================================================
 
 use super::*;
@@ -27,7 +27,7 @@ impl IommuDomain {
         supports_1gb: bool,
         max_addr_bits: u8,
         domain_type: IommuDomainType,
-        page_table_pool: Arc<crate::io::iommu::core::dma::page_table_pool::PageTablePool>,
+        page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
     ) -> Self {
         // Allocate page table on the preferred NUMA node when possible.
@@ -71,7 +71,7 @@ impl IommuDomain {
         } else {
             (0x1_0000_0000, 0x8_0000_0000) // 4GB base, 32GB window
         };
-        let per_domain_iova = crate::io::iommu::core::dma::iova_allocator::IovaAllocator::new(default_iova_base, default_iova_size);
+        let per_domain_iova = crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(default_iova_base, default_iova_size);
 
         let new_domain = Self {
             id,
@@ -144,7 +144,7 @@ impl IommuDomain {
         supports_1gb: bool,
         max_addr_bits: u8,
         domain_type: IommuDomainType,
-        page_table_pool: Arc<crate::io::iommu::core::dma::page_table_pool::PageTablePool>,
+        page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
         iova_base: u64,
         iova_size: u64,
@@ -161,7 +161,7 @@ impl IommuDomain {
         );
 
         // Override with custom IOVA range
-        domain.per_domain_iova = crate::io::iommu::core::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size);
+        domain.per_domain_iova = crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size);
 
         log::debug!(
             "[IOMMU] Domain {} initialized with custom IOVA: base=0x{:x}, size=0x{:x}",
@@ -179,7 +179,7 @@ impl IommuDomain {
     /// All domains have their own IOVA allocator, eliminating lock contention.
     #[inline]
     pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
-        use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
+        use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
         
         // IovaAllocatorFast is internally lock-free for common paths
         self.per_domain_iova
@@ -292,9 +292,9 @@ impl IommuDomain {
 // Phase 7: IommuHardwareContext implementation for IommuDomain
 // ============================================================================
 
-impl crate::io::iommu::core::interface::IommuHardwareContext for IommuDomain {
+impl crate::io::iommu::common::interface::IommuHardwareContext for IommuDomain {
     fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
-        use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
+        use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
         
         // Map alignment to granularity
         let granularity = if alignment >= 1024 * 1024 * 1024 {
@@ -316,7 +316,7 @@ impl crate::io::iommu::core::interface::IommuHardwareContext for IommuDomain {
         _alignment: u64,
         mask: u64,
     ) -> Result<u64, IommuError> {
-        use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
+        use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
         
         self.per_domain_iova
             .allocate_with_limit(size, PageGranularity::Page4K, mask)
@@ -829,7 +829,7 @@ impl IommuDomain {
                 *pdp_entry = SlPte::new();
 
                 // Quarantine PD
-                if let Some(pd) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
+                if let Some(pd) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
                     if let Ok(mut pending) = self.pending_pt_release.lock() {
                         pending.push(pd);
                     }
@@ -841,7 +841,7 @@ impl IommuDomain {
                     *pml4_entry = SlPte::new();
 
                     // Quarantine PDP
-                    if let Some(pdp) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                    if let Some(pdp) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
                         if let Ok(mut pending) = self.pending_pt_release.lock() {
                             pending.push(pdp);
                         }
@@ -887,7 +887,7 @@ impl IommuDomain {
                 *pml4_entry = SlPte::new();
 
                 // Quarantine PDP
-                if let Some(pdp) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                if let Some(pdp) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
                     if let Ok(mut pending) = self.pending_pt_release.lock() {
                         pending.push(pdp);
                     }

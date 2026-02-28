@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/domain/map_ops.rs
+// kernel/src/io/iommu/common/domain/map_ops.rs
 // ============================================================================
 
 //! DMA handle mapping helpers
@@ -33,9 +33,9 @@ impl IommuDomain {
         &self,
         rref: crate::ipc::RRef<T>,
         context: &dyn IommuHardwareContext,
-        direction: crate::io::iommu::core::dma::handle::DmaDirection,
-    ) -> Result<crate::io::iommu::core::dma::handle::DmaHandle<T>, crate::io::iommu::core::dma::handle::MapError<T>> {
-        use crate::io::iommu::core::dma::handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
+        direction: crate::io::iommu::common::dma::handle::DmaDirection,
+    ) -> Result<crate::io::iommu::common::dma::handle::DmaHandle<T>, crate::io::iommu::common::dma::handle::MapError<T>> {
+        use crate::io::iommu::common::dma::handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
         use x86_64::VirtAddr;
 
         // Get physical address from RRef's virtual pointer
@@ -62,9 +62,9 @@ impl IommuDomain {
 
         // Determine permissions from direction
         let (read, write) = match direction {
-            crate::io::iommu::core::dma::handle::DmaDirection::ToDevice => (true, false),
-            crate::io::iommu::core::dma::handle::DmaDirection::FromDevice => (false, true),
-            crate::io::iommu::core::dma::handle::DmaDirection::Bidirectional => (true, true),
+            crate::io::iommu::common::dma::handle::DmaDirection::ToDevice => (true, false),
+            crate::io::iommu::common::dma::handle::DmaDirection::FromDevice => (false, true),
+            crate::io::iommu::common::dma::handle::DmaDirection::Bidirectional => (true, true),
         };
 
         // Create page table mappings

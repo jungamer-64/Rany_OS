@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Once;
 use x86_64::PhysAddr;
 
-use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::types::IommuError;
 use crate::io::iommu::api;
 
 /// Default panic DMA pool size (bytes).

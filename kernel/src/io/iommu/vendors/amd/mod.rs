@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/mod.rs
+// kernel/src/io/iommu/vendors/amd/mod.rs
 // ============================================================================
 
 //! AMD-Vi backend driver.
@@ -30,6 +30,8 @@ pub mod qemu_tests;
 pub use self::init::init_iommu_from_ivrs;
 #[allow(unused_imports)]
 pub use self::fault::{drain_deferred_faults, fault_handler_task, spawn_fault_handler_task};
+#[cfg(test)]
+pub(crate) use self::domain::map_ivmd_ranges;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -37,19 +39,19 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
 use crate::io::iommu::runtime::command::queue::CommandQueue;
-use crate::io::iommu::core::tables::phys_to_virt_usize;
+use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::mmio::{mmio_read_u64, mmio_write_u64};
-use crate::io::iommu::core::dma::iova_allocator::IovaAllocator;
+use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
 
-use crate::io::iommu::core::domain::IommuDomain as DomainState;
+use crate::io::iommu::common::domain::IommuDomain as DomainState;
 use crate::io::iommu::runtime::backend::IommuBackend;
-use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, init_driver};
-use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 
 use self::device_table::AmdDeviceTable;
 use self::domain::align_down;
@@ -566,7 +568,7 @@ impl AmdIommuDriver {
 // IommuHardwareContext trait impl
 // ---------------------------------------------------------------------------
 
-impl crate::io::iommu::core::interface::IommuHardwareContext for AmdIommuDriver {
+impl crate::io::iommu::common::interface::IommuHardwareContext for AmdIommuDriver {
     fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
         if alignment <= PAGE_SIZE_4K as u64 {
             return self
@@ -595,7 +597,7 @@ impl crate::io::iommu::core::interface::IommuHardwareContext for AmdIommuDriver 
         mask: u64,
     ) -> Result<u64, IommuError> {
         self.iova_allocator
-            .allocate_with_limit(size, crate::io::iommu::core::dma::iova_allocator::PageGranularity::Page4K, mask)
+            .allocate_with_limit(size, crate::io::iommu::common::dma::iova_allocator::PageGranularity::Page4K, mask)
             .ok_or(IommuError::OutOfIova)
     }
 

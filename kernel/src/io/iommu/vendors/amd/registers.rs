@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/registers.rs
+// kernel/src/io/iommu/vendors/amd/registers.rs
 // ============================================================================
 
 //! AMD-Vi MMIO register offsets and hardware constant definitions.

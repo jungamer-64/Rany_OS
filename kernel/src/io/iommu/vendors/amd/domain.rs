@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/domain.rs
+// kernel/src/io/iommu/vendors/amd/domain.rs
 // ============================================================================
 
 //! AMD-Vi domain management, device attach/detach, and DTE construction.
@@ -8,8 +8,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
-use crate::io::iommu::core::domain::IommuDomain as DomainState;
-use crate::io::iommu::core::tables::virt_ptr_to_phys;
+use crate::io::iommu::common::domain::IommuDomain as DomainState;
+use crate::io::iommu::common::tables::virt_ptr_to_phys;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
 
@@ -100,7 +100,7 @@ fn map_unity_segments(
     Ok(())
 }
 
-pub(super) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
+pub(crate) fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
     let page_size = PAGE_SIZE_4K;
     let exclusions = collect_exclusion_ranges(ranges, page_size);
 

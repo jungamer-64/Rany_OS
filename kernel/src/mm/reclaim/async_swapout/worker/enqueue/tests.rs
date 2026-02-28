@@ -1,7 +1,3 @@
-#[cfg(all(test, feature = "qemu-test-export"))]
-#[path = "../../qemu_tests.rs"]
-pub mod qemu_tests;
-
 // テスト: キューイング API とワーカの動作を検証するユニットテストを追加
 #[cfg(all(test, feature = "std"))]
 mod tests {

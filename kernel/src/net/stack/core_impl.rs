@@ -212,7 +212,7 @@ impl NetworkStack {
         let result = self.ipv4.process_with_time(data, current_time);
 
         match result {
-            Ipv4ProcessResult::Icmp(payload, src_ip, ttl) => {
+            Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl) => {
                 if payload.as_ptr() < data.as_ptr() || 
                    payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
                     self.stats.record_rx_error();
@@ -221,7 +221,7 @@ impl NetworkStack {
                 let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
                 let mut p = packet;
                 p.advance(offset);
-                self.process_icmp(payload, src_ip, ttl, current_time, p);
+                self.process_icmp(payload, src_ip, dst_ip, ttl, current_time, p);
             }
             Ipv4ProcessResult::Igmp(payload, src_ip, ttl) => {
                 self.process_igmp_data(payload, src_ip, ttl);
@@ -278,7 +278,7 @@ impl NetworkStack {
             match packet.protocol() {
                 IpProtocol::Icmp => {
                     // Process ICMP directly without PacketRef
-                    self.process_icmp_data(payload, src, packet.ttl(), current_time);
+                    self.process_icmp_data(payload, src, dst, packet.ttl(), current_time);
                 }
                 IpProtocol::Igmp => {
                     // Process IGMP for multicast group management
@@ -300,8 +300,23 @@ impl NetworkStack {
     }
 
     /// Process ICMP data (for reassembled packets)
-    pub(super) fn process_icmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, _ttl: u8, current_time: u64) {
+    pub(super) fn process_icmp_data(
+        &mut self,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        _ttl: u8,
+        current_time: u64,
+    ) {
         if !self.icmp_echo_enabled() {
+            return;
+        }
+
+        // Security: Do not respond to broadcast/multicast ICMP Echo Requests (Smurf attack prevention)
+        if dst_ip.is_broadcast()
+            || dst_ip.is_multicast()
+            || dst_ip == self.ipv4.config().broadcast_address()
+        {
             return;
         }
 

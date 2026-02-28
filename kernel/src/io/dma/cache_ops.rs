@@ -412,7 +412,7 @@ impl CoherentDmaBuffer {
 
         // IOMMUマッピング（デバイスID指定時かつIOMMU有効時）
         let (iova, iommu_device) = if let Some(dev) = device {
-            if crate::io::iommu::runtime::registry::is_iommu_enabled() {
+            if crate::io::iommu::api::is_iommu_enabled() {
                 // ページアライメントされたサイズでマッピング（4K境界）
                 let aligned_size = iommu_align_len(size).unwrap_or(size);
                 let (read, write) = match attributes.direction {
@@ -579,7 +579,7 @@ impl<'a> StreamingDmaMapping<'a> {
 
         // SECURITY: Even for streaming mapping, check against protected regions.
         if size > 0 {
-            if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
+            if let Err(e) = crate::io::iommu::api::validate_dma_region(phys, size) {
                 panic!("[DMA][SECURITY] StreamingDmaMapping overlaps protected region! phys={:#x}, size={}, error={:?}", phys, size, e);
             }
         }

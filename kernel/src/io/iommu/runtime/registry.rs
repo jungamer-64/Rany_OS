@@ -12,7 +12,7 @@ use spin::Mutex;
 
 use crate::io::iommu::runtime::backend::IommuBackend;
 #[allow(unused_imports)]
-pub use crate::io::iommu::backends::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
+pub use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
 
 // Global IOMMU driver protected by a spin mutex.  We hold the mutex only
 // briefly to set or read the option, and then return `'static` references by
@@ -48,7 +48,7 @@ pub fn init_driver(driver: Arc<IommuBackend>) {
 
 use alloc::collections::BTreeMap;
 use spin::RwLock;
-use crate::io::iommu::core::types::{DeviceId, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuError};
 
 // Per-device DMA address masks (inclusive).
 static DEVICE_DMA_MASKS: RwLock<BTreeMap<DeviceId, u64>> = RwLock::new(BTreeMap::new());

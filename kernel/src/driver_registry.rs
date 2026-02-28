@@ -725,6 +725,8 @@ pub(crate) fn prepare_driver_exports(
             crate::io::log::early_print("\n");
             let init_addr = init as usize;
             let init_virt = crate::mm::virt::higher_half::VirtAddr::new(init_addr as u64);
+            #[cfg(any(not(test), feature = "full_mm_tests"))]
+            {
             if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(init_virt) {
                 let pte_raw = pte.as_u64();
                 let pte_flags = pte.flags().as_u64();
@@ -749,6 +751,12 @@ pub(crate) fn prepare_driver_exports(
                 crate::io::log::early_print("\n");
             } else {
                 crate::io::log::early_print("[DRIVER] init pte lookup failed\n");
+            }
+            }
+            #[cfg(not(any(not(test), feature = "full_mm_tests")))]
+            {
+                let _ = init_virt;
+                crate::io::log::early_print("[DRIVER] init pte lookup skipped in test shim\n");
             }
             let res = init(kernel_api_v1() as *const KernelApiV1);
             crate::io::log::early_print("[DRIVER] prepare_exports: init done\n");

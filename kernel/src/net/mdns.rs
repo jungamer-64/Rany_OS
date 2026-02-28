@@ -369,6 +369,12 @@ impl MdnsService {
     /// Aレコードをキャッシュに追加・更新する。TTL=0のgoodbyeパケットはキャッシュ削除。
     /// 正常にキャッシュ更新された場合trueを返す。
     fn cache_a_record(&mut self, name_lower: &str, ip: Ipv4Address, ttl: u32, current_time: u64) -> bool {
+        // Security: mDNS is only for names ending in ".local" (RFC 6762)
+        if !name_lower.ends_with(".local") {
+            log::warn!("[NET] mDNS: Ignoring non-local name: {}", name_lower);
+            return false;
+        }
+
         if ttl == 0 {
             self.cache.remove(name_lower);
             return false;

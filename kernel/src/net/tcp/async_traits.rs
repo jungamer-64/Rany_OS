@@ -72,8 +72,8 @@ impl TcpStream {
     ///
     /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
     pub async fn dial(addr: SocketAddr) -> Result<Self, TcpError> {
-        // ローカルポートの割り当てとTCBの作成、初期SYNの送信は Global Stack に委譲
-        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, allocate_ephemeral_port());
+        // ローカルポートの割り当て（0を指定して自動割り当て）とTCBの作成、初期SYNの送信は Global Stack に委譲
+        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0);
         
         let stream = crate::net::stack::connect_tcp(local_addr, addr)?;
         
@@ -573,7 +573,7 @@ impl Future for ConnectTimeoutFuture {
 impl TcpStream {
     /// Connect with a timeout in microseconds
     pub async fn dial_timeout(addr: SocketAddr, timeout_us: u64) -> Result<Self, TcpError> {
-        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, allocate_ephemeral_port());
+        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0);
         let stream = crate::net::stack::connect_tcp(local_addr, addr)?;
         let start = crate::time::precise_time_nanos() / 1000;
         let tcb = stream.tcb.clone();
@@ -747,12 +747,3 @@ use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
 pub(crate) static NEXT_EPHEMERAL_PORT: AtomicU16 = AtomicU16::new(49152);
 pub(crate) static SEQ_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// エフェメラルポート割り当て
-pub(crate) fn allocate_ephemeral_port() -> u16 {
-    let port = NEXT_EPHEMERAL_PORT.fetch_add(1, Ordering::Relaxed);
-    if port >= 65535 {
-        NEXT_EPHEMERAL_PORT.store(49152, Ordering::Relaxed);
-    }
-    port
-}

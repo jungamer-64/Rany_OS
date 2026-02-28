@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/dma.rs
+// kernel/src/io/iommu/vendors/intel/controller/dma.rs
 // ============================================================================
 
 //! Domain and DMA Mapping Management
@@ -9,10 +9,10 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use crate::io::iommu::core::domain::{InvalidateFlags, InvalidateRequest, IommuDomain, IommuInvalidator};
-use crate::io::iommu::backends::intel::registry::get_iommu_registry;
-use crate::io::iommu::backends::intel::registers::ecap_bits;
-use crate::io::iommu::backends::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
+use crate::io::iommu::common::domain::{InvalidateFlags, InvalidateRequest, IommuDomain, IommuInvalidator};
+use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
+use crate::io::iommu::vendors::intel::registers::ecap_bits;
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 
 use super::{HardwareContext, IommuController};
@@ -171,7 +171,7 @@ impl IommuController {
         }
         let req = InvalidateRequest {
             domain_id,
-            kind: crate::io::iommu::core::domain::InvalidateKind::Pages { start_iova: iova, bytes: size },
+            kind: crate::io::iommu::common::domain::InvalidateKind::Pages { start_iova: iova, bytes: size },
             flags,
         };
         self.process_invalidations(&[req])

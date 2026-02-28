@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/cmd.rs
+// kernel/src/io/iommu/vendors/amd/cmd.rs
 // ============================================================================
 
 // AMD-Vi command buffer and IOTLB invalidation helpers (skeleton).

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/ivrs_utils.rs
+// kernel/src/io/iommu/vendors/amd/ivrs_utils.rs
 // ============================================================================
 
 //! Helpers for dealing with IVRS/IVHD/IVMD entries.

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/qemu_tests.rs
+// kernel/src/io/iommu/vendors/amd/qemu_tests.rs
 // ============================================================================
 
 //! AMD‑Vi deterministic smoke exports for `qemu-test-export`.
@@ -11,12 +11,12 @@ use hashbrown::HashMap;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
 use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
-use crate::io::iommu::core::domain::IommuDomain as DomainState;
-use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::common::domain::IommuDomain as DomainState;
+use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::runtime::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
-use crate::io::iommu::core::dma::iova_allocator::IovaAllocator;
+use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::sync::PoisonLock;
 
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;

@@ -7,11 +7,11 @@
 use alloc::sync::Arc;
 use x86_64::PhysAddr;
 
-use crate::io::iommu::backends::amd::AmdIommuDriver;
-use crate::io::iommu::core::domain::IommuDomain;
-use crate::io::iommu::backends::intel::IntelIommuDriver;
+use crate::io::iommu::vendors::amd::AmdIommuDriver;
+use crate::io::iommu::common::domain::IommuDomain;
+use crate::io::iommu::vendors::intel::IntelIommuDriver;
 use super::security::SecurityNotifier;
-use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 
 /// IOMMU backend implementation selected at init time.
 pub enum IommuBackend {

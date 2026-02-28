@@ -31,9 +31,9 @@ use core::task::{Context, Poll, Waker};
 use crate::ipc::rref::{RRef, RRefRawParts, RawPartsError};
 use crate::sync::IrqMutex;
 
-use crate::io::iommu::core::domain::InvalidateRequest;
-use crate::io::iommu::core::interface::IommuHardwareContext;
-use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::common::domain::InvalidateRequest;
+use crate::io::iommu::common::interface::IommuHardwareContext;
+use crate::io::iommu::types::IommuError;
 
 // ============================================================================
 // Constants

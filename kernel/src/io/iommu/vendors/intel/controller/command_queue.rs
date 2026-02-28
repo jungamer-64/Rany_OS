@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/command_queue.rs
+// kernel/src/io/iommu/vendors/intel/controller/command_queue.rs
 // ============================================================================
 
 //! Support routines for the IOMMU controller command queue.
@@ -20,7 +20,7 @@ impl IommuController {
     ) -> Result<(), ()> {
         if let Some(ref cq) = self.command_queue {
             return cq.submit_sync_with_worker(kind, |k| {
-                use crate::io::iommu::backends::intel::controller::dma::DomainManager;
+                use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
                 self.handle_command_queue_entry(k)
             });
         }

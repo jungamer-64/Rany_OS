@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/common/posted_interrupt.rs
+// kernel/src/io/iommu/vendors/common/posted_interrupt.rs
 // ============================================================================
 
 //! Posted Interrupt structures and operations
@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU64;
 use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
-use crate::io::iommu::core::tables::{phys_to_virt_usize, virt_ptr_to_phys};
+use crate::io::iommu::common::tables::{phys_to_virt_usize, virt_ptr_to_phys};
 
 // ============================================================================
 // Posted Interrupt Descriptor (PID)

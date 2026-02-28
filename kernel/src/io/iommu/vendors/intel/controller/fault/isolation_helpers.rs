@@ -1,9 +1,9 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/fault/isolation_helpers.rs
+// kernel/src/io/iommu/vendors/intel/controller/fault/isolation_helpers.rs
 // ============================================================================
 
 use super::*;
-use crate::io::iommu::core::types::DeviceId;
+use crate::io::iommu::types::DeviceId;
 
 
 // ============================================================================

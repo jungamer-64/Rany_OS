@@ -471,8 +471,26 @@ impl NetworkStack {
     }
 
     /// Process ICMP packet
-    pub(super) fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, _ttl: u8, current_time: u64, _packet: PacketRef) {
+    pub(super) fn process_icmp(
+        &mut self,
+        data: &[u8],
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        _ttl: u8,
+        current_time: u64,
+        _packet: PacketRef,
+    ) {
         if !self.icmp_echo_enabled() {
+            return;
+        }
+
+        // Security: Do not respond to broadcast/multicast ICMP Echo Requests (Smurf attack prevention)
+        // RFC 1122 specifies that a host SHOULD NOT respond to ICMP echo requests sent to
+        // a broadcast or multicast address.
+        if dst_ip.is_broadcast()
+            || dst_ip.is_multicast()
+            || dst_ip == self.ipv4.config().broadcast_address()
+        {
             return;
         }
 
@@ -1085,51 +1103,69 @@ impl NetworkStack {
     }
 
     /// Connect to a remote TCP address
-    pub fn connect_tcp(&mut self, local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
+    pub fn connect_tcp(&mut self, mut local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
+        // Resolve local source address when unspecified.
+        if local_addr.is_ipv4() {
+            if local_addr.as_ipv4() == Some(crate::net::tcp::Ipv4Addr::UNSPECIFIED) {
+                let [a, b, c, d] = self.config.ipv4.address.octets();
+                local_addr = TcpSocketAddr::new(crate::net::tcp::Ipv4Addr::new(a, b, c, d), local_addr.port());
+            }
+        } else if local_addr.as_ipv6().is_unspecified() {
+            if let Some(ipv6_cfg) = self.config.ipv6 {
+                let src_v6 = ipv6_cfg.global.unwrap_or(ipv6_cfg.link_local);
+                if !src_v6.is_unspecified() {
+                    local_addr = TcpSocketAddr::new_v6(src_v6, local_addr.port());
+                }
+            }
+        }
+
+        // Allocate ephemeral port if not specified
+        if local_addr.port() == 0 {
+            let port = self.tcp.allocate_ephemeral_port(&local_addr, &remote_addr);
+            if port == 0 {
+                return Err(TcpError::BufferFull); // Or a better error for port exhaustion
+            }
+            local_addr = if local_addr.is_ipv4() {
+                TcpSocketAddr::new(
+                    local_addr.as_ipv4().unwrap_or(crate::net::tcp::Ipv4Addr::UNSPECIFIED),
+                    port,
+                )
+            } else {
+                TcpSocketAddr::new_v6(local_addr.as_ipv6(), port)
+            };
+        }
+
         let stream = self.tcp.connect(local_addr, remote_addr)?;
         
         // Send initial SYN
         let initial_seq = stream.initial_seq()?;
         
-        // crate::net::tcp::send_syn_packet(local_addr, remote_addr, initial_seq);
-        // DEADLOCK AVOIDANCE: send_syn_packet locks NETWORK_STACK, but we already hold it.
-        // We must construct and send manually.
+        // Construct and send SYN manually to avoid deadlock on NETWORK_STACK lock
         {
-            let mut buffer = [0u8; 64]; // Minimum 20 bytes header, 64 is safe
+            let mut buffer = [0u8; 64]; 
             let header_len = 20;
-            let total_len = header_len; // No payload for SYN
+            let total_len = header_len; 
             
             // Construct TCP header
-            // Source Port
             buffer[0..2].copy_from_slice(&local_addr.port().to_be_bytes());
-            // Dest Port
             buffer[2..4].copy_from_slice(&remote_addr.port().to_be_bytes());
-            // Seq
             buffer[4..8].copy_from_slice(&initial_seq.to_be_bytes());
-            // Ack (0 for SYN)
             buffer[8..12].fill(0);
-            // Flags & Offset (Header Length 5 dwords = 20 bytes)
-            // SYN = 0x02
-            let flags = 0x02u16; 
+            let flags = 0x02u16; // SYN
             let offset_flags = (5 << 12) | flags;
             buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
-            // Window (initial window 65535)
             buffer[14..16].copy_from_slice(&65535u16.to_be_bytes());
-            // Checksum (zero for now)
             buffer[16..18].fill(0);
-            // Urgent Pointer
             buffer[18..20].fill(0);
             
-             // Calculate checksum and send (support IPv4 & IPv6)
+            // Calculate checksum and send (using the resolved local_addr)
             let sent = if let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local_addr, remote_addr) {
                 crate::net::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
                     local_v4.octets(),
                     remote_v4.octets(),
                 );
-                let src_ip_out = Ipv4Address::new(local_v4.octets());
-                let dst_ip_out = Ipv4Address::new(remote_v4.octets());
-                self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
+                self.send_tcp(Ipv4Address::new(local_v4.octets()), Ipv4Address::new(remote_v4.octets()), &buffer[..total_len])
             } else if tcp_is_native_v6_pair(local_addr, remote_addr) {
                 let src_v6 = local_addr.as_ipv6();
                 let dst_v6 = remote_addr.as_ipv6();
@@ -1139,20 +1175,12 @@ impl NetworkStack {
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
                 self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
             } else {
-                log::warn!(
-                    "[NET] mixed TCP family dropped in connect_tcp SYN path: {} -> {}",
-                    local_addr,
-                    remote_addr
-                );
                 false
             };
 
             let now = self.current_time();
             if sent {
-                // Record that a SYN was sent so TCB outstanding bytes and snd_nxt are updated
                 self.tcp.record_sent_packet(local_addr, remote_addr, initial_seq, TcpHeader::FLAG_SYN, &[], now);
-            } else {
-                log::info!("[NET] SYN send failed (ARP unresolved) - will retry");
             }
         }
 

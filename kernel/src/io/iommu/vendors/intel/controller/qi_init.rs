@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/qi_init.rs
+// kernel/src/io/iommu/vendors/intel/controller/qi_init.rs
 // ============================================================================
 
 //! Queued Invalidation Initialization Methods
@@ -12,8 +12,8 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::backends::intel::qi::InvalidationQueue;
-use crate::io::iommu::backends::intel::registers::{gcmd_bits, gsts_bits, regs};
+use crate::io::iommu::vendors::intel::qi::InvalidationQueue;
+use crate::io::iommu::vendors::intel::registers::{gcmd_bits, gsts_bits, regs};
 
 pub trait QIManager {
     /// Initialize the Invalidation Queue

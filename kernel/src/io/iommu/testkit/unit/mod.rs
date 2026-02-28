@@ -1,35 +1,36 @@
 // ============================================================================
-// kernel/src/io/iommu/tests/mod.rs
+// kernel/src/io/iommu/testkit/unit/mod.rs
 // ============================================================================
 
 //! IOMMU Unit Tests
 //!
 //! Tests for IOMMU controller functionality, domain management, and invalidation.
 
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu;
-
 use crate::io::iommu::runtime::config::IommuConfig;
-use crate::io::iommu::core::domain::IommuDomain;
+use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
+use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::runtime::fault_log::FaultRecord;
-use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry};
-use crate::io::iommu::core::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
-use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::backends::intel::controller::IommuController;
-use crate::io::iommu::backends::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
+use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::vendors::intel::controller::IommuController;
+use crate::io::iommu::vendors::intel::controller::fault::FaultHandler;
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
+use alloc::boxed::Box;
 use alloc::sync::Arc;
-use crate::io::iommu::backends::intel::controller::dma::DomainManager;
-use crate::io::iommu::backends::intel::controller::fault::{
+use alloc::vec::Vec;
+use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
+use crate::io::iommu::vendors::intel::controller::fault::{
     drain_deferred_faults_with_controller, push_deferred_fault_for_test, RawFaultEvent,
 };
-use crate::io::iommu::backends::intel::controller::iova::IovaManager;
-use crate::io::iommu::backends::intel::controller::ir::InterruptRemapper;
-use crate::io::iommu::backends::intel::controller::pri::PageRequestManager;
-use crate::io::iommu::backends::intel::controller::qi_init::QIManager;
-use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
-use crate::io::iommu::backends::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
-use crate::io::iommu::backends::intel::registers::ecap_bits;
+use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
+use crate::io::iommu::vendors::intel::controller::ir::InterruptRemapper;
+use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
+use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
+use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
+use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
+use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -102,10 +103,12 @@ fn test_invalidation_queue_uses_physical_addresses_for_hw() {
     let status_virt = queue.status_virtual_address();
     let expected_status_phys = virt_ptr_to_phys(status_virt as *const u8)
         .expect("failed to translate status virtual address");
-    let wait = queue.wait_entry();
+    let (wait, expected_seq) = queue.wait_entry();
     assert_eq!(wait.hi, expected_status_phys);
     assert_eq!(wait.hi & 0xFFF, 0);
-    assert_eq!(queue.submit_wait(), status_virt);
+    let (submitted_status, submitted_seq) = queue.submit_wait();
+    assert_eq!(submitted_status, status_virt);
+    assert_eq!(submitted_seq, expected_seq.wrapping_add(1));
 }
 
 unsafe fn is_4k_mapped(domain: &IommuDomain, iova: u64, format: PteFormat) -> bool {
@@ -397,6 +400,7 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
 
 #[test_case]
 fn test_scalable_mode_pasid0_fault_resolution() {
+    #[derive(Debug)]
     struct TestNotifier {
         seen: AtomicBool,
         domain_id: AtomicU32,
@@ -488,7 +492,8 @@ fn test_scalable_mode_pasid0_fault_resolution() {
         .remove(&device);
 
     let notifier = Arc::new(TestNotifier::new());
-    ctrl.set_security_notifier(Arc::clone(&notifier));
+    let notifier_dyn: Arc<dyn SecurityNotifier> = notifier.clone();
+    ctrl.set_security_notifier(notifier_dyn);
 
     push_deferred_fault_for_test(RawFaultEvent {
         source_id: device.requester_id(),
@@ -709,6 +714,7 @@ fn test_map_for_dma_alloc_non_identity() {
     ctrl.free_iova(iova, size).expect("free failed");
 }
 
+#[cfg(feature = "std")]
 #[test_case]
 fn test_cmdqueue_map_unmap_with_domain() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
@@ -810,6 +816,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
     assert!(domain_arc.mapping(0x1000).is_none());
 }
 
+#[cfg(feature = "std")]
 #[test_case]
 fn test_map_for_device_async_and_unmap() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
@@ -831,7 +838,7 @@ fn test_map_for_device_async_and_unmap() {
         .init_iova(0x1000, 0x1_0000_0000 - 0x1000)
         .expect("init_iova");
     if get_iommu_driver().is_none() {
-        crate::io::iommu::backends::intel::IntelIommuDriver::register_driver();
+        crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
     }
 
     // Obtain controller Arc for worker
@@ -954,7 +961,7 @@ fn test_map_for_device_respects_dma_mask() {
     };
 
     if get_iommu_driver().is_none() {
-        crate::io::iommu::backends::intel::IntelIommuDriver::register_driver();
+        crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
     }
 
     let _ = controller.init_iova(0x1000, 0x1_0000_0000 - 0x1000);
@@ -1234,11 +1241,11 @@ fn test_page_table_scope_commit_preserves_counts() {
     let scope_phys = scope.phys();
     let parent_phys = 0xDEADBEEF;
 
-    crate::io::iommu::core::dma::page_table_pool::register_page_table(scope_phys, 0, 0);
+    crate::io::iommu::common::dma::page_table_pool::register_page_table(scope_phys, 0, 0);
     for _ in 0..42 {
-        crate::io::iommu::core::dma::page_table_pool::inc_ref(scope_phys);
+        crate::io::iommu::common::dma::page_table_pool::inc_ref(scope_phys);
     }
-    crate::io::iommu::core::dma::page_table_pool::register_page_table(parent_phys, 0, 0);
+    crate::io::iommu::common::dma::page_table_pool::register_page_table(parent_phys, 0, 0);
 
     // Create a fake parent entry and attach
     let mut parent_entry = SlPte::new();
@@ -1252,11 +1259,11 @@ fn test_page_table_scope_commit_preserves_counts() {
     // Commit should not overwrite existing count for scope.phys(), but should increment parent
     scope.commit();
 
-    assert_eq!(crate::io::iommu::core::dma::page_table_pool::get_ref_count(scope_phys), 42);
-    assert_eq!(crate::io::iommu::core::dma::page_table_pool::get_ref_count(parent_phys), 1);
+    assert_eq!(crate::io::iommu::common::dma::page_table_pool::get_ref_count(scope_phys), 42);
+    assert_eq!(crate::io::iommu::common::dma::page_table_pool::get_ref_count(parent_phys), 1);
 
-    crate::io::iommu::core::dma::page_table_pool::unregister_page_table(parent_phys);
-    crate::io::iommu::core::dma::page_table_pool::unregister_page_table(scope_phys);
+    crate::io::iommu::common::dma::page_table_pool::unregister_page_table(parent_phys);
+    crate::io::iommu::common::dma::page_table_pool::unregister_page_table(scope_phys);
 }
 
 #[test_case]
@@ -1340,7 +1347,7 @@ impl crate::io::iommu::runtime::security::SecurityNotifier for MockSecurityNotif
 
 #[test_case]
 fn test_security_notifier_registration() {
-    let ctrl = crate::io::iommu::backends::intel::controller::IommuController::new(0x0, 0);
+    let ctrl = crate::io::iommu::vendors::intel::controller::IommuController::new(0x0, 0);
     let notifier = Arc::new(MockSecurityNotifier::new());
 
     // First registration should succeed
@@ -1353,10 +1360,10 @@ fn test_security_notifier_registration() {
 
 #[test_case]
 fn test_api_security_notifier_registration() {
-    use crate::io::iommu::backends::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
+    use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
     use crate::io::iommu::runtime::registry::get_iommu_driver;
     use crate::io::iommu::runtime::config::IommuConfig;
-    use crate::io::iommu::backends::intel::controller::IommuController;
+    use crate::io::iommu::vendors::intel::controller::IommuController;
 
     if get_iommu_registry().is_none() {
         let ctrl = IommuController::new(0x0, 0);
@@ -1366,7 +1373,7 @@ fn test_api_security_notifier_registration() {
     }
 
     if get_iommu_driver().is_none() {
-        crate::io::iommu::backends::intel::IntelIommuDriver::register_driver();
+        crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
     }
 
     let notifier = Arc::new(MockSecurityNotifier::new());
@@ -1498,7 +1505,7 @@ fn test_domain_type_not_passthrough() {
     // Domain should be Translated type for proper IOMMU protection
     match domain.domain_type() {
         IommuDomainType::Translated => { /* OK */ }
-        IommuDomainType::PassThrough => {
+        IommuDomainType::Passthrough => {
             panic!("Domain should not use PassThrough type in production");
         }
     }
@@ -1558,7 +1565,7 @@ fn test_mapping_iova_phys_distinct() {
 
 #[test_case]
 fn test_ats_enable_requires_qi() {
-    let ctrl = IommuController::new(0x0, 0);
+    let mut ctrl = IommuController::new(0x0, 0);
     let device = DeviceId::new(0, 0, 1, 0);
     
     // 1. Try to enable ATS without QI enabled
@@ -1614,7 +1621,7 @@ fn test_iova_quarantine_and_epoch_drain() {
 
 #[test_case]
 fn test_invalidate_request_ats_flag() {
-    use crate::io::iommu::core::domain::{InvalidateRequest, InvalidateFlags};
+    use crate::io::iommu::common::domain::{InvalidateRequest, InvalidateFlags};
     
     let req = InvalidateRequest::pages(1, 0x1000, 0x1000).with_ats();
     assert!(req.flags.contains(InvalidateFlags::ATS_AWARE));

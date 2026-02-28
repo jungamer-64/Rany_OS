@@ -90,7 +90,7 @@ pub use port::AhciPort;
 
 pub fn init_from_pci(
     base_virt: u64,
-    device_id: Option<crate::io::iommu::core::types::DeviceId>,
+    device_id: Option<crate::io::iommu::types::DeviceId>,
 ) -> AhciResult<Arc<Mutex<AhciController>>> {
     let packed_id = device_id.map(|d| {
         ((d.segment as u64) << 32)

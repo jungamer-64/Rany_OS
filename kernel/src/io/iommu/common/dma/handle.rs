@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/dma/handle.rs
+// kernel/src/io/iommu/common/dma/handle.rs
 // ============================================================================
 
 //! DMA Handle - IOMMU-mapped buffer with ownership tracking
@@ -46,7 +46,7 @@
 //!     crate::mm::types::PAGE_SIZE_4K,
 //! )
 //! .expect("alloc rref slice");
-//! let handle = crate::io::iommu::core::dma::handle::DmaHandle::map_rref_slice(
+//! let handle = crate::io::iommu::common::dma::handle::DmaHandle::map_rref_slice(
 //!     rref,
 //!     0,
 //!     DmaDirection::ToDevice,
@@ -62,7 +62,7 @@
 use core::marker::PhantomData;
 
 // use super::IommuController;
-use crate::io::iommu::core::types::{DeviceId, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
 
 // ============================================================================
@@ -397,19 +397,29 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
             // Attempt to enqueue to zombie queue for async cleanup
             // We take the RRef only if enqueue succeeds
             let success = if let Some(rref) = self.rref.take() {
-                let raw_parts = rref.into_raw_parts();
-                if crate::io::iommu::runtime::zombie::enqueue_zombie(
-                    self.iova,
-                    self.size,
-                    self.domain_id,
-                    device_id,
-                    mapping_kind_encoded,
-                    Some(raw_parts),
-                ) {
-                    true
-                } else {
-                    // Failed to enqueue - put RRef back for fallback or leak
-                    self.rref = Some(unsafe { RRef::from_raw_parts_for_zombie(raw_parts) });
+                #[cfg(not(test))]
+                {
+                    let raw_parts = rref.into_raw_parts();
+                    if crate::io::iommu::runtime::zombie::enqueue_zombie(
+                        self.iova,
+                        self.size,
+                        self.domain_id,
+                        device_id,
+                        mapping_kind_encoded,
+                        Some(raw_parts),
+                    ) {
+                        true
+                    } else {
+                        // Failed to enqueue - put RRef back for fallback or leak
+                        self.rref = Some(unsafe { RRef::from_raw_parts_for_zombie(raw_parts) });
+                        false
+                    }
+                }
+                #[cfg(test)]
+                {
+                    // The test shim uses a simplified RRef representation.
+                    // Keep ownership and use the sync fallback path below.
+                    self.rref = Some(rref);
                     false
                 }
             } else {
@@ -734,10 +744,10 @@ impl<T> DmaHandle<T> {
     ///     crate::ipc::DomainId::KERNEL,
     ///     DmaPage([0u8; 4096]),
     /// );
-    /// let handle = crate::io::iommu::core::dma::handle::DmaHandle::map_rref(
+    /// let handle = crate::io::iommu::common::dma::handle::DmaHandle::map_rref(
     ///     rref,
     ///     0,
-    ///     crate::io::iommu::core::dma::handle::DmaDirection::ToDevice,
+    ///     crate::io::iommu::common::dma::handle::DmaDirection::ToDevice,
     /// )?;
     /// // Use handle.iova() for device programming
     /// let returned_rref = handle.unmap()?;

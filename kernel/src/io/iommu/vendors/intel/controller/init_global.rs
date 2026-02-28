@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/init_global.rs
+// kernel/src/io/iommu/vendors/intel/controller/init_global.rs
 // ============================================================================
 
 //! Global Initialization (from ACPI)
@@ -11,7 +11,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::io::iommu::runtime::config::{IommuConfig, ReservedMemoryRegion};
-use crate::io::iommu::core::tables::phys_to_virt_usize;
+use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::types::{DeviceId, IommuError, IommuDomainType};
 // Intel-specific imports
 use super::super::registry::{IommuRegistry, init_registry};

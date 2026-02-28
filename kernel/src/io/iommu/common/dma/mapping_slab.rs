@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/dma/mapping_slab.rs
+// kernel/src/io/iommu/common/dma/mapping_slab.rs
 // ============================================================================
 
 //! Allocation-Free DMA Mapping Management
@@ -37,7 +37,7 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::io::iommu::core::types::DmaMapping;
+use crate::io::iommu::types::DmaMapping;
 
 // ============================================================================
 // Configuration

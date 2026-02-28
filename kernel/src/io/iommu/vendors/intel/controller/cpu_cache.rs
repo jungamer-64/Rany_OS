@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/cpu_cache.rs
+// kernel/src/io/iommu/vendors/intel/controller/cpu_cache.rs
 // ============================================================================
 
 //! Per-CPU Domain Mapping Cache Helpers

@@ -83,7 +83,7 @@ impl DeviceDmaContext {
             crate::io::iommu::api::map_rref_for_device(rref, &device, iommu_direction)
         } else {
             let domain_id = self.domain_id.unwrap_or(0);
-            crate::io::iommu::core::dma::handle::DmaHandle::map_rref(rref, domain_id, iommu_direction)
+            crate::io::iommu::api::map_rref_for_domain(rref, domain_id, iommu_direction)
         }
     }
 
@@ -100,7 +100,7 @@ impl DeviceDmaContext {
             crate::io::iommu::api::map_rref_slice_for_device(rref, &device, iommu_direction)
         } else {
             let domain_id = self.domain_id.unwrap_or(0);
-            crate::io::iommu::core::dma::handle::DmaHandle::map_rref_slice(
+            crate::io::iommu::api::map_rref_slice_for_domain(
                 rref,
                 domain_id,
                 iommu_direction,
@@ -332,4 +332,3 @@ pub fn cache_line_size() -> usize {
 #[cfg(test)]
 #[path = "../../tests.rs"]
 mod tests;
-

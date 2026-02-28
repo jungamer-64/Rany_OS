@@ -21,13 +21,6 @@ pub(crate) fn generate_initial_seq() -> u32 {
     time_component.wrapping_add(counter).wrapping_add(secret)
 }
 
-/// ポートが使用中か確認
-pub(crate) fn is_port_in_use(_port: u16) -> bool {
-    // 現状はシングルトンTcpProcessorがないため、常にfalseを返す
-    // 将来的にはグローバルTcpProcessorの接続リストをチェック
-    false
-}
-
 // ============================================================================
 // TCP送信ヘルパー関数
 // ============================================================================
@@ -655,4 +648,6 @@ pub struct TcpProcessor {
     connections: BTreeMap<(SocketAddr, SocketAddr), Arc<PoisonLock<TcpControlBlock>>>,
     /// Listening sockets indexed by local address
     listeners: BTreeMap<SocketAddr, Arc<PoisonLock<TcpControlBlock>>>,
+    /// Count of semi-open connections (SYN-RECEIVED state) for DoS protection
+    semi_open_count: usize,
 }

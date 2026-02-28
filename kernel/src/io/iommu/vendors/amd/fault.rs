@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/fault.rs
+// kernel/src/io/iommu/vendors/amd/fault.rs
 // ============================================================================
 
 //! AMD-Vi fault event processing, deferred fault queue, and async fault handler.
@@ -8,7 +8,7 @@ use core::future::poll_fn;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::Poll;
 
-use crate::io::iommu::core::tables::phys_to_virt_usize;
+use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 use crate::io::iommu::runtime::security::SecurityEvent;
 use crate::io::iommu::types::IommuError;

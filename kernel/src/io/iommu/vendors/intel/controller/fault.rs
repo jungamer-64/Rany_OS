@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/fault.rs
+// kernel/src/io/iommu/vendors/intel/controller/fault.rs
 // ============================================================================
 
 //! Fault Handling Methods
@@ -17,8 +17,8 @@
 use super::dma::DomainManager;
 use super::{HardwareContext, IommuController};
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
-use crate::io::iommu::backends::intel::registers::{ecap_bits, fsts_bits, regs};
-use crate::io::iommu::backends::intel::tables::{ContextEntry, ScalableContextEntry};
+use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits, regs};
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
 use crate::io::iommu::runtime::fault_log::{FaultLog, FaultRecord};
 use crate::io::iommu::types::{DeviceId, IommuError};
 use core::cell::UnsafeCell;

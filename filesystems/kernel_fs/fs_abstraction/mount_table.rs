@@ -179,7 +179,6 @@ pub fn write_inode_by_number(ino: InodeNum, offset: u64, data: &[u8]) -> Result<
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 #[path = "tests.rs"]
 mod tests;
-

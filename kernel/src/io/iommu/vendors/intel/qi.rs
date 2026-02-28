@@ -1,10 +1,10 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/qi.rs
+// kernel/src/io/iommu/vendors/intel/qi.rs
 // ============================================================================
 
 use alloc::alloc::Layout;
 use alloc::vec::Vec;
-use crate::io::iommu::core::tables::virt_ptr_to_phys;
+use crate::io::iommu::common::tables::virt_ptr_to_phys;
 
 /// Mandatory for x2APIC interrupt remapping
 #[repr(C, align(16))]

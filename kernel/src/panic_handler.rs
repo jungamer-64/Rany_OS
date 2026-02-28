@@ -171,7 +171,7 @@ fn panic_output_location(info: &PanicInfo, message_slice: &[u8]) {
 /// Save IOMMU DMA panic record if message is valid UTF-8 (lock-free).
 fn panic_save_iommu_record(message_slice: &[u8]) {
     if let Ok(s) = core::str::from_utf8(message_slice) {
-        if let Some(info) = crate::io::iommu::runtime::panic::write_panic_record(s) {
+        if let Some(info) = crate::io::iommu::api::write_panic_record(s) {
             crate::io::log::early_print("[PANIC] DMA record saved\n");
             crate::io::log::early_print("DMA iova=0x");
             crate::io::log::early_print_hex(info.iova);

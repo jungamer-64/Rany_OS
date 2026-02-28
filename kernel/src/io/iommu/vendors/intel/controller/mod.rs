@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/mod.rs
+// kernel/src/io/iommu/vendors/intel/controller/mod.rs
 // ============================================================================
 
 //! Intel IOMMU Controller Implementation
@@ -35,17 +35,17 @@ use hashbrown::HashMap;
 use self::iova::IovaManager;
 use self::ir::InterruptRemapTable;
 use self::init::CapabilityManager;
-use crate::io::iommu::backends::common::{PageRequestQueue, PostedInterruptPool};
-use crate::io::iommu::core::domain::IommuDomain;
+use crate::io::iommu::vendors::shared::{PageRequestQueue, PostedInterruptPool};
+use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::runtime::fault_log::FaultLog;
-use crate::io::iommu::backends::intel::qi::{InvalidationQueue, QiStats};
-use crate::io::iommu::backends::intel::registers::{gcmd_bits, gsts_bits, regs, rtaddr_bits};
-use crate::io::iommu::backends::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
-use crate::io::iommu::core::interface::IommuHardwareContext;
-use crate::io::iommu::core::dma::iova_allocator::IovaAllocator;
-use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, QiStats};
+use crate::io::iommu::vendors::intel::registers::{gcmd_bits, gsts_bits, regs, rtaddr_bits};
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
+use crate::io::iommu::common::interface::IommuHardwareContext;
+use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
+use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
-use crate::io::iommu::core::tables::HardwareTable;
+use crate::io::iommu::common::tables::HardwareTable;
 use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
 
 use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
@@ -267,14 +267,14 @@ impl IommuController {
         if self.cap == 0 {
             return 0;
         }
-        ((self.cap & crate::io::iommu::backends::intel::registers::cap_bits::CAP_SAGAW_MASK) >> 8) as u8
+        ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_SAGAW_MASK) >> 8) as u8
     }
 
     fn max_guest_address_width(&self) -> u8 {
         if self.cap == 0 {
             return 48;
         }
-        let raw = ((self.cap & crate::io::iommu::backends::intel::registers::cap_bits::CAP_MGAW_MASK) >> 16)
+        let raw = ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_MGAW_MASK) >> 16)
             as u8;
         raw.saturating_add(1).clamp(1, 64)
     }
@@ -375,7 +375,7 @@ impl IommuController {
 
         self.write_gcmd_with_state(gcmd_bits::GCMD_SRTP);
 
-        use crate::io::iommu::backends::intel::controller::utils::IommuUtils;
+        use crate::io::iommu::vendors::intel::controller::utils::IommuUtils;
         self.wait_for_condition(
             || (self.read32(regs::GSTS) & gsts_bits::GSTS_RTPS) != 0,
             100_000,
@@ -409,7 +409,7 @@ impl IommuController {
 
     /// Get IOTLB register offset from ECAP
     fn iotlb_reg_offset(&self) -> u64 {
-        use crate::io::iommu::backends::intel::registers::ecap_bits;
+        use crate::io::iommu::vendors::intel::registers::ecap_bits;
         ((self.ecap & ecap_bits::ECAP_IRO_MASK) >> 8) * 16
     }
 
@@ -420,7 +420,7 @@ impl IommuController {
             return;
         }
 
-        use crate::io::iommu::backends::intel::registers::{iotlb_bits, iotlb_regs};
+        use crate::io::iommu::vendors::intel::registers::{iotlb_bits, iotlb_regs};
         let offset = self.iotlb_reg_offset();
 
         let cmd = iotlb_bits::IOTLB_IIRG_DOMAIN
@@ -447,7 +447,7 @@ impl IommuController {
             return;
         }
 
-        use crate::io::iommu::backends::intel::registers::{iotlb_bits, iotlb_regs};
+        use crate::io::iommu::vendors::intel::registers::{iotlb_bits, iotlb_regs};
         let offset = self.iotlb_reg_offset();
 
         let cmd = iotlb_bits::IOTLB_IIRG_GLOBAL
@@ -471,7 +471,7 @@ impl IommuController {
     ///
     /// Used for emergency device isolation.
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
-        use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
+        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
         
         // Advance epoch before global invalidation
         let epoch = if let Ok(guard) = self.iova_allocator.lock() {
@@ -508,7 +508,7 @@ impl IommuController {
     ///
     /// Used for emergency device isolation.
     pub fn invalidate_context_global_sync(&self) -> Result<(), IommuError> {
-        use crate::io::iommu::backends::intel::controller::qi_ops::InvalidationOps;
+        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 
         // Advance epoch
         let epoch = if let Ok(guard) = self.iova_allocator.lock() {
@@ -549,7 +549,7 @@ impl IommuController {
             return;
         }
 
-        use crate::io::iommu::backends::intel::registers::ccmd_bits;
+        use crate::io::iommu::vendors::intel::registers::ccmd_bits;
         
         // Global context invalidation command
         let cmd: u64 = ccmd_bits::CCMD_ICC
@@ -579,7 +579,7 @@ impl IommuController {
         // Enable Translation (TE) while preserving already-enabled control bits.
         self.write_gcmd_with_state(gcmd_bits::GCMD_TE);
 
-        use crate::io::iommu::backends::intel::controller::utils::IommuUtils;
+        use crate::io::iommu::vendors::intel::controller::utils::IommuUtils;
         self.wait_for_condition(
             || (self.read32(regs::GSTS) & gsts_bits::GSTS_TES) != 0,
             100_000,

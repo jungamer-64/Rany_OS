@@ -72,6 +72,8 @@ const NAT_GC_EVERY_RX_MASK: u64 = 0xFF;
 struct NatEntry {
     protocol: crate::net::ipv4::IpProtocol,
     external_addr: super::Ipv4Address,
+    remote_addr: super::Ipv4Address,
+    remote_port: u16,
     egress_if: super::NetIfId,
     internal_addr: super::Ipv4Address,
     internal_port: u16,
@@ -91,6 +93,8 @@ fn nat_translate_out(
     protocol: crate::net::ipv4::IpProtocol,
     internal_ip: super::Ipv4Address,
     internal_port: u16,
+    remote_ip: super::Ipv4Address,
+    remote_port: u16,
     out_if_id: super::NetIfId,
 ) -> (super::Ipv4Address, u16) {
     // determine external IP from interface config
@@ -103,13 +107,16 @@ fn nat_translate_out(
         }
     }
 
-    // look for existing mapping (by internal_addr+port)
+    // look for existing mapping (by internal_addr+port + remote_addr+port)
+    // This implements Symmetric NAT for better security.
     {
         let table = NAT_TABLE.read();
         for (&ext_port, entry) in table.iter() {
             if entry.protocol == protocol
                 && entry.internal_addr == internal_ip
                 && entry.internal_port == internal_port
+                && entry.remote_addr == remote_ip
+                && entry.remote_port == remote_port
             {
                 // refresh timestamp
                 drop(table);
@@ -122,31 +129,52 @@ fn nat_translate_out(
         }
     }
 
-    // allocate new external port
-    let ext_port = NAT_NEXT_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    {
-        let mut tablew = NAT_TABLE.write();
-        tablew.insert(
-            ext_port,
-            NatEntry {
-                protocol,
-                external_addr: ext_ip,
-                egress_if: out_if_id,
-                internal_addr: internal_ip,
-                internal_port,
-                last_seen: crate::time::get_uptime_ms(),
-            },
-        );
+    // allocate new external port with collision check
+    let mut tablew = NAT_TABLE.write();
+    let mut ext_port = NAT_NEXT_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    
+    // Ensure we stay in ephemeral range [40000, 65535]
+    if ext_port < NAT_EPHEMERAL_START {
+        ext_port = NAT_EPHEMERAL_START;
+        NAT_NEXT_PORT.store(NAT_EPHEMERAL_START + 1, core::sync::atomic::Ordering::Relaxed);
     }
+
+    // Collision detection: skip ports that are already mapped
+    let mut attempts = 0;
+    while tablew.contains_key(&ext_port) && attempts < 1000 {
+        ext_port = NAT_NEXT_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if ext_port < NAT_EPHEMERAL_START {
+            ext_port = NAT_EPHEMERAL_START;
+            NAT_NEXT_PORT.store(NAT_EPHEMERAL_START + 1, core::sync::atomic::Ordering::Relaxed);
+        }
+        attempts += 1;
+    }
+
+    tablew.insert(
+        ext_port,
+        NatEntry {
+            protocol,
+            external_addr: ext_ip,
+            remote_addr: remote_ip,
+            remote_port,
+            egress_if: out_if_id,
+            internal_addr: internal_ip,
+            internal_port,
+            last_seen: crate::time::get_uptime_ms(),
+        },
+    );
 
     (ext_ip, ext_port)
 }
 
 /// Perform inbound NAT translation on a packet arriving on any interface.
-/// If translation exists for `dst_port`, rewrites `dst_ip` and `dst_port` to
-/// the internal values and returns true.  Caller should recompute checksums.
+/// If translation exists for `dst_port` AND matches remote address/port, 
+/// rewrites `dst_ip` and `dst_port` to the internal values and returns true.
+/// Caller should recompute checksums.
 fn nat_translate_in(
     protocol: crate::net::ipv4::IpProtocol,
+    src_ip: super::Ipv4Address,
+    src_port: u16,
     dst_ip: &mut super::Ipv4Address,
     dst_port: &mut u16,
 ) -> bool {
@@ -157,7 +185,13 @@ fn nat_translate_in(
 
     let mut tablew = NAT_TABLE.write();
     if let Some(entry) = tablew.get_mut(dst_port) {
-        if entry.protocol != protocol || entry.external_addr != *dst_ip {
+        // Security check: Verify protocol, local destination IP, AND the remote source IP/port.
+        // This prevents unsolicited traffic from hijacking the NAT port.
+        if entry.protocol != protocol 
+            || entry.external_addr != *dst_ip
+            || entry.remote_addr != src_ip
+            || entry.remote_port != src_port
+        {
             return false;
         }
         // rewrite
@@ -487,8 +521,9 @@ pub fn process_received_packet_zero_copy_for_interface(
                         && header_len <= ip_buf.len().saturating_sub(4)
                     {
                         let (_, transport) = ip_buf.split_at_mut(header_len);
+                        let src_port = u16::from_be_bytes([transport[0], transport[1]]);
                         let mut dst_port = u16::from_be_bytes([transport[2], transport[3]]);
-                        if nat_translate_in(proto, &mut dst_ip, &mut dst_port) {
+                        if nat_translate_in(proto, src_ip, src_port, &mut dst_ip, &mut dst_port) {
                             transport[2..4].copy_from_slice(&dst_port.to_be_bytes());
                             recompute_ipv4_transport_checksum(transport, src_ip, dst_ip, proto);
                             translated_dst = Some(dst_ip);
@@ -541,6 +576,8 @@ pub fn process_received_packet_zero_copy_for_interface(
                                                 crate::net::ipv4::IpProtocol::Udp,
                                                 src,
                                                 udp.src_port(),
+                                                dst,
+                                                udp.dst_port(),
                                                 route.if_id,
                                             );
                                             (ns, np)
@@ -553,10 +590,16 @@ pub fn process_received_packet_zero_copy_for_interface(
                                             .get(..2)
                                             .map(|port| u16::from_be_bytes([port[0], port[1]]))
                                             .unwrap_or(0);
+                                        let tcp_dst_port = transport
+                                            .get(2..4)
+                                            .map(|port| u16::from_be_bytes([port[0], port[1]]))
+                                            .unwrap_or(0);
                                         let (ns, np) = nat_translate_out(
                                             crate::net::ipv4::IpProtocol::Tcp,
                                             src,
                                             tcp_src_port,
+                                            dst,
+                                            tcp_dst_port,
                                             route.if_id,
                                         );
                                         (ns, np)
@@ -1363,36 +1406,62 @@ pub(crate) mod tests {
 
         let internal_ip = Ipv4Address::new([10, 0, 0, 2]);
         let internal_port = 1234;
+        let remote_ip = Ipv4Address::new([198, 51, 100, 10]);
+        let remote_port = 43210;
         let (ext_ip, ext_port) =
-            nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, wan_if);
+            nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, remote_ip, remote_port, wan_if);
 
         assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
         assert!(ext_port >= NAT_EPHEMERAL_START);
 
         let mut dst_ip = ext_ip;
         let mut dst_port = ext_port;
-        assert!(nat_translate_in(IpProtocol::Udp, &mut dst_ip, &mut dst_port));
+        assert!(nat_translate_in(
+            IpProtocol::Udp,
+            remote_ip,
+            remote_port,
+            &mut dst_ip,
+            &mut dst_port
+        ));
         assert_eq!(dst_ip, internal_ip);
         assert_eq!(dst_port, internal_port);
 
         // Same external port but different protocol must not match.
         let mut dst_ip = ext_ip;
         let mut dst_port = ext_port;
-        assert!(!nat_translate_in(IpProtocol::Tcp, &mut dst_ip, &mut dst_port));
+        assert!(!nat_translate_in(
+            IpProtocol::Tcp,
+            remote_ip,
+            remote_port,
+            &mut dst_ip,
+            &mut dst_port
+        ));
         assert_eq!(dst_ip, ext_ip);
         assert_eq!(dst_port, ext_port);
 
         // Different local WAN IP (also local) must not match this mapping.
         let mut dst_ip = Ipv4Address::new([10, 0, 2, 1]);
         let mut dst_port = ext_port;
-        assert!(!nat_translate_in(IpProtocol::Udp, &mut dst_ip, &mut dst_port));
+        assert!(!nat_translate_in(
+            IpProtocol::Udp,
+            remote_ip,
+            remote_port,
+            &mut dst_ip,
+            &mut dst_port
+        ));
         assert_eq!(dst_ip, Ipv4Address::new([10, 0, 2, 1]));
         assert_eq!(dst_port, ext_port);
 
         // Non-local destination addresses must not be rewritten.
         let mut dst_ip = Ipv4Address::new([203, 0, 113, 9]);
         let mut dst_port = ext_port;
-        assert!(!nat_translate_in(IpProtocol::Udp, &mut dst_ip, &mut dst_port));
+        assert!(!nat_translate_in(
+            IpProtocol::Udp,
+            remote_ip,
+            remote_port,
+            &mut dst_ip,
+            &mut dst_port
+        ));
         assert_eq!(dst_ip, Ipv4Address::new([203, 0, 113, 9]));
         assert_eq!(dst_port, ext_port);
     }
@@ -1422,12 +1491,16 @@ pub(crate) mod tests {
             IpProtocol::Udp,
             Ipv4Address::new([10, 0, 0, 2]),
             1111,
+            Ipv4Address::new([198, 51, 100, 1]),
+            50001,
             wan_if,
         );
         let (_, fresh_port) = nat_translate_out(
             IpProtocol::Udp,
             Ipv4Address::new([10, 0, 0, 3]),
             2222,
+            Ipv4Address::new([198, 51, 100, 2]),
+            50002,
             wan_if,
         );
 

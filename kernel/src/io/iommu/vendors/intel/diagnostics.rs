@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/diagnostics.rs
+// kernel/src/io/iommu/vendors/intel/diagnostics.rs
 // ============================================================================
 
 use super::*;

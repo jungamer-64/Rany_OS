@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/invalidation.rs
+// kernel/src/io/iommu/vendors/intel/controller/invalidation.rs
 // ============================================================================
 
 //! High-level IOMMU Invalidation Logic
@@ -9,7 +9,7 @@
 
 use super::IommuController;
 use super::qi_ops::InvalidationOps;
-use crate::io::iommu::core::domain::{
+use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
 use crate::io::iommu::types::IommuError;

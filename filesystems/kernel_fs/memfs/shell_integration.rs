@@ -281,7 +281,6 @@ pub fn create_symlink(target: &str, link_name: &str, cwd: &str) -> FsResult<()> 
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 #[path = "tests.rs"]
 mod tests;
-

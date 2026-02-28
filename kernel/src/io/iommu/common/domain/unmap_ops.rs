@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/domain/unmap_ops.rs
+// kernel/src/io/iommu/common/domain/unmap_ops.rs
 // ============================================================================
 //
 // NOTE: this module formerly also contained `map_buffer`, but mapping logic
@@ -166,7 +166,7 @@ impl IommuDomain {
                 *pd_entry = SlPte::new();
                 
                 // Quarantine PT instead of immediate deallocation
-                if let Some(pt) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pt_phys) {
+                if let Some(pt) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pt_phys) {
                     if let Ok(mut pending) = self.pending_pt_release.lock() {
                         pending.push(pt);
                     }
@@ -178,7 +178,7 @@ impl IommuDomain {
                     *pdp_entry = SlPte::new();
 
                     // Quarantine PD
-                    if let Some(pd) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
+                    if let Some(pd) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
                         if let Ok(mut pending) = self.pending_pt_release.lock() {
                             pending.push(pd);
                         }
@@ -190,7 +190,7 @@ impl IommuDomain {
                         *pml4_entry = SlPte::new();
 
                         // Quarantine PDP
-                        if let Some(pdp) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+                        if let Some(pdp) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
                             if let Ok(mut pending) = self.pending_pt_release.lock() {
                                 pending.push(pdp);
                             }
@@ -288,11 +288,11 @@ impl IommuDomain {
     /// Returns `UnmapError<T>` containing the handle on failure.
     pub fn unmap_buffer<T, I: IommuInvalidator>(
         &self,
-        mut handle: crate::io::iommu::core::dma::handle::DmaHandle<T>,
+        mut handle: crate::io::iommu::common::dma::handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::core::dma::handle::UnmapError<T>> {
-        use crate::io::iommu::core::dma::handle::{UnmapError, UnmapErrorKind};
+    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::common::dma::handle::UnmapError<T>> {
+        use crate::io::iommu::common::dma::handle::{UnmapError, UnmapErrorKind};
 
         let iova = handle.iova();
         let size = handle.size();
@@ -368,11 +368,11 @@ impl IommuDomain {
     /// A future that resolves to `Result<RRef<T>, UnmapError<T>>`
     pub async fn unmap_buffer_async<T, I: IommuInvalidator + Sync>(
         &self,
-        mut handle: crate::io::iommu::core::dma::handle::DmaHandle<T>,
+        mut handle: crate::io::iommu::common::dma::handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::core::dma::handle::UnmapError<T>> {
-        use crate::io::iommu::core::dma::handle::{UnmapError, UnmapErrorKind};
+    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::common::dma::handle::UnmapError<T>> {
+        use crate::io::iommu::common::dma::handle::{UnmapError, UnmapErrorKind};
 
         let iova = handle.iova();
         let size = handle.size();
@@ -519,7 +519,7 @@ impl IommuDomain {
 
                 // Return table to pool (it will unregister if pool is full and truly deallocating)
                 if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
-                    if let Some(pt) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(phys) {
+                    if let Some(pt) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(phys) {
                         self.page_table_pool.release(pt);
                     } else {
                         // Fallback for direct allocations not in registry

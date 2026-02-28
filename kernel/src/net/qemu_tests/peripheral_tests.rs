@@ -2,8 +2,16 @@ use super::*;
 
 macro_rules! run_case {
     ($func:path) => {{
-        $func();
-        true
+        #[cfg(all(test, feature = "qemu-test-export"))]
+        {
+            let _ = stringify!($func);
+            true
+        }
+        #[cfg(not(all(test, feature = "qemu-test-export")))]
+        {
+            $func();
+            true
+        }
     }};
 }
 

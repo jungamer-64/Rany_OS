@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/domain/paging.rs
+// kernel/src/io/iommu/common/domain/paging.rs
 // ============================================================================
 
 use super::*;
@@ -177,7 +177,7 @@ impl IommuDomain {
         unsafe { *pd_entry = SlPte::new(); }
 
         // Quarantine PT instead of immediate deallocation
-        if let Some(pt) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pt_phys) {
+        if let Some(pt) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pt_phys) {
             if let Ok(mut pending) = self.pending_pt_release.lock() {
                 pending.push(pt);
             }
@@ -191,7 +191,7 @@ impl IommuDomain {
         unsafe { *pdp_entry = SlPte::new(); }
 
         // Quarantine PD
-        if let Some(pd) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
+        if let Some(pd) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pd_phys) {
             if let Ok(mut pending) = self.pending_pt_release.lock() {
                 pending.push(pd);
             }
@@ -205,7 +205,7 @@ impl IommuDomain {
         unsafe { *pml4_entry = SlPte::new(); }
 
         // Quarantine PDP
-        if let Some(pdp) = crate::io::iommu::core::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
+        if let Some(pdp) = crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(pdp_phys) {
             if let Ok(mut pending) = self.pending_pt_release.lock() {
                 pending.push(pdp);
             }

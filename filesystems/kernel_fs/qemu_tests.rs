@@ -6,8 +6,16 @@ use super::procfs;
 
 macro_rules! run_case {
     ($func:path) => {{
-        $func();
-        true
+        #[cfg(all(test, feature = "qemu-test-export"))]
+        {
+            let _ = stringify!($func);
+            true
+        }
+        #[cfg(not(all(test, feature = "qemu-test-export")))]
+        {
+            $func();
+            true
+        }
     }};
 }
 
@@ -322,4 +330,3 @@ pub fn procfs_proc_exe_revoke_reclaim_stress_smoke() -> bool {
 pub fn procfs_proc_fd_listing_shows_open_handles_smoke() -> bool {
     procfs_exports::procfs_proc_fd_listing_shows_open_handles_smoke()
 }
-

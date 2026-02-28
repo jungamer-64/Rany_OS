@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/invalidation.rs
+// kernel/src/io/iommu/vendors/amd/invalidation.rs
 // ============================================================================
 
 //! AMD-Vi command state management and invalidation operations.
@@ -517,7 +517,7 @@ impl AmdIommuDriver {
 // IommuInvalidator implementation for AmdIommuDriver
 // ---------------------------------------------------------------------------
 
-use crate::io::iommu::core::domain::{IommuInvalidator, InvalidateKind, InvalidateRequest, InvalidateFlags};
+use crate::io::iommu::common::domain::{IommuInvalidator, InvalidateKind, InvalidateRequest, InvalidateFlags};
 
 impl IommuInvalidator for AmdIommuDriver {
     fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {

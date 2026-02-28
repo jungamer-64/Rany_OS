@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/dma.rs
+// kernel/src/io/iommu/vendors/amd/dma.rs
 // ============================================================================
 
 //! AMD-Vi DMA mapping, IOVA allocation, and command queue dispatch.
@@ -8,7 +8,7 @@ use x86_64::PhysAddr;
 
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;
 use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::core::dma::iova_allocator::PageGranularity;
+use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
 
 use super::AmdIommuDriver;
 
@@ -260,7 +260,7 @@ impl AmdIommuDriver {
         &self,
         cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
         device: &DeviceId,
-        domain: &crate::io::iommu::core::domain::IommuDomain,
+        domain: &crate::io::iommu::common::domain::IommuDomain,
         iova: u64,
     ) -> Result<(), IommuError> {
         let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
@@ -317,7 +317,7 @@ impl AmdIommuDriver {
         &self,
         cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
         device: &DeviceId,
-        domain: &crate::io::iommu::core::domain::IommuDomain,
+        domain: &crate::io::iommu::common::domain::IommuDomain,
         iova: u64,
     ) -> Result<(), IommuError> {
         let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/init.rs
+// kernel/src/io/iommu/vendors/intel/controller/init.rs
 // ============================================================================
 
 //! Controller Initialization and Capability Detection
@@ -8,7 +8,7 @@
 
 use super::IommuController;
 use crate::io::iommu::types::IommuCapabilities;
-use crate::io::iommu::backends::intel::registers::{cap_bits, ecap_bits};
+use crate::io::iommu::vendors::intel::registers::{cap_bits, ecap_bits};
 
 pub trait CapabilityManager {
     /// Check if Queued Invalidation is supported

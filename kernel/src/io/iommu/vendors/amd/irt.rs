@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/irt.rs
+// kernel/src/io/iommu/vendors/amd/irt.rs
 // ============================================================================
 
 //! AMD-Vi Interrupt Remapping Table (IRT) management.
@@ -14,7 +14,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::io::iommu::core::tables::{HardwareTable, Zeroable};
+use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ use core::sync::atomic::Ordering;
 
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, is_iommu_enabled};
-use crate::io::iommu::core::types::{DeviceId, IommuDomainType, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::IOMMU_REQUIRED;
 
 /// IOMMUを必須に設定する

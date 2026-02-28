@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/driver_ops/invalidation.rs
+// kernel/src/io/iommu/vendors/intel/driver_ops/invalidation.rs
 // ============================================================================
 
 use super::*;

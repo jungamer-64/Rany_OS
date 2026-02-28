@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/driver.rs
+// kernel/src/io/iommu/vendors/amd/driver.rs
 // ============================================================================
 
 //! Driver trait implementation for AMD-Vi IOMMU
@@ -8,7 +8,7 @@ use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
 use crate::io::iommu::runtime::config::IommuConfig;
-use crate::io::iommu::backends::amd::init_iommu_from_ivrs;
+use crate::io::iommu::vendors::amd::init_iommu_from_ivrs;
 
 /// AMD-Vi Driver Wrapper
 pub struct AmdViDriver {

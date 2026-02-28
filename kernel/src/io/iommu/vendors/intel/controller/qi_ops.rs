@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/qi_ops.rs
+// kernel/src/io/iommu/vendors/intel/controller/qi_ops.rs
 // ============================================================================
 
 //! Queued Invalidation Operations
@@ -11,11 +11,11 @@ use core::sync::atomic::Ordering;
 use super::utils::IommuUtils;
 use super::{InvalidationWaiter, IommuController};
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::core::domain::{
+use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
-use crate::io::iommu::backends::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
-use crate::io::iommu::backends::intel::registers::regs;
+use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
+use crate::io::iommu::vendors::intel::registers::regs;
 
 fn submit_invalidation_locked(
     controller: &IommuController,

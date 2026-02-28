@@ -279,6 +279,11 @@ impl NetworkEventHandler {
             });
         }
 
+        // TCB更新: SYNは1シーケンス番号を消費する
+        tcb_table().lookup_mut(local_addr, remote, |tcb| {
+            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+        });
+
         log::info!(
             "TCP: SYN sent {} -> {} (seq={})",
             local_addr,
@@ -396,6 +401,8 @@ impl NetworkEventHandler {
                     .lookup_mut(local, remote, |tcb| {
                         let seq = tcb.snd_nxt;
                         tcb.state = TcpConnectionState::FinWait1;
+                        // TCB更新: FINは1シーケンス番号を消費する
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
                         seq
                     })
                     .unwrap_or(0);
@@ -427,6 +434,8 @@ impl NetworkEventHandler {
                     .lookup_mut(local, remote, |tcb| {
                         let seq = tcb.snd_nxt;
                         tcb.state = TcpConnectionState::LastAck;
+                        // TCB更新: FINは1シーケンス番号を消費する
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
                         seq
                     })
                     .unwrap_or(0);

@@ -1,14 +1,14 @@
 // ============================================================================
-// kernel/src/io/iommu/core/dma/slice_handle.rs
+// kernel/src/io/iommu/common/dma/slice_handle.rs
 // ============================================================================
 
-use crate::io::iommu::core::types::DeviceId;
+use crate::io::iommu::types::DeviceId;
 use core::marker::PhantomData;
 use crate::ipc::RRef;
-use crate::io::iommu::core::dma::handle::{DmaDirection, DmaHandle, MappingKind, MapError, MapErrorKind, UnmapError, UnmapErrorKind};
-use crate::io::iommu::core::domain::{IommuDomain, IommuInvalidator, InvalidateRequest};
-use crate::io::iommu::core::interface::IommuHardwareContext;
-use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MappingKind, MapError, MapErrorKind, UnmapError, UnmapErrorKind};
+use crate::io::iommu::common::domain::{IommuDomain, IommuInvalidator, InvalidateRequest};
+use crate::io::iommu::common::interface::IommuHardwareContext;
+use crate::io::iommu::types::IommuError;
 
 
 impl<T> DmaHandle<[T]> {

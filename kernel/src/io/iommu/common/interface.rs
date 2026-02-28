@@ -1,10 +1,10 @@
 // ============================================================================
-// kernel/src/io/iommu/core/interface.rs
+// kernel/src/io/iommu/common/interface.rs
 // ============================================================================
 
 //! IOMMU backend interfaces (hardware context/domain).
 
-use crate::io::iommu::core::types::{DmaMapping, IommuDomainType, IommuError};
+use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError};
 
 /// Default IOVA allocation alignment (4KB).
 pub const DEFAULT_IOVA_ALIGNMENT: u64 = 4096;

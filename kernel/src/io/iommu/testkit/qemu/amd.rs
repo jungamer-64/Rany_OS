@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/tests/qemu/amd.rs
+// kernel/src/io/iommu/testkit/qemu/amd.rs
 // ============================================================================
 
-pub use crate::io::iommu::backends::amd::qemu_tests::*;
+pub use crate::io::iommu::vendors::amd::qemu_tests::*;

@@ -5,12 +5,15 @@ mod state_handlers;
 impl TcpProcessor {
     /// Default maximum number of concurrent TCP connections
     pub const DEFAULT_MAX_CONNECTIONS: usize = 512;
+    /// Maximum number of semi-open connections (SYN-RECEIVED)
+    pub const MAX_SEMI_OPEN_CONNECTIONS: usize = 128;
 
     /// Create a new TCP processor
     pub fn new() -> Self {
         TcpProcessor {
             connections: BTreeMap::new(),
             listeners: BTreeMap::new(),
+            semi_open_count: 0,
         }
     }
 
@@ -23,8 +26,7 @@ impl TcpProcessor {
     
     /// Bind to a specific port
     pub fn bind(&mut self, addr: SocketAddr) -> Result<TcpListener, TcpError> {
-        if self.listeners.contains_key(&addr) || 
-           self.connections.keys().any(|(local, _)| local == &addr) {
+        if self.is_port_in_use(addr.port()) {
             return Err(TcpError::AddressInUse);
         }
         
@@ -47,6 +49,35 @@ impl TcpProcessor {
             backlog,
             accept_waker,
         })
+    }
+
+    /// Check if a port is already in use by a listener or active connection
+    pub fn is_port_in_use(&self, port: u16) -> bool {
+        // Check listeners
+        if self.listeners.keys().any(|addr| addr.port() == port) {
+            return true;
+        }
+        // Check active connections
+        if self.connections.keys().any(|(local, _)| local.port() == port) {
+            return true;
+        }
+        false
+    }
+
+    /// Allocate a unique ephemeral port
+    pub fn allocate_ephemeral_port(&self, _local: &SocketAddr, _remote: &SocketAddr) -> u16 {
+        use core::sync::atomic::Ordering;
+        let range_size = (65535 - 49152 + 1) as u32;
+
+        for _ in 0..range_size {
+            let port = NEXT_EPHEMERAL_PORT.fetch_add(1, Ordering::Relaxed);
+            let port = 49152 + ((port as u32 - 49152) % range_size) as u16;
+
+            if !self.is_port_in_use(port) {
+                return port;
+            }
+        }
+        0 // Exhausted
     }
 
     /// Initiate a connection to a remote address
@@ -261,6 +292,12 @@ impl TcpProcessor {
             return None;
         }
 
+        // Check semi-open connection limit
+        if self.semi_open_count >= Self::MAX_SEMI_OPEN_CONNECTIONS {
+            log::warn!("[TCP] SYN flood suspected - dropping SYN from {}", remote_addr);
+            return None;
+        }
+
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.set_remote_addr(remote_addr);
         tcb.set_rcv_nxt(seq_num.wrapping_add(1));
@@ -287,6 +324,7 @@ impl TcpProcessor {
             (local_addr, remote_addr),
             Arc::new(PoisonLock::new(tcb)),
         );
+        self.semi_open_count += 1;
         Some(syn_ack)
     }
 
@@ -458,6 +496,33 @@ impl TcpProcessor {
 
 
 
+    /// Check if an incoming segment is acceptable according to RFC 793 Step 1
+    pub(crate) fn is_acceptable_sequence(tcb: &TcpControlBlock, seq_num: u32, payload_len: usize) -> bool {
+        let rcv_nxt = tcb.rcv_nxt();
+        let rcv_wnd = tcb.get_effective_rcv_wnd();
+        
+        if payload_len == 0 {
+            if rcv_wnd == 0 {
+                seq_num == rcv_nxt
+            } else {
+                // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd
+                let diff = seq_num.wrapping_sub(rcv_nxt);
+                diff < rcv_wnd
+            }
+        } else {
+            if rcv_wnd == 0 {
+                // Data received but window is 0 - not acceptable
+                false
+            } else {
+                // rcv_nxt <= seq_num < rcv_nxt + rcv_wnd OR
+                // rcv_nxt <= seq_num + payload_len - 1 < rcv_nxt + rcv_wnd
+                let diff_start = seq_num.wrapping_sub(rcv_nxt);
+                let diff_end = seq_num.wrapping_add(payload_len as u32).wrapping_sub(1).wrapping_sub(rcv_nxt);
+                diff_start < rcv_wnd || diff_end < rcv_wnd
+            }
+        }
+    }
+
     /// Process a TCP segment for an existing connection
     pub(super) fn process_segment(
         &mut self,
@@ -478,18 +543,31 @@ impl TcpProcessor {
         let fin = flags & TcpHeader::FLAG_FIN != 0;
         let _psh = flags & TcpHeader::FLAG_PSH != 0;
 
+        // RFC 793 Step 1: Check sequence number acceptability
+        let payload_len = payload.len();
+        if !Self::is_acceptable_sequence(tcb, seq_num, payload_len) {
+            // If the segment is not acceptable and RST is not set, send an ACK
+            if !rst {
+                return Self::make_ack_result(tcb);
+            }
+            return TcpProcessResult::None;
+        }
+
         // Security (RFC 5961): RST sequence number validation
         if rst {
             if seq_num == tcb.rcv_nxt() {
                 // Exact match: accept RST and close
                 let local = tcb.local_addr();
                 if let Some(remote) = tcb.remote_addr() {
+                    if matches!(tcb.state(), TcpState::SynSent | TcpState::SynReceived) {
+                        self.semi_open_count = self.semi_open_count.saturating_sub(1);
+                    }
                     tcb.close_and_wake();
                     self.connections.remove(&(local, remote));
                 }
                 return TcpProcessResult::None;
             } else if (seq_num.wrapping_sub(tcb.rcv_nxt()) as i32) >= 0
-                && (seq_num.wrapping_sub(tcb.rcv_nxt().wrapping_add(tcb.rcv_wnd() as u32)) as i32) < 0
+                && (seq_num.wrapping_sub(tcb.rcv_nxt().wrapping_add(tcb.get_effective_rcv_wnd())) as i32) < 0
             {
                 // Within window but not exact match: send challenge ACK
                 return Self::make_ack_result(tcb);
@@ -516,7 +594,7 @@ impl TcpProcessor {
                 TcpProcessResult::None
             }
             TcpState::SynSent => Self::handle_syn_sent_segment(tcb, syn, ack, seq_num, ack_num),
-            TcpState::SynReceived => Self::handle_syn_received_segment(
+            TcpState::SynReceived => self.handle_syn_received_segment(
                 tcb,
                 tcb_arc,
                 ack,
@@ -580,6 +658,7 @@ impl TcpProcessor {
 
     /// Handle segment in SYN-RECEIVED state
     pub(super) fn handle_syn_received_segment(
+        &mut self,
         tcb: &mut TcpControlBlock,
         tcb_arc: &Arc<PoisonLock<TcpControlBlock>>,
         ack: bool,
@@ -594,6 +673,7 @@ impl TcpProcessor {
             tcb.set_snd_una(ack_num);
             tcb.set_snd_nxt(ack_num);
             tcb.enter_established();
+            self.semi_open_count = self.semi_open_count.saturating_sub(1);
 
             // Push to backlog and wake accept waker
             Self::notify_backlog(tcb, tcb_arc);

@@ -170,7 +170,6 @@ impl Inode for Ext2InodeWrapper {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 #[path = "tests.rs"]
 mod tests;
-

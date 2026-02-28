@@ -281,7 +281,7 @@ pub struct ZombieData {
     /// IOMMU domain ID (u16)
     pub domain_id: u16,
     /// Optional Device ID
-    pub device_id: Option<crate::io::iommu::core::types::DeviceId>,
+    pub device_id: Option<crate::io::iommu::types::DeviceId>,
     /// Encoded mapping kind (0=Identity, 1=Global, 2=Device, 3=Domain)
     pub mapping_kind: u32,
 }
@@ -343,7 +343,7 @@ impl ZombieQueue {
         iova: u64,
         size: u64,
         domain_id: u16,
-        device_id: Option<crate::io::iommu::core::types::DeviceId>,
+        device_id: Option<crate::io::iommu::types::DeviceId>,
         mapping_kind: u32,
         raw: Option<RRefRawParts>,
     ) -> bool {
@@ -427,7 +427,7 @@ impl ZombieQueue {
             size: payload.size,
             domain_id: payload.domain_id,
             device_id: if payload.device_bdf != 0xFFFF {
-                Some(crate::io::iommu::core::types::DeviceId::from_bdf(payload.device_bdf))
+                Some(crate::io::iommu::types::DeviceId::from_bdf(payload.device_bdf))
             } else {
                 None
             },
@@ -575,7 +575,7 @@ pub fn enqueue_zombie(
     iova: u64,
     size: u64,
     domain_id: u16,
-    device_id: Option<crate::io::iommu::core::types::DeviceId>,
+    device_id: Option<crate::io::iommu::types::DeviceId>,
     mapping_kind: u32,
     raw: Option<RRefRawParts>,
 ) -> bool {
@@ -614,8 +614,8 @@ pub fn has_pending_zombies() -> bool {
 // ============================================================================
 
 /// Encode MappingKind for storage in zombie queue.
-pub fn encode_mapping_kind(kind: &crate::io::iommu::core::dma::handle::MappingKind) -> u32 {
-    use crate::io::iommu::core::dma::handle::MappingKind;
+pub fn encode_mapping_kind(kind: &crate::io::iommu::common::dma::handle::MappingKind) -> u32 {
+    use crate::io::iommu::common::dma::handle::MappingKind;
     match kind {
         MappingKind::Identity => 0,
         MappingKind::Global => 1,
@@ -628,9 +628,9 @@ pub fn encode_mapping_kind(kind: &crate::io::iommu::core::dma::handle::MappingKi
 }
 
 /// Decode MappingKind from zombie queue storage.
-pub fn decode_mapping_kind(encoded: u32) -> crate::io::iommu::core::dma::handle::MappingKind {
-    use crate::io::iommu::core::dma::handle::MappingKind;
-    use crate::io::iommu::core::types::DeviceId;
+pub fn decode_mapping_kind(encoded: u32) -> crate::io::iommu::common::dma::handle::MappingKind {
+    use crate::io::iommu::common::dma::handle::MappingKind;
+    use crate::io::iommu::types::DeviceId;
 
     let kind = encoded & 0xFFFF;
     match kind {
@@ -655,7 +655,7 @@ pub fn decode_mapping_kind(encoded: u32) -> crate::io::iommu::core::dma::handle:
 /// Processes up to `max_count` zombie entries.
 /// Updates failure reason statistics for monitoring.
 pub fn run_zombie_gc(max_count: usize) -> usize {
-    use crate::io::iommu::core::dma::handle::MappingKind;
+    use crate::io::iommu::common::dma::handle::MappingKind;
     use crate::io::iommu::runtime::registry::get_iommu_driver;
 
     let driver = get_iommu_driver();

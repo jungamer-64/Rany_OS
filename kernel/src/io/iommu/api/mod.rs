@@ -8,29 +8,32 @@
 //! and interrupt remapping.
 
 pub mod dma;
+pub mod dispatcher;
+pub mod driver;
 pub mod mgmt;
+pub mod panic_dma;
+pub mod pci;
+pub mod security;
 
 // Re-exports from submodules
 pub use self::dma::*;
+pub use self::dispatcher::*;
+pub use self::driver::*;
 pub use self::mgmt::*;
+pub use self::panic_dma::*;
+pub use self::pci::*;
+pub use self::security::*;
 
 // Re-exports from other internal modules (for API compatibility)
 pub use crate::io::iommu::runtime::irq::{map_interrupt, get_remap_msi_message};
 pub use crate::io::iommu::runtime::stats::{
     reset_map_unmap_counts, get_map_count, get_unmap_count,
 };
-pub use crate::io::iommu::runtime::security::{
-    FaultSummary, IsolationDecision, IsolationReason, SecurityEvent, SecurityNotifier,
-    set_security_notifier, 
-    // set_unsafe_identity_mapping_allowed,
-    is_unsafe_identity_mapping_allowed,
-    set_global_dma_mapping_allowed, is_global_dma_mapping_allowed,
-};
 pub use crate::io::iommu::runtime::registry::{
     is_iommu_enabled, 
     register_device_dma_mask, register_device_dma_width, clear_device_dma_mask, get_device_dma_mask
 };
-pub use crate::io::iommu::core::dma::handle::{
+pub use crate::io::iommu::common::dma::handle::{
     DmaDirection, DmaHandle, MapError, MapErrorKind, UnmapError, UnmapErrorKind,
 };
 

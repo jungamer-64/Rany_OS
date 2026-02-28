@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/event_log.rs
+// kernel/src/io/iommu/vendors/amd/event_log.rs
 // ============================================================================
 
 //! AMD-Vi Event Log ring buffer structures.
@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use x86_64::PhysAddr;
 
-use crate::io::iommu::core::tables::phys_to_virt_usize;
+use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::io::mmio::{mmio_write_u32, mmio_write_u64};
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;

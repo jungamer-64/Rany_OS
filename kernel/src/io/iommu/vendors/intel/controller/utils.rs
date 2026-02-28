@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/utils.rs
+// kernel/src/io/iommu/vendors/intel/controller/utils.rs
 // ============================================================================
 
 //! Utility methods for IommuController

@@ -865,7 +865,7 @@ pub fn test_connect_timeout_expires() {
     use core::pin::Pin;
     use core::task::Poll;
 
-    let now = crate::time::precise_time_nanos() / 1000;
+    let now = crate::task::timer::current_tick();
     let local = SocketAddr::new(Ipv4Addr::LOCALHOST, 4001);
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_syn_sent();

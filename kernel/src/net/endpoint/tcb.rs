@@ -163,7 +163,11 @@ impl TcpControlBlockEntry {
     /// `current_time_ms`: 現在時刻（ミリ秒）。CUBICやBBRが正確な時刻を必要とする。
     /// `rtt_sample_ms`: RTTサンプル（ミリ秒）。BBRが帯域推定に使用。0なら無効。
     pub fn on_ack_received(&mut self, ack_num: u32, is_dup: bool, current_time_ms: u64, rtt_sample_ms: u64) {
-        let bytes_acked = if ack_num > self.snd_una && !is_dup {
+        // RFC 793 validation: SND.UNA < SEG.ACK =< SND.NXT
+        let is_valid_ack = (ack_num.wrapping_sub(self.snd_una) as i32) > 0 
+            && (ack_num.wrapping_sub(self.snd_nxt) as i32) <= 0;
+
+        let bytes_acked = if is_valid_ack && !is_dup {
             ack_num.wrapping_sub(self.snd_una)
         } else {
             0
@@ -172,7 +176,7 @@ impl TcpControlBlockEntry {
         self.congestion
             .on_ack(bytes_acked, is_dup, self.snd_una, current_time_ms, rtt_sample_ms);
 
-        if !is_dup && ack_num > self.snd_una {
+        if !is_dup && is_valid_ack {
             self.snd_una = ack_num;
         }
     }
@@ -392,6 +396,34 @@ impl TcbTable {
         // 100tickごとに再送チェック（パフォーマンス最適化）
         if tick % 100 == 0 {
             check_retransmit_timeouts();
+            // SYN flood対策: 定期的に古いSynReceivedエントリを掃除する
+            self.scavenge_syn_received(tick);
+        }
+    }
+
+    /// SynReceived状態の古いエントリを掃除する（SYN Flood対策）
+    fn scavenge_syn_received(&self, current_tick: u64) {
+        let mut entries = self.entries.write();
+        let syn_recv_keys: alloc::vec::Vec<_> = entries
+            .iter()
+            .filter(|(_, e)| e.state == TcpConnectionState::SynReceived)
+            .map(|(k, e)| (*k, e.last_send_tick))
+            .collect();
+
+        // エントリ数が制限の半分を超えている場合に掃除を開始
+        if syn_recv_keys.len() >= MAX_SYN_RECEIVED_ENTRIES / 2 {
+            let mut sorted = syn_recv_keys;
+            sorted.sort_by_key(|(_, tick)| *tick);
+
+            // 最も古い10%のエントリを対象にする
+            let count_to_remove = (sorted.len() / 10).max(1);
+            for i in 0..count_to_remove {
+                let (key, last_tick) = sorted[i];
+                // 送信から3秒(3000ms)以上経過しているエントリを削除
+                if current_tick.saturating_sub(last_tick) > 3000 {
+                    entries.remove(&key);
+                }
+            }
         }
     }
 

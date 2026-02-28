@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/core/dma/iova_allocator.rs - IOVA-Specific Allocator with Quarantine
+// kernel/src/io/iommu/common/dma/iova_allocator.rs - IOVA-Specific Allocator with Quarantine
 // ============================================================================
 
 //
@@ -43,10 +43,12 @@ use crate::mm::remote_free::{QuarantineRing, QuarantineEntry}; // Using generic 
 #[cfg(not(feature = "qemu-test-export"))]
 use crate::per_cpu::MAX_CPUS;
 
-use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::types::IommuError;
 
 /// Backward compatibility alias
 pub type IovaGranularity = PageGranularity;
+/// Backward compatibility alias for older tests/callers.
+pub type IovaAllocatorFast = IovaAllocator;
 
 /// Default capacity for quarantine ring (must be power of 2)
 const QUARANTINE_CAPACITY: usize = 256;

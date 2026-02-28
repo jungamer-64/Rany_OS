@@ -232,7 +232,7 @@ impl IcmpProcessor {
     }
 
     /// Process an ICMP Redirect packet.
-    pub(super) fn process_redirect(&self, packet: &IcmpPacket<'_>) -> IcmpResult {
+    pub(super) fn process_redirect(&self, _packet: &IcmpPacket<'_>) -> IcmpResult {
         // Security: ICMP Redirects are dangerous and can be used for MitM attacks.
         // We ignore them by default unless the system is specifically configured to
         // trust them and they come from the current gateway.

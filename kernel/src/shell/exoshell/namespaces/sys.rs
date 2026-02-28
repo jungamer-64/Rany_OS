@@ -332,7 +332,7 @@ impl SysNamespace {
     /// パニックDMA記録（IOMMUが有効な場合）
     pub fn panic_record() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        if let Some(info) = crate::io::iommu::runtime::panic::last_panic_record() {
+        if let Some(info) = crate::io::iommu::api::last_panic_record() {
             map.insert(String::from("available"), ExoValue::Bool(true));
             map.insert(String::from("iova"), ExoValue::Int(info.iova as i64));
             map.insert(
@@ -341,7 +341,7 @@ impl SysNamespace {
             );
             map.insert(String::from("len"), ExoValue::Int(info.len as i64));
             map.insert(String::from("total"), ExoValue::Int(info.total as i64));
-            let message = crate::io::iommu::runtime::panic::last_panic_record_message();
+            let message = crate::io::iommu::api::last_panic_record_message();
             map.insert(
                 String::from("message"),
                 ExoValue::String(Cow::Owned(

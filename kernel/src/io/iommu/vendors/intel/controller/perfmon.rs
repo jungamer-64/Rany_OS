@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/perfmon.rs
+// kernel/src/io/iommu/vendors/intel/controller/perfmon.rs
 // ============================================================================
 
 //! Performance Monitoring Methods
@@ -9,7 +9,7 @@
 use super::IommuController;
 use super::init::CapabilityManager;
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::backends::intel::registers::{PerfMonEvent, regs};
+use crate::io::iommu::vendors::intel::registers::{PerfMonEvent, regs};
 
 pub trait PerfMonitor {
     /// Configure a performance monitoring counter

@@ -20,10 +20,6 @@
 
 use super::{Task, TaskId, create_waker};
 use crate::sync::PoisonLock;
-use crate::io::iommu::backends::intel::controller::dma::DomainManager;
-use crate::io::iommu::runtime::backend::IommuBackend;
-use crate::io::iommu::runtime::command::queue::IommuCommandKind;
-use crate::io::iommu::runtime::registry::get_iommu_driver;
 use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
@@ -280,49 +276,6 @@ pub fn wake_task(task_id: TaskId) {
 // Executor本体
 // ============================================================================
 
-// ============================================================================
-// IOMMU command-queue helpers (extracted from Executor::run)
-// ============================================================================
-
-/// Dispatch a single IOMMU command to the given controller.
-fn dispatch_iommu_command(
-    ctrl: &crate::io::iommu::backends::intel::controller::IommuController,
-    kind: &IommuCommandKind,
-) -> Result<i32, ()> {
-    ctrl.handle_command_queue_entry(kind).map_err(|_| ())
-}
-
-/// Drain IOMMU command queues from all registered Intel controllers.
-fn process_iommu_command_queues() {
-    // 1. Process Intel-specific controllers if registry is present
-    if let Some(reg) = crate::io::iommu::backends::intel::registry::get_iommu_registry() {
-        for ctrl in &reg.controllers {
-            if let Some(ref cq) = ctrl.command_queue {
-                for _ in 0..4 {
-                    let processed = cq.process_once(|kind| dispatch_iommu_command(ctrl, kind));
-                    if processed == 0 {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Process the active global driver (handles AMD-Vi and generic dispatch)
-    if let Some(driver) = get_iommu_driver() {
-        if let IommuBackend::Amd(ref amd_driver) = **driver {
-            if let Some(ref cq) = amd_driver.command_queue {
-                for _ in 0..4 {
-                    let processed = cq.process_once(|kind| amd_driver.handle_command_queue_entry(kind));
-                    if processed == 0 {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// ロックフリー Executor
 pub struct Executor {
     /// ローカルキュー（Per-CPU）
@@ -390,7 +343,7 @@ impl Executor {
                 crate::task::interrupt_waker::process_interrupt_events();
             });
             // IOMMU command queue processing
-            process_iommu_command_queues();
+            crate::io::iommu::api::process_pending_command_queues();
 
             // 1. Refill fuel for this executor slice and process local tasks
             crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);

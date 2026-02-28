@@ -9,7 +9,7 @@ fn test_zombie_queue_basic() {
     let queue = ZombieQueue::new();
 
     // Enqueue a zombie (domain_id is u16)
-    assert!(queue.try_enqueue(0x1000, 4096, 1u16, 0, None));
+    assert!(queue.try_enqueue(0x1000, 4096, 1u16, None, 0, None));
 
     // Check stats
     let stats = queue.stats();
@@ -43,8 +43,8 @@ fn test_zombie_queue_failed_cleanup() {
     let queue = ZombieQueue::new();
 
     // Enqueue two zombies
-    assert!(queue.try_enqueue(0x1000, 4096, 1u16, 0, None));
-    assert!(queue.try_enqueue(0x2000, 4096, 2u16, 0, None));
+    assert!(queue.try_enqueue(0x1000, 4096, 1u16, None, 0, None));
+    assert!(queue.try_enqueue(0x2000, 4096, 2u16, None, 0, None));
 
     // Process with callback that returns false (cleanup failed)
     let count = queue.process_pending(10, |_| false);
@@ -64,7 +64,7 @@ fn test_zombie_queue_probe_limit() {
 
     // Fill up more than MAX_PROBE_COUNT entries
     for i in 0..(MAX_PROBE_COUNT + 10) {
-        let _ = queue.try_enqueue(i as u64 * 0x1000, 4096, 1u16, 0, None);
+        let _ = queue.try_enqueue(i as u64 * 0x1000, 4096, 1u16, None, 0, None);
     }
 
     // After MAX_PROBE_COUNT, enqueue should start failing
@@ -76,8 +76,8 @@ fn test_zombie_queue_probe_limit() {
 
 #[test_case]
 fn test_mapping_kind_encoding() {
-    use super::super::dma_handle::MappingKind;
-    use super::super::types::DeviceId;
+    use crate::io::iommu::common::dma::handle::MappingKind;
+    use crate::io::iommu::types::DeviceId;
 
     // Identity
     let encoded = encode_mapping_kind(&MappingKind::Identity);
@@ -121,7 +121,7 @@ fn test_state_transitions() {
         iova: 0x1000,
         size: 4096,
         domain_id: 1,
-        _pad1: 0,
+        device_bdf: 0xFFFF,
         mapping_kind: 0,
         raw_ptr: 0,
         raw_owner: 0,

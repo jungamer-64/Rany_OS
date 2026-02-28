@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/init.rs
+// kernel/src/io/iommu/vendors/amd/init.rs
 // ============================================================================
 
 //! AMD-Vi hardware initialization and IVRS table parsing.
@@ -20,7 +20,7 @@ use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::io::iommu::types::IommuError;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::virt::mapping::phys_to_virt;
-use crate::io::iommu::core::tables::phys_to_virt_usize;
+use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::sync::PoisonLock;
 
 use super::cmd;

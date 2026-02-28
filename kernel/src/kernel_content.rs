@@ -408,13 +408,11 @@ fn parse_iommu_cmdline(boot_info: &ExoBootInfo, phys_mem_offset: u64) -> io::iom
 
 /// Try to register and start an IOMMU driver (Intel VT-d or AMD-Vi).
 fn init_iommu_driver(parser: &io::acpi::AcpiParser, iommu_config: &io::iommu::runtime::config::IommuConfig) {
-    use alloc::boxed::Box;
     use crate::driver_registry::{register_driver, driver_registry};
 
     match parser.find_table(b"DMAR") {
         Ok(dmar_addr) => {
-            use crate::io::iommu::backends::intel::driver::IntelVtDDriver;
-            let drv = Box::new(IntelVtDDriver::new(dmar_addr, iommu_config.clone()));
+            let drv = io::iommu::api::create_intel_vtd_driver(dmar_addr, iommu_config.clone());
             match register_driver(drv) {
                 Ok(handle) => {
                     info!(target: "init", "Registered Intel VT-d driver");
@@ -434,8 +432,7 @@ fn init_iommu_driver(parser: &io::acpi::AcpiParser, iommu_config: &io::iommu::ru
         }
         Err(_) => match parser.find_table(b"IVRS") {
             Ok(ivrs_addr) => {
-                use crate::io::iommu::backends::amd::driver::AmdViDriver;
-                let drv = Box::new(AmdViDriver::new(ivrs_addr, iommu_config.clone()));
+                let drv = io::iommu::api::create_amd_vi_driver(ivrs_addr, iommu_config.clone());
                 match register_driver(drv) {
                     Ok(handle) => {
                         info!(target: "init", "Registered AMD-Vi driver");
@@ -582,7 +579,7 @@ fn init_single_ahci_controller(dev: &pci_driver::PciDeviceInfo) {
         crate::io::log::early_print("[AHCI] PTE: not present in page tables\n");
     }
 
-    let iommu_device = crate::io::iommu::core::types::DeviceId::new(
+    let iommu_device = crate::io::iommu::types::DeviceId::new(
         dev.segment,
         dev.bdf.bus(),
         dev.bdf.device(),

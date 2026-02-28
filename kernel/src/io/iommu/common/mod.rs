@@ -1,8 +1,7 @@
 // ============================================================================
-// kernel/src/io/iommu/core/mod.rs
+// kernel/src/io/iommu/common/mod.rs
 // ============================================================================
 
-pub(crate) mod types;
 pub(crate) mod interface;
 pub(crate) mod tables;
 pub(crate) mod domain;

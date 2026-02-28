@@ -106,7 +106,7 @@ impl SystemIntegration {
 
         #[cfg(not(test))]
         {
-            if let Err(e) = crate::io::iommu::runtime::pci::setup_iommu_for_all_pci_devices(&mut devices) {
+            if let Err(e) = crate::io::iommu::api::setup_iommu_for_all_pci_devices(&mut devices) {
                 self.log(&alloc::format!(
                     "  [IOMMU][WARNING] Failed to protect one or more PCI devices: {:?}. System may be vulnerable.",
                     e

@@ -2,18 +2,62 @@
 // kernel/src/io/iommu/runtime/security/audit_convert.rs
 // ============================================================================
 
-use super::*;
+use crate::security::audit::{AuditEvent, AuditEventType};
 
+use super::{
+    AtsChangeReason,
+    DeviceTrustLevel,
+    EventAggregate,
+    EventAggregateKey,
+    FMT_BUF_SIZE,
+    IsolationReason,
+    SecurityEvent,
+    fmt_dec_u64,
+    fmt_hex_u64,
+};
+
+/// Log a summary for aggregated events (called periodically).
+pub(crate) fn log_aggregated_event_summary(key: EventAggregateKey, aggregate: EventAggregate) {
+    let mut buf1 = [0u8; FMT_BUF_SIZE];
+    let mut buf2 = [0u8; FMT_BUF_SIZE];
+
+    let audit_event = match key {
+        EventAggregateKey::DmaViolation { source_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("dma_violation_summary")
+            .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
+        EventAggregateKey::DeviceIsolated { source_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("device_isolated_summary")
+            .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
+        EventAggregateKey::QuarantinePoisoned { domain_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("quarantine_poisoned_summary")
+            .field("domain_id", fmt_dec_u64(domain_id as u64, &mut buf1))
+            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
+        EventAggregateKey::FaultStorm { source_id } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("fault_storm_summary")
+            .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+            .field("count", fmt_dec_u64(aggregate.count, &mut buf2)),
+        EventAggregateKey::Other => {
+            if let Some(event) = aggregate.representative {
+                let mut buf3 = [0u8; FMT_BUF_SIZE];
+                return crate::security::audit::log_event(
+                    security_event_to_audit(event)
+                        .field("repeated_count", fmt_dec_u64(aggregate.count, &mut buf3)),
+                );
+            }
+            return;
+        }
+    };
+    crate::security::audit::log_event(audit_event);
+}
 
 /// Convert a SecurityEvent to an AuditEvent using stack-allocated formatting.
-///
-/// # ISR Safety
-///
-/// This function uses stack-allocated buffers for all numeric formatting,
-/// completely avoiding heap allocation. Safe to call from any context
-/// including interrupt handlers and high-priority executor threads.
 pub(crate) fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
-    // Stack-allocated format buffers (no heap allocation)
     let mut buf1 = [0u8; FMT_BUF_SIZE];
     let mut buf2 = [0u8; FMT_BUF_SIZE];
     let mut buf3 = [0u8; FMT_BUF_SIZE];
@@ -39,7 +83,6 @@ pub(crate) fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
             }
         }
         SecurityEvent::DeviceIsolated { source_id, reason } => {
-            // Use static strings for IsolationReason to avoid allocation
             let reason_str = match reason {
                 IsolationReason::DmaFault => "DmaFault",
                 IsolationReason::PolicyViolation => "PolicyViolation",
@@ -52,17 +95,13 @@ pub(crate) fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
                 .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
                 .field("reason", reason_str)
         }
-        SecurityEvent::QuarantinePoisoned { domain_id } => {
-            AuditEvent::new(AuditEventType::IommuEvent, domain_id as u64)
-                .success(false)
-                .message("quarantine_poisoned")
-        }
-        SecurityEvent::EventsDropped { count } => {
-            AuditEvent::new(AuditEventType::IommuEvent, 0)
-                .success(false)
-                .message("events_dropped")
-                .field("count", fmt_dec_u64(count, &mut buf1))
-        }
+        SecurityEvent::QuarantinePoisoned { domain_id } => AuditEvent::new(AuditEventType::IommuEvent, domain_id as u64)
+            .success(false)
+            .message("quarantine_poisoned"),
+        SecurityEvent::EventsDropped { count } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("events_dropped")
+            .field("count", fmt_dec_u64(count, &mut buf1)),
         SecurityEvent::FaultStormDetected {
             source_id,
             fault_count,
@@ -79,7 +118,6 @@ pub(crate) fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
             device_id,
             trust_level,
         } => {
-            // Use static strings for DeviceTrustLevel to avoid allocation
             let trust_str = match trust_level {
                 DeviceTrustLevel::Untrusted => "Untrusted",
                 DeviceTrustLevel::Partial => "Partial",
@@ -98,7 +136,6 @@ pub(crate) fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
             enabled,
             reason,
         } => {
-            // Use static strings for AtsChangeReason to avoid allocation
             let reason_str = match reason {
                 AtsChangeReason::DriverInit => "DriverInit",
                 AtsChangeReason::SecurityPolicy => "SecurityPolicy",

@@ -1,8 +1,8 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/tables.rs
+// kernel/src/io/iommu/vendors/amd/tables.rs
 // ============================================================================
 
-use crate::io::iommu::core::tables::Zeroable;
+use crate::io::iommu::common::tables::Zeroable;
 
 /// AMD-Vi Page Table Entry
 #[repr(transparent)]

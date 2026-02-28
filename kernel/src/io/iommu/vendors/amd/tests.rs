@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/amd/tests.rs
+// kernel/src/io/iommu/vendors/amd/tests.rs
 // ============================================================================
 
 //! Unit tests for the AMD-Vi IOMMU subsystem.
@@ -12,15 +12,15 @@ use x86_64::PhysAddr;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
 use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
-use crate::io::iommu::core::domain::IommuDomain as DomainState;
-use crate::io::iommu::core::dma::page_table_pool::PageTablePool;
+use crate::io::iommu::common::domain::IommuDomain as DomainState;
+use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::runtime::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
-use crate::io::iommu::core::dma::iova_allocator::IovaAllocator;
+use crate::io::iommu::common::dma::iova_allocator::{IovaAllocator, IovaAllocatorFast};
 use crate::sync::PoisonLock;
 
-use crate::io::iommu::core::domain::map_ivmd_ranges;
+use crate::io::iommu::common::domain::map_ivmd_ranges;
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;
 use super::{AmdDomainInfo, AmdIommuDriver, AmdIommuUnit, AmdIvmdRange};
 
@@ -260,6 +260,7 @@ fn test_map_for_device_rejects_exclusion_range() {
 // Wave1 test support
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct TestMockNotifier;
 
 impl SecurityNotifier for TestMockNotifier {

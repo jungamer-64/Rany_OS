@@ -1,18 +1,18 @@
 // ============================================================================
-// kernel/src/io/iommu/core/domain/mod.rs
+// kernel/src/io/iommu/common/domain/mod.rs
 // ============================================================================
 
-use crate::io::iommu::core::interface::IommuHardwareContext;
-use crate::io::iommu::core::dma::mapping_slab::MappingSlab;
-use crate::io::iommu::core::dma::page_table_pool::{
+use crate::io::iommu::common::interface::IommuHardwareContext;
+use crate::io::iommu::common::dma::mapping_slab::MappingSlab;
+use crate::io::iommu::common::dma::page_table_pool::{
     dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
 };
 use crate::io::iommu::runtime::quarantine::QuarantineQueue;
-use crate::io::iommu::core::tables::{
+use crate::io::iommu::common::tables::{
     PT_ENTRIES, PT_LEVELS, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
-use crate::io::iommu::core::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::backends::amd::tables::AmdPte;
+use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::vendors::amd::tables::AmdPte;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -27,6 +27,9 @@ mod paging;
 mod identity_mapping;
 mod map_ops;
 mod unmap_ops;
+
+#[cfg(test)]
+pub(crate) use crate::io::iommu::vendors::amd::map_ivmd_ranges;
 
 // ============================================================================
 // Invalidation Request Pattern
@@ -720,7 +723,7 @@ pub struct IommuDomain {
     /// Pre-allocated contexts for zero-allocation flush (Phase 5)
     flush_context: PoisonLock<crate::io::iommu::runtime::quarantine::FlushContext>,
     /// Phase 6: Page table recycling pool (shared with controller)
-    page_table_pool: Arc<crate::io::iommu::core::dma::page_table_pool::PageTablePool>,
+    page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)
     pte_format: PteFormat,
     /// Optional security notifier for fatal domain errors
@@ -742,7 +745,7 @@ pub struct IommuDomain {
     /// - Full 48-bit IOVA space per domain for ASLR
     /// - Per-domain resource accounting
     /// - 32-bit devices don't compete for low addresses
-    per_domain_iova: crate::io::iommu::core::dma::iova_allocator::IovaAllocator,
+    per_domain_iova: crate::io::iommu::common::dma::iova_allocator::IovaAllocator,
     /// DMA Resource Registry (Phase 8: Leak Prevention)
     ///
     /// Tracks all active DmaHandles belonging to this domain.
@@ -758,5 +761,5 @@ pub struct IommuDomain {
     ///
     /// When a page table becomes empty during unmap, it is moved here.
     /// The next flush() operation will return them to the page_table_pool.
-    pub(crate) pending_pt_release: PoisonLock<Vec<crate::io::iommu::core::dma::page_table_pool::PooledPt>>,
+    pub(crate) pending_pt_release: PoisonLock<Vec<crate::io::iommu::common::dma::page_table_pool::PooledPt>>,
 }

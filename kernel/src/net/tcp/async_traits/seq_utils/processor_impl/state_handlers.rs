@@ -98,29 +98,39 @@ impl TcpProcessor {
         const TWO_MSL_US: u64 = 240_000_000;
         const HANDSHAKE_TIMEOUT_US: u64 = 60_000_000;
         let current_time = crate::task::timer::current_tick();
+        let mut semi_open_removed = 0;
 
         self.connections.retain(|_, tcb_lock| {
             if let Ok(tcb) = tcb_lock.lock() {
-                match tcb.state() {
-                    TcpState::Closed => false,
+                let (should_remove, is_semi_open) = match tcb.state() {
+                    TcpState::Closed => (true, false),
                     TcpState::TimeWait => {
                         // Keep if 2MSL has not yet passed
                         let entered = tcb.time_wait_entered_or_last_activity();
                         let elapsed = current_time.saturating_sub(entered);
-                        elapsed < TWO_MSL_US
+                        (! (elapsed < TWO_MSL_US), false)
                     }
                     TcpState::SynSent | TcpState::SynReceived => {
                         // Remove stale handshakes (DoS protection)
                         let elapsed = current_time.saturating_sub(tcb.created_at());
-                        elapsed < HANDSHAKE_TIMEOUT_US
+                        (! (elapsed < HANDSHAKE_TIMEOUT_US), true)
                     }
-                    _ => true,
+                    _ => (false, false),
+                };
+                if should_remove && is_semi_open {
+                    semi_open_removed += 1;
                 }
+                !should_remove
             } else {
                 // If lock is poisoned, remove the connection
+                // We don't know if it was semi-open, but better to be safe and not decrement
+                // unless we are sure, or maybe we SHOULD decrement if it was in SYN-RECEIVED state?
+                // But we can't know the state if it's poisoned.
                 false
             }
         });
+
+        self.semi_open_count = self.semi_open_count.saturating_sub(semi_open_removed);
     }
 
     /// Check for retransmission timeouts and generate retransmit packets

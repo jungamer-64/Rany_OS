@@ -1,7 +1,7 @@
 use super::*;
 use crate::io::virtio::virtqueue::vring_flags;
 use crate::io::iommu::types::DmaAddr;
-use crate::io::iommu::runtime::security::is_global_dma_mapping_allowed;
+use crate::io::iommu::api::is_global_dma_mapping_allowed;
 
 
 mod async_io;

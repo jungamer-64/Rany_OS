@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/backends/intel/controller/iova.rs
+// kernel/src/io/iommu/vendors/intel/controller/iova.rs
 // ============================================================================
 
 //! IOVA (I/O Virtual Address) Management Methods
@@ -10,8 +10,8 @@
 //! per-CPU magazine caching, providing O(1) allocation/free for 4KB/2MB/1GB pages.
 
 use super::IommuController;
-use crate::io::iommu::core::dma::iova_allocator::{IovaAllocator, PageGranularity};
-use crate::io::iommu::core::types::IommuError;
+use crate::io::iommu::common::dma::iova_allocator::{IovaAllocator, PageGranularity};
+use crate::io::iommu::types::IommuError;
 
 pub trait IovaManager {
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError>;
