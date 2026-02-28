@@ -26,7 +26,7 @@ pub mod error;
 pub mod connection;
 pub mod crypto;
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 mod tests;
 
 #[cfg(feature = "qemu-test-export")]

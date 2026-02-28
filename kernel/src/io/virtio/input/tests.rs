@@ -5,6 +5,14 @@ use core::sync::atomic::Ordering;
 use super::*;
 use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 
+fn align_up(value: usize, align: usize) -> usize {
+    if align == 0 {
+        value
+    } else {
+        (value + align - 1) & !(align - 1)
+    }
+}
+
 struct NoopTransport;
 
 impl VirtioTransport for NoopTransport {

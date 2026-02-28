@@ -5,6 +5,14 @@ use core::sync::atomic::Ordering;
 use super::*;
 use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 
+fn align_up(value: usize, align: usize) -> usize {
+    if align == 0 {
+        value
+    } else {
+        (value + align - 1) & !(align - 1)
+    }
+}
+
 /// Noop transport for unit-testing balloon without real hardware
 struct NoopTransport {
     /// Simulated config space (at least 8 bytes for num_pages + actual)
