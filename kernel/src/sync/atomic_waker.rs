@@ -628,6 +628,9 @@ mod tests {
         // Lock-free implementation wakes directly from ISR context
         atomic_waker.wake_from_isr();
 
+        // Process deferred wakes since ISR wake is now deferred for safety
+        process_deferred_wakes();
+
         // With lock-free implementation, wake should be immediate
         assert!(flag.load(Ordering::Acquire), "expected immediate wake");
         assert!(!atomic_waker.has_waker());

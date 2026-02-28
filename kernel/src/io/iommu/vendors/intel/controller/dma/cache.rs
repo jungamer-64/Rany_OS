@@ -11,8 +11,4 @@
 
 #![allow(deprecated)]
 
-#[deprecated(
-    note = "context cache moved to `crate::io::iommu::vendors::intel::controller::context_cache`"
-)]
-pub use crate::io::iommu::vendors::intel::controller::context_cache::*;
 

@@ -115,7 +115,7 @@ pub fn register_protected_range(start: u64, size: u64) {
 pub fn unregister_protected_range(start: u64, size: u64) {
     if size == 0 { return; }
     let end = start.saturating_add(size);
-    let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
+    let _boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
 
     // Always check the regions list to ensure consistency, 
     // as even small ranges could be part of a larger region in the list.

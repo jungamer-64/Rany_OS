@@ -338,7 +338,7 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
     };
     
     // 脆弱性修正: 参照カウントのチェックとPTEの更新をアトミックに行うためロックを保持
-    let mut manager = match PAGE_REF_MANAGER.lock() {
+    let manager = match PAGE_REF_MANAGER.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };

@@ -58,12 +58,12 @@ pub enum BuildError {
     CargoFailed { step: &'static str, exit_code: i32 },
     CommandLaunch {
         step: &'static str,
-        program: &'static str,
+        program: String,
         source: std::io::Error,
     },
     CommandFailed {
         step: &'static str,
-        program: &'static str,
+        program: String,
         exit_code: i32,
     },
     ArtifactMissing { step: &'static str, path: PathBuf },
@@ -189,7 +189,7 @@ fn run_cargo(root: &Path, step: &'static str, args: &[&str]) -> Result<(), Build
 fn run_command(
     root: &Path,
     step: &'static str,
-    program: &'static str,
+    program: &str,
     args: &[&str],
 ) -> Result<(), BuildError> {
     let status = Command::new(program)
@@ -198,7 +198,7 @@ fn run_command(
         .status()
         .map_err(|source| BuildError::CommandLaunch {
             step,
-            program,
+            program: program.to_string(),
             source,
         })?;
 
@@ -208,7 +208,7 @@ fn run_command(
 
     Err(BuildError::CommandFailed {
         step,
-        program,
+        program: program.to_string(),
         exit_code: status.code().unwrap_or(-1),
     })
 }
@@ -448,10 +448,36 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
     }
 }
 
+pub fn build_signer() -> Result<PathBuf, BuildError> {
+    let root = workspace_root();
+    run_cargo(
+        &root,
+        "build kernel-signer",
+        &["build", "--manifest-path", "tools/signer/Cargo.toml", "--release"],
+    )?;
+
+    let path = root
+        .join("tools")
+        .join("signer")
+        .join("target")
+        .join("release")
+        .join("kernel-signer");
+
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(BuildError::ArtifactMissing {
+            step: "build kernel-signer",
+            path,
+        })
+    }
+}
+
 pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, BuildError> {
     let root = workspace_root();
     let exoloader_path = build_exoloader_efi()?;
     let kernel_elf_path = build_kernel_elf()?;
+    let signer_path = build_signer()?;
 
     let label = fullboot_label(config);
     let boot_root = root.join("target").join("qemu-boot").join(format!("fullboot-{label}"));
@@ -475,17 +501,29 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
     })?;
 
     let kernel_payload_path = boot_root.join("rany_os");
-    let kernel_bytes = std::fs::read(&kernel_elf_path).map_err(|source| BuildError::Io {
-        step: "read kernel elf",
-        source,
-    })?;
-    let mut payload = Vec::with_capacity(64 + kernel_bytes.len());
-    payload.resize(64, 0);
-    payload.extend_from_slice(&kernel_bytes);
-    std::fs::write(&kernel_payload_path, payload).map_err(|source| BuildError::Io {
-        step: "write signed kernel payload",
-        source,
-    })?;
+    let secret_key_path = root.join("keys").join("kernel.key");
+
+    if !secret_key_path.exists() {
+        return Err(BuildError::ArtifactMissing {
+            step: "locate kernel signing key",
+            path: secret_key_path,
+        });
+    }
+
+    run_command(
+        &root,
+        "sign kernel",
+        signer_path.to_str().unwrap(),
+        &[
+            "sign",
+            "--kernel",
+            kernel_elf_path.to_str().unwrap(),
+            "--secret-key",
+            secret_key_path.to_str().unwrap(),
+            "--output",
+            kernel_payload_path.to_str().unwrap(),
+        ],
+    )?;
 
     let kernel_out_dir = kernel_elf_path.parent().ok_or_else(|| BuildError::ArtifactMissing {
         step: "locate kernel output directory",
@@ -766,6 +804,10 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
             .arg(format!("file={},if=none,id=storage0,format=raw", storage_disk.display()))
             .arg("-device")
             .arg("virtio-blk-pci,drive=storage0");
+    }
+
+    if config.profile == "iommu" {
+        qemu_cmd.arg("-device").arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
     }
 
     for extra in &config.extra_args {

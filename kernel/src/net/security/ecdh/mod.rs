@@ -299,7 +299,7 @@ pub mod p256 {
     }
 
     /// キャリーと最終正規化を適用して result mod p を返す (Constant-time version)
-    fn normalize_mod_p(mut result: P256FieldElement, carry: i64) -> P256FieldElement {
+    fn normalize_mod_p(result: P256FieldElement, carry: i64) -> P256FieldElement {
         // NISTリダクションの結果は -4p < res < 6p の範囲に収まる。
         // キャリー（256ビット境界を超える分）を正規化するため、
         // 常に最大回数の加算/減算を行い、ct_select で必要な結果を選ぶ。
@@ -308,8 +308,8 @@ pub mod p256 {
 
         // 負のキャリー（最大4回）を解消するために4pを加算
         for _ in 0..4 {
-            let added = result.add(&p_fe);
-            let condition = (carry < 0) as u8; // 実際にはキャリーの値に応じて微調整が必要だが、
+            let _added = result.add(&p_fe);
+            let _condition = (carry < 0) as u8; // 実際にはキャリーの値に応じて微調整が必要だが、
                                               // ここでは単純化のため carry ごとに ct_select
             // 実際には carry は固定ではないので、このループも改善が必要
         }
@@ -339,8 +339,8 @@ pub mod p256 {
         }
 
         // 最後に [0, p) に収めるための最終調整 (add/sub 内部で行われるが念のため)
-        let subbed = val.sub(&p_fe);
-        let is_above = 1u8; // sub内部で判定される
+        let _subbed = val.sub(&p_fe);
+        let _is_above = 1u8; // sub内部で判定される
         // 実は add/sub 自体が mod p 正規化を行うので、
         // ここでのループは carry (256ビット超え) の処理に専念すればよい。
         
@@ -668,7 +668,7 @@ pub mod p256 {
     // p256_parsing モジュールの公開関数を p256 名前空間から再エクスポート
     pub use crate::net::security::ecdh::ecdsa_p256_verify;
     pub use crate::net::security::ecdh::parse_uncompressed_point;
-    pub use crate::net::security::ecdh::scalar_is_valid;
+    
     
     
     

@@ -433,7 +433,7 @@ impl IommuDomain {
     pub fn flush<I: IommuInvalidator>(
         &self,
         invalidator: &I,
-        context: &dyn IommuHardwareContext,
+        _context: &dyn IommuHardwareContext,
     ) -> Result<(), IommuError> {
         let mut fctx = self
             .flush_context

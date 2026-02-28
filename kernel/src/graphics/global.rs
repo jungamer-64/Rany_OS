@@ -158,7 +158,7 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
 
     crate::io::log::early_print("[GFX] map_framebuffer_vram entry\n");
 
-    let mut manager = unsafe { PageTableManager::from_current_cr3(offset) };
+    let _manager = unsafe { PageTableManager::from_current_cr3(offset) };
 
     // Use a dedicated virtual address range for MMIO mappings
     // We'll use HHDM_OFFSET + phys_addr but explicitly map it
@@ -203,7 +203,7 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
 /// Write-Combiningに変更して、描画パフォーマンスを向上させる。
 fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     let offset = physical_memory_offset();
-    let mut manager = unsafe { PageTableManager::from_current_cr3(offset) };
+    let manager = unsafe { PageTableManager::from_current_cr3(offset) };
 
     // 仮想アドレスと物理アドレスの開始位置を取得
     let virt_start = VirtAddr::new(virt_addr);

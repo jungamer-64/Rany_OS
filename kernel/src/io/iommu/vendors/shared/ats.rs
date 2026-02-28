@@ -7,8 +7,6 @@
 //! This module contains structures for
 //! Page Request handling, which are part of the ATS/PRI extensions.
 
-use alloc::vec::Vec;
-use core::sync::atomic::AtomicU64;
 
 // Convenience wrappers for contiguous frame allocation
 use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};

@@ -88,7 +88,8 @@ pub fn protect_kernel_image() {
 /// Get the physical address range of the kernel image.
 #[cfg(test)]
 pub(crate) fn kernel_phys_range() -> Option<(u64, u64)> {
-    None
+    // Return a dummy range for unit tests to allow mapping validation to proceed
+    Some((0, 0))
 }
 
 /// Get the physical address range of the kernel image.

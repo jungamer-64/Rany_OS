@@ -47,6 +47,7 @@ pub enum RuntimeGroup {
     Boot,
     Storage,
     DriverCell,
+    Iommu,
 }
 
 pub struct RuntimeTestCase {
@@ -80,6 +81,7 @@ fn is_known_profile(profile: &str) -> bool {
         || str_eq(profile, "boot-smoke")
         || str_eq(profile, "storage")
         || str_eq(profile, "driver_cell")
+        || str_eq(profile, "iommu")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +119,16 @@ fn storage_integration_suite() -> RuntimeTestResult {
         RuntimeTestResult::pass()
     } else {
         RuntimeTestResult::fail("integration suite failures")
+    }
+}
+
+fn iommu_integration_suite() -> RuntimeTestResult {
+    let suite = crate::test::integration::test_iommu();
+    suite.print_summary();
+    if suite.failed() == 0 {
+        RuntimeTestResult::pass()
+    } else {
+        RuntimeTestResult::fail("iommu suite failures")
     }
 }
 
@@ -159,6 +171,12 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Storage,
     },
     RuntimeTestCase {
+        id: "iommu.integration_suite",
+        run: iommu_integration_suite,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Iommu,
+    },
+    RuntimeTestCase {
         id: "driver_cell.runtime_suite",
         run: driver_cell_runtime_suite,
         tier: RuntimeTier::PrRequired,
@@ -177,6 +195,8 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
         matches!(case.group, RuntimeGroup::Storage)
     } else if str_eq(profile, "driver_cell") {
         matches!(case.group, RuntimeGroup::DriverCell)
+    } else if str_eq(profile, "iommu") {
+        matches!(case.group, RuntimeGroup::Iommu)
     } else {
         false
     }

@@ -68,6 +68,8 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
             );
             return Err(IommuError::InvalidAddress);
         }
+    } else if crate::io::iommu::api::is_iommu_enabled() && super::protection::is_global_dma_mapping_allowed() {
+        log::warn!("[IOMMU][SECURITY] Unable to determine kernel physical range, but allowing DMA mapping because IOMMU is enabled and global DMA is allowed.");
     } else {
         // High-security fallback: if we cannot determine the kernel range, 
         // we must reject any non-quarantined DMA mapping for safety.

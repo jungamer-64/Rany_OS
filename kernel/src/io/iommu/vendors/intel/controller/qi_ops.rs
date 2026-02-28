@@ -11,9 +11,6 @@ use core::sync::atomic::Ordering;
 use super::utils::IommuUtils;
 use super::{InvalidationWaiter, IommuController};
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::common::domain::{
-    InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
-};
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
 use crate::io::iommu::vendors::intel::registers::{regs, fsts_bits};
 

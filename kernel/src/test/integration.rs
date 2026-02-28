@@ -20,6 +20,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use x86_64::PhysAddr;
 
 /// Integration test result (different from main TestResult)
 #[derive(Debug, Clone)]
@@ -425,6 +426,52 @@ pub fn test_storage() -> IntegrationTestSuite {
             Ok(n) if n == buf.len() => Ok(String::from("NVMe read ok")),
             Ok(n) => Err(alloc::format!("NVMe read size mismatch: {}", n)),
             Err(e) => Err(alloc::format!("NVMe read failed: {:?}", e)),
+        }
+    }));
+
+    suite
+}
+
+// ============================================================================
+// IOMMU Test Suite
+// ============================================================================
+
+pub fn test_iommu() -> IntegrationTestSuite {
+    let mut suite = IntegrationTestSuite::new("IOMMU");
+
+    // Test IOMMU detection
+    suite.add_result(run_test("iommu_detection", || {
+        if crate::io::iommu::api::is_iommu_enabled() {
+            Ok(String::from("IOMMU detected and enabled"))
+        } else {
+            Err(String::from("IOMMU not detected or disabled"))
+        }
+    }));
+
+    // Test IOMMU DMA mapping
+    suite.add_result(run_test("iommu_dma_map_basic", || {
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Err(String::from("IOMMU not enabled, skipping DMA test"));
+        }
+
+        // Test basic mapping through the public API
+        let phys_addr = 0x2000_0000; // Assume this is safe in QEMU
+        let size = 0x1000;
+        let iova = 0x8000_0000u64;
+
+        // Note: In real hardware this might fail if the IOMMU doesn't support
+        // the requested IOVA or if there's no backend, but here we expect
+        // a functioning IOMMU if is_iommu_enabled() is true.
+        
+        // We use a dummy device ID for testing
+        let device_id = crate::io::iommu::types::DeviceId::new(0, 0, 0, 0);
+
+        match unsafe { crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size) } {
+            Ok(mapped_iova) => {
+                let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
+                Ok(alloc::format!("Successfully mapped and unmapped IOVA 0x{:x}", mapped_iova))
+            },
+            Err(e) => Err(alloc::format!("IOMMU mapping failed: {:?}", e)),
         }
     }));
 

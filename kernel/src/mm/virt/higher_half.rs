@@ -17,7 +17,6 @@
 
 #![allow(dead_code)]
 
-use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
