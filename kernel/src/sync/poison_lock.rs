@@ -539,6 +539,22 @@ impl<T: ?Sized> IrqPoisonLock<T> {
     pub fn clear_poison(&self) {
         self.poisoned.store(false, Ordering::Release);
     }
+
+    /// 初期化時用のロック（毒入れされていても無視して取得し、初期化後に毒をクリアする）
+    pub fn lock_for_init(&self, context: &str) -> IrqPoisonLockGuard<'_, T> {
+        if self.is_poisoned() {
+            log::warn!("[IrqPoisonLock] Recovering poisoned lock during init: {}", context);
+            self.clear_poison();
+        }
+        match self.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                // 既にクリアしたはずだが、レースコンディション等で再度発生した場合は
+                // into_inner() で強制的に取得
+                err.into_inner()
+            }
+        }
+    }
 }
 
 /// IrqPoisonLockのガード

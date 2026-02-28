@@ -22,6 +22,8 @@ use core::fmt;
 /// IPv4 address (4 bytes)
 mod pmtu_cache_impl;
 pub use pmtu_cache_impl::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv4Address([u8; 4]);
 

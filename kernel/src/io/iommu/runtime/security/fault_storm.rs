@@ -7,19 +7,23 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use super::IsolationReason;
 
 /// Maximum number of devices to track for fault rate limiting.
-const MAX_TRACKED_DEVICES: usize = 64;
+const MAX_TRACKED_DEVICES: usize = 256;
 
 /// Fault threshold: number of faults within the time window before isolation.
-const FAULT_STORM_THRESHOLD: u32 = 10;
+const FAULT_STORM_THRESHOLD: u32 = 20;
 
 /// Time window for fault rate calculation in milliseconds.
 const FAULT_STORM_WINDOW_MS: u32 = 1000;
+
+/// Stale entry threshold: if no faults for this long, the entry can be reused.
+const STALE_ENTRY_TIMEOUT_MS: u64 = 60_000; // 1 minute
 
 /// Per-device fault tracking entry.
 struct DeviceFaultEntry {
     source_id: AtomicU32,
     fault_count: AtomicU32,
     window_start: AtomicU64,
+    last_fault_time: AtomicU64,
     isolated: AtomicU32,
 }
 
@@ -29,12 +33,21 @@ impl DeviceFaultEntry {
             source_id: AtomicU32::new(0),
             fault_count: AtomicU32::new(0),
             window_start: AtomicU64::new(0),
+            last_fault_time: AtomicU64::new(0),
             isolated: AtomicU32::new(0),
         }
     }
 
     fn is_unused(&self) -> bool {
         self.source_id.load(Ordering::Relaxed) == 0
+    }
+
+    fn is_stale(&self, current_time_ms: u64) -> bool {
+        if self.is_isolated() {
+            return false;
+        }
+        let last = self.last_fault_time.load(Ordering::Relaxed);
+        current_time_ms.saturating_sub(last) > STALE_ENTRY_TIMEOUT_MS
     }
 
     fn matches(&self, source_id: u16) -> bool {
@@ -50,6 +63,7 @@ impl DeviceFaultEntry {
     }
 
     fn record_fault(&self, current_time_ms: u64) -> (u32, bool) {
+        self.last_fault_time.store(current_time_ms, Ordering::Relaxed);
         let window_start = self.window_start.load(Ordering::Relaxed);
         let elapsed = current_time_ms.saturating_sub(window_start);
 
@@ -65,12 +79,19 @@ impl DeviceFaultEntry {
     }
 
     fn try_claim(&self, source_id: u16, current_time_ms: u64) -> bool {
+        // Try to claim if unused or stale
+        let current_sid = self.source_id.load(Ordering::Relaxed);
+        if current_sid != 0 && !self.is_stale(current_time_ms) {
+            return false;
+        }
+
         if self
             .source_id
-            .compare_exchange(0, source_id as u32, Ordering::AcqRel, Ordering::Relaxed)
+            .compare_exchange(current_sid, source_id as u32, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
             self.window_start.store(current_time_ms, Ordering::Relaxed);
+            self.last_fault_time.store(current_time_ms, Ordering::Relaxed);
             self.fault_count.store(0, Ordering::Relaxed);
             self.isolated.store(0, Ordering::Relaxed);
             true

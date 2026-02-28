@@ -111,13 +111,13 @@ impl IommuController {
                     let source_id = device.requester_id();
                     match (iova, am) {
                         (Some(iova_val), Some(am_val)) => {
-                            let _ = self.qi_invalidate_device_tlb_range(source_id, iova_val, am_val);
+                            self.qi_invalidate_device_tlb_range(source_id, iova_val, am_val)?;
                         }
                         (Some(iova_val), None) => {
-                            let _ = self.qi_invalidate_device_tlb_page(source_id, iova_val);
+                            self.qi_invalidate_device_tlb_page(source_id, iova_val)?;
                         }
                         _ => {
-                            let _ = self.qi_invalidate_device_tlb_all(source_id);
+                            self.qi_invalidate_device_tlb_all(source_id)?;
                         }
                     }
                 }

@@ -8,8 +8,6 @@ use super::*;
 /// 非同期読み取りトレイト
 mod seq_utils;
 pub use seq_utils::*;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use self::seq_utils::tests;
 pub trait AsyncRead {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -506,7 +504,7 @@ impl TcpListener {
 
 /// 接続Future
 pub(crate) struct ConnectFuture {
-    tcb: Arc<PoisonLock<TcpControlBlock>>,
+    pub(crate) tcb: Arc<PoisonLock<TcpControlBlock>>,
 }
 
 impl Future for ConnectFuture {
@@ -533,9 +531,9 @@ impl Future for ConnectFuture {
 
 /// Connect future with timeout support
 pub(crate) struct ConnectTimeoutFuture {
-    tcb: Arc<PoisonLock<TcpControlBlock>>,
-    start_us: u64,
-    timeout_us: u64,
+    pub(crate) tcb: Arc<PoisonLock<TcpControlBlock>>,
+    pub(crate) start_us: u64,
+    pub(crate) timeout_us: u64,
 }
 
 impl Future for ConnectTimeoutFuture {
@@ -628,7 +626,7 @@ impl<'a> Future for FlushFuture<'a> {
 
 /// Accept Future
 pub(crate) struct AcceptFuture<'a> {
-    listener: &'a TcpListener,
+    pub(crate) listener: &'a TcpListener,
 }
 
 impl<'a> Future for AcceptFuture<'a> {

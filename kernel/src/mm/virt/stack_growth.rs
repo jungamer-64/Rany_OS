@@ -24,7 +24,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
-use spin::RwLock;
+use crate::sync::IrqPoisonLock;
 
 use super::higher_half::{PageFlags, MapError, VirtAddr};
 use crate::mm::meta::memcg::ChargeType; // for memcg page charges
@@ -178,7 +178,7 @@ impl StackManager {
     }
 }
 
-static STACK_MANAGER: RwLock<StackManager> = RwLock::new(StackManager::new());
+static STACK_MANAGER: IrqPoisonLock<StackManager> = IrqPoisonLock::new(StackManager::new());
 
 // ============================================================================
 // Statistics
@@ -247,7 +247,10 @@ pub enum StackResult {
 pub fn handle_stack_fault(task_id: u64, fault_addr: VirtAddr) -> StackResult {
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
     
-    let mut manager = STACK_MANAGER.write();
+    let mut manager = match STACK_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     let stack = match manager.get_mut(task_id) {
         Some(s) => s,
         None => return StackResult::NotFound,
@@ -379,7 +382,10 @@ pub fn create_stack(task_id: u64, stack_top: VirtAddr, initial_size: u64, max_si
         addr += 4096;
     }
     
-    STACK_MANAGER.write().register(task_id, stack);
+    match STACK_MANAGER.lock() {
+        Ok(mut guard) => guard.register(task_id, stack),
+        Err(poisoned) => poisoned.into_inner().register(task_id, stack),
+    }
     
     StackResult::Ok
 }
@@ -388,7 +394,10 @@ pub fn create_stack(task_id: u64, stack_top: VirtAddr, initial_size: u64, max_si
 pub fn set_stack_limit(task_id: u64, new_limit: u64) -> StackResult {
     let new_limit = new_limit.clamp(MIN_STACK_SIZE, MAX_STACK_SIZE);
     
-    let mut manager = STACK_MANAGER.write();
+    let mut manager = match STACK_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     if let Some(stack) = manager.get_mut(task_id) {
         // 現在のサイズより小さくはできない
         if new_limit < stack.current_size() {
@@ -406,7 +415,10 @@ pub fn set_stack_limit(task_id: u64, new_limit: u64) -> StackResult {
 
 /// スタック情報を取得
 pub fn get_stack_info(task_id: u64) -> Option<StackInfo> {
-    let manager = STACK_MANAGER.read();
+    let manager = match STACK_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     manager.get(task_id).map(|s| StackInfo {
         stack_top: s.stack_top,
         current_bottom: s.current_bottom,
@@ -434,7 +446,10 @@ pub struct StackInfo {
 
 /// スタックを削除
 pub fn remove_stack(task_id: u64) -> Option<StackRegion> {
-    STACK_MANAGER.write().remove(task_id)
+    match STACK_MANAGER.lock() {
+        Ok(mut guard) => guard.remove(task_id),
+        Err(poisoned) => poisoned.into_inner().remove(task_id),
+    }
 }
 
 // ============================================================================
@@ -443,7 +458,10 @@ pub fn remove_stack(task_id: u64) -> Option<StackRegion> {
 
 /// スタックポインタが有効な範囲内か検証
 pub fn validate_stack_pointer(task_id: u64, sp: VirtAddr) -> bool {
-    let manager = STACK_MANAGER.read();
+    let manager = match STACK_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     if let Some(stack) = manager.get(task_id) {
         // スタック範囲内または拡張可能範囲内
         stack.contains(sp) || stack.can_grow_to(sp)
@@ -454,7 +472,10 @@ pub fn validate_stack_pointer(task_id: u64, sp: VirtAddr) -> bool {
 
 /// 現在のスタック使用量を取得
 pub fn get_stack_usage(task_id: u64, current_sp: VirtAddr) -> Option<u64> {
-    let manager = STACK_MANAGER.read();
+    let manager = match STACK_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     manager.get(task_id).map(|stack| {
         stack.stack_top.as_u64().saturating_sub(current_sp.as_u64())
     })

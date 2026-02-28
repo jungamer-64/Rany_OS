@@ -7,14 +7,14 @@
 //! as part of the zero-copy networking stack.
 
 use super::ethernet::MacAddress;
-use super::ipv4::Ipv4Address;
+use crate::net::l3::ipv4::Ipv4Address;
 use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// ARP hardware type
 pub(crate) mod processor_impl;
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use self::processor_impl::tests;
+pub mod tests;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum ArpHardwareType {

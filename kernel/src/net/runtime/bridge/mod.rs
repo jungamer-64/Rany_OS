@@ -6,11 +6,11 @@
 //! 送信コールバック設定と受信パケット処理を統合します。
 
 
-use super::ethernet::MacAddress;
-use super::ipv4::{Ipv4Address, Ipv4Config};
-use super::optimization::{BatchConfig, BatchProcessor};
-use super::stack::{self, NetworkConfig};
-use super::manager;
+use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
+use crate::net::l2::ethernet::MacAddress;
+use crate::net::l3::ipv4::{Ipv4Address, Ipv4Config};
+use crate::net::runtime::manager::{self, NetIfId};
+use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::net::api::shell::{ArpCacheEntry, NetworkConfigSnapshot, NetworkStatsSnapshot};
 use crate::net::obs::{
     counters,
@@ -52,11 +52,11 @@ static BATCH_PROCESSOR: BatchProcessor = BatchProcessor::new(BatchConfig {
 });
 
 /// Per-interface bridge stats (transitional; stack path is still single-instance).
-static BRIDGE_IF_STATS: RwLock<BTreeMap<super::NetIfId, BridgeInterfaceStats>> =
+static BRIDGE_IF_STATS: RwLock<BTreeMap<NetIfId, BridgeInterfaceStats>> =
     RwLock::new(BTreeMap::new());
 
 /// Primary interface used by legacy bridge wrappers.
-static PRIMARY_BRIDGE_IF: RwLock<Option<super::NetIfId>> = RwLock::new(None);
+static PRIMARY_BRIDGE_IF: RwLock<Option<NetIfId>> = RwLock::new(None);
 
 // ============================================================================
 // NAT (Network Address Translation) support
@@ -64,7 +64,7 @@ static PRIMARY_BRIDGE_IF: RwLock<Option<super::NetIfId>> = RwLock::new(None);
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 /// Records routing events (if_id,destination) for unit tests.
-static FORWARD_EVENTS: RwLock<Vec<(super::NetIfId, super::Ipv4Address)>> =
+static FORWARD_EVENTS: RwLock<Vec<(NetIfId, Ipv4Address)>> =
     RwLock::new(Vec::new());
 
 const NAT_EPHEMERAL_START: u16 = 40_000;
@@ -76,11 +76,11 @@ const NAT_GC_EVERY_RX_MASK: u64 = 0xFF;
 #[derive(Clone, Copy)]
 struct NatEntry {
     protocol: crate::net::l3::ipv4::IpProtocol,
-    external_addr: super::Ipv4Address,
-    remote_addr: super::Ipv4Address,
+    external_addr: Ipv4Address,
+    remote_addr: Ipv4Address,
     remote_port: u16,
-    egress_if: super::NetIfId,
-    internal_addr: super::Ipv4Address,
+    egress_if: NetIfId,
+    internal_addr: Ipv4Address,
     internal_port: u16,
     last_seen: u64,
 }
@@ -96,12 +96,12 @@ static NAT_NEXT_PORT: AtomicU16 = AtomicU16::new(NAT_EPHEMERAL_START);
 /// Returns (translated_src_ip, translated_src_port).
 fn nat_translate_out(
     protocol: crate::net::l3::ipv4::IpProtocol,
-    internal_ip: super::Ipv4Address,
+    internal_ip: Ipv4Address,
     internal_port: u16,
-    remote_ip: super::Ipv4Address,
+    remote_ip: Ipv4Address,
     remote_port: u16,
-    out_if_id: super::NetIfId,
-) -> (super::Ipv4Address, u16) {
+    out_if_id: NetIfId,
+) -> (Ipv4Address, u16) {
     // determine external IP from interface config
     let mut ext_ip = internal_ip;
     if let Ok(iface_opt) = manager::get_interface(out_if_id) {
@@ -178,9 +178,9 @@ fn nat_translate_out(
 /// Caller should recompute checksums.
 fn nat_translate_in(
     protocol: crate::net::l3::ipv4::IpProtocol,
-    src_ip: super::Ipv4Address,
+    src_ip: Ipv4Address,
     src_port: u16,
-    dst_ip: &mut super::Ipv4Address,
+    dst_ip: &mut Ipv4Address,
     dst_port: &mut u16,
 ) -> bool {
     // Only DNAT packets that are actually addressed to one of our local IPs.
@@ -219,8 +219,8 @@ fn transport_checksum_offset(protocol: crate::net::l3::ipv4::IpProtocol) -> Opti
 
 fn recompute_ipv4_transport_checksum(
     transport: &mut [u8],
-    src_ip: super::Ipv4Address,
-    dst_ip: super::Ipv4Address,
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
     protocol: crate::net::l3::ipv4::IpProtocol,
 ) {
     let Some(checksum_off) = transport_checksum_offset(protocol) else {
@@ -271,7 +271,7 @@ fn nat_maybe_gc(rx_packets_after_increment: u64) {
 }
 
 /// Determine if the given IPv4 address is assigned to any local interface.
-fn is_local_ipv4(addr: super::Ipv4Address) -> bool {
+fn is_local_ipv4(addr: Ipv4Address) -> bool {
     if let Ok(routes) = manager::NETWORK_MANAGER.lock() {
         if let Some(mgr) = routes.as_ref() {
             for iface in mgr.list_interfaces() {
@@ -286,7 +286,7 @@ fn is_local_ipv4(addr: super::Ipv4Address) -> bool {
     false
 }
 
-fn ensure_bridge_if_state(if_id: super::NetIfId, virtio_index: Option<u8>) {
+fn ensure_bridge_if_state(if_id: NetIfId, virtio_index: Option<u8>) {
     let mut stats = BRIDGE_IF_STATS.write();
     let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
         if_id,
@@ -301,7 +301,7 @@ fn ensure_bridge_if_state(if_id: super::NetIfId, virtio_index: Option<u8>) {
     entry.initialized = true;
 }
 
-fn record_bridge_if_tx(if_id: super::NetIfId) {
+fn record_bridge_if_tx(if_id: NetIfId) {
     let mut stats = BRIDGE_IF_STATS.write();
     let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
         if_id,
@@ -314,7 +314,7 @@ fn record_bridge_if_tx(if_id: super::NetIfId) {
     entry.initialized = true;
 }
 
-fn record_bridge_if_rx(if_id: super::NetIfId) {
+fn record_bridge_if_rx(if_id: NetIfId) {
     let mut stats = BRIDGE_IF_STATS.write();
     let entry = stats.entry(if_id).or_insert(BridgeInterfaceStats {
         if_id,
@@ -327,11 +327,11 @@ fn record_bridge_if_rx(if_id: super::NetIfId) {
     entry.initialized = true;
 }
 
-fn primary_bridge_if() -> Option<super::NetIfId> {
+fn primary_bridge_if() -> Option<NetIfId> {
     *PRIMARY_BRIDGE_IF.read()
 }
 
-fn set_primary_bridge_if_for_virtio(if_id: super::NetIfId, virtio_index: u8) {
+fn set_primary_bridge_if_for_virtio(if_id: NetIfId, virtio_index: u8) {
     let mut primary = PRIMARY_BRIDGE_IF.write();
     // Preserve first-registered behavior, but always prefer legacy vnet0 so
     // single-stack compatibility paths keep using the canonical interface.
@@ -348,7 +348,7 @@ fn set_primary_bridge_if_for_virtio(if_id: super::NetIfId, virtio_index: u8) {
 /// This is called when NetworkStack needs to send a packet.  The first
 /// argument is an optional interface identifier; if the stack supplies `None`
 /// the bridge will fall back to the legacy ``primary_bridge_if`` behaviour.
-fn virtio_transmit(if_id: Option<super::NetIfId>, data: &[u8]) -> bool {
+fn virtio_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
     if let Some(if_id) = if_id.or_else(primary_bridge_if) {
         return send_packet_on_interface(if_id, data);
     }
@@ -418,14 +418,14 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
     }
 }
 
-fn lookup_virtio_index_for_interface(if_id: super::NetIfId) -> Option<u8> {
+fn lookup_virtio_index_for_interface(if_id: NetIfId) -> Option<u8> {
     manager::get_interface(if_id)
         .ok()
         .flatten()
         .and_then(|iface| iface.virtio_index)
 }
 
-fn transmit_packet_for_interface(if_id: super::NetIfId, data: &[u8]) -> Result<(), &'static str> {
+fn transmit_packet_for_interface(if_id: NetIfId, data: &[u8]) -> Result<(), &'static str> {
     let virtio_index =
         lookup_virtio_index_for_interface(if_id).ok_or("VirtIO mapping not found for interface")?;
     match with_virtio_net_at_index(virtio_index, |device| transmit_packet(device, data)) {
@@ -435,7 +435,7 @@ fn transmit_packet_for_interface(if_id: super::NetIfId, data: &[u8]) -> Result<(
 }
 
 /// Explicit TX submit on a logical interface (transitional helper).
-pub fn send_packet_on_interface(if_id: super::NetIfId, data: &[u8]) -> bool {
+pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
     match transmit_packet_for_interface(if_id, data) {
         Ok(()) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
@@ -499,7 +499,7 @@ pub fn process_received_packet_zero_copy(mut packet: crate::net::datapath::mempo
 ///
 /// This updates per-interface bridge stats while reusing the existing single global stack path.
 pub fn process_received_packet_zero_copy_for_interface(
-    if_id: super::NetIfId,
+    if_id: NetIfId,
     mut packet: crate::net::datapath::mempool::PacketRef,
     header_size: usize,
     payload_len: usize,
@@ -858,7 +858,7 @@ pub struct BridgeStats {
 /// Bridge statistics for a specific logical interface.
 #[derive(Debug, Clone, Copy)]
 pub struct BridgeInterfaceStats {
-    pub if_id: super::NetIfId,
+    pub if_id: NetIfId,
     pub tx_packets: u64,
     pub rx_packets: u64,
     pub initialized: bool,
@@ -871,7 +871,7 @@ pub struct BridgeInterfaceStats {
 pub fn register_virtio_port(
     virtio_index: u8,
     initial_config: Option<NetworkConfig>,
-) -> Result<super::NetIfId, &'static str> {
+) -> Result<NetIfId, &'static str> {
     manager::init_network_manager();
     let if_id = manager::register_virtio_port(virtio_index, initial_config)
         .map_err(|_| "failed to register virtio port")?;
@@ -882,12 +882,12 @@ pub fn register_virtio_port(
 }
 
 /// Look up the logical interface id mapped to a VirtIO index.
-pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<super::NetIfId> {
+pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
     manager::lookup_if_by_virtio_index(virtio_index)
 }
 
 /// Per-interface bridge stats snapshot.
-pub fn get_bridge_stats_for_interface(if_id: super::NetIfId) -> Option<BridgeInterfaceStats> {
+pub fn get_bridge_stats_for_interface(if_id: NetIfId) -> Option<BridgeInterfaceStats> {
     BRIDGE_IF_STATS.read().get(&if_id).copied()
 }
 
@@ -925,7 +925,7 @@ pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
 ///
 /// Transitional behavior: returns the single global stack config only for the
 /// current primary bridge interface.
-pub fn get_real_config_for_interface(if_id: super::NetIfId) -> Option<NetworkConfigSnapshot> {
+pub fn get_real_config_for_interface(if_id: NetIfId) -> Option<NetworkConfigSnapshot> {
     if primary_bridge_if() != Some(if_id) {
         return None;
     }
@@ -945,11 +945,11 @@ pub(crate) mod tests {
     use crate::net::runtime::manager;
 
     struct BridgeStateGuard {
-        prev_if_stats: BTreeMap<super::super::NetIfId, BridgeInterfaceStats>,
-        prev_primary_if: Option<super::super::NetIfId>,
+        prev_if_stats: BTreeMap<NetIfId, BridgeInterfaceStats>,
+        prev_primary_if: Option<NetIfId>,
         prev_nat_table: BTreeMap<u16, NatEntry>,
         prev_nat_next_port: u16,
-        prev_forward_events: Vec<(super::super::NetIfId, super::super::Ipv4Address)>,
+        prev_forward_events: Vec<(NetIfId, Ipv4Address)>,
         prev_manager: Option<crate::net::runtime::manager::NetworkManager>,
     }
 
@@ -1048,7 +1048,7 @@ pub(crate) mod tests {
     fn qemu_zero_copy_prereq_ipv4_heapless_smoke() -> bool {
         let _bridge_guard = qemu_prepare_zero_copy_env();
 
-        let mut config = super::NetworkConfig::default();
+        let mut config = NetworkConfig::default();
         config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
         stack::init(config);
 
@@ -1066,7 +1066,7 @@ pub(crate) mod tests {
     fn qemu_zero_copy_prereq_ipv6_heapless_smoke() -> bool {
         let _bridge_guard = qemu_prepare_zero_copy_env();
 
-        let mut config = super::NetworkConfig::default();
+        let mut config = NetworkConfig::default();
         config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[
             0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
         ]));
@@ -1098,7 +1098,7 @@ pub(crate) mod tests {
             Err(_) => return false,
         };
 
-        let cfg1 = super::NetworkConfig {
+        let cfg1 = NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 5),
             ipv4: Ipv4Config {
                 address: Ipv4Address::new([10, 0, 0, 1]),
@@ -1109,7 +1109,7 @@ pub(crate) mod tests {
             ipv6: None,
             icmp_echo_enabled: true,
         };
-        let cfg2 = super::NetworkConfig {
+        let cfg2 = NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 6),
             ipv4: Ipv4Config {
                 address: Ipv4Address::new([10, 0, 1, 1]),
@@ -1177,7 +1177,7 @@ pub(crate) mod tests {
         let _ = mempool::init_net_mempool(4);
 
         // Configure stack to use 127.0.0.1 for tests
-        let mut config = super::NetworkConfig::default();
+        let mut config = NetworkConfig::default();
         config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
         stack::init(config);
 
@@ -1287,7 +1287,7 @@ pub(crate) mod tests {
         let if1 = manager::register_interface("if1").expect("register if1");
         let if2 = manager::register_interface("if2").expect("register if2");
         // configure addresses
-        let cfg1 = super::NetworkConfig {
+        let cfg1 = NetworkConfig {
             mac: MacAddress::from_octets(0,1,2,3,4,5),
             ipv4: Ipv4Config {
                 address: Ipv4Address::new([10,0,0,1]),
@@ -1298,7 +1298,7 @@ pub(crate) mod tests {
             ipv6: None,
             icmp_echo_enabled: true,
         };
-        let cfg2 = super::NetworkConfig {
+        let cfg2 = NetworkConfig {
             mac: MacAddress::from_octets(0,1,2,3,4,6),
             ipv4: Ipv4Config {
                 address: Ipv4Address::new([10,0,1,1]),
@@ -1386,7 +1386,7 @@ pub(crate) mod tests {
 
         let wan_if = manager::register_interface("wan0").expect("register wan0");
         let other_wan_if = manager::register_interface("wan1").expect("register wan1");
-        let wan_cfg = super::NetworkConfig {
+        let wan_cfg = NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 42),
             ipv4: Ipv4Config {
                 address: Ipv4Address::new([10, 0, 1, 1]),
@@ -1400,7 +1400,7 @@ pub(crate) mod tests {
         let _ = manager::set_interface_config(wan_if, wan_cfg);
         let _ = manager::set_interface_config(
             other_wan_if,
-            super::NetworkConfig {
+            NetworkConfig {
                 mac: MacAddress::from_octets(0, 1, 2, 3, 4, 43),
                 ipv4: Ipv4Config {
                     address: Ipv4Address::new([10, 0, 2, 1]),
@@ -1483,7 +1483,7 @@ pub(crate) mod tests {
         let wan_if = manager::register_interface("wan0").expect("register wan0");
         let _ = manager::set_interface_config(
             wan_if,
-            super::NetworkConfig {
+            NetworkConfig {
                 mac: MacAddress::from_octets(0, 1, 2, 3, 4, 44),
                 ipv4: Ipv4Config {
                     address: Ipv4Address::new([10, 0, 9, 1]),
@@ -1536,7 +1536,7 @@ pub(crate) mod tests {
         let _ = mempool::init_net_mempool(4);
 
         // Configure stack with IPv6 enabled for tests
-        let mut config = super::NetworkConfig::default();
+        let mut config = NetworkConfig::default();
         config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
         stack::init(config);
 
@@ -1633,8 +1633,8 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_per_interface_bridge_stats_are_separated() {
         let _guard = BridgeStateGuard::new();
-        let if0 = super::super::NetIfId(10);
-        let if1 = super::super::NetIfId(11);
+        let if0 = NetIfId(10);
+        let if1 = NetIfId(11);
 
         ensure_bridge_if_state(if0, Some(0));
         ensure_bridge_if_state(if1, Some(1));
@@ -1689,7 +1689,7 @@ pub(crate) mod tests {
     pub fn test_virtio_transmit_interface_argument() {
         // using a dummy interface id should simply delegate to the
         // per-interface send function, which currently fails (no mapping)
-        let dummy = super::super::NetIfId(7);
+        let dummy = NetIfId(7);
         assert!(!virtio_transmit(Some(dummy), b"hello"));
     }
 }
@@ -1725,7 +1725,7 @@ pub fn get_real_stats() -> Option<NetworkStatsSnapshot> {
 ///
 /// Transitional behavior: returns the single global stack stats only for the
 /// current primary bridge interface.
-pub fn get_real_stats_for_interface(if_id: super::NetIfId) -> Option<NetworkStatsSnapshot> {
+pub fn get_real_stats_for_interface(if_id: NetIfId) -> Option<NetworkStatsSnapshot> {
     if primary_bridge_if() != Some(if_id) {
         return None;
     }

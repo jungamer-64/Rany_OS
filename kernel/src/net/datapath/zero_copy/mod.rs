@@ -33,6 +33,8 @@ use crate::sync::{LockFreeIndexStack, MpmcRingBuffer};
 /// デフォルトのバッファサイズ
 mod send_future;
 pub use send_future::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 const DEFAULT_BUFFER_SIZE: usize = 2048;
 
 /// DMAアライメント要件

@@ -142,6 +142,12 @@ pub fn handle_timer_tick(current_tick: u64) {
 
 /// プリエンプションが必要かどうか（割り込みハンドラから呼ばれる）
 pub fn should_preempt() -> bool {
+    // 脆弱性修正: RCU read section 等でプリエンプションが禁止されている場合は false を返す
+    if let Some(hot) = unsafe { crate::per_cpu::current_per_cpu_hot() } {
+        if hot.is_preempt_disabled() {
+            return false;
+        }
+    }
     PREEMPTION_CONTROLLER.should_preempt()
 }
 

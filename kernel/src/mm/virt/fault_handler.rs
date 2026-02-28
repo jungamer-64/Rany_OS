@@ -359,7 +359,10 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode, current_r
     let manager = super::address_space::address_space_manager();
     
     let vma: Option<super::rcu_vma::VmaInfo> = {
-        let spaces_guard = manager.spaces().read();
+        let spaces_guard = match manager.spaces().lock() {
+            Ok(guard) => guard,
+            Err(p) => p.into_inner(),
+        };
         if let Some(space) = spaces_guard.get(&asid) {
             space.vma_list().find(fault_addr)
         } else {

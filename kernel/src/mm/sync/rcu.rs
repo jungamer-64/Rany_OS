@@ -66,16 +66,17 @@ pub fn rcu_read_lock() -> RcuReadGuard {
     // 読み取り開始を記録（compiler fence のみ、実際のロックなし）
     core::sync::atomic::compiler_fence(Ordering::Acquire);
     
-    // Increment local read depth
+    // Increment local read depth and disable preemption
     unsafe {
         let gs_base = per_cpu::read_gs_base();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.read_depth.fetch_add(1, Ordering::Relaxed);
-        } else {
-             // Fallback for non-SMP/init
-             // Using interrupts disabled can be a fallback? 
-             // Or just do nothing and rely on non-preemption if early?
+            
+            // 脆弱性修正: プリエンプションを禁止
+            if let Some(hot) = per_cpu::current_per_cpu_hot() {
+                hot.preempt_disable();
+            }
         }
     }
     
@@ -90,6 +91,11 @@ fn rcu_read_unlock_internal() {
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.read_depth.fetch_sub(1, Ordering::Relaxed);
+            
+            // 脆弱性修正: プリエンプションを再有効化
+            if let Some(hot) = per_cpu::current_per_cpu_hot() {
+                hot.preempt_enable();
+            }
         }
     }
     core::sync::atomic::compiler_fence(Ordering::Release);

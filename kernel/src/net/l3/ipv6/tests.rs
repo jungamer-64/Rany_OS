@@ -155,6 +155,41 @@ pub fn test_packet_mut_build() {
     assert_eq!(header.payload_length(), 20);
 }
 
+#[cfg_attr(test, test_case)]
+pub fn test_ipv6_packet_mut_finalize_clamp() {
+    let mut buffer = [0u8; 50]; // 40 bytes header + 10 bytes payload
+    let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();
+    packet.init_header();
+
+    // Try to finalize with a payload larger than buffer
+    packet.finalize(100);
+
+    // Check that it was clamped
+    let bytes = packet.as_bytes();
+    assert_eq!(bytes.len(), 50);
+
+    // Check header payload length
+    if let Some(h) = packet.header() {
+        assert_eq!(h.payload_length(), 10);
+    }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ipv6_packet_mut_manual_overflow_protection() {
+    let mut buffer = [0u8; 50];
+    let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();
+    packet.init_header();
+
+    // Manually set a large payload length
+    if let Some(h) = packet.header_mut() {
+        h.set_payload_length(100);
+    }
+
+    // as_bytes() should not panic
+    let bytes = packet.as_bytes();
+    assert_eq!(bytes.len(), 50);
+}
+
 // --- Extension header tests ---
 
 #[cfg_attr(test, test_case)]

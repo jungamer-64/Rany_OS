@@ -179,29 +179,24 @@ macro_rules! eprintln {
 
 #[cfg(all(test, feature = "std"))]
 pub fn test_runner(tests: &[&dyn Fn()]) {
-    crate::io::log::early_print("[qemu-suite] kernel-unit start\n");
-    crate::io::log::early_print("[test] running ");
-    crate::io::log::early_print_dec(tests.len() as u64);
-    crate::io::log::early_print(" tests...\n");
+    eprintln!("[qemu-suite] kernel-unit start");
+    eprintln!("[test] running {} tests...", tests.len());
 
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut failed_indices: [usize; 64] = [0; 64];
 
     for (i, t) in tests.iter().enumerate() {
-        crate::io::log::early_print("[test] #");
-        crate::io::log::early_print_dec(i as u64);
-        crate::io::log::early_print(" ... ");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             t();
         }));
         match result {
             Ok(()) => {
-                crate::io::log::early_print("[test] ok\n");
+                eprintln!("[test] #{} ... [test] ok", i);
                 passed += 1;
             }
             Err(_) => {
-                crate::io::log::early_print("[test] FAILED\n");
+                eprintln!("[test] #{} ... [test] FAILED", i);
                 if failed < 64 {
                     failed_indices[failed] = i;
                 }
@@ -210,28 +205,27 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
         }
     }
 
-    crate::io::log::early_print("\n[test] results: ");
-    crate::io::log::early_print_dec(passed as u64);
-    crate::io::log::early_print(" passed, ");
-    crate::io::log::early_print_dec(failed as u64);
-    crate::io::log::early_print(" failed\n");
+    eprintln!("\n[test] results: {} passed, {} failed", passed, failed);
 
     if failed > 0 {
-        crate::io::log::early_print("[test] failed indices: ");
+        let mut indices = String::new();
         let show = if failed < 64 { failed } else { 64 };
         for fi in 0..show {
-            if fi > 0 { crate::io::log::early_print(", "); }
-            crate::io::log::early_print_dec(failed_indices[fi] as u64);
+            if fi > 0 {
+                indices.push_str(", ");
+            }
+            use core::fmt::Write as _;
+            let _ = write!(&mut indices, "{}", failed_indices[fi]);
         }
-        crate::io::log::early_print("\n");
+        eprintln!("[test] failed indices: {}", indices);
     }
 
     if failed > 0 {
-        crate::io::log::early_print("[qemu-suite] kernel-unit FAIL\n");
+        eprintln!("[qemu-suite] kernel-unit FAIL");
         std::process::exit(1);
     }
 
-    crate::io::log::early_print("[qemu-suite] kernel-unit pass\n");
+    eprintln!("[qemu-suite] kernel-unit pass");
 }
 
 #[cfg(all(test, not(feature = "std")))]
@@ -1872,76 +1866,20 @@ pub mod io {
     pub mod log {
         /// Early boot serial-like print used before the full logger is initialized.
         pub fn early_print(s: &str) {
-            #[cfg(feature = "std")]
-            {
-                std::print!("{}", s);
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                // Write to COM1 (0x3F8) for QEMU test output
-                unsafe {
-                    let port = 0x3F8u16;
-                    for byte in s.bytes() {
-                         core::arch::asm!("out dx, al", in("dx") port, in("al") byte);
-                    }
-                }
-            }
+            std::print!("{}", s);
         }
 
-        pub fn early_print_dec(mut n: u64) {
-             #[cfg(feature = "std")]
-             {
-                 std::print!("{}", n);
-                 return;
-             }
-             #[cfg(not(feature = "std"))]
-             {
-                 if n == 0 {
-                     early_print("0");
-                     return;
-                 }
-                 let mut buf = [0u8; 20];
-                 let mut i = 0;
-                 while n > 0 {
-                     buf[i] = (n % 10) as u8 + b'0';
-                     n /= 10;
-                     i += 1;
-                 }
-                 while i > 0 {
-                     i -= 1;
-                     early_print(core::str::from_utf8(&buf[i..=i]).unwrap());
-                 }
-             }
+        pub fn early_print_dec(n: u64) {
+            std::print!("{}", n);
         }
         
         pub fn early_print_hex(n: u64) {
-            #[cfg(feature = "std")]
-            {
-                std::print!("0x{:016x}", n);
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                early_print("0x");
-                for i in (0..16).rev() {
-                    let digit = (n >> (i * 4)) & 0xF;
-                    let c = if digit < 10 { b'0' + digit as u8 } else { b'a' + (digit - 10) as u8 };
-                    early_print(core::str::from_utf8(&[c]).unwrap());
-                }
-            }
+            std::print!("0x{:016x}", n);
         }
 
         /// Early boot single-character print used by low-level routines.
         pub fn early_print_char(c: u8) {
-            #[cfg(feature = "std")]
-            {
-                std::print!("{}", c as char);
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                unsafe {
-                    core::arch::asm!("out dx, al", in("dx") 0x3F8u16, in("al") c);
-                }
-            }
+            std::print!("{}", c as char);
         }
 
         /// Initialize the logger. Returns Ok(()) for the test shim.

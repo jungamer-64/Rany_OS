@@ -170,7 +170,7 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
 
     // Poison the socket table lock
     set_panicking(true);
-    if let Ok(_g) = proc.sockets.sockets.lock() {
+    if let Ok(_g) = proc.sockets().sockets.lock() {
         // drop marks as poisoned
     }
     set_panicking(false);
@@ -187,7 +187,7 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
     let res = proc.process(&buffer[..len], src_ip, dst_ip);
     assert_eq!(res, UdpResult::NoSocket);
 
-    let stats = proc.sockets.stats();
+    let stats = proc.sockets().stats();
     assert_eq!(stats.2, 1); // rx_dropped == 1
 }
 

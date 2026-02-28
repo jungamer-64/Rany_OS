@@ -174,15 +174,15 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
         size
     );
 
-    crate::io::log::early_print("[GFX] About to call map_range\n");
+    crate::io::log::early_print("[GFX] About to call global_unmap_range and global_map_range\n");
 
     unsafe {
         // First unmap existing HHDM mapping (ignore errors, it may not be mapped)
-        let _ = manager.unmap_range(virt_start, size);
+        let _ = crate::mm::virt::higher_half::global_unmap_range(virt_start, size);
         crate::io::log::early_print("[GFX] Existing mapping cleared\n");
 
         // Map with Write-Combining attributes for optimal VRAM performance
-        match manager.map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
+        match crate::mm::virt::higher_half::global_map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
             Ok(_) => {
                 crate::io::log::early_print("[GFX] map_range OK\n");
                 log::info!("[GRAPHICS] Framebuffer mapped successfully with WC attributes\n");
@@ -255,11 +255,11 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     unsafe {
         // 1. 既存のマッピングを範囲解除
         // エラーは無視（一部マップされていない可能性もあるため許容）
-        let _ = manager.unmap_range(virt_start, size);
+        let _ = crate::mm::virt::higher_half::global_unmap_range(virt_start, size);
 
         // 2. Write-Combining属性で範囲マップ
         // map_rangeはアラインメントとサイズに基づいて自動的にHuge Page (2MiB/1GiB)を使用する
-        match manager.map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
+        match crate::mm::virt::higher_half::global_map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
             Ok(_) => {
                 log::info!("[GRAPHICS] Framebuffer remapped successfully with WC attributes\n");
             }

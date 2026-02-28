@@ -1,5 +1,5 @@
 use super::*;
-use alloc::vec;
+use super::processor_impl::ipv6_multicast_to_mac;
 
 #[cfg_attr(test, test_case)]
 pub fn test_neighbor_cache_basic() {

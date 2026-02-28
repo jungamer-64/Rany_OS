@@ -41,7 +41,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
-use spin::RwLock;
+use crate::sync::IrqPoisonLock;
 use x86_64::structures::paging::PhysFrame;
 
 use crate::mm::phys::frame_allocator::{alloc_frame, dealloc_frame};
@@ -116,7 +116,7 @@ impl PageRefManager {
     }
 }
 
-static PAGE_REF_MANAGER: RwLock<PageRefManager> = RwLock::new(PageRefManager::new());
+static PAGE_REF_MANAGER: IrqPoisonLock<PageRefManager> = IrqPoisonLock::new(PageRefManager::new());
 
 // ============================================================================
 // CoW Statistics
@@ -178,7 +178,10 @@ pub enum CowResult {
 pub fn page_get(phys_addr: u64) {
     let page_addr = phys_addr & !0xFFF;
     
-    let mut manager = PAGE_REF_MANAGER.write();
+    let mut manager = match PAGE_REF_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     
     if let Some(entry) = manager.refcounts.get(&page_addr) {
         entry.inc();
@@ -200,7 +203,10 @@ pub fn page_get(phys_addr: u64) {
 pub fn page_put(phys_addr: u64) -> bool {
     let page_addr = phys_addr & !0xFFF;
     
-    let mut manager = PAGE_REF_MANAGER.write();
+    let mut manager = match PAGE_REF_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     
     if let Some(entry) = manager.refcounts.get(&page_addr) {
         let old = entry.dec();
@@ -224,7 +230,10 @@ pub fn page_put(phys_addr: u64) -> bool {
 pub fn page_refcount(phys_addr: u64) -> u32 {
     let page_addr = phys_addr & !0xFFF;
     
-    let manager = PAGE_REF_MANAGER.read();
+    let manager = match PAGE_REF_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     
     manager.refcounts
         .get(&page_addr)
@@ -236,7 +245,10 @@ pub fn page_refcount(phys_addr: u64) -> u32 {
 pub fn page_is_cow(phys_addr: u64) -> bool {
     let page_addr = phys_addr & !0xFFF;
     
-    let manager = PAGE_REF_MANAGER.read();
+    let manager = match PAGE_REF_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     
     manager.refcounts
         .get(&page_addr)
@@ -266,7 +278,10 @@ pub fn cow_mark_page(virt_addr: VirtAddr) -> CowResult {
     
     // CoWフラグをセット
     {
-        let manager = PAGE_REF_MANAGER.read();
+        let manager = match PAGE_REF_MANAGER.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         if let Some(entry) = manager.refcounts.get(&(phys_addr.as_u64() & !0xFFF)) {
             entry.set_cow(true);
         }
@@ -323,7 +338,10 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
     };
     
     // 脆弱性修正: 参照カウントのチェックとPTEの更新をアトミックに行うためロックを保持
-    let mut manager = PAGE_REF_MANAGER.write();
+    let mut manager = match PAGE_REF_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     
     let refcount = manager.refcounts
         .get(&(old_phys.as_u64() & !0xFFF))
@@ -533,7 +551,10 @@ pub fn init_zero_page() {
         
         // 参照カウントを大きな値に設定（解放されないように）
         {
-            let mut manager = PAGE_REF_MANAGER.write();
+            let mut manager = match PAGE_REF_MANAGER.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             let entry = PageRefCount::new();
             entry.count.store(u32::MAX / 2, Ordering::Release);
             manager.refcounts.insert(phys.as_u64(), entry);
@@ -597,7 +618,10 @@ pub struct CowStatSnapshot {
 
 /// CoW統計を取得
 pub fn cow_stats() -> CowStatSnapshot {
-    let tracked = PAGE_REF_MANAGER.read().refcounts.len() as u64;
+    let tracked = match PAGE_REF_MANAGER.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }.refcounts.len() as u64;
     
     CowStatSnapshot {
         marked: COW_STATS.marked.load(Ordering::Relaxed),

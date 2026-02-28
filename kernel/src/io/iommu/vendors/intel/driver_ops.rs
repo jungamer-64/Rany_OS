@@ -484,8 +484,8 @@ impl IntelIommuDriver {
 
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
             // Quarantine full: Force global flush and immediate free
-            let _ = unsafe { controller.invalidate_iotlb_global() };
-            let _ = controller.free_iova_fast(iova, mapping.size);
+            unsafe { controller.invalidate_iotlb_global_sync() }?;
+            controller.free_iova_fast(iova, mapping.size)?;
         }
         Ok(())
     }
@@ -507,7 +507,7 @@ impl IntelIommuDriver {
         if rc != 0 {
             return Err(IommuError::HardwareError);
         }
-        let _ = controller.free_iova(iova, mapping_size);
+        controller.free_iova(iova, mapping_size)?;
         Ok(())
     }
 
@@ -536,8 +536,8 @@ impl IntelIommuDriver {
         
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
             // Quarantine full: Force global flush and immediate free
-            let _ = unsafe { controller.invalidate_iotlb_global() };
-            let _ = controller.free_iova_fast(iova, mapping.size);
+            unsafe { controller.invalidate_iotlb_global_sync() }?;
+            controller.free_iova_fast(iova, mapping.size)?;
         }
         Ok(())
     }

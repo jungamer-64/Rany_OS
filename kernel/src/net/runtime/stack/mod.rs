@@ -7,28 +7,32 @@
 //! This module integrates all network protocol layers into
 //! a unified zero-copy network stack as specified in Section 6.2.
 
-use super::arp::{ArpProcessor, ArpResult};
-use super::ethernet::{EtherType, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult};
-use super::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode};
-use super::icmpv6::{Icmpv6EchoBuilder, Icmpv6Processor, Icmpv6Result};
-use super::igmp::{IgmpProcessor, IgmpResult, IgmpError, multicast_ip_to_mac};
-use super::ipv4::{
+use crate::net::l2::arp::{ArpProcessor, ArpResult};
+use crate::net::l2::ethernet::{EtherType, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult};
+use crate::net::l3::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode};
+use crate::net::l3::icmpv6::{Icmpv6EchoBuilder, Icmpv6Processor, Icmpv6Result};
+use crate::net::l2::igmp::{IgmpError, IgmpProcessor, IgmpResult, multicast_ip_to_mac};
+use crate::net::l3::ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
 };
-use super::ipv6::{
+use crate::net::l3::ipv6::{
     Ipv6Address, Ipv6Config, Ipv6PacketMut, Ipv6ProcessResult, Ipv6Processor, IPV6_HEADER_SIZE,
     Ipv6FragmentReassembler, Ipv6PmtuCache,
 };
-use super::ndp::{NdpProcessor, NdpResult};
-use super::mempool::{PacketPool, PacketRef};
-use super::optimization::PacketBatch;
-use super::tcp::{
+use crate::net::l3::ndp::{NdpProcessor, NdpResult};
+use crate::net::datapath::mempool::{PacketPool, PacketRef};
+use crate::net::datapath::optimization::PacketBatch;
+use crate::net::l4::tcp::{
     TcpError, TcpListener, TcpProcessor, TcpProcessResult, TcpStream,
     SocketAddr as TcpSocketAddr, TcpHeader,
 };
 
-use super::udp::{UdpProcessor, UdpResult, UdpSocket};
-use super::NetIfId; // required for new transmit callback signature
+use crate::net::l4::udp::{UdpProcessor, UdpResult, UdpSocket};
+use crate::net::obs::{
+    counters,
+    trace::{self, NetEventKind, NetLayer},
+};
+use crate::net::runtime::manager::NetIfId; // required for new transmit callback signature
 
 use crate::sync::PoisonLock;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -39,6 +43,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 mod core_impl;
 pub use core_impl::*;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 
 extern crate alloc;
 
@@ -99,27 +105,35 @@ impl NetworkStats {
     pub fn record_rx(&self, len: usize) {
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
         self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
+        trace::push_event(NetLayer::L3, NetEventKind::Rx, "stack receive");
     }
 
     /// Record transmitted packet
     pub fn record_tx(&self, len: usize) {
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
+        trace::push_event(NetLayer::L4, NetEventKind::Tx, "stack transmit");
     }
 
     /// Record receive error
     pub fn record_rx_error(&self) {
         self.rx_errors.fetch_add(1, Ordering::Relaxed);
+        counters::global().record_error();
+        trace::push_event(NetLayer::L3, NetEventKind::Error, "stack rx error");
     }
 
     /// Record transmit error
     pub fn record_tx_error(&self) {
         self.tx_errors.fetch_add(1, Ordering::Relaxed);
+        counters::global().record_error();
+        trace::push_event(NetLayer::L4, NetEventKind::Error, "stack tx error");
     }
 
     /// Record dropped packet
     pub fn record_dropped(&self) {
         self.rx_dropped.fetch_add(1, Ordering::Relaxed);
+        counters::global().record_drop();
+        trace::push_event(NetLayer::L3, NetEventKind::Drop, "stack drop");
     }
 }
 

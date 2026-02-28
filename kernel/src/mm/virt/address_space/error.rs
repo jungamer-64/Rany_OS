@@ -64,6 +64,8 @@ pub struct AddressSpaceStats {
     pub heap_size: u64,
 }
 
+use crate::sync::IrqPoisonLock;
+
 // ============================================================================
 // Global Address Space Manager
 // ============================================================================
@@ -71,7 +73,7 @@ pub struct AddressSpaceStats {
 /// グローバルアドレス空間マネージャ
 pub struct AddressSpaceManager {
     /// アドレス空間のマップ (asid -> address_space)
-    spaces: RwLock<BTreeMap<u64, Box<ProcessAddressSpace>>>,
+    spaces: IrqPoisonLock<BTreeMap<u64, Box<ProcessAddressSpace>>>,
     /// 現在アクティブなASID
     current_asid: AtomicU64,
 }
@@ -80,13 +82,13 @@ impl AddressSpaceManager {
     /// 新しいマネージャを作成
     pub const fn new() -> Self {
         Self {
-            spaces: RwLock::new(BTreeMap::new()),
+            spaces: IrqPoisonLock::new(BTreeMap::new()),
             current_asid: AtomicU64::new(0),
         }
     }
     
     /// アドレス空間のマップを取得
-    pub fn spaces(&self) -> &RwLock<BTreeMap<u64, Box<ProcessAddressSpace>>> {
+    pub fn spaces(&self) -> &IrqPoisonLock<BTreeMap<u64, Box<ProcessAddressSpace>>> {
         &self.spaces
     }
     
@@ -97,7 +99,10 @@ impl AddressSpaceManager {
         
         space.init_page_table()?;
         
-        let mut spaces = self.spaces.write();
+        let mut spaces = match self.spaces.lock() {
+            Ok(guard) => guard,
+            Err(p) => p.into_inner(),
+        };
         spaces.insert(asid, space);
         
         Ok(asid)
@@ -105,13 +110,19 @@ impl AddressSpaceManager {
     
     /// アドレス空間を取得
     pub fn get(&self, asid: u64) -> Option<u64> {
-        let spaces = self.spaces.read();
+        let spaces = match self.spaces.lock() {
+            Ok(guard) => guard,
+            Err(p) => p.into_inner(),
+        };
         spaces.get(&asid).map(|s| s.page_table_root())
     }
     
     /// アドレス空間を削除
     pub fn destroy(&self, asid: u64) {
-        let mut spaces = self.spaces.write();
+        let mut spaces = match self.spaces.lock() {
+            Ok(guard) => guard,
+            Err(p) => p.into_inner(),
+        };
         spaces.remove(&asid);
     }
     
@@ -122,7 +133,10 @@ impl AddressSpaceManager {
     
     /// アドレス空間を切り替え
     pub fn switch_to(&self, asid: u64) -> Result<(), AddressSpaceError> {
-        let spaces = self.spaces.read();
+        let spaces = match self.spaces.lock() {
+            Ok(guard) => guard,
+            Err(p) => p.into_inner(),
+        };
         
         if let Some(space) = spaces.get(&asid) {
             let cr3 = space.page_table_root();
@@ -144,7 +158,10 @@ impl AddressSpaceManager {
         let asid = self.current_asid.load(Ordering::Acquire);
         if asid == 0 { return None; }
 
-        let spaces = self.spaces.read();
+        let spaces = match self.spaces.lock() {
+            Ok(guard) => guard,
+            Err(p) => p.into_inner(),
+        };
         if let Some(space) = spaces.get(&asid) {
             Some(space.scan_numa_hints(start_addr, batch_size))
         } else {

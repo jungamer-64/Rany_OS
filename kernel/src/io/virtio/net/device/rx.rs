@@ -1,4 +1,8 @@
 use super::*;
+use crate::net::obs::{
+    counters,
+    trace::{self, NetEventKind, NetLayer},
+};
 
 impl VirtioNetDevice {
     /// パケットを受信（非同期）
@@ -40,6 +44,7 @@ impl VirtioNetDevice {
             let completions = rx_queue.process_used();
             for (desc_idx, len) in completions {
                 self.rx_packets.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio rx completion");
 
                 // IoScheduler path: completion belongs to a pending IoRequest.
                 if let Some(handler) = get_poll_handler(self.virtio_index) {
@@ -54,6 +59,12 @@ impl VirtioNetDevice {
                             log::warn!(
                                 "[VIRTIO-NET] RX scheduler completion disappeared desc={}",
                                 desc_idx
+                            );
+                            counters::global().record_error();
+                            trace::push_event(
+                                NetLayer::Driver,
+                                NetEventKind::Error,
+                                "virtio rx scheduler completion missing",
                             );
                             crate::io::io_scheduler::IoResult::Error(
                                 crate::io::io_scheduler::IoError::DeviceError,
@@ -87,6 +98,7 @@ impl VirtioNetDevice {
         let header_size = core::mem::size_of::<VirtioNetHeader>();
         let payload_len = (len as usize).saturating_sub(header_size);
         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET][RX-COMP] desc={} len={} payload_len={} (packetref)\n", desc_idx, len, payload_len));
+        trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio zero-copy rx packetref");
 
         // Pass PacketRef to bridge for zero-copy processing (prefer interface-aware path).
         if let Some(if_id) = self
@@ -110,8 +122,23 @@ impl VirtioNetDevice {
         // Re-post a new PacketRef buffer to the queue so we keep a steady supply
         match self.try_post_rx_packet(rx_queue) {
             Ok(true) => {}
-            Ok(false) => log::warn!("[VIRTIO-NET] OOM allocating replacement PacketRef"),
-            Err(_) => {}
+            Ok(false) => {
+                log::warn!("[VIRTIO-NET] OOM allocating replacement PacketRef");
+                counters::global().record_drop();
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::QueuePressure,
+                    "virtio rx packetref repost oom",
+                );
+            }
+            Err(_) => {
+                counters::global().record_error();
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::Error,
+                    "virtio rx packetref repost failed",
+                );
+            }
         }
     }
 
@@ -130,6 +157,12 @@ impl VirtioNetDevice {
 
         if let Err(e) = inflight.vbuf.complete_receive() {
             log::warn!("[VIRTIO-NET] failed to complete rx buffer {}: {}", desc_idx, e);
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                "virtio rx complete_receive failed",
+            );
             return;
         }
 
@@ -139,6 +172,12 @@ impl VirtioNetDevice {
             Some(d) => d,
             None => {
                 log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
+                counters::global().record_error();
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::Error,
+                    "virtio rx completion missing payload",
+                );
                 return;
             }
         };
@@ -180,6 +219,12 @@ impl VirtioNetDevice {
             }
         } else {
             log::warn!("[VIRTIO-NET] RX completion missing CPU buffer desc={}", desc_idx);
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                "virtio rx completion missing cpu buffer",
+            );
         }
 
         // Keep RX queue depth stable even when PacketRef mempool is unavailable.
@@ -187,13 +232,45 @@ impl VirtioNetDevice {
             Ok(true) => {}
             Ok(false) => match self.try_post_rx_vbuf(rx_queue) {
                 Ok(true) => {}
-                Ok(false) => log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx),
-                Err(_) => log::warn!("[VIRTIO-NET] RX repost aborted after desc={}", desc_idx),
+                Ok(false) => {
+                    log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx);
+                    counters::global().record_drop();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::QueuePressure,
+                        "virtio rx repost failed",
+                    );
+                }
+                Err(_) => {
+                    log::warn!("[VIRTIO-NET] RX repost aborted after desc={}", desc_idx);
+                    counters::global().record_error();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::Error,
+                        "virtio rx repost aborted",
+                    );
+                }
             },
             Err(_) => match self.try_post_rx_vbuf(rx_queue) {
                 Ok(true) => {}
-                Ok(false) => log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx),
-                Err(_) => log::warn!("[VIRTIO-NET] RX repost aborted after desc={}", desc_idx),
+                Ok(false) => {
+                    log::warn!("[VIRTIO-NET] failed to repost RX buffer after desc={}", desc_idx);
+                    counters::global().record_drop();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::QueuePressure,
+                        "virtio rx repost failed",
+                    );
+                }
+                Err(_) => {
+                    log::warn!("[VIRTIO-NET] RX repost aborted after desc={}", desc_idx);
+                    counters::global().record_error();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::Error,
+                        "virtio rx repost aborted",
+                    );
+                }
             },
         }
     }
@@ -226,6 +303,12 @@ impl VirtioNetDevice {
                         "[VIRTIO-NET] RX legacy completion missing pending slot desc={}",
                         desc_idx
                     );
+                    counters::global().record_error();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::Error,
+                        "virtio rx packetref completion missing",
+                    );
                     len
                 }
             };
@@ -251,6 +334,12 @@ impl VirtioNetDevice {
                         "[VIRTIO-NET] RX legacy completion missing pending slot desc={}",
                         desc_idx
                     );
+                    counters::global().record_error();
+                    trace::push_event(
+                        NetLayer::Driver,
+                        NetEventKind::Error,
+                        "virtio rx vbuf completion missing",
+                    );
                     len
                 }
             };
@@ -270,5 +359,11 @@ impl VirtioNetDevice {
             );
         }
         log::warn!("[VIRTIO-NET] Received completion for unknown desc {}", desc_idx);
+        counters::global().record_drop();
+        trace::push_event(
+            NetLayer::Driver,
+            NetEventKind::Drop,
+            "virtio rx completion unknown desc",
+        );
     }
 }

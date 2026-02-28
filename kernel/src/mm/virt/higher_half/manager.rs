@@ -63,14 +63,20 @@ impl HigherHalfManager {
 // ============================================================================
 
 /// グローバルHigher Halfマネージャー
-pub(crate) static HIGHER_HALF_MANAGER: PoisonLock<Option<HigherHalfManager>> = PoisonLock::new(None);
+pub(crate) static HIGHER_HALF_MANAGER: crate::sync::IrqPoisonLock<Option<HigherHalfManager>> = crate::sync::IrqPoisonLock::new(None);
 
 /// Higher Halfカーネルを初期化
 pub fn init(physical_memory_offset: u64) {
     let manager = HigherHalfManager::new(physical_memory_offset);
     // Initialization-time best-effort recovery: recovering a poisoned manager during init is
     // acceptable to allow boot to continue.
-    let mut mgr_guard = HIGHER_HALF_MANAGER.lock_for_init("[MM] Higher Half init");
+    let mut mgr_guard = match HIGHER_HALF_MANAGER.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            log::warn!("[MM] Higher Half init - lock poisoned; proceeding with recovery");
+            poisoned.into_inner()
+        }
+    };
     *mgr_guard = Some(manager);
     // Keep the global page-table manager in sync so callers of
     // global_map_page/global_update_flags work immediately after MM init.
@@ -289,9 +295,6 @@ impl PageTableManager {
         let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
         crate::mm::meta::page_flags::inc_map_count(frame_idx);
 
-        // TLBを無効化（マルチコア対応シュートダウン）
-        invalidate_page(virt);
-
         Ok(())
     }
 
@@ -350,8 +353,6 @@ impl PageTableManager {
             crate::mm::meta::page_flags::inc_map_count(start_frame.offset(i));
         }
 
-        invalidate_page(virt);
-
         Ok(())
     }
 
@@ -397,8 +398,6 @@ impl PageTableManager {
         let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
         crate::mm::meta::page_flags::inc_map_count(frame_idx);
 
-        invalidate_page(virt);
-
         Ok(())
     }
 
@@ -434,7 +433,6 @@ impl PageTableManager {
             let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
             crate::mm::meta::page_flags::dec_map_count(frame_idx);
             
-            invalidate_page(virt);
             return Ok(phys);
         }
 
@@ -455,7 +453,6 @@ impl PageTableManager {
                 crate::mm::meta::page_flags::dec_map_count(start_frame.offset(i));
             }
             
-            invalidate_page(virt);
             return Ok(phys);
         }
 
@@ -474,8 +471,6 @@ impl PageTableManager {
         let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
         crate::mm::meta::page_flags::dec_map_count(frame_idx);
         
-        invalidate_page(virt);
-
         Ok(phys)
     }
 
@@ -511,7 +506,6 @@ impl PageTableManager {
         }
         if pdpte.is_huge() {
             pdpte.set_flags(flags.set(PageFlags::PRESENT).set(PageFlags::HUGE_PAGE));
-            invalidate_page(virt);
             return Ok(());
         }
 
@@ -522,7 +516,6 @@ impl PageTableManager {
         }
         if pde.is_huge() {
             pde.set_flags(flags.set(PageFlags::PRESENT).set(PageFlags::HUGE_PAGE));
-            invalidate_page(virt);
             return Ok(());
         }
 
@@ -533,7 +526,6 @@ impl PageTableManager {
         }
 
         pte.set_flags(flags.set(PageFlags::PRESENT));
-        invalidate_page(virt);
 
         Ok(())
     }
@@ -681,14 +673,20 @@ impl PageTableManager {
 }
 
 /// グローバルなページテーブルマネージャー
-pub(crate) static PAGE_TABLE_MANAGER: PoisonLock<Option<PageTableManager>> = PoisonLock::new(None);
+pub(crate) static PAGE_TABLE_MANAGER: crate::sync::IrqPoisonLock<Option<PageTableManager>> = crate::sync::IrqPoisonLock::new(None);
 
 /// ページテーブルマネージャーを初期化
 pub fn init_page_table_manager(physical_memory_offset: u64) {
     log::info!("[MM] init_page_table_manager: initializing with offset {:#x}", physical_memory_offset);
     let manager = unsafe { PageTableManager::from_current_cr3(physical_memory_offset) };
     // Initialization-time best-effort recovery for PageTableManager initialization.
-    let mut mgr_guard = PAGE_TABLE_MANAGER.lock_for_init("[MM] Page Table Manager init");
+    let mut mgr_guard = match PAGE_TABLE_MANAGER.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            log::warn!("[MM] Page Table Manager init - lock poisoned; proceeding with recovery");
+            poisoned.into_inner()
+        }
+    };
     *mgr_guard = Some(manager);
     log::info!("[MM] init_page_table_manager: manager set");
 }
@@ -723,7 +721,14 @@ pub unsafe fn global_map_page(
     manager.set_pml4_phys(get_cr3());
     
     log::info!("[MM] global_map_page: mapping virt={:#x} phys={:#x} flags={:#x}", virt.as_u64(), phys.as_u64(), flags.as_u64());
-    unsafe { manager.map_page(virt, phys, flags) }
+    let res = unsafe { manager.map_page(virt, phys, flags) };
+    
+    // ロックを解放してからTLBを無効化（デッドロック防止）
+    drop(guard);
+    if res.is_ok() {
+        invalidate_page(virt);
+    }
+    res
 }
 
 /// グローバルページテーブルマネージャーでページをアンマップ
@@ -740,7 +745,14 @@ pub unsafe fn global_unmap_page(virt: VirtAddr) -> Result<PhysAddr, MapError> {
     // 現在のCR3を使用
     manager.set_pml4_phys(get_cr3());
     
-    unsafe { manager.unmap_page(virt) }
+    let res = unsafe { manager.unmap_page(virt) };
+    
+    // ロックを解放してからTLBを無効化（デッドロック防止）
+    drop(guard);
+    if res.is_ok() {
+        invalidate_page(virt);
+    }
+    res
 }
 
 /// グローバルページテーブルマネージャーで仮想→物理変換
@@ -766,6 +778,60 @@ pub fn get_current_pte(virt: VirtAddr) -> Option<PageTableEntry> {
         }
         Err(_) => None,
     }
+}
+
+/// グローバルページテーブルマネージャーで範囲をマップ
+pub unsafe fn global_map_range(
+    virt: VirtAddr,
+    phys: PhysAddr,
+    size: u64,
+    flags: PageFlags,
+) -> Result<(), MapError> {
+    let mut guard = PAGE_TABLE_MANAGER.lock().map_err(|_| MapError::HardwareError)?;
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    
+    manager.set_pml4_phys(get_cr3());
+    let res = unsafe { manager.map_range(virt, phys, size, flags) };
+    
+    drop(guard);
+    if res.is_ok() {
+        // 範囲全体のTLBを無効化（簡略化のため全フラッシュ、または個別にループ）
+        if size > 4096 * 8 {
+            crate::mm::sync::tlb_batch::flush_tlb_all();
+        } else {
+            let mut addr = virt.as_u64();
+            let end = addr + size;
+            while addr < end {
+                invalidate_page(VirtAddr::new(addr));
+                addr += 4096;
+            }
+        }
+    }
+    res
+}
+
+/// グローバルページテーブルマネージャーで範囲をアンマップ
+pub unsafe fn global_unmap_range(virt: VirtAddr, size: u64) -> Result<(), MapError> {
+    let mut guard = PAGE_TABLE_MANAGER.lock().map_err(|_| MapError::HardwareError)?;
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    
+    manager.set_pml4_phys(get_cr3());
+    let res = unsafe { manager.unmap_range(virt, size) };
+    
+    drop(guard);
+    if res.is_ok() {
+        if size > 4096 * 8 {
+            crate::mm::sync::tlb_batch::flush_tlb_all();
+        } else {
+            let mut addr = virt.as_u64();
+            let end = addr + size;
+            while addr < end {
+                invalidate_page(VirtAddr::new(addr));
+                addr += 4096;
+            }
+        }
+    }
+    res
 }
 
 /// 仮想アドレスのPTEを変更（現在のCR3を使用）
@@ -805,7 +871,14 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
             // 現在のCR3を使用
             manager.set_pml4_phys(get_cr3());
             
-            unsafe { manager.update_flags(virt, flags) }
+            let res = unsafe { manager.update_flags(virt, flags) };
+            
+            // ロックを解放してからTLBを無効化（デッドロック防止）
+            drop(guard);
+            if res.is_ok() {
+                invalidate_page(virt);
+            }
+            res
         }
         Err(_) => {
             log::error!("[MM] Page Table Manager lock poisoned - returning HardwareError");

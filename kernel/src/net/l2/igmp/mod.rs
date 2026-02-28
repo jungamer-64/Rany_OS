@@ -20,7 +20,7 @@
 //! - All Hosts Group: 224.0.0.1
 //! - All Routers Group: 224.0.0.2
 
-use super::ipv4::Ipv4Address;
+use crate::net::l3::ipv4::Ipv4Address;
 use alloc::vec::Vec;
 
 extern crate alloc;

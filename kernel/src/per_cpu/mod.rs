@@ -448,6 +448,8 @@ pub struct PerCpuHot {
     pub cpu_id: usize,
     /// Interrupt nesting depth (incremented on ISR entry, decremented on exit)
     pub interrupt_depth: core::sync::atomic::AtomicU32,
+    /// Preemption disable count (0 = preemption allowed, >0 = disabled)
+    pub preempt_disable_count: core::sync::atomic::AtomicU32,
     /// Recursive page fault detection
     pub in_page_fault: core::sync::atomic::AtomicBool,
     /// Current task pointer (frequently accessed by scheduler)
@@ -471,6 +473,7 @@ impl PerCpuHot {
             self_ptr: 0,
             cpu_id,
             interrupt_depth: core::sync::atomic::AtomicU32::new(0),
+            preempt_disable_count: core::sync::atomic::AtomicU32::new(0),
             in_page_fault: core::sync::atomic::AtomicBool::new(false),
             current_task_ptr: AtomicU64::new(0),
             current_task_id: 0,
@@ -537,6 +540,27 @@ impl PerCpuHot {
     #[inline]
     pub fn exit_interrupt(&self) {
         self.interrupt_depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Check if preemption is disabled
+    #[inline]
+    pub fn is_preempt_disabled(&self) -> bool {
+        self.preempt_disable_count.load(core::sync::atomic::Ordering::Relaxed) > 0
+    }
+
+    /// Disable preemption on this CPU
+    #[inline]
+    pub fn preempt_disable(&self) {
+        self.preempt_disable_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Enable preemption on this CPU
+    #[inline]
+    pub fn preempt_enable(&self) {
+        let old = self.preempt_disable_count.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+        if old == 0 {
+            panic!("preempt_enable() called when preempt_disable_count was already 0");
+        }
     }
 }
 

@@ -71,7 +71,7 @@ impl TcpProcessor {
 
         for _ in 0..range_size {
             let port = NEXT_EPHEMERAL_PORT.fetch_add(1, Ordering::Relaxed);
-            let port = 49152 + ((port as u32 - 49152) % range_size) as u16;
+            let port = 49152 + ((port as u32).wrapping_sub(49152) % range_size) as u16;
 
             if !self.is_port_in_use(port) {
                 return port;
@@ -923,5 +923,3 @@ impl Default for TcpProcessor {
 // テスト
 // ============================================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-mod tests;

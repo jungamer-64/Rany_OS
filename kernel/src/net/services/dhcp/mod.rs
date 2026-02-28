@@ -11,19 +11,21 @@ use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use super::ethernet::MacAddress;
-use super::ipv4::Ipv4Address;
+use crate::net::l2::ethernet::MacAddress;
+use crate::net::l3::ipv4::Ipv4Address;
 
 /// DHCPクライアントポート
 mod client_impl;
 pub use client_impl::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use client_impl::tests as qemu_v4_tests;
+pub mod tests;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use self::tests as qemu_v4_tests;
 
 mod v6;
 pub use v6::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use v6::tests as qemu_v6_tests;
+pub(crate) use self::v6::tests as qemu_v6_tests;
 pub const DHCP_CLIENT_PORT: u16 = 68;
 
 /// DHCPサーバーポート

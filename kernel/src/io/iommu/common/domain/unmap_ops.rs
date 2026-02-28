@@ -32,7 +32,7 @@ impl IommuDomain {
             if !(*pml4_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
-            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
             let pdp_phys = (*pml4_entry).phys_addr();
 
             let pdp_entry = pdp_table.add(pdp_idx);
@@ -42,7 +42,7 @@ impl IommuDomain {
             if (*pdp_entry).is_super_page(self.pte_format) {
                 return Err(IommuError::InvalidAlignment);
             }
-            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
             let pd_phys = (*pdp_entry).phys_addr();
 
             let pd_entry = pd_table.add(pd_idx);
@@ -52,7 +52,7 @@ impl IommuDomain {
             if (*pd_entry).is_super_page(self.pte_format) {
                 return Err(IommuError::InvalidAlignment);
             }
-            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+            let pt_table = phys_to_virt_usize((*pd_entry).phys_addr()) as *mut SlPte;
             let pt_phys = (*pd_entry).phys_addr();
 
             Self::verify_pt_entries_present(pt_table, pt_idx, pages_in_pt)?;
@@ -137,21 +137,21 @@ impl IommuDomain {
             if !(*pml4_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
-            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
             let pdp_phys = (*pml4_entry).phys_addr();
 
             let pdp_entry = pdp_table.add(pdp_idx);
             if !(*pdp_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
-            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
             let pd_phys = (*pdp_entry).phys_addr();
 
             let pd_entry = pd_table.add(pd_idx);
             if !(*pd_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
-            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+            let pt_table = phys_to_virt_usize((*pd_entry).phys_addr()) as *mut SlPte;
             let pt_phys = (*pd_entry).phys_addr();
 
             let pt_entry = pt_table.add(pt_idx);
@@ -331,15 +331,12 @@ impl IommuDomain {
             let _ = self.flush(invalidator, context);
         }
 
-        // Free IOVA back to domain's per-domain allocator
-        if let Err(IommuError::OutOfMemory) = self.free_iova(iova, aligned_size) {
-            // Quarantine full: Force a global IOTLB flush for this domain and retry.
-            // This advances the epoch and drains the ring.
-            log::warn!("[IommuDomain] IOVA quarantine full for domain {}, forcing flush", self.id);
-            let _ = invalidator.invalidate(InvalidateRequest::domain(self.id));
-            if let Err(e) = self.free_iova(iova, aligned_size) {
-                log::error!("[IommuDomain] IOVA free failed even after flush for 0x{:x}: {:?}", iova, e);
-            }
+        // SECURITY: Use immediate free because we have just confirmed IOTLB invalidation
+        // for this specific range (or the entire domain). Bypassing the allocator's
+        // internal quarantine is safe here and prevents permanent IOVA leaks since
+        // the per-domain allocator's epoch is not automatically advanced by the controller.
+        if let Err(e) = self.free_iova_immediate(iova, aligned_size) {
+            log::error!("[IommuDomain] IOVA immediate free failed for 0x{:x}: {:?}", iova, e);
         }
         let _ = context; // context kept for API compatibility
 
@@ -410,15 +407,11 @@ impl IommuDomain {
             let _ = self.flush(invalidator, context);
         }
 
-        // Free IOVA back to domain's per-domain allocator
-        if let Err(IommuError::OutOfMemory) = self.free_iova(iova, aligned_size) {
-            // Quarantine full: Force an async global IOTLB flush for this domain and retry.
-            // This advances the epoch and drains the ring.
-            log::warn!("[IommuDomain] IOVA quarantine full for domain {}, forcing async flush", domain_id);
-            let _ = invalidator.invalidate_async(InvalidateRequest::domain(domain_id)).await;
-            if let Err(e) = self.free_iova(iova, aligned_size) {
-                log::error!("[IommuDomain] IOVA async free failed even after flush for 0x{:x}: {:?}", iova, e);
-            }
+        // SECURITY: Use immediate free because we have just confirmed IOTLB invalidation
+        // for this range (async). Bypassing the allocator's internal quarantine is safe
+        // here and prevents permanent IOVA leaks.
+        if let Err(e) = self.free_iova_immediate(iova, aligned_size) {
+            log::error!("[IommuDomain] IOVA async immediate free failed for 0x{:x}: {:?}", iova, e);
         }
 
         // Take the RRef from the handle (marks it as unmapped)

@@ -28,7 +28,7 @@ use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 /// Minimum Neighbor Solicitation size: ICMPv6 header (4) + reserved (4) + target (16) = 24
 pub(crate) mod processor_impl;
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use self::processor_impl::tests;
+pub mod tests;
 pub const NS_MIN_SIZE: usize = 24;
 
 /// Minimum Neighbor Advertisement size: same as NS

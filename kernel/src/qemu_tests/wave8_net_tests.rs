@@ -277,7 +277,7 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
 
     let _ = mempool::init_net_mempool(4);
 
-    let mut config = net::NetworkConfig::default();
+    let mut config = stack::NetworkConfig::default();
     config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
     stack::init(config);
 
@@ -354,8 +354,8 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
     }
 
     packet.set_len(header_size + eth_total_len);
-    driver_bridge::process_received_packet_zero_copy(packet, header_size, eth_total_len);
-    driver_bridge::check_batch_timeout(100_000, 1);
+    bridge::process_received_packet_zero_copy(packet, header_size, eth_total_len);
+    bridge::check_batch_timeout(100_000, 1);
 
     if let Ok(guard) = tcb_arc.lock() {
         if guard.recv_buffer_is_empty() {
@@ -383,7 +383,7 @@ pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
 
     let _ = mempool::init_net_mempool(4);
 
-    let mut config = net::NetworkConfig::default();
+    let mut config = stack::NetworkConfig::default();
     config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
     stack::init(config);
 
@@ -453,8 +453,8 @@ pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
     buf[tcp_off + 20..tcp_off + 20 + payload.len()].copy_from_slice(payload);
 
     packet.set_len(header_size + eth_total_len);
-    driver_bridge::process_received_packet_zero_copy(packet, header_size, eth_total_len);
-    driver_bridge::check_batch_timeout(100_000, 1);
+    bridge::process_received_packet_zero_copy(packet, header_size, eth_total_len);
+    bridge::check_batch_timeout(100_000, 1);
 
     if let Ok(guard) = tcb_arc.lock() {
         if guard.recv_buffer_is_empty() { return false; }

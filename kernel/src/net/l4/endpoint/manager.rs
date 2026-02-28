@@ -53,7 +53,7 @@ impl SocketManager {
         for _ in 0..range_size {
             let port = self.next_ephemeral_port.fetch_add(1, Ordering::Relaxed);
             let port =
-                EPHEMERAL_PORT_START + ((port - EPHEMERAL_PORT_START as u32) % range_size) as u16;
+                EPHEMERAL_PORT_START + (port.wrapping_sub(EPHEMERAL_PORT_START as u32) % range_size) as u16;
 
             if !ports_guard.contains_key(&port) {
                 return Some(port);

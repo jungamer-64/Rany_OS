@@ -190,7 +190,7 @@ pub fn test_fragment_overlap_detection() {
     // reassembler should drop buffer and return None
     assert!(result2.is_none());
     // buffer map should be empty now
-    assert_eq!(reassembler.buffers.len(), 0);
+    assert_eq!(reassembler.active_buffers(), 0);
 }
 
 #[cfg_attr(test, test_case)]

@@ -7,7 +7,7 @@
 //! for the ExoRust networking stack.
 
 
-use super::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
+use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -16,7 +16,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::NetworkError;
+use crate::net::types::NetworkError;
 
 extern crate alloc;
 
@@ -24,6 +24,8 @@ extern crate alloc;
 mod types;
 pub use types::*;
 mod socket_table_impl;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct UdpHeader {

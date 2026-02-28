@@ -390,6 +390,20 @@ impl AmdIommuDriver {
         for alias in aliases {
             self.invalidate_device_entry_by_devid(device.segment, *alias)?;
         }
+        
+        // Security: Invalidate Device-TLB (ATS) to ensure no stale translations remain in the device.
+        // We invalidate the entire range (0 to u64::MAX) for safety.
+        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+        for alias in aliases {
+            let alias_device = DeviceId::new(
+                device.segment,
+                ((*alias >> 8) & 0xFF) as u8,
+                ((*alias >> 3) & 0x1F) as u8,
+                (*alias & 0x07) as u8,
+            );
+            let _ = self.invalidate_iotlb_pages(alias_device, 0, u64::MAX);
+        }
+
         Ok(())
     }
 
@@ -402,7 +416,9 @@ impl AmdIommuDriver {
     ) {
         if let Ok(mut device_domains) = self.device_domains.lock() {
             device_domains.insert(device, previous_domain);
-            let _ = self.write_device_entries_for_domain(device, aliases, Some(previous_domain));
+            if let Err(err) = self.write_device_entries_for_domain(device, aliases, Some(previous_domain)) {
+                log::error!("[IOMMU][AMD-Vi] Critical: Failed to restore DTE during rollback for device {:?}: {:?}", device, err);
+            }
         }
     }
 

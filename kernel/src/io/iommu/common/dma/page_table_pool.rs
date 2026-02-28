@@ -393,7 +393,19 @@ impl PageTablePool {
     /// This method NEVER reallocates because:
     /// - Vector capacity is pre-allocated in `new()`
     /// - We check `len() < max_per_node` before push
-    pub fn release(&self, pt: PooledPt) {
+    pub fn release(&self, mut pt: PooledPt) {
+        // Keep node within this pool instance's configured NUMA range.
+        // Some callers may carry broader system node IDs than this pool supports.
+        let max_node = self.pools.len().saturating_sub(1);
+        if pt.node > max_node {
+            log::warn!(
+                "[IOMMU] PageTablePool::release remapping out-of-range node {} -> {}",
+                pt.node,
+                max_node
+            );
+            pt.node = max_node;
+        }
+
         let mut pool = self.pools[pt.node].lock();
 
         // NEVER exceed capacity to avoid realloc

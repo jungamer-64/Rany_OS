@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::l3::ipv4::Ipv4Address;
 use alloc::{format, vec};
 
 #[cfg_attr(test, test_case)]

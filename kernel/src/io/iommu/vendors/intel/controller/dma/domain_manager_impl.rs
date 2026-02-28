@@ -14,7 +14,37 @@ impl DomainManager for IommuController {
         numa_node: Option<usize>,
         domain_type: IommuDomainType,
     ) -> Result<u16, IommuError> {
-        let id = self.next_domain_id.fetch_add(1, Ordering::Relaxed) as u16;
+        let mut domains = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
+        
+        // Security: Respect hardware domain ID limits (ND field in CAP register)
+        let nd_bits = (self.cap & 0x7) as u8;
+        let max_ids = match nd_bits {
+            0b000 => 16,
+            0b001 => 64,
+            0b010 => 256,
+            0b011 => 1024,
+            0b100 => 4096,
+            0b101 => 16384,
+            0b110 => 65536,
+            _ => 65536,
+        };
+
+        // Find a free domain ID starting from next_domain_id hint
+        let mut id = (self.next_domain_id.load(Ordering::Relaxed) % max_ids as u64) as u16;
+        let mut found = false;
+        for _ in 0..max_ids {
+            if id > 0 && !domains.contains_key(&id) {
+                found = true;
+                break;
+            }
+            id = ((id as u64 + 1) % max_ids as u64) as u16;
+        }
+
+        if !found {
+            log::error!("[IOMMU] Out of Domain IDs (max {})", max_ids);
+            return Err(IommuError::OutOfMemory);
+        }
+        self.next_domain_id.store((id as u64 + 1) % max_ids as u64, Ordering::Relaxed);
 
         let supports_2mb = self.supports_2mb_pages();
         let supports_1gb = self.supports_1gb_pages();
@@ -35,14 +65,7 @@ impl DomainManager for IommuController {
             let _ = domain_arc.set_security_notifier(Arc::clone(notifier));
         }
 
-        match self.domains.lock() {
-            Ok(mut domains) => {
-                domains.insert(id, domain_arc.clone());
-            }
-            Err(_) => {
-                return Err(IommuError::HardwareError);
-            }
-        }
+        domains.insert(id, domain_arc.clone());
         Ok(id)
     }
 

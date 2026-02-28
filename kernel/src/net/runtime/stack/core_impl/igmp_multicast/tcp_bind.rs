@@ -339,7 +339,7 @@ impl NetworkStack {
         dst_mac: MacAddress,
         dst_port: u16,
         data: &[u8],
-    ) -> Option<Result<(), crate::net::NetworkError>> {
+    ) -> Option<Result<(), crate::net::types::NetworkError>> {
         let mut packet = crate::net::datapath::mempool::alloc_packet()?;
         let mut frame = EthernetFrameMut::new(packet.data_mut())?;
         frame
@@ -389,7 +389,7 @@ impl NetworkStack {
         src: crate::net::l4::udp::UdpAddr,
         dst: crate::net::l4::udp::UdpAddr,
         data: &[u8],
-    ) -> Result<(), crate::net::NetworkError> {
+    ) -> Result<(), crate::net::types::NetworkError> {
         let config = self.config.clone();
         let current_time = self.current_time();
 
@@ -403,7 +403,7 @@ impl NetworkStack {
 
         // Resolve MAC address
         let dst_mac = self.resolve_mac(dst_ip, &config, current_time)
-            .ok_or(crate::net::NetworkError::ArpResolutionPending)?;
+            .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?;
 
         // Try zero-copy first
         if let Some(result) = self.try_send_udp_zero_copy(
@@ -416,7 +416,7 @@ impl NetworkStack {
 
         // Build Ethernet frame
         let mut frame = EthernetFrameMut::new(&mut buffer)
-            .ok_or(crate::net::NetworkError::BufferTooSmall)?;
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         
         frame
             .set_destination(dst_mac)
@@ -427,7 +427,7 @@ impl NetworkStack {
 
         // Build IP packet
         let mut ip_packet = Ipv4PacketMut::new(eth_payload)
-            .ok_or(crate::net::NetworkError::BufferTooSmall)?;
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         
         ip_packet
             .init_header()
@@ -441,7 +441,7 @@ impl NetworkStack {
         // Build UDP datagram
         let udp_len = crate::net::l4::udp::UdpHeader::SIZE + data.len();
         if ip_payload.len() < udp_len {
-            return Err(crate::net::NetworkError::BufferTooSmall);
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
         // UDP Header
@@ -462,7 +462,7 @@ impl NetworkStack {
         if self.transmit(frame.as_bytes()) {
             Ok(())
         } else {
-            Err(crate::net::NetworkError::TransmitFailed)
+            Err(crate::net::types::NetworkError::TransmitFailed)
         }
     }
 

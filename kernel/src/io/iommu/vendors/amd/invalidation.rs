@@ -443,9 +443,22 @@ impl AmdIommuDriver {
                     u64::MAX,  // size = all pages
                     None,      // pasid
                 );
-                if let Ok(mut state) = cmd_state.lock() {
-                    if let Err(err) = state.submit_and_wait(command) {
-                        last_err = Some(err);
+                match cmd_state.lock() {
+                    Ok(mut state) => {
+                        // Use invalidate_iommu_pages with size = u64::MAX to invalidate all pages
+                        let command = cmd::AmdCommand::invalidate_iommu_pages(
+                            domain_id,
+                            0,         // address
+                            u64::MAX,  // size = all pages
+                            None,      // pasid
+                        );
+                        if let Err(err) = state.submit_and_wait(command) {
+                            last_err = Some(err);
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[IOMMU][AMD-Vi] cmd_state lock poisoned during domain {} invalidation", domain_id);
+                        last_err = Some(IommuError::Poisoned);
                     }
                 }
             }
@@ -494,35 +507,41 @@ impl AmdIommuDriver {
 
         for (idx, _unit) in self.units.iter().enumerate() {
             if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
-                if let Ok(mut state) = cmd_state.lock() {
-                    let sync_phys = state.sync_phys;
-                    for devid in &device_ids {
-                        let command = cmd::AmdCommand::invalidate_device_entry(*devid);
-                        if let Err(err) = state.submit(command) {
-                            last_err = Some(err);
-                            break;
-                        }
-                    }
-                    
-                    if last_err.is_none() {
-                        // Submit a completion wait and wait for it
-                        match state.submit_and_wait_token(
-                            cmd::AmdCommand::completion_wait(
-                                sync_phys,
-                                0, // Dummy, submit_and_wait_token will override it
-                                false,
-                            ),
-                            false,
-                        ) {
-                            Ok(token) => {
-                                if let Err(err) = token.wait_blocking() {
-                                    last_err = Some(err);
-                                }
-                            },
-                            Err(err) => {
+                match cmd_state.lock() {
+                    Ok(mut state) => {
+                        let sync_phys = state.sync_phys;
+                        for devid in &device_ids {
+                            let command = cmd::AmdCommand::invalidate_device_entry(*devid);
+                            if let Err(err) = state.submit(command) {
                                 last_err = Some(err);
+                                break;
                             }
                         }
+                        
+                        if last_err.is_none() {
+                            // Submit a completion wait and wait for it
+                            match state.submit_and_wait_token(
+                                cmd::AmdCommand::completion_wait(
+                                    sync_phys,
+                                    0, // Dummy, submit_and_wait_token will override it
+                                    false,
+                                ),
+                                false,
+                            ) {
+                                Ok(token) => {
+                                    if let Err(err) = token.wait_blocking() {
+                                        last_err = Some(err);
+                                    }
+                                },
+                                Err(err) => {
+                                    last_err = Some(err);
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("[IOMMU][AMD-Vi] cmd_state lock poisoned during all-device-entries invalidation");
+                        last_err = Some(IommuError::Poisoned);
                     }
                 }
             }
@@ -557,20 +576,21 @@ impl IommuInvalidator for AmdIommuDriver {
                 InvalidateKind::Pages { start_iova, bytes } => {
                     // AMD-Vi invalidate_domain_pages iterates over all units
                     self.invalidate_domain_pages(req.domain_id, start_iova, bytes)?;
-                                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
-                                        self.invalidate_domain_device_tlbs(
-                                            req.domain_id,
-                                            Some(start_iova),
-                                            Some(bytes),
-                                        )?;
-                                    }
-                                }
-                                InvalidateKind::Domain => {
-                                    self.invalidate_domain_all(req.domain_id)?;
-                                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
-                                        self.invalidate_domain_device_tlbs(req.domain_id, None, None)?;
-                                    }
-                                }                InvalidateKind::Global => {
+                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                        self.invalidate_domain_device_tlbs(
+                            req.domain_id,
+                            Some(start_iova),
+                            Some(bytes),
+                        )?;
+                    }
+                }
+                InvalidateKind::Domain => {
+                    self.invalidate_domain_all(req.domain_id)?;
+                    if req.flags.contains(InvalidateFlags::ATS_AWARE) {
+                        self.invalidate_domain_device_tlbs(req.domain_id, None, None)?;
+                    }
+                }
+                InvalidateKind::Global => {
                     self.invalidate_all_entries()?;
                 }
                 InvalidateKind::Context { source_id } => {

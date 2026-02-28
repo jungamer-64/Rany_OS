@@ -17,12 +17,10 @@ pub(crate) fn ahci_ensure_mapping(
         }
         let page_size: u64 = 0x1000;
         let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
-        let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
-        let mut manager =
-            unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        
         let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
         match unsafe {
-            manager.map_range(
+            crate::mm::virt::higher_half::global_map_range(
                 crate::mm::virt::higher_half::VirtAddr::new(base_virt),
                 crate::mm::virt::higher_half::PhysAddr::new(base_phys),
                 map_size,

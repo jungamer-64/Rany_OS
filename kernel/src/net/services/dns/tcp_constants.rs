@@ -130,5 +130,3 @@ pub fn cleanup_cache(current_tick: u64) {
     }
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-mod tests;

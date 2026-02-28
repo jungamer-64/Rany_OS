@@ -23,13 +23,13 @@ impl IommuDomain {
             if check_super_page && unsafe { (*entry).is_super_page(self.pte_format) } {
                 return Err(IommuError::AlreadyMapped);
             }
-            let child = unsafe { (*entry).phys_addr() as *mut SlPte };
+            let child = unsafe { phys_to_virt_usize((*entry).phys_addr()) as *mut SlPte };
             let phys = unsafe { (*entry).phys_addr() };
             Ok((child, phys, None))
         } else {
             let mut scope = self.allocate_page_table()?;
             scope.attach_to_parent(entry, parent_phys, self.pte_format, level);
-            let child = unsafe { (*entry).phys_addr() as *mut SlPte };
+            let child = unsafe { phys_to_virt_usize((*entry).phys_addr()) as *mut SlPte };
             let phys = unsafe { (*entry).phys_addr() };
             Ok((child, phys, Some(scope)))
         }

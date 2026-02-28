@@ -1,4 +1,8 @@
 use super::*;
+use crate::net::obs::{
+    counters,
+    trace::{self, NetEventKind, NetLayer},
+};
 
 impl VirtioNetDevice {
 
@@ -30,11 +34,25 @@ impl VirtioNetDevice {
                 crate::io::dma::DmaMemoryAttributes::MMIO,
             ),
         }
-        .ok_or(VirtioNetError::DeviceError)?;
+        .ok_or_else(|| {
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                "virtio tx dma buffer alloc failed",
+            );
+            VirtioNetError::DeviceError
+        })?;
 
         if is_iommu_enabled() && self.iommu_device_id.is_some() && !buffer.is_iommu_mapped() {
             log::error!(
                 "[NET-TX] IOMMU enabled but TX buffer is not mapped for device DMA; refusing phys fallback"
+            );
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                "virtio tx iommu mapping missing",
             );
             return Err(VirtioNetError::DeviceError);
         }
@@ -42,6 +60,12 @@ impl VirtioNetDevice {
         // Copy payload into the DMA buffer
         let dst = unsafe { buffer.as_mut_slice() };
         if dst.len() < data_len {
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                "virtio tx buffer too small",
+            );
             return Err(VirtioNetError::BufferTooSmall);
         }
         dst[..data_len].copy_from_slice(data);
@@ -62,15 +86,40 @@ impl VirtioNetDevice {
                     tx_queue.notify(self.transport.as_ref());
 
                     self.process_tx_completions();
+                    trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio tx queued");
                     Ok(())
                 }
                 Err(e) => {
                     log::warn!("[NET-TX] failed to add tx buffer: {:?}", e);
+                    match e {
+                        VirtioNetError::QueueFull => {
+                            counters::global().record_drop();
+                            trace::push_event(
+                                NetLayer::Driver,
+                                NetEventKind::QueuePressure,
+                                "virtio tx queue full",
+                            );
+                        }
+                        _ => {
+                            counters::global().record_error();
+                            trace::push_event(
+                                NetLayer::Driver,
+                                NetEventKind::Error,
+                                "virtio tx enqueue failed",
+                            );
+                        }
+                    }
                     Err(e)
                 }
             }
         } else {
             log::warn!("[NET-TX] device not initialized");
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                "virtio tx not initialized",
+            );
             Err(VirtioNetError::NotInitialized)
         }
     }
@@ -111,7 +160,15 @@ impl VirtioNetDevice {
     pub fn enqueue_send_zero_copy(&self, packet: crate::net::datapath::mempool::PacketRef) -> Result<(), VirtioNetError> {
         let tx_queue = match self.first_tx_queue() {
             Some(q) => q,
-            None => return Err(VirtioNetError::NotInitialized),
+            None => {
+                counters::global().record_error();
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::Error,
+                    "virtio zero-copy tx not initialized",
+                );
+                return Err(VirtioNetError::NotInitialized);
+            }
         };
 
         let data = packet.data();
@@ -124,6 +181,12 @@ impl VirtioNetDevice {
 
         if let Err(err) = check_device_dma_mask(self.iommu_device_id, dma_addr, payload_len) {
             self.cleanup_dma_on_error(bounce_buffer, mapped_iova, mapped_len);
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                "virtio tx dma mask violation",
+            );
             return Err(err);
         }
 
@@ -147,10 +210,29 @@ impl VirtioNetDevice {
                 }
                 
                 tx_queue.notify(self.transport.as_ref());
+                trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio zero-copy tx queued");
                 Ok(())
             }
             Err(e) => {
                 self.cleanup_dma_on_error(bounce_buffer, mapped_iova, mapped_len);
+                match e {
+                    VirtioNetError::QueueFull => {
+                        counters::global().record_drop();
+                        trace::push_event(
+                            NetLayer::Driver,
+                            NetEventKind::QueuePressure,
+                            "virtio zero-copy tx queue full",
+                        );
+                    }
+                    _ => {
+                        counters::global().record_error();
+                        trace::push_event(
+                            NetLayer::Driver,
+                            NetEventKind::Error,
+                            "virtio zero-copy tx enqueue failed",
+                        );
+                    }
+                }
                 Err(e)
             }
         }
@@ -269,6 +351,7 @@ impl VirtioNetDevice {
             for (desc_idx, len) in completions {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes.fetch_add(len, Ordering::Relaxed);
+                trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio tx completion");
 
                 log::info!("[VIRTIO-NET][TX-COMP] desc={} len={}", desc_idx, len);
 
@@ -281,6 +364,12 @@ impl VirtioNetDevice {
                             log::warn!(
                                 "[VIRTIO-NET] TX scheduler completion disappeared desc={}",
                                 desc_idx
+                            );
+                            counters::global().record_error();
+                            trace::push_event(
+                                NetLayer::Driver,
+                                NetEventKind::Error,
+                                "virtio tx scheduler completion missing",
                             );
                             crate::io::io_scheduler::IoResult::Error(
                                 crate::io::io_scheduler::IoError::DeviceError,
@@ -335,6 +424,12 @@ impl VirtioNetDevice {
                     "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
                     desc_idx
                 );
+                counters::global().record_error();
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::Error,
+                    "virtio tx legacy completion missing",
+                );
             }
             return true;
         }
@@ -354,6 +449,12 @@ impl VirtioNetDevice {
                 log::warn!(
                     "[VIRTIO-NET] TX legacy completion missing pending slot desc={}",
                     desc_idx
+                );
+                counters::global().record_error();
+                trace::push_event(
+                    NetLayer::Driver,
+                    NetEventKind::Error,
+                    "virtio tx zero-copy completion missing",
                 );
             }
             if let Some(buf) = entry.pool_bounce_buffer {
@@ -380,5 +481,11 @@ impl VirtioNetDevice {
             );
         }
         log::warn!("[VIRTIO-NET] TX completion for unknown desc {}", desc_idx);
+        counters::global().record_error();
+        trace::push_event(
+            NetLayer::Driver,
+            NetEventKind::Error,
+            "virtio tx completion unknown desc",
+        );
     }
 }

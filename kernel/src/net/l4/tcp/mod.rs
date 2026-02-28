@@ -21,7 +21,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use super::mempool::PacketRef;
+use crate::net::datapath::mempool::PacketRef;
 
 // ============================================================================
 // ネットワークアドレス
@@ -547,4 +547,4 @@ struct UnackedSegment {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use self::async_traits::tests;
+pub mod tests;

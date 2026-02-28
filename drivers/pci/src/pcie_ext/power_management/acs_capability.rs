@@ -46,7 +46,7 @@ impl AcsController {
         })
     }
 
-    /// Enable ACS P2P Isolation (Source Validation, P2P Redirect, Upstream Forwarding)
+    /// Enable ACS P2P Isolation (Source Validation, Translation Blocking, P2P Redirect, Upstream Forwarding)
     pub fn enable_isolation(&self) -> PcieResult<()> {
         let cap = self
             .capability
@@ -59,19 +59,24 @@ impl AcsController {
             .read16(self.bdf, offset + acs_regs::CTRL)
             .ok_or(PcieError::ConfigError)?;
 
-        // Enable Source Validation if supported
+        // Enable Source Validation (SV) if supported
         if cap.source_validation {
             ctrl |= 0x01;
         }
-        // Enable P2P Request Redirect if supported
+        // Enable Translation Blocking (TB) if supported
+        // SECURITY: TB is critical to prevent devices from bypassing IOMMU via 'Translated' TLP headers
+        if cap.translation_blocking {
+            ctrl |= 0x02;
+        }
+        // Enable P2P Request Redirect (RR) if supported
         if cap.p2p_request_redirect {
             ctrl |= 0x04;
         }
-        // Enable P2P Completion Redirect if supported
+        // Enable P2P Completion Redirect (CR) if supported
         if cap.p2p_completion_redirect {
             ctrl |= 0x08;
         }
-        // Enable Upstream Forwarding if supported
+        // Enable Upstream Forwarding (UF) if supported
         if cap.upstream_forwarding {
             ctrl |= 0x10;
         }
@@ -96,16 +101,18 @@ impl AcsController {
         // Strict security policy:
         // For a bridge to provide isolation, it MUST support and enable:
         // 1. Source Validation (SV): Prevents device spoofing of requester IDs.
-        // 2. P2P Request Redirect (RR): Forces P2P requests to go upstream to IOMMU.
-        // 3. P2P Completion Redirect (CR): Forces P2P completions to go upstream.
-        // 4. Upstream Forwarding (UF): Prevents direct P2P bypass of IOMMU.
+        // 2. Translation Blocking (TB): Prevents bypass via Translated TLPs.
+        // 3. P2P Request Redirect (RR): Forces P2P requests to go upstream to IOMMU.
+        // 4. P2P Completion Redirect (CR): Forces P2P completions to go upstream.
+        // 5. Upstream Forwarding (UF): Prevents direct P2P bypass of IOMMU.
         
         let sv_ok = cap.source_validation && (ctrl & 0x01) != 0;
+        let tb_ok = !cap.translation_blocking || (ctrl & 0x02) != 0; // Required IF supported
         let rr_ok = cap.p2p_request_redirect && (ctrl & 0x04) != 0;
         let cr_ok = cap.p2p_completion_redirect && (ctrl & 0x08) != 0;
         let uf_ok = cap.upstream_forwarding && (ctrl & 0x10) != 0;
 
-        sv_ok && rr_ok && cr_ok && uf_ok
+        sv_ok && tb_ok && rr_ok && cr_ok && uf_ok
     }
 }
 

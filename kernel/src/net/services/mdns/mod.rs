@@ -18,7 +18,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::ipv4::Ipv4Address;
+use crate::net::l3::ipv4::Ipv4Address;
 
 extern crate alloc;
 

@@ -4,8 +4,6 @@ use super::*;
 /// 初期シーケンス番号生成
 /// RFC 6528に従い、タイムスタンプベースで予測困難な値を生成
 mod processor_impl;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use self::processor_impl::tests;
 pub(crate) fn generate_initial_seq() -> u32 {
     // RFC 6528: ISN should be unpredictable.
     // We use the hardware RNG if available, mixed with tick count.
@@ -653,7 +651,7 @@ pub enum TcpProcessResult {
 /// TCP segment processor for the network stack
 pub struct TcpProcessor {
     /// TCP connections indexed by (local_addr, remote_addr) tuple
-    connections: BTreeMap<(SocketAddr, SocketAddr), Arc<PoisonLock<TcpControlBlock>>>,
+    pub(crate) connections: BTreeMap<(SocketAddr, SocketAddr), Arc<PoisonLock<TcpControlBlock>>>,
     /// Listening sockets indexed by local address
     listeners: BTreeMap<SocketAddr, Arc<PoisonLock<TcpControlBlock>>>,
     /// Count of semi-open connections (SYN-RECEIVED state) for DoS protection

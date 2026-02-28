@@ -2,6 +2,8 @@
 // kernel/src/io/iommu/vendors/amd/tests.rs
 // ============================================================================
 
+#![cfg(feature = "qemu-test-export")]
+
 //! Unit tests for the AMD-Vi IOMMU subsystem.
 
 use alloc::vec::Vec;

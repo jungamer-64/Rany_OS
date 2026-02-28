@@ -258,6 +258,24 @@ pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceI
         return Ok(());
     }
 
+    // Phase 1: Enable ACS on all bridges to ensure proper grouping and P2P isolation.
+    // This MUST happen before domain assignment to ensure is_isolation_enabled()
+    // returns correct results based on active hardware state.
+    if let Some(config) = pcie_ext_config() {
+        for device in devices.iter() {
+            if device.is_pci_bridge() {
+                let bdf = PcieBdf::from_bdf_address(&device.bdf);
+                if let Ok(acs) = pci_driver::AcsController::new(config, bdf) {
+                    if let Err(e) = acs.enable_isolation() {
+                        log::warn!("[IOMMU][ACS] Failed to enable ACS on bridge {:?}: {:?}", device.bdf, e);
+                    } else {
+                        log::info!("[IOMMU][ACS] Enabled P2P isolation on bridge {:?}", device.bdf);
+                    }
+                }
+            }
+        }
+    }
+
     let mut protected_count = 0;
     let mut failed_count = 0;
     let mut last_error = None;

@@ -13,13 +13,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
-use super::ipv4::Ipv4Address;
+use crate::net::l3::ipv4::Ipv4Address;
 
 /// DNSポート
 mod tcp_constants;
 pub use tcp_constants::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use tcp_constants::tests;
+pub mod tests;
 mod client_impl;
 pub const DNS_PORT: u16 = 53;
 
@@ -272,6 +272,16 @@ impl DnsCache {
         // テーブルが満杯の場合、古いエントリを削除
         if self.entries.len() >= self.max_entries {
             self.cleanup(current_tick);
+            
+            // それでも満杯の場合は、DoS攻撃を防ぐために最も古いエントリを強制削除
+            if self.entries.len() >= self.max_entries {
+                if let Some(oldest_key) = self.entries.iter()
+                    .min_by_key(|(_, entry)| entry.cached_at)
+                    .map(|(k, _)| k.clone()) 
+                {
+                    self.entries.remove(&oldest_key);
+                }
+            }
         }
 
         self.entries.insert(

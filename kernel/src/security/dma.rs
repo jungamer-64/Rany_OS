@@ -99,12 +99,14 @@ pub fn is_page_protected(phys: u64) -> bool {
 pub fn register_protected_range(start: u64, size: u64) {
     if size == 0 { return; }
     let end = start.saturating_add(size);
+    let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
     
-    // For large regions (> 1MB) or high-memory regions, use the regions list directly
-    if size > 1024 * 1024 || start >= (PROTECTED_BITMAP_PAGES as u64 * 4096) {
+    // For large regions (> 1MB) or if ANY part is above the bitmap range,
+    // use the regions list to ensure coverage of the high-memory part.
+    if size > 1024 * 1024 || end > boundary {
         register_protected_region_internal(start, size, "Large/High Protected Range");
-        if start >= (PROTECTED_BITMAP_PAGES as u64 * 4096) {
-            return; // No need to try bitmap for high memory
+        if start >= boundary {
+            return; // No need to try bitmap for purely high memory
         }
     }
 
@@ -124,9 +126,10 @@ pub fn register_protected_range(start: u64, size: u64) {
 pub fn unregister_protected_range(start: u64, size: u64) {
     if size == 0 { return; }
     let end = start.saturating_add(size);
+    let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
 
     // If it was potentially in the regions list
-    if size > 1024 * 1024 || start >= (PROTECTED_BITMAP_PAGES as u64 * 4096) {
+    if size > 1024 * 1024 || end > boundary {
         let mut regions = PROTECTED_REGIONS.write();
         let mut i = 0;
         while i < regions.len() {
@@ -309,5 +312,27 @@ pub fn range_overlaps_protected(start: u64, size: u64) -> bool {
     }) {
         Ok(_) => true,
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn test_dma_protection_boundary_hole() {
+        let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
+        let start = boundary - 4096;
+        let size = 8192;
+        
+        register_protected_range(start, size);
+        
+        let p1 = is_page_protected(start);
+        let p2 = is_page_protected(boundary);
+        
+        unregister_protected_range(start, size);
+
+        assert!(p1, "Page below boundary should be protected");
+        assert!(p2, "Page at boundary should be protected (VULNERABILITY REPRODUCTION)");
     }
 }

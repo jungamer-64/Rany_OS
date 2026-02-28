@@ -578,45 +578,8 @@ impl<'a> Ipv6PacketMut<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test_case]
-    fn test_ipv6_packet_mut_finalize_clamp() {
-        let mut buffer = [0u8; 50]; // 40 bytes header + 10 bytes payload
-        let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();
-        packet.init_header();
-        
-        // Try to finalize with a payload larger than buffer
-        packet.finalize(100);
-        
-        // Check that it was clamped
-        let bytes = packet.as_bytes();
-        assert_eq!(bytes.len(), 50);
-        
-        // Check header payload length
-        if let Some(h) = packet.header() {
-            assert_eq!(h.payload_length(), 10);
-        }
-    }
-
-    #[test_case]
-    fn test_ipv6_packet_mut_manual_overflow_protection() {
-        let mut buffer = [0u8; 50];
-        let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();
-        packet.init_header();
-        
-        // Manually set a large payload length
-        if let Some(h) = packet.header_mut() {
-            h.set_payload_length(100);
-        }
-        
-        // as_bytes() should not panic
-        let bytes = packet.as_bytes();
-        assert_eq!(bytes.len(), 50);
-    }
-}
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub mod tests;
 
 // =====================================================
 // Extension Header Traversal
