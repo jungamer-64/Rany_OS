@@ -148,6 +148,9 @@ jobs:
     - name: ProcessId allowlist check
       run: bash scripts/check-posix-compat.sh
 
+    - name: Run syscall-boundary guard
+      run: bash scripts/check-no-sys-symbol-boundary.sh
+
   # ============================================================================
   # Documentation Job
   # ============================================================================

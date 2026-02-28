@@ -236,8 +236,8 @@
 
 ## 6. 即時着手バックログ（最大10件）
 
-1. `P0` `sys_*` 依存除去設計: `cell_runtime` から KAPI 直呼びへの移行差分を確定。
-2. `P0` `register_kernel_symbols()` から `sys_*` エントリを削除する変更を完了。
+1. `P0` `sys_*` 再導入防止の CI ガードを追加（`rg "\\bsys_(log|alloc|dealloc|sleep|panic)\\b" kernel interfaces` が常に `0 hit`）。
+2. `P0` `KERNEL_API_SYMBOL` 解決を必須化する loader/cell_runtime 回帰テストを追加。
 3. `P0` OOM kill 実処理（タスク停止 + ドメイン遷移 + リソース回収）を `domain_system` API で実装。
 4. `P0` quota 超過時の scheduler 連携（優先度降格/一時停止）を導入。
 5. `P1` `legacy-posix` feature の段階的無効化マップを作成。
@@ -249,7 +249,9 @@
 
 ## 7. 公開API/インターフェース影響
 
-- 本監査フェーズはコード変更なし。公開API変更なし。
+- `P0-1` 実装で `KernelApiV1` を後方互換拡張（末尾 optional entry: `heap_alloc` / `heap_dealloc` / `panic_abort`）。
+- `KERNEL_API_ABI_VERSION` は `1` のまま維持（既存ドライバは prefix フィールドのみ利用可能）。
+- kernel 公開シンボルは `sys_*` から `__exorust_kernel_api_v1`（`KERNEL_API_SYMBOL`）へ統一。
 - 次フェーズ候補（削除対象）:
   - `legacy-posix` 依存 API 群
   - （更新）`sys_*` シンボル境界は本フェーズで削除済み
@@ -263,8 +265,15 @@
 
 ## 9. 検証ログ（実コマンド）
 
-- `rg -n "legacy-posix" kernel interfaces docs | wc -l` -> `13`
-- `rg -n "\\bsys_(log|alloc|dealloc|sleep|panic)\\b" kernel interfaces | wc -l` -> `46`
+- `rg -n "legacy-posix|sys_" kernel interfaces` -> `14 hit`（`legacy-posix`: 13件, `eval_sys_method`: 1件）
+- `rg -n "\\bsys_(log|alloc|dealloc|sleep|panic)\\b" kernel interfaces` -> `0 hit`
+- `rg -n "fn\\s+sys_(log|alloc|dealloc|sleep|panic)|\\\"sys_(log|alloc|dealloc|sleep|panic)\\\"" kernel interfaces` -> `0 hit`
+- `rg -n "__exorust_kernel_api_v1|KERNEL_API_SYMBOL" kernel interfaces` -> `7 hit`
 - `rg -n "XL710|E810|\\bi40e\\b|\\bice\\b|\\bixgbe\\b" drivers kernel Cargo.toml docs README.md` -> `0 hit`
 - `rg -n "loop_boundary|ExactSizeIterator" kernel/src/task docs/exorust_design/scheduler` -> 設計例のみヒット
 - `rg -n "set_domain_priority|set_domain_resource_limits|TODO: 実際のドメイン終了処理" ...` -> enforcement hook/TODO の残存を確認
+- `cargo build -p kernel_api --features cell_runtime` -> `pass`
+- `cargo build -p example_abi_driver --features standalone,export_driver_entry` -> `pass`
+- `cargo build -p driver_cell_probe --features standalone,variant_v1` -> `pass`
+- `cargo build -p driver_cell_probe --features standalone,variant_v2` -> `pass`
+- `cargo test -p rany_kernel --lib` -> `198 passed, 0 failed`

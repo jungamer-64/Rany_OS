@@ -342,10 +342,16 @@ impl Ipv4Header {
         (self.total_length() as usize).saturating_sub(self.header_len())
     }
 
-    /// Calculate header checksum
-    pub fn compute_checksum(&self) -> u16 {
-        let header_len = self.header_len();
-        let header_bytes = &crate::util::struct_as_bytes(self)[..header_len];
+    /// Calculate header checksum from a raw byte slice.
+    /// The slice MUST be at least as long as the header length specified in the first byte.
+    pub fn compute_checksum_static(header_bytes: &[u8]) -> u16 {
+        if header_bytes.is_empty() { return 0; }
+        let ihl = (header_bytes[0] & 0x0F) as usize;
+        let header_len = ihl * 4;
+        
+        if header_bytes.len() < header_len {
+            return 0; // Or panic? Returning 0 is safer for now.
+        }
 
         let mut sum: u32 = 0;
 
@@ -370,20 +376,37 @@ impl Ipv4Header {
         !(sum as u16)
     }
 
+    /// Calculate header checksum (instance method, only works for IHL=5)
+    /// Deprecated: Use Ipv4Packet::verify_checksum or Ipv4PacketMut::update_checksum instead.
+    pub fn compute_checksum(&self) -> u16 {
+        let header_len = self.header_len();
+        if header_len > Self::MIN_SIZE {
+            // Cannot compute checksum for options via struct reference
+            return 0; 
+        }
+        let header_bytes = crate::util::struct_as_bytes(self);
+        Self::compute_checksum_static(header_bytes)
+    }
+
     /// Update checksum
+    /// Deprecated: Use Ipv4PacketMut::update_checksum instead.
     pub fn update_checksum(&mut self) {
+        if self.ihl() > 5 { return; } // Cannot update if options present
         self.checksum = [0, 0];
         let checksum = self.compute_checksum();
         self.set_checksum(checksum);
     }
 
     /// Verify checksum
+    /// Deprecated: Use Ipv4Packet::verify_checksum instead.
     pub fn verify_checksum(&self) -> bool {
         let header_len = self.header_len();
-        let header_bytes = &crate::util::struct_as_bytes(self)[..header_len];
-
+        if header_len > Self::MIN_SIZE {
+            return false; // Cannot verify if options present via struct reference
+        }
+        let header_bytes = crate::util::struct_as_bytes(self);
+        
         let mut sum: u32 = 0;
-
         for i in (0..header_len).step_by(2) {
             let word = if i + 1 < header_len {
                 u16::from_be_bytes([header_bytes[i], header_bytes[i + 1]])
@@ -490,7 +513,13 @@ impl<'a> Ipv4Packet<'a> {
 
     /// Verify header checksum
     pub fn verify_checksum(&self) -> bool {
-        self.header().verify_checksum()
+        let header_len = self.header().header_len();
+        if self.data.len() < header_len {
+            return false;
+        }
+        let expected = self.header().checksum();
+        let calculated = Ipv4Header::compute_checksum_static(&self.data[..header_len]);
+        expected == calculated
     }
 }
 
@@ -585,7 +614,18 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Update checksum
     pub fn update_checksum(&mut self) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.update_checksum(); }
+        let header_len = if let Some(h) = self.header_mut() {
+            h.header_len()
+        } else {
+            return self;
+        };
+
+        if self.data.len() >= header_len {
+            let checksum = Ipv4Header::compute_checksum_static(&self.data[..header_len]);
+            if let Some(h) = self.header_mut() {
+                h.set_checksum(checksum);
+            }
+        }
         self
     }
 
@@ -597,20 +637,33 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Get mutable payload buffer
     pub fn payload_mut(&mut self) -> &mut [u8] {
-        &mut self.data[Ipv4Header::MIN_SIZE..]
+        let header_len = self.header_mut().map(|h| h.header_len()).unwrap_or(Ipv4Header::MIN_SIZE);
+        if self.data.len() < header_len {
+            &mut []
+        } else {
+            &mut self.data[header_len..]
+        }
     }
 
     /// Set total length and update checksum
     pub fn finalize(&mut self, payload_len: usize) {
+        let header_len = if let Some(h) = self.header_mut() {
+            h.header_len()
+        } else {
+            return;
+        };
+
         // Security: Clamp payload length to physical buffer size to prevent buffer overflow/panic
-        let max_payload = self.data.len().saturating_sub(Ipv4Header::MIN_SIZE);
+        let max_payload = self.data.len().saturating_sub(header_len);
         let actual_payload = payload_len.min(max_payload);
+
+        let total_len_usize = header_len + actual_payload;
+        let total_len = total_len_usize.min(65535) as u16;
         
-        let total_len = (Ipv4Header::MIN_SIZE + actual_payload) as u16;
         if let Some(h) = self.header_mut() {
             h.set_total_length(total_len);
-            h.update_checksum();
         }
+        self.update_checksum();
     }
 
     /// Get total packet length
