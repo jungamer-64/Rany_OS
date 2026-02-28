@@ -18,6 +18,9 @@ pub(super) mod dma;
 pub(super) mod init;
 pub(super) mod irt;
 
+// shared helpers pulled out of the previous `qemu_tests` module
+pub(super) mod ivrs_utils;
+
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "qemu-test-export")]

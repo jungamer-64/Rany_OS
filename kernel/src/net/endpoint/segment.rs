@@ -269,6 +269,10 @@ impl TcpSegmentBuilder {
 
     /// チェックサム計算（疑似ヘッダ込み） — IPv4 用
     pub fn calculate_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
+        if segment.len() < 20 {
+            return;
+        }
+
         // チェックサムフィールドをゼロに
         segment[16] = 0;
         segment[17] = 0;
@@ -308,6 +312,10 @@ impl TcpSegmentBuilder {
 
     /// TCPチェックサム計算（IPv6擬似ヘッダ）
     pub fn calculate_checksum_v6(segment: &mut [u8], src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address) {
+        if segment.len() < 20 {
+            return;
+        }
+
         // Ensure checksum field is zeroed
         segment[16] = 0;
         segment[17] = 0;

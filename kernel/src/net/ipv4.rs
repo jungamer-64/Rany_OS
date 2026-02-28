@@ -598,7 +598,11 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Set total length and update checksum
     pub fn finalize(&mut self, payload_len: usize) {
-        let total_len = (Ipv4Header::MIN_SIZE + payload_len) as u16;
+        // Security: Clamp payload length to physical buffer size to prevent buffer overflow/panic
+        let max_payload = self.data.len().saturating_sub(Ipv4Header::MIN_SIZE);
+        let actual_payload = payload_len.min(max_payload);
+        
+        let total_len = (Ipv4Header::MIN_SIZE + actual_payload) as u16;
         if let Some(h) = self.header_mut() {
             h.set_total_length(total_len);
             h.update_checksum();
@@ -608,14 +612,60 @@ impl<'a> Ipv4PacketMut<'a> {
     /// Get total packet length
     pub fn total_len(&self) -> usize {
         // Use safe helper to read header; buffer length was validated in new()
-        crate::util::get_ref::<Ipv4Header>(self.data, 0)
+        let declared_len = crate::util::get_ref::<Ipv4Header>(self.data, 0)
             .map(|h| h.total_length() as usize)
-            .unwrap_or(Ipv4Header::MIN_SIZE)
+            .unwrap_or(Ipv4Header::MIN_SIZE);
+        
+        // Security: Clamp to physical buffer size to prevent panic in slice indexing
+        core::cmp::min(declared_len, self.data.len())
     }
 
     /// Get packet as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.data[..self.total_len()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ipv4_packet_mut_finalize_clamp() {
+        let mut buffer = [0u8; 30]; // 20 bytes header + 10 bytes payload
+        let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();
+        packet.init_header();
+        
+        // Try to finalize with a payload larger than buffer
+        packet.finalize(100);
+        
+        // Check that it was clamped
+        assert_eq!(packet.total_len(), 30);
+        assert_eq!(packet.as_bytes().len(), 30);
+        
+        // Check header total length
+        if let Some(h) = packet.header_mut() {
+            assert_eq!(h.total_length(), 30);
+        }
+    }
+
+    #[test]
+    fn test_ipv4_packet_mut_manual_overflow_protection() {
+        let mut buffer = [0u8; 30];
+        let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();
+        packet.init_header();
+        
+        // Manually set a large total length
+        if let Some(h) = packet.header_mut() {
+            h.set_total_length(100);
+        }
+        
+        // total_len() should still be clamped to buffer size
+        assert_eq!(packet.total_len(), 30);
+        
+        // as_bytes() should not panic
+        let bytes = packet.as_bytes();
+        assert_eq!(bytes.len(), 30);
     }
 }
 

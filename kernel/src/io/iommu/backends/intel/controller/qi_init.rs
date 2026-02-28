@@ -24,23 +24,6 @@ pub trait QIManager {
     unsafe fn disable_queued_invalidation(&self) -> Result<(), IommuError>;
 }
 
-impl IommuController {
-    pub(crate) fn execute_sync_command(&self, kind: crate::io::iommu::runtime::command::queue::IommuCommandKind) -> Result<(), ()> {
-        if let Some(ref cq) = self.command_queue {
-            return cq.submit_sync_with_worker(kind, |k| {
-                use crate::io::iommu::backends::intel::controller::dma::DomainManager;
-                self.handle_command_queue_entry(k)
-            });
-        }
-        Err(())
-    }
-
-    fn process_command_queue_once(&self) {
-        if let Some(ref cq) = self.command_queue {
-            let _ = cq.process_once(|_k| Ok(0));
-        }
-    }
-}
 
 impl QIManager for IommuController {
     fn init_queued_invalidation(&mut self, size_log2: u8) -> Result<(), IommuError> {

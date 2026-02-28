@@ -7,6 +7,7 @@
 //! Contains `IommuController` and its implementation modules.
 
 pub mod cpu_cache;
+pub mod context_cache;
 pub mod dma;
 pub mod fault;
 pub mod init;
@@ -19,6 +20,7 @@ pub mod pi;
 pub mod pri;
 pub mod qi_init;
 pub mod qi_ops;
+pub mod command_queue;
 pub mod utils;
 
 use alloc::collections::BTreeSet;

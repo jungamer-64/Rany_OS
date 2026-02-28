@@ -563,12 +563,58 @@ impl<'a> Ipv6PacketMut<'a> {
     #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         let payload_len = self.header().map(|h| h.payload_length() as usize).unwrap_or(0);
-        &self.data[..IPV6_HEADER_SIZE + payload_len]
+        let total_len = IPV6_HEADER_SIZE + payload_len;
+        // Security: Clamp to physical buffer size to prevent panic
+        &self.data[..core::cmp::min(total_len, self.data.len())]
     }
 
     /// Finalize packet (set payload length based on actual data written)
     pub fn finalize(&mut self, payload_len: usize) {
-        if let Some(h) = self.header_mut() { h.set_payload_length(payload_len as u16); }
+        // Security: Clamp payload length to physical buffer size
+        let max_payload = self.data.len().saturating_sub(IPV6_HEADER_SIZE);
+        let actual_payload = payload_len.min(max_payload);
+
+        if let Some(h) = self.header_mut() { h.set_payload_length(actual_payload as u16); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ipv6_packet_mut_finalize_clamp() {
+        let mut buffer = [0u8; 50]; // 40 bytes header + 10 bytes payload
+        let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();
+        packet.init_header();
+        
+        // Try to finalize with a payload larger than buffer
+        packet.finalize(100);
+        
+        // Check that it was clamped
+        let bytes = packet.as_bytes();
+        assert_eq!(bytes.len(), 50);
+        
+        // Check header payload length
+        if let Some(h) = packet.header() {
+            assert_eq!(h.payload_length(), 10);
+        }
+    }
+
+    #[test]
+    fn test_ipv6_packet_mut_manual_overflow_protection() {
+        let mut buffer = [0u8; 50];
+        let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();
+        packet.init_header();
+        
+        // Manually set a large payload length
+        if let Some(h) = packet.header_mut() {
+            h.set_payload_length(100);
+        }
+        
+        // as_bytes() should not panic
+        let bytes = packet.as_bytes();
+        assert_eq!(bytes.len(), 50);
     }
 }
 

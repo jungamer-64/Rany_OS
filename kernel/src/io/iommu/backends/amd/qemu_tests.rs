@@ -2,8 +2,7 @@
 // kernel/src/io/iommu/backends/amd/qemu_tests.rs
 // ============================================================================
 
-//! AMD-Vi deterministic smoke exports for qemu-test-export.
-
+//! AMD‑Vi deterministic smoke exports for `qemu-test-export`.
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64};
@@ -22,194 +21,17 @@ use crate::sync::PoisonLock;
 
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;
 use super::{AmdDomainInfo, AmdIommuDriver, AmdIommuUnit, AmdIvmdRange};
+// helper routines live in a shared utility module now (see ivrs_utils.rs)
+use super::ivrs_utils::{
+    unit_covers_devid,
+    alias_devids_for_entries,
+    ivhd_flags_for_entries,
+    reject_excluded_ivmd_range_for_device,
+};
 
-fn unit_covers_devid(entries: &[IvhdDeviceEntry], devid: u16) -> bool {
-    entries.iter().any(|entry| match entry {
-        IvhdDeviceEntry::All { .. } => true,
-        IvhdDeviceEntry::Select {
-            devid: entry_devid, ..
-        } => *entry_devid == devid,
-        IvhdDeviceEntry::Range { start, end, .. } => devid >= *start && devid <= *end,
-        IvhdDeviceEntry::Alias {
-            devid: entry_devid,
-            alias,
-            ..
-        } => *entry_devid == devid || *alias == devid,
-        IvhdDeviceEntry::AliasRange {
-            start, end, alias, ..
-        } => (devid >= *start && devid <= *end) || *alias == devid,
-        IvhdDeviceEntry::ExtSelect {
-            devid: entry_devid, ..
-        } => *entry_devid == devid,
-        IvhdDeviceEntry::ExtRange { start, end, .. } => devid >= *start && devid <= *end,
-        IvhdDeviceEntry::Special {
-            devid: entry_devid, ..
-        } => *entry_devid == devid,
-        IvhdDeviceEntry::AcpiHid {
-            devid: entry_devid, ..
-        } => *entry_devid == devid,
-    })
-}
 
-fn alias_devids_for_entries(entries: &[IvhdDeviceEntry], device: DeviceId) -> Vec<u16> {
-    let mut aliases = Vec::new();
-    let devid = device.requester_id();
 
-    if !unit_covers_devid(entries, devid) {
-        return aliases;
-    }
 
-    for entry in entries {
-        match entry {
-            IvhdDeviceEntry::Alias {
-                devid: entry_devid,
-                alias,
-                ..
-            } => {
-                if *entry_devid == devid && *alias != devid {
-                    aliases.push(*alias);
-                }
-            }
-            IvhdDeviceEntry::AliasRange {
-                start, end, alias, ..
-            } => {
-                if devid >= *start && devid <= *end && *alias != devid {
-                    aliases.push(*alias);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    aliases.sort_unstable();
-    aliases.dedup();
-    aliases
-}
-
-fn ivhd_flags_for_entries(entries: &[IvhdDeviceEntry], device: DeviceId) -> u8 {
-    let devid = device.requester_id();
-    let mut flags = 0u8;
-
-    if !unit_covers_devid(entries, devid) {
-        return flags;
-    }
-
-    for entry in entries {
-        match entry {
-            IvhdDeviceEntry::All { flags: entry_flags } => flags |= *entry_flags,
-            IvhdDeviceEntry::Select {
-                devid: entry_devid,
-                flags: entry_flags,
-            } => {
-                if *entry_devid == devid {
-                    flags |= *entry_flags;
-                }
-            }
-            IvhdDeviceEntry::Range {
-                start,
-                end,
-                flags: entry_flags,
-            } => {
-                if devid >= *start && devid <= *end {
-                    flags |= *entry_flags;
-                }
-            }
-            IvhdDeviceEntry::Alias {
-                devid: entry_devid,
-                alias,
-                flags: entry_flags,
-            } => {
-                if *entry_devid == devid || *alias == devid {
-                    flags |= *entry_flags;
-                }
-            }
-            IvhdDeviceEntry::AliasRange {
-                start,
-                end,
-                alias,
-                flags: entry_flags,
-            } => {
-                if (devid >= *start && devid <= *end) || *alias == devid {
-                    flags |= *entry_flags;
-                }
-            }
-            IvhdDeviceEntry::ExtSelect {
-                devid: entry_devid,
-                flags: entry_flags,
-                ..
-            } => {
-                if *entry_devid == devid {
-                    flags |= *entry_flags;
-                }
-            }
-            IvhdDeviceEntry::ExtRange {
-                start,
-                end,
-                flags: entry_flags,
-                ..
-            } => {
-                if devid >= *start && devid <= *end {
-                    flags |= *entry_flags;
-                }
-            }
-            IvhdDeviceEntry::Special {
-                devid: entry_devid,
-                flags: entry_flags,
-                ..
-            } => {
-                if *entry_devid == devid {
-                    flags |= *entry_flags;
-                }
-            }
-            IvhdDeviceEntry::AcpiHid {
-                devid: entry_devid,
-                flags: entry_flags,
-            } => {
-                if *entry_devid == devid {
-                    flags |= *entry_flags;
-                }
-            }
-        }
-    }
-
-    flags
-}
-
-fn reject_excluded_ivmd_range_for_device(
-    ranges: &[AmdIvmdRange],
-    device: DeviceId,
-    phys_addr: u64,
-    size: u64,
-) -> Result<(), IommuError> {
-    if size == 0 {
-        return Ok(());
-    }
-
-    let devid = device.requester_id();
-    let end = phys_addr
-        .checked_add(size)
-        .ok_or(IommuError::InvalidAddress)?;
-
-    for range in ranges {
-        if range.segment != device.segment {
-            continue;
-        }
-        if devid < range.devid_start || devid > range.devid_end {
-            continue;
-        }
-        if !range.exclusion {
-            continue;
-        }
-        if range.range_end <= range.range_start {
-            continue;
-        }
-        if phys_addr < range.range_end && end > range.range_start {
-            return Err(IommuError::InvalidAddress);
-        }
-    }
-
-    Ok(())
-}
 
 fn align_down(value: u64, align: usize) -> u64 {
     crate::util::align_down_u64(value, align as u64)

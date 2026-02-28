@@ -25,6 +25,7 @@ mod domain_impl;
 mod mapping;
 mod paging;
 mod identity_mapping;
+mod map_ops;
 mod unmap_ops;
 
 // ============================================================================
