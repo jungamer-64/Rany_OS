@@ -39,7 +39,7 @@ use crate::io::iommu::vendors::shared::{PageRequestQueue, PostedInterruptPool};
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::runtime::fault_log::FaultLog;
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, QiStats};
-use crate::io::iommu::vendors::intel::registers::{gcmd_bits, gsts_bits, regs, rtaddr_bits};
+use crate::io::iommu::vendors::intel::registers::{fsts_bits, gcmd_bits, gsts_bits, regs, rtaddr_bits};
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
 use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
@@ -306,6 +306,12 @@ impl IommuController {
             log::error!("IOMMU MMIO Base is NULL");
             return Err(IommuError::HardwareError);
         }
+
+        // Clear any pending faults
+        self.write32(
+            regs::FSTS,
+            fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE,
+        );
 
         self.read_and_log_caps();
         let scalable_enabled = self.resolve_scalable_mode(enable_scalable_mode);
