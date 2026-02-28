@@ -62,6 +62,6 @@ pub fn get_virtio_input_device() -> Option<Arc<VirtioInputDevice>> {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 #[path = "tests.rs"]
 mod tests;

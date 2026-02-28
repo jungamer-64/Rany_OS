@@ -582,7 +582,7 @@ impl<'a> Ipv6PacketMut<'a> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ipv6_packet_mut_finalize_clamp() {
         let mut buffer = [0u8; 50]; // 40 bytes header + 10 bytes payload
         let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();
@@ -601,7 +601,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_ipv6_packet_mut_manual_overflow_protection() {
         let mut buffer = [0u8; 50];
         let mut packet = Ipv6PacketMut::new(&mut buffer).unwrap();

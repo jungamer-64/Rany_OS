@@ -441,6 +441,7 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     );
     // debug hook: verify we returned from memory::init without crashing
     io::log::early_print("[DEBUG] after memory::init return\n");
+    memory::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
@@ -490,16 +491,18 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "KernelServices registered");
     io::log::early_print("[DEBUG] After second info! macro\n");
 
-    // now that the initial synchronous messages have been emitted, enable
-    // asynchronous logging so that later log traffic uses the buffered path.
-    io::log::early_print("[DEBUG] enabling async logging\n");
-    io::log::enable_async_logging();
-
-    // Asynchronous logging can now be turned on safely.  We delay this until
-    // after the initial sequence of early info! calls (which ran synchronously)
-    // so that the first few messages don't trigger the crash seen previously.
-    io::log::early_print("[DEBUG] enabling async logging\n");
-    io::log::enable_async_logging();
+    // qemu-test-export/full-boot profiles can run with interrupts disabled
+    // (`qemu_no_if=1`), so keep synchronous logging there to avoid async
+    // logger backpressure stalls before runtime profile dispatch.
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        io::log::early_print("[DEBUG] enabling async logging\n");
+        io::log::enable_async_logging();
+    }
+    #[cfg(feature = "qemu-test-export")]
+    {
+        io::log::early_print("[DEBUG] keeping synchronous logging in qemu-test-export\n");
+    }
 
     // グラフィックスフレームバッファの初期化（ExoLoader経由）
     io::log::early_print("[DEBUG] Before graphics init info!\n");

@@ -526,8 +526,8 @@ pub mod p256 {
 
             // S = 4 * X * Y²
             let y2 = self.y.square();
-            let s = self.x.mul(&y2);
-            let s = s.add(&s).add(&s).add(&s); // 4 * X * Y²
+            let x_y2 = self.x.mul(&y2);
+            let s = x_y2.add(&x_y2).add(&x_y2.add(&x_y2)); // (2*x_y2) + (2*x_y2) = 4*x_y2
 
             // X' = M² - 2*S
             let m2 = m.square();
@@ -666,6 +666,7 @@ pub mod p256 {
     // p256_parsing モジュールの公開関数を p256 名前空間から再エクスポート
     pub use crate::net::ecdh::ecdsa_p256_verify;
     pub use crate::net::ecdh::parse_uncompressed_point;
+    pub use crate::net::ecdh::scalar_is_valid;
     
     
     

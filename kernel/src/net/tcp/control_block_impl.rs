@@ -7,8 +7,7 @@ impl TcpControlBlock {
         
         // Generate a cryptographically secure random Initial Sequence Number (ISN).
         // Using ISN randomization (RFC 6528) is critical to prevent TCP spoofing and hijacking.
-        let random_bytes = crate::net::tls::generate_random();
-        let isn = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+        let isn = generate_initial_seq();
 
         Self {
             endpoints: TcpEndpointMeta::new(local_addr),

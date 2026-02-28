@@ -16,6 +16,40 @@ impl IcmpProcessor {
         &self.stats
     }
 
+    /// Check rate limit for a given IP (Token Bucket)
+    /// Returns true if allowed, false if dropped.
+    fn check_rate_limit(&mut self, src_ip: Ipv4Address, current_time: u64) -> bool {
+        // Add 1 token per 100ms, max 20 tokens.
+        // Security: Limit map size to prevent memory DoS.
+        const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
+        
+        if self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES && !self.per_ip_rate_limits.contains_key(&src_ip) {
+            // Evict oldest entry to prevent DoS
+            let oldest = self.per_ip_rate_limits.iter()
+                .min_by_key(|(_, (last_time, _))| *last_time)
+                .map(|(&ip, _)| ip);
+            if let Some(oldest_ip) = oldest {
+                self.per_ip_rate_limits.remove(&oldest_ip);
+            } else {
+                return false;
+            }
+        }
+
+        let (last_time, tokens) = self.per_ip_rate_limits.entry(src_ip).or_insert((current_time, 10));
+        let elapsed = current_time.saturating_sub(*last_time);
+        let new_tokens = (elapsed / 100) as u32;
+        if new_tokens > 0 {
+            *tokens = (*tokens + new_tokens).min(20);
+            *last_time = current_time;
+        }
+
+        if *tokens == 0 {
+            return false;
+        }
+        *tokens -= 1;
+        true
+    }
+
     /// Process an incoming ICMP packet
     pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) -> IcmpResult {
         let packet = match IcmpPacket::parse(data) {
@@ -36,34 +70,9 @@ impl IcmpProcessor {
             IcmpType::EchoRequest => {
                 self.stats.echo_requests_rx += 1;
 
-                // Rate limiting (Per-IP Token Bucket)
-                // Add 1 token per 100ms, max 20 tokens.
-                // Security: Limit map size to prevent memory DoS.
-                const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
-                if self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES && !self.per_ip_rate_limits.contains_key(&src_ip) {
-                    // Evict oldest entry to prevent DoS
-                    let oldest = self.per_ip_rate_limits.iter()
-                        .min_by_key(|(_, (last_time, _))| *last_time)
-                        .map(|(&ip, _)| ip);
-                    if let Some(oldest_ip) = oldest {
-                        self.per_ip_rate_limits.remove(&oldest_ip);
-                    } else {
-                        return IcmpResult::Ignored;
-                    }
-                }
-
-                let (last_time, tokens) = self.per_ip_rate_limits.entry(src_ip).or_insert((current_time, 10));
-                let elapsed = current_time.saturating_sub(*last_time);
-                let new_tokens = (elapsed / 100) as u32;
-                if new_tokens > 0 {
-                    *tokens = (*tokens + new_tokens).min(20);
-                    *last_time = current_time;
-                }
-
-                if *tokens == 0 {
+                if !self.check_rate_limit(src_ip, current_time) {
                     return IcmpResult::Ignored;
                 }
-                *tokens -= 1;
 
                 if let Some(echo) = packet.as_echo() {
                     IcmpResult::SendEchoReply {
@@ -103,6 +112,9 @@ impl IcmpProcessor {
                 self.process_redirect(&packet)
             }
             IcmpType::TimestampRequest => {
+                if !self.check_rate_limit(src_ip, current_time) {
+                    return IcmpResult::Ignored;
+                }
                 self.process_timestamp_request(&packet, src_ip)
             }
             IcmpType::TimestampReply => {

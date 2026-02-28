@@ -157,7 +157,9 @@ pub struct FragmentBuffer {
 
 impl FragmentBuffer {
     /// Maximum reassembled packet size (64KB - IP header)
-    pub const MAX_DATAGRAM_SIZE: usize = 65535;
+    /// RFC 791 defines the maximum IP packet size as 65535 bytes.
+    /// Since the header is at least 20 bytes, the max payload is 65515.
+    pub const MAX_DATAGRAM_SIZE: usize = 65515;
 
     /// Maximum number of holes allowed in the reassembly buffer
     pub const MAX_HOLES: usize = 64;
@@ -171,7 +173,7 @@ impl FragmentBuffer {
             data: Vec::new(),
             holes: vec![FragmentHole {
                 first: 0,
-                last: u16::MAX,
+                last: Self::MAX_DATAGRAM_SIZE as u16,
             }],
             total_len: None,
             first_header: None,

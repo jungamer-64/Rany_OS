@@ -143,6 +143,6 @@ pub fn get_virtio_console_device() -> Option<Arc<VirtioConsoleDevice>> {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 #[path = "tests.rs"]
 mod tests;

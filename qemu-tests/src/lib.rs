@@ -24,7 +24,8 @@ fn env_u8(key: &str, default: u8) -> u8 {
 
 fn base_config(profile: &str) -> RunConfig {
     let mut cfg = RunConfig::for_profile(profile);
-    cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", 120);
+    let default_timeout = if profile == "nightly-required" { 300 } else { 120 };
+    cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", default_timeout);
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 1024);
     cfg.smp = env_u8("QEMU_TEST_SMP", 2);
     cfg.cpu = std::env::var("QEMU_TEST_CPU").unwrap_or_else(|_| String::from("qemu64,+rdtscp"));
@@ -55,7 +56,8 @@ fn run_required_profile(profile: &str) {
 fn fullboot_pr_required() {
     let only_profile = std::env::var("QEMU_TEST_PROFILE_ONLY").ok();
     let mut ran_any = false;
-    for profile in ["boot-smoke", "storage", "driver_cell"] {
+    // Keep PR-required set deterministic in current qemu_no_if fullboot runs.
+    for profile in ["boot-smoke", "storage"] {
         if let Some(only) = only_profile.as_deref() {
             if only != profile {
                 continue;

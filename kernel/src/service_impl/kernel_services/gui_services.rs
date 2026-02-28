@@ -4,6 +4,7 @@ use super::*;
 mod fs_tests;
 #[cfg(test)]
 pub use self::fs_tests::*;
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 mod nvme_tests;
 
 // ============================================================================

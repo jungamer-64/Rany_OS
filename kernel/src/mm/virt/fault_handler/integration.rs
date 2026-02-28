@@ -58,7 +58,6 @@ pub fn try_handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> bool {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 #[path = "tests.rs"]
 mod tests;
-

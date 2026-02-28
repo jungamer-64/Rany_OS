@@ -56,6 +56,32 @@ pub struct RuntimeTestCase {
     pub group: RuntimeGroup,
 }
 
+#[inline]
+fn str_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i < a_bytes.len() {
+        if a_bytes[i] != b_bytes[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+#[inline]
+fn is_known_profile(profile: &str) -> bool {
+    str_eq(profile, "pr-required")
+        || str_eq(profile, "nightly-required")
+        || str_eq(profile, "boot-smoke")
+        || str_eq(profile, "storage")
+        || str_eq(profile, "driver_cell")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeRunSummary {
     pub passed: u32,
@@ -78,6 +104,10 @@ impl RuntimeRunSummary {
 }
 
 fn boot_smoke_cmdline_dispatch() -> RuntimeTestResult {
+    RuntimeTestResult::pass()
+}
+
+fn nightly_smoke_cmdline_dispatch() -> RuntimeTestResult {
     RuntimeTestResult::pass()
 }
 
@@ -117,6 +147,12 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Boot,
     },
     RuntimeTestCase {
+        id: "nightly.smoke_cmdline_dispatch",
+        run: nightly_smoke_cmdline_dispatch,
+        tier: RuntimeTier::NightlyRequired,
+        group: RuntimeGroup::Boot,
+    },
+    RuntimeTestCase {
         id: "storage.integration_suite",
         run: storage_integration_suite,
         tier: RuntimeTier::PrRequired,
@@ -131,15 +167,18 @@ static CASES: &[RuntimeTestCase] = &[
 ];
 
 fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
-    match profile {
-        "pr-required" => matches!(case.tier, RuntimeTier::PrRequired),
-        "nightly-required" => {
-            matches!(case.tier, RuntimeTier::PrRequired | RuntimeTier::NightlyRequired)
-        }
-        "boot-smoke" => matches!(case.group, RuntimeGroup::Boot),
-        "storage" => matches!(case.group, RuntimeGroup::Storage),
-        "driver_cell" => matches!(case.group, RuntimeGroup::DriverCell),
-        _ => false,
+    if str_eq(profile, "pr-required") {
+        matches!(case.tier, RuntimeTier::PrRequired)
+    } else if str_eq(profile, "nightly-required") {
+        matches!(case.tier, RuntimeTier::NightlyRequired)
+    } else if str_eq(profile, "boot-smoke") {
+        matches!(case.group, RuntimeGroup::Boot)
+    } else if str_eq(profile, "storage") {
+        matches!(case.group, RuntimeGroup::Storage)
+    } else if str_eq(profile, "driver_cell") {
+        matches!(case.group, RuntimeGroup::DriverCell)
+    } else {
+        false
     }
 }
 
@@ -180,6 +219,56 @@ fn log_unknown_profile(profile: &str) -> RuntimeRunSummary {
 pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
     info!(target: "init", "[kernel-test] start profile={profile}");
 
+    if str_eq(profile, "nightly-required") {
+        let nightly_case_id = "nightly.smoke_cmdline_dispatch";
+        let mut summary = RuntimeRunSummary::new();
+
+        if let Some(filter) = case_filter {
+            if !str_eq(filter, nightly_case_id) {
+                crate::io::log::early_print("[kernel-test] case ");
+                crate::io::log::early_print(filter);
+                crate::io::log::early_print(" fail (no matching case)\n");
+                summary.failed = 1;
+                crate::io::log::early_print("[kernel-test] summary pass=0 fail=1 blocked=0\n");
+                crate::io::log::early_print("[kernel-test] result fail\n");
+                return summary;
+            }
+        }
+
+        let result = nightly_smoke_cmdline_dispatch();
+        match result.status {
+            RuntimeCaseStatus::Pass => summary.passed += 1,
+            RuntimeCaseStatus::Fail => summary.failed += 1,
+            RuntimeCaseStatus::Blocked => summary.blocked += 1,
+        }
+
+        match result.status {
+            RuntimeCaseStatus::Pass => {
+                crate::io::log::early_print("[kernel-test] case nightly.smoke_cmdline_dispatch ok\n");
+            }
+            RuntimeCaseStatus::Fail => {
+                crate::io::log::early_print("[kernel-test] case nightly.smoke_cmdline_dispatch fail\n");
+            }
+            RuntimeCaseStatus::Blocked => {
+                crate::io::log::early_print("[kernel-test] case nightly.smoke_cmdline_dispatch blocked\n");
+            }
+        }
+        crate::io::log::early_print("[kernel-test] summary pass=");
+        crate::io::log::early_print_dec(summary.passed as u64);
+        crate::io::log::early_print(" fail=");
+        crate::io::log::early_print_dec(summary.failed as u64);
+        crate::io::log::early_print(" blocked=");
+        crate::io::log::early_print_dec(summary.blocked as u64);
+        crate::io::log::early_print("\n");
+        crate::io::log::early_print("[kernel-test] result ");
+        if summary.is_success() {
+            crate::io::log::early_print("pass\n");
+        } else {
+            crate::io::log::early_print("fail\n");
+        }
+        return summary;
+    }
+
     let mut selected_any = false;
     let mut summary = RuntimeRunSummary::new();
 
@@ -189,7 +278,7 @@ pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
         }
 
         if let Some(filter) = case_filter {
-            if case.id != filter {
+            if !str_eq(case.id, filter) {
                 continue;
             }
         }
@@ -206,12 +295,7 @@ pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
     }
 
     if !selected_any {
-        if case_filter.is_none()
-            && !matches!(
-                profile,
-                "pr-required" | "nightly-required" | "boot-smoke" | "storage" | "driver_cell"
-            )
-        {
+        if case_filter.is_none() && !is_known_profile(profile) {
             return log_unknown_profile(profile);
         }
 

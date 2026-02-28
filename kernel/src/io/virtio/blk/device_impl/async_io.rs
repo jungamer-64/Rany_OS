@@ -7,7 +7,7 @@ use super::*;
 
 mod interrupt_sync;
 pub use interrupt_sync::*;
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 #[path = "../tests.rs"]
 mod tests;
 

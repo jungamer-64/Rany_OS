@@ -630,7 +630,7 @@ impl<'a> Ipv4PacketMut<'a> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_ipv4_packet_mut_finalize_clamp() {
         let mut buffer = [0u8; 30]; // 20 bytes header + 10 bytes payload
         let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();
@@ -649,7 +649,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn test_ipv4_packet_mut_manual_overflow_protection() {
         let mut buffer = [0u8; 30];
         let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();

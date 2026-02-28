@@ -581,5 +581,5 @@ pub fn get_virtio_balloon_device() -> Option<Arc<VirtioBalloonDevice>> {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 mod tests;

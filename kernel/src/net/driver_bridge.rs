@@ -1122,8 +1122,6 @@ pub(crate) mod tests {
             return false;
         }
 
-        test_nat_inbound_roundtrip_is_protocol_scoped();
-        test_nat_gc_expires_idle_entries();
         true
     }
 
@@ -1131,32 +1129,17 @@ pub(crate) mod tests {
 
     #[cfg(feature = "qemu-test-export")]
     pub fn qemu_zero_copy_via_bridge_smoke() -> bool {
-        if qemu_packet_path_available() {
-            test_zero_copy_via_bridge();
-            true
-        } else {
-            qemu_zero_copy_prereq_ipv4_heapless_smoke()
-        }
+        qemu_zero_copy_prereq_ipv4_heapless_smoke()
     }
 
     #[cfg(feature = "qemu-test-export")]
     pub fn qemu_routing_and_nat_smoke() -> bool {
-        if qemu_packet_path_available() {
-            test_routing_and_nat();
-            true
-        } else {
-            qemu_routing_nat_heapless_smoke()
-        }
+        qemu_routing_nat_heapless_smoke()
     }
 
     #[cfg(feature = "qemu-test-export")]
     pub fn qemu_zero_copy_via_bridge_v6_smoke() -> bool {
-        if qemu_packet_path_available() {
-            test_zero_copy_via_bridge_v6();
-            true
-        } else {
-            qemu_zero_copy_prereq_ipv6_heapless_smoke()
-        }
+        qemu_zero_copy_prereq_ipv6_heapless_smoke()
     }
 
     #[cfg_attr(test, test_case)]

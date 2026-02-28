@@ -180,6 +180,13 @@ impl TlsConnection {
 
     /// ハンドシェイクメッセージを記録し、トランスクリプトハッシュと鍵導出を更新する
     pub(super) fn record_and_update_handshake(&mut self, msg_data: &[u8], msg_type: u8) -> TlsResult<()> {
+        // Security: Limit cumulative handshake messages to prevent memory DoS.
+        // 128KB is the limit for a single message, so we allow 256KB total for the whole handshake.
+        const MAX_HANDSHAKE_ACCUMULATOR: usize = 262144;
+        if self.handshake_messages.len() + msg_data.len() > MAX_HANDSHAKE_ACCUMULATOR {
+            return Err(TlsError::DecodeError);
+        }
+
         self.handshake_messages.extend_from_slice(msg_data);
         if let Some(ref mut hasher) = self.transcript_hash {
             hasher.update(msg_data);

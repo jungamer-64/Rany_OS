@@ -9,6 +9,7 @@ mod nvme_tests {
     use super::*;
     use alloc::boxed::Box;
     use alloc::sync::Arc;
+    use crate::service_impl::kernel_services::gui_services::EXOKERNEL;
     use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
     use crate::security::capability::{self, CapabilitySet};
     use crate::task::context::{get_current_task, set_current_task, TaskControlBlock};

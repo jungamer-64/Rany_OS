@@ -86,6 +86,10 @@ pub(crate) fn send_tcp_packet(
 
 /// TCPチェックサム計算（IPv4疑似ヘッダ込み）
 pub(crate) fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
+    if segment.len() < 20 {
+        return;
+    }
+
     // チェックサムフィールドをゼロに
     segment[16] = 0;
     segment[17] = 0;
@@ -121,6 +125,10 @@ pub(crate) fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip
 
 /// TCPチェックサム計算（IPv6擬似ヘッダ）
 pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address) {
+    if segment.len() < 20 {
+        return;
+    }
+
     // Ensure checksum field is zeroed
     segment[16] = 0;
     segment[17] = 0;

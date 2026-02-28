@@ -460,7 +460,7 @@ pub fn exit_panic_mode() {
     IN_PANIC.store(false, Ordering::SeqCst);
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 mod tests {
     use super::*;
 

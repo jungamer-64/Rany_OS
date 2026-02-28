@@ -276,6 +276,11 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     // 3-5. Exchange Heap, Per-CPU, Per-Core Slab Cache
     init_post_buddy();
 
+    // Early-boot helper vector is no longer needed.  Avoid allocator churn on
+    // function epilogue in qemu-test-export/full-mm paths where allocator
+    // metadata can still be in a fragile state.
+    core::mem::forget(usable_regions);
+
     crate::io::log::early_print("[MEM] all done\n");
 }
 
@@ -407,7 +412,7 @@ pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
 
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 pub(crate) fn init_global_heap() {
-    #[cfg(not(feature = "full_mm_tests"))]
+    #[cfg(any(not(feature = "full_mm_tests"), all(feature = "full_mm_tests", not(test))))]
     {
         crate::io::log::early_print("[HEAP] lock\n");
         let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] global allocator init");
@@ -421,9 +426,53 @@ pub(crate) fn init_global_heap() {
         crate::io::log::early_print("[HEAP] done\n");
     }
 
-    #[cfg(feature = "full_mm_tests")]
+    #[cfg(all(feature = "full_mm_tests", test))]
     {
         crate::io::log::early_print("[HEAP] Skipping global heap init (using dummy)\n");
+    }
+}
+
+/// Ensure global heap allocator state is usable before runtime subsystems
+/// (ACPI/IOMMU/etc.) begin allocating.
+///
+/// If metadata was clobbered and the allocator appears uninitialized, rebuild
+/// the buddy free lists from the canonical heap geometry.
+pub(crate) fn ensure_global_heap_ready() {
+    #[cfg(any(not(feature = "full_mm_tests"), all(feature = "full_mm_tests", not(test))))]
+    {
+        let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] ensure global allocator ready");
+        if guard.ensure_initialized() {
+            set_heap_deallocation_enabled(true);
+            return;
+        }
+
+        let has_free_list_entries = guard.free_lists.iter().any(|entry| entry.is_some());
+        if !has_free_list_entries {
+            crate::io::log::early_print("[HEAP] allocator free-lists empty - rebuilding\n");
+            unsafe {
+                guard.init(heap_start() as usize, HEAP_SIZE);
+            }
+            set_heap_deallocation_enabled(true);
+            return;
+        }
+
+        if guard.heap_start == 0 {
+            guard.heap_start = heap_start() as usize;
+        }
+        if guard.heap_size == 0 {
+            guard.heap_size = HEAP_SIZE;
+        }
+        if guard.ensure_initialized() {
+            crate::io::log::early_print("[HEAP] allocator metadata repaired\n");
+        } else {
+            crate::io::log::early_print("[HEAP] allocator metadata unrecoverable\n");
+        }
+        set_heap_deallocation_enabled(true);
+    }
+
+    #[cfg(all(feature = "full_mm_tests", test))]
+    {
+        // dummy allocator path
     }
 }
 

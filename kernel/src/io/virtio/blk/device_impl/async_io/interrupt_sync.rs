@@ -35,7 +35,7 @@ pub fn blk_read_sync(_sector: u64, buf: &mut [u8]) -> Result<usize, BlockError> 
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "qemu-test-export")))]
 mod unit_tests {
     use super::*;
 

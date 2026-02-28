@@ -29,7 +29,7 @@ mod interrupt_macros;
 
 // Global Allocator for tests (requires full_mm_tests)
 #[cfg(all(feature = "full_mm_tests", not(feature = "std")))]
-#[global_allocator]
+#[cfg_attr(all(test, not(target_os = "linux")), global_allocator)]
 pub static ALLOCATOR: DummyGlobalAlloc = DummyGlobalAlloc;
 
 // Dummy allocator for tests if not found or problematic

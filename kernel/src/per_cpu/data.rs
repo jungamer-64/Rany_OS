@@ -479,7 +479,10 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
         crate::io::log::early_print("[PCPU] fsgs\n");
 
         // CPUIDでFSGSBASEサポートを確認
+        #[cfg(not(feature = "qemu-test-export"))]
         let fsgsbase_supported = unsafe { check_fsgsbase_support() };
+        #[cfg(feature = "qemu-test-export")]
+        let fsgsbase_supported = false;
         crate::io::log::early_print(if fsgsbase_supported {
             "[PCPU] fsgs supported\n"
         } else {
@@ -647,7 +650,7 @@ pub fn mark_cpu_online(cpu_id: usize) {
     }
     let bit = 1u64 << cpu_id;
     ONLINE_CPU_MASK.fetch_or(bit, Ordering::Release);
-    let mut active = ACTIVE_CPUS.lock().expect("lock poisoned");
+    let mut active = ACTIVE_CPUS.lock_for_init("[PCPU] mark_cpu_online");
     if cpu_id + 1 > *active {
         *active = cpu_id + 1;
     }

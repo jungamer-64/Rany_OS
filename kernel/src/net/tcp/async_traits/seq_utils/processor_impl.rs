@@ -93,8 +93,7 @@ impl TcpProcessor {
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.set_remote_addr(remote_addr);
         tcb.enter_syn_sent();
-        let random_bytes = crate::net::tls::crypto::generate_random();
-        let isn = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+        let isn = generate_initial_seq();
         tcb.set_snd_nxt(isn);
         tcb.set_snd_una(isn);
 
@@ -304,8 +303,7 @@ impl TcpProcessor {
         tcb.set_rcv_wnd(65535);
         tcb.enter_syn_received();
 
-        let random_bytes = crate::net::tls::crypto::generate_random();
-        let isn = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+        let isn = generate_initial_seq();
         tcb.set_snd_nxt(isn);
         tcb.set_snd_una(isn);
 

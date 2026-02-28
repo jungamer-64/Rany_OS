@@ -547,6 +547,10 @@ fn send_tlb_flush_ipi_pages(cpu_mask: CpuMask, pages: &[u64]) {
 fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, pages: &[u64], asid: u16) {
     // 現在のCPUを除外したターゲットマスクを作成
     let current_cpu = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let cpu_scan_limit = core::cmp::max(
+        crate::per_cpu::active_cpu_count().min(MAX_CPUS),
+        current_cpu.saturating_add(1).min(MAX_CPUS),
+    );
     let mut remote_mask = cpu_mask;
     remote_mask.clear(current_cpu);
     
@@ -574,7 +578,7 @@ fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, page
     TLB_FLUSH_DONE_COUNT.store(0, Ordering::Release);
     
     // 各ターゲットCPUの状態をチェック
-    for cpu_id in 0..MAX_CPUS {
+    for cpu_id in 0..cpu_scan_limit {
         if remote_mask.is_set(cpu_id) {
             let state = get_cpu_tlb_state(cpu_id);
             
@@ -594,7 +598,7 @@ fn send_tlb_flush_ipi_internal(cpu_mask: CpuMask, flush_type: TlbFlushType, page
     }
 
     // アクティブなCPUにIPIを送信
-    for cpu_id in 0..MAX_CPUS {
+    for cpu_id in 0..cpu_scan_limit {
         if remote_mask.is_set(cpu_id) {
             send_tlb_ipi_to_cpu(cpu_id);
         }
@@ -1735,4 +1739,3 @@ mod tests {
         assert_eq!(state.get_state(), TlbState::Active);
     }
 }
-
