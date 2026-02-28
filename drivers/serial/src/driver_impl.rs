@@ -104,6 +104,14 @@ pub async fn read_byte() -> u8 {
     SERIAL1.read_byte().await
 }
 
+/// Read a byte from COM1 without blocking.
+pub fn try_read_byte() -> Option<u8> {
+    SERIAL1
+        .rx_buffer
+        .pop()
+        .or_else(|| SERIAL1.port.try_receive().ok())
+}
+
 /// Write a byte to COM1 (blocking)
 pub fn write_byte(byte: u8) {
     SERIAL1.port.send(byte);

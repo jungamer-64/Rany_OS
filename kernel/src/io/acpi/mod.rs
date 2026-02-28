@@ -26,7 +26,8 @@ pub use acpi_driver::info::{
 };
 pub use acpi_driver::parser::{
     AcpiParser, init, interrupt_overrides, io_apics, local_apic_address, local_apics,
-    numa_cpu_proximity, numa_memory_regions, pcie_ecam_regions, processor_count, set_hhdm_offset,
+    find_table_global, numa_cpu_proximity, numa_memory_regions, pcie_ecam_regions,
+    processor_count, set_hhdm_offset,
 };
 pub use acpi_driver::tables::{
     AcpiError, AcpiSdtHeader, Fadt, Madt, MadtEntryHeader, MadtEntryType, MadtInterruptOverride,

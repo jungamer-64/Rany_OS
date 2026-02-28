@@ -147,8 +147,8 @@ pub struct FragmentBuffer {
     holes: Vec<FragmentHole>,
     /// Total datagram length (known when last fragment received)
     total_len: Option<u16>,
-    /// First fragment's header (for protocol info)
-    first_header: Option<[u8; 20]>,
+    /// First fragment's full header (including options, up to 60 bytes)
+    first_header: Option<Vec<u8>>,
     /// Creation timestamp (for timeout)
     created_at: u64,
     /// Last update timestamp
@@ -232,7 +232,7 @@ impl FragmentBuffer {
             }
         }
 
-        self.store_first_header_if_needed(header, fragment_offset);
+        // Note: first header storage is now handled in process_fragment for consistency
 
         // Ensure buffer is large enough
         if self.data.len() < fragment_end as usize {
@@ -284,14 +284,9 @@ impl FragmentBuffer {
     }
 
     /// Store the first fragment header for later reassembly
-    pub(super) fn store_first_header_if_needed(&mut self, header: &Ipv4Header, fragment_offset: u16) {
+    pub(super) fn store_first_header_if_needed(&mut self, header_data: &[u8], fragment_offset: u16) {
         if fragment_offset == 0 && self.first_header.is_none() {
-            let mut hdr = [0u8; 20];
-            let hdr_bytes = crate::util::struct_as_bytes(header);
-            if hdr_bytes.len() >= 20 {
-                hdr.copy_from_slice(&hdr_bytes[..20]);
-                self.first_header = Some(hdr);
-            }
+            self.first_header = Some(header_data.to_vec());
         }
     }
 
@@ -334,34 +329,42 @@ impl FragmentBuffer {
     }
 
     /// Get the reassembled packet (only valid when is_complete() is true)
+    /// Build the reassembled packet once complete
     pub fn get_reassembled(&self) -> Option<Vec<u8>> {
         if !self.is_complete() {
             return None;
         }
 
         let total_len = self.total_len? as usize;
-        let header = self.first_header.as_ref()?;
+        let header_data = self.first_header.as_ref()?;
+        let header_len = header_data.len();
+
+        // Check if reassembled length fits in IPv4 Total Length field (16 bits)
+        if header_len + total_len > 65535 {
+            log::warn!("[NET-IPV4] Reassembled packet too large for u16 Total Length: {} bytes", header_len + total_len);
+            return None;
+        }
 
         // Build complete packet: header + payload
-        let mut packet = Vec::with_capacity(20 + total_len);
-        packet.extend_from_slice(header);
+        let mut packet = Vec::with_capacity(header_len + total_len);
+        packet.extend_from_slice(header_data);
         packet.extend_from_slice(&self.data[..total_len]);
 
         // Update header fields
-        let packet_total_len = (20 + total_len) as u16;
+        let packet_total_len = (header_len + total_len) as u16;
         packet[2] = (packet_total_len >> 8) as u8;
-        packet[3] = packet_total_len as u8;
+        packet[3] = (packet_total_len & 0xff) as u8;
 
-        // Clear fragment flags/offset
-        packet[6] = 0;
-        packet[7] = 0;
+        // Clear fragment flags/offset (keep DF if set, but actually reassembled packet shouldn't have MF or offset)
+        packet[6] &= 0x40; // Keep only DF flag, clear MF and high offset bits
+        packet[7] = 0; // Clear remaining offset bits
 
         // Recalculate header checksum
         packet[10] = 0;
         packet[11] = 0;
-        let checksum = calculate_ip_checksum(&packet[..20]);
+        let checksum = calculate_ip_checksum(&packet[..header_len]);
         packet[10] = (checksum >> 8) as u8;
-        packet[11] = checksum as u8;
+        packet[11] = (checksum & 0xff) as u8;
 
         Some(packet)
     }
@@ -413,9 +416,11 @@ impl FragmentReassembler {
     /// Process an incoming fragment
     ///
     /// Returns Some(reassembled_packet) if reassembly is complete
+    /// Process an incoming IPv4 fragment
     pub fn process_fragment(
         &mut self,
         header: &Ipv4Header,
+        header_data: &[u8],
         payload: &[u8],
         current_time: u64,
     ) -> Option<Vec<u8>> {
@@ -447,6 +452,9 @@ impl FragmentReassembler {
 
         // Get the buffer and add fragment
         let buffer = self.buffers.get_mut(&key)?;
+
+        // Capture first header for reassembly
+        buffer.store_first_header_if_needed(header_data, header.fragment_offset());
 
         if !buffer.add_fragment(header, payload, current_time) {
             self.stats.dropped_invalid += 1;
@@ -658,8 +666,10 @@ impl Ipv4Processor {
 
         if is_fragment {
             // Handle fragmented packet
+            let header_len = header.header_len();
+            let header_data = &data[..header_len];
             let payload = packet.payload();
-            if let Some(reassembled) = self.reassembler.process_fragment(header, payload, current_time) {
+            if let Some(reassembled) = self.reassembler.process_fragment(header, header_data, payload, current_time) {
                 // Reassembly complete - return the reassembled packet
                 return Ipv4ProcessResult::Reassembled(reassembled);
             } else {

@@ -27,6 +27,11 @@ fn generate_tcp_timestamp() -> u32 {
     (ms / 10) as u32
 }
 
+#[inline]
+fn seq_before(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) < 0
+}
+
 /// RFC 793 Step 1: 受信セグメントのシーケンス番号妥当性を検証
 fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, payload_len: usize) -> bool {
     let rcv_nxt = tcb.rcv_nxt;
@@ -596,8 +601,19 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
 
 /// データ受信処理（OOO再組立て対応）
 fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
-    if seq_num != tcb.rcv_nxt {
-        // Out-of-order: OOOキューに保存し、即座にDupACKを返す
+    // --- In-order / Overlapping セグメント処理 ---
+    let (actual_seq, actual_data) = if seq_num == tcb.rcv_nxt {
+        (seq_num, data)
+    } else if seq_before(seq_num, tcb.rcv_nxt) {
+        // 重複/オーバーラップ: すでに受信済みの部分を切り捨てる
+        let overlap = tcb.rcv_nxt.wrapping_sub(seq_num) as usize;
+        if overlap >= data.len() {
+            // 完全に受信済み
+            return;
+        }
+        (tcb.rcv_nxt, &data[overlap..])
+    } else {
+        // 完全に順序外: OOOキューに保存し、即座にDupACKを返す
         ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data);
 
         // SACKブロック取得（OOOキュー内の受信済み範囲を通知）
@@ -609,12 +625,6 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
             .ack(tcb.rcv_nxt)
             .ack_flag()
             .window(65535);
-
-        // TCP Timestamps (RFC 7323): DupACKにTSoptとSACKを付与（合意済みの場合）
-        if tcb.ts_enabled {
-            // Timestamp は最後に置く（SACK の後ろに置いても OK）
-            // We will add SACK below if negotiated.
-        }
 
         if tcb.sack_enabled && !sack.is_empty() {
             // NOP+NOP+SACK でアラインメント (RFC 2018 Section 3)
@@ -637,14 +647,13 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         }
         send_tcp_segment(tcb.local, tcb.remote, dup_ack);
         return;
-    }
+    };
 
-    // --- In-order セグメント処理 ---
-    let mut new_rcv_nxt = tcb.rcv_nxt.wrapping_add(data.len() as u32);
+    let mut new_rcv_nxt = actual_seq.wrapping_add(actual_data.len() as u32);
 
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        socket.push_data(data);
+        socket.push_data(actual_data);
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
         new_rcv_nxt = ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_seg_seq, seg_data| {

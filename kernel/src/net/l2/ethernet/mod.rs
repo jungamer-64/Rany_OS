@@ -295,11 +295,13 @@ impl<'a> EthernetFrameMut<'a> {
     pub fn pad_to_minimum(&mut self) {
         let current_len = self.total_len();
         if current_len < EthernetFrame::MIN_SIZE {
+            // Security: Ensure we don't write past the end of our actual buffer
+            let pad_end = EthernetFrame::MIN_SIZE.min(self.data.len());
             // Zero out padding
-            for byte in &mut self.data[current_len..EthernetFrame::MIN_SIZE] {
+            for byte in &mut self.data[current_len..pad_end] {
                 *byte = 0;
             }
-            self.payload_len = EthernetFrame::MIN_SIZE - EthernetHeader::SIZE;
+            self.payload_len = pad_end - EthernetHeader::SIZE;
         }
     }
 }

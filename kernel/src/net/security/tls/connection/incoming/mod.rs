@@ -608,10 +608,6 @@ impl TlsConnection {
         };
 
         let (hash_alg, digest) = match alg_selector {
-            1 => {
-                let d = crate::net::security::tls::crypto::legacy::sha1_compute(signed_data);
-                (crate::net::security::rsa::HashAlgorithm::Sha1, d.to_vec())
-            }
             2 => {
                 let d = crate::loader::sha256::compute(signed_data);
                 (crate::net::security::rsa::HashAlgorithm::Sha256, d.to_vec())
@@ -661,8 +657,7 @@ impl TlsConnection {
             0x0501 => self.verify_rsa_ske_signature(signed_data, signature, 3), // 3 = SHA384
             // ECDSA-SECP256R1-SHA256 (0x0403)
             0x0403 => self.verify_ecdsa_ske_signature(signed_data, signature),
-            // RSA-PKCS1-SHA1 (0x0201)
-            0x0201 => self.verify_rsa_ske_signature(signed_data, signature, 1), // 1 = SHA1
+            // Security: SHA-1 (0x0201) is deprecated and removed for security reasons.
             _ => Err(TlsError::UnsupportedCipherSuite),
         }
     }

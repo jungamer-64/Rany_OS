@@ -96,6 +96,10 @@ impl DnsClient {
             if len > 63 {
                 return Err("Label too long");
             }
+            // Security: Check bounds before writing
+            if offset + 1 + len > buffer.len() {
+                return Err("Buffer too small for name");
+            }
             buffer[offset] = len as u8;
             offset += 1;
             buffer[offset..offset + len].copy_from_slice(label.as_bytes());
@@ -103,14 +107,23 @@ impl DnsClient {
         }
 
         // 終端のゼロ
+        if offset >= buffer.len() {
+            return Err("Buffer too small for zero terminator");
+        }
         buffer[offset] = 0;
         offset += 1;
 
         // QTYPE
+        if offset + 2 > buffer.len() {
+            return Err("Buffer too small for QTYPE");
+        }
         buffer[offset..offset + 2].copy_from_slice(&(qtype as u16).to_be_bytes());
         offset += 2;
 
         // QCLASS (IN = 1)
+        if offset + 2 > buffer.len() {
+            return Err("Buffer too small for QCLASS");
+        }
         buffer[offset..offset + 2].copy_from_slice(&(DnsQueryClass::IN as u16).to_be_bytes());
         offset += 2;
 
@@ -154,16 +167,34 @@ impl DnsClient {
             if len > 63 {
                 return Err("Label too long");
             }
+            // Security: Check bounds before writing
+            if offset + 1 + len > buffer.len() {
+                return Err("Buffer too small for name");
+            }
             buffer[offset] = len as u8;
             offset += 1;
             buffer[offset..offset + len].copy_from_slice(label.as_bytes());
             offset += len;
         }
 
+        // 終端のゼロ
+        if offset >= buffer.len() {
+            return Err("Buffer too small for zero terminator");
+        }
         buffer[offset] = 0;
         offset += 1;
+
+        // QTYPE
+        if offset + 2 > buffer.len() {
+            return Err("Buffer too small for QTYPE");
+        }
         buffer[offset..offset + 2].copy_from_slice(&(qtype as u16).to_be_bytes());
         offset += 2;
+
+        // QCLASS (IN = 1)
+        if offset + 2 > buffer.len() {
+            return Err("Buffer too small for QCLASS");
+        }
         buffer[offset..offset + 2].copy_from_slice(&(DnsQueryClass::IN as u16).to_be_bytes());
         offset += 2;
 

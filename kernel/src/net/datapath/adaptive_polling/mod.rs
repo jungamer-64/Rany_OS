@@ -86,7 +86,7 @@ impl PacketBuffer {
             data,
             capacity,
             len: 0,
-            headroom: 64, // イーサネット + IP + TCP/UDPヘッダ用
+            headroom: 64.min(capacity), // Security: Ensure headroom fits in capacity
             pool_id,
         }
     }
@@ -103,7 +103,9 @@ impl PacketBuffer {
 
     /// データ長を設定
     pub fn set_len(&mut self, len: usize) {
-        self.len = len.min(self.capacity - self.headroom);
+        // Security: Avoid underflow and clamp to capacity
+        let max_len = self.capacity.saturating_sub(self.headroom);
+        self.len = len.min(max_len);
     }
 
     /// ヘッドルームを調整（プロトコルヘッダ追加用）

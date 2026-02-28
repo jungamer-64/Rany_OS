@@ -568,52 +568,14 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         match sig_algorithm {
             // RFC 8446 Section 4.2.3: RSASSA-PKCS1-v1_5 (0x0*01) is NOT supported for CertificateVerify in TLS 1.3.
-            // Only PSS (0x0804) or ECDSA are allowed for RSA/EC keys.
+            // Only PSS or ECDSA are allowed for RSA/EC keys.
             0x0804 => self.verify_rsa_pss_signature(content, signature, crate::net::security::rsa::HashAlgorithm::Sha256),
+            0x0805 => self.verify_rsa_pss_signature(content, signature, crate::net::security::rsa::HashAlgorithm::Sha384),
+            0x0806 => self.verify_rsa_pss_signature(content, signature, crate::net::security::rsa::HashAlgorithm::Sha512),
             0x0403 => self.verify_ecdsa_p256_signature(content, signature),
             0x0503 => self.verify_ecdsa_p384_signature(content, signature),
             _ => Err(TlsError::UnsupportedCipherSuite),
         }
-    }
-
-    /// RSA PKCS#1 v1.5 署名検証ヘルパー
-    pub(super) fn verify_rsa_pkcs1_signature(
-        &self,
-        message: &[u8],
-        signature: &[u8],
-        hash_alg: crate::net::security::rsa::HashAlgorithm,
-    ) -> TlsResult<()> {
-        let pubkey = match &self.server_public_key {
-            Some(ServerPublicKey::Rsa { modulus, exponent }) => {
-                crate::net::security::rsa::RsaPublicKey {
-                    modulus,
-                    exponent,
-                }
-            }
-            _ => return Err(TlsError::CertificateError),
-        };
-
-        let digest = match hash_alg {
-            crate::net::security::rsa::HashAlgorithm::Sha1 => {
-                let h = crate::net::security::tls::crypto::legacy::sha1_compute(message);
-                h.to_vec()
-            }
-            crate::net::security::rsa::HashAlgorithm::Sha256 => {
-                let h = crate::loader::sha256::compute(message);
-                h.to_vec()
-            }
-            crate::net::security::rsa::HashAlgorithm::Sha384 => {
-                let h = crate::loader::sha384::compute(message);
-                h.to_vec()
-            }
-            crate::net::security::rsa::HashAlgorithm::Sha512 => {
-                let h = crate::loader::sha512::compute(message);
-                h.to_vec()
-            }
-        };
-
-        crate::net::security::rsa::rsa_pkcs1_verify(&pubkey, hash_alg, &digest, signature)
-            .map_err(|_| TlsError::CryptoError)
     }
 
     /// RSA-PSS 署名検証ヘルパー (RFC 8446 required for TLS 1.3)
@@ -634,10 +596,6 @@ impl TlsConnection {
         };
 
         let digest = match hash_alg {
-            crate::net::security::rsa::HashAlgorithm::Sha1 => {
-                let h = crate::net::security::tls::crypto::legacy::sha1_compute(message);
-                h.to_vec()
-            }
             crate::net::security::rsa::HashAlgorithm::Sha256 => {
                 let h = crate::loader::sha256::compute(message);
                 h.to_vec()
@@ -650,6 +608,8 @@ impl TlsConnection {
                 let h = crate::loader::sha512::compute(message);
                 h.to_vec()
             }
+            // Security: SHA-1 is not supported for PSS in TLS 1.3.
+            _ => return Err(TlsError::CryptoError),
         };
 
         crate::net::security::rsa::rsa_pss_verify(&pubkey, hash_alg, &digest, signature)

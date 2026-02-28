@@ -24,7 +24,13 @@ fn env_u8(key: &str, default: u8) -> u8 {
 
 fn base_config(profile: &str) -> RunConfig {
     let mut cfg = RunConfig::for_profile(profile);
-    let default_timeout = if profile == "nightly-required" { 300 } else { 120 };
+    let default_timeout = if profile == "step9-heavy" {
+        480
+    } else if profile == "nightly-required" {
+        300
+    } else {
+        120
+    };
     cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", default_timeout);
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 1024);
     cfg.smp = env_u8("QEMU_TEST_SMP", 2);
@@ -78,6 +84,12 @@ fn fullboot_pr_required() {
 #[ignore = "nightly-only full-boot expansion profile"]
 fn fullboot_nightly_required() {
     run_required_profile("nightly-required");
+}
+
+#[test]
+#[ignore = "manual/nightly heavy profile for Step9 power-cut + dual-transport kgdb checks"]
+fn fullboot_step9_heavy() {
+    run_required_profile("step9-heavy");
 }
 
 #[test]

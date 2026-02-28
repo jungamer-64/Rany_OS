@@ -4,10 +4,10 @@
 //! - `pmem`: persistent memory flush/order helpers
 
 pub mod pmem;
-// pub mod wal;
+pub mod wal;
 
 /// Initialize storage durability subsystems.
 pub fn init() {
-    pmem::init_default_region();
-    // wal::init_global_wal();
+    let _ = pmem::init_from_nfit();
+    wal::init_global_wal();
 }

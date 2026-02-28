@@ -64,14 +64,21 @@ impl TcpProcessor {
         false
     }
 
-    /// Allocate a unique ephemeral port
+    /// Allocate a unique ephemeral port using source port randomization
     pub fn allocate_ephemeral_port(&self, _local: &SocketAddr, _remote: &SocketAddr) -> u16 {
-        use core::sync::atomic::Ordering;
-        let range_size = (65535 - 49152 + 1) as u32;
+        // Use cryptographically secure random number to determine start port
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let seed = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
 
-        for _ in 0..range_size {
-            let port = NEXT_EPHEMERAL_PORT.fetch_add(1, Ordering::Relaxed);
-            let port = 49152 + ((port as u32).wrapping_sub(49152) % range_size) as u16;
+        // Ephemeral port range (RFC 6056 / IANA)
+        const EPHEMERAL_START: u16 = 49152;
+        const EPHEMERAL_END: u16 = 65535;
+        const RANGE_SIZE: u16 = EPHEMERAL_END - EPHEMERAL_START + 1;
+
+        let start_port = EPHEMERAL_START + (seed % RANGE_SIZE);
+
+        for i in 0..RANGE_SIZE {
+            let port = EPHEMERAL_START + ((start_port.wrapping_sub(EPHEMERAL_START).wrapping_add(i as u16)) % RANGE_SIZE);
 
             if !self.is_port_in_use(port) {
                 return port;
@@ -140,6 +147,12 @@ impl TcpProcessor {
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
         if header_len < TcpHeader::MIN_HEADER_LEN || header_len > data.len() {
+            return TcpProcessResult::None;
+        }
+
+        // Verify checksum
+        if !verify_tcp_checksum(data, src_ip.octets(), dst_ip.octets()) {
+            log::warn!("[TCP] Checksum verification failed from {}", src_ip);
             return TcpProcessResult::None;
         }
 
@@ -212,6 +225,12 @@ impl TcpProcessor {
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
         if header_len < TcpHeader::MIN_HEADER_LEN || header_len > data.len() {
+            return TcpProcessResult::None;
+        }
+
+        // Verify checksum
+        if !verify_tcp_checksum_v6(data, src_ip, dst_ip) {
+            log::warn!("[TCP] Checksum verification failed from {}", src_ip);
             return TcpProcessResult::None;
         }
 
@@ -353,6 +372,12 @@ impl TcpProcessor {
         let header_len = ((data_offset_flags >> 12) & 0x0F) as usize * 4;
 
         if header_len < TcpHeader::MIN_HEADER_LEN || header_len > data.len() {
+            return TcpProcessResult::None;
+        }
+
+        // Verify checksum
+        if !verify_tcp_checksum(data, src_ip.octets(), dst_ip.octets()) {
+            log::warn!("[TCP] Checksum verification failed from {} (zero-copy path)", src_ip);
             return TcpProcessResult::None;
         }
 

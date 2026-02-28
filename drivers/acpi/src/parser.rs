@@ -37,6 +37,7 @@ use super::tables::{
 /// Physical memory offset for HHDM translation.
 /// Must be set before parsing ACPI tables.
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
+static GLOBAL_RSDP_ADDR: AtomicU64 = AtomicU64::new(0);
 
 /// Set the HHDM offset for physical-to-virtual translation.
 /// This must be called before `init()` if the kernel uses HHDM.
@@ -391,7 +392,18 @@ pub unsafe fn init(rsdp_address: u64) -> Result<AcpiParser, AcpiError> {
     let mut parser = AcpiParser::new(rsdp_address);
     let info = unsafe { parser.parse()? };
     *ACPI_INFO.lock() = Some(info.clone());
+    GLOBAL_RSDP_ADDR.store(rsdp_address, Ordering::SeqCst);
     Ok(parser)
+}
+
+/// Find ACPI table using globally initialized RSDP state.
+pub fn find_table_global(signature: &[u8; 4]) -> Result<usize, AcpiError> {
+    let rsdp = GLOBAL_RSDP_ADDR.load(Ordering::Acquire);
+    if rsdp == 0 {
+        return Err(AcpiError::TableNotFound);
+    }
+    let parser = AcpiParser::new(rsdp);
+    parser.find_table(signature)
 }
 
 /// Get local APIC address

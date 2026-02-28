@@ -29,6 +29,7 @@ pub mod signature {
     pub const MADT: [u8; 4] = *b"APIC";
     pub const FADT: [u8; 4] = *b"FACP";
     pub const MCFG: [u8; 4] = *b"MCFG";
+    pub const NFIT: [u8; 4] = *b"NFIT";
     pub const HPET: [u8; 4] = *b"HPET";
     pub const SRAT: [u8; 4] = *b"SRAT";
     pub const SLIT: [u8; 4] = *b"SLIT";

@@ -17,6 +17,8 @@ impl Log for KernelLogger {
             return;
         }
 
+        let serial_enabled = serial_output_enabled();
+
         // decide whether we can use the asynchronous path
         // if interrupts are still disabled, the UART ISR will never run and
         // any buffered data will be lost, so fall back to synchronous output
@@ -26,20 +28,22 @@ impl Log for KernelLogger {
         // enabled async logging.  Early in boot we keep async off to avoid the
         // kind of page fault that was observed when the heap was first coming
         // online.
-        let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed)
-            && !IN_PANIC.load(Ordering::Relaxed)
-            && crate::interrupts::are_interrupts_enabled()
-            && crate::io::log::async_logging_enabled();
-        if use_async {
-            if self.try_log_async(record) {
-                start_serial_tx();
+        if serial_enabled {
+            let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed)
+                && !IN_PANIC.load(Ordering::Relaxed)
+                && crate::interrupts::are_interrupts_enabled()
+                && crate::io::log::async_logging_enabled();
+            if use_async {
+                if self.try_log_async(record) {
+                    start_serial_tx();
+                } else {
+                    self.log_sync_fallback(record);
+                }
             } else {
-                self.log_sync_fallback(record);
+                // either heap isn't ready, we're panicking, or interrupts are off
+                // in all of these cases we write synchronously to ensure delivery
+                self.log_sync(record);
             }
-        } else {
-            // either heap isn't ready, we're panicking, or interrupts are off
-            // in all of these cases we write synchronously to ensure delivery
-            self.log_sync(record);
         }
 
         // 画面への出力（統合実装）
@@ -174,6 +178,10 @@ impl<'a, const N: usize> Write for AsyncLogWriter<'a, N> {
 
 /// シリアル送信を開始（割り込み有効化）
 pub(crate) fn start_serial_tx() {
+    if !serial_output_enabled() {
+        return;
+    }
+
     // Aggregate per-core buffers into the global buffer in non-ISR context.
     // This keeps ISR work minimal: only the global buffer is drained.
     // Aggregation is also performed by the executor idle loop; this function
@@ -201,6 +209,9 @@ pub(crate) fn start_serial_tx() {
 }
 
 pub(crate) fn drain_global_tx_buffer(data_port: &mut PortU8, lsr: &mut PortU8) -> usize {
+    if !serial_output_enabled() {
+        return 0;
+    }
     let mut tmp = [0u8; ISR_TX_BURST];
     let n = {
         let guard = LOG_BUFFER.lock();
@@ -487,6 +498,16 @@ mod tests {
         set_console_mirror_enabled(true);
         assert!(console_mirror_enabled());
     }
+
+    #[test]
+    fn serial_output_toggle() {
+        set_serial_output_enabled(true);
+        assert!(serial_output_enabled());
+        set_serial_output_enabled(false);
+        assert!(!serial_output_enabled());
+        set_serial_output_enabled(true);
+        assert!(serial_output_enabled());
+    }
 }
 
 /// 実行時にログレベルを変更
@@ -505,6 +526,26 @@ pub fn set_console_mirror_enabled(enabled: bool) {
 /// Returns whether log mirroring to the framebuffer console is enabled.
 pub fn console_mirror_enabled() -> bool {
     CONSOLE_MIRROR_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable/disable serial log output at runtime.
+///
+/// When disabled, pending async serial buffers are dropped and TX interrupts
+/// are disabled to prevent RSP packet contamination on COM1.
+pub fn set_serial_output_enabled(enabled: bool) {
+    SERIAL_OUTPUT_ENABLED.store(enabled, Ordering::SeqCst);
+    if !enabled {
+        LOG_BUFFER.lock().clear();
+        for i in 0..PER_CPU_COUNT {
+            PER_CORE_LOG_BUFFERS[i].lock().clear();
+        }
+        disable_tx_interrupt();
+    }
+}
+
+/// Returns whether serial log output is enabled.
+pub fn serial_output_enabled() -> bool {
+    SERIAL_OUTPUT_ENABLED.load(Ordering::Relaxed)
 }
 
 /// 現在のログレベルを取得

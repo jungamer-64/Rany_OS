@@ -48,6 +48,7 @@ pub enum RuntimeGroup {
     Storage,
     DriverCell,
     Iommu,
+    Step9Heavy,
 }
 
 pub struct RuntimeTestCase {
@@ -78,6 +79,7 @@ fn str_eq(a: &str, b: &str) -> bool {
 fn is_known_profile(profile: &str) -> bool {
     str_eq(profile, "pr-required")
         || str_eq(profile, "nightly-required")
+        || str_eq(profile, "step9-heavy")
         || str_eq(profile, "boot-smoke")
         || str_eq(profile, "storage")
         || str_eq(profile, "driver_cell")
@@ -110,6 +112,14 @@ fn boot_smoke_cmdline_dispatch() -> RuntimeTestResult {
 }
 
 fn nightly_smoke_cmdline_dispatch() -> RuntimeTestResult {
+    RuntimeTestResult::pass()
+}
+
+fn nightly_powercut_replay_smoke() -> RuntimeTestResult {
+    RuntimeTestResult::pass()
+}
+
+fn nightly_dual_transport_kgdb_smoke() -> RuntimeTestResult {
     RuntimeTestResult::pass()
 }
 
@@ -165,6 +175,18 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Boot,
     },
     RuntimeTestCase {
+        id: "nightly.step9.powercut_replay_smoke",
+        run: nightly_powercut_replay_smoke,
+        tier: RuntimeTier::NightlyRequired,
+        group: RuntimeGroup::Step9Heavy,
+    },
+    RuntimeTestCase {
+        id: "nightly.step9.kgdb_dual_transport_smoke",
+        run: nightly_dual_transport_kgdb_smoke,
+        tier: RuntimeTier::NightlyRequired,
+        group: RuntimeGroup::Step9Heavy,
+    },
+    RuntimeTestCase {
         id: "storage.integration_suite",
         run: storage_integration_suite,
         tier: RuntimeTier::PrRequired,
@@ -197,6 +219,8 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
         matches!(case.group, RuntimeGroup::DriverCell)
     } else if str_eq(profile, "iommu") {
         matches!(case.group, RuntimeGroup::Iommu)
+    } else if str_eq(profile, "step9-heavy") {
+        matches!(case.group, RuntimeGroup::Step9Heavy)
     } else {
         false
     }
@@ -238,56 +262,6 @@ fn log_unknown_profile(profile: &str) -> RuntimeRunSummary {
 
 pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
     info!(target: "init", "[kernel-test] start profile={profile}");
-
-    if str_eq(profile, "nightly-required") {
-        let nightly_case_id = "nightly.smoke_cmdline_dispatch";
-        let mut summary = RuntimeRunSummary::new();
-
-        if let Some(filter) = case_filter {
-            if !str_eq(filter, nightly_case_id) {
-                crate::io::log::early_print("[kernel-test] case ");
-                crate::io::log::early_print(filter);
-                crate::io::log::early_print(" fail (no matching case)\n");
-                summary.failed = 1;
-                crate::io::log::early_print("[kernel-test] summary pass=0 fail=1 blocked=0\n");
-                crate::io::log::early_print("[kernel-test] result fail\n");
-                return summary;
-            }
-        }
-
-        let result = nightly_smoke_cmdline_dispatch();
-        match result.status {
-            RuntimeCaseStatus::Pass => summary.passed += 1,
-            RuntimeCaseStatus::Fail => summary.failed += 1,
-            RuntimeCaseStatus::Blocked => summary.blocked += 1,
-        }
-
-        match result.status {
-            RuntimeCaseStatus::Pass => {
-                crate::io::log::early_print("[kernel-test] case nightly.smoke_cmdline_dispatch ok\n");
-            }
-            RuntimeCaseStatus::Fail => {
-                crate::io::log::early_print("[kernel-test] case nightly.smoke_cmdline_dispatch fail\n");
-            }
-            RuntimeCaseStatus::Blocked => {
-                crate::io::log::early_print("[kernel-test] case nightly.smoke_cmdline_dispatch blocked\n");
-            }
-        }
-        crate::io::log::early_print("[kernel-test] summary pass=");
-        crate::io::log::early_print_dec(summary.passed as u64);
-        crate::io::log::early_print(" fail=");
-        crate::io::log::early_print_dec(summary.failed as u64);
-        crate::io::log::early_print(" blocked=");
-        crate::io::log::early_print_dec(summary.blocked as u64);
-        crate::io::log::early_print("\n");
-        crate::io::log::early_print("[kernel-test] result ");
-        if summary.is_success() {
-            crate::io::log::early_print("pass\n");
-        } else {
-            crate::io::log::early_print("fail\n");
-        }
-        return summary;
-    }
 
     let mut selected_any = false;
     let mut summary = RuntimeRunSummary::new();

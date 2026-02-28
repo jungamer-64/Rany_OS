@@ -188,6 +188,9 @@ impl DhcpClient {
 
         // Helper to safely append options
         let mut append_opt = |opt: u8, data: &[u8]| -> Result<(), &'static str> {
+            if data.len() > 255 {
+                return Err("DHCP option length exceeds 255 bytes");
+            }
             if offset + 2 + data.len() > buffer.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -282,6 +285,9 @@ impl DhcpClient {
 
         // Helper to safely append options
         let mut append_opt = |opt: u8, data: &[u8]| -> Result<(), &'static str> {
+            if data.len() > 255 {
+                return Err("DHCP option length exceeds 255 bytes");
+            }
             if offset + 2 + data.len() > buffer.len() {
                 return Err("Buffer overflow during option writing");
             }

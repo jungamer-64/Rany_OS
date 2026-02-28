@@ -168,6 +168,7 @@ define_interrupt!(
 /// Debug Exception (#DB)
 define_interrupt!(
     pub fn debug_handler(stack_frame: InterruptStackFrame) {
+        crate::debug::gdb_stub::on_trap(5, &stack_frame);
         early_print("\n[EXCEPTION] DEBUG (#DB)\n");
         dump_stack_frame(&stack_frame);
         // デバッグ例外は継続可能
@@ -178,6 +179,7 @@ define_interrupt!(
 define_interrupt!(
     pub fn breakpoint_handler(stack_frame: InterruptStackFrame) {
         EXCEPTION_STATS.breakpoints.fetch_add(1, Ordering::Relaxed);
+        crate::debug::gdb_stub::on_trap(5, &stack_frame);
 
         early_print("\n[EXCEPTION] BREAKPOINT (#BP)\n");
         dump_stack_frame(&stack_frame);

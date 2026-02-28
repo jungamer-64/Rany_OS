@@ -7,6 +7,9 @@ impl KernelLogger {
     /// タイムアウト時は書き込みをスキップする。
     #[inline]
     pub(super) fn write_byte_raw(byte: u8) {
+        if !serial_output_enabled() {
+            return;
+        }
         let mut status_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_LSR_OFFSET);
         let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_DATA_OFFSET);
 
@@ -75,6 +78,9 @@ impl KernelLogger {
     /// ロックは `Log::log()` 実装側で取得するため、この関数自体はロックを取らない。
     /// 早期ブート時やパニック時に直接呼び出される。
     pub(super) fn write_raw(s: &str) {
+        if !serial_output_enabled() {
+            return;
+        }
         for byte in s.bytes() {
             if byte == b'\n' {
                 // LFをCRLFに変換（ターミナル互換性）

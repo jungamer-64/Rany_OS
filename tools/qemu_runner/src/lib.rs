@@ -245,6 +245,11 @@ fn kernel_cmdline(config: &RunConfig) -> String {
         String::from("shell=off"),
         String::from("qemu_no_if=1"),
     ];
+    if config.profile == "step9-heavy" {
+        parts.push(String::from("kgdb=on"));
+        parts.push(String::from("kgdb_transport=both"));
+        parts.push(String::from("kgdb_serial_exclusive=1"));
+    }
     if let Some(case) = &config.case_filter {
         parts.push(format!("run_case={case}"));
     }
@@ -252,7 +257,10 @@ fn kernel_cmdline(config: &RunConfig) -> String {
 }
 
 fn profile_needs_storage_disk(profile: &str) -> bool {
-    matches!(profile, "storage" | "pr-required" | "nightly-required")
+    matches!(
+        profile,
+        "storage" | "pr-required" | "nightly-required" | "step9-heavy"
+    )
 }
 
 fn profile_needs_driver_cell_assets(profile: &str) -> bool {

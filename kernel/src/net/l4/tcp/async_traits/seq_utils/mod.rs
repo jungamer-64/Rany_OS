@@ -121,6 +121,56 @@ pub(crate) fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip
     segment[16..18].copy_from_slice(&checksum.to_be_bytes());
 }
 
+/// TCPチェックサム検証（IPv4疑似ヘッダ込み）
+pub(crate) fn verify_tcp_checksum(segment: &[u8], src_ip: [u8; 4], dst_ip: [u8; 4]) -> bool {
+    if segment.len() < 20 {
+        return false;
+    }
+
+    let mut sum: u32 = 0;
+
+    // 疑似ヘッダ
+    sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
+    sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
+    sum += u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32;
+    sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
+    sum += 6u32; // Protocol (TCP)
+    sum += segment.len() as u32;
+
+    // TCPセグメント本体
+    let mut i = 0;
+    while i + 1 < segment.len() {
+        sum += u16::from_be_bytes([segment[i], segment[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < segment.len() {
+        sum += (segment[i] as u32) << 8;
+    }
+
+    // 1の補数
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    
+    (sum as u16) == 0xFFFF
+}
+
+/// TCPチェックサム検証（IPv6擬似ヘッダ）
+pub(crate) fn verify_tcp_checksum_v6(segment: &[u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) -> bool {
+    if segment.len() < 20 {
+        return false;
+    }
+
+    use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
+    use crate::net::l3::ipv4::data_checksum;
+    use crate::net::l3::ipv4::IpProtocol;
+
+    let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+    let checksum = data_checksum(segment, pseudo);
+    
+    checksum == 0xFFFF
+}
+
 /// TCPチェックサム計算（IPv6擬似ヘッダ）
 pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
     if segment.len() < 20 {

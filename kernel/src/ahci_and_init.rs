@@ -250,6 +250,36 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
     Err(last_err)
 }
 
+fn kernel_cmdline<'a>(boot_info: &'a ExoBootInfo, phys_mem_offset: u64) -> Option<&'a str> {
+    if boot_info.cmdline_len == 0 {
+        return None;
+    }
+    let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
+        boot_info.cmdline_ptr
+    } else {
+        phys_mem_offset.checked_add(boot_info.cmdline_ptr)?
+    };
+    if cmdline_addr == 0 {
+        return None;
+    }
+    let cmdline_len = usize::try_from(boot_info.cmdline_len).ok()?;
+    let slice = unsafe { core::slice::from_raw_parts(cmdline_addr as *const u8, cmdline_len) };
+    core::str::from_utf8(slice).ok()
+}
+
+#[inline]
+fn parse_cmdline_bool(v: &str) -> bool {
+    matches!(v, "1" | "true" | "yes" | "on")
+}
+
+fn parse_cmdline_u64(v: &str) -> Option<u64> {
+    if let Some(rest) = v.strip_prefix("0x") {
+        u64::from_str_radix(rest, 16).ok()
+    } else {
+        v.parse::<u64>().ok()
+    }
+}
+
 /// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.
 pub(crate) fn run_integration_tests_if_requested(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     fn exit_with_runtime_summary(summary: crate::test::runtime_dispatch::RuntimeRunSummary) -> ! {
@@ -655,6 +685,94 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
     io::log::early_print("[DEBUG] After memfs init\n");
+
+    // 3.8. WAL / PMEM / KGDB initialization
+    info!(target: "init", "Initializing durability + kgdb subsystems");
+    storage::init();
+
+    let cmdline = kernel_cmdline(boot_info, phys_mem_offset);
+    if let Some(cmdline) = cmdline
+        && let Some(wal_mode) = util::get_cmdline_option(cmdline, "wal")
+        && wal_mode == "nvme_raw"
+    {
+        let nsid = util::get_cmdline_option(cmdline, "wal_nsid")
+            .and_then(parse_cmdline_u64)
+            .unwrap_or(0) as u32;
+        let lba_start = util::get_cmdline_option(cmdline, "wal_lba_start")
+            .and_then(parse_cmdline_u64)
+            .unwrap_or(0);
+        let lba_len = util::get_cmdline_option(cmdline, "wal_lba_len")
+            .and_then(parse_cmdline_u64)
+            .unwrap_or(0);
+        if nsid != 0 && lba_len != 0 {
+            if let Err(e) = storage::wal::set_backend_nvme_raw(nsid, lba_start, lba_len) {
+                warn!(target: "init", "WAL NVMe backend disabled: {:?}", e);
+            } else {
+                info!(
+                    target: "init",
+                    "WAL backend enabled: nvme_raw nsid={} lba_start={} lba_len={}",
+                    nsid,
+                    lba_start,
+                    lba_len
+                );
+            }
+        } else {
+            warn!(
+                target: "init",
+                "wal=nvme_raw requested but wal_nsid/wal_lba_len missing; WAL kept disabled"
+            );
+        }
+    }
+
+    if let Err(e) = storage::wal::recover_from_backend(|_tx_id, _op| {
+        // Recovery apply-hook is intentionally a no-op at kernel boot stage.
+    }) {
+        warn!(target: "init", "WAL recovery skipped: {:?}", e);
+    }
+    if let Err(e) = storage::wal::checkpoint() {
+        warn!(target: "init", "WAL checkpoint skipped: {:?}", e);
+    }
+
+    let kgdb_on = cmdline
+        .and_then(|c| util::get_cmdline_option(c, "kgdb"))
+        .map(parse_cmdline_bool)
+        .unwrap_or(false);
+    if kgdb_on {
+        let transport_mode = cmdline
+            .and_then(|c| util::get_cmdline_option(c, "kgdb_transport"))
+            .unwrap_or("both");
+        let use_serial = transport_mode == "serial" || transport_mode == "both";
+        let use_virtio = transport_mode == "virtio" || transport_mode == "both";
+        let serial_exclusive = cmdline
+            .and_then(|c| util::get_cmdline_option(c, "kgdb_serial_exclusive"))
+            .map(parse_cmdline_bool)
+            .unwrap_or(use_serial);
+
+        let _ = debug::gdb_stub::init_gdb_stub();
+        debug::gdb_stub::set_enabled(true);
+        if use_serial {
+            let _ = debug::gdb_stub::register_transport(alloc::sync::Arc::new(
+                debug::gdb_stub::SerialCom1Transport::new(),
+            ));
+        }
+        if use_virtio {
+            let _ = debug::gdb_stub::register_transport(alloc::sync::Arc::new(
+                debug::gdb_stub::VirtioConsoleTransport::new(),
+            ));
+        }
+        if serial_exclusive && use_serial {
+            io::log::set_serial_output_enabled(false);
+        }
+        info!(
+            target: "init",
+            "kgdb enabled (transport={}, serial_exclusive={})",
+            transport_mode,
+            serial_exclusive
+        );
+    } else {
+        debug::gdb_stub::set_enabled(false);
+    }
+    info!(target: "init", "Durability + kgdb subsystems initialized");
 
     // 4. タスクスケジューラの初期化
     io::log::early_print("[DEBUG] Before scheduler init\n");

@@ -63,12 +63,26 @@ impl ConnectionOooQueue {
         self.segments.insert(seq, data);
     }
 
+    /// rcv_nxtより前のセグメントを削除
+    fn prune_outdated(&mut self, rcv_nxt: u32) {
+        let outdated_keys: Vec<u32> = self.segments.keys()
+            .filter(|&&seq| seq_before(seq, rcv_nxt))
+            .cloned()
+            .collect();
+        for key in outdated_keys {
+            self.segments.remove(&key);
+        }
+    }
+
     /// rcv_nxtから連続するデータをドレイン
     /// 提供されたクロージャ f() にセグメントを渡す
     fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> u32
     where
         F: FnMut(u32, &[u8]),
     {
+        // まず古いセグメントを掃除
+        self.prune_outdated(rcv_nxt);
+
         loop {
             if let Some(packet) = self.segments.remove(&rcv_nxt) {
                 let data = packet.data();

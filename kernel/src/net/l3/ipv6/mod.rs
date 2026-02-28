@@ -460,8 +460,10 @@ impl<'a> Ipv6Packet<'a> {
     /// Get raw bytes
     #[inline]
     pub fn as_bytes(&self) -> &'a [u8] {
-        let total = IPV6_HEADER_SIZE + self.header().payload_length() as usize;
-        &self.data[..total]
+        let payload_len = self.header().payload_length() as usize;
+        let total = IPV6_HEADER_SIZE + payload_len;
+        // Security: Ensure we don't panic on packets with invalid payload length
+        &self.data[..core::cmp::min(total, self.data.len())]
     }
 
     /// Get total packet length

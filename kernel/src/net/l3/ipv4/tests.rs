@@ -67,8 +67,9 @@ pub fn test_fragment_reassembly_simple() {
         dst_addr: [10, 0, 0, 2],
     };
     let payload1 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    let h1_data = crate::util::struct_as_bytes(&header1);
 
-    let result = reassembler.process_fragment(&header1, &payload1, 0);
+    let result = reassembler.process_fragment(&header1, h1_data, &payload1, 0);
     assert!(result.is_none()); // Not complete yet
 
     // Second fragment (offset 8, last fragment)
@@ -85,8 +86,9 @@ pub fn test_fragment_reassembly_simple() {
         dst_addr: [10, 0, 0, 2],
     };
     let payload2 = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+    let h2_data = crate::util::struct_as_bytes(&header2);
 
-    let result = reassembler.process_fragment(&header2, &payload2, 0);
+    let result = reassembler.process_fragment(&header2, h2_data, &payload2, 0);
     assert!(result.is_some()); // Complete!
 
     let reassembled = result.unwrap();
@@ -144,7 +146,7 @@ pub fn test_pmtu_cache_minimum() {
 #[cfg_attr(test, test_case)]
 pub fn test_fragment_overflow_rejected() {
     let mut buffer = FragmentBuffer::new(0);
-    let mut header = Ipv4Header {
+    let header = Ipv4Header {
         version_ihl: 0x45,
         dscp_ecn: 0,
         total_length: [0, 0],
@@ -166,7 +168,7 @@ pub fn test_fragment_overflow_rejected() {
 pub fn test_fragment_overlap_detection() {
     let mut reassembler = FragmentReassembler::new(4);
 
-    let mut hdr1 = Ipv4Header {
+    let hdr1 = Ipv4Header {
         version_ihl: 0x45,
         dscp_ecn: 0,
         total_length: [0, 40],
@@ -179,14 +181,16 @@ pub fn test_fragment_overlap_detection() {
         dst_addr: [2, 2, 2, 2],
     };
     let p1 = [0u8; 8];
-    let result = reassembler.process_fragment(&hdr1, &p1, 0);
+    let h1_data = crate::util::struct_as_bytes(&hdr1);
+    let result = reassembler.process_fragment(&hdr1, h1_data, &p1, 0);
     assert!(result.is_none());
 
     // second fragment overlaps first (offset 0)
-    let mut hdr2 = Ipv4Header { flags_fragment: [0x00, 0x00], ..hdr1 };
+    let hdr2 = Ipv4Header { flags_fragment: [0x00, 0x00], ..hdr1 };
     // offset field still 0 (means overlap)
     let p2 = [0u8; 8];
-    let result2 = reassembler.process_fragment(&hdr2, &p2, 0);
+    let h2_data = crate::util::struct_as_bytes(&hdr2);
+    let result2 = reassembler.process_fragment(&hdr2, h2_data, &p2, 0);
     // reassembler should drop buffer and return None
     assert!(result2.is_none());
     // buffer map should be empty now
@@ -220,5 +224,67 @@ pub fn test_fragment_hole_exhaustion() {
             assert!(!accepted, "should start rejecting after hole limit");
             break;
         }
+    }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_with_options_vulnerability_fixed() {
+    let mut reassembler = FragmentReassembler::new(16);
+
+    // First fragment with IHL=6 (24 bytes). 
+    let header1 = Ipv4Header {
+        version_ihl: 0x46, // IHL=6 (24 bytes)
+        dscp_ecn: 0,
+        total_length: [0, 32], // 24 header + 8 bytes payload
+        identification: [0x00, 0x01],
+        flags_fragment: [0x20, 0x00], // MF=1, offset=0
+        ttl: 64,
+        protocol: 17, // UDP
+        checksum: [0, 0],
+        src_addr: [10, 0, 0, 1],
+        dst_addr: [10, 0, 0, 2],
+    };
+    // Full 24-byte header data
+    let mut h1_full = Vec::new();
+    h1_full.extend_from_slice(crate::util::struct_as_bytes(&header1));
+    h1_full.extend_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]); // 4 bytes of options
+    
+    let payload1 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+    let result = reassembler.process_fragment(&header1, &h1_full, &payload1, 0);
+    assert!(result.is_none());
+
+    // Second fragment (offset 8, last fragment)
+    let header2 = Ipv4Header {
+        version_ihl: 0x46,
+        dscp_ecn: 0,
+        total_length: [0, 32],
+        identification: [0x00, 0x01],
+        flags_fragment: [0x00, 0x01], // MF=0, offset=8/8=1
+        ttl: 64,
+        protocol: 17,
+        checksum: [0, 0],
+        src_addr: [10, 0, 0, 1],
+        dst_addr: [10, 0, 0, 2],
+    };
+    let payload2 = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
+    let h2_data = crate::util::struct_as_bytes(&header2);
+
+    let result = reassembler.process_fragment(&header2, h2_data, &payload2, 0);
+    assert!(result.is_some());
+
+    let reassembled = result.unwrap();
+    
+    // Parse the reassembled packet
+    if let Some(packet) = Ipv4Packet::parse(&reassembled) {
+        assert_eq!(packet.header().ihl(), 6);
+        assert_eq!(packet.header().header_len(), 24);
+        
+        let payload = packet.payload();
+        assert_eq!(payload.len(), 16, "Payload length should be 16");
+        assert_eq!(payload[0], 0x01, "First byte of payload should be 0x01");
+        assert_eq!(payload[15], 0x10, "Last byte of payload should be 0x10");
+    } else {
+        panic!("Reassembled packet could not be parsed");
     }
 }

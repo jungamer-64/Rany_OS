@@ -139,10 +139,14 @@ impl RetransmitQueue {
     /// ACK受信時の処理（累積ACK）
     /// 確認されたセグメントを削除し、RTTサンプルを収集
     pub fn ack_received(&mut self, ack_num: u32, current_tick: u64) {
-        // 累積ACKより前のセグメントを全て削除
+        // 累積ACKによって完全に確認されたセグメントを全て削除
         while let Some(seg) = self.unacked.front() {
-            // seqがack_numより前なら確認済み
-            if Self::seq_before(seg.seq, ack_num) {
+            let seg_len = seg.data.len() as u32;
+            let seg_end = seg.seq.wrapping_add(seg_len);
+
+            // セグメントの末尾まで確認されているか？
+            // seq_leq(seg_end, ack_num) を使用
+            if Self::seq_leq(seg_end, ack_num) {
                 let seg = self.unacked.pop_front().unwrap();
                 // 再送でないセグメントのみRTTサンプルとして使用（Karnのアルゴリズム）
                 if !seg.is_retransmit {

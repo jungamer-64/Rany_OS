@@ -38,7 +38,7 @@ impl SocketManager {
         }
     }
 
-    /// エフェメラルポート割り当て
+    /// エフェメラルポート割り当て（ランダム化）
     pub fn allocate_ephemeral_port(&self, socket_type: SocketType) -> Option<u16> {
         let ports = match socket_type {
             SocketType::Tcp => &self.tcp_ports,
@@ -46,14 +46,17 @@ impl SocketManager {
             _ => return Some(0),
         };
 
+        // 暗号論的に安全な乱数から開始ポートを決定
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let seed = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
+
         let ports_guard = ports.read();
-        let range_size = (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1) as u32;
+        let range_size = (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1) as u16;
+        let start_port = EPHEMERAL_PORT_START + (seed % range_size);
 
         // 最大でrange_size回試行
-        for _ in 0..range_size {
-            let port = self.next_ephemeral_port.fetch_add(1, Ordering::Relaxed);
-            let port =
-                EPHEMERAL_PORT_START + (port.wrapping_sub(EPHEMERAL_PORT_START as u32) % range_size) as u16;
+        for i in 0..range_size {
+            let port = EPHEMERAL_PORT_START + ((start_port.wrapping_sub(EPHEMERAL_PORT_START).wrapping_add(i)) % range_size);
 
             if !ports_guard.contains_key(&port) {
                 return Some(port);

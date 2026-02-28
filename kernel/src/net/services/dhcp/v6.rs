@@ -113,18 +113,27 @@ impl DhcpV6Client {
         buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
         let mut off = 4usize;
 
+        // Helper to safely append options
+        let mut append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+            if *offset + 4 + data.len() > buf.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
+            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
+            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
+            *offset += 4 + data.len();
+            Ok(())
+        };
+
         // Client Identifier (option 1)
-        let cl_id_len = self.duid.len();
-        buf[off..off + 2].copy_from_slice(&(1u16.to_be_bytes())); // option-code
-        buf[off + 2..off + 4].copy_from_slice(&(cl_id_len as u16).to_be_bytes());
-        off += 4;
-        buf[off..off + cl_id_len].copy_from_slice(&self.duid);
-        off += cl_id_len;
+        append_opt(buf, &mut off, 1, &self.duid)?;
 
         // Option: IA_NA (3) with IAID(4) + T1(4) + T2(4) and no suboptions yet
+        if off + 16 > buf.len() {
+            return Err("Buffer overflow during IA_NA writing");
+        }
         buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
-        // option length to fill later
-        let ia_len_pos = off + 2;
+        buf[off + 2..off + 4].copy_from_slice(&(12u16.to_be_bytes())); // length
         off += 4;
         // IAID
         buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
@@ -134,11 +143,6 @@ impl DhcpV6Client {
         off += 4;
         buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
         off += 4;
-        // No IAADDRs in SOLICIT
-
-        // Fill IA_NA length
-        let ia_opt_len = (12u16).to_be_bytes(); // IAID(4) + T1(4) + T2(4)
-        buf[ia_len_pos..ia_len_pos + 2].copy_from_slice(&ia_opt_len);
 
         Ok(off)
     }
@@ -158,23 +162,33 @@ impl DhcpV6Client {
         buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
         let mut off = 4usize;
 
+        // Helper to safely append options
+        let mut append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+            if *offset + 4 + data.len() > buf.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
+            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
+            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
+            *offset += 4 + data.len();
+            Ok(())
+        };
+
         // Client Identifier (option 1)
-        let cl_id_len = self.duid.len();
-        buf[off..off + 2].copy_from_slice(&(1u16.to_be_bytes())); // option-code
-        buf[off + 2..off + 4].copy_from_slice(&(cl_id_len as u16).to_be_bytes());
-        off += 4;
-        buf[off..off + cl_id_len].copy_from_slice(&self.duid);
-        off += cl_id_len;
+        append_opt(buf, &mut off, 1, &self.duid)?;
 
         // IA_NA (option 3) with IAADDR suboption (code 5)
         // IA_NA length = IAID(4)+T1(4)+T2(4) + suboption(4+24) = 40
+        if off + 44 > buf.len() {
+            return Err("Buffer overflow during IA_NA writing");
+        }
         buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
         buf[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // length
         off += 4;
         // IAID
         buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
         off += 4;
-        // T1, T2 (set to 0 - server will respond with updated timings)
+        // T1, T2
         buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
         off += 4;
         buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
@@ -210,28 +224,33 @@ impl DhcpV6Client {
         buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
         let mut off = 4usize;
 
+        // Helper to safely append options
+        let mut append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+            if *offset + 4 + data.len() > buf.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
+            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
+            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
+            *offset += 4 + data.len();
+            Ok(())
+        };
+
         // Client Identifier (option 1)
-        let cl_id_len = self.duid.len();
-        buf[off..off + 2].copy_from_slice(&(1u16.to_be_bytes())); // option-code
-        buf[off + 2..off + 4].copy_from_slice(&(cl_id_len as u16).to_be_bytes());
-        off += 4;
-        buf[off..off + cl_id_len].copy_from_slice(&self.duid);
-        off += cl_id_len;
+        append_opt(buf, &mut off, 1, &self.duid)?;
 
         // Server Identifier (option 2) if we have a DUID
         if let Ok(g) = self.server_duid.lock() {
             if let Some(ref duid) = *g {
-                buf[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
-                buf[off + 2..off + 4].copy_from_slice(&(duid.len() as u16).to_be_bytes());
-                off += 4;
-                buf[off..off + duid.len()].copy_from_slice(duid);
-                off += duid.len();
+                append_opt(buf, &mut off, 2, duid)?;
             }
         }
 
         // IA_NA (option 3) without IAADDR suboption
+        if off + 16 > buf.len() {
+            return Err("Buffer overflow during IA_NA writing");
+        }
         buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
-        // length = IAID(4) + T1(4) + T2(4) = 12
         buf[off + 2..off + 4].copy_from_slice(&(12u16.to_be_bytes()));
         off += 4;
         buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());

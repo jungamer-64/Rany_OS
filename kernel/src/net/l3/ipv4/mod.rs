@@ -481,9 +481,11 @@ impl<'a> Ipv4Packet<'a> {
     }
 
     /// Get raw packet data
+    #[inline]
     pub fn as_bytes(&self) -> &'a [u8] {
         let total_len = self.header().total_length() as usize;
-        &self.data[..total_len]
+        // Security: Clamp to physical buffer size to prevent panic in slice indexing
+        &self.data[..core::cmp::min(total_len, self.data.len())]
     }
 
     /// Verify header checksum

@@ -114,6 +114,10 @@ static HEAP_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// Serial output remains enabled regardless of this switch.
 static CONSOLE_MIRROR_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Whether serial logging output is enabled.
+/// This can be disabled for exclusive kgdb RSP sessions on COM1.
+static SERIAL_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
+
 /// シリアルポート排他制御用Spinlock
 ///
 /// マルチコア環境や割り込みコンテキストでの同時アクセスを防ぐ。
