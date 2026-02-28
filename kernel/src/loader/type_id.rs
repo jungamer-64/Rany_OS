@@ -601,6 +601,47 @@ mod tests {
         let all = list_kernel_interfaces();
         assert!(all.iter().any(|i| i.name == name && i.hash == hash));
     }
+
+    #[test_case]
+    fn test_verify_cell_dependencies_accepts_matching_hash() {
+        let iface = "TypeIdVerifyMatchIface";
+        let hash = 0xdead_beef_cafe_babe;
+        let ver = SemVer::new(1, 2, 0);
+        register_kernel_interface_manual(iface, hash, ver);
+
+        let deps = CellDependencies {
+            cell_name: String::from("test-cell"),
+            cell_version: SemVer::new(1, 0, 0),
+            dependencies: vec![DependencyEntry {
+                interface: String::from(iface),
+                hash,
+                min_version: SemVer::new(1, 0, 0),
+            }],
+        };
+
+        assert!(verify_cell_dependencies(&deps).is_ok());
+    }
+
+    #[test_case]
+    fn test_verify_cell_dependencies_rejects_hash_mismatch() {
+        let iface = "TypeIdVerifyMismatchIface";
+        let actual = 0x1111_2222_3333_4444;
+        let required = 0x9999_aaaa_bbbb_cccc;
+        register_kernel_interface_manual(iface, actual, SemVer::new(1, 0, 0));
+
+        let deps = CellDependencies {
+            cell_name: String::from("test-cell"),
+            cell_version: SemVer::new(1, 0, 0),
+            dependencies: vec![DependencyEntry {
+                interface: String::from(iface),
+                hash: required,
+                min_version: SemVer::new(1, 0, 0),
+            }],
+        };
+
+        let err = verify_cell_dependencies(&deps).expect_err("hash mismatch must be rejected");
+        assert!(matches!(err, TypeIdError::HashMismatch { .. }));
+    }
 }
 
 

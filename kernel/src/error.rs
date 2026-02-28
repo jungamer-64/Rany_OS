@@ -424,6 +424,9 @@ impl From<crate::loader::signature::VerificationError> for KernelError {
             VE::InvalidSignature => LoaderError::SignatureVerificationFailed,
             VE::HashMismatch => LoaderError::SignatureVerificationFailed,
             VE::VersionMismatch => LoaderError::InvalidSecurityLevel,
+            VE::RevokedKey => LoaderError::SignatureVerificationFailed,
+            VE::RevokedCell => LoaderError::SignatureVerificationFailed,
+            VE::InvalidTrustChain => LoaderError::SignatureVerificationFailed,
         })
     }
 }
@@ -603,4 +606,3 @@ impl fmt::Display for ContextualError {
         write!(f, "{}: {}", self.context, self.error)
     }
 }
-

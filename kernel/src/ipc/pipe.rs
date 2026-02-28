@@ -685,16 +685,19 @@ pub fn pipe_manager() -> &'static PipeManager {
 }
 
 /// パイプを作成 (pipe() システムコール相当)
+#[cfg(feature = "legacy-posix")]
 pub fn pipe() -> Pipe {
     PIPE_MANAGER.create()
 }
 
 /// オプション付きパイプを作成 (pipe2() システムコール相当)
+#[cfg(feature = "legacy-posix")]
 pub fn pipe2(flags: PipeFlags) -> Pipe {
     PIPE_MANAGER.create_with_options(PipeBufferSize::DEFAULT, flags)
 }
 
 /// 名前付きパイプを作成 (mkfifo() システムコール相当)
+#[cfg(feature = "legacy-posix")]
 pub fn mkfifo(name: &str) -> Result<NamedPipe, PipeError> {
     PIPE_MANAGER.create_named(name)
 }

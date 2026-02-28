@@ -744,3 +744,48 @@ pub fn verify_cell(elf_data: &[u8]) -> Result<bool, LoadError> {
 pub fn get_verifier_stats() -> Option<VerifierStats> {
     GLOBAL_VERIFIER.lock().as_ref().map(|v| v.stats().clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_signature(public_key: [u8; 32]) -> CellSignature {
+        CellSignature {
+            version: SIGNATURE_VERSION,
+            contains_unsafe: false,
+            uses_framework_only: true,
+            compiler_version: String::from("test"),
+            build_timestamp: 0,
+            hash: [1; 32],
+            signature: alloc::vec![0u8; ED25519_SIGNATURE_SIZE],
+            public_key,
+        }
+    }
+
+    #[test_case]
+    fn test_revoked_key_is_rejected_before_hash_check() {
+        let mut verifier = SignatureVerifier::new();
+        let key = [7u8; 32];
+        let key_id = verifier.add_trusted_key_with_level(key, KeyLevel::Kernel, None);
+        verifier.revoke_key(key_id);
+
+        let sig = fake_signature(key);
+        let err = verifier
+            .verify(&sig, b"payload")
+            .expect_err("revoked key must be rejected");
+        assert_eq!(err, VerificationError::RevokedKey);
+    }
+
+    #[test_case]
+    fn test_invalid_chain_without_kernel_issuer_is_rejected() {
+        let mut verifier = SignatureVerifier::new();
+        let driver_key = [9u8; 32];
+        let _ = verifier.add_trusted_key_with_level(driver_key, KeyLevel::Driver, None);
+
+        let sig = fake_signature(driver_key);
+        let err = verifier
+            .verify(&sig, b"payload")
+            .expect_err("driver key without issuer must fail");
+        assert_eq!(err, VerificationError::InvalidTrustChain);
+    }
+}

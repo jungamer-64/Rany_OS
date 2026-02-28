@@ -31,8 +31,7 @@ pub fn shm_manager() -> &'static SharedMemoryManager {
 
 // --- System V IPC風 API ---
 
-/// shmget() 相当
-pub fn shmget(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
+fn create_or_get_by_key(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
     if flags.create || key == ShmKey::IPC_PRIVATE {
         SHM_MANAGER.create(key, size, ShmPermissions::default(), flags)
     } else {
@@ -40,32 +39,11 @@ pub fn shmget(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmE
     }
 }
 
-/// shmat() 相当 (従来互換: トークンなし)
-pub fn shmat(id: ShmId) -> Result<ShmHandle, ShmError> {
-    SHM_MANAGER.attach_with_token(id, None)
-}
-
-/// shmat() with optional token: attach with a capability token id to register in-flight usage
-pub fn shmat_with_token(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
+fn attach_region(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
     SHM_MANAGER.attach_with_token(id, token)
 }
 
-/// shmdt() 相当 (ShmHandle::detach を使用)
-
-/// shmctl() 相当 - 削除
-pub fn shmctl_remove(id: ShmId) -> Result<(), ShmError> {
-    SHM_MANAGER.remove(id)
-}
-
-/// shmctl() 相当 - 情報取得
-pub fn shmctl_stat(id: ShmId) -> Option<ShmInfo> {
-    SHM_MANAGER.info(id)
-}
-
-// --- POSIX 名前付き共有メモリ風 API ---
-
-/// shm_open() 相当
-pub fn shm_open(name: &str, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
+fn create_or_get_named(name: &str, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
     if flags.create {
         SHM_MANAGER.create_named(name, size, ShmPermissions::default(), flags)
     } else {
@@ -73,10 +51,55 @@ pub fn shm_open(name: &str, size: ShmSize, flags: ShmFlags) -> Result<ShmId, Shm
     }
 }
 
-/// shm_unlink() 相当
-pub fn shm_unlink(name: &str) -> Result<(), ShmError> {
+fn remove_named(name: &str) -> Result<(), ShmError> {
     let id = SHM_MANAGER.get_by_name(name).ok_or(ShmError::NotFound)?;
     SHM_MANAGER.remove(id)
+}
+
+/// shmget() 相当
+#[cfg(feature = "legacy-posix")]
+pub fn shmget(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
+    create_or_get_by_key(key, size, flags)
+}
+
+/// shmat() 相当 (従来互換: トークンなし)
+#[cfg(feature = "legacy-posix")]
+pub fn shmat(id: ShmId) -> Result<ShmHandle, ShmError> {
+    attach_region(id, None)
+}
+
+/// shmat() with optional token: attach with a capability token id to register in-flight usage
+#[cfg(feature = "legacy-posix")]
+pub fn shmat_with_token(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
+    attach_region(id, token)
+}
+
+/// shmdt() 相当 (ShmHandle::detach を使用)
+
+/// shmctl() 相当 - 削除
+#[cfg(feature = "legacy-posix")]
+pub fn shmctl_remove(id: ShmId) -> Result<(), ShmError> {
+    SHM_MANAGER.remove(id)
+}
+
+/// shmctl() 相当 - 情報取得
+#[cfg(feature = "legacy-posix")]
+pub fn shmctl_stat(id: ShmId) -> Option<ShmInfo> {
+    SHM_MANAGER.info(id)
+}
+
+// --- POSIX 名前付き共有メモリ風 API ---
+
+/// shm_open() 相当
+#[cfg(feature = "legacy-posix")]
+pub fn shm_open(name: &str, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
+    create_or_get_named(name, size, flags)
+}
+
+/// shm_unlink() 相当
+#[cfg(feature = "legacy-posix")]
+pub fn shm_unlink(name: &str) -> Result<(), ShmError> {
+    remove_named(name)
 }
 
 // ============================================================================
@@ -101,7 +124,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
     /// 新しいゼロコピーリージョンを作成
     pub fn new(name: &str, owner: DomainId) -> Result<Self, ShmError> {
         let size = ShmSize::new(core::mem::size_of::<T>());
-        let id = shm_open(
+        let id = create_or_get_named(
             name,
             size,
             ShmFlags {
@@ -109,7 +132,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
                 ..Default::default()
             },
         )?;
-        let handle = shmat(id)?;
+        let handle = attach_region(id, None)?;
 
         Ok(Self {
             handle,
@@ -121,7 +144,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
     /// 既存のリージョンを開く
     pub fn open(name: &str, owner: DomainId) -> Result<Self, ShmError> {
         let id = SHM_MANAGER.get_by_name(name).ok_or(ShmError::NotFound)?;
-        let handle = shmat(id)?;
+        let handle = attach_region(id, None)?;
 
         Ok(Self {
             handle,
@@ -232,7 +255,7 @@ impl<T: Copy> SharedRingBuffer<T> {
         let header_size = core::mem::size_of::<SharedRingHeader>();
         let total_size = header_size + capacity * element_size;
 
-        let id = shm_open(
+        let id = create_or_get_named(
             name,
             ShmSize::new(total_size),
             ShmFlags {
@@ -241,7 +264,7 @@ impl<T: Copy> SharedRingBuffer<T> {
                 ..Default::default()
             },
         )?;
-        let handle = shmat(id)?;
+        let handle = attach_region(id, None)?;
 
         // ヘッダーを初期化
         let slice = handle.write().ok_or(ShmError::NotAttached)?;
@@ -264,7 +287,7 @@ impl<T: Copy> SharedRingBuffer<T> {
     /// 既存の共有リングバッファを開く
     pub fn open(name: &str, producer: DomainId, consumer: DomainId) -> Result<Self, ShmError> {
         let id = SHM_MANAGER.get_by_name(name).ok_or(ShmError::NotFound)?;
-        let handle = shmat(id)?;
+        let handle = attach_region(id, None)?;
 
         // ヘッダーから容量を読み取り（Borrowを短く保つ）
         let capacity_val = {
@@ -383,4 +406,3 @@ impl<T: Copy> SharedRingBuffer<T> {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-
