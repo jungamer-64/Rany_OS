@@ -471,6 +471,11 @@ pub struct TlsConfig {
 
 impl Default for TlsConfig {
     fn default() -> Self {
+        let mut ca_certs = Vec::new();
+        for &(_label, der) in security::root_certs::ROOT_CERTS {
+            ca_certs.push(Certificate::from_der(der.to_vec()));
+        }
+
         Self {
             min_version: TlsVersion::TLS_1_0,
             max_version: TlsVersion::TLS_1_3,
@@ -491,7 +496,7 @@ impl Default for TlsConfig {
             enable_session_resumption: true,
             client_cert: None,
             client_key: None,
-            ca_certs: Vec::new(),
+            ca_certs,
             skip_verify: false,
         }
     }

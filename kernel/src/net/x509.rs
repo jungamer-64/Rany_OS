@@ -159,6 +159,8 @@ pub struct X509Certificate<'a> {
     pub not_after: u64,
     /// CA（Certificate Authority）ビットがセットされているか
     pub is_ca: bool,
+    /// CAの場合、その先に続くことのできる証明書の最大数 (RFC 5280)
+    pub path_len_constraint: Option<u32>,
     /// Subject Alternative Name (SAN) 拡張の生データ
     pub san_raw: Option<&'a [u8]>,
 }
@@ -517,6 +519,7 @@ fn parse_tbs_fields<'a>(
     u64,
     u64,
     bool, // is_ca
+    Option<u32>, // path_len_constraint
     Option<&'a [u8]>, // san_raw
 )> {
     let mut tbs = DerParser::new(tbs_content);
@@ -542,6 +545,7 @@ fn parse_tbs_fields<'a>(
 
     // Extensions [3] EXPLICIT SEQUENCE (optional)
     let mut is_ca = false;
+    let mut path_len_constraint = None;
     let mut san_raw = None;
     while let Some((tag, content)) = tbs.read_tlv() {
         // Tag 0xA3 = [3] Context-specific EXPLICIT
@@ -574,8 +578,23 @@ fn parse_tbs_fields<'a>(
                                         let len = bc_inner.read_length()?;
                                         if len == 1 {
                                             is_ca = bc_inner.remaining().get(0).copied().unwrap_or(0) != 0;
+                                            bc_inner.pos += 1;
                                         }
+                                    } else if tag == 0x02 {
+                                        // Some certs might omit cA if it's False but have pathLen
+                                        // Though RFC 5280 says it's only for CAs.
+                                        // Fall through to parse integer below.
+                                        bc_inner.pos -= 1; 
                                     }
+                                }
+                                
+                                // Optional pathLenConstraint INTEGER
+                                if let Some(int_val) = bc_inner.read_integer() {
+                                    let mut val: u32 = 0;
+                                    for &b in int_val {
+                                        val = (val << 8) | (b as u32);
+                                    }
+                                    path_len_constraint = Some(val);
                                 }
                             }
                         } else if oid == OID_SUBJECT_ALT_NAME {
@@ -597,6 +616,7 @@ fn parse_tbs_fields<'a>(
         not_before,
         not_after,
         is_ca,
+        path_len_constraint,
         san_raw,
     ))
 }
@@ -624,6 +644,7 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
         not_before,
         not_after,
         is_ca,
+        path_len_constraint,
         san_raw,
     ) = parse_tbs_fields(tbs_content)?;
 
@@ -646,6 +667,7 @@ pub fn parse_x509<'a>(der: &'a [u8]) -> Option<X509Certificate<'a>> {
         not_before,
         not_after,
         is_ca,
+        path_len_constraint,
         san_raw,
     })
 }
@@ -855,6 +877,29 @@ pub fn validate_certificate_chain<'a>(
     if chain.len() > 1 {
         verify_chain_links(&certs, chain.len())?;
         
+        // Security: Verify CA constraints for intermediate/root certificates
+        // certificates[0] is leaf, [1..] are intermediates/root
+        let mut max_path_len = u32::MAX;
+        for i in 1..chain.len() {
+            if let Some(ref cert) = certs[i] {
+                // All intermediate certificates must be CAs
+                if !cert.is_ca {
+                    return None;
+                }
+                
+                // pathLenConstraint check
+                if let Some(constraint) = cert.path_len_constraint {
+                    max_path_len = core::cmp::min(max_path_len, constraint);
+                }
+                
+                // Current path length (number of non-self-issued intermediate certs below this one)
+                // Simplified check: i-1 is the number of certs below certs[i]
+                if (i - 1) as u32 > max_path_len {
+                    return None;
+                }
+            }
+        }
+
         // Security: The root of the chain (last cert) must be trusted.
         let root = certs[chain.len() - 1].as_ref()?;
         

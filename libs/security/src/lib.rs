@@ -641,6 +641,8 @@ pub fn init() {
     MANAGER.set_capabilities(0, CapabilitySet::full());
 }
 
+pub mod root_certs;
+
 #[cfg(test)]
 #[allow(clippy::must_use_candidate)]
 mod tests {

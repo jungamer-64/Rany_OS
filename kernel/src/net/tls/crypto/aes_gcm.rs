@@ -191,6 +191,76 @@ pub(crate) fn aes_gcm_encrypt(
     (Vec::new(), [0u8; 16])
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_aes_gcm_nist_vector() {
+        // NIST SP 800-38D Test Case 1 (AES-128)
+        // Key: 00000000000000000000000000000000
+        // IV:  000000000000000000000000 (12 bytes)
+        // PT:  (empty)
+        // AAD: (empty)
+        // CT:  (empty)
+        // Tag: 58e2fccefa7e3061367f1d57a4e7455a
+
+        let key = [0u8; 16];
+        let nonce = [0u8; 12];
+        let aad = [];
+        let plaintext = [];
+
+        let (ct, tag) = aes_gcm_encrypt(&key, &nonce, &aad, &plaintext);
+
+        assert_eq!(ct.len(), 0);
+        let expected_tag = [
+            0x58, 0xe2, 0xfc, 0xce, 0xfa, 0x7e, 0x30, 0x61,
+            0x36, 0x7f, 0x1d, 0x57, 0xa4, 0xe7, 0x45, 0x5a
+        ];
+        assert_eq!(tag, expected_tag);
+
+        // Test decryption
+        let decrypted = aes_gcm_decrypt(&key, &nonce, &aad, &ct, &tag);
+        assert!(decrypted.is_some());
+        assert_eq!(decrypted.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_aes_gcm_nist_vector_2() {
+        // NIST SP 800-38D Test Case 2 (AES-128)
+        // Key: 00000000000000000000000000000000
+        // IV:  000000000000000000000000
+        // PT:  00000000000000000000000000000000 (16 bytes)
+        // AAD: (empty)
+        // CT:  0388dace60b6a392f328c2b971b2fe78
+        // Tag: ab6e47d42cec13bdf53a67b21251b397
+
+        let key = [0u8; 16];
+        let nonce = [0u8; 12];
+        let aad = [];
+        let plaintext = [0u8; 16];
+
+        let (ct, tag) = aes_gcm_encrypt(&key, &nonce, &aad, &plaintext);
+
+        let expected_ct = [
+            0x03, 0x88, 0xda, 0xce, 0x60, 0xb6, 0xa3, 0x92,
+            0xf3, 0x28, 0xc2, 0xb9, 0x71, 0xb2, 0xfe, 0x78
+        ];
+        let expected_tag = [
+            0xab, 0x6e, 0x47, 0xd4, 0x2c, 0xec, 0x13, 0xbd,
+            0xf5, 0x3a, 0x67, 0xb2, 0x12, 0x51, 0xb3, 0x97
+        ];
+
+        assert_eq!(ct, expected_ct);
+        assert_eq!(tag, expected_tag);
+
+        // Test decryption
+        let decrypted = aes_gcm_decrypt(&key, &nonce, &aad, &ct, &tag);
+        assert!(decrypted.is_some());
+        assert_eq!(decrypted.unwrap(), plaintext.to_vec());
+    }
+}
+
 /// AES-GCM decryption convenience wrapper.  See `aes_gcm_encrypt`.
 pub(crate) fn aes_gcm_decrypt(
     key: &[u8],
