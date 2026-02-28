@@ -188,7 +188,7 @@
   - 主要 API: `reserve`, `allocate_4k/2m/1g`, `allocate_contiguous`, `free_immediate`, `free_range_immediate`
   - 主な呼出元:
     - `frame_allocator::PmmAllocatorFast`（起動時の reserve / 実行時の alloc/free）
-    - `kernel/src/io/iommu/iova_allocator.rs`（IOVA 管理で FastBitmap を流用）
+    - `kernel/src/io/iommu/common/dma/iova_allocator.rs`（IOVA 管理で FastBitmap を流用）
 
 - per_node_buddy (`kernel/src/mm/per_node_buddy.rs`)
   - 主要 API: `init_per_node_allocators`, `alloc_frame_local_first`, per-node alloc/dealloc

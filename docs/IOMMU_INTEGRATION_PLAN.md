@@ -10,17 +10,17 @@
 
 | コンポーネント | 状態 | ファイル |
 |---|---|---|
-| Intel VT-d バックエンド | ✅ 完了 | `kernel/src/io/iommu/intel/` |
-| AMD-Vi バックエンド | ✅ 完了 | `kernel/src/io/iommu/amd/` |
-| `DmaHandle<T>` 型安全DMA管理 | ✅ 完了 | `kernel/src/io/iommu/dma_handle.rs` |
-| IOVAアロケータ | ✅ 完了 | `kernel/src/io/iommu/iova_allocator.rs` |
-| IOMMUドメイン管理 | ✅ 完了 | `kernel/src/io/iommu/domain.rs` |
-| DmaResourceRegistry | ✅ 完了 | `kernel/src/io/iommu/domain.rs` |
-| IOMMUグルーピング / ACS | ✅ 完了 | `kernel/src/io/iommu/groups.rs` |
-| PCIデバイスへのドメイン割当 | ✅ 完了 | `kernel/src/io/iommu/pci.rs` |
-| Queued Invalidation | ✅ 完了 | `kernel/src/io/iommu/cmdqueue.rs` |
-| Async Unmap / Zombie Queue | ✅ 完了 | `kernel/src/io/iommu/zombie_queue.rs` |
-| セキュリティ監視 | ✅ 完了 | `kernel/src/io/iommu/security.rs` |
+| Intel VT-d バックエンド | ✅ 完了 | `kernel/src/io/iommu/vendors/intel/` |
+| AMD-Vi バックエンド | ✅ 完了 | `kernel/src/io/iommu/vendors/amd/` |
+| `DmaHandle<T>` 型安全DMA管理 | ✅ 完了 | `kernel/src/io/iommu/common/dma/handle.rs` |
+| IOVAアロケータ | ✅ 完了 | `kernel/src/io/iommu/common/dma/iova_allocator.rs` |
+| IOMMUドメイン管理 | ✅ 完了 | `kernel/src/io/iommu/common/domain/domain_impl.rs` |
+| DmaResourceRegistry | ✅ 完了 | `kernel/src/io/iommu/common/domain/mod.rs` |
+| IOMMUグルーピング / ACS | ✅ 完了 | `kernel/src/io/iommu/runtime/groups.rs` |
+| PCIデバイスへのドメイン割当 | ✅ 完了 | `kernel/src/io/iommu/runtime/pci.rs` |
+| Queued Invalidation | ✅ 完了 | `kernel/src/io/iommu/runtime/command/queue.rs` |
+| Async Unmap / Zombie Queue | ✅ 完了 | `kernel/src/io/iommu/runtime/zombie/mod.rs` |
+| セキュリティ監視 | ✅ 完了 | `kernel/src/io/iommu/runtime/security/mod.rs` |
 | `RRefDmaBuffer` / `RRefDmaBytes` | ✅ 完了 | `kernel/src/io/dma.rs` |
 | バウンスバッファ割当 | ✅ 完了 | `kernel/src/io/dma.rs` (`allocate_iommu_bounce_bytes`) |
 

@@ -303,7 +303,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
 **重要な発見（要点）**
 
 - ✅ **フレーム/マッピング基盤は揃っている**: `kernel/src/mm/frame_allocator.rs` の `allocate_contiguous`、`kernel/src/mm/mapping.rs` の `phys_to_virt` 等があり、ページ（物理フレーム）を確保して HHDM 上の仮想アドレスを得ることで連続領域を実現可能です。
-- ✅ **RRef / IOMMU 経路がある**: `kernel/src/ipc/rref.rs`、`kernel/src/io/iommu/dma_handle.rs` と `domain.rs` により、RRef→IOVA マップや `DmaHandle` が利用可能で、ドメイン間のゼロコピーパスと IOMMU 統合が可能です。
+- ✅ **RRef / IOMMU 経路がある**: `kernel/src/ipc/rref.rs`、`kernel/src/io/iommu/common/dma/handle.rs` と `kernel/src/io/iommu/common/domain/domain_impl.rs` により、RRef→IOVA マップや `DmaHandle` が利用可能で、ドメイン間のゼロコピーパスと IOMMU 統合が可能です。
 - ✅ **Exchange Heap と既存ゼロコピー（ネットワーク）の事例**: `kernel/src/mm/exchange_heap.rs` と `kernel/src/net/mempool.rs`（`PacketRef`）はゼロコピーの実装例で、`kernel/src/io/virtio/net.rs` にゼロコピー send/recv が実装されています（実装パターンの良い参照）。
 - ✅ **borrowed API / IoBuffer は導入済み**: vfs に `IoBuffer`/`IoBufferMut`/`DmaInfo` を導入し、borrowed API とテストを追加済み。
 - ✅ **virtio-blk の borrowed API + DMA 経路は実装済み**: `dma_info()` がある場合は `map_for_dma`/`unmap_dma` で IOVA マップ（device-scoped `DmaHandle` は後半対応）。

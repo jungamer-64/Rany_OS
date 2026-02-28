@@ -944,15 +944,13 @@ pub fn validate_certificate_chain<'a>(
 /// Common Name (CN) OID: 2.5.4.3 (06 03 55 04 03)
 const OID_COMMON_NAME: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
 
-/// Hostname verification (checks SAN first, then CN)
+/// Hostname verification (checks SAN first, then CN only if SAN is absent)
 fn match_hostname(cert: &X509Certificate<'_>, hostname: &str) -> bool {
     // 1. Check SAN (Subject Alternative Name) first (preferred)
     if let Some(san_der) = cert.san_raw {
-        if match_hostname_in_san(san_der, hostname) {
-            return true;
-        }
+        return match_hostname_in_san(san_der, hostname);
     }
-    // 2. Fallback to CN (Common Name)
+    // 2. Fallback to CN (Common Name) ONLY if SAN is not present
     match_hostname_in_subject(cert.subject_raw, hostname)
 }
 

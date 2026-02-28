@@ -17,7 +17,7 @@
 
 ### 1. デュアルバックエンド対応 ✅
 - **Intel VT-d**: フル機能対応
-- **AMD-Vi**: フル機能対応 (`kernel/src/io/iommu/amd/mod.rs`)
+- **AMD-Vi**: フル機能対応 (`kernel/src/io/iommu/vendors/amd/mod.rs`)
 - **IommuBackend enum**: 静的ディスパッチによるゼロアロケーション
 
 ### 2. IOMMU Grouping / ACS (Access Control Services) ✅ (2026-02-27追加)
@@ -42,18 +42,18 @@ PCIeトポロジーに基づいた **IOMMU Grouping** ロジックの実装完�
 - **Per-CPU Magazine** (2026-01-04追加): O(1)ロックフリー割り当て
   - 3層アーキテクチャ: Per-CPU Magazine → NUMA Depot → Physical Allocator
   - `kernel/src/mm/per_cpu.rs`: `PtMagazine`構造体
-  - `kernel/src/io/iommu/page_table_pool.rs`: `acquire_fast()`, `release_fast()`
+  - `kernel/src/io/iommu/common/dma/page_table_pool.rs`: `acquire_fast()`, `release_fast()`
 
 ### 3. IOVAアロケーション ✅
 - **Tree-based allocator**: O(log n) Best-Fit割り当て
 - **Per-Domain IOVA** (2026-01-04追加): ドメイン間のロック競合を排除
-  - `kernel/src/io/iommu/domain.rs`: `new_with_iova()`, `allocate_iova()`, `free_iova()`
+  - `kernel/src/io/iommu/common/domain/domain_impl.rs`: `new_with_iova()`, `allocate_iova()`, `free_iova()`
   - グローバルアロケータとPer-Domainアロケータの選択可能
 
 ### 4. DMAハンドル管理 ✅
 - **DmaHandle<T>**: 所有権ベースのDMAバッファ管理
 - **DmaResourceRegistry** (2026-01-04追加): SAS環境でのリソースリーク防止
-  - `kernel/src/io/iommu/domain.rs`: `DmaResourceRegistry`構造体
+  - `kernel/src/io/iommu/common/domain/mod.rs`: `DmaResourceRegistry`構造体
   - ドメイン破棄時の強制unmapサポート: `force_unmap_all_dma()`
 - **Async Unmap Default** (2026-01-04追加): 遅延IOTLB無効化
   - `kernel/Cargo.toml`: `async_unmap_default` feature flag

@@ -132,14 +132,16 @@ pub mod p256 {
                     .wrapping_sub(P[i] as u128)
                     .wrapping_sub(borrow as u128);
                 sub[i] = diff as u64;
-                borrow = if diff >> 127 != 0 { 1 } else { 0 };
+                borrow = (diff >> 127) as u64;
             }
-            // carry > 0ならオーバーフローしたのでsub使用、borrow == 0なら >= pなのでsub使用
-            let use_sub = (carry > 0) || (borrow == 0);
+            
+            // carry > 0 OR borrow == 0
+            // carry is either 0 or 1. borrow is either 0 or 1.
+            let use_sub = (carry as u8) | (1 - borrow as u8);
             
             let res_fe = Self { limbs: result };
             let sub_fe = Self { limbs: sub };
-            Self::ct_select(&res_fe, &sub_fe, use_sub as u8)
+            Self::ct_select(&res_fe, &sub_fe, use_sub)
         }
 
         /// フィールド減算 (mod p)
@@ -155,7 +157,7 @@ pub mod p256 {
                     .wrapping_sub(other.limbs[i] as u128)
                     .wrapping_sub(borrow as u128);
                 result[i] = diff as u64;
-                borrow = if diff >> 127 != 0 { 1 } else { 0 };
+                borrow = (diff >> 127) as u64;
             }
 
             // アンダーフローした場合はpを加算 (定時間で計算)
@@ -164,7 +166,7 @@ pub mod p256 {
             for i in 0..4 {
                 let sum = (result[i] as u128) + (P[i] as u128) + (carry as u128);
                 added[i] = sum as u64;
-                carry = (sum >> 64) as u64;
+                carry = (sum >> 127) as u64; // sum >> 64 but u128
             }
 
             let res_fe = Self { limbs: result };

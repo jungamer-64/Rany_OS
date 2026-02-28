@@ -162,7 +162,9 @@ impl DhcpClient {
         };
 
         if *state_guard == DhcpState::Init {
-            let xid = (current_tick as u32) ^ 0xDEADBEEF;
+            // Use cryptographically secure random value for XID to prevent spoofing
+            let random_bytes = crate::net::tls::crypto::random::generate_random();
+            let xid = u32::from_be_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
             self.xid.store(xid, Ordering::SeqCst);
         }
         let xid = self.xid.load(Ordering::SeqCst);
