@@ -454,25 +454,40 @@ pub fn test_iommu() -> IntegrationTestSuite {
             return Err(String::from("IOMMU not enabled, skipping DMA test"));
         }
 
+        use crate::io::iommu::runtime::registry::get_iommu_driver;
+        use crate::io::iommu::types::{DeviceId, IommuDomainType};
+
+        let driver = get_iommu_driver().ok_or_else(|| String::from("IOMMU driver not initialized"))?;
+
         // Test basic mapping through the public API
         let phys_addr = 0x2000_0000; // Assume this is safe in QEMU
         let size = 0x1000;
         let iova = 0x8000_0000u64;
 
-        // Note: In real hardware this might fail if the IOMMU doesn't support
-        // the requested IOVA or if there's no backend, but here we expect
-        // a functioning IOMMU if is_iommu_enabled() is true.
-        
         // We use a dummy device ID for testing
-        let device_id = crate::io::iommu::types::DeviceId::new(0, 0, 0, 0);
+        let device_id = DeviceId::new(0, 0, 0, 0);
 
-        match unsafe { crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size) } {
+        // For the public API to work, the device MUST be attached to a domain.
+        // In this integration test, we manually create and attach a domain for the dummy device.
+        let domain_id = driver.create_domain(None, IommuDomainType::Translated)
+            .map_err(|e| alloc::format!("Failed to create domain: {:?}", e))?;
+        
+        driver.attach_device(device_id, domain_id)
+            .map_err(|e| alloc::format!("Failed to attach device: {:?}", e))?;
+
+        let result = match unsafe { crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size) } {
             Ok(mapped_iova) => {
                 let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
                 Ok(alloc::format!("Successfully mapped and unmapped IOVA 0x{:x}", mapped_iova))
             },
             Err(e) => Err(alloc::format!("IOMMU mapping failed: {:?}", e)),
-        }
+        };
+
+        // Cleanup: detach and destroy domain
+        let _ = driver.detach_device(device_id);
+        // Note: destroy_domain implementation might vary, for now we just detach
+        
+        result
     }));
 
     suite

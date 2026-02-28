@@ -34,10 +34,11 @@ pub mod window_scale;
 
 // Re-exports: types
 pub use types::{
-    SocketAddr, SocketError, SocketFd,
+    SocketAddr, SocketError, SocketFd, SocketResult, SocketState, SocketType,
 };
 
 // Re-exports: event
+pub use event::NetworkEvent;
 
 // Re-exports: inner
 
@@ -55,7 +56,7 @@ pub use manager::{
 
 // Re-exports: socket
 pub use socket::{
-    OwnedSocket, create_tcp_server, create_tcp_socket, create_raw_socket,
+    OwnedSocket, create_tcp_server, create_tcp_socket, create_udp_socket, create_raw_socket,
 };
 
 // Re-exports: futures

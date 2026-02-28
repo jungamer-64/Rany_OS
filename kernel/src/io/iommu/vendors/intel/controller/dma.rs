@@ -19,7 +19,6 @@ use super::{HardwareContext, IommuController};
 use super::qi_ops::InvalidationOps;
 
 mod domain_manager_impl;
-pub(crate) mod cache;
 
 
 fn align_down(value: u64, align: usize) -> u64 {
