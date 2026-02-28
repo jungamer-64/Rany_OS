@@ -654,8 +654,8 @@ impl TcpControlBlock {
     pub fn update_rto(&mut self, rtt_sample: u64) {
         const ALPHA: u64 = 8;  // 1/8
         const BETA: u64 = 4;   // 1/4
-        const MIN_RTO: u64 = 200_000;    // 200ms in microseconds
-        const MAX_RTO: u64 = 60_000_000; // 60 seconds in microseconds
+        const MIN_RTO: u64 = 200;    // 200ms
+        const MAX_RTO: u64 = 60_000; // 60 seconds in milliseconds
 
         if let (Some(srtt), Some(rttvar)) = (self.timers.srtt, self.timers.rttvar) {
             // Subsequent measurements.  Compute with β=1/4 and α=1/8 using
@@ -683,7 +683,7 @@ impl TcpControlBlock {
 
     /// Backoff RTO on retransmission timeout
     pub fn backoff_rto(&mut self) {
-        const MAX_RTO: u64 = 60_000_000; // 60 seconds
+        const MAX_RTO: u64 = 60_000; // 60 seconds in milliseconds
         self.timers.rto = (self.timers.rto * 2).min(MAX_RTO);
         self.timers.retransmit_count += 1;
     }
@@ -858,13 +858,13 @@ impl TcpControlBlock {
     // TCP Keepalive
     // ========================================================================
 
-    /// Enable/disable keepalive with custom parameters
-    pub fn set_keepalive(&mut self, enabled: bool, idle_us: Option<u64>, interval_us: Option<u64>, count: Option<u8>) {
+    /// Enable/disable keepalive with custom parameters (all times in milliseconds)
+    pub fn set_keepalive(&mut self, enabled: bool, idle_ms: Option<u64>, interval_ms: Option<u64>, count: Option<u8>) {
         self.timers.keepalive_enabled = enabled;
-        if let Some(idle) = idle_us {
+        if let Some(idle) = idle_ms {
             self.timers.keepalive_idle = idle;
         }
-        if let Some(interval) = interval_us {
+        if let Some(interval) = interval_ms {
             self.timers.keepalive_interval = interval;
         }
         if let Some(c) = count {
@@ -928,8 +928,8 @@ impl TcpControlBlock {
     // Zero-Window Probe (RFC 1122 Section 4.2.2.17)
     // ========================================================================
 
-    /// ゼロウィンドウプローブ間隔 (マイクロ秒): 500ms
-    const ZWP_INITIAL_INTERVAL_US: u64 = 500_000;
+    /// ゼロウィンドウプローブ間隔 (ミリ秒): 500ms
+    const ZWP_INITIAL_INTERVAL_MS: u64 = 500;
     /// ゼロウィンドウプローブ最大再試行回数
     const ZWP_MAX_PROBES: u8 = 10;
 
@@ -960,7 +960,7 @@ impl TcpControlBlock {
 
         // Exponential backoff: initial * 2^min(probes, 6)
         let backoff = 1u64 << core::cmp::min(self.timers.zwp_probes_sent, 6);
-        let interval = Self::ZWP_INITIAL_INTERVAL_US.saturating_mul(backoff);
+        let interval = Self::ZWP_INITIAL_INTERVAL_MS.saturating_mul(backoff);
         let elapsed = current_time.saturating_sub(self.timers.zwp_last_probe_time);
 
         if elapsed >= interval {
@@ -1062,10 +1062,10 @@ impl TcpControlBlock {
         
         // RFC 7323: If ts_recent is less than 24 days old and 
         // incoming ts_val < ts_recent, reject segment
-        const PAWS_IDLE_LIMIT: u64 = 24 * 24 * 60 * 60 * 1_000_000; // 24 days in microseconds
+        const PAWS_IDLE_LIMIT_MS: u64 = 24 * 24 * 60 * 60 * 1_000; // 24 days in milliseconds
         
         let age = current_time.saturating_sub(self.options.ts_recent_age);
-        if age < PAWS_IDLE_LIMIT {
+        if age < PAWS_IDLE_LIMIT_MS {
             // Compare timestamps (handling wrap-around)
             let diff = ts_val.wrapping_sub(self.options.ts_recent) as i32;
             if diff < 0 {
@@ -1078,7 +1078,7 @@ impl TcpControlBlock {
 
     /// Measure RTT from timestamp echo
     /// 
-    /// Returns RTT in microseconds if measurement is valid
+    /// Returns RTT in milliseconds if measurement is valid
     pub fn measure_rtt_from_ts(&self, ts_ecr: u32, current_ts: u32) -> Option<u64> {
         if !self.options.ts_enabled || ts_ecr == 0 {
             return None;
@@ -1087,7 +1087,7 @@ impl TcpControlBlock {
         // RTT = current_ts - ts_ecr (in timestamp units)
         // Assuming 1ms per tick (common convention)
         let rtt_ticks = current_ts.wrapping_sub(ts_ecr);
-        Some(rtt_ticks as u64 * 1000) // Convert to microseconds
+        Some(rtt_ticks as u64) // Already in milliseconds
     }
 
     /// Enable timestamps (call when negotiated in SYN)

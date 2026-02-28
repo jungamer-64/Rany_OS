@@ -128,6 +128,8 @@ split-debuginfo = "unpacked"
 [profile.release]
 panic = "abort"
 lto = true
+incremental = false
+codegen-units = 1
 opt-level = 3
 # Disable debug info and strip symbols for release kernel images to avoid
 # embedding large debug/symbol sections that can overlap loadable ranges.

@@ -20,6 +20,7 @@
 #![allow(unexpected_cfgs)]
 
 use super::LoadError;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -42,6 +43,74 @@ const ED25519_PUBLIC_KEY_SIZE: usize = 32;
 /// Built-in trusted key for production verification.
 const BUILTIN_TRUSTED_KEY: [u8; ED25519_PUBLIC_KEY_SIZE] =
     *include_bytes!("../../../keys/kernel_pub.key");
+
+/// Trusted key level used for signature-chain enforcement.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum KeyLevel {
+    Platform = 0,
+    Kernel = 1,
+    Driver = 2,
+    Application = 3,
+}
+
+impl KeyLevel {
+    #[inline]
+    fn required_parent(self) -> Option<Self> {
+        match self {
+            Self::Platform => None,
+            // Current deployment bootstraps kernel keys directly from built-in trust.
+            Self::Kernel => None,
+            Self::Driver => Some(Self::Kernel),
+            Self::Application => Some(Self::Driver),
+        }
+    }
+}
+
+/// Logical key identifier used in trust-chain and revocation tracking.
+pub type KeyId = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrustedKeyRecord {
+    key_id: KeyId,
+    public_key: [u8; ED25519_PUBLIC_KEY_SIZE],
+    level: KeyLevel,
+    issuer: Option<KeyId>,
+}
+
+/// Revocation set for keys and signed cell hashes.
+#[derive(Debug, Default, Clone)]
+pub struct RevocationSet {
+    revoked_key_ids: BTreeSet<KeyId>,
+    revoked_cell_hashes: BTreeSet<[u8; 32]>,
+}
+
+impl RevocationSet {
+    pub fn revoke_key(&mut self, key_id: KeyId) {
+        self.revoked_key_ids.insert(key_id);
+    }
+
+    pub fn revoke_cell_hash(&mut self, hash: [u8; 32]) {
+        self.revoked_cell_hashes.insert(hash);
+    }
+
+    #[inline]
+    pub fn is_key_revoked(&self, key_id: KeyId) -> bool {
+        self.revoked_key_ids.contains(&key_id)
+    }
+
+    #[inline]
+    pub fn is_cell_hash_revoked(&self, hash: &[u8; 32]) -> bool {
+        self.revoked_cell_hashes.contains(hash)
+    }
+}
+
+#[inline]
+fn key_id_from_public_key(key: &[u8; ED25519_PUBLIC_KEY_SIZE]) -> KeyId {
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&key[..8]);
+    u64::from_le_bytes(id)
+}
 
 // ============================================================================
 // 署名情報
@@ -156,6 +225,12 @@ pub enum VerificationError {
     HashMismatch,
     /// バージョン不一致
     VersionMismatch,
+    /// 失効済みの署名鍵
+    RevokedKey,
+    /// 失効済みのセルハッシュ
+    RevokedCell,
+    /// 信頼チェーン不整合
+    InvalidTrustChain,
 }
 
 /// 署名検証器
@@ -163,10 +238,14 @@ pub enum VerificationError {
 /// 信頼された公開鍵のリストを保持し、
 /// セル署名を検証する。
 pub struct SignatureVerifier {
-    /// 信頼された公開鍵のリスト
-    trusted_keys: Vec<[u8; ED25519_PUBLIC_KEY_SIZE]>,
+    /// 信頼された公開鍵（KeyId -> record）
+    trusted_keys: BTreeMap<KeyId, TrustedKeyRecord>,
+    /// 公開鍵からKeyIdを逆引きする索引
+    key_index: BTreeMap<[u8; ED25519_PUBLIC_KEY_SIZE], KeyId>,
     /// 開発モードを許可するか（デフォルト: false）
     allow_dev_mode: bool,
+    /// 失効リスト
+    revocation_set: RevocationSet,
     /// 検証統計
     stats: VerifierStats,
 }
@@ -188,8 +267,10 @@ impl SignatureVerifier {
     /// 新しい検証器を作成
     pub fn new() -> Self {
         Self {
-            trusted_keys: Vec::new(),
+            trusted_keys: BTreeMap::new(),
+            key_index: BTreeMap::new(),
             allow_dev_mode: false,
+            revocation_set: RevocationSet::default(),
             stats: VerifierStats::default(),
         }
     }
@@ -197,17 +278,46 @@ impl SignatureVerifier {
     /// 本番モードの検証器を作成（開発モード無効）
     pub fn production() -> Self {
         Self {
-            trusted_keys: Vec::new(),
+            trusted_keys: BTreeMap::new(),
+            key_index: BTreeMap::new(),
             allow_dev_mode: false,
+            revocation_set: RevocationSet::default(),
             stats: VerifierStats::default(),
         }
     }
 
     /// 信頼された公開鍵を追加
     pub fn add_trusted_key(&mut self, key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
-        if !self.trusted_keys.contains(&key) {
-            self.trusted_keys.push(key);
-        }
+        let _ = self.add_trusted_key_with_level(key, KeyLevel::Kernel, None);
+    }
+
+    /// 信頼された公開鍵をレベル付きで追加
+    pub fn add_trusted_key_with_level(
+        &mut self,
+        key: [u8; ED25519_PUBLIC_KEY_SIZE],
+        level: KeyLevel,
+        issuer: Option<KeyId>,
+    ) -> KeyId {
+        let key_id = key_id_from_public_key(&key);
+        let rec = TrustedKeyRecord {
+            key_id,
+            public_key: key,
+            level,
+            issuer,
+        };
+        self.trusted_keys.insert(key_id, rec);
+        self.key_index.insert(key, key_id);
+        key_id
+    }
+
+    /// 署名鍵を失効させる
+    pub fn revoke_key(&mut self, key_id: KeyId) {
+        self.revocation_set.revoke_key(key_id);
+    }
+
+    /// セルハッシュを失効させる
+    pub fn revoke_cell_hash(&mut self, hash: [u8; 32]) {
+        self.revocation_set.revoke_cell_hash(hash);
     }
 
     /// 開発モードを許可/禁止
@@ -217,7 +327,37 @@ impl SignatureVerifier {
 
     /// 公開鍵が信頼されているかチェック
     pub fn is_trusted_key(&self, key: &[u8; ED25519_PUBLIC_KEY_SIZE]) -> bool {
-        self.trusted_keys.contains(key)
+        self.key_index.contains_key(key)
+    }
+
+    fn key_id_for_public_key(&self, key: &[u8; ED25519_PUBLIC_KEY_SIZE]) -> Option<KeyId> {
+        self.key_index.get(key).copied()
+    }
+
+    fn verify_trust_chain(&self, key_id: KeyId, depth: usize) -> Result<(), VerificationError> {
+        if depth > 8 {
+            return Err(VerificationError::InvalidTrustChain);
+        }
+        let Some(record) = self.trusted_keys.get(&key_id) else {
+            return Err(VerificationError::UntrustedKey);
+        };
+        if self.revocation_set.is_key_revoked(record.key_id) {
+            return Err(VerificationError::RevokedKey);
+        }
+        match record.level.required_parent() {
+            None => Ok(()),
+            Some(expected_parent_level) => {
+                let issuer_id = record.issuer.ok_or(VerificationError::InvalidTrustChain)?;
+                let issuer = self
+                    .trusted_keys
+                    .get(&issuer_id)
+                    .ok_or(VerificationError::InvalidTrustChain)?;
+                if issuer.level != expected_parent_level {
+                    return Err(VerificationError::InvalidTrustChain);
+                }
+                self.verify_trust_chain(issuer_id, depth + 1)
+            }
+        }
     }
 
     /// 署名を検証
@@ -241,14 +381,23 @@ impl SignatureVerifier {
             return Err(VerificationError::MalformedSignature);
         }
 
+        if self.revocation_set.is_cell_hash_revoked(&signature.hash) {
+            self.stats.failed_verifications += 1;
+            return Err(VerificationError::RevokedCell);
+        }
+
         // 2. 公開鍵の信頼チェック（trusted keyが必須）
         if self.trusted_keys.is_empty() {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::UntrustedKey);
         }
-        if !self.is_trusted_key(&signature.public_key) {
+        let Some(key_id) = self.key_id_for_public_key(&signature.public_key) else {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::UntrustedKey);
+        };
+        if let Err(e) = self.verify_trust_chain(key_id, 0) {
+            self.stats.failed_verifications += 1;
+            return Err(e);
         }
 
         // 3. ハッシュ検証
@@ -539,6 +688,34 @@ pub fn add_trusted_key(key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
     }
 }
 
+/// 信頼された公開鍵をレベル付きで追加
+pub fn add_trusted_key_with_level(
+    key: [u8; ED25519_PUBLIC_KEY_SIZE],
+    level: KeyLevel,
+    issuer: Option<KeyId>,
+) -> Option<KeyId> {
+    let mut verifier = GLOBAL_VERIFIER.lock();
+    verifier
+        .as_mut()
+        .map(|v| v.add_trusted_key_with_level(key, level, issuer))
+}
+
+/// 署名鍵を失効させる
+pub fn revoke_key(key_id: KeyId) {
+    let mut verifier = GLOBAL_VERIFIER.lock();
+    if let Some(v) = verifier.as_mut() {
+        v.revoke_key(key_id);
+    }
+}
+
+/// セルハッシュを失効させる
+pub fn revoke_cell_hash(hash: [u8; 32]) {
+    let mut verifier = GLOBAL_VERIFIER.lock();
+    if let Some(v) = verifier.as_mut() {
+        v.revoke_cell_hash(hash);
+    }
+}
+
 /// 署名を検証（グローバル検証器を使用）
 pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
     let mut verifier_guard = GLOBAL_VERIFIER.lock();
@@ -567,4 +744,3 @@ pub fn verify_cell(elf_data: &[u8]) -> Result<bool, LoadError> {
 pub fn get_verifier_stats() -> Option<VerifierStats> {
     GLOBAL_VERIFIER.lock().as_ref().map(|v| v.stats().clone())
 }
-

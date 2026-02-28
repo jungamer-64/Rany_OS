@@ -369,7 +369,7 @@ struct TcpOptionsState {
     ts_ecr: u32,
     /// Timestamp of last segment for RTT measurement
     ts_recent: u32,
-    /// Age of ts_recent (for PAWS check)
+    /// Age of ts_recent (for PAWS check, in milliseconds)
     ts_recent_age: u64,
 
     // TCP SACK (RFC 2018)
@@ -406,13 +406,13 @@ impl TcpOptionsState {
 /// TCPタイマー/再送/keepalive状態
 struct TcpTimerState {
     // Retransmission Timer (RFC 6298)
-    /// Smoothed Round-Trip Time (microseconds)
+    /// Smoothed Round-Trip Time (milliseconds)
     srtt: Option<u64>,
-    /// Round-Trip Time Variation (microseconds)
+    /// Round-Trip Time Variation (milliseconds)
     rttvar: Option<u64>,
-    /// Retransmission Timeout (microseconds)
+    /// Retransmission Timeout (milliseconds)
     rto: u64,
-    /// Last retransmit timestamp (tick)
+    /// Last retransmit timestamp (tick/ms)
     last_retransmit_time: u64,
     /// Retransmission count for current segment
     retransmit_count: u8,
@@ -422,23 +422,23 @@ struct TcpTimerState {
     // TCP Keepalive
     /// Keepalive enabled
     keepalive_enabled: bool,
-    /// Keepalive idle time (microseconds) - time before first probe
+    /// Keepalive idle time (milliseconds) - time before first probe
     keepalive_idle: u64,
-    /// Keepalive interval (microseconds) - time between probes
+    /// Keepalive interval (milliseconds) - time between probes
     keepalive_interval: u64,
     /// Keepalive probe count before giving up
     keepalive_count: u8,
     /// Current keepalive probe count
     keepalive_probes_sent: u8,
-    /// Last activity timestamp (microseconds) - last data received
+    /// Last activity timestamp (milliseconds) - last data received
     last_activity_time: u64,
-    /// Timestamp when TIME_WAIT state was entered (microseconds)
+    /// Timestamp when TIME_WAIT state was entered (milliseconds)
     time_wait_entered: u64,
 
     // Zero-Window Probe (RFC 1122 Section 4.2.2.17)
     /// Number of zero-window probes sent since peer window became 0
     zwp_probes_sent: u8,
-    /// Timestamp of last zero-window probe sent (microseconds)
+    /// Timestamp of last zero-window probe sent (milliseconds)
     zwp_last_probe_time: u64,
 }
 
@@ -447,13 +447,13 @@ impl TcpTimerState {
         Self {
             srtt: None,
             rttvar: None,
-            rto: 1_000_000, // Initial RTO = 1 second (in microseconds)
+            rto: 1_000, // Initial RTO = 1 second (in milliseconds)
             last_retransmit_time: 0,
             retransmit_count: 0,
             unacked_segments: VecDeque::new(),
             keepalive_enabled: false,
-            keepalive_idle: 7_200_000_000, // 2 hours in microseconds
-            keepalive_interval: 75_000_000, // 75 seconds in microseconds
+            keepalive_idle: 7_200_000, // 2 hours in milliseconds
+            keepalive_interval: 75_000, // 75 seconds in milliseconds
             keepalive_count: 9,
             keepalive_probes_sent: 0,
             last_activity_time: 0,

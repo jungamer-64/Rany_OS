@@ -148,6 +148,16 @@ fn field_value(snapshot: &crate::domain_system::DomainSnapshot, field: &str) -> 
 }
 
 fn system_file_value(field: &str) -> Option<String> {
+    #[cfg(feature = "legacy-posix")]
+    let proc_filesystems = "nodev\tproc\n";
+    #[cfg(not(feature = "legacy-posix"))]
+    let proc_filesystems = "";
+
+    #[cfg(feature = "legacy-posix")]
+    let proc_mounts = "proc /proc proc rw,nosuid,nodev,noexec 0 0\n";
+    #[cfg(not(feature = "legacy-posix"))]
+    let proc_mounts = "";
+
     match field {
         "version" => Some(format!(
             "ExoRust Kernel {} ({}) (gcc version 12.0.0)\n",
@@ -169,15 +179,15 @@ fn system_file_value(field: &str) -> Option<String> {
         "cpuinfo" => Some(generate_cpuinfo()),
         "stat" => Some(generate_stat()),
         "loadavg" => Some(String::from("0.00 0.00 0.00 1/1 1\n")),
-        "filesystems" => Some(String::from(
-            "nodev\tproc\n\
-             nodev\tdevfs\n\
+        "filesystems" => Some(format!(
+            "{}nodev\tdevfs\n\
              \text2\n\
              nodev\ttmpfs\n",
+            proc_filesystems
         )),
-        "mounts" => Some(String::from(
-            "proc /proc proc rw,nosuid,nodev,noexec 0 0\n\
-             devfs /dev devfs rw,nosuid 0 0\n",
+        "mounts" => Some(format!(
+            "{}devfs /dev devfs rw,nosuid 0 0\n",
+            proc_mounts
         )),
         "cmdline" => Some(String::from("console=ttyS0\n")),
         _ => None,

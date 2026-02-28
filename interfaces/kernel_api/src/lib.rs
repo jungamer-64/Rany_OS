@@ -64,6 +64,27 @@ pub use types::{
     SystemInfo, TaskHandle, TcpEndpoint,
 };
 
+/// Emit a minimal `.rany_type_id` section consumed by kernel-side ABI checks.
+///
+/// Format:
+/// - 4 bytes magic "RTID"
+/// - 4 bytes format version (u32 LE)
+/// - 4 bytes dependency count (u32 LE)
+#[macro_export]
+macro_rules! declare_rany_type_id_section {
+    () => {
+        const _: () = {
+            #[used]
+            #[unsafe(link_section = ".rany_type_id")]
+            static RANY_TYPE_ID_SECTION: [u8; 12] = [
+                b'R', b'T', b'I', b'D', // magic
+                1, 0, 0, 0, // section format version
+                0, 0, 0, 0, // dependency count
+            ];
+        };
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{AbiError, DriverContext, pack_version, unpack_version};

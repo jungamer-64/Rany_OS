@@ -181,6 +181,7 @@ pub fn unload_cell(id: CellId) -> Result<(), crate::loader::LoadError> {
 
 /// Initialize the "Kernel Cell" entry
 pub fn init_kernel_cell() {
+    crate::loader::type_id::init_kernel_interfaces();
     let kernel_cell = Cell {
         id: CellId(0), // Special ID 0 for Kernel
         name: String::from("kernel"),

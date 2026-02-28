@@ -304,47 +304,52 @@ impl Ipv6FragmentBuffer {
         //
         // The unfragmentable part's last Next Header byte currently says "Fragment (44)".
         // We need to replace that with the actual next header from the fragment header.
-        //
-        // For the simple case of no pre-fragment extension headers,
-        // the Next Header field is at byte 6 of the IPv6 fixed header.
-        // If there are pre-fragment extension headers, we need to find the last one
-        // and patch its Next Header field.
         if unfrag.len() >= 40 {
             // Walk the extension header chain in the unfragmentable part
-            // to find the one whose Next Header == 44 (Fragment)
             let mut pos = 6; // Next Header offset in IPv6 fixed header
             let mut nh_value = unfrag[pos];
 
             // If the fixed header's Next Header is already 44, just patch it
             if nh_value == super::EXT_HEADER_FRAGMENT {
-                packet[pos] = nh;
+                if pos < packet.len() {
+                    packet[pos] = nh;
+                }
             } else {
                 // Walk extension headers inside unfragmentable part
                 let mut ext_offset = 40usize;
-                loop {
-                    if nh_value == super::EXT_HEADER_FRAGMENT {
-                        // Previous extension header's Next Header should be patched
-                        // But pos still points to the place we need to patch
-                        packet[pos] = nh;
-                        break;
-                    }
+                // Security: limit iterations to prevent infinite loop on malformed headers
+                for _ in 0..16 {
                     if ext_offset + 2 > unfrag.len() {
                         break;
                     }
-                    pos = ext_offset; // This extension header's Next Header field
+                    
+                    // Previous extension header's Next Header field is at 'pos'
+                    // We need to update nh_value to the CURRENT extension header's Next Header
                     nh_value = unfrag[ext_offset];
+                    
+                    if nh_value == super::EXT_HEADER_FRAGMENT {
+                        if ext_offset < packet.len() {
+                            packet[ext_offset] = nh;
+                        }
+                        break;
+                    }
+                    
                     let ext_len = (unfrag[ext_offset + 1] as usize + 1) * 8;
+                    if ext_len == 0 { break; } 
+                    
                     ext_offset += ext_len;
-                    if ext_offset > unfrag.len() {
+                    if ext_offset >= unfrag.len() {
                         break;
                     }
                 }
             }
 
             // Update Payload Length in the IPv6 header
-            let payload_len = (packet.len() - 40) as u16;
-            packet[4] = (payload_len >> 8) as u8;
-            packet[5] = (payload_len & 0xff) as u8;
+            if packet.len() >= 6 {
+                let payload_len = (packet.len().saturating_sub(40)) as u16;
+                packet[4] = (payload_len >> 8) as u8;
+                packet[5] = (payload_len & 0xff) as u8;
+            }
         }
 
         Some(packet)

@@ -29,6 +29,7 @@ macro_rules! export_async_driver {
         version = $version:expr,
         irq = $irq:path
     ) => {
+        $crate::declare_rany_type_id_section!();
         #[cfg(feature = "export_driver_entry")]
         #[no_mangle]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
@@ -85,6 +86,7 @@ macro_rules! export_async_driver {
         driver_type = $dtype:expr,
         version = $version:expr
     ) => {
+        $crate::declare_rany_type_id_section!();
         #[cfg(feature = "export_driver_entry")]
         #[no_mangle]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {

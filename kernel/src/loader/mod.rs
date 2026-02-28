@@ -28,7 +28,10 @@ pub use live_update::{
     wait_for_quiescent_state,
 };
 #[allow(unused_imports)]
-pub use signature::{CellSignature, SignatureVerifier, verify_cell};
+pub use signature::{
+    CellSignature, KeyId, KeyLevel, RevocationSet, SignatureVerifier, add_trusted_key_with_level,
+    revoke_cell_hash, revoke_key, verify_cell,
+};
 
 use crate::driver_registry::{DriverHandle, register_abi_driver, register_exports_driver};
 use alloc::collections::BTreeMap;

@@ -15,6 +15,7 @@ pub fn find_cell_by_driver(handle: DriverHandle) -> Option<CellId> {
 
 /// カーネルセルを初期化（起動時に呼ばれる）
 pub fn init_kernel_cell() {
+    super::type_id::init_kernel_interfaces();
     with_registry_mut(|r| {
         let entry = CellEntry {
             id: CellId::KERNEL,

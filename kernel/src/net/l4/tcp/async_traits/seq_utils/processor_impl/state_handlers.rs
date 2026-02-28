@@ -53,9 +53,9 @@ impl TcpProcessor {
         current_time: u64,
     ) -> TcpProcessResult {
         // RFC 793: Wait for 2*MSL (Maximum Segment Lifetime) then move to Closed
-        // MSL = 120 seconds, 2*MSL = 240 seconds = 240_000_000 microseconds
-        const TWO_MSL_US: u64 = 240_000_000;
-        if current_time.saturating_sub(tcb.time_wait_entered_at()) >= TWO_MSL_US {
+        // MSL = 120 seconds, 2*MSL = 240 seconds = 240,000 milliseconds
+        const TWO_MSL_MS: u64 = 240_000;
+        if current_time.saturating_sub(tcb.time_wait_entered_at()) >= TWO_MSL_MS {
             tcb.close_and_wake();
         }
         TcpProcessResult::None
@@ -95,38 +95,42 @@ impl TcpProcessor {
 
     /// Remove closed and expired connections
     pub fn cleanup_closed(&mut self) {
-        const TWO_MSL_US: u64 = 240_000_000;
-        const HANDSHAKE_TIMEOUT_US: u64 = 60_000_000;
+        // Standard TCP timeouts in milliseconds (matching current_tick())
+        const TWO_MSL_MS: u64 = 240_000;
+        const HANDSHAKE_TIMEOUT_MS: u64 = 20_000; // 20 seconds for handshake (DoS protection)
         let current_time = crate::task::timer::current_tick();
         let mut semi_open_removed = 0;
 
         self.connections.retain(|_, tcb_lock| {
-            if let Ok(tcb) = tcb_lock.lock() {
-                let (should_remove, is_semi_open) = match tcb.state() {
-                    TcpState::Closed => (true, false),
-                    TcpState::TimeWait => {
-                        // Keep if 2MSL has not yet passed
-                        let entered = tcb.time_wait_entered_or_last_activity();
-                        let elapsed = current_time.saturating_sub(entered);
-                        (! (elapsed < TWO_MSL_US), false)
+            match tcb_lock.lock() {
+                Ok(tcb) => {
+                    let (should_remove, is_semi_open) = match tcb.state() {
+                        TcpState::Closed => (true, false),
+                        TcpState::TimeWait => {
+                            // Keep if 2MSL has not yet passed
+                            let entered = tcb.time_wait_entered_or_last_activity();
+                            let elapsed = current_time.saturating_sub(entered);
+                            (!(elapsed < TWO_MSL_MS), false)
+                        }
+                        TcpState::SynSent | TcpState::SynReceived => {
+                            // Remove stale handshakes (DoS protection)
+                            let elapsed = current_time.saturating_sub(tcb.created_at());
+                            (!(elapsed < HANDSHAKE_TIMEOUT_MS), true)
+                        }
+                        _ => (false, false),
+                    };
+                    if should_remove && is_semi_open {
+                        semi_open_removed += 1;
                     }
-                    TcpState::SynSent | TcpState::SynReceived => {
-                        // Remove stale handshakes (DoS protection)
-                        let elapsed = current_time.saturating_sub(tcb.created_at());
-                        (! (elapsed < HANDSHAKE_TIMEOUT_US), true)
-                    }
-                    _ => (false, false),
-                };
-                if should_remove && is_semi_open {
-                    semi_open_removed += 1;
+                    !should_remove
                 }
-                !should_remove
-            } else {
-                // If lock is poisoned, remove the connection
-                // We don't know if it was semi-open, but better to be safe and not decrement
-                // unless we are sure, or maybe we SHOULD decrement if it was in SYN-RECEIVED state?
-                // But we can't know the state if it's poisoned.
-                false
+                Err(_) => {
+                    // If lock is poisoned, remove the connection.
+                    // We can't safely know if it was semi-open, but we assume it might have been
+                    // if the counter is non-zero to avoid permanent DoS.
+                    // However, we don't have enough info here. For safety, we just remove it.
+                    false
+                }
             }
         });
 

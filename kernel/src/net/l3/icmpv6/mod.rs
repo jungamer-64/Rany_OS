@@ -199,6 +199,8 @@ pub enum Icmpv6Result {
     },
     /// Packet Too Big received (Path MTU Discovery)
     PacketTooBig {
+        /// Original destination that triggered the error
+        dst: Ipv6Address,
         /// MTU from the message
         mtu: u32,
     },
@@ -404,7 +406,20 @@ impl Icmpv6Processor {
 
         let mtu = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
-        Icmpv6Result::PacketTooBig { mtu }
+        // Extract original destination IP from the invoking packet (RFC 4443)
+        // Invoking packet starts at offset 8. Invoking IPv6 header destination is at offset 24 within it.
+        // Total offset = 8 + 24 = 32.
+        if data.len() >= 32 + 16 {
+            let dst_bytes = &data[32..32 + 16];
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(dst_bytes);
+            let dst = Ipv6Address::new(arr);
+            Icmpv6Result::PacketTooBig { dst, mtu }
+        } else {
+            // Not enough data to extract destination, but we still have the MTU.
+            // However, without destination we can't reliably update PMTU cache.
+            Icmpv6Result::Error
+        }
     }
 }
 

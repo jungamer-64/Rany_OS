@@ -10,6 +10,36 @@ use spin::Once;
 /// グローバルMemoryFsインスタンス
 pub(crate) static SHELL_FS: Once<Arc<MemoryFs>> = Once::new();
 
+#[cfg(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+fn wal_record_mutation(op: &str, path: &str, payload: &[u8]) {
+    let tx = crate::storage::wal::begin();
+    let mut data = alloc::vec::Vec::with_capacity(op.len() + path.len() + payload.len() + 2);
+    data.extend_from_slice(op.as_bytes());
+    data.push(0);
+    data.extend_from_slice(path.as_bytes());
+    data.push(0);
+    data.extend_from_slice(payload);
+    crate::storage::wal::append(
+        tx,
+        crate::storage::wal::WalOperation::Write {
+            offset: 0,
+            data,
+        },
+    );
+    crate::storage::wal::commit(tx);
+}
+
+#[cfg(not(any(
+    not(test),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+)))]
+fn wal_record_mutation(_op: &str, _path: &str, _payload: &[u8]) {}
+
 /// シェル用ファイルシステムを初期化
 pub fn init_shell_fs() {
     SHELL_FS.call_once(|| {
@@ -135,6 +165,7 @@ pub fn make_directory(path: &str, cwd: &str) -> FsResult<()> {
     let (parent_path, name) = split_path(path, cwd);
     let parent = resolve_path(&parent_path, cwd)?;
     parent.mkdir(&name, FileMode::DEFAULT_DIR)?;
+    wal_record_mutation("mkdir", path, &[]);
     Ok(())
 }
 
@@ -148,6 +179,7 @@ pub fn touch_file(path: &str, cwd: &str) -> FsResult<()> {
         Ok(_) => Ok(()),
         Err(FsError::NotFound) => {
             parent.create(&name, FileMode::DEFAULT_FILE, OpenFlags::default())?;
+            wal_record_mutation("touch", path, &[]);
             Ok(())
         }
         Err(e) => Err(e),
@@ -158,14 +190,18 @@ pub fn touch_file(path: &str, cwd: &str) -> FsResult<()> {
 pub fn remove_file(path: &str, cwd: &str) -> FsResult<()> {
     let (parent_path, name) = split_path(path, cwd);
     let parent = resolve_path(&parent_path, cwd)?;
-    parent.unlink(&name)
+    parent.unlink(&name)?;
+    wal_record_mutation("unlink", path, &[]);
+    Ok(())
 }
 
 /// ディレクトリを削除
 pub fn remove_directory(path: &str, cwd: &str) -> FsResult<()> {
     let (parent_path, name) = split_path(path, cwd);
     let parent = resolve_path(&parent_path, cwd)?;
-    parent.rmdir(&name)
+    parent.rmdir(&name)?;
+    wal_record_mutation("rmdir", path, &[]);
+    Ok(())
 }
 
 /// ファイル/ディレクトリを移動
@@ -176,7 +212,9 @@ pub fn move_file(src: &str, dst: &str, cwd: &str) -> FsResult<()> {
     let src_parent = resolve_path(&src_parent_path, cwd)?;
     let dst_parent = resolve_path(&dst_parent_path, cwd)?;
 
-    src_parent.rename(&src_name, &dst_parent, &dst_name)
+    src_parent.rename(&src_name, &dst_parent, &dst_name)?;
+    wal_record_mutation("rename", src, dst.as_bytes());
+    Ok(())
 }
 
 /// ファイルをコピー（従来方式 - PagedContentで高速化済み）
@@ -200,6 +238,7 @@ pub fn copy_file(src: &str, dst: &str, cwd: &str) -> FsResult<()> {
 
     dst_inode.truncate(0)?;
     dst_inode.write(0, &content)?;
+    wal_record_mutation("copy", dst, &content);
 
     Ok(())
 }
@@ -231,6 +270,7 @@ pub fn write_file_content(path: &str, cwd: &str, content: &[u8]) -> FsResult<()>
 
     inode.truncate(0)?;
     inode.write(0, content)?;
+    wal_record_mutation("write", path, content);
     Ok(())
 }
 
@@ -272,6 +312,7 @@ pub fn create_symlink(target: &str, link_name: &str, cwd: &str) -> FsResult<()> 
     let parent = resolve_path(&parent_path, cwd)?;
 
     parent.symlink(&name, target)?;
+    wal_record_mutation("symlink", link_name, target.as_bytes());
     Ok(())
 }
 

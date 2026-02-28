@@ -477,7 +477,9 @@ impl Default for TlsConfig {
         }
 
         Self {
-            min_version: TlsVersion::TLS_1_0,
+            // Security: Use TLS 1.2 as minimum version. 
+            // TLS 1.0 and 1.1 are deprecated (RFC 8996).
+            min_version: TlsVersion::TLS_1_2,
             max_version: TlsVersion::TLS_1_3,
             cipher_suites: CipherSuite::defaults(),
             signature_schemes: vec![

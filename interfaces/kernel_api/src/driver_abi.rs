@@ -504,6 +504,7 @@ macro_rules! export_driver {
         $(, stop = $stop:path)?
         , irq = $irq:path
     ) => {
+            $crate::declare_rany_type_id_section!();
             #[cfg(all(feature = "export_driver_entry", not(test)))]
             #[unsafe(no_mangle)]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
@@ -644,6 +645,7 @@ macro_rules! export_driver {
         $(, start = $start:path)?
         $(, stop = $stop:path)?
     ) => {
+        $crate::declare_rany_type_id_section!();
         #[cfg(feature = "export_driver_entry")]
         #[unsafe(no_mangle)]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {

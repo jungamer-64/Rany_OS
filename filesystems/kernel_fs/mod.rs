@@ -51,6 +51,7 @@ pub mod memfs;
 pub mod async_memfs;
 pub mod page;
 pub mod sysfs;
+#[cfg(feature = "legacy-posix")]
 pub mod procfs;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
@@ -97,6 +98,7 @@ pub use memfs::{
     shell_fs, stat_file, touch_file, write_file_content,
 };
 #[allow(unused_imports)]
+#[cfg(feature = "legacy-posix")]
 pub use procfs::{
     Pid as ProcPid, ProcEntry, ProcError, ProcFileHandle, ProcFileType, ProcFs, ProcInode, procfs,
 };

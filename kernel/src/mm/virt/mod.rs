@@ -4,10 +4,10 @@
 
 pub mod higher_half;    // ページテーブル管理
 pub mod mapping;        // 物理↔仮想アドレス変換
-pub mod mmap;           // メモリマッピングAPI
-pub mod address_space;  // プロセスアドレス空間管理
+pub(crate) mod mmap;           // レガシー: SAS移行までの内部実装
+pub(crate) mod address_space;  // レガシー: SAS移行までの内部実装
 pub mod fault_handler;  // Page Fault Handler
 pub mod rcu_vma;        // RCU VMA/PageTable Walk
-pub mod cow;            // Copy-on-Write
+pub(crate) mod cow;            // レガシー: SAS移行までの内部実装
 pub mod demand_paging;  // Demand Paging
 pub mod stack_growth;   // 自動スタック拡張

@@ -7,6 +7,12 @@
 [unstable]
 panic-abort-tests = true
 
+[build]
+# Reproducible builds: normalize local workspace path.
+rustflags = [
+    "--remap-path-prefix=/home/jgm64=.",
+]
+
 # Custom kernel target with PIE disabled and higher-half linker script
 # Note: For JSON targets, use the full path including .json extension
 [target.x86_64-exorust]
