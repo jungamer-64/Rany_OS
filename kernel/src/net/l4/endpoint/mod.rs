@@ -56,7 +56,7 @@ pub use manager::{
 
 // Re-exports: socket
 pub use socket::{
-    OwnedSocket, create_tcp_server, create_tcp_socket, create_raw_socket,
+    OwnedSocket, create_tcp_server, create_tcp_socket, create_udp_socket, create_raw_socket,
 };
 
 // Re-exports: futures

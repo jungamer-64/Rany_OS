@@ -368,7 +368,7 @@ impl Drop for PageTableScope {
 /// - Test: assume identity (pointer value is physical for unit tests)
 #[inline]
 pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
-    #[cfg(not(any(test, feature = "qemu-test-export")))]
+    #[cfg(not(test))]
     {
         let virt = ptr as u64;
         let hhdm_base = crate::memory::physical_memory_offset();
@@ -385,7 +385,7 @@ pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
             .map(|p| p.as_u64())
     }
 
-    #[cfg(any(test, feature = "qemu-test-export"))]
+    #[cfg(test)]
     {
         Ok(ptr as u64)
     }
@@ -394,14 +394,14 @@ pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
 /// Helper: convert a physical address (u64) to a virtual address usize.
 #[inline]
 pub fn phys_to_virt_usize(phys: u64) -> usize {
-    #[cfg(not(any(test, feature = "qemu-test-export")))]
+    #[cfg(not(test))]
     {
         // Use the generic HHDM mapper here: this path is used very early during
         // IOMMU bring-up where HigherHalfManager may not be published yet.
         crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys)).as_u64() as usize
     }
 
-    #[cfg(any(test, feature = "qemu-test-export"))]
+    #[cfg(test)]
     {
         phys as usize
     }

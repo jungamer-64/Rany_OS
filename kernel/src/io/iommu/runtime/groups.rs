@@ -362,6 +362,131 @@ impl IommuGroupManager {
 }
 
 // ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::collections::BTreeMap;
+
+    struct MockTopology {
+        header_types: BTreeMap<(u8, u8, u8), u8>,
+        acs_enabled: BTreeMap<(u8, u8, u8), bool>,
+        parents: BTreeMap<u8, (u8, u8, u8)>,
+    }
+
+    impl MockTopology {
+        fn new() -> Self {
+            Self {
+                header_types: BTreeMap::new(),
+                acs_enabled: BTreeMap::new(),
+                parents: BTreeMap::new(),
+            }
+        }
+
+        fn add_endpoint(&mut self, bus: u8, dev: u8, func: u8, multi: bool) {
+            let ht = if multi { 0x80 } else { 0x00 };
+            self.header_types.insert((bus, dev, func), ht);
+        }
+
+        fn add_bridge(&mut self, bus: u8, dev: u8, func: u8, child_bus: u8, acs: bool) {
+            self.header_types.insert((bus, dev, func), 0x01);
+            self.acs_enabled.insert((bus, dev, func), acs);
+            self.parents.insert(child_bus, (bus, dev, func));
+        }
+    }
+
+    impl PciTopologyProvider for MockTopology {
+        fn read_header_type(&self, bus: u8, device: u8, function: u8) -> Option<u8> {
+            self.header_types.get(&(bus, device, function)).copied()
+        }
+
+        fn is_acs_isolation_enabled(&self, bus: u8, device: u8, function: u8) -> Option<bool> {
+            self.acs_enabled.get(&(bus, device, function)).copied()
+        }
+
+        fn find_parent_bridge(&self, child_bus: u8) -> Option<(u8, u8, u8)> {
+            self.parents.get(&child_bus).copied()
+        }
+    }
+
+    #[test_case]
+    fn test_group_single_endpoint() {
+        let mut topo = MockTopology::new();
+        topo.add_endpoint(0, 1, 0, false);
+
+        let dev = DeviceId::new(0, 0, 1, 0);
+        let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
+        
+        // Single isolated endpoint should be its own group root
+        assert_eq!(group_id, dev);
+    }
+
+    #[test_case]
+    fn test_group_multifunction_no_acs() {
+        let mut topo = MockTopology::new();
+        // Multifunction device at 00:02.x, no ACS reported
+        topo.add_endpoint(0, 2, 0, true);
+        topo.add_endpoint(0, 2, 1, true);
+
+        let dev0 = DeviceId::new(0, 0, 2, 0);
+        let dev1 = DeviceId::new(0, 0, 2, 1);
+        
+        let id0 = IommuGroupManager::determine_group_id_for_device(dev0, &topo).unwrap();
+        let id1 = IommuGroupManager::determine_group_id_for_device(dev1, &topo).unwrap();
+        
+        // Both should be grouped under function 0
+        assert_eq!(id0, dev0);
+        assert_eq!(id1, dev0);
+    }
+
+    #[test_case]
+    fn test_group_behind_non_acs_bridge() {
+        let mut topo = MockTopology::new();
+        // Root bridge (0,1,0) -> Bus 1, ACS disabled
+        topo.add_bridge(0, 1, 0, 1, false);
+        topo.add_endpoint(1, 0, 0, false);
+
+        let dev = DeviceId::new(0, 1, 0, 0);
+        let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
+        
+        // Should be grouped under the bridge (0,1,0)
+        assert_eq!(group_id, DeviceId::new(0, 0, 1, 0));
+    }
+
+    #[test_case]
+    fn test_group_behind_acs_bridge() {
+        let mut topo = MockTopology::new();
+        // Root bridge (0,1,0) -> Bus 1, ACS enabled
+        topo.add_bridge(0, 1, 0, 1, true);
+        topo.add_endpoint(1, 0, 0, false);
+
+        let dev = DeviceId::new(0, 1, 0, 0);
+        let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
+        
+        // Bridge has ACS, so the endpoint is isolated
+        assert_eq!(group_id, dev);
+    }
+
+    #[test_case]
+    fn test_group_non_acs_chain() {
+        let mut topo = MockTopology::new();
+        // Bridge A (0,1,0) -> Bus 1, ACS disabled
+        topo.add_bridge(0, 1, 0, 1, false);
+        // Bridge B (1,2,0) -> Bus 2, ACS disabled
+        topo.add_bridge(1, 2, 0, 2, false);
+        topo.add_endpoint(2, 0, 0, false);
+
+        let dev = DeviceId::new(0, 2, 0, 0);
+        let group_id = IommuGroupManager::determine_group_id_for_device(dev, &topo).unwrap();
+        
+        // Should be promoted to the highest non-ACS ancestor: Bridge A
+        assert_eq!(group_id, DeviceId::new(0, 0, 1, 0));
+    }
+}
+
+// ============================================================================
 // Global IOMMU Group Manager
 // ============================================================================
 
