@@ -596,7 +596,10 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Set IHL (Internet Header Length in 32-bit words)
     pub fn set_ihl(&mut self, ihl: u8) -> &mut Self {
-        if let Some(h) = self.header_mut() { h.version_ihl = (h.version_ihl & 0xf0) | (ihl & 0x0f); }
+        // Valid IHL is 5 (20 bytes) to 15 (60 bytes)
+        if ihl >= 5 && ihl <= 15 {
+            if let Some(h) = self.header_mut() { h.version_ihl = (h.version_ihl & 0xf0) | (ihl & 0x0f); }
+        }
         self
     }
 

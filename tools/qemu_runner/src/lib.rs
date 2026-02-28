@@ -814,7 +814,7 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
             .arg("virtio-blk-pci,drive=storage0");
     }
 
-    if config.profile == "iommu" {
+    if matches!(config.profile.as_str(), "iommu" | "driver_cell") {
         qemu_cmd.arg("-device").arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
     }
 

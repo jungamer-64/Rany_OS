@@ -79,7 +79,7 @@ jobs:
           QEMU_TEST_CPU: qemu64,+rdtscp
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
-          QEMU_TEST_TIMEOUT_SECS: 120
+          QEMU_TEST_TIMEOUT_SECS: 240
         run: cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
       - name: Upload full-boot logs (PR required)

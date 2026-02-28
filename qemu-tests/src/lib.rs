@@ -28,6 +28,8 @@ fn base_config(profile: &str) -> RunConfig {
         480
     } else if profile == "nightly-required" {
         300
+    } else if profile == "driver_cell" {
+        240
     } else {
         120
     };
