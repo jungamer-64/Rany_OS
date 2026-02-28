@@ -8,7 +8,7 @@ use alloc::vec;
 
 /// Test mempool allocation
 pub fn test_mempool_allocation() -> TestResult {
-    use crate::net::mempool::{PacketPool, PacketBuffer};
+    use crate::net::datapath::mempool::{PacketPool, PacketBuffer};
     
     // Create a packet pool
     let pool = PacketPool::new(16, 1518);
@@ -51,7 +51,7 @@ pub fn test_mempool_allocation() -> TestResult {
 
 /// Test Ethernet frame parsing
 pub fn test_ethernet_frame() -> TestResult {
-    use crate::net::ethernet::{EthernetFrame, EthernetFrameMut, MacAddress, EtherType, EthernetHeader};
+    use crate::net::l2::ethernet::{EthernetFrame, EthernetFrameMut, MacAddress, EtherType, EthernetHeader};
     
     // Test MAC address
     let mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
@@ -115,7 +115,7 @@ pub fn test_ethernet_frame() -> TestResult {
 
 /// Test IPv4 packet parsing
 pub fn test_ipv4_packet() -> TestResult {
-    use crate::net::ipv4::{Ipv4Packet, Ipv4Address, IpProtocol, Ipv4Header};
+    use crate::net::l3::ipv4::{Ipv4Packet, Ipv4Address, IpProtocol, Ipv4Header};
     
     // Test IPv4 address
     let addr = Ipv4Address::new(192, 168, 1, 1);
@@ -196,7 +196,7 @@ pub fn test_ipv4_packet() -> TestResult {
 
 /// Test TCP state machine
 pub fn test_tcp_state_machine() -> TestResult {
-    use crate::net::tcp::TcpState;
+    use crate::net::l4::tcp::TcpState;
     
     // Test state transitions (conceptual)
     let state = TcpState::Closed;
@@ -226,7 +226,7 @@ pub fn test_tcp_state_machine() -> TestResult {
 
 /// Test zero-copy buffer
 pub fn test_zero_copy_buffer() -> TestResult {
-    use crate::net::zero_copy::{ZeroCopyBuffer, MemoryPool, PoolId};
+    use crate::net::datapath::zero_copy::{ZeroCopyBuffer, MemoryPool, PoolId};
     
     // Create a small test pool
     let pool = MemoryPool::new(PoolId(1), 8, 256);
@@ -259,9 +259,9 @@ pub fn test_zero_copy_buffer() -> TestResult {
 
 /// Test ARP cache
 pub fn test_arp_cache() -> TestResult {
-    use crate::net::arp::{ArpCache, ArpEntry, ArpEntryState};
-    use crate::net::ipv4::Ipv4Address;
-    use crate::net::ethernet::MacAddress;
+    use crate::net::l2::arp::{ArpCache, ArpEntry, ArpEntryState};
+    use crate::net::l3::ipv4::Ipv4Address;
+    use crate::net::l2::ethernet::MacAddress;
     
     let mut cache = ArpCache::new(100);
     
@@ -294,8 +294,8 @@ pub fn test_arp_cache() -> TestResult {
 
 /// Test UDP socket operations
 pub fn test_udp_socket() -> TestResult {
-    use crate::net::udp::{UdpSocket, UdpAddr};
-    use crate::net::ipv4::Ipv4Address;
+    use crate::net::l4::udp::{UdpSocket, UdpAddr};
+    use crate::net::l3::ipv4::Ipv4Address;
     
     // Create UDP socket
     let socket = UdpSocket::new();
@@ -314,8 +314,8 @@ pub fn test_udp_socket() -> TestResult {
 
 /// Test ICMP echo
 pub fn test_icmp_echo() -> TestResult {
-    use crate::net::icmp::{IcmpType, IcmpEchoBuilder};
-    use crate::net::ipv4::Ipv4Address;
+    use crate::net::l3::icmp::{IcmpType, IcmpEchoBuilder};
+    use crate::net::l3::ipv4::Ipv4Address;
     
     // Build ICMP echo request
     let builder = IcmpEchoBuilder::new()

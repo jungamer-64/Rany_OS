@@ -108,7 +108,7 @@ impl VirtioNetDevice {
     /// Enqueue a zero-copy PacketRef for transmission without waiting for completion.
     /// Ownership of `packet` is moved into the device's inflight map; completion will
     /// perform unmap/cleanup and return the buffer to the pool.
-    pub fn enqueue_send_zero_copy(&self, packet: crate::net::PacketRef) -> Result<(), VirtioNetError> {
+    pub fn enqueue_send_zero_copy(&self, packet: crate::net::datapath::mempool::PacketRef) -> Result<(), VirtioNetError> {
         let tx_queue = match self.first_tx_queue() {
             Some(q) => q,
             None => return Err(VirtioNetError::NotInitialized),
@@ -303,8 +303,8 @@ impl VirtioNetDevice {
             }
 
             // Notify network stack that TX resources became available
-            crate::net::endpoint::event::send_event_ignore(
-                crate::net::endpoint::event::NetworkEvent::TxAvailable,
+            crate::net::l4::endpoint::event::send_event_ignore(
+                crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
             );
         }
     }

@@ -41,14 +41,14 @@ impl SystemIntegration {
         self.log("System integration complete!");
 
         // Diagnostic: print Net Bridge and Network configuration/stats
-        let bridge_stats = crate::net::get_bridge_stats();
+        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
         self.log(&alloc::format!("  Net Bridge stats: init={} rx={} tx={}", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets));
-        if let Some(cfg) = crate::net::get_real_config() {
+        if let Some(cfg) = crate::net::runtime::bridge::get_real_config() {
             self.log(&alloc::format!("  Net Config: IP={:?} MAC={:02x?}", cfg.ip, cfg.mac));
         } else {
             self.log("  Net Config: none");
         }
-        if let Some(stats) = crate::net::get_network_stats() {
+        if let Some(stats) = crate::net::api::shell::get_network_stats() {
             self.log(&alloc::format!("  Net Stack stats: rx={} tx={} rx_bytes={} tx_bytes={}", stats.rx_packets, stats.tx_packets, stats.rx_bytes, stats.tx_bytes));
         } else {
             self.log("  Net Stack stats: none");
@@ -368,9 +368,8 @@ impl SystemIntegration {
         }
     }
 
-    pub(super) fn register_and_start_virtio_net_driver(&mut self, drv: alloc::boxed::Box<crate::net::driver::VirtioNetDriver>) {
+    pub(super) fn register_and_start_virtio_net_driver(&mut self, drv: alloc::boxed::Box<crate::net::drivers::virtio_registry::VirtioNetDriver>) {
         use crate::driver_registry::{register_driver, driver_registry};
-        use crate::net; // for ping test
 
         match register_driver(drv) {
             Ok(handle) => {
@@ -381,7 +380,7 @@ impl SystemIntegration {
                     // Quick sanity ping immediately after driver start.  If the
                     // global VirtIO device is working the ping should succeed
                     // (or at least return an I/O error if the network is down).
-                    let ping = net::send_real_icmp_echo([10, 0, 2, 2], 1);
+                    let ping = crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1);
                     self.log(&alloc::format!("    [PING TEST] result={:?}", ping));
                 }
             }
@@ -414,7 +413,7 @@ impl SystemIntegration {
             dev,
             crate::io::virtio::VirtioDeviceType::Network,
         ) {
-            let _ = crate::net::init_driver_bridge();
+            let _ = crate::net::runtime::bridge::init_bridge();
             match crate::io::virtio::init_virtio_net_with_transport(
                 alloc::boxed::Box::new(transport),
                 Some(iommu_device),
@@ -441,7 +440,7 @@ impl SystemIntegration {
 
         // Register Driver via DriverRegistry
         use alloc::boxed::Box;
-        use crate::net::driver::VirtioNetDriver;
+        use crate::net::drivers::virtio_registry::VirtioNetDriver;
 
         if initialized_via_pci {
             let drv = Box::new(VirtioNetDriver::new());

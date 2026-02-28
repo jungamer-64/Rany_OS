@@ -2,12 +2,12 @@
 // tls/qemu_tests.rs - QEMU Integration Tests
 // ============================================================================
 use super::*;
-use crate::net::tls::connection::TlsConnection;
-use crate::net::tls::crypto::*;
-use crate::net::tls::crypto::aes_core::{aes_ctr, gf_mul};
-use crate::net::tls::crypto::aes_gcm::gf128_mul;
-use crate::net::tls::crypto::chacha20::{chacha20_block, chacha20_encrypt, poly1305_mac};
-use crate::net::tls::crypto::hkdf::{hkdf_expand, hkdf_extract};
+use crate::net::security::tls::connection::TlsConnection;
+use crate::net::security::tls::crypto::*;
+use crate::net::security::tls::crypto::aes_core::{aes_ctr, gf_mul};
+use crate::net::security::tls::crypto::aes_gcm::gf128_mul;
+use crate::net::security::tls::crypto::chacha20::{chacha20_block, chacha20_encrypt, poly1305_mac};
+use crate::net::security::tls::crypto::hkdf::{hkdf_expand, hkdf_extract};
 
 mod aes_gcm_smoke;
 pub use aes_gcm_smoke::*;

@@ -637,8 +637,8 @@ impl TlsConnection {
         self.pre_master_secret = pms.to_vec();
 
         // RSA暗号化
-        let rsa_key = crate::net::rsa::RsaPublicKey { modulus, exponent };
-        let encrypted_pms = crate::net::rsa::rsa_pkcs1_encrypt(&rsa_key, &pms).ok()?;
+        let rsa_key = crate::net::security::rsa::RsaPublicKey { modulus, exponent };
+        let encrypted_pms = crate::net::security::rsa::rsa_pkcs1_encrypt(&rsa_key, &pms).ok()?;
 
         // EncryptedPreMasterSecret: length(2) || encrypted_pms
         let mut body = Vec::with_capacity(2 + encrypted_pms.len());

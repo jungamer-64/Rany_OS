@@ -7,171 +7,171 @@ pub use net_endpoint_tests::*;
 mod net_peripheral_tests;
 pub use net_peripheral_tests::*;
 pub fn net_tls_wave8_tls13_full_key_schedule_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_full_key_schedule_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_full_key_schedule_smoke()
 }
 
 pub fn net_tls_wave8_tls13_hkdf_expand_label_rfc8446_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_hkdf_expand_label_rfc8446_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_hkdf_expand_label_rfc8446_smoke()
 }
 
 pub fn net_tls_wave8_tls13_key_schedule_chain_consistency_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_key_schedule_chain_consistency_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_key_schedule_chain_consistency_smoke()
 }
 
 pub fn net_tls_wave8_tls13_finished_round_trip_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_finished_round_trip_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_finished_round_trip_smoke()
 }
 
 pub fn net_tls_wave8_tls13_initial_state_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_initial_state_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_initial_state_smoke()
 }
 
 pub fn net_tls_wave8_tls13_client_hello_key_share_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_client_hello_key_share_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_client_hello_key_share_smoke()
 }
 
 pub fn net_tls_wave8_tls13_client_hello_supported_versions_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_client_hello_supported_versions_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_client_hello_supported_versions_smoke()
 }
 
 pub fn net_tls_wave8_tls13_client_hello_psk_modes_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_client_hello_psk_modes_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_client_hello_psk_modes_smoke()
 }
 
 pub fn net_tls_wave8_tls13_strip_content_type_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_strip_content_type_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_strip_content_type_smoke()
 }
 
 pub fn net_tls_wave8_hmac_sha256_long_key_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hmac_sha256_long_key_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hmac_sha256_long_key_smoke()
 }
 
 pub fn net_tls_wave8_hkdf_extract_empty_salt_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hkdf_extract_empty_salt_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hkdf_extract_empty_salt_smoke()
 }
 
 pub fn net_tls_wave8_hkdf_expand_zero_length_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hkdf_expand_zero_length_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hkdf_expand_zero_length_smoke()
 }
 
 pub fn net_tls_wave8_chacha20_poly1305_auth_failure_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_chacha20_poly1305_auth_failure_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_chacha20_poly1305_auth_failure_smoke()
 }
 
 pub fn net_tls_wave8_chacha20_poly1305_roundtrip_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_chacha20_poly1305_roundtrip_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_chacha20_poly1305_roundtrip_smoke()
 }
 
 pub fn net_tls_wave8_chacha20_poly1305_empty_plaintext_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_chacha20_poly1305_empty_plaintext_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_chacha20_poly1305_empty_plaintext_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_256_roundtrip_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_256_roundtrip_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_256_roundtrip_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_corrupted_ciphertext_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_corrupted_ciphertext_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_corrupted_ciphertext_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_empty_plaintext_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_empty_plaintext_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_empty_plaintext_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_key_in_place_roundtrip_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_key_in_place_roundtrip_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_key_invalid_nonce_len_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_key_invalid_nonce_len_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_key_invalid_nonce_len_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke()
 }
 
 pub fn net_tls_wave8_aes_key_expansion_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_key_expansion_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_key_expansion_smoke()
 }
 
 pub fn net_tls_wave8_derive_master_secret_length_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_derive_master_secret_length_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_derive_master_secret_length_smoke()
 }
 
 pub fn net_tls_wave8_derive_key_block_length_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_derive_key_block_length_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_derive_key_block_length_smoke()
 }
 
 pub fn net_tls_wave8_derive_master_secret_deterministic_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_derive_master_secret_deterministic_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_derive_master_secret_deterministic_smoke()
 }
 
 pub fn net_tls_wave8_derive_master_secret_differs_with_input_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_derive_master_secret_differs_with_input_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_derive_master_secret_differs_with_input_smoke()
 }
 
 pub fn net_tls_wave8_tls12_prf_deterministic_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls12_prf_deterministic_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls12_prf_deterministic_smoke()
 }
 
 pub fn net_tls_wave8_tls12_prf_different_labels_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls12_prf_different_labels_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls12_prf_different_labels_smoke()
 }
 
 pub fn net_tls_wave8_hkdf_expand_label_length_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hkdf_expand_label_length_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hkdf_expand_label_length_smoke()
 }
 
 pub fn net_tls_wave8_hkdf_expand_label_different_labels_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hkdf_expand_label_different_labels_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hkdf_expand_label_different_labels_smoke()
 }
 
 pub fn net_tls_wave8_cipher_suite_helpers_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_cipher_suite_helpers_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_cipher_suite_helpers_smoke()
 }
 
 pub fn net_tls_wave8_base64_decode_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_base64_decode_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_base64_decode_smoke()
 }
 
 pub fn net_tls_wave8_tls_version_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls_version_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_version_smoke()
 }
 
 pub fn net_tls_wave8_cipher_suite_defaults_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_cipher_suite_defaults_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_cipher_suite_defaults_smoke()
 }
 
 pub fn net_tls_wave8_tls_version_ordering_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls_version_ordering_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_version_ordering_smoke()
 }
 
 pub fn net_tls_wave8_tls_connection_initial_state_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls_connection_initial_state_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_connection_initial_state_smoke()
 }
 
 pub fn net_tls_wave8_tls_connection_client_hello_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls_connection_client_hello_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_connection_client_hello_smoke()
 }
 
 pub fn net_tls_wave8_tls_connection_encrypt_not_established_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls_connection_encrypt_not_established_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_connection_encrypt_not_established_smoke()
 }
 
 pub fn net_tls_wave8_process_handshake_multiple_messages_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_process_handshake_multiple_messages_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_process_handshake_multiple_messages_smoke()
 }
 
 pub fn net_tls_wave8_process_handshake_truncated_header_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_process_handshake_truncated_header_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_process_handshake_truncated_header_smoke()
 }
 
 pub fn net_tls_wave8_generate_random_not_all_zeros_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_generate_random_not_all_zeros_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_generate_random_not_all_zeros_smoke()
 }
 
 pub fn net_tls_wave8_generate_random_different_calls_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_generate_random_different_calls_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_generate_random_different_calls_smoke()
 }
 
 // ========================================================================
@@ -179,43 +179,43 @@ pub fn net_tls_wave8_generate_random_different_calls_smoke() -> bool {
 // ========================================================================
 
 pub fn net_tls_wave8_sha384_empty_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_sha384_empty_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_sha384_empty_smoke()
 }
 
 pub fn net_tls_wave8_sha384_abc_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_sha384_abc_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_sha384_abc_smoke()
 }
 
 pub fn net_tls_wave8_hmac_sha384_rfc4231_case1_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hmac_sha384_rfc4231_case1_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hmac_sha384_rfc4231_case1_smoke()
 }
 
 pub fn net_tls_wave8_hmac_sha384_rfc4231_case2_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hmac_sha384_rfc4231_case2_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hmac_sha384_rfc4231_case2_smoke()
 }
 
 pub fn net_tls_wave8_p256_point_on_curve_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_p256_point_on_curve_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_p256_point_on_curve_smoke()
 }
 
 pub fn net_tls_wave8_p256_scalar_mul_base_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_p256_scalar_mul_base_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_p256_scalar_mul_base_smoke()
 }
 
 pub fn net_tls_wave8_ecdh_p256_key_exchange_symmetry_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_ecdh_p256_key_exchange_symmetry_smoke()
+    crate::net::security::tls::qemu_tests::wave8_ecdh_p256_key_exchange_symmetry_smoke()
 }
 
 pub fn net_tls_wave8_ecdh_p256_public_key_length_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_ecdh_p256_public_key_length_smoke()
+    crate::net::security::tls::qemu_tests::wave8_ecdh_p256_public_key_length_smoke()
 }
 
 pub fn net_tls_wave8_ecdh_p256_reject_invalid_peer_key_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_ecdh_p256_reject_invalid_peer_key_smoke()
+    crate::net::security::tls::qemu_tests::wave8_ecdh_p256_reject_invalid_peer_key_smoke()
 }
 
 pub fn net_tls_wave8_ecdh_group_from_named_group_p256_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_ecdh_group_from_named_group_p256_smoke()
+    crate::net::security::tls::qemu_tests::wave8_ecdh_group_from_named_group_p256_smoke()
 }
 
 // ========================================================================
@@ -223,54 +223,56 @@ pub fn net_tls_wave8_ecdh_group_from_named_group_p256_smoke() -> bool {
 // ========================================================================
 
 pub fn net_tls_wave8_der_parse_tag_length_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_der_parse_tag_length_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_der_parse_tag_length_smoke()
 }
 
 pub fn net_tls_wave8_der_parse_integer_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_der_parse_integer_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_der_parse_integer_smoke()
 }
 
 pub fn net_tls_wave8_der_parse_sequence_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_der_parse_sequence_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_der_parse_sequence_smoke()
 }
 
 pub fn net_tls_wave8_x509_parse_self_signed_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_x509_parse_self_signed_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_x509_parse_self_signed_smoke()
 }
 
 pub fn net_tls_wave8_x509_extract_rsa_pubkey_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_x509_extract_rsa_pubkey_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_x509_extract_rsa_pubkey_smoke()
 }
 
 pub fn net_tls_wave8_x509_signature_algorithm_oid_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_x509_signature_algorithm_oid_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_x509_signature_algorithm_oid_smoke()
 }
 
 pub fn net_tls_wave8_rsa_modexp_small_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_rsa_modexp_small_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_rsa_modexp_small_smoke()
 }
 
 pub fn net_tls_wave8_rsa_modexp_medium_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_rsa_modexp_medium_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_rsa_modexp_medium_smoke()
 }
 
 pub fn net_tls_wave8_rsa_pkcs1_verify_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_rsa_pkcs1_verify_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_rsa_pkcs1_verify_smoke()
 }
 
 pub fn net_tls_wave8_rsa_pkcs1_verify_bad_sig_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_rsa_pkcs1_verify_bad_sig_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_rsa_pkcs1_verify_bad_sig_smoke()
 }
 
 pub fn net_tls_wave8_rsa_biguint_mul_div_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_rsa_biguint_mul_div_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_rsa_biguint_mul_div_smoke()
 }
 
 pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
-    use crate::net::driver_bridge;
-    use crate::net::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
-    use crate::net::tcp::{Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock};
-    use crate::net::{self, VirtioNetHeader, mempool, stack};
+    use crate::net::runtime::bridge;
+    use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, Ipv4PacketMut};
+    use crate::net::l4::tcp::{Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock};
+    use crate::io::virtio::net::VirtioNetHeader;
+    use crate::net::datapath::mempool;
+    use crate::net::runtime::stack;
     use crate::sync::PoisonLock;
 
     let _ = mempool::init_net_mempool(4);
@@ -370,17 +372,19 @@ pub fn kernel_net_bridge_zero_copy_integration_smoke() -> bool {
 }
 
 pub fn kernel_net_bridge_zero_copy_integration_v6_smoke() -> bool {
-    use crate::net::driver_bridge;
-    use crate::net::ipv6::{Ipv6Address, Ipv6PacketMut};
-    use crate::net::ipv4::IpProtocol;
-    use crate::net::tcp::{SocketAddr as TcpSocketAddr, TcpControlBlock};
-    use crate::net::{self, VirtioNetHeader, mempool, stack};
+    use crate::net::runtime::bridge;
+    use crate::net::l3::ipv6::{Ipv6Address, Ipv6PacketMut};
+    use crate::net::l3::ipv4::IpProtocol;
+    use crate::net::l4::tcp::{SocketAddr as TcpSocketAddr, TcpControlBlock};
+    use crate::io::virtio::net::VirtioNetHeader;
+    use crate::net::datapath::mempool;
+    use crate::net::runtime::stack;
     use crate::sync::PoisonLock;
 
     let _ = mempool::init_net_mempool(4);
 
     let mut config = net::NetworkConfig::default();
-    config.ipv6 = Some(crate::net::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
+    config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
     stack::init(config);
 
     let local = TcpSocketAddr::new_v6(Ipv6Address::LOOPBACK, 1000);

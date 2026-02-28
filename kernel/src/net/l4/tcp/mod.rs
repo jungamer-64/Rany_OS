@@ -66,7 +66,7 @@ impl core::fmt::Display for Ipv4Addr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SocketAddr {
     V4 { ip: Ipv4Addr, port: u16 },
-    V6 { ip: crate::net::ipv6::Ipv6Address, port: u16 },
+    V6 { ip: crate::net::l3::ipv6::Ipv6Address, port: u16 },
 }
 
 impl SocketAddr {
@@ -76,7 +76,7 @@ impl SocketAddr {
     }
 
     /// IPv6 constructor
-    pub const fn new_v6(ip: crate::net::ipv6::Ipv6Address, port: u16) -> Self {
+    pub const fn new_v6(ip: crate::net::l3::ipv6::Ipv6Address, port: u16) -> Self {
         SocketAddr::V6 { ip, port }
     }
 
@@ -113,7 +113,7 @@ impl SocketAddr {
 
     /// Return IPv6 bytes (for IPv4 returns mapped form)
     #[inline]
-    pub fn as_ipv6(&self) -> crate::net::ipv6::Ipv6Address {
+    pub fn as_ipv6(&self) -> crate::net::l3::ipv6::Ipv6Address {
         match *self {
             SocketAddr::V6 { ip, .. } => ip,
             SocketAddr::V4 { ip, .. } => {
@@ -122,7 +122,7 @@ impl SocketAddr {
                 b[11] = 0xff;
                 let oct = ip.octets();
                 b[12..16].copy_from_slice(&oct);
-                crate::net::ipv6::Ipv6Address::new(b)
+                crate::net::l3::ipv6::Ipv6Address::new(b)
             }
         }
     }

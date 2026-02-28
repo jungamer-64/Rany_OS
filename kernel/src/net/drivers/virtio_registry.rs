@@ -72,12 +72,12 @@ impl Driver for VirtioNetDriver {
         }
 
         // Check if VirtIO-Net device is available (global instance)
-        if super::driver_bridge::is_initialized() {
+        if crate::net::runtime::bridge::is_initialized() {
             self.initialized = true;
             // quick ping test to verify network connectivity; this runs in
             // driver probe context so it can exercise the transmit path.
             // We log at INFO so it appears even in noisy boots.
-            match crate::net::send_real_icmp_echo([10, 0, 2, 2], 1) {
+            match crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1) {
                 Ok(rtt) => {
                     log::info!(target: "net", "Probe ping success rtt={}", rtt);
                 }
@@ -92,7 +92,7 @@ impl Driver for VirtioNetDriver {
         // debug: check presence before calling (early print)
         let present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
         crate::io::log::early_print(&alloc::format!("[DEBUG] init_bridge: virtio present? {}\n", present));
-        match super::driver_bridge::init_bridge() {
+        match crate::net::runtime::bridge::init_bridge() {
             Ok(()) => {
                 self.initialized = true;
                 Ok(())

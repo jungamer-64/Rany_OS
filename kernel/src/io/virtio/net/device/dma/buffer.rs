@@ -29,7 +29,7 @@ impl VirtioNetRxDmaBuffer {
     pub fn new() -> Option<Self> {
         // VirtIO net header + MTU
         let size = core::mem::size_of::<VirtioNetHeader>() + VIRTIO_NET_MTU;
-        let alloc_size = crate::io::virtio::net::device_impl::dma_helpers::iommu_align_len(size)?;
+        let alloc_size = iommu_align_len(size)?;
         let buffer = TypedDmaSlice::new(alloc_size)?;
 
         Some(Self {
@@ -107,7 +107,7 @@ impl VirtioNetTxDmaBuffer {
     pub fn with_data(data: &[u8]) -> Option<Self> {
         let header_size = core::mem::size_of::<VirtioNetHeader>();
         let total_size = header_size + data.len();
-        let alloc_size = crate::io::virtio::net::device_impl::dma_helpers::iommu_align_len(total_size)?;
+        let alloc_size = iommu_align_len(total_size)?;
 
         let mut buffer = TypedDmaSlice::new(alloc_size)?;
 

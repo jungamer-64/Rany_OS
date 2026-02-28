@@ -1,6 +1,6 @@
 use super::*;
-use crate::net::tls::crypto::aes_core::aes_key_expansion;
-use crate::net::tls::error::TlsError;
+use crate::net::security::tls::crypto::aes_core::aes_key_expansion;
+use crate::net::security::tls::error::TlsError;
 
 
 pub fn wave8_tls_aes_gcm_empty_plaintext_smoke() -> bool {
@@ -25,7 +25,7 @@ pub fn wave8_tls_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
     let aad = b"in-place aad";
     let plaintext = b"in-place aes-gcm payload";
 
-    let Some(ctx) = crate::net::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
+    let Some(ctx) = crate::net::security::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
         return false;
     };
 
@@ -51,7 +51,7 @@ pub fn wave8_tls_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
 
 pub fn wave8_tls_aes_gcm_key_invalid_nonce_len_smoke() -> bool {
     let key = [0x11u8; 16];
-    let Some(ctx) = crate::net::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
+    let Some(ctx) = crate::net::security::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
         return false;
     };
 
@@ -72,7 +72,7 @@ pub fn wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> boo
     let aad = b"aad";
     let plaintext = b"secret";
 
-    let Some(ctx) = crate::net::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
+    let Some(ctx) = crate::net::security::tls::crypto::aes_gcm::AesGcmKey::new(&key) else {
         return false;
     };
 
@@ -320,7 +320,7 @@ pub fn wave8_tls_hmac_sha384_rfc4231_case2_smoke() -> bool {
 
 /// P-256 ベースポイントが曲線上にあることを検証 (FIPS 186-4)
 pub fn wave8_tls_p256_point_on_curve_smoke() -> bool {
-    use crate::net::ecdh::p256::P256Point;
+    use crate::net::security::ecdh::p256::P256Point;
     let g = P256Point::generator();
     g.is_on_curve()
 }
@@ -329,8 +329,8 @@ pub fn wave8_tls_p256_point_on_curve_smoke() -> bool {
 ///
 /// k = 1 -> [1]G = G を検証する。
 pub fn wave8_tls_p256_scalar_mul_base_smoke() -> bool {
-    use crate::net::ecdh::p256::P256Point;
-    use crate::net::ecdh::scalar_base_mul;
+    use crate::net::security::ecdh::p256::P256Point;
+    use crate::net::security::ecdh::scalar_base_mul;
     let g = P256Point::generator();
     let (gx, gy) = match g.to_affine() {
         Some(v) => v,
@@ -351,22 +351,22 @@ pub fn wave8_tls_p256_scalar_mul_base_smoke() -> bool {
 
 /// P-256 ECDH 鍵交換対称性テスト
 pub fn wave8_ecdh_p256_key_exchange_symmetry_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_key_exchange_symmetry_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_key_exchange_symmetry_smoke()
 }
 
 /// P-256 公開鍵長テスト (65バイト)
 pub fn wave8_ecdh_p256_public_key_length_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_public_key_length_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_public_key_length_smoke()
 }
 
 /// P-256 不正なピア鍵拒否テスト
 pub fn wave8_ecdh_p256_reject_invalid_peer_key_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_reject_invalid_peer_key_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_reject_invalid_peer_key_smoke()
 }
 
 /// P-256 NamedGroupマッピングテスト
 pub fn wave8_ecdh_group_from_named_group_p256_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_group_from_named_group_p256_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_group_from_named_group_p256_smoke()
 }
 
 pub fn wave8_tls_tls_connection_initial_state_smoke() -> bool {
@@ -414,55 +414,55 @@ pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
 
 /// DERパーサー基本テスト: タグ・長さ読み取り
 pub fn wave8_tls_der_parse_tag_length_smoke() -> bool {
-    crate::net::x509::qemu_tests::x509_der_parse_tag_length_smoke()
+    crate::net::security::x509::qemu_tests::x509_der_parse_tag_length_smoke()
 }
 
 /// DERパーサーINTEGER読み取りテスト
 pub fn wave8_tls_der_parse_integer_smoke() -> bool {
-    crate::net::x509::qemu_tests::x509_der_parse_integer_smoke()
+    crate::net::security::x509::qemu_tests::x509_der_parse_integer_smoke()
 }
 
 /// DERパーサーSEQUENCEトラバーサルテスト
 pub fn wave8_tls_der_parse_sequence_smoke() -> bool {
-    crate::net::x509::qemu_tests::x509_der_parse_sequence_smoke()
+    crate::net::security::x509::qemu_tests::x509_der_parse_sequence_smoke()
 }
 
 /// X.509証明書パース基本テスト
 pub fn wave8_tls_x509_parse_self_signed_smoke() -> bool {
-    crate::net::x509::qemu_tests::x509_parse_self_signed_smoke()
+    crate::net::security::x509::qemu_tests::x509_parse_self_signed_smoke()
 }
 
 /// RSA公開鍵抽出テスト
 pub fn wave8_tls_x509_extract_rsa_pubkey_smoke() -> bool {
-    crate::net::x509::qemu_tests::x509_extract_rsa_pubkey_smoke()
+    crate::net::security::x509::qemu_tests::x509_extract_rsa_pubkey_smoke()
 }
 
 /// 署名アルゴリズムOIDマッピングテスト
 pub fn wave8_tls_x509_signature_algorithm_oid_smoke() -> bool {
-    crate::net::x509::qemu_tests::x509_signature_algorithm_oid_smoke()
+    crate::net::security::x509::qemu_tests::x509_signature_algorithm_oid_smoke()
 }
 
 /// 小さな値のモジュラ冪乗テスト
 pub fn wave8_tls_rsa_modexp_small_smoke() -> bool {
-    crate::net::rsa::qemu_tests::rsa_modexp_small_smoke()
+    crate::net::security::rsa::qemu_tests::rsa_modexp_small_smoke()
 }
 
 /// 256ビット決定論的モジュラ冪乗テスト
 pub fn wave8_tls_rsa_modexp_medium_smoke() -> bool {
-    crate::net::rsa::qemu_tests::rsa_modexp_medium_smoke()
+    crate::net::security::rsa::qemu_tests::rsa_modexp_medium_smoke()
 }
 
 /// PKCS#1 v1.5 署名検証テスト
 pub fn wave8_tls_rsa_pkcs1_verify_smoke() -> bool {
-    crate::net::rsa::qemu_tests::rsa_pkcs1_verify_smoke()
+    crate::net::security::rsa::qemu_tests::rsa_pkcs1_verify_smoke()
 }
 
 /// PKCS#1 v1.5 不正署名拒否テスト
 pub fn wave8_tls_rsa_pkcs1_verify_bad_sig_smoke() -> bool {
-    crate::net::rsa::qemu_tests::rsa_pkcs1_verify_bad_sig_smoke()
+    crate::net::security::rsa::qemu_tests::rsa_pkcs1_verify_bad_sig_smoke()
 }
 
 /// BigUint 乗算・除算ラウンドトリップテスト
 pub fn wave8_tls_rsa_biguint_mul_div_smoke() -> bool {
-    crate::net::rsa::qemu_tests::rsa_biguint_mul_div_smoke()
+    crate::net::security::rsa::qemu_tests::rsa_biguint_mul_div_smoke()
 }

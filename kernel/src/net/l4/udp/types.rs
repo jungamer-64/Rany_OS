@@ -62,7 +62,7 @@ impl UdpProcessor {
         }
 
         let payload = packet.payload();
-        if let Some(mut pkt_ref) = crate::net::alloc_packet() {
+        if let Some(mut pkt_ref) = crate::net::datapath::mempool::alloc_packet() {
             let buf = pkt_ref.data_mut();
             if payload.len() > buf.len() {
                 return UdpResult::Invalid;
@@ -164,5 +164,4 @@ impl Default for UdpProcessor {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "tests.rs"]
-pub mod tests;
+mod tests;

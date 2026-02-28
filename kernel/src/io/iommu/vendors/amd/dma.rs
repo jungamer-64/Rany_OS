@@ -306,8 +306,8 @@ impl AmdIommuDriver {
         }
         
         if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapping.size) {
-            let _ = self.invalidate_all_entries();
-            let _ = self.free_iova(iova, mapping.size);
+            self.invalidate_all_entries()?;
+            self.free_iova(iova, mapping.size)?;
         }
         Ok(())
     }
@@ -364,8 +364,8 @@ impl AmdIommuDriver {
         }
         
         if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapping.size) {
-            let _ = self.invalidate_all_entries();
-            let _ = self.free_iova(iova, mapping.size);
+            self.invalidate_all_entries()?;
+            self.free_iova(iova, mapping.size)?;
         }
         Ok(())
     }

@@ -1047,7 +1047,7 @@ impl ZeroCopyWriter {
     /// Returns Ok(()) if the packet was successfully queued. This performs no
     /// completion wait — completion and cleanup occurs in the device interrupt
     /// handler which will return the buffer to the mempool.
-    pub fn enqueue_via_virtio(packet: crate::net::PacketRef) -> Result<(), &'static str> {
+    pub fn enqueue_via_virtio(packet: crate::net::datapath::mempool::PacketRef) -> Result<(), &'static str> {
         // Check device presence first to avoid moving packet into a closure that
         // might not be executed (which would drop the PacketRef unexpectedly).
         if crate::io::virtio::with_virtio_net(|_| ()).is_none() {

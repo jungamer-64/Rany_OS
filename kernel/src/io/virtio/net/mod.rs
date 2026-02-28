@@ -30,10 +30,12 @@ use crate::io::iommu::api::{
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 // Import PacketRef for zero-copy
-use crate::net::mempool::PacketRef;
+use crate::net::datapath::mempool::PacketRef;
 
-mod device_impl;
-pub use device_impl::*;
+pub mod device;
+pub use device::*;
+pub mod features;
+pub mod queue;
 
 // ============================================================================
 // VirtIO Net Transport Helper Functions
@@ -93,33 +95,6 @@ fn unmap_iommu_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
     if let Err(err) = result {
         log::warn!("[VIRTIO-NET] failed to unmap DMA buffer: {:?}", err);
     }
-}
-
-// ============================================================================
-// VirtIO Net Device Feature Flags
-// ============================================================================
-
-pub mod features {
-    /// デバイスはチェックサムオフロードをサポート
-    pub const VIRTIO_NET_F_CSUM: u64 = 1 << 0;
-    /// ゲストはチェックサムオフロードを使用可能
-    pub const VIRTIO_NET_F_GUEST_CSUM: u64 = 1 << 1;
-    /// MTU設定をサポート
-    pub const VIRTIO_NET_F_MTU: u64 = 1 << 3;
-    /// MACアドレスをサポート
-    pub const VIRTIO_NET_F_MAC: u64 = 1 << 5;
-    /// TCPセグメンテーションオフロード
-    pub const VIRTIO_NET_F_GSO: u64 = 1 << 6;
-    /// ゲストTSO4
-    pub const VIRTIO_NET_F_GUEST_TSO4: u64 = 1 << 7;
-    /// ゲストTSO6
-    pub const VIRTIO_NET_F_GUEST_TSO6: u64 = 1 << 8;
-    /// マルチキューサポート
-    pub const VIRTIO_NET_F_MQ: u64 = 1 << 22;
-    /// CTRL_VQサポート
-    pub const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;
-    /// 割り込み抑制
-    pub const VIRTIO_NET_F_NOTIF_COAL: u64 = 1 << 52;
 }
 
 // ============================================================================

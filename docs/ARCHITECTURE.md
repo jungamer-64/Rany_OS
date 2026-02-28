@@ -415,18 +415,26 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 
 ### 7.2 プロジェクト構造
 
-```
+```text
 RanyOS/
-├── src/
-│   ├── main.rs              # エントリポイント
-│   ├── lib.rs               # ライブラリルート
+├── kernel/src/
 │   ├── mm/                  # メモリ管理
 │   ├── task/                # タスク・スケジューラ
-│   ├── io/                  # デバイスドライバ
-│   ├── net/                 # ネットワークスタック
-│   │   └── endpoint.rs      # ネットワークエンドポイント (非POSIXソケット)
+│   ├── io/                  # デバイスI/O
+│   │   └── virtio/net/      # VirtIO-Net（features/queue/device/dma）
+│   ├── net/                 # 階層化ネットワークスタック
+│   │   ├── api/             # shell/diag
+│   │   ├── obs/             # counters/trace/snapshot
+│   │   ├── l2/              # ethernet/arp/igmp
+│   │   ├── l3/              # ipv4/ipv6/icmp/icmpv6/ndp
+│   │   ├── l4/              # tcp/udp/endpoint
+│   │   ├── services/        # dhcp/dns/mdns
+│   │   ├── security/        # tls/x509/rsa/ecdh
+│   │   ├── datapath/        # mempool/zero_copy/optimization
+│   │   ├── runtime/         # stack/manager/bridge/timeouts
+│   │   ├── drivers/         # virtio_registry
+│   │   └── tests/           # qemu/peripheral tests
 │   ├── fs/                  # ファイルシステム
-│   │   └── fs_abstraction.rs # FSレイヤー抽象化 (オプション、高速パスはバイパス)
 │   ├── ipc/                 # プロセス間通信
 │   ├── domain/              # ドメイン管理
 │   ├── sync/                # 同期プリミティブ

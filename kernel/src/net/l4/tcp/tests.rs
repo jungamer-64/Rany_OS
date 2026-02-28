@@ -48,7 +48,7 @@ pub fn test_tcp_stats_rx_wire_and_app_delivery_are_separate() {
 #[cfg_attr(test, test_case)]
 pub fn test_process_with_packet_zero_copy() {
     // Initialize a small mempool for tests
-    let _ = crate::net::mempool::init_net_mempool(2);
+    let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut processor = TcpProcessor::new();
     let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
@@ -63,7 +63,7 @@ pub fn test_process_with_packet_zero_copy() {
     processor.connections.insert((local, remote), tcb_arc.clone());
 
     // Build a simple TCP segment with a small payload
-    let mut packet = crate::net::mempool::alloc_packet().expect("alloc packet");
+    let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let payload = b"hello";
     let header_len = 20usize;
 
@@ -104,7 +104,7 @@ pub fn test_process_with_packet_zero_copy() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_copy_fallback_queues_payload_and_keeps_connection_alive() {
-    let _ = crate::net::mempool::init_net_mempool(2);
+    let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut processor = TcpProcessor::new();
     let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3000);
@@ -164,7 +164,7 @@ pub fn test_copy_fallback_queues_payload_and_keeps_connection_alive() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_recv_copy_fallback_overflow_sends_rst_and_closes() {
-    let _ = crate::net::mempool::init_net_mempool(2);
+    let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut processor = TcpProcessor::new();
     let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 3100);
@@ -277,14 +277,14 @@ pub fn test_poll_read_consumes_recv_copy_fallback_queue_with_remainder() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_can_send_respects_cwnd_bytes() {
-    let _ = crate::net::mempool::init_net_mempool(2);
+    let _ = crate::net::datapath::mempool::init_net_mempool(2);
     let local = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1), 1000);
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_established();
     tcb.set_cwnd_for_test(100);
     assert!(tcb.can_send());
     // If queued bytes alone already exceed cwnd, cannot send
-    let mut packet = crate::net::mempool::alloc_packet().expect("alloc packet");
+    let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     packet.set_len(100);
     tcb.enqueue_send_packet(packet);
     assert!(!tcb.can_send());
@@ -293,7 +293,7 @@ pub fn test_can_send_respects_cwnd_bytes() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_buffer_bytes_decrement_on_flush() {
     // Initialize a small mempool for tests
-    let _ = crate::net::mempool::init_net_mempool(2);
+    let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 1001);
     let remote = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 2001);
@@ -306,7 +306,7 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
     let mut stream = TcpStream { tcb: tcb_arc.clone() };
 
     // Create packet and enqueue
-    let mut packet = crate::net::mempool::alloc_packet().expect("alloc packet");
+    let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let payload = [0u8; 120];
     packet.data_mut()[..payload.len()].copy_from_slice(&payload);
     packet.set_len(payload.len());
@@ -351,7 +351,7 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
 #[cfg_attr(test, test_case)]
 pub fn test_three_way_handshake() {
     // Initialize mempool for any packet allocations
-    let _ = crate::net::mempool::init_net_mempool(4);
+    let _ = crate::net::datapath::mempool::init_net_mempool(4);
 
     let mut client = TcpProcessor::new();
     let mut server = TcpProcessor::new();
@@ -469,13 +469,13 @@ pub fn test_three_way_handshake() {
 #[cfg_attr(test, test_case)]
 pub fn test_three_way_handshake_v6() {
     // IPv6 three-way handshake using TcpProcessor::process_v6
-    let _ = crate::net::mempool::init_net_mempool(4);
+    let _ = crate::net::datapath::mempool::init_net_mempool(4);
 
     let mut client = TcpProcessor::new();
     let mut server = TcpProcessor::new();
 
-    let client_addr = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 3000);
-    let server_addr = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 4000);
+    let client_addr = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 3000);
+    let server_addr = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 4000);
 
     let listener = server.bind(server_addr).expect("bind v6");
 
@@ -505,8 +505,8 @@ pub fn test_three_way_handshake_v6() {
     // Server processes SYN (IPv6)
     let res = server.process_v6(
         &syn,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
         0,
     );
 
@@ -531,8 +531,8 @@ pub fn test_three_way_handshake_v6() {
 
     let client_res = client.process_v6(
         &synack,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
         0,
     );
 
@@ -555,8 +555,8 @@ pub fn test_three_way_handshake_v6() {
 
     let srv_res = server.process_v6(
         &ack,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
         0,
     );
 
@@ -577,7 +577,7 @@ pub fn test_three_way_handshake_v6() {
 }
 #[cfg_attr(test, test_case)]
 pub fn test_retransmit_on_timeout() {
-    let _ = crate::net::mempool::init_net_mempool(2);
+    let _ = crate::net::datapath::mempool::init_net_mempool(2);
 
     let mut proc = TcpProcessor::new();
     let local = SocketAddr::new(Ipv4Addr::new(127,0,0,1), 1000);

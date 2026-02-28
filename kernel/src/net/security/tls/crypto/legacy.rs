@@ -3,7 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use super::hmac::hmac_sha256;
-use crate::net::tls::TlsVersion;
+use crate::net::security::tls::TlsVersion;
 
 // ============================================================================
 // MD5 Implementation (RFC 1321)

@@ -1,6 +1,6 @@
 use super::*;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
-use crate::net::tcp::TcpControlBlock;
+use crate::net::l4::tcp::TcpControlBlock;
 
 impl NetworkStack {
 
@@ -99,7 +99,7 @@ impl NetworkStack {
         };
 
         // Try zero-copy transmission first (allocate PacketRef and build packet directly into it)
-        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+        if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
             if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
                 frame
                     .set_destination(dst_mac)
@@ -133,7 +133,7 @@ impl NetworkStack {
                         drop(frame);
                         packet.set_len(total_len);
 
-                        match crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
+                        match crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
                             Ok(()) => {
                                 // Zero-copy enqueue succeeded
                                 // Update stats
@@ -185,12 +185,12 @@ impl NetworkStack {
                 let src_v6 = local.as_ipv6();
                 let dst_v6 = remote.as_ipv6();
                 // IPv6 pseudo-header based checksum
-                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::ipv4::IpProtocol::Tcp, total_len as u32);
-                let checksum = crate::net::ipv4::data_checksum(&buffer[..total_len], pseudo);
+                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::l3::ipv4::IpProtocol::Tcp, total_len as u32);
+                let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
             } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-                crate::net::tcp::calculate_tcp_checksum(&mut buffer[..total_len], lv4.octets(), rv4.octets());
+                crate::net::l4::tcp::calculate_tcp_checksum(&mut buffer[..total_len], lv4.octets(), rv4.octets());
             }
 
             Some((local, remote, seq, total_len))
@@ -324,7 +324,7 @@ impl NetworkStack {
     }
 
     /// Get list of joined multicast groups
-    pub fn multicast_groups(&self) -> &[crate::net::igmp::MulticastGroup] {
+    pub fn multicast_groups(&self) -> &[crate::net::l2::igmp::MulticastGroup] {
         self.igmp.joined_groups()
     }
 
@@ -340,7 +340,7 @@ impl NetworkStack {
         dst_port: u16,
         data: &[u8],
     ) -> Option<Result<(), crate::net::NetworkError>> {
-        let mut packet = crate::net::mempool::alloc_packet()?;
+        let mut packet = crate::net::datapath::mempool::alloc_packet()?;
         let mut frame = EthernetFrameMut::new(packet.data_mut())?;
         frame
             .set_destination(dst_mac)
@@ -359,7 +359,7 @@ impl NetworkStack {
 
         let ip_payload = ip_packet.payload_mut();
 
-        let udp_len = crate::net::udp::UdpProcessor::build_packet(
+        let udp_len = crate::net::l4::udp::UdpProcessor::build_packet(
             ip_payload,
             config.ipv4.address,
             src_port,
@@ -376,7 +376,7 @@ impl NetworkStack {
         drop(frame);
         packet.set_len(total_len);
 
-        if let Ok(()) = crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
+        if let Ok(()) = crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet) {
             self.stats.record_tx(total_len);
             return Some(Ok(()));
         }
@@ -386,8 +386,8 @@ impl NetworkStack {
 
     pub fn send_udp_addr(
         &mut self,
-        src: crate::net::udp::UdpAddr,
-        dst: crate::net::udp::UdpAddr,
+        src: crate::net::l4::udp::UdpAddr,
+        dst: crate::net::l4::udp::UdpAddr,
         data: &[u8],
     ) -> Result<(), crate::net::NetworkError> {
         let config = self.config.clone();
@@ -439,7 +439,7 @@ impl NetworkStack {
         let ip_payload = ip_packet.payload_mut();
         
         // Build UDP datagram
-        let udp_len = crate::net::udp::UdpHeader::SIZE + data.len();
+        let udp_len = crate::net::l4::udp::UdpHeader::SIZE + data.len();
         if ip_payload.len() < udp_len {
             return Err(crate::net::NetworkError::BufferTooSmall);
         }
@@ -487,13 +487,13 @@ impl NetworkStack {
             .cache()
             .all_entries()
             .iter()
-            .filter(|e| e.state == crate::net::arp::ArpEntryState::Resolved)
+            .filter(|e| e.state == crate::net::l2::arp::ArpEntryState::Resolved)
             .map(|e| (e.ip, e.mac))
             .collect()
     }
 
     /// List all UDP sockets (for debugging/statistics)
-    pub fn list_udp_sockets(&self) -> Vec<crate::net::udp::UdpSocketSnapshot> {
+    pub fn list_udp_sockets(&self) -> Vec<crate::net::l4::udp::UdpSocketSnapshot> {
         self.udp.sockets().list_sockets()
     }
 
@@ -603,7 +603,7 @@ impl NetworkStack {
         };
 
         // Try zero-copy path first
-        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+        if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
             if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
                 let src_mac = self.mac_address();
                 frame
@@ -632,7 +632,7 @@ impl NetworkStack {
                         drop(frame);
                         packet.set_len(total_len);
 
-                        if crate::net::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet).is_ok() {
+                        if crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet).is_ok() {
                             self.stats.record_tx(total_len);
                             log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
                                 target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
@@ -690,7 +690,7 @@ impl NetworkStack {
 
         // Run NDP periodic maintenance (expire stale neighbor cache entries + NUD probes)
         // Collect NS messages and link-local address first to avoid double borrow
-        let ndp_ns_data: alloc::vec::Vec<(crate::net::ipv6::Ipv6Address, crate::net::ipv6::Ipv6Address, alloc::vec::Vec<u8>)> = {
+        let ndp_ns_data: alloc::vec::Vec<(crate::net::l3::ipv6::Ipv6Address, crate::net::l3::ipv6::Ipv6Address, alloc::vec::Vec<u8>)> = {
             if let Some(ref mut ndp) = self.ndp {
                 let ns_messages = ndp.tick(current_time);
                 let our_ll = ndp.our_link_local;
@@ -700,7 +700,7 @@ impl NetworkStack {
                         if ns_msg.len() >= 24 {
                             let mut target_bytes = [0u8; 16];
                             target_bytes.copy_from_slice(&ns_msg[8..24]);
-                            let target = crate::net::ipv6::Ipv6Address::new(target_bytes);
+                            let target = crate::net::l3::ipv6::Ipv6Address::new(target_bytes);
                             let sn_mcast = target.solicited_node();
                             Some((our_ll, sn_mcast, ns_msg))
                         } else {
@@ -718,11 +718,11 @@ impl NetworkStack {
         }
 
         // Cleanup expired DNS cache entries
-        crate::net::dns::cleanup_cache(current_time);
+        crate::net::services::dns::cleanup_cache(current_time);
 
         // Check DHCP (IPv4) lease timers (T1 renewal, T2 rebinding)
         // tick_rate = 1000 (current_time is in milliseconds, DHCP timers are in seconds)
-        if let Ok(guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+        if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
             if let Some(ref client) = *guard {
                 if let Err(e) = client.drive(current_time, 1000) {
                     log::warn!("[NET] DHCPv4 drive failed: {}", e);
@@ -731,7 +731,7 @@ impl NetworkStack {
         }
 
         // Check DHCPv6 client timers
-        if let Ok(guard6) = crate::net::dhcp::DHCPV6_CLIENT.lock() {
+        if let Ok(guard6) = crate::net::services::dhcp::DHCPV6_CLIENT.lock() {
             if let Some(ref client6) = *guard6 {
                 let _ = client6.check_timeout(current_time, 1000);
             }

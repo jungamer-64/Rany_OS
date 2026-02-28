@@ -6,7 +6,7 @@ mod tcp_bind;
 fn tcp_ipv4_pair(
     local: TcpSocketAddr,
     remote: TcpSocketAddr,
-) -> Option<(crate::net::tcp::Ipv4Addr, crate::net::tcp::Ipv4Addr)> {
+) -> Option<(crate::net::l4::tcp::Ipv4Addr, crate::net::l4::tcp::Ipv4Addr)> {
     Some((local.as_ipv4()?, remote.as_ipv4()?))
 }
 
@@ -51,7 +51,7 @@ impl NetworkStack {
                 // Build IGMP leave into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
                 if ip_payload.len() >= 8 {
-                    if let Some(len) = crate::net::igmp::IgmpProcessor::build_leave(group_addr, ip_payload) {
+                    if let Some(len) = crate::net::l2::igmp::IgmpProcessor::build_leave(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
 
@@ -68,7 +68,7 @@ impl NetworkStack {
     }
 
     /// Apply DHCPv4 lease to live stack configuration and synchronize manager state.
-    fn apply_dhcp_v4_lease(&mut self, lease: &crate::net::dhcp::DhcpLease) {
+    fn apply_dhcp_v4_lease(&mut self, lease: &crate::net::services::dhcp::DhcpLease) {
         let mut config = self.config();
         config.ipv4.address = lease.ip_address;
         config.ipv4.subnet_mask = lease.subnet_mask;
@@ -79,23 +79,23 @@ impl NetworkStack {
 
         self.set_config(config);
 
-        if let Some(if_id) = crate::net::lookup_if_by_virtio_index(0) {
-            let _ = crate::net::set_interface_config(if_id, config);
+        if let Some(if_id) = crate::net::runtime::manager::lookup_if_by_virtio_index(0) {
+            let _ = crate::net::runtime::manager::set_interface_config(if_id, config);
         }
     }
 
     /// Handle DHCPv4 packet payload and consume it from UDP socket delivery path.
     fn try_handle_dhcp_v4_packet(&mut self, src_port: u16, dst_port: u16, payload: &[u8]) -> bool {
-        if src_port != crate::net::DHCP_SERVER_PORT || dst_port != crate::net::DHCP_CLIENT_PORT {
+        if src_port != crate::net::services::dhcp::DHCP_SERVER_PORT || dst_port != crate::net::services::dhcp::DHCP_CLIENT_PORT {
             return false;
         }
 
         let now = self.current_time();
-        match crate::net::dhcp::DHCP_CLIENT.lock() {
+        match crate::net::services::dhcp::DHCP_CLIENT.lock() {
             Ok(guard) => {
                 if let Some(ref client) = *guard {
                     match client.process_response(payload, now) {
-                        Ok(crate::net::DhcpResponseResult::Ack(lease)) => {
+                        Ok(crate::net::services::dhcp::DhcpResponseResult::Ack(lease)) => {
                             self.apply_dhcp_v4_lease(&lease);
                         }
                         Ok(_) => {}
@@ -118,9 +118,9 @@ impl NetworkStack {
 
     /// Process UDP data (for reassembled packets)
     pub(super) fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
-        if let Some(packet) = crate::net::udp::UdpPacket::parse(data) {
-            if packet.src_port() == crate::net::DHCP_SERVER_PORT
-                && packet.dst_port() == crate::net::DHCP_CLIENT_PORT
+        if let Some(packet) = crate::net::l4::udp::UdpPacket::parse(data) {
+            if packet.src_port() == crate::net::services::dhcp::DHCP_SERVER_PORT
+                && packet.dst_port() == crate::net::services::dhcp::DHCP_CLIENT_PORT
             {
                 if !packet.verify_checksum(src_ip, dst_ip) {
                     self.stats.record_rx_error();
@@ -188,7 +188,7 @@ impl NetworkStack {
                     log::warn!("[NET] mixed TCP family dropped in IPv4 response path: {} -> {}", local, remote);
                     return;
                 };
-                crate::net::tcp::calculate_tcp_checksum(
+                crate::net::l4::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
                     local_v4.octets(),
                     remote_v4.octets(),
@@ -215,12 +215,12 @@ impl NetworkStack {
     pub(super) fn process_udp_data_v6(
         &mut self,
         data: &[u8],
-        src: crate::net::ipv6::Ipv6Address,
-        dst: crate::net::ipv6::Ipv6Address,
+        src: crate::net::l3::ipv6::Ipv6Address,
+        dst: crate::net::l3::ipv6::Ipv6Address,
     ) {
-        use crate::net::ipv4::IpProtocol;
-        use crate::net::ipv6::ipv6_pseudo_header_checksum;
-        use crate::net::ipv4::data_checksum;
+        use crate::net::l3::ipv4::IpProtocol;
+        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
+        use crate::net::l3::ipv4::data_checksum;
 
         // UDPヘッダー最小長チェック (8 bytes)
         if data.len() < 8 {
@@ -262,8 +262,8 @@ impl NetworkStack {
         }
         let payload = &data[8..payload_end];
 
-        if src_port == crate::net::DHCPV6_SERVER_PORT && dst_port == crate::net::DHCPV6_CLIENT_PORT {
-            match crate::net::dhcp::DHCPV6_CLIENT.lock() {
+        if src_port == crate::net::services::dhcp::DHCPV6_SERVER_PORT && dst_port == crate::net::services::dhcp::DHCPV6_CLIENT_PORT {
+            match crate::net::services::dhcp::DHCPV6_CLIENT.lock() {
                 Ok(guard) => {
                     if let Some(ref client) = *guard {
                         if client.handle_packet(payload, src) {
@@ -285,12 +285,12 @@ impl NetworkStack {
 
         // 既存のUDPソケットテーブルにポートベースで配送
         // src IPはIPv4マッピング不可のため0.0.0.0を使用（ソケット側で区別可能）
-        let src_addr = crate::net::udp::UdpAddr::new(
+        let src_addr = crate::net::l4::udp::UdpAddr::new(
             Ipv4Address::new([0, 0, 0, 0]),
             src_port,
         );
         
-        if let Some(mut pkt_ref) = crate::net::alloc_packet() {
+        if let Some(mut pkt_ref) = crate::net::datapath::mempool::alloc_packet() {
             let buf = pkt_ref.data_mut();
             if payload.len() <= buf.len() {
                 buf[..payload.len()].copy_from_slice(payload);
@@ -316,13 +316,13 @@ impl NetworkStack {
     pub(super) fn process_tcp_data_v6(
         &mut self,
         data: &[u8],
-        src: crate::net::ipv6::Ipv6Address,
-        dst: crate::net::ipv6::Ipv6Address,
+        src: crate::net::l3::ipv6::Ipv6Address,
+        dst: crate::net::l3::ipv6::Ipv6Address,
         _current_time: u64,
     ) {
-        use crate::net::ipv4::IpProtocol;
-        use crate::net::ipv6::ipv6_pseudo_header_checksum;
-        use crate::net::ipv4::data_checksum;
+        use crate::net::l3::ipv4::IpProtocol;
+        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
+        use crate::net::l3::ipv4::data_checksum;
 
         // TCPヘッダー最小長チェック (20 bytes)
         if data.len() < 20 {
@@ -351,7 +351,7 @@ impl NetworkStack {
         let is_dst_ipv4_mapped = dbytes[0..10] == [0u8; 10] && dbytes[10] == 0xff && dbytes[11] == 0xff;
 
         if is_src_ipv4_mapped && is_dst_ipv4_mapped {
-            use crate::net::ipv4::Ipv4Address;
+            use crate::net::l3::ipv4::Ipv4Address;
 
             let src_v4 = Ipv4Address::new([sbytes[12], sbytes[13], sbytes[14], sbytes[15]]);
             let dst_v4 = Ipv4Address::new([dbytes[12], dbytes[13], dbytes[14], dbytes[15]]);
@@ -388,7 +388,7 @@ impl NetworkStack {
                         );
                         return;
                     };
-                    crate::net::tcp::calculate_tcp_checksum(
+                    crate::net::l4::tcp::calculate_tcp_checksum(
                         &mut buffer[..total_len],
                         local_v4.0,
                         remote_v4.0,
@@ -435,8 +435,8 @@ impl NetworkStack {
                 // IPv6 TCP checksum
                 let src_v6 = local.as_ipv6();
                 let dst_v6 = remote.as_ipv6();
-                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::ipv4::IpProtocol::Tcp, total_len as u32);
-                let checksum = crate::net::ipv4::data_checksum(&buffer[..total_len], pseudo);
+                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::l3::ipv4::IpProtocol::Tcp, total_len as u32);
+                let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
 
@@ -534,9 +534,9 @@ impl NetworkStack {
 
     /// Process UDP packet
     pub(super) fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
-        if let Some(packet) = crate::net::udp::UdpPacket::parse(data) {
-            if packet.src_port() == crate::net::DHCP_SERVER_PORT
-                && packet.dst_port() == crate::net::DHCP_CLIENT_PORT
+        if let Some(packet) = crate::net::l4::udp::UdpPacket::parse(data) {
+            if packet.src_port() == crate::net::services::dhcp::DHCP_SERVER_PORT
+                && packet.dst_port() == crate::net::services::dhcp::DHCP_CLIENT_PORT
             {
                 if !packet.verify_checksum(src_ip, dst_ip) {
                     self.stats.record_rx_error();
@@ -615,7 +615,7 @@ impl NetworkStack {
                     log::warn!("[NET] mixed TCP family dropped in IPv4 send path: {} -> {}", local, remote);
                     return;
                 };
-                crate::net::tcp::calculate_tcp_checksum(
+                crate::net::l4::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
                     local_v4.octets(),
                     remote_v4.octets(),
@@ -817,7 +817,7 @@ impl NetworkStack {
     pub fn send_icmp_time_exceeded(
         &mut self,
         dst_ip: Ipv4Address,
-        code: crate::net::icmp::TimeExceededCode,
+        code: crate::net::l3::icmp::TimeExceededCode,
         original_packet: &[u8],
     ) -> bool {
         let config = self.config.clone();
@@ -845,7 +845,7 @@ impl NetworkStack {
 
                 let ip_payload = ip_packet.payload_mut();
                 if let Some(icmp_len) =
-                    crate::net::icmp::IcmpProcessor::build_time_exceeded(ip_payload, code, original_packet)
+                    crate::net::l3::icmp::IcmpProcessor::build_time_exceeded(ip_payload, code, original_packet)
                 {
                     ip_packet.finalize(icmp_len);
                     let ip_len = ip_packet.total_len();
@@ -1043,7 +1043,7 @@ impl NetworkStack {
                 let ip_payload = ip_packet.payload_mut();
 
                 // Build UDP packet
-                if let Some(udp_len) = crate::net::udp::UdpProcessor::build_packet(
+                if let Some(udp_len) = crate::net::l4::udp::UdpProcessor::build_packet(
                     ip_payload,
                     src_ip,
                     src_port,
@@ -1106,9 +1106,9 @@ impl NetworkStack {
     pub fn connect_tcp(&mut self, mut local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
         // Resolve local source address when unspecified.
         if local_addr.is_ipv4() {
-            if local_addr.as_ipv4() == Some(crate::net::tcp::Ipv4Addr::UNSPECIFIED) {
+            if local_addr.as_ipv4() == Some(crate::net::l4::tcp::Ipv4Addr::UNSPECIFIED) {
                 let [a, b, c, d] = self.config.ipv4.address.octets();
-                local_addr = TcpSocketAddr::new(crate::net::tcp::Ipv4Addr::new(a, b, c, d), local_addr.port());
+                local_addr = TcpSocketAddr::new(crate::net::l4::tcp::Ipv4Addr::new(a, b, c, d), local_addr.port());
             }
         } else if local_addr.as_ipv6().is_unspecified() {
             if let Some(ipv6_cfg) = self.config.ipv6 {
@@ -1127,7 +1127,7 @@ impl NetworkStack {
             }
             local_addr = if local_addr.is_ipv4() {
                 TcpSocketAddr::new(
-                    local_addr.as_ipv4().unwrap_or(crate::net::tcp::Ipv4Addr::UNSPECIFIED),
+                    local_addr.as_ipv4().unwrap_or(crate::net::l4::tcp::Ipv4Addr::UNSPECIFIED),
                     port,
                 )
             } else {
@@ -1160,7 +1160,7 @@ impl NetworkStack {
             
             // Calculate checksum and send (using the resolved local_addr)
             let sent = if let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local_addr, remote_addr) {
-                crate::net::tcp::calculate_tcp_checksum(
+                crate::net::l4::tcp::calculate_tcp_checksum(
                     &mut buffer[..total_len],
                     local_v4.octets(),
                     remote_v4.octets(),
@@ -1169,8 +1169,8 @@ impl NetworkStack {
             } else if tcp_is_native_v6_pair(local_addr, remote_addr) {
                 let src_v6 = local_addr.as_ipv6();
                 let dst_v6 = remote_addr.as_ipv6();
-                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::ipv4::IpProtocol::Tcp, total_len as u32);
-                let checksum = crate::net::ipv4::data_checksum(&buffer[..total_len], pseudo);
+                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_v6, &dst_v6, crate::net::l3::ipv4::IpProtocol::Tcp, total_len as u32);
+                let checksum = crate::net::l3::ipv4::data_checksum(&buffer[..total_len], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
                 buffer[16..18].copy_from_slice(&final_checksum.to_be_bytes());
                 self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
@@ -1194,8 +1194,8 @@ mod family_guard_tests {
 
     #[cfg_attr(test, test_case)]
     fn tcp_ipv4_pair_rejects_mixed_family() {
-        let local = TcpSocketAddr::new(crate::net::tcp::Ipv4Addr::LOCALHOST, 1234);
-        let remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 80);
+        let local = TcpSocketAddr::new(crate::net::l4::tcp::Ipv4Addr::LOCALHOST, 1234);
+        let remote = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 80);
         assert!(tcp_ipv4_pair(local, remote).is_none());
         assert!(!tcp_is_native_v6_pair(local, remote));
     }

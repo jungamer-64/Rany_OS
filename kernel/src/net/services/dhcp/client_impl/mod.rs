@@ -163,7 +163,7 @@ impl DhcpClient {
 
         if *state_guard == DhcpState::Init {
             // Use cryptographically secure random value for XID to prevent spoofing
-            let random_bytes = crate::net::tls::crypto::random::generate_random();
+            let random_bytes = crate::net::security::tls::crypto::random::generate_random();
             let xid = u32::from_be_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
             self.xid.store(xid, Ordering::SeqCst);
         }
@@ -630,7 +630,6 @@ pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "tests.rs"]
-pub(crate) mod tests;
+mod tests;
 
 

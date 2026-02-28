@@ -286,12 +286,12 @@ pub mod p384 {
             let bytes = product[11 - i].to_be_bytes();
             be_bytes[i * 8..(i + 1) * 8].copy_from_slice(&bytes);
         }
-        let prod_big = crate::net::rsa::BigUint::from_be_bytes(&be_bytes);
+        let prod_big = crate::net::security::rsa::BigUint::from_be_bytes(&be_bytes);
 
         // PをBigUintに変換
         let p_fe = P384FieldElement::from_limbs(P);
         let p_bytes = p_fe.to_be_bytes();
-        let p_big = crate::net::rsa::BigUint::from_be_bytes(&p_bytes);
+        let p_big = crate::net::security::rsa::BigUint::from_be_bytes(&p_bytes);
 
         let result = prod_big.rem(&p_big);
         let result_bytes = result.to_be_bytes_padded(48);
@@ -592,8 +592,8 @@ pub mod p384 {
 
     /// P-384群位数 n 上での乗算: (a * b) mod n
     pub fn scalar_mul_mod_n_384(a: &[u8; 48], b: &[u8; 48]) -> [u8; 48] {
-        let a_big = crate::net::rsa::BigUint::from_be_bytes(a);
-        let b_big = crate::net::rsa::BigUint::from_be_bytes(b);
+        let a_big = crate::net::security::rsa::BigUint::from_be_bytes(a);
+        let b_big = crate::net::security::rsa::BigUint::from_be_bytes(b);
 
         // a * b
         let product = a_big.mul(&b_big);
@@ -601,7 +601,7 @@ pub mod p384 {
         // mod n
         let n_fe = P384FieldElement::from_limbs(N);
         let n_bytes = n_fe.to_be_bytes();
-        let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
+        let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
 
         let rem = product.rem(&n_big);
         let rem_bytes = rem.to_be_bytes_padded(48);
@@ -622,8 +622,8 @@ pub mod p384 {
         // n - 2 を BigUint 経由で計算
         let n_fe = P384FieldElement::from_limbs(N);
         let n_bytes = n_fe.to_be_bytes();
-        let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
-        let two_big = crate::net::rsa::BigUint::from_be_bytes(&[2]);
+        let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
+        let two_big = crate::net::security::rsa::BigUint::from_be_bytes(&[2]);
         let nm2 = n_big.sub(&two_big);
         let nm2_bytes = nm2.to_be_bytes();
 
@@ -807,8 +807,8 @@ pub mod p384 {
         // r' = x mod n
         let n_fe = P384FieldElement::from_limbs(N);
         let n_bytes = n_fe.to_be_bytes();
-        let rx_big = crate::net::rsa::BigUint::from_be_bytes(&rx_bytes);
-        let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
+        let rx_big = crate::net::security::rsa::BigUint::from_be_bytes(&rx_bytes);
+        let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
         let rx_mod_n = rx_big.rem(&n_big);
         let rx_mod_n_bytes = rx_mod_n.to_be_bytes_padded(48);
 

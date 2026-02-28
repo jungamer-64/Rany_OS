@@ -450,7 +450,7 @@ pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, 
     em.push(0x00); em.push(0x02);
     let mut ps_remaining = ps_len;
     while ps_remaining > 0 {
-        let random_bytes = crate::net::tls::crypto::random::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         for &b in &random_bytes {
             if b != 0 {
                 em.push(b);

@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use super::{BoxFuture, ShellNamespace};
 use crate::security::capability::{CAP_NET_RAW, CAP_NET_BIND, manager};
 use crate::shell::exoshell::types::ExoValue;
-use crate::net::stack::bind_udp_with_token;
+use crate::net::runtime::stack::bind_udp_with_token;
 use alloc::boxed::Box;
 
 /// ネットワーク名前空間
@@ -52,7 +52,7 @@ impl NetNamespace {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
                 return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
             }
-            match crate::net::stack::bind_udp(port) {
+            match crate::net::runtime::stack::bind_udp(port) {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("bind failed")),
             }
@@ -81,7 +81,7 @@ impl NetNamespace {
     }
     /// ネットワーク設定を取得
     pub fn config() -> ExoValue<'static> {
-        if let Some(cfg) = crate::net::get_network_config() {
+        if let Some(cfg) = crate::net::api::shell::get_network_config() {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("ip"),
@@ -112,7 +112,7 @@ impl NetNamespace {
 
     /// ネットワーク統計
     pub fn stats() -> ExoValue<'static> {
-        if let Some(stats) = crate::net::get_network_stats() {
+        if let Some(stats) = crate::net::api::shell::get_network_stats() {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("rx_packets"),
@@ -146,7 +146,7 @@ impl NetNamespace {
 
     /// ARP キャッシュ
     pub fn arp_cache() -> ExoValue<'static> {
-        if let Some(entries) = crate::net::get_arp_cache() {
+        if let Some(entries) = crate::net::api::shell::get_arp_cache() {
             let values: Vec<ExoValue> = entries
                 .into_iter()
                 .map(|e| {
@@ -198,7 +198,7 @@ impl NetNamespace {
                         return ExoValue::Error(String::from("invalid IP"));
                     }
                 }
-                crate::net::ipv4::Ipv4Address::new(octets)
+                crate::net::l3::ipv4::Ipv4Address::new(octets)
             }
             _ => return ExoValue::Error(String::from("ip must be string")),
         };
@@ -217,23 +217,23 @@ impl NetNamespace {
                         return ExoValue::Error(String::from("invalid MAC"));
                     }
                 }
-                crate::net::ethernet::MacAddress::from_octets(
+                crate::net::l2::ethernet::MacAddress::from_octets(
                     octets[0], octets[1], octets[2], octets[3], octets[4], octets[5]
                 )
             }
             _ => return ExoValue::Error(String::from("mac must be string")),
         };
-        let ok = crate::net::arp_cache_insert(ip, mac);
+        let ok = crate::net::api::shell::arp_cache_insert(ip, mac);
         ExoValue::Bool(ok)
     }
 
     fn format_ipv6(addr: [u8; 16]) -> String {
-        format!("{}", crate::net::ipv6::Ipv6Address::new(addr))
+        format!("{}", crate::net::l3::ipv6::Ipv6Address::new(addr))
     }
 
     /// DHCP state snapshot (IPv4 + IPv6)
     pub fn dhcp_state() -> ExoValue<'static> {
-        let state = crate::net::dhcp_state();
+        let state = crate::net::api::shell::dhcp_state();
         let mut map = BTreeMap::new();
         map.insert(
             String::from("v4_state"),
@@ -300,7 +300,7 @@ impl NetNamespace {
 
     /// Trigger DHCP renew/restart for both DHCPv4 and DHCPv6.
     pub fn dhcp_renew() -> ExoValue<'static> {
-        match crate::net::dhcp_renew() {
+        match crate::net::api::shell::dhcp_renew() {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
@@ -308,7 +308,7 @@ impl NetNamespace {
 
     /// Send DHCPDISCOVER and report any currently stored offer
     pub fn dhcp_discover() -> ExoValue<'static> {
-        if let Some(info) = crate::net::dhcp_discover() {
+        if let Some(info) = crate::net::api::shell::dhcp_discover() {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("server_ip"),
@@ -353,18 +353,18 @@ impl NetNamespace {
         }
         let server = parse_ip(&args[0]).unwrap_or([0,0,0,0]);
         let offered = parse_ip(&args[1]).unwrap_or([0,0,0,0]);
-        ExoValue::Bool(crate::net::dhcp_request(server, offered))
+        ExoValue::Bool(crate::net::api::shell::dhcp_request(server, offered))
     }
 
     /// Send DHCPRELEASE for current lease (if any)
     pub fn dhcp_release() -> ExoValue<'static> {
-        crate::net::dhcp_release();
+        crate::net::api::shell::dhcp_release();
         ExoValue::Bool(true)
     }
 
     /// last declined IP (string or nil)
     pub fn dhcp_last_declined() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::dhcp_last_declined() {
+        if let Some(ip) = crate::net::api::shell::dhcp_last_declined() {
             ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
         } else {
             ExoValue::Nil
@@ -373,7 +373,7 @@ impl NetNamespace {
 
     /// last released IP (string or nil)
     pub fn dhcp_last_released() -> ExoValue<'static> {
-        if let Some(ip) = crate::net::dhcp_last_released() {
+        if let Some(ip) = crate::net::api::shell::dhcp_last_released() {
             ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])))
         } else {
             ExoValue::Nil
@@ -397,7 +397,7 @@ impl NetNamespace {
             // 各パケット送信前にyield（他タスクに機会を与える）
             crate::task::yield_now().await;
 
-            match crate::net::send_real_icmp_echo(ip, seq) {
+            match crate::net::runtime::bridge::send_real_icmp_echo(ip, seq) {
                 Ok(rtt) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
@@ -456,7 +456,7 @@ impl NetNamespace {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
                 return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
             }
-            match crate::net::bind_udp(port) {
+            match crate::net::runtime::stack::bind_udp(port) {
                 Some(_) => ExoValue::Bool(true),
                 None => ExoValue::Error(String::from("bind failed")),
             }

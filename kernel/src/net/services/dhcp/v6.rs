@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::net::ipv6::Ipv6Address;
+use crate::net::l3::ipv6::Ipv6Address;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -40,7 +40,7 @@ pub enum DhcpV6State {
 
 /// シンプルな DHCPv6 クライアント実装（IA_NA サポート）
 pub struct DhcpV6Client {
-    mac: crate::net::ethernet::MacAddress,
+    mac: crate::net::l2::ethernet::MacAddress,
     duid: Vec<u8>,
     state: PoisonLock<DhcpV6State>,
     xid: AtomicU32, // 24-bit トランザクションIDを格納
@@ -59,7 +59,7 @@ impl DhcpV6Client {
     pub const RETRANS_INTERVAL_SECS: u64 = 4;
 
     /// DUID-LL を生成（type=3, hwtype=1 + MAC）
-    fn make_duid_ll(mac: &crate::net::ethernet::MacAddress) -> Vec<u8> {
+    fn make_duid_ll(mac: &crate::net::l2::ethernet::MacAddress) -> Vec<u8> {
         let mut v = Vec::new();
         // DUID type (2 bytes) = 3 (DUID-LL)
         v.extend_from_slice(&(3u16.to_be_bytes()));
@@ -69,7 +69,7 @@ impl DhcpV6Client {
         v
     }
 
-    pub fn new(mac: crate::net::ethernet::MacAddress) -> Self {
+    pub fn new(mac: crate::net::l2::ethernet::MacAddress) -> Self {
         let duid = Self::make_duid_ll(&mac);
         Self {
             mac,
@@ -328,7 +328,7 @@ impl DhcpV6Client {
     /// `src` is the IPv6 source address the packet was received from.
     /// Returns true if handled
     pub fn handle_packet(&self, data: &[u8], src: Ipv6Address) -> bool {
-        let now = crate::net::tcb_table().get_current_tick();
+        let now = crate::net::l4::endpoint::tcb_table().get_current_tick();
 
         // Inspect message type first so we can react to ADVERTISE even when no IAADDR is present
         let msg_type = data.get(0).copied().unwrap_or(0);
@@ -351,7 +351,7 @@ impl DhcpV6Client {
                     // build and send REQUEST (selection)
                     let mut buf = [0u8; 256];
                     if let Ok(len) = self.build_request_from_advertise(&mut buf, now) {
-                        if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
                             if let Some(ref mut stack) = *guard {
                                 if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                     let src_ip = ipv6_cfg.link_local;
@@ -385,7 +385,7 @@ impl DhcpV6Client {
                 }
 
                 // Apply IPv6 address to the running NetworkStack
-                crate::net::stack::apply_ipv6_global_address(lease.addr);
+                crate::net::runtime::stack::apply_ipv6_global_address(lease.addr);
 
                 if let Ok(mut st) = self.state.lock() {
                     *st = DhcpV6State::Bound;
@@ -408,11 +408,11 @@ impl DhcpV6Client {
                     let len = self.build_solicit(&mut buf, current_tick)?;
 
                     // Use link-local as source for SOLICIT
-                    if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                    if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
                         if let Some(ref mut stack) = *guard {
                             if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                 let src = ipv6_cfg.link_local;
-                                let dst = crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]); // all DHCP servers/relay
+                                let dst = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]); // all DHCP servers/relay
                                 // Send via UDP/IPv6
                                 if stack.send_udp_v6_raw(
                                     DHCPV6_CLIENT_PORT,
@@ -441,11 +441,11 @@ impl DhcpV6Client {
                             // retransmit SOLICIT
                             let mut buf = [0u8; 256];
                             let len = self.build_solicit(&mut buf, current_tick)?;
-                            if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                            if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
                                 if let Some(ref mut stack) = *guard {
                                     if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                         let src = ipv6_cfg.link_local;
-                                        let dst = crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+                                        let dst = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
                                         let _ = stack.send_udp_v6_raw(
                                             DHCPV6_CLIENT_PORT,
                                             src,
@@ -472,13 +472,13 @@ impl DhcpV6Client {
                             // rebuild Request (selection) and resend
                             let mut buf = [0u8; 256];
                             let len = self.build_request_from_advertise(&mut buf, current_tick)?;
-                            if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                            if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
                                 if let Some(ref mut stack) = *guard {
                                     if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                         let src = ipv6_cfg.link_local;
                                         let dst = match self.server_addr.lock() {
-                                            Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
-                                            Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
+                                            Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
+                                            Err(_) => crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
                                         };
                                         let _ = stack.send_udp_v6_raw(
                                             DHCPV6_CLIENT_PORT,
@@ -520,15 +520,15 @@ impl DhcpV6Client {
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
                                 let len = self.build_request(&mut buf, &lease, current_tick)?;
-                                if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                                if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
                                     if let Some(ref mut stack) = *guard {
                                         if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                             let src = ipv6_cfg.link_local;
                                             // If we know the server IPv6 address, send unicast Renew there;
                                             // otherwise fall back to multicast.
                                             let dst = match self.server_addr.lock() {
-                                                Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
-                                                Err(_) => crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
+                                                Ok(ref a) => a.as_ref().copied().unwrap_or_else(|| crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2])),
+                                                Err(_) => crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]),
                                             };
                                             let _ = stack.send_udp_v6_raw(
                                                 DHCPV6_CLIENT_PORT,
@@ -564,11 +564,11 @@ impl DhcpV6Client {
                             if let Some(lease) = self.lease() {
                                 let mut buf = [0u8; 512];
                                 let len = self.build_request(&mut buf, &lease, current_tick)?;
-                                if let Ok(mut guard) = crate::net::stack::stack().lock() {
+                                if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
                                     if let Some(ref mut stack) = *guard {
                                         if let Some(ref ipv6_cfg) = stack.config().ipv6 {
                                             let src = ipv6_cfg.link_local;
-                                            let dst = crate::net::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+                                            let dst = crate::net::l3::ipv6::Ipv6Address::new([0xff,0x02,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
                                             let _ = stack.send_udp_v6_raw(
                                                 DHCPV6_CLIENT_PORT,
                                                 src,
@@ -633,7 +633,7 @@ impl DhcpV6Client {
 pub(crate) static DHCPV6_CLIENT: PoisonLock<Option<DhcpV6Client>> = PoisonLock::new(None);
 
 /// DHCPv6 クライアントをグローバルに初期化
-pub fn init_v6(mac_address: crate::net::ethernet::MacAddress) {
+pub fn init_v6(mac_address: crate::net::l2::ethernet::MacAddress) {
     let client = DhcpV6Client::new(mac_address);
     match DHCPV6_CLIENT.lock() {
         Ok(mut g) => *g = Some(client),
@@ -649,11 +649,11 @@ pub fn client_v6() -> Option<&'static PoisonLock<Option<DhcpV6Client>>> {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) mod tests {
     use super::*;
-    use crate::net::ipv6::Ipv6Address;
+    use crate::net::l3::ipv6::Ipv6Address;
 
     #[cfg_attr(test, test_case)]
     pub fn test_build_solicit_min_size() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         let mut buf = [0u8; 256];
         let now = 1000u64;
@@ -664,7 +664,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_parse_reply_with_iaaddr() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         // construct a fake REPLY that contains IA_NA with IAADDR
         let mut pkt = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
@@ -699,10 +699,10 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_build_request_min_size() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: crate::net::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,2]),
+            addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,2]),
             preferred_lifetime: 3600,
             valid_lifetime: 7200,
             obtained_at: 100,
@@ -725,11 +725,11 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_bound_to_renewing_and_rebinding_transitions() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         // set lease with preferred lifetime = 1 second
         let lease = DhcpV6Lease {
-            addr: crate::net::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,3]),
+            addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,3]),
             preferred_lifetime: 1,
             valid_lifetime: 10,
             obtained_at: 0,
@@ -757,7 +757,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_packet_stores_server_addr_and_duid() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Build a REPLY that contains Server Identifier (option 2) + IA_NA with IAADDR
@@ -816,7 +816,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_advertise_triggers_request_and_requesting_state() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Put client into SolicitSent
@@ -844,7 +844,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_requesting_retransmit_exhaustion_goes_to_init() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         if let Ok(mut st) = client.state.lock() { *st = DhcpV6State::Requesting; }
         // simulate having already retried up to MAX_RETRIES
@@ -857,7 +857,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_force_renew_or_restart_paths() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
             addr: Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,8]),
@@ -880,7 +880,7 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_solicit_advertise_request_reply_complete_flow() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
 
         // Start from Init -> send SOLICIT (simulate periodic trigger)
@@ -933,10 +933,10 @@ pub(crate) mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_renew_uses_known_server_address_for_dst() {
-        let mac = crate::net::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x00,0x11,0x22,0x33,0x44,0x55]);
         let client = DhcpV6Client::new(mac);
         let lease = DhcpV6Lease {
-            addr: crate::net::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,5]),
+            addr: crate::net::l3::ipv6::Ipv6Address::new([0x20,0x01,0x0d,0xb8,0,0,0,0,0,0,0,0,0,0,0,5]),
             preferred_lifetime: 1,
             valid_lifetime: 10,
             obtained_at: 0,
@@ -948,7 +948,7 @@ pub(crate) mod tests {
             *st = DhcpV6State::Renewing;
         }
         // set known server address
-        let server_ip = crate::net::ipv6::Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
+        let server_ip = crate::net::l3::ipv6::Ipv6Address::new([0xfe,0x80,0,0,0,0,0,0,0,0,0,0,0,0,0,2]);
         if let Ok(mut g) = client.server_addr.lock() { *g = Some(server_ip); }
 
         let tick_rate = 1000u64;

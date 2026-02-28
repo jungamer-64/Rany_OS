@@ -11,7 +11,7 @@ use core::sync::atomic::Ordering;
 
 use crate::sync::poison_lock::PoisonLock;
 
-use crate::net::tcp::{
+use crate::net::l4::tcp::{
     TcpListener as TcpListenerImpl, TcpStream,
 };
 
@@ -154,11 +154,11 @@ impl Socket {
 
             // TCPリスナー作成 - tcp.rs の SocketAddr 型に変換 (IPv4/IPv6 対応)
             let tcp_addr = if local_addr.is_ipv6() {
-                let v6 = crate::net::ipv6::Ipv6Address::new(local_addr.as_ipv6());
-                crate::net::tcp::SocketAddr::new_v6(v6, local_addr.port())
+                let v6 = crate::net::l3::ipv6::Ipv6Address::new(local_addr.as_ipv6());
+                crate::net::l4::tcp::SocketAddr::new_v6(v6, local_addr.port())
             } else if let Some(v4) = local_addr.as_ipv4() {
-                crate::net::tcp::SocketAddr::new(
-                    crate::net::tcp::Ipv4Addr::new(v4[0], v4[1], v4[2], v4[3]),
+                crate::net::l4::tcp::SocketAddr::new(
+                    crate::net::l4::tcp::Ipv4Addr::new(v4[0], v4[1], v4[2], v4[3]),
                     local_addr.port(),
                 )
             } else {

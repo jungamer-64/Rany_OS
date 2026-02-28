@@ -19,7 +19,7 @@ impl UdpSocketTable {
     /// 1024..65535 の範囲からランダムな未使用ポートを選択する
     fn find_available_port(&self, sockets: &BTreeMap<u16, Arc<PoisonLock<UdpSocketInner>>>) -> Option<u16> {
         // 暗号論的に安全な乱数から開始ポートを決定 (Source Port Randomization)
-        let random_bytes = crate::net::tls::generate_random();
+        let random_bytes = crate::net::security::tls::generate_random();
         let mut seed = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
         
         // エフェメラルポート範囲 (RFC 6056 / IANA)

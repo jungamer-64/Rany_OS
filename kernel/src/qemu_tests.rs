@@ -574,135 +574,135 @@ pub fn driver_cell_global_stats_tracking_smoke() -> bool {
 }
 
 pub fn net_ecdh_x25519_key_exchange_symmetry_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_x25519_key_exchange_symmetry_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_x25519_key_exchange_symmetry_smoke()
 }
 
 pub fn net_ecdh_x25519_public_key_length_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_x25519_public_key_length_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_x25519_public_key_length_smoke()
 }
 
 pub fn net_ecdh_x25519_group_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_x25519_group_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_x25519_group_smoke()
 }
 
 pub fn net_ecdh_group_from_named_group_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_group_from_named_group_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_group_from_named_group_smoke()
 }
 
 pub fn net_ecdh_x25519_reject_invalid_peer_key_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_x25519_reject_invalid_peer_key_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_x25519_reject_invalid_peer_key_smoke()
 }
 
 pub fn net_ecdh_x25519_rfc7748_vector_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_x25519_rfc7748_vector_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_x25519_rfc7748_vector_smoke()
 }
 
 pub fn net_ecdh_p256_key_exchange_symmetry_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_key_exchange_symmetry_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_key_exchange_symmetry_smoke()
 }
 
 pub fn net_ecdh_p256_public_key_length_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_public_key_length_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_public_key_length_smoke()
 }
 
 pub fn net_ecdh_p256_reject_invalid_peer_key_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_reject_invalid_peer_key_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_reject_invalid_peer_key_smoke()
 }
 
 pub fn net_ecdh_group_from_named_group_p256_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_group_from_named_group_p256_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_group_from_named_group_p256_smoke()
 }
 
 pub fn net_ecdh_p256_point_on_curve_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_point_on_curve_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_point_on_curve_smoke()
 }
 
 pub fn net_ecdh_p256_scalar_mul_base_smoke() -> bool {
-    crate::net::ecdh::qemu_tests::ecdh_p256_scalar_mul_base_smoke()
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_scalar_mul_base_smoke()
 }
 
 pub fn net_tls_wave8_hmac_sha256_rfc4231_case1_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case1_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case1_smoke()
 }
 
 pub fn net_tls_wave8_hmac_sha256_rfc4231_case2_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case2_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case2_smoke()
 }
 
 pub fn net_tls_wave8_hmac_sha256_rfc4231_case3_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case3_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hmac_sha256_rfc4231_case3_smoke()
 }
 
 pub fn net_tls_wave8_hkdf_rfc5869_case1_extract_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hkdf_rfc5869_case1_extract_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hkdf_rfc5869_case1_extract_smoke()
 }
 
 pub fn net_tls_wave8_hkdf_rfc5869_case1_expand_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_hkdf_rfc5869_case1_expand_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_hkdf_rfc5869_case1_expand_smoke()
 }
 
 pub fn net_tls_wave8_chacha20_rfc8439_block_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_chacha20_rfc8439_block_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_chacha20_rfc8439_block_smoke()
 }
 
 pub fn net_tls_wave8_chacha20_rfc8439_encrypt_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_chacha20_rfc8439_encrypt_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_chacha20_rfc8439_encrypt_smoke()
 }
 
 pub fn net_tls_wave8_poly1305_rfc8439_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_poly1305_rfc8439_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_poly1305_rfc8439_smoke()
 }
 
 pub fn net_tls_wave8_chacha20_poly1305_rfc8439_encrypt_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_chacha20_poly1305_rfc8439_encrypt_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_chacha20_poly1305_rfc8439_encrypt_smoke()
 }
 
 pub fn net_tls_wave8_chacha20_poly1305_rfc8439_decrypt_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_chacha20_poly1305_rfc8439_decrypt_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_chacha20_poly1305_rfc8439_decrypt_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_roundtrip_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_roundtrip_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_roundtrip_smoke()
 }
 
 pub fn net_tls_wave8_aes_gcm_auth_failure_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_gcm_auth_failure_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_gcm_auth_failure_smoke()
 }
 
 pub fn net_tls_wave8_aes_ctr_roundtrip_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_aes_ctr_roundtrip_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_aes_ctr_roundtrip_smoke()
 }
 
 pub fn net_tls_wave8_gf128_mul_zero_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_gf128_mul_zero_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_gf128_mul_zero_smoke()
 }
 
 pub fn net_tls_wave8_gf_mul_basic_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_gf_mul_basic_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_gf_mul_basic_smoke()
 }
 
 pub fn net_tls_wave8_tls13_early_secret_no_psk_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_early_secret_no_psk_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_early_secret_no_psk_smoke()
 }
 
 pub fn net_tls_wave8_tls13_handshake_secret_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_handshake_secret_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_handshake_secret_smoke()
 }
 
 pub fn net_tls_wave8_tls13_master_secret_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_master_secret_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_master_secret_smoke()
 }
 
 pub fn net_tls_wave8_tls13_derive_secret_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_derive_secret_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_derive_secret_smoke()
 }
 
 pub fn net_tls_wave8_tls13_derive_traffic_keys_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_derive_traffic_keys_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_derive_traffic_keys_smoke()
 }
 
 pub fn net_tls_wave8_tls13_finished_key_and_verify_data_smoke() -> bool {
-    crate::net::tls::qemu_tests::wave8_tls_tls13_finished_key_and_verify_data_smoke()
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_finished_key_and_verify_data_smoke()
 }
 
 pub fn sync_lockfree_spsc_basic_smoke() -> bool {
@@ -1144,91 +1144,91 @@ pub fn net_core_tcp_connect_timeout_expires_smoke() -> bool {
 // BEGIN re-added local QEMU wrappers after origin/master rebase
 
 pub fn net_endpoint_congestion_cubic_initial_state_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_cubic_initial_state_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_cubic_initial_state_smoke()
 }
 
 pub fn net_endpoint_congestion_cubic_slow_start_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_cubic_slow_start_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_cubic_slow_start_smoke()
 }
 
 pub fn net_endpoint_congestion_cubic_root_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_cubic_root_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_cubic_root_smoke()
 }
 
 pub fn net_endpoint_congestion_cubic_fast_recovery_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_cubic_fast_recovery_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_cubic_fast_recovery_smoke()
 }
 
 pub fn net_endpoint_congestion_bbr_initial_state_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_bbr_initial_state_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_bbr_initial_state_smoke()
 }
 
 pub fn net_endpoint_congestion_bbr_startup_growth_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_bbr_startup_growth_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_bbr_startup_growth_smoke()
 }
 
 pub fn net_endpoint_congestion_bbr_rt_prop_tracking_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_bbr_rt_prop_tracking_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_bbr_rt_prop_tracking_smoke()
 }
 
 pub fn net_endpoint_congestion_bbr_available_window_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_bbr_available_window_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_bbr_available_window_smoke()
 }
 
 pub fn net_endpoint_congestion_bbr_bdp_calculation_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_bbr_bdp_calculation_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_bbr_bdp_calculation_smoke()
 }
 
 pub fn net_endpoint_congestion_bbr_startup_to_drain_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_bbr_startup_to_drain_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_bbr_startup_to_drain_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_from_algorithm_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_from_algorithm_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_from_algorithm_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_with_mss_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_with_mss_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_with_mss_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_newreno_ack_delegation_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_newreno_ack_delegation_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_newreno_ack_delegation_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_cubic_ack_delegation_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_cubic_ack_delegation_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_cubic_ack_delegation_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_bbr_ack_delegation_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_bbr_ack_delegation_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_bbr_ack_delegation_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_timeout_delegation_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_timeout_delegation_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_timeout_delegation_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_reset_delegation_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_reset_delegation_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_reset_delegation_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_available_window_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_available_window_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_available_window_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_fast_retransmit_newreno_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_fast_retransmit_newreno_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_fast_retransmit_newreno_smoke()
 }
 
 pub fn net_endpoint_congestion_variant_default_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::congestion_variant_default_smoke()
+    crate::net::l4::endpoint::qemu_tests::congestion_variant_default_smoke()
 }
 
 pub fn net_endpoint_window_scale_disabled_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::window_scale_disabled_smoke()
+    crate::net::l4::endpoint::qemu_tests::window_scale_disabled_smoke()
 }
 
 pub fn net_endpoint_window_scale_enabled_smoke() -> bool {
-    crate::net::endpoint::qemu_tests::window_scale_enabled_smoke()
+    crate::net::l4::endpoint::qemu_tests::window_scale_enabled_smoke()
 }
 
 // END re-added local QEMU wrappers after origin/master rebase

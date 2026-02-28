@@ -576,7 +576,7 @@ pub fn poll_timer_events() {
             .map(|hz| (hz / 1_000_000).max(1))
             .unwrap_or(2000);
         let current_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        crate::net::driver_bridge::check_batch_timeout(current_tsc, tsc_freq_mhz);
+        crate::net::runtime::bridge::check_batch_timeout(current_tsc, tsc_freq_mhz);
 
         // ペンディングのプリエンプションを処理
         if crate::task::preemption::is_preemption_pending() {

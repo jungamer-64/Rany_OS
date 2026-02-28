@@ -11,6 +11,11 @@ use super::ipv4::{Ipv4Address, Ipv4Config};
 use super::optimization::{BatchConfig, BatchProcessor};
 use super::stack::{self, NetworkConfig};
 use super::manager;
+use crate::net::api::shell::{ArpCacheEntry, NetworkConfigSnapshot, NetworkStatsSnapshot};
+use crate::net::obs::{
+    counters,
+    trace::{self, NetEventKind, NetLayer},
+};
 use crate::io::virtio::{
     VirtioNetDevice, bind_virtio_net_interface, with_virtio_net, with_virtio_net_at_index,
 };
@@ -70,7 +75,7 @@ const NAT_GC_EVERY_RX_MASK: u64 = 0xFF;
 /// External port is key; value stores internal address/port.
 #[derive(Clone, Copy)]
 struct NatEntry {
-    protocol: crate::net::ipv4::IpProtocol,
+    protocol: crate::net::l3::ipv4::IpProtocol,
     external_addr: super::Ipv4Address,
     remote_addr: super::Ipv4Address,
     remote_port: u16,
@@ -90,7 +95,7 @@ static NAT_NEXT_PORT: AtomicU16 = AtomicU16::new(NAT_EPHEMERAL_START);
 /// Perform outbound NAT translation for a packet leaving on `out_if_id`.
 /// Returns (translated_src_ip, translated_src_port).
 fn nat_translate_out(
-    protocol: crate::net::ipv4::IpProtocol,
+    protocol: crate::net::l3::ipv4::IpProtocol,
     internal_ip: super::Ipv4Address,
     internal_port: u16,
     remote_ip: super::Ipv4Address,
@@ -172,7 +177,7 @@ fn nat_translate_out(
 /// rewrites `dst_ip` and `dst_port` to the internal values and returns true.
 /// Caller should recompute checksums.
 fn nat_translate_in(
-    protocol: crate::net::ipv4::IpProtocol,
+    protocol: crate::net::l3::ipv4::IpProtocol,
     src_ip: super::Ipv4Address,
     src_port: u16,
     dst_ip: &mut super::Ipv4Address,
@@ -204,10 +209,10 @@ fn nat_translate_in(
     }
 }
 
-fn transport_checksum_offset(protocol: crate::net::ipv4::IpProtocol) -> Option<usize> {
+fn transport_checksum_offset(protocol: crate::net::l3::ipv4::IpProtocol) -> Option<usize> {
     match protocol {
-        crate::net::ipv4::IpProtocol::Udp => Some(6),
-        crate::net::ipv4::IpProtocol::Tcp => Some(16),
+        crate::net::l3::ipv4::IpProtocol::Udp => Some(6),
+        crate::net::l3::ipv4::IpProtocol::Tcp => Some(16),
         _ => None,
     }
 }
@@ -216,7 +221,7 @@ fn recompute_ipv4_transport_checksum(
     transport: &mut [u8],
     src_ip: super::Ipv4Address,
     dst_ip: super::Ipv4Address,
-    protocol: crate::net::ipv4::IpProtocol,
+    protocol: crate::net::l3::ipv4::IpProtocol,
 ) {
     let Some(checksum_off) = transport_checksum_offset(protocol) else {
         return;
@@ -226,7 +231,7 @@ fn recompute_ipv4_transport_checksum(
     }
 
     // IPv4 UDP checksum may be zero (disabled). Preserve that behavior.
-    if protocol == crate::net::ipv4::IpProtocol::Udp
+    if protocol == crate::net::l3::ipv4::IpProtocol::Udp
         && u16::from_be_bytes([transport[checksum_off], transport[checksum_off + 1]]) == 0
     {
         return;
@@ -234,8 +239,8 @@ fn recompute_ipv4_transport_checksum(
 
     transport[checksum_off..checksum_off + 2].copy_from_slice(&0u16.to_be_bytes());
     let pseudo =
-        crate::net::ipv4::pseudo_header_checksum(src_ip, dst_ip, protocol, transport.len() as u16);
-    let checksum = crate::net::ipv4::data_checksum(transport, pseudo);
+        crate::net::l3::ipv4::pseudo_header_checksum(src_ip, dst_ip, protocol, transport.len() as u16);
+    let checksum = crate::net::l3::ipv4::data_checksum(transport, pseudo);
     let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
     transport[checksum_off..checksum_off + 2].copy_from_slice(&final_checksum.to_be_bytes());
 }
@@ -358,6 +363,8 @@ fn virtio_transmit(if_id: Option<super::NetIfId>, data: &[u8]) -> bool {
     match result {
         Some(Ok(())) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+            counters::global().record_tx(data.len());
+            trace::push_event(NetLayer::Driver, NetEventKind::Tx, "virtio transmit");
             if let Some(if_id) = if_id.or_else(primary_bridge_if) {
                 record_bridge_if_tx(if_id);
             }
@@ -365,6 +372,8 @@ fn virtio_transmit(if_id: Option<super::NetIfId>, data: &[u8]) -> bool {
         }
         Some(Err(_)) => {
             log::info!("[NET BRIDGE] Transmit error");
+            counters::global().record_error();
+            trace::push_event(NetLayer::Driver, NetEventKind::Error, "virtio transmit error");
             false
         }
         None => {
@@ -430,6 +439,8 @@ pub fn send_packet_on_interface(if_id: super::NetIfId, data: &[u8]) -> bool {
     match transmit_packet_for_interface(if_id, data) {
         Ok(()) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
+            counters::global().record_tx(data.len());
+            trace::push_event(NetLayer::Driver, NetEventKind::Tx, "interface transmit");
             record_bridge_if_tx(if_id);
             true
         }
@@ -437,6 +448,12 @@ pub fn send_packet_on_interface(if_id: super::NetIfId, data: &[u8]) -> bool {
             // log the failure reason and interface
             crate::io::log::early_print(&alloc::format!("[DEBUG] send_packet_on_interface if={} err={:?}\n", if_id.0, e));
             log::info!("[NET BRIDGE] Interface transmit error if_id={}", if_id.0);
+            counters::global().record_error();
+            trace::push_event(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                alloc::format!("interface transmit error if={}", if_id.0),
+            );
             false
         }
     }
@@ -454,13 +471,15 @@ pub fn send_packet_on_interface(if_id: super::NetIfId, data: &[u8]) -> bool {
 
 
 /// Process a completed RX buffer without copying: use the provided PacketRef (zero-copy)
-pub fn process_received_packet_zero_copy(mut packet: crate::net::PacketRef, header_size: usize, payload_len: usize) {
+pub fn process_received_packet_zero_copy(mut packet: crate::net::datapath::mempool::PacketRef, header_size: usize, payload_len: usize) {
     if let Some(if_id) = primary_bridge_if() {
         process_received_packet_zero_copy_for_interface(if_id, packet, header_size, payload_len);
         return;
     }
 
     RX_PACKETS.fetch_add(1, Ordering::Relaxed);
+    counters::global().record_rx(payload_len);
+    trace::push_event(NetLayer::Driver, NetEventKind::Rx, "rx packet");
 
     // Ensure view length covers header + payload
     packet.set_len(header_size + payload_len);
@@ -481,12 +500,18 @@ pub fn process_received_packet_zero_copy(mut packet: crate::net::PacketRef, head
 /// This updates per-interface bridge stats while reusing the existing single global stack path.
 pub fn process_received_packet_zero_copy_for_interface(
     if_id: super::NetIfId,
-    mut packet: crate::net::PacketRef,
+    mut packet: crate::net::datapath::mempool::PacketRef,
     header_size: usize,
     payload_len: usize,
 ) {
     ensure_bridge_if_state(if_id, None);
     let rx_count = RX_PACKETS.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    counters::global().record_rx(payload_len);
+    trace::push_event(
+        NetLayer::Driver,
+        NetEventKind::Rx,
+        alloc::format!("rx packet if={}", if_id.0),
+    );
     record_bridge_if_rx(if_id);
     nat_maybe_gc(rx_count);
 
@@ -498,14 +523,14 @@ pub fn process_received_packet_zero_copy_for_interface(
     // Attempt inbound NAT translation first (may rewrite dst address/port)
     {
         let data = packet.data_mut();
-        if let Some(mut eth) = crate::net::ethernet::EthernetFrameMut::new(data) {
+        if let Some(mut eth) = crate::net::l2::ethernet::EthernetFrameMut::new(data) {
             let is_ipv4 = eth
                 .header_mut()
-                .map(|hdr| hdr.ether_type() == crate::net::ethernet::EtherType::Ipv4)
+                .map(|hdr| hdr.ether_type() == crate::net::l2::ethernet::EtherType::Ipv4)
                 .unwrap_or(false);
             if is_ipv4 {
                 let ip_buf = eth.payload_mut();
-                let parsed = crate::net::ipv4::Ipv4Packet::parse(ip_buf).map(|ip_pkt| {
+                let parsed = crate::net::l3::ipv4::Ipv4Packet::parse(ip_buf).map(|ip_pkt| {
                     (
                         ip_pkt.protocol(),
                         ip_pkt.header().header_len(),
@@ -516,8 +541,8 @@ pub fn process_received_packet_zero_copy_for_interface(
 
                 let mut translated_dst = None;
                 if let Some((proto, header_len, src_ip, mut dst_ip)) = parsed {
-                    if (proto == crate::net::ipv4::IpProtocol::Udp
-                        || proto == crate::net::ipv4::IpProtocol::Tcp)
+                    if (proto == crate::net::l3::ipv4::IpProtocol::Udp
+                        || proto == crate::net::l3::ipv4::IpProtocol::Tcp)
                         && header_len <= ip_buf.len().saturating_sub(4)
                     {
                         let (_, transport) = ip_buf.split_at_mut(header_len);
@@ -532,7 +557,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                 }
 
                 if let Some(dst_ip) = translated_dst {
-                    if let Some(mut ip_pkt) = crate::net::ipv4::Ipv4PacketMut::new(ip_buf) {
+                    if let Some(mut ip_pkt) = crate::net::l3::ipv4::Ipv4PacketMut::new(ip_buf) {
                         ip_pkt.set_destination(dst_ip);
                         ip_pkt.update_checksum();
                     }
@@ -545,9 +570,9 @@ pub fn process_received_packet_zero_copy_for_interface(
     if {
         let data = packet.data_mut();
         let mut forwarded = false;
-        if let Some(eth) = crate::net::ethernet::EthernetFrame::parse(&*data) {
-            if eth.ether_type() == crate::net::ethernet::EtherType::Ipv4 {
-                if let Some(ip_pkt) = crate::net::ipv4::Ipv4Packet::parse(eth.payload()) {
+        if let Some(eth) = crate::net::l2::ethernet::EthernetFrame::parse(&*data) {
+            if eth.ether_type() == crate::net::l2::ethernet::EtherType::Ipv4 {
+                if let Some(ip_pkt) = crate::net::l3::ipv4::Ipv4Packet::parse(eth.payload()) {
                     let dst = ip_pkt.destination();
                     let dst_octets = dst.octets();
                     let is_limited_broadcast = dst_octets == [255, 255, 255, 255];
@@ -570,10 +595,10 @@ pub fn process_received_packet_zero_copy_for_interface(
                                 let transport = ip_pkt.payload();
                                 // need to parse transport header for ports
                                 let (_new_src, _new_port) = match proto {
-                                    crate::net::ipv4::IpProtocol::Udp => {
-                                        if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
+                                    crate::net::l3::ipv4::IpProtocol::Udp => {
+                                        if let Some(udp) = crate::net::l4::udp::UdpPacket::parse(transport) {
                                             let (ns, np) = nat_translate_out(
-                                                crate::net::ipv4::IpProtocol::Udp,
+                                                crate::net::l3::ipv4::IpProtocol::Udp,
                                                 src,
                                                 udp.src_port(),
                                                 dst,
@@ -585,7 +610,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                             (src, 0)
                                         }
                                     }
-                                    crate::net::ipv4::IpProtocol::Tcp => {
+                                    crate::net::l3::ipv4::IpProtocol::Tcp => {
                                         let tcp_src_port = transport
                                             .get(..2)
                                             .map(|port| u16::from_be_bytes([port[0], port[1]]))
@@ -595,7 +620,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                             .map(|port| u16::from_be_bytes([port[0], port[1]]))
                                             .unwrap_or(0);
                                         let (ns, np) = nat_translate_out(
-                                            crate::net::ipv4::IpProtocol::Tcp,
+                                            crate::net::l3::ipv4::IpProtocol::Tcp,
                                             src,
                                             tcp_src_port,
                                             dst,
@@ -614,7 +639,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                         if let Some(ref mut s) = *g {
                                             Ok(s.send_icmp_time_exceeded(
                                                 src,
-                                                crate::net::icmp::TimeExceededCode::TtlExceeded,
+                                                crate::net::l3::icmp::TimeExceededCode::TtlExceeded,
                                                 original_ip,
                                             ))
                                         } else {
@@ -625,8 +650,8 @@ pub fn process_received_packet_zero_copy_for_interface(
                                     let next_ttl = ttl - 1;
                                     // build new packet via stack send API
                                     match proto {
-                                        crate::net::ipv4::IpProtocol::Udp => {
-                                            if let Some(udp) = crate::net::udp::UdpPacket::parse(transport) {
+                                        crate::net::l3::ipv4::IpProtocol::Udp => {
+                                            if let Some(udp) = crate::net::l4::udp::UdpPacket::parse(transport) {
                                                 let payload = udp.payload();
                                                 let src_port = _new_port;
                                                 let dst_port = udp.dst_port();
@@ -648,7 +673,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                                 });
                                             }
                                         }
-                                        crate::net::ipv4::IpProtocol::Tcp => {
+                                        crate::net::l3::ipv4::IpProtocol::Tcp => {
                                             // entire segment including header
                                             let mut nat_segment = Vec::from(transport);
                                             if _new_port != 0 && nat_segment.len() >= 18 {
@@ -657,7 +682,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                                     &mut nat_segment,
                                                     _new_src,
                                                     dst,
-                                                    crate::net::ipv4::IpProtocol::Tcp,
+                                                    crate::net::l3::ipv4::IpProtocol::Tcp,
                                                 );
                                             }
                                             let _ = stack::stack().lock().and_then(|mut g| {
@@ -740,7 +765,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
             gateway: Ipv4Address::new([10, 0, 2, 2]), // QEMU gateway
             dns: Some(Ipv4Address::new([10, 0, 2, 3])),
         },
-        ipv6: Some(crate::net::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
+        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
         icmp_echo_enabled: true,
     };
 
@@ -773,7 +798,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
     // Do not seed gateway ARP with the local NIC MAC.
     // Let normal ARP resolution discover the peer MAC to avoid self-MAC misrouting.
 
-    if let Err(e) = crate::net::init_dhcp_runtime() {
+    if let Err(e) = crate::net::api::shell::init_dhcp_runtime() {
         log::warn!("[NET BRIDGE] DHCP runtime init failed: {}", e);
     }
 
@@ -872,7 +897,7 @@ pub fn list_bridge_stats() -> Vec<BridgeInterfaceStats> {
 }
 
 /// Get real network configuration from NetworkStack
-pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
+pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
             let stack = match guard.as_ref() {
@@ -882,7 +907,7 @@ pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
 
             let config = stack.config();
 
-            Some(super::NetworkConfigSnapshot {
+            Some(NetworkConfigSnapshot {
                 ip: *config.ipv4.address.as_bytes(),
                 netmask: *config.ipv4.subnet_mask.as_bytes(),
                 gateway: *config.ipv4.gateway.as_bytes(),
@@ -900,7 +925,7 @@ pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
 ///
 /// Transitional behavior: returns the single global stack config only for the
 /// current primary bridge interface.
-pub fn get_real_config_for_interface(if_id: super::NetIfId) -> Option<super::NetworkConfigSnapshot> {
+pub fn get_real_config_for_interface(if_id: super::NetIfId) -> Option<NetworkConfigSnapshot> {
     if primary_bridge_if() != Some(if_id) {
         return None;
     }
@@ -911,12 +936,13 @@ pub fn get_real_config_for_interface(if_id: super::NetIfId) -> Option<super::Net
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) mod tests {
     use super::*;
-    use crate::net::{mempool, stack};
-    use crate::net::ipv4::{Ipv4PacketMut, Ipv4Address, IpProtocol};
-    use crate::net::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr};
+    use crate::net::datapath::mempool;
+    use crate::net::runtime::stack;
+    use crate::net::l3::ipv4::{Ipv4PacketMut, Ipv4Address, IpProtocol};
+    use crate::net::l4::tcp::{TcpControlBlock, SocketAddr as TcpSocketAddr, Ipv4Addr as TcpIpv4Addr};
     use alloc::collections::BTreeMap;
     use alloc::vec::Vec;
-    use crate::net::manager;
+    use crate::net::runtime::manager;
 
     struct BridgeStateGuard {
         prev_if_stats: BTreeMap<super::super::NetIfId, BridgeInterfaceStats>,
@@ -924,7 +950,7 @@ pub(crate) mod tests {
         prev_nat_table: BTreeMap<u16, NatEntry>,
         prev_nat_next_port: u16,
         prev_forward_events: Vec<(super::super::NetIfId, super::super::Ipv4Address)>,
-        prev_manager: Option<crate::net::manager::NetworkManager>,
+        prev_manager: Option<crate::net::runtime::manager::NetworkManager>,
     }
 
     impl BridgeStateGuard {
@@ -941,7 +967,7 @@ pub(crate) mod tests {
                 NAT_NEXT_PORT.swap(NAT_EPHEMERAL_START, core::sync::atomic::Ordering::Relaxed);
             let prev_forward_events = core::mem::take(&mut *FORWARD_EVENTS.write());
             let prev_manager = {
-                let mut guard = crate::net::manager::NETWORK_MANAGER
+                let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
                     .lock_for_init("[TEST][NET BRIDGE] manager snapshot");
                 core::mem::take(&mut *guard)
             };
@@ -963,7 +989,7 @@ pub(crate) mod tests {
             *NAT_TABLE.write() = core::mem::take(&mut self.prev_nat_table);
             NAT_NEXT_PORT.store(self.prev_nat_next_port, core::sync::atomic::Ordering::Relaxed);
             *FORWARD_EVENTS.write() = core::mem::take(&mut self.prev_forward_events);
-            let mut guard = crate::net::manager::NETWORK_MANAGER
+            let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
                 .lock_for_init("[TEST][NET BRIDGE] manager restore");
             *guard = self.prev_manager.take();
         }
@@ -1041,13 +1067,13 @@ pub(crate) mod tests {
         let _bridge_guard = qemu_prepare_zero_copy_env();
 
         let mut config = super::NetworkConfig::default();
-        config.ipv6 = Some(crate::net::ipv6::Ipv6Config::from_mac(&[
+        config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[
             0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
         ]));
         stack::init(config);
 
-        let local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 1000);
-        let remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 2000);
+        let local = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 1000);
+        let remote = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 2000);
         let tcb_arc = match qemu_insert_established_tcb(local, remote) {
             Some(tcb) => tcb,
             None => return false,
@@ -1511,12 +1537,12 @@ pub(crate) mod tests {
 
         // Configure stack with IPv6 enabled for tests
         let mut config = super::NetworkConfig::default();
-        config.ipv6 = Some(crate::net::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
+        config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01]));
         stack::init(config);
 
         // Prepare a TCB and register it in the global stack (IPv6)
-        let local = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 1000);
-        let remote = TcpSocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK, 2000);
+        let local = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 1000);
+        let remote = TcpSocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK, 2000);
 
         let mut tcb = TcpControlBlock::new(local);
         tcb.set_remote_addr(remote);
@@ -1561,11 +1587,11 @@ pub(crate) mod tests {
         // IPv6 header
         let ip_off = eth_off + 14;
         {
-            let mut ipv6_mut = crate::net::ipv6::Ipv6PacketMut::new(&mut buf[ip_off..ip_off + 40]).expect("ipv6 mut");
+            let mut ipv6_mut = crate::net::l3::ipv6::Ipv6PacketMut::new(&mut buf[ip_off..ip_off + 40]).expect("ipv6 mut");
             ipv6_mut.init_header();
-            ipv6_mut.set_source(&crate::net::ipv6::Ipv6Address::LOOPBACK);
-            ipv6_mut.set_destination(&crate::net::ipv6::Ipv6Address::LOOPBACK);
-            ipv6_mut.set_next_header(crate::net::ipv4::IpProtocol::Tcp);
+            ipv6_mut.set_source(&crate::net::l3::ipv6::Ipv6Address::LOOPBACK);
+            ipv6_mut.set_destination(&crate::net::l3::ipv6::Ipv6Address::LOOPBACK);
+            ipv6_mut.set_next_header(crate::net::l3::ipv4::IpProtocol::Tcp);
             ipv6_mut.set_payload_length(tcp_len as u16);
         }
 
@@ -1669,7 +1695,7 @@ pub(crate) mod tests {
 }
 
 /// Get real network statistics from NetworkStack
-pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
+pub fn get_real_stats() -> Option<NetworkStatsSnapshot> {
     match stack::stack().lock() {
         Ok(guard) => {
             let stack = match guard.as_ref() {
@@ -1679,7 +1705,7 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
 
             let stats = stack.stats();
 
-            Some(super::NetworkStatsSnapshot {
+            Some(NetworkStatsSnapshot {
                 rx_packets: stats.rx_packets.load(Ordering::Relaxed),
                 tx_packets: stats.tx_packets.load(Ordering::Relaxed),
                 rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
@@ -1699,7 +1725,7 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
 ///
 /// Transitional behavior: returns the single global stack stats only for the
 /// current primary bridge interface.
-pub fn get_real_stats_for_interface(if_id: super::NetIfId) -> Option<super::NetworkStatsSnapshot> {
+pub fn get_real_stats_for_interface(if_id: super::NetIfId) -> Option<NetworkStatsSnapshot> {
     if primary_bridge_if() != Some(if_id) {
         return None;
     }
@@ -1729,7 +1755,7 @@ pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static st
 }
 
 /// Get ARP cache entries from real NetworkStack
-pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
+pub fn get_real_arp_cache() -> Vec<ArpCacheEntry> {
     match stack::stack().lock() {
         Ok(guard) => match guard.as_ref() {
             Some(stack) => {
@@ -1737,7 +1763,7 @@ pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
                 let mut entries = Vec::new();
 
                 for (ip, mac) in arp_cache {
-                    entries.push(super::ArpCacheEntry {
+                    entries.push(ArpCacheEntry {
                         ip: *ip.as_bytes(),
                         mac: *mac.as_bytes(),
                         complete: true,

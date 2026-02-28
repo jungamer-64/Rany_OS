@@ -71,8 +71,8 @@ fn send_challenge_ack(tcb: &TcpControlBlockEntry) {
     } else {
         TcpSegmentBuilder::calculate_checksum_v6(
             &mut ack,
-            crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-            crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
         );
     }
     send_tcp_segment(tcb.local, tcb.remote, ack);
@@ -154,7 +154,7 @@ fn handle_established_segment(
         if tcb.sack_enabled {
             if let Some(blocks) = parser.find_sack_blocks() {
                 if !blocks.is_empty() {
-                    crate::net::endpoint::retransmit::retransmit_queue_process_sack(
+                    crate::net::l4::endpoint::retransmit::retransmit_queue_process_sack(
                         tcb.local,
                         tcb.remote,
                         &blocks,
@@ -309,8 +309,8 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
         // one or both addresses are IPv6; fall back to v6 checksum generator
         TcpSegmentBuilder::calculate_checksum_v6(
             &mut ack_segment,
-            crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-            crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
         );
     }
 
@@ -372,8 +372,8 @@ fn process_tcp_new_connection(
     } else {
         TcpSegmentBuilder::calculate_checksum_v6(
             &mut rst,
-            crate::net::ipv6::Ipv6Address::new(local.as_ipv6()),
-            crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
         );
     }
         send_tcp_segment(local, remote, rst);
@@ -434,8 +434,8 @@ fn process_tcp_new_connection(
     } else {
         TcpSegmentBuilder::calculate_checksum_v6(
             &mut syn_ack,
-            crate::net::ipv6::Ipv6Address::new(local.as_ipv6()),
-            crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
         );
     }
 
@@ -631,8 +631,8 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         } else {
             TcpSegmentBuilder::calculate_checksum_v6(
                 &mut dup_ack,
-                crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-                crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
+                crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
+                crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
             );
         }
         send_tcp_segment(tcb.local, tcb.remote, dup_ack);
@@ -682,7 +682,7 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
     if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
         TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
     } else {
-        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
+        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
     }
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }
@@ -710,7 +710,7 @@ fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
     if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
         TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
     } else {
-        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
+        TcpSegmentBuilder::calculate_checksum_v6(&mut ack, crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()), crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()));
     }
     // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack);

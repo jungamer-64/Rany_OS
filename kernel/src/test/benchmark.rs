@@ -334,8 +334,8 @@ pub fn bench_ipc() -> TestResult {
 
 /// Benchmark network stack performance
 pub fn bench_network() -> TestResult {
-    use crate::net::ethernet::{EthernetFrame, MacAddress, EtherType};
-    use crate::net::ipv4::{Ipv4Packet, Ipv4Address};
+    use crate::net::l2::ethernet::{EthernetFrame, MacAddress, EtherType};
+    use crate::net::l3::ipv4::{Ipv4Packet, Ipv4Address};
     
     const ITERATIONS: usize = 10000;
     

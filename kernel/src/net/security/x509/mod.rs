@@ -1050,7 +1050,7 @@ fn match_hostname_in_subject(subject_der: &[u8], hostname: &str) -> bool {
 
 /// 証明書の署名を発行者の公開鍵で検証する
 fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKeyInfo<'_>) -> bool {
-    use crate::net::rsa::{rsa_pkcs1_verify, rsa_pss_verify, RsaPublicKey, HashAlgorithm};
+    use crate::net::security::rsa::{rsa_pkcs1_verify, rsa_pss_verify, RsaPublicKey, HashAlgorithm};
 
     match cert.signature_algorithm {
         SignatureAlgorithmId::Sha256WithRsa => {
@@ -1093,7 +1093,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
         SignatureAlgorithmId::EcdsaWithSha256 => {
             if let SubjectPublicKeyInfo::EcdsaP256 { public_key } = issuer_pubkey {
                 let digest = crate::loader::sha256::compute(cert.raw_tbs);
-                crate::net::ecdh::p256::ecdsa_p256_verify(
+                crate::net::security::ecdh::p256::ecdsa_p256_verify(
                     public_key,
                     &digest,
                     cert.signature_value,
@@ -1105,7 +1105,7 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
         SignatureAlgorithmId::EcdsaWithSha384 => {
             if let SubjectPublicKeyInfo::EcdsaP384 { public_key } = issuer_pubkey {
                 let digest = crate::loader::sha384::compute(cert.raw_tbs);
-                crate::net::ecdh::p384::ecdsa_p384_verify(
+                crate::net::security::ecdh::p384::ecdsa_p384_verify(
                     public_key,
                     &digest,
                     cert.signature_value,

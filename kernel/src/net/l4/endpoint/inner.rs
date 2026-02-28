@@ -8,8 +8,8 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use crate::net::tcp::{TcpListener as TcpListenerImpl, TcpStream};
-use crate::net::udp::UdpSocket as RawUdpSocket;
+use crate::net::l4::tcp::{TcpListener as TcpListenerImpl, TcpStream};
+use crate::net::l4::udp::UdpSocket as RawUdpSocket;
 
 use super::congestion::CongestionAlgorithm;
 use super::types::{AcceptedConnection, SocketAddr, SocketError, SocketResult, SocketState};

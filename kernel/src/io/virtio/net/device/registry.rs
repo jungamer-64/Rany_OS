@@ -1,6 +1,5 @@
-use super::VirtioNetDevice;
+use super::{VirtioNetDevice, VirtioNetError};
 use crate::io::virtio::transport::VirtioMmioTransport;
-use crate::io::virtio::net::device_impl::VirtioNetError;
 use crate::io::virtio::transport::VirtioTransport;
 use crate::task::{spawn, wait_for_interrupt, InterruptSource};
 use alloc::boxed::Box;
@@ -175,7 +174,7 @@ where
 }
 
 /// Bind a VirtIO-Net device index to a logical network interface id.
-pub fn bind_virtio_net_interface(index: u8, if_id: crate::net::NetIfId) -> bool {
+pub fn bind_virtio_net_interface(index: u8, if_id: crate::net::runtime::manager::NetIfId) -> bool {
     with_virtio_net_device_at_index_mut(index, |device| {
         device.set_net_if_id(if_id);
     })

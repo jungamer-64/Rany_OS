@@ -175,7 +175,7 @@ pub fn flow_control_probe_timing_smoke() -> bool {
 }
 
 pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
-    let sock = crate::net::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_socket();
     if let Some(s) = sock.socket() {
         let Ok(mut inner) = s.inner().lock() else { return false; };
         inner.local_addr = Some(super::types::SocketAddr::new([127, 0, 0, 1], 30001));
@@ -187,24 +187,24 @@ pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
 }
 
 pub fn futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
-    let sock = crate::net::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_socket();
     sock.socket().is_some()
 }
 
 pub fn futures_tcp_packet_stream_multiple_packets_smoke() -> bool {
-    let sock = crate::net::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_socket();
     sock.tcp_packet_stream().is_none()
 }
 
 pub fn futures_udp_packet_stream_delivered_smoke() -> bool {
-    let proc = crate::net::udp::UdpProcessor::new();
+    let proc = crate::net::l4::udp::UdpProcessor::new();
     proc.bind_with_token(40123, None).is_ok()
 }
 
 pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
-    crate::net::endpoint::manager::init_socket_manager();
+    crate::net::l4::endpoint::manager::init_socket_manager();
 
-    let sock = crate::net::endpoint::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_socket();
     let fd = sock.fd();
 
     if let Some(s) = sock.socket() {
@@ -215,15 +215,15 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
     }
 
     let handler = handler::NetworkEventHandler::new();
-    if !matches!(handler.handle_event(crate::net::endpoint::event::NetworkEvent::TxAvailable), handler::EventHandleResult::Success) {
+    if !matches!(handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::TxAvailable), handler::EventHandleResult::Success) {
         return false;
     }
 
     for _ in 0..16 {
-        let Some(evt) = crate::net::endpoint::event::event_queue().recv() else {
+        let Some(evt) = crate::net::l4::endpoint::event::event_queue().recv() else {
             break;
         };
-        if let crate::net::endpoint::event::NetworkEvent::DataReady { fd: efd, .. } = evt {
+        if let crate::net::l4::endpoint::event::NetworkEvent::DataReady { fd: efd, .. } = evt {
             if efd.raw() == fd.raw() {
                 return true;
             }
@@ -234,9 +234,9 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
 }
 
 pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
-    crate::net::endpoint::manager::init_socket_manager();
+    crate::net::l4::endpoint::manager::init_socket_manager();
 
-    let sock = crate::net::endpoint::create_tcp_socket();
+    let sock = crate::net::l4::endpoint::create_tcp_socket();
     let fd = sock.fd();
 
     if let Some(s) = sock.socket() {
@@ -247,7 +247,7 @@ pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
     }
 
     let handler = handler::NetworkEventHandler::new();
-    let _ = handler.handle_event(crate::net::endpoint::event::NetworkEvent::DataReady {
+    let _ = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::DataReady {
         fd,
         socket_type: super::types::SocketType::Tcp,
     });

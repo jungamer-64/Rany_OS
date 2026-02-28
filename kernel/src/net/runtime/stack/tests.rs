@@ -68,7 +68,7 @@ pub fn test_send_icmp_fallback_zero_copy() {
         }
     }
 
-    let res = crate::net::send_icmp_echo([8, 8, 8, 8], 1);
+    let res = crate::net::api::shell::send_icmp_echo([8, 8, 8, 8], 1);
     assert!(res.is_ok());
 }
 
@@ -77,11 +77,11 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     init_default();
 
     let client_mac = MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
-    crate::net::dhcp::init(client_mac);
+    crate::net::services::dhcp::init(client_mac);
 
     let xid = {
-        let mut discover = [0u8; crate::net::dhcp::DHCP_MAX_MESSAGE_SIZE];
-        let guard = match crate::net::dhcp::DHCP_CLIENT.lock() {
+        let mut discover = [0u8; crate::net::services::dhcp::DHCP_MAX_MESSAGE_SIZE];
+        let guard = match crate::net::services::dhcp::DHCP_CLIENT.lock() {
             Ok(g) => g,
             Err(_) => panic!("dhcp lock"),
         };
@@ -98,7 +98,7 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     let dns = Ipv4Address::new([1, 1, 1, 1]);
 
     let mut dhcp_ack = [0u8; 512];
-    dhcp_ack[0] = crate::net::DhcpOperation::Reply as u8;
+    dhcp_ack[0] = crate::net::services::dhcp::DhcpOperation::Reply as u8;
     dhcp_ack[1] = 1;
     dhcp_ack[2] = 6;
     dhcp_ack[4..8].copy_from_slice(&xid.to_be_bytes());
@@ -106,41 +106,41 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     dhcp_ack[20..24].copy_from_slice(server_ip.as_bytes()); // siaddr
     dhcp_ack[28..34].copy_from_slice(client_mac.as_bytes());
 
-    let mut off = crate::net::DhcpHeader::SIZE;
-    dhcp_ack[off..off + 4].copy_from_slice(&crate::net::DHCP_MAGIC_COOKIE);
+    let mut off = crate::net::services::dhcp::DhcpHeader::SIZE;
+    dhcp_ack[off..off + 4].copy_from_slice(&crate::net::services::dhcp::DHCP_MAGIC_COOKIE);
     off += 4;
 
-    dhcp_ack[off] = crate::net::dhcp::DhcpOption::MessageType as u8;
+    dhcp_ack[off] = crate::net::services::dhcp::DhcpOption::MessageType as u8;
     dhcp_ack[off + 1] = 1;
-    dhcp_ack[off + 2] = crate::net::DhcpMessageType::Ack as u8;
+    dhcp_ack[off + 2] = crate::net::services::dhcp::DhcpMessageType::Ack as u8;
     off += 3;
 
-    dhcp_ack[off] = crate::net::dhcp::DhcpOption::ServerIdentifier as u8;
+    dhcp_ack[off] = crate::net::services::dhcp::DhcpOption::ServerIdentifier as u8;
     dhcp_ack[off + 1] = 4;
     dhcp_ack[off + 2..off + 6].copy_from_slice(server_ip.as_bytes());
     off += 6;
 
-    dhcp_ack[off] = crate::net::dhcp::DhcpOption::SubnetMask as u8;
+    dhcp_ack[off] = crate::net::services::dhcp::DhcpOption::SubnetMask as u8;
     dhcp_ack[off + 1] = 4;
     dhcp_ack[off + 2..off + 6].copy_from_slice(subnet.as_bytes());
     off += 6;
 
-    dhcp_ack[off] = crate::net::dhcp::DhcpOption::Router as u8;
+    dhcp_ack[off] = crate::net::services::dhcp::DhcpOption::Router as u8;
     dhcp_ack[off + 1] = 4;
     dhcp_ack[off + 2..off + 6].copy_from_slice(server_ip.as_bytes());
     off += 6;
 
-    dhcp_ack[off] = crate::net::dhcp::DhcpOption::DnsServer as u8;
+    dhcp_ack[off] = crate::net::services::dhcp::DhcpOption::DnsServer as u8;
     dhcp_ack[off + 1] = 4;
     dhcp_ack[off + 2..off + 6].copy_from_slice(dns.as_bytes());
     off += 6;
 
-    dhcp_ack[off] = crate::net::dhcp::DhcpOption::LeaseTime as u8;
+    dhcp_ack[off] = crate::net::services::dhcp::DhcpOption::LeaseTime as u8;
     dhcp_ack[off + 1] = 4;
     dhcp_ack[off + 2..off + 6].copy_from_slice(&3600u32.to_be_bytes());
     off += 6;
 
-    dhcp_ack[off] = crate::net::dhcp::DhcpOption::End as u8;
+    dhcp_ack[off] = crate::net::services::dhcp::DhcpOption::End as u8;
     off += 1;
 
     let src_ip = server_ip;
@@ -164,14 +164,14 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     let udp_len = UdpProcessor::build_packet(
         ip.payload_mut(),
         src_ip,
-        crate::net::DHCP_SERVER_PORT,
+        crate::net::services::dhcp::DHCP_SERVER_PORT,
         dst_ip,
-        crate::net::DHCP_CLIENT_PORT,
+        crate::net::services::dhcp::DHCP_CLIENT_PORT,
         &dhcp_ack[..off],
     )
     .expect("udp packet");
     ip.finalize(udp_len);
-    eth.set_payload_len(crate::net::ipv4::Ipv4Header::MIN_SIZE + udp_len);
+    eth.set_payload_len(crate::net::l3::ipv4::Ipv4Header::MIN_SIZE + udp_len);
 
     receive(eth.as_bytes());
 
@@ -191,38 +191,38 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 pub fn test_dhcp_runtime_public_apis_smoke() {
     init_default();
 
-    assert!(crate::net::init_dhcp_runtime().is_ok());
+    assert!(crate::net::api::shell::init_dhcp_runtime().is_ok());
 
-    let st = crate::net::dhcp_state();
+    let st = crate::net::api::shell::dhcp_state();
     assert!(!st.v4_state.is_empty());
     assert!(!st.v6_state.is_empty());
 
-    assert!(crate::net::dhcp_renew().is_ok());
+    assert!(crate::net::api::shell::dhcp_renew().is_ok());
 
     // The new public entrypoints should at least compile and return sane defaults.
     // At the moment no offer exists, so discover should return None.
-    assert!(crate::net::dhcp_discover().is_none());
+    assert!(crate::net::api::shell::dhcp_discover().is_none());
 
     // Sending a request with bogus addresses should not panic; result may be false.
-    let _ = crate::net::dhcp_request([0, 0, 0, 0], [0, 0, 0, 0]);
+    let _ = crate::net::api::shell::dhcp_request([0, 0, 0, 0], [0, 0, 0, 0]);
 
     // Release should be a no-op as well
-    crate::net::dhcp_release();
+    crate::net::api::shell::dhcp_release();
 
     // last declined / released are initially None
-    assert!(crate::net::dhcp_last_declined().is_none());
-    assert!(crate::net::dhcp_last_released().is_none());
+    assert!(crate::net::api::shell::dhcp_last_declined().is_none());
+    assert!(crate::net::api::shell::dhcp_last_released().is_none());
 
     // create a fake client lease to exercise release API
-    if let Ok(guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+    if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
             // manually populate lease and then release via helper
-            let lease = crate::net::dhcp::DhcpLease {
-                ip_address: crate::net::Ipv4Address::new([10, 1, 2, 3]),
-                subnet_mask: crate::net::Ipv4Address::new([255, 255, 255, 0]),
+            let lease = crate::net::services::dhcp::DhcpLease {
+                ip_address: crate::net::l3::ipv4::Ipv4Address::new([10, 1, 2, 3]),
+                subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255, 255, 255, 0]),
                 gateway: None,
                 dns_servers: alloc::vec![],
-                server_ip: crate::net::Ipv4Address::new([10, 1, 2, 1]),
+                server_ip: crate::net::l3::ipv4::Ipv4Address::new([10, 1, 2, 1]),
                 lease_time: 3600,
                 t1: 1800,
                 t2: 3150,
@@ -233,21 +233,21 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
             client.set_lease_for_test(lease.clone());
         }
     }
-    crate::net::dhcp_release();
-    assert_eq!(crate::net::dhcp_last_released(), Some([10,1,2,3]));
+    crate::net::api::shell::dhcp_release();
+    assert_eq!(crate::net::api::shell::dhcp_last_released(), Some([10,1,2,3]));
 
     // simulate a conflict/decline
     let test_ip = [192, 168, 123, 45];
     let server_ip = [192, 168, 123, 1];
-    if let Ok(guard) = crate::net::dhcp::DHCP_CLIENT.lock() {
+    if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
         if let Some(ref client) = *guard {
-            let _ = client.send_decline(crate::net::Ipv4Address::new(test_ip), Some(crate::net::Ipv4Address::new(server_ip)));
+            let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new(test_ip), Some(crate::net::l3::ipv4::Ipv4Address::new(server_ip)));
         }
     }
-    assert_eq!(crate::net::dhcp_last_declined(), Some(test_ip));
+    assert_eq!(crate::net::api::shell::dhcp_last_declined(), Some(test_ip));
 
     // verify dhcp_state snapshot reflects the same
-    let snap = crate::net::dhcp_state();
+    let snap = crate::net::api::shell::dhcp_state();
     assert_eq!(snap.v4_last_declined, Some(test_ip));
     assert_eq!(snap.v4_last_released, Some([10,1,2,3]));
 }
@@ -332,8 +332,8 @@ pub fn test_send_on_helpers_exist() {
     let _ = send_udp_v6_on(
         NetIfId(0),
         1234,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
-        crate::net::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
+        crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
         80,
         &[0u8],
     );

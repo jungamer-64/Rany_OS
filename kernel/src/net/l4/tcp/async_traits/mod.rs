@@ -75,7 +75,7 @@ impl TcpStream {
         // ローカルポートの割り当て（0を指定して自動割り当て）とTCBの作成、初期SYNの送信は Global Stack に委譲
         let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0);
         
-        let stream = crate::net::stack::connect_tcp(local_addr, addr)?;
+        let stream = crate::net::runtime::stack::connect_tcp(local_addr, addr)?;
         
         // 接続完了を待つ
         let tcb = stream.tcb.clone();
@@ -156,7 +156,7 @@ impl TcpStream {
 
                 if let Some(mut queued) = tcb.pop_recv_copy_fallback_front() {
 
-                    if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+                    if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
                         let data_slice = packet.data_mut();
                         let copy_len = queued.len().min(data_slice.len());
                         data_slice[..copy_len].copy_from_slice(&queued[..copy_len]);
@@ -175,7 +175,7 @@ impl TcpStream {
                         crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(queued.len())
                     {
                         dma_buf.as_mut_slice().copy_from_slice(&queued);
-                        let mut packet = crate::net::mempool::PacketRef::from_dma_slice(dma_buf);
+                        let mut packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
                         packet.set_len(queued.len());
                         tcb.record_rx_delivered_stats(queued.len());
                         return Poll::Ready(Some(packet));
@@ -331,7 +331,7 @@ impl AsyncWrite for TcpStream {
 
                 // Prefer mempool packet, but fall back to a DMA-backed packet so
                 // writers don't stall forever when the packet pool is exhausted.
-                if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+                if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
                     packet.data_mut()[..len].copy_from_slice(&buf[..len]);
                     packet.set_len(len);
                     tcb.enqueue_send_packet(packet);
@@ -341,7 +341,7 @@ impl AsyncWrite for TcpStream {
                     crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(len)
                 {
                     dma_buf.as_mut_slice()[..len].copy_from_slice(&buf[..len]);
-                    let mut packet = crate::net::mempool::PacketRef::from_dma_slice(dma_buf);
+                    let mut packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(dma_buf);
                     packet.set_len(len);
                     tcb.enqueue_send_packet(packet);
                     tcb.record_tx_enqueued_stats(len);
@@ -468,7 +468,7 @@ impl TcpListener {
     ///
     /// 【設計書】POSIXのbind()と同様の動作
     pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
-        crate::net::stack::bind_tcp(addr)
+        crate::net::runtime::stack::bind_tcp(addr)
     }
 
     // Legacy constructor `TcpListener::new` removed; use `TcpListener::bind(addr)` instead.
@@ -574,7 +574,7 @@ impl TcpStream {
     /// Connect with a timeout in microseconds
     pub async fn dial_timeout(addr: SocketAddr, timeout_us: u64) -> Result<Self, TcpError> {
         let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0);
-        let stream = crate::net::stack::connect_tcp(local_addr, addr)?;
+        let stream = crate::net::runtime::stack::connect_tcp(local_addr, addr)?;
         let start = crate::time::precise_time_nanos() / 1000;
         let tcb = stream.tcb.clone();
         ConnectTimeoutFuture { tcb, start_us: start, timeout_us }.await?;

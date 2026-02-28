@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use crate::net::mempool::PacketRef;
+use crate::net::datapath::mempool::PacketRef;
 use crate::net::NetworkError;
 
 extern crate alloc;
@@ -389,7 +389,7 @@ impl UdpSocket {
         let dst_ip = dst.ip;
         let dst_port = dst.port;
         
-        if crate::net::stack::send_udp(local_port, dst_ip, dst_port, data) {
+        if crate::net::runtime::stack::send_udp(local_port, dst_ip, dst_port, data) {
             Ok(data.len())
         } else {
             Err(NetworkError::TransmitFailed)

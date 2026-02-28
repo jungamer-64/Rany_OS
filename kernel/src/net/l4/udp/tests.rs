@@ -103,7 +103,7 @@ pub fn test_bind_with_token_reclaim() {
     // Target binds using token
     {
         let _target_guard = set_current_subject(target);
-        let sock = crate::net::stack::bind_udp_with_token(40000, Some(token));
+        let sock = crate::net::runtime::stack::bind_udp_with_token(40000, Some(token));
         assert!(sock.is_some());
         assert_eq!(manager().in_flight_count(token), 1);
     }
@@ -120,7 +120,7 @@ pub fn test_bind_with_token_reclaim() {
     // Now unbind the socket (target releases resource)
     {
         let _target_guard = set_current_subject(target);
-        crate::net::stack::unbind_udp(40000);
+        crate::net::runtime::stack::unbind_udp(40000);
     }
 
     assert_eq!(manager().in_flight_count(token), 0);
@@ -231,7 +231,7 @@ pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
     assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
 
     let mut packet = unsafe {
-        crate::net::mempool::PacketRef::from_static_raw_for_tests(
+        crate::net::datapath::mempool::PacketRef::from_static_raw_for_tests(
             addr_of_mut!(WAITERS_TEST_PACKET) as *mut u8,
             3,
         )
@@ -300,7 +300,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         buf[7] = 0;
         static mut UDP_PROCESS_TEST_PACKET: [u8; 2] = [0; 2];
         let mut packet = unsafe {
-            crate::net::mempool::PacketRef::from_static_raw_for_tests(
+            crate::net::datapath::mempool::PacketRef::from_static_raw_for_tests(
                 addr_of_mut!(UDP_PROCESS_TEST_PACKET) as *mut u8,
                 payload.len(),
             )
@@ -316,10 +316,10 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
     }
     #[cfg(not(feature = "qemu-test-export"))]
     {
-        match crate::net::mempool::net_mempool() {
-            None => crate::net::mempool::init_net_mempool(4)
+        match crate::net::datapath::mempool::net_mempool() {
+            None => crate::net::datapath::mempool::init_net_mempool(4)
                 .expect("initialize mempool for udp zero-copy enqueue test"),
-            Some(pool) if pool.stats().free_buffers == 0 => crate::net::mempool::init_net_mempool(1)
+            Some(pool) if pool.stats().free_buffers == 0 => crate::net::datapath::mempool::init_net_mempool(1)
                 .expect("top up mempool for udp zero-copy enqueue test"),
             Some(_) => {}
         }

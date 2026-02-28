@@ -364,7 +364,7 @@ impl NetworkStack {
         };
 
         // Check for fragment header before normal processing
-        use crate::net::ipv6::{skip_extension_headers_fraginfo, ExtHeaderResult};
+        use crate::net::l3::ipv6::{skip_extension_headers_fraginfo, ExtHeaderResult};
         match skip_extension_headers_fraginfo(data) {
             ExtHeaderResult::Fragment {
                 unfragmentable,
@@ -375,11 +375,11 @@ impl NetworkStack {
                 if data.len() < 40 {
                     return;
                 }
-                let src = crate::net::ipv6::Ipv6Address::new([
+                let src = crate::net::l3::ipv6::Ipv6Address::new([
                     data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
                     data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
                 ]);
-                let dst = crate::net::ipv6::Ipv6Address::new([
+                let dst = crate::net::l3::ipv6::Ipv6Address::new([
                     data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
                     data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
                 ]);
@@ -477,7 +477,7 @@ impl NetworkStack {
     /// Process NDP message
     pub(super) fn process_ndp_message(
         &mut self,
-        msg_type: crate::net::icmpv6::Icmpv6Type,
+        msg_type: crate::net::l3::icmpv6::Icmpv6Type,
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
@@ -535,7 +535,7 @@ impl NetworkStack {
                 log::info!("NDP: Router Advertisement from {}, {} prefixes", router, prefixes.len());
                 // SLAAC (RFC 4862): Apply prefix information
                 for prefix_opt in &prefixes {
-                    if let crate::net::ndp::NdpOption::PrefixInfo {
+                    if let crate::net::l3::ndp::NdpOption::PrefixInfo {
                         prefix_len,
                         on_link: _,
                         autonomous,
@@ -790,8 +790,8 @@ impl NetworkStack {
                 payload_buf[8..8 + data.len()].copy_from_slice(data);
 
                 // Compute UDP checksum (IPv6 pseudo-header)
-                let pseudo = crate::net::ipv6::ipv6_pseudo_header_checksum(&src_ip, &dst, IpProtocol::Udp, udp_len as u32);
-                let checksum = crate::net::ipv4::data_checksum(&payload_buf[..udp_len as usize], pseudo);
+                let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(&src_ip, &dst, IpProtocol::Udp, udp_len as u32);
+                let checksum = crate::net::l3::ipv4::data_checksum(&payload_buf[..udp_len as usize], pseudo);
                 let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
                 payload_buf[6..8].copy_from_slice(&final_checksum.to_be_bytes());
 
@@ -932,7 +932,7 @@ impl NetworkStack {
     }
 
     /// Apply a DHCPv6-obtained global IPv6 address to the stack
-    pub fn apply_ipv6_global_address(&mut self, addr: crate::net::ipv6::Ipv6Address) {
+    pub fn apply_ipv6_global_address(&mut self, addr: crate::net::l3::ipv6::Ipv6Address) {
         if let Some(ref mut ipv6_proc) = self.ipv6 {
             ipv6_proc.set_global_address(addr);
         }
@@ -1036,7 +1036,7 @@ impl NetworkStack {
                 // Build IGMP message into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
                 if ip_payload.len() >= 8 {
-                    if let Some(len) = crate::net::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
+                    if let Some(len) = crate::net::l2::igmp::IgmpProcessor::build_report(group_addr, ip_payload) {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
 

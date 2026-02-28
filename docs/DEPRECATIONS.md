@@ -105,11 +105,18 @@ This document lists symbols that have been marked deprecated and recommended mig
   - Re-export of `ahci_driver::atapi` ✅ **deprecated** (marked deprecated in `drivers/ahci` on 2026-01-17)
     - Migration: Use `ahci_driver::atapi` directly.
 
-- `kernel/src/io/virtio/net.rs`
+- `kernel/src/io/virtio/net/mod.rs`
   - `notify_addr` field ✅ **deprecated**
     - Migration: Prefer transport-level notify configuration and the `notify` methods on the virtio transport; use interrupt-driven notifications instead of per-queue MMIO `notify_addr` where possible.
 
 - `kernel/src/net` (TCP/Socket APIs)
+  - 旧トップレベル `crate::net::*` 直下ネットワークAPI / 再エクスポート ❌ **removed**
+    - Replacement: 新階層へ移行 (`crate::net::api::{shell,diag}`, `crate::net::runtime::{stack,manager,bridge}`, `crate::net::l2/l3/l4`, `crate::net::services`, `crate::net::security`, `crate::net::datapath`, `crate::net::drivers`)。
+    - 代表例:
+      - `crate::net::get_network_config` -> `crate::net::api::shell::get_network_config`
+      - `crate::net::get_network_stats` -> `crate::net::api::shell::get_network_stats`
+      - `crate::net::send_icmp_echo` -> `crate::net::api::shell::send_icmp_echo`
+      - `crate::net::get_arp_cache` -> `crate::net::api::shell::get_arp_cache`
   - POSIX-style socket compatibility methods (e.g., `Socket::bind`, `Socket::connect`, `Socket::listen`, `Socket::accept`, `TcpStream::connect`, `TcpListener::bind`/`accept`) ❌ **removed**
     - Removal: These compatibility wrappers have been removed; migrate to the async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()`.
   - `TcpListener::new` ❌ **removed** (was deprecated)

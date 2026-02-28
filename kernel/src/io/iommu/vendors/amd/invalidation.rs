@@ -415,7 +415,7 @@ impl AmdIommuDriver {
         };
 
         for domain_id in domain_ids {
-            let _ = self.invalidate_domain_all(domain_id);
+            self.invalidate_domain_all(domain_id)?;
         }
 
         Ok(())
@@ -433,6 +433,7 @@ impl AmdIommuDriver {
     /// Invalidate all pages in a domain.
     fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
         let epoch = self.iova_allocator.advance_epoch();
+        let mut last_err = None;
         for (idx, _unit) in self.units.iter().enumerate() {
             if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
                 // Use invalidate_iommu_pages with size = u64::MAX to invalidate all pages
@@ -443,11 +444,16 @@ impl AmdIommuDriver {
                     None,      // pasid
                 );
                 if let Ok(mut state) = cmd_state.lock() {
-                    let _ = state.submit_and_wait(command);
+                    if let Err(err) = state.submit_and_wait(command) {
+                        last_err = Some(err);
+                    }
                 }
             }
         }
         self.iova_allocator.complete_epoch(epoch);
+        if let Some(err) = last_err {
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -464,10 +470,10 @@ impl AmdIommuDriver {
                 // For ATS-aware invalidation, we must send INVALIDATE_IOTLB_PAGES to the device
                 match (iova, size) {
                     (Some(iova_val), Some(size_val)) => {
-                        let _ = self.invalidate_iotlb_pages(device, iova_val, size_val);
+                        self.invalidate_iotlb_pages(device, iova_val, size_val)?;
                     }
                     _ => {
-                        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+                        self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
                     }
                 }
             }
@@ -484,6 +490,7 @@ impl AmdIommuDriver {
 
         // Advance epoch before global invalidation
         let epoch = self.iova_allocator.advance_epoch();
+        let mut last_err = None;
 
         for (idx, _unit) in self.units.iter().enumerate() {
             if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
@@ -491,24 +498,41 @@ impl AmdIommuDriver {
                     let sync_phys = state.sync_phys;
                     for devid in &device_ids {
                         let command = cmd::AmdCommand::invalidate_device_entry(*devid);
-                        let _ = state.submit(command);
+                        if let Err(err) = state.submit(command) {
+                            last_err = Some(err);
+                            break;
+                        }
                     }
-                    // Submit a completion wait and wait for it
-                    let token = state.submit_and_wait_token(
-                        cmd::AmdCommand::completion_wait(
-                            sync_phys,
-                            0, // Dummy, submit_and_wait_token will override it
+                    
+                    if last_err.is_none() {
+                        // Submit a completion wait and wait for it
+                        match state.submit_and_wait_token(
+                            cmd::AmdCommand::completion_wait(
+                                sync_phys,
+                                0, // Dummy, submit_and_wait_token will override it
+                                false,
+                            ),
                             false,
-                        ),
-                        false,
-                    )?;
-                    token.wait_blocking()?;
+                        ) {
+                            Ok(token) => {
+                                if let Err(err) = token.wait_blocking() {
+                                    last_err = Some(err);
+                                }
+                            },
+                            Err(err) => {
+                                last_err = Some(err);
+                            }
+                        }
+                    }
                 }
             }
         }
 
         // Complete epoch after hardware confirmation
         self.iova_allocator.complete_epoch(epoch);
+        if let Some(err) = last_err {
+            return Err(err);
+        }
         Ok(())
     }
 }

@@ -10,7 +10,7 @@ pub mod tests {
     use super::super::socket::Socket;
     use super::super::tcb::TcpControlBlockEntry;
     use super::super::types::{AcceptedConnection, SocketAddr, SocketError, SocketFd, SocketState};
-    use crate::net::endpoint::SocketType;
+    use crate::net::l4::endpoint::SocketType;
     use alloc::vec::Vec;
 
     #[cfg_attr(test, test_case)]
@@ -95,15 +95,15 @@ pub mod tests {
         // Bound -> Listening
         {
             let mut inner = listen_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 8080));
+            inner.local_addr = Some(SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080));
             let _ = inner.transition_to(SocketState::Bound);
             let _ = inner.transition_to(SocketState::Listening);
         }
 
         // 接続をAcceptキューに追加
         let accepted_fd = SocketFd::from_raw(201);
-        let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
-        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 54001);
+        let local = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 54001);
         let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
         let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
 
@@ -177,10 +177,10 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_start_listening_v6() {
         // Ensure manager exists
-        crate::net::endpoint::manager::init_socket_manager();
+        crate::net::l4::endpoint::manager::init_socket_manager();
 
-        let sock = crate::net::endpoint::create_tcp_socket();
-        let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
+        let sock = crate::net::l4::endpoint::create_tcp_socket();
+        let local = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
         assert!(sock.set_local_addr(local).is_ok());
         assert!(sock.start_listening(4).is_ok());
 
@@ -195,13 +195,13 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_connect_creates_tcb_v6() {
-        crate::net::endpoint::manager::init_socket_manager();
-        let handler = crate::net::endpoint::handler::NetworkEventHandler::new();
+        crate::net::l4::endpoint::manager::init_socket_manager();
+        let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
 
-        let sock = crate::net::endpoint::create_tcp_socket();
+        let sock = crate::net::l4::endpoint::create_tcp_socket();
         let fd = sock.fd();
-        let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
-        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 3000);
+        let local = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
+        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 3000);
 
         if let Some(s) = sock.socket() {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -209,12 +209,12 @@ pub mod tests {
             inner.remote_addr = Some(remote);
         }
 
-        let res = handler.handle_event(crate::net::endpoint::event::NetworkEvent::Connect { fd, local, remote });
-        assert!(matches!(res, crate::net::endpoint::handler::EventHandleResult::Success));
+        let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::Connect { fd, local, remote });
+        assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
 
-        let tcb = crate::net::endpoint::tcb::tcb_table().get(local, remote);
+        let tcb = crate::net::l4::endpoint::tcb::tcb_table().get(local, remote);
         assert!(tcb.is_some());
-        assert_eq!(tcb.unwrap().state, crate::net::endpoint::tcb::TcpConnectionState::SynSent);
+        assert_eq!(tcb.unwrap().state, crate::net::l4::endpoint::tcb::TcpConnectionState::SynSent);
     }
 }
 

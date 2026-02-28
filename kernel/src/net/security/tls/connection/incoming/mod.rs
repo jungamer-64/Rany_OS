@@ -497,21 +497,21 @@ impl TlsConnection {
     /// 検証成功後、サーバー公開鍵を保存する。
     pub(super) fn extract_server_public_key_from_spki(
         &mut self,
-        spki: crate::net::x509::SubjectPublicKeyInfo<'_>,
+        spki: crate::net::security::x509::SubjectPublicKeyInfo<'_>,
     ) -> TlsResult<()> {
         match spki {
-            crate::net::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
+            crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
                 self.server_public_key = Some(ServerPublicKey::Rsa {
                     modulus: modulus.to_vec(),
                     exponent: exponent.to_vec(),
                 });
             }
-            crate::net::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
+            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
                 self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
                     point: public_key.to_vec(),
                 });
             }
-            crate::net::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
+            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
                 self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
                     point: public_key.to_vec(),
                 });
@@ -527,7 +527,7 @@ impl TlsConnection {
 
     pub(super) fn extract_server_public_key(
         &mut self,
-        cert: &crate::net::x509::X509Certificate,
+        cert: &crate::net::security::x509::X509Certificate,
     ) -> TlsResult<()> {
         self.extract_server_public_key_from_spki(cert.subject_public_key_info)
     }
@@ -571,7 +571,7 @@ impl TlsConnection {
         if !self.config.skip_verify {
             // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
             let ca_ders: Vec<&[u8]> = self.config.ca_certs.iter().map(|c| c.der.as_slice()).collect();
-            if let Some(spki) = crate::net::x509::validate_certificate_chain(
+            if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
                 &certs,
                 self.config.server_name.as_deref(),
                 &ca_ders,
@@ -583,7 +583,7 @@ impl TlsConnection {
         } else {
             // 検証スキップ時は最初の証明書の鍵をそのまま使用
             log::warn!("[TLS] Security: Certificate verification skipped. This connection is vulnerable to Man-in-the-Middle attacks!");
-            if let Some(cert) = crate::net::x509::parse_x509(certs[0]) {
+            if let Some(cert) = crate::net::security::x509::parse_x509(certs[0]) {
                 self.extract_server_public_key(&cert)?;
             } else {
                 return Err(TlsError::CertificateError);
@@ -602,28 +602,28 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         let pubkey = match &self.server_public_key {
             Some(ServerPublicKey::Rsa { modulus, exponent }) => {
-                crate::net::rsa::RsaPublicKey { modulus, exponent }
+                crate::net::security::rsa::RsaPublicKey { modulus, exponent }
             }
             _ => return Err(TlsError::CertificateError),
         };
 
         let (hash_alg, digest) = match alg_selector {
             1 => {
-                let d = crate::net::tls::crypto::legacy::sha1_compute(signed_data);
-                (crate::net::rsa::HashAlgorithm::Sha1, d.to_vec())
+                let d = crate::net::security::tls::crypto::legacy::sha1_compute(signed_data);
+                (crate::net::security::rsa::HashAlgorithm::Sha1, d.to_vec())
             }
             2 => {
                 let d = crate::loader::sha256::compute(signed_data);
-                (crate::net::rsa::HashAlgorithm::Sha256, d.to_vec())
+                (crate::net::security::rsa::HashAlgorithm::Sha256, d.to_vec())
             }
             3 => {
                 let d = crate::loader::sha384::compute(signed_data);
-                (crate::net::rsa::HashAlgorithm::Sha384, d.to_vec())
+                (crate::net::security::rsa::HashAlgorithm::Sha384, d.to_vec())
             }
             _ => return Err(TlsError::CryptoError),
         };
 
-        crate::net::rsa::rsa_pkcs1_verify(
+        crate::net::security::rsa::rsa_pkcs1_verify(
             &pubkey,
             hash_alg,
             &digest,

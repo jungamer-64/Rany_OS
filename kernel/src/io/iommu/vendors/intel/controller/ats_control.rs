@@ -162,8 +162,17 @@ impl IommuController {
                     }
 
                     // Issue Device-TLB invalidation to clear stale entries
-                    // Note: This is best-effort since the device may not respond
-                    let _ = self.qi_invalidate_device_tlb_all(device.requester_id());
+                    if let Err(err) = self.qi_invalidate_device_tlb_all(device.requester_id()) {
+                        log::error!(
+                            "[IOMMU][SECURITY] Failed to submit Device-TLB invalidation for device {:04X}:{:02X}.{:X} while disabling ATS: {:?}",
+                            device.bus, device.device, device.function, err
+                        );
+                    } else if let Err(err) = self.qi_wait_sync() {
+                        log::error!(
+                            "[IOMMU][SECURITY] Timeout/Error waiting for Device-TLB invalidation for device {:04X}:{:02X}.{:X} while disabling ATS: {:?}",
+                            device.bus, device.device, device.function, err
+                        );
+                    }
                 }
             }
             Err(_) => {

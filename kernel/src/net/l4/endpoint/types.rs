@@ -270,7 +270,7 @@ impl core::fmt::Display for SocketAddr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
             SocketAddr::V4 { ip, port } => write!(f, "{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], port),
-            SocketAddr::V6 { ip, port } => write!(f, "[{}]:{}", crate::net::Ipv6Address::new(ip), port),
+            SocketAddr::V6 { ip, port } => write!(f, "[{}]:{}", crate::net::l3::ipv6::Ipv6Address::new(ip), port),
         }
     }
 }

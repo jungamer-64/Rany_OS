@@ -333,7 +333,7 @@ impl IgmpProcessor {
         }
 
         // Security: Generate better random delay to avoid synchronized multicast storms.
-        let random_bytes = crate::net::tls::crypto::random::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         let rand_val = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
         let random_delay = (rand_val as u64 % max_delay_ms) + 1;
 

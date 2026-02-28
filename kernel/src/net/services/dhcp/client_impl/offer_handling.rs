@@ -10,7 +10,7 @@ impl DhcpClient {
         }
 
         // Best-effort: ARP probe the offered IP to detect conflicts
-        match crate::net::stack::stack().lock() {
+        match crate::net::runtime::stack::stack().lock() {
             Ok(mut s) => {
                 if let Some(stack) = s.as_mut() {
                     stack.send_arp_probe(lease.ip_address);
@@ -156,7 +156,7 @@ impl DhcpClient {
                 self.last_declined.store(declined_ip.to_u32(), Ordering::SeqCst);
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
-                crate::net::stack::send_udp(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..len])
+                crate::net::runtime::stack::send_udp(DHCP_CLIENT_PORT, dst, DHCP_SERVER_PORT, &buf[..len])
             }
             Err(_) => false,
         }
@@ -237,7 +237,7 @@ impl DhcpClient {
 
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_release(&mut buf, 0) {
-            Ok(len) => crate::net::stack::send_udp(DHCP_CLIENT_PORT, lease.server_ip, DHCP_SERVER_PORT, &buf[..len]),
+            Ok(len) => crate::net::runtime::stack::send_udp(DHCP_CLIENT_PORT, lease.server_ip, DHCP_SERVER_PORT, &buf[..len]),
             Err(_) => false,
         }
     }
@@ -267,7 +267,7 @@ impl DhcpClient {
     fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
-        Ok(crate::net::stack::send_udp(
+        Ok(crate::net::runtime::stack::send_udp(
             DHCP_CLIENT_PORT,
             Ipv4Address::new([255, 255, 255, 255]),
             DHCP_SERVER_PORT,
@@ -296,7 +296,7 @@ impl DhcpClient {
         let len = self.build_request(&mut buf, current_tick)?;
         let state = self.state();
         let dst = self.request_destination_for_state(state);
-        Ok(crate::net::stack::send_udp(
+        Ok(crate::net::runtime::stack::send_udp(
             DHCP_CLIENT_PORT,
             dst,
             DHCP_SERVER_PORT,
@@ -399,7 +399,7 @@ impl DhcpClient {
 
     // --- check_timeout helper: send initial ARP probe for offered IP ---
     pub(super) fn send_initial_arp_probe(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
-        match crate::net::stack::stack().lock() {
+        match crate::net::runtime::stack::stack().lock() {
             Ok(mut s) => {
                 if let Some(stack) = s.as_mut() {
                     stack.send_arp_probe(offered_ip);
@@ -414,7 +414,7 @@ impl DhcpClient {
 
     // --- check_timeout helper: check ARP cache for address conflict ---
     pub(super) fn check_arp_conflict(&self, offered_ip: Ipv4Address, current_tick: u64) -> bool {
-        if let Ok(mut s) = crate::net::stack::stack().lock() {
+        if let Ok(mut s) = crate::net::runtime::stack::stack().lock() {
             if let Some(stack) = s.as_mut() {
                 if let Some(mac) = stack.arp_resolve(offered_ip, current_tick) {
                     return mac != self.mac_address && !mac.is_broadcast();

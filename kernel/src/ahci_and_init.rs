@@ -129,9 +129,12 @@ pub(crate) fn init_hid_and_serial_drivers() {
 pub(crate) fn init_network_subsystem() {
     io::log::early_print("[DEBUG] Network init\n");
     info!(target: "init", "Initializing network subsystem");
-    let bridge_initialized = crate::net::driver_bridge::is_initialized();
-    let stack_initialized = net::is_stack_initialized();
-    let socket_manager_initialized = net::is_socket_manager_initialized();
+    let bridge_initialized = crate::net::runtime::bridge::is_initialized();
+    let stack_initialized = crate::net::runtime::stack::stack()
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false);
+    let socket_manager_initialized = crate::net::l4::endpoint::is_socket_manager_initialized();
     info!(target: "init", "Net Bridge initialized: {}", bridge_initialized);
     info!(
         target: "init",
@@ -150,7 +153,7 @@ pub(crate) fn init_network_subsystem() {
             "Bridge already initialized; skipping default stack initialization"
         );
     } else if !stack_initialized {
-        net::init_stack_default();
+        crate::net::runtime::stack::init(crate::net::runtime::stack::NetworkConfig::default());
         info!(target: "init", "Network stack initialized (default)");
     } else {
         info!(
@@ -159,8 +162,8 @@ pub(crate) fn init_network_subsystem() {
         );
     }
 
-    if !net::is_socket_manager_initialized() {
-        net::init_socket_manager();
+    if !crate::net::l4::endpoint::is_socket_manager_initialized() {
+        crate::net::l4::endpoint::init_socket_manager();
         info!(target: "init", "Socket manager initialized");
     } else {
         info!(
@@ -170,7 +173,7 @@ pub(crate) fn init_network_subsystem() {
     }
 
     info!(target: "init", "Initializing network shell API");
-    net::init_network_shell();
+    crate::net::api::shell::init_network_shell();
     info!(target: "init", "Network shell API initialized");
 
     let virtio_net_present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
@@ -189,7 +192,7 @@ pub(crate) fn init_network_subsystem() {
         {
             use alloc::boxed::Box;
             use driver_registry::register_driver;
-            use net::driver::VirtioNetDriver;
+            use crate::net::drivers::virtio_registry::VirtioNetDriver;
 
             let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
             if let Err(e) = driver_registry::driver_registry()
@@ -222,7 +225,7 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
     let mut last_err = "Failed to send ICMP echo request";
 
     for attempt in 1..=MAX_ATTEMPTS {
-        match crate::net::send_real_icmp_echo(target, seq) {
+        match crate::net::runtime::bridge::send_real_icmp_echo(target, seq) {
             Ok(rtt) => return Ok(rtt),
             Err(err) => {
                 last_err = err;
@@ -242,7 +245,7 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
 
         for _ in 0..PUMP_ROUNDS_PER_ATTEMPT {
             crate::io::virtio::handle_all_virtio_net_interrupts();
-            crate::net::driver_bridge::check_batch_timeout(100_000, 1);
+            crate::net::runtime::bridge::check_batch_timeout(100_000, 1);
         }
     }
 

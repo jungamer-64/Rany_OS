@@ -191,8 +191,8 @@ impl TcpProcessor {
     pub fn process_v6(
         &mut self,
         data: &[u8],
-        src_ip: crate::net::ipv6::Ipv6Address,
-        dst_ip: crate::net::ipv6::Ipv6Address,
+        src_ip: crate::net::l3::ipv6::Ipv6Address,
+        dst_ip: crate::net::l3::ipv6::Ipv6Address,
         current_time: u64,
     ) -> TcpProcessResult {
         
@@ -262,7 +262,7 @@ impl TcpProcessor {
                     wildcard_v4
                 } else {
                     let wildcard_v6 =
-                        SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::UNSPECIFIED, port);
+                        SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
                     if self.listeners.contains_key(&wildcard_v6) {
                         wildcard_v6
                     } else {
@@ -271,7 +271,7 @@ impl TcpProcessor {
                 }
             } else {
                 let wildcard_v6 =
-                    SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::UNSPECIFIED, port);
+                    SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED, port);
                 if self.listeners.contains_key(&wildcard_v6) {
                     wildcard_v6
                 } else {
@@ -406,8 +406,8 @@ impl TcpProcessor {
     pub fn process_with_packet_v6(
         &mut self,
         data: &[u8],
-        src_ip: crate::net::ipv6::Ipv6Address,
-        dst_ip: crate::net::ipv6::Ipv6Address,
+        src_ip: crate::net::l3::ipv6::Ipv6Address,
+        dst_ip: crate::net::l3::ipv6::Ipv6Address,
         packet: PacketRef,
         current_time: u64,
     ) -> TcpProcessResult {
@@ -856,7 +856,7 @@ impl TcpProcessor {
     ) -> bool {
         let copy_len = payload_len.min(payload.len());
         let payload = &payload[..copy_len];
-        if let Some(mut packet) = crate::net::mempool::alloc_packet() {
+        if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
             let data_slice = packet.data_mut();
             if copy_len <= data_slice.len() {
                 data_slice[..copy_len].copy_from_slice(payload);
@@ -924,5 +924,4 @@ impl Default for TcpProcessor {
 // ============================================================================
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "../../tests.rs"]
-pub mod tests;
+mod tests;

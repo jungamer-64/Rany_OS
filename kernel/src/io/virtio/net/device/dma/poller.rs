@@ -259,8 +259,8 @@ impl PollHandler for VirtioNetPollHandler {
             }
 
             if tx_completed {
-                crate::net::endpoint::event::send_event_ignore(
-                    crate::net::endpoint::event::NetworkEvent::TxAvailable,
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
                 );
             }
             results

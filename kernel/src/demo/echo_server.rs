@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::demo::DemoResult;
-use crate::net::endpoint::{OwnedSocket, SocketAddr, SocketError, create_tcp_server};
+use crate::net::l4::endpoint::{OwnedSocket, SocketAddr, SocketError, create_tcp_server};
 
 /// Echo server statistics
 pub struct EchoStats {

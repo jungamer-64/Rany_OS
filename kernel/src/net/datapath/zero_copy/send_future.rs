@@ -94,6 +94,5 @@ pub fn alloc_buffer() -> Option<ZeroCopyBuffer> {
 // ============================================================================
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "tests.rs"]
-pub mod tests;
+mod tests;
 

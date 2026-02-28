@@ -1,7 +1,7 @@
 use alloc::{format, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use crate::net::l4::tcp::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use crate::task::{self, Task, TimeoutResult};
 
 static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
@@ -150,8 +150,8 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
 }
 
 fn build_health_response() -> Vec<u8> {
-    let bridge = crate::net::driver_bridge::is_initialized();
-    let stats = crate::net::get_bridge_stats();
+    let bridge = crate::net::runtime::bridge::is_initialized();
+    let stats = crate::net::runtime::bridge::get_bridge_stats();
     let body = format!(
         "{{\"status\":\"ok\",\"bridge\":{},\"rx\":{},\"tx\":{}}}",
         if bridge { "true" } else { "false" },

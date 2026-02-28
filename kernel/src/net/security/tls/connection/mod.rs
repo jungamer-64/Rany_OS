@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use super::types::*;
 use super::error::{TlsError, TlsResult};
 use super::crypto::*;
-use crate::net::ecdh;
+use crate::net::security::ecdh;
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod incoming;

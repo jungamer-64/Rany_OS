@@ -167,7 +167,7 @@ pub fn ipv6_checksum(
     data: &[u8],
 ) -> u16 {
     let pseudo = ipv6_pseudo_header_checksum(src, dst, next_header, data.len() as u32);
-    crate::net::ipv4::data_checksum(data, pseudo)
+    crate::net::l3::ipv4::data_checksum(data, pseudo)
 }
 
 // =====================================================
@@ -175,5 +175,4 @@ pub fn ipv6_checksum(
 // =====================================================
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "tests.rs"]
-pub mod tests;
+mod tests;

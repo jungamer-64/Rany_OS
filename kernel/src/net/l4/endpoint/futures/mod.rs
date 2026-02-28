@@ -13,8 +13,8 @@ use core::task::{Context, Poll};
 use super::socket::{OwnedSocket, Socket};
 use super::types::{SocketAddr, SocketError, SocketResult, SocketState};
 
-use crate::net::tcp::TcpStream;
-use crate::net::mempool::PacketRef;
+use crate::net::l4::tcp::TcpStream;
+use crate::net::datapath::mempool::PacketRef;
 
 /// 非同期受信Future
 pub struct RecvFuture {
@@ -258,17 +258,17 @@ impl TcpPacketStream {
 
 /// UDPゼロコピー用の小さなストリームラッパー（使いやすいヘルパ）
 pub struct UdpPacketStream {
-    socket: crate::net::udp::UdpSocket,
+    socket: crate::net::l4::udp::UdpSocket,
 }
 
 impl UdpPacketStream {
     /// 新規作成
-    pub fn new(socket: crate::net::udp::UdpSocket) -> Self {
+    pub fn new(socket: crate::net::l4::udp::UdpSocket) -> Self {
         Self { socket }
     }
 
     /// 次のパケットを受信するFutureを返す
-    pub fn next_packet(&self) -> crate::net::udp::UdpRecvFuture {
+    pub fn next_packet(&self) -> crate::net::l4::udp::UdpRecvFuture {
         self.socket.recv()
     }
 }
@@ -316,7 +316,7 @@ impl OwnedSocket {
     }
 
     /// UDPのゼロコピー受信ヘルパ（内部UDPソケットが設定されている場合にのみ利用可能）
-    pub fn recv_packet_from_udp(&self) -> Option<crate::net::udp::UdpRecvFuture> {
+    pub fn recv_packet_from_udp(&self) -> Option<crate::net::l4::udp::UdpRecvFuture> {
         if self.socket().map(|s| s.socket_type()) != Some(super::types::SocketType::Udp) {
             return None;
         }
@@ -350,10 +350,11 @@ pub mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
-    use crate::net::endpoint::manager::init_socket_manager;
-    use crate::net::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
-    use crate::net::endpoint::{SocketAddr, SocketState};
-    use crate::net::{self, create_tcp_socket, create_udp_socket, stack, NetworkEvent};
+    use crate::net::l4::endpoint::manager::init_socket_manager;
+    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+    use crate::net::l4::endpoint::{SocketAddr, SocketState};
+    use crate::net::l4::endpoint::{create_tcp_socket, create_udp_socket, NetworkEvent};
+    use crate::net::runtime::stack;
     use core::future::Future;
     use core::pin::Pin;
     use core::task::{Context, Poll, Waker};
@@ -364,7 +365,7 @@ pub mod qemu_tests {
         stack::init_default();
         if let Ok(mut guard) = stack::stack().lock() {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_if: Option<crate::net::NetIfId>, _data: &[u8]| {
+                s.set_transmit_fn(|_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
                     assert!(_if.is_none());
                     true
                 });
@@ -399,10 +400,10 @@ pub mod qemu_tests {
         match pinned.as_mut().poll(&mut cx) {
             Poll::Ready(Ok(n)) => n == expected.len(),
             Poll::Pending => {
-                let handler = crate::net::endpoint::handler::NetworkEventHandler::new();
+                let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
                 let _ = handler.handle_event(NetworkEvent::DataReady {
                     fd,
-                    socket_type: crate::net::endpoint::types::SocketType::Tcp,
+                    socket_type: crate::net::l4::endpoint::types::SocketType::Tcp,
                 });
 
                 match pinned.as_mut().poll(&mut cx) {
@@ -439,7 +440,7 @@ pub mod qemu_tests {
 
         use alloc::sync::Arc;
         use crate::sync::PoisonLock;
-        use crate::net::tcp::{
+        use crate::net::l4::tcp::{
             Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock,
             TcpStream,
         };
@@ -487,7 +488,7 @@ pub mod qemu_tests {
 
         use alloc::sync::Arc;
         use crate::sync::PoisonLock;
-        use crate::net::tcp::{
+        use crate::net::l4::tcp::{
             Ipv4Addr as TcpIpv4Addr, SocketAddr as TcpSocketAddr, TcpControlBlock,
             TcpStream,
         };
@@ -522,7 +523,7 @@ pub mod qemu_tests {
     pub fn udp_packet_stream_delivered_smoke() -> bool {
         init_socket_manager();
 
-        let proc = crate::net::udp::UdpProcessor::new();
+        let proc = crate::net::l4::udp::UdpProcessor::new();
         let port = 40000u16;
         let Ok(u) = proc.bind_with_token(port, None) else {
             return false;

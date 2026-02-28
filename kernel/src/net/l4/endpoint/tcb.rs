@@ -335,7 +335,7 @@ impl TcbTable {
     /// 5-tuple情報を組み合わせることで、シーケンス番号予測攻撃を防ぎます。
     pub fn generate_isn(&self, local: SocketAddr, remote: SocketAddr) -> u32 {
         // 暗号論的に安全な乱数を取得
-        let random_bytes = crate::net::tls::generate_random();
+        let random_bytes = crate::net::security::tls::generate_random();
         
         // FNV-1aハッシュで5-tupleと乱数を混合
         let mut hash: u32 = 0x811c9dc5;

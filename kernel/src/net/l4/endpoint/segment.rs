@@ -311,7 +311,7 @@ impl TcpSegmentBuilder {
     }
 
     /// TCPチェックサム計算（IPv6擬似ヘッダ）
-    pub fn calculate_checksum_v6(segment: &mut [u8], src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address) {
+    pub fn calculate_checksum_v6(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
         if segment.len() < 20 {
             return;
         }
@@ -320,9 +320,9 @@ impl TcpSegmentBuilder {
         segment[16] = 0;
         segment[17] = 0;
 
-        use crate::net::ipv6::ipv6_pseudo_header_checksum;
-        use crate::net::ipv4::data_checksum;
-        use crate::net::ipv4::IpProtocol;
+        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
+        use crate::net::l3::ipv4::data_checksum;
+        use crate::net::l3::ipv4::IpProtocol;
 
         let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
         let checksum = data_checksum(segment, pseudo);
@@ -334,11 +334,11 @@ impl TcpSegmentBuilder {
 /// TCPセグメント送信（IP層に渡す） — IPv4/IPv6 デュアルスタック対応
 pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>) -> bool {
     if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
-        let src_ip = crate::net::ipv4::Ipv4Address::new(src_v4);
-        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4);
+        let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
+        let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
         // NetworkStack経由で送信
-        let stack = crate::net::stack::stack();
+        let stack = crate::net::runtime::stack::stack();
         match stack.lock() {
             Ok(mut guard) => {
                 if let Some(ref mut s) = *guard {
@@ -361,9 +361,9 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
     }
 
     if endpoint_is_native_v6_pair(local, remote) {
-        let src_v6 = crate::net::ipv6::Ipv6Address::new(local.as_ipv6());
-        let dst_v6 = crate::net::ipv6::Ipv6Address::new(remote.as_ipv6());
-        let ok = crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment);
+        let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
+        let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
+        let ok = crate::net::runtime::stack::send_tcp_v6(src_v6, dst_v6, &segment);
         if ok {
             log::info!(
                 "TCP TX (v6): [{}]:{} -> [{}]:{} ({} bytes)",
@@ -504,8 +504,8 @@ pub mod tests {
         let mut segment = TcpSegmentBuilder::new(1234, 80).seq(1).ack(0).build();
         TcpSegmentBuilder::calculate_checksum_v6(
             &mut segment,
-            crate::net::ipv6::Ipv6Address::LOOPBACK,
-            crate::net::ipv6::Ipv6Address::LOOPBACK,
+            crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
+            crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
         );
         // Checksum field should be non-zero for valid segment
         assert!(segment[16] != 0 || segment[17] != 0);
@@ -514,7 +514,7 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_send_tcp_segment_rejects_mixed_family() {
         let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
         let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
 
         assert!(!send_tcp_segment(local, remote, segment));
@@ -531,8 +531,8 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_send_tcp_segment_ipv6_no_panic_when_stack_unavailable() {
-        let local = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 12347);
-        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
+        let local = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12347);
+        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
         let segment = TcpSegmentBuilder::new(local.port(), remote.port()).syn().build();
 
         let _ = send_tcp_segment(local, remote, segment);

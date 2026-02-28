@@ -3,8 +3,12 @@
 //! This module delegates to existing NET core `tests::test_*` implementations
 //! so host `#[test_case]` and QEMU full-boot runtime tests stay aligned.
 
-use super::{adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, stack_timeouts, ipv6, ndp, tcp};
-use super::{dhcp, dns, mdns, igmp, driver_bridge};
+use crate::net::datapath::{adaptive_polling, mempool, zero_copy};
+use crate::net::l2::{arp, ethernet, igmp};
+use crate::net::l3::{icmp, icmpv6, ipv4, ipv6, ndp};
+use crate::net::l4::{tcp, udp};
+use crate::net::runtime::{bridge as driver_bridge, stack, timeouts as stack_timeouts};
+use crate::net::services::{dhcp, dns, mdns};
 
 macro_rules! run_case {
     ($func:path) => {{
@@ -23,7 +27,6 @@ macro_rules! run_case {
 
 mod peripheral_tests;
 pub use peripheral_tests::*;
-
 pub fn adaptive_polling_polling_mode_default_smoke() -> bool {
     run_case!(adaptive_polling::tests::test_polling_mode_default)
 }
@@ -135,8 +138,8 @@ pub fn icmp_echo_builder_smoke() -> bool {
 
 pub fn udp_udp_packet_smoke() -> bool {
     let mut buffer = [0u8; 64];
-    let src_ip = crate::net::Ipv4Address::from_octets(192, 168, 1, 1);
-    let dst_ip = crate::net::Ipv4Address::from_octets(192, 168, 1, 2);
+    let src_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(192, 168, 1, 1);
+    let dst_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(192, 168, 1, 2);
     let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 12345, dst_ip, 53, b"hello") else {
         return false;
     };
@@ -179,8 +182,8 @@ pub fn udp_udp_recv_future_poisoned_returns_closed_smoke() -> bool {
 
 pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
     let proc = udp::UdpProcessor::new();
-    let src_ip = crate::net::Ipv4Address::from_octets(1, 2, 3, 4);
-    let dst_ip = crate::net::Ipv4Address::from_octets(1, 2, 3, 4);
+    let src_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(1, 2, 3, 4);
+    let dst_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(1, 2, 3, 4);
     let mut buffer = [0u8; 64];
     let Some(len) = udp::UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x") else {
         return false;
@@ -278,7 +281,7 @@ pub fn stack_send_udp_fallback_zero_copy_smoke() -> bool {
     match stack::stack().lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_if: Option<crate::net::NetIfId>, _data: &[u8]| {
+                s.set_transmit_fn(|_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
                     assert!(_if.is_none());
                     true
                 });
@@ -295,7 +298,7 @@ pub fn stack_send_icmp_fallback_zero_copy_smoke() -> bool {
     match stack::stack().lock() {
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
-                s.set_transmit_fn(|_if: Option<crate::net::NetIfId>, _data: &[u8]| {
+                s.set_transmit_fn(|_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
                     assert!(_if.is_none());
                     true
                 });
@@ -547,8 +550,8 @@ pub fn tcp_process_with_packet_zero_copy_smoke() -> bool {
 
     match processor.process(
         &seg,
-        crate::net::Ipv4Address::from_octets(127, 0, 0, 1),
-        crate::net::Ipv4Address::from_octets(127, 0, 0, 1),
+        crate::net::l3::ipv4::Ipv4Address::from_octets(127, 0, 0, 1),
+        crate::net::l3::ipv4::Ipv4Address::from_octets(127, 0, 0, 1),
         0,
     ) {
         tcp::TcpProcessResult::SendPacket { local: l, remote: r, flags, ack, .. } => {

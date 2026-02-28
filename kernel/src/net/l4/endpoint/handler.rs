@@ -51,8 +51,8 @@ fn apply_tcp_checksum_for_addrs(
     if endpoint_is_native_v6_pair(local, remote) {
         TcpSegmentBuilder::calculate_checksum_v6(
             segment,
-            crate::net::ipv6::Ipv6Address::new(local.as_ipv6()),
-            crate::net::ipv6::Ipv6Address::new(remote.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
         );
         return Ok(());
     }
@@ -555,9 +555,9 @@ impl NetworkEventHandler {
 
         let payload = &packet[8..];
         let (_, dst_v4) = endpoint_ipv4_pair(src, dst).ok_or(SocketError::InvalidArgument)?;
-        let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4);
+        let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
-        if crate::net::stack::send_udp(src.port(), dst_ip, dst.port(), payload) {
+        if crate::net::runtime::stack::send_udp(src.port(), dst_ip, dst.port(), payload) {
             Ok(())
         } else {
             Err(SocketError::ResourceExhausted)
@@ -575,10 +575,10 @@ impl Default for NetworkEventHandler {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
-    use crate::net::endpoint::event::{event_queue, NetworkEvent};
-    use crate::net::endpoint::manager::init_socket_manager;
-    use crate::net::endpoint::{create_tcp_socket, create_udp_socket, SocketAddr, SocketState};
-    use crate::net::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
+    use crate::net::l4::endpoint::manager::init_socket_manager;
+    use crate::net::l4::endpoint::{create_tcp_socket, create_udp_socket, SocketAddr, SocketState};
+    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_tx_available_requeues_dataready() {
@@ -646,7 +646,7 @@ pub mod tests {
     pub fn test_send_udp_packet_rejects_mixed_family() {
         let handler = NetworkEventHandler::new();
         let local = SocketAddr::new([127, 0, 0, 1], 12345);
-        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
 
         assert!(matches!(
             handler.send_udp_packet(local, remote, alloc::vec![0u8; 8]),
@@ -664,11 +664,11 @@ pub mod tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             let local = SocketAddr::new([127, 0, 0, 1], 12345);
             inner.local_addr = Some(local);
-            inner.udp_socket = Some(crate::net::udp::UdpSocket::new(local.port()));
+            inner.udp_socket = Some(crate::net::l4::udp::UdpSocket::new(local.port()));
             let _ = inner.transition_to(SocketState::Bound);
         }
 
-        let remote = SocketAddr::new_v6(crate::net::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
+        let remote = SocketAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
         let handler = NetworkEventHandler::new();
         let res = handler.handle_send_to(fd, remote, alloc::vec![1, 2, 3]);
         assert!(matches!(
@@ -687,7 +687,7 @@ pub mod tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             let local = SocketAddr::new([127, 0, 0, 1], 12346);
             inner.local_addr = Some(local);
-            inner.udp_socket = Some(crate::net::udp::UdpSocket::new(local.port()));
+            inner.udp_socket = Some(crate::net::l4::udp::UdpSocket::new(local.port()));
             let _ = inner.transition_to(SocketState::Bound);
         }
 
@@ -716,10 +716,10 @@ pub fn init_network_event_handler() {
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
-    use crate::net::endpoint::event::{event_queue, NetworkEvent};
-    use crate::net::endpoint::manager::init_socket_manager;
-    use crate::net::endpoint::{create_tcp_socket, SocketAddr, SocketState};
-    use crate::net::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
+    use crate::net::l4::endpoint::manager::init_socket_manager;
+    use crate::net::l4::endpoint::{create_tcp_socket, SocketAddr, SocketState};
+    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
 
     pub fn handle_tx_available_requeues_dataready_smoke() -> bool {
         init_socket_manager();

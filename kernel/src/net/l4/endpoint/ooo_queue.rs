@@ -15,7 +15,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::net::mempool::{PacketRef, alloc_packet};
+use crate::net::datapath::mempool::{PacketRef, alloc_packet};
 use crate::sync::PoisonLock;
 use super::types::SocketAddr;
 

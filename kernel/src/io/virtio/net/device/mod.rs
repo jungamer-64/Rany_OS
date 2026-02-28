@@ -2,12 +2,14 @@ use super::*;
 use crate::io::virtio::virtqueue::{VringAvail, VringDesc, VringUsed};
 
 
-mod dma_helpers;
-pub use dma_helpers::*;
+mod dma;
+pub use dma::*;
 mod tx;
 mod rx;
 mod irq;
 mod mac;
+mod registry;
+pub use registry::*;
 impl Drop for NetVirtQueue {
     fn drop(&mut self) {
         if let Some(map) = self.iommu_map.take() {
@@ -57,7 +59,7 @@ impl Default for VirtioNetConfig {
 /// In-flight entry for a zero-copy TX packet. Holds cleanup handles for unmapping when completed.
 #[derive(Debug)]
 pub(crate) struct TxPacketInflight {
-    packet: crate::net::PacketRef,
+    packet: crate::net::datapath::mempool::PacketRef,
     bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
     dma_iova: Option<u64>,
     dma_len: usize,
@@ -68,7 +70,7 @@ pub(crate) struct TxPacketInflight {
 /// In-flight entry for a zero-copy RX PacketRef. Holds IOMMU mapping for cleanup on completion.
 #[derive(Debug)]
 pub(crate) struct RxPacketInflight {
-    packet: crate::net::PacketRef,
+    packet: crate::net::datapath::mempool::PacketRef,
     /// IOVA mapped through IOMMU for this buffer (None when IOMMU is inactive)
     iommu_iova: Option<u64>,
     /// Size of the IOMMU mapping
@@ -105,7 +107,7 @@ pub struct VirtioNetDevice {
     /// VirtIO-Net device index (multi-NIC support)
     pub(crate) virtio_index: u8,
     /// Bound logical network interface id (assigned by NetworkManager)
-    pub(crate) net_if_id: Option<crate::net::NetIfId>,
+    pub(crate) net_if_id: Option<crate::net::runtime::manager::NetIfId>,
     /// Optional IOMMU device identifier for device-scoped mappings
     iommu_device_id: Option<IommuDeviceId>,
     /// 受信キューリスト (各ペアにつき1つ、インデックス0,2,...)
@@ -202,12 +204,12 @@ impl VirtioNetDevice {
     }
 
     /// Bind this VirtIO device to a logical network interface identifier.
-    pub fn set_net_if_id(&mut self, if_id: crate::net::NetIfId) {
+    pub fn set_net_if_id(&mut self, if_id: crate::net::runtime::manager::NetIfId) {
         self.net_if_id = Some(if_id);
     }
 
     /// Return the logical network interface identifier, if assigned.
-    pub fn net_if_id(&self) -> Option<crate::net::NetIfId> {
+    pub fn net_if_id(&self) -> Option<crate::net::runtime::manager::NetIfId> {
         self.net_if_id
     }
 
@@ -699,7 +701,7 @@ impl VirtioNetDevice {
         &self,
         rxq: &NetVirtQueue,
     ) -> Result<bool, VirtioNetError> {
-        let packet = match crate::net::mempool::alloc_packet() {
+        let packet = match crate::net::datapath::mempool::alloc_packet() {
             Some(p) => p,
             None => return Ok(false),
         };

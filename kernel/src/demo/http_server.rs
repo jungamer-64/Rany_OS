@@ -9,7 +9,7 @@ use alloc::format;
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 
 use crate::demo::DemoResult;
-use crate::net::ipv4::Ipv4Address;
+use crate::net::l3::ipv4::Ipv4Address;
 
 /// HTTP server statistics
 pub struct HttpStats {

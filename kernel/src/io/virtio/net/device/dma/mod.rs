@@ -8,12 +8,10 @@ use super::*;
 /// Result of DMA buffer preparation for virtio-net I/O.
 mod stats;
 pub use stats::*;
-mod poll_handler;
-pub use poll_handler::*;
-mod registry;
-pub use registry::*;
-mod dma_buffer;
-pub use dma_buffer::*;
+mod poller;
+pub use poller::*;
+mod buffer;
+pub use buffer::*;
 pub(crate) struct DmaPrepareResult {
     dma_addr: u64,
     mapped_iova: Option<u64>,
@@ -409,7 +407,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
         if tx_queue.take_completion(this.desc_idx).is_some() {
             unmap_dma_on_completion(this.device, &mut this.pool_bounce_buffer, &mut this.dma_iova, this.dma_len, false);
             let packet = this.packet.take();
-            let len = packet.map(|p: crate::net::mempool::PacketRef| p.data().len()).unwrap_or(0);
+            let len = packet.map(|p: crate::net::datapath::mempool::PacketRef| p.data().len()).unwrap_or(0);
             Poll::Ready(Ok(len))
         } else {
             tx_queue.register_waker(cx.waker().clone());
@@ -462,7 +460,7 @@ impl<'a> ZeroCopySendFuture<'a> {
 /// 受信完了後、PacketRefとしてデータを返却する。
 pub struct ZeroCopyRecvFuture<'a> {
     pub(crate) device: &'a VirtioNetDevice,
-    pub(crate) pool: &'static crate::net::mempool::Mempool,
+    pub(crate) pool: &'static crate::net::datapath::mempool::Mempool,
     pub(crate) packet: Option<PacketRef>,
     pub(crate) submitted: bool,
     pub(crate) desc_idx: u16,

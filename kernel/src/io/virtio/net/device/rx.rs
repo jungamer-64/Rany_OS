@@ -20,7 +20,7 @@ impl VirtioNetDevice {
     /// PacketRefとして返却する。
     pub fn recv_zero_copy(
         &self,
-        pool: &'static crate::net::mempool::Mempool,
+        pool: &'static crate::net::datapath::mempool::Mempool,
     ) -> ZeroCopyRecvFuture<'_> {
         ZeroCopyRecvFuture {
             device: self,
@@ -91,16 +91,16 @@ impl VirtioNetDevice {
         // Pass PacketRef to bridge for zero-copy processing (prefer interface-aware path).
         if let Some(if_id) = self
             .net_if_id()
-            .or_else(|| crate::net::driver_bridge::lookup_if_by_virtio_index(self.virtio_index))
+            .or_else(|| crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index))
         {
-            crate::net::driver_bridge::process_received_packet_zero_copy_for_interface(
+            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
                 if_id,
                 inflight.packet,
                 header_size,
                 payload_len,
             );
         } else {
-            crate::net::driver_bridge::process_received_packet_zero_copy(
+            crate::net::runtime::bridge::process_received_packet_zero_copy(
                 inflight.packet,
                 header_size,
                 payload_len,
@@ -160,19 +160,19 @@ impl VirtioNetDevice {
         crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] handing payload desc={} payload_len={} to bridge\n", desc_idx, actual_len));
         // Convert the completed RX DMA buffer into PacketRef (zero-copy handoff).
         if let Some(cpu_buf) = inflight.vbuf.take_cpu_buffer() {
-            let packet = crate::net::mempool::PacketRef::from_dma_slice(cpu_buf);
+            let packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(cpu_buf);
             if let Some(if_id) = self
                 .net_if_id()
-                .or_else(|| crate::net::driver_bridge::lookup_if_by_virtio_index(self.virtio_index))
+                .or_else(|| crate::net::runtime::bridge::lookup_if_by_virtio_index(self.virtio_index))
             {
-                crate::net::driver_bridge::process_received_packet_zero_copy_for_interface(
+                crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
                     if_id,
                     packet,
                     header_size,
                     actual_len,
                 );
             } else {
-                crate::net::driver_bridge::process_received_packet_zero_copy(
+                crate::net::runtime::bridge::process_received_packet_zero_copy(
                     packet,
                     header_size,
                     actual_len,

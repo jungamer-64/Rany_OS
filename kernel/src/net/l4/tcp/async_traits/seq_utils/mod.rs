@@ -9,7 +9,7 @@ pub(crate) use self::processor_impl::tests;
 pub(crate) fn generate_initial_seq() -> u32 {
     // RFC 6528: ISN should be unpredictable.
     // We use the hardware RNG if available, mixed with tick count.
-    let random_bytes = crate::net::tls::crypto::random::generate_random();
+    let random_bytes = crate::net::security::tls::crypto::random::generate_random();
     let secret = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
     
     // タイムスタンプベースの値（マイクロ秒精度）
@@ -71,15 +71,15 @@ pub(crate) fn send_tcp_packet(
     match (local.as_ipv4(), remote.as_ipv4()) {
         (Some(src_v4), Some(dst_v4)) => {
             calculate_tcp_checksum(&mut segment, src_v4.0, dst_v4.0);
-            let src_ip = crate::net::ipv4::Ipv4Address::new(src_v4.0);
-            let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4.0);
-            crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4.0);
+            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4.0);
+            crate::net::runtime::stack::send_tcp(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
             calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
-            crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+            crate::net::runtime::stack::send_tcp_v6(src_v6, dst_v6, &segment)
         }
     }
 }
@@ -124,7 +124,7 @@ pub(crate) fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip
 }
 
 /// TCPチェックサム計算（IPv6擬似ヘッダ）
-pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address) {
+pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
     if segment.len() < 20 {
         return;
     }
@@ -133,9 +133,9 @@ pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::
     segment[16] = 0;
     segment[17] = 0;
 
-    use crate::net::ipv6::ipv6_pseudo_header_checksum;
-    use crate::net::ipv4::data_checksum;
-    use crate::net::ipv4::IpProtocol;
+    use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
+    use crate::net::l3::ipv4::data_checksum;
+    use crate::net::l3::ipv4::IpProtocol;
 
     let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
     let checksum = data_checksum(segment, pseudo);
@@ -158,7 +158,7 @@ pub(crate) fn send_syn_packet_with_options(
     sack_permitted: bool,
     timestamps: Option<(u32, u32)>,
 ) -> bool {
-    use crate::net::endpoint::window_scale::TcpOptionBuilder;
+    use crate::net::l4::endpoint::window_scale::TcpOptionBuilder;
 
     let mut opt_builder = TcpOptionBuilder::new();
     opt_builder.add_mss(mss);
@@ -185,7 +185,7 @@ pub(crate) fn send_syn_ack_packet_with_options(
     sack_permitted: bool,
     timestamps: Option<(u32, u32)>,
 ) -> bool {
-    use crate::net::endpoint::window_scale::TcpOptionBuilder;
+    use crate::net::l4::endpoint::window_scale::TcpOptionBuilder;
 
     let mut opt_builder = TcpOptionBuilder::new();
     opt_builder.add_mss(mss);
@@ -258,15 +258,15 @@ pub(crate) fn send_tcp_packet_with_options(
     match (local.as_ipv4(), remote.as_ipv4()) {
         (Some(src_v4), Some(dst_v4)) => {
             calculate_tcp_checksum(&mut segment, src_v4.0, dst_v4.0);
-            let src_ip = crate::net::ipv4::Ipv4Address::new(src_v4.0);
-            let dst_ip = crate::net::ipv4::Ipv4Address::new(dst_v4.0);
-            crate::net::stack::send_tcp(src_ip, dst_ip, &segment)
+            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4.0);
+            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4.0);
+            crate::net::runtime::stack::send_tcp(src_ip, dst_ip, &segment)
         }
         _ => {
             let src_v6 = local.as_ipv6();
             let dst_v6 = remote.as_ipv6();
             calculate_tcp_checksum_v6(&mut segment, src_v6, dst_v6);
-            crate::net::stack::send_tcp_v6(src_v6, dst_v6, &segment)
+            crate::net::runtime::stack::send_tcp_v6(src_v6, dst_v6, &segment)
         }
     }
 }
@@ -434,7 +434,7 @@ pub fn process_incoming_packet(packet: PacketRef) {
 
 /// ARP パケットを処理
 pub(crate) fn process_arp_packet(offset: usize, packet: &PacketRef) {
-    use crate::net::arp::{ArpOperation, ArpPacket};
+    use crate::net::l2::arp::{ArpOperation, ArpPacket};
 
     let data = packet.data();
     if data.len() < offset + ArpPacket::SIZE {
@@ -633,7 +633,7 @@ pub(crate) fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_heade
 // TCP Processor (for integration with NetworkStack)
 // ============================================================================
 
-use crate::net::ipv4::Ipv4Address;
+use crate::net::l3::ipv4::Ipv4Address;
 
 /// Result of TCP Processing
 #[derive(Debug)]

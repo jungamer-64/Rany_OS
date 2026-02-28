@@ -73,7 +73,7 @@ impl DnsClient {
         }
 
         // トランザクションIDを生成 (RFC 5452: 予測困難なIDを使用)
-        let random_bytes = crate::net::tls::crypto::random::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         let id = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
 
         // ヘッダを構築

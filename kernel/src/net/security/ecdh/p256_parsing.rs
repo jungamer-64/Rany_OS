@@ -174,10 +174,10 @@ pub(crate) fn scalar_reduce_mod_n(val: &[u64; 8]) -> [u8; 32] {
     }
 
     // rsa::BigUint を使って mod n を計算
-    let val_big = crate::net::rsa::BigUint::from_be_bytes(&bytes);
+    let val_big = crate::net::security::rsa::BigUint::from_be_bytes(&bytes);
     let n_fe = P256FieldElement::from_limbs(N);
     let n_bytes = n_fe.to_be_bytes();
-    let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
+    let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
 
     let rem = val_big.rem(&n_big);
     let rem_bytes = rem.to_be_bytes();
@@ -202,8 +202,8 @@ pub fn scalar_inv_mod_n(a: &[u8; 32]) -> [u8; 32] {
     n_minus_2.copy_from_slice(&n_bytes);
 
     // n - 2 を BigUint 経由で計算
-    let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
-    let two_big = crate::net::rsa::BigUint::from_be_bytes(&[2]);
+    let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
+    let two_big = crate::net::security::rsa::BigUint::from_be_bytes(&[2]);
     let nm2 = n_big.sub(&two_big);
     let nm2_bytes = nm2.to_be_bytes();
 
@@ -267,8 +267,8 @@ pub(crate) fn verify_r_equals_x(
     // (P-256では p > n なので x mod n が必要)
     let n_fe = P256FieldElement::from_limbs(N);
     let n_bytes = n_fe.to_be_bytes();
-    let rx_big = crate::net::rsa::BigUint::from_be_bytes(&rx_bytes);
-    let n_big = crate::net::rsa::BigUint::from_be_bytes(&n_bytes);
+    let rx_big = crate::net::security::rsa::BigUint::from_be_bytes(&rx_bytes);
+    let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
     let rx_mod_n = rx_big.rem(&n_big);
     let rx_mod_n_bytes = rx_mod_n.to_be_bytes_padded(32);
 

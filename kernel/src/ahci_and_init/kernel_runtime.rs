@@ -22,7 +22,7 @@ pub(crate) fn spawn_kernel_tasks(
     }
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
-    crate::net::host_http_service::start_once(executor);
+    crate::net::runtime::host_http_service::start_once(executor);
 
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
@@ -165,12 +165,12 @@ pub(crate) fn spawn_kernel_tasks(
 
         crate::io::log::early_print("[NET-PING-MANUAL] sending manual ping now\n");
         info!(target: "net_test", "Sending ICMP echo to 10.0.2.2 seq=1");
-        match crate::net::send_real_icmp_echo([10, 0, 2, 2], 1) {
+        match crate::net::runtime::bridge::send_real_icmp_echo([10, 0, 2, 2], 1) {
             Ok(rtt) => info!(target: "net_test", "Ping success rtt={} (units depending on implementation)", rtt),
             Err(e) => warn!(target: "net_test", "Ping failed: {}", e),
         }
 
-        let bridge_stats = crate::net::get_bridge_stats();
+        let bridge_stats = crate::net::runtime::bridge::get_bridge_stats();
         info!(target: "net_test", "Bridge stats after ping: init={} rx={} tx={} ", bridge_stats.initialized, bridge_stats.rx_packets, bridge_stats.tx_packets);
     }));
 

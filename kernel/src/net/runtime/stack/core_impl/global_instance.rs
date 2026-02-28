@@ -31,7 +31,7 @@ pub fn is_initialized() -> bool {
 
 /// Process a received packet
 pub fn receive(data: &[u8]) {
-    use crate::net::mempool::alloc_packet;
+    use crate::net::datapath::mempool::alloc_packet;
 
     // Allocate PacketRef to bridge legacy driver to Zero-Copy stack
     if let Some(mut packet) = alloc_packet() {
@@ -109,7 +109,7 @@ pub fn send_udp_on(if_id: super::NetIfId, src_port: u16, dst_ip: Ipv4Address, ds
 }
 
 /// Send a UDP datagram over IPv6
-pub fn send_udp_v6(src_port: u16, src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
+pub fn send_udp_v6(src_port: u16, src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address, dst_port: u16, data: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {
@@ -129,8 +129,8 @@ pub fn send_udp_v6(src_port: u16, src_ip: crate::net::ipv6::Ipv6Address, dst_ip:
 pub fn send_udp_v6_on(
     if_id: super::NetIfId,
     src_port: u16,
-    src_ip: crate::net::ipv6::Ipv6Address,
-    dst_ip: crate::net::ipv6::Ipv6Address,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
     data: &[u8],
 ) -> bool {
@@ -185,7 +185,7 @@ pub fn send_tcp_on(_if_id: super::NetIfId, src_ip: Ipv4Address, dst_ip: Ipv4Addr
 }
 
 /// Send a TCP segment over IPv6
-pub fn send_tcp_v6(src_ip: crate::net::ipv6::Ipv6Address, dst_ip: crate::net::ipv6::Ipv6Address, tcp_segment: &[u8]) -> bool {
+pub fn send_tcp_v6(src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address, tcp_segment: &[u8]) -> bool {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {
@@ -238,7 +238,7 @@ pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpSocket> {
 }
 
 /// Apply IPv6 global address obtained via DHCPv6
-pub fn apply_ipv6_global_address(addr: crate::net::ipv6::Ipv6Address) {
+pub fn apply_ipv6_global_address(addr: crate::net::l3::ipv6::Ipv6Address) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {
@@ -302,8 +302,8 @@ pub fn connect_tcp(local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Res
 /// 
 /// # Example
 /// ```no_run
-/// use crate::net::stack::join_multicast_group;
-/// use crate::net::ipv4::Ipv4Address;
+/// use crate::net::runtime::stack::join_multicast_group;
+/// use crate::net::l3::ipv4::Ipv4Address;
 /// 
 /// let group = Ipv4Address::new([224, 0, 0, 251]); // mDNS group
 /// join_multicast_group(group).expect("Failed to join multicast group");
@@ -356,5 +356,4 @@ pub fn is_multicast_member(group: Ipv4Address) -> bool {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[path = "../tests.rs"]
-pub mod tests;
+mod tests;
