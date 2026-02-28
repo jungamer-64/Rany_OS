@@ -60,7 +60,7 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
     if let Some((kstart, kend)) = super::protection::kernel_phys_range() {
         if ranges_overlap(start, end, kstart, kend) {
             log::error!(
-                "[IOMMU][SECURITY] DMA mapping overlaps kernel image (fallback): {:#x}-{:#x} vs {:#x}-{:#x}",
+                "[IOMMU][SECURITY] DMA mapping overlaps kernel image: {:#x}-{:#x} vs {:#x}-{:#x}",
                 start,
                 end,
                 kstart,
@@ -68,6 +68,12 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
             );
             return Err(IommuError::InvalidAddress);
         }
+    } else {
+        // High-security fallback: if we cannot determine the kernel range, 
+        // we must reject any non-quarantined DMA mapping for safety.
+        // This prevents a potential bypass where global_translate fails.
+        log::error!("[IOMMU][SECURITY] CRITICAL: Unable to determine kernel physical range. Rejecting DMA mapping {:#x}-{:#x} for safety.", start, end);
+        return Err(IommuError::InvalidAddress);
     }
 
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);

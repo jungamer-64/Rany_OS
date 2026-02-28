@@ -433,7 +433,7 @@ fn handle_file_fault_info(fault_addr: VirtAddr, vma: &super::rcu_vma::VmaInfo) -
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
     let file_offset = vma.file_offset + (page_addr.as_u64() - vma.start.as_u64());
     
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    let memcg_id = crate::mm::meta::memcg::current_memcg_id();
     
     // 脆弱性修正: PageSetupを使用して、不完全なマッピングやリークを防止
     let setup = match PageSetup::allocate(Some(memcg_id), ChargeType::Cache) {
@@ -602,7 +602,7 @@ fn handle_demand_paging(
     FAULT_STATS.demand_paging.fetch_add(1, Ordering::Relaxed);
 
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    let memcg_id = crate::mm::meta::memcg::current_memcg_id();
 
     let setup = match PageSetup::allocate(Some(memcg_id), ChargeType::Anon) {
         Some(s) => s,
@@ -769,7 +769,7 @@ fn handle_file_fault(fault_addr: VirtAddr, vma: &VmArea) -> FaultResult {
     }
     
     // Memcgチャージ（ファイルキャッシュ）
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    let memcg_id = crate::mm::meta::memcg::current_memcg_id();
     if memcg_charge(memcg_id, 1, ChargeType::Cache).is_err() {
         crate::mm::phys::frame_allocator::dealloc_frame(frame);
         FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);

@@ -343,7 +343,7 @@ fn grow_stack_to(stack: &mut StackRegion, target_addr: VirtAddr) -> StackResult 
 
 /// 単一ページを割り当て
 fn grow_single_page(page_addr: VirtAddr) -> StackResult {
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    let memcg_id = crate::mm::meta::memcg::current_memcg_id();
 
     let setup = match PageSetup::allocate(Some(memcg_id), ChargeType::Anon) {
         Some(s) => s,

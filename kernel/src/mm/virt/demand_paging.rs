@@ -441,7 +441,7 @@ fn populate_anonymous_page(
 
     // memcg ID（条件付き）
     let memcg_id = if config.memcg_enabled {
-        Some(crate::task::process::get_current_process_memcg_id())
+        Some(crate::mm::meta::memcg::current_memcg_id())
     } else {
         None
     };
@@ -491,7 +491,7 @@ fn prepare_file_page_data(
     let mut memcg_charged = false;
     let mut memcg_id = MemcgId::ROOT;
     if CONFIG.read().memcg_enabled {
-        memcg_id = crate::task::process::get_current_process_memcg_id();
+        memcg_id = crate::mm::meta::memcg::current_memcg_id();
         if memcg_charge(memcg_id, 1, ChargeType::Cache).is_err() {
             return Err(DemandResult::OutOfMemory);
         }

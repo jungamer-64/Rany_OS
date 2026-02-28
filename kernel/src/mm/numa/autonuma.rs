@@ -274,6 +274,9 @@ pub struct NumaScanner {
     
     /// 1スキャンあたりの最大ページ数
     scan_batch_size: AtomicU64,
+
+    /// Per-domain migration is pending; keep a global cursor for now.
+    scan_cursor: AtomicU64,
     
     /// 統計: スキャンしたページ数
     pages_scanned: AtomicU64,
@@ -289,6 +292,7 @@ impl NumaScanner {
             next_scan_time: AtomicU64::new(0),
             scan_period_ms: AtomicU64::new(NUMA_SCAN_PERIOD_MS),
             scan_batch_size: AtomicU64::new(NUMA_SCAN_BATCH_SIZE as u64),
+            scan_cursor: AtomicU64::new(crate::mm::virt::address_space::USER_SPACE_START),
             pages_scanned: AtomicU64::new(0),
             faults_set: AtomicU64::new(0),
         }
@@ -334,8 +338,8 @@ impl NumaScanner {
             self.faults_set.load(Ordering::Relaxed),
         )
     }
-    /// タスクのアドレス空間をスキャン
-    pub fn scan_task(&self, task: &crate::task::process::ProcessInfo) {
+    /// 現在ドメインのアドレス空間をスキャン
+    pub fn scan_current_domain(&self) {
         if !self.is_enabled() { return; }
 
         let current_time = crate::time::current_time_ns();
@@ -343,16 +347,10 @@ impl NumaScanner {
             return;
         }
 
-        // 現在のタスクのみ対象（簡易実装: リモートスキャンはロックが必要なため）
-        let current_pid = crate::task::process::get_current_process();
-        if task.pid != current_pid {
-            return;
-        }
-
         let address_space_manager = crate::mm::virt::address_space::address_space_manager();
-        
+
         // スキャン位置を取得
-        let scan_addr_val = task.numa_scan_addr.load(Ordering::Relaxed);
+        let scan_addr_val = self.scan_cursor.load(Ordering::Relaxed);
         let scan_addr = crate::mm::virt::higher_half::VirtAddr::new(scan_addr_val);
         let batch_size = self.scan_batch_size.load(Ordering::Relaxed) as usize;
 
@@ -366,7 +364,7 @@ impl NumaScanner {
                 next_addr.as_u64()
             };
             
-            task.numa_scan_addr.store(next_val, Ordering::Release);
+            self.scan_cursor.store(next_val, Ordering::Release);
             self.record_scan(current_time, scanned as u64, faults as u64);
         }
     }
@@ -374,18 +372,7 @@ impl NumaScanner {
 
 /// 現在のプロセスのAutoNUMAスキャンを試行
 pub fn try_scan_current_process() {
-    // TODO: Align AutoNUMA scan info with Task/Domain context.
-    // scan_task expects a struct carrying numa_scan_addr; options:
-    // 1. Move numa_scan_addr onto TaskContext or a Domain-scoped record
-    // 2. Introduce a NumaScanInfo trait/struct keyed by DomainId
-    // 3. Change scan_task to accept DomainId + scan cursor directly
-    //
-    // Temporarily disabled until design is resolved.
-    // use crate::task::context::current_subject;
-    // let domain = current_subject().domain;
-    // if domain != crate::domain_system::DomainId::KERNEL {
-    //     // ...
-    // }
+    NUMA_SCANNER.scan_current_domain();
 }
 
 /// グローバルスキャナ
@@ -1037,4 +1024,3 @@ mod tests {
         }
     }
 }
-

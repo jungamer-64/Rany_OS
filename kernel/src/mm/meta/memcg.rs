@@ -686,6 +686,19 @@ pub fn memcg_root() -> MemcgId {
     MemcgId::ROOT
 }
 
+/// Resolve memcg id from a domain.
+///
+/// Current migration default keeps all domains on `ROOT` until domain-specific
+/// memcg registration is introduced.
+pub fn memcg_for_domain(_domain: crate::domain_system::DomainId) -> MemcgId {
+    MemcgId::ROOT
+}
+
+/// Get current subject's memcg id.
+pub fn current_memcg_id() -> MemcgId {
+    memcg_for_domain(crate::task::context::current_subject().domain)
+}
+
 // ============================================================================
 // Per-Page Tracking (Optional)
 // ============================================================================

@@ -69,7 +69,7 @@ impl SlPte {
 
     /// Create a present entry with address and permissions
     pub fn mapping(phys_addr: u64, read: bool, write: bool) -> Self {
-        let mut flags = Self::PRESENT;
+        let mut flags = 0;
         if read {
             flags |= Self::READ;
         }
@@ -83,7 +83,7 @@ impl SlPte {
     /// phys_addr must be 2MB-aligned
     pub fn super_page_2mb(phys_addr: u64, read: bool, write: bool) -> Self {
         const MASK_2MB: u64 = (2 * 1024 * 1024) - 1; // 0x1F_FFFF
-        let mut flags = Self::PRESENT | Self::SUPER_PAGE;
+        let mut flags = Self::SUPER_PAGE;
         if read {
             flags |= Self::READ;
         }
@@ -97,7 +97,7 @@ impl SlPte {
     /// phys_addr must be 1GB-aligned
     pub fn super_page_1gb(phys_addr: u64, read: bool, write: bool) -> Self {
         const MASK_1GB: u64 = (1024 * 1024 * 1024) - 1; // 0x3FFF_FFFF
-        let mut flags = Self::PRESENT | Self::SUPER_PAGE;
+        let mut flags = Self::SUPER_PAGE;
         if read {
             flags |= Self::READ;
         }
@@ -120,7 +120,10 @@ impl SlPte {
 
     /// Check if present
     pub fn is_present(&self) -> bool {
-        (self.0 & Self::PRESENT) != 0
+        // Intel: Present if Read or Write bit is set.
+        // AMD: Present if Bit 0 (PR) is set. Bit 1 is reserved (0).
+        // So checking (bit 0 | bit 1) works for both.
+        (self.0 & (Self::READ | Self::WRITE)) != 0
     }
 
     /// Get physical address

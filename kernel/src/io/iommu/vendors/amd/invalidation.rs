@@ -351,6 +351,51 @@ impl AmdIommuDriver {
         .await
     }
 
+    pub(super) async fn invalidate_domain_pages_async(
+        &self,
+        domain_id: u16,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        let mut has_state = false;
+        let mut futures = Vec::new();
+
+        // Advance epoch before domain invalidation
+        let epoch = self.iova_allocator.advance_epoch();
+
+        for idx in 0..self.cmd_states.len() {
+            if self.cmd_states[idx].is_none() {
+                continue;
+            }
+            has_state = true;
+            
+            let cmd = cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None);
+            futures.push(self.submit_cmd_async(idx, cmd));
+        }
+
+        if !has_state {
+            self.iova_allocator.complete_epoch(epoch);
+            return Err(IommuError::NotSupported);
+        }
+
+        // Wait for all units to complete
+        let mut last_err = None;
+        for f in futures {
+            if let Err(e) = f.await {
+                last_err = Some(e);
+            }
+        }
+
+        // Complete epoch after all units confirmed
+        self.iova_allocator.complete_epoch(epoch);
+
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(super) fn invalidate_domain_pages(
         &self,
         domain_id: u16,

@@ -261,7 +261,7 @@ impl ShellControlNamespace {
     /// Parse an `ExoValue` array of capability entries into `RequestedCap` structs.
     fn parse_requested_caps(
         reqs: &[ExoValue<'static>],
-    ) -> Vec<crate::task::process::RequestedCap> {
+    ) -> Vec<crate::domain_system::RequestedCap> {
         let mut out = Vec::new();
         for r in reqs {
             if let ExoValue::Map(map) = r {
@@ -277,7 +277,7 @@ impl ShellControlNamespace {
                         _ => None,
                     })
                     .unwrap_or(false);
-                out.push(crate::task::process::RequestedCap {
+                out.push(crate::domain_system::RequestedCap {
                     cap,
                     expires,
                     delegatable,
@@ -327,7 +327,7 @@ impl ShellControlNamespace {
         };
         let requested_caps = Self::parse_requested_caps(&reqs);
 
-        match crate::task::process::spawn_with_caps(name, &requested_caps) {
+        match crate::domain_system::spawn_domain_with_caps(name.to_string(), &requested_caps) {
             Ok((child, tokens_vec)) => {
                 let tokens = tokens_vec
                     .into_iter()
@@ -507,4 +507,3 @@ mod tests {
         }
     }
 }
-

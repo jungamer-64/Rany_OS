@@ -393,7 +393,7 @@ pub fn cow_break(virt_addr: VirtAddr) -> CowResult {
     copy_page(old_phys, new_phys);
     
     // Memcgチャージ
-    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    let memcg_id = crate::mm::meta::memcg::current_memcg_id();
     if crate::mm::meta::memcg::memcg_charge(memcg_id, 1, crate::mm::meta::memcg::ChargeType::Anon).is_err() {
         dealloc_frame(new_frame);
         return CowResult::OutOfMemory;

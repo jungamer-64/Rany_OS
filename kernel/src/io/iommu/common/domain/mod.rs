@@ -19,7 +19,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use crate::sync::{PoisonLock, PoisonLockGuard};
+use crate::sync::{PoisonLock, PoisonLockGuard, IrqMutex};
 use spin::{Once, RwLock};
 mod domain_impl;
 mod mapping;

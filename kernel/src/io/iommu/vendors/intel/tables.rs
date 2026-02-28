@@ -367,6 +367,11 @@ impl PasidTable {
         let mut allocated = Vec::with_capacity(bitmap_len);
         allocated.resize(bitmap_len, 0);
 
+        // Security: Reserve PASID 0 once up-front (for RID->PASID mapping)
+        if !allocated.is_empty() {
+            allocated[0] |= 1u64;
+        }
+
         Ok(Self {
             directory,
             table,
@@ -452,11 +457,6 @@ impl PasidTable {
 
     /// Allocate the next free PASID (PASID 0 is reserved for RID→PASID mapping)
     pub fn allocate_pasid(&mut self) -> Result<u32, IommuError> {
-        // Reserve PASID 0 once up-front so free-bit search can proceed uniformly.
-        if !self.allocated.is_empty() {
-            self.allocated[0] |= 1u64;
-        }
-
         for word_idx in 0..self.allocated.len() {
             let word = self.allocated[word_idx];
             if word == u64::MAX {

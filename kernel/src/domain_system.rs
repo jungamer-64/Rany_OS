@@ -135,6 +135,14 @@ fn kernel_security_handle() -> Arc<DomainSecurity> {
         .clone()
 }
 
+/// Requested capability descriptor used by `spawn_domain_with_caps`.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestedCap {
+    pub cap: u64,
+    pub expires: Option<u64>,
+    pub delegatable: bool,
+}
+
 // ============================================================================
 // ドメイン構造体
 // ============================================================================
@@ -430,6 +438,57 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
             Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned))
         }
     }
+}
+
+/// Spawn a new domain and apply requested capability grants atomically.
+///
+/// This is the Domain/Cell equivalent of the legacy `spawn_with_caps`.
+pub fn spawn_domain_with_caps(
+    name: String,
+    requested: &[RequestedCap],
+) -> Result<(DomainId, Vec<u64>), KernelError> {
+    let parent = crate::task::context::current_subject().domain.as_u64();
+    let cap_mgr = crate::security::capability::manager();
+
+    for req in requested {
+        let allowed = cap_mgr.has_capability(parent, crate::security::capability::CAP_SYS_ADMIN)
+            || cap_mgr.get_capabilities(parent).is_permitted(req.cap)
+            || cap_mgr
+                .list_grants(parent)
+                .iter()
+                .any(|t| t.cap == req.cap && t.delegatable);
+        if !allowed {
+            return Err(KernelError::Domain(DomainErrorKind::OwnershipViolation));
+        }
+    }
+
+    let domain_id = create_domain(name)?;
+    let _ = with_domain_mut(domain_id, |d| d.state = DomainState::Running);
+
+    let mut created_tokens: Vec<u64> = Vec::new();
+    for req in requested {
+        match cap_mgr.grant_capability_with_opts(
+            parent,
+            domain_id.as_u64(),
+            req.cap,
+            req.expires,
+            req.delegatable,
+        ) {
+            Ok(token_id) => {
+                created_tokens.push(token_id);
+                let _ = cap_mgr.increment_in_flight(token_id);
+            }
+            Err(_) => {
+                for token_id in created_tokens.iter().copied() {
+                    let _ = cap_mgr.revoke_grant(parent, token_id, true);
+                }
+                let _ = with_domain_mut(domain_id, |d| d.state = DomainState::Terminated);
+                return Err(KernelError::Domain(DomainErrorKind::LifecycleError));
+            }
+        }
+    }
+
+    Ok((domain_id, created_tokens))
 }
 
 /// ドメインのセキュリティハンドルを取得
