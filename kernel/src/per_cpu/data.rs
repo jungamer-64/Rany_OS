@@ -52,6 +52,11 @@ pub(crate) static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
 pub(crate) static GSBASE_FASTPATH: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// BSPのGSBaseが設定済みかどうか
+/// read_gsbase_any() が初期化前にMSRからゴミ値を読み取るのを防ぐ
+pub(crate) static BSP_GSBASE_SET: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Check if FSGSBASE fastpath is adopted (CPUID supports it)
 #[inline]
 pub fn can_use_fsgsbase() -> bool {
@@ -62,11 +67,16 @@ pub fn can_use_fsgsbase() -> bool {
 /// 
 /// Uses rdgsbase if fastpath is adopted AND this CPU has CR4.FSGSBASE enabled,
 /// otherwise falls back to MSR read. This prevents #UD on APs before their CR4 is set.
+/// Returns 0 if BSP GSBase has not been initialized yet (prevents MSR garbage).
 /// 
 /// # Safety
 /// Must be called in kernel mode
 #[inline]
 pub unsafe fn read_gsbase_any() -> u64 {
+    // GS baseがまだ設定されていなければ0を返す（MSRのゴミ値を防ぐ）
+    if !BSP_GSBASE_SET.load(Ordering::Acquire) {
+        return 0;
+    }
     if can_use_fsgsbase() && is_fsgsbase_enabled() {
         read_gs_base()
     } else {
@@ -521,6 +531,9 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             } else {
                 write_gs_base_msr(bsp_ptr);
             }
+
+            // BSPのGSBaseが設定済みであることをマーク
+            BSP_GSBASE_SET.store(true, Ordering::Release);
 
             // 2.5. TLS (Thread Local Storage) の初期化
             crate::io::log::early_print("[PCPU] TLS init\n");

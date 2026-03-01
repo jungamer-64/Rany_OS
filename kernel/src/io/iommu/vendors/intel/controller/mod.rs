@@ -259,6 +259,11 @@ impl IommuController {
         self.scalable_mode_enabled.load(Ordering::Acquire)
     }
 
+    /// Check if IOMMU translation is enabled on this controller
+    pub fn is_translation_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
     pub(crate) fn set_scalable_mode_enabled(&self, enabled: bool) {
         self.scalable_mode_enabled.store(enabled, Ordering::Release);
     }

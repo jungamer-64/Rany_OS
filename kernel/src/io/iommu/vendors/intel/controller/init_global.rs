@@ -340,6 +340,28 @@ fn finalize_iommu_setup(config: &IommuConfig) {
         }
     }
     crate::io::log::early_print("[IOMMU] Default domain done.\n");
+
+    // Enable IOMMU translation directly via the Intel registry.
+    // This avoids reliance on the global driver pointer (IOMMU_DRIVER)
+    // which may not be accessible from enable_iommu() in some configurations.
+    crate::io::log::early_print("[IOMMU] Enabling translation on all controllers...\n");
+    if let Some(registry) = super::super::registry::get_iommu_registry() {
+        for (idx, controller) in registry.controllers.iter().enumerate() {
+            match unsafe { controller.enable() } {
+                Ok(()) => {
+                    crate::io::log::early_print("[IOMMU] Controller ");
+                    crate::io::log::early_print_dec(idx as u64);
+                    crate::io::log::early_print(" translation enabled\n");
+                }
+                Err(_e) => {
+                    crate::io::log::early_print("[IOMMU] Controller ");
+                    crate::io::log::early_print_dec(idx as u64);
+                    crate::io::log::early_print(" enable FAILED\n");
+                }
+            }
+        }
+    }
+    crate::io::log::early_print("[IOMMU] finalize_iommu_setup done.\n");
 }
 
 /// Initialize the global IOMMU (legacy wrapper)

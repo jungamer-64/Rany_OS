@@ -41,15 +41,27 @@ pub fn enforce_iommu_requirement() {
 
 /// Enable IOMMU translation (on all controllers)
 pub fn enable_iommu() -> Result<(), IommuError> {
-    // diagnostic logging: check whether driver pointer exists
-    let has = get_iommu_driver().is_some();
-    if !has {
-        // early return to make logs clear
-        return Err(IommuError::NotInitialized);
+    // If IOMMU translation was already enabled during finalize_iommu_setup,
+    // return success immediately.
+    if is_iommu_enabled() {
+        return Ok(());
     }
-    let driver = get_iommu_driver().unwrap();
-    let result = driver.enable();
-    result
+
+    let driver = match get_iommu_driver() {
+        Some(d) => d,
+        None => {
+            // Global driver pointer not available – fall back to the
+            // Intel registry which is populated before the pointer.
+            if let Some(registry) = crate::io::iommu::vendors::intel::registry::get_iommu_registry() {
+                for controller in &registry.controllers {
+                    unsafe { controller.enable()?; }
+                }
+                return Ok(());
+            }
+            return Err(IommuError::NotInitialized);
+        }
+    };
+    driver.enable()
 }
 
 /// Disable IOMMU translation (on all controllers)

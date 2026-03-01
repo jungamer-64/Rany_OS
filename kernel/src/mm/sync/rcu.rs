@@ -68,7 +68,7 @@ pub fn rcu_read_lock() -> RcuReadGuard {
     
     // Increment local read depth and disable preemption
     unsafe {
-        let gs_base = per_cpu::read_gs_base();
+        let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.read_depth.fetch_add(1, Ordering::Relaxed);
@@ -87,7 +87,7 @@ pub fn rcu_read_lock() -> RcuReadGuard {
 #[inline]
 fn rcu_read_unlock_internal() {
     unsafe {
-        let gs_base = per_cpu::read_gs_base();
+        let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.read_depth.fetch_sub(1, Ordering::Relaxed);
@@ -105,7 +105,7 @@ fn rcu_read_unlock_internal() {
 #[inline]
 pub fn rcu_read_active() -> bool {
     unsafe {
-        let gs_base = per_cpu::read_gs_base();
+        let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.read_depth.load(Ordering::Relaxed) > 0
@@ -137,7 +137,7 @@ pub fn rcu_advance_epoch() {
 #[inline]
 pub fn rcu_note_context_switch() {
     unsafe {
-        let gs = per_cpu::read_gs_base();
+        let gs = per_cpu::read_gsbase_any();
         if gs != 0 {
             let pcp = &*(gs as *const per_cpu::PerCpuData);
             // Only report QS if not in a read section
@@ -257,7 +257,7 @@ pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
 
     // Try per-CPU queue first
     unsafe {
-        let gs_base = per_cpu::read_gs_base();
+        let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.batch_queue.lock().push_back(entry);
@@ -278,7 +278,7 @@ pub fn rcu_process_callbacks() {
     let current_epoch = rcu_current_epoch();
     
     unsafe {
-        let gs_base = per_cpu::read_gs_base();
+        let gs_base = per_cpu::read_gsbase_any();
         if gs_base == 0 { return; }
         let pcp = &*(gs_base as *const per_cpu::PerCpuData);
         let mut queue = pcp.rcu_state.batch_queue.lock();
@@ -305,7 +305,7 @@ pub fn rcu_process_callbacks() {
 /// ペンディング中のRCUコールバック数を取得 (Current CPU)
 pub fn rcu_pending_callbacks() -> usize {
     unsafe {
-        let gs_base = per_cpu::read_gs_base();
+        let gs_base = per_cpu::read_gsbase_any();
         if gs_base != 0 {
             let pcp = &*(gs_base as *const per_cpu::PerCpuData);
             pcp.rcu_state.batch_queue.lock().len()
