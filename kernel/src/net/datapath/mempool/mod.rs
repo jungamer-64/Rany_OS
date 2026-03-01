@@ -457,6 +457,54 @@ impl PacketRef {
     }
 }
 
+impl Clone for PacketRefKind {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Pooled {
+                buffer,
+                pool,
+                offset,
+                len,
+            } => {
+                unsafe {
+                    buffer.as_ref().add_ref();
+                }
+                Self::Pooled {
+                    buffer: *buffer,
+                    pool,
+                    offset: *offset,
+                    len: *len,
+                }
+            }
+            Self::Dma { buf, offset, len } => Self::Dma {
+                buf: buf.clone(),
+                offset: *offset,
+                len: *len,
+            },
+            #[cfg(any(test, feature = "qemu-test-export"))]
+            Self::BorrowedTest {
+                ptr,
+                cap,
+                offset,
+                len,
+            } => Self::BorrowedTest {
+                ptr: *ptr,
+                cap: *cap,
+                offset: *offset,
+                len: *len,
+            },
+        }
+    }
+}
+
+impl Clone for PacketRef {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+        }
+    }
+}
+
 impl Drop for PacketRef {
     fn drop(&mut self) {
         match &self.kind {

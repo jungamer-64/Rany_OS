@@ -85,7 +85,7 @@ impl NetworkStack {
     }
 
     /// Process UDP data (for reassembled packets)
-    pub(super) fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+    pub fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
         // For reassembled packets, we don't have a PacketRef for zero-copy
         // Use the non-zero-copy path
         let result = self.udp.process(data, src_ip, dst_ip);
@@ -102,7 +102,7 @@ impl NetworkStack {
     }
 
     /// Process TCP data (for reassembled packets)
-    pub(super) fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) {
+    pub fn process_tcp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) {
         // For reassembled packets, use the non-zero-copy TCP processing path
         let result = self.tcp.process(data, src_ip, dst_ip, current_time);
 
@@ -411,7 +411,7 @@ impl NetworkStack {
     }
 
     /// Process ARP packet
-    pub(super) fn process_arp(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress) {
+    pub fn process_arp(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress) {
         let result = self.arp.process(data, current_time, src_mac);
 
         match result {
@@ -491,7 +491,7 @@ impl NetworkStack {
     }
 
     /// Process UDP packet
-    pub(super) fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
+    pub fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
         let result = self.udp.process_with_packet(data, src_ip, dst_ip, _packet);
 
         match result {
@@ -507,7 +507,7 @@ impl NetworkStack {
     }
 
     /// Process TCP packet
-    pub(super) fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef, current_time: u64) {
+    pub fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef, current_time: u64) {
         // Zero-copy path: pass PacketRef to the TCP processor so it can enqueue a zero-copy payload view.
         let result = self.tcp.process_with_packet(data, src_ip, dst_ip, _packet, current_time);
 

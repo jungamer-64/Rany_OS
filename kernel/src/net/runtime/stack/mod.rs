@@ -8,7 +8,7 @@
 //! a unified zero-copy network stack as specified in Section 6.2.
 
 use crate::net::l2::arp::{ArpProcessor, ArpResult};
-use crate::net::l2::ethernet::{EtherType, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult};
+use crate::net::l2::ethernet::{EtherType, EthernetFrameMut, EthernetProcessor, MacAddress};
 use crate::net::l3::icmp::{DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, IcmpType, RedirectCode};
 use crate::net::l3::icmpv6::{Icmpv6EchoBuilder, Icmpv6Processor, Icmpv6Result};
 use crate::net::l2::igmp::{IgmpError, IgmpProcessor, IgmpResult, multicast_ip_to_mac};
@@ -166,7 +166,7 @@ pub type TransmitFn = fn(Option<NetIfId>, &[u8]) -> bool;
 // Only the gateway and timestamp are stored; the map key is the destination
 // address itself.
 #[derive(Debug)]
-struct RedirectCacheEntry {
+pub(crate) struct RedirectCacheEntry {
     gateway: Ipv4Address,
     timestamp: u64,
 }
@@ -175,7 +175,7 @@ const REDIRECT_CACHE_SIZE: usize = 32;
 const REDIRECT_CACHE_TTL: u64 = 600_000;
 
 #[derive(Debug)]
-struct RedirectCache {
+pub(crate) struct RedirectCache {
     map: BTreeMap<Ipv4Address, RedirectCacheEntry>,
     current_time: u64,
 }
@@ -225,45 +225,45 @@ impl RedirectCache {
 /// Integrated network stack
 pub struct NetworkStack {
     /// Configuration
-    config: NetworkConfig,
+    pub config: NetworkConfig,
     /// Ethernet processor
-    ethernet: EthernetProcessor,
+    pub ethernet: EthernetProcessor,
     /// IPv4 processor
-    ipv4: Ipv4Processor,
+    pub ipv4: Ipv4Processor,
     /// IPv6 processor (optional)
-    ipv6: Option<Ipv6Processor>,
+    pub ipv6: Option<Ipv6Processor>,
     /// ARP processor
-    arp: ArpProcessor,
+    pub arp: ArpProcessor,
     /// ICMP processor
-    icmp: IcmpProcessor,
+    pub icmp: IcmpProcessor,
     /// ICMPv6 processor (optional)
-    icmpv6: Option<Icmpv6Processor>,
+    pub icmpv6: Option<Icmpv6Processor>,
     /// IGMP processor (multicast group management)
-    igmp: IgmpProcessor,
+    pub igmp: IgmpProcessor,
     /// NDP processor (optional, IPv6 neighbor discovery)
-    ndp: Option<NdpProcessor>,
+    pub ndp: Option<NdpProcessor>,
     /// UDP processor
-    udp: UdpProcessor,
+    pub udp: UdpProcessor,
     /// TCP processor
-    tcp: TcpProcessor,
+    pub tcp: TcpProcessor,
     /// Packet pool for transmit buffers
-    tx_pool: PacketPool,
+    pub tx_pool: PacketPool,
     /// Statistics
-    stats: NetworkStats,
+    pub stats: NetworkStats,
     /// Timeout wheel for periodic tasks
-    timeout_wheel: TimeoutWheel,
+    pub timeout_wheel: TimeoutWheel,
     /// Transmit callback
-    transmit_fn: Option<TransmitFn>,
+    pub transmit_fn: Option<TransmitFn>,
     /// Current timestamp (ticks)
-    current_time: AtomicU64,
+    pub current_time: AtomicU64,
     /// ICMP Redirect cache
-    redirect_cache: RedirectCache,
+    pub redirect_cache: RedirectCache,
     /// Pending IPv6 packets awaiting NDP resolution
-    ndp_pending_queue: NdpPendingQueue,
+    pub ndp_pending_queue: NdpPendingQueue,
     /// IPv6 fragment reassembler
-    ipv6_fragment_reassembler: Ipv6FragmentReassembler,
+    pub ipv6_fragment_reassembler: Ipv6FragmentReassembler,
     /// IPv6 Path MTU Discovery cache
-    ipv6_pmtu_cache: Ipv6PmtuCache,
+    pub ipv6_pmtu_cache: Ipv6PmtuCache,
 }
 
 /// NDP解決待ちパケットキュー
@@ -275,7 +275,7 @@ const NDP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
 
 /// NDP解決待ちパケット
 #[derive(Clone)]
-struct PendingIpv6Packet {
+pub(crate) struct PendingIpv6Packet {
     /// 送信先IPv6アドレス
     dst: Ipv6Address,
     /// 送信元IPv6アドレス
@@ -287,7 +287,7 @@ struct PendingIpv6Packet {
 }
 
 /// NDP解決待ちキュー
-struct NdpPendingQueue {
+pub(crate) struct NdpPendingQueue {
     packets: VecDeque<PendingIpv6Packet>,
 }
 

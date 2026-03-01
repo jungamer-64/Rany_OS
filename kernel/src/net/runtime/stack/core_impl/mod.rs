@@ -212,97 +212,19 @@ impl NetworkStack {
     }
 
     /// Process an incoming packet (main entry point)
+    /// Receive a packet from the network
     pub fn receive(&mut self, packet: PacketRef) {
-        let current_time = self.current_time();
-        let pkt_len = packet.len();
-
-        // Process Ethernet frame (zero-copy via PacketRef view)
-        let result = self.ethernet.process(packet.data());
-
-        match result {
-            ProcessResult::Ipv4(payload, src_mac) => {
-                // Safety: Ensure payload is within packet bounds before offset calculation
-                let pkt_data = packet.data();
-                if payload.as_ptr() < pkt_data.as_ptr() || 
-                   payload.as_ptr() as usize + payload.len() > pkt_data.as_ptr() as usize + pkt_data.len() {
-                    self.stats.record_rx_error();
-                    return;
-                }
-                let offset = unsafe { payload.as_ptr().offset_from(pkt_data.as_ptr()) } as usize;
-                let mut ip_packet = packet.clone_ref();
-                ip_packet.advance(offset);
-                self.process_ipv4(payload, current_time, ip_packet, src_mac);
-                self.stats.record_rx(pkt_len);
-            }
-            ProcessResult::Arp(payload, src_mac) => {
-                self.process_arp(payload, current_time, src_mac);
-                self.stats.record_rx(pkt_len);
-            }
-            ProcessResult::Ipv6(payload, src_mac) => {
-                if self.ipv6.is_some() {
-                    self.process_ipv6_data(payload, current_time, src_mac, false);
-                    self.stats.record_rx(pkt_len);
-                } else {
-                    self.stats.record_dropped();
-                }
-            }
-            ProcessResult::VlanTagged { vlan_id, pcp: _, dei: _, inner_type, payload, src_mac } => {
-                // VLAN-tagged frame - process based on inner type
-                // For now, we process the inner payload directly
-                // In a full implementation, we would check VLAN membership
-                let pkt_data = packet.data();
-                if payload.as_ptr() < pkt_data.as_ptr() || 
-                   payload.as_ptr() as usize + payload.len() > pkt_data.as_ptr() as usize + pkt_data.len() {
-                    self.stats.record_rx_error();
-                    return;
-                }
-                let offset = unsafe { payload.as_ptr().offset_from(pkt_data.as_ptr()) } as usize;
-                let mut inner_packet = packet.clone_ref();
-                inner_packet.advance(offset);
-
-                match inner_type {
-                    EtherType::Ipv4 => {
-                        self.process_ipv4(payload, current_time, inner_packet, src_mac);
-                        self.stats.record_rx(pkt_len);
-                    }
-                    EtherType::Arp => {
-                        self.process_arp(payload, current_time, src_mac);
-                        self.stats.record_rx(pkt_len);
-                    }
-                    EtherType::Ipv6 => {
-                        if self.ipv6.is_some() {
-                            self.process_ipv6_data(payload, current_time, src_mac, false);
-                            self.stats.record_rx(pkt_len);
-                        } else {
-                            self.stats.record_dropped();
-                        }
-                    }
-                    _ => {
-                        // Unsupported inner protocol
-                        self.stats.record_dropped();
-                    }
-                }
-
-                // Log VLAN info if needed
-                let _ = vlan_id; // VLAN ID can be used for filtering/routing
-            }
-            ProcessResult::Dropped => {
-                self.stats.record_dropped();
-            }
-            ProcessResult::Error => {
-                self.stats.record_rx_error();
-            }
-        }
+        // Offload ALL packet processing to the asynchronous endpoint stack.
+        // This minimizes time spent in the interrupt/polling context.
+        crate::net::l4::endpoint::event::send_event_ignore(
+            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet }
+        );
     }
-
 
     /// Process a batch of incoming packets
     pub fn receive_batch(&mut self, batch: PacketBatch) {
-        // Since we are already holding the lock (caller must lock),
-        // we can process packets in a loop efficiently.
+        // Enqueue all packets in the batch to the asynchronous event queue.
         for packet in batch {
-            // Processing logic is identical to single packet receive
-            // receive() takes ownership of PacketRef
             self.receive(packet);
         }
     }
@@ -331,37 +253,29 @@ impl NetworkStack {
             Ipv4ProcessResult::Igmp(payload, src_ip, ttl) => {
                 self.process_igmp_data(payload, src_ip, ttl);
             }
-            Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
+            Ipv4ProcessResult::Udp(_payload, _src_ip, dst_ip) => {
                 // Security: Only process multicast UDP if group is joined (except mandatory)
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
                     self.stats.record_dropped();
                     return;
                 }
-                if payload.as_ptr() < data.as_ptr() || 
-                   payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
-                    self.stats.record_rx_error();
-                    return;
-                }
-                let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
-                let mut p = packet;
-                p.advance(offset);
-                self.process_udp(payload, src_ip, dst_ip, p);
+                
+                // Offload to asynchronous endpoint stack
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet: packet.clone() }
+                );
             }
-            Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip) => {
+            Ipv4ProcessResult::Tcp(_payload, _src_ip, dst_ip) => {
                 // Security: TCP multicast is generally not allowed/supported (RFC 793 / RFC 1122)
                 if dst_ip.is_multicast() {
                     self.stats.record_dropped();
                     return;
                 }
-                if payload.as_ptr() < data.as_ptr() || 
-                   payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
-                    self.stats.record_rx_error();
-                    return;
-                }
-                let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
-                let mut p = packet;
-                p.advance(offset);
-                self.process_tcp(payload, src_ip, dst_ip, p, current_time);
+                
+                // Offload to asynchronous endpoint stack
+                crate::net::l4::endpoint::event::send_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { packet: packet.clone() }
+                );
             }
             Ipv4ProcessResult::Reassembled(reassembled_data) => {
                 // Process reassembled packet recursively
@@ -383,7 +297,7 @@ impl NetworkStack {
     }
 
     /// Process a reassembled IP packet
-    pub(super) fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64, _src_mac: MacAddress) {
+    pub fn process_reassembled_packet(&mut self, data: &[u8], current_time: u64, _src_mac: MacAddress) {
         // Parse the reassembled packet
         if let Some(packet) = Ipv4Packet::parse(data) {
             let src = packet.source();
@@ -421,7 +335,7 @@ impl NetworkStack {
     }
 
     /// Process ICMP data (for reassembled packets)
-    pub(super) fn process_icmp_data(
+    pub fn process_icmp_data(
         &mut self,
         data: &[u8],
         src_ip: Ipv4Address,
@@ -478,7 +392,7 @@ impl NetworkStack {
     // =========================================================================
 
     /// Process IPv6 packet data
-    pub(super) fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress, reassembled: bool) {
+    pub fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress, reassembled: bool) {
         let ipv6 = match self.ipv6 {
             Some(ref ipv6) => ipv6,
             None => return,
@@ -1202,7 +1116,7 @@ impl NetworkStack {
     }
 
     /// Process IGMP data for multicast group management
-    pub(super) fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, ttl: u8) {
+    pub fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, ttl: u8) {
         // Security (RFC 2236 Section 2): all IGMP messages MUST be sent with a IP TTL of 1.
         if ttl != 1 {
             log::warn!("IGMP: Dropping packet with invalid TTL {}", ttl);

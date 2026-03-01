@@ -12,12 +12,17 @@ use super::manager::SOCKET_MANAGER;
 use super::segment::TcpSegmentBuilder;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
 use super::types::{SocketAddr, SocketError, SocketFd, SocketResult, SocketType};
+use crate::net::datapath::mempool::PacketRef;
+use crate::net::l2::ethernet::{EtherType, MacAddress};
+use crate::net::l3::ipv4::Ipv4Address;
 
 /// イベント処理の結果
 #[derive(Debug)]
 pub enum EventHandleResult {
     /// 処理成功
     Success,
+    /// 着信パケット - プロトコルスタックへのオフロード
+    IngressPacket { packet: PacketRef },
     /// ソケットが見つからない
     SocketNotFound(SocketFd),
     /// プロトコルエラー
@@ -83,6 +88,7 @@ impl NetworkEventHandler {
     /// イベントを処理
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
         match event {
+            NetworkEvent::IngressPacket { packet } => self.handle_ingress_packet(packet),
             NetworkEvent::DataReady { fd, socket_type } => self.handle_data_ready(fd, socket_type),
             NetworkEvent::TxAvailable => self.handle_tx_available(),
             NetworkEvent::Connect { fd, local, remote } => self.handle_connect(fd, local, remote),
@@ -92,6 +98,153 @@ impl NetworkEventHandler {
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
             NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
         }
+    }
+
+    /// IngressPacketイベント処理
+    fn handle_ingress_packet(&self, packet: PacketRef) -> EventHandleResult {
+        let pkt_len = packet.len();
+        let data = packet.data();
+        
+        // Ethernetヘッダ解析
+        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+            if let Some(ref mut stack) = *stack_guard {
+                let current_time = stack.current_time();
+                
+                // Ethernetフレームを処理（NetworkStackのEthernetProcessorを使用）
+                match stack.ethernet.process(data) {
+                    crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
+                        self.handle_ipv4_ingress(payload, src_mac, current_time, stack);
+                        stack.stats.record_rx(pkt_len);
+                    }
+                    crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
+                        stack.process_arp(payload, current_time, src_mac);
+                        stack.stats.record_rx(pkt_len);
+                    }
+                    crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
+                        if stack.ipv6.is_some() {
+                            stack.process_ipv6_data(payload, current_time, src_mac, false);
+                            stack.stats.record_rx(pkt_len);
+                        } else {
+                            stack.stats.record_dropped();
+                        }
+                    }
+                    crate::net::l2::ethernet::ProcessResult::VlanTagged { vlan_id, pcp: _, dei: _, inner_type, payload, src_mac } => {
+                        // VLAN IDを元にフィルタリング等の処理が可能
+                        let _ = vlan_id;
+                        match inner_type {
+                            EtherType::Ipv4 => {
+                                self.handle_ipv4_ingress(payload, src_mac, current_time, stack);
+                                stack.stats.record_rx(pkt_len);
+                            }
+                            EtherType::Arp => {
+                                stack.process_arp(payload, current_time, src_mac);
+                                stack.stats.record_rx(pkt_len);
+                            }
+                            EtherType::Ipv6 => {
+                                if stack.ipv6.is_some() {
+                                    stack.process_ipv6_data(payload, current_time, src_mac, false);
+                                    stack.stats.record_rx(pkt_len);
+                                } else {
+                                    stack.stats.record_dropped();
+                                }
+                            }
+                            _ => {
+                                stack.stats.record_dropped();
+                            }
+                        }
+                    }
+                    crate::net::l2::ethernet::ProcessResult::Dropped => {
+                        stack.stats.record_dropped();
+                    }
+                    crate::net::l2::ethernet::ProcessResult::Error => {
+                        stack.stats.record_rx_error();
+                    }
+                }
+            }
+        }
+
+        EventHandleResult::Success
+    }
+
+    /// IPv4パケットの処理
+    fn handle_ipv4_ingress(
+        &self, 
+        data: &[u8], 
+        src_mac: MacAddress, 
+        current_time: u64, 
+        stack: &mut crate::net::runtime::stack::NetworkStack
+    ) -> EventHandleResult {
+        // Ipv4Processorを使用してプロトコル判定
+        let result = stack.ipv4.process_with_time(data, current_time);
+
+        match result {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl) => {
+                stack.process_icmp_data(payload, src_ip, dst_ip, ttl, current_time);
+            }
+            crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl) => {
+                stack.process_igmp_data(payload, src_ip, ttl);
+            }
+            crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
+                self.handle_udp_ingress(src_ip.octets(), dst_ip.octets(), payload);
+            }
+            crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip) => {
+                super::tcp_rx::process_tcp_segment(src_ip.octets(), dst_ip.octets(), payload);
+            }
+            crate::net::l3::ipv4::Ipv4ProcessResult::Reassembled(reassembled_data) => {
+                // 再組立てパケットを再帰的に処理
+                stack.process_reassembled_packet(&reassembled_data, current_time, src_mac);
+            }
+            crate::net::l3::ipv4::Ipv4ProcessResult::FragmentPending => {}
+            crate::net::l3::ipv4::Ipv4ProcessResult::Dropped => {
+                stack.stats.record_dropped();
+            }
+            crate::net::l3::ipv4::Ipv4ProcessResult::Error => {
+                stack.stats.record_rx_error();
+            }
+            crate::net::l3::ipv4::Ipv4ProcessResult::Success => {}
+        }
+
+        EventHandleResult::Success
+    }
+
+    /// IPv6パケットの処理 (Stub)
+    fn handle_ipv6_ingress(
+        &self, 
+        _data: &[u8], 
+        _packet: PacketRef
+    ) -> EventHandleResult {
+        EventHandleResult::Success
+    }
+
+    /// ARPパケットの処理 (NetworkStack側で処理するため未使用)
+    fn handle_arp_ingress(&self, _data: &[u8], _src_mac: MacAddress) -> EventHandleResult {
+        EventHandleResult::Success
+    }
+
+    /// ICMPパケットの処理 (NetworkStack側で処理するため未使用)
+    fn handle_icmp_ingress(&self, _data: &[u8], _src_ip: Ipv4Address, _dst_ip: Ipv4Address, _ttl: u8) -> EventHandleResult {
+        EventHandleResult::Success
+    }
+
+    /// UDPパケットの処理
+    fn handle_udp_ingress(&self, src_ip: [u8; 4], _dst_ip: [u8; 4], payload: &[u8]) -> EventHandleResult {
+        if payload.len() < 8 {
+            return EventHandleResult::Success;
+        }
+
+        let src_port = u16::from_be_bytes([payload[0], payload[1]]);
+        let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
+        let data = &payload[8..];
+
+        let remote = SocketAddr::new(src_ip, src_port);
+
+        if let Some(ref mgr) = *SOCKET_MANAGER.read() {
+            if let Some(socket) = mgr.find_by_port(SocketType::Udp, dst_port) {
+                socket.push_packet(remote, data.to_vec());
+            }
+        }
+
+        EventHandleResult::Success
     }
 
     /// SetPriorityイベント処理
@@ -328,7 +481,7 @@ impl NetworkEventHandler {
         tcb.set_nodelay(nodelay);
         tcb.set_priority(priority); // 設定を反映
         tcb.state = TcpConnectionState::SynSent;
-        tcb_table().insert(tcb);
+        let _ = tcb_table().insert(tcb);
 
         // SYNパケット構築 (TCPオプション付き)
         // MSS=1460 (標準的なイーサネットMTU)
@@ -422,7 +575,7 @@ impl NetworkEventHandler {
         // backlog値を保存（接続要求キューの最大サイズ）
         // 注: 実際の接続要求キューはTCBテーブル側で管理
         let _ = backlog; // 現在のTCB構造体にはbacklogフィールドなし
-        tcb_table().insert(tcb);
+        let _ = tcb_table().insert(tcb);
 
         log::info!(
             "TCP: Listening on {} (fd={}, backlog={})",
@@ -708,7 +861,7 @@ pub mod tests {
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
         tcb.state = TcpConnectionState::Established;
-        tcb_table().insert(tcb);
+        let _ = tcb_table().insert(tcb);
 
         let handler = NetworkEventHandler::new();
         let res = handler.handle_data_ready(fd, SocketType::Tcp);
@@ -850,7 +1003,7 @@ pub mod qemu_tests {
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
         tcb.state = TcpConnectionState::Established;
-        tcb_table().insert(tcb);
+        let _ = tcb_table().insert(tcb);
 
         let handler = NetworkEventHandler::new();
         matches!(

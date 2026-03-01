@@ -904,7 +904,7 @@ pub async fn network_event_task() {
         let event_clone = event.clone();
         let result = handler.handle_event(event);
         match result {
-            EventHandleResult::Success => {}
+            EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
             EventHandleResult::SocketNotFound(fd) => {
                 // ソケットが既に閉じられている - 正常
                 log::info!("Network: Socket {} not found (already closed)", fd.raw());
@@ -925,6 +925,7 @@ pub async fn network_event_task() {
             let event_clone = event.clone();
             let result = handler.handle_event(event);
             match result {
+                EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
                 EventHandleResult::SocketNotFound(fd) => {
                     log::info!("Network: Socket {} not found", fd.raw());
                 }

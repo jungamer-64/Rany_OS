@@ -14,10 +14,13 @@ use core::task::{Context, Poll};
 use crate::sync::PoisonLock;
 
 use super::types::{SocketAddr, SocketFd, SocketType};
+use crate::net::datapath::mempool::PacketRef;
 
 /// ネットワークイベント種別
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
+    /// 着信パケット - プロトコルスタックへのオフロード
+    IngressPacket { packet: PacketRef },
     /// 送信データ準備完了 - プロトコルスタックに送信を要求
     DataReady {
         fd: SocketFd,
