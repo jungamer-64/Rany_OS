@@ -1155,6 +1155,11 @@ impl NetworkStack {
             return Some(MacAddress::BROADCAST);
         }
 
+        // Multicast address (RFC 1112)
+        if dst_ip.is_multicast() {
+            return Some(multicast_ip_to_mac(dst_ip));
+        }
+
         // Determine next hop, considering ICMP Redirect cache
         let next_hop = if config.ipv4.is_local(&dst_ip) {
             dst_ip

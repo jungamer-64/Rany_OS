@@ -216,12 +216,21 @@ impl FragmentBuffer {
 
         self.last_update = current_time;
 
-        // Security: Check for 'Tiny Fragments' (RFC 1858)
-        // If this is the first fragment (offset 0) and there are more fragments,
-        // it must be large enough to contain the transport header (at least 8 bytes for UDP/TCP).
-        if fragment_offset == 0 && header.more_fragments() && fragment_len < 8 {
-            log::warn!("[NET-IPV4] Tiny fragment (offset 0, len {}) detected, dropping datagram", fragment_len);
-            return false;
+        // Security: Check for 'Tiny Fragments' (RFC 1858, RFC 3128)
+        // The first fragment (offset 0) must be large enough to contain the critical
+        // parts of the transport header to allow for stateful inspection and filtering.
+        if fragment_offset == 0 && header.more_fragments() {
+            let min_len = match header.protocol() {
+                super::IpProtocol::Tcp => 20, // TCP: must contain the entire 20-byte base header (RFC 3128)
+                super::IpProtocol::Udp => 8, // UDP: must contain at least the 8-byte header
+                super::IpProtocol::Icmp => 8,  // ICMP: must contain at least the 8-byte header
+                _ => 8,
+            };
+            if fragment_len < min_len {
+                log::warn!("[NET-IPV4] Tiny fragment (offset 0, protocol {:?}, len {}) detected, dropping datagram", 
+                    header.protocol(), fragment_len);
+                return false;
+            }
         }
 
         // RFC 791: 8-octet multiple check for non-last fragments
@@ -552,8 +561,8 @@ pub struct Ipv4Processor {
     stats: Ipv4Stats,
     /// Internal ID counter
     next_id: u16,
-    /// ID generation secret (per-boot)
-    id_secret: u16,
+    /// ID generation secret (per-boot, 32-bit for better scrambling)
+    id_secret: u32,
     /// Fragment reassembler
     reassembler: FragmentReassembler,
     /// Path MTU Discovery cache
@@ -603,7 +612,7 @@ impl Ipv4Processor {
         // Use cryptographically secure random for initial ID and secret
         let random_bytes = crate::net::security::tls::generate_random();
         let id_init = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
-        let secret = u16::from_be_bytes([random_bytes[2], random_bytes[3]]);
+        let secret = u32::from_le_bytes([random_bytes[2], random_bytes[3], random_bytes[4], random_bytes[5]]);
 
         Ipv4Processor {
             config,
@@ -657,7 +666,13 @@ impl Ipv4Processor {
     }
 
     /// Process an incoming IPv4 packet with timestamp for fragment timeout handling
-    pub fn process_with_time<'a>(&mut self, data: &'a [u8], current_time: u64) -> Ipv4ProcessResult<'a> {
+    pub fn process_with_time<'a>(&mut self, data: &'a [u8], mut current_time: u64) -> Ipv4ProcessResult<'a> {
+        // Security: Ensure we have a valid timestamp for fragment timeout handling.
+        // If 0 is provided, fall back to the system uptime.
+        if current_time == 0 {
+            current_time = crate::time::get_uptime_ms();
+        }
+
         let packet = match Ipv4Packet::parse(data) {
             Some(p) => p,
             None => {
@@ -736,10 +751,13 @@ impl Ipv4Processor {
 
     /// Get next packet ID (unpredictable per-destination to prevent Idle Scan and Traffic Analysis)
     pub fn next_id(&mut self, dst: Ipv4Address) -> u16 {
-        // Increment global counter by a random amount (RFC 6864 recommendation)
-        // Using generate_random() to get a small random increment (1 to 256)
-        let rand = crate::net::security::tls::generate_random();
-        let increment = (rand[0] as u16).saturating_add(1);
+        // RFC 6864 recommendation: increment the global counter by 1 or more.
+        // To avoid predictable IDs while remaining efficient, we use a simple
+        // LCG-based increment seeded by our secret.
+        let mut rand_state = self.next_id as u32 ^ self.id_secret;
+        rand_state = rand_state.wrapping_mul(1103515245).wrapping_add(12345);
+        let increment = ((rand_state >> 16) & 0xFF) as u16 + 1;
+        
         self.next_id = self.next_id.wrapping_add(increment);
         
         // Compute per-destination scrambling using FNV-1a of (dst, secret)
@@ -750,10 +768,9 @@ impl Ipv4Processor {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        for byte in self.id_secret.to_le_bytes() {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
+        
+        hash ^= self.id_secret;
+        hash = hash.wrapping_mul(FNV_PRIME);
         
         // Mix the global counter with the per-destination hash
         let scramble = (hash ^ (hash >> 16)) as u16;

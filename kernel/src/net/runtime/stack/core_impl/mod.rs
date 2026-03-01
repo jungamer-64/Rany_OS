@@ -111,6 +111,12 @@ impl NetworkStack {
         &self.stats
     }
 
+    /// Check if an IPv4 multicast group is allowed (joined or mandatory)
+    fn is_multicast_allowed(&self, group: Ipv4Address) -> bool {
+        use crate::net::l2::igmp::ALL_HOSTS_GROUP;
+        group == ALL_HOSTS_GROUP || self.igmp.is_member(group)
+    }
+
     /// Process an incoming packet (main entry point)
     pub fn receive(&mut self, packet: PacketRef) {
         let current_time = self.current_time();
@@ -213,6 +219,11 @@ impl NetworkStack {
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl) => {
+                // Security: Only process multicast ICMP if group is joined (except mandatory)
+                if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
+                    self.stats.record_dropped();
+                    return;
+                }
                 if payload.as_ptr() < data.as_ptr() || 
                    payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
                     self.stats.record_rx_error();
@@ -227,6 +238,11 @@ impl NetworkStack {
                 self.process_igmp_data(payload, src_ip, ttl);
             }
             Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
+                // Security: Only process multicast UDP if group is joined (except mandatory)
+                if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
+                    self.stats.record_dropped();
+                    return;
+                }
                 if payload.as_ptr() < data.as_ptr() || 
                    payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
                     self.stats.record_rx_error();
@@ -238,6 +254,11 @@ impl NetworkStack {
                 self.process_udp(payload, src_ip, dst_ip, p);
             }
             Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip) => {
+                // Security: TCP multicast is generally not allowed/supported (RFC 793 / RFC 1122)
+                if dst_ip.is_multicast() {
+                    self.stats.record_dropped();
+                    return;
+                }
                 if payload.as_ptr() < data.as_ptr() || 
                    payload.as_ptr() as usize + payload.len() > data.as_ptr() as usize + data.len() {
                     self.stats.record_rx_error();
@@ -274,6 +295,12 @@ impl NetworkStack {
             let src = packet.source();
             let dst = packet.destination();
             let payload = packet.payload();
+
+            // Security: Only process multicast packets if group is joined (RFC 1122)
+            if dst.is_multicast() && !self.is_multicast_allowed(dst) {
+                self.stats.record_dropped();
+                return;
+            }
 
             match packet.protocol() {
                 IpProtocol::Icmp => {

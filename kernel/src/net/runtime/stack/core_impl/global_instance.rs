@@ -277,6 +277,23 @@ pub fn bind_tcp(addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
     }
 }
 
+/// Bind a TCP listener with a capability token
+pub fn bind_tcp_with_token(addr: TcpSocketAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.bind_tcp_with_token(addr, token)
+            } else {
+                Err(TcpError::InvalidState)
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - bind_tcp_with_token failed");
+            Err(TcpError::InvalidState)
+        }
+    }
+}
+
 /// Connect to a remote TCP address
 pub fn connect_tcp(local_addr: TcpSocketAddr, remote_addr: TcpSocketAddr) -> Result<TcpStream, TcpError> {
      match NETWORK_STACK.lock() {

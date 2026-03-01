@@ -48,6 +48,8 @@ pub enum TcpError {
     InvalidState,
     /// ネットワーク到達不能
     NetworkUnreachable,
+    /// 権限不足 (設計書 8.4)
+    PermissionDenied,
 }
 
 // ============================================================================
@@ -467,6 +469,11 @@ impl TcpListener {
     /// 【設計書】POSIXのbind()と同様の動作
     pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
         crate::net::runtime::stack::bind_tcp(addr)
+    }
+
+    /// 指定アドレスとトークンで新しいリスナーを作成
+    pub fn bind_with_token(addr: SocketAddr, token: Option<u64>) -> Result<Self, TcpError> {
+        crate::net::runtime::stack::bind_tcp_with_token(addr, token)
     }
 
     // Legacy constructor `TcpListener::new` removed; use `TcpListener::bind(addr)` instead.

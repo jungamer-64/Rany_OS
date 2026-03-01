@@ -56,12 +56,39 @@ impl UdpSocketTable {
                     } else {
                         return None;
                     }
-                } else if sockets.contains_key(&port) {
-                    return None; // Port in use
+                } else {
+                    // Security: Check for privileged ports (< 1024)
+                    if port < 1024 {
+                        let caller = crate::task::context::current_subject().domain.as_u64();
+                        let mut permitted = false;
+
+                        if let Some(t) = token {
+                            // If a token is provided, it MUST grant CAP_NET_BIND for privileged ports
+                            if crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_NET_BIND) {
+                                permitted = true;
+                            }
+                        } else {
+                            // If no token, check if the domain has the capability ambiently
+                            if crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_NET_BIND) {
+                                permitted = true;
+                            }
+                        }
+
+                        if !permitted {
+                            log::warn!("[NET] UDP: Permission denied for privileged port {}", port);
+                            return None;
+                        }
+                    }
+
+                    if sockets.contains_key(&port) {
+                        return None; // Port in use
+                    }
                 }
 
                 // If a token was provided, attempt to increment in-flight.
                 if let Some(t) = token {
+                    // Note: We already validated the token if port < 1024.
+                    // For non-privileged ports, any valid network token is accepted for now.
                     if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
                         return None;
                     }

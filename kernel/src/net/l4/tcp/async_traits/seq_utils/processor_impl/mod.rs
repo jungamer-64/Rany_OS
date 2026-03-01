@@ -104,9 +104,46 @@ impl TcpProcessor {
     }
     
     /// Bind to a specific port
-    pub fn bind(&mut self, addr: SocketAddr) -> Result<TcpListener, TcpError> {
-        if self.is_port_in_use(addr.port()) {
+    pub fn bind(&mut self, addr: SocketAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
+        let port = addr.port();
+        
+        // Security: Check for privileged ports (< 1024)
+        if port < 1024 {
+            let caller = crate::task::context::current_subject().domain.as_u64();
+            let mut permitted = false;
+
+            if let Some(t) = token {
+                if crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_NET_BIND) {
+                    permitted = true;
+                }
+            } else {
+                if crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_NET_BIND) {
+                    permitted = true;
+                }
+            }
+
+            if !permitted {
+                log::warn!("[NET] TCP: Permission denied for privileged port {}", port);
+                return Err(TcpError::PermissionDenied);
+            }
+        }
+
+        if self.is_port_in_use(port) {
             return Err(TcpError::AddressInUse);
+        }
+        
+        // If a token was provided and not already validated, validate it now
+        if let Some(t) = token {
+            // Check if it's at least a valid network token if it wasn't already checked for CAP_NET_BIND
+            if port >= 1024 {
+                 // For now we allow any valid token for non-privileged ports,
+                 // but we should probably check for a generic NET capability.
+                 // Let's just increment in-flight for now if it exists.
+            }
+            
+            if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                return Err(TcpError::PermissionDenied);
+            }
         }
         
         // Create shared state for backlog and waker

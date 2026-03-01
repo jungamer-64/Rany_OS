@@ -6,8 +6,13 @@ impl NetworkStack {
 
     /// Bind a TCP listener
     pub fn bind_tcp(&mut self, addr: TcpSocketAddr) -> Result<TcpListener, TcpError> {
-        // Delegate to processor
-        self.tcp.bind(addr)
+        // Default: no token
+        self.tcp.bind(addr, None)
+    }
+
+    /// Bind a TCP listener with a capability token
+    pub fn bind_tcp_with_token(&mut self, addr: TcpSocketAddr, token: Option<u64>) -> Result<TcpListener, TcpError> {
+        self.tcp.bind(addr, token)
     }
 
     /// Test helper: insert a pre-built TCP connection into the stack.
