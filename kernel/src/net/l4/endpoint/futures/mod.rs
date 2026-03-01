@@ -150,6 +150,40 @@ impl Future for SendFuture {
     }
 }
 
+/// 非同期UDP送信Future
+pub struct SendToFuture {
+    socket: Socket,
+    data: Vec<u8>,
+    addr: SocketAddr,
+}
+
+impl SendToFuture {
+    /// 新規作成
+    pub fn new(socket: Socket, data: Vec<u8>, addr: SocketAddr) -> Self {
+        Self {
+            socket,
+            data,
+            addr,
+        }
+    }
+}
+
+impl Future for SendToFuture {
+    type Output = SocketResult<usize>;
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // UDPは現在バッファリングせず即座にイベントキューへ
+        // TODO: イベントキューが満杯の場合のWaker登録（現在はポーリングに依存）
+        match this.socket.send_to(&this.data, this.addr) {
+            Ok(len) => Poll::Ready(Ok(len)),
+            Err(SocketError::ResourceExhausted) => Poll::Pending,
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+}
+
 /// 非同期接続受け入れFuture
 pub struct AcceptFuture {
     socket: Socket,
@@ -197,7 +231,7 @@ impl RecvFromFuture {
 impl Future for RecvFromFuture {
     type Output = SocketResult<(Vec<u8>, SocketAddr)>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
         // バッファサイズを取得
@@ -210,7 +244,11 @@ impl Future for RecvFromFuture {
                 this.buffer[..len].copy_from_slice(&temp_buf[..len]);
                 Poll::Ready(Ok((core::mem::take(&mut this.buffer), addr)))
             }
-            Err(SocketError::Timeout) => Poll::Pending,
+            Err(SocketError::Timeout) => {
+                // Wakerを登録してPending
+                this.socket.register_recv_waker(cx.waker().clone());
+                Poll::Pending
+            }
             Err(e) => Poll::Ready(Err(e)),
         }
     }
@@ -286,6 +324,11 @@ impl OwnedSocket {
     /// 非同期送信
     pub fn send_async(&self, data: Vec<u8>) -> Option<SendFuture> {
         self.socket().map(|s| SendFuture::new(s.clone(), data))
+    }
+
+    /// 非同期UDP送信
+    pub fn send_to_async(&self, data: Vec<u8>, addr: SocketAddr) -> Option<SendToFuture> {
+        self.socket().map(|s| SendToFuture::new(s.clone(), data, addr))
     }
 
     /// 非同期接続受け入れ

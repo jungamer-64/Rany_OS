@@ -230,6 +230,18 @@ impl Socket {
         inner.accept_waker = Some(waker);
     }
 
+    /// 受信待ちWakerを登録（非同期用）
+    pub fn register_recv_waker(&self, waker: core::task::Waker) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.recv_waker = Some(waker);
+    }
+
+    /// 送信待ちWakerを登録（非同期用）
+    pub fn register_send_waker(&self, waker: core::task::Waker) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.send_waker = Some(waker);
+    }
+
     /// 接続受け入れ（内部用 - バックログ経由）
     pub fn accept_from_backlog(
         &self,

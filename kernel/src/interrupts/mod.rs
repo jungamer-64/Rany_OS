@@ -285,15 +285,24 @@ pub fn enable_interrupts() {
         init_idt();
         IDT_INITIALIZED.store(true, Ordering::SeqCst);
     }
+    // Direct serial port I/O trace: write '1' before sti
+    crate::io::outb(0x3F8, b'1');
     // actually enable
     x86_64::instructions::interrupts::enable();
+    // Direct serial port I/O trace: write '2' after sti
+    crate::io::outb(0x3F8, b'2');
     crate::io::log::early_print("[INT] sti done\n");
+    // Direct serial port I/O trace: write '3' before start_serial_tx
+    crate::io::outb(0x3F8, b'3');
 
     // Now that interrupts are enabled, there may be pending serial transmit
     // work left over from earlier synchronous/asynchronous logging attempts.
     // Kick the transmitter again to ensure any data buffered before IF was set
     // actually makes it onto the wire.
     crate::io::log::start_serial_tx();
+    // Direct serial port I/O trace: write '4' after start_serial_tx
+    crate::io::outb(0x3F8, b'4');
+    crate::io::outb(0x3F8, b'\n');
 }
 
 /// 割り込みを無効化

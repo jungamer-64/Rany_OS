@@ -6,7 +6,7 @@
 //! process_tcp_segment, network_event_task
 
 
-use super::event::event_queue;
+use super::event::{event_queue, NetworkEvent};
 use super::handler::{EventHandleResult, NetworkEventHandler};
 use super::manager::SOCKET_MANAGER;
 use super::ooo_queue;
@@ -900,42 +900,52 @@ pub async fn network_event_task() {
         // イベントを待機（単一イベントを取得）
         let event = event_queue().wait_for_events().await;
 
-        // イベントを処理
-        let event_clone = event.clone();
-        let result = handler.handle_event(event);
-        match result {
-            EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
-            EventHandleResult::SocketNotFound(fd) => {
-                // ソケットが既に閉じられている - 正常
-                log::info!("Network: Socket {} not found (already closed)", fd.raw());
-            }
-            EventHandleResult::ProtocolError(e) => {
-                log::info!("Network: Protocol error: {:?}", e);
-            }
-            EventHandleResult::Retry => {
-                // 再試行が必要な場合はイベントを再キュー
-                if let Err(_) = super::event::send_event(event_clone) {
-                    log::warn!("Network: Event requeue failed due to full queue");
+        // スタックのロックを取得してバッチ処理
+        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+            if let Some(ref mut stack) = *stack_guard {
+                // 最初のイベントを処理
+                let event_clone = event.clone();
+                let result = handler.handle_event_with_stack(event, stack);
+                process_handle_result(result, event_clone);
+
+                // キューに溜まっている他のイベントもスタックロック保持中に一括処理
+                while let Some(batch_event) = event_queue().recv() {
+                    let batch_clone = batch_event.clone();
+                    let result = handler.handle_event_with_stack(batch_event, stack);
+                    process_handle_result(result, batch_clone);
                 }
+                continue;
             }
         }
 
-        // 残りのイベントも処理（バッチ処理）
-        while let Some(event) = event_queue().recv() {
-            let event_clone = event.clone();
-            let result = handler.handle_event(event);
-            match result {
-                EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
-                EventHandleResult::SocketNotFound(fd) => {
-                    log::info!("Network: Socket {} not found", fd.raw());
-                }
-                EventHandleResult::Retry => {
-                    // 再試行イベントを再キュー
-                    if let Err(_) = super::event::send_event(event_clone) {
-                        log::warn!("Network: Event requeue failed due to full queue");
-                    }
-                }
-                _ => {}
+        // スタック未初期化やロック失敗時は通常の個別処理
+        let event_clone = event.clone();
+        let result = handler.handle_event(event);
+        process_handle_result(result, event_clone);
+        
+        while let Some(batch_event) = event_queue().recv() {
+            let batch_clone = batch_event.clone();
+            let result = handler.handle_event(batch_event);
+            process_handle_result(result, batch_clone);
+        }
+    }
+}
+
+/// イベント処理結果の共通対応
+fn process_handle_result(result: EventHandleResult, event_clone: NetworkEvent) {
+    match result {
+        EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
+        EventHandleResult::SocketNotFound(fd) => {
+            // ソケットが既に閉じられている - 正常
+            log::info!("Network: Socket {} not found (already closed)", fd.raw());
+        }
+        EventHandleResult::ProtocolError(e) => {
+            log::info!("Network: Protocol error: {:?}", e);
+        }
+        EventHandleResult::Retry => {
+            // 再試行が必要な場合はイベントを再キュー（バックプレッシャー対応）
+            if let Err(_) = super::event::send_event(event_clone) {
+                log::warn!("Network: Event requeue failed due to full queue");
             }
         }
     }

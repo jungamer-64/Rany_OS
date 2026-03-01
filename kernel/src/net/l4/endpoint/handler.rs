@@ -100,25 +100,28 @@ impl NetworkEventHandler {
         }
     }
 
-    /// IngressPacketイベント処理
-    fn handle_ingress_packet(&self, packet: PacketRef) -> EventHandleResult {
-        let pkt_len = packet.len();
-        let data = packet.data();
-        
-        // Ethernetヘッダ解析
-        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
-            if let Some(ref mut stack) = *stack_guard {
+    /// スタックロック保持状態でイベントを処理（効率化用）
+    pub fn handle_event_with_stack(
+        &self,
+        event: NetworkEvent,
+        stack: &mut crate::net::runtime::stack::NetworkStack,
+    ) -> EventHandleResult {
+        match event {
+            NetworkEvent::IngressPacket { packet } => {
+                let pkt_len = packet.len();
+                let data = packet.data();
                 let current_time = stack.current_time();
-                
-                // Ethernetフレームを処理（NetworkStackのEthernetProcessorを使用）
+
                 match stack.ethernet.process(data) {
                     crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
-                        self.handle_ipv4_ingress(payload, src_mac, current_time, stack);
+                        self.handle_ipv4_ingress_with_stack(payload, src_mac, current_time, stack);
                         stack.stats.record_rx(pkt_len);
+                        EventHandleResult::Success
                     }
                     crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
                         stack.process_arp(payload, current_time, src_mac);
                         stack.stats.record_rx(pkt_len);
+                        EventHandleResult::Success
                     }
                     crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
                         if stack.ipv6.is_some() {
@@ -127,47 +130,39 @@ impl NetworkEventHandler {
                         } else {
                             stack.stats.record_dropped();
                         }
+                        EventHandleResult::Success
                     }
-                    crate::net::l2::ethernet::ProcessResult::VlanTagged { vlan_id, pcp: _, dei: _, inner_type, payload, src_mac } => {
-                        // VLAN IDを元にフィルタリング等の処理が可能
-                        let _ = vlan_id;
-                        match inner_type {
-                            EtherType::Ipv4 => {
-                                self.handle_ipv4_ingress(payload, src_mac, current_time, stack);
-                                stack.stats.record_rx(pkt_len);
-                            }
-                            EtherType::Arp => {
-                                stack.process_arp(payload, current_time, src_mac);
-                                stack.stats.record_rx(pkt_len);
-                            }
-                            EtherType::Ipv6 => {
-                                if stack.ipv6.is_some() {
-                                    stack.process_ipv6_data(payload, current_time, src_mac, false);
-                                    stack.stats.record_rx(pkt_len);
-                                } else {
-                                    stack.stats.record_dropped();
-                                }
-                            }
-                            _ => {
-                                stack.stats.record_dropped();
-                            }
-                        }
-                    }
-                    crate::net::l2::ethernet::ProcessResult::Dropped => {
-                        stack.stats.record_dropped();
-                    }
-                    crate::net::l2::ethernet::ProcessResult::Error => {
-                        stack.stats.record_rx_error();
-                    }
+                    _ => EventHandleResult::Success,
                 }
             }
+            NetworkEvent::DataReady { fd, socket_type } => {
+                if socket_type == SocketType::Tcp {
+                    self.handle_tcp_data_ready_with_stack(fd, stack)
+                } else {
+                    EventHandleResult::Success
+                }
+            }
+            NetworkEvent::SendTo { fd, data, remote } => {
+                self.handle_send_to_with_stack(fd, remote, data, stack)
+            }
+            // その他のイベントはスタック非依存または個別ロックで対応
+            other => self.handle_event(other),
         }
+    }
 
+    /// IngressPacketイベント処理
+    fn handle_ingress_packet(&self, packet: PacketRef) -> EventHandleResult {
+        // Ethernetヘッダ解析
+        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+            if let Some(ref mut stack) = *stack_guard {
+                return self.handle_event_with_stack(NetworkEvent::IngressPacket { packet }, stack);
+            }
+        }
         EventHandleResult::Success
     }
 
     /// IPv4パケットの処理
-    fn handle_ipv4_ingress(
+    fn handle_ipv4_ingress_with_stack(
         &self, 
         data: &[u8], 
         src_mac: MacAddress, 
@@ -185,7 +180,7 @@ impl NetworkEventHandler {
                 stack.process_igmp_data(payload, src_ip, ttl);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
-                self.handle_udp_ingress(src_ip.octets(), dst_ip.octets(), payload);
+                self.handle_udp_ingress_with_stack(src_ip.octets(), dst_ip.octets(), payload, stack);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip) => {
                 super::tcp_rx::process_tcp_segment(src_ip.octets(), dst_ip.octets(), payload);
@@ -227,7 +222,13 @@ impl NetworkEventHandler {
     }
 
     /// UDPパケットの処理
-    fn handle_udp_ingress(&self, src_ip: [u8; 4], _dst_ip: [u8; 4], payload: &[u8]) -> EventHandleResult {
+    fn handle_udp_ingress_with_stack(
+        &self, 
+        src_ip: [u8; 4], 
+        _dst_ip: [u8; 4], 
+        payload: &[u8],
+        _stack: &mut crate::net::runtime::stack::NetworkStack
+    ) -> EventHandleResult {
         if payload.len() < 8 {
             return EventHandleResult::Success;
         }
@@ -245,6 +246,130 @@ impl NetworkEventHandler {
         }
 
         EventHandleResult::Success
+    }
+
+    /// DataReadyイベント処理 (TCP)
+    fn handle_tcp_data_ready_with_stack(
+        &self, 
+        fd: SocketFd, 
+        stack: &mut crate::net::runtime::stack::NetworkStack
+    ) -> EventHandleResult {
+        let manager = SOCKET_MANAGER.read();
+        let Some(ref mgr) = *manager else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let Some(socket) = mgr.get(fd) else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let (data, local, remote) = {
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            if inner.send_buffer.is_empty() {
+                return EventHandleResult::Success;
+            }
+            let local = match inner.local_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+            };
+            let remote = match inner.remote_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+            };
+            (
+                inner.send_buffer.iter().copied().collect::<Vec<u8>>(),
+                local,
+                remote,
+            )
+        };
+
+        let data_len = data.len() as u32;
+        let (seq, ack, window) = match tcb_table().lookup(local, remote) {
+            Some(tcb) => {
+                if tcb.state != TcpConnectionState::Established {
+                    return EventHandleResult::ProtocolError(SocketError::NotConnected);
+                }
+                if tcb.should_delay_send(data.len()) {
+                    return EventHandleResult::Success;
+                }
+                (tcb.snd_nxt, tcb.rcv_nxt, tcb.rcv_wnd)
+            }
+            None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+        };
+
+        let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
+            .seq(seq)
+            .ack(ack)
+            .psh()
+            .window(window)
+            .payload(&data)
+            .build();
+
+        if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
+            return EventHandleResult::ProtocolError(e);
+        }
+
+        // スタックを使用して直接送信
+        let sent = if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+            stack.send_tcp(Ipv4Address::new(lv4), Ipv4Address::new(rv4), &segment)
+        } else if local.is_ipv6() && remote.is_ipv6() {
+            let lv6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
+            let rv6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
+            stack.send_tcp_v6_raw(lv6, rv6, &segment)
+        } else {
+            false
+        };
+
+        if sent {
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.send_buffer.drain(..data.len());
+            
+            tcb_table().lookup_mut(local, remote, |tcb| {
+                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
+            });
+            EventHandleResult::Success
+        } else {
+            EventHandleResult::Retry
+        }
+    }
+
+    /// SendToイベント処理 (UDP)
+    fn handle_send_to_with_stack(
+        &self,
+        fd: SocketFd,
+        remote: SocketAddr,
+        data: Vec<u8>,
+        stack: &mut crate::net::runtime::stack::NetworkStack
+    ) -> EventHandleResult {
+        let manager = SOCKET_MANAGER.read();
+        let Some(ref mgr) = *manager else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let Some(socket) = mgr.get(fd) else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
+        if local_port == 0 {
+            return EventHandleResult::ProtocolError(SocketError::NotConnected);
+        }
+
+        let sent = if let (Some(dst_v4), Some(_src_v4)) = (remote.as_ipv4(), socket.local_addr().and_then(|a| a.as_ipv4())) {
+            stack.send_udp_raw(local_port, Ipv4Address::new(dst_v4), remote.port(), &data)
+        } else if remote.is_ipv6() && socket.local_addr().map_or(false, |a| a.is_ipv6()) {
+            let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(socket.local_addr().unwrap().as_ipv6());
+            let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
+            stack.send_udp_v6_raw(local_port, src_v6, dst_v6, remote.port(), &data)
+        } else {
+            false
+        };
+
+        if sent {
+            EventHandleResult::Success
+        } else {
+            EventHandleResult::Retry
+        }
     }
 
     /// SetPriorityイベント処理
