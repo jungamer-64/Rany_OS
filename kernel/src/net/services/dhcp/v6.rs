@@ -114,7 +114,7 @@ impl DhcpV6Client {
         let mut off = 4usize;
 
         // Helper to safely append options
-        let mut append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -163,7 +163,7 @@ impl DhcpV6Client {
         let mut off = 4usize;
 
         // Helper to safely append options
-        let mut append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }
@@ -225,7 +225,7 @@ impl DhcpV6Client {
         let mut off = 4usize;
 
         // Helper to safely append options
-        let mut append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
+        let append_opt = |buf: &mut [u8], offset: &mut usize, code: u16, data: &[u8]| -> Result<(), &'static str> {
             if *offset + 4 + data.len() > buf.len() {
                 return Err("Buffer overflow during option writing");
             }

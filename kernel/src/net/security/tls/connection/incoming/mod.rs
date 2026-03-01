@@ -51,11 +51,15 @@ impl TlsConnection {
         };
         
         // TLS 1.2: 読み取り暗号化が有効な場合、Handshake/Alertレコードも復号が必要
-        let mut decrypted_storage = Vec::new();
-        let final_payload = if !self.is_tls13 && self.read_encryption_active && 
+        let decrypted_storage_opt = if !self.is_tls13 && self.read_encryption_active && 
                                (ct == ContentType::Handshake || ct == ContentType::Alert) {
-            decrypted_storage = self.decrypt_record(payload, content_type)?;
-            &decrypted_storage
+            Some(self.decrypt_record(payload, content_type)?)
+        } else {
+            None
+        };
+
+        let final_payload = if let Some(ref decrypted) = decrypted_storage_opt {
+            decrypted.as_slice()
         } else {
             payload
         };
