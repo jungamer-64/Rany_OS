@@ -562,15 +562,6 @@ impl FaultHandler for IommuController {
             let record = FaultRecord { lo, hi };
 
             if record.is_valid() {
-                // ISR-SAFE diagnostic: log fault address and source (serial port I/O only)
-                crate::io::log::early_print("[IOMMU-FAULT] addr=");
-                crate::io::log::early_print_hex(record.fault_address());
-                crate::io::log::early_print(" src=");
-                crate::io::log::early_print_hex(record.source_id() as u64);
-                crate::io::log::early_print(" reason=");
-                crate::io::log::early_print_hex(record.reason() as u64);
-                crate::io::log::early_print("\n");
-
                 // ISR-SAFE: Push to deferred queue (lock-free)
                 // All processing (logging, fault_log, security) done by async task
                 if processed < FAULT_LOG_RATE_LIMIT {

@@ -324,18 +324,18 @@ impl VirtioNetDevice {
     pub fn refill_rx_queues(&self) {
         for rx_queue in &self.rx_queues {
             let mut count = 0;
+            let queue_size = rx_queue
+                .vq
+                .lock()
+                .expect("virtqueue lock poisoned")
+                .size();
             // API drift fallback: post until the queue rejects new buffers.
-            while count
-                < rx_queue
-                    .vq
-                    .lock()
-                    .expect("virtqueue lock poisoned")
-                    .size()
-            {
-                if self.try_post_rx_packet(rx_queue).is_err() {
-                    break;
+            while count < queue_size {
+                match self.try_post_rx_packet(rx_queue) {
+                    Ok(true) => count += 1,
+                    Ok(false) => break, // queue full or mempool empty
+                    Err(_) => break,
                 }
-                count += 1;
             }
             if count > 0 {
                 log::info!(
@@ -502,27 +502,9 @@ impl VirtioNetDevice {
         let avail_addr = dma_base + desc_size as u64;
         let used_addr = dma_base + used_offset as u64;
 
-        crate::io::log::early_print(&alloc::format!(
-            "[EARLY][VIRTIO-NET] queue {}: dma_base=0x{:x} desc_size={} avail_size={} used_offset={} used_addr=0x{:x} vring_total_size={}\n",
-            queue_index,
-            dma_base,
-            desc_size,
-            avail_size,
-            used_offset,
-            used_addr,
-            vring_total_size
-        ));
-
         self.mut_transport().set_queue_desc_addr(desc_addr);
         self.mut_transport().set_queue_avail_addr(avail_addr);
         self.mut_transport().set_queue_used_addr(used_addr);
-
-        crate::io::log::early_print(&alloc::format!(
-            "[EARLY][VIRTIO-NET] set_queue_desc_addr=0x{:x} avail_addr=0x{:x} used_addr=0x{:x}\n",
-            desc_addr,
-            avail_addr,
-            used_addr
-        ));
 
         // Create trackers for this queue
         if (queue_index % 2) == 0 {
@@ -674,7 +656,6 @@ impl VirtioNetDevice {
         buf_len: usize,
     ) -> Result<(u64, Option<u64>, u64), VirtioNetError> {
         if !is_iommu_enabled() {
-            crate::io::log::early_print("[VIRTIO-RX] IOMMU not enabled, using raw phys\n");
             return Ok((phys, None, 0));
         }
 

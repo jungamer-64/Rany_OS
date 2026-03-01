@@ -140,7 +140,7 @@ impl NetworkStack {
             }
             ProcessResult::Ipv6(payload, src_mac) => {
                 if self.ipv6.is_some() {
-                    self.process_ipv6_data(payload, current_time, src_mac);
+                    self.process_ipv6_data(payload, current_time, src_mac, false);
                     self.stats.record_rx(pkt_len);
                 } else {
                     self.stats.record_dropped();
@@ -171,7 +171,7 @@ impl NetworkStack {
                     }
                     EtherType::Ipv6 => {
                         if self.ipv6.is_some() {
-                            self.process_ipv6_data(payload, current_time, src_mac);
+                            self.process_ipv6_data(payload, current_time, src_mac, false);
                             self.stats.record_rx(pkt_len);
                         } else {
                             self.stats.record_dropped();
@@ -357,7 +357,7 @@ impl NetworkStack {
     // =========================================================================
 
     /// Process IPv6 packet data
-    pub(super) fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress) {
+    pub(super) fn process_ipv6_data(&mut self, data: &[u8], current_time: u64, src_mac: MacAddress, reassembled: bool) {
         let ipv6 = match self.ipv6 {
             Some(ref ipv6) => ipv6,
             None => return,
@@ -371,8 +371,17 @@ impl NetworkStack {
                 frag_header,
                 frag_payload,
             } => {
+                // Security (RFC 8200): A packet must not contain more than one Fragment header.
+                // If this packet was already reassembled, it must not contain another Fragment header.
+                if reassembled {
+                    log::warn!("[NET-IPV6] Dropping packet with nested Fragment header");
+                    self.stats.record_dropped();
+                    return;
+                }
+
                 // Extract src/dst from fixed header for the fragment key
                 if data.len() < 40 {
+                    self.stats.record_dropped();
                     return;
                 }
                 let src = crate::net::l3::ipv6::Ipv6Address::new([
@@ -384,16 +393,29 @@ impl NetworkStack {
                     data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
                 ]);
 
-                if let Some(reassembled) = self.ipv6_fragment_reassembler.process_fragment(
+                let (reassembled, expired) = self.ipv6_fragment_reassembler.process_fragment(
                     src,
                     dst,
                     unfragmentable,
                     &frag_header,
                     frag_payload,
                     current_time,
-                ) {
+                );
+
+                // Handle expired fragments by sending ICMPv6 Time Exceeded
+                for (exp_src, exp_dst, unfrag) in expired {
+                    // RFC 8200: Send Fragment Reassembly Time Exceeded
+                    // code 1 = fragment reassembly time exceeded
+                    let time_exceeded = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_time_exceeded(
+                        &exp_dst, &exp_src, 1, &unfrag
+                    );
+                    self.send_ipv6_icmpv6(&exp_dst, &exp_src, &time_exceeded);
+                }
+
+                if let Some(reassembled_pkt) = reassembled {
                     // Recursively process the reassembled (non-fragmented) packet
-                    self.process_ipv6_data(&reassembled, current_time, src_mac);
+                    // Set reassembled=true to prevent further fragmentation processing
+                    self.process_ipv6_data(&reassembled_pkt, current_time, src_mac, true);
                 }
                 return;
             }
@@ -433,6 +455,11 @@ impl NetworkStack {
         hop_limit: u8,
         current_time: u64,
     ) {
+        // Security: Do not respond to multicast Echo Requests (Smurf attack prevention)
+        if dst.is_multicast() {
+            return;
+        }
+
         let icmpv6 = match self.icmpv6 {
             Some(ref icmpv6) => icmpv6,
             None => return,
@@ -447,7 +474,24 @@ impl NetworkStack {
                 sequence,
                 data: echo_data,
             } => {
-                self.send_icmpv6_echo_reply(reply_dst, identifier, sequence, &echo_data);
+                // Choose source address: if the original request was to our global address, 
+                // use that as source for the reply.
+                let mut reply_src = None;
+                if let Some(ref ipv6) = self.ipv6 {
+                    let config = ipv6.config();
+                    if let Some(global) = config.global {
+                        if dst == global {
+                            reply_src = Some(global);
+                        }
+                    }
+                    if reply_src.is_none() {
+                        reply_src = Some(config.link_local);
+                    }
+                }
+
+                if let Some(src_addr) = reply_src {
+                    self.send_icmpv6_echo_reply_with_src(src_addr, reply_dst, identifier, sequence, &echo_data);
+                }
             }
             Icmpv6Result::EchoReplyReceived {
                 src: _,
@@ -605,22 +649,15 @@ impl NetworkStack {
         }
     }
 
-    /// Send ICMPv6 Echo Reply
-    pub(super) fn send_icmpv6_echo_reply(
+    /// Send ICMPv6 Echo Reply with explicit source address
+    pub(super) fn send_icmpv6_echo_reply_with_src(
         &mut self,
+        src: Ipv6Address,
         dst: Ipv6Address,
         identifier: u16,
         sequence: u16,
         echo_data: &[u8],
     ) {
-        let ipv6_config = match self.ipv6 {
-            Some(ref ipv6) => ipv6.config(),
-            None => return,
-        };
-
-        let src = ipv6_config.link_local;
-        let _config = self.config;
-
         // Build ICMPv6 Echo Reply message (with checksum)
         let icmpv6_msg = Icmpv6EchoBuilder::build_echo_reply(
             &src, &dst, identifier, sequence, echo_data,
@@ -629,8 +666,8 @@ impl NetworkStack {
         self.send_ipv6_icmpv6(&src, &dst, &icmpv6_msg);
 
         log::info!(
-            "ICMPv6: Echo Reply sent to {} id={} seq={}",
-            dst, identifier, sequence
+            "ICMPv6: Echo Reply sent from {} to {} id={} seq={}",
+            src, dst, identifier, sequence
         );
     }
 

@@ -43,8 +43,12 @@ impl RootEntry {
 
     /// Set context table pointers for scalable mode (lower and upper halves)
     pub fn set_context_table_pair(&mut self, low_addr: u64, high_addr: u64) {
-        self.lo = (low_addr & !0xFFF) | 1; // Present bit
+        // SECURITY: Write the high QWORD first, then the low QWORD with a memory fence.
+        // This ensures the IOMMU sees the upper context table pointer before or at 
+        // the same time as the lower one.
         self.hi = (high_addr & !0xFFF) | 1; // Present bit
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        self.lo = (low_addr & !0xFFF) | 1; // Present bit
     }
 
     /// Get context table address
@@ -88,16 +92,20 @@ impl ContextEntry {
 
     /// Set second level page table pointer (Translation Type = 00b)
     pub fn set_sl_pt(&mut self, addr: u64, domain_id: u16, agaw: u8) {
-        self.lo = (addr & !0xFFF) | 1; // Present
+        // SECURITY: Set fields in an order that avoids race conditions.
+        // We set the high QWORD (domain ID) first, then the low QWORD (address + Present).
         self.hi = ((domain_id as u64) << 8) | ((agaw as u64) << 0);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        self.lo = (addr & !0xFFF) | 1; // Present
     }
 
     /// Set passthrough (Translation Type = 10b / 2)
     pub fn set_passthrough(&mut self, domain_id: u16) {
+        // SECURITY: Set domain ID first, then Translation Type and Present bit.
         // PT (bit 3:2) = 10b (2). Present (bit 0) = 1.
+        self.hi = ((domain_id as u64) << 8) | 2; // AGAW=2
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         self.lo = (2 << 2) | 1;
-        // Keep AGAW aligned with the normal 4-level page-table mode used here.
-        self.hi = ((domain_id as u64) << 8) | 2;
     }
 
     /// Get second level page table address
@@ -296,17 +304,24 @@ impl PasidTableEntry {
     /// Set second level page table pointer (SL-only translation)
     pub fn set_sl_pt(&mut self, addr: u64, address_width: u8, domain_id: u16) {
         self.clear();
-        self.qwords[0] = (addr & Self::SLPT_MASK) | Self::PRESENT;
-        self.qwords[0] |= ((address_width as u64) & 0x7) << Self::AW_SHIFT;
-        self.qwords[0] |= (Self::PGTT_SL_ONLY & 0x7) << Self::PGTT_SHIFT;
+        // SECURITY: Set fields in an order that avoids race conditions.
+        // We set other qwords before qwords[0] (which contains the Present bit).
         self.qwords[1] = (domain_id as u64) & Self::DID_MASK;
+        let qw0 = (addr & Self::SLPT_MASK) | Self::PRESENT
+            | (((address_width as u64) & 0x7) << Self::AW_SHIFT)
+            | ((Self::PGTT_SL_ONLY & 0x7) << Self::PGTT_SHIFT);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        self.qwords[0] = qw0;
     }
 
     /// Set passthrough translation (no page tables)
     pub fn set_passthrough(&mut self, domain_id: u16) {
         self.clear();
-        self.qwords[0] = Self::PRESENT | ((Self::PGTT_PT & 0x7) << Self::PGTT_SHIFT);
+        // SECURITY: Set domain_id first, then Present bit and Translation Type.
         self.qwords[1] = (domain_id as u64) & Self::DID_MASK;
+        let qw0 = Self::PRESENT | ((Self::PGTT_PT & 0x7) << Self::PGTT_SHIFT);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        self.qwords[0] = qw0;
     }
 
     /// Get second level page table address

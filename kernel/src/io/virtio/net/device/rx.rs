@@ -42,14 +42,6 @@ impl VirtioNetDevice {
     pub(super) fn process_rx_completions(&self) {
         for (q_idx, rx_queue) in self.rx_queues.iter().enumerate() {
             // Diagnostic: check raw used ring state
-            if let Ok(vq) = rx_queue.vq.lock() {
-                let used_idx = vq.get_used_idx_public();
-                let last_used = vq.get_last_used_idx();
-                crate::io::log::early_print(&alloc::format!(
-                    "[RX-DIAG] q{} used_idx={} last_used={}\n",
-                    q_idx, used_idx, last_used
-                ));
-            }
             let completions = rx_queue.process_used();
             for (desc_idx, len) in completions {
                 self.rx_packets.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -106,7 +98,6 @@ impl VirtioNetDevice {
 
         let header_size = core::mem::size_of::<VirtioNetHeader>();
         let payload_len = (len as usize).saturating_sub(header_size);
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET][RX-COMP] desc={} len={} payload_len={} (packetref)\n", desc_idx, len, payload_len));
         trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio zero-copy rx packetref");
 
         // Pass PacketRef to bridge for zero-copy processing (prefer interface-aware path).
@@ -205,7 +196,6 @@ impl VirtioNetDevice {
             log::info!("[VIRTIO-NET][RX-COMP] desc={} len={} payload_len={}", desc_idx, len, actual_len);
         }
 
-        crate::io::log::early_print(&alloc::format!("[EARLY][VIRTIO-NET] handing payload desc={} payload_len={} to bridge\n", desc_idx, actual_len));
         // Convert the completed RX DMA buffer into PacketRef (zero-copy handoff).
         if let Some(cpu_buf) = inflight.vbuf.take_cpu_buffer() {
             let packet = crate::net::datapath::mempool::PacketRef::from_dma_slice(cpu_buf);

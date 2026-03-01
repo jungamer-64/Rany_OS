@@ -270,11 +270,7 @@ pub fn handle_virtio_net_interrupt() {
 /// 直接 `process_rx_completions` / `process_tx_completions` を呼ぶ。
 /// ISR外の同期コンテキスト（例: 初期化時のpingループ）で使用する。
 pub fn poll_all_virtio_net_queues() {
-    crate::io::log::early_print("[POLL] enter\n");
     let indices = collect_registered_virtio_net_indices();
-    if indices.is_empty() {
-        crate::io::log::early_print("[POLL] no devices registered!\n");
-    }
     for index in indices {
         poll_virtio_net_queues_for_index(index);
     }
@@ -287,9 +283,6 @@ fn poll_virtio_net_queues_for_index(index: u8) {
     if let Some(transport) = transport {
         let status = transport.get_interrupt_status();
         if status != 0 {
-            crate::io::log::early_print(&alloc::format!(
-                "[POLL] ISR status=0x{:x} for index={}\n", status, index
-            ));
             transport.ack_interrupt(status);
         }
     }

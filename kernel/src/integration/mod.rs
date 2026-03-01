@@ -159,12 +159,6 @@ fn try_create_pci_transport(
     let notify_virt = resolve_bar_virt_addr(dev, caps.notify_cfg);
     let isr_virt = resolve_bar_virt_addr(dev, caps.isr_cfg);
 
-    // Log computed addresses for debugging transport initialization
-    crate::io::log::early_print(&alloc::format!(
-        "[EARLY] try_create_pci_transport: common=0x{:x} notify=0x{:x} isr=0x{:x} device=0x{:x} multiplier={}\n",
-        common_virt, notify_virt, isr_virt, device_virt, caps.notify_multiplier,
-    ));
-
     unsafe {
         crate::io::virtio::VirtioPciTransport::new(
             dev.bdf.to_u16() as u32,

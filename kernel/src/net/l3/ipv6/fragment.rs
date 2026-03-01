@@ -179,8 +179,30 @@ impl Ipv6FragmentBuffer {
         let payload_len = payload.len() as u32;
         let end = offset + payload_len;
 
+        // RFC 8200: 8-octet multiple check for non-last fragments
+        if frag.more_fragments && (payload_len % 8 != 0) {
+            log::warn!("[NET-IPV6] Fragment length ({}) not a multiple of 8 while M=1, dropping", payload_len);
+            return false;
+        }
+
         if end as usize > Self::MAX_PAYLOAD {
             return false;
+        }
+
+        // RFC 8200: Check for consistent total length
+        if !frag.more_fragments {
+            if let Some(existing_total) = self.total_len {
+                if existing_total != end {
+                    log::warn!("[NET-IPV6] Inconsistent total length in fragments: expected {}, got {}", existing_total, end);
+                    return false;
+                }
+            }
+            self.total_len = Some(end);
+        } else if let Some(total) = self.total_len {
+            if end > total {
+                log::warn!("[NET-IPV6] Fragment beyond end of datagram: {} > {}", end, total);
+                return false;
+            }
         }
 
         // RFC 8200 overlap check: if any of the fragments overlap, discard entire datagram.
@@ -409,14 +431,7 @@ impl Ipv6FragmentReassembler {
 
     /// Process an incoming IPv6 packet that contains a fragment header.
     ///
-    /// - `unfragmentable`: the part of the original packet before the fragment header
-    ///   (IPv6 fixed header + any pre-fragment extension headers).
-    /// - `frag`: the parsed fragment header.
-    /// - `payload`: the fragment payload (data after the fragment header).
-    /// - `src`, `dst`: source and destination addresses (from the IPv6 fixed header).
-    /// - `current_time`: monotonic timestamp in milliseconds.
-    ///
-    /// Returns `Some(reassembled_packet)` when the last fragment completes the datagram.
+    /// Returns (reassembled_packet, expired_buffers).
     pub fn process_fragment(
         &mut self,
         src: Ipv6Address,
@@ -425,19 +440,19 @@ impl Ipv6FragmentReassembler {
         frag: &Ipv6FragmentHeader,
         payload: &[u8],
         current_time: u64,
-    ) -> Option<Vec<u8>> {
+    ) -> (Option<Vec<u8>>, Vec<(Ipv6Address, Ipv6Address, Vec<u8>)>) {
         self.stats.fragments_received += 1;
 
         let key = Ipv6FragmentKey::new(src, dst, frag.identification);
 
         // Lazy eviction of expired buffers
-        self.evict_expired(current_time);
+        let expired = self.evict_expired(current_time);
 
         // Ensure we have a buffer for this key
         if !self.buffers.contains_key(&key) {
             if self.buffers.len() >= self.max_buffers {
                 self.stats.dropped_limit += 1;
-                return None;
+                return (None, expired);
             }
             // Per-source limit: prevent a single source from monopolizing buffers
             let source_count = self.buffers.keys().filter(|k| k.src == src).count();
@@ -448,17 +463,20 @@ impl Ipv6FragmentReassembler {
                     src
                 );
                 self.stats.dropped_limit += 1;
-                return None;
+                return (None, expired);
             }
             self.buffers.insert(key, Ipv6FragmentBuffer::new(current_time));
         }
 
-        let buffer = self.buffers.get_mut(&key)?;
+        let buffer = match self.buffers.get_mut(&key) {
+            Some(b) => b,
+            None => return (None, expired),
+        };
 
         if !buffer.add_fragment(unfragmentable, frag, payload) {
             self.stats.dropped_invalid += 1;
             self.buffers.remove(&key);
-            return None;
+            return (None, expired);
         }
 
         if buffer.is_complete() {
@@ -467,25 +485,33 @@ impl Ipv6FragmentReassembler {
             if result.is_some() {
                 self.stats.reassembled += 1;
             }
-            return result;
+            return (result, expired);
         }
 
-        None
+        (None, expired)
     }
 
-    /// Evict expired reassembly buffers
-    fn evict_expired(&mut self, current_time: u64) {
-        let expired: Vec<_> = self
-            .buffers
-            .iter()
-            .filter(|(_, buf)| buf.is_expired(current_time))
-            .map(|(k, _)| *k)
-            .collect();
+    /// Evict expired reassembly buffers.
+    /// Returns a list of (src, dst, unfragmentable_part) for buffers that had the first fragment.
+    pub fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv6Address, Ipv6Address, Vec<u8>)> {
+        let mut expired_with_first = Vec::new();
+        let mut keys_to_remove = Vec::new();
 
-        for key in expired {
+        for (key, buf) in self.buffers.iter() {
+            if buf.is_expired(current_time) {
+                if let Some(ref unfrag) = buf.unfragmentable_part {
+                    expired_with_first.push((key.src, key.dst, unfrag.clone()));
+                }
+                keys_to_remove.push(*key);
+            }
+        }
+
+        for key in keys_to_remove {
             self.buffers.remove(&key);
             self.stats.timeouts += 1;
         }
+
+        expired_with_first
     }
 
     /// Number of active reassembly buffers

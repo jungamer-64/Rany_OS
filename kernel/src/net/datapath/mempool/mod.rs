@@ -305,9 +305,15 @@ impl PacketRef {
     }
 
     /// データ長を設定
+    ///
+    /// Pooled の場合、内部 PacketBuffer.meta.len も同期更新する。
+    /// これにより data() / data_mut() が返すスライスの範囲が正しくなる。
     pub fn set_len(&mut self, len_val: usize) {
         match &mut self.kind {
-            PacketRefKind::Pooled { len, .. } => *len = len_val,
+            PacketRefKind::Pooled { buffer, len, .. } => {
+                *len = len_val;
+                unsafe { buffer.as_ref().set_len(len_val); }
+            },
             PacketRefKind::Dma { len, .. } => *len = len_val,
             #[cfg(any(test, feature = "qemu-test-export"))]
             PacketRefKind::BorrowedTest { len, .. } => *len = len_val,

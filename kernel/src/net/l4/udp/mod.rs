@@ -329,12 +329,16 @@ impl UdpSocket {
                     return;
                 }
 
-                if inner.rx_packet_queue.len() < 64 {
+                let pkt_len = packet.len();
+                if inner.rx_packet_queue.len() < 64 && inner.rx_queue_bytes + pkt_len <= MAX_UDP_RX_QUEUE_BYTES {
+                    inner.rx_queue_bytes += pkt_len;
                     inner.rx_packet_queue.push_back((src, packet));
 
                     for waker in inner.wakers.drain(..) {
                         waker.wake();
                     }
+                } else {
+                    log::warn!("[NET] UDP socket queue full, dropping packet (len={}, queue_bytes={})", pkt_len, inner.rx_queue_bytes);
                 }
             }
             Err(_) => log::error!("[NET] UDP Socket poisoned during deliver - dropping packet"),

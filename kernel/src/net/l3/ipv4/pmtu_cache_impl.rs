@@ -216,6 +216,12 @@ impl FragmentBuffer {
 
         self.last_update = current_time;
 
+        // RFC 791: 8-octet multiple check for non-last fragments
+        if header.more_fragments() && (fragment_len % 8 != 0) {
+            log::warn!("[NET-IPV4] Fragment length ({}) not a multiple of 8 while MF=1, dropping", fragment_len);
+            return false;
+        }
+
         // Security: Check for consistent total length (RFC 791)
         if !header.more_fragments() {
             if let Some(existing_total) = self.total_len {
@@ -399,6 +405,10 @@ impl FragmentReassembler {
     /// Default maximum number of concurrent reassembly buffers
     pub const DEFAULT_MAX_BUFFERS: usize = 64;
 
+    /// Maximum concurrent reassembly buffers from a single source address.
+    /// Prevents a single attacker from monopolizing the entire buffer pool.
+    const MAX_BUFFERS_PER_SOURCE: usize = 16;
+
     /// Create a new fragment reassembler
     pub fn new(max_buffers: usize) -> Self {
         FragmentReassembler {
@@ -427,6 +437,7 @@ impl FragmentReassembler {
         self.stats.fragments_received += 1;
 
         let key = FragmentKey::from_header(header);
+        let src = header.source();
 
         // Evict expired buffers
         self.evict_expired(current_time);
@@ -445,6 +456,18 @@ impl FragmentReassembler {
                     self.stats.dropped_limit += 1;
                     return None;
                 }
+            }
+
+            // Per-source limit: prevent a single source from monopolizing buffers (RFC 4963 / Best Practice)
+            let source_count = self.buffers.keys().filter(|k| k.src == src).count();
+            if source_count >= Self::MAX_BUFFERS_PER_SOURCE {
+                log::warn!(
+                    "[NET-IPV4] Fragment buffer per-source limit ({}) reached for source {:?}, dropping",
+                    Self::MAX_BUFFERS_PER_SOURCE,
+                    src
+                );
+                self.stats.dropped_limit += 1;
+                return None;
             }
 
             self.buffers.insert(key, FragmentBuffer::new(current_time));
@@ -705,10 +728,13 @@ impl Ipv4Processor {
             || *addr == self.config.broadcast_address()
     }
 
-    /// Get next packet ID (unpredictable per-destination to prevent Idle Scan)
+    /// Get next packet ID (unpredictable per-destination to prevent Idle Scan and Traffic Analysis)
     pub fn next_id(&mut self, dst: Ipv4Address) -> u16 {
-        // Increment global counter
-        self.next_id = self.next_id.wrapping_add(1);
+        // Increment global counter by a random amount (RFC 6864 recommendation)
+        // Using generate_random() to get a small random increment (1 to 256)
+        let rand = crate::net::security::tls::generate_random();
+        let increment = (rand[0] as u16).saturating_add(1);
+        self.next_id = self.next_id.wrapping_add(increment);
         
         // Compute per-destination scrambling using FNV-1a of (dst, secret)
         let mut hash: u32 = 0x811c9dc5;

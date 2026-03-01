@@ -137,7 +137,13 @@ impl TcpControlBlock {
             return false;
         }
 
+        // Security: Check global OOO limit to prevent memory exhaustion
+        if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
+            return false;
+        }
+
         self.rx.ooo_queue.insert(seq, packet);
+        GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
         true
     }
 

@@ -532,15 +532,52 @@ impl Icmpv6EchoBuilder {
         code: u8,
         trigger_packet: &[u8],
     ) -> Vec<u8> {
-        // ICMPv6 header (4) + unused (4) + as much of trigger as fits
-        let max_trigger = 1232.min(trigger_packet.len()); // stay under minimum MTU of 1280
+        Self::build_error(src, dst, Icmpv6Type::DestinationUnreachable, code, 0, trigger_packet)
+    }
+
+    /// Build a Time Exceeded message
+    pub fn build_time_exceeded(
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        code: u8,
+        trigger_packet: &[u8],
+    ) -> Vec<u8> {
+        Self::build_error(src, dst, Icmpv6Type::TimeExceeded, code, 0, trigger_packet)
+    }
+
+    /// Build a Parameter Problem message
+    pub fn build_parameter_problem(
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        code: u8,
+        pointer: u32,
+        trigger_packet: &[u8],
+    ) -> Vec<u8> {
+        Self::build_error(src, dst, Icmpv6Type::ParameterProblem, code, pointer, trigger_packet)
+    }
+
+    /// Internal helper to build ICMPv6 error messages
+    fn build_error(
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        msg_type: Icmpv6Type,
+        code: u8,
+        arg: u32,
+        trigger_packet: &[u8],
+    ) -> Vec<u8> {
+        // ICMPv6 header (4) + arg/unused (4) + as much of trigger as fits
+        // stay under minimum MTU of 1280 (RFC 4443)
+        let max_trigger = 1232.min(trigger_packet.len()); 
         let total_len = 8 + max_trigger;
         let mut message = vec![0u8; total_len];
 
-        message[0] = u8::from(Icmpv6Type::DestinationUnreachable);
+        message[0] = u8::from(msg_type);
         message[1] = code;
         // Checksum placeholder
-        // Bytes 4-7 = unused (zeros)
+        // Bytes 4-7 = argument (e.g. pointer for parameter problem)
+        let arg_bytes = arg.to_be_bytes();
+        message[4..8].copy_from_slice(&arg_bytes);
+        
         // Trigger packet
         message[8..8 + max_trigger].copy_from_slice(&trigger_packet[..max_trigger]);
 

@@ -582,7 +582,6 @@ impl<T, const N: usize> MpscRingBuffer<T, N> {
 
                     // コミット
                     self.committed.store(next_head, Ordering::Release);
-                    crate::io::log::early_print("[MPSC] pushed value successfully\n");
 
                     return Ok(());
                 }
@@ -611,7 +610,6 @@ impl<T, const N: usize> MpscRingBuffer<T, N> {
 
         let next_tail = (tail + 1) % N;
         self.tail.store(next_tail, Ordering::Release);
-        crate::io::log::early_print("[MPSC] popped value successfully\n");
 
         Some(value)
     }

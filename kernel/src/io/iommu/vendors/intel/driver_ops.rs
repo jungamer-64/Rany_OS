@@ -674,7 +674,9 @@ impl IntelIommuDriver {
                     "[IOMMU][SECURITY] Domain ID mismatch during creation on controller {}: expected {}, got {}. Consistency broken.",
                     idx, first_id.unwrap(), id
                 );
-                // We proceed but consistency is now compromised for this domain ID.
+                // SECURITY: Refuse to proceed with inconsistent domain IDs across controllers.
+                // This prevents subtle isolation bypasses on multi-IOMMU systems.
+                return Err(IommuError::HardwareError);
             }
         }
 

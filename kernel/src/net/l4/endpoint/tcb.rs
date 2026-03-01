@@ -7,6 +7,7 @@
 
 
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
@@ -415,6 +416,39 @@ impl TcbTable {
             check_retransmit_timeouts();
             // SYN flood対策: 定期的に古いSynReceivedエントリを掃除する
             self.scavenge_syn_received(tick);
+            // TIME_WAIT対策: 定期的に期限切れのTIME_WAITエントリを掃除する
+            self.scavenge_time_wait(tick);
+        }
+    }
+
+    /// TIME_WAIT状態の期限切れエントリを掃除する
+    /// 
+    /// 2MSL（Maximum Segment Lifetime）の待機時間を経過した接続を完全に削除する。
+    /// 2MSLは通常30秒〜120秒。ここでは60秒（60,000 tick）とする。
+    fn scavenge_time_wait(&self, current_tick: u64) {
+        /// TIME_WAIT のタイムアウト閾値（tick ≒ ms）
+        const TIME_WAIT_TIMEOUT_TICKS: u64 = 60_000;
+        /// 1回の掃除で各シャードから削除するエントリの最大数
+        const MAX_SCAVENGE_PER_SHARD: usize = 16;
+
+        for shard in &self.shards {
+            let mut entries = shard.write();
+            let mut to_remove: Vec<(SocketAddr, SocketAddr)> = Vec::new();
+
+            for (key, entry) in entries.iter() {
+                if entry.state == TcpConnectionState::TimeWait
+                    && current_tick.saturating_sub(entry.last_send_tick) > TIME_WAIT_TIMEOUT_TICKS
+                {
+                    to_remove.push(*key);
+                    if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
+                        break;
+                    }
+                }
+            }
+
+            for key in to_remove {
+                entries.remove(&key);
+            }
         }
     }
 

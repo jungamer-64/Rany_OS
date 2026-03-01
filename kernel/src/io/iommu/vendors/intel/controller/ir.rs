@@ -136,7 +136,11 @@ impl InterruptRemapTable {
 
     pub fn set(&mut self, index: u16, entry: InterruptRemapEntry) -> bool {
         if let Some(e) = self.table.get_mut(index as usize) {
-            *e = entry;
+            // SECURITY: Update IRTE in a safe order. 
+            // Write the high QWORD first (SID/validation), then the low QWORD (vector/dest/P bit).
+            e.hi = entry.hi;
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            e.lo = entry.lo;
             true
         } else {
             false

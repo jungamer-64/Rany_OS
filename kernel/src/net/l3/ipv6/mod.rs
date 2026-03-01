@@ -632,17 +632,11 @@ pub fn skip_extension_headers<'a>(
                 data = &data[ext_len..];
             }
             EXT_HEADER_FRAGMENT => {
-                // Fragment header: always 8 bytes
-                if data.len() < 8 {
-                    return (next_header, data);
-                }
-                let ext_next = data[0];
-                next_header = IpProtocol::from(ext_next);
-                data = &data[8..];
-                // Fragment reassembly handled by Ipv6FragmentReassembler
-                // skip_extension_headers only strips the header for non-fragment
-                // processing path. Use skip_extension_headers_fraginfo() for
-                // fragment-aware processing.
+                // Fragment header found. 
+                // We do NOT skip it here, because reassembly MUST happen before
+                // upper-layer processing. If we reach here, it means reassembly
+                // was bypassed or failed.
+                return (next_header, data);
             }
             EXT_HEADER_NO_NEXT => {
                 // No next header — end of chain
