@@ -201,6 +201,7 @@ impl Socket {
                 let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
+                new_inner.tcp_nodelay = inner.tcp_nodelay; // 設定を引き継ぐ
                 let _ = new_inner.transition_to(SocketState::Connected);
             }
 
@@ -421,6 +422,24 @@ impl Socket {
     pub fn has_data(&self) -> bool {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).recv_buffer.len() > 0
     }
+
+    /// TCP_NODELAY (Nagleアルゴリズム無効化) を設定
+    pub fn set_nodelay(&self, nodelay: bool) -> SocketResult<()> {
+        if self.socket_type != SocketType::Tcp {
+            return Err(SocketError::InvalidArgument);
+        }
+
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.tcp_nodelay = nodelay;
+        }
+
+        // ネットワークスタックに通知（接続済みの場合、TCBに反映させる）
+        send_event(NetworkEvent::SetNoDelay {
+            fd: self.fd,
+            nodelay,
+        })
+    }
 }
 
 impl Clone for Socket {
@@ -550,6 +569,14 @@ impl OwnedSocket {
             .as_ref()
             .ok_or(SocketError::NotFound)?
             .recv_from(buf)
+    }
+
+    /// TCP_NODELAY設定
+    pub fn set_nodelay(&self, nodelay: bool) -> SocketResult<()> {
+        self.socket
+            .as_ref()
+            .ok_or(SocketError::NotFound)?
+            .set_nodelay(nodelay)
     }
 }
 

@@ -89,7 +89,40 @@ impl NetworkEventHandler {
             NetworkEvent::Listen { fd, local, backlog } => self.handle_listen(fd, local, backlog),
             NetworkEvent::Close { fd } => self.handle_close(fd),
             NetworkEvent::SendTo { fd, data, remote } => self.handle_send_to(fd, remote, data),
+            NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
         }
+    }
+
+    /// SetNoDelayイベント処理
+    fn handle_set_nodelay(&self, fd: SocketFd, nodelay: bool) -> EventHandleResult {
+        let manager = SOCKET_MANAGER.read();
+        let Some(ref mgr) = *manager else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let Some(socket) = mgr.get(fd) else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let (local, remote) = {
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let local = match inner.local_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::Success, // 未接続なら何もしない
+            };
+            let remote = match inner.remote_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::Success, // リモートなしなら何もしない
+            };
+            (local, remote)
+        };
+
+        // TCBに反映
+        tcb_table().lookup_mut(local, remote, |tcb| {
+            tcb.set_nodelay(nodelay);
+        });
+
+        EventHandleResult::Success
     }
 
     /// DataReadyイベント処理

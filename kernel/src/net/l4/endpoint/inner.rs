@@ -56,6 +56,8 @@ pub struct SocketInner {
     pub urgent_pending: bool,
     /// 輻輳制御アルゴリズム選択（TCB作成時に使用）
     pub congestion_algorithm: Option<CongestionAlgorithm>,
+    /// TCP_NODELAY (Nagleアルゴリズム無効化)
+    pub tcp_nodelay: bool,
 }
 
 impl SocketInner {
@@ -89,6 +91,7 @@ impl SocketInner {
             accept_waker: None,
             urgent_pending: false,
             congestion_algorithm: None,
+            tcp_nodelay: false, // デフォルトはNagle有効 (NODELAY無効)
         }
     }
 

@@ -45,6 +45,11 @@ pub enum NetworkEvent {
         data: Vec<u8>,
         remote: SocketAddr,
     },
+    /// TCP_NODELAY 設定
+    SetNoDelay {
+        fd: SocketFd,
+        nodelay: bool,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）
