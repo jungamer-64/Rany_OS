@@ -846,6 +846,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                                 dst,
                                                 udp.dst_port(),
                                                 route.if_id,
+                                                0, // UDP has no TCP flags
                                             )
                                         } else {
                                             None
@@ -860,6 +861,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                             .get(2..4)
                                             .map(|port| u16::from_be_bytes([port[0], port[1]]))
                                             .unwrap_or(0);
+                                        let tcp_flags = transport.get(13).copied().unwrap_or(0);
                                         nat_translate_out(
                                             crate::net::l3::ipv4::IpProtocol::Tcp,
                                             src,
@@ -867,6 +869,7 @@ pub fn process_received_packet_zero_copy_for_interface(
                                             dst,
                                             tcp_dst_port,
                                             route.if_id,
+                                            tcp_flags,
                                         )
                                     }
                                     crate::net::l3::ipv4::IpProtocol::Icmp => {
