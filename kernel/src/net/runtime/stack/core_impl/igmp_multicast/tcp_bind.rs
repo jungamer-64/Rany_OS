@@ -162,7 +162,7 @@ impl NetworkStack {
     /// Call periodically with current time (ticks) to allow TCP retransmits.
     /// Build a raw TCP packet from TcpProcessResult fields and return the
     /// buffer and total length, or None if the result is not a SendPacket.
-    pub(super) fn build_tcp_packet_from_result(
+    pub(in crate::net::runtime::stack::core_impl) fn build_tcp_packet_from_result(
         res: &TcpProcessResult,
         buffer: &mut [u8; MAX_PACKET_SIZE],
     ) -> Option<(TcpSocketAddr, TcpSocketAddr, u32, usize)> {
