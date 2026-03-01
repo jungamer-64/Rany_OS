@@ -3,14 +3,14 @@
 // ============================================================================
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 
 use crate::net::l4::tcp::{TcpStream, SocketAddr, Ipv4Addr};
-use crate::net::services::dns::resolve_ipv4;
+use crate::net::services::dns::resolve_cached;
 use super::types::{HttpRequest, HttpResponse};
 use super::parser::{HttpParser, HttpParseError};
-use crate::net::security::tls::{TlsConnection, TlsConfig};
+use crate::net::security::tls::connection::TlsConnection;
+use crate::net::security::tls::types::TlsConfig;
 
 #[derive(Debug)]
 pub enum HttpClientError {
@@ -24,7 +24,7 @@ pub enum HttpClientError {
 
 /// HTTP/HTTPS クライアント
 pub struct HttpClient {
-    timeout_ms: u64,
+    pub timeout_ms: u64,
 }
 
 impl HttpClient {
@@ -85,61 +85,70 @@ impl HttpClient {
             req.headers.push(super::types::HttpHeader::new("Connection", "close"));
         }
 
-        // 1. DNS解決
-        let ip_addr = resolve_ipv4(&host).await
+        // 1. DNS解決（同期キャッシュから。本来は非同期解決が必要）
+        let ip_addr = resolve_cached(&host, crate::task::timer::current_tick())
             .ok_or(HttpClientError::DnsResolutionFailed)?;
+        
+        // `Ipv4Address` から `Ipv4Addr` に変換
+        let tcp_ip_addr = Ipv4Addr::new(
+            ip_addr.octets()[0],
+            ip_addr.octets()[1],
+            ip_addr.octets()[2],
+            ip_addr.octets()[3]
+        );
 
         // 2. TCP接続確立
-        let remote_addr = SocketAddr::new(ip_addr, port);
-        // FIXME: 適当なローカルポートを選択するか、エフェメラルポートアロケータを使用
-        // 今回は単純化のため、乱数等を使用するのが理想的だが、簡易的に固定またはスタック任せとする
-        // 実際にはカーネルのバインドアロケータに依存
-        let local_port = crate::task::timer::current_tick() as u16 % 16384 + 49152; 
-        let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, local_port);
+        let remote_addr = SocketAddr::new(tcp_ip_addr, port);
 
-        let mut stream = TcpStream::connect(local_addr, remote_addr).await
+        let mut stream = TcpStream::dial(remote_addr).await
             .map_err(|_| HttpClientError::ConnectionFailed)?;
 
         let request_bytes = req.to_bytes();
         let mut parser = HttpParser::new();
 
+        // Helper function for write_all
+        async fn write_all(stream: &mut TcpStream, buf: &[u8]) -> Result<(), HttpClientError> {
+            let mut written = 0;
+            while written < buf.len() {
+                let n = stream.write(&buf[written..]).await.map_err(|_| HttpClientError::WriteError)?;
+                if n == 0 { return Err(HttpClientError::WriteError); }
+                written += n;
+            }
+            Ok(())
+        }
+
         // 3. 通信 (TLS or 平文)
         if is_https {
             // HTTPS
             let mut tls_config = TlsConfig::default();
-            tls_config.set_server_name(&host);
+            tls_config.with_server_name(&host);
             let mut tls = Box::new(TlsConnection::new(tls_config));
+
+            // ClientHello 送信
+            let client_hello = tls.build_client_hello();
+            write_all(&mut stream, &client_hello).await?;
 
             // ハンドシェイク
             while !tls.is_handshake_complete() {
-                // 送信すべきデータがあればストリームへ
-                let mut out_buf = [0u8; 4096];
-                if let Ok(len) = tls.read_tls_output(&mut out_buf) {
-                    if len > 0 {
-                        stream.write_all(&out_buf[..len]).await.map_err(|_| HttpClientError::WriteError)?;
-                    }
-                }
-
-                if tls.is_handshake_complete() {
-                    break;
-                }
-
-                // ストリームからデータを受信してTLSに入力
                 let mut in_buf = [0u8; 4096];
                 let read_len = stream.read(&mut in_buf).await.map_err(|_| HttpClientError::ReadError)?;
                 if read_len == 0 {
                     return Err(HttpClientError::TlsHandshakeFailed);
                 }
-                tls.process_tls_input(&in_buf[..read_len]).map_err(|_| HttpClientError::TlsHandshakeFailed)?;
+
+                // 入力を処理し、送り返す必要のあるデータがあれば送信
+                let reply_data = tls.process_incoming(&in_buf[..read_len])
+                    .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
+                
+                if !reply_data.is_empty() {
+                    write_all(&mut stream, &reply_data).await?;
+                }
             }
 
             // HTTPリクエストの暗号化と送信
-            tls.write_application_data(&request_bytes).map_err(|_| HttpClientError::WriteError)?;
-            let mut out_buf = [0u8; 4096];
-            while let Ok(len) = tls.read_tls_output(&mut out_buf) {
-                if len == 0 { break; }
-                stream.write_all(&out_buf[..len]).await.map_err(|_| HttpClientError::WriteError)?;
-            }
+            let encrypted_request = tls.encrypt_application_data(&request_bytes)
+                .map_err(|_| HttpClientError::WriteError)?;
+            write_all(&mut stream, &encrypted_request).await?;
 
             // HTTPレスポンスの受信と復号
             loop {
@@ -148,12 +157,21 @@ impl HttpClient {
                 if read_len == 0 {
                     break; // EOF
                 }
-                tls.process_tls_input(&in_buf[..read_len]).map_err(|_| HttpClientError::ReadError)?;
+
+                let reply_data = tls.process_incoming(&in_buf[..read_len])
+                    .map_err(|_| HttpClientError::ReadError)?;
+                if !reply_data.is_empty() {
+                    write_all(&mut stream, &reply_data).await?;
+                }
                 
-                let mut app_data = [0u8; 4096];
-                while let Ok(len) = tls.read_application_data(&mut app_data) {
-                    if len == 0 { break; }
-                    parser.push_data(&app_data[..len]);
+                // process_incomingの後に復号されたアプリケーションデータを取得
+                // TlsConnectionはアプリケーションデータを受信すると recv_buffer に蓄積するか
+                // またはここでどうにか取り出す必要がある。
+                // read_application_data メソッドがないため、TLSスタックのAPIに従う必要がある
+                // NOTE: ExoRust の TlsConnection の仕様に合わせる
+                let app_data = tls.read_application_data();
+                if !app_data.is_empty() {
+                    parser.push_data(&app_data);
                     
                     if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
                         return Ok(response);
@@ -163,7 +181,7 @@ impl HttpClient {
 
         } else {
             // HTTP
-            stream.write_all(&request_bytes).await.map_err(|_| HttpClientError::WriteError)?;
+            write_all(&mut stream, &request_bytes).await?;
 
             loop {
                 let mut in_buf = [0u8; 4096];
