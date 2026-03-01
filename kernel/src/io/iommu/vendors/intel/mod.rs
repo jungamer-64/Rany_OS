@@ -140,7 +140,15 @@ unsafe fn apply_mapping_sync(
         return Err(err);
     }
     crate::io::log::early_print("[DMA] apply_mapping_sync: map OK, calling invalidate\n");
-    controller.invalidate_iotlb(domain_id, false);
+    if let Err(err) = controller.invalidate_iotlb(domain_id, false) {
+        crate::io::log::early_print("[DMA] apply_mapping_sync: invalidate FAILED, rolling back\n");
+        let _ = domain_arc.unmap(iova);
+        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
+            let _ = controller.invalidate_iotlb_global_sync();
+            let _ = controller.free_iova_fast(iova, size);
+        }
+        return Err(err);
+    }
     Ok(iova)
 }
 
@@ -188,6 +196,13 @@ async unsafe fn apply_mapping_async(
         }
         return Err(err);
     }
-    controller.invalidate_iotlb(domain_id, false);
+    if let Err(err) = controller.invalidate_iotlb(domain_id, false) {
+        let _ = domain_arc.unmap(iova);
+        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
+            let _ = controller.invalidate_iotlb_global_sync();
+            let _ = controller.free_iova_fast(iova, size);
+        }
+        return Err(err);
+    }
     Ok(iova)
 }

@@ -280,6 +280,8 @@ pub fn wake_task(task_id: TaskId) {
 pub struct Executor {
     /// ローカルキュー（Per-CPU）
     local_queue: VecDeque<Task>,
+    /// クォータ制御で一時停止中のタスク
+    suspended_queue: VecDeque<(u64, Task)>,
     /// ローカルキャッシュ（高速アクセス用）
     local_cache: VecDeque<TaskId>,
     /// CPUインデックス（Work Stealing用）
@@ -298,6 +300,7 @@ impl Executor {
     pub fn with_cpu_id(cpu_id: usize) -> Self {
         Self {
             local_queue: VecDeque::with_capacity(256),
+            suspended_queue: VecDeque::with_capacity(64),
             local_cache: VecDeque::with_capacity(64),
             cpu_id,
             batch_size: 32,
@@ -346,6 +349,9 @@ impl Executor {
             // IOMMU command queue processing
             crate::io::iommu::api::process_pending_command_queues();
 
+            // 0.5 Suspend期限到達タスクを再投入
+            self.process_suspended_tasks();
+
             // 1. Refill fuel for this executor slice and process local tasks
             crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
             self.run_ready_tasks();
@@ -393,8 +399,19 @@ impl Executor {
         let mut processed = 0;
 
         while let Some(mut task) = self.local_queue.pop_front() {
+            let now_ns = crate::time::precise_time_nanos();
+            if !crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns) {
+                let deadline = crate::domain_system::quota_suspend_deadline_ns(task.domain_id)
+                    .unwrap_or_else(|| {
+                        now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
+                    });
+                self.suspended_queue.push_back((deadline, task));
+                continue;
+            }
+
             let waker = create_waker(task.id);
             let mut context = Context::from_waker(&waker);
+            let start_ns = crate::time::precise_time_nanos();
 
             match task.poll(&mut context) {
                 Poll::Ready(()) => {
@@ -404,8 +421,39 @@ impl Executor {
                         .fetch_add(1, Ordering::Relaxed);
                 }
                 Poll::Pending => {
-                    // ペンディング状態のタスクをper-coreストアに保存
-                    PER_CORE_STORES[self.cpu_id].insert(task.id, task);
+                    let end_ns = crate::time::precise_time_nanos();
+                    let elapsed_ns = end_ns.saturating_sub(start_ns);
+                    let exceeded = if task.domain_id == crate::domain_system::DomainId::KERNEL {
+                        false
+                    } else {
+                        crate::domain::quota::quota_manager().consume_cpu_time(
+                            task.domain_id,
+                            elapsed_ns,
+                            end_ns,
+                        )
+                    };
+
+                    let action = if exceeded {
+                        crate::domain_system::report_cpu_quota_exceeded(task.domain_id, end_ns)
+                    } else {
+                        crate::domain_system::report_cpu_quota_ok(task.domain_id);
+                        crate::domain_system::CpuQuotaAction::None
+                    };
+
+                    match action {
+                        crate::domain_system::CpuQuotaAction::Suspend { until_ns } => {
+                            self.suspended_queue.push_back((until_ns, task));
+                            crate::task::preemption::request_yield();
+                        }
+                        crate::domain_system::CpuQuotaAction::YieldDemote => {
+                            PER_CORE_STORES[self.cpu_id].insert(task.id, task);
+                            crate::task::preemption::request_yield();
+                        }
+                        crate::domain_system::CpuQuotaAction::None => {
+                            // ペンディング状態のタスクをper-coreストアに保存
+                            PER_CORE_STORES[self.cpu_id].insert(task.id, task);
+                        }
+                    }
                 }
             }
 
@@ -435,6 +483,27 @@ impl Executor {
                 .poll_cycles
                 .fetch_add(processed as u64, Ordering::Relaxed);
         }
+    }
+
+    fn process_suspended_tasks(&mut self) {
+        if self.suspended_queue.is_empty() {
+            return;
+        }
+
+        let now_ns = crate::time::precise_time_nanos();
+        let mut pending = VecDeque::with_capacity(self.suspended_queue.len());
+
+        while let Some((deadline, task)) = self.suspended_queue.pop_front() {
+            if now_ns >= deadline
+                && crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns)
+            {
+                self.local_queue.push_back(task);
+            } else {
+                pending.push_back((deadline, task));
+            }
+        }
+
+        self.suspended_queue = pending;
     }
 
     /// Wake queueを処理

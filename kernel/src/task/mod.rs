@@ -285,6 +285,7 @@ impl Default for TaskId {
 /// 設計書 4.1: スタックレスコルーチンとしてのタスク
 pub struct Task {
     pub id: TaskId,
+    pub domain_id: crate::domain_system::DomainId,
     pub future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
@@ -292,6 +293,7 @@ impl Task {
     pub fn new(future: impl Future<Output = ()> + Send + 'static) -> Task {
         Task {
             id: TaskId::new(),
+            domain_id: crate::domain_system::current_domain(),
             future: Box::pin(future),
         }
     }

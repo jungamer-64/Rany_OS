@@ -614,7 +614,7 @@ impl<T> DmaHandle<T> {
     ///
     /// # Errors
     /// Returns `UnmapError<T>` containing the handle if unmap fails.
-    pub fn unmap_simple(mut self) -> Result<RRef<T>, UnmapError<T>> {
+    pub unsafe fn unmap_simple(mut self) -> Result<RRef<T>, UnmapError<T>> {
         // Take the rref to mark this handle as unmapped
         match self.take_rref() {
             Some(rref) => {

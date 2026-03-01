@@ -35,8 +35,9 @@ impl KernelServices for ExoKernel {
         &self,
         future: Pin<Box<dyn Future<Output = ()> + Send>>,
     ) -> Result<TaskHandle, KapiError> {
+        let domain_id = context::current_subject().domain.as_u64();
         // Use Task::new_boxed to avoid double-boxing (optimization)
-        let task = Task::new_boxed(future, Priority::Normal, None);
+        let task = Task::new_boxed(future, Priority::Normal, Some(domain_id));
         let task_id = task.metadata.id.as_u64();
 
         // Submit to ExecutorManager for load-balanced scheduling

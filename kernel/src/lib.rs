@@ -177,7 +177,7 @@ macro_rules! eprintln {
     });
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
 pub fn test_runner(tests: &[&dyn Fn()]) {
     eprintln!("[qemu-suite] kernel-unit start");
     eprintln!("[test] running {} tests...", tests.len());
@@ -228,7 +228,7 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
     eprintln!("[qemu-suite] kernel-unit pass");
 }
 
-#[cfg(all(test, not(feature = "std")))]
+#[cfg(all(test, not(feature = "std"), not(target_os = "linux")))]
 pub fn test_runner(tests: &[&dyn Fn()]) {
     crate::io::log::early_print("[qemu-suite] kernel-unit start\n");
     crate::io::log::early_print("[test] running ");

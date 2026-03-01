@@ -687,7 +687,7 @@ impl<'a> Ipv4PacketMut<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+mod packet_mut_tests {
     use super::*;
 
     #[test_case]

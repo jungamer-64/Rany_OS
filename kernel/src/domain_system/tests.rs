@@ -111,3 +111,64 @@ fn test_reclaim_domain_resources_poisoned_no_panic() {
 
     reclaim_domain_resources(id);
 }
+
+#[test_case]
+fn test_cpu_quota_demote_then_suspend() {
+    use crate::domain::quota::DomainPriority;
+
+    let id = create_domain(String::from("cpu_quota_demote")).expect("create_domain failed");
+    set_domain_priority(id, DomainPriority::High).expect("set_domain_priority failed");
+
+    assert_eq!(
+        report_cpu_quota_exceeded(id, 1),
+        CpuQuotaAction::YieldDemote,
+        "first violation should demote and yield"
+    );
+    assert_eq!(
+        get_domain_snapshot(id).expect("domain snapshot missing").priority,
+        DomainPriority::Normal
+    );
+
+    assert_eq!(
+        report_cpu_quota_exceeded(id, 2),
+        CpuQuotaAction::YieldDemote,
+        "second violation should demote and yield"
+    );
+    assert_eq!(
+        get_domain_snapshot(id).expect("domain snapshot missing").priority,
+        DomainPriority::Low
+    );
+
+    let action = report_cpu_quota_exceeded(id, 10);
+    let until = match action {
+        CpuQuotaAction::Suspend { until_ns } => until_ns,
+        other => panic!("expected suspend action, got {:?}", other),
+    };
+    assert_eq!(
+        get_domain_snapshot(id).expect("domain snapshot missing").state,
+        DomainState::Suspended
+    );
+    assert!(
+        until >= 10 + CPU_QUOTA_SUSPEND_WINDOW_NS,
+        "suspend deadline should include configured window"
+    );
+}
+
+#[test_case]
+fn test_quota_suspend_auto_resume_after_window() {
+    let id = create_domain(String::from("cpu_quota_resume")).expect("create_domain failed");
+
+    let mut deadline = 0;
+    for now in [100u64, 200, 300] {
+        let action = report_cpu_quota_exceeded(id, now);
+        if let CpuQuotaAction::Suspend { until_ns } = action {
+            deadline = until_ns;
+        }
+    }
+    assert!(deadline > 0, "domain should enter suspended state");
+    assert!(!is_domain_runnable_now(id, deadline.saturating_sub(1)));
+    assert!(is_domain_runnable_now(id, deadline.saturating_add(1)));
+
+    let snapshot = get_domain_snapshot(id).expect("domain snapshot missing");
+    assert_eq!(snapshot.state, DomainState::Running);
+}

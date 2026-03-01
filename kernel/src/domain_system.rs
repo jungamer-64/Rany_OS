@@ -22,6 +22,16 @@ use crate::security::CapabilitySet;
 use crate::sync::PoisonLock;
 use spin::Once;
 
+pub const CPU_QUOTA_SUSPEND_STREAK: u8 = 3;
+pub const CPU_QUOTA_SUSPEND_WINDOW_NS: u64 = 100_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuQuotaAction {
+    None,
+    YieldDemote,
+    Suspend { until_ns: u64 },
+}
+
 // ============================================================================
 // ドメインID
 // ============================================================================
@@ -198,6 +208,10 @@ pub struct Domain {
     pub memory_limit_bytes: u64,
     /// I/O帯域上限（バイト/秒、0=無制限）
     pub io_bandwidth_limit: u64,
+    /// CPUクォータ連続違反回数
+    pub cpu_violation_streak: u8,
+    /// クォータ制御での一時Suspend期限（ns, 0=未設定）
+    pub quota_suspend_until_ns: u64,
 }
 
 /// Domain summary snapshot for external queries
@@ -253,6 +267,8 @@ impl Domain {
             cpu_limit_percent: 100,
             memory_limit_bytes: u64::MAX,
             io_bandwidth_limit: 0,
+            cpu_violation_streak: 0,
+            quota_suspend_until_ns: 0,
         }
     }
 
@@ -329,12 +345,12 @@ impl Domain {
         Arc::make_mut(&mut self.security).caps = caps;
     }
 
-    /// 優先度を設定（将来のQoS enforcement用）
+    /// 優先度を設定
     pub fn set_priority(&mut self, priority: DomainPriority) {
         self.priority = priority;
     }
 
-    /// リソース上限メタデータを設定（将来のquota enforcement用）
+    /// リソース上限メタデータを設定
     pub fn set_resource_limits(
         &mut self,
         cpu_limit_percent: u64,
@@ -732,7 +748,7 @@ pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), 
     }
 }
 
-/// Set priority metadata for a domain (future scheduler/QoS hook)
+/// Set scheduling priority metadata for a domain
 pub fn set_domain_priority(id: DomainId, priority: DomainPriority) -> Result<(), &'static str> {
     match REGISTRY.lock() {
         Ok(mut guard) => {
@@ -757,7 +773,7 @@ pub fn set_domain_priority(id: DomainId, priority: DomainPriority) -> Result<(),
     }
 }
 
-/// Set quota metadata for a domain (future quota enforcement hook)
+/// Set quota metadata for a domain
 pub fn set_domain_resource_limits(
     id: DomainId,
     cpu_limit_percent: u64,
@@ -787,6 +803,114 @@ pub fn set_domain_resource_limits(
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (set_domain_resource_limits)");
             Err("Domain registry poisoned")
+        }
+    }
+}
+
+#[inline]
+fn demote_priority(priority: DomainPriority) -> DomainPriority {
+    match priority {
+        DomainPriority::Critical => DomainPriority::Critical,
+        DomainPriority::High => DomainPriority::Normal,
+        DomainPriority::Normal | DomainPriority::Low => DomainPriority::Low,
+    }
+}
+
+pub fn report_cpu_quota_exceeded(id: DomainId, now_ns: u64) -> CpuQuotaAction {
+    if id == DomainId::KERNEL {
+        return CpuQuotaAction::None;
+    }
+
+    match REGISTRY.lock() {
+        Ok(mut guard) => {
+            let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) else {
+                return CpuQuotaAction::None;
+            };
+
+            if matches!(domain.state, DomainState::Terminated | DomainState::Stopped) {
+                return CpuQuotaAction::None;
+            }
+
+            domain.cpu_violation_streak = domain.cpu_violation_streak.saturating_add(1);
+            let next_priority = demote_priority(domain.priority);
+            if next_priority != domain.priority {
+                domain.priority = next_priority;
+            }
+
+            sync_domain_quota(
+                id,
+                domain.priority,
+                domain.cpu_limit_percent,
+                domain.memory_limit_bytes,
+                domain.io_bandwidth_limit,
+            );
+
+            if domain.cpu_violation_streak >= CPU_QUOTA_SUSPEND_STREAK {
+                let until_ns = now_ns.saturating_add(CPU_QUOTA_SUSPEND_WINDOW_NS);
+                domain.quota_suspend_until_ns = until_ns;
+                domain.state = DomainState::Suspended;
+                return CpuQuotaAction::Suspend { until_ns };
+            }
+
+            CpuQuotaAction::YieldDemote
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (report_cpu_quota_exceeded)");
+            CpuQuotaAction::None
+        }
+    }
+}
+
+pub fn report_cpu_quota_ok(id: DomainId) {
+    if id == DomainId::KERNEL {
+        return;
+    }
+    match REGISTRY.lock() {
+        Ok(mut guard) => {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                domain.cpu_violation_streak = 0;
+            }
+        }
+        Err(_) => log::error!("[DOMAIN] Registry poisoned (report_cpu_quota_ok)"),
+    }
+}
+
+pub fn quota_suspend_deadline_ns(id: DomainId) -> Option<u64> {
+    match REGISTRY.lock() {
+        Ok(guard) => guard
+            .domains
+            .iter()
+            .find(|d| d.id == id && d.quota_suspend_until_ns > 0)
+            .map(|d| d.quota_suspend_until_ns),
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (quota_suspend_deadline_ns)");
+            None
+        }
+    }
+}
+
+pub fn is_domain_runnable_now(id: DomainId, now_ns: u64) -> bool {
+    match REGISTRY.lock() {
+        Ok(mut guard) => {
+            let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) else {
+                return false;
+            };
+
+            if domain.state == DomainState::Suspended {
+                if domain.quota_suspend_until_ns > 0 && now_ns >= domain.quota_suspend_until_ns {
+                    domain.state = DomainState::Running;
+                    domain.quota_suspend_until_ns = 0;
+                    domain.cpu_violation_streak = 0;
+                    return true;
+                }
+                return false;
+            }
+
+            domain.state.is_runnable()
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (is_domain_runnable_now)");
+            false
         }
     }
 }

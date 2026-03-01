@@ -25,7 +25,7 @@ pub use pipe::{
     pipe_manager,
     zero_copy_channel,
 };
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 #[allow(unused_imports)]
 pub use pipe::{mkfifo, pipe, pipe2};
 #[allow(unused_imports)]
@@ -44,7 +44,7 @@ pub use rref::{
     RRef,
     reclaim_domain_resources,
 };
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 #[allow(unused_imports)]
 pub use shared_mem::{
     SharedMemoryManager,

@@ -286,6 +286,8 @@ pub struct PerCoreExecutor {
     tasks_stolen_from: AtomicU64,
     /// シャットダウンフラグ
     shutdown: AtomicBool,
+    /// クォータ超過で一時停止中のタスク
+    suspended_queue: PoisonLock<VecDeque<(u64, Arc<Task>)>>,
 }
 
 impl PerCoreExecutor {
@@ -300,6 +302,7 @@ impl PerCoreExecutor {
             tasks_stolen: AtomicU64::new(0),
             tasks_stolen_from: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
+            suspended_queue: PoisonLock::new(VecDeque::new()),
         }
     }
 
@@ -396,6 +399,8 @@ impl PerCoreExecutor {
             return false;
         }
 
+        self.process_suspended_tasks();
+
         // 【重要】保留中の割り込みイベントを処理（2段階Wake方式）
         // ISRからのwake()はイベントキューに積まれているため、
         // ここで実際のwake()を実行する
@@ -412,6 +417,24 @@ impl PerCoreExecutor {
         });
 
         if let Some(task) = self.next_task() {
+            if let Some(domain_raw) = task.metadata.domain_id {
+                let domain_id = crate::domain_system::DomainId::new(domain_raw);
+                let now_ns = crate::time::precise_time_nanos();
+                if !crate::domain_system::is_domain_runnable_now(domain_id, now_ns) {
+                    let deadline = crate::domain_system::quota_suspend_deadline_ns(domain_id)
+                        .unwrap_or_else(|| {
+                            now_ns
+                                .saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
+                        });
+                    match self.suspended_queue.lock() {
+                        Ok(mut q) => q.push_back((deadline, task)),
+                        Err(_) => log::error!(
+                            "[EXECUTOR] suspended_queue poisoned (run_once) - dropping task"
+                        ),
+                    }
+                    return true;
+                }
+            }
             self.run_task(&task);
             true
         } else {
@@ -435,15 +458,36 @@ impl PerCoreExecutor {
 
         // Wakerを作成
         let waker = task_waker(task.clone(), self.core_id);
+        let start_ns = crate::time::precise_time_nanos();
 
         // タスクをpoll
         let poll_result = unsafe { task.poll(&waker) };
 
         let end_cycles = read_tsc();
         let elapsed = end_cycles.saturating_sub(start_cycles);
+        let end_ns = crate::time::precise_time_nanos();
+        let elapsed_ns = end_ns.saturating_sub(start_ns);
         task.metadata
             .total_run_time
             .fetch_add(elapsed, Ordering::Relaxed);
+
+        let mut quota_action = crate::domain_system::CpuQuotaAction::None;
+        if let Some(domain_raw) = task.metadata.domain_id {
+            let domain_id = crate::domain_system::DomainId::new(domain_raw);
+            if domain_id != crate::domain_system::DomainId::KERNEL {
+                let exceeded = crate::domain::quota::quota_manager().consume_cpu_time(
+                    domain_id,
+                    elapsed_ns,
+                    end_ns,
+                );
+                if exceeded {
+                    quota_action =
+                        crate::domain_system::report_cpu_quota_exceeded(domain_id, end_ns);
+                } else {
+                    crate::domain_system::report_cpu_quota_ok(domain_id);
+                }
+            }
+        }
 
         match poll_result {
             Poll::Ready(()) => {
@@ -451,13 +495,66 @@ impl PerCoreExecutor {
                 task.set_state(TaskState::Completed);
             }
             Poll::Pending => {
-                // タスクはWakerによって再スケジュールされる
-                task.set_state(TaskState::Blocked);
+                if let crate::domain_system::CpuQuotaAction::Suspend { until_ns } = quota_action {
+                    task.set_state(TaskState::Blocked);
+                    match self.suspended_queue.lock() {
+                        Ok(mut q) => q.push_back((until_ns, task.clone())),
+                        Err(_) => log::error!(
+                            "[EXECUTOR] suspended_queue poisoned (run_task) - dropping task"
+                        ),
+                    }
+                } else {
+                    // タスクはWakerによって再スケジュールされる
+                    task.set_state(TaskState::Blocked);
+                }
             }
+        }
+
+        if matches!(
+            quota_action,
+            crate::domain_system::CpuQuotaAction::YieldDemote
+                | crate::domain_system::CpuQuotaAction::Suspend { .. }
+        ) {
+            crate::task::preemption::request_yield();
         }
 
         self.running_count.fetch_sub(1, Ordering::Relaxed);
         self.tasks_executed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn process_suspended_tasks(&self) {
+        let now_ns = crate::time::precise_time_nanos();
+        let mut ready = VecDeque::new();
+
+        match self.suspended_queue.lock() {
+            Ok(mut queue) => {
+                let mut pending = VecDeque::with_capacity(queue.len());
+                while let Some((deadline, task)) = queue.pop_front() {
+                    if now_ns >= deadline {
+                        if let Some(domain_raw) = task.metadata.domain_id {
+                            let domain_id = crate::domain_system::DomainId::new(domain_raw);
+                            if crate::domain_system::is_domain_runnable_now(domain_id, now_ns) {
+                                ready.push_back(task);
+                                continue;
+                            }
+                        } else {
+                            ready.push_back(task);
+                            continue;
+                        }
+                    }
+                    pending.push_back((deadline, task));
+                }
+                *queue = pending;
+            }
+            Err(_) => {
+                log::error!("[EXECUTOR] suspended_queue poisoned (process_suspended_tasks)");
+                return;
+            }
+        }
+
+        while let Some(task) = ready.pop_front() {
+            self.schedule(task);
+        }
     }
 
     /// エグゼキュータをシャットダウン

@@ -54,6 +54,85 @@ fn heap_deallocation_enabled() -> bool {
     HEAP_DEALLOC_ENABLED.load(Ordering::Acquire)
 }
 
+const ALLOC_HEADER_MAGIC: u64 = 0x514f_5441_4d45_4d31;
+const QUOTA_ALLOCATION_RACE_RETRY: usize = 3;
+const ALLOC_OOM_RETRY: usize = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AllocHeader {
+    magic: u64,
+    owner_domain: u64,
+    charged_bytes: u64,
+    raw_ptr: usize,
+    raw_size: usize,
+    raw_align: usize,
+}
+
+impl AllocHeader {
+    const fn new(
+        owner_domain: u64,
+        charged_bytes: u64,
+        raw_ptr: usize,
+        raw_size: usize,
+        raw_align: usize,
+    ) -> Self {
+        Self {
+            magic: ALLOC_HEADER_MAGIC,
+            owner_domain,
+            charged_bytes,
+            raw_ptr,
+            raw_size,
+            raw_align,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuotaChargeOutcome {
+    Charged,
+    Exceeded,
+    Retry,
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[inline]
+fn current_allocation_domain() -> crate::domain_system::DomainId {
+    crate::domain_system::current_domain()
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+#[inline]
+fn current_allocation_domain() -> crate::domain_system::DomainId {
+    crate::domain_system::DomainId::KERNEL
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[inline]
+fn quota_try_charge(domain: crate::domain_system::DomainId, bytes: u64) -> QuotaChargeOutcome {
+    match crate::domain::quota::quota_manager().try_allocate_memory(domain, bytes) {
+        Ok(()) => QuotaChargeOutcome::Charged,
+        Err(crate::domain::quota::QuotaError::AllocationRace) => QuotaChargeOutcome::Retry,
+        Err(_) => QuotaChargeOutcome::Exceeded,
+    }
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+#[inline]
+fn quota_try_charge(_domain: crate::domain_system::DomainId, _bytes: u64) -> QuotaChargeOutcome {
+    QuotaChargeOutcome::Charged
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[inline]
+fn quota_uncharge(domain: crate::domain_system::DomainId, bytes: u64) {
+    crate::domain::quota::quota_manager().deallocate_memory(domain, bytes);
+}
+
+#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+#[inline]
+fn quota_uncharge(_domain: crate::domain_system::DomainId, _bytes: u64) {}
+
 /// 物理メモリオフセットを取得
 #[inline]
 pub fn physical_memory_offset() -> u64 {
@@ -454,31 +533,120 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let size = layout.size();
         let _align = layout.align();
-        
+
         // Log suspicious allocations
         if size == 0 {
-             crate::io::log::early_print("[ALLOC] WARNING: alloc called with size 0\n");
+            crate::io::log::early_print("[ALLOC] WARNING: alloc called with size 0\n");
         }
 
-        match self.0.lock() {
-            Ok(mut guard) => {
-                let ptr = guard.allocate(layout);
-                if ptr.is_null() {
-                    Self::dump_alloc_failure(&*guard, layout, size);
-                }
-                
-                ptr
-            }
-            Err(poisoned) => {
+        let owner = current_allocation_domain();
+        let requested_bytes = layout.size() as u64;
+        let needs_quota = owner != crate::domain_system::DomainId::KERNEL;
 
-                crate::io::log::early_print("[ALLOC] Poisoned lock\n");
-                Self::dump_poisoned_state(poisoned.get_ref());
-                null_mut()
+        let (header_plus_payload, user_offset) = match Layout::new::<AllocHeader>().extend(layout) {
+            Ok((l, off)) => (l.pad_to_align(), off),
+            Err(_) => return null_mut(),
+        };
+
+        let mut retry = 0usize;
+        loop {
+            let mut charged = false;
+            if needs_quota {
+                let mut quota_result = QuotaChargeOutcome::Exceeded;
+                for _ in 0..=QUOTA_ALLOCATION_RACE_RETRY {
+                    quota_result = quota_try_charge(owner, requested_bytes);
+                    if quota_result != QuotaChargeOutcome::Retry {
+                        break;
+                    }
+                }
+                if quota_result != QuotaChargeOutcome::Charged {
+                    return null_mut();
+                }
+                charged = true;
             }
+
+            let raw_ptr = match self.0.lock() {
+                Ok(mut guard) => {
+                    let p = guard.allocate(header_plus_payload);
+                    if p.is_null() {
+                        Self::dump_alloc_failure(&*guard, header_plus_payload, size);
+                    }
+                    p
+                }
+                Err(poisoned) => {
+                    crate::io::log::early_print("[ALLOC] Poisoned lock\n");
+                    Self::dump_poisoned_state(poisoned.get_ref());
+                    if charged {
+                        quota_uncharge(owner, requested_bytes);
+                    }
+                    return null_mut();
+                }
+            };
+
+            if !raw_ptr.is_null() {
+                let raw_addr = raw_ptr as usize;
+                let header_ptr = raw_ptr as *mut AllocHeader;
+                core::ptr::write(
+                    header_ptr,
+                    AllocHeader::new(
+                        owner.as_u64(),
+                        if needs_quota { requested_bytes } else { 0 },
+                        raw_addr,
+                        header_plus_payload.size(),
+                        header_plus_payload.align(),
+                    ),
+                );
+                return raw_ptr.add(user_offset);
+            }
+
+            if charged {
+                quota_uncharge(owner, requested_bytes);
+            }
+
+            if retry >= ALLOC_OOM_RETRY || !crate::memory::oom_killer::try_free_memory() {
+                return null_mut();
+            }
+            retry = retry.saturating_add(1);
         }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if ptr.is_null() {
+            return;
+        }
+
+        let user_offset = match Layout::new::<AllocHeader>().extend(layout) {
+            Ok((_, off)) => off,
+            Err(_) => {
+                if let Ok(mut guard) = self.0.lock() {
+                    guard.deallocate(ptr, layout);
+                }
+                return;
+            }
+        };
+
+        if user_offset <= ptr as usize {
+            let header_addr = (ptr as usize).saturating_sub(user_offset);
+            let header_ptr = header_addr as *const AllocHeader;
+            let header = core::ptr::read(header_ptr);
+
+            if header.magic == ALLOC_HEADER_MAGIC {
+                if header.charged_bytes > 0 {
+                    quota_uncharge(
+                        crate::domain_system::DomainId::new(header.owner_domain),
+                        header.charged_bytes,
+                    );
+                }
+
+                if let Ok(raw_layout) = Layout::from_size_align(header.raw_size, header.raw_align) {
+                    if let Ok(mut guard) = self.0.lock() {
+                        guard.deallocate(header.raw_ptr as *mut u8, raw_layout);
+                        return;
+                    }
+                }
+            }
+        }
+
         if let Ok(mut guard) = self.0.lock() {
             guard.deallocate(ptr, layout);
         }
@@ -562,7 +730,8 @@ pub const EXCHANGE_HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 const EFI_PAGE_SIZE: u64 = 4096;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_CODE: u32 = 3;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_DATA: u32 = 4;
-const EFI_MEMORY_TYPE_ACPI_RECLAIM: u32 = 9;
+const EFI_MEMORY_TYPE_ACPI_RECLAIM: u32 = 8;
+const EFI_MEMORY_TYPE_ACPI_NVS: u32 = 9;
 const EFI_MEMORY_TYPE_CONVENTIONAL: u32 = 7;
 const MIN_USABLE_PHYS_ADDR: u64 = 0x100_0000; // 16 MiB
 
@@ -761,3 +930,6 @@ fn subtract_if_valid(
         _ => regions,
     }
 }
+
+#[cfg(test)]
+mod tests;

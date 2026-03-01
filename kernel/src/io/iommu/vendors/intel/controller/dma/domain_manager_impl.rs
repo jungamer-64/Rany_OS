@@ -33,7 +33,7 @@ impl DomainManager for IommuController {
         let mut id = (self.next_domain_id.load(Ordering::Relaxed) % max_ids as u64) as u16;
         let mut found = false;
         for _ in 0..max_ids {
-            if id > 0 && !domains.contains_key(&id) {
+            if !domains.contains_key(&id) {
                 found = true;
                 break;
             }

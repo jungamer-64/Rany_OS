@@ -169,13 +169,16 @@ pub fn unregister_protected_range(start: u64, size: u64) {
         }
     }
 
-    let start_page = (start / 4096) as usize;
-    let end_page = ((end.saturating_add(4095)) / 4096) as usize;
-    let check_end_page = end_page.min(PROTECTED_BITMAP_PAGES);
+    // Security: Only unprotect pages that are COMPLETELY covered by the request in the bitmap.
+    // If a range is not page-aligned, we do NOT unprotect the partial pages at the
+    // start and end, as they might contain other protected objects.
+    let start_page_aligned = ((start + 4095) / 4096) as usize; // Round UP
+    let end_page_aligned = (end / 4096) as usize; // Round DOWN
+    let check_end_page = end_page_aligned.min(PROTECTED_BITMAP_PAGES);
 
-    if start_page < check_end_page {
+    if start_page_aligned < check_end_page {
         let mut bitmap = get_protected_bitmap().lock();
-        for page_idx in start_page..check_end_page {
+        for page_idx in start_page_aligned..check_end_page {
             bitmap[page_idx / 8] &= !(1 << (page_idx % 8));
         }
     }

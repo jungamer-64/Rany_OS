@@ -50,8 +50,11 @@ pub fn protect_bios_reserved_regions(boot_info: &boot_proto::ExoBootInfo) {
 
     for desc in descriptors {
         let ty = desc.r#type;
-        // Skip ranges treated as usable RAM.
-        if ty == 7 || ty == 3 || ty == 4 || ty == 9 {
+        // SECURITY: Skip only ranges that are genuinely usable RAM for general purposes.
+        // Conventional Memory (7) is free RAM.
+        // Boot Services Code/Data (3, 4) are often used for early allocations and reclaimed.
+        // EVERYTHING ELSE (including ACPI tables, NVS, and Reserved) MUST be protected.
+        if ty == 7 || ty == 3 || ty == 4 {
             continue;
         }
 

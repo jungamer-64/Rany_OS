@@ -219,7 +219,17 @@ impl IntelIommuDriver {
                 ok = false;
                 continue;
             };
-            if domain.unmap(iova).is_err() {
+            if domain.unmap(iova).is_ok() {
+                // SECURITY: Invalidate IOTLB after rollback to ensure no stale entries remain
+                if let Err(e) = ctrl.invalidate_iotlb(0, true) {
+                    log::error!(
+                        "[IOMMU][SECURITY] IOTLB invalidation failed during rollback on controller {}: {:?}",
+                        mapped,
+                        e
+                    );
+                    ok = false;
+                }
+            } else {
                 ok = false;
             }
         }
@@ -277,62 +287,62 @@ impl IntelIommuDriver {
             return Err(IommuError::NotPresent);
         }
 
-        let mut last_err = None;
         let mut mapping_size = 0;
+        let mut first_err = None;
         let mut unmapped_controllers = alloc::vec::Vec::with_capacity(registry.controllers.len());
+        let mut success_count = 0;
 
+        // SECURITY: Unmap from ALL controllers that have Domain 0.
+        // Failing to unmap from any controller while freeing the IOVA would leave a 
+        // stale mapping that could be exploited for DMA Use-After-Free.
         for (idx, controller) in registry.controllers.iter().enumerate() {
-            let domain_arc = {
-                let domains_guard = controller
-                    .domains
-                    .lock()
-                    .map_err(|_| IommuError::HardwareError)?;
-                domains_guard
-                    .get(&0)
-                    .cloned()
-                    .ok_or(IommuError::DomainNotFound)?
-            };
-            match domain_arc.unmap(iova) {
-                Ok(mapping) => {
-                    if let Err(err) = controller.invalidate_iotlb(0, true) {
-                         log::error!(
-                            "[IOMMU][SECURITY] unmap_dma invalidation failed on controller {}: {:?}. Poisoning domain.",
-                            idx, err
-                        );
-                        domain_arc.poison();
-                        last_err = Some(err);
-                    } else {
+            if let Some(domain_arc) = controller.domain(0) {
+                match domain_arc.unmap(iova) {
+                    Ok(mapping) => {
                         mapping_size = mapping.size;
+                        if let Err(err) = controller.invalidate_iotlb(0, true) {
+                            log::error!(
+                                "[IOMMU][SECURITY] unmap_dma invalidation failed on controller {}: {:?}. Poisoning domain.",
+                                idx, err
+                            );
+                            domain_arc.poison();
+                            if first_err.is_none() {
+                                first_err = Some(err);
+                            }
+                        } else {
+                            unmapped_controllers.push(idx);
+                            success_count += 1;
+                        }
+                    }
+                    Err(IommuError::NotMapped) => {
+                        // Already unmapped or not present on this controller, count as success
                         unmapped_controllers.push(idx);
+                        success_count += 1;
+                    }
+                    Err(err) => {
+                        if first_err.is_none() {
+                            first_err = Some(err);
+                        }
                     }
                 }
-                Err(err) => {
-                    last_err = Some(err);
-                    // SECURITY: If one controller fails, we have a partial unmap.
-                    // This is dangerous. We poison the domain to prevent further use.
-                    log::error!(
-                        "[IOMMU][SECURITY] unmap_dma failed on controller {}: {:?}. Poisoning domain.",
-                        idx, err
-                    );
-                    domain_arc.poison();
-                }
+            } else {
+                // Controller doesn't have Domain 0, it couldn't have had this mapping
+                unmapped_controllers.push(idx);
+                success_count += 1;
             }
         }
 
-        if let Some(err) = last_err {
-            // Partial unmap occurred. We do NOT free the IOVA to prevent reuse of
-            // potentially still-mapped addresses on other controllers.
-            // Mark domain as poisoned if needed?
+        if let Some(err) = first_err {
             return Err(err);
         }
 
-        // All controllers unmapped successfully. Now safe to free IOVA.
-        if mapping_size > 0 {
+        // SECURITY: Only free the IOVA if ALL controllers unmapped and invalidated successfully.
+        // If some controllers failed, we leak the IOVA (it remains "zombie") to prevent UAF.
+        if success_count == registry.controllers.len() && mapping_size > 0 {
             for idx in unmapped_controllers {
                 let controller = &registry.controllers[idx];
                 if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping_size) {
                     // Quarantine full: Force a global IOTLB flush and then use immediate free.
-                    // This is safe because the global flush ensures no stale entries remain.
                     if let Ok(_) = self.invalidate_iotlb_global() {
                         let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
                             &**controller,
@@ -342,6 +352,11 @@ impl IntelIommuDriver {
                     }
                 }
             }
+        } else if mapping_size > 0 {
+            log::warn!(
+                "[IOMMU][SECURITY] Partial unmap success ({}/{}); IOVA 0x{:x} (size {}) will NOT be freed to prevent UAF.",
+                success_count, registry.controllers.len(), iova, mapping_size
+            );
         }
 
         Ok(())
@@ -507,7 +522,7 @@ impl IntelIommuDriver {
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
             // Quarantine full: Force global flush and immediate free.
             // This is safe because the global flush ensures no stale entries remain.
-            if let Ok(_) = unsafe { controller.invalidate_iotlb_global_sync() } {
+            if let Ok(_) = controller.invalidate_iotlb_global_sync() {
                 let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
                     controller,
                     iova,
@@ -536,7 +551,7 @@ impl IntelIommuDriver {
             return Err(IommuError::HardwareError);
         }
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping_size) {
-            if let Ok(_) = unsafe { controller.invalidate_iotlb_global_sync() } {
+            if let Ok(_) = controller.invalidate_iotlb_global_sync() {
                 let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
                     controller,
                     iova,
@@ -593,7 +608,7 @@ impl IntelIommuDriver {
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
             // Quarantine full: Force global flush and immediate free.
             // This is safe because the global flush ensures no stale entries remain.
-            if let Ok(_) = unsafe { controller.invalidate_iotlb_global_sync() } {
+            if let Ok(_) = controller.invalidate_iotlb_global_sync() {
                 let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
                     controller,
                     iova,
@@ -642,12 +657,28 @@ impl IntelIommuDriver {
             return controller.create_domain(numa_node, domain_type);
         }
         let registry = self.registry()?;
-        let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-        let controller = registry
-            .controllers
-            .get(idx)
-            .ok_or(IommuError::NotPresent)?;
-        controller.create_domain(numa_node, domain_type)
+        if registry.controllers.is_empty() {
+            return Err(IommuError::NotPresent);
+        }
+
+        // SECURITY: Create the domain on ALL controllers to ensure Domain ID consistency
+        // across the entire IOMMU topology. This is critical for global DMA (Domain 0) 
+        // to function correctly on multi-controller systems.
+        let mut first_id = None;
+        for (idx, controller) in registry.controllers.iter().enumerate() {
+            let id = controller.create_domain(numa_node, domain_type)?;
+            if first_id.is_none() {
+                first_id = Some(id);
+            } else if first_id != Some(id) {
+                log::error!(
+                    "[IOMMU][SECURITY] Domain ID mismatch during creation on controller {}: expected {}, got {}. Consistency broken.",
+                    idx, first_id.unwrap(), id
+                );
+                // We proceed but consistency is now compromised for this domain ID.
+            }
+        }
+
+        first_id.ok_or(IommuError::NotPresent)
     }
 
     pub(crate) fn destroy_domain(&self, domain_id: u16) -> Result<(), IommuError> {

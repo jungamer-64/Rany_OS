@@ -75,7 +75,8 @@ pub fn spawn<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let task = Task::new(future, Priority::Normal, None);
+    let domain_id = Some(crate::domain_system::current_domain().as_u64());
+    let task = Task::new(future, Priority::Normal, domain_id);
     EXECUTOR_MANAGER.spawn(task);
 }
 
@@ -84,7 +85,8 @@ pub fn spawn_with_priority<F>(future: F, priority: Priority, domain_id: Option<u
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let task = Task::new(future, priority, domain_id);
+    let resolved_domain = domain_id.or_else(|| Some(crate::domain_system::current_domain().as_u64()));
+    let task = Task::new(future, priority, resolved_domain);
     EXECUTOR_MANAGER.spawn(task);
 }
 
@@ -120,4 +122,3 @@ pub(crate) fn current_core_id() -> u32 {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
-

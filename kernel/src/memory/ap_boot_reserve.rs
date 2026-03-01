@@ -400,7 +400,14 @@ pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
             continue;
         }
         if let Some((start, end)) = validate_usable_descriptor(desc, MIN_USABLE_PHYS_ADDR) {
-            let released = crate::mm::phys::frame_allocator::pmm_release_range(PhysAddr::new(start), end - start);
+            let size = end - start;
+            
+            // SECURITY: Unregister the range from DMA protection before reclaiming it as RAM.
+            // This is necessary because reclaimed RAM can be used for DMA targets, and 
+            // IOMMU validation will reject any mapping into a protected region.
+            crate::security::dma::unregister_protected_range(start, size);
+            
+            let released = crate::mm::phys::frame_allocator::pmm_release_range(PhysAddr::new(start), size);
             total_pages += released;
         }
     }

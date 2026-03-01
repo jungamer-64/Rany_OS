@@ -307,10 +307,13 @@ impl Default for DeviceDmaContext {
 
 impl Drop for DeviceDmaContext {
     fn drop(&mut self) {
-        // IOMMUドメインからデバイスをデタッチ
-        if let (Some(device_id), Some(_domain_id)) = (self.device_id, self.domain_id) {
+        // IOMMUドメインからデバイスをデタッチし、ドメインを破棄してメモリリークを防ぐ
+        if let Some(domain_id) = self.domain_id {
             let _ = crate::io::iommu::api::with_iommu(|iommu| {
-                let _ = iommu.detach_device(device_id);
+                if let Some(device_id) = self.device_id {
+                    let _ = iommu.detach_device(device_id);
+                }
+                let _ = iommu.destroy_domain(domain_id);
             });
         }
     }

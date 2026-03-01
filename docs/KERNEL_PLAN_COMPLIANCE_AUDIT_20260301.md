@@ -15,9 +15,9 @@
 
 - 総分類数: 12
 - 準拠: 5
-- 解消済み: 1
+- 解消済み: 2
 - 思想的に不要: 1
-- 不足: 5
+- 不足: 4
 
 ### 2.1 分類サマリ表
 
@@ -34,7 +34,7 @@
 | M-02 | 不足 | 4d 実NIC（XL710/E810）未実装 | Roadmap completeness: High | P2 |
 | M-03 | 不足 | SR-IOV/オフロードの実NIC統合未達 | Throughput scalability: High | P2 |
 | M-04 | 不足 | 永続CoW FS の snapshot/rollback 未達（メモリ内CoW中心） | Durability: High | P1 |
-| M-05 | 不足 | QoS/Quota/OOM の実執行連携不足（メタデータ/TODO残） | Stability/Fairness: Critical | P0 |
+| M-05 | 解消済み | QoS/Quota/OOM の実執行連携（段階制御 + alloc強制 + OOM統一） | Stability/Fairness: Resolved | 完了 |
 
 ## 3. 詳細分類（設計要件ID付き）
 
@@ -196,26 +196,29 @@
   - `filesystems/kernel_fs/memfs/shell_integration.rs:246`
   - `kernel/src/storage/wal/mod.rs:406`
 
-## M-05 不足: QoS/Quota/OOMの実執行連携不足
+## M-05 解消済み: QoS/Quota/OOM の実執行連携
 
 - 設計要件ID: `REQ-9.3-QOS-ACCOUNTING`
-- 現状: quota API と domain metadata は存在するが、`future enforcement hook` 記載・OOM kill実処理 TODO が残存。
-- 乖離内容: 設計は「超過時スケジューリング低下/サスペンド」「OOMで実終了」だが、実行経路統合が未完。
-- 推奨アクション: scheduler/allocator/OOM ハンドラへ domain quota enforcement を接続し、TODO を除去。
+- 現状: CPU超過時の段階制御（降格→一時Suspend）、`GlobalAlloc` 入口のメモリクォータ強制、`quota_manager().select_oom_victim()` を用いた OOM 実終了まで接続済み。
+- 乖離内容: なし（解消済み）。
+- 推奨アクション: `scripts/check-m05-qos-enforcement.sh` をCI必須として維持し、再発を防止。
 - 設計根拠:
   - `Rustカーネル設計案作成.md:628`
   - `Rustカーネル設計案作成.md:632`
   - `Rustカーネル設計案作成.md:644`
 - 実装根拠:
-  - `kernel/src/domain_system.rs:332`
-  - `kernel/src/domain_system.rs:680`
-  - `kernel/src/memory/oom_killer.rs:197`
+  - `kernel/src/domain_system.rs:735`
+  - `kernel/src/task/executor.rs:395`
+  - `kernel/src/task/per_core_executor.rs:422`
+  - `kernel/src/memory.rs:533`
+  - `kernel/src/memory/oom_killer.rs:98`
+  - `scripts/check-m05-qos-enforcement.sh:1`
 
 ## 4. 優先度再分類（P0/P1/P2）
 
 ### P0
 
-- `M-05` QoS/Quota/OOM 実執行未統合（安定性・公平性リスク）
+- なし（P0 解消済み）
 
 ### P1
 
@@ -233,21 +236,20 @@
 - `U-02` 最短ルート（完了）:
   - `interfaces/kernel_api/src/cell_runtime.rs` の `extern "C" sys_*` 依存を `KernelApiV1` 参照へ置換し、`kernel_runtime.rs` の `sys_*` シンボル登録・実装を削除。
 
-- `M-05` 最短ルート:
-  - `domain_system` の `set_domain_priority/set_domain_resource_limits` を scheduler/allocator/OOM 経路へ直結し、`oom_killer.rs` の TODO 箇所を実終了処理に置換。
+- `M-05` 最短ルート（完了）:
+  - `domain_system` の CPU違反状態機械を `task` 実行系へ接続し、`GlobalAlloc` クォータ強制 + `quota` 選定 OOM に統一。
 
 ## 6. 即時着手バックログ（最大10件）
 
-1. `P0` OOM kill 実処理（タスク停止 + ドメイン遷移 + リソース回収）を `domain_system` API で実装。
-2. `P0` quota 超過時の scheduler 連携（優先度降格/一時停止）を導入。
-3. `P1` `legacy-posix` feature の段階的無効化マップを作成。
-4. `P1` ループ境界静的証明の最小版（untrustedセルを警告/拒否）をビルドパイプラインに導入。
-5. `P1` 永続CoW FS向け snapshot metadata と rollback エントリ形式を定義。
-6. `P2` 実NICドライバ候補（XL710/E810）の crate 骨格を作成。
-7. `P2` SR-IOV VF 初期化と queue 割当の実NIC統合ポイントを定義。
-8. `P2` checksum/TSO HW offload の feature negotiation と fallback を共通化。
-9. `運用` `scripts/check-no-sys-symbol-boundary.sh` の fail-fast を維持し、`lint` 以外の workflow でも再利用可能にする。
-10. `運用` `driver_cell` runtime full-boot の所要時間監視（目安 35-40s）を追加し、退行を検知する。
+1. `P1` `legacy-posix` feature の段階的無効化マップを作成。
+2. `P1` ループ境界静的証明の最小版（untrustedセルを警告/拒否）をビルドパイプラインに導入。
+3. `P1` 永続CoW FS向け snapshot metadata と rollback エントリ形式を定義。
+4. `P2` 実NICドライバ候補（XL710/E810）の crate 骨格を作成。
+5. `P2` SR-IOV VF 初期化と queue 割当の実NIC統合ポイントを定義。
+6. `P2` checksum/TSO HW offload の feature negotiation と fallback を共通化。
+7. `運用` `scripts/check-no-sys-symbol-boundary.sh` の fail-fast を維持し、`lint` 以外の workflow でも再利用可能にする。
+8. `運用` `scripts/check-m05-qos-enforcement.sh` を維持し、`M-05` の再発を防止する。
+9. `運用` `driver_cell` runtime full-boot の所要時間監視（目安 35-40s）を追加し、退行を検知する。
 
 ## 7. 公開API/インターフェース影響
 
@@ -276,12 +278,18 @@
 - `bash scripts/check-no-sys-symbol-boundary.sh` -> `PASS`
 - `rg -n "XL710|E810|\\bi40e\\b|\\bice\\b|\\bixgbe\\b" drivers kernel Cargo.toml docs README.md` -> `0 hit`
 - `rg -n "loop_boundary|ExactSizeIterator" kernel/src/task docs/exorust_design/scheduler` -> 設計例のみヒット
-- `rg -n "set_domain_priority|set_domain_resource_limits|TODO: 実際のドメイン終了処理" ...` -> enforcement hook/TODO の残存を確認
+- `rg -n "future quota enforcement hook|future scheduler/QoS hook" kernel/src/domain_system.rs` -> `0 hit`
+- `rg -n "consume_cpu_time\\(" kernel/src/task/executor.rs kernel/src/task/per_core_executor.rs` -> `hit`（双方）
+- `rg -n "struct OomKiller" kernel/src/mm/reclaim/oom_killer.rs` -> `0 hit`
+- `bash scripts/check-m05-qos-enforcement.sh` -> `PASS`
 - `cargo build -p kernel_api --features cell_runtime` -> `pass`
 - `cargo build -p example_abi_driver --features standalone,export_driver_entry` -> `pass`
 - `cargo build -p driver_cell_probe --features standalone,variant_v1` -> `pass`
 - `cargo build -p driver_cell_probe --features standalone,variant_v2` -> `pass`
-- `cargo test -p rany_kernel --lib` -> `198 passed, 0 failed`
+- `cargo test -p rany_kernel --lib` -> `194 passed, 0 failed`
+- `M-05 unit tests`:
+  - default: `test_cpu_quota_demote_then_suspend`, `test_quota_suspend_auto_resume_after_window`
+  - feature-gated (`full_mm_tests` or `qemu-test-export`): `test_global_alloc_quota_charge_and_uncharge_with_header`, `test_oom_killer_uses_quota_victim_selection`
 - `scripts/build_driver_cell_probe_fixtures.sh --profile release` -> `pass`（`target/initramfs.tar`, `driver_cell_probe_v1/v2.cell` 生成）
 - `QEMU_TEST_PROFILE_ONLY=driver_cell cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture` -> `PASS`（`required full-boot profile 'driver_cell' passed`）
 - `scripts/run_driver_cell_runtime_qemu_test.sh` -> `PASS`（`pass=1 fail=0 blocked=0`）

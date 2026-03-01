@@ -86,6 +86,9 @@ impl AmdIommuDriver {
         }
         if let Err(err) = self.invalidate_domain_pages(0, iova, size) {
             if err != IommuError::NotSupported {
+                // SECURITY: Rollback if invalidation fails to prevent access with inconsistent state
+                let _ = domain.unmap(iova);
+                let _ = self.free_iova_fast(iova, size);
                 return Err(err);
             }
         }
@@ -211,8 +214,19 @@ impl AmdIommuDriver {
             let _ = self.free_iova_fast(iova, size);
             return Err(err);
         }
-        self.invalidate_iommu_pages(*device, domain_id, iova, size)?;
-        self.invalidate_iotlb_pages(*device, iova, size)?;
+
+        if let Err(err) = self.invalidate_iommu_pages(*device, domain_id, iova, size) {
+            let _ = domain.unmap(iova);
+            let _ = self.free_iova_fast(iova, size);
+            return Err(err);
+        }
+
+        if let Err(err) = self.invalidate_iotlb_pages(*device, iova, size) {
+            let _ = domain.unmap(iova);
+            let _ = self.free_iova_fast(iova, size);
+            return Err(err);
+        }
+
         Ok(iova)
     }
 
@@ -259,8 +273,19 @@ impl AmdIommuDriver {
             let _ = self.free_iova_fast(iova, size);
             return Err(err);
         }
-        self.invalidate_iommu_pages_async(*device, domain_id, iova, size).await?;
-        self.invalidate_iotlb_pages_async(*device, iova, size).await?;
+
+        if let Err(err) = self.invalidate_iommu_pages_async(*device, domain_id, iova, size).await {
+            let _ = domain.unmap(iova);
+            let _ = self.free_iova_fast(iova, size);
+            return Err(err);
+        }
+
+        if let Err(err) = self.invalidate_iotlb_pages_async(*device, iova, size).await {
+            let _ = domain.unmap(iova);
+            let _ = self.free_iova_fast(iova, size);
+            return Err(err);
+        }
+
         Ok(iova)
     }
 

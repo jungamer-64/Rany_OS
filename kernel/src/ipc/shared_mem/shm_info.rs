@@ -57,19 +57,19 @@ fn remove_named(name: &str) -> Result<(), ShmError> {
 }
 
 /// shmget() 相当
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 pub fn shmget(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
     create_or_get_by_key(key, size, flags)
 }
 
 /// shmat() 相当 (従来互換: トークンなし)
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 pub fn shmat(id: ShmId) -> Result<ShmHandle, ShmError> {
     attach_region(id, None)
 }
 
 /// shmat() with optional token: attach with a capability token id to register in-flight usage
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 pub fn shmat_with_token(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
     attach_region(id, token)
 }
@@ -77,13 +77,13 @@ pub fn shmat_with_token(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmE
 /// shmdt() 相当 (ShmHandle::detach を使用)
 
 /// shmctl() 相当 - 削除
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 pub fn shmctl_remove(id: ShmId) -> Result<(), ShmError> {
     SHM_MANAGER.remove(id)
 }
 
 /// shmctl() 相当 - 情報取得
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 pub fn shmctl_stat(id: ShmId) -> Option<ShmInfo> {
     SHM_MANAGER.info(id)
 }
@@ -91,13 +91,13 @@ pub fn shmctl_stat(id: ShmId) -> Option<ShmInfo> {
 // --- POSIX 名前付き共有メモリ風 API ---
 
 /// shm_open() 相当
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 pub fn shm_open(name: &str, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmError> {
     create_or_get_named(name, size, flags)
 }
 
 /// shm_unlink() 相当
-#[cfg(feature = "legacy-posix")]
+#[cfg(any(feature = "legacy-posix", feature = "qemu-test-export"))]
 pub fn shm_unlink(name: &str) -> Result<(), ShmError> {
     remove_named(name)
 }
