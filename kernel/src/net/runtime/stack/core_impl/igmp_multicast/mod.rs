@@ -494,7 +494,7 @@ impl NetworkStack {
             return;
         }
 
-        let result = self.icmp.process(data, src_ip, current_time);
+        let result = self.icmp.process(data, src_ip, dst_ip, current_time);
 
         match result {
             IcmpResult::SendEchoReply {
@@ -958,6 +958,17 @@ impl NetworkStack {
         // So for local lookup, we use 'original_src' as local IP.
         match protocol {
             6 => { // TCP
+                // TCP sequence number starts at byte 4 of the TCP header
+                if data.len() < transport_offset + 8 {
+                    return;
+                }
+                let seq_num = u32::from_be_bytes([
+                    data[transport_offset + 4],
+                    data[transport_offset + 5],
+                    data[transport_offset + 6],
+                    data[transport_offset + 7],
+                ]);
+
                 use crate::net::l4::tcp::Ipv4Addr;
                 let local_ip = Ipv4Addr::new(
                     original_src.as_bytes()[0],
@@ -974,8 +985,12 @@ impl NetworkStack {
                 let local_addr = TcpSocketAddr::new(local_ip, src_port);
                 let remote_addr = TcpSocketAddr::new(remote_ip, dst_port);
 
-                if !self.tcp.has_connection_or_listener(local_addr, remote_addr) {
-                    // No matching TCP connection, ignore ICMP error
+                if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
+                    // Sequence number validation failed (prevents PMTU poisoning)
+                    log::warn!(
+                        "[NET] ICMP: PMTU error for {} rejected due to invalid TCP seq {}",
+                        original_dst, seq_num
+                    );
                     return;
                 }
             }

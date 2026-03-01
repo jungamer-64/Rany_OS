@@ -68,6 +68,7 @@ pub use net::{
     handle_all_virtio_net_interrupts, handle_virtio_net_interrupt, handle_virtio_net_interrupt_for_index, init_virtio_net,
     init_virtio_net_at_index, init_virtio_net_for_device, init_virtio_net_for_device_at_index,
     init_virtio_net_with_transport, init_virtio_net_with_transport_at_index,
+    poll_all_virtio_net_queues,
     register_virtio_net_with_io_scheduler, with_virtio_net, with_virtio_net_at_index,
 };
 pub use virtqueue::{VringAvail, VringDesc, VringUsed};

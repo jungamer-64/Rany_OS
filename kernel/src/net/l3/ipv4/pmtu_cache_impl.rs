@@ -705,14 +705,27 @@ impl Ipv4Processor {
             || *addr == self.config.broadcast_address()
     }
 
-    /// Get next packet ID (RFC 6864 compliant unpredictability)
-    pub fn next_id(&mut self) -> u16 {
+    /// Get next packet ID (unpredictable per-destination to prevent Idle Scan)
+    pub fn next_id(&mut self, dst: Ipv4Address) -> u16 {
+        // Increment global counter
         self.next_id = self.next_id.wrapping_add(1);
-        // Scramble the ID using a secret to prevent Idle Scan attacks
-        let mut x = self.next_id ^ self.id_secret;
-        x = x.wrapping_mul(31337);
-        x ^= x >> 7;
-        x
+        
+        // Compute per-destination scrambling using FNV-1a of (dst, secret)
+        let mut hash: u32 = 0x811c9dc5;
+        const FNV_PRIME: u32 = 0x01000193;
+        
+        for &byte in &dst.octets() {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        for byte in self.id_secret.to_le_bytes() {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        
+        // Mix the global counter with the per-destination hash
+        let scramble = (hash ^ (hash >> 16)) as u16;
+        self.next_id.wrapping_add(scramble)
     }
 
     /// Build an IP packet for transmission
@@ -728,7 +741,7 @@ impl Ipv4Processor {
             .set_source(self.config.address)
             .set_destination(dst)
             .set_protocol(protocol)
-            .set_identification(self.next_id());
+            .set_identification(self.next_id(dst));
         Some(packet)
     }
 }

@@ -25,18 +25,7 @@ pub fn validate_critical_dma_region(start: u64, size: u64) -> Result<(), IommuEr
         return Err(IommuError::InvalidAddress);
     }
 
-    if let Some((k_start, k_end)) = super::protection::kernel_phys_range() {
-        if start < k_end && k_start < end {
-            log::error!(
-                "[IOMMU][SECURITY] CRITICAL: Attempt to map privileged region overlapping kernel image! range={:#x}-{:#x}, kernel={:#x}-{:#x}",
-                start,
-                end,
-                k_start,
-                k_end
-            );
-            return Err(IommuError::InvalidAddress);
-        }
-    }
+    // NOTE: kernel_phys_range() check removed — see validate_dma_region() comment.
 
     Ok(())
 }
@@ -57,24 +46,14 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
         return Err(IommuError::InvalidAddress);
     }
 
-    if let Some((kstart, kend)) = super::protection::kernel_phys_range() {
-        if ranges_overlap(start, end, kstart, kend) {
-            log::error!(
-                "[IOMMU][SECURITY] DMA mapping overlaps kernel image: {:#x}-{:#x} vs {:#x}-{:#x}",
-                start,
-                end,
-                kstart,
-                kend
-            );
-            return Err(IommuError::InvalidAddress);
-        }
-    } else {
-        // High-security fallback: if we cannot determine the kernel range, 
-        // we must reject any non-quarantined DMA mapping for safety.
-        // This prevents a potential bypass where global_translate and all fallbacks fail.
-        log::error!("[IOMMU][SECURITY] CRITICAL: Unable to determine kernel physical range. Rejecting DMA mapping {:#x}-{:#x} for safety.", start, end);
-        return Err(IommuError::InvalidAddress);
-    }
+    // NOTE: kernel_phys_range() check is intentionally removed.
+    // The bootloader uses UEFI alloc_zeroed_pages() for each ELF segment,
+    // so there is no single contiguous physical range for the kernel image.
+    // The linker-script AT() formula produces WRONG physical addresses.
+    // Protection is provided by:
+    //   1. The frame allocator (kernel pages are not re-allocated for DMA)
+    //   2. Individual page protection via register_protected_page() (page tables, stacks)
+    //   3. The range_overlaps_protected() check above (bitmap + region list)
 
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys == 0 {

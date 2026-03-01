@@ -58,9 +58,12 @@ impl IntelIommuDriver {
     }
 
     pub fn register_driver() {
-        if !is_iommu_enabled() {
-            init_driver(Arc::new(IommuBackend::Intel(IntelIommuDriver::new())));
-        }
+        // Always register the global driver pointer.
+        // Previously this checked !is_iommu_enabled(), but that function
+        // already returns true via the Intel registry fallback path,
+        // causing IOMMU_DRIVER to never be initialized. This broke
+        // handle_fault(), map_for_device(), and other driver-dependent paths.
+        init_driver(Arc::new(IommuBackend::Intel(IntelIommuDriver::new())));
     }
 
     fn registry(&self) -> Result<&'static self::registry::IommuRegistry, IommuError> {

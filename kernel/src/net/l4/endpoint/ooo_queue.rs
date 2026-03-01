@@ -15,15 +15,23 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::net::datapath::mempool::{PacketRef, alloc_packet};
 use crate::sync::PoisonLock;
 use super::types::{SocketAddr, conn_key_hash, seq_before};
 
 /// OOOセグメントの最大保持数（接続あたり）
-const MAX_OOO_SEGMENTS: usize = 32;
+const MAX_OOO_SEGMENTS: usize = 16;
 
 /// OOOキューの最大接続数
-const MAX_OOO_CONNECTIONS: usize = 256;
+const MAX_OOO_CONNECTIONS: usize = 128;
+
+/// 全接続での最大合計OOOセグメント数 (Mempool 4096 の 1/8)
+/// これにより、攻撃者がOOOセグメントでMempoolを使い果たすことを防ぐ。
+const GLOBAL_MAX_OOO_SEGMENTS: usize = 512;
+
+/// 現在のグローバルなOOOセグメント合計数
+static GLOBAL_OOO_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// 順序外セグメント
 #[derive(Clone)]
@@ -54,13 +62,24 @@ impl ConnectionOooQueue {
             if let Some((&last_key, _)) = self.segments.iter().next_back() {
                 // 新しいセグメントが既存の最後より前であれば挿入、そうでなければ破棄
                 if seq_before(seq, last_key) {
-                    self.segments.remove(&last_key);
+                    if self.segments.remove(&last_key).is_some() {
+                        GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                    }
                 } else {
                     return; // 新しいセグメントが最も遠いので破棄
                 }
             }
         }
-        self.segments.insert(seq, data);
+        
+        // グローバル制限チェック
+        if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
+            // すでに上限に達している場合は新しいセグメントを破棄
+            return;
+        }
+
+        if self.segments.insert(seq, data).is_none() {
+            GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// rcv_nxtより前のセグメントを削除
@@ -70,12 +89,13 @@ impl ConnectionOooQueue {
             .cloned()
             .collect();
         for key in outdated_keys {
-            self.segments.remove(&key);
+            if self.segments.remove(&key).is_some() {
+                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 
     /// rcv_nxtから連続するデータをドレイン
-    /// 提供されたクロージャ f() にセグメントを渡す
     fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> u32
     where
         F: FnMut(u32, &[u8]),
@@ -85,6 +105,7 @@ impl ConnectionOooQueue {
 
         loop {
             if let Some(packet) = self.segments.remove(&rcv_nxt) {
+                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                 let data = packet.data();
                 let data_len = data.len() as u32;
                 f(rcv_nxt, data);
@@ -138,8 +159,10 @@ impl ConnectionOooQueue {
         self.segments.is_empty()
     }
 
-    fn len(&self) -> usize {
-        self.segments.len()
+    fn clear(&mut self) {
+        let count = self.segments.len();
+        self.segments.clear();
+        GLOBAL_OOO_COUNT.fetch_sub(count, Ordering::Relaxed);
     }
 }
 
@@ -178,8 +201,6 @@ impl SackBlocks {
     }
 }
 
-// seq_before は types モジュールの統一実装を使用
-
 /// 接続キー
 type ConnKey = (SocketAddr, SocketAddr);
 
@@ -200,8 +221,9 @@ static OOO_SHARDS: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; O
     [EMPTY; OOO_SHARD_COUNT]
 };
 
-/// OOOキューを初期化（ネットワークスタック初期化時に呼ぶ）
+/// OOOキューを初期化
 pub fn init_ooo_queues() {
+    GLOBAL_OOO_COUNT.store(0, Ordering::SeqCst);
     for shard in &OOO_SHARDS {
         match shard.lock() {
             Ok(mut g) => {
@@ -213,8 +235,6 @@ pub fn init_ooo_queues() {
 }
 
 /// OOOセグメントを挿入
-///
-/// 順序外で到着したセグメントを保存する。
 pub fn insert_ooo_segment(
     local: SocketAddr,
     remote: SocketAddr,
@@ -223,9 +243,14 @@ pub fn insert_ooo_segment(
 ) {
     if data.is_empty() { return; }
 
+    // まずグローバル上限チェック
+    if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
+        return;
+    }
+
     let mut packet = match alloc_packet() {
         Some(p) => p,
-        None => return, // Mempool枯渇時はOOOセグメントをドロップ
+        None => return, // Mempool枯渇
     };
 
     let len = data.len().min(packet.data_mut().len());
@@ -236,9 +261,9 @@ pub fn insert_ooo_segment(
     let Ok(mut guard) = OOO_SHARDS[idx].lock() else { return };
     let queues = guard.get_or_insert_with(BTreeMap::new);
 
-    // 接続数制限チェック（シャードあたり MAX_OOO_CONNECTIONS / OOO_SHARD_COUNT）
+    // 接続数制限チェック
     let per_shard_limit = MAX_OOO_CONNECTIONS / OOO_SHARD_COUNT;
-    if !queues.contains_key(&(local, remote)) && queues.len() >= per_shard_limit.max(16) {
+    if !queues.contains_key(&(local, remote)) && queues.len() >= per_shard_limit.max(8) {
         return;
     }
 
@@ -250,8 +275,6 @@ pub fn insert_ooo_segment(
 }
 
 /// OOOキューから連続データをクロージャにプッシュしてドレイン
-///
-/// rcv_nxtが進んだ後に呼び出して、連続するセグメントを回収する。
 pub fn drain_ooo_contiguous<F>(
     local: SocketAddr,
     remote: SocketAddr,
@@ -301,11 +324,13 @@ pub fn get_sack_blocks(
     }
 }
 
-/// 接続のOOOキューを削除（接続クローズ時）
+/// 接続のOOOキューを削除
 pub fn remove_ooo_queue(local: SocketAddr, remote: SocketAddr) {
     let idx = ooo_shard_index(&local, &remote);
     let Ok(mut guard) = OOO_SHARDS[idx].lock() else { return };
     if let Some(queues) = guard.as_mut() {
-        queues.remove(&(local, remote));
+        if let Some(mut conn_queue) = queues.remove(&(local, remote)) {
+            conn_queue.clear();
+        }
     }
 }

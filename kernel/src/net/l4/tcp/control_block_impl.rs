@@ -94,6 +94,99 @@ impl TcpControlBlock {
         self.seq.rcv_wnd
     }
 
+    /// Enqueue an out-of-order segment
+    pub fn enqueue_ooo_payload(&mut self, seq: u32, packet: PacketRef) -> bool {
+        // Security: Discard segments that are already acknowledged
+        if (seq.wrapping_sub(self.seq.rcv_nxt) as i32) < 0 {
+            let end_seq = seq.wrapping_add(packet.len() as u32);
+            if (end_seq.wrapping_sub(self.seq.rcv_nxt) as i32) <= 0 {
+                return false; // Entirely old
+            }
+            // Partially old: we could trim it, but for simplicity we'll just 
+            // let drain_ooo_segments handle it if we decide to insert.
+            // Or just discard if it's not exactly aligned (easier).
+        }
+
+        // Limit per-connection OOO segments to prevent resource exhaustion
+        const MAX_PER_CONN_OOO: usize = 16;
+        
+        if self.rx.ooo_queue.len() >= MAX_PER_CONN_OOO {
+            // キュー満杯: 最も遠いセグメントを破棄して入れ替える
+            let mut furthest_seq: Option<u32> = None;
+            for &s in self.rx.ooo_queue.keys() {
+                if furthest_seq.is_none() || (s.wrapping_sub(seq) as i32) > (furthest_seq.unwrap().wrapping_sub(seq) as i32) {
+                    furthest_seq = Some(s);
+                }
+            }
+
+            if let Some(f_seq) = furthest_seq {
+                if (f_seq.wrapping_sub(seq) as i32) > 0 {
+                    if self.rx.ooo_queue.remove(&f_seq).is_some() {
+                        GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                    }
+                } else {
+                    return false; // New segment is even further away
+                }
+            } else {
+                return false;
+            }
+        }
+
+        // If we already have this sequence, ignore the new one
+        if self.rx.ooo_queue.contains_key(&seq) {
+            return false;
+        }
+
+        self.rx.ooo_queue.insert(seq, packet);
+        true
+    }
+
+    /// Try to drain contiguous OOO segments into the receive buffer
+    pub fn drain_ooo_segments(&mut self) -> u32 {
+        // First, prune segments that are now entirely before rcv_nxt
+        self.prune_ooo_segments();
+
+        let mut drained_count = 0;
+        let mut current_rcv_nxt = self.seq.rcv_nxt;
+
+        while let Some(packet) = self.rx.ooo_queue.remove(&current_rcv_nxt) {
+            GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            let len = packet.len();
+
+            if self.rx.recv_buffer_bytes + len <= self.rx.recv_buffer_limit_bytes {
+                self.rx.recv_buffer_bytes += len;
+                self.rx.recv_buffer.push_back(packet);
+                current_rcv_nxt = current_rcv_nxt.wrapping_add(len as u32);
+                drained_count += 1;
+            } else {
+                self.rx.ooo_queue.insert(current_rcv_nxt, packet);
+                GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+                break;
+            }
+        }
+
+        if drained_count > 0 {
+            self.seq.rcv_nxt = current_rcv_nxt;
+            self.wake_read_waiter();
+        }
+
+        current_rcv_nxt
+    }
+
+    /// Remove outdated OOO segments (before rcv_nxt)
+    pub fn prune_ooo_segments(&mut self) {
+        let rcv_nxt = self.seq.rcv_nxt;
+        let outdated: Vec<u32> = self.rx.ooo_queue.keys()
+            .filter(|&&seq| (seq.wrapping_sub(rcv_nxt) as i32) < 0)
+            .cloned()
+            .collect();
+
+        for seq in outdated {
+            if self.rx.ooo_queue.remove(&seq).is_some() {
+                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
     #[inline]
     pub fn set_snd_nxt(&mut self, next: u32) {
         self.seq.snd_nxt = next;
@@ -991,6 +1084,32 @@ impl TcpControlBlock {
     }
 
     /// Set peer's window scale factor (from SYN/SYN-ACK option)
+    #[inline]
+    pub fn set_mss(&mut self, mss: u16) {
+        self.congestion.mss = mss;
+        // Also update initial cwnd if we're still in slow start
+        if self.congestion.cwnd == 10 * 1460 {
+            self.congestion.cwnd = 10 * mss as u32;
+        }
+    }
+
+    #[inline]
+    pub fn set_sack_enabled(&mut self, enabled: bool) {
+        self.options.sack_enabled = enabled;
+    }
+
+    #[inline]
+    pub fn set_timestamps_enabled(&mut self, enabled: bool) {
+        self.options.ts_enabled = enabled;
+    }
+
+    #[inline]
+    pub fn update_timestamps(&mut self, ts_val: u32) {
+        self.options.ts_recent = ts_val;
+        self.options.ts_recent_age = crate::task::timer::current_tick();
+    }
+
+    #[inline]
     pub fn set_peer_wscale(&mut self, scale: u8) {
         // RFC 7323: scale factor must be <= 14
         self.options.rcv_wscale = scale.min(14);

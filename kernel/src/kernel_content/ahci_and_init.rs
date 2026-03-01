@@ -246,9 +246,12 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
             break;
         }
 
-        for _ in 0..PUMP_ROUNDS_PER_ATTEMPT {
-            crate::io::virtio::handle_all_virtio_net_interrupts();
-            crate::net::runtime::bridge::check_batch_timeout(100_000, 1);
+        for round in 0..PUMP_ROUNDS_PER_ATTEMPT {
+            if round == 0 {
+                crate::io::log::early_print("[PUMP] start\n");
+            }
+            crate::io::virtio::poll_all_virtio_net_queues();
+            crate::net::runtime::bridge::flush_pending_batch();
         }
     }
 
@@ -509,7 +512,9 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             // info!(target: "init", "Boot splash displayed");
 
             // Initialize Text Console driver
+            crate::io::log::early_print("[DEBUG] Before init_console()\n");
             graphics::init_console();
+            crate::io::log::early_print("[DEBUG] After init_console()\n");
             graphics_console_ready = true;
             info!(target: "init", "Text Console driver initialized");
 

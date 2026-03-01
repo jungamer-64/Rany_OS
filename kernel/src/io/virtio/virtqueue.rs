@@ -165,6 +165,16 @@ impl VirtQueue {
         self.index
     }
 
+    /// Returns the current used_idx from the device (volatile read)
+    pub fn get_used_idx_public(&self) -> u16 {
+        self.get_used_idx()
+    }
+
+    /// Returns the last used_idx tracked by the driver
+    pub fn get_last_used_idx(&self) -> u16 {
+        self.last_used_idx.load(core::sync::atomic::Ordering::Acquire)
+    }
+
     /// Allocate a descriptor from the free list
     pub fn alloc_desc(&self) -> Option<u16> {
         self.free_list.lock().ok().and_then(|mut list| list.pop())

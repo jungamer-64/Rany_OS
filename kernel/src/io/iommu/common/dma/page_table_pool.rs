@@ -152,17 +152,15 @@ fn page_table_registry() -> &'static IrqMutex<BTreeMap<u64, PageTableRegistryEnt
 
 /// Register a page table's metadata in the global registry
 pub fn register_page_table(phys: u64, virt: usize, node: usize) {
-    crate::io::log::early_print("[IOMMU] register_page_table: enter phys=");
-    crate::io::log::early_print_hex(phys);
-    crate::io::log::early_print("\n");
     let mut registry = page_table_registry().lock();
-    crate::io::log::early_print("[IOMMU] register_page_table: acquired registry lock\n");
     registry.insert(phys, PageTableRegistryEntry {
         ref_count: 0,
         virt,
         node: node as u8,
     });
-    crate::io::log::early_print("[IOMMU] register_page_table: inserted entry\n");
+    // Drop the registry lock BEFORE calling register_protected_page
+    // to avoid nested IrqMutex acquisition which can deadlock.
+    drop(registry);
     
     // Security: Mark the page table as protected from DMA
     crate::io::iommu::runtime::security::register_protected_page(phys);

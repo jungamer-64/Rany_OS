@@ -70,6 +70,7 @@ impl UdpSocketTable {
                 let inner = Arc::new(PoisonLock::new(UdpSocketInner {
                     local_port: port,
                     rx_packet_queue: VecDeque::with_capacity(64),
+                    rx_queue_bytes: 0,
                     wakers: Vec::new(),
                     closed: false,
                     token,
@@ -140,7 +141,9 @@ impl UdpSocketTable {
                         return false;
                     }
 
-                    if inner.rx_packet_queue.len() < 64 {
+                    let packet_len = packet.len();
+                    if inner.rx_packet_queue.len() < 64 && inner.rx_queue_bytes + packet_len <= MAX_UDP_RX_QUEUE_BYTES {
+                        inner.rx_queue_bytes += packet_len;
                         inner.rx_packet_queue.push_back((src, packet));
                         for waker in inner.wakers.drain(..) {
                             waker.wake();

@@ -260,14 +260,18 @@ pub(crate) struct UdpSocketInner {
     local_port: u16,
     /// Receive queue (zero-copy PacketRef)
     rx_packet_queue: VecDeque<(UdpAddr, PacketRef)>,
+    /// Total bytes in receive queue
+    rx_queue_bytes: usize,
     /// Wakers for async receive
     wakers: Vec<Waker>,
     /// Is socket closed
     closed: bool,
     /// Optional associated grant token id used to authorize this binding
     token: Option<u64>,
-}  
+}
 
+/// Maximum UDP receive queue size in bytes (e.g., 256 KB per socket)
+const MAX_UDP_RX_QUEUE_BYTES: usize = 256 * 1024;
 /// UDP socket (async)
 pub struct UdpSocket {
     inner: Arc<PoisonLock<UdpSocketInner>>,
@@ -291,6 +295,7 @@ impl UdpSocket {
             inner: Arc::new(PoisonLock::new(UdpSocketInner {
                 local_port,
                 rx_packet_queue: VecDeque::with_capacity(64),
+                rx_queue_bytes: 0,
                 wakers: Vec::new(),
                 closed: false,
                 token,
@@ -416,6 +421,7 @@ impl Future for UdpRecvFuture {
                 }
 
                 if let Some((addr, packet)) = inner.rx_packet_queue.pop_front() {
+                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(packet.len());
                     Poll::Ready(Some((addr, packet)))
                 } else {
                     inner.wakers.push(cx.waker().clone());

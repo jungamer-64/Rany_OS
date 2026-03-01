@@ -602,8 +602,11 @@ impl NetworkStack {
             }
         };
 
+        crate::io::log::early_print("[NET-PING-DIAG] ARP resolved, building ICMP packet\n");
+
         // Try zero-copy path first
         if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
+            crate::io::log::early_print(&alloc::format!("[NET-PING-DIAG] alloc_packet OK len={}\n", packet.data().len()));
             if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
                 let src_mac = self.mac_address();
                 frame
@@ -637,13 +640,24 @@ impl NetworkStack {
                             log::info!("[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}", 
                                 target.as_bytes()[0], target.as_bytes()[1], target.as_bytes()[2], target.as_bytes()[3], sequence);
                             return Ok(send_time);
+                        } else {
+                            crate::io::log::early_print("[NET-PING-DIAG] enqueue_via_virtio FAILED\n");
                         }
+                    } else {
+                        crate::io::log::early_print("[NET-PING-DIAG] IcmpEchoBuilder FAILED\n");
                     }
+                } else {
+                    crate::io::log::early_print("[NET-PING-DIAG] Ipv4PacketMut FAILED\n");
                 }
+            } else {
+                crate::io::log::early_print("[NET-PING-DIAG] EthernetFrameMut FAILED\n");
             }
+        } else {
+            crate::io::log::early_print("[NET-PING-DIAG] alloc_packet FAILED\n");
         }
 
         // Fallback to copy-based path
+        crate::io::log::early_print("[NET-PING-DIAG] falling back to copy path\n");
         self.send_icmp_echo_fallback(target, dst_mac, local_ip, identifier, sequence)
     }
 

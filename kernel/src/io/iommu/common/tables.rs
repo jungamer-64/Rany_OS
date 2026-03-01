@@ -69,9 +69,12 @@ impl SlPte {
     }
 
     /// Create a present entry with address and permissions
+    /// Intel VT-d spec: W bit is reserved (must be 0) when R=0,
+    /// so if write is requested, read is automatically enabled.
     pub fn mapping(phys_addr: u64, read: bool, write: bool) -> Self {
         let mut flags = 0;
-        if read {
+        // VT-d: R must be set for W to be valid
+        if read || write {
             flags |= Self::READ;
         }
         if write {
@@ -86,7 +89,8 @@ impl SlPte {
     pub fn super_page_2mb(phys_addr: u64, read: bool, write: bool) -> Self {
         const MASK_2MB: u64 = (2 * 1024 * 1024) - 1;
         let mut flags = Self::SUPER_PAGE;
-        if read {
+        // VT-d: R must be set for W to be valid
+        if read || write {
             flags |= Self::READ;
         }
         if write {
@@ -101,7 +105,8 @@ impl SlPte {
     pub fn super_page_1gb(phys_addr: u64, read: bool, write: bool) -> Self {
         const MASK_1GB: u64 = (1024 * 1024 * 1024) - 1;
         let mut flags = Self::SUPER_PAGE;
-        if read {
+        // VT-d: R must be set for W to be valid
+        if read || write {
             flags |= Self::READ;
         }
         if write {

@@ -710,6 +710,8 @@ pub struct TcpProcessor {
     listeners: BTreeMap<SocketAddr, Arc<PoisonLock<TcpControlBlock>>>,
     /// Count of semi-open connections (SYN-RECEIVED state) for DoS protection
     semi_open_count: usize,
+    /// Secret key for SYN Cookies
+    syncookie_secret: [u8; 32],
 }
 
 impl TcpProcessor {
@@ -720,6 +722,35 @@ impl TcpProcessor {
         }
         if self.listeners.contains_key(&local) {
             return true;
+        }
+        false
+    }
+
+    /// ICMPエラーメッセージに含まれるシーケンス番号が妥当か検証（RFC 5927）
+    /// 
+    /// オフパス攻撃者による PMTU 毒入れ攻撃を防ぐため、引用されたパケットの
+    /// シーケンス番号が現在の送信ウィンドウ内にあることを確認します。
+    pub fn validate_icmp_sequence(&self, local: SocketAddr, remote: SocketAddr, seq: u32) -> bool {
+        if let Some(conn) = self.connections.get(&(local, remote)) {
+            if let Ok(tcb) = conn.lock() {
+                // 接続が確立済み（または終了処理中）であることを確認
+                match tcb.state {
+                    TcpState::SynSent | TcpState::Closed | TcpState::Listen => return false,
+                    _ => {}
+                }
+
+                // 送信済みで未確認の範囲 [SND.UNA, SND.NXT] に seq が含まれるかチェック
+                let una = tcb.seq.snd_una;
+                let nxt = tcb.seq.snd_nxt;
+                
+                // una <= seq <= nxt (wrapping handling)
+                // RFC 5927 Section 4.1: "The TCP sequence number should be checked 
+                // to see if it's within the current window"
+                let diff_una = seq.wrapping_sub(una);
+                let diff_nxt = nxt.wrapping_sub(una);
+                
+                return diff_una <= diff_nxt;
+            }
         }
         false
     }

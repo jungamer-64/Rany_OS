@@ -2,6 +2,7 @@ use super::*;
 
 
 mod state_handlers;
+
 impl TcpProcessor {
     /// Default maximum number of concurrent TCP connections
     pub const DEFAULT_MAX_CONNECTIONS: usize = 512;
@@ -10,11 +11,80 @@ impl TcpProcessor {
 
     /// Create a new TCP processor
     pub fn new() -> Self {
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         TcpProcessor {
             connections: BTreeMap::new(),
             listeners: BTreeMap::new(),
             semi_open_count: 0,
+            syncookie_secret: random_bytes,
         }
+    }
+
+    /// Generate a SYN Cookie (RFC 4987)
+    fn generate_syncookie(&self, local: SocketAddr, remote: SocketAddr, _client_isn: u32, mss_idx: u8) -> u32 {
+        use crate::net::security::tls::crypto::hmac::hmac_sha256;
+        
+        let mut data = [0u8; 40];
+        let local_v6 = local.as_ipv6();
+        let remote_v6 = remote.as_ipv6();
+        data[0..16].copy_from_slice(local_v6.as_bytes());
+        data[16..18].copy_from_slice(&local.port().to_be_bytes());
+        data[18..34].copy_from_slice(remote_v6.as_bytes());
+        data[34..36].copy_from_slice(&remote.port().to_be_bytes());
+        
+        let timestamp = (crate::task::timer::current_tick() / 64000) as u32;
+        data[36..40].copy_from_slice(&timestamp.to_be_bytes());
+
+        let hash = hmac_sha256(&self.syncookie_secret, &data);
+        
+        let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], 0]);
+        let time_bits = (timestamp & 0x1F) << 3;
+        let mss_bits = mss_idx & 0x07;
+        
+        hash_val | (time_bits | mss_bits as u32) as u32
+    }
+
+    /// Verify a SYN Cookie and return MSS if valid
+    fn verify_syncookie(&self, local: SocketAddr, remote: SocketAddr, ack_num: u32) -> Option<u16> {
+        use crate::net::security::tls::crypto::hmac::hmac_sha256;
+        
+        let cookie = ack_num.wrapping_sub(1);
+        let mss_idx = (cookie & 0x07) as u8;
+        let time_bits_received = (cookie >> 3) & 0x1F;
+        
+        let current_tick = crate::task::timer::current_tick();
+        let current_timestamp = (current_tick / 64000) as u32;
+        
+        for i in 0..2 {
+            let timestamp = current_timestamp.wrapping_sub(i);
+            if (timestamp & 0x1F) != time_bits_received {
+                continue;
+            }
+            
+            let mut data = [0u8; 40];
+            let local_v6 = local.as_ipv6();
+            let remote_v6 = remote.as_ipv6();
+            data[0..16].copy_from_slice(local_v6.as_bytes());
+            data[16..18].copy_from_slice(&local.port().to_be_bytes());
+            data[18..34].copy_from_slice(remote_v6.as_bytes());
+            data[34..36].copy_from_slice(&remote.port().to_be_bytes());
+            data[36..40].copy_from_slice(&timestamp.to_be_bytes());
+
+            let hash = hmac_sha256(&self.syncookie_secret, &data);
+            let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], 0]);
+            
+            if (cookie & 0xFFFFFF00) == hash_val {
+                let mss = match mss_idx {
+                    0 => 536,
+                    1 => 1300,
+                    2 => 1440,
+                    3 => 1460,
+                    _ => 1460,
+                };
+                return Some(mss);
+            }
+        }
+        None
     }
 
     /// Start listening on a local address
@@ -191,8 +261,32 @@ impl TcpProcessor {
             }
         }
 
+        // Check if this is an ACK completing a SYN Cookie handshake
+        if flags == TcpHeader::FLAG_ACK {
+            if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num) {
+                log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote_addr);
+
+                let mut tcb = TcpControlBlock::new(local_addr);
+                tcb.set_remote_addr(remote_addr);
+                tcb.set_rcv_nxt(seq_num); // We expect this seq_num (client ISN + 1)
+                tcb.set_snd_una(ack_num.wrapping_sub(1));
+                tcb.set_snd_nxt(ack_num);
+                tcb.set_rcv_wnd(65535);
+                tcb.set_mss(mss);
+                tcb.enter_established();
+                let tcb_arc = Arc::new(PoisonLock::new(tcb));
+                self.connections.insert((local_addr, remote_addr), tcb_arc.clone());
+                
+                // Process this ACK segment in the new TCB
+                if let Ok(mut tcb_guard) = tcb_arc.lock() {
+                    return self.process_segment(&tcb_arc, &mut *tcb_guard, seq_num, ack_num, flags, window, header_len, payload, None, current_time);
+                }
+            }
+        }
+
         // Check if this is for a listening socket
-        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window) {
+        let options = if header_len > 20 { Some(&data[20..header_len]) } else { None };
+        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window, options) {
             return result;
         }
 
@@ -252,8 +346,32 @@ impl TcpProcessor {
             }
         }
 
+        // Check if this is an ACK completing a SYN Cookie handshake
+        if flags == TcpHeader::FLAG_ACK {
+            if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num) {
+                log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote_addr);
+
+                let mut tcb = TcpControlBlock::new(local_addr);
+                tcb.set_remote_addr(remote_addr);
+                tcb.set_rcv_nxt(seq_num); // We expect this seq_num (client ISN + 1)
+                tcb.set_snd_una(ack_num.wrapping_sub(1));
+                tcb.set_snd_nxt(ack_num);
+                tcb.set_rcv_wnd(65535);
+                tcb.set_mss(mss);
+                tcb.enter_established();
+                let tcb_arc = Arc::new(PoisonLock::new(tcb));
+                self.connections.insert((local_addr, remote_addr), tcb_arc.clone());
+                
+                // Process this ACK segment in the new TCB
+                if let Ok(mut tcb_guard) = tcb_arc.lock() {
+                    return self.process_segment(&tcb_arc, &mut *tcb_guard, seq_num, ack_num, flags, window, header_len, payload, None, current_time);
+                }
+            }
+        }
+
         // Check if this is for a listening socket
-        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window) {
+        let options = if header_len > 20 { Some(&data[20..header_len]) } else { None };
+        if let Some(result) = self.handle_incoming_syn(local_addr, remote_addr, seq_num, flags, window, options) {
             return result;
         }
 
@@ -268,6 +386,7 @@ impl TcpProcessor {
         seq_num: u32,
         flags: u16,
         _window: u16,
+        options_data: Option<&[u8]>,
     ) -> Option<TcpProcessResult> {
         let listener_addr = if self.listeners.contains_key(&local_addr) {
             local_addr
@@ -310,16 +429,62 @@ impl TcpProcessor {
             return None;
         }
 
-        // Check semi-open connection limit
+        // Check semi-open connection limit. If reached, use SYN Cookies.
         if self.semi_open_count >= Self::MAX_SEMI_OPEN_CONNECTIONS {
-            log::warn!("[TCP] SYN flood suspected - dropping SYN from {}", remote_addr);
-            return None;
+            let mut mss_idx = 3; // default 1460
+            if let Some(data) = options_data {
+                use crate::net::l4::endpoint::window_scale::TcpOptionParser;
+                let mut parser = TcpOptionParser::new(data);
+                if let Some(mss) = parser.find_mss() {
+                    mss_idx = match mss {
+                        0..=536 => 0,
+                        537..=1300 => 1,
+                        1301..=1440 => 2,
+                        _ => 3,
+                    };
+                }
+            }
+
+            // Generate SYN Cookie
+            let cookie = self.generate_syncookie(local_addr, remote_addr, seq_num, mss_idx);
+            
+            return Some(TcpProcessResult::SendPacket {
+                local: local_addr,
+                remote: remote_addr,
+                seq: cookie,
+                ack: seq_num.wrapping_add(1),
+                flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+                window: 65535,
+                payload: Vec::new(),
+            });
         }
 
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.set_remote_addr(remote_addr);
         tcb.set_rcv_nxt(seq_num.wrapping_add(1));
         tcb.set_rcv_wnd(65535);
+
+        // Parse options for the initial TCB (SynReceived state)
+        if let Some(data) = options_data {
+            use crate::net::l4::endpoint::window_scale::TcpOptionParser;
+            let mut parser = TcpOptionParser::new(data);
+            
+            if let Some(peer_mss) = parser.find_mss() {
+                // Security: Enforce minimum MSS of 536 to prevent Tinygram attacks
+                tcb.set_mss(peer_mss.max(536));
+            }
+            if let Some(peer_wscale) = parser.find_window_scale() {
+                tcb.set_peer_wscale(peer_wscale);
+            }
+            if parser.find_sack_permitted() {
+                tcb.set_sack_enabled(true);
+            }
+            if let Some((ts_val, _ts_ecr)) = parser.find_timestamps() {
+                tcb.set_timestamps_enabled(true);
+                tcb.update_timestamps(ts_val);
+            }
+        }
+
         tcb.enter_syn_received();
 
         let isn = generate_initial_seq();
@@ -576,6 +741,44 @@ impl TcpProcessor {
             return TcpProcessResult::None;
         }
 
+        // Parse options (MSS / TS / SACK)
+        let mut ts_val: Option<u32> = None;
+        let mut ts_ecr: Option<u32> = None;
+        let mut sack_blocks: Option<alloc::vec::Vec<(u32, u32)>> = None;
+
+        if header_len > 20 {
+            if let Some(pkt) = &packet_opt {
+                if pkt.len() >= header_len {
+                    use crate::net::l4::endpoint::window_scale::TcpOptionParser;
+                    let mut parser = TcpOptionParser::new(&pkt.data()[20..header_len]);
+                    if let Some((v, e)) = parser.find_timestamps() {
+                        ts_val = Some(v);
+                        ts_ecr = Some(e);
+                    }
+                    sack_blocks = parser.find_sack_blocks();
+                }
+            }
+        }
+
+        // Security (RFC 7323): PAWS (Protection Against Wrapped Sequences)
+        if let Some(v) = ts_val {
+            if tcb.check_paws(v, current_time) {
+                // Old duplicate segment - send ACK and drop (RFC 7323 Section 5.2)
+                if !rst {
+                    log::warn!("[TCP] PAWS drop: seq={}, ts_val={}, ts_recent={}", seq_num, v, tcb.options.ts_recent);
+                    return Self::make_ack_result(tcb);
+                }
+                return TcpProcessResult::None;
+            }
+            // Update TS.Recent and prepare TS.EchoReply
+            tcb.process_ts_option(v, ts_ecr.unwrap_or(0), current_time, seq_num);
+        }
+
+        // Process SACK blocks if present
+        if let Some(blocks) = sack_blocks {
+            tcb.process_sack_option(&blocks);
+        }
+
         // Security (RFC 5961): RST sequence number validation
         if rst {
             if seq_num == tcb.rcv_nxt() {
@@ -616,17 +819,45 @@ impl TcpProcessor {
                 // Closed: ignore; Listen: handled in main process(); CloseWait: handled by close()
                 TcpProcessResult::None
             }
-            TcpState::SynSent => Self::handle_syn_sent_segment(tcb, syn, ack, seq_num, ack_num),
-            TcpState::SynReceived => self.handle_syn_received_segment(
-                tcb,
-                tcb_arc,
-                ack,
-                ack_num,
-                seq_num,
-                header_len,
-                payload,
-                packet_opt,
-            ),
+            TcpState::SynSent => {
+                // SYN-ACKのTCPオプションを解析（TSopt / SACK-Permitted / MSS / WSCALE検出）
+                let options = if header_len > 20 && packet_opt.is_some() {
+                    let pkt = packet_opt.as_ref().unwrap();
+                    if pkt.len() >= header_len {
+                        Some(&pkt.data()[20..header_len])
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                Self::handle_syn_sent_segment(tcb, syn, ack, seq_num, ack_num, options)
+            }
+            TcpState::SynReceived => {
+                // ACK (completing 3-way handshake) or data segment
+                // オプションバイトを所有型にコピーし、packet_optのムーブ後もアクセス可能にする
+                let options_owned: Option<alloc::vec::Vec<u8>> = if header_len > 20 && packet_opt.is_some() {
+                    let pkt = packet_opt.as_ref().unwrap();
+                    if pkt.len() >= header_len {
+                        Some(pkt.data()[20..header_len].to_vec())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.handle_syn_received_segment(
+                    tcb,
+                    tcb_arc,
+                    ack,
+                    ack_num,
+                    seq_num,
+                    header_len,
+                    payload,
+                    packet_opt,
+                    options_owned.as_deref(),
+                )
+            }
             TcpState::Established => {
                 Self::handle_established_segment(tcb, ack, ack_num, fin, seq_num, payload, header_len, packet_opt)
             }
@@ -645,10 +876,40 @@ impl TcpProcessor {
         ack: bool,
         seq_num: u32,
         ack_num: u32,
+        options_data: Option<&[u8]>,
     ) -> TcpProcessResult {
         // Waiting for SYN-ACK
         // Accept ACK that acknowledges the initial SYN (snd_una + 1)
         if syn && ack && ack_num == tcb.snd_una().wrapping_add(1) {
+            // 解析 options (MSS / WSCALE / SACK / TS)
+            if let Some(data) = options_data {
+                use crate::net::l4::endpoint::window_scale::TcpOptionParser;
+                let mut parser = TcpOptionParser::new(data);
+                
+                // MSS negotiation
+                if let Some(peer_mss) = parser.find_mss() {
+                    // Security: Enforce minimum MSS of 536 to prevent Tinygram attacks (RFC 879)
+                    let mss = peer_mss.max(536);
+                    tcb.set_mss(mss);
+                }
+                
+                // Window Scale negotiation
+                if let Some(peer_wscale) = parser.find_window_scale() {
+                    tcb.set_peer_wscale(peer_wscale);
+                }
+                
+                // SACK negotiation
+                if parser.find_sack_permitted() {
+                    tcb.set_sack_enabled(true);
+                }
+                
+                // Timestamps negotiation
+                if let Some((ts_val, _ts_ecr)) = parser.find_timestamps() {
+                    tcb.set_timestamps_enabled(true);
+                    tcb.update_timestamps(ts_val);
+                }
+            }
+
             tcb.set_snd_una(ack_num);
             tcb.set_snd_nxt(ack_num);
             tcb.set_rcv_nxt(seq_num.wrapping_add(1));
@@ -690,9 +951,31 @@ impl TcpProcessor {
         header_len: usize,
         payload: &[u8],
         packet_opt: Option<PacketRef>,
+        options_data: Option<&[u8]>,
     ) -> TcpProcessResult {
         // ACK acknowledging our SYN (snd_una + 1)
         if ack && ack_num == tcb.snd_una().wrapping_add(1) {
+            // Parse options if this segment has them (some stacks send data + options in the final ACK)
+            if let Some(data) = options_data {
+                use crate::net::l4::endpoint::window_scale::TcpOptionParser;
+                let mut parser = TcpOptionParser::new(data);
+                
+                if let Some(peer_mss) = parser.find_mss() {
+                    let mss = peer_mss.max(536);
+                    tcb.set_mss(mss);
+                }
+                if let Some(peer_wscale) = parser.find_window_scale() {
+                    tcb.set_peer_wscale(peer_wscale);
+                }
+                if parser.find_sack_permitted() {
+                    tcb.set_sack_enabled(true);
+                }
+                if let Some((ts_val, _ts_ecr)) = parser.find_timestamps() {
+                    tcb.set_timestamps_enabled(true);
+                    tcb.update_timestamps(ts_val);
+                }
+            }
+
             tcb.set_snd_una(ack_num);
             tcb.set_snd_nxt(ack_num);
             tcb.enter_established();
@@ -817,14 +1100,42 @@ impl TcpProcessor {
         packet_opt: Option<PacketRef>,
         payload_len: usize,
     ) -> TcpProcessResult {
-        if seq_num == tcb.rcv_nxt() {
+        let rcv_nxt = tcb.rcv_nxt();
+        let rcv_wnd = tcb.rcv_wnd() as u32;
+        
+        // Security: RFC 793 / 5961 segment acceptability check
+        // The segment must at least partially overlap with the receive window.
+        let is_acceptable = if payload_len == 0 {
+            if rcv_wnd == 0 {
+                seq_num == rcv_nxt
+            } else {
+                let diff = seq_num.wrapping_sub(rcv_nxt) as i32;
+                diff >= 0 && diff < rcv_wnd as i32
+            }
+        } else {
+            if rcv_wnd == 0 {
+                false
+            } else {
+                let start_diff = seq_num.wrapping_sub(rcv_nxt) as i32;
+                let end_seq = seq_num.wrapping_add(payload_len as u32).wrapping_sub(1);
+                let end_diff = end_seq.wrapping_sub(rcv_nxt) as i32;
+                
+                (start_diff >= 0 && start_diff < rcv_wnd as i32) ||
+                (end_diff >= 0 && end_diff < rcv_wnd as i32)
+            }
+        };
+
+        if !is_acceptable {
+            // Segment outside window - send challenge ACK
+            return Self::make_ack_result(tcb);
+        }
+
+        if seq_num == rcv_nxt {
             // In-order data
             if !Self::enqueue_inorder_payload(tcb, payload, header_len, packet_opt, payload_len) {
-                // 受信フォールバック上限超過時は fail-close して RST を返す。
                 if tcb.is_closed() {
                     return Self::make_rst_ack_result(tcb);
                 }
-                // ドロップ/未格納の場合はシーケンス番号を進めず、既存のACKを返す
                 return Self::make_ack_result(tcb);
             }
 
@@ -832,8 +1143,29 @@ impl TcpProcessor {
             tcb.advance_rcv_nxt(payload_len as u32);
             tcb.record_rx_segment_stats(payload_len);
 
+            // Drain contiguous OOO segments
+            tcb.drain_ooo_segments();
+            
             tcb.wake_read_waiter();
+        } else if (seq_num.wrapping_sub(rcv_nxt) as i32) > 0 {
+            // Out-of-order data (future) within window
+            // Security: Limit global OOO segments to prevent DoS/deadlock
+            if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) < GLOBAL_MAX_OOO_SEGMENTS {
+                if let Some(packet) = packet_opt {
+                    let mut p = packet.clone_ref();
+                    p.advance(header_len);
+                    p.set_len(payload_len);
+                    
+                    if tcb.enqueue_ooo_payload(seq_num, p) {
+                        GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+                        tcb.add_sack_block(seq_num, seq_num.wrapping_add(payload_len as u32));
+                    }
+                }
+            } else {
+                log::warn!("[TCP] Global OOO limit reached, dropping segment from future");
+            }
         }
+        
         // Both in-order and out-of-order: send ACK for expected seq
         Self::make_ack_result(tcb)
     }

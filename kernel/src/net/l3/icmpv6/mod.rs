@@ -194,11 +194,15 @@ pub enum Icmpv6Result {
         src: Ipv6Address,
         /// Destination address
         dst: Ipv6Address,
+        /// Source MAC address
+        src_mac: crate::net::l2::ethernet::MacAddress,
         /// IPv6 hop limit from fixed header
         hop_limit: u8,
     },
     /// Packet Too Big received (Path MTU Discovery)
     PacketTooBig {
+        /// Original source address from the invoking packet (should be US)
+        quoted_src: Ipv6Address,
         /// Original destination that triggered the error
         dst: Ipv6Address,
         /// MTU from the message
@@ -270,12 +274,14 @@ impl Icmpv6Processor {
     ///
     /// `data` is the ICMPv6 payload (after IPv6 header + extension headers)
     /// `src` and `dst` are the IPv6 addresses from the enclosing IPv6 header
+    /// `src_mac` is the source MAC address from the Ethernet header
     /// `hop_limit` is the IPv6 hop limit from the fixed header
     pub fn process(
         &self,
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
+        src_mac: crate::net::l2::ethernet::MacAddress,
         hop_limit: u8,
         current_time: u64,
     ) -> Icmpv6Result {
@@ -339,6 +345,7 @@ impl Icmpv6Processor {
                     data: data.to_vec(),
                     src,
                     dst,
+                    src_mac,
                     hop_limit,
                 }
             }
@@ -406,21 +413,34 @@ impl Icmpv6Processor {
 
         let mtu = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
 
-        // Extract original destination IP from the invoking packet (RFC 4443)
-        // Invoking packet starts at offset 8. Invoking IPv6 header destination is at offset 24 within it.
-        // Total offset = 8 + 24 = 32.
+        // Extract original source and destination IP from the invoking packet (RFC 4443)
+        // Invoking packet starts at offset 8.
+        // Invoking IPv6 header source is at offset 8 within invoking packet -> total offset 16.
+        // Invoking IPv6 header destination is at offset 24 within invoking packet -> total offset 32.
         if data.len() >= 32 + 16 {
+            let src_bytes = &data[16..16 + 16];
             let dst_bytes = &data[32..32 + 16];
-            let mut arr = [0u8; 16];
-            arr.copy_from_slice(dst_bytes);
-            let dst = Ipv6Address::new(arr);
-            Icmpv6Result::PacketTooBig { dst, mtu }
+            
+            let mut src_arr = [0u8; 16];
+            src_arr.copy_from_slice(src_bytes);
+            let quoted_src = Ipv6Address::new(src_arr);
+            
+            let mut dst_arr = [0u8; 16];
+            dst_arr.copy_from_slice(dst_bytes);
+            let quoted_dst = Ipv6Address::new(dst_arr);
+            
+            Icmpv6Result::PacketTooBig { 
+                quoted_src,
+                dst: quoted_dst, 
+                mtu 
+            }
         } else {
             // Not enough data to extract destination, but we still have the MTU.
             // However, without destination we can't reliably update PMTU cache.
             Icmpv6Result::Error
         }
     }
+
 }
 
 impl Default for Icmpv6Processor {
@@ -613,7 +633,8 @@ pub mod tests {
         let msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 100, 5, &[0xAB]);
 
         // Process it
-        let result = processor.process(&msg, src, dst, 64, 100);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
+        let result = processor.process(&msg, src, dst, mac, 64, 100);
         match result {
             Icmpv6Result::SendEchoReply { dst: reply_dst, identifier, sequence, data } => {
                 assert_eq!(reply_dst, src);
@@ -632,7 +653,8 @@ pub mod tests {
         let dst = Ipv6Address::LOOPBACK;
 
         let msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 1, 1, &[]);
-        let result = processor.process(&msg, src, dst, 64, 100);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
+        let result = processor.process(&msg, src, dst, mac, 64, 100);
         assert!(matches!(result, Icmpv6Result::Dropped));
     }
 
@@ -646,7 +668,8 @@ pub mod tests {
         let mut msg = Icmpv6EchoBuilder::build_echo_request(&src, &dst, 1, 1, &[]);
         msg[2] ^= 0xFF; // corrupt checksum
 
-        let result = processor.process(&msg, src, dst, 64, 100);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
+        let result = processor.process(&msg, src, dst, mac, 64, 100);
         assert!(matches!(result, Icmpv6Result::Dropped));
     }
 
@@ -671,7 +694,8 @@ pub mod tests {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        let result = processor.process(&msg, src, dst, 255, 100);
+        let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
+        let result = processor.process(&msg, src, dst, mac, 255, 100);
         match result {
             Icmpv6Result::NdpMessage { msg_type, .. } => {
                 assert_eq!(msg_type, Icmpv6Type::NeighborSolicitation);

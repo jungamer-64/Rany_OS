@@ -41,6 +41,15 @@ impl VirtioNetDevice {
     /// RXキュー完了を処理し、パケットをスタックに渡す
     pub(super) fn process_rx_completions(&self) {
         for (q_idx, rx_queue) in self.rx_queues.iter().enumerate() {
+            // Diagnostic: check raw used ring state
+            if let Ok(vq) = rx_queue.vq.lock() {
+                let used_idx = vq.get_used_idx_public();
+                let last_used = vq.get_last_used_idx();
+                crate::io::log::early_print(&alloc::format!(
+                    "[RX-DIAG] q{} used_idx={} last_used={}\n",
+                    q_idx, used_idx, last_used
+                ));
+            }
             let completions = rx_queue.process_used();
             for (desc_idx, len) in completions {
                 self.rx_packets.fetch_add(1, core::sync::atomic::Ordering::Relaxed);

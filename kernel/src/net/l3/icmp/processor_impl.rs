@@ -51,7 +51,7 @@ impl IcmpProcessor {
     }
 
     /// Process an incoming ICMP packet
-    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) -> IcmpResult {
+    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, current_time: u64) -> IcmpResult {
         let packet = match IcmpPacket::parse(data) {
             Some(p) => p,
             None => {
@@ -69,6 +69,12 @@ impl IcmpProcessor {
         match packet.icmp_type() {
             IcmpType::EchoRequest => {
                 self.stats.echo_requests_rx += 1;
+
+                // Security: RFC 1122 Section 3.2.2.6 - Do not respond to broadcast/multicast ICMP Echo Requests.
+                // This prevents being used in Smurf amplification attacks.
+                if dst_ip.is_broadcast() || dst_ip.is_multicast() {
+                    return IcmpResult::Ignored;
+                }
 
                 if !self.check_rate_limit(src_ip, current_time) {
                     return IcmpResult::Ignored;

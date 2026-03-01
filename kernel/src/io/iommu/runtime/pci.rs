@@ -49,13 +49,29 @@ pub fn setup_iommu_for_pci_device(
     device: &mut crate::io::pci::PciDeviceInfo,
 ) -> Result<u16, crate::io::iommu::types::IommuError> {
     if !is_iommu_enabled() {
+        log::warn!("[IOMMU][PCI] is_iommu_enabled() returned false for {:?}", device.bdf);
         return Err(crate::io::iommu::types::IommuError::NotSupported);
     }
 
     // Critical: Grouping is mandatory for security. Fail if driver or manager are missing.
-    let driver = get_iommu_driver().ok_or(crate::io::iommu::types::IommuError::NotInitialized)?;
-    let iommu_group_manager = get_iommu_group_manager().ok_or(crate::io::iommu::types::IommuError::NotInitialized)?;
-    let pcie_ext_manager = pcie_ext_manager().ok_or(crate::io::iommu::types::IommuError::NotInitialized)?;
+    let driver = match get_iommu_driver() {
+        Some(d) => d,
+        None => {
+            log::error!("[IOMMU][PCI] get_iommu_driver() returned None for {:?}", device.bdf);
+            return Err(crate::io::iommu::types::IommuError::NotInitialized);
+        }
+    };
+    let iommu_group_manager = match get_iommu_group_manager() {
+        Some(m) => m,
+        None => {
+            log::error!("[IOMMU][PCI] get_iommu_group_manager() returned None for {:?}", device.bdf);
+            return Err(crate::io::iommu::types::IommuError::NotInitialized);
+        }
+    };
+    // PCIe extended config is optional; when MCFG/ECAM is not available
+    // (e.g. some QEMU configurations), we fall back to legacy I/O port
+    // based topology which is safe (conservative ACS assumptions).
+    let has_pcie_ext = pcie_ext_manager().is_some();
 
     let device_id = DeviceId::new(
         device.segment,
@@ -86,21 +102,48 @@ pub fn setup_iommu_for_pci_device(
         crate::io::iommu::runtime::backend::IommuBackend::Amd(_) => 0, // AMD driver manages multiple units internally
     };
 
-    let (iommu_group, newly_created) = iommu_group_manager.find_or_create_group(
-        device_id,
-        driver,
-        controller_idx,
-        &RealPciTopology::new(pcie_ext_manager),
-        domain_type,
-    )?;
+    let (iommu_group, newly_created) = if has_pcie_ext {
+        let ext_mgr = pcie_ext_manager().unwrap();
+        match iommu_group_manager.find_or_create_group(
+            device_id,
+            driver,
+            controller_idx,
+            &RealPciTopology::new(ext_mgr),
+            domain_type,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("[IOMMU][PCI] find_or_create_group (PCIe) failed for {:?}: {:?}", device_id, e);
+                return Err(e);
+            }
+        }
+    } else {
+        match iommu_group_manager.find_or_create_group(
+            device_id,
+            driver,
+            controller_idx,
+            &crate::io::iommu::runtime::groups::LegacyPciTopology,
+            domain_type,
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("[IOMMU][PCI] find_or_create_group (Legacy) failed for {:?}: {:?}", device_id, e);
+                return Err(e);
+            }
+        }
+    };
 
     let domain_id = iommu_group.domain_id;
 
     // ATS support check (Intel specific for now in this function, but safe to call)
-    if let crate::io::iommu::runtime::backend::IommuBackend::Intel(ref _intel_ctrl) = **driver {
-        let registry = get_iommu_registry().expect("Intel registry must exist");
-        if let Some(controller) = registry.controllers.get(controller_idx) {
-            try_enable_ats(controller, pcie_ext_manager, device, device_id);
+    // ATS requires PCIe extended config space; skip when unavailable.
+    if has_pcie_ext {
+        if let crate::io::iommu::runtime::backend::IommuBackend::Intel(ref _intel_ctrl) = **driver {
+            let registry = get_iommu_registry().expect("Intel registry must exist");
+            if let Some(controller) = registry.controllers.get(controller_idx) {
+                let ext_mgr = pcie_ext_manager().unwrap();
+                try_enable_ats(controller, ext_mgr, device, device_id);
+            }
         }
     }
 

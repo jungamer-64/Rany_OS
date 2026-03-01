@@ -152,6 +152,12 @@ impl core::fmt::Display for SocketAddr {
 // TCP接続状態
 // ============================================================================
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+/// 全接続での合計OOOセグメント数
+pub(crate) static GLOBAL_OOO_COUNT: AtomicUsize = AtomicUsize::new(0);
+const GLOBAL_MAX_OOO_SEGMENTS: usize = 512;
+
 /// TCP状態マシン
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
@@ -254,6 +260,8 @@ struct TcpRxState {
     recv_queue_bytes: usize,
     /// `recv_queue` の総バイト上限
     recv_queue_limit_bytes: usize,
+    /// Out-of-order segments queue
+    ooo_queue: BTreeMap<u32, PacketRef>,
 }
 
 impl TcpRxState {
@@ -266,6 +274,7 @@ impl TcpRxState {
             recv_queue_bytes: 0,
             // limit initialized from constant above (currently zero)
             recv_queue_limit_bytes: TCP_RECV_COPY_FALLBACK_LIMIT_BYTES,
+            ooo_queue: BTreeMap::new(),
         }
     }
 }
@@ -494,6 +503,15 @@ struct TcpAsyncWaiters {
 // ============================================================================
 // TCP制御ブロック (TCB)
 // ============================================================================
+
+impl Drop for TcpControlBlock {
+    fn drop(&mut self) {
+        let ooo_count = self.rx.ooo_queue.len();
+        if ooo_count > 0 {
+            GLOBAL_OOO_COUNT.fetch_sub(ooo_count, Ordering::Relaxed);
+        }
+    }
+}
 
 /// TCP制御ブロック
 pub struct TcpControlBlock {

@@ -94,6 +94,11 @@ static NAT_NEXT_PORT: AtomicU16 = AtomicU16::new(NAT_EPHEMERAL_START);
 
 /// Perform outbound NAT translation for a packet leaving on `out_if_id`.
 /// Returns (translated_src_ip, translated_src_port).
+/// Maximum NAT table entries to prevent memory DoS
+const MAX_NAT_ENTRIES: usize = 10000;
+
+/// Perform outbound NAT translation for a packet leaving on `out_if_id`.
+/// Returns (translated_src_ip, translated_src_port).
 fn nat_translate_out(
     protocol: crate::net::l3::ipv4::IpProtocol,
     internal_ip: Ipv4Address,
@@ -136,23 +141,33 @@ fn nat_translate_out(
 
     // allocate new external port with collision check
     let mut tablew = NAT_TABLE.write();
-    let mut ext_port = NAT_NEXT_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    
-    // Ensure we stay in ephemeral range [40000, 65535]
-    if ext_port < NAT_EPHEMERAL_START {
-        ext_port = NAT_EPHEMERAL_START;
-        NAT_NEXT_PORT.store(NAT_EPHEMERAL_START + 1, core::sync::atomic::Ordering::Relaxed);
+
+    // DoS protection: limit NAT table size
+    if tablew.len() >= MAX_NAT_ENTRIES {
+        // Emergency prune before rejecting
+        drop(tablew);
+        nat_prune_expired(crate::time::get_uptime_ms(), 30000); // 30s timeout for emergency
+        tablew = NAT_TABLE.write();
+        if tablew.len() >= MAX_NAT_ENTRIES {
+            log::error!("[NET BRIDGE] NAT table full, dropping connection");
+            return (internal_ip, internal_port); // Pass-through as fallback (likely to fail downstream)
+        }
     }
+
+    // Use random starting port to prevent port prediction attacks
+    let random_bytes = crate::net::security::tls::generate_random();
+    let mut ext_port = (u16::from_be_bytes([random_bytes[0], random_bytes[1]]) % (65535 - NAT_EPHEMERAL_START)) + NAT_EPHEMERAL_START;
 
     // Collision detection: skip ports that are already mapped
     let mut attempts = 0;
     while tablew.contains_key(&ext_port) && attempts < 1000 {
-        ext_port = NAT_NEXT_PORT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if ext_port < NAT_EPHEMERAL_START {
-            ext_port = NAT_EPHEMERAL_START;
-            NAT_NEXT_PORT.store(NAT_EPHEMERAL_START + 1, core::sync::atomic::Ordering::Relaxed);
-        }
+        ext_port = (ext_port.wrapping_add(1) % (65535 - NAT_EPHEMERAL_START)) + NAT_EPHEMERAL_START;
         attempts += 1;
+    }
+
+    if attempts >= 1000 {
+        log::error!("[NET BRIDGE] NAT port allocation failed (exhaustion)");
+        return (internal_ip, internal_port);
     }
 
     tablew.insert(
@@ -171,6 +186,7 @@ fn nat_translate_out(
 
     (ext_ip, ext_port)
 }
+
 
 /// Perform inbound NAT translation on a packet arriving on any interface.
 /// If translation exists for `dst_port` AND matches remote address/port, 
@@ -573,7 +589,23 @@ pub fn process_received_packet_zero_copy_for_interface(
         if let Some(eth) = crate::net::l2::ethernet::EthernetFrame::parse(&*data) {
             if eth.ether_type() == crate::net::l2::ethernet::EtherType::Ipv4 {
                 if let Some(ip_pkt) = crate::net::l3::ipv4::Ipv4Packet::parse(eth.payload()) {
+                    let src = ip_pkt.source();
                     let dst = ip_pkt.destination();
+
+                    // Security: Ingress Filtering (BCP 38 / RFC 2827)
+                    // If the source IP belongs to a local network, it MUST arrive on the 
+                    // interface associated with that network. If it arrives on a different 
+                    // interface, it's a spoofed packet.
+                    if let Ok(Some(src_route)) = manager::lookup_ipv4_route(src) {
+                        if src_route.if_id != if_id && src_route.flags.connected {
+                            log::warn!(
+                                "[NET BRIDGE] Ingress filtering drop: src {} on if {} (expected if {})",
+                                src, if_id.0, src_route.if_id.0
+                            );
+                            return;
+                        }
+                    }
+
                     let dst_octets = dst.octets();
                     let is_limited_broadcast = dst_octets == [255, 255, 255, 255];
                     let is_multicast = (dst_octets[0] & 0xF0) == 0xE0;
@@ -737,6 +769,11 @@ pub fn init_bridge() -> Result<(), &'static str> {
         return Ok(());
     }
 
+    // Initialize zero-copy packet mempool (required for alloc_packet() in TX path)
+    if let Err(e) = crate::net::datapath::mempool::init_net_mempool(256) {
+        log::warn!("[NET BRIDGE] mempool init failed: {}", e);
+    }
+
     log::info!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
 
     // Get MAC address from VirtIO-Net if available
@@ -829,6 +866,15 @@ pub fn is_initialized() -> bool {
 /// Should be called periodically (e.g. from timer interrupt)
 pub fn check_batch_timeout(current_tsc: u64, tsc_freq: u64) {
     if let Some(batch) = BATCH_PROCESSOR.check_timeout(current_tsc, tsc_freq) {
+        stack::receive_batch(batch);
+    }
+}
+
+/// 保留中のバッチを即座にフラッシュしてスタックに渡す。
+///
+/// 同期的なポーリングループ（初期化時のping等）で使用する。
+pub fn flush_pending_batch() {
+    if let Some(batch) = BATCH_PROCESSOR.flush() {
         stack::receive_batch(batch);
     }
 }

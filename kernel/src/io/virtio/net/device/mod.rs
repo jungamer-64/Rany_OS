@@ -302,6 +302,13 @@ impl VirtioNetDevice {
                 | status::VIRTIO_STATUS_DRIVER_OK,
         );
 
+        // 10. DRIVER_OK後にRXキューを再通知（VirtIO spec準拠）
+        // setup_queues()でRXバッファ投稿・通知がDRIVER_OK前に行われるため、
+        // デバイスが通知を見逃す可能性がある。再通知で確実にする。
+        for rxq in &self.rx_queues {
+            rxq.notify(self.transport.as_ref());
+        }
+
         // Initialize bounce buffer pools for IOMMU paths (performance optimization)
         if let Err(e) = self.init_bounce_pools() {
             log::error!("[VIRTIO-NET] Failed to init bounce pools: {:?}", e);
@@ -667,17 +674,20 @@ impl VirtioNetDevice {
         buf_len: usize,
     ) -> Result<(u64, Option<u64>, u64), VirtioNetError> {
         if !is_iommu_enabled() {
+            crate::io::log::early_print("[VIRTIO-RX] IOMMU not enabled, using raw phys\n");
             return Ok((phys, None, 0));
         }
 
         if let Some(ref device_id) = self.iommu_device_id {
             let map_size = iommu_align_len(buf_len).unwrap_or(buf_len) as u64;
+            // Intel VT-d: R=0,W=1 is invalid (W is reserved when R=0)
+            // RX buffers need R+W even though device only writes
             match unsafe {
                 map_for_device_with_perms(
                     device_id,
                     PhysAddr::new(phys),
                     map_size,
-                    false,
+                    true,
                     true,
                 )
             } {
@@ -810,6 +820,10 @@ impl VirtioNetDevice {
             }
         }
         log::info!("[VIRTIO-NET] posted {} initial RX buffers", added);
+        // Notify the device that new RX buffers are available
+        if added > 0 {
+            rxq.notify(self.transport.as_ref());
+        }
     }
 
     /// 登録済み全 RX キューにバッファを事前割り当てする

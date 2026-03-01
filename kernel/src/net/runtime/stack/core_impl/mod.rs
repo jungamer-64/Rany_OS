@@ -320,7 +320,7 @@ impl NetworkStack {
             return;
         }
 
-        let result = self.icmp.process(data, src_ip, current_time);
+        let result = self.icmp.process(data, src_ip, dst_ip, current_time);
 
         match result {
             IcmpResult::SendEchoReply {
@@ -406,7 +406,7 @@ impl NetworkStack {
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
-                self.process_icmpv6_data(payload, src, dst, hop_limit, current_time);
+                self.process_icmpv6_data(payload, src, dst, src_mac, hop_limit, current_time);
             }
             Ipv6ProcessResult::Tcp(payload, src, dst) => {
                 self.process_tcp_data_v6(payload, src, dst, current_time);
@@ -429,6 +429,7 @@ impl NetworkStack {
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
+        src_mac: MacAddress,
         hop_limit: u8,
         current_time: u64,
     ) {
@@ -437,7 +438,7 @@ impl NetworkStack {
             None => return,
         };
 
-        let result = icmpv6.process(data, src, dst, hop_limit, current_time);
+        let result = icmpv6.process(data, src, dst, src_mac, hop_limit, current_time);
 
         match result {
             Icmpv6Result::SendEchoReply {
@@ -460,27 +461,39 @@ impl NetworkStack {
                 data: ndp_data,
                 src: ndp_src,
                 dst: ndp_dst,
+                src_mac: ndp_src_mac,
                 hop_limit,
             } => {
-                self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, hop_limit, current_time);
+                self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, ndp_src_mac, hop_limit, current_time);
             }
-            Icmpv6Result::PacketTooBig { dst, mtu } => {
-                // Security check (RFC 8201): Verify that the ICMPv6 message quote a packet 
-                // that we actually sent.
+            Icmpv6Result::PacketTooBig { quoted_src, dst, mtu } => {
+                // Security check (RFC 8201): Verify that the ICMPv6 message quotes a packet 
+                // that we actually sent. The quoted Source IP must be one of our local addresses.
+                let mut is_our_packet = false;
                 if let Some(ref ipv6) = self.ipv6 {
-                    let _our_addr = ipv6.config().link_local;
-                    let _our_global = ipv6.config().global;
-                    
-                    // We can't easily see the quoted Source IP without deeper parsing here,
-                    // but we can at least ensure we are updating the correct destination.
-                    // Correct implementation should check the quoted Source IP in handle_packet_too_big.
-                    
+                    let config = ipv6.config();
+                    if quoted_src == config.link_local {
+                        is_our_packet = true;
+                    } else if let Some(global) = config.global {
+                        if quoted_src == global {
+                            is_our_packet = true;
+                        }
+                    }
+                }
+
+                if is_our_packet {
                     log::info!("ICMPv6: Packet Too Big for {}, MTU={}", dst, mtu);
                     // Update IPv6 Path MTU cache (RFC 8201)
                     let current_time = self.current_time();
                     self.ipv6_pmtu_cache.update(dst, mtu, current_time);
+                } else {
+                    log::warn!(
+                        "ICMPv6: Packet Too Big for {} rejected (quoted src {} is not local)",
+                        dst, quoted_src
+                    );
                 }
             }
+
             Icmpv6Result::Dropped | Icmpv6Result::Error => {}
         }
     }
@@ -492,6 +505,7 @@ impl NetworkStack {
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
+        src_mac: MacAddress,
         hop_limit: u8,
         current_time: u64,
     ) {
@@ -507,7 +521,7 @@ impl NetworkStack {
             None => return,
         };
 
-        let result = ndp.process(msg_type, data, src, dst, current_time);
+        let result = ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time);
 
         match result {
             NdpResult::SendNeighborAdvertisement {

@@ -120,35 +120,19 @@ impl IovaAllocator {
         let inner = FastBitmapAllocator::new(base, size);
 
         // Initialize Per-CPU Quarantine Rings (try to allocate, but avoid panic on OOM)
-        crate::io::log::early_print("[IOVA] new: entering IovaAllocator::new\n");
-        // Check heap/allocator state for diagnostics
-        if let Some(initialized) = crate::memory::ALLOCATOR.is_initialized() {
-            crate::io::log::early_print("[IOVA] heap_initialized=");
-            crate::io::log::early_print_dec(if initialized { 1 } else { 0 });
-            crate::io::log::early_print("\n");
-        } else {
-            crate::io::log::early_print("[IOVA] ALLOCATOR lock poisoned\n");
-        }
-
         let quarantines = {
             let mut v: Vec<IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>> = Vec::new();
-            crate::io::log::early_print("[IOVA] new: try_reserve(IOVA_ALLOCATOR_MAX_CPUS)\n");
             if v.try_reserve(IOVA_ALLOCATOR_MAX_CPUS).is_ok() {
-                crate::io::log::early_print("[IOVA] try_reserve OK, allocating quarantines\n");
                 for _ in 0..IOVA_ALLOCATOR_MAX_CPUS {
                     v.push(IrqMutex::new(QuarantineRing::new()));
                 }
-                crate::io::log::early_print("[IOVA] quarantines allocated\n");
                 Some(v.into_boxed_slice())
             } else {
                 // Heap not available or OOM during early boot: fall back to None and
                 // perform immediate frees instead of quarantining.
-                crate::io::log::early_print("[IOVA] try_reserve FAILED - falling back to immediate frees\n");
                 None
             }
         };
-
-        crate::io::log::early_print("[IOVA] new: done\n");
 
         Self {
             inner,

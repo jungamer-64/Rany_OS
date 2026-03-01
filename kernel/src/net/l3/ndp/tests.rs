@@ -197,6 +197,7 @@ pub fn test_ns_processing() {
         &ns,
         sender_ip,
         dst,
+        sender_mac,
         1000,
     );
 
@@ -214,4 +215,65 @@ pub fn test_ns_processing() {
     let entry = proc.cache().lookup(&sender_ip).unwrap();
     assert_eq!(entry.mac, sender_mac);
     assert_eq!(entry.state, NeighborState::Reachable);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ndp_spoofing_detection() {
+    let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let mut proc = NdpProcessor::new(our_ip, our_mac);
+
+    let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let dst = our_ip.solicited_node();
+    
+    // Attacker sends NS with SLLA option containing their MAC, 
+    // but the actual Ethernet source MAC is different (spoofed).
+    let slla_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    let actual_eth_mac = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
+    
+    let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &slla_mac);
+
+    let result = proc.process(
+        Icmpv6Type::NeighborSolicitation,
+        &ns,
+        sender_ip,
+        dst,
+        actual_eth_mac,
+        1000,
+    );
+
+    // Should return Error due to spoofing detection
+    assert!(matches!(result, NdpResult::Error));
+    
+    // Cache should NOT be updated
+    assert!(proc.cache().lookup(&sender_ip).is_none());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_na_multicast_target_rejection() {
+    let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let mut proc = NdpProcessor::new(our_ip, our_mac);
+
+    let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    
+    // Build an NA with a MULTICAST target address (invalid per RFC 4861)
+    let mcast_target = Ipv6Address::ALL_NODES_LINK_LOCAL;
+    let na = NdpProcessor::build_na(&sender_ip, &our_ip, &mcast_target, &sender_mac, true);
+
+    let result = proc.process(
+        Icmpv6Type::NeighborAdvertisement,
+        &na,
+        sender_ip,
+        our_ip,
+        sender_mac,
+        1000,
+    );
+
+    // Should return Error
+    assert!(matches!(result, NdpResult::Error));
+    
+    // Cache should NOT be updated with multicast address
+    assert!(proc.cache().lookup(&mcast_target).is_none());
 }

@@ -89,6 +89,61 @@ pub struct RealPciTopology {
     ext_manager: &'static pci_driver::PcieExtManager,
 }
 
+// ============================================================================
+// Legacy PCI Topology (fallback when PCIe Extended Config is unavailable)
+// ============================================================================
+
+/// Fallback topology provider that uses legacy I/O port PCI config reads.
+/// This is used when no MCFG/ECAM is available (no PCIe extended config space).
+///
+/// ACS is not available via legacy config access, so this implementation
+/// conservatively treats each device as having NO ACS isolation.  This means
+/// all devices behind the same non-ACS bridge are grouped together, which is
+/// the safe default.
+#[cfg(not(test))]
+pub struct LegacyPciTopology;
+
+#[cfg(not(test))]
+impl PciTopologyProvider for LegacyPciTopology {
+    fn read_header_type(&self, bus: u8, device: u8, function: u8) -> Option<u8> {
+        // Legacy PCI config space: Header Type is at offset 0x0E
+        let vendor_id = pci_driver::pci_read16(bus, device, function, 0x00);
+        if vendor_id == 0xFFFF {
+            return None; // Device not present
+        }
+        Some(pci_driver::pci_read8(bus, device, function, 0x0E))
+    }
+
+    fn is_acs_isolation_enabled(&self, _bus: u8, _device: u8, _function: u8) -> Option<bool> {
+        // ACS capabilities are in PCIe extended config space (offset > 0xFF),
+        // which is not accessible via legacy I/O ports.
+        // Conservative default: no ACS isolation available.
+        None
+    }
+
+    fn find_parent_bridge(&self, child_bus: u8) -> Option<(u8, u8, u8)> {
+        if child_bus == 0 {
+            return None;
+        }
+        // Scan bus 0 for bridges whose secondary bus matches child_bus
+        for dev in 0..32u8 {
+            let vendor_id = pci_driver::pci_read16(0, dev, 0, 0x00);
+            if vendor_id == 0xFFFF {
+                continue;
+            }
+            let header_type = pci_driver::pci_read8(0, dev, 0, 0x0E);
+            if (header_type & 0x7F) == 0x01 {
+                // Type 1 header (PCI-to-PCI bridge)
+                let secondary_bus = pci_driver::pci_read8(0, dev, 0, 0x19);
+                if secondary_bus == child_bus {
+                    return Some((0, dev, 0));
+                }
+            }
+        }
+        None
+    }
+}
+
 #[cfg(not(test))]
 impl RealPciTopology {
     pub fn new(ext_manager: &'static pci_driver::PcieExtManager) -> Self {

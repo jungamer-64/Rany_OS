@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::l2::ethernet::MacAddress;
 
 
 impl NdpProcessor {
@@ -51,20 +52,22 @@ impl NdpProcessor {
     /// Process an NDP message (already validated as ICMPv6 NDP type)
     ///
     /// `data` includes the full ICMPv6 message (type, code, checksum, ...)
+    /// `src_mac` is the source MAC address from the Ethernet header
     pub fn process(
         &mut self,
         msg_type: Icmpv6Type,
         data: &[u8],
         src: Ipv6Address,
         dst: Ipv6Address,
+        src_mac: [u8; 6],
         current_time: u64,
     ) -> NdpResult {
         match msg_type {
             Icmpv6Type::NeighborSolicitation => {
-                self.process_ns(data, src, dst, current_time)
+                self.process_ns(data, src, dst, src_mac, current_time)
             }
             Icmpv6Type::NeighborAdvertisement => {
-                self.process_na(data, src, dst, current_time)
+                self.process_na(data, src, dst, src_mac, current_time)
             }
             Icmpv6Type::RouterAdvertisement => {
                 self.process_ra(data, src, dst, current_time)
@@ -85,6 +88,7 @@ impl NdpProcessor {
         data: &[u8],
         src: Ipv6Address,
         _dst: Ipv6Address,
+        src_mac: [u8; 6],
         current_time: u64,
     ) -> NdpResult {
         if data.len() < NS_MIN_SIZE {
@@ -117,6 +121,17 @@ impl NdpProcessor {
                 mac,
             } = opt
             {
+                // Security: Verify that the Source Link-Layer Address option matches
+                // the source MAC address in the Ethernet header.
+                if *mac != src_mac {
+                    log::warn!(
+                        "[NET-NDP] Possible NS spoofing: SLLA {} does not match Ethernet source MAC {}",
+                        MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]),
+                        MacAddress::from_octets(src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5])
+                    );
+                    return NdpResult::Error;
+                }
+
                 if !src.is_unspecified() {
                     self.cache.update_reachable(&src, *mac, current_time);
                 }
@@ -140,6 +155,7 @@ impl NdpProcessor {
         data: &[u8],
         _src: Ipv6Address,
         _dst: Ipv6Address,
+        src_mac: [u8; 6],
         current_time: u64,
     ) -> NdpResult {
         if data.len() < NA_MIN_SIZE {
@@ -151,13 +167,19 @@ impl NdpProcessor {
         // Flags: R(1) + S(1) + O(1) + reserved(29) — byte 4
         let flags = data[4];
         let _router = (flags & 0x80) != 0;
-        let _solicited = (flags & 0x40) != 0;
+        let solicited = (flags & 0x40) != 0;
         let override_flag = (flags & 0x20) != 0;
 
         // Target address (bytes 8-23)
         let mut target_bytes = [0u8; 16];
         target_bytes.copy_from_slice(&data[8..24]);
         let target = Ipv6Address::new(target_bytes);
+
+        // Security (RFC 4861 Section 7.1.2): Target address MUST NOT be a multicast address.
+        if target.is_multicast() {
+            log::warn!("[NET-NDP] Dropping NA with multicast target address {}", target);
+            return NdpResult::Error;
+        }
 
         // Parse options for Target Link-Layer Address
         let options = if data.len() > NA_MIN_SIZE {
@@ -173,15 +195,47 @@ impl NdpProcessor {
                 mac,
             } = opt
             {
+                // Security: Verify that the Target Link-Layer Address option matches
+                // the source MAC address in the Ethernet header.
+                if *mac != src_mac {
+                    log::warn!(
+                        "[NET-NDP] Possible NA spoofing: TLLA {} does not match Ethernet source MAC {}",
+                        MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]),
+                        MacAddress::from_octets(src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5])
+                    );
+                    return NdpResult::Error;
+                }
                 learned_mac = Some(*mac);
             }
         }
 
         // Update neighbor cache
         if let Some(mac) = learned_mac {
-            // If override flag is set, or entry doesn't exist, update
-            if override_flag || self.cache.lookup(&target).is_none() {
+            // RFC 4861 Section 7.2.5:
+            // If the Target Address is already in the Neighbor Cache:
+            //   1. If the Solicited flag is set, the state becomes REACHABLE.
+            //   2. If the Solicited flag is zero and the Override flag is set, state becomes STALE.
+            //   3. If neither (1) nor (2), do not update.
+            // If the Target Address is NOT in the Neighbor Cache, only create if solicited.
+            if let Some(entry) = self.cache.lookup_mut(&target) {
+                if solicited {
+                    entry.mac = mac;
+                    entry.state = NeighborState::Reachable;
+                    entry.timestamp = current_time;
+                    entry.probes_sent = 0;
+                } else if override_flag {
+                    if entry.mac != mac {
+                        entry.mac = mac;
+                        entry.state = NeighborState::Stale;
+                        entry.timestamp = current_time;
+                    }
+                }
+            } else if solicited {
+                // New entry from solicited NA
                 self.cache.update_reachable(&target, mac, current_time);
+            } else {
+                // Unsolicited NA for non-existent entry - ignore to prevent cache poisoning
+                return NdpResult::None;
             }
 
             return NdpResult::NeighborUpdated {
