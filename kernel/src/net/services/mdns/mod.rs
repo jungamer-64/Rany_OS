@@ -19,7 +19,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::udp::{UdpSocket, UdpAddr};
+use crate::net::l4::udp::UdpAddr;
 use crate::sync::PoisonLock;
 
 extern crate alloc;

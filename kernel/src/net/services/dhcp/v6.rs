@@ -1,7 +1,6 @@
 use super::*;
 
 use crate::net::l3::ipv6::Ipv6Address;
-use crate::net::l4::udp::UdpSocket;
 use crate::task::{self, TimeoutResult};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};

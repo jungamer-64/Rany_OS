@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::l4::udp::{UdpSocket, UdpAddr};
+use crate::net::l4::udp::UdpAddr;
 use crate::task::{self, TimeoutResult};
 
 impl DnsClient {
