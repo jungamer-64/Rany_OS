@@ -25,6 +25,7 @@ pub mod segment;
 pub mod socket;
 pub mod tcb;
 pub mod tcp_rx;
+pub mod timer_wheel;
 #[cfg(any(test, feature = "qemu-test-export"))]
 mod tests;
 #[cfg(feature = "qemu-test-export")]
@@ -35,6 +36,8 @@ pub mod window_scale;
 // Re-exports: types
 pub use types::{
     SocketAddr, SocketError, SocketFd, SocketResult, SocketState, SocketType,
+    seq_before, seq_leq, seq_after, seq_geq,
+    conn_key_hash,
 };
 
 // Re-exports: event

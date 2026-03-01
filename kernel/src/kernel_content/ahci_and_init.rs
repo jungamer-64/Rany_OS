@@ -166,6 +166,11 @@ pub(crate) fn init_network_subsystem() {
         );
     }
 
+    // OOOキューとタイミングホイールを初期化
+    crate::net::l4::endpoint::ooo_queue::init_ooo_queues();
+    crate::net::l4::endpoint::retransmit::init_timer_wheel();
+    info!(target: "init", "OOO queues and retransmit timer wheel initialized");
+
     io::log::early_print("[EPRINT] about to log 'Initializing network shell API'\n");
     info!(target: "init", "Initializing network shell API");
     crate::net::api::shell::init_network_shell();

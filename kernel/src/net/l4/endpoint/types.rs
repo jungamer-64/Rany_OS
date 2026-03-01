@@ -310,6 +310,86 @@ impl AcceptedConnection {
 }
 
 // =====================================================
+// 接続キーのハッシュ関数（シャーディング用）
+// =====================================================
+
+/// (SocketAddr, SocketAddr) の接続キーから FNV-1a ハッシュを計算する。
+///
+/// シャードインデックスの決定に使用。暗号的安全性は不要。
+#[inline]
+pub fn conn_key_hash(local: &SocketAddr, remote: &SocketAddr) -> u32 {
+    const FNV_OFFSET: u32 = 0x811c9dc5;
+    const FNV_PRIME: u32 = 0x01000193;
+
+    let mut h = FNV_OFFSET;
+    let hash_bytes = |h: &mut u32, addr: &SocketAddr| {
+        match addr {
+            SocketAddr::V4 { ip, port } => {
+                for &b in ip {
+                    *h ^= b as u32;
+                    *h = h.wrapping_mul(FNV_PRIME);
+                }
+                for b in port.to_le_bytes() {
+                    *h ^= b as u32;
+                    *h = h.wrapping_mul(FNV_PRIME);
+                }
+            }
+            SocketAddr::V6 { ip, port } => {
+                for &b in ip {
+                    *h ^= b as u32;
+                    *h = h.wrapping_mul(FNV_PRIME);
+                }
+                for b in port.to_le_bytes() {
+                    *h ^= b as u32;
+                    *h = h.wrapping_mul(FNV_PRIME);
+                }
+            }
+        }
+    };
+    hash_bytes(&mut h, local);
+    hash_bytes(&mut h, remote);
+    h
+}
+
+// =====================================================
+// TCPシーケンス番号ユーティリティ
+// =====================================================
+//
+// TCP の 32bit シーケンス番号はラップアラウンドするため、
+// 単純な大小比較（<, >）では正しく判定できない。
+// 以下のユーティリティ関数は RFC 793 のシーケンス空間
+// ($2^{31}$ 以内の距離を「前」とみなす) に準拠した比較を提供する。
+//
+// プロジェクト内で i32 キャスト方式に統一する。
+
+/// a が b より前（strictly before）か判定する（ラップアラウンド対応）
+///
+/// $a < b$ iff $(a - b)$ を符号付き 32bit として解釈したとき負。
+/// 距離が $2^{31}$ 未満のときのみ有効。
+#[inline(always)]
+pub fn seq_before(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) < 0
+}
+
+/// a が b 以前（before or equal）か判定する
+#[inline(always)]
+pub fn seq_leq(a: u32, b: u32) -> bool {
+    a == b || seq_before(a, b)
+}
+
+/// a が b より後（strictly after）か判定する
+#[inline(always)]
+pub fn seq_after(a: u32, b: u32) -> bool {
+    seq_before(b, a)
+}
+
+/// a が b 以後（after or equal）か判定する
+#[inline(always)]
+pub fn seq_geq(a: u32, b: u32) -> bool {
+    a == b || seq_after(a, b)
+}
+
+// =====================================================
 // テスト
 // =====================================================
 

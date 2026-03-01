@@ -18,6 +18,7 @@ use super::socket::Socket;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 use super::types::{
     AcceptedConnection, SocketAddr, SocketError, SocketFd, SocketState, SocketType,
+    seq_before,
 };
 use super::window_scale::TcpOptionParser;
 
@@ -27,10 +28,7 @@ fn generate_tcp_timestamp() -> u32 {
     (ms / 10) as u32
 }
 
-#[inline]
-fn seq_before(a: u32, b: u32) -> bool {
-    (a.wrapping_sub(b) as i32) < 0
-}
+// seq_before は types モジュールの統一実装を使用
 
 /// RFC 793 Step 1: 受信セグメントのシーケンス番号妥当性を検証
 fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, payload_len: usize) -> bool {

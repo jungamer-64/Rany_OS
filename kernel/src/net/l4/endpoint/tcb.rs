@@ -13,7 +13,7 @@ use spin::RwLock;
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
-use super::types::{SocketAddr, SocketFd};
+use super::types::{SocketAddr, SocketFd, seq_after, conn_key_hash};
 use super::window_scale::WindowScaleOption;
 
 /// TCPフラグ
@@ -265,8 +265,8 @@ impl TcpControlBlockEntry {
         let new_up = seg_seq.wrapping_add(urgent_ptr as u32);
 
         // Check if this is newer urgent data
-        // Use sequence number arithmetic for wraparound handling
-        let is_newer = new_up.wrapping_sub(self.rcv_up) < 0x80000000;
+        // Use unified seq utility for wraparound handling
+        let is_newer = seq_after(new_up, self.rcv_up);
 
         if is_newer && new_up != self.rcv_up {
             self.rcv_up = new_up;
@@ -279,7 +279,7 @@ impl TcpControlBlockEntry {
     /// Check if we have pending urgent data to read
     pub fn has_urgent_data(&self) -> bool {
         // Urgent data exists if rcv_urg is set and urgent pointer is ahead of rcv_nxt
-        self.rcv_urg && self.rcv_up.wrapping_sub(self.rcv_nxt) < 0x80000000
+        self.rcv_urg && seq_after(self.rcv_up, self.rcv_nxt)
     }
 
     /// Get the position of urgent data in receive buffer
@@ -303,26 +303,43 @@ impl TcpControlBlockEntry {
     }
 }
 
-/// TCBテーブル（接続管理）
+/// シャード数（2のべき乗にすることで高速モジュロ演算が可能）
+const TCB_SHARD_COUNT: usize = 16;
+const TCB_SHARD_MASK: usize = TCB_SHARD_COUNT - 1;
+
+/// シャード化されたTCBテーブル（接続管理）
+///
+/// 従来の単一 `RwLock<BTreeMap>` をシャード分割し、
+/// 異なるコネクションへの並行アクセス時のロック競合を大幅に低減する。
+/// シャードインデックスは (local, remote) の FNV-1a ハッシュで決定。
 pub struct TcbTable {
-    /// アクティブな接続
-    entries: RwLock<BTreeMap<(SocketAddr, SocketAddr), TcpControlBlockEntry>>,
+    /// シャード化されたエントリテーブル
+    shards: [RwLock<BTreeMap<(SocketAddr, SocketAddr), TcpControlBlockEntry>>; TCB_SHARD_COUNT],
     /// シーケンス番号カウンタ
     seq_counter: AtomicU32,
     /// 現在のtick（再送タイマー用）
     pub current_tick: AtomicU64,
 }
 
-/// 最大TCBエントリ数 (DoS防止)
+/// 最大TCBエントリ数 (DoS防止) — 全シャード合計
 const MAX_TCB_ENTRIES: usize = 4096;
-/// SynReceived状態の最大エントリ数 (SYN Flood防止)
+/// SynReceived状態の最大エントリ数 (SYN Flood防止) — 全シャード合計
 const MAX_SYN_RECEIVED_ENTRIES: usize = 1024;
+
+/// 接続キーからシャードインデックスを算出
+#[inline(always)]
+fn shard_index(local: &SocketAddr, remote: &SocketAddr) -> usize {
+    (conn_key_hash(local, remote) as usize) & TCB_SHARD_MASK
+}
 
 impl TcbTable {
     /// 新規作成
     pub const fn new() -> Self {
+        // const context で配列を初期化
+        const EMPTY_SHARD: RwLock<BTreeMap<(SocketAddr, SocketAddr), TcpControlBlockEntry>> =
+            RwLock::new(BTreeMap::new());
         Self {
-            entries: RwLock::new(BTreeMap::new()),
+            shards: [EMPTY_SHARD; TCB_SHARD_COUNT],
             seq_counter: AtomicU32::new(0),
             current_tick: AtomicU64::new(0),
         }
@@ -402,25 +419,52 @@ impl TcbTable {
     }
 
     /// SynReceived状態の古いエントリを掃除する（SYN Flood対策）
+    ///
+    /// 改善: ソートや動的アロケーション (`Vec::collect`) を行わず、
+    /// Writeロック保持中の処理をO(n)線形探索に限定する。
+    /// 閾値（SYN_RECV_TIMEOUT_TICKS = 3000）を超えたエントリを直接削除し、
+    /// 1回あたりの削除数を `MAX_SCAVENGE_PER_TICK` で制限することで
+    /// ロック保持時間を最小化する。各シャードを個別にロックして処理する。
     fn scavenge_syn_received(&self, current_tick: u64) {
-        let mut entries = self.entries.write();
-        let syn_recv_keys: alloc::vec::Vec<_> = entries
-            .iter()
-            .filter(|(_, e)| e.state == TcpConnectionState::SynReceived)
-            .map(|(k, e)| (*k, e.last_send_tick))
-            .collect();
+        /// SynReceived のタイムアウト閾値（tick ≒ ms）
+        const SYN_RECV_TIMEOUT_TICKS: u64 = 3000;
+        /// 1回の掃除で各シャードから削除するエントリの最大数
+        const MAX_SCAVENGE_PER_SHARD: usize = 8;
 
-        // エントリ数が制限の半分を超えている場合に掃除を開始
-        if syn_recv_keys.len() >= MAX_SYN_RECEIVED_ENTRIES / 2 {
-            let mut sorted = syn_recv_keys;
-            sorted.sort_by_key(|(_, tick)| *tick);
+        // まず全シャードの Read ロックで SYN_RECEIVED 数を概算
+        let mut total_syn_recv: usize = 0;
+        for shard in &self.shards {
+            let guard = shard.read();
+            total_syn_recv += guard.values()
+                .filter(|e| e.state == TcpConnectionState::SynReceived)
+                .count();
+        }
 
-            // 最も古い10%のエントリを対象にする
-            let count_to_remove = (sorted.len() / 10).max(1);
-            for i in 0..count_to_remove {
-                let (key, last_tick) = sorted[i];
-                // 送信から3秒(3000ms)以上経過しているエントリを削除
-                if current_tick.saturating_sub(last_tick) > 3000 {
+        if total_syn_recv < MAX_SYN_RECEIVED_ENTRIES / 2 {
+            return;
+        }
+
+        // 各シャードを個別に Write ロックして掃除
+        for shard in &self.shards {
+            let mut entries = shard.write();
+
+            let mut to_remove: [Option<(SocketAddr, SocketAddr)>; 8] = [None; 8];
+            let mut remove_count = 0;
+
+            for (key, entry) in entries.iter() {
+                if entry.state == TcpConnectionState::SynReceived
+                    && current_tick.saturating_sub(entry.last_send_tick) > SYN_RECV_TIMEOUT_TICKS
+                {
+                    to_remove[remove_count] = Some(*key);
+                    remove_count += 1;
+                    if remove_count >= MAX_SCAVENGE_PER_SHARD {
+                        break;
+                    }
+                }
+            }
+
+            for i in 0..remove_count {
+                if let Some(key) = to_remove[i] {
                     entries.remove(&key);
                 }
             }
@@ -438,29 +482,32 @@ impl TcbTable {
     /// - `Ok(())` : 成功
     /// - `Err(&'static str)` : テーブル満杯などのエラー
     pub fn insert(&self, entry: TcpControlBlockEntry) -> Result<(), &'static str> {
-        let mut entries = self.entries.write();
-        
-        // 全体リソース制限
-        if entries.len() >= MAX_TCB_ENTRIES {
+        // 全シャード合計数で制限チェック（概算: 正確さよりパフォーマンス優先）
+        let total_count: usize = self.shards.iter().map(|s| s.read().len()).sum();
+        if total_count >= MAX_TCB_ENTRIES {
             return Err("TCB table full");
         }
 
         // SYN-RECV制限 (SYN Flood攻撃対策)
         if entry.state == TcpConnectionState::SynReceived {
-            let syn_recv_count = entries.values().filter(|e| e.state == TcpConnectionState::SynReceived).count();
+            let syn_recv_count: usize = self.shards.iter()
+                .map(|s| s.read().values().filter(|e| e.state == TcpConnectionState::SynReceived).count())
+                .sum();
             if syn_recv_count >= MAX_SYN_RECEIVED_ENTRIES {
                 return Err("Too many SYN-RECV connections");
             }
         }
 
+        let idx = shard_index(&entry.local, &entry.remote);
         let key = (entry.local, entry.remote);
-        entries.insert(key, entry);
+        self.shards[idx].write().insert(key, entry);
         Ok(())
     }
 
     /// 接続取得
     pub fn get(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
-        self.entries.read().get(&(local, remote)).cloned()
+        let idx = shard_index(&local, &remote);
+        self.shards[idx].read().get(&(local, remote)).cloned()
     }
 
     /// 接続更新
@@ -468,8 +515,9 @@ impl TcbTable {
     where
         F: FnOnce(&mut TcpControlBlockEntry),
     {
-        let mut entries = self.entries.write();
-        if let Some(entry) = entries.get_mut(&(local, remote)) {
+        let idx = shard_index(&local, &remote);
+        let mut shard = self.shards[idx].write();
+        if let Some(entry) = shard.get_mut(&(local, remote)) {
             f(entry);
             true
         } else {
@@ -479,25 +527,37 @@ impl TcbTable {
 
     /// 接続削除
     pub fn remove(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
-        self.entries.write().remove(&(local, remote))
+        let idx = shard_index(&local, &remote);
+        self.shards[idx].write().remove(&(local, remote))
     }
 
-    /// FDで接続検索
+    /// FDで接続検索（全シャードを探索）
     pub fn find_by_fd(&self, fd: SocketFd) -> Option<TcpControlBlockEntry> {
-        self.entries.read().values().find(|e| e.fd == fd).cloned()
+        for shard in &self.shards {
+            let guard = shard.read();
+            if let Some(entry) = guard.values().find(|e| e.fd == fd) {
+                return Some(entry.clone());
+            }
+        }
+        None
     }
 
-    /// FDで接続削除
+    /// FDで接続削除（全シャードを探索）
     pub fn remove_by_fd(&self, fd: SocketFd) -> Option<TcpControlBlockEntry> {
-        let mut entries = self.entries.write();
-        let key = entries.iter().find(|(_, e)| e.fd == fd).map(|(k, _)| *k);
-        key.and_then(|k| entries.remove(&k))
+        for shard in &self.shards {
+            let mut guard = shard.write();
+            let key = guard.iter().find(|(_, e)| e.fd == fd).map(|(k, _)| *k);
+            if let Some(k) = key {
+                return guard.remove(&k);
+            }
+        }
+        None
     }
 
     /// 接続参照取得（イミュータブル）
-    /// 注: RwLockGuardを返すため、短時間でのアクセスに限定すること
     pub fn lookup(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
-        self.entries.read().get(&(local, remote)).cloned()
+        let idx = shard_index(&local, &remote);
+        self.shards[idx].read().get(&(local, remote)).cloned()
     }
 
     /// 接続参照取得して更新（クロージャ版）
@@ -505,16 +565,17 @@ impl TcbTable {
     where
         F: FnOnce(&mut TcpControlBlockEntry) -> R,
     {
-        let mut entries = self.entries.write();
-        entries.get_mut(&(local, remote)).map(f)
+        let idx = shard_index(&local, &remote);
+        let mut shard = self.shards[idx].write();
+        shard.get_mut(&(local, remote)).map(f)
     }
 
     /// 全接続のスナップショットを取得（netstat用）
     pub fn list_connections(&self) -> alloc::vec::Vec<TcpConnectionSnapshot> {
-        self.entries
-            .read()
-            .values()
-            .map(|entry| TcpConnectionSnapshot {
+        let mut result = alloc::vec::Vec::new();
+        for shard in &self.shards {
+            let guard = shard.read();
+            result.extend(guard.values().map(|entry| TcpConnectionSnapshot {
                 local: entry.local,
                 remote: entry.remote,
                 state: entry.state,
@@ -523,13 +584,14 @@ impl TcbTable {
                 rcv_nxt: entry.rcv_nxt,
                 snd_wnd: entry.snd_wnd,
                 rcv_wnd: entry.rcv_wnd,
-            })
-            .collect()
+            }));
+        }
+        result
     }
 
     /// アクティブな接続数を取得
     pub fn connection_count(&self) -> usize {
-        self.entries.read().len()
+        self.shards.iter().map(|s| s.read().len()).sum()
     }
 }
 

@@ -17,7 +17,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use crate::net::datapath::mempool::{PacketRef, alloc_packet};
 use crate::sync::PoisonLock;
-use super::types::SocketAddr;
+use super::types::{SocketAddr, conn_key_hash, seq_before};
 
 /// OOOセグメントの最大保持数（接続あたり）
 const MAX_OOO_SEGMENTS: usize = 32;
@@ -178,25 +178,37 @@ impl SackBlocks {
     }
 }
 
-/// シーケンス番号の前後比較（ラップアラウンド対応）
-fn seq_before(a: u32, b: u32) -> bool {
-    (a.wrapping_sub(b) as i32) < 0
-}
+// seq_before は types モジュールの統一実装を使用
 
 /// 接続キー
 type ConnKey = (SocketAddr, SocketAddr);
 
-/// グローバルOOOキューマップ
-static OOO_QUEUES: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>> =
-    PoisonLock::new(None);
+/// シャード数
+const OOO_SHARD_COUNT: usize = 16;
+const OOO_SHARD_MASK: usize = OOO_SHARD_COUNT - 1;
+
+/// シャードインデックスを算出
+#[inline(always)]
+fn ooo_shard_index(local: &SocketAddr, remote: &SocketAddr) -> usize {
+    (conn_key_hash(local, remote) as usize) & OOO_SHARD_MASK
+}
+
+/// シャード化されたグローバルOOOキューマップ
+static OOO_SHARDS: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; OOO_SHARD_COUNT] = {
+    const EMPTY: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>> =
+        PoisonLock::new(None);
+    [EMPTY; OOO_SHARD_COUNT]
+};
 
 /// OOOキューを初期化（ネットワークスタック初期化時に呼ぶ）
 pub fn init_ooo_queues() {
-    match OOO_QUEUES.lock() {
-        Ok(mut g) => {
-            *g = Some(BTreeMap::new());
+    for shard in &OOO_SHARDS {
+        match shard.lock() {
+            Ok(mut g) => {
+                *g = Some(BTreeMap::new());
+            }
+            Err(_) => {}
         }
-        Err(_) => {}
     }
 }
 
@@ -220,11 +232,13 @@ pub fn insert_ooo_segment(
     packet.data_mut()[..len].copy_from_slice(&data[..len]);
     packet.set_len(len);
 
-    let Ok(mut guard) = OOO_QUEUES.lock() else { return };
+    let idx = ooo_shard_index(&local, &remote);
+    let Ok(mut guard) = OOO_SHARDS[idx].lock() else { return };
     let queues = guard.get_or_insert_with(BTreeMap::new);
 
-    // 接続数制限チェック
-    if !queues.contains_key(&(local, remote)) && queues.len() >= MAX_OOO_CONNECTIONS {
+    // 接続数制限チェック（シャードあたり MAX_OOO_CONNECTIONS / OOO_SHARD_COUNT）
+    let per_shard_limit = MAX_OOO_CONNECTIONS / OOO_SHARD_COUNT;
+    if !queues.contains_key(&(local, remote)) && queues.len() >= per_shard_limit.max(16) {
         return;
     }
 
@@ -247,7 +261,8 @@ pub fn drain_ooo_contiguous<F>(
 where
     F: FnMut(u32, &[u8]),
 {
-    let Ok(mut guard) = OOO_QUEUES.lock() else {
+    let idx = ooo_shard_index(&local, &remote);
+    let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
         return rcv_nxt;
     };
     let Some(queues) = guard.as_mut() else {
@@ -271,7 +286,8 @@ pub fn get_sack_blocks(
     local: SocketAddr,
     remote: SocketAddr,
 ) -> SackBlocks {
-    let Ok(guard) = OOO_QUEUES.lock() else {
+    let idx = ooo_shard_index(&local, &remote);
+    let Ok(guard) = OOO_SHARDS[idx].lock() else {
         return SackBlocks::new();
     };
     let Some(queues) = guard.as_ref() else {
@@ -287,7 +303,8 @@ pub fn get_sack_blocks(
 
 /// 接続のOOOキューを削除（接続クローズ時）
 pub fn remove_ooo_queue(local: SocketAddr, remote: SocketAddr) {
-    let Ok(mut guard) = OOO_QUEUES.lock() else { return };
+    let idx = ooo_shard_index(&local, &remote);
+    let Ok(mut guard) = OOO_SHARDS[idx].lock() else { return };
     if let Some(queues) = guard.as_mut() {
         queues.remove(&(local, remote));
     }

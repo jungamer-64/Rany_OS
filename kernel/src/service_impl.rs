@@ -153,10 +153,16 @@ pub(crate) fn file_handle_path(handle_id: u64) -> Option<String> {
 
 // DMA registry stores heap allocated TypedDmaSlice instances keyed by
 // the virtual pointer to the buffer so we can free them later.
+struct DmaEntry {
+    buffer: Box<dyn core::any::Any + Send>,
+    phys: u64,
+    owner: u64,
+}
+
 struct DmaRegistry {
     /// Registry of DMA buffers keyed by virtual address.
     /// Uses `Box<dyn Any + Send>` to support both CoherentDmaBuffer and TypedDmaSlice.
-    buffers: Mutex<BTreeMap<usize, Box<dyn core::any::Any + Send>>>,
+    buffers: Mutex<BTreeMap<usize, DmaEntry>>,
 }
 
 impl DmaRegistry {
@@ -166,35 +172,64 @@ impl DmaRegistry {
         }
     }
 
-    fn register(
-        &self,
-        _buf: Box<dyn core::any::Any + Send>,
-    ) -> usize {
-        // Register with a runtime-generated key based on the pointer value.
-        // Since we don't have direct access to the inner buffer here,
-        // the caller must provide the key externally if needed.
-        // For now, use a simple counter-based approach.
-        // Actually, we'll let the caller register with a known key.
-        0 // placeholder - caller should use register_with_key
-    }
-
     fn register_with_key(
         &self,
         key: usize,
-        buf: Box<dyn core::any::Any + Send>,
+        buffer: Box<dyn core::any::Any + Send>,
+        phys: u64,
+        owner: u64,
     ) {
-        self.buffers.lock().insert(key, buf);
+        self.buffers.lock().insert(key, DmaEntry { buffer, phys, owner });
     }
 
     fn unregister(
         &self,
         virt_ptr: usize,
-    ) -> Option<Box<dyn core::any::Any + Send>> {
+    ) -> Option<DmaEntry> {
         self.buffers.lock().remove(&virt_ptr)
+    }
+
+    fn get_owner(&self, virt_ptr: usize) -> Option<u64> {
+        self.buffers.lock().get(&virt_ptr).map(|e| e.owner)
+    }
+}
+
+/// Registry for physical address ownership tracking to prevent IOMMU mapping vulnerabilities.
+struct PhysOwnershipRegistry {
+    /// Mapping from physical start address to its size and owner domain ID.
+    ranges: Mutex<BTreeMap<u64, (usize, u64)>>,
+}
+
+impl PhysOwnershipRegistry {
+    const fn new() -> Self {
+        Self {
+            ranges: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn register(&self, phys: u64, size: usize, owner: u64) {
+        self.ranges.lock().insert(phys, (size, owner));
+    }
+
+    fn unregister(&self, phys: u64) {
+        self.ranges.lock().remove(&phys);
+    }
+
+    /// Check if a given physical range is fully owned by the specified domain.
+    fn is_owned_by(&self, phys: u64, size: usize, domain_id: u64) -> bool {
+        let ranges = self.ranges.lock();
+        // Find the range that starts at or before 'phys'
+        if let Some((&start, &(r_size, r_owner))) = ranges.range(..=phys).next_back() {
+            if r_owner == domain_id && phys >= start && (phys + size as u64) <= (start + r_size as u64) {
+                return true;
+            }
+        }
+        false
     }
 }
 
 static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
+static PHYS_OWNERSHIP_REGISTRY: PhysOwnershipRegistry = PhysOwnershipRegistry::new();
 
 // ============================================================================
 // NVMe DMA Context Registry (Option B-2: Full Abstraction)
@@ -256,6 +291,8 @@ struct NvmeDmaContextEntry {
     prp_list: Option<PrpListChain>,
     data_map: Option<IommuMapping>,
     logical_len: usize,
+    phys: u64,
+    owner: u64,
 }
 
 impl NvmeDmaContextEntry {
@@ -269,6 +306,9 @@ impl NvmeDmaContextEntry {
         if let Some(m) = self.data_map.take() {
             m.unmap();
         }
+        
+        // SECURITY: Physical ownership is unregistered in the service call
+        // using the phys field.
         data
     }
 }

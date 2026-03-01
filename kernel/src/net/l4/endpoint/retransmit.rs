@@ -12,7 +12,8 @@ use spin::RwLock;
 
 use super::segment::send_tcp_segment;
 use super::tcb::tcb_table;
-use super::types::SocketAddr;
+use super::timer_wheel::TimingWheel;
+use super::types::{SocketAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn};
 
 /// 未確認セグメント（再送用）
 #[derive(Debug, Clone)]
@@ -200,17 +201,15 @@ impl RetransmitQueue {
     }
 
     /// シーケンス番号比較（wrapping考慮）
+    /// typesモジュールの統一実装へ委譲
     pub fn seq_before(a: u32, b: u32) -> bool {
-        // aがbより前かどうか（wrapping考慮）
-        // a < b かつ (b - a) < 2^31
-        let diff = b.wrapping_sub(a);
-        diff > 0 && diff < (1 << 31)
+        seq_before_fn(a, b)
     }
 
     /// シーケンス番号比較（以下）
     #[allow(dead_code)]
     pub fn seq_leq(a: u32, b: u32) -> bool {
-        a == b || Self::seq_before(a, b)
+        seq_leq_fn(a, b)
     }
 }
 
@@ -220,13 +219,54 @@ impl Default for RetransmitQueue {
     }
 }
 
-/// グローバル再送キューテーブル
-static RETRANSMIT_QUEUES: RwLock<BTreeMap<(SocketAddr, SocketAddr), RetransmitQueue>> =
-    RwLock::new(BTreeMap::new());
+/// シャード数
+const RETRANSMIT_SHARD_COUNT: usize = 16;
+const RETRANSMIT_SHARD_MASK: usize = RETRANSMIT_SHARD_COUNT - 1;
+
+/// シャードインデックスを算出
+#[inline(always)]
+fn retransmit_shard_index(local: &SocketAddr, remote: &SocketAddr) -> usize {
+    (conn_key_hash(local, remote) as usize) & RETRANSMIT_SHARD_MASK
+}
+
+/// シャード化されたグローバル再送キューテーブル
+static RETRANSMIT_SHARDS: [RwLock<BTreeMap<(SocketAddr, SocketAddr), RetransmitQueue>>; RETRANSMIT_SHARD_COUNT] = {
+    const EMPTY: RwLock<BTreeMap<(SocketAddr, SocketAddr), RetransmitQueue>> =
+        RwLock::new(BTreeMap::new());
+    [EMPTY; RETRANSMIT_SHARD_COUNT]
+};
+
+/// グローバルタイミングホイール
+///
+/// 再送タイマーの満了検知を $O(1)$ amortized で行う。
+/// `retransmit_queue_push` 時にタイマーを登録し、
+/// `check_retransmit_timeouts` で満了した接続のみを処理する。
+static TIMER_WHEEL: spin::Mutex<Option<TimingWheel>> = spin::Mutex::new(None);
+
+/// タイミングホイールを初期化する（ネットワークスタック初期化時に呼ぶ）
+pub fn init_timer_wheel() {
+    let mut tw = TIMER_WHEEL.lock();
+    *tw = Some(TimingWheel::new());
+}
+
+/// タイミングホイールにタイマーを登録する内部ヘルパー
+fn schedule_retransmit_timer(local: SocketAddr, remote: SocketAddr, deadline: u64) {
+    if let Some(ref mut tw) = *TIMER_WHEEL.lock() {
+        tw.reschedule(local, remote, deadline);
+    }
+}
+
+/// タイミングホイールからタイマーをキャンセルする内部ヘルパー
+fn cancel_retransmit_timer(local: &SocketAddr, remote: &SocketAddr) {
+    if let Some(ref mut tw) = *TIMER_WHEEL.lock() {
+        tw.cancel(local, remote);
+    }
+}
 
 /// 再送キュー取得または作成
 pub fn get_or_create_retransmit_queue(local: SocketAddr, remote: SocketAddr) -> bool {
-    let mut queues = RETRANSMIT_QUEUES.write();
+    let idx = retransmit_shard_index(&local, &remote);
+    let mut queues = RETRANSMIT_SHARDS[idx].write();
     if !queues.contains_key(&(local, remote)) {
         queues.insert((local, remote), RetransmitQueue::new());
         true
@@ -238,24 +278,41 @@ pub fn get_or_create_retransmit_queue(local: SocketAddr, remote: SocketAddr) -> 
 /// 再送キューにセグメント追加
 pub fn retransmit_queue_push(local: SocketAddr, remote: SocketAddr, seq: u32, data: Vec<u8>) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
-    let mut queues = RETRANSMIT_QUEUES.write();
+    let idx = retransmit_shard_index(&local, &remote);
+    let mut queues = RETRANSMIT_SHARDS[idx].write();
     if let Some(queue) = queues.get_mut(&(local, remote)) {
+        // キューが空だった場合、タイミングホイールにタイマーを登録
+        let was_empty = queue.is_empty();
         queue.push(seq, data, current_tick);
+        if was_empty {
+            let deadline = current_tick + queue.get_rto();
+            schedule_retransmit_timer(local, remote, deadline);
+        }
     }
 }
 
 /// ACK受信時の再送キュー更新
 pub fn retransmit_queue_ack(local: SocketAddr, remote: SocketAddr, ack_num: u32) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
-    let mut queues = RETRANSMIT_QUEUES.write();
+    let idx = retransmit_shard_index(&local, &remote);
+    let mut queues = RETRANSMIT_SHARDS[idx].write();
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         queue.ack_received(ack_num, current_tick);
+        if queue.is_empty() {
+            // 全セグメント確認済み → タイマーキャンセル
+            cancel_retransmit_timer(&local, &remote);
+        } else {
+            // まだ未確認セグメントがある → タイマーを再スケジュール
+            let deadline = current_tick + queue.get_rto();
+            schedule_retransmit_timer(local, remote, deadline);
+        }
     }
 }
 
 /// SACKオプションで通知された領域を再送キューから取り除く
 pub fn retransmit_queue_process_sack(local: SocketAddr, remote: SocketAddr, blocks: &[(u32, u32)]) {
-    let mut queues = RETRANSMIT_QUEUES.write();
+    let idx = retransmit_shard_index(&local, &remote);
+    let mut queues = RETRANSMIT_SHARDS[idx].write();
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         // フィルタしてSACKで完全に被覆されるセグメントを削除
         let mut new_unacked = VecDeque::new();
@@ -276,43 +333,77 @@ pub fn retransmit_queue_process_sack(local: SocketAddr, remote: SocketAddr, bloc
             }
         }
         queue.unacked = new_unacked;
+        if queue.is_empty() {
+            cancel_retransmit_timer(&local, &remote);
+        }
     }
 }
 
 /// 再送キュー削除
 pub fn retransmit_queue_remove(local: SocketAddr, remote: SocketAddr) {
-    RETRANSMIT_QUEUES.write().remove(&(local, remote));
+    let idx = retransmit_shard_index(&local, &remote);
+    RETRANSMIT_SHARDS[idx].write().remove(&(local, remote));
+    cancel_retransmit_timer(&local, &remote);
 }
 
 /// タイマー駆動の再送チェック（定期的に呼ばれる）
+///
+/// タイミングホイールを使って、満了した接続のみを $O(1)$ amortized で取得し、
+/// 対象のシャードのみをロックして再送処理を行う。
+/// タイミングホイールが未初期化の場合はフォールバックとして全シャードを探索する。
 pub fn check_retransmit_timeouts() {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
-    let mut queues = RETRANSMIT_QUEUES.write();
-    let mut to_remove = Vec::new();
 
-    for ((local, remote), queue) in queues.iter_mut() {
-        if queue.check_timeout(current_tick).is_some() {
-            if let Some(segment_data) = queue.retransmit(current_tick) {
-                // 再送実行
-                send_tcp_segment(*local, *remote, segment_data);
-            } else {
-                // 最大再送回数超過 - 接続をリセット
-                log::info!(
-                    "TCP: Max retransmit exceeded for {:?} -> {:?}",
-                    local,
-                    remote
-                );
-                to_remove.push((*local, *remote));
+    // タイミングホイールから満了した接続を取得
+    let expired: Vec<(SocketAddr, SocketAddr)> = {
+        let mut tw_guard = TIMER_WHEEL.lock();
+        if let Some(ref mut tw) = *tw_guard {
+            tw.advance(current_tick)
+        } else {
+            // フォールバック: 全シャードを探索（ホイール未初期化時）
+            let mut result = Vec::new();
+            for shard in &RETRANSMIT_SHARDS {
+                let queues = shard.read();
+                for ((local, remote), queue) in queues.iter() {
+                    if queue.check_timeout(current_tick).is_some() {
+                        result.push((*local, *remote));
+                    }
+                }
+            }
+            result
+        }
+    };
 
-                // TCBも削除
-                tcb_table().remove(*local, *remote);
+    // 満了した各接続を処理
+    for (local, remote) in expired {
+        let idx = retransmit_shard_index(&local, &remote);
+        let mut queues = RETRANSMIT_SHARDS[idx].write();
+
+        if let Some(queue) = queues.get_mut(&(local, remote)) {
+            // 実際にタイムアウトしているか再確認（ホイールのスロット粒度による誤差対策）
+            if queue.check_timeout(current_tick).is_some() {
+                if let Some(segment_data) = queue.retransmit(current_tick) {
+                    // 再送実行
+                    send_tcp_segment(local, remote, segment_data);
+                    // 次のタイムアウトをスケジュール
+                    let deadline = current_tick + queue.get_rto();
+                    schedule_retransmit_timer(local, remote, deadline);
+                } else {
+                    // 最大再送回数超過 - 接続をリセット
+                    log::info!(
+                        "TCP: Max retransmit exceeded for {:?} -> {:?}",
+                        local,
+                        remote
+                    );
+                    queues.remove(&(local, remote));
+                    tcb_table().remove(local, remote);
+                }
+            } else if !queue.is_empty() {
+                // まだタイムアウトしていない → 再スケジュール
+                let deadline = current_tick + queue.get_rto();
+                schedule_retransmit_timer(local, remote, deadline);
             }
         }
-    }
-
-    // 削除対象をクリーンアップ
-    for key in to_remove {
-        queues.remove(&key);
     }
 }
 
@@ -431,7 +522,8 @@ pub mod tests {
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
 
         // 内部状態を確認（最初のセグメントが削除され、残り1件）
-        let qs = RETRANSMIT_QUEUES.read();
+        let idx = retransmit_shard_index(&local, &remote);
+        let qs = RETRANSMIT_SHARDS[idx].read();
         let q = qs.get(&(local, remote)).unwrap();
         assert_eq!(q.unacked.len(), 1);
         assert_eq!(q.unacked.front().unwrap().seq, 1003);
@@ -544,7 +636,8 @@ pub mod qemu_tests {
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
 
         let ok = {
-            let qs = RETRANSMIT_QUEUES.read();
+            let idx = retransmit_shard_index(&local, &remote);
+            let qs = RETRANSMIT_SHARDS[idx].read();
             let Some(q) = qs.get(&(local, remote)) else {
                 return false;
             };

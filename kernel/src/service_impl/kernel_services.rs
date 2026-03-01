@@ -59,15 +59,20 @@ impl KernelServices for ExoKernel {
     // ========================================================================
 
     fn alloc_dma(&self, size: usize) -> Result<DmaBuffer, KapiError> {
+        let caller = context::current_subject().domain.as_u64();
         // Use CoherentDmaBuffer for proper DMA allocation with correct physical address
         match dma::CoherentDmaBuffer::new(size, dma::DmaMemoryAttributes::MMIO) {
             Some(buffer) => {
                 let phys = buffer.phys_addr().as_u64();
                 let dev_addr = buffer.device_addr();
                 let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
+                
+                // SECURITY: Track physical address ownership
+                PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
+
                 // Box up the buffer and register by virtual address so it can be freed later
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
-                DMA_REGISTRY.register_with_key(virt_ptr, boxed);
+                DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
                 Ok(DmaBuffer::new_with_device_addr(phys, dev_addr, virt_ptr as *mut u8, size))
             }
             None => Err(KapiError::OutOfMemory),
@@ -75,6 +80,7 @@ impl KernelServices for ExoKernel {
     }
 
     fn alloc_dma_for_device(&self, size: usize, device_id: u64) -> Result<DmaBuffer, KapiError> {
+        let caller = context::current_subject().domain.as_u64();
         let dev_id = unpack_device_id(device_id);
         match dma::CoherentDmaBuffer::new_for_device(size, dma::DmaMemoryAttributes::MMIO, &dev_id) {
             Some(buffer) => {
@@ -82,8 +88,11 @@ impl KernelServices for ExoKernel {
                 let dev_addr = buffer.device_addr();
                 let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
                 
+                // SECURITY: Track physical address ownership
+                PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
+
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
-                DMA_REGISTRY.register_with_key(virt_ptr, boxed);
+                DMA_REGISTRY.register_with_key(virt_ptr, boxed, phys, caller);
                 Ok(DmaBuffer::new_with_device_addr(phys, dev_addr, virt_ptr as *mut u8, size))
             }
             None => Err(KapiError::OutOfMemory),
@@ -91,9 +100,22 @@ impl KernelServices for ExoKernel {
     }
 
     fn free_dma(&self, buffer: DmaBuffer) {
+        let caller = context::current_subject().domain.as_u64();
         // Try to lookup the registered buffer by its virtual pointer
         let virt_ptr = buffer.as_ptr() as usize;
-        if DMA_REGISTRY.unregister(virt_ptr).is_some() {
+
+        // SECURITY: Verify that the caller actually owns this buffer before freeing.
+        if let Some(owner) = DMA_REGISTRY.get_owner(virt_ptr) {
+            if owner != caller {
+                log::error!("[KAPI][SECURITY] free_dma: Domain {} tried to free buffer owned by Domain {}", caller, owner);
+                return;
+            }
+        }
+
+        if let Some(entry) = DMA_REGISTRY.unregister(virt_ptr) {
+            // SECURITY: Unregister using the physical address from the kernel's registry,
+            // NOT the one provided by the potentially malicious caller in the DmaBuffer struct.
+            PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
             // Successfully unregistered and dropped
             return;
         }
@@ -520,10 +542,14 @@ impl KernelServices for ExoKernel {
             return Err(KapiError::IoError);
         }
 
+        let caller = context::current_subject().domain.as_u64();
         let alloc_len = align_up_page(len);
         let data = TypedDmaSlice::<CpuOwned>::new(alloc_len)
             .ok_or(KapiError::OutOfMemory)?;
         let data_phys = data.phys_addr().as_u64();
+
+        // SECURITY: Track physical address ownership
+        PHYS_OWNERSHIP_REGISTRY.register(data_phys, alloc_len, caller);
 
         let device = crate::io::nvme::iommu_device();
         let (data_addr, data_map) = map_for_iommu(device, data_phys, alloc_len)?;
@@ -537,6 +563,8 @@ impl KernelServices for ExoKernel {
             prp_list,
             data_map,
             logical_len: len,
+            phys: data_phys,
+            owner: caller,
         };
 
         let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
@@ -548,6 +576,7 @@ impl KernelServices for ExoKernel {
             return Err(KapiError::IoError);
         }
 
+        let caller = context::current_subject().domain.as_u64();
         let alloc_len = align_up_page(data.len());
         let mut dma_buf = TypedDmaSlice::<CpuOwned>::new(alloc_len)
             .ok_or(KapiError::OutOfMemory)?;
@@ -559,6 +588,10 @@ impl KernelServices for ExoKernel {
         }
 
         let data_phys = dma_buf.phys_addr().as_u64();
+
+        // SECURITY: Track physical address ownership
+        PHYS_OWNERSHIP_REGISTRY.register(data_phys, alloc_len, caller);
+
         let device = crate::io::nvme::iommu_device();
         let (data_addr, data_map) = map_for_iommu(device, data_phys, alloc_len)?;
         let (prp2, prp_list) = build_prp_list_internal(device, data_addr, alloc_len)?;
@@ -571,6 +604,8 @@ impl KernelServices for ExoKernel {
             prp_list,
             data_map,
             logical_len: data.len(),
+            phys: data_phys,
+            owner: caller,
         };
 
         let id = NVME_DMA_CONTEXT_REGISTRY.register(entry);
@@ -580,6 +615,18 @@ impl KernelServices for ExoKernel {
     fn nvme_complete_dma_read(&self, handle: NvmeDmaHandle) -> KapiResult<alloc::vec::Vec<u8>> {
         let entry = NVME_DMA_CONTEXT_REGISTRY.unregister(handle.id())
             .ok_or(KapiError::InvalidHandle)?;
+        
+        // SECURITY: Verify owner
+        let caller = context::current_subject().domain.as_u64();
+        if entry.owner != caller {
+            log::error!("[KAPI][SECURITY] nvme_complete_dma_read: Domain {} tried to complete DMA owned by Domain {}", caller, entry.owner);
+            // Re-register to avoid losing it? No, better fail.
+            return Err(KapiError::PermissionDenied);
+        }
+
+        // Unregister physical ownership
+        PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
+
         let logical_len = entry.logical_len;
         let dma_slice = entry.complete();
 
@@ -592,6 +639,17 @@ impl KernelServices for ExoKernel {
     fn nvme_complete_dma_write(&self, handle: NvmeDmaHandle) -> KapiResult<()> {
         let entry = NVME_DMA_CONTEXT_REGISTRY.unregister(handle.id())
             .ok_or(KapiError::InvalidHandle)?;
+
+        // SECURITY: Verify owner
+        let caller = context::current_subject().domain.as_u64();
+        if entry.owner != caller {
+            log::error!("[KAPI][SECURITY] nvme_complete_dma_write: Domain {} tried to complete DMA owned by Domain {}", caller, entry.owner);
+            return Err(KapiError::PermissionDenied);
+        }
+
+        // Unregister physical ownership
+        PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
+
         let _ = entry.complete();
         Ok(())
     }
@@ -610,6 +668,16 @@ impl KernelServices for ExoKernel {
         phys_addr: u64,
         size: usize,
     ) -> KapiResult<(u64, u64)> {
+        let caller = context::current_subject().domain.as_u64();
+
+        // SECURITY: Verify that the caller actually owns the physical range being mapped.
+        // This prevents a malicious driver from mapping kernel memory or other drivers' memory.
+        if !PHYS_OWNERSHIP_REGISTRY.is_owned_by(phys_addr, size, caller) {
+            log::error!("[KAPI][SECURITY] nvme_iommu_map: Domain {} tried to map unowned physical range {:#x}-{:#x}", 
+                caller, phys_addr, phys_addr + size as u64);
+            return Err(KapiError::PermissionDenied);
+        }
+
         let device = crate::io::nvme::iommu_device();
         let (iova, mapping) = map_for_iommu(device, phys_addr, size)?;
         
