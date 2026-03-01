@@ -1,0 +1,16 @@
+// ============================================================================
+// kernel/src/net/services/http/mod.rs
+// ============================================================================
+//!
+//! # HTTP/HTTPS クライアント実装
+//!
+//! ExoRust カーネル用の非同期・ゼロコピー指向 HTTP/1.1 クライアントです。
+//! 既存の `TcpStream` および `TlsConnection` を統合し、セキュアなHTTPSリクエストを
+//! フルスクラッチでサポートします。
+
+pub mod client;
+pub mod parser;
+pub mod types;
+
+pub use client::HttpClient;
+pub use types::{HttpRequest, HttpResponse, HttpMethod, HttpVersion, HttpHeader};
