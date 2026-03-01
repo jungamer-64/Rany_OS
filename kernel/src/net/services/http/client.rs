@@ -10,7 +10,7 @@ use crate::net::services::dns::resolve_cached;
 use super::types::{HttpRequest, HttpResponse};
 use super::parser::{HttpParser, HttpParseError};
 use crate::net::security::tls::connection::TlsConnection;
-use crate::net::security::tls::types::TlsConfig;
+use crate::net::security::tls::types::{TlsConfig, TlsState};
 
 #[derive(Debug)]
 pub enum HttpClientError {
@@ -120,8 +120,7 @@ impl HttpClient {
         // 3. 通信 (TLS or 平文)
         if is_https {
             // HTTPS
-            let mut tls_config = TlsConfig::default();
-            tls_config.with_server_name(&host);
+            let tls_config = TlsConfig::default().with_server_name(&host);
             let mut tls = Box::new(TlsConnection::new(tls_config));
 
             // ClientHello 送信
@@ -129,20 +128,46 @@ impl HttpClient {
             write_all(&mut stream, &client_hello).await?;
 
             // ハンドシェイク
-            while !tls.is_handshake_complete() {
+            while tls.state() != TlsState::Established && tls.state() != TlsState::Error {
                 let mut in_buf = [0u8; 4096];
                 let read_len = stream.read(&mut in_buf).await.map_err(|_| HttpClientError::ReadError)?;
                 if read_len == 0 {
                     return Err(HttpClientError::TlsHandshakeFailed);
                 }
 
-                // 入力を処理し、送り返す必要のあるデータがあれば送信
-                let reply_data = tls.process_incoming(&in_buf[..read_len])
+                // 受信データを処理
+                let _app_data = tls.process_incoming(&in_buf[..read_len])
                     .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
-                
-                if !reply_data.is_empty() {
-                    write_all(&mut stream, &reply_data).await?;
+
+                // 状態遷移に応じた応答を構築して送信
+                match tls.state() {
+                    TlsState::Handshaking => {
+                        // TLS 1.2: ServerHelloDone 受信後
+                        if let Some(cke) = tls.build_client_key_exchange() {
+                            write_all(&mut stream, &cke).await?;
+                        } else if let Some(cke_rsa) = tls.build_client_key_exchange_rsa() {
+                            write_all(&mut stream, &cke_rsa).await?;
+                        }
+                        
+                        let ccs = tls.build_change_cipher_spec();
+                        write_all(&mut stream, &ccs).await?;
+                        
+                        if let Ok(fin) = tls.build_client_finished_tls12() {
+                            write_all(&mut stream, &fin).await?;
+                        }
+                    }
+                    TlsState::Tls13ServerFinishedReceived => {
+                        // TLS 1.3: Server Finished 受信後
+                        if let Ok(fin) = tls.build_client_finished_tls13() {
+                            write_all(&mut stream, &fin).await?;
+                        }
+                    }
+                    _ => {}
                 }
+            }
+
+            if tls.state() != TlsState::Established {
+                return Err(HttpClientError::TlsHandshakeFailed);
             }
 
             // HTTPリクエストの暗号化と送信
@@ -158,18 +183,14 @@ impl HttpClient {
                     break; // EOF
                 }
 
-                let reply_data = tls.process_incoming(&in_buf[..read_len])
+                let app_data = tls.process_incoming(&in_buf[..read_len])
                     .map_err(|_| HttpClientError::ReadError)?;
-                if !reply_data.is_empty() {
-                    write_all(&mut stream, &reply_data).await?;
+                
+                // KeyUpdate 等のポストハンドシェイク応答があれば送信
+                if let Some(resp) = tls.build_key_update_response() {
+                    write_all(&mut stream, &resp).await?;
                 }
                 
-                // process_incomingの後に復号されたアプリケーションデータを取得
-                // TlsConnectionはアプリケーションデータを受信すると recv_buffer に蓄積するか
-                // またはここでどうにか取り出す必要がある。
-                // read_application_data メソッドがないため、TLSスタックのAPIに従う必要がある
-                // NOTE: ExoRust の TlsConnection の仕様に合わせる
-                let app_data = tls.read_application_data();
                 if !app_data.is_empty() {
                     parser.push_data(&app_data);
                     
