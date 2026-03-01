@@ -46,6 +46,7 @@ members = [
 ]
 exclude = ["tools/framebuffer_bench", "tools/signer", "tools/symlookup"]
 default-members = [
+    "kernel",
     "libs/boot_config",
     "libs/security",
     "interfaces/kernel_api",

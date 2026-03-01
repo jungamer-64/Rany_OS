@@ -363,6 +363,12 @@ impl NetworkStack {
             None => return,
         };
 
+        // Security: Minimum length and version check (RFC 8200)
+        if data.len() < 40 || (data[0] >> 4) != 6 {
+            self.stats.record_header_error();
+            return;
+        }
+
         // Check for fragment header before normal processing
         use crate::net::l3::ipv6::{skip_extension_headers_fraginfo, ExtHeaderResult};
         match skip_extension_headers_fraginfo(data) {
@@ -379,21 +385,25 @@ impl NetworkStack {
                     return;
                 }
 
-                // Extract src/dst from fixed header for the fragment key
-                if data.len() < 40 {
-                    self.stats.record_dropped();
-                    return;
-                }
-                let src = crate::net::l3::ipv6::Ipv6Address::new([
-                    data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
-                    data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
-                ]);
+                // Extract dst from fixed header at offset 24
                 let dst = crate::net::l3::ipv6::Ipv6Address::new([
                     data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
                     data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
                 ]);
 
-                let (reassembled, expired) = self.ipv6_fragment_reassembler.process_fragment(
+                // Security: Check if the packet is for us before adding to reassembly buffer (DoS prevention)
+                if !ipv6.is_for_us(&dst) {
+                    self.stats.record_dropped();
+                    return;
+                }
+
+                // Extract src from fixed header at offset 8
+                let src = crate::net::l3::ipv6::Ipv6Address::new([
+                    data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
+                    data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
+                ]);
+
+                let (reassembled_pkt, expired) = self.ipv6_fragment_reassembler.process_fragment(
                     src,
                     dst,
                     unfragmentable,
@@ -406,16 +416,24 @@ impl NetworkStack {
                 for (exp_src, exp_dst, unfrag) in expired {
                     // RFC 8200: Send Fragment Reassembly Time Exceeded
                     // code 1 = fragment reassembly time exceeded
+                    
+                    // Security: Rate limit ICMPv6 error messages (RFC 4443)
+                    if let Some(ref icmpv6) = self.icmpv6 {
+                        if !icmpv6.check_tx_rate_limit(current_time) {
+                            continue;
+                        }
+                    }
+
                     let time_exceeded = crate::net::l3::icmpv6::Icmpv6EchoBuilder::build_time_exceeded(
                         &exp_dst, &exp_src, 1, &unfrag
                     );
                     self.send_ipv6_icmpv6(&exp_dst, &exp_src, &time_exceeded);
                 }
 
-                if let Some(reassembled_pkt) = reassembled {
+                if let Some(reassembled_data) = reassembled_pkt {
                     // Recursively process the reassembled (non-fragmented) packet
                     // Set reassembled=true to prevent further fragmentation processing
-                    self.process_ipv6_data(&reassembled_pkt, current_time, src_mac, true);
+                    self.process_ipv6_data(&reassembled_data, current_time, src_mac, true);
                 }
                 return;
             }
@@ -510,9 +528,9 @@ impl NetworkStack {
             } => {
                 self.process_ndp_message(msg_type, &ndp_data, ndp_src, ndp_dst, ndp_src_mac, hop_limit, current_time);
             }
-            Icmpv6Result::PacketTooBig { quoted_src, dst, mtu } => {
-                // Security check (RFC 8201): Verify that the ICMPv6 message quotes a packet 
-                // that we actually sent. The quoted Source IP must be one of our local addresses.
+            Icmpv6Result::PacketTooBig { quoted_src, dst, mtu, quoted_packet } => {
+                // Security check (RFC 8201 / RFC 5927): Verify that the ICMPv6 message quotes 
+                // a packet that we actually sent and corresponds to an active connection.
                 let mut is_our_packet = false;
                 if let Some(ref ipv6) = self.ipv6 {
                     let config = ipv6.config();
@@ -526,6 +544,48 @@ impl NetworkStack {
                 }
 
                 if is_our_packet {
+                    // Further validation: check transport layer (ports/sequence numbers)
+                    // Quoted packet starts with an IPv6 header (40 bytes)
+                    if quoted_packet.len() >= 40 {
+                        let next_header = quoted_packet[6];
+                        let payload = &quoted_packet[40..];
+
+                        // Skip extension headers to find the upper-layer header
+                        use crate::net::l3::ipv6::skip_extension_headers;
+                        let (final_proto, transport_data) = skip_extension_headers(IpProtocol::from(next_header), payload);
+
+                        match final_proto {
+                            IpProtocol::Tcp => {
+                                if transport_data.len() >= 8 {
+                                    let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                                    let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
+                                    let seq_num = u32::from_be_bytes([transport_data[4], transport_data[5], transport_data[6], transport_data[7]]);
+
+                                    use crate::net::l4::tcp::SocketAddr as TcpSocketAddr;
+                                    let local_addr = TcpSocketAddr::new_v6(quoted_src, src_port);
+                                    let remote_addr = TcpSocketAddr::new_v6(dst, dst_port);
+
+                                    if !self.tcp.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
+                                        log::warn!("[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq", dst);
+                                        return;
+                                    }
+                                }
+                            }
+                            IpProtocol::Udp => {
+                                if transport_data.len() >= 4 {
+                                    let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                                    if !self.udp.has_socket(src_port) {
+                                        log::warn!("[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})", dst, src_port);
+                                        return;
+                                    }
+                                }
+                            }
+                            _ => {
+                                // For other protocols, we've already checked the IP addresses
+                            }
+                        }
+                    }
+
                     log::info!("ICMPv6: Packet Too Big for {}, MTU={}", dst, mtu);
                     // Update IPv6 Path MTU cache (RFC 8201)
                     let current_time = self.current_time();

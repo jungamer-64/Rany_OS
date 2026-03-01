@@ -129,6 +129,13 @@ impl NetworkStats {
         trace::push_event(NetLayer::L4, NetEventKind::Error, "stack tx error");
     }
 
+    /// Record header parse error
+    pub fn record_header_error(&self) {
+        self.rx_errors.fetch_add(1, Ordering::Relaxed);
+        counters::global().record_error();
+        trace::push_event(NetLayer::L3, NetEventKind::Error, "header error");
+    }
+
     /// Record dropped packet
     pub fn record_dropped(&self) {
         self.rx_dropped.fetch_add(1, Ordering::Relaxed);

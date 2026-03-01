@@ -82,7 +82,7 @@ impl Ipv6Processor {
     }
 
     /// Check if a destination address is for this interface
-    pub(super) fn is_for_us(&self, addr: &Ipv6Address) -> bool {
+    pub(crate) fn is_for_us(&self, addr: &Ipv6Address) -> bool {
         // Direct matches: link-local, all-nodes multicast, solicited-node, loopback
         if *addr == self.config.link_local
             || *addr == Ipv6Address::ALL_NODES_LINK_LOCAL

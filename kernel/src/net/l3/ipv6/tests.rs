@@ -356,3 +356,105 @@ pub fn test_pmtu_cache_evict_expired_cleans_entries_and_lru() {
     );
     assert_eq!(cache.get(&dst_b, Ipv6PmtuEntry::TIMEOUT_MS + 1), 1390);
 }
+
+// --- Fragmentation tests ---
+
+#[cfg_attr(test, test_case)]
+pub fn test_ipv6_fragment_header_parse() {
+    let mut data = [0u8; 8];
+    data[0] = 6; // next header = TCP
+    data[2] = 0x00; data[3] = 0x09; // offset = 1, M = 1
+    data[4] = 0x11; data[5] = 0x22; data[6] = 0x33; data[7] = 0x44; // ID
+
+    let frag = Ipv6FragmentHeader::parse(&data).expect("parse failed");
+    assert_eq!(frag.next_header, 6);
+    assert_eq!(frag.fragment_offset, 1);
+    assert_eq!(frag.more_fragments, true);
+    assert_eq!(frag.identification, 0x11223344);
+    assert_eq!(frag.offset_bytes(), 8);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ipv6_fragment_reassembly_success() {
+    let mut reassembler = Ipv6FragmentReassembler::new(4);
+    let src = Ipv6Address::LOOPBACK;
+    let dst = Ipv6Address::LOOPBACK;
+    let id = 0x12345678;
+    let now = 1000;
+
+    // Unfragmentable part (IPv6 header, next=44)
+    let mut unfrag = [0u8; 40];
+    unfrag[0] = 0x60;
+    unfrag[6] = 44; // Fragment header
+    src.as_bytes().iter().enumerate().for_each(|(i, &b)| unfrag[8+i] = b);
+    dst.as_bytes().iter().enumerate().for_each(|(i, &b)| unfrag[24+i] = b);
+
+    // Fragment 1: offset=0, M=1, next=58 (ICMPv6)
+    let frag1_hdr = Ipv6FragmentHeader {
+        next_header: 58,
+        fragment_offset: 0,
+        more_fragments: true,
+        identification: id,
+    };
+    let payload1 = [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // 8 bytes
+
+    let (res1, _) = reassembler.process_fragment(src, dst, &unfrag, &frag1_hdr, &payload1, now);
+    assert!(res1.is_none());
+    assert_eq!(reassembler.active_buffers(), 1);
+
+    // Fragment 2: offset=1 (8 bytes), M=0
+    let frag2_hdr = Ipv6FragmentHeader {
+        next_header: 58,
+        fragment_offset: 1,
+        more_fragments: false,
+        identification: id,
+    };
+    let payload2 = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22];
+
+    let (res2, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2_hdr, &payload2, now);
+    let packet = res2.expect("reassembly failed");
+    assert_eq!(reassembler.active_buffers(), 0);
+
+    // Check reassembled packet
+    assert_eq!(packet.len(), 40 + 16);
+    assert_eq!(packet[6], 58); // Patched Next Header (ICMPv6)
+    assert_eq!(u16::from_be_bytes([packet[4], packet[5]]), 16); // Patched Payload Length
+    assert_eq!(&packet[40..48], &payload1);
+    assert_eq!(&packet[48..56], &payload2);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ipv6_fragment_overlap_rejection() {
+    let mut reassembler = Ipv6FragmentReassembler::new(4);
+    let src = Ipv6Address::LOOPBACK;
+    let dst = Ipv6Address::LOOPBACK;
+    let id = 0x999;
+
+    let unfrag = [0u8; 40];
+    let frag1 = Ipv6FragmentHeader { next_header: 6, fragment_offset: 0, more_fragments: true, identification: id };
+    let frag2 = Ipv6FragmentHeader { next_header: 6, fragment_offset: 1, more_fragments: false, identification: id };
+    
+    reassembler.process_fragment(src, dst, &unfrag, &frag1, &[0xaa; 16], 0);
+    
+    // Overlapping fragment (starts at offset 8, but offset 0-16 already filled)
+    let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2, &[0xbb; 8], 0);
+    assert!(res.is_none());
+    assert_eq!(reassembler.stats().dropped_invalid, 1);
+    assert_eq!(reassembler.active_buffers(), 0); // Entire datagram discarded on overlap
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ipv6_fragment_tiny_attack_rejection() {
+    let mut reassembler = Ipv6FragmentReassembler::new(4);
+    let src = Ipv6Address::LOOPBACK;
+    let dst = Ipv6Address::LOOPBACK;
+    
+    // First fragment with only 4 bytes of payload (ICMPv6 header is 8 bytes)
+    // This violates RFC 7112 (entire header chain must be in first fragment)
+    let unfrag = [0u8; 40];
+    let frag = Ipv6FragmentHeader { next_header: 58, fragment_offset: 0, more_fragments: true, identification: 0x123 };
+    
+    let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag, &[0x00; 4], 0);
+    assert!(res.is_none());
+    assert_eq!(reassembler.stats().dropped_invalid, 1);
+}

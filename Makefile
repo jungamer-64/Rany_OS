@@ -46,14 +46,18 @@ all: build
 build:
 	@echo "Building ExoRust kernel..."
 	rustup run nightly $(CARGO) build --target $(TARGET).json \
-		-Zunstable-options -Zjson-target-spec -Zbuild-std=core,alloc
+		-Zunstable-options -Zjson-target-spec \
+		-Zbuild-std=core,compiler_builtins,alloc \
+		-Zbuild-std-features=compiler-builtins-mem
 	@echo "Build complete: $(BUILD_DIR)"
 
 # リリースビルド
 release:
 	@echo "Building ExoRust kernel (release)..."
 	rustup run nightly $(CARGO) build --target $(TARGET).json --release \
-		-Zunstable-options -Zjson-target-spec -Zbuild-std=core,alloc
+		-Zunstable-options -Zjson-target-spec \
+		-Zbuild-std=core,compiler_builtins,alloc \
+		-Zbuild-std-features=compiler-builtins-mem
 	@echo "Release build complete"
 
 # カーネルを実行

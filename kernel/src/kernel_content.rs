@@ -323,17 +323,13 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     if io::iommu::api::is_iommu_enabled() {
         // Security: Protect BIOS/UEFI reserved regions from DMA.
         // This is called after IOMMU security init in init_iommu_from_acpi.
-        io::log::early_print("[DEBUG] before protect_bios_reserved_regions\n");
         io::iommu::runtime::security::protect_bios_reserved_regions(boot_info);
-        io::log::early_print("[DEBUG] after protect_bios_reserved_regions\n");
 
-        io::log::early_print("[DEBUG] before init_panic_dma_pool_default\n");
         if let Err(e) = io::iommu::runtime::panic::init_panic_dma_pool_default() {
             warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
         } else {
             info!(target: "init", "IOMMU panic DMA pool initialized");
         }
-        io::log::early_print("[DEBUG] after init_panic_dma_pool_default\n");
     }
 
     match parser.find_table(b"MCFG") {

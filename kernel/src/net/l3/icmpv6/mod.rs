@@ -207,6 +207,8 @@ pub enum Icmpv6Result {
         dst: Ipv6Address,
         /// MTU from the message
         mtu: u32,
+        /// Quoted portion of the original packet for validation (ports/seq)
+        quoted_packet: Vec<u8>,
     },
     /// Packet dropped (unknown type, checksum error, etc.)
     Dropped,
@@ -247,10 +249,10 @@ pub struct Icmpv6Processor {
     echo_enabled: bool,
     /// Statistics
     stats: Icmpv6Stats,
-    /// Rate limiting: last time an echo reply was sent (ms)
-    last_echo_reply_time: AtomicU64,
-    /// Rate limiting: tokens for bucket
-    echo_reply_tokens: AtomicU32,
+    /// Rate limiting: last time tokens were added (ms)
+    last_token_time: AtomicU64,
+    /// Rate limiting: tokens for bucket (general TX rate limit)
+    tx_tokens: AtomicU32,
 }
 
 impl Icmpv6Processor {
@@ -259,9 +261,39 @@ impl Icmpv6Processor {
         Self {
             echo_enabled,
             stats: Icmpv6Stats::default(),
-            last_echo_reply_time: AtomicU64::new(0),
-            echo_reply_tokens: AtomicU32::new(10), // Initial burst capacity
+            last_token_time: AtomicU64::new(0),
+            tx_tokens: AtomicU32::new(20), // Initial burst capacity
         }
+    }
+
+    /// Check if an outgoing message is allowed by the rate limiter
+    ///
+    /// This should be called before sending ANY ICMPv6 error message
+    /// and optionally for informational messages.
+    pub fn check_tx_rate_limit(&self, current_time: u64) -> bool {
+        // Token Bucket: Add 1 token per 50ms (20 packets/sec)
+        let last_time = self.last_token_time.load(Ordering::Relaxed);
+        let elapsed = current_time.saturating_sub(last_time);
+        let new_tokens = (elapsed / 50) as u32;
+        
+        if new_tokens > 0 {
+            // Atomic update of tokens and time
+            // Note: simple load/store is usually fine for rate limiting in a kernel,
+            // but we use Relaxed atomic ops to be safe across cores.
+            let old_tokens = self.tx_tokens.load(Ordering::Relaxed);
+            let val = (old_tokens + new_tokens).min(50); // Max burst 50
+            self.tx_tokens.store(val, Ordering::Relaxed);
+            self.last_token_time.store(current_time, Ordering::Relaxed);
+        }
+
+        let current_tokens = self.tx_tokens.load(Ordering::Relaxed);
+        if current_tokens == 0 {
+            self.stats.dropped_rate_limit.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        
+        self.tx_tokens.fetch_sub(1, Ordering::Relaxed);
+        true
     }
 
     /// Get stats reference
@@ -304,25 +336,10 @@ impl Icmpv6Processor {
             Icmpv6Type::EchoRequest => {
                 self.stats.rx_echo_requests.fetch_add(1, Ordering::Relaxed);
 
-                // Rate limiting (Token Bucket)
-                // Add 1 token per 100ms
-                let last_time = self.last_echo_reply_time.load(Ordering::Relaxed);
-                let elapsed = current_time.saturating_sub(last_time);
-                let new_tokens = (elapsed / 100) as u32;
-                
-                if new_tokens > 0 {
-                    let old_tokens = self.echo_reply_tokens.load(Ordering::Relaxed);
-                    let val = (old_tokens + new_tokens).min(20);
-                    self.echo_reply_tokens.store(val, Ordering::Relaxed);
-                    self.last_echo_reply_time.store(current_time, Ordering::Relaxed);
-                }
-
-                let current_tokens = self.echo_reply_tokens.load(Ordering::Relaxed);
-                if current_tokens == 0 {
-                    self.stats.dropped_rate_limit.fetch_add(1, Ordering::Relaxed);
+                // Informational messages are also rate-limited
+                if !self.check_tx_rate_limit(current_time) {
                     return Icmpv6Result::Dropped;
                 }
-                self.echo_reply_tokens.fetch_sub(1, Ordering::Relaxed);
 
                 self.handle_echo_request(data, src, dst)
             }
@@ -428,11 +445,15 @@ impl Icmpv6Processor {
             let mut dst_arr = [0u8; 16];
             dst_arr.copy_from_slice(dst_bytes);
             let quoted_dst = Ipv6Address::new(dst_arr);
+
+            // Quoted packet portion starts at offset 8 (IPv6 header + extension headers + upper layer)
+            let quoted_packet = data[8..].to_vec();
             
             Icmpv6Result::PacketTooBig { 
                 quoted_src,
                 dst: quoted_dst, 
-                mtu 
+                mtu,
+                quoted_packet,
             }
         } else {
             // Not enough data to extract destination, but we still have the MTU.

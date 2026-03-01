@@ -245,13 +245,10 @@ pub mod p256 {
             result
         }
 
-        /// ビッグエンディアン32バイトからフィールド要素を生成
-        pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
+        /// ビッグエンディアン32バイトからフィールド要素を生成。
+        /// 範囲チェックを行い、p 以上の場合は None を返す。
+        pub fn from_be_bytes(bytes: &[u8; 32]) -> Option<Self> {
             let mut limbs = [0u64; 4];
-            // bytes[0..8] → 最上位リム (limbs[3])
-            // bytes[8..16] → limbs[2]
-            // bytes[16..24] → limbs[1]
-            // bytes[24..32] → 最下位リム (limbs[0])
             for i in 0..4 {
                 let offset = (3 - i) * 8;
                 limbs[i] = u64::from_be_bytes([
@@ -265,7 +262,24 @@ pub mod p256 {
                     bytes[offset + 7],
                 ]);
             }
-            Self { limbs }
+
+            // 範囲チェック (val < p)
+            let mut is_less = false;
+            for i in (0..4).rev() {
+                if limbs[i] < P[i] {
+                    is_less = true;
+                    break;
+                }
+                if limbs[i] > P[i] {
+                    return None;
+                }
+            }
+            if !is_less {
+                // val == p
+                return None;
+            }
+
+            Some(Self { limbs })
         }
 
         /// ビッグエンディアン32バイトへエンコード
@@ -297,6 +311,7 @@ pub mod p256 {
         let mut words = [0u32; 8];
         for i in 0..8 {
             acc[i] += carry;
+            // 右シフトは算術シフトであることを期待 (i64)
             carry = acc[i] >> 32;
             words[i] = (acc[i] & 0xFFFFFFFF) as u32;
         }
@@ -311,54 +326,31 @@ pub mod p256 {
 
     /// キャリーと最終正規化を適用して result mod p を返す (Constant-time version)
     fn normalize_mod_p(result: P256FieldElement, carry: i64) -> P256FieldElement {
-        // NISTリダクションの結果は -4p < res < 6p の範囲に収まる。
-        // キャリー（256ビット境界を超える分）を正規化するため、
-        // 常に最大回数の加算/減算を行い、ct_select で必要な結果を選ぶ。
-        
         let p_fe = P256FieldElement { limbs: P };
-
-        // 負のキャリー（最大4回）を解消するために4pを加算
-        for _ in 0..4 {
-            let _added = result.add(&p_fe);
-            let _condition = (carry < 0) as u8; // 実際にはキャリーの値に応じて微調整が必要だが、
-                                              // ここでは単純化のため carry ごとに ct_select
-            // 実際には carry は固定ではないので、このループも改善が必要
-        }
-        
-        // より正確な定数時間実装: 
-        // 1. 中間値に 4p を加算して確実に正にする。
-        // 2. その後、適切な回数 p を減算する。
-        
         let mut val = result;
-        // -4p までの負値をカバーするため 4p 加算
-        // carry は carry_propagate_to_limbs からの上位ビット
-        // 実際には carry * 2^256 を足し引きする必要がある。
+
+        // NISTリダクションの結果は -4p < res < 6p の範囲に収まる。
+        // キャリー (2^256の倍数) を定数時間で処理する。
         
-        // 簡易的かつ安全な定数時間化:
-        // P256FieldElement::add/sub が定数時間になったので、
-        // carry の絶対値の最大(6)だけループして ct_select する。
-        
+        // 1. carry * 2^256 を加算/減算するのと同等の処理
+        // 実際には carry は limbs の外側にあるため、
+        // val = val - carry * p (mod p) を計算すればよい (carry * 2^256 = carry * p mod p)
+        // ただし p は 2^256 に近いため、単純に carry の回数だけ p を足し引きする。
+
+        // 正のキャリーを処理 (最大6回)
         for i in 1..=6 {
             let subbed = val.sub(&p_fe);
-            // Constant-time: carry >= i
-            let diff = carry.wrapping_sub(i as i64);
-            let condition = ((diff >> 63) ^ 1) as u8;
+            let condition = (carry >= i as i64) as u8;
             val = P256FieldElement::ct_select(&val, &subbed, condition);
         }
+
+        // 負のキャリーを処理 (最大4回)
         for i in 1..=4 {
             let added = val.add(&p_fe);
-            // Constant-time: carry <= -i  <=>  carry + i <= 0
-            let sum = carry.wrapping_add(i as i64);
-            let condition = ((sum.wrapping_sub(1) >> 63) & 1) as u8;
+            let condition = (carry <= -(i as i64)) as u8;
             val = P256FieldElement::ct_select(&val, &added, condition);
         }
 
-        // 最後に [0, p) に収めるための最終調整 (add/sub 内部で行われるが念のため)
-        let _subbed = val.sub(&p_fe);
-        let _is_above = 1u8; // sub内部で判定される
-        // 実は add/sub 自体が mod p 正規化を行うので、
-        // ここでのループは carry (256ビット超え) の処理に専念すればよい。
-        
         val
     }
 
