@@ -407,8 +407,8 @@ pub unsafe fn send_eoi(irq: u8) {
         crate::io::outb(PIC2_COMMAND, 0x20); // スレーブPICにEOI
     }
     crate::io::outb(PIC1_COMMAND, 0x20); // マスターPICにEOI
-    // Local APIC EOI: write 0 to LAPIC EOI register (offset 0xB0)
-    // Required for KVM irqchip=split where PIC EOI alone is insufficient
+
+    // LAPIC EOI — KVM kernel-irqchip=split ではLAPICもEOIが必要
     core::ptr::write_volatile(0xFEE0_00B0 as *mut u32, 0);
 }
 

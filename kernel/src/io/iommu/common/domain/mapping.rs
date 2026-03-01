@@ -107,19 +107,19 @@ impl IommuDomain {
             // Level 4: PML4 -> PDP
             let pml4_entry = self.page_table.add(pml4_idx);
             newly_allocated[0] = self.ensure_pdp_table(pml4_entry, pml4_phys)?;
-            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
             let pdp_phys = (*pml4_entry).phys_addr();
 
             // Level 3: PDP -> PD
             let pdp_entry = pdp_table.add(pdp_idx);
             newly_allocated[1] = self.ensure_pd_table(pdp_entry, pdp_phys)?;
-            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
             let pd_phys = (*pdp_entry).phys_addr();
 
             // Level 2: PD -> PT
             let pd_entry = pd_table.add(pd_idx);
             newly_allocated[2] = self.ensure_pt_table(pd_entry, pd_phys)?;
-            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+            let pt_table = phys_to_virt_usize((*pd_entry).phys_addr()) as *mut SlPte;
             let pt_phys = (*pd_entry).phys_addr();
 
             // Level 1: PT -> Page
@@ -177,13 +177,13 @@ impl IommuDomain {
 
         newly_allocated[0] = unsafe { self.ensure_pdp_table(pml4_entry, pml4_phys)? };
 
-        let pdp_table = (unsafe { *pml4_entry }).phys_addr() as *mut SlPte;
+        let pdp_table = phys_to_virt_usize((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
         let pdp_phys = (unsafe { *pml4_entry }).phys_addr();
 
         newly_allocated[1] = unsafe { self.ensure_pd_table(pdp_entry, pdp_phys)? };
 
-        let pd_table = (unsafe { *pdp_entry }).phys_addr() as *mut SlPte;
+        let pd_table = phys_to_virt_usize((unsafe { *pdp_entry }).phys_addr()) as *mut SlPte;
         let pd_entry = unsafe { pd_table.add(pd_idx) };
         let pd_phys = (unsafe { *pdp_entry }).phys_addr();
 
@@ -237,7 +237,7 @@ impl IommuDomain {
         let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
         newly_allocated_pdp = unsafe { self.ensure_pdp_for_super_page(pml4_entry, pml4_phys)? };
 
-        let pdp_table = (unsafe { *pml4_entry }).phys_addr() as *mut SlPte;
+        let pdp_table = phys_to_virt_usize((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
         let pdp_phys = (unsafe { *pml4_entry }).phys_addr();
 
@@ -366,7 +366,7 @@ impl IommuDomain {
             if !(*pml4_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
-            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
 
             let pdp_entry = pdp_table.add(pdp_idx);
             if !(*pdp_entry).is_present() {
@@ -377,7 +377,7 @@ impl IommuDomain {
                 return Ok(Some(SIZE_1GB));
             }
 
-            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
             let pd_entry = pd_table.add(pd_idx);
             if !(*pd_entry).is_present() {
                 return Err(IommuError::NotMapped);

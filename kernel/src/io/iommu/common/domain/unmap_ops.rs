@@ -89,7 +89,7 @@ impl IommuDomain {
             if !(*pml4_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
-            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_table = phys_to_virt_usize((*pml4_entry).phys_addr()) as *mut SlPte;
 
             let pdp_entry = pdp_table.add(pdp_idx);
             if !(*pdp_entry).is_present() {
@@ -100,7 +100,7 @@ impl IommuDomain {
                 return Ok(SIZE_1GB);
             }
 
-            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_table = phys_to_virt_usize((*pdp_entry).phys_addr()) as *mut SlPte;
             let pd_entry = pd_table.add(pd_idx);
             if !(*pd_entry).is_present() {
                 return Err(IommuError::NotMapped);

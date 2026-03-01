@@ -67,9 +67,18 @@ impl IovaManager for IommuController {
         };
 
         if let Some(alloc) = guard.as_ref() {
-            alloc
-                .allocate(size, PageGranularity::Page4K)
-                .ok_or(IommuError::OutOfMemory)
+            if size <= 4096 {
+                alloc
+                    .allocate(size, PageGranularity::Page4K)
+                    .ok_or(IommuError::OutOfMemory)
+            } else {
+                // allocate() requires size == granularity.size_bytes(), so for
+                // multi-page allocations use contiguous allocator with 4KB alignment
+                let aligned = (size + 4095) & !4095;
+                alloc
+                    .allocate_contiguous(aligned, 4096)
+                    .ok_or(IommuError::OutOfMemory)
+            }
         } else {
             Err(IommuError::NotInitialized)
         }
