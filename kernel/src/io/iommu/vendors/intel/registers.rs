@@ -173,6 +173,8 @@ pub mod cap_bits {
     pub const CAP_SLLPS_2M: u64 = 1 << 34;
     /// 1GB super-page supported
     pub const CAP_SLLPS_1G: u64 = 1 << 35;
+    /// Address Mask (AM) support (bits 48-53)
+    pub const CAP_AM_MASK: u64 = 0x3F << 48;
     /// Page walk coherency
     pub const CAP_PWC: u64 = 1 << 38;
 }

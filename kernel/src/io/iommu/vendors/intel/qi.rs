@@ -71,7 +71,14 @@ impl InvalidationQueueEntry {
         // preventing Use-After-Free attacks on page tables.
         lo &= !(1 << 9);
 
-        let hi = address & !0xFFF; // Page-aligned address for page-selective
+        let mut hi = address & !0xFFF; // Page-aligned address for page-selective
+        if granularity == 3 && am > 0 {
+            // Section 6.5.2.2: Address [11+AM:12] must be 1s for PS-within-domain invalidation.
+            // This mask sets bits corresponding to the AM field to satisfy hardware requirement.
+            let ps_mask = (1u64 << (am as u64 & 0x3F)) - 1;
+            hi |= ps_mask << 12;
+        }
+
         Self { lo, hi }
     }
 

@@ -270,6 +270,14 @@ impl IommuController {
         ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_SAGAW_MASK) >> 8) as u8
     }
 
+    /// Get the maximum Address Mask (AM) supported by the hardware (bits 53:48 of CAP).
+    fn cap_am(&self) -> u8 {
+        if self.cap == 0 {
+            return 0;
+        }
+        ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_AM_MASK) >> 48) as u8
+    }
+
     fn max_guest_address_width(&self) -> u8 {
         if self.cap == 0 {
             return 48;

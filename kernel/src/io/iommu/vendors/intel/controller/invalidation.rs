@@ -73,15 +73,29 @@ impl IommuController {
         size: u64,
         any_ats: bool,
     ) -> Result<(), IommuError> {
+        if size == 0 {
+            return Ok(());
+        }
+
         if self.is_queued_invalidation_enabled() {
-            let num_pages = (size + 4095) / 4096;
+            // Security: Use saturating addition to prevent overflow when calculating num_pages.
+            // A wrapped small size would cause partial invalidation and potential UAF.
+            let num_pages = size.saturating_add(4095) / 4096;
+            if num_pages == 0 { return Ok(()); }
+
             let am = if num_pages > 1 {
+                // Find log2 of next power of two
                 64 - (num_pages - 1).leading_zeros() as u8
             } else {
                 0
             };
             
-            let fallback_to_domain = am > 6 || (start_iova & ((4096 << am) - 1)) != 0;
+            // Security: Fallback to domain-selective if the mask is not supported by hardware
+            // or if the range is not naturally aligned to the mask size.
+            let cap_am = self.cap_am();
+            let mask_val = if am < 64 { (1u64 << am) - 1 } else { !0u64 };
+            let alignment_mask = mask_val.saturating_mul(4096);
+            let fallback_to_domain = am > cap_am || am >= 60 || (start_iova & alignment_mask) != 0;
 
             if fallback_to_domain {
                 self.qi_invalidate_iotlb_domain(domain_id)?;
