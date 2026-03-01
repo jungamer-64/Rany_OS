@@ -59,6 +59,61 @@ static BRIDGE_IF_STATS: RwLock<BTreeMap<NetIfId, BridgeInterfaceStats>> =
 static PRIMARY_BRIDGE_IF: RwLock<Option<NetIfId>> = RwLock::new(None);
 
 // ============================================================================
+// Deferred RX Dispatch (deadlock prevention)
+// ============================================================================
+//
+// When the VirtIO device lock is held during polling, RX packet processing
+// must be deferred to avoid the following deadlock chain:
+//   VIRTIO_NET_DEVICE.lock() → handle_interrupt() → bridge dispatch
+//   → stack.receive() → ARP reply → transmit → VIRTIO_NET_DEVICE.lock() ← DEADLOCK
+//
+// In deferred mode, received packets are buffered and dispatched only after
+// the device lock is released.
+
+/// Packet awaiting dispatch after device lock release.
+struct DeferredRxPacket {
+    packet: crate::net::datapath::mempool::PacketRef,
+    header_size: usize,
+    payload_len: usize,
+    if_id: Option<NetIfId>,
+}
+
+/// When true, `process_received_packet_zero_copy*` buffers packets instead of
+/// dispatching them inline.
+static RX_DEFERRED_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Buffer for packets deferred during poll mode.
+static DEFERRED_RX_PACKETS: PoisonLock<Vec<DeferredRxPacket>> = PoisonLock::new(Vec::new());
+
+/// Enter deferred RX mode. Call before acquiring the VirtIO device lock
+/// in a synchronous poll context.
+pub fn enter_deferred_rx_mode() {
+    RX_DEFERRED_MODE.store(true, Ordering::Release);
+}
+
+/// Leave deferred RX mode and dispatch all buffered packets.
+/// Call after releasing the VirtIO device lock.
+pub fn drain_deferred_rx_packets() {
+    RX_DEFERRED_MODE.store(false, Ordering::Release);
+    let packets: Vec<DeferredRxPacket> = {
+        let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() else { return };
+        core::mem::take(&mut *guard)
+    };
+    for p in packets {
+        if let Some(if_id) = p.if_id {
+            process_received_packet_zero_copy_for_interface(
+                if_id,
+                p.packet,
+                p.header_size,
+                p.payload_len,
+            );
+        } else {
+            process_received_packet_zero_copy(p.packet, p.header_size, p.payload_len);
+        }
+    }
+}
+
+// ============================================================================
 // NAT (Network Address Translation) support
 // ============================================================================
 
@@ -679,6 +734,14 @@ pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
 
 /// Process a completed RX buffer without copying: use the provided PacketRef (zero-copy)
 pub fn process_received_packet_zero_copy(mut packet: crate::net::datapath::mempool::PacketRef, header_size: usize, payload_len: usize) {
+    // Deferred mode: buffer packet for later dispatch to avoid deadlock
+    if RX_DEFERRED_MODE.load(Ordering::Acquire) {
+        if let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() {
+            guard.push(DeferredRxPacket { packet, header_size, payload_len, if_id: None });
+        }
+        return;
+    }
+
     if let Some(if_id) = primary_bridge_if() {
         process_received_packet_zero_copy_for_interface(if_id, packet, header_size, payload_len);
         return;
@@ -711,6 +774,14 @@ pub fn process_received_packet_zero_copy_for_interface(
     header_size: usize,
     payload_len: usize,
 ) {
+    // Deferred mode: buffer packet for later dispatch to avoid deadlock
+    if RX_DEFERRED_MODE.load(Ordering::Acquire) {
+        if let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() {
+            guard.push(DeferredRxPacket { packet, header_size, payload_len, if_id: Some(if_id) });
+        }
+        return;
+    }
+
     ensure_bridge_if_state(if_id, None);
     let rx_count = RX_PACKETS.fetch_add(1, Ordering::Relaxed).saturating_add(1);
     counters::global().record_rx(payload_len);

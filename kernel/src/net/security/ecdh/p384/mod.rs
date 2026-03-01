@@ -326,7 +326,7 @@ pub mod p384 {
                 arr[48 - len..].copy_from_slice(&result_bytes);
             }
             arr
-        })
+        }).unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
     }
 
     // ========================================================================

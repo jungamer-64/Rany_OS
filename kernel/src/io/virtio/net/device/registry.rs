@@ -277,6 +277,9 @@ pub fn poll_all_virtio_net_queues() {
 }
 
 /// 指定インデックスのVirtIO-Netデバイスのキューを同期ポーリングする。
+///
+/// RXパケットのブリッジ/スタック処理はデバイスロック解放後に実行する。
+/// これにより、RX処理→ARP応答→TX送信→デバイスロック再取得のデッドロックを防止する。
 fn poll_virtio_net_queues_for_index(index: u8) {
     // ISR statusを確認してACK
     let transport = VIRTIO_NET_TRANSPORTS.read().get(&index).cloned();
@@ -287,11 +290,15 @@ fn poll_virtio_net_queues_for_index(index: u8) {
         }
     }
 
-    // デバイスロックを取得してRX/TXを直接処理
+    // Phase 1: デバイスロック保持中にRX/TX完了を収集（ブリッジ転送は遅延）
+    crate::net::runtime::bridge::enter_deferred_rx_mode();
     with_virtio_net_device_at_index(index, |device| {
         device.handle_interrupt();
         device.refill_rx_queues();
     });
+
+    // Phase 2: デバイスロック解放後にバッファされたパケットをディスパッチ
+    crate::net::runtime::bridge::drain_deferred_rx_packets();
 }
 
 #[cfg(test)]
