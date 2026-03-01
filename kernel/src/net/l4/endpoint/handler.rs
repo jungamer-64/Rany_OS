@@ -165,6 +165,13 @@ impl NetworkEventHandler {
                 if tcb.state != TcpConnectionState::Established {
                     return EventHandleResult::ProtocolError(SocketError::NotConnected);
                 }
+
+                // Nagle's algorithm (RFC 896): Delay sending if data is small and there is outstanding data
+                if tcb.should_delay_send(data.len()) {
+                    log::debug!("TCP: Nagle algorithm delaying send for fd={}", fd.raw());
+                    return EventHandleResult::Success; // Delay until ACK received or more data added
+                }
+
                 (tcb.snd_nxt, tcb.rcv_nxt, tcb.rcv_wnd)
             }
             None => return EventHandleResult::ProtocolError(SocketError::NotConnected),

@@ -94,6 +94,8 @@ pub struct TcpControlBlockEntry {
     pub ts_val: u32,
     /// Last received TSval from peer (echoed back as TSecr)
     pub ts_ecr: u32,
+    /// Nagle's algorithm enabled (delays small packets until ACK received)
+    pub nagle_enabled: bool,
 }
 
 impl TcpControlBlockEntry {
@@ -133,7 +135,43 @@ impl TcpControlBlockEntry {
             ts_enabled: false,
             ts_val: 0,
             ts_ecr: 0,
+            nagle_enabled: true, // デフォルトで有効
         }
+    }
+
+    /// TCP_NODELAY (Nagle無効化) を設定
+    pub fn set_nodelay(&mut self, nodelay: bool) {
+        self.nagle_enabled = !nodelay;
+    }
+
+    /// Nagleアルゴリズムが有効か確認
+    pub fn is_nodelay_enabled(&self) -> bool {
+        !self.nagle_enabled
+    }
+
+    /// 送信を遅延させるべきか判定 (Nagleアルゴリズム)
+    /// 
+    /// 以下の条件のいずれかを満たす場合は送信する:
+    /// 1. NODELAYが有効 (Nagle無効)
+    /// 2. データサイズがMSS以上
+    /// 3. 未確認データ (outstanding data) がない
+    pub fn should_delay_send(&self, data_len: usize) -> bool {
+        if !self.nagle_enabled {
+            return false;
+        }
+
+        // MSS以上なら即座に送信
+        if data_len >= self.mss as usize {
+            return false;
+        }
+
+        // 未確認データがなければ即座に送信
+        if self.snd_nxt == self.snd_una {
+            return false;
+        }
+
+        // 小さいパケットで未確認データがある場合は遅延させる
+        true
     }
 
     /// 初期シーケンス番号を設定
