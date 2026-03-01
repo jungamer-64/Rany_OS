@@ -38,10 +38,14 @@ impl PacketPool {
 
     /// Return a buffer to the pool
     pub fn free(&self, mut buffer: Vec<u8>) {
-        // For performance we intentionally avoid zeroing here; callers are
-        // expected to overwrite the contents when they reuse the buffer.
-        // The only invariant we maintain is that returned vectors have
-        // `capacity() == self.buffer_size` and `len() == 0`.
+        // Security: Zero out the buffer content to prevent information leaks
+        // between different connections or users of the pool.
+        unsafe {
+            let cap = buffer.capacity();
+            let ptr = buffer.as_mut_ptr();
+            core::ptr::write_bytes(ptr, 0, cap);
+        }
+
         if buffer.capacity() != self.buffer_size {
             // drop whatever the caller gave us and create a fresh one
             buffer = Vec::with_capacity(self.buffer_size);

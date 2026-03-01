@@ -306,8 +306,8 @@ impl DnsClient {
         let id_valid = match self.pending_ids.lock() {
             Ok(mut pending) => pending.remove(&response_id).is_some(),
             Err(_) => {
-                log::error!("[NET] DNS pending_ids lock poisoned - accepting response for safety");
-                true // ロックが汚染されている場合は受け入れる（可用性優先）
+                log::error!("[NET] DNS pending_ids lock poisoned - dropping response for security");
+                false // ロックが汚染されている場合はセキュリティのため拒否
             }
         };
         if !id_valid {

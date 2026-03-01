@@ -107,7 +107,15 @@ pub mod p256 {
 
         /// ゼロ判定
         pub fn is_zero(&self) -> bool {
-            self.limbs[0] == 0 && self.limbs[1] == 0 && self.limbs[2] == 0 && self.limbs[3] == 0
+            self.is_zero_ct() != 0
+        }
+
+        /// ゼロ判定 (Constant-time version)
+        /// ゼロなら1, ゼロ以外なら0を返す。
+        pub fn is_zero_ct(&self) -> u8 {
+            let or = self.limbs[0] | self.limbs[1] | self.limbs[2] | self.limbs[3];
+            let is_zero = ((or | (0u64.wrapping_sub(or))) >> 63) ^ 1;
+            is_zero as u8
         }
 
         /// フィールド加算 (mod p)
@@ -332,12 +340,16 @@ pub mod p256 {
         
         for i in 1..=6 {
             let subbed = val.sub(&p_fe);
-            let condition = (carry >= i as i64) as u8;
+            // Constant-time: carry >= i
+            let diff = carry.wrapping_sub(i as i64);
+            let condition = ((diff >> 63) ^ 1) as u8;
             val = P256FieldElement::ct_select(&val, &subbed, condition);
         }
         for i in 1..=4 {
             let added = val.add(&p_fe);
-            let condition = (carry <= -(i as i64)) as u8;
+            // Constant-time: carry <= -i  <=>  carry + i <= 0
+            let sum = carry.wrapping_add(i as i64);
+            let condition = ((sum.wrapping_sub(1) >> 63) & 1) as u8;
             val = P256FieldElement::ct_select(&val, &added, condition);
         }
 
@@ -512,15 +524,8 @@ pub mod p256 {
         /// a = p - 3のショートカットを使用:
         /// M = 3*(X + Z^2)*(X - Z^2) （3X^2 + aZ^4の代わりに）
         pub fn double(&self) -> Self {
-            if self.is_identity() {
-                return Self::identity();
-            }
-
-            let y_is_zero = self.y.is_zero();
-            if y_is_zero {
-                return Self::identity();
-            }
-
+            let is_id = self.is_identity();
+            
             // a = p - 3 ショートカット: M = 3(X + Z²)(X - Z²)
             let z2 = self.z.square();
             let xpz2 = self.x.add(&z2);
@@ -549,23 +554,23 @@ pub mod p256 {
             let z3 = self.y.mul(&self.z);
             let z3 = z3.add(&z3);
 
-            Self {
+            let res = Self {
                 x: x3,
                 y: y3,
                 z: z3,
-            }
+            };
+
+            // If identity, stay identity. If Y is zero (vertical tangent), becomes identity.
+            let y_is_zero = self.y.is_zero_ct();
+            Self::ct_select(&res, &Self::identity(), is_id as u8 | y_is_zero)
         }
 
         /// 点の加算（ヤコビアン座標）
         ///
         /// 標準的なヤコビアン加算を無限遠点の検査付きで実装する。
         pub fn add(&self, other: &Self) -> Self {
-            if self.is_identity() {
-                return *other;
-            }
-            if other.is_identity() {
-                return *self;
-            }
+            let is_self_id = self.is_identity() as u8;
+            let is_other_id = other.is_identity() as u8;
 
             let z1z1 = self.z.square();
             let z2z2 = other.z.square();
@@ -579,16 +584,8 @@ pub mod p256 {
             let h = u2.sub(&u1);
             let r = s2.sub(&s1);
 
-            // U1 == U2 の場合
-            if h.is_zero() {
-                if r.is_zero() {
-                    // 同じ点 → 2倍算
-                    return self.double();
-                } else {
-                    // 逆元 → 無限遠点
-                    return Self::identity();
-                }
-            }
+            let h_is_zero = h.is_zero_ct();
+            let r_is_zero = r.is_zero_ct();
 
             let h2 = h.square();
             let h3 = h2.mul(&h);
@@ -604,11 +601,26 @@ pub mod p256 {
             // Z3 = H*Z1*Z2
             let z3 = h.mul(&self.z).mul(&other.z);
 
-            Self {
+            let res = Self {
                 x: x3,
                 y: y3,
                 z: z3,
-            }
+            };
+
+            // U1 == U2 の場合
+            let is_equal = h_is_zero & r_is_zero;
+            let is_opposite = h_is_zero & (1 - r_is_zero);
+            
+            // 2倍算の結果（自己加算時）
+            let doubled = self.double();
+            
+            let res = Self::ct_select(&res, &doubled, is_equal);
+            let res = Self::ct_select(&res, &Self::identity(), is_opposite);
+            
+            // 単位元の処理
+            let res = Self::ct_select(&res, other, is_self_id);
+            let res = Self::ct_select(&res, self, is_other_id);
+            res
         }
 
         /// Constant-time selection: returns `a` if `condition == 0`, `b` if `condition == 1`.
@@ -622,13 +634,13 @@ pub mod p256 {
 
         /// スカラー倍算 [k]P (Constant-time implementation)
         ///
-        /// 固定回数 (256) のループと条件付き選択 (ct_select) を使用し、
+        /// 全ての演算が定数時間で行われる add/double を使用し、
         /// スカラーの値に依存しない定時間で演算を行う。
         pub fn scalar_mul(&self, scalar: &[u8; 32]) -> Self {
             let mut result = Self::identity();
 
-            // 固定回数ループにより、鍵長や上位ビットの0の数によるタイミング漏洩を防止。
-            // 常に 256 回の double と 256 回の add を実行する。
+            // 固定回数ループにより、タイミング漏洩を防止。
+            // 全ての add と double が定数時間化されているため、このループも定数時間となる。
             for i in (0..256).rev() {
                 let byte_idx = i / 8;
                 let bit_idx = i % 8;
