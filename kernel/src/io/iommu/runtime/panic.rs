@@ -74,7 +74,13 @@ use crate::util::align_up_u64 as align_up;
 ///
 /// Must be called after the IOMMU backend is initialized and enabled.
 pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
+    use crate::io::log::{early_print, early_print_hex, early_print_dec};
+    early_print("[PANIC_DMA] init_panic_dma_pool: bytes=");
+    early_print_dec(bytes as u64);
+    early_print("\n");
+
     if PANIC_DMA_POOL.get().is_some() {
+        early_print("[PANIC_DMA] already initialized\n");
         return Err(IommuError::AlreadyInitialized);
     }
 
@@ -85,16 +91,33 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     let size = align_up(bytes as u64, PANIC_DMA_ALIGN);
     let frames = (size / PANIC_DMA_ALIGN) as usize;
 
+    early_print("[PANIC_DMA] alloc_contiguous_frames: frames=");
+    early_print_dec(frames as u64);
+    early_print("\n");
     let phys = crate::mm::phys::frame_allocator::alloc_contiguous_frames(frames).ok_or(IommuError::OutOfMemory)?;
     let phys_addr = PhysAddr::new(phys.as_u64());
+    early_print("[PANIC_DMA] phys=");
+    early_print_hex(phys_addr.as_u64());
+    early_print("\n");
+
+    early_print("[PANIC_DMA] map_for_dma size=");
+    early_print_hex(size);
+    early_print("\n");
     let iova = match unsafe { api::map_for_dma(phys_addr, size) } {
-        Ok(iova) => iova,
+        Ok(iova) => {
+            early_print("[PANIC_DMA] map_for_dma OK iova=");
+            early_print_hex(iova);
+            early_print("\n");
+            iova
+        }
         Err(err) => {
+            early_print("[PANIC_DMA] map_for_dma FAILED\n");
             crate::mm::phys::frame_allocator::dealloc_contiguous_frames(phys, frames);
             return Err(err);
         }
     };
 
+    early_print("[PANIC_DMA] zeroing memory\n");
     let virt_base = crate::mm::virt::mapping::phys_to_virt(phys_addr).as_u64() as usize;
     unsafe {
         core::ptr::write_bytes(virt_base as *mut u8, 0, size as usize);
@@ -119,16 +142,29 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
 /// four) down to one page.  This makes boot more robust on fragmented memory
 /// layouts.
 pub fn init_panic_dma_pool_default() -> Result<(), IommuError> {
+    use crate::io::log::{early_print, early_print_dec};
+    early_print("[PANIC_DMA] init_panic_dma_pool_default: ENTER\n");
     let mut size = PANIC_DMA_POOL_BYTES;
     while size >= crate::mm::types::PAGE_SIZE_4K {
+        early_print("[PANIC_DMA] trying size=");
+        early_print_dec(size as u64);
+        early_print("\n");
         match init_panic_dma_pool(size) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                early_print("[PANIC_DMA] SUCCESS\n");
+                return Ok(());
+            }
             Err(IommuError::OutOfMemory) => {
+                early_print("[PANIC_DMA] OutOfMemory, retrying smaller\n");
                 size /= 4;
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                early_print("[PANIC_DMA] FATAL ERROR, returning\n");
+                return Err(e);
+            }
         }
     }
+    early_print("[PANIC_DMA] all sizes exhausted\n");
     Err(IommuError::OutOfMemory)
 }
 

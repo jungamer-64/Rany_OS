@@ -249,7 +249,7 @@ impl NetworkStack {
             &src, &dst, IpProtocol::Udp, udp_length as u32,
         );
         let verify = data_checksum(&data[..udp_length as usize], pseudo);
-        if verify != 0xFFFF {
+        if verify != 0 {
             self.stats.record_rx_error();
             return;
         }
@@ -335,7 +335,7 @@ impl NetworkStack {
             &src, &dst, IpProtocol::Tcp, data.len() as u32,
         );
         let verify = data_checksum(data, pseudo);
-        if verify != 0xFFFF {
+        if verify != 0 {
             self.stats.record_rx_error();
             return;
         }

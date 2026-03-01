@@ -82,16 +82,32 @@ impl ConnectionOooQueue {
         }
     }
 
-    /// rcv_nxtより前のセグメントを削除
+    /// rcv_nxtより前のセグメントを削除、または部分的な重複をトリム
     fn prune_outdated(&mut self, rcv_nxt: u32) {
+        let mut to_reinsert = Vec::new();
         let outdated_keys: Vec<u32> = self.segments.keys()
             .filter(|&&seq| seq_before(seq, rcv_nxt))
             .cloned()
             .collect();
+            
         for key in outdated_keys {
-            if self.segments.remove(&key).is_some() {
-                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+            if let Some(mut packet) = self.segments.remove(&key) {
+                let seg_end = key.wrapping_add(packet.len() as u32);
+                if seq_before(rcv_nxt, seg_end) {
+                    // 部分的な重複: すでに受信済みの部分を切り捨てて再挿入
+                    let overlap = rcv_nxt.wrapping_sub(key) as usize;
+                    packet.advance(overlap);
+                    to_reinsert.push((rcv_nxt, packet));
+                } else {
+                    // 完全に受信済み
+                    GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                }
             }
+        }
+        
+        for (seq, packet) in to_reinsert {
+            self.segments.insert(seq, packet);
+            // GLOBAL_OOO_COUNT は remove 時にも減らしていないため、再挿入時にも増やさない
         }
     }
 
@@ -100,7 +116,7 @@ impl ConnectionOooQueue {
     where
         F: FnMut(u32, &[u8]),
     {
-        // まず古いセグメントを掃除
+        // まず古いセグメントを掃除・トリム
         self.prune_outdated(rcv_nxt);
 
         loop {
@@ -110,6 +126,9 @@ impl ConnectionOooQueue {
                 let data_len = data.len() as u32;
                 f(rcv_nxt, data);
                 rcv_nxt = rcv_nxt.wrapping_add(data_len);
+                
+                // 次のセグメントとの重複をトリムするために再度 prune
+                self.prune_outdated(rcv_nxt);
             } else {
                 break;
             }
@@ -120,7 +139,7 @@ impl ConnectionOooQueue {
     /// SACKブロックを生成（最大4ブロック、RFC 2018）
     fn sack_blocks(&self) -> SackBlocks {
         let mut sack = SackBlocks::new();
-        let mut block_start = None;
+        let mut block_start: Option<u32> = None;
         let mut block_end = 0u32;
 
         for (&seq, packet) in &self.segments {
@@ -132,9 +151,11 @@ impl ConnectionOooQueue {
                     block_end = seg_end;
                 }
                 Some(start) => {
-                    if seq == block_end {
-                        // 連続 → ブロック拡張
-                        block_end = seg_end;
+                    if !seq_before(block_end, seq) {
+                        // 連続または重複 → ブロック拡張
+                        if seq_before(block_end, seg_end) {
+                            block_end = seg_end;
+                        }
                     } else {
                         // 非連続 → 現在のブロックを確定
                         sack.push((start, block_end));

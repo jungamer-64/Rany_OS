@@ -146,7 +146,7 @@ impl<'a> UdpPacket<'a> {
 
         // Include the checksum in the data for verification
         let actual_checksum = data_checksum(&self.data[..length as usize], pseudo);
-        actual_checksum == 0xFFFF
+        actual_checksum == 0
     }
 }
 

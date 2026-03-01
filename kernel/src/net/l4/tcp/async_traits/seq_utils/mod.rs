@@ -187,10 +187,9 @@ pub(crate) fn verify_tcp_checksum_v6(segment: &[u8], src_ip: crate::net::l3::ipv
 
     let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
     let checksum = data_checksum(segment, pseudo);
-    
-    checksum == 0xFFFF
-}
 
+    checksum == 0
+    }
 /// TCPチェックサム計算（IPv6擬似ヘッダ）
 pub(crate) fn calculate_tcp_checksum_v6(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
     if segment.len() < 20 {

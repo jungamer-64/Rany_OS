@@ -248,7 +248,7 @@ impl<'a> IcmpPacket<'a> {
 
     /// Verify checksum
     pub fn verify_checksum(&self) -> bool {
-        data_checksum(self.data, 0) == 0xFFFF
+        data_checksum(self.data, 0) == 0
     }
 
     /// Try to parse as echo request/reply

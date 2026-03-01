@@ -630,6 +630,12 @@ impl TcpProcessor {
             return TcpProcessResult::None;
         }
 
+        // Verify checksum
+        if !verify_tcp_checksum_v6(data, src_ip, dst_ip) {
+            log::warn!("[TCP] Checksum verification failed from {} (zero-copy v6 path)", src_ip);
+            return TcpProcessResult::None;
+        }
+
         // Convert to internal address types
         let remote_addr = SocketAddr::new_v6(src_ip, src_port);
         let local_addr = SocketAddr::new_v6(dst_ip, dst_port);
