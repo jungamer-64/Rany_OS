@@ -98,7 +98,7 @@ static NAT_NEXT_PORT: AtomicU16 = AtomicU16::new(NAT_EPHEMERAL_START);
 const MAX_NAT_ENTRIES: usize = 10000;
 
 /// Perform outbound NAT translation for a packet leaving on `out_if_id`.
-/// Returns (translated_src_ip, translated_src_port).
+/// Returns Some((translated_src_ip, translated_src_port)) or None if allocation fails.
 fn nat_translate_out(
     protocol: crate::net::l3::ipv4::IpProtocol,
     internal_ip: Ipv4Address,
@@ -106,7 +106,7 @@ fn nat_translate_out(
     remote_ip: Ipv4Address,
     remote_port: u16,
     out_if_id: NetIfId,
-) -> (Ipv4Address, u16) {
+) -> Option<(Ipv4Address, u16)> {
     // determine external IP from interface config
     let mut ext_ip = internal_ip;
     if let Ok(iface_opt) = manager::get_interface(out_if_id) {
@@ -134,7 +134,7 @@ fn nat_translate_out(
                 if let Some(e) = tablew.get_mut(&ext_port) {
                     e.last_seen = crate::time::get_uptime_ms();
                 }
-                return (ext_ip, ext_port);
+                return Some((ext_ip, ext_port));
             }
         }
     }
@@ -149,8 +149,8 @@ fn nat_translate_out(
         nat_prune_expired(crate::time::get_uptime_ms(), 30000); // 30s timeout for emergency
         tablew = NAT_TABLE.write();
         if tablew.len() >= MAX_NAT_ENTRIES {
-            log::error!("[NET BRIDGE] NAT table full, dropping connection");
-            return (internal_ip, internal_port); // Pass-through as fallback (likely to fail downstream)
+            log::error!("[NET BRIDGE] NAT table full, dropping connection (Security: prevent internal IP leak)");
+            return None;
         }
     }
 
@@ -167,7 +167,7 @@ fn nat_translate_out(
 
     if attempts >= 1000 {
         log::error!("[NET BRIDGE] NAT port allocation failed (exhaustion)");
-        return (internal_ip, internal_port);
+        return None;
     }
 
     tablew.insert(
@@ -184,7 +184,7 @@ fn nat_translate_out(
         },
     );
 
-    (ext_ip, ext_port)
+    Some((ext_ip, ext_port))
 }
 
 
@@ -223,6 +223,121 @@ fn nat_translate_in(
     } else {
         false
     }
+}
+
+/// Perform outbound ICMP NAT translation.
+fn nat_translate_out_icmp(
+    internal_ip: Ipv4Address,
+    remote_ip: Ipv4Address,
+    icmp_payload: &[u8],
+    out_if_id: NetIfId,
+) -> Option<(Ipv4Address, u16)> {
+    if icmp_payload.len() < 8 {
+        return None;
+    }
+
+    let icmp_type = icmp_payload[0];
+    if icmp_type == 8 {
+        // Echo Request
+        let identifier = u16::from_be_bytes([icmp_payload[4], icmp_payload[5]]);
+        nat_translate_out(
+            crate::net::l3::ipv4::IpProtocol::Icmp,
+            internal_ip,
+            identifier,
+            remote_ip,
+            0, // Echo requests don't have a "remote port"
+            out_if_id,
+        )
+    } else {
+        // Other ICMP types (errors, etc) are not currently handled for outbound NAT
+        // because we are primarily a client OS.
+        None
+    }
+}
+
+/// Perform inbound ICMP NAT translation.
+fn nat_translate_in_icmp(
+    src_ip: Ipv4Address,
+    dst_ip: &mut Ipv4Address,
+    icmp_payload: &mut [u8],
+) -> Option<Ipv4Address> {
+    if icmp_payload.len() < 8 {
+        return None;
+    }
+
+    let icmp_type = icmp_payload[0];
+    if icmp_type == 0 {
+        // Echo Reply
+        let identifier = u16::from_be_bytes([icmp_payload[4], icmp_payload[5]]);
+        let mut port = identifier;
+        if nat_translate_in(
+            crate::net::l3::ipv4::IpProtocol::Icmp,
+            src_ip,
+            0,
+            dst_ip,
+            &mut port,
+        ) {
+            // Identifier must be rewritten back to internal value
+            icmp_payload[4..6].copy_from_slice(&port.to_be_bytes());
+            return Some(*dst_ip);
+        }
+    } else if icmp_type == 3 || icmp_type == 11 || icmp_type == 12 {
+        // Destination Unreachable, Time Exceeded, Parameter Problem
+        // These contain the original IP header + 8 bytes of payload.
+        if icmp_payload.len() < 8 + 20 + 8 {
+            return None;
+        }
+
+        let inner_ip_header_off = 8;
+        let inner_ip_header = &icmp_payload[inner_ip_header_off..inner_ip_header_off + 20];
+        let inner_proto = inner_ip_header[9];
+        let inner_src = Ipv4Address::from_octets(
+            inner_ip_header[12],
+            inner_ip_header[13],
+            inner_ip_header[14],
+            inner_ip_header[15],
+        );
+        let inner_dst = Ipv4Address::from_octets(
+            inner_ip_header[16],
+            inner_ip_header[17],
+            inner_ip_header[18],
+            inner_ip_header[19],
+        );
+
+        let inner_payload_off = inner_ip_header_off + 20;
+        let inner_src_port =
+            u16::from_be_bytes([icmp_payload[inner_payload_off], icmp_payload[inner_payload_off + 1]]);
+        let inner_dst_port = u16::from_be_bytes([
+            icmp_payload[inner_payload_off + 2],
+            icmp_payload[inner_payload_off + 3],
+        ]);
+
+        // Look up by original outgoing 5-tuple
+        let table = NAT_TABLE.read();
+        for (&_ext_port, entry) in table.iter() {
+            if u8::from(entry.protocol) == inner_proto
+                && entry.internal_addr == inner_src
+                && entry.internal_port == inner_src_port
+                && entry.remote_addr == inner_dst
+                && entry.remote_port == inner_dst_port
+            {
+                // Found it! Rewrite the outer destination IP to the internal address.
+                *dst_ip = entry.internal_addr;
+
+                // Also rewrite the INNER packet's source IP to the internal address
+                // so the local stack recognizes the error as belonging to its socket.
+                icmp_payload[inner_ip_header_off + 12..inner_ip_header_off + 16]
+                    .copy_from_slice(entry.internal_addr.as_bytes());
+                // And inner source port
+                icmp_payload[inner_payload_off..inner_payload_off + 2]
+                    .copy_from_slice(&entry.internal_port.to_be_bytes());
+
+                return Some(*dst_ip);
+            }
+        }
+    }
+
+    None
 }
 
 fn transport_checksum_offset(protocol: crate::net::l3::ipv4::IpProtocol) -> Option<usize> {
@@ -557,19 +672,32 @@ pub fn process_received_packet_zero_copy_for_interface(
 
                 let mut translated_dst = None;
                 if let Some((proto, header_len, src_ip, mut dst_ip)) = parsed {
-                    if (proto == crate::net::l3::ipv4::IpProtocol::Udp
-                        || proto == crate::net::l3::ipv4::IpProtocol::Tcp)
-                        && header_len <= ip_buf.len().saturating_sub(4)
-                    {
-                        let (_, transport) = ip_buf.split_at_mut(header_len);
-                        let src_port = u16::from_be_bytes([transport[0], transport[1]]);
-                        let mut dst_port = u16::from_be_bytes([transport[2], transport[3]]);
-                        if nat_translate_in(proto, src_ip, src_port, &mut dst_ip, &mut dst_port) {
-                            transport[2..4].copy_from_slice(&dst_port.to_be_bytes());
-                            recompute_ipv4_transport_checksum(transport, src_ip, dst_ip, proto);
-                            translated_dst = Some(dst_ip);
-                        }
-                    }
+                   if (proto == crate::net::l3::ipv4::IpProtocol::Udp
+                       || proto == crate::net::l3::ipv4::IpProtocol::Tcp)
+                       && header_len <= ip_buf.len().saturating_sub(4)
+                   {
+                       let (_, transport) = ip_buf.split_at_mut(header_len);
+                       let src_port = u16::from_be_bytes([transport[0], transport[1]]);
+                       let mut dst_port = u16::from_be_bytes([transport[2], transport[3]]);
+                       if nat_translate_in(proto, src_ip, src_port, &mut dst_ip, &mut dst_port) {
+                           transport[2..4].copy_from_slice(&dst_port.to_be_bytes());
+                           recompute_ipv4_transport_checksum(transport, src_ip, dst_ip, proto);
+                           translated_dst = Some(dst_ip);
+                       }
+                   } else if proto == crate::net::l3::ipv4::IpProtocol::Icmp && header_len <= ip_buf.len().saturating_sub(8) {
+                       let (_, transport) = ip_buf.split_at_mut(header_len);
+                       if let Some(new_dst) = nat_translate_in_icmp(src_ip, &mut dst_ip, transport) {
+                           // ICMP checksum needs to be recomputed. 
+                           // Since we might have modified the payload (for ICMP errors), 
+                           // we just clear and recompute the whole thing.
+                           transport[2] = 0;
+                           transport[3] = 0;
+                           let checksum = crate::net::l3::ipv4::data_checksum(transport, 0);
+                           transport[2] = (checksum >> 8) as u8;
+                           transport[3] = (checksum & 0xff) as u8;
+                           translated_dst = Some(new_dst);
+                       }
+                   }
                 }
 
                 if let Some(dst_ip) = translated_dst {
@@ -626,20 +754,19 @@ pub fn process_received_packet_zero_copy_for_interface(
                                 let proto = ip_pkt.protocol();
                                 let transport = ip_pkt.payload();
                                 // need to parse transport header for ports
-                                let (_new_src, _new_port) = match proto {
+                                let translated = match proto {
                                     crate::net::l3::ipv4::IpProtocol::Udp => {
                                         if let Some(udp) = crate::net::l4::udp::UdpPacket::parse(transport) {
-                                            let (ns, np) = nat_translate_out(
+                                            nat_translate_out(
                                                 crate::net::l3::ipv4::IpProtocol::Udp,
                                                 src,
                                                 udp.src_port(),
                                                 dst,
                                                 udp.dst_port(),
                                                 route.if_id,
-                                            );
-                                            (ns, np)
+                                            )
                                         } else {
-                                            (src, 0)
+                                            None
                                         }
                                     }
                                     crate::net::l3::ipv4::IpProtocol::Tcp => {
@@ -651,17 +778,28 @@ pub fn process_received_packet_zero_copy_for_interface(
                                             .get(2..4)
                                             .map(|port| u16::from_be_bytes([port[0], port[1]]))
                                             .unwrap_or(0);
-                                        let (ns, np) = nat_translate_out(
+                                        nat_translate_out(
                                             crate::net::l3::ipv4::IpProtocol::Tcp,
                                             src,
                                             tcp_src_port,
                                             dst,
                                             tcp_dst_port,
                                             route.if_id,
-                                        );
-                                        (ns, np)
+                                        )
                                     }
-                                    _ => (src, 0),
+                                    crate::net::l3::ipv4::IpProtocol::Icmp => {
+                                        nat_translate_out_icmp(src, dst, transport, route.if_id)
+                                    }
+                                    _ => None,
+                                };
+
+                                let (_new_src, _new_port) = match translated {
+                                    Some(pair) => pair,
+                                    None => {
+                                        // If NAT is enabled but failed (table full, etc), drop to prevent internal IP leak
+                                        log::warn!("[NET BRIDGE] NAT failed for {:?}, dropping packet", proto);
+                                        return;
+                                    }
                                 };
 
                                 let ttl = ip_pkt.ttl();
@@ -1464,7 +1602,7 @@ pub(crate) mod tests {
         let remote_ip = Ipv4Address::new([198, 51, 100, 10]);
         let remote_port = 43210;
         let (ext_ip, ext_port) =
-            nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, remote_ip, remote_port, wan_if);
+            nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, remote_ip, remote_port, wan_if).expect("NAT allocation failed");
 
         assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
         assert!(ext_port >= NAT_EPHEMERAL_START);
@@ -1549,7 +1687,7 @@ pub(crate) mod tests {
             Ipv4Address::new([198, 51, 100, 1]),
             50001,
             wan_if,
-        );
+        ).expect("NAT allocation failed");
         let (_, fresh_port) = nat_translate_out(
             IpProtocol::Udp,
             Ipv4Address::new([10, 0, 0, 3]),
@@ -1557,7 +1695,7 @@ pub(crate) mod tests {
             Ipv4Address::new([198, 51, 100, 2]),
             50002,
             wan_if,
-        );
+        ).expect("NAT allocation failed");
 
         {
             let mut table = NAT_TABLE.write();
@@ -1571,6 +1709,112 @@ pub(crate) mod tests {
         let table = NAT_TABLE.read();
         assert!(!table.contains_key(&stale_port));
         assert!(table.contains_key(&fresh_port));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_nat_icmp_echo() {
+        let _guard = BridgeStateGuard::new();
+        manager::init_network_manager();
+
+        let wan_if = manager::register_interface("wan0").expect("register wan0");
+        let _ = manager::set_interface_config(
+            wan_if,
+            NetworkConfig {
+                mac: MacAddress::from_octets(0, 1, 2, 3, 4, 45),
+                ipv4: Ipv4Config {
+                    address: Ipv4Address::new([10, 0, 1, 1]),
+                    subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                    gateway: Ipv4Address::ANY,
+                    dns: None,
+                },
+                ipv6: None,
+                icmp_echo_enabled: true,
+            },
+        );
+
+        let internal_ip = Ipv4Address::new([10, 0, 0, 2]);
+        let remote_ip = Ipv4Address::new([8, 8, 8, 8]);
+        let mut icmp_req = [0u8; 8];
+        icmp_req[0] = 8; // Echo Request
+        icmp_req[4] = 0x12; // Identifier
+        icmp_req[5] = 0x34;
+
+        let (ext_ip, ext_port) = nat_translate_out_icmp(internal_ip, remote_ip, &icmp_req, wan_if).expect("NAT allocation failed");
+        assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
+        
+        // Response
+        let mut icmp_reply = [0u8; 8];
+        icmp_reply[0] = 0; // Echo Reply
+        icmp_reply[4] = (ext_port >> 8) as u8;
+        icmp_reply[5] = (ext_port & 0xff) as u8;
+
+        let mut dst_ip = ext_ip;
+        let new_dst = nat_translate_in_icmp(remote_ip, &mut dst_ip, &mut icmp_reply).expect("NAT lookup failed");
+        assert_eq!(new_dst, internal_ip);
+        assert_eq!(icmp_reply[4], 0x12);
+        assert_eq!(icmp_reply[5], 0x34);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_nat_icmp_error() {
+        let _guard = BridgeStateGuard::new();
+        manager::init_network_manager();
+
+        let wan_if = manager::register_interface("wan0").expect("register wan0");
+        let _ = manager::set_interface_config(
+            wan_if,
+            NetworkConfig {
+                mac: MacAddress::from_octets(0, 1, 2, 3, 4, 46),
+                ipv4: Ipv4Config {
+                    address: Ipv4Address::new([10, 0, 1, 1]),
+                    subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                    gateway: Ipv4Address::ANY,
+                    dns: None,
+                },
+                ipv6: None,
+                icmp_echo_enabled: true,
+            },
+        );
+
+        let internal_ip = Ipv4Address::new([10, 0, 0, 2]);
+        let internal_port = 1234;
+        let remote_ip = Ipv4Address::new([93, 184, 216, 34]);
+        let remote_port = 80;
+
+        let (_ext_ip, ext_port) = nat_translate_out(
+            IpProtocol::Tcp,
+            internal_ip,
+            internal_port,
+            remote_ip,
+            remote_port,
+            wan_if,
+        ).expect("NAT allocation failed");
+
+        // ICMP Error (Time Exceeded) from an intermediate router (1.1.1.1)
+        let mut icmp_err = [0u8; 8 + 20 + 8];
+        icmp_err[0] = 11; // Time Exceeded
+        icmp_err[1] = 0;  // Code: TTL exceeded in transit
+        
+        // Original IP header
+        let inner_ip_off = 8;
+        icmp_err[inner_ip_off + 9] = 6; // TCP
+        icmp_err[inner_ip_off + 12..inner_ip_off + 16].copy_from_slice(_ext_ip.as_bytes()); // was sent as translated IP
+        icmp_err[inner_ip_off + 16..inner_ip_off + 20].copy_from_slice(remote_ip.as_bytes());
+        
+        // Original transport (first 8 bytes)
+        let inner_tcp_off = inner_ip_off + 20;
+        icmp_err[inner_tcp_off..inner_tcp_off + 2].copy_from_slice(&ext_port.to_be_bytes());
+        icmp_err[inner_tcp_off + 2..inner_tcp_off + 4].copy_from_slice(&remote_port.to_be_bytes());
+
+        let mut dst_ip = _ext_ip;
+        let router_ip = Ipv4Address::new([1, 1, 1, 1]);
+        let new_dst = nat_translate_in_icmp(router_ip, &mut dst_ip, &mut icmp_err).expect("NAT lookup failed for ICMP error");
+        
+        assert_eq!(new_dst, internal_ip);
+        // Inner IP should be rewritten back to internal IP
+        assert_eq!(Ipv4Address::from_octets(icmp_err[inner_ip_off + 12], icmp_err[inner_ip_off + 13], icmp_err[inner_ip_off + 14], icmp_err[inner_ip_off + 15]), internal_ip);
+        // Inner port should be rewritten back to internal port
+        assert_eq!(u16::from_be_bytes([icmp_err[inner_tcp_off], icmp_err[inner_tcp_off + 1]]), internal_port);
     }
 
     #[cfg_attr(test, test_case)]

@@ -590,6 +590,11 @@ impl Mempool {
         }?;
 
         unsafe {
+            // Security: Zero-out the buffer to prevent Information Disclosure
+            // from previous packets (RFC 4963, RFC 6274).
+            // We zero the entire data area before reuse.
+            core::ptr::write_bytes(buffer.as_ref().data.as_mut_ptr(), 0, DEFAULT_BUFFER_SIZE);
+
             // 初期化
             buffer.as_ref().meta.len.store(0, Ordering::Release);
             buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
@@ -707,6 +712,9 @@ impl PerCoreMempoolCache {
         if let Ok(mut cache) = self.local_cache.lock() {
             if let Some(buffer) = cache.pop() {
                 unsafe {
+                    // Security: Zero-out the buffer to prevent Information Disclosure
+                    core::ptr::write_bytes(buffer.as_ref().data.as_mut_ptr(), 0, DEFAULT_BUFFER_SIZE);
+
                     buffer.as_ref().meta.len.store(0, Ordering::Release);
                     buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
                 }

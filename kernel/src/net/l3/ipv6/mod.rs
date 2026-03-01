@@ -650,6 +650,49 @@ pub fn skip_extension_headers<'a>(
     }
 }
 
+/// Check if a buffer contains a complete IPv6 header chain (RFC 8200/7112).
+///
+/// Returns true if the chain ends with an upper-layer protocol or NoNextHeader
+/// within the provided buffer.
+pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
+    let mut headers_seen = 0;
+    loop {
+        headers_seen += 1;
+        if headers_seen > MAX_EXTENSION_HEADERS {
+            return false;
+        }
+
+        match next_header {
+            EXT_HEADER_HOP_BY_HOP | EXT_HEADER_ROUTING | EXT_HEADER_DESTINATION => {
+                if data.len() < 8 {
+                    return false;
+                }
+                let ext_next = data[0];
+                let ext_len = (data[1] as usize + 1) * 8;
+                if data.len() < ext_len {
+                    return false;
+                }
+                next_header = ext_next;
+                data = &data[ext_len..];
+            }
+            EXT_HEADER_FRAGMENT => {
+                // RFC 8200: A packet must not contain more than one Fragment header.
+                return false;
+            }
+            EXT_HEADER_NO_NEXT => {
+                return true;
+            }
+            _ => {
+                // Upper-layer protocol found — chain is complete.
+                // Note: For some protocols (like TCP/UDP), we might want to check 
+                // if at least the ports are present, but RFC 7112 simply requires 
+                // the entire chain to be present.
+                return true;
+            }
+        }
+    }
+}
+
 /// Result of extension-header walk with fragment awareness.
 pub enum ExtHeaderResult<'a> {
     /// No fragment header encountered — upper-layer protocol and payload

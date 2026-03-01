@@ -22,10 +22,8 @@ pub(crate) fn generate_initial_seq(local: SocketAddr, remote: Option<SocketAddr>
     }
 
     // Hardware RNG source for the secret component
-    let random_bytes = crate::net::security::tls::crypto::random::generate_random();
-    let secret_seed = [random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3], 
-                       random_bytes[4], random_bytes[5], random_bytes[6], random_bytes[7]];
-    
+    // Security: Use full 32 bytes for the HMAC key to maximize entropy
+    let secret_seed = crate::net::security::tls::crypto::random::generate_random();
     // Generate F(...) using HMAC
     let hash = hmac_sha256(&secret_seed, &data);
     let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);

@@ -110,6 +110,36 @@ impl Ipv4Address {
         (self.0[0] == 192 && self.0[1] == 168)
     }
 
+    /// Check if this is a shared address space (CGNAT, 100.64.0.0/10)
+    pub const fn is_shared_address(&self) -> bool {
+        self.0[0] == 100 && (self.0[1] & 0xc0) == 64
+    }
+
+    /// Check if this is a Martian/Reserved address that should not appear on the public internet
+    /// as a source address (RFC 1812, RFC 6890)
+    pub const fn is_martian(&self) -> bool {
+        // 0.0.0.0/8 (Current network)
+        if self.0[0] == 0 { return true; }
+        // 127.0.0.0/8 (Loopback)
+        if self.is_loopback() { return true; }
+        // 169.254.0.0/16 (Link Local)
+        if self.is_link_local() { return true; }
+        // 192.0.0.0/24 (IETF Protocol Assignments)
+        if self.0[0] == 192 && self.0[1] == 0 && self.0[2] == 0 { return true; }
+        // 192.0.2.0/24 (TEST-NET-1)
+        if self.0[0] == 192 && self.0[1] == 0 && self.0[2] == 2 { return true; }
+        // 198.51.100.0/24 (TEST-NET-2)
+        if self.0[0] == 198 && self.0[1] == 51 && self.0[2] == 100 { return true; }
+        // 203.0.113.0/24 (TEST-NET-3)
+        if self.0[0] == 203 && self.0[1] == 0 && self.0[2] == 113 { return true; }
+        // 240.0.0.0/4 (Reserved / Future Use)
+        if (self.0[0] & 0xf0) == 240 {
+            // 255.255.255.255 is handled separately as broadcast
+            return !self.is_broadcast();
+        }
+        false
+    }
+
     /// Apply a subnet mask
     pub const fn apply_mask(&self, mask: Ipv4Address) -> Ipv4Address {
         Ipv4Address([

@@ -228,6 +228,14 @@ impl Ipv6FragmentBuffer {
 
         // Capture unfragmentable part from the first fragment
         if frag.fragment_offset == 0 && self.unfragmentable_part.is_none() {
+            // RFC 8200/7112: The first fragment (offset 0) MUST contain the entire header chain
+            // (all extension headers + upper-layer header).
+            if !super::is_header_chain_complete(frag.next_header, payload) {
+                log::warn!(
+                    "[NET-IPV6] Dropping IPv6 datagram due to incomplete header chain in first fragment (Tiny Fragment Attack prevention)"
+                );
+                return false;
+            }
             self.unfragmentable_part = Some(unfragmentable.to_vec());
         }
 

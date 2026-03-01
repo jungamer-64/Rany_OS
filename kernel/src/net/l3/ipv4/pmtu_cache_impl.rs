@@ -216,6 +216,14 @@ impl FragmentBuffer {
 
         self.last_update = current_time;
 
+        // Security: Check for 'Tiny Fragments' (RFC 1858)
+        // If this is the first fragment (offset 0) and there are more fragments,
+        // it must be large enough to contain the transport header (at least 8 bytes for UDP/TCP).
+        if fragment_offset == 0 && header.more_fragments() && fragment_len < 8 {
+            log::warn!("[NET-IPV4] Tiny fragment (offset 0, len {}) detected, dropping datagram", fragment_len);
+            return false;
+        }
+
         // RFC 791: 8-octet multiple check for non-last fragments
         if header.more_fragments() && (fragment_len % 8 != 0) {
             log::warn!("[NET-IPV4] Fragment length ({}) not a multiple of 8 while MF=1, dropping", fragment_len);
@@ -245,8 +253,7 @@ impl FragmentBuffer {
             self.data.resize(fragment_end as usize, 0);
         }
 
-        // Security: Check for inconsistent overlaps (RFC 1858 / RFC 3128)
-        // If this fragment overlaps with data we already have, it MUST be identical.
+        // Security: Check for overlapping fragments.
         // We detect overlap by checking if the fragment range [offset, end) 
         // covers any byte that is not currently in a hole.
         let mut covered_hole_bytes: u32 = 0;
@@ -259,18 +266,10 @@ impl FragmentBuffer {
         }
 
         if covered_hole_bytes < fragment_len as u32 {
-            // Potential overlap with existing data. Check consistency.
-            // We only need to check bytes that are NOT in holes.
-            for i in 0..fragment_len as usize {
-                let pos = fragment_offset as usize + i;
-                let is_in_hole = self.holes.iter().any(|h| pos >= h.first as usize && pos < h.last as usize);
-                if !is_in_hole {
-                    if pos < self.data.len() && self.data[pos] != payload[i] {
-                        log::warn!("[NET-IPV4] Inconsistent fragment overlap at offset {}", pos);
-                        return false;
-                    }
-                }
-            }
+            // Overlap detected. RFC 5722 (for IPv6) and general security best practices
+            // recommend discarding the entire datagram to prevent IDS evasion.
+            log::warn!("[NET-IPV4] Overlapping fragment detected at offset {}, dropping datagram", fragment_offset);
+            return false;
         }
 
         // Copy fragment data
@@ -685,9 +684,15 @@ impl Ipv4Processor {
         let src = packet.source();
         
         // Security: Prevent Source IP spoofing (Martian packets)
-        if src.is_broadcast() || src.is_multicast() || (src.is_loopback() && !self.config.address.is_loopback()) {
-            self.stats.rx_dropped += 1;
-            return Ipv4ProcessResult::Dropped;
+        // RFC 1812: Source IP must not be a multicast or broadcast address.
+        // RFC 6890: Filter other reserved/special-purpose ranges.
+        if src.is_broadcast() || src.is_multicast() || src.is_martian() {
+            // Special exception: 0.0.0.0 is allowed as source for DHCP DISCOVER/REQUEST
+            if !src.is_any() {
+                self.stats.rx_dropped += 1;
+                log::warn!("[NET-IPV4] Dropping Martian packet with source {}", src);
+                return Ipv4ProcessResult::Dropped;
+            }
         }
 
         let header = packet.header();
@@ -726,6 +731,7 @@ impl Ipv4Processor {
         *addr == self.config.address
             || addr.is_broadcast()
             || *addr == self.config.broadcast_address()
+            || addr.is_multicast() // Allow multicast for group processing
     }
 
     /// Get next packet ID (unpredictable per-destination to prevent Idle Scan and Traffic Analysis)
