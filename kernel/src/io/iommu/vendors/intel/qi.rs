@@ -144,11 +144,14 @@ impl InvalidationQueueEntry {
         if am == 0 {
             Self::device_tlb_invalidate_page(source_id, iova)
         } else {
-            // PCIe ATS range encoding: S=1, and the least-significant zero bit 
-            // in address[63:12] indicates the size (2^(N+1) pages).
-            // For 2^am pages, N = am - 1.
+            // PCIe ATS range encoding (Intel VT-d Spec Section 6.5.2.3):
+            // Range size is 2^am pages (4KB * 2^am bytes).
+            // Encoding: S=1, Address[63:12] has (am-1) least-significant bits as 1, 
+            // and bit (12+(am-1)) as 0.
+            let page_addr = iova >> 12;
             let mask = (1u64 << (am - 1)) - 1;
-            let addr = (iova & !((1u64 << am) - 1)) | mask;
+            let encoded_page_addr = (page_addr & !((1u64 << am) - 1)) | mask;
+            let addr = encoded_page_addr << 12;
             Self::device_tlb_invalidate(source_id, addr, true)
         }
     }

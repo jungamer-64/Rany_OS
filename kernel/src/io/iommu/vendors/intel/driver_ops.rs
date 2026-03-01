@@ -102,15 +102,24 @@ impl IntelIommuDriver {
     }
 
     pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
-        // Intel VT-d MSI/MSI-X format (same as previous implementation).
-        let handle = handle as u64;
-        let index_14_0 = handle & 0x7FFF;
-        let index_15 = (handle >> 15) & 1;
-
-        let address = 0xFEE0_0000 | (index_14_0 << 5) | (index_15 << 3);
-        let data = 0;
-
-        (address, data)
+        // Intel VT-d MSI/MSI-X format for Interrupt Remapping.
+        // Spec Section 5.1.2.1: MSI and MSI-X Register Programming
+        let handle_val = handle as u64;
+        
+        if handle_val < 0x8000 {
+            // Standard case: Index fits in 15 bits of address (bits 19:5).
+            // SHV=0 (Sub-handle Valid is bit 3).
+            let address = 0xFEE0_0000 | (handle_val << 5);
+            let data = 0;
+            (address, data)
+        } else {
+            // High index case: Use SHV=1 (bit 3) and sub-handle in Data register.
+            // Effective Index = (Interrupt Index in Address[19:5]) + (Sub-handle in Data[15:0]).
+            // Here we set Interrupt Index = 0 and Sub-handle = handle.
+            let address = 0xFEE0_0000 | (1 << 3); // SHV=1
+            let data = handle as u32; // Sub-handle is in lower 16 bits of Data
+            (address, data)
+        }
     }
 
     pub(crate) fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {

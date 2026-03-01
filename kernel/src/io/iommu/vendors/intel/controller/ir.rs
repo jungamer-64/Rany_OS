@@ -42,12 +42,13 @@ impl InterruptRemapEntry {
         if logical {
             lo |= 1 << 2;
         }
-        // E (Extended Interrupt Mode) = 1 (bit 15)
-        // This is required for 32-bit destination ID support (x2APIC).
-        lo |= 1 << 15;
+        // SECURITY: IM (Interrupt Mode) = 0 (bit 15) for remapped interrupts.
+        // Bit 15 must be 0; previous implementation incorrectly set it.
+        lo &= !(1 << 15);
         // Vector (bits 31:16)
         lo |= (vector as u64) << 16;
         // DestID (bits 63:32)
+        // Note: This requires EIME=1 in IRTA register (32-bit Destination ID).
         lo |= (dest_id as u64) << 32;
 
         let mut hi = 0;
@@ -64,9 +65,12 @@ impl InterruptRemapEntry {
     }
 
     pub fn posted(pid_addr: u64, vector: u8, sid: Option<u16>) -> Self {
-        // P=1 (bit 0), IM=1 (bit 4)
+        // P=1 (bit 0), IM=1 (bit 15)
         // PID address (PDA) must be 4KB aligned, bits 63:12 are used.
-        let lo = (pid_addr & !0xFFF) | (1 << 4) | 1;
+        let mut lo = (pid_addr & !0xFFF) | 1;
+        // SECURITY: IM (Interrupt Mode) = 1 (bit 15) for posted interrupts.
+        lo |= 1 << 15;
+        
         let mut hi = 0;
         
         // Notification Vector (bits 111:104 of IRTE, bits 47:40 of hi)
