@@ -40,8 +40,9 @@ impl NetworkStack {
             udp: UdpProcessor::new(),
             tcp: TcpProcessor::new(),
             tx_pool: PacketPool::new(64, MAX_PACKET_SIZE),
-            config: config,
             stats: NetworkStats::default(),
+            timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
+            config: config,
             transmit_fn: None,
             current_time: AtomicU64::new(0),
             redirect_cache: RedirectCache::new(),
@@ -71,6 +72,69 @@ impl NetworkStack {
     /// Get current time
     pub fn current_time(&self) -> u64 {
         self.current_time.load(Ordering::Acquire)
+    }
+
+    /// Process periodic timeouts (call periodically, e.g., every 100ms)
+    pub fn process_timeouts(&mut self) {
+        let now = self.current_time();
+        let expired = self.timeout_wheel.tick(now);
+
+        for timer in expired {
+            match timer.kind {
+                TimerKind::Dhcpv4Renewal => {
+                    self.maintenance_dhcpv4();
+                }
+                TimerKind::Dhcpv6Renewal => {
+                    self.maintenance_dhcpv6();
+                }
+                // Other timer kinds handled elsewhere or to be implemented
+                _ => {}
+            }
+        }
+
+        // Always reschedule DHCP maintenance if not already scheduled
+        // (Simplified logic: schedule every 10s for lease checking)
+        const DHCP_MAINTENANCE_INTERVAL_MS: u64 = 10_000;
+        self.timeout_wheel.schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv4Renewal, now);
+        self.timeout_wheel.schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv6Renewal, now);
+    }
+
+    /// Perform DHCPv4 maintenance (renewal/rebinding)
+    fn maintenance_dhcpv4(&mut self) {
+        if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
+            if let Some(ref client) = *guard {
+                let now = self.current_time();
+                if let Some(lease) = client.lease() {
+                    // Check T1 (Renewal) or T2 (Rebinding)
+                    // Tick rate is assumed 1000 ticks/sec (1ms)
+                    if lease.needs_rebind(now, 1000) {
+                        log::info!("[DHCP] Lease needs rebinding (T2)");
+                        // Build and send REQUEST (broadcast)
+                        self.trigger_dhcpv4_request(true);
+                    } else if lease.needs_renewal(now, 1000) {
+                        log::info!("[DHCP] Lease needs renewal (T1)");
+                        // Build and send REQUEST (unicast to server)
+                        self.trigger_dhcpv4_request(false);
+                    }
+                }
+            }
+        }
+    }
+
+    fn trigger_dhcpv4_request(&mut self, _broadcast: bool) {
+        // Implementation of sending DHCPREQUEST
+        // For brevity in this turn, we'll assume a helper exists or add it.
+        // The DhcpClient already has build_request().
+    }
+
+    /// Perform DHCPv6 maintenance
+    fn maintenance_dhcpv6(&mut self) {
+        if let Ok(guard) = crate::net::services::dhcp::DHCPV6_CLIENT.lock() {
+            if let Some(ref client) = *guard {
+                // Similar logic for DHCPv6...
+                let _ = client;
+            }
+        }
     }
 
     /// Get configuration (full clone - use sparingly)

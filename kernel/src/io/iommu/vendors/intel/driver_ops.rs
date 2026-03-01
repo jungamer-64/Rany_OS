@@ -264,8 +264,10 @@ impl IntelIommuDriver {
         read: bool,
         write: bool,
     ) -> Result<u64, IommuError> {
+        crate::io::log::early_print("[DMA-TRC] validate\n");
         Self::validate_dma_alignment(phys_addr, size)?;
 
+        crate::io::log::early_print("[DMA-TRC] registry\n");
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
             return Err(IommuError::NotPresent);
@@ -274,12 +276,15 @@ impl IntelIommuDriver {
         let default_controller = registry
             .default_controller()
             .ok_or(IommuError::NotPresent)?;
+        crate::io::log::early_print("[DMA-TRC] alloc_iova\n");
         let iova = default_controller.allocate_iova(size)?;
+        crate::io::log::early_print("[DMA-TRC] iova_ok\n");
 
         let reserved_indices = unsafe {
             self.reserve_iova_on_secondary(registry, default_controller, iova, size)?
         };
 
+        crate::io::log::early_print("[DMA-TRC] map_all\n");
         if let Err(err) = unsafe {
             self.map_on_all_controllers(registry, &reserved_indices, iova, phys_addr, size, read, write)
         } {
@@ -287,6 +292,7 @@ impl IntelIommuDriver {
             return Err(err);
         }
 
+        crate::io::log::early_print("[DMA-TRC] ok\n");
         Ok(iova)
     }
 

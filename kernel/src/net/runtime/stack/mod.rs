@@ -28,6 +28,7 @@ use crate::net::l4::tcp::{
 };
 
 use crate::net::l4::udp::{UdpProcessor, UdpResult, UdpSocket};
+use crate::net::runtime::timeouts::{TimeoutWheel, TimerKind};
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
@@ -249,6 +250,8 @@ pub struct NetworkStack {
     tx_pool: PacketPool,
     /// Statistics
     stats: NetworkStats,
+    /// Timeout wheel for periodic tasks
+    timeout_wheel: TimeoutWheel,
     /// Transmit callback
     transmit_fn: Option<TransmitFn>,
     /// Current timestamp (ticks)

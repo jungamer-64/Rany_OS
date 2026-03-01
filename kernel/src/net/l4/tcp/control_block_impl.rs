@@ -1329,4 +1329,63 @@ impl TcpControlBlock {
     pub fn get_sack_blocks(&self) -> &[(u32, u32)] {
         &self.options.sack_blocks[..self.options.sack_block_count as usize]
     }
+
+    /// Build TCP options for an outgoing segment
+    pub fn build_options(&mut self, flags: u16) -> Vec<u8> {
+        let mut opts = Vec::new();
+        let syn = flags & crate::net::l4::tcp::TcpHeader::FLAG_SYN != 0;
+
+        // MSS (Maximum Segment Size) - Only in SYN
+        if syn {
+            opts.push(2); // Kind
+            opts.push(4); // Length
+            let mss = self.congestion.mss.to_be_bytes();
+            opts.extend_from_slice(&mss);
+        }
+
+        // Window Scale - Only in SYN
+        if syn && self.options.wscale_enabled {
+            opts.push(3); // Kind
+            opts.push(3); // Length
+            opts.push(self.options.rcv_wscale);
+        }
+
+        // SACK Permitted - Only in SYN
+        if syn {
+            opts.push(4); // Kind
+            opts.push(2); // Length
+        }
+
+        // Timestamps (RFC 7323)
+        if self.options.ts_enabled {
+            opts.push(8);  // Kind
+            opts.push(10); // Length
+            let ts_val = self.get_ts_val().to_be_bytes();
+            let ts_ecr = self.options.ts_ecr.to_be_bytes();
+            opts.extend_from_slice(&ts_val);
+            opts.extend_from_slice(&ts_ecr);
+        }
+
+        // SACK Blocks (RFC 2018) - Only in ACKs for out-of-order data
+        if !syn && self.options.sack_enabled && self.options.sack_block_count > 0 {
+            let count = self.options.sack_block_count as usize;
+            opts.push(5); // Kind
+            opts.push((2 + count * 8) as u8); // Length
+            for i in 0..count {
+                let (left, right) = self.options.sack_blocks[i];
+                opts.extend_from_slice(&left.to_be_bytes());
+                opts.extend_from_slice(&right.to_be_bytes());
+            }
+        }
+
+        // Padding to 4-byte boundary (RFC 793)
+        let remainder = opts.len() % 4;
+        if remainder != 0 {
+            for _ in 0..(4 - remainder) {
+                opts.push(1); // NOP
+            }
+        }
+
+        opts
+    }
 }

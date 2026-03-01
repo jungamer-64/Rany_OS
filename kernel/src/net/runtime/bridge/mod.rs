@@ -96,10 +96,16 @@ pub fn enter_deferred_rx_mode() {
 pub fn drain_deferred_rx_packets() {
     RX_DEFERRED_MODE.store(false, Ordering::Release);
     let packets: Vec<DeferredRxPacket> = {
-        let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() else { return };
+        let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() else {
+            crate::io::log::early_print("[DRAIN] lock failed\n");
+            return;
+        };
         core::mem::take(&mut *guard)
     };
-    for p in packets {
+    let count = packets.len();
+    crate::io::log::early_print(&alloc::format!("[DRAIN] {} packets\n", count));
+    for (i, p) in packets.into_iter().enumerate() {
+        crate::io::log::early_print(&alloc::format!("[DRAIN] pkt {}/{} len={}\n", i + 1, count, p.payload_len));
         if let Some(if_id) = p.if_id {
             process_received_packet_zero_copy_for_interface(
                 if_id,
@@ -110,7 +116,9 @@ pub fn drain_deferred_rx_packets() {
         } else {
             process_received_packet_zero_copy(p.packet, p.header_size, p.payload_len);
         }
+        crate::io::log::early_print(&alloc::format!("[DRAIN] pkt {} done\n", i + 1));
     }
+    crate::io::log::early_print("[DRAIN] all done\n");
 }
 
 // ============================================================================

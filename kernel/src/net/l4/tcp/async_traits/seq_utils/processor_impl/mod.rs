@@ -493,6 +493,19 @@ impl TcpProcessor {
             // Generate SYN Cookie
             let cookie = self.generate_syncookie(local_addr, remote_addr, seq_num, mss_idx);
             
+            // Build fixed MSS option for SYN Cookie response
+            let mss_val = match mss_idx {
+                0 => 536,
+                1 => 1300,
+                2 => 1440,
+                3 => 1460,
+                _ => 1460,
+            };
+            let mut cookie_opts = Vec::with_capacity(4);
+            cookie_opts.push(2); // MSS
+            cookie_opts.push(4);
+            cookie_opts.extend_from_slice(&mss_val.to_be_bytes());
+
             return Some(TcpProcessResult::SendPacket {
                 local: local_addr,
                 remote: remote_addr,
@@ -501,6 +514,7 @@ impl TcpProcessor {
                 flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
                 window: 65535,
                 payload: Vec::new(),
+                options: cookie_opts,
             });
         }
 
@@ -537,14 +551,18 @@ impl TcpProcessor {
         tcb.set_snd_nxt(isn);
         tcb.set_snd_una(isn);
 
+        let flags = TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK;
+        let opts = tcb.build_options(flags);
+
         let syn_ack = TcpProcessResult::SendPacket {
             local: local_addr,
             remote: remote_addr,
             seq: tcb.snd_nxt(),
             ack: tcb.rcv_nxt(),
-            flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+            flags,
             window: 65535,
             payload: Vec::new(),
+            options: opts,
         };
 
         drop(listener);
@@ -703,34 +721,40 @@ impl TcpProcessor {
     }
 
     /// Create an ACK packet result from current TCB state
-    pub(super) fn make_ack_result(tcb: &TcpControlBlock) -> TcpProcessResult {
+    pub(super) fn make_ack_result(tcb: &mut TcpControlBlock) -> TcpProcessResult {
         let Some(remote) = tcb.remote_addr() else {
             return TcpProcessResult::None;
         };
+        let flags = TcpHeader::FLAG_ACK;
+        let opts = tcb.build_options(flags);
         TcpProcessResult::SendPacket {
             local: tcb.local_addr(),
             remote,
             seq: tcb.snd_nxt(),
             ack: tcb.rcv_nxt(),
-            flags: TcpHeader::FLAG_ACK,
+            flags,
             window: tcb.rcv_wnd(),
             payload: Vec::new(),
+            options: opts,
         }
     }
 
     /// Create an RST|ACK packet result from current TCB state
-    pub(super) fn make_rst_ack_result(tcb: &TcpControlBlock) -> TcpProcessResult {
+    pub(super) fn make_rst_ack_result(tcb: &mut TcpControlBlock) -> TcpProcessResult {
         let Some(remote) = tcb.remote_addr() else {
             return TcpProcessResult::None;
         };
+        let flags = TcpHeader::FLAG_RST | TcpHeader::FLAG_ACK;
+        let opts = tcb.build_options(flags);
         TcpProcessResult::SendPacket {
             local: tcb.local_addr(),
             remote,
             seq: tcb.snd_nxt(),
             ack: tcb.rcv_nxt(),
-            flags: TcpHeader::FLAG_RST | TcpHeader::FLAG_ACK,
+            flags,
             window: tcb.rcv_wnd(),
             payload: Vec::new(),
+            options: opts,
         }
     }
 
@@ -1123,6 +1147,7 @@ impl TcpProcessor {
             // Fast retransmit: immediately resend oldest unacked segment
             if let Some((seq, flags, payload)) = tcb.clone_oldest_unacked_packet_for_retransmit() {
                 if let Some(remote) = tcb.remote_addr() {
+                    let opts = tcb.build_options(flags);
                     return TcpProcessResult::SendPacket {
                         local: tcb.local_addr(),
                         remote,
@@ -1131,6 +1156,7 @@ impl TcpProcessor {
                         flags,
                         window: tcb.rcv_wnd(),
                         payload,
+                        options: opts,
                     };
                 }
             }

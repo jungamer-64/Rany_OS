@@ -729,7 +729,8 @@ pub enum TcpProcessResult {
         ack: u32,
         flags: u16,
         window: u16,
-        payload: Vec<u8>
+        payload: Vec<u8>,
+        options: Vec<u8>,
     },
 }
 

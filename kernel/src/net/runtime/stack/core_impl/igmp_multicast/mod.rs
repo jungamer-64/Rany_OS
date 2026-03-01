@@ -161,9 +161,10 @@ impl NetworkStack {
                 flags,
                 window,
                 payload,
+                options,
             } => {
                 let mut buffer = [0u8; MAX_PACKET_SIZE];
-                let header_len = 20;
+                let header_len = 20 + options.len();
                 let total_len = header_len + payload.len();
 
                 if total_len > buffer.len() {
@@ -175,13 +176,21 @@ impl NetworkStack {
                 buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
                 buffer[4..8].copy_from_slice(&seq.to_be_bytes());
                 buffer[8..12].copy_from_slice(&ack.to_be_bytes());
-                let offset_flags = (5u16 << 12) | (flags & 0x01ff);
+                let data_offset = (header_len / 4) as u16;
+                let offset_flags = (data_offset << 12) | (flags & 0x01ff);
                 buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
                 buffer[14..16].copy_from_slice(&window.to_be_bytes());
                 buffer[16..18].fill(0);
                 buffer[18..20].fill(0);
+
+                // Copy options
+                if !options.is_empty() {
+                    buffer[20..20 + options.len()].copy_from_slice(&options);
+                }
+
+                // Copy payload
                 if !payload.is_empty() {
-                    buffer[20..total_len].copy_from_slice(&payload);
+                    buffer[header_len..total_len].copy_from_slice(&payload);
                 }
 
                 let Some((local_v4, remote_v4)) = tcp_ipv4_pair(local, remote) else {
@@ -360,9 +369,9 @@ impl NetworkStack {
             let res = self.tcp.process(data, src_v4, dst_v4, self.current_time());
 
             match res {
-                TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } => {
+                TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload, options } => {
                     let mut buffer = [0u8; 1518];
-                    let header_len = 20usize;
+                    let header_len = 20 + options.len();
                     let total_len = header_len + payload.len();
                     if total_len > buffer.len() { return; }
 
@@ -370,13 +379,21 @@ impl NetworkStack {
                     buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
                     buffer[4..8].copy_from_slice(&seq.to_be_bytes());
                     buffer[8..12].copy_from_slice(&ack.to_be_bytes());
-                    let offset_flags = (5 << 12) | (flags & 0x1FF);
+                    let data_offset = (header_len / 4) as u16;
+                    let offset_flags = (data_offset << 12) | (flags & 0x1FF);
                     buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
                     buffer[14..16].copy_from_slice(&window.to_be_bytes());
                     buffer[16..18].fill(0);
                     buffer[18..20].fill(0);
+
+                    // Copy options
+                    if !options.is_empty() {
+                        buffer[20..20 + options.len()].copy_from_slice(&options);
+                    }
+
+                    // Copy payload
                     if !payload.is_empty() {
-                        buffer[20..total_len].copy_from_slice(&payload);
+                        buffer[header_len..total_len].copy_from_slice(&payload);
                     }
 
                     // IPv4 TCP checksum (we're sending over IPv4 for mapped addresses)
@@ -390,8 +407,8 @@ impl NetworkStack {
                     };
                     crate::net::l4::tcp::calculate_tcp_checksum(
                         &mut buffer[..total_len],
-                        local_v4.0,
-                        remote_v4.0,
+                        local_v4.octets(),
+                        remote_v4.octets(),
                     );
 
                     let src_ip_out = Ipv4Address::new(local_v4.octets());
@@ -412,10 +429,10 @@ impl NetworkStack {
         // build/send any resulting TCP segments over IPv6.
         let res = self.tcp.process_v6(data, src, dst, self.current_time());
         match res {
-            TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload } => {
+            TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, payload, options } => {
                 // Build TCP segment and send over IPv6
                 let mut buffer = [0u8; 1518];
-                let header_len = 20usize;
+                let header_len = 20 + options.len();
                 let total_len = header_len + payload.len();
                 if total_len > buffer.len() { return; }
 
@@ -423,13 +440,21 @@ impl NetworkStack {
                 buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
                 buffer[4..8].copy_from_slice(&seq.to_be_bytes());
                 buffer[8..12].copy_from_slice(&ack.to_be_bytes());
-                let offset_flags = (5u16 << 12) | (flags & 0x01ff);
+                let data_offset = (header_len / 4) as u16;
+                let offset_flags = (data_offset << 12) | (flags & 0x01ff);
                 buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
                 buffer[14..16].copy_from_slice(&window.to_be_bytes());
                 buffer[16..18].fill(0);
                 buffer[18..20].fill(0);
+
+                // Copy options
+                if !options.is_empty() {
+                    buffer[20..20 + options.len()].copy_from_slice(&options);
+                }
+
+                // Copy payload
                 if !payload.is_empty() {
-                    buffer[20..total_len].copy_from_slice(&payload);
+                    buffer[header_len..total_len].copy_from_slice(&payload);
                 }
 
                 // IPv6 TCP checksum
