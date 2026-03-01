@@ -367,3 +367,33 @@ impl DnsStats {
         }
     }
 }
+
+// ============================================================================
+// Global Instance
+// ============================================================================
+
+pub static DNS_CLIENT: PoisonLock<Option<DnsClient>> = PoisonLock::new(None);
+
+/// DNSクライアントを初期化
+pub fn init(tick_rate: u64) {
+    let client = DnsClient::new(tick_rate);
+    if let Ok(mut guard) = DNS_CLIENT.lock() {
+        *guard = Some(client);
+    }
+}
+
+/// DNSクライアントを取得
+pub fn client() -> &'static PoisonLock<Option<DnsClient>> {
+    &DNS_CLIENT
+}
+
+/// DNSキャッシュをクリーンアップ (periodic maintenance)
+pub fn cleanup_cache(current_tick: u64) {
+    if let Ok(guard) = DNS_CLIENT.lock() {
+        if let Some(ref client) = *guard {
+            if let Ok(mut cache) = client.cache.lock() {
+                cache.cleanup(current_tick);
+            }
+        }
+    }
+}

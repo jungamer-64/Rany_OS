@@ -19,6 +19,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::l4::udp::{UdpSocket, UdpAddr};
+use crate::sync::PoisonLock;
 
 extern crate alloc;
 
@@ -159,6 +161,62 @@ impl MdnsService {
             local_ip,
             cache: BTreeMap::new(),
             pending_reports: Vec::new(),
+        }
+    }
+
+    /// mDNSサービスのメインループ（非同期）
+    pub async fn run(&mut self) -> Result<(), &'static str> {
+        let socket = crate::net::runtime::stack::bind_udp(MDNS_PORT).map_err(|_| "Failed to bind mDNS socket")?;
+        
+        // mDNSマルチキャストグループに参加
+        socket.join_multicast_group(MDNS_MULTICAST_GROUP).map_err(|_| "Failed to join mDNS multicast group")?;
+        
+        log::info!("[NET] mDNS service task started (hostname: {}.local)", self.hostname);
+
+        loop {
+            // パケット受信を待機
+            if let Some((src, packet)) = socket.recv().await {
+                let now = crate::task::timer::current_tick() / 1000;
+                
+                // 受信パケットを処理
+                // mDNSパケットは通常TTL=255だが、socket.recv()からはTTLが取得できないため、
+                // 内部ではTTL=255と仮定する。
+                let result = self.process_packet(packet.data(), src.ip, 255, now);
+                
+                match result {
+                    MdnsResult::SendResponse { name, ip, ttl } => {
+                        let mut buffer = [0u8; 512];
+                        if let Some(len) = Self::build_response(&mut buffer, &name, ip, ttl) {
+                            let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
+                            let _ = socket.send_to(&buffer[..len], dst);
+                        }
+                    }
+                    _ => {}
+                }
+                
+                // 保留中のレポート（クエリなど）があれば送信
+                let reports = self.take_pending_reports();
+                for report in reports {
+                    let mut buffer = [0u8; 512];
+                    if report.is_response {
+                        if let Some(ip) = report.ip {
+                            if let Some(len) = Self::build_response(&mut buffer, &report.name, ip, report.ttl) {
+                                let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
+                                let _ = socket.send_to(&buffer[..len], dst);
+                            }
+                        }
+                    } else {
+                        if let Some(len) = Self::build_query(&mut buffer, &report.name) {
+                            let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
+                            let _ = socket.send_to(&buffer[..len], dst);
+                        }
+                    }
+                }
+            }
+            
+            // 定期的なキャッシュクリーンアップ
+            let now = crate::task::timer::current_tick() / 1000;
+            self.cleanup_expired(now);
         }
     }
 
@@ -837,6 +895,25 @@ fn to_lowercase(s: &str) -> String {
         }
     }
     result
+}
+
+// ============================================================================
+// Global Instance
+// ============================================================================
+
+pub static MDNS_SERVICE: PoisonLock<Option<MdnsService>> = PoisonLock::new(None);
+
+/// mDNSサービスを初期化
+pub fn init(hostname: String, local_ip: Ipv4Address) {
+    let service = MdnsService::new(hostname, local_ip);
+    if let Ok(mut guard) = MDNS_SERVICE.lock() {
+        *guard = Some(service);
+    }
+}
+
+/// mDNSサービスを取得
+pub fn service() -> &'static PoisonLock<Option<MdnsService>> {
+    &MDNS_SERVICE
 }
 
 // ============================================================================

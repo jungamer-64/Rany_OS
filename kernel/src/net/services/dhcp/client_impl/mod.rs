@@ -58,6 +58,12 @@ impl DhcpClient {
                                     stack.apply_dhcp_v4_lease(&lease);
                                 }
                             }
+                            // mDNS のローカル IP を更新
+                            if let Ok(mut guard) = crate::net::services::mdns::service().lock() {
+                                if let Some(ref mut mdns) = *guard {
+                                    mdns.set_local_ip(lease.ip_address);
+                                }
+                            }
                         }
                         Ok(DhcpResponseResult::Offer(lease)) => {
                             log::info!("[NET] DHCPv4 OFFER received: {:?} from {:?}", lease.ip_address, lease.server_ip);

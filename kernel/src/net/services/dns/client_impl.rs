@@ -15,6 +15,23 @@ impl DnsClient {
         }
     }
 
+    /// DNSクライアントのメインループ（非同期）
+    /// 
+    /// キャッシュの定期的なクリーンアップなどを行います。
+    pub async fn run(&self) -> Result<(), &'static str> {
+        log::info!("[NET] DNS client task started");
+
+        loop {
+            // 5秒ごとにキャッシュをクリーンアップ
+            crate::task::timer::sleep_ms(5000).await;
+            
+            let now = crate::task::timer::current_tick();
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.cleanup(now);
+            }
+        }
+    }
+
     /// IPv4 DNSサーバーを設定
     pub fn set_ipv4_servers(&self, servers: Vec<Ipv4Address>) {
         match self.ipv4_servers.lock() {

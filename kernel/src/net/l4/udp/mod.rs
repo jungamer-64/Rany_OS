@@ -371,6 +371,18 @@ impl UdpSocket {
         }
     }
 
+    /// Join a multicast group for this socket.
+    /// 
+    /// Note: This affects the underlying network stack to ensure packets are received.
+    pub fn join_multicast_group(&self, group: Ipv4Address) -> Result<(), crate::net::l2::igmp::IgmpError> {
+        crate::net::runtime::stack::join_multicast_group(group)
+    }
+
+    /// Leave a multicast group for this socket.
+    pub fn leave_multicast_group(&self, group: Ipv4Address) -> Result<(), crate::net::l2::igmp::IgmpError> {
+        crate::net::runtime::stack::leave_multicast_group(group)
+    }
+
     /// Get receive queue length
     pub fn rx_queue_len(&self) -> usize {
         match self.inner.lock() {

@@ -355,6 +355,29 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     dhcp::init(mac);
     dhcp::init_v6(mac);
 
+    let (hostname, ip, dns_servers) = match stack::stack().lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(stack_guard) => {
+                let cfg = stack_guard.config();
+                let dns = if let Some(d) = cfg.ipv4.dns { vec![d] } else { vec![] };
+                (String::from("ranyos"), cfg.ipv4.address, dns)
+            }
+            None => (String::from("ranyos"), Ipv4Address::new([0, 0, 0, 0]), vec![]),
+        },
+        Err(_) => (String::from("ranyos"), Ipv4Address::new([0, 0, 0, 0]), vec![]),
+    };
+    crate::net::services::mdns::init(hostname, ip);
+    
+    // DNS 初期化
+    crate::net::services::dns::init(1000);
+    if !dns_servers.is_empty() {
+        if let Ok(guard) = crate::net::services::dns::client().lock() {
+            if let Some(ref client) = *guard {
+                client.set_ipv4_servers(dns_servers);
+            }
+        }
+    }
+
     // Spawn DHCPv4 client task
     crate::task::Executor::spawn_global(crate::task::Task::new(async move {
         if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
@@ -369,6 +392,24 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         if let Ok(guard) = dhcp::DHCPV6_CLIENT.lock() {
             if let Some(client6) = &*guard {
                 let _ = client6.run().await;
+            }
+        }
+    }));
+
+    // Spawn mDNS service task
+    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+        if let Ok(mut guard) = crate::net::services::mdns::service().lock() {
+            if let Some(ref mut service) = *guard {
+                let _ = service.run().await;
+            }
+        }
+    }));
+
+    // Spawn DNS client task
+    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+        if let Ok(guard) = crate::net::services::dns::client().lock() {
+            if let Some(ref client) = *guard {
+                let _ = client.run().await;
             }
         }
     }));
