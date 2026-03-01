@@ -550,10 +550,33 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
             // graphics::show_boot_splash(); // Disabled by user request
             // info!(target: "init", "Boot splash displayed");
 
-            // Initialize Text Console driver
-            graphics::init_console();
-            graphics_console_ready = true;
-            info!(target: "init", "Text Console driver initialized");
+            // QEMU full-boot driver_cell runtime profile does not require an interactive
+            // framebuffer console and may stall in console init under qemu-test-export.
+            let skip_text_console_init = {
+                #[cfg(feature = "qemu-test-export")]
+                {
+                    kernel_cmdline(boot_info, phys_mem_offset)
+                        .and_then(|cmdline| util::get_cmdline_option(cmdline, "run_integration"))
+                        .map(|profile| profile == "driver_cell")
+                        .unwrap_or(false)
+                }
+                #[cfg(not(feature = "qemu-test-export"))]
+                {
+                    false
+                }
+            };
+
+            if skip_text_console_init {
+                info!(
+                    target: "init",
+                    "Skipping text console init for qemu-test-export driver_cell profile"
+                );
+            } else {
+                // Initialize Text Console driver
+                graphics::init_console();
+                graphics_console_ready = true;
+                info!(target: "init", "Text Console driver initialized");
+            }
 
             // Initialize Graphical Shell (now that framebuffer is ready)
             // graphical_shell::init();
@@ -629,11 +652,21 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // 2.8.5. セルローダー / ライブアップデート / DriverCell の基盤初期化
     io::log::early_print("[DEBUG] Before early loader init\n");
     info!(target: "init", "Initializing cell loader (early)");
+    io::log::early_print("[DEBUG] early loader: before init_kernel_cell\n");
     loader::init_kernel_cell();
+    io::log::early_print("[DEBUG] early loader: after init_kernel_cell\n");
+    io::log::early_print("[DEBUG] early loader: before register_kernel_symbols\n");
     register_kernel_symbols();
+    io::log::early_print("[DEBUG] early loader: after register_kernel_symbols\n");
+    io::log::early_print("[DEBUG] early loader: before live_update::init\n");
     loader::live_update::init();
+    io::log::early_print("[DEBUG] early loader: after live_update::init\n");
+    io::log::early_print("[DEBUG] early loader: before set_active_cores\n");
     loader::live_update::set_active_cores(1);
+    io::log::early_print("[DEBUG] early loader: after set_active_cores\n");
+    io::log::early_print("[DEBUG] early loader: before driver_cell::init\n");
     crate::driver_cell::init();
+    io::log::early_print("[DEBUG] early loader: after driver_cell::init\n");
     info!(target: "init", "Cell loader/live update/DriverCell initialized");
     io::log::early_print("[DEBUG] After early loader init\n");
 

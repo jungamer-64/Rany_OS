@@ -27,6 +27,12 @@ pub(super) struct AmdCommandWaitToken {
     expected_seq: u64,
 }
 
+// SAFETY: The token only carries a pointer to a completion counter in DMA-backed
+// memory and an expected sequence number. Completion checks are read-only volatile
+// loads, and synchronization is handled by hardware command completion ordering.
+unsafe impl Send for AmdCommandWaitToken {}
+unsafe impl Sync for AmdCommandWaitToken {}
+
 impl AmdCommandWaitToken {
     fn is_complete(&self) -> bool {
         // Commands complete in order; a newer sequence implies this one finished.
@@ -666,5 +672,30 @@ impl IommuInvalidator for AmdIommuDriver {
         // Complete epoch after hardware confirmation
         self.iova_allocator.complete_epoch(epoch);
         Ok(())
+    }
+
+    fn invalidate_async(&self, request: InvalidateRequest) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
+        async move {
+            match request.kind {
+                InvalidateKind::Pages { start_iova, bytes } => {
+                    self.invalidate_domain_pages_async(request.domain_id, start_iova, bytes).await?;
+                    if request.flags.contains(InvalidateFlags::ATS_AWARE) {
+                        // TODO: Implement async Device-TLB invalidation for AMD
+                        self.invalidate_domain_device_tlbs(request.domain_id, Some(start_iova), Some(bytes))?;
+                    }
+                }
+                InvalidateKind::Domain => {
+                    self.invalidate_domain_pages_async(request.domain_id, 0, u64::MAX).await?;
+                    if request.flags.contains(InvalidateFlags::ATS_AWARE) {
+                        self.invalidate_domain_device_tlbs(request.domain_id, None, None)?;
+                    }
+                }
+                _ => {
+                    // Fall back to sync path for global/context for now
+                    self.invalidate(request)?;
+                }
+            }
+            Ok(())
+        }
     }
 }

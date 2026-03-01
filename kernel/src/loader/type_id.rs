@@ -22,7 +22,6 @@
 
 #![allow(dead_code)]
 
-use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -116,33 +115,35 @@ pub const fn const_hash(bytes: &[u8]) -> TypeHash {
 ///
 /// カーネルが提供するインターフェースのハッシュ値を管理します。
 pub struct InterfaceRegistry {
-    /// インターフェース名 -> TypeIdInfo のマッピング
-    interfaces: BTreeMap<String, TypeIdInfo>,
+    /// 登録済みインターフェース一覧（名前は一意）
+    interfaces: Vec<TypeIdInfo>,
 }
 
 impl InterfaceRegistry {
     pub const fn new() -> Self {
         Self {
-            interfaces: BTreeMap::new(),
+            interfaces: Vec::new(),
         }
     }
 
     /// インターフェースを登録
     pub fn register<T: TypeIdHash>(&mut self) {
         let info = T::type_id_info();
-        self.interfaces.insert(info.name.clone(), info);
+        self.register_manual(info.name, info.hash, info.version);
     }
 
     /// インターフェースを手動登録（名前とハッシュを指定）
     pub fn register_manual(&mut self, name: String, hash: TypeHash, version: SemVer) {
-        self.interfaces.insert(
-            name.clone(),
-            TypeIdInfo {
-                name,
-                hash,
-                version,
-            },
-        );
+        if let Some(existing) = self.interfaces.iter_mut().find(|i| i.name == name) {
+            existing.hash = hash;
+            existing.version = version;
+            return;
+        }
+        self.interfaces.push(TypeIdInfo {
+            name,
+            hash,
+            version,
+        });
     }
 
     /// インターフェースのハッシュを検証
@@ -151,7 +152,7 @@ impl InterfaceRegistry {
     /// - `Ok(())`: ハッシュが一致
     /// - `Err(TypeIdError)`: ハッシュ不一致または未登録
     pub fn verify(&self, name: &str, expected_hash: TypeHash) -> Result<(), TypeIdError> {
-        match self.interfaces.get(name) {
+        match self.interfaces.iter().find(|i| i.name == name) {
             Some(info) => {
                 if info.hash == expected_hash {
                     Ok(())
@@ -177,7 +178,7 @@ impl InterfaceRegistry {
         expected_hash: TypeHash,
         required_version: SemVer,
     ) -> Result<(), TypeIdError> {
-        match self.interfaces.get(name) {
+        match self.interfaces.iter().find(|i| i.name == name) {
             Some(info) => {
                 if info.hash != expected_hash {
                     return Err(TypeIdError::HashMismatch {
@@ -491,17 +492,17 @@ pub fn register_kernel_interface_manual(name: &str, hash: TypeHash, version: Sem
 
 /// 登録済みカーネルインターフェースを取得（シェル観測用）
 pub fn get_kernel_interface(name: &str) -> Option<TypeIdInfo> {
-    INTERFACE_REGISTRY.lock().interfaces.get(name).cloned()
+    INTERFACE_REGISTRY
+        .lock()
+        .interfaces
+        .iter()
+        .find(|i| i.name == name)
+        .cloned()
 }
 
 /// 登録済みカーネルインターフェースを列挙（シェル観測用）
 pub fn list_kernel_interfaces() -> Vec<TypeIdInfo> {
-    INTERFACE_REGISTRY
-        .lock()
-        .interfaces
-        .values()
-        .cloned()
-        .collect()
+    INTERFACE_REGISTRY.lock().interfaces.clone()
 }
 
 /// セルの依存関係を検証
@@ -572,12 +573,18 @@ impl TypeIdHash for IpcInterface {
 
 /// カーネルインターフェースの初期化
 pub fn init_kernel_interfaces() {
+    crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: enter\n");
     let mut registry = INTERFACE_REGISTRY.lock();
+    crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: locked\n");
 
     // 標準カーネルインターフェースを登録
+    crate::io::log::early_print("[LDBG] type_id: register MemoryAllocatorInterface\n");
     registry.register::<MemoryAllocatorInterface>();
+    crate::io::log::early_print("[LDBG] type_id: register TaskSchedulerInterface\n");
     registry.register::<TaskSchedulerInterface>();
+    crate::io::log::early_print("[LDBG] type_id: register IpcInterface\n");
     registry.register::<IpcInterface>();
+    crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: done\n");
 
     log::info!("[TypeID] Registered {} kernel interfaces\n", registry.len());
 }

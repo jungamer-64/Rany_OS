@@ -498,27 +498,39 @@ impl MpkManager {
 
     /// CPU機能を検出してMPKを初期化
     pub fn init(&mut self) {
+        crate::io::log::early_print("[MPKDBG] manager.init: enter\n");
         self.detect_pku();
+        crate::io::log::early_print("[MPKDBG] manager.init: after detect_pku\n");
 
         if self.pku_detected {
+            crate::io::log::early_print("[MPKDBG] manager.init: before enable_pku\n");
             self.enable_pku();
+            crate::io::log::early_print("[MPKDBG] manager.init: after enable_pku\n");
         }
+        crate::io::log::early_print("[MPKDBG] manager.init: done\n");
     }
 
     /// PKU機能をCPUIDで検出
     fn detect_pku(&mut self) {
+        crate::io::log::early_print("[MPKDBG] detect_pku: enter\n");
         // CPUID.07H:ECX.PKU (bit 3)
         #[cfg(target_arch = "x86_64")]
         {
             use core::arch::x86_64::__cpuid_count;
 
+            crate::io::log::early_print("[MPKDBG] detect_pku: before cpuid\n");
             let result = __cpuid_count(0x07, 0);
+            crate::io::log::early_print("[MPKDBG] detect_pku: after cpuid\n");
             self.pku_detected = (result.ecx & (1 << 3)) != 0;
 
             if self.pku_detected {
+                crate::io::log::early_print("[MPKDBG] detect_pku: before log supported\n");
                 log::info!("[MPK] PKU support detected\n");
+                crate::io::log::early_print("[MPKDBG] detect_pku: after log supported\n");
             } else {
+                crate::io::log::early_print("[MPKDBG] detect_pku: before log unsupported\n");
                 log::info!("[MPK] PKU not supported by CPU\n");
+                crate::io::log::early_print("[MPKDBG] detect_pku: after log unsupported\n");
             }
         }
 
@@ -599,8 +611,11 @@ pub fn is_pku_enabled() -> bool {
 
 /// MPKサブシステムを初期化
 pub fn init() {
+    crate::io::log::early_print("[MPKDBG] init(): before lock\n");
     let mut manager = MPK_MANAGER.lock();
+    crate::io::log::early_print("[MPKDBG] init(): after lock\n");
     manager.init();
+    crate::io::log::early_print("[MPKDBG] init(): after manager.init\n");
 }
 
 // ============================================================================
@@ -651,4 +666,3 @@ mod tests {
         }
     }
 }
-

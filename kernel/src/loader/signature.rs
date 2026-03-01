@@ -724,6 +724,11 @@ pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
     if verifier_guard.is_none() {
         let mut v = SignatureVerifier::production();
         v.add_trusted_key(BUILTIN_TRUSTED_KEY);
+        #[cfg(feature = "qemu-test-export")]
+        {
+            // Full-boot runtime tests load unsigned fixture cells from initramfs.
+            v.set_dev_mode(true);
+        }
         *verifier_guard = Some(v);
     }
 

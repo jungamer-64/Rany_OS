@@ -128,9 +128,9 @@
 ## U-02 解消済み: `sys_*` エクスポートによる syscall 的境界の残存
 
 - 設計要件ID: `REQ-2.2-SPL-NO-TRADITIONAL-SYSCALL`
-- 現状: `cell_runtime` は `KernelApiV1` シンボル参照に移行し、`register_kernel_symbols()` の `sys_*` 登録を削除済み。
+- 現状: `cell_runtime` は `KernelApiV1` シンボル参照に移行し、`register_kernel_symbols()` の `sys_*` 登録を削除済み。加えて CI で `sys_*` 再導入をブロックするガードを運用開始。
 - 乖離内容: なし（解消済み）。
-- 推奨アクション: `sys_*` 境界を再導入しないことを CI で静的検証する。
+- 推奨アクション: CI ガード + `fullboot_pr_required(driver_cell)` を維持し、PR必須検証として固定運用する。
 - 設計根拠:
   - `Rustカーネル設計案作成.md:56`
   - `Rustカーネル設計案作成.md:60`
@@ -139,6 +139,8 @@
   - `interfaces/kernel_api/src/cell_runtime.rs:39`
   - `kernel/src/ahci_and_init/kernel_runtime.rs:265`
   - `kernel/src/kernel_content/ahci_and_init/kernel_runtime.rs:264`
+  - `scripts/check-no-sys-symbol-boundary.sh:1`
+  - `.github/workflows/ci.yml:152`
 
 ## M-01 不足: 4.4.2 ループ境界静的証明の実装本体欠落
 
@@ -236,22 +238,24 @@
 
 ## 6. 即時着手バックログ（最大10件）
 
-1. `P0` `sys_*` 再導入防止の CI ガードを追加（`rg "\\bsys_(log|alloc|dealloc|sleep|panic)\\b" kernel interfaces` が常に `0 hit`）。
-2. `P0` `KERNEL_API_SYMBOL` 解決を必須化する loader/cell_runtime 回帰テストを追加。
-3. `P0` OOM kill 実処理（タスク停止 + ドメイン遷移 + リソース回収）を `domain_system` API で実装。
-4. `P0` quota 超過時の scheduler 連携（優先度降格/一時停止）を導入。
-5. `P1` `legacy-posix` feature の段階的無効化マップを作成。
-6. `P1` ループ境界静的証明の最小版（untrustedセルを警告/拒否）をビルドパイプラインに導入。
-7. `P1` 永続CoW FS向け snapshot metadata と rollback エントリ形式を定義。
-8. `P2` 実NICドライバ候補（XL710/E810）の crate 骨格を作成。
-9. `P2` SR-IOV VF 初期化と queue 割当の実NIC統合ポイントを定義。
-10. `P2` checksum/TSO HW offload の feature negotiation と fallback を共通化。
+1. `P0` OOM kill 実処理（タスク停止 + ドメイン遷移 + リソース回収）を `domain_system` API で実装。
+2. `P0` quota 超過時の scheduler 連携（優先度降格/一時停止）を導入。
+3. `P1` `legacy-posix` feature の段階的無効化マップを作成。
+4. `P1` ループ境界静的証明の最小版（untrustedセルを警告/拒否）をビルドパイプラインに導入。
+5. `P1` 永続CoW FS向け snapshot metadata と rollback エントリ形式を定義。
+6. `P2` 実NICドライバ候補（XL710/E810）の crate 骨格を作成。
+7. `P2` SR-IOV VF 初期化と queue 割当の実NIC統合ポイントを定義。
+8. `P2` checksum/TSO HW offload の feature negotiation と fallback を共通化。
+9. `運用` `scripts/check-no-sys-symbol-boundary.sh` の fail-fast を維持し、`lint` 以外の workflow でも再利用可能にする。
+10. `運用` `driver_cell` runtime full-boot の所要時間監視（目安 35-40s）を追加し、退行を検知する。
 
 ## 7. 公開API/インターフェース影響
 
 - `P0-1` 実装で `KernelApiV1` を後方互換拡張（末尾 optional entry: `heap_alloc` / `heap_dealloc` / `panic_abort`）。
 - `KERNEL_API_ABI_VERSION` は `1` のまま維持（既存ドライバは prefix フィールドのみ利用可能）。
 - kernel 公開シンボルは `sys_*` から `__exorust_kernel_api_v1`（`KERNEL_API_SYMBOL`）へ統一。
+- CI `lint` ジョブに `Run syscall-boundary guard`（`scripts/check-no-sys-symbol-boundary.sh`）を追加。
+- `qemu-tests` の `fullboot_pr_required` は `driver_cell` プロファイルを含む構成に更新。
 - 次フェーズ候補（削除対象）:
   - `legacy-posix` 依存 API 群
   - （更新）`sys_*` シンボル境界は本フェーズで削除済み
@@ -269,6 +273,7 @@
 - `rg -n "\\bsys_(log|alloc|dealloc|sleep|panic)\\b" kernel interfaces` -> `0 hit`
 - `rg -n "fn\\s+sys_(log|alloc|dealloc|sleep|panic)|\\\"sys_(log|alloc|dealloc|sleep|panic)\\\"" kernel interfaces` -> `0 hit`
 - `rg -n "__exorust_kernel_api_v1|KERNEL_API_SYMBOL" kernel interfaces` -> `7 hit`
+- `bash scripts/check-no-sys-symbol-boundary.sh` -> `PASS`
 - `rg -n "XL710|E810|\\bi40e\\b|\\bice\\b|\\bixgbe\\b" drivers kernel Cargo.toml docs README.md` -> `0 hit`
 - `rg -n "loop_boundary|ExactSizeIterator" kernel/src/task docs/exorust_design/scheduler` -> 設計例のみヒット
 - `rg -n "set_domain_priority|set_domain_resource_limits|TODO: 実際のドメイン終了処理" ...` -> enforcement hook/TODO の残存を確認
@@ -277,3 +282,7 @@
 - `cargo build -p driver_cell_probe --features standalone,variant_v1` -> `pass`
 - `cargo build -p driver_cell_probe --features standalone,variant_v2` -> `pass`
 - `cargo test -p rany_kernel --lib` -> `198 passed, 0 failed`
+- `scripts/build_driver_cell_probe_fixtures.sh --profile release` -> `pass`（`target/initramfs.tar`, `driver_cell_probe_v1/v2.cell` 生成）
+- `QEMU_TEST_PROFILE_ONLY=driver_cell cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture` -> `PASS`（`required full-boot profile 'driver_cell' passed`）
+- `scripts/run_driver_cell_runtime_qemu_test.sh` -> `PASS`（`pass=1 fail=0 blocked=0`）
+- serial log: `target/qemu-logs/fullboot-driver_cell.log`（`[driver-cell-runtime] case ... pass`、summary完了を確認）

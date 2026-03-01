@@ -86,7 +86,7 @@ pub struct CellRegistry {
     /// セルID -> セル情報のマッピング
     cells: BTreeMap<CellId, CellEntry>,
     /// シンボルテーブル（名前 -> アドレス）
-    pub symbol_table: BTreeMap<String, usize>,
+    pub symbol_table: Vec<(String, usize)>,
     /// 次のセルID
     next_id: u64,
 }
@@ -119,6 +119,10 @@ pub struct CellEntry {
     /// ロードされたアドレス範囲
     pub load_address: usize,
     pub load_size: usize,
+    /// ヒープに実際に確保した先頭（ASLR補正前）
+    pub allocation_base: usize,
+    /// ヒープに実際に確保したサイズ（ASLRパディング込み）
+    pub allocation_size: usize,
     /// エントリポイント
     pub entry_point: Option<usize>,
     /// エクスポートされたシンボル
@@ -146,9 +150,20 @@ impl CellRegistry {
     pub const fn new() -> Self {
         Self {
             cells: BTreeMap::new(),
-            symbol_table: BTreeMap::new(),
+            symbol_table: Vec::new(),
             next_id: 1, // 0はカーネル用
         }
+    }
+
+    pub fn register_symbol(&mut self, symbol: String, addr: usize) {
+        if self.symbol_table.iter().any(|(name, _)| name == &symbol) {
+            return;
+        }
+        self.symbol_table.push((symbol, addr));
+    }
+
+    fn unregister_symbol(&mut self, symbol: &str) {
+        self.symbol_table.retain(|(name, _)| name != symbol);
     }
 
     /// 新しいセルIDを生成
@@ -180,10 +195,7 @@ impl CellRegistry {
                     crate::io::log::early_print_hex(_idx as u64);
                     crate::io::log::early_print("\n");
                 }
-                if self.symbol_table.contains_key(symbol.as_str()) {
-                    continue;
-                }
-                self.symbol_table.insert(symbol.clone(), *addr);
+                self.register_symbol(symbol.clone(), *addr);
             }
         }
         crate::io::log::early_print("[LDBG] registry.register: exports done\n");
@@ -203,7 +215,9 @@ impl CellRegistry {
 
     /// シンボルを解決
     pub fn resolve_symbol(&self, name: &str) -> Option<usize> {
-        self.symbol_table.get(name).copied()
+        self.symbol_table
+            .iter()
+            .find_map(|(symbol, addr)| (symbol == name).then_some(*addr))
     }
 
     /// セルをアンロード
@@ -218,7 +232,7 @@ impl CellRegistry {
                 );
             } else {
                 for (symbol, _) in &entry.exports {
-                    self.symbol_table.remove(symbol);
+                    self.unregister_symbol(symbol);
                 }
             }
             Some(entry)
@@ -438,6 +452,8 @@ fn load_cell_with_flags(
             state: CellState::Loaded,
             load_address: loaded.base_address,
             load_size: loaded.size,
+            allocation_base: loaded.allocation_base,
+            allocation_size: loaded.allocation_size,
             entry_point: loaded.entry_point,
             exports,
             imports,
@@ -649,9 +665,17 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     }
 
     // セルのメモリ情報と PKEY を取得（unload前に必要）
-    let (load_address, load_size, pkey_opt) = with_registry(|r| {
+    let (load_address, load_size, allocation_base, allocation_size, pkey_opt) = with_registry(|r| {
         r.get(id)
-            .map(|c| (c.load_address, c.load_size, c.pkey))
+            .map(|c| {
+                (
+                    c.load_address,
+                    c.load_size,
+                    c.allocation_base,
+                    c.allocation_size,
+                    c.pkey,
+                )
+            })
             .ok_or(LoadError::CellNotFound)
     })?;
 
@@ -683,17 +707,30 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     }
 
     // メモリ解放
-    if load_address != 0 && load_size > 0 {
+    let dealloc_base = if allocation_base != 0 {
+        allocation_base
+    } else {
+        load_address
+    };
+    let dealloc_size = if allocation_size != 0 {
+        allocation_size
+    } else {
+        load_size
+    };
+
+    if dealloc_base != 0 && dealloc_size > 0 {
         unsafe {
             use alloc::alloc::{Layout, dealloc};
-            // ELFローダーは4096バイトアライメントでメモリを割り当てている
-            let layout = Layout::from_size_align_unchecked(load_size, 4096);
-            dealloc(load_address as *mut u8, layout);
+            // ELFローダーは4KiBアラインメントで割り当てる。ASLR時は
+            // `load_address` ではなく `allocation_base` で解放する必要がある。
+            let layout = Layout::from_size_align_unchecked(dealloc_size, 4096);
+            dealloc(dealloc_base as *mut u8, layout);
             log::debug!(
-                "[Loader] Deallocated {} bytes at {:#x} for cell {:?}",
-                load_size,
-                load_address,
-                id.as_u64()
+                "[Loader] Deallocated {} bytes at {:#x} for cell {:?} (runtime base {:#x})",
+                dealloc_size,
+                dealloc_base,
+                id.as_u64(),
+                load_address
             );
         }
     }

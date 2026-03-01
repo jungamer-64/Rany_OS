@@ -263,7 +263,7 @@ pub(crate) fn print_system_stats() {
 /// カーネルシンボルを登録（セルローダー用）
 pub(crate) fn register_kernel_symbols() {
     loader::with_registry_mut(|registry| {
-        registry.symbol_table.insert(
+        registry.register_symbol(
             alloc::string::String::from(kernel_api::driver_abi::KERNEL_API_SYMBOL),
             crate::driver_registry::kernel_api_v1() as *const kernel_api::driver_abi::KernelApiV1
                 as usize,

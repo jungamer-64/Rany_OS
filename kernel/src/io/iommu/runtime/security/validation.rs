@@ -68,29 +68,29 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
             );
             return Err(IommuError::InvalidAddress);
         }
-    } else if crate::io::iommu::api::is_iommu_enabled() && super::protection::is_global_dma_mapping_allowed() {
-        log::warn!("[IOMMU][SECURITY] Unable to determine kernel physical range, but allowing DMA mapping because IOMMU is enabled and global DMA is allowed.");
     } else {
         // High-security fallback: if we cannot determine the kernel range, 
         // we must reject any non-quarantined DMA mapping for safety.
-        // This prevents a potential bypass where global_translate fails.
+        // This prevents a potential bypass where global_translate and all fallbacks fail.
         log::error!("[IOMMU][SECURITY] CRITICAL: Unable to determine kernel physical range. Rejecting DMA mapping {:#x}-{:#x} for safety.", start, end);
         return Err(IommuError::InvalidAddress);
     }
 
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys == 0 {
-        // Early boot exception for common firmware low-memory reservations.
+        // Early boot check: RAM layout is unknown, but we already confirmed it 
+        // doesn't overlap the kernel image (above). 
+        // Still, we must restrict early boot mappings to below 4GB (firmware space).
         if end <= 0x1_0000_0000 {
             log::warn!(
-                "[IOMMU][SECURITY] Early boot DMA mapping allowed in low-mem: {:#x}-{:#x}",
+                "[IOMMU][SECURITY] Early boot DMA mapping allowed (verified no-kernel-overlap): {:#x}-{:#x}",
                 start,
                 end
             );
             return Ok(());
         }
 
-        log::error!("[IOMMU][SECURITY] DMA mapping attempted before RAM layout is known");
+        log::error!("[IOMMU][SECURITY] DMA mapping attempted before RAM layout is known outside low-mem");
         return Err(IommuError::NotInitialized);
     }
 

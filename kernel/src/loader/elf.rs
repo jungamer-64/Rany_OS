@@ -288,6 +288,10 @@ pub struct LoadedCell {
     pub base_address: usize,
     /// 合計サイズ
     pub size: usize,
+    /// 実際にヒープへ割り当てた先頭アドレス（ASLR補正前）
+    pub allocation_base: usize,
+    /// 実際にヒープへ割り当てたサイズ（ASLRパディング込み）
+    pub allocation_size: usize,
     /// エントリポイント（あれば）
     pub entry_point: Option<usize>,
     /// 割り当てられた Protection Key（存在する場合）

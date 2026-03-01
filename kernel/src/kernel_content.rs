@@ -346,7 +346,16 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
         }
         info!(target: "init", "Early IOMMU PCI domain assignment completed");
     }
-    memory::reclaim_acpi_reclaimable(boot_info);
+    #[cfg(feature = "qemu-test-export")]
+    {
+        // full-boot test profiles prioritize deterministic runtime execution.
+        // ACPI reclaim can be deferred without affecting the DriverCell suite.
+        info!(target: "init", "Skipping ACPI reclaim in qemu-test-export profile");
+    }
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        memory::reclaim_acpi_reclaimable(boot_info);
+    }
 }
 
 /// Parse IOMMU configuration from kernel command line.

@@ -76,6 +76,8 @@ fn test_register_abi_driver_and_block_unload() {
             state: crate::loader::CellState::Loaded,
             load_address: 0, // test: no real allocation
             load_size: 0,
+            allocation_base: 0,
+            allocation_size: 0,
             entry_point: None,
             exports: Vec::new(),
             imports: Vec::new(),

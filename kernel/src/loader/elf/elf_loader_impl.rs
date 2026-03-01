@@ -341,7 +341,8 @@ impl<'a> ElfLoader<'a> {
         };
 
         // メモリを割り当て
-        let base_address = self.allocate_memory(info.memory_size, info.alignment)?;
+        let (base_address, allocation_base, allocation_size) =
+            self.allocate_memory(info.memory_size, info.alignment)?;
 
         // PKEY を取得（テストビルドでは None）
         #[cfg(any(feature = "pkey_integration_test", not(any(test, feature = "bench"))))]
@@ -362,6 +363,8 @@ impl<'a> ElfLoader<'a> {
         return Ok(LoadedCell {
             base_address,
             size: info.memory_size,
+            allocation_base,
+            allocation_size,
             entry_point,
             pkey: Some(pkey),
         });
@@ -370,6 +373,8 @@ impl<'a> ElfLoader<'a> {
         return Ok(LoadedCell {
             base_address,
             size: info.memory_size,
+            allocation_base,
+            allocation_size,
             entry_point,
             pkey: None,
         });
@@ -463,7 +468,7 @@ impl<'a> ElfLoader<'a> {
     /// メモリを割り当て
     ///
     /// ASLRが有効な場合、ランダムなオフセットを加算してベースアドレスを予測困難にする
-    fn allocate_memory(&self, size: usize, _alignment: usize) -> Result<usize, LoadError> {
+    fn allocate_memory(&self, size: usize, _alignment: usize) -> Result<(usize, usize, usize), LoadError> {
         // Note: フレームアロケータは mm::frame_allocator モジュールで実装
         // 現在はallocクレートを使用したヒープ割り当て
         use alloc::alloc::Layout;
@@ -485,8 +490,9 @@ impl<'a> ElfLoader<'a> {
 
         let ptr = crate::util::allocate_zeroed(layout).ok_or(LoadError::OutOfMemory)?;
 
+        let allocation_base = ptr.as_ptr() as usize;
         // ASLRオフセットを適用したアドレスを返す
-        let base_address = ptr.as_ptr() as usize + aslr_offset;
+        let base_address = allocation_base + aslr_offset;
 
         log::debug!(
             "[ELF] Allocated {} bytes at {:#x} (ASLR offset: {:#x})",
@@ -495,7 +501,7 @@ impl<'a> ElfLoader<'a> {
             aslr_offset
         );
 
-        Ok(base_address)
+        Ok((base_address, allocation_base, total_size))
     }
 
     /// Apply per-page flags for a memory range belonging to a segment.

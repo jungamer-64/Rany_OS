@@ -113,12 +113,21 @@ pub(crate) fn kernel_phys_range() -> Option<(u64, u64)> {
     let phys_start = crate::mm::virt::higher_half::global_translate(kstart_virt)
         .map(|p| p.as_u64())
         .or_else(|| {
-            // Fallback: direct-map offset based conversion when table is not ready.
+            // Fallback 1: direct-map offset based conversion when table is not ready.
             let offset = crate::mm::virt::higher_half::physical_memory_offset();
-            if kstart_virt.as_u64() >= offset {
+            if offset != 0 && kstart_virt.as_u64() >= offset {
                 Some(kstart_virt.as_u64().saturating_sub(offset))
             } else {
                 None
+            }
+        })
+        .or_else(|| {
+            // Fallback 2: Linker-script provided physical start (0x1000)
+            // This is safer than allowing all DMA in early boot.
+            if kstart_virt.as_u64() >= 0xffffffff80000000 {
+                 Some(0x1000)
+            } else {
+                 None
             }
         })?;
 
@@ -128,10 +137,19 @@ pub(crate) fn kernel_phys_range() -> Option<(u64, u64)> {
         .map(|p| p.as_u64())
         .or_else(|| {
             let offset = crate::mm::virt::higher_half::physical_memory_offset();
-            if last_virt.as_u64() >= offset {
+            if offset != 0 && last_virt.as_u64() >= offset {
                 Some(last_virt.as_u64().saturating_sub(offset))
             } else {
                 None
+            }
+        })
+        .or_else(|| {
+            // Fallback 2: Linker-script provided physical base + offset
+            if last_virt.as_u64() >= 0xffffffff80000000 {
+                 let k_offset = last_virt.as_u64().saturating_sub(0xffffffff80000000);
+                 Some(0x1000u64.saturating_add(k_offset))
+            } else {
+                 None
             }
         })?;
     let phys_end = phys_last.saturating_add(1);
