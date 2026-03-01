@@ -14,8 +14,8 @@ pub fn parse_uncompressed_point(bytes: &[u8]) -> Option<P256Point> {
     x_bytes.copy_from_slice(&bytes[1..33]);
     y_bytes.copy_from_slice(&bytes[33..65]);
 
-    let x = P256FieldElement::from_be_bytes(&x_bytes);
-    let y = P256FieldElement::from_be_bytes(&y_bytes);
+    let x = P256FieldElement::from_be_bytes(&x_bytes)?;
+    let y = P256FieldElement::from_be_bytes(&y_bytes)?;
 
     let point = P256Point::from_affine(x, y);
 

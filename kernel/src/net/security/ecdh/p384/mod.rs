@@ -238,13 +238,10 @@ pub mod p384 {
             p_fe.sub(self)
         }
 
-        /// ビッグエンディアン48バイトからフィールド要素を生成
-        pub fn from_be_bytes(bytes: &[u8; 48]) -> Self {
+        /// ビッグエンディアン48バイトからフィールド要素を生成。
+        /// 範囲チェックを行い、p 以上の場合は None を返す。
+        pub fn from_be_bytes(bytes: &[u8; 48]) -> Option<Self> {
             let mut limbs = [0u64; 6];
-            // bytes[0..8] → 最上位リム (limbs[5])
-            // bytes[8..16] → limbs[4]
-            // ...
-            // bytes[40..48] → 最下位リム (limbs[0])
             for i in 0..6 {
                 let offset = (5 - i) * 8;
                 limbs[i] = u64::from_be_bytes([
@@ -258,7 +255,24 @@ pub mod p384 {
                     bytes[offset + 7],
                 ]);
             }
-            Self { limbs }
+
+            // 範囲チェック (val < p)
+            let mut is_less = false;
+            for i in (0..6).rev() {
+                if limbs[i] < P[i] {
+                    is_less = true;
+                    break;
+                }
+                if limbs[i] > P[i] {
+                    return None;
+                }
+            }
+            if !is_less {
+                // val == p
+                return None;
+            }
+
+            Some(Self { limbs })
         }
 
         /// ビッグエンディアン48バイトへエンコード
@@ -543,8 +557,8 @@ pub mod p384 {
         x_bytes.copy_from_slice(&bytes[1..49]);
         y_bytes.copy_from_slice(&bytes[49..97]);
 
-        let x = P384FieldElement::from_be_bytes(&x_bytes);
-        let y = P384FieldElement::from_be_bytes(&y_bytes);
+        let x = P384FieldElement::from_be_bytes(&x_bytes)?;
+        let y = P384FieldElement::from_be_bytes(&y_bytes)?;
 
         let point = P384Point::from_affine(x, y);
 

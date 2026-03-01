@@ -483,7 +483,7 @@ impl TcpProcessor {
                 tcb.set_mss(peer_mss.max(536));
             }
             if let Some(peer_wscale) = parser.find_window_scale() {
-                tcb.set_peer_wscale(peer_wscale);
+                tcb.set_peer_wscale(peer_wscale.min(14));
             }
             if parser.find_sack_permitted() {
                 tcb.set_sack_enabled(true);
@@ -910,7 +910,9 @@ impl TcpProcessor {
                 
                 // Window Scale negotiation
                 if let Some(peer_wscale) = parser.find_window_scale() {
-                    tcb.set_peer_wscale(peer_wscale);
+                    // Security: RFC 7323 Section 2.3 - limit scale factor to 14
+                    let scale = peer_wscale.min(14);
+                    tcb.set_peer_wscale(scale);
                 }
                 
                 // SACK negotiation
@@ -980,7 +982,7 @@ impl TcpProcessor {
                     tcb.set_mss(mss);
                 }
                 if let Some(peer_wscale) = parser.find_window_scale() {
-                    tcb.set_peer_wscale(peer_wscale);
+                    tcb.set_peer_wscale(peer_wscale.min(14));
                 }
                 if parser.find_sack_permitted() {
                     tcb.set_sack_enabled(true);
@@ -1041,15 +1043,8 @@ impl TcpProcessor {
         let payload_len = payload.len();
         let mut result = Self::handle_established_ack(tcb, ack, ack_num);
 
-        if payload_len > 0 {
-            result = Self::handle_established_data(tcb, seq_num, payload, header_len, packet_opt, payload_len);
-            if tcb.is_closed() {
-                return result;
-            }
-        }
-
-        if fin {
-            result = Self::handle_established_fin(tcb);
+        if payload_len > 0 || fin {
+            result = Self::handle_established_data(tcb, seq_num, payload, header_len, packet_opt, payload_len, fin);
         }
 
         result
@@ -1114,13 +1109,16 @@ impl TcpProcessor {
         header_len: usize,
         packet_opt: Option<PacketRef>,
         payload_len: usize,
+        fin: bool,
     ) -> TcpProcessResult {
         let rcv_nxt = tcb.rcv_nxt();
         let rcv_wnd = tcb.rcv_wnd() as u32;
         
         // Security: RFC 793 / 5961 segment acceptability check
-        // The segment must at least partially overlap with the receive window.
-        let is_acceptable = if payload_len == 0 {
+        // Also account for FIN (1 seq num)
+        let total_seq_len = payload_len + if fin { 1 } else { 0 };
+        
+        let is_acceptable = if total_seq_len == 0 {
             if rcv_wnd == 0 {
                 seq_num == rcv_nxt
             } else {
@@ -1132,7 +1130,7 @@ impl TcpProcessor {
                 false
             } else {
                 let start_diff = seq_num.wrapping_sub(rcv_nxt) as i32;
-                let end_seq = seq_num.wrapping_add(payload_len as u32).wrapping_sub(1);
+                let end_seq = seq_num.wrapping_add(total_seq_len as u32).wrapping_sub(1);
                 let end_diff = end_seq.wrapping_sub(rcv_nxt) as i32;
                 
                 (start_diff >= 0 && start_diff < rcv_wnd as i32) ||
@@ -1147,20 +1145,25 @@ impl TcpProcessor {
 
         if seq_num == rcv_nxt {
             // In-order data
-            if !Self::enqueue_inorder_payload(tcb, payload, header_len, packet_opt, payload_len) {
-                if tcb.is_closed() {
-                    return Self::make_rst_ack_result(tcb);
+            if payload_len > 0 {
+                if !Self::enqueue_inorder_payload(tcb, payload, header_len, packet_opt, payload_len) {
+                    if tcb.is_closed() {
+                        return Self::make_rst_ack_result(tcb);
+                    }
+                    return Self::make_ack_result(tcb);
                 }
-                return Self::make_ack_result(tcb);
+                tcb.advance_rcv_nxt(payload_len as u32);
+                tcb.record_rx_segment_stats(payload_len);
             }
-
-            // Update stats
-            tcb.advance_rcv_nxt(payload_len as u32);
-            tcb.record_rx_segment_stats(payload_len);
 
             // Drain contiguous OOO segments
             tcb.drain_ooo_segments();
-            
+
+            // Handle FIN if it is now at the head of the sequence
+            if fin && tcb.rcv_nxt() == seq_num.wrapping_add(payload_len as u32) {
+                return Self::handle_established_fin(tcb);
+            }
+
             tcb.wake_read_waiter();
         } else if (seq_num.wrapping_sub(rcv_nxt) as i32) > 0 {
             // Out-of-order data (future) within window
@@ -1172,7 +1175,6 @@ impl TcpProcessor {
                     p.set_len(payload_len);
                     
                     if tcb.enqueue_ooo_payload(seq_num, p) {
-                        GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
                         tcb.add_sack_block(seq_num, seq_num.wrapping_add(payload_len as u32));
                     }
                 }

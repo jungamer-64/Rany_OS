@@ -623,6 +623,14 @@ pub fn skip_extension_headers<'a>(
                 if data.len() < 2 {
                     return (next_header, data);
                 }
+                
+                // Security (RFC 5095): Reject Routing Header Type 0
+                if nh == EXT_HEADER_ROUTING && data.len() >= 3 && data[2] == 0 {
+                    log::warn!("[NET-IPV6] Dropping packet with deprecated Routing Header Type 0 (RFC 5095)");
+                    // Stop traversal and treat as malformed/dropped
+                    return (IpProtocol::from(EXT_HEADER_NO_NEXT), &[]);
+                }
+
                 let ext_next = data[0];
                 let ext_len = (data[1] as usize + 1) * 8; // length in 8-byte units + first 8 bytes
                 if data.len() < ext_len {
@@ -667,6 +675,12 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
                 if data.len() < 8 {
                     return false;
                 }
+                
+                // Security (RFC 5095): Reject Routing Header Type 0
+                if next_header == EXT_HEADER_ROUTING && data[2] == 0 {
+                    return false;
+                }
+
                 let ext_next = data[0];
                 let ext_len = (data[1] as usize + 1) * 8;
                 if data.len() < ext_len {
@@ -733,6 +747,12 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                 if offset + 2 > raw_packet.len() {
                     return ExtHeaderResult::NoFragment(IpProtocol::from(next_header), &raw_packet[offset..]);
                 }
+                
+                // Security (RFC 5095): Reject Routing Header Type 0
+                if next_header == EXT_HEADER_ROUTING && offset + 3 <= raw_packet.len() && raw_packet[offset + 2] == 0 {
+                    return ExtHeaderResult::NoFragment(IpProtocol::from(EXT_HEADER_NO_NEXT), &[]);
+                }
+
                 let ext_next = raw_packet[offset];
                 let ext_len = (raw_packet[offset + 1] as usize + 1) * 8;
                 if offset + ext_len > raw_packet.len() {
