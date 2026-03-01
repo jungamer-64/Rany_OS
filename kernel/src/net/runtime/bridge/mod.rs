@@ -69,13 +69,29 @@ static FORWARD_EVENTS: RwLock<Vec<(NetIfId, Ipv4Address)>> =
 
 const NAT_EPHEMERAL_START: u16 = 40_000;
 const NAT_IDLE_TIMEOUT_MS: u64 = 5 * 60_000;
+const NAT_TCP_ESTABLISHED_TIMEOUT_MS: u64 = 24 * 60 * 60_000; // 24 hours for established TCP
+const NAT_TCP_TRANSIT_TIMEOUT_MS: u64 = 30_000; // 30s for non-established or closing TCP
 const NAT_GC_EVERY_RX_MASK: u64 = 0xFF;
+
+/// TCP state for NAT session tracking
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NatTcpState {
+    /// Non-TCP protocol
+    None,
+    /// SYN sent, waiting for SYN-ACK
+    SynSent,
+    /// Handshake complete
+    Established,
+    /// FIN seen from one or both sides
+    Closing,
+}
 
 /// Simple NAT entry for TCP/UDP port translation.
 /// External port is key; value stores internal address/port.
 #[derive(Clone, Copy)]
 struct NatEntry {
     protocol: crate::net::l3::ipv4::IpProtocol,
+    tcp_state: NatTcpState,
     external_addr: Ipv4Address,
     remote_addr: Ipv4Address,
     remote_port: u16,
@@ -106,6 +122,7 @@ fn nat_translate_out(
     remote_ip: Ipv4Address,
     remote_port: u16,
     out_if_id: NetIfId,
+    tcp_flags: u8,
 ) -> Option<(Ipv4Address, u16)> {
     // determine external IP from interface config
     let mut ext_ip = internal_ip;
@@ -128,11 +145,30 @@ fn nat_translate_out(
                 && entry.remote_addr == remote_ip
                 && entry.remote_port == remote_port
             {
-                // refresh timestamp
+                // refresh timestamp and update state
                 drop(table);
                 let mut tablew = NAT_TABLE.write();
                 if let Some(e) = tablew.get_mut(&ext_port) {
                     e.last_seen = crate::time::get_uptime_ms();
+                    
+                    // TCP state machine
+                    if protocol == crate::net::l3::ipv4::IpProtocol::Tcp {
+                        const FIN: u8 = 0x01;
+                        const SYN: u8 = 0x02;
+                        const RST: u8 = 0x04;
+                        const ACK: u8 = 0x10;
+
+                        if (tcp_flags & RST) != 0 {
+                            e.tcp_state = NatTcpState::Closing;
+                            e.last_seen -= NAT_TCP_TRANSIT_TIMEOUT_MS; // Expire quickly
+                        } else if (tcp_flags & FIN) != 0 {
+                            e.tcp_state = NatTcpState::Closing;
+                        } else if e.tcp_state == NatTcpState::SynSent && (tcp_flags & ACK) != 0 {
+                            // If we see an ACK from internal side after SYN, assume established
+                            // (Simplified: real state machine would track SYN-ACK from external)
+                            e.tcp_state = NatTcpState::Established;
+                        }
+                    }
                 }
                 return Some((ext_ip, ext_port));
             }
@@ -146,7 +182,7 @@ fn nat_translate_out(
     if tablew.len() >= MAX_NAT_ENTRIES {
         // Emergency prune before rejecting
         drop(tablew);
-        nat_prune_expired(crate::time::get_uptime_ms(), 30000); // 30s timeout for emergency
+        nat_prune_expired(crate::time::get_uptime_ms());
         tablew = NAT_TABLE.write();
         if tablew.len() >= MAX_NAT_ENTRIES {
             log::error!("[NET BRIDGE] NAT table full, dropping connection (Security: prevent internal IP leak)");
@@ -170,10 +206,22 @@ fn nat_translate_out(
         return None;
     }
 
+    // Initial state for TCP
+    let mut tcp_state = NatTcpState::None;
+    if protocol == crate::net::l3::ipv4::IpProtocol::Tcp {
+        const SYN: u8 = 0x02;
+        if (tcp_flags & SYN) != 0 {
+            tcp_state = NatTcpState::SynSent;
+        } else {
+            tcp_state = NatTcpState::Established; // Assume established for mid-stream packets
+        }
+    }
+
     tablew.insert(
         ext_port,
         NatEntry {
             protocol,
+            tcp_state,
             external_addr: ext_ip,
             remote_addr: remote_ip,
             remote_port,
@@ -198,6 +246,7 @@ fn nat_translate_in(
     src_port: u16,
     dst_ip: &mut Ipv4Address,
     dst_port: &mut u16,
+    tcp_flags: u8,
 ) -> bool {
     // Only DNAT packets that are actually addressed to one of our local IPs.
     if !is_local_ipv4(*dst_ip) {
@@ -215,6 +264,25 @@ fn nat_translate_in(
         {
             return false;
         }
+        
+        // TCP state machine for inbound packets
+        if protocol == crate::net::l3::ipv4::IpProtocol::Tcp {
+            const FIN: u8 = 0x01;
+            const SYN: u8 = 0x02;
+            const RST: u8 = 0x04;
+            const ACK: u8 = 0x10;
+
+            if (tcp_flags & RST) != 0 {
+                entry.tcp_state = NatTcpState::Closing;
+                entry.last_seen = entry.last_seen.saturating_sub(NAT_TCP_TRANSIT_TIMEOUT_MS);
+            } else if (tcp_flags & FIN) != 0 {
+                entry.tcp_state = NatTcpState::Closing;
+            } else if entry.tcp_state == NatTcpState::SynSent && (tcp_flags & (SYN | ACK)) == (SYN | ACK) {
+                // Received SYN-ACK from external side
+                entry.tcp_state = NatTcpState::Established;
+            }
+        }
+
         // rewrite
         *dst_ip = entry.internal_addr;
         *dst_port = entry.internal_port;
@@ -247,6 +315,7 @@ fn nat_translate_out_icmp(
             remote_ip,
             0, // Echo requests don't have a "remote port"
             out_if_id,
+            0, // ICMP has no TCP flags
         )
     } else {
         // Other ICMP types (errors, etc) are not currently handled for outbound NAT
@@ -276,6 +345,7 @@ fn nat_translate_in_icmp(
             0,
             dst_ip,
             &mut port,
+            0, // ICMP has no TCP flags
         ) {
             // Identifier must be rewritten back to internal value
             icmp_payload[4..6].copy_from_slice(&port.to_be_bytes());
@@ -376,12 +446,18 @@ fn recompute_ipv4_transport_checksum(
     transport[checksum_off..checksum_off + 2].copy_from_slice(&final_checksum.to_be_bytes());
 }
 
-fn nat_prune_expired(now_ms: u64, idle_timeout_ms: u64) -> usize {
+fn nat_prune_expired(now_ms: u64) -> usize {
     let mut removed = 0usize;
     let mut table = NAT_TABLE.write();
     let mut stale_ports = Vec::new();
     for (&ext_port, entry) in table.iter() {
-        if now_ms.saturating_sub(entry.last_seen) > idle_timeout_ms {
+        let timeout = match entry.tcp_state {
+            NatTcpState::Established => NAT_TCP_ESTABLISHED_TIMEOUT_MS,
+            NatTcpState::Closing | NatTcpState::SynSent => NAT_TCP_TRANSIT_TIMEOUT_MS,
+            NatTcpState::None => NAT_IDLE_TIMEOUT_MS, // For UDP/ICMP
+        };
+        
+        if now_ms.saturating_sub(entry.last_seen) > timeout {
             stale_ports.push(ext_port);
         }
     }
@@ -398,7 +474,7 @@ fn nat_maybe_gc(rx_packets_after_increment: u64) {
         return;
     }
     let now_ms = crate::time::get_uptime_ms();
-    let _ = nat_prune_expired(now_ms, NAT_IDLE_TIMEOUT_MS);
+    let _ = nat_prune_expired(now_ms);
 }
 
 /// Determine if the given IPv4 address is assigned to any local interface.
@@ -679,7 +755,13 @@ pub fn process_received_packet_zero_copy_for_interface(
                        let (_, transport) = ip_buf.split_at_mut(header_len);
                        let src_port = u16::from_be_bytes([transport[0], transport[1]]);
                        let mut dst_port = u16::from_be_bytes([transport[2], transport[3]]);
-                       if nat_translate_in(proto, src_ip, src_port, &mut dst_ip, &mut dst_port) {
+                       
+                       let mut tcp_flags = 0u8;
+                       if proto == crate::net::l3::ipv4::IpProtocol::Tcp && transport.len() >= 14 {
+                           tcp_flags = transport[13]; // TCP flags (SYN, FIN, RST, etc)
+                       }
+
+                       if nat_translate_in(proto, src_ip, src_port, &mut dst_ip, &mut dst_port, tcp_flags) {
                            transport[2..4].copy_from_slice(&dst_port.to_be_bytes());
                            recompute_ipv4_transport_checksum(transport, src_ip, dst_ip, proto);
                            translated_dst = Some(dst_ip);
@@ -1602,7 +1684,7 @@ pub(crate) mod tests {
         let remote_ip = Ipv4Address::new([198, 51, 100, 10]);
         let remote_port = 43210;
         let (ext_ip, ext_port) =
-            nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, remote_ip, remote_port, wan_if).expect("NAT allocation failed");
+            nat_translate_out(IpProtocol::Udp, internal_ip, internal_port, remote_ip, remote_port, wan_if, 0).expect("NAT allocation failed");
 
         assert_eq!(ext_ip, Ipv4Address::new([10, 0, 1, 1]));
         assert!(ext_port >= NAT_EPHEMERAL_START);
@@ -1614,7 +1696,8 @@ pub(crate) mod tests {
             remote_ip,
             remote_port,
             &mut dst_ip,
-            &mut dst_port
+            &mut dst_port,
+            0
         ));
         assert_eq!(dst_ip, internal_ip);
         assert_eq!(dst_port, internal_port);
@@ -1627,7 +1710,8 @@ pub(crate) mod tests {
             remote_ip,
             remote_port,
             &mut dst_ip,
-            &mut dst_port
+            &mut dst_port,
+            0
         ));
         assert_eq!(dst_ip, ext_ip);
         assert_eq!(dst_port, ext_port);
@@ -1640,7 +1724,8 @@ pub(crate) mod tests {
             remote_ip,
             remote_port,
             &mut dst_ip,
-            &mut dst_port
+            &mut dst_port,
+            0
         ));
         assert_eq!(dst_ip, Ipv4Address::new([10, 0, 2, 1]));
         assert_eq!(dst_port, ext_port);
@@ -1653,7 +1738,8 @@ pub(crate) mod tests {
             remote_ip,
             remote_port,
             &mut dst_ip,
-            &mut dst_port
+            &mut dst_port,
+            0
         ));
         assert_eq!(dst_ip, Ipv4Address::new([203, 0, 113, 9]));
         assert_eq!(dst_port, ext_port);
@@ -1687,6 +1773,7 @@ pub(crate) mod tests {
             Ipv4Address::new([198, 51, 100, 1]),
             50001,
             wan_if,
+            0,
         ).expect("NAT allocation failed");
         let (_, fresh_port) = nat_translate_out(
             IpProtocol::Udp,
@@ -1695,6 +1782,7 @@ pub(crate) mod tests {
             Ipv4Address::new([198, 51, 100, 2]),
             50002,
             wan_if,
+            0,
         ).expect("NAT allocation failed");
 
         {
@@ -1788,6 +1876,7 @@ pub(crate) mod tests {
             remote_ip,
             remote_port,
             wan_if,
+            0,
         ).expect("NAT allocation failed");
 
         // ICMP Error (Time Exceeded) from an intermediate router (1.1.1.1)
