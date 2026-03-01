@@ -8,7 +8,6 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 use crate::io::iommu::runtime::config::IommuConfig;
 pub use crate::io::iommu::runtime::config::ReservedMemoryRegion; // Will be moved? RMRR is defined in mod?
@@ -89,18 +88,16 @@ impl IommuRegistry {
     }
 }
 
-/// Global Intel IOMMU Registry guarded by a spin mutex.
-static IOMMU_REGISTRY: Mutex<Option<IommuRegistry>> = Mutex::new(None);
+/// Global Intel IOMMU Registry stored in a lock-free spin::Once.
+/// Written exactly once during boot via init_registry(), then read-only.
+/// This avoids deadlocks when IOMMU fault interrupts fire while
+/// the boot context is reading the registry.
+static IOMMU_REGISTRY: spin::Once<IommuRegistry> = spin::Once::new();
 
 pub fn get_iommu_registry() -> Option<&'static IommuRegistry> {
-    let guard = IOMMU_REGISTRY.lock();
-    guard.as_ref().map(|r| unsafe { &*(r as *const IommuRegistry) })
+    IOMMU_REGISTRY.get()
 }
 
 pub fn init_registry(registry: IommuRegistry) {
-    let mut guard = IOMMU_REGISTRY.lock();
-    if guard.is_some() {
-        panic!("IOMMU registry already initialized");
-    }
-    *guard = Some(registry);
+    IOMMU_REGISTRY.call_once(|| registry);
 }
