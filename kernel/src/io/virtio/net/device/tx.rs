@@ -8,7 +8,6 @@ impl VirtioNetDevice {
 
     pub fn submit_tx(&self, data: &[u8]) -> Result<(), VirtioNetError> {
         let data_len = data.len();
-        crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] submit_tx called len={}\n", data_len));
         if data_len >= 14 {
             log::info!(
                 "[NET-TX] submit_tx len={} dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",

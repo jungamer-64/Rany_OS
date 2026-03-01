@@ -6,7 +6,7 @@ use alloc::string::String;
 use alloc::boxed::Box;
 
 use crate::net::l4::tcp::{TcpStream, SocketAddr, Ipv4Addr};
-use crate::net::services::dns::resolve_cached;
+use crate::net::services::dns::resolve_ipv4;
 use super::types::{HttpRequest, HttpResponse};
 use super::parser::{HttpParser, HttpParseError};
 use crate::net::security::tls::connection::TlsConnection;
@@ -85,8 +85,8 @@ impl HttpClient {
             req.headers.push(super::types::HttpHeader::new("Connection", "close"));
         }
 
-        // 1. DNS解決（同期キャッシュから。本来は非同期解決が必要）
-        let ip_addr = resolve_cached(&host, crate::task::timer::current_tick())
+        // 1. DNS解決（非同期Global APIを使用）
+        let ip_addr = resolve_ipv4(&host).await
             .ok_or(HttpClientError::DnsResolutionFailed)?;
         
         // `Ipv4Address` から `Ipv4Addr` に変換

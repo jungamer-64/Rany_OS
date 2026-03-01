@@ -1,35 +1,12 @@
 use super::*;
-
-
-/// DNS over TCP constants
-pub mod tcp {
-    /// Maximum DNS message size for TCP (RFC 7766)
-    /// While UDP is limited to 512 bytes (or 4096 with EDNS),
-    /// TCP can carry messages up to 65535 bytes.
-    pub const MAX_TCP_MESSAGE_SIZE: usize = 65535;
-    
-    /// Minimum buffer size for TCP DNS (length prefix + minimal message)
-    pub const MIN_TCP_BUFFER_SIZE: usize = 14; // 2 + 12 (header only)
-    
-    /// Recommended buffer size for TCP DNS queries
-    pub const RECOMMENDED_QUERY_BUFFER: usize = 512;
-    
-    /// Recommended buffer size for TCP DNS responses
-    pub const RECOMMENDED_RESPONSE_BUFFER: usize = 4096;
-    
-    /// TCP connection timeout for DNS (RFC 7766 recommends 30 seconds)
-    pub const TCP_TIMEOUT_MS: u64 = 30_000;
-    
-    /// Idle timeout for persistent TCP connections
-    pub const TCP_IDLE_TIMEOUT_MS: u64 = 30_000;
-}
+use alloc::sync::Arc;
 
 /// グローバルDNSクライアント
-pub(crate) static DNS_CLIENT: PoisonLock<Option<DnsClient>> = PoisonLock::new(None);
+pub(crate) static DNS_CLIENT: PoisonLock<Option<Arc<DnsClient>>> = PoisonLock::new(None);
 
 /// DNSクライアントを初期化
 pub fn init(tick_rate: u64) {
-    let client = DnsClient::new(tick_rate);
+    let client = Arc::new(DnsClient::new(tick_rate));
     match DNS_CLIENT.lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DNS Global lock poisoned (init) - initialization skipped"),
@@ -83,8 +60,20 @@ pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
     }
 }
 
+/// 非同期でIPv4アドレスを解決 (Global API)
+pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
+    // 1. クライアントの Arc を取得 (ロック時間は最小)
+    let client = match DNS_CLIENT.lock() {
+        Ok(g) => g.as_ref().cloned(),
+        Err(_) => None,
+    }?;
+
+    // 2. 非同期解決を実行
+    client.resolve_ipv4(name).await
+}
+
 /// Build a DNS query for TCP transport (global API)
-/// 
+///
 /// Returns the total length including the 2-byte length prefix.
 pub fn build_tcp_query(
     buffer: &mut [u8],
@@ -101,7 +90,7 @@ pub fn build_tcp_query(
         }
         Err(_) => {
             log::error!("[NET] DNS Global lock poisoned (build_tcp_query)");
-            Err("DNS client lock poisoned")
+            Err("DNS lock poisoned")
         }
     }
 }
@@ -136,7 +125,10 @@ pub fn needs_tcp_fallback(data: &[u8]) -> bool {
                 false
             }
         }
-        Err(_) => false,
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (needs_tcp_fallback)");
+            false
+        }
     }
 }
 
@@ -150,7 +142,6 @@ pub fn cleanup_cache(current_tick: u64) {
                 client.cleanup_cache(current_tick);
             }
         }
-        Err(_) => {}
+        Err(_) => log::error!("[NET] DNS Global lock poisoned (cleanup_cache) - operation skipped"),
     }
 }
-

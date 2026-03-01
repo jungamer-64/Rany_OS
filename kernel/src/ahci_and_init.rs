@@ -249,13 +249,10 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
         // 同期的にRX/TXキューをポーリングし、受信バッチをフラッシュする。
         // handle_all_virtio_net_interrupts() はasyncワーカーにwakeするだけなので
         // 同期コンテキストでは直接処理する poll_all_virtio_net_queues() を使用する。
-        for round in 0..PUMP_ROUNDS_PER_ATTEMPT {
-            crate::io::log::early_print(&alloc::format!("[PUMP] a{} r{}\n", attempt, round));
+        for _ in 0..PUMP_ROUNDS_PER_ATTEMPT {
             crate::io::virtio::poll_all_virtio_net_queues();
-            crate::io::log::early_print("[PUMP] flush\n");
             crate::net::runtime::bridge::flush_pending_batch();
         }
-        crate::io::log::early_print(&alloc::format!("[PUMP] a{} done\n", attempt));
     }
 
     Err(last_err)

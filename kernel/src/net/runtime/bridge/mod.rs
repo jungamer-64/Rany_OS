@@ -97,15 +97,11 @@ pub fn drain_deferred_rx_packets() {
     RX_DEFERRED_MODE.store(false, Ordering::Release);
     let packets: Vec<DeferredRxPacket> = {
         let Ok(mut guard) = DEFERRED_RX_PACKETS.lock() else {
-            crate::io::log::early_print("[DRAIN] lock failed\n");
             return;
         };
         core::mem::take(&mut *guard)
     };
-    let count = packets.len();
-    crate::io::log::early_print(&alloc::format!("[DRAIN] {} packets\n", count));
-    for (i, p) in packets.into_iter().enumerate() {
-        crate::io::log::early_print(&alloc::format!("[DRAIN] pkt {}/{} len={}\n", i + 1, count, p.payload_len));
+    for p in packets.into_iter() {
         if let Some(if_id) = p.if_id {
             process_received_packet_zero_copy_for_interface(
                 if_id,
@@ -116,9 +112,7 @@ pub fn drain_deferred_rx_packets() {
         } else {
             process_received_packet_zero_copy(p.packet, p.header_size, p.payload_len);
         }
-        crate::io::log::early_print(&alloc::format!("[DRAIN] pkt {} done\n", i + 1));
     }
-    crate::io::log::early_print("[DRAIN] all done\n");
 }
 
 // ============================================================================
@@ -661,7 +655,6 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
     // is added and the device is notified immediately. The DMA buffer is
     // retained in the device's tx_inflight map and freed when the TX completion
     // is processed in the interrupt handler.
-    crate::io::log::early_print(&alloc::format!("[EARLY][NET-TX] transmit_packet called len={}\n", data.len()));
 
     match device.submit_tx(data) {
         Ok(()) => {
@@ -716,7 +709,6 @@ pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
         }
         Err(e) => {
             // log the failure reason and interface
-            crate::io::log::early_print(&alloc::format!("[DEBUG] send_packet_on_interface if={} err={:?}\n", if_id.0, e));
             log::info!("[NET BRIDGE] Interface transmit error if_id={}", if_id.0);
             counters::global().record_error();
             trace::push_event(
@@ -1061,7 +1053,6 @@ pub fn init_bridge() -> Result<(), &'static str> {
     }
 
     let virtio_present = with_virtio_net(|_| ()).is_some();
-    crate::io::log::early_print(&alloc::format!("[DEBUG] init_bridge virtio_present={}\n", virtio_present));
     if !virtio_present {
         log::warn!("[NET BRIDGE] VirtIO-Net not initialized; bridge init deferred");
         return Err("VirtIO-Net device not initialized");

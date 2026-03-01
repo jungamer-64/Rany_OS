@@ -1,5 +1,6 @@
 use super::*;
-
+use crate::net::l4::udp::{UdpSocket, UdpAddr};
+use crate::task::{self, TimeoutResult};
 
 impl DnsClient {
     /// 新しいDNSクライアントを作成
@@ -72,6 +73,64 @@ impl DnsClient {
             }
         }
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    /// 非同期でIPアドレスを解決
+    pub async fn resolve_ipv4(&self, name: &str) -> Option<Ipv4Address> {
+        let tick = crate::task::timer::current_tick();
+        
+        // 1. まずキャッシュをチェック
+        if let Some(ip) = self.resolve_cached(name, tick) {
+            return Some(ip);
+        }
+
+        // 2. キャッシュになければネットワーククエリを実行
+        let server = self.primary_ipv4_server()?;
+        
+        // エフェメラルポートでソケットをバインド
+        let socket = crate::net::runtime::stack::bind_udp(0)?;
+
+        let mut buffer = [0u8; 512];
+        let query_len = match self.build_query(&mut buffer, name, DnsQueryType::A) {
+            Ok(len) => len,
+            Err(_) => return None,
+        };
+
+        // クエリ送信
+        let dest = UdpAddr::new(server, DNS_PORT);
+        if socket.send_to(&buffer[..query_len], dest).is_err() {
+            return None;
+        }
+
+        // 応答待ち受け (タイムアドアウト付き)
+        let mut attempt = 0;
+        loop {
+            match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
+                TimeoutResult::Completed(Some((_src, packet))) => {
+                    // 応答をパース
+                    if let Ok(records) = self.parse_response(packet.data(), tick) {
+                        // Aレコードを探す
+                        for record in records {
+                            if let DnsRecordData::A(ip) = record.data {
+                                return Some(ip);
+                            }
+                        }
+                    }
+                }
+                TimeoutResult::TimedOut | TimeoutResult::Completed(None) => {
+                    attempt += 1;
+                    if attempt >= DNS_MAX_RETRIES {
+                        break;
+                    }
+                    // 再送
+                    if socket.send_to(&buffer[..query_len], dest).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+
         None
     }
 

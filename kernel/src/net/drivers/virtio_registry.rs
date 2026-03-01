@@ -89,9 +89,6 @@ impl Driver for VirtioNetDriver {
         }
 
         // Initialize the bridge (connects global device to stack)
-        // debug: check presence before calling (early print)
-        let present = crate::io::virtio::with_virtio_net(|_| ()).is_some();
-        crate::io::log::early_print(&alloc::format!("[DEBUG] init_bridge: virtio present? {}\n", present));
         match crate::net::runtime::bridge::init_bridge() {
             Ok(()) => {
                 self.initialized = true;

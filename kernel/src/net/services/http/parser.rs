@@ -42,8 +42,7 @@ impl HttpParser {
         let header_bytes = &self.buffer[..header_end_idx];
         let header_str = str::from_utf8(header_bytes).map_err(|_| HttpParseError::InvalidEncoding)?;
         
-        let mut lines = header_str.split("
-");
+        let mut lines = header_str.split("\r\n");
         
         // ステータス行のパース
         let status_line = lines.next().ok_or(HttpParseError::InvalidFormat)?;
@@ -63,7 +62,7 @@ impl HttpParser {
         
         // ヘッダ行のパース
         let mut headers = Vec::new();
-        let mut content_length = 0usize;
+        let mut content_length = None;
         let mut chunked = false;
         
         for line in lines {
@@ -78,31 +77,32 @@ impl HttpParser {
             headers.push(HttpHeader::new(name, value));
             
             if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.parse().map_err(|_| HttpParseError::InvalidFormat)?;
-            } else if name.eq_ignore_ascii_case("Transfer-Encoding") && value.eq_ignore_ascii_case("chunked") {
+                content_length = Some(value.parse::<usize>().map_err(|_| HttpParseError::InvalidFormat)?);
+            } else if name.eq_ignore_ascii_case("Transfer-Encoding") && value.to_lowercase().contains("chunked") {
                 chunked = true;
             }
         }
         
-        // ボディの抽出（簡易実装: 現在はContent-Lengthベースのみ対応、chunkedは非対応）
-        // 実際のカーネルHTTPクライアントではchunked等の対応も将来必要
-        let body_start_idx = header_end_idx + 4; // 
-
-
+        let body_start_idx = header_end_idx + 4; // \r\n\r\n
         
-        if chunked {
-            // TODO: chunked転送のパースを実装
-            return Err(HttpParseError::InvalidFormat);
-        }
-
-        if self.buffer.len() < body_start_idx + content_length {
-            return Ok(None); // まだボディが完了していない
-        }
-        
-        let body = self.buffer[body_start_idx..body_start_idx + content_length].to_vec();
+        let (body, total_len) = if chunked {
+            // chunked転送のパース
+            self.parse_chunked(body_start_idx)?
+        } else if let Some(len) = content_length {
+            if self.buffer.len() < body_start_idx + len {
+                return Ok(None); // まだボディが完了していない
+            }
+            let body = self.buffer[body_start_idx..body_start_idx + len].to_vec();
+            (body, body_start_idx + len)
+        } else {
+            // Content-Length も Transfer-Encoding: chunked もない場合
+            // HTTP/1.1 ではボディなし、または接続終了まで読み込む
+            // ここでは簡易的にボディなしとして扱う
+            (Vec::new(), body_start_idx)
+        };
         
         // パース済みのデータをバッファから削除
-        self.buffer.drain(..body_start_idx + content_length);
+        self.buffer.drain(..total_len);
 
         Ok(Some(HttpResponse {
             version,
@@ -113,14 +113,79 @@ impl HttpParser {
         }))
     }
 
+    /// chunkedエンコーディングのパース
+    fn parse_chunked(&self, start_idx: usize) -> Result<(Vec<u8>, usize), HttpParseError> {
+        let mut body = Vec::new();
+        let mut current_pos = start_idx;
+
+        loop {
+            // チャンクサイズの行を探す
+            let line_end = self.find_line_end(current_pos);
+            let end_idx = match line_end {
+                Some(idx) => idx,
+                None => return Ok((Vec::new(), 0)), // 不完全なデータ
+            };
+
+            let line = str::from_utf8(&self.buffer[current_pos..end_idx]).map_err(|_| HttpParseError::InvalidEncoding)?;
+            // チャンクサイズは16進数
+            let chunk_size = usize::from_str_radix(line.trim(), 16).map_err(|_| HttpParseError::InvalidFormat)?;
+
+            current_pos = end_idx + 2; // \r\n を飛ばす
+
+            if chunk_size == 0 {
+                // 最後のチャンク (0\r\n\r\n)
+                if self.buffer.len() < current_pos + 2 {
+                    // まだ最後の \r\n が来ていない可能性（またはフッタがある可能性）
+                    // ここでは簡易的に \r\n があるか確認
+                    return Ok((Vec::new(), 0)); 
+                }
+                // 実際にはフッタ（トレイラー）があるかもしれないが、ここでは無視
+                current_pos += 2; 
+                break;
+            }
+
+            if self.buffer.len() < current_pos + chunk_size + 2 {
+                return Ok((Vec::new(), 0)); // データ不足
+            }
+
+            body.extend_from_slice(&self.buffer[current_pos..current_pos + chunk_size]);
+            current_pos += chunk_size + 2; // データ本体 + \r\n
+        }
+
+        // 成功した場合、(ボディ, 消費した全バイト数)
+        if current_pos == 0 {
+             Ok((Vec::new(), 0))
+        } else {
+             Ok((body, current_pos))
+        }
+    }
+
     fn find_header_end(&self) -> Option<usize> {
         for i in 0..self.buffer.len().saturating_sub(3) {
-            if &self.buffer[i..i+4] == b"
-
-" {
+            if &self.buffer[i..i+4] == b"\r\n\r\n" {
                 return Some(i);
             }
         }
         None
+    }
+
+    fn find_line_end(&self, start: usize) -> Option<usize> {
+        for i in start..self.buffer.len().saturating_sub(1) {
+            if &self.buffer[i..i+2] == b"\r\n" {
+                return Some(i);
+            }
+        }
+        None
+    }
+}
+
+// 修正後の try_parse 内での chunked 処理呼び出しの結果を適切に扱うようにラップ
+impl HttpParser {
+    pub fn try_parse_wrapped(&mut self) -> Result<Option<HttpResponse>, HttpParseError> {
+        let res = self.try_parse()?;
+        match res {
+            Some(resp) => Ok(Some(resp)),
+            None => Ok(None),
+        }
     }
 }

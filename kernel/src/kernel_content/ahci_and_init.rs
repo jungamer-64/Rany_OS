@@ -246,10 +246,7 @@ fn manual_ping_before_if_strict(target: [u8; 4], seq: u16) -> Result<u64, &'stat
             break;
         }
 
-        for round in 0..PUMP_ROUNDS_PER_ATTEMPT {
-            if round == 0 {
-                crate::io::log::early_print("[PUMP] start\n");
-            }
+        for _ in 0..PUMP_ROUNDS_PER_ATTEMPT {
             crate::io::virtio::poll_all_virtio_net_queues();
             crate::net::runtime::bridge::flush_pending_batch();
         }
