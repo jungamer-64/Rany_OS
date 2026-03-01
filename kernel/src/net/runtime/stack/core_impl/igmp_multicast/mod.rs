@@ -68,7 +68,7 @@ impl NetworkStack {
     }
 
     /// Apply DHCPv4 lease to live stack configuration and synchronize manager state.
-    fn apply_dhcp_v4_lease(&mut self, lease: &crate::net::services::dhcp::DhcpLease) {
+    pub fn apply_dhcp_v4_lease(&mut self, lease: &crate::net::services::dhcp::DhcpLease) {
         let mut config = self.config();
         config.ipv4.address = lease.ip_address;
         config.ipv4.subnet_mask = lease.subnet_mask;
@@ -84,54 +84,8 @@ impl NetworkStack {
         }
     }
 
-    /// Handle DHCPv4 packet payload and consume it from UDP socket delivery path.
-    fn try_handle_dhcp_v4_packet(&mut self, src_port: u16, dst_port: u16, payload: &[u8]) -> bool {
-        if src_port != crate::net::services::dhcp::DHCP_SERVER_PORT || dst_port != crate::net::services::dhcp::DHCP_CLIENT_PORT {
-            return false;
-        }
-
-        let now = self.current_time();
-        match crate::net::services::dhcp::DHCP_CLIENT.lock() {
-            Ok(guard) => {
-                if let Some(ref client) = *guard {
-                    match client.process_response(payload, now) {
-                        Ok(crate::net::services::dhcp::DhcpResponseResult::Ack(lease)) => {
-                            self.apply_dhcp_v4_lease(&lease);
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            log::warn!("[NET] DHCPv4 response rejected: {}", e);
-                            self.stats.record_rx_error();
-                        }
-                    }
-                } else {
-                    self.stats.record_dropped();
-                }
-            }
-            Err(_) => {
-                log::error!("[NET] DHCPv4 global lock poisoned - dropping packet");
-                self.stats.record_rx_error();
-            }
-        }
-        true
-    }
-
     /// Process UDP data (for reassembled packets)
     pub(super) fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
-        if let Some(packet) = crate::net::l4::udp::UdpPacket::parse(data) {
-            if packet.src_port() == crate::net::services::dhcp::DHCP_SERVER_PORT
-                && packet.dst_port() == crate::net::services::dhcp::DHCP_CLIENT_PORT
-            {
-                if !packet.verify_checksum(src_ip, dst_ip) {
-                    self.stats.record_rx_error();
-                    return;
-                }
-                if self.try_handle_dhcp_v4_packet(packet.src_port(), packet.dst_port(), packet.payload()) {
-                    return;
-                }
-            }
-        }
-
         // For reassembled packets, we don't have a PacketRef for zero-copy
         // Use the non-zero-copy path
         let result = self.udp.process(data, src_ip, dst_ip);
@@ -270,27 +224,6 @@ impl NetworkStack {
             return;
         }
         let payload = &data[8..payload_end];
-
-        if src_port == crate::net::services::dhcp::DHCPV6_SERVER_PORT && dst_port == crate::net::services::dhcp::DHCPV6_CLIENT_PORT {
-            match crate::net::services::dhcp::DHCPV6_CLIENT.lock() {
-                Ok(guard) => {
-                    if let Some(ref client) = *guard {
-                        if client.handle_packet(payload, src) {
-                            self.stats.record_rx(data.len());
-                        } else {
-                            self.stats.record_dropped();
-                        }
-                    } else {
-                        self.stats.record_dropped();
-                    }
-                }
-                Err(_) => {
-                    log::error!("[NET] DHCPv6 global lock poisoned - dropping packet");
-                    self.stats.record_rx_error();
-                }
-            }
-            return;
-        }
 
         // 既存のUDPソケットテーブルにポートベースで配送
         // src IPはIPv4マッピング不可のため0.0.0.0を使用（ソケット側で区別可能）
@@ -559,20 +492,6 @@ impl NetworkStack {
 
     /// Process UDP packet
     pub(super) fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, _packet: PacketRef) {
-        if let Some(packet) = crate::net::l4::udp::UdpPacket::parse(data) {
-            if packet.src_port() == crate::net::services::dhcp::DHCP_SERVER_PORT
-                && packet.dst_port() == crate::net::services::dhcp::DHCP_CLIENT_PORT
-            {
-                if !packet.verify_checksum(src_ip, dst_ip) {
-                    self.stats.record_rx_error();
-                    return;
-                }
-                if self.try_handle_dhcp_v4_packet(packet.src_port(), packet.dst_port(), packet.payload()) {
-                    return;
-                }
-            }
-        }
-
         let result = self.udp.process_with_packet(data, src_ip, dst_ip, _packet);
 
         match result {

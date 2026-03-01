@@ -736,23 +736,6 @@ impl NetworkStack {
         // Cleanup expired DNS cache entries
         crate::net::services::dns::cleanup_cache(current_time);
 
-        // Check DHCP (IPv4) lease timers (T1 renewal, T2 rebinding)
-        // tick_rate = 1000 (current_time is in milliseconds, DHCP timers are in seconds)
-        if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
-            if let Some(ref client) = *guard {
-                if let Err(e) = client.drive(current_time, 1000) {
-                    log::warn!("[NET] DHCPv4 drive failed: {}", e);
-                }
-            }
-        }
-
-        // Check DHCPv6 client timers
-        if let Ok(guard6) = crate::net::services::dhcp::DHCPV6_CLIENT.lock() {
-            if let Some(ref client6) = *guard6 {
-                let _ = client6.check_timeout(current_time, 1000);
-            }
-        }
-
         // Evict expired IPv6 PMTU cache entries
         self.ipv6_pmtu_cache.evict_expired(current_time);
     }

@@ -355,22 +355,23 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     dhcp::init(mac);
     dhcp::init_v6(mac);
 
-    let now = tcb_table().get_current_tick();
-    if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
-        if let Some(ref client) = *guard {
-            client.drive(now, 1000).map_err(String::from)?;
+    // Spawn DHCPv4 client task
+    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+        if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+            if let Some(client) = &*guard {
+                let _ = client.run().await;
+            }
         }
-    } else {
-        return Err(String::from("DHCPv4 global client lock poisoned"));
-    }
+    }));
 
-    if let Ok(guard6) = dhcp::DHCPV6_CLIENT.lock() {
-        if let Some(ref client6) = *guard6 {
-            client6.check_timeout(now, 1000).map_err(String::from)?;
+    // Spawn DHCPv6 client task
+    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+        if let Ok(guard) = dhcp::DHCPV6_CLIENT.lock() {
+            if let Some(client6) = &*guard {
+                let _ = client6.run().await;
+            }
         }
-    } else {
-        return Err(String::from("DHCPv6 global client lock poisoned"));
-    }
+    }));
 
     Ok(())
 }
@@ -446,7 +447,6 @@ pub fn dhcp_renew() -> Result<(), String> {
         Ok(guard) => {
             if let Some(ref client) = *guard {
                 client.force_renew_or_restart(now);
-                client.drive(now, 1000).map_err(String::from)?;
                 touched = true;
             }
         }
@@ -457,7 +457,6 @@ pub fn dhcp_renew() -> Result<(), String> {
         Ok(guard6) => {
             if let Some(ref client6) = *guard6 {
                 client6.force_renew_or_restart(now).map_err(String::from)?;
-                client6.check_timeout(now, 1000).map_err(String::from)?;
                 touched = true;
             }
         }

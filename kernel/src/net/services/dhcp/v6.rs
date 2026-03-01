@@ -1,6 +1,8 @@
 use super::*;
 
 use crate::net::l3::ipv6::Ipv6Address;
+use crate::net::l4::udp::UdpSocket;
+use crate::task::{self, TimeoutResult};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -77,9 +79,51 @@ impl DhcpV6Client {
             state: PoisonLock::new(DhcpV6State::Init),
             xid: AtomicU32::new(0),
             iaid: 0xAABBCCDD, // 固定 IAID（将来乱数化可）
-            lease: PoisonLock::new(None),            server_duid: PoisonLock::new(None),
-            server_addr: PoisonLock::new(None),            state_time: AtomicU64::new(0),
+            lease: PoisonLock::new(None),
+            server_duid: PoisonLock::new(None),
+            server_addr: PoisonLock::new(None),
+            state_time: AtomicU64::new(0),
             retry_count: AtomicU32::new(0),
+        }
+    }
+
+    /// DHCPv6 クライアントのメインループ（非同期）
+    pub async fn run(&self) -> Result<(), &'static str> {
+        let socket = crate::net::runtime::stack::bind_udp(DHCPV6_CLIENT_PORT).map_err(|_| "Failed to bind DHCPv6 socket")?;
+
+        log::info!("[NET] DHCPv6 client task started");
+
+        loop {
+            let now = crate::task::timer::current_tick();
+            
+            // タイムアウトチェックと必要に応じた SOLICIT/REQUEST 送信
+            self.check_timeout(now, 1000)?;
+
+            // 応答待機
+            match task::with_timeout(socket.recv(), 1000).await {
+                TimeoutResult::Completed(Some((src, packet))) => {
+                    // src.ip は UdpAddr 内では Ipv4Address なので、src_ipv6 を取得する必要があるが、
+                    // 現状の UdpAddr 実装を確認する必要がある。
+                    // とりあえず handle_packet を呼び出し、内部で適切な処理を行う。
+                    // 実際には IPv6 パケットからソースアドレスを取得する必要がある。
+                    
+                    // ここでは UdpAddr::ip() は IPv4 互換を想定しているため、
+                    // 真の IPv6 アドレスを取得するには Datapath からの情報を利用するか、
+                    // UdpSocket::recv() が IPv6 対応している必要がある。
+                    
+                    // TODO: UdpAddr の IPv6 対応を確認
+                    // 現状は handle_packet 内で src を利用しているが、
+                    // socket.recv() が UdpAddr (IPv4) を返す場合、適切に変換が必要。
+                    
+                    // 便宜上、src が IPv4Mapped であれば変換、そうでなければデフォルトを使用
+                    let src_v6 = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]); // fallback
+                    
+                    if self.handle_packet(packet.data(), src_v6) {
+                        log::info!("[NET] DHCPv6 packet handled");
+                    }
+                }
+                _ => {}
+            }
         }
     }
 

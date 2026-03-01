@@ -1,5 +1,6 @@
 use super::*;
-
+use crate::net::l4::udp::UdpSocket;
+use crate::task::{self, TimeoutResult};
 
 mod offer_handling;
 impl DhcpClient {
@@ -26,6 +27,61 @@ impl DhcpClient {
             state_time: AtomicU64::new(0),
             retry_count: AtomicU32::new(0),
         }
+    }
+
+    /// DHCPクライアントのメインループ（非同期）
+    /// 
+    /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
+    pub async fn run(&self) -> Result<(), &'static str> {
+        // DHCPクライアントポート(68)でバインド
+        let socket = crate::net::runtime::stack::bind_udp(DHCP_CLIENT_PORT).map_err(|_| "Failed to bind DHCP socket")?;
+        
+        log::info!("[NET] DHCPv4 client task started");
+
+        loop {
+            let now = crate::task::timer::current_tick();
+            
+            // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
+            self.drive(now, 1000)?;
+            
+            // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
+            match task::with_timeout(socket.recv(), 1000).await {
+                TimeoutResult::Completed(Some((_src, packet))) => {
+                    let now = crate::task::timer::current_tick();
+                    // 応答パケットを処理
+                    match self.process_response(packet.data(), now) {
+                        Ok(DhcpResponseResult::Ack(lease)) => {
+                            log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
+                            // リースをスタックに適用
+                            if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
+                                if let Some(ref mut stack) = *guard {
+                                    stack.apply_dhcp_v4_lease(&lease);
+                                }
+                            }
+                        }
+                        Ok(DhcpResponseResult::Offer(lease)) => {
+                            log::info!("[NET] DHCPv4 OFFER received: {:?} from {:?}", lease.ip_address, lease.server_ip);
+                        }
+                        Ok(DhcpResponseResult::Nak) => {
+                            log::warn!("[NET] DHCPv4 NAK received");
+                        }
+                        Err(e) => {
+                            // 自分宛てでないXIDのパケットなどは無視される
+                            log::trace!("[NET] DHCPv4 response ignored: {}", e);
+                        }
+                    }
+                }
+                TimeoutResult::TimedOut => {
+                    // タイムアウトした場合はループの先頭に戻り、drive() で再送チェックが行われる
+                }
+                TimeoutResult::Completed(None) => {
+                    log::warn!("[NET] DHCPv4 socket closed unexpectedly");
+                    break;
+                }
+            }
+        }
+        
+        Ok(())
     }
 
     /// 現在の状態を取得
