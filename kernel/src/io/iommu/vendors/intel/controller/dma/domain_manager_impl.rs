@@ -176,25 +176,46 @@ impl DomainManager for IommuController {
 
     fn map_dma(&self, device: &DeviceId, iova: u64, phys: u64, size: u64, read: bool, write: bool) -> Result<(), IommuError> {
         crate::io::iommu::runtime::security::validate_dma_region(phys, size)?;
-        let (_domain_id, domain_arc) = self.resolve_device_domain(device)?;
-        domain_arc.map(iova, phys, size, read, write)
+        let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
+        domain_arc.map(iova, phys, size, read, write)?;
+        self.invalidate_iotlb(domain_id, false)
     }
 
     fn unmap_dma(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
         let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
+        let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
         let mapping = domain_arc.unmap(iova)?;
-        self.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
+        let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pt_removed = pts_after > pts_before;
+
+        if pt_removed {
+            // SECURITY: If a page table was removed, we MUST perform a domain-wide
+            // invalidation to clear cached paging-structure entries.
+            self.invalidate_iotlb(domain_id, true)?;
+            let _ = domain_arc.flush(self, self);
+        } else {
+            self.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
+        }
         Ok(mapping)
     }
 
     async fn unmap_dma_async(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
         let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
+        let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
         let mapping = domain_arc.unmap(iova)?;
-        if self.is_queued_invalidation_enabled() {
-            self.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
-            self.qi_wait_async().await?;
+        let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+        let pt_removed = pts_after > pts_before;
+
+        if pt_removed {
+            self.invalidate_iotlb(domain_id, true)?;
+            let _ = domain_arc.flush(self, self);
         } else {
-            unsafe { self.invalidate_iotlb_direct(domain_id) };
+            if self.is_queued_invalidation_enabled() {
+                self.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
+                self.qi_wait_async().await?;
+            } else {
+                unsafe { self.invalidate_iotlb_direct(domain_id) };
+            }
         }
         Ok(mapping)
     }
@@ -222,14 +243,30 @@ impl DomainManager for IommuController {
             },
             IommuCommandKind::UnmapRegion { domain, iova, .. } => {
                 let domain_arc = self.domain(*domain).ok_or(())?;
+                let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
                 domain_arc.unmap(*iova).map_err(|_| ())?;
+                let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+                let pt_removed = pts_after > pts_before;
+
                 self.invalidate_iotlb(*domain, true).map_err(|_| ())?;
+                if pt_removed {
+                    let _ = domain_arc.flush(self, self);
+                }
                 Ok(0)
             },
             IommuCommandKind::UnmapRegionDevice { device, iova, .. } => {
                 let (domain_id, domain_arc) = self.resolve_device_domain(device).map_err(|_| ())?;
+                let pts_before = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
                 let mapping = domain_arc.unmap(*iova).map_err(|_| ())?;
-                self.qi_invalidate_unmap(domain_id, device, *iova, mapping.size as u64).map_err(|_| ())?;
+                let pts_after = domain_arc.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
+                let pt_removed = pts_after > pts_before;
+
+                if pt_removed {
+                    self.invalidate_iotlb(domain_id, true).map_err(|_| ())?;
+                    let _ = domain_arc.flush(self, self);
+                } else {
+                    self.qi_invalidate_unmap(domain_id, device, *iova, mapping.size as u64).map_err(|_| ())?;
+                }
                 Ok(0)
             },
             IommuCommandKind::InvalidateIotlbDomain { domain } => {
