@@ -36,7 +36,13 @@ impl HttpParser {
         // ヘッダの終わりを検索
         let header_end_idx = match self.find_header_end() {
             Some(idx) => idx,
-            None => return Ok(None), // まだヘッダが完了していない
+            None => {
+                // Security: Limit header size to prevent memory DoS
+                if self.buffer.len() > 8192 {
+                    return Err(HttpParseError::InvalidFormat);
+                }
+                return Ok(None); // まだヘッダが完了していない
+            }
         };
 
         let header_bytes = &self.buffer[..header_end_idx];
@@ -83,11 +89,20 @@ impl HttpParser {
             }
         }
         
+        // Security: RFC 7230 - Request Smuggling / Response Splitting prevention
+        if chunked && content_length.is_some() {
+            return Err(HttpParseError::InvalidFormat);
+        }
+        
         let body_start_idx = header_end_idx + 4; // \r\n\r\n
         
         let (body, total_len) = if chunked {
             // chunked転送のパース
-            self.parse_chunked(body_start_idx)?
+            let res = self.parse_chunked(body_start_idx)?;
+            if res.1 == 0 {
+                return Ok(None); // まだデータが完了していない
+            }
+            res
         } else if let Some(len) = content_length {
             if self.buffer.len() < body_start_idx + len {
                 return Ok(None); // まだボディが完了していない
@@ -127,8 +142,10 @@ impl HttpParser {
             };
 
             let line = str::from_utf8(&self.buffer[current_pos..end_idx]).map_err(|_| HttpParseError::InvalidEncoding)?;
-            // チャンクサイズは16進数
-            let chunk_size = usize::from_str_radix(line.trim(), 16).map_err(|_| HttpParseError::InvalidFormat)?;
+            // チャンクサイズは16進数。セミコロン以降のチャンク拡張は無視する。
+            let line_trim = line.trim();
+            let hex_part = line_trim.split(';').next().unwrap_or(line_trim).trim();
+            let chunk_size = usize::from_str_radix(hex_part, 16).map_err(|_| HttpParseError::InvalidFormat)?;
 
             current_pos = end_idx + 2; // \r\n を飛ばす
 

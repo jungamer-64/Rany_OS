@@ -287,6 +287,7 @@ pub fn enable_interrupts() {
     }
     // actually enable
     x86_64::instructions::interrupts::enable();
+    crate::io::log::early_print("[INT] sti done\n");
 
     // Now that interrupts are enabled, there may be pending serial transmit
     // work left over from earlier synchronous/asynchronous logging attempts.
