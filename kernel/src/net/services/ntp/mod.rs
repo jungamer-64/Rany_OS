@@ -18,32 +18,34 @@ pub const NTP_PORT: u16 = 123;
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C, packed)]
 pub struct NtpTimestamp {
-    pub seconds: u32,
-    pub fraction: u32,
+    pub seconds: [u8; 4],
+    pub fraction: [u8; 4],
 }
 
 impl NtpTimestamp {
     pub fn from_be_bytes(bytes: [u8; 8]) -> Self {
-        Self {
-            seconds: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            fraction: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-        }
+        let mut seconds = [0u8; 4];
+        let mut fraction = [0u8; 4];
+        seconds.copy_from_slice(&bytes[0..4]);
+        fraction.copy_from_slice(&bytes[4..8]);
+        Self { seconds, fraction }
     }
 
     pub fn to_be_bytes(&self) -> [u8; 8] {
         let mut b = [0u8; 8];
-        b[0..4].copy_from_slice(&self.seconds.to_be_bytes());
-        b[4..8].copy_from_slice(&self.fraction.to_be_bytes());
+        b[0..4].copy_from_slice(&self.seconds);
+        b[4..8].copy_from_slice(&self.fraction);
         b
     }
 
     /// Convert to Unix time (seconds since 1970)
     pub fn to_unix_seconds(&self) -> u64 {
-        if self.seconds == 0 { return 0; }
+        let seconds_u32 = u32::from_be_bytes(self.seconds);
+        if seconds_u32 == 0 { return 0; }
         // NTP era 0: 1900-01-01 to 2036-02-07
         // Offset between 1900 and 1970 is 2,208,988,800 seconds.
         const NTP_UNIX_OFFSET: u32 = 2_208_988_800;
-        (self.seconds.wrapping_sub(NTP_UNIX_OFFSET)) as u64
+        (seconds_u32.wrapping_sub(NTP_UNIX_OFFSET)) as u64
     }
 }
 
@@ -56,9 +58,9 @@ pub struct NtpHeader {
     pub stratum: u8,
     pub poll: i8,
     pub precision: i8,
-    pub root_delay: u32,
-    pub root_dispersion: u32,
-    pub reference_id: u32,
+    pub root_delay: [u8; 4],
+    pub root_dispersion: [u8; 4],
+    pub reference_id: [u8; 4],
     pub reference_timestamp: NtpTimestamp,
     pub origin_timestamp: NtpTimestamp,
     pub receive_timestamp: NtpTimestamp,
@@ -75,9 +77,9 @@ impl NtpHeader {
             stratum: 0,
             poll: 0,
             precision: 0,
-            root_delay: 0,
-            root_dispersion: 0,
-            reference_id: 0,
+            root_delay: [0; 4],
+            root_dispersion: [0; 4],
+            reference_id: [0; 4],
             reference_timestamp: NtpTimestamp::default(),
             origin_timestamp: NtpTimestamp::default(),
             receive_timestamp: NtpTimestamp::default(),

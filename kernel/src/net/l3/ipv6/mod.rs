@@ -92,6 +92,25 @@ impl Ipv6Address {
         ])
     }
 
+    /// Create a global address from a /64 prefix + random interface ID (RFC 4941)
+    ///
+    /// Used for IPv6 Privacy Extensions to prevent tracking via the MAC address.
+    pub fn from_prefix_random(prefix: &Ipv6Address) -> Self {
+        let p = prefix.as_bytes();
+        // Generate 8 bytes of entropy for the interface identifier
+        let rand = crate::net::security::tls::crypto::random::generate_random();
+        
+        let mut addr = [0u8; 16];
+        addr[0..8].copy_from_slice(&p[0..8]);
+        addr[8..16].copy_from_slice(&rand[0..8]);
+        
+        // Security: Ensure the "universal/local" bit is set to 0 (local)
+        // per RFC 4941, although many implementations just use full randomness.
+        addr[8] &= !0x02;
+        
+        Self(addr)
+    }
+
     /// Get raw bytes
     #[inline]
     pub const fn as_bytes(&self) -> &[u8; 16] {
@@ -798,6 +817,8 @@ pub struct Ipv6Config {
     pub link_local: Ipv6Address,
     /// Global unicast address (via SLAAC or manual)
     pub global: Option<Ipv6Address>,
+    /// Temporary global address (RFC 4941 Privacy Extensions)
+    pub temporary: Option<Ipv6Address>,
     /// Prefix length (default 64)
     pub prefix_len: u8,
     /// Default gateway (link-local of router)
@@ -812,6 +833,7 @@ impl Ipv6Config {
         Self {
             link_local: Ipv6Address::from_eui64(mac),
             global: None,
+            temporary: None,
             prefix_len: 64,
             gateway: None,
             hop_limit: 64,
@@ -824,6 +846,7 @@ impl Default for Ipv6Config {
         Self {
             link_local: Ipv6Address::UNSPECIFIED,
             global: None,
+            temporary: None,
             prefix_len: 64,
             gateway: None,
             hop_limit: 64,

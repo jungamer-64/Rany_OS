@@ -397,6 +397,7 @@ impl SystemIntegration {
         ));
         let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
         register_pci_dma_width(dev, dma_bits);
+        crate::io::log::early_print("[VIRTIO-DBG] DMA width registered\n");
         let iommu_device = crate::io::iommu::types::DeviceId::new(
             dev.segment,
             dev.bdf.bus(),
@@ -405,20 +406,25 @@ impl SystemIntegration {
         );
         dev.enable_bus_master();
         dev.enable_memory_space();
+        crate::io::log::early_print("[VIRTIO-DBG] bus master + mem space enabled\n");
 
         // Try PCI transport regardless of BAR0 presence.  The transport
         // parser will examine virtio PCI capabilities and pick the correct BARs.
         let mut initialized_via_pci = false;
+        crate::io::log::early_print("[VIRTIO-DBG] trying PCI transport...\n");
         if let Some(transport) = try_create_pci_transport(
             dev,
             crate::io::virtio::VirtioDeviceType::Network,
         ) {
+            crate::io::log::early_print("[VIRTIO-DBG] PCI transport created, init bridge...\n");
             let _ = crate::net::runtime::bridge::init_bridge();
+            crate::io::log::early_print("[VIRTIO-DBG] bridge init done, init device...\n");
             match crate::io::virtio::init_virtio_net_with_transport(
                 alloc::boxed::Box::new(transport),
                 Some(iommu_device),
             ) {
                 Ok(()) => {
+                    crate::io::log::early_print("[VIRTIO-DBG] PCI transport init OK\n");
                     self.log("    VirtIO-net PCI transport initialized");
                     initialized_via_pci = true;
                 }
@@ -429,6 +435,8 @@ impl SystemIntegration {
                     ));
                 }
             }
+        } else {
+            crate::io::log::early_print("[VIRTIO-DBG] PCI transport creation failed (None)\n");
         }
 
         // Determine legacy MMIO base from BAR0 if available

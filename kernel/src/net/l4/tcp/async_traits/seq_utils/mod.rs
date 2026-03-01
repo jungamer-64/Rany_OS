@@ -4,6 +4,18 @@ use super::*;
 /// 初期シーケンス番号生成
 /// RFC 6528に従い、タイムスタンプベースで予測困難な値を生成
 mod processor_impl;
+
+use once_cell::race::OnceBox;
+use alloc::boxed::Box;
+
+static ISN_SECRET: OnceBox<[u8; 32]> = OnceBox::new();
+
+fn get_isn_secret() -> &'static [u8; 32] {
+    ISN_SECRET.get_or_init(|| {
+        Box::new(crate::net::security::tls::crypto::random::generate_random())
+    })
+}
+
 pub(crate) fn generate_initial_seq(local: SocketAddr, remote: Option<SocketAddr>) -> u32 {
     use crate::net::security::tls::crypto::hmac::hmac_sha256;
 
@@ -21,11 +33,12 @@ pub(crate) fn generate_initial_seq(local: SocketAddr, remote: Option<SocketAddr>
         data[34..36].copy_from_slice(&r.port().to_be_bytes());
     }
 
-    // Hardware RNG source for the secret component
-    // Security: Use full 32 bytes for the HMAC key to maximize entropy
-    let secret_seed = crate::net::security::tls::crypto::random::generate_random();
+    // RFC 6528: The secret MUST NOT change per connection.
+    // Use a long-lived secret for the HMAC key.
+    let secret = get_isn_secret();
+    
     // Generate F(...) using HMAC
-    let hash = hmac_sha256(&secret_seed, &data);
+    let hash = hmac_sha256(secret, &data);
     let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
 
     // Timer-based component (M)

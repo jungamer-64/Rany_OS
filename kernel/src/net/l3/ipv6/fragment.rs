@@ -336,7 +336,7 @@ impl Ipv6FragmentBuffer {
         // We need to replace that with the actual next header from the fragment header.
         if unfrag.len() >= 40 {
             // Walk the extension header chain in the unfragmentable part
-            let mut pos = 6; // Next Header offset in IPv6 fixed header
+            let pos = 6; // Next Header offset in IPv6 fixed header
             let mut nh_value = unfrag[pos];
 
             // If the fixed header's Next Header is already 44, just patch it

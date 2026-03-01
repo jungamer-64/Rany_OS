@@ -136,7 +136,7 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
                 true
             }
             Err(e) => {
-                crate::io::log::early_print("[AHCI] Failed to map BAR region ");
+                crate::io::log::early_print("[BAR] Failed to map BAR region ");
                 crate::io::log::early_print_hex(base_phys);
                 crate::io::log::early_print(" err=");
                 let err_str = match e {
@@ -150,7 +150,7 @@ fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
                 };
                 crate::io::log::early_print(err_str);
                 crate::io::log::early_print("\n");
-                false
+                matches!(e, crate::mm::virt::higher_half::MapError::AlreadyMapped)
             }
         }
     }

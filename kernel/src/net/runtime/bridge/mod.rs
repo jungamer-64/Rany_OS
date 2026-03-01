@@ -1865,7 +1865,7 @@ pub(crate) mod tests {
             table.get_mut(&fresh_port).unwrap().last_seen = 900;
         }
 
-        let removed = nat_prune_expired(1_000, 200);
+        let removed = nat_prune_expired(1_000);
         assert_eq!(removed, 1);
 
         let table = NAT_TABLE.read();

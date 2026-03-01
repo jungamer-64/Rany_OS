@@ -3,7 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
-use super::aes_core::{AesRoundKeySchedule, aes_expand_key_schedule, aes_encrypt_block_with_schedule, aes_ctr_with_schedule};
+use super::aes_core::{AesRoundKeySchedule, aes_expand_key_schedule, aes_encrypt_block_with_schedule};
 
 /// Constant-time 16-byte tag comparison to prevent timing side-channels.
 /// The comparison always iterates through all 16 bytes and uses bitwise
@@ -58,9 +58,16 @@ impl AesGcmKey {
             return Err(());
         }
         // CTR encrypt
-        let ct = aes_ctr_with_schedule(&self.schedule, nonce, plaintext, 2);
-        ciphertext_out[..plaintext.len()].copy_from_slice(&ct);
-        let s = ghash(&self.h, aad, &ct);
+        // Security: avoid heap allocation in the data path
+        ciphertext_out[..plaintext.len()].copy_from_slice(plaintext);
+        super::aes_core::aes_ctr_with_schedule_in_place(
+            &self.schedule,
+            nonce,
+            2,
+            &mut ciphertext_out[..plaintext.len()],
+        );
+
+        let s = ghash(&self.h, aad, &ciphertext_out[..plaintext.len()]);
         let mut y0 = [0u8; 16];
         y0[0..12].copy_from_slice(nonce);
         y0[15] = 1;
@@ -97,9 +104,16 @@ impl AesGcmKey {
         if !ct_eq_16(tag, &expected_tag) {
             return Err(());
         }
+        
         // perform decryption now that tag has been verified
-        let pt = aes_ctr_with_schedule(&self.schedule, nonce, ciphertext, 2);
-        plaintext_out[..ciphertext.len()].copy_from_slice(&pt);
+        // Security: avoid heap allocation in the data path
+        plaintext_out[..ciphertext.len()].copy_from_slice(ciphertext);
+        super::aes_core::aes_ctr_with_schedule_in_place(
+            &self.schedule,
+            nonce,
+            2,
+            &mut plaintext_out[..ciphertext.len()],
+        );
         Ok(())
     }
 }

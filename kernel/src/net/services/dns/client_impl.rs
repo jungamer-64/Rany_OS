@@ -330,15 +330,22 @@ impl DnsClient {
         let nscount = u16::from_be_bytes(header.nscount) as usize;
         let arcount = u16::from_be_bytes(header.arcount) as usize;
 
-        // Security: 回答数・追加レコード数の上限を制限 (DoSメモリ消耗攻撃防止)
-        let acount = acount.min(DNS_MAX_ANSWER_COUNT);
-        let nscount = nscount.min(DNS_MAX_ANSWER_COUNT);
-        let arcount = arcount.min(DNS_MAX_ANSWER_COUNT);
+        // Security: Overall record count limit to prevent CPU exhaustion DoS (RFC 1035 doesn't specify, but 512-1024 is reasonable)
+        if qcount > 64 || acount > 1024 || nscount > 1024 || arcount > 1024 {
+            log::warn!(
+                "[NET] DNS: Response with excessive record counts (Q: {}, A: {}, NS: {}, AR: {}), dropping",
+                qcount, acount, nscount, arcount
+            );
+            return Err(DnsResponseCode::FormatError);
+        }
 
         // 質問セクションをスキップ
         let mut offset = DnsHeader::SIZE;
         for _ in 0..qcount {
             offset = self.skip_name(data, offset)?;
+            if offset + 4 > data.len() {
+                return Err(DnsResponseCode::FormatError);
+            }
             offset += 4; // QTYPE + QCLASS
         }
 
@@ -413,19 +420,21 @@ impl DnsClient {
             let rdata = &data[*offset..*offset + rdlength];
             *offset += rdlength;
 
-            let record_data = self.parse_record_data(data, rdata, rtype, rdlength, *offset);
+            if records.len() < DNS_MAX_ANSWER_COUNT {
+                let record_data = self.parse_record_data(data, rdata, rtype, rdlength, *offset);
 
-            records.push(DnsRecord {
-                name,
-                rtype: DnsQueryType::from_u16(rtype).unwrap_or(DnsQueryType::A),
-                rclass: if rclass == 1 {
-                    DnsQueryClass::IN
-                } else {
-                    DnsQueryClass::IN
-                },
-                ttl,
-                data: record_data,
-            });
+                records.push(DnsRecord {
+                    name,
+                    rtype: DnsQueryType::from_u16(rtype).unwrap_or(DnsQueryType::A),
+                    rclass: if rclass == 1 {
+                        DnsQueryClass::IN
+                    } else {
+                        DnsQueryClass::IN
+                    },
+                    ttl,
+                    data: record_data,
+                });
+            }
         }
         Ok(records)
     }
@@ -484,18 +493,33 @@ impl DnsClient {
 
     /// TXTレコードをパースする
     pub(super) fn parse_txt_record(&self, rdata: &[u8], rdlength: usize) -> DnsRecordData {
-        if !rdata.is_empty() {
-            let txt_len = rdata[0] as usize;
-            if txt_len < rdlength {
-                DnsRecordData::TXT(
-                    String::from_utf8_lossy(&rdata[1..1 + txt_len]).into_owned(),
-                )
-            } else {
-                DnsRecordData::Raw(rdata.to_vec())
-            }
-        } else {
-            DnsRecordData::Raw(rdata.to_vec())
+        if rdata.is_empty() {
+            return DnsRecordData::Raw(rdata.to_vec());
         }
+
+        // RFC 1035: TXT RDATA consists of one or more <character-string>s.
+        // Each <character-string> has a 1-byte length followed by data.
+        let mut txt_content = String::new();
+        let mut offset = 0;
+        
+        while offset < rdlength && offset < rdata.len() {
+            let txt_len = rdata[offset] as usize;
+            offset += 1;
+            
+            if offset + txt_len > rdata.len() || offset + txt_len > rdlength {
+                // Malformed TXT record, but we've already started parsing.
+                // If we have nothing yet, return Raw. Otherwise return what we have.
+                if txt_content.is_empty() {
+                    return DnsRecordData::Raw(rdata.to_vec());
+                }
+                break;
+            }
+            
+            txt_content.push_str(&String::from_utf8_lossy(&rdata[offset..offset + txt_len]));
+            offset += txt_len;
+        }
+        
+        DnsRecordData::TXT(txt_content)
     }
 
     /// ドメイン名をスキップ
@@ -514,7 +538,15 @@ impl DnsClient {
 
             if len & 0xC0 == 0xC0 {
                 // 圧縮ポインター
+                if offset + 2 > data.len() {
+                    return Err(DnsResponseCode::FormatError);
+                }
                 return Ok(offset + 2);
+            }
+
+            // RFC 1035: Label length maximum is 63 bytes
+            if len > 63 {
+                return Err(DnsResponseCode::FormatError);
             }
 
             // Security: Limit number of labels to prevent CPU exhaustion
