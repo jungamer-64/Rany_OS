@@ -317,8 +317,6 @@ impl DnsCache {
     }
 }
 
-use crate::net::l3::ipv6::Ipv6Address;
-
 /// DNSクライアント
 pub struct DnsClient {
     /// IPv4 DNSサーバーアドレス

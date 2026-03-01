@@ -441,12 +441,14 @@ fn process_tcp_new_connection(
     if inner.state != SocketState::Listening {
         return;
     }
+    let nodelay = inner.tcp_nodelay; // 設定を取得
     drop(inner);
 
     // TCB作成
     let isn = tcb_table().generate_isn(local, remote);
     let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
     tcb.initialize_seq(isn);
+    tcb.set_nodelay(nodelay); // 設定を反映
     tcb.rcv_nxt = seq_num.wrapping_add(1);
     tcb.state = TcpConnectionState::SynReceived;
 

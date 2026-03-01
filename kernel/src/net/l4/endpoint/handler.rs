@@ -271,10 +271,10 @@ impl NetworkEventHandler {
         let local_addr = local.with_port(local_port);
 
         // ソケットのローカルアドレスを更新し、輻輳制御アルゴリズム設定を取得
-        let congestion_algo = {
+        let (congestion_algo, nodelay) = {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local_addr);
-            inner.congestion_algorithm
+            (inner.congestion_algorithm, inner.tcp_nodelay)
         };
 
         // TCB（TCP Control Block）を作成
@@ -285,6 +285,7 @@ impl NetworkEventHandler {
             TcpControlBlockEntry::new(fd, local_addr, remote)
         };
         tcb.initialize_seq(isn);
+        tcb.set_nodelay(nodelay); // 設定を反映
         tcb.state = TcpConnectionState::SynSent;
         tcb_table().insert(tcb);
 
