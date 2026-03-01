@@ -494,7 +494,7 @@ impl TcpProcessor {
             let cookie = self.generate_syncookie(local_addr, remote_addr, seq_num, mss_idx);
             
             // Build fixed MSS option for SYN Cookie response
-            let mss_val = match mss_idx {
+            let mss_val: u16 = match mss_idx {
                 0 => 536,
                 1 => 1300,
                 2 => 1440,
@@ -1004,14 +1004,17 @@ impl TcpProcessor {
             let Some(remote) = tcb.remote_addr() else {
                 return TcpProcessResult::None;
             };
+            let flags = TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK;
+            let opts = tcb.build_options(flags);
             TcpProcessResult::SendPacket {
                 local: tcb.local_addr(),
                 remote,
                 seq: tcb.snd_nxt(),
                 ack: tcb.rcv_nxt(),
-                flags: TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+                flags,
                 window: tcb.rcv_wnd(),
                 payload: Vec::new(),
+                options: opts,
             }
         } else {
             TcpProcessResult::None

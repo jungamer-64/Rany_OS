@@ -601,10 +601,11 @@ impl NetworkStack {
                 flags,
                 window,
                 payload,
+                options,
             } => {
                 // Construct and send TCP segment
                 let mut buffer = [0u8; 1518]; // MAX_PACKET_SIZE
-                let header_len = 20; // Default header size
+                let header_len = 20 + options.len();
                 let total_len = header_len + payload.len();
                 
                 if total_len > buffer.len() {
@@ -620,19 +621,25 @@ impl NetworkStack {
                 buffer[4..8].copy_from_slice(&seq.to_be_bytes());
                 // Ack
                 buffer[8..12].copy_from_slice(&ack.to_be_bytes());
-                // Flags & Offset (Header Length 5 dwords = 20 bytes)
-                let offset_flags = (5 << 12) | (flags & 0x1FF);
+                // Data offset + flags
+                let data_offset = (header_len / 4) as u16;
+                let offset_flags = (data_offset << 12) | (flags & 0x1FF);
                 buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
                 // Window
                 buffer[14..16].copy_from_slice(&window.to_be_bytes());
-                // Checksum (zero for now)
+                // Checksum
                 buffer[16..18].fill(0);
-                // Urgent Pointer
+                // Urgent pointer
                 buffer[18..20].fill(0);
-                
-                // Payload
+
+                // Copy options
+                if !options.is_empty() {
+                    buffer[20..20 + options.len()].copy_from_slice(&options);
+                }
+
+                // Copy payload
                 if !payload.is_empty() {
-                    buffer[20..total_len].copy_from_slice(&payload);
+                    buffer[header_len..total_len].copy_from_slice(&payload);
                 }
                 
                 // Calculate Checksum

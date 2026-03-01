@@ -166,8 +166,8 @@ impl NetworkStack {
         res: &TcpProcessResult,
         buffer: &mut [u8; MAX_PACKET_SIZE],
     ) -> Option<(TcpSocketAddr, TcpSocketAddr, u32, usize)> {
-        if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, ref payload } = *res {
-            let header_len = 20usize;
+        if let TcpProcessResult::SendPacket { local, remote, seq, ack, flags, window, ref payload, ref options } = *res {
+            let header_len = 20 + options.len();
             let total_len = header_len + payload.len();
             if total_len > buffer.len() {
                 return None;
@@ -176,13 +176,21 @@ impl NetworkStack {
             buffer[2..4].copy_from_slice(&remote.port().to_be_bytes());
             buffer[4..8].copy_from_slice(&seq.to_be_bytes());
             buffer[8..12].copy_from_slice(&ack.to_be_bytes());
-            let offset_flags = ((5u16 << 12) | (flags & 0x1FF)) as u16;
+            let data_offset = (header_len / 4) as u16;
+            let offset_flags = ((data_offset << 12) | (flags & 0x1FF)) as u16;
             buffer[12..14].copy_from_slice(&offset_flags.to_be_bytes());
             buffer[14..16].copy_from_slice(&window.to_be_bytes());
             buffer[16..18].fill(0);
             buffer[18..20].fill(0);
+
+            // Copy options
+            if !options.is_empty() {
+                buffer[20..20 + options.len()].copy_from_slice(options);
+            }
+
+            // Copy payload
             if !payload.is_empty() {
-                buffer[20..total_len].copy_from_slice(payload);
+                buffer[header_len..total_len].copy_from_slice(payload);
             }
 
             // Compute TCP checksum according to address family
@@ -204,7 +212,7 @@ impl NetworkStack {
         }
     }
 
-    pub fn process_timeouts(&mut self, current_time: u64) {
+    pub fn process_tcp_retransmissions(&mut self, current_time: u64) {
         let results = self.tcp.check_retransmissions(current_time);
 
         for res in results {
@@ -687,7 +695,7 @@ impl NetworkStack {
         self.tcp.cleanup_closed();
 
         // Process TCP timeouts (retransmissions, keepalives, zero-window probes)
-        self.process_timeouts(current_time);
+        self.process_timeouts();
 
         // Process IGMP timers and send pending reports
         self.igmp.update_time(current_time);

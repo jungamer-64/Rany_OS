@@ -213,11 +213,11 @@ pub fn bind_udp(port: u16) -> Option<UdpSocket> {
 }
 
 /// Process retransmission timeouts on the global network stack
-pub fn process_timeouts(current_time: u64) {
+pub fn process_timeouts(_current_time: u64) {
     match NETWORK_STACK.lock() {
         Ok(mut guard) => {
             if let Some(ref mut stack) = *guard {
-                stack.process_timeouts(current_time);
+                stack.process_timeouts();
             }
         }
         Err(_) => {

@@ -77,6 +77,36 @@ impl NetworkStack {
     /// Process periodic timeouts (call periodically, e.g., every 100ms)
     pub fn process_timeouts(&mut self) {
         let now = self.current_time();
+        
+        // 1. Process TCP retransmissions
+        self.process_tcp_retransmissions(now);
+
+        // 2. Process TCP keepalives and zero-window probes
+        let mut extra_packets = self.tcp.process_keepalives(now);
+        extra_packets.extend(self.tcp.process_zero_window_probes(now));
+
+        for res in extra_packets {
+            let mut buffer = [0u8; MAX_PACKET_SIZE];
+            if let Some((local, remote, seq, total_len)) = Self::build_tcp_packet_from_result(&res, &mut buffer) {
+                let sent = if local.is_ipv6() && remote.is_ipv6() {
+                    let src_v6 = local.as_ipv6();
+                    let dst_v6 = remote.as_ipv6();
+                    self.send_tcp_v6_raw(src_v6, dst_v6, &buffer[..total_len])
+                } else if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
+                    let src_ip_out = Ipv4Address::new(lv4.octets());
+                    let dst_ip_out = Ipv4Address::new(rv4.octets());
+                    self.send_tcp(src_ip_out, dst_ip_out, &buffer[..total_len])
+                } else {
+                    false
+                };
+
+                if sent {
+                    self.tcp.record_sent_packet(local, remote, seq, 0x10 /* ACK */, &[], now);
+                }
+            }
+        }
+
+        // 3. Process other scheduled timeouts
         let expired = self.timeout_wheel.tick(now);
 
         for timer in expired {

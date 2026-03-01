@@ -157,14 +157,17 @@ impl TcpProcessor {
 
                         // Build a packet resend (PSH+ACK)
                         if let Some(remote) = tcb.remote_addr() {
+                            let flags = TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK;
+                            let opts = tcb.build_options(flags);
                             results.push(TcpProcessResult::SendPacket {
                                 local: tcb.local_addr(),
                                 remote,
                                 seq,
                                 ack: tcb.rcv_nxt(),
-                                flags: TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+                                flags,
                                 window: tcb.rcv_wnd(),
                                 payload,
+                                options: opts,
                             });
                         }
                     }
@@ -187,14 +190,17 @@ impl TcpProcessor {
                     Some(true) => {
                         // Send keepalive probe: ACK with seq = snd_una - 1
                         if let Some(remote) = tcb.remote_addr() {
+                            let flags = TcpHeader::FLAG_ACK;
+                            let opts = tcb.build_options(flags);
                             results.push(TcpProcessResult::SendPacket {
                                 local: tcb.local_addr(),
                                 remote,
                                 seq: tcb.snd_una().wrapping_sub(1),
                                 ack: tcb.rcv_nxt(),
-                                flags: TcpHeader::FLAG_ACK,
+                                flags,
                                 window: tcb.rcv_wnd(),
                                 payload: Vec::new(),
+                                options: opts,
                             });
                         }
                     }
@@ -234,14 +240,17 @@ impl TcpProcessor {
                         // Send zero-window probe: ACK with seq = snd_una - 1
                         // This forces the peer to respond with its current window size
                         if let Some(remote) = tcb.remote_addr() {
+                            let flags = TcpHeader::FLAG_ACK;
+                            let opts = tcb.build_options(flags);
                             results.push(TcpProcessResult::SendPacket {
                                 local: tcb.local_addr(),
                                 remote,
                                 seq: tcb.snd_una().wrapping_sub(1),
                                 ack: tcb.rcv_nxt(),
-                                flags: TcpHeader::FLAG_ACK,
+                                flags,
                                 window: tcb.rcv_wnd(),
                                 payload: Vec::new(),
+                                options: opts,
                             });
                         }
                     }
