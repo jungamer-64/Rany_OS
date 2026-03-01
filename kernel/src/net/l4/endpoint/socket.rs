@@ -202,6 +202,7 @@ impl Socket {
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.tcp_nodelay = inner.tcp_nodelay; // 設定を引き継ぐ
+                new_inner.priority = inner.priority; // 優先度を引き継ぐ
                 let _ = new_inner.transition_to(SocketState::Connected);
             }
 
@@ -440,6 +441,20 @@ impl Socket {
             nodelay,
         })
     }
+
+    /// QoS優先度 (DSCP) を設定
+    pub fn set_priority(&self, priority: u8) -> SocketResult<()> {
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.priority = priority & 0x3F; // DSCPは6ビット
+        }
+
+        // ネットワークスタックに通知
+        send_event(NetworkEvent::SetPriority {
+            fd: self.fd,
+            priority: priority & 0x3F,
+        })
+    }
 }
 
 impl Clone for Socket {
@@ -577,6 +592,14 @@ impl OwnedSocket {
             .as_ref()
             .ok_or(SocketError::NotFound)?
             .set_nodelay(nodelay)
+    }
+
+    /// QoS優先度設定
+    pub fn set_priority(&self, priority: u8) -> SocketResult<()> {
+        self.socket
+            .as_ref()
+            .ok_or(SocketError::NotFound)?
+            .set_priority(priority)
     }
 }
 

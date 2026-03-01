@@ -96,6 +96,8 @@ pub struct TcpControlBlockEntry {
     pub ts_ecr: u32,
     /// Nagle's algorithm enabled (delays small packets until ACK received)
     pub nagle_enabled: bool,
+    /// QoS priority (DSCP)
+    pub priority: u8,
 }
 
 impl TcpControlBlockEntry {
@@ -136,12 +138,18 @@ impl TcpControlBlockEntry {
             ts_val: 0,
             ts_ecr: 0,
             nagle_enabled: true, // デフォルトで有効
+            priority: 0,
         }
     }
 
     /// TCP_NODELAY (Nagle無効化) を設定
     pub fn set_nodelay(&mut self, nodelay: bool) {
         self.nagle_enabled = !nodelay;
+    }
+
+    /// QoS優先度を設定
+    pub fn set_priority(&mut self, priority: u8) {
+        self.priority = priority & 0x3F;
     }
 
     /// Nagleアルゴリズムが有効か確認

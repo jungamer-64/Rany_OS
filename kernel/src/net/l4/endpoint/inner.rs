@@ -58,6 +58,8 @@ pub struct SocketInner {
     pub congestion_algorithm: Option<CongestionAlgorithm>,
     /// TCP_NODELAY (Nagleアルゴリズム無効化)
     pub tcp_nodelay: bool,
+    /// QoS優先度 (DSCP値, 6ビット)
+    pub priority: u8,
 }
 
 impl SocketInner {
@@ -92,6 +94,7 @@ impl SocketInner {
             urgent_pending: false,
             congestion_algorithm: None,
             tcp_nodelay: false, // デフォルトはNagle有効 (NODELAY無効)
+            priority: 0,        // デフォルトは優先度なし (Best Effort)
         }
     }
 

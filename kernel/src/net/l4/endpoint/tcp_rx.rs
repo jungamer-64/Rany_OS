@@ -442,13 +442,15 @@ fn process_tcp_new_connection(
         return;
     }
     let nodelay = inner.tcp_nodelay; // 設定を取得
+    let priority = inner.priority;
     drop(inner);
 
     // TCB作成
     let isn = tcb_table().generate_isn(local, remote);
     let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
     tcb.initialize_seq(isn);
-    tcb.set_nodelay(nodelay); // 設定を反映
+    tcb.set_nodelay(nodelay);
+    tcb.set_priority(priority); // 設定を反映
     tcb.rcv_nxt = seq_num.wrapping_add(1);
     tcb.state = TcpConnectionState::SynReceived;
 

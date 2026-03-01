@@ -50,6 +50,11 @@ pub enum NetworkEvent {
         fd: SocketFd,
         nodelay: bool,
     },
+    /// QoS 優先度設定
+    SetPriority {
+        fd: SocketFd,
+        priority: u8,
+    },
 }
 
 /// イベントキュー（ロックフリーリングバッファ）

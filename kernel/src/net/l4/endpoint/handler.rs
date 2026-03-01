@@ -90,7 +90,40 @@ impl NetworkEventHandler {
             NetworkEvent::Close { fd } => self.handle_close(fd),
             NetworkEvent::SendTo { fd, data, remote } => self.handle_send_to(fd, remote, data),
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
+            NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
         }
+    }
+
+    /// SetPriorityイベント処理
+    fn handle_set_priority(&self, fd: SocketFd, priority: u8) -> EventHandleResult {
+        let manager = SOCKET_MANAGER.read();
+        let Some(ref mgr) = *manager else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let Some(socket) = mgr.get(fd) else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+
+        let (local, remote) = {
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let local = match inner.local_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::Success,
+            };
+            let remote = match inner.remote_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::Success,
+            };
+            (local, remote)
+        };
+
+        // TCBに反映
+        tcb_table().lookup_mut(local, remote, |tcb| {
+            tcb.set_priority(priority);
+        });
+
+        EventHandleResult::Success
     }
 
     /// SetNoDelayイベント処理
@@ -277,11 +310,11 @@ impl NetworkEventHandler {
         };
         let local_addr = local.with_port(local_port);
 
-        // ソケットのローカルアドレスを更新し、輻輳制御アルゴリズム設定を取得
-        let (congestion_algo, nodelay) = {
+        // ソケットのローカルアドレスを更新し、設定を取得
+        let (congestion_algo, nodelay, priority) = {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local_addr);
-            (inner.congestion_algorithm, inner.tcp_nodelay)
+            (inner.congestion_algorithm, inner.tcp_nodelay, inner.priority)
         };
 
         // TCB（TCP Control Block）を作成
@@ -292,7 +325,8 @@ impl NetworkEventHandler {
             TcpControlBlockEntry::new(fd, local_addr, remote)
         };
         tcb.initialize_seq(isn);
-        tcb.set_nodelay(nodelay); // 設定を反映
+        tcb.set_nodelay(nodelay);
+        tcb.set_priority(priority); // 設定を反映
         tcb.state = TcpConnectionState::SynSent;
         tcb_table().insert(tcb);
 
