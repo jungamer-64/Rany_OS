@@ -124,7 +124,13 @@ impl DnsClient {
         let mut attempt = 0;
         loop {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
-                TimeoutResult::Completed(Some((_src, packet))) => {
+                TimeoutResult::Completed(Some((src, packet))) => {
+                    // Security: Verify source IP and port match the server we queried (RFC 5452)
+                    if src.ip != server || src.port != DNS_PORT {
+                        log::warn!("[NET] DNS: Ignoring response from unexpected source {:?}", src);
+                        continue;
+                    }
+
                     // 応答をパース
                     if let Ok(records) = self.parse_response(packet.data(), tick) {
                         // Aレコードを探す

@@ -8,6 +8,8 @@ impl IcmpProcessor {
             _local_ip: local_ip,
             stats: IcmpStats::default(),
             per_ip_rate_limits: alloc::collections::BTreeMap::new(),
+            global_last_time: 0,
+            global_tokens: 100, // Max 100 tokens globally
         }
     }
 
@@ -19,7 +21,19 @@ impl IcmpProcessor {
     /// Check rate limit for a given IP (Token Bucket)
     /// Returns true if allowed, false if dropped.
     fn check_rate_limit(&mut self, src_ip: Ipv4Address, current_time: u64) -> bool {
-        // Add 1 token per 100ms, max 20 tokens.
+        // Global rate limit: Add 1 token per 10ms (100 pkts/sec), max 100 tokens.
+        let elapsed_global = current_time.saturating_sub(self.global_last_time);
+        let new_global_tokens = (elapsed_global / 10) as u32;
+        if new_global_tokens > 0 {
+            self.global_tokens = (self.global_tokens + new_global_tokens).min(100);
+            self.global_last_time = current_time;
+        }
+
+        if self.global_tokens == 0 {
+            return false;
+        }
+
+        // Add 1 token per 100ms, max 20 tokens per IP.
         // Security: Limit map size to prevent memory DoS.
         const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
         
@@ -46,7 +60,9 @@ impl IcmpProcessor {
         if *tokens == 0 {
             return false;
         }
+        
         *tokens -= 1;
+        self.global_tokens -= 1;
         true
     }
 

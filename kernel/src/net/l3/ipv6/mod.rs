@@ -591,8 +591,8 @@ impl<'a> Ipv6PacketMut<'a> {
 
     /// Finalize packet (set payload length based on actual data written)
     pub fn finalize(&mut self, payload_len: usize) {
-        // Security: Clamp payload length to physical buffer size
-        let max_payload = self.data.len().saturating_sub(IPV6_HEADER_SIZE);
+        // Security: Clamp payload length to physical buffer size and u16 limit (65535)
+        let max_payload = self.data.len().saturating_sub(IPV6_HEADER_SIZE).min(65535);
         let actual_payload = payload_len.min(max_payload);
 
         if let Some(h) = self.header_mut() { h.set_payload_length(actual_payload as u16); }

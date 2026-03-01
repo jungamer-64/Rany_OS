@@ -313,6 +313,13 @@ impl TcpProcessor {
 
                 let mut tcb = TcpControlBlock::new(local_addr);
                 tcb.set_remote_addr(remote_addr);
+
+                if let Some(listener_lock) = self.listeners.get(&local_addr) {
+                    if let Ok(listener) = listener_lock.lock() {
+                        tcb.inherit_listener_waiters(&listener);
+                    }
+                }
+
                 tcb.set_rcv_nxt(seq_num); // We expect this seq_num (client ISN + 1)
                 tcb.set_snd_una(ack_num.wrapping_sub(1));
                 tcb.set_snd_nxt(ack_num);
@@ -322,6 +329,10 @@ impl TcpProcessor {
                 let tcb_arc = Arc::new(PoisonLock::new(tcb));
                 self.connections.insert((local_addr, remote_addr), tcb_arc.clone());
                 
+                if let Ok(tcb_guard) = tcb_arc.lock() {
+                    Self::notify_backlog(&tcb_guard, &tcb_arc);
+                }
+
                 // Process this ACK segment in the new TCB
                 if let Ok(mut tcb_guard) = tcb_arc.lock() {
                     return self.process_segment(&tcb_arc, &mut *tcb_guard, seq_num, ack_num, flags, window, header_len, payload, None, current_time);
@@ -398,6 +409,13 @@ impl TcpProcessor {
 
                 let mut tcb = TcpControlBlock::new(local_addr);
                 tcb.set_remote_addr(remote_addr);
+
+                if let Some(listener_lock) = self.listeners.get(&local_addr) {
+                    if let Ok(listener) = listener_lock.lock() {
+                        tcb.inherit_listener_waiters(&listener);
+                    }
+                }
+
                 tcb.set_rcv_nxt(seq_num); // We expect this seq_num (client ISN + 1)
                 tcb.set_snd_una(ack_num.wrapping_sub(1));
                 tcb.set_snd_nxt(ack_num);
@@ -407,6 +425,10 @@ impl TcpProcessor {
                 let tcb_arc = Arc::new(PoisonLock::new(tcb));
                 self.connections.insert((local_addr, remote_addr), tcb_arc.clone());
                 
+                if let Ok(tcb_guard) = tcb_arc.lock() {
+                    Self::notify_backlog(&tcb_guard, &tcb_arc);
+                }
+
                 // Process this ACK segment in the new TCB
                 if let Ok(mut tcb_guard) = tcb_arc.lock() {
                     return self.process_segment(&tcb_arc, &mut *tcb_guard, seq_num, ack_num, flags, window, header_len, payload, None, current_time);

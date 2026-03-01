@@ -458,6 +458,10 @@ pub struct IcmpProcessor {
     stats: IcmpStats,
     /// Per-IP rate limiting: (last_update_ms, tokens)
     per_ip_rate_limits: alloc::collections::BTreeMap<Ipv4Address, (u64, u32)>,
+    /// Global rate limiting: last_update_ms
+    global_last_time: u64,
+    /// Global rate limiting: tokens
+    global_tokens: u32,
 }
 
 /// ICMP statistics
