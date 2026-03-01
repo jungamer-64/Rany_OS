@@ -416,13 +416,6 @@ impl TypedDmaSlice<CpuOwned> {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        // Diagnostic: log DMA allocation info
-        crate::io::log::early_print("[DMA] TypedDmaSlice alloc size=");
-        crate::io::log::early_print_dec(size as u64);
-        crate::io::log::early_print(" phys=");
-        crate::io::log::early_print_hex(phys_addr.as_u64());
-        crate::io::log::early_print("\n");
-
         Some(Self {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
             phys_addr,
@@ -446,17 +439,6 @@ impl TypedDmaSlice<CpuOwned> {
     ///
     /// 完了時は `guard.complete(dev)` を呼ぶ。
     pub fn start_dma(self) -> (TypedDmaSlice<DeviceOwned>, SliceDmaGuard) {
-        // Diagnostic: log DMA transfer start
-        crate::io::log::early_print("[DMA] TypedDmaSlice start_dma phys=");
-        crate::io::log::early_print_hex(self.phys_addr.as_u64());
-        crate::io::log::early_print(" size=");
-        crate::io::log::early_print_dec(self.size as u64);
-        crate::io::log::early_print("\n");
-
-        // Debug: verify buddy integrity after DMA start to catch early corruption
-        #[cfg(debug_assertions)]
-        crate::memory::verify_buddy_integrity();
-
         core::sync::atomic::fence(Ordering::Release);
 
         let guard = SliceDmaGuard {

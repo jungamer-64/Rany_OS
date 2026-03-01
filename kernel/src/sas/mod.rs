@@ -85,28 +85,9 @@ impl SingleAddressSpaceManager {
         log::info!("[SAS] Single Address Space Manager initialized\n");
         log::info!("[SAS] Base address: {:#x}\n", SAS_BASE_ADDRESS);
 
-        // Initialize Exchange Heap (32MB)
-        // Allocate from Global Allocator to ensure backed memory
-            // Exchange heap is only initialized in non-test/bench builds where the
-            // `mm` module (and the global allocator) is available. Tests run under
-            // `cargo test --lib` do not link the full kernel binary and should not
-            // perform global memory allocations here.
-            #[cfg(not(any(test, feature = "bench")))]
-            unsafe {
-                use alloc::alloc::{Layout, alloc};
-                let size = 32 * 1024 * 1024; // 32MB
-                let layout = Layout::from_size_align(size, 4096).unwrap();
-                let ptr = alloc(layout);
-                if !ptr.is_null() {
-                    crate::mm::cache::exchange_heap::init_exchange_heap(ptr as usize, size);
-                    log::info!(
-                        "[SAS] Exchange Heap initialized (32MB) at {:#x}\n",
-                        ptr as usize
-                    );
-                } else {
-                    log::error!("[SAS] Failed to allocate memory for Exchange Heap\n");
-                }
-            }
+        // Exchange Heap は init_post_buddy() で既に 4MB で初期化済み。
+        // init_exchange_heap() は call_once で保護されているため、
+        // ここでの再初期化は不要。
     }
 
     /// セル用のメモリ領域を割り当て

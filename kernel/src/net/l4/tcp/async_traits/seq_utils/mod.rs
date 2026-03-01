@@ -4,19 +4,40 @@ use super::*;
 /// 初期シーケンス番号生成
 /// RFC 6528に従い、タイムスタンプベースで予測困難な値を生成
 mod processor_impl;
-pub(crate) fn generate_initial_seq() -> u32 {
-    // RFC 6528: ISN should be unpredictable.
-    // We use the hardware RNG if available, mixed with tick count.
-    let random_bytes = crate::net::security::tls::crypto::random::generate_random();
-    let secret = u32::from_le_bytes([random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3]]);
+pub(crate) fn generate_initial_seq(local: SocketAddr, remote: Option<SocketAddr>) -> u32 {
+    use crate::net::security::tls::crypto::hmac::hmac_sha256;
+
+    // RFC 6528: ISN = M + F(localip, localport, remoteip, remoteport, secret)
+    // We use HMAC-SHA256 to generate the hash component.
     
+    let mut data = [0u8; 40];
+    let local_v6 = local.as_ipv6();
+    data[0..16].copy_from_slice(local_v6.as_bytes());
+    data[16..18].copy_from_slice(&local.port().to_be_bytes());
+    
+    if let Some(r) = remote {
+        let remote_v6 = r.as_ipv6();
+        data[18..34].copy_from_slice(remote_v6.as_bytes());
+        data[34..36].copy_from_slice(&r.port().to_be_bytes());
+    }
+
+    // Hardware RNG source for the secret component
+    let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+    let secret_seed = [random_bytes[0], random_bytes[1], random_bytes[2], random_bytes[3], 
+                       random_bytes[4], random_bytes[5], random_bytes[6], random_bytes[7]];
+    
+    // Generate F(...) using HMAC
+    let hash = hmac_sha256(&secret_seed, &data);
+    let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]);
+
+    // Timer-based component (M)
     // タイムスタンプベースの値（マイクロ秒精度）
     let time_component = crate::task::timer::current_tick() as u32;
     // カウンターを追加して同一タイミングでも異なる値に
     let counter = SEQ_COUNTER.fetch_add(64000, Ordering::Relaxed);
     
-    // Mix them
-    time_component.wrapping_add(counter).wrapping_add(secret)
+    // Mix them: ISN = M + Hash
+    time_component.wrapping_add(counter).wrapping_add(hash_val)
 }
 
 // ============================================================================

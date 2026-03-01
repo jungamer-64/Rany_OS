@@ -720,13 +720,13 @@ pub fn revoke_cell_hash(hash: [u8; 32]) {
 pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
     let mut verifier_guard = GLOBAL_VERIFIER.lock();
 
-    // 未初期化の場合は本番モードで自動初期化
+    // 未初期化の場合は自動初期化
     if verifier_guard.is_none() {
         let mut v = SignatureVerifier::production();
         v.add_trusted_key(BUILTIN_TRUSTED_KEY);
-        #[cfg(feature = "qemu-test-export")]
+        #[cfg(any(feature = "qemu-test-export", debug_assertions))]
         {
-            // Full-boot runtime tests load unsigned fixture cells from initramfs.
+            // デバッグビルドおよびQEMUテストでは署名なしセルのロードを許可
             v.set_dev_mode(true);
         }
         *verifier_guard = Some(v);

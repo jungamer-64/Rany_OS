@@ -90,31 +90,13 @@ impl SegregatedFreeListHeap {
         let class = Self::size_to_class(final_size);
         let block_ptr = final_addr as *mut FreeBlock;
 
-        crate::io::log::early_print("[ExHeap] add_free_block final_addr=");
-        crate::io::log::early_print_hex(final_addr as u64);
-        crate::io::log::early_print(" final_size=");
-        crate::io::log::early_print_hex(final_size as u64);
-        crate::io::log::early_print(" class=");
-        crate::io::log::early_print_dec(class as u64);
-        crate::io::log::early_print("\n");
-
         unsafe {
-            let old_head = self.free_lists[class].map_or(0usize, |nn| nn.as_ptr() as usize);
-            crate::io::log::early_print("[ExHeap] add_free_block old_head=");
-            crate::io::log::early_print_hex(old_head as u64);
-            crate::io::log::early_print("\n");
-
             // Set header (use checked store for debug)
             crate::memory::checked_store_usize(block_ptr as usize, final_size, "ExHeap header size store");
             (*block_ptr).next = self.free_lists[class];
 
-            // Dump next after set
-            let next_val = match (*block_ptr).next { Some(nn) => nn.as_ptr() as usize, None => 0usize };
-            crate::io::log::early_print("[ExHeap] add_free_block set_next=");
-            crate::io::log::early_print_hex(next_val as u64);
-            crate::io::log::early_print("\n");
-
             #[cfg(debug_assertions)] {
+                let next_val = match (*block_ptr).next { Some(nn) => nn.as_ptr() as usize, None => 0usize };
                 if next_val == crate::memory::EXCHANGE_HEAP_SIZE {
                     crate::io::log::early_print("[ExHeap] WARNING: next pointer equal to EXCHANGE_HEAP_SIZE!\n");
                     let bt = crate::unwind::Backtrace::capture();

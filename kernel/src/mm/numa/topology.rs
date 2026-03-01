@@ -520,9 +520,6 @@ pub fn current_node() -> usize {
 /// # Returns
 /// 割り当てられたメモリへのポインタ（失敗時はNone）
 pub fn allocate_zeroed_on_node(layout: Layout, node: Option<usize>) -> Option<NonNull<u8>> {
-    crate::io::log::early_print("[NUMA] allocate_zeroed_on_node size=");
-    crate::io::log::early_print_dec(layout.size() as u64);
-    crate::io::log::early_print("\n");
     let allocator = NUMA_ALLOCATOR.lock();
     if allocator.is_initialized() {
         allocator.allocate(layout, node).map(|(ptr, _)| ptr)

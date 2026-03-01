@@ -21,7 +21,7 @@ impl TcpProcessor {
     }
 
     /// Generate a SYN Cookie (RFC 4987)
-    fn generate_syncookie(&self, local: SocketAddr, remote: SocketAddr, _client_isn: u32, mss_idx: u8) -> u32 {
+    fn generate_syncookie(&self, local: SocketAddr, remote: SocketAddr, client_isn: u32, mss_idx: u8) -> u32 {
         use crate::net::security::tls::crypto::hmac::hmac_sha256;
         
         let mut data = [0u8; 40];
@@ -38,17 +38,23 @@ impl TcpProcessor {
         let hash = hmac_sha256(&self.syncookie_secret, &data);
         
         let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], 0]);
+        // Mix client ISN into the hash (masked to 24 bits) to bind cookie to the specific SYN.
+        // This prevents off-path spoofing attacks where the attacker doesn't know the ISN.
+        let mixed_hash = hash_val.wrapping_add(client_isn) & 0xFFFFFF00;
+
         let time_bits = (timestamp & 0x1F) << 3;
         let mss_bits = mss_idx & 0x07;
         
-        hash_val | (time_bits | mss_bits as u32) as u32
+        mixed_hash | (time_bits | mss_bits as u32) as u32
     }
 
     /// Verify a SYN Cookie and return MSS if valid
-    fn verify_syncookie(&self, local: SocketAddr, remote: SocketAddr, ack_num: u32) -> Option<u16> {
+    fn verify_syncookie(&self, local: SocketAddr, remote: SocketAddr, ack_num: u32, seq_num: u32) -> Option<u16> {
         use crate::net::security::tls::crypto::hmac::hmac_sha256;
         
         let cookie = ack_num.wrapping_sub(1);
+        let client_isn = seq_num.wrapping_sub(1); // seq_num is client_isn + 1
+
         let mss_idx = (cookie & 0x07) as u8;
         let time_bits_received = (cookie >> 3) & 0x1F;
         
@@ -73,7 +79,10 @@ impl TcpProcessor {
             let hash = hmac_sha256(&self.syncookie_secret, &data);
             let hash_val = u32::from_be_bytes([hash[0], hash[1], hash[2], 0]);
             
-            if (cookie & 0xFFFFFF00) == hash_val {
+            // Verify with client ISN
+            let expected_mixed = hash_val.wrapping_add(client_isn) & 0xFFFFFF00;
+
+            if (cookie & 0xFFFFFF00) == expected_mixed {
                 let mss = match mss_idx {
                     0 => 536,
                     1 => 1300,
@@ -170,9 +179,8 @@ impl TcpProcessor {
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.set_remote_addr(remote_addr);
         tcb.enter_syn_sent();
-        let isn = generate_initial_seq();
-        tcb.set_snd_nxt(isn);
-        tcb.set_snd_una(isn);
+        tcb.regenerate_isn();
+        let isn = tcb.snd_nxt();
 
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
 
@@ -263,7 +271,7 @@ impl TcpProcessor {
 
         // Check if this is an ACK completing a SYN Cookie handshake
         if flags == TcpHeader::FLAG_ACK {
-            if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num) {
+            if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num, seq_num) {
                 log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote_addr);
 
                 let mut tcb = TcpControlBlock::new(local_addr);
@@ -348,7 +356,7 @@ impl TcpProcessor {
 
         // Check if this is an ACK completing a SYN Cookie handshake
         if flags == TcpHeader::FLAG_ACK {
-            if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num) {
+            if let Some(mss) = self.verify_syncookie(local_addr, remote_addr, ack_num, seq_num) {
                 log::info!("[TCP] SYN Cookie verified for {}, creating connection", remote_addr);
 
                 let mut tcb = TcpControlBlock::new(local_addr);
@@ -461,6 +469,7 @@ impl TcpProcessor {
 
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.set_remote_addr(remote_addr);
+        tcb.regenerate_isn();
         tcb.set_rcv_nxt(seq_num.wrapping_add(1));
         tcb.set_rcv_wnd(65535);
 
@@ -487,7 +496,7 @@ impl TcpProcessor {
 
         tcb.enter_syn_received();
 
-        let isn = generate_initial_seq();
+        let isn = generate_initial_seq(local_addr, Some(remote_addr));
         tcb.set_snd_nxt(isn);
         tcb.set_snd_una(isn);
 

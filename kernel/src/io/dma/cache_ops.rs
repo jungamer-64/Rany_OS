@@ -403,13 +403,6 @@ impl CoherentDmaBuffer {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        // Diagnostic: log Coherent DMA allocation
-        crate::io::log::early_print("[DMA] CoherentDmaBuffer alloc size=");
-        crate::io::log::early_print_dec(size as u64);
-        crate::io::log::early_print(" phys=");
-        crate::io::log::early_print_hex(phys_addr.as_u64());
-        crate::io::log::early_print("\n");
-
         // IOMMUマッピング（デバイスID指定時かつIOMMU有効時）
         let (iova, iommu_device) = if let Some(dev) = device {
             if crate::io::iommu::api::is_iommu_enabled() {

@@ -68,7 +68,6 @@ impl ExchangeHeap {
         {
             let mut cache = PER_CPU_CACHES[cpu_id].lock();
             if let Some((addr, _cached_size)) = cache.try_alloc(size_class) {
-                 crate::io::log::early_print("[ExHeap] allocate: per-cpu success\n");
                 return NonNull::new(addr as *mut u8);
             }
             cache.steal_attempts.fetch_add(1, Ordering::Relaxed);
@@ -79,7 +78,6 @@ impl ExchangeHeap {
                 if let Some((addr, _stolen_size)) = victim_cache.try_steal_one(size_class) {
                     let local = PER_CPU_CACHES[cpu_id].lock();
                     local.steal_successes.fetch_add(1, Ordering::Relaxed);
-                     crate::io::log::early_print("[ExHeap] allocate: steal success\n");
                     return NonNull::new(addr as *mut u8);
                 }
             }
@@ -89,7 +87,6 @@ impl ExchangeHeap {
 
     /// Exchange Heap上にメモリを割り当て
 pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
-    crate::io::log::early_print("[ExHeap] allocate: enter\n");
     let size = layout.size().max(core::mem::size_of::<FreeBlock>());
     let size_class = SegregatedFreeListHeap::size_to_class(size);
     
@@ -101,20 +98,11 @@ pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
     }
     
     // Slow path: global heap
-    crate::io::log::early_print("[ExHeap] allocate: global heap lock...\n");
     match self.heap.lock() {
         Ok(mut guard) => {
-            crate::io::log::early_print("[ExHeap] allocate: global heap locked\n");
-            let res = guard.allocate_first_fit(layout).ok();
-            if res.is_some() {
-                crate::io::log::early_print("[ExHeap] allocate: global success\n");
-            } else {
-                crate::io::log::early_print("[ExHeap] allocate: global failed\n");
-            }
-            res
+            guard.allocate_first_fit(layout).ok()
         },
         Err(_) => {
-            crate::io::log::early_print("[ExHeap] allocate: poisoned\n");
             log::error!("[MEM] Exchange Heap poisoned - allocation failed");
             None
         }

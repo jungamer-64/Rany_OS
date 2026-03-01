@@ -93,7 +93,6 @@ impl IommuDomain {
             pending_pt_release: PoisonLock::new(Vec::new()),
             paging_lock: IrqMutex::new(()),
         };
-        crate::io::log::early_print("[IOMMU] IommuDomain::new: constructed domain object, returning\n");
         new_domain
     }
 

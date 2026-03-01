@@ -410,9 +410,7 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    crate::io::log::early_print("[DMA] map_for_device: calling allocate_iova\n");
                     let iova = allocate_iova_for_device(&domain_arc, device, size)?;
-                    crate::io::log::early_print("[DMA] map_for_device: iova allocated, calling apply_mapping_sync\n");
                     return apply_mapping_sync(
                         controller, &domain_arc, iova, phys_addr.as_u64(), size, read, write,
                     );

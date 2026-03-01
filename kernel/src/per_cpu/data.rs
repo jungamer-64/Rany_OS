@@ -479,25 +479,17 @@ pub unsafe fn check_fsgsbase_support() -> bool {
 /// これにより、初期化中でも `current_cpu_id()` や `try_current_cpu_id()` を
 /// 安全に呼び出すことができる。
 pub unsafe fn init_per_cpu(num_cpus: usize) {
-    crate::io::log::early_print("[PCPU] init\n");
     INITIALIZED.call_once(|| {
-        crate::io::log::early_print("[PCPU] once\n");
         let num_cpus = num_cpus.min(MAX_CPUS);
 
         // 1. FSGSBASEを有効化（サポートされている場合のみ）
         // SAFETY: 初期化時に一度だけ呼ばれる
-        crate::io::log::early_print("[PCPU] fsgs\n");
 
         // CPUIDでFSGSBASEサポートを確認
         #[cfg(not(feature = "qemu-test-export"))]
         let fsgsbase_supported = unsafe { check_fsgsbase_support() };
         #[cfg(feature = "qemu-test-export")]
         let fsgsbase_supported = false;
-        crate::io::log::early_print(if fsgsbase_supported {
-            "[PCPU] fsgs supported\n"
-        } else {
-            "[PCPU] fsgs not supported, using MSR\n"
-        });
 
         if fsgsbase_supported {
             unsafe {
@@ -505,13 +497,10 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             }
             // Set global adoption flag - each AP will still need to enable CR4 in setup_current_cpu
             GSBASE_FASTPATH.store(true, Ordering::Release);
-            crate::io::log::early_print("[PCPU] fsgs enabled\n");
         }
-        crate::io::log::early_print("[PCPU] fsgs ok\n");
 
         // 2. BSP（CPU 0）のデータを先に初期化してGsBaseを設定
         // これにより、以降の初期化コード内でcurrent_cpu_id()が使えるようになる
-        crate::io::log::early_print("[PCPU] bsp setup\n");
         unsafe {
             // Initialize Hot/Cold structures (Phase 3)
             PER_CPU_HOT[0] = PerCpuHot::new(0);
@@ -536,7 +525,6 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             BSP_GSBASE_SET.store(true, Ordering::Release);
 
             // 2.5. TLS (Thread Local Storage) の初期化
-            crate::io::log::early_print("[PCPU] TLS init\n");
 
             #[cfg(all(not(test), not(target_os = "windows")))]
             {
@@ -547,15 +535,6 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
 
                 let tls_start = &__tls_start as *const u8 as u64;
                 let tls_end = &__tls_end as *const u8 as u64;
-                let tls_size = tls_end.saturating_sub(tls_start);
-
-                crate::io::log::early_print("[PCPU] TLS size=");
-                if tls_size == 0 {
-                    crate::io::log::early_print("0");
-                } else {
-                    crate::io::log::early_print("non-zero");
-                }
-                crate::io::log::early_print("\n");
 
                 let fs_base = tls_end;
 
@@ -564,29 +543,16 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                 } else {
                     write_fs_base_msr(fs_base);
                 }
-                crate::io::log::early_print("[PCPU] TLS ok\n");
             }
             #[cfg(any(test, target_os = "windows"))]
             {
-                crate::io::log::early_print("[PCPU] TLS skipped in test or Windows build\n");
+                // TLS skipped in test or Windows build
             }
         }
 
-        crate::io::log::early_print("[PCPU] bsp ok\n");
-
         // 3. 残りのCPU（AP）のデータを初期化
-        crate::io::log::early_print("[PCPU] loop start\n");
         let mut i = 1usize; // CPU 0は既に初期化済み
         while i < num_cpus {
-            crate::io::log::early_print("[PCPU] i=0x");
-            // 2-digit hex output (supports CPU 0-63)
-            let hi = (i >> 4) & 0xF;
-            let lo = i & 0xF;
-            let to_hex = |n: usize| if n < 10 { b'0' + n as u8 } else { b'a' + (n - 10) as u8 };
-            crate::io::log::early_print_char(to_hex(hi));
-            crate::io::log::early_print_char(to_hex(lo));
-            crate::io::log::early_print("\n");
-
             // SAFETY: 初期化中は他のCPUからアクセスされない
             // Initialize Hot/Cold structures (Phase 3)
             unsafe {
@@ -599,16 +565,12 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                 PER_CPU_DATA[i] = PerCpuData::new(i);
                 PER_CPU_DATA[i].set_self_ptr();
             }
-            crate::io::log::early_print("[PCPU] ok\n");
             i += 1;
         }
-        crate::io::log::early_print("[PCPU] cpus ok\n");
 
         *ACTIVE_CPUS.lock().expect("lock poisoned") = num_cpus;
         mark_cpu_online(0);
-        crate::io::log::early_print("[PCPU] done\n");
     });
-    crate::io::log::early_print("[PCPU] exit\n");
 }
 
 /// 現在のCPUのPer-CPUデータを設定（AP用）

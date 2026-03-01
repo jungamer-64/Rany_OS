@@ -80,27 +80,19 @@ pub enum InterruptVector {
 
 /// IDTを初期化する関数
 fn init_idt() {
-    crate::io::log::early_print("[IDT] init\n");
-
     let idt = unsafe {
         let idt_ptr = (*IDT_CONTAINER.0.get()).as_mut_ptr();
 
         // IDTをゼロクリア（大きなstructなので慎重に）
-        crate::io::log::early_print("[IDT] zero start\n");
         let idt_bytes = idt_ptr as *mut u8;
         let idt_size = core::mem::size_of::<InterruptDescriptorTable>();
-        // 小さなチャンクで初期化
         for i in 0..idt_size {
             crate::io::mmio::volatile_write::<u8>(idt_bytes.add(i) as usize, 0);
         }
-        crate::io::log::early_print("[IDT] zeroed\n");
 
         // IDTはすでにゼロ初期化されているので、ハンドラだけ設定
-        // InterruptDescriptorTable::new()を呼ばずに直接設定
         &mut *(idt_ptr as *mut InterruptDescriptorTable)
     };
-
-        crate::io::log::early_print("[IDT] handlers\n");
 
         // CPU例外ハンドラの設定
         idt.divide_error.set_handler_fn(handler_to_x86!(
@@ -154,8 +146,6 @@ fn init_idt() {
             exceptions::simd_floating_point_handler
                 as extern "x86-interrupt" fn(InterruptStackFrame)
         ));
-
-        crate::io::log::early_print("[IDT] hw int\n");
 
         // ハードウェア割り込みハンド設定
         idt[InterruptVector::Timer as u8].set_handler_fn(handler_to_x86!(
@@ -256,11 +246,8 @@ fn init_idt() {
             spurious_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
         ));
 
-        crate::io::log::early_print("[IDT] load\n");
-
         // IDTをロード
         idt.load();
-        crate::io::log::early_print("[IDT] done\n");
 
 }
 
@@ -275,22 +262,15 @@ fn init_idt() {
 /// 2. PICの初期化
 /// 3. IDTのロード
 pub fn init() {
-    crate::io::log::early_print("[INT] init\n");
-
     // 1. GDT と TSS の初期化
     gdt::init_gdt();
-    crate::io::log::early_print("[INT] GDT done\n");
 
     // 2. PIC の初期化（ハードウェア割り込みのリマップ）
-    crate::io::log::early_print("[INT] PIC\n");
     init_pic();
-    crate::io::log::early_print("[INT] PIC done\n");
 
     // 3. IDT のロード
-    crate::io::log::early_print("[INT] IDT init\n");
     init_idt();
     IDT_INITIALIZED.store(true, Ordering::SeqCst);
-    crate::io::log::early_print("[INT] ready\n");
 }
 
 /// 割り込みを有効化
@@ -305,21 +285,8 @@ pub fn enable_interrupts() {
         init_idt();
         IDT_INITIALIZED.store(true, Ordering::SeqCst);
     }
-    // guarantee some output even if logging backend is unusable
-    crate::io::log::early_print("[INT] enable_interrupts() entry\n");
-
-    // We avoid calling `log::info!` here; the logger mutex may deadlock
-    // if an interrupt fires immediately after IF is set and the handler tries
-    // to log.  Use early_print which does not take the lock.
-    crate::io::log::early_print("[INT] enable_interrupts() about to set IF\n");
-
     // actually enable
     x86_64::instructions::interrupts::enable();
-
-    // we might be interrupted immediately after the preceding instruction,
-    // but if execution resumes in this thread we can record that fact.
-    crate::io::log::early_print("[INT] after IF set\n");
-    log::info!("[INT] enable_interrupts() returned (IF set)");
 
     // Now that interrupts are enabled, there may be pending serial transmit
     // work left over from earlier synchronous/asynchronous logging attempts.

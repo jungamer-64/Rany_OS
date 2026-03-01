@@ -56,9 +56,6 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
 #[cfg(not(test))]
 fn spawn_command_queue_worker(controller: Arc<IommuController>) {
     let future = command_queue_worker(controller);
-    crate::io::log::early_print("[IOMMU] Future size: ");
-    crate::io::log::early_print_dec(core::mem::size_of_val(&future) as u64);
-    crate::io::log::early_print("\n");
     crate::task::per_core_executor::spawn(future);
 }
 
@@ -101,22 +98,17 @@ pub unsafe fn init_iommu_from_acpi(
 
     #[cfg(not(test))]
     {
-        crate::io::log::early_print("[IOMMU] Loop start.\n");
         for (_i, controller) in registry.controllers.iter().enumerate() {
             if controller.command_queue.is_some() {
                 spawn_command_queue_worker(Arc::clone(controller));
             }
         }
-        crate::io::log::early_print("[IOMMU] Loop end.\n");
     }
-    crate::io::log::early_print("[IOMMU] Block end.\n");
 
     // Apply Reserved Regions (RMRR) before publishing registry
     apply_rmrr_reservations(&registry);
 
-    crate::io::log::early_print("[IOMMU] Init registry...\n");
     init_registry(registry);
-    crate::io::log::early_print("[IOMMU] Registry done.\n");
 
     #[cfg(not(test))]
     finalize_iommu_setup(&config);
@@ -244,7 +236,6 @@ fn build_rmrr_regions(dmar_info: &crate::io::acpi::dmar::DmarInfo) -> Vec<Reserv
 
 /// Apply RMRR reservations to IOVA allocators on all controllers.
 fn apply_rmrr_reservations(registry: &IommuRegistry) {
-    crate::io::log::early_print("[IOMMU] Processing RMRR...\n");
     let page_size = crate::mm::types::PAGE_SIZE_4K;
 
     for region in &registry.reserved_regions {
@@ -261,8 +252,6 @@ fn apply_rmrr_reservations(registry: &IommuRegistry) {
             reserve_rmrr_on_controller(controller, region.segment, start, end);
         }
     }
-
-    crate::io::log::early_print("[IOMMU] RMRR done.\n");
 }
 
 /// Reserve a single RMRR range on a controller's IOVA allocator.
@@ -321,38 +310,27 @@ fn reserve_rmrr_on_controller(controller: &Arc<IommuController>, segment: u16, s
 /// Final setup: register driver, create default domain, initialize group manager.
 #[cfg(not(test))]
 fn finalize_iommu_setup(config: &IommuConfig) {
-    crate::io::log::early_print("[IOMMU] Registering driver...\n");
     super::super::IntelIommuDriver::register_driver();
     crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
 
-    crate::io::log::early_print("[IOMMU] Creating default domain...\n");
     if let Some(driver) = crate::io::iommu::runtime::registry::get_iommu_driver() {
-        crate::io::log::early_print("[IOMMU] about to call driver.create_domain\n");
         match driver.create_domain(None, IommuDomainType::Translated) {
             Ok(id) => {
                 log::info!("IOMMU default domain created: ID={}", id);
-                crate::io::log::early_print("[IOMMU] driver.create_domain returned Ok\n");
             }
             Err(e) => {
                 log::warn!("Failed to create default IOMMU domain: {:?}", e);
-                crate::io::log::early_print("[IOMMU] driver.create_domain returned Err\n");
             }
         }
     }
-    crate::io::log::early_print("[IOMMU] Default domain done.\n");
 
     // Enable IOMMU translation directly via the Intel registry.
     // This avoids reliance on the global driver pointer (IOMMU_DRIVER)
     // which may not be accessible from enable_iommu() in some configurations.
-    crate::io::log::early_print("[IOMMU] Enabling translation on all controllers...\n");
     if let Some(registry) = super::super::registry::get_iommu_registry() {
         for (idx, controller) in registry.controllers.iter().enumerate() {
             match unsafe { controller.enable() } {
-                Ok(()) => {
-                    crate::io::log::early_print("[IOMMU] Controller ");
-                    crate::io::log::early_print_dec(idx as u64);
-                    crate::io::log::early_print(" translation enabled\n");
-                }
+                Ok(()) => {}
                 Err(_e) => {
                     crate::io::log::early_print("[IOMMU] Controller ");
                     crate::io::log::early_print_dec(idx as u64);
@@ -361,7 +339,6 @@ fn finalize_iommu_setup(config: &IommuConfig) {
             }
         }
     }
-    crate::io::log::early_print("[IOMMU] finalize_iommu_setup done.\n");
 }
 
 /// Initialize the global IOMMU (legacy wrapper)

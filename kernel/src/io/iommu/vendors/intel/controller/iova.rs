@@ -31,29 +31,10 @@ pub trait IovaManager {
 impl IovaManager for IommuController {
     /// Initialize controller IOVA allocator
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError> {
-        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(usize::MAX);
-        crate::io::log::early_print("[IOMMU] init_iova: enter cpu=");
-        crate::io::log::early_print_dec(cpu_id as u64);
-        crate::io::log::early_print(" base=");
-        crate::io::log::early_print_hex(base);
-        crate::io::log::early_print(" size=");
-        crate::io::log::early_print_hex(size);
-        crate::io::log::early_print("\n");
-
-        // Print heap state for diagnostics
-        if let Some(initialized) = crate::memory::ALLOCATOR.is_initialized() {
-            crate::io::log::early_print("[IOMMU] heap_initialized=");
-            crate::io::log::early_print_dec(if initialized { 1 } else { 0 });
-            crate::io::log::early_print("\n");
-        } else {
-            crate::io::log::early_print("[IOMMU] ALLOCATOR lock poisoned\n");
-        }
-
         let mut guard = self
             .iova_allocator
             .lock_for_init("[IOMMU] iova_allocator init");
         *guard = Some(IovaAllocator::new(base, size));
-        crate::io::log::early_print("[IOMMU] init_iova: IovaAllocator initialized\n");
         Ok(())
     }
 
@@ -112,41 +93,14 @@ impl IovaManager for IommuController {
 
     /// Allocate an IOVA range within a DMA mask limit (inclusive).
     fn allocate_iova_masked(&self, size: u64, mask: u64) -> Result<u64, IommuError> {
-        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(usize::MAX);
-        crate::io::log::early_print("[IOMMU] allocate_iova_masked: enter cpu=");
-        crate::io::log::early_print_dec(cpu_id as u64);
-        crate::io::log::early_print(" size=");
-        crate::io::log::early_print_dec(size as u64);
-        crate::io::log::early_print(" mask=");
-        crate::io::log::early_print_hex(mask as u64);
-        crate::io::log::early_print("\n");
-
         let guard = self
             .iova_allocator
             .lock()
             .map_err(|_| IommuError::HardwareError)?;
 
-        if guard.is_none() {
-            crate::io::log::early_print("[IOMMU] allocate_iova_masked: iova_allocator not initialized\n");
-            return Err(IommuError::NotPresent);
-        }
-
         let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
 
-        crate::io::log::early_print("[IOMMU] allocate_iova_masked: calling allocate_with_limit\n");
         let res = alloc.allocate_with_limit(size, PageGranularity::Page4K, mask);
-        crate::io::log::early_print("[IOMMU] allocate_iova_masked: allocate_with_limit returned\n");
-        if res.is_none() {
-            crate::io::log::early_print("[IOMMU] allocate_iova_masked: allocation returned None (OOM)\n");
-            // Print heap diagnostic snapshot
-            if let Some(initialized) = crate::memory::ALLOCATOR.is_initialized() {
-                crate::io::log::early_print("[IOMMU] heap_initialized=");
-                crate::io::log::early_print_dec(if initialized { 1 } else { 0 });
-                crate::io::log::early_print("\n");
-            } else {
-                crate::io::log::early_print("[IOMMU] ALLOCATOR lock poisoned\n");
-            }
-        }
 
         res.ok_or(IommuError::OutOfMemory)
     }

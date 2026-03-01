@@ -7,7 +7,7 @@ impl TcpControlBlock {
         
         // Generate a cryptographically secure random Initial Sequence Number (ISN).
         // Using ISN randomization (RFC 6528) is critical to prevent TCP spoofing and hijacking.
-        let isn = generate_initial_seq();
+        let isn = generate_initial_seq(local_addr, None);
 
         Self {
             endpoints: TcpEndpointMeta::new(local_addr),
@@ -21,6 +21,15 @@ impl TcpControlBlock {
             waiters: TcpAsyncWaiters::default(),
             stats: TcpStats::default(),
             created_at: now,
+        }
+    }
+
+    /// Regenerate ISN once remote address is known (RFC 6528 compliant)
+    pub fn regenerate_isn(&mut self) {
+        if let Some(remote) = self.endpoints.remote_addr {
+            let isn = generate_initial_seq(self.endpoints.local_addr, Some(remote));
+            self.seq.snd_nxt = isn;
+            self.seq.snd_una = isn;
         }
     }
 

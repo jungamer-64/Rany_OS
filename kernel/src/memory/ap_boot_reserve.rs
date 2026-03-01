@@ -89,13 +89,10 @@ pub(crate) fn reserve_boot_info_ranges(
 pub(crate) fn init_buddy_from_boot_info(
     boot_info: Option<&ExoBootInfo>,
 ) -> alloc::vec::Vec<(x86_64::PhysAddr, u64)> {
-    crate::io::log::early_print("[MEM] buddy prep\n");
     let memory_map = boot_info.map(|info| &info.memory_map);
     let mut usable_regions = if let Some(map) = memory_map {
-        crate::io::log::early_print("[MEM] boot memory map\n");
         let regions = get_boot_memory_regions(map);
         if regions.is_empty() {
-            crate::io::log::early_print("[MEM] boot map empty\n");
             get_default_memory_regions()
         } else {
             regions
@@ -106,50 +103,21 @@ pub(crate) fn init_buddy_from_boot_info(
 
     usable_regions = reserve_bootstrap_heaps(usable_regions);
 
-    crate::io::log::early_print("[MEM] After reserve_bootstrap_heaps:\n");
-    for (addr, size) in usable_regions.iter() {
-        crate::io::log::early_print("  region phys=");
-        crate::io::log::early_print_hex(addr.as_u64());
-        crate::io::log::early_print(" size=");
-        crate::io::log::early_print_hex(*size);
-        crate::io::log::early_print("\n");
-    }
-
-    crate::io::log::early_print("[MEM] heap_start=");
-    crate::io::log::early_print_hex(heap_start());
-    crate::io::log::early_print(" exchange_heap_start=");
-    crate::io::log::early_print_hex(exchange_heap_start());
-    crate::io::log::early_print("\n");
-
-    let hhdm = physical_memory_offset();
-    crate::io::log::early_print("[MEM] HHDM=");
-    crate::io::log::early_print_hex(hhdm);
-    crate::io::log::early_print(" heap_phys=");
-    crate::io::log::early_print_hex(heap_start().saturating_sub(hhdm));
-    crate::io::log::early_print(" exchange_phys=");
-    crate::io::log::early_print_hex(exchange_heap_start().saturating_sub(hhdm));
-    crate::io::log::early_print("\n");
-
     if let Some(info) = boot_info {
         usable_regions = reserve_boot_info_ranges(usable_regions, info);
     }
-    crate::io::log::early_print("[MEM] buddy bootstrap\n");
 
     unsafe {
         crate::mm::phys::buddy_allocator::init_buddy_allocator(&usable_regions);
     }
-    crate::io::log::early_print("[MEM] buddy ready\n");
 
     #[cfg(feature = "buddy_freelist")]
     {
-        crate::io::log::early_print("[MEM] freelist buddy init\n");
         unsafe {
             crate::mm::phys::buddy_freelist::init_freelist_buddy(&usable_regions);
         }
-        crate::io::log::early_print("[MEM] freelist buddy ready\n");
     }
 
-    crate::io::log::early_print("[HEAP_CHECK] after init_buddy_allocator\n");
     verify_buddy_integrity();
 
     usable_regions
@@ -164,7 +132,6 @@ pub(crate) fn init_numa_pmm(
     let mut pmm_initialized = false;
     if let Some(info) = numa_info {
         if info.node_count > 0 {
-            crate::io::log::early_print("[MEM] NUMA info from bootloader\n");
             unsafe {
                 if crate::mm::phys::frame_allocator::init_numa_frame_allocator_from_info(info) {
                     pmm_initialized = true;
@@ -178,7 +145,6 @@ pub(crate) fn init_numa_pmm(
     }
 
     if !pmm_initialized {
-        crate::io::log::early_print("[MEM] using global PMM\n");
         unsafe {
             crate::mm::phys::frame_allocator::init_frame_allocator(usable_regions);
         }
@@ -187,20 +153,12 @@ pub(crate) fn init_numa_pmm(
 
 /// SRAT (ACPI) からNUMA領域を解析してPMMを初期化する
 pub(crate) fn init_pmm_from_srat(rsdp_addr: Option<u64>) -> bool {
-    crate::io::log::early_print("[MEM] SRAT check\n");
     let Some(_rsdp_addr_val) = rsdp_addr else {
-        crate::io::log::early_print("[MEM] no SRAT (RSDP not provided)\n");
         return false;
     };
-    crate::io::log::early_print("[MEM] parsing SRAT\n");
     let regions = crate::io::acpi::numa_memory_regions();
     let mut numa_regions = alloc::vec::Vec::new();
     for (base, length, proximity) in regions {
-        let s = alloc::format!(
-            "[MEM] registering region {:#x} len {:#x} prox {}\n",
-            base, length, proximity
-        );
-        crate::io::log::early_print(&s);
         let base_phys = x86_64::PhysAddr::new(base);
         let node = crate::mm::types::NumaNodeId::new(proximity as u8);
         numa_regions.push((base_phys, length, node));
@@ -211,30 +169,22 @@ pub(crate) fn init_pmm_from_srat(rsdp_addr: Option<u64>) -> bool {
         }
         true
     } else {
-        crate::io::log::early_print("[MEM] SRAT empty\n");
         false
     }
 }
 
 /// Exchange Heap, Per-CPU, Per-Core Slab Cache の初期化
 pub(crate) fn init_post_buddy() {
-    crate::io::log::early_print("[MEM] exheap init\n");
     unsafe {
         crate::mm::cache::exchange_heap::init_exchange_heap(exchange_heap_start() as usize, EXCHANGE_HEAP_SIZE);
     }
-    crate::io::log::early_print("[MEM] exheap done\n");
-    crate::io::log::early_print("[HEAP_CHECK] after exchange_heap_init\n");
     verify_buddy_integrity();
 
-    crate::io::log::early_print("[MEM] percpu init\n");
     unsafe {
         crate::per_cpu::init_per_cpu(1);
     }
-    crate::io::log::early_print("[MEM] percpu done\n");
 
-    crate::io::log::early_print("[MEM] slab init\n");
     crate::mm::cache::slab_cache::init_per_core_caches(1);
-    crate::io::log::early_print("[MEM] slab done\n");
 }
 
 /// メモリサブシステムの完全初期化
@@ -251,20 +201,14 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     crate::io::log::early_print("[MEM] init start\n");
 
     if MEMORY_INITIALIZED.swap(true, Ordering::SeqCst) {
-        crate::io::log::early_print("[MEM] already init\n");
         return;
     }
 
-    crate::io::log::early_print("[MEM] global heap\n");
-
     // 0. Higher Half Manager の初期化 (IOMMUなどが依存)
     crate::mm::virt::higher_half::init(physical_memory_offset());
-    crate::io::log::early_print("[MEM] higher half init\n");
 
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
     init_global_heap();
-    crate::io::log::early_print("[MEM] heap done\n");
-    crate::io::log::early_print("[HEAP_CHECK] after global heap init\n");
     verify_buddy_integrity();
 
     // 2. Buddy Allocator の初期化（ブートローダーのメモリマップを使用）
@@ -281,7 +225,7 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     // metadata can still be in a fragile state.
     core::mem::forget(usable_regions);
 
-    crate::io::log::early_print("[MEM] all done\n");
+    crate::io::log::early_print("[MEM] init done\n");
 }
 
 /// ヒープ整合性チェック（デバッグ用）
@@ -290,16 +234,10 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
 pub fn verify_buddy_integrity() {
     #[cfg(not(feature = "full_mm_tests"))]
     {
-        crate::io::log::early_print("[HEAP_CHECK] Verifying buddy free lists...\n");
         match ALLOCATOR.0.lock() {
             Ok(guard) => {
                 for i in 0..=BuddyHeapAllocator::MAX_ORDER {
-                    crate::io::log::early_print("[HEAP_CHECK] free_lists[");
-                    crate::io::log::early_print_dec(i as u64);
-                    crate::io::log::early_print("] = ");
                     let head = guard.free_lists[i].unwrap_or(0);
-                    crate::io::log::early_print_hex(head as u64);
-                    crate::io::log::early_print("\n");
 
                     if head != 0 {
                         let next = crate::io::mmio::volatile_read::<usize>(head as usize);
@@ -325,11 +263,6 @@ pub fn verify_buddy_integrity() {
                 crate::io::log::early_print("[HEAP_CHECK] Failed to lock buddy allocator\n");
             }
         }
-    }
-
-    #[cfg(feature = "full_mm_tests")]
-    {
-        crate::io::log::early_print("[HEAP_CHECK] Skipping buddy integrity check in full_mm_tests\n");
     }
 }
 
