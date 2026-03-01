@@ -259,6 +259,19 @@ fn process_tcp_with_tcb(
     segment: &[u8],
     data_offset: usize,
 ) {
+    // RFC 5961 Section 4.2: SYN bit in synchronized state
+    // 確立済みの接続に対してSYNを受信した場合、ブラインドリセット攻撃を防ぐため
+    // RSTではなくチャレンジACKを送信して生存確認を行う。
+    let is_syn = (flags & tcp_flags::SYN) != 0;
+    if is_syn && tcb.state != TcpConnectionState::SynSent && tcb.state != TcpConnectionState::SynReceived {
+        log::warn!(
+            "[TCP] SYN in synchronized state {:?} from {} (seq={}), sending Challenge ACK",
+            tcb.state, tcb.remote, seq_num
+        );
+        send_challenge_ack(&tcb);
+        return;
+    }
+
     match tcb.state {
         TcpConnectionState::SynSent => {
             handle_syn_sent_segment(tcb, flags, seq_num, ack_num, segment, data_offset);

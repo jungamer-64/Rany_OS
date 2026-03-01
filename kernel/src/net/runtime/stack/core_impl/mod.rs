@@ -468,8 +468,8 @@ impl NetworkStack {
                 // Security check (RFC 8201): Verify that the ICMPv6 message quote a packet 
                 // that we actually sent.
                 if let Some(ref ipv6) = self.ipv6 {
-                    let our_addr = ipv6.config().link_local;
-                    let our_global = ipv6.config().global;
+                    let _our_addr = ipv6.config().link_local;
+                    let _our_global = ipv6.config().global;
                     
                     // We can't easily see the quoted Source IP without deeper parsing here,
                     // but we can at least ensure we are updating the correct destination.

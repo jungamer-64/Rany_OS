@@ -528,8 +528,10 @@ pub struct Ipv4Processor {
     config: Ipv4Config,
     /// Statistics
     stats: Ipv4Stats,
-    /// Next identification value
+    /// Internal ID counter
     next_id: u16,
+    /// ID generation secret (per-boot)
+    id_secret: u16,
     /// Fragment reassembler
     reassembler: FragmentReassembler,
     /// Path MTU Discovery cache
@@ -576,10 +578,16 @@ pub enum Ipv4ProcessResult<'a> {
 impl Ipv4Processor {
     /// Create a new IPv4 processor
     pub fn new(config: Ipv4Config) -> Self {
+        // Use cryptographically secure random for initial ID and secret
+        let random_bytes = crate::net::security::tls::generate_random();
+        let id_init = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
+        let secret = u16::from_be_bytes([random_bytes[2], random_bytes[3]]);
+
         Ipv4Processor {
             config,
             stats: Ipv4Stats::default(),
-            next_id: 1,
+            next_id: id_init,
+            id_secret: secret,
             reassembler: FragmentReassembler::new(FragmentReassembler::DEFAULT_MAX_BUFFERS),
             pmtu_cache: PmtuCache::new(PmtuCache::DEFAULT_MAX_ENTRIES),
         }
@@ -697,11 +705,14 @@ impl Ipv4Processor {
             || *addr == self.config.broadcast_address()
     }
 
-    /// Get next packet ID
+    /// Get next packet ID (RFC 6864 compliant unpredictability)
     pub fn next_id(&mut self) -> u16 {
-        let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        id
+        // Scramble the ID using a secret to prevent Idle Scan attacks
+        let mut x = self.next_id ^ self.id_secret;
+        x = x.wrapping_mul(31337);
+        x ^= x >> 7;
+        x
     }
 
     /// Build an IP packet for transmission

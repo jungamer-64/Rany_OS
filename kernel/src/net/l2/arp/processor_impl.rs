@@ -74,17 +74,27 @@ impl ArpProcessor {
         // To prevent ARP Poisoning, we only accept:
         //  1. ARP Requests that target our IP (we need the mapping to reply).
         //  2. ARP Replies that we are actually waiting for (Incomplete entry exists).
-        //  3. ARP Replies for entries we already have in the cache (updating existing mappings).
+        //  3. ARP Replies for entries we already have, but ONLY if they don't change
+        //     the MAC address (refreshing timestamp). This prevents unsolicited
+        //     poisoning of existing entries.
         let mut should_update = false;
         if !sender_ip.is_any() && !sender_mac.is_broadcast() {
             if packet.operation() == ArpOperation::Request && target_ip == self.local_ip {
                 should_update = true;
             } else if packet.operation() == ArpOperation::Reply {
-                if self.cache.is_pending(sender_ip, current_time) || 
-                   self.cache.lookup(sender_ip, current_time).is_some() {
+                if self.cache.is_pending(sender_ip, current_time) {
                     should_update = true;
+                } else if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time) {
+                    if existing_mac == sender_mac {
+                        should_update = true; // Just refreshing timestamp
+                    } else {
+                        log::warn!(
+                            "[NET-ARP] Ignoring unsolicited ARP reply from {} with DIFFERENT MAC {} (cached: {}) to prevent poisoning",
+                            sender_ip, sender_mac, existing_mac
+                        );
+                    }
                 } else {
-                    log::warn!("[NET] ARP: Dropping unsolicited ARP reply from {} ({})", sender_ip, sender_mac);
+                    log::warn!("[NET-ARP] Dropping unsolicited ARP reply from {} ({})", sender_ip, sender_mac);
                 }
             }
         }
