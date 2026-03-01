@@ -105,7 +105,7 @@ impl DnsClient {
         buffer[4..6].copy_from_slice(&1u16.to_be_bytes()); // QDCOUNT = 1
         buffer[6..8].copy_from_slice(&0u16.to_be_bytes()); // ANCOUNT = 0
         buffer[8..10].copy_from_slice(&0u16.to_be_bytes()); // NSCOUNT = 0
-        buffer[10..12].copy_from_slice(&0u16.to_be_bytes()); // ARCOUNT = 0
+        buffer[10..12].copy_from_slice(&1u16.to_be_bytes()); // ARCOUNT = 1 (EDNS0)
 
         // 質問セクション - ドメイン名をエンコード
         let mut offset = DnsHeader::SIZE;
@@ -147,6 +147,24 @@ impl DnsClient {
             return Err("Buffer too small for QCLASS");
         }
         buffer[offset..offset + 2].copy_from_slice(&(DnsQueryClass::IN as u16).to_be_bytes());
+        offset += 2;
+
+        // EDNS0 OPT RR (RFC 6891)
+        if offset + 11 > buffer.len() {
+            return Err("Buffer too small for EDNS0 OPT");
+        }
+        buffer[offset] = 0; // Name: root (empty)
+        offset += 1;
+        buffer[offset..offset + 2].copy_from_slice(&(DnsQueryType::OPT as u16).to_be_bytes());
+        offset += 2;
+        // UDP Payload Size: 4096 (0x1000)
+        buffer[offset..offset + 2].copy_from_slice(&4096u16.to_be_bytes());
+        offset += 2;
+        // Extended RCODE and flags
+        buffer[offset..offset + 4].copy_from_slice(&0u32.to_be_bytes());
+        offset += 4;
+        // RDLENGTH: 0
+        buffer[offset..offset + 2].copy_from_slice(&0u16.to_be_bytes());
         offset += 2;
 
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
@@ -309,9 +327,13 @@ impl DnsClient {
 
         let qcount = header.question_count() as usize;
         let acount = header.answer_count() as usize;
+        let nscount = u16::from_be_bytes(header.nscount) as usize;
+        let arcount = u16::from_be_bytes(header.arcount) as usize;
 
-        // Security: 回答数の上限を制限 (DoSメモリ消耗攻撃防止)
+        // Security: 回答数・追加レコード数の上限を制限 (DoSメモリ消耗攻撃防止)
         let acount = acount.min(DNS_MAX_ANSWER_COUNT);
+        let nscount = nscount.min(DNS_MAX_ANSWER_COUNT);
+        let arcount = arcount.min(DNS_MAX_ANSWER_COUNT);
 
         // 質問セクションをスキップ
         let mut offset = DnsHeader::SIZE;
@@ -321,7 +343,27 @@ impl DnsClient {
         }
 
         // 回答セクションを解析
-        let records = self.parse_answer_section(data, &mut offset, acount)?;
+        let mut records = self.parse_answer_section(data, &mut offset, acount)?;
+
+        // 権威セクションをスキップ (キャッシュ対象外とする)
+        for _ in 0..nscount {
+            if offset >= data.len() { break; }
+            offset = self.skip_name(data, offset)?;
+            if offset + 10 > data.len() { break; }
+            let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
+            offset += 10 + rdlength;
+        }
+
+        // 追加セクションを解析
+        let additional_records = self.parse_answer_section(data, &mut offset, arcount)?;
+        
+        // 必要な追加情報をメインレコードに追加 (例: SRVのターゲットアドレスなど)
+        for ar in additional_records {
+            // EDNS0 OPTレコードなどはキャッシュしないが、パースエラーを防ぐために処理
+            if ar.rtype != DnsQueryType::OPT {
+                records.push(ar);
+            }
+        }
 
         self.stats
             .responses_received

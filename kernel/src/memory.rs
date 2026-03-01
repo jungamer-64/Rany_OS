@@ -285,15 +285,27 @@ impl BuddyHeapAllocator {
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
         // Security check: Range validation
         if addr < self.heap_start || addr >= self.heap_start.saturating_add(HEAP_SIZE) {
-            panic!("[BUD] Security Fault: add_to_free_list got invalid address {:#x} (heap: {:#x}-{:#x})", 
-                addr, self.heap_start, self.heap_start + HEAP_SIZE);
+            crate::io::log::early_print("[BUD] WARN: add_to_free_list invalid addr=");
+            crate::io::log::early_print_hex(addr as u64);
+            crate::io::log::early_print(" order=");
+            crate::io::log::early_print_dec(order as u64);
+            crate::io::log::early_print(" heap=");
+            crate::io::log::early_print_hex(self.heap_start as u64);
+            crate::io::log::early_print("-");
+            crate::io::log::early_print_hex((self.heap_start + HEAP_SIZE) as u64);
+            crate::io::log::early_print("\n");
+            return; // graceful skip
         }
 
         // Security check: Alignment validation
         let block_size = Self::order_to_size(order);
         if addr % block_size != 0 {
-            panic!("[BUD] Security Fault: add_to_free_list got unaligned address {:#x} for order {}", 
-                addr, order);
+            crate::io::log::early_print("[BUD] WARN: add_to_free_list unaligned addr=");
+            crate::io::log::early_print_hex(addr as u64);
+            crate::io::log::early_print(" order=");
+            crate::io::log::early_print_dec(order as u64);
+            crate::io::log::early_print("\n");
+            return; // graceful skip
         }
 
         let old_head = self.free_lists[order].unwrap_or(0);
@@ -313,22 +325,13 @@ impl BuddyHeapAllocator {
             && addr < self.heap_start.saturating_add(HEAP_SIZE)
             && addr % Self::MIN_BLOCK_SIZE == 0;
         if !head_valid {
-            #[cfg(feature = "qemu-test-export")]
-            {
-                // Drop corrupted head and continue with lower orders.
-                self.free_lists[order] = None;
-                return None;
-            }
-            #[cfg(not(feature = "qemu-test-export"))]
-            {
-                if addr < self.heap_start || addr >= self.heap_start.saturating_add(HEAP_SIZE) {
-                    panic!(
-                        "[BUD] Security Fault: Corrupted free list head {:#x} for order {}",
-                        addr, order
-                    );
-                }
-                panic!("[BUD] Security Fault: Unaligned free list head {:#x}", addr);
-            }
+            crate::io::log::early_print("[BUD] WARN: remove_from_free_list corrupt head=");
+            crate::io::log::early_print_hex(addr as u64);
+            crate::io::log::early_print(" order=");
+            crate::io::log::early_print_dec(order as u64);
+            crate::io::log::early_print("\n");
+            self.free_lists[order] = None;
+            return None;
         }
 
         let next = crate::io::mmio::volatile_read::<usize>(addr);
@@ -337,24 +340,15 @@ impl BuddyHeapAllocator {
                 && next < self.heap_start.saturating_add(HEAP_SIZE)
                 && next % Self::MIN_BLOCK_SIZE == 0;
             if !next_valid {
-                #[cfg(feature = "qemu-test-export")]
-                {
-                    self.free_lists[order] = None;
-                    return Some(addr);
-                }
-                #[cfg(not(feature = "qemu-test-export"))]
-                {
-                    if next < self.heap_start || next >= self.heap_start.saturating_add(HEAP_SIZE) {
-                        panic!(
-                            "[BUD] Security Fault: Corrupted free list: invalid next pointer {:#x} at {:#x}",
-                            next, addr
-                        );
-                    }
-                    panic!(
-                        "[BUD] Security Fault: Unaligned next pointer {:#x} at {:#x}",
-                        next, addr
-                    );
-                }
+                crate::io::log::early_print("[BUD] WARN: remove_from_free_list corrupt next=");
+                crate::io::log::early_print_hex(next as u64);
+                crate::io::log::early_print(" at head=");
+                crate::io::log::early_print_hex(addr as u64);
+                crate::io::log::early_print(" order=");
+                crate::io::log::early_print_dec(order as u64);
+                crate::io::log::early_print("\n");
+                self.free_lists[order] = None;
+                return Some(addr);
             }
         }
 

@@ -5,17 +5,43 @@ use crate::sync::set_panicking;
 pub fn test_primary_server_poisoned_returns_none() {
     let client = DnsClient::new(100);
     {
-        let mut s = client.servers.lock().unwrap();
+        let mut s = client.ipv4_servers.lock().unwrap();
         s.push(Ipv4Address::from_octets(1, 2, 3, 4));
     }
 
     set_panicking(true);
     {
-        let _guard = client.servers.lock().unwrap();
+        let _guard = client.ipv4_servers.lock().unwrap();
     }
     set_panicking(false);
 
-    assert_eq!(client.primary_server(), None);
+    assert_eq!(client.primary_ipv4_server(), None);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_build_query_with_edns0() {
+    let client = DnsClient::new(100);
+    let mut buffer = [0u8; 512];
+    let name = "example.com";
+    
+    let len = client.build_query(&mut buffer, name, DnsQueryType::A).unwrap();
+    
+    // Header check
+    let header = crate::util::get_ref::<DnsHeader>(&buffer, 0).unwrap();
+    assert_eq!(header.question_count(), 1);
+    assert_eq!(u16::from_be_bytes(header.arcount), 1); // EDNS0 OPT
+    
+    // Question ends at DnsHeader::SIZE + 13 + 4 = 12 + 13 + 4 = 29
+    // OPT RR starts at 29
+    let opt_offset = 12 + 13 + 4;
+    assert_eq!(buffer[opt_offset], 0); // Root name
+    let opt_type = u16::from_be_bytes([buffer[opt_offset + 1], buffer[opt_offset + 2]]);
+    assert_eq!(opt_type, DnsQueryType::OPT as u16);
+    
+    let udp_payload_size = u16::from_be_bytes([buffer[opt_offset + 3], buffer[opt_offset + 4]]);
+    assert_eq!(udp_payload_size, 4096);
+    
+    assert_eq!(len, opt_offset + 11);
 }
 
 #[cfg_attr(test, test_case)]
