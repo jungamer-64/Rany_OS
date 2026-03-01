@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::l3::ipv6::Ipv6Address;
 
 /// DNSポート
 mod tcp_constants;
@@ -45,6 +46,8 @@ pub enum DnsQueryType {
     AAAA = 28,
     /// サービスロケーション (RFC 2782)
     SRV = 33,
+    /// EDNS0 オプション (RFC 6891)
+    OPT = 41,
     /// 全タイプ
     ALL = 255,
 }
@@ -62,6 +65,7 @@ impl DnsQueryType {
             16 => Some(Self::TXT),
             28 => Some(Self::AAAA),
             33 => Some(Self::SRV),
+            41 => Some(Self::OPT),
             255 => Some(Self::ALL),
             _ => None,
         }
@@ -198,6 +202,8 @@ pub struct DnsRecord {
 pub enum DnsRecordData {
     /// IPv4アドレス (Aレコード)
     A(Ipv4Address),
+    /// IPv6アドレス (AAAAレコード)
+    AAAA(Ipv6Address),
     /// ドメイン名 (CNAME, NS, PTRなど)
     Name(String),
     /// MXレコード (優先度, ドメイン名)
@@ -311,10 +317,14 @@ impl DnsCache {
     }
 }
 
+use crate::net::l3::ipv6::Ipv6Address;
+
 /// DNSクライアント
 pub struct DnsClient {
-    /// DNSサーバーアドレス (最大3つ)
-    servers: PoisonLock<Vec<Ipv4Address>>,
+    /// IPv4 DNSサーバーアドレス
+    ipv4_servers: PoisonLock<Vec<Ipv4Address>>,
+    /// IPv6 DNSサーバーアドレス
+    ipv6_servers: PoisonLock<Vec<Ipv6Address>>,
     /// DNSキャッシュ
     cache: PoisonLock<DnsCache>,
     /// 次のトランザクションID

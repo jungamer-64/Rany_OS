@@ -100,3 +100,54 @@ pub fn test_tcp_message_length() {
     assert_eq!(DnsClient::tcp_message_length(&[0x01, 0x00]), 256);
     assert_eq!(DnsClient::tcp_message_length(&[0xFF, 0xFF]), 65535);
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_parse_aaaa_record() {
+    use crate::net::l3::ipv6::Ipv6Address;
+    let client = DnsClient::new(100);
+    
+    // Fake DNS response with AAAA record
+    // Header (12 bytes) + Question (example.com + 4) + Answer (AAAA record)
+    let mut data = vec![0u8; 12 + 13 + 4 + 2 + 10 + 16];
+    
+    // Header: 1 question, 1 answer, no error
+    data[0..2].copy_from_slice(&0x1234u16.to_be_bytes()); // ID
+    data[2] = 0x81; data[3] = 0x80; // Standard response
+    data[4..6].copy_from_slice(&1u16.to_be_bytes()); // QDCOUNT
+    data[6..8].copy_from_slice(&1u16.to_be_bytes()); // ANCOUNT
+    
+    // Question: example.com (7 + 3 + 0)
+    let q_offset = 12;
+    data[q_offset] = 7; data[q_offset+1..q_offset+8].copy_from_slice(b"example");
+    data[q_offset+8] = 3; data[q_offset+9..q_offset+12].copy_from_slice(b"com");
+    data[q_offset+12] = 0;
+    data[q_offset+13..q_offset+15].copy_from_slice(&(DnsQueryType::AAAA as u16).to_be_bytes());
+    data[q_offset+15..q_offset+17].copy_from_slice(&1u16.to_be_bytes()); // IN
+    
+    // Answer: Name pointer (0xc00c) + Type (AAAA=28) + Class (1) + TTL (3600) + Len (16) + IPv6 addr
+    let a_offset = q_offset + 17;
+    data[a_offset..a_offset+2].copy_from_slice(&0xc00cu16.to_be_bytes());
+    data[a_offset+2..a_offset+4].copy_from_slice(&(DnsQueryType::AAAA as u16).to_be_bytes());
+    data[a_offset+4..a_offset+6].copy_from_slice(&1u16.to_be_bytes());
+    data[a_offset+6..a_offset+10].copy_from_slice(&3600u32.to_be_bytes());
+    data[a_offset+10..a_offset+12].copy_from_slice(&16u16.to_be_bytes());
+    
+    let ipv6_addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    data[a_offset+12..a_offset+28].copy_from_slice(&ipv6_addr);
+    
+    // We need to register the ID first because parse_response checks for pending IDs
+    if let Ok(mut pending) = client.pending_ids.lock() {
+        pending.insert(0x1234, 0);
+    }
+    
+    let records = client.parse_response(&data, 1000).unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].name, "example.com");
+    assert_eq!(records[0].rtype, DnsQueryType::AAAA);
+    
+    if let DnsRecordData::AAAA(addr) = &records[0].data {
+        assert_eq!(addr.as_bytes(), &ipv6_addr);
+    } else {
+        panic!("Expected AAAA record data");
+    }
+}

@@ -291,7 +291,7 @@ impl NdpProcessor {
                     // Update neighbor cache with router's MAC
                     self.cache.update_reachable(&src, *mac, current_time);
                 }
-                NdpOption::PrefixInfo { .. } | NdpOption::Mtu(_) => {
+                NdpOption::PrefixInfo { .. } | NdpOption::Mtu(_) | NdpOption::RecursiveDnsServer { .. } => {
                     prefix_options.push(opt);
                 }
                 _ => {}

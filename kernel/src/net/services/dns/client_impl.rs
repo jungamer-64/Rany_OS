@@ -5,7 +5,8 @@ impl DnsClient {
     /// 新しいDNSクライアントを作成
     pub fn new(tick_rate: u64) -> Self {
         Self {
-            servers: PoisonLock::new(Vec::new()),
+            ipv4_servers: PoisonLock::new(Vec::new()),
+            ipv6_servers: PoisonLock::new(Vec::new()),
             cache: PoisonLock::new(DnsCache::new(tick_rate)),
             next_id: AtomicU16::new(1),
             stats: DnsStats::new(),
@@ -13,23 +14,43 @@ impl DnsClient {
         }
     }
 
-    /// DNSサーバーを設定
-    pub fn set_servers(&self, servers: Vec<Ipv4Address>) {
-        match self.servers.lock() {
+    /// IPv4 DNSサーバーを設定
+    pub fn set_ipv4_servers(&self, servers: Vec<Ipv4Address>) {
+        match self.ipv4_servers.lock() {
             Ok(mut guard) => *guard = servers,
-            Err(_) => log::error!("[NET] DNS Servers lock poisoned (set_servers) - operation skipped"),
+            Err(_) => log::error!("[NET] DNS IPv4 Servers lock poisoned (set_ipv4_servers) - operation skipped"),
         }
     }
 
-    /// DNSサーバーを追加
-    pub fn add_server(&self, server: Ipv4Address) {
-        match self.servers.lock() {
+    /// IPv6 DNSサーバーを設定
+    pub fn set_ipv6_servers(&self, servers: Vec<Ipv6Address>) {
+        match self.ipv6_servers.lock() {
+            Ok(mut guard) => *guard = servers,
+            Err(_) => log::error!("[NET] DNS IPv6 Servers lock poisoned (set_ipv6_servers) - operation skipped"),
+        }
+    }
+
+    /// IPv4 DNSサーバーを追加
+    pub fn add_ipv4_server(&self, server: Ipv4Address) {
+        match self.ipv4_servers.lock() {
             Ok(mut servers) => {
                 if !servers.contains(&server) && servers.len() < 3 {
                     servers.push(server);
                 }
             }
-            Err(_) => log::error!("[NET] DNS Servers lock poisoned (add_server) - operation skipped"),
+            Err(_) => log::error!("[NET] DNS IPv4 Servers lock poisoned (add_ipv4_server) - operation skipped"),
+        }
+    }
+
+    /// IPv6 DNSサーバーを追加
+    pub fn add_ipv6_server(&self, server: Ipv6Address) {
+        match self.ipv6_servers.lock() {
+            Ok(mut servers) => {
+                if !servers.contains(&server) && servers.len() < 3 {
+                    servers.push(server);
+                }
+            }
+            Err(_) => log::error!("[NET] DNS IPv6 Servers lock poisoned (add_ipv6_server) - operation skipped"),
         }
     }
 
@@ -382,6 +403,11 @@ impl DnsClient {
                 bytes.copy_from_slice(rdata);
                 DnsRecordData::A(Ipv4Address::new(bytes))
             }
+            Some(DnsQueryType::AAAA) if rdlength == 16 => {
+                let mut bytes = [0u8; 16];
+                bytes.copy_from_slice(rdata);
+                DnsRecordData::AAAA(Ipv6Address::new(bytes))
+            }
             Some(DnsQueryType::CNAME) | Some(DnsQueryType::NS) | Some(DnsQueryType::PTR) => {
                 if let Ok((cname, _)) = self.parse_name(data, offset_after_rdata - rdlength) {
                     DnsRecordData::Name(cname)
@@ -553,12 +579,23 @@ impl DnsClient {
         &self.stats
     }
 
-    /// プライマリDNSサーバーを取得
-    pub fn primary_server(&self) -> Option<Ipv4Address> {
-        match self.servers.lock() {
+    /// プライマリIPv4 DNSサーバーを取得
+    pub fn primary_ipv4_server(&self) -> Option<Ipv4Address> {
+        match self.ipv4_servers.lock() {
             Ok(servers) => servers.first().copied(),
             Err(_) => {
-                log::error!("[NET] DNS Servers lock poisoned - returning None");
+                log::error!("[NET] DNS IPv4 Servers lock poisoned - returning None");
+                None
+            }
+        }
+    }
+
+    /// プライマリIPv6 DNSサーバーを取得
+    pub fn primary_ipv6_server(&self) -> Option<Ipv6Address> {
+        match self.ipv6_servers.lock() {
+            Ok(servers) => servers.first().copied(),
+            Err(_) => {
+                log::error!("[NET] DNS IPv6 Servers lock poisoned - returning None");
                 None
             }
         }

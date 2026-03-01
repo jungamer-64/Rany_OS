@@ -36,15 +36,39 @@ pub fn init(tick_rate: u64) {
     }
 }
 
-/// DNSサーバーを設定
-pub fn set_servers(servers: Vec<Ipv4Address>) {
+/// IPv4 DNSサーバーを設定
+pub fn set_ipv4_servers(servers: Vec<Ipv4Address>) {
     match DNS_CLIENT.lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
-                client.set_servers(servers);
+                client.set_ipv4_servers(servers);
             }
         }
-        Err(_) => log::error!("[NET] DNS Global lock poisoned (set_servers) - operation skipped"),
+        Err(_) => log::error!("[NET] DNS Global lock poisoned (set_ipv4_servers) - operation skipped"),
+    }
+}
+
+/// IPv6 DNSサーバーを設定
+pub fn set_ipv6_servers(servers: Vec<Ipv6Address>) {
+    match DNS_CLIENT.lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.set_ipv6_servers(servers);
+            }
+        }
+        Err(_) => log::error!("[NET] DNS Global lock poisoned (set_ipv6_servers) - operation skipped"),
+    }
+}
+
+/// IPv6 DNSサーバーを追加
+pub fn add_ipv6_server(server: Ipv6Address) {
+    match DNS_CLIENT.lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.add_ipv6_server(server);
+            }
+        }
+        Err(_) => log::error!("[NET] DNS Global lock poisoned (add_ipv6_server) - operation skipped"),
     }
 }
 

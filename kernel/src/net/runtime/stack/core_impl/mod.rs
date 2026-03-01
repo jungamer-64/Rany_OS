@@ -635,6 +635,17 @@ impl NetworkStack {
                                 ndp.add_global_address(global_addr);
                             }
                         }
+                    } else if let crate::net::l3::ndp::NdpOption::RecursiveDnsServer {
+                        lifetime,
+                        servers,
+                    } = prefix_opt
+                    {
+                        if *lifetime > 0 {
+                            for server in servers {
+                                crate::net::services::dns::add_ipv6_server(*server);
+                                log::info!("NDP: Added DNS server {} from RDNSS option", server);
+                            }
+                        }
                     }
                 }
                 // Set router as default gateway

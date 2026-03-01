@@ -76,6 +76,8 @@ pub enum NdpOptionType {
     RedirectedHeader = 4,
     /// MTU
     Mtu = 5,
+    /// Recursive DNS Server (RFC 8106)
+    RecursiveDnsServer = 25,
     /// Unknown option
     Unknown(u8),
 }
@@ -88,6 +90,7 @@ impl From<u8> for NdpOptionType {
             3 => NdpOptionType::PrefixInformation,
             4 => NdpOptionType::RedirectedHeader,
             5 => NdpOptionType::Mtu,
+            25 => NdpOptionType::RecursiveDnsServer,
             other => NdpOptionType::Unknown(other),
         }
     }
@@ -116,6 +119,11 @@ pub enum NdpOption {
     },
     /// MTU option
     Mtu(u32),
+    /// Recursive DNS Server (RDNSS)
+    RecursiveDnsServer {
+        lifetime: u32,
+        servers: Vec<Ipv6Address>,
+    },
 }
 
 /// Parse NDP options from the data following the fixed NDP message fields
@@ -182,6 +190,26 @@ pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
                         opt_data[4], opt_data[5], opt_data[6], opt_data[7],
                     ]);
                     options.push(NdpOption::Mtu(mtu));
+                }
+            }
+            NdpOptionType::RecursiveDnsServer => {
+                if opt_len >= 24 {
+                    // RFC 8106: Type(1), Length(1), Reserved(2), Lifetime(4), Addresses(Nx16)
+                    let lifetime = u32::from_be_bytes([
+                        opt_data[4], opt_data[5], opt_data[6], opt_data[7],
+                    ]);
+                    let mut servers = Vec::new();
+                    let mut addr_offset = 8;
+                    while addr_offset + 16 <= opt_len {
+                        let mut addr_bytes = [0u8; 16];
+                        addr_bytes.copy_from_slice(&opt_data[addr_offset..addr_offset + 16]);
+                        servers.push(Ipv6Address::new(addr_bytes));
+                        addr_offset += 16;
+                    }
+                    options.push(NdpOption::RecursiveDnsServer {
+                        lifetime,
+                        servers,
+                    });
                 }
             }
             _ => {
