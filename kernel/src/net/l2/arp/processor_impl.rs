@@ -57,6 +57,19 @@ impl ArpProcessor {
         let sender_ip = packet.sender_ip();
         let target_ip = packet.target_ip();
 
+        // Security: Reject ARP packets where sender_ip claims to be our own IP.
+        // This prevents IP address conflict / gratuitous ARP spoofing attacks where
+        // an attacker advertises our IP with their MAC address.
+        if sender_ip == self.local_ip && sender_mac != self.local_mac {
+            log::warn!(
+                "[NET-ARP] Possible IP conflict/spoofing: sender claims our IP {} with MAC {} (our MAC: {})",
+                sender_ip,
+                sender_mac,
+                self.local_mac
+            );
+            return ArpResult::Invalid;
+        }
+
         // Decide whether we're allowed to update the cache. (Strict ARP logic)
         // To prevent ARP Poisoning, we only accept:
         //  1. ARP Requests that target our IP (we need the mapping to reply).

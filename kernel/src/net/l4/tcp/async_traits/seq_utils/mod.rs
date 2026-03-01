@@ -711,3 +711,16 @@ pub struct TcpProcessor {
     /// Count of semi-open connections (SYN-RECEIVED state) for DoS protection
     semi_open_count: usize,
 }
+
+impl TcpProcessor {
+    /// Check if a connection or listener exists for the given flow
+    pub fn has_connection_or_listener(&self, local: SocketAddr, remote: SocketAddr) -> bool {
+        if self.connections.contains_key(&(local, remote)) {
+            return true;
+        }
+        if self.listeners.contains_key(&local) {
+            return true;
+        }
+        false
+    }
+}

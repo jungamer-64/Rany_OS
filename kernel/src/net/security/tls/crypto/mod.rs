@@ -54,5 +54,6 @@ pub(crate) use legacy::compute_tls_mac;
 
 // ── Random ───────────────────────────────────────────────────────────────────
 pub(crate) use random::generate_random;
+pub(crate) use random::has_secure_random;
 #[cfg(feature = "qemu-test-export")]
 pub use random::{qemu_test_set_random_override_seed, qemu_test_clear_random_override};

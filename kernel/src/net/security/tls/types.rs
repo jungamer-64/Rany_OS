@@ -131,25 +131,25 @@ impl CipherSuite {
     }
 
     /// デフォルトの暗号スイート一覧
+    ///
+    /// Security: 前方秘匿性(Forward Secrecy)を持たないRSA鍵転送スイートと
+    /// SHA-1ベースのCBCスイートはデフォルトから除外済み。
     pub fn defaults() -> Vec<Self> {
         vec![
-            // TLS 1.3 AEAD
+            // TLS 1.3 AEAD (最優先)
             Self::TLS_AES_128_GCM_SHA256,
             Self::TLS_AES_256_GCM_SHA384,
             Self::TLS_CHACHA20_POLY1305_SHA256,
-            // TLS 1.2 AEAD
+            // TLS 1.2 ECDHE + AEAD (前方秘匿性あり)
             Self::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
             Self::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
             Self::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
             Self::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            // TLS 1.0/1.1/1.2 CBC
+            // TLS 1.2 ECDHE + CBC-SHA256 (前方秘匿性あり、SHA-256 MAC)
             Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
-            Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-            Self::TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-            Self::TLS_RSA_WITH_AES_128_CBC_SHA256,
-            Self::TLS_RSA_WITH_AES_256_CBC_SHA256,
-            Self::TLS_RSA_WITH_AES_128_CBC_SHA,
-            Self::TLS_RSA_WITH_AES_256_CBC_SHA,
+            // Security: 以下はデフォルトから除外:
+            // - TLS_ECDHE_RSA_WITH_AES_*_CBC_SHA (非SHA-1 MAC)
+            // - TLS_RSA_WITH_* (前方秘匿性なし)
         ]
     }
 
@@ -461,11 +461,13 @@ pub struct TlsConfig {
     pub client_key: Option<PrivateKey>,
     /// CA証明書
     pub ca_certs: Vec<Certificate>,
-    /// 証明書検証を無効化（デバッグ用）
+    /// 証明書検証を無効化（デバッグ/テスト用）
     ///
     /// # WARNING
     /// このフラグを有効にすると、サーバー証明書の真正性が検証されません。
-    /// 本番環境では常に false に設定してください。
+    /// 本番環境では絶対に使用しないでください。
+    /// テスト/QEMUビルドでのみ利用可能です。
+    #[cfg(any(test, feature = "qemu-test-export"))]
     pub skip_verify: bool,
 }
 
@@ -499,6 +501,7 @@ impl Default for TlsConfig {
             client_cert: None,
             client_key: None,
             ca_certs,
+            #[cfg(any(test, feature = "qemu-test-export"))]
             skip_verify: false,
         }
     }
@@ -508,6 +511,17 @@ impl TlsConfig {
     /// 新しいTLS設定を作成
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 証明書検証をスキップするかどうかを返す
+    ///
+    /// テスト/QEMU環境でのみskip_verifyフィールドを参照可能。
+    /// プロダクションビルドでは常にfalseを返す（検証を必ず実行）。
+    pub fn should_skip_verify(&self) -> bool {
+        #[cfg(any(test, feature = "qemu-test-export"))]
+        { self.skip_verify }
+        #[cfg(not(any(test, feature = "qemu-test-export")))]
+        { false }
     }
 
     /// サーバー名を設定

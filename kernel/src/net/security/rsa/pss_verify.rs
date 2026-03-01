@@ -10,7 +10,8 @@ pub fn rsa_pss_verify(
     let k = key.modulus.len();
     let h_len = hash_alg.digest_len();
 
-    if signature.len() != k {
+    // Security: Limit modulus size to prevent DoS via large allocations.
+    if k > 1024 || signature.len() != k {
         return Err(RsaError::InvalidSignatureLength);
     }
 

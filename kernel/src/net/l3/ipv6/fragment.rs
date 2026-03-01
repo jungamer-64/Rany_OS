@@ -389,6 +389,10 @@ impl Ipv6FragmentReassembler {
     /// Default maximum concurrent reassembly buffers
     pub const DEFAULT_MAX_BUFFERS: usize = 64;
 
+    /// Maximum concurrent reassembly buffers from a single source address.
+    /// Prevents a single attacker from monopolizing the entire buffer pool.
+    const MAX_BUFFERS_PER_SOURCE: usize = 8;
+
     /// Create a new reassembler
     pub fn new(max_buffers: usize) -> Self {
         Self {
@@ -432,6 +436,17 @@ impl Ipv6FragmentReassembler {
         // Ensure we have a buffer for this key
         if !self.buffers.contains_key(&key) {
             if self.buffers.len() >= self.max_buffers {
+                self.stats.dropped_limit += 1;
+                return None;
+            }
+            // Per-source limit: prevent a single source from monopolizing buffers
+            let source_count = self.buffers.keys().filter(|k| k.src == src).count();
+            if source_count >= Self::MAX_BUFFERS_PER_SOURCE {
+                log::warn!(
+                    "[NET-IPV6] Fragment buffer per-source limit ({}) reached for source {:?}, dropping",
+                    Self::MAX_BUFFERS_PER_SOURCE,
+                    src
+                );
                 self.stats.dropped_limit += 1;
                 return None;
             }

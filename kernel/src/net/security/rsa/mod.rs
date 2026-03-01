@@ -423,9 +423,14 @@ fn verify_digest_info(t_data: &[u8], prefix: &[u8], digest: &[u8], t_len: usize)
 }
 
 pub fn rsa_pkcs1_verify(key: &RsaPublicKey, hash_alg: HashAlgorithm, digest: &[u8], signature: &[u8]) -> Result<(), RsaError> {
+    let k = key.modulus.len();
+    // Security: Limit modulus size to prevent DoS via large allocations.
+    if k > 1024 {
+        return Err(RsaError::ModulusTooSmall); // Or a new error variant
+    }
+    
     let n = BigUint::from_be_bytes(key.modulus);
     let e = BigUint::from_be_bytes(key.exponent);
-    let k = key.modulus.len();
     let prefix = match hash_alg {
         HashAlgorithm::Sha1 => &DIGEST_INFO_SHA1_PREFIX[..],
         HashAlgorithm::Sha256 => &DIGEST_INFO_SHA256_PREFIX[..],
@@ -444,6 +449,11 @@ pub fn rsa_pkcs1_verify(key: &RsaPublicKey, hash_alg: HashAlgorithm, digest: &[u
 
 pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, RsaError> {
     let k = key.modulus.len();
+    // Security: Limit modulus size to prevent DoS via large allocations.
+    if k > 1024 {
+        return Err(RsaError::ModulusTooSmall);
+    }
+    
     if message.len() > k.saturating_sub(11) { return Err(RsaError::ModulusTooSmall); }
     let ps_len = k - 3 - message.len();
     let mut em = Vec::with_capacity(k);
@@ -488,6 +498,11 @@ fn unmask_db(masked_db: &[u8], h: &[u8], db_len: usize, hash_alg: HashAlgorithm,
 fn constant_time_hash_eq(a: &[u8], b: &[u8]) -> Result<(), RsaError> {
     if a.len() != b.len() { return Err(RsaError::DigestMismatch); }
     let mut diff = 0u8;
-    for i in 0..a.len() { diff |= a[i] ^ b[i]; }
-    if diff != 0 { Err(RsaError::DigestMismatch) } else { Ok(()) }
+    for i in 0..a.len() {
+        // Security: read_volatile prevents the compiler from optimizing
+        // this loop into an early-exit comparison (timing side-channel).
+        diff |= unsafe { core::ptr::read_volatile(&a[i]) }
+              ^ unsafe { core::ptr::read_volatile(&b[i]) };
+    }
+    if unsafe { core::ptr::read_volatile(&diff) } != 0 { Err(RsaError::DigestMismatch) } else { Ok(()) }
 }

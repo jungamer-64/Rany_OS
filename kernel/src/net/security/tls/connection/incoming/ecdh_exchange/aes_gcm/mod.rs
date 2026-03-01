@@ -460,12 +460,12 @@ impl TlsConnection {
                     });
                 }
                 _ => {
-                    if !self.config.skip_verify {
+                    if !self.config.should_skip_verify() {
                         return Err(TlsError::CertificateError);
                     }
                 }
             }
-        } else if !self.config.skip_verify {
+        } else if !self.config.should_skip_verify() {
             return Err(TlsError::CertificateError);
         }
         Ok(())
@@ -476,14 +476,14 @@ impl TlsConnection {
         let certs = self.tls13_extract_cert_chain(data)?;
 
         if certs.is_empty() {
-            if !self.config.skip_verify {
+            if !self.config.should_skip_verify() {
                 return Err(TlsError::CertificateError);
             }
             self.state = TlsState::Tls13WaitCertificateVerify;
             return Ok(());
         }
 
-        if !self.config.skip_verify {
+        if !self.config.should_skip_verify() {
             // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
             let ca_ders: Vec<&[u8]> = self.config.ca_certs.iter().map(|c| c.der.as_slice()).collect();
             if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
@@ -524,7 +524,7 @@ impl TlsConnection {
 
         let signature = &data[4..4 + sig_len];
 
-        if self.config.skip_verify {
+        if self.config.should_skip_verify() {
             self.state = TlsState::Tls13WaitFinished;
             return Ok(());
         }

@@ -1010,12 +1010,36 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
     }
 
     // Handle *.domain.com (RFC 6125)
+    // A wildcard is only allowed as the left-most label.
     if pattern.starts_with(b"*.") && pattern.len() > 2 {
         let suffix = &pattern[1..]; // ".domain.com"
         
         // Security: Prevent wildcard matches on top-level domains (e.g. *.com)
-        if !suffix[1..].contains(&b'.') {
-            return false;
+        // or broad public suffixes (e.g. *.co.jp).
+        let suffix_str = unsafe { core::str::from_utf8_unchecked(&suffix[1..]) };
+        let mut labels = suffix_str.split('.');
+        
+        // Check labels count
+        let labels_count = suffix_str.split('.').count();
+        if labels_count < 2 {
+            return false; // Rejects *.com
+        }
+        
+        // Security: Reject common public suffixes if there are only 2 labels.
+        // This is a partial list of common multi-part TLDs.
+        if labels_count == 2 {
+            let s0 = labels.next().unwrap_or("");
+            let s1 = labels.next().unwrap_or("");
+            let is_public = match s0 {
+                "co" | "com" | "net" | "org" | "or" | "ac" | "gov" | "edu" | "ad" => {
+                    // Check if the second part is a 2-letter ccTLD or common gTLD
+                    s1.len() == 2 || s1 == "jp" || s1 == "uk" || s1 == "au"
+                }
+                _ => false,
+            };
+            if is_public {
+                return false;
+            }
         }
 
         if hostname.as_bytes().ends_with(suffix) {

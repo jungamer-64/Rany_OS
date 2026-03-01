@@ -9,6 +9,7 @@ impl DnsClient {
             cache: PoisonLock::new(DnsCache::new(tick_rate)),
             next_id: AtomicU16::new(1),
             stats: DnsStats::new(),
+            pending_ids: PoisonLock::new(BTreeMap::new()),
         }
     }
 
@@ -129,6 +130,19 @@ impl DnsClient {
 
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
 
+        // Security: トランザクションIDを保留中クエリに登録 (RFC 5452 キャッシュポイズニング防止)
+        if let Ok(mut pending) = self.pending_ids.lock() {
+            // 膨張防止: 256件を超えたら最も古いエントリを削除
+            while pending.len() >= 256 {
+                if let Some(&oldest_id) = pending.keys().next() {
+                    pending.remove(&oldest_id);
+                } else {
+                    break;
+                }
+            }
+            pending.insert(id, 0); // tickは呼び出し元で設定可
+        }
+
         Ok(offset)
     }
 
@@ -248,6 +262,24 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
+        // Security: トランザクションIDを検証 (RFC 5452 キャッシュポイズニング防止)
+        let response_id = header.id();
+        let id_valid = match self.pending_ids.lock() {
+            Ok(mut pending) => pending.remove(&response_id).is_some(),
+            Err(_) => {
+                log::error!("[NET] DNS pending_ids lock poisoned - accepting response for safety");
+                true // ロックが汚染されている場合は受け入れる（可用性優先）
+            }
+        };
+        if !id_valid {
+            log::warn!(
+                "[NET] DNS: Response with unexpected transaction ID 0x{:04x}, dropping (possible cache poisoning attempt)",
+                response_id
+            );
+            self.stats.errors.fetch_add(1, Ordering::Relaxed);
+            return Err(DnsResponseCode::FormatError);
+        }
+
         let rcode = header.rcode();
         if rcode as u8 != DnsResponseCode::NoError as u8 {
             self.stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -256,6 +288,9 @@ impl DnsClient {
 
         let qcount = header.question_count() as usize;
         let acount = header.answer_count() as usize;
+
+        // Security: 回答数の上限を制限 (DoSメモリ消耗攻撃防止)
+        let acount = acount.min(DNS_MAX_ANSWER_COUNT);
 
         // 質問セクションをスキップ
         let mut offset = DnsHeader::SIZE;
@@ -440,6 +475,10 @@ impl DnsClient {
             *final_offset = offset + 2;
         }
         let pointer = ((len as usize & 0x3F) << 8) | data[offset + 1] as usize;
+        // Security: ポインタオフセットがデータ範囲内であることを検証
+        if pointer >= data.len() {
+            return Err(DnsResponseCode::FormatError);
+        }
         *jump_count += 1;
         if *jump_count > 128 {
             return Err(DnsResponseCode::FormatError);

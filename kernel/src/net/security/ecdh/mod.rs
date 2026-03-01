@@ -206,9 +206,8 @@ pub mod p256 {
         /// フィールド逆元 (mod p)
         ///
         /// フェルマーの小定理によるa^(p-2)を二乗と乗算の繰り返しで計算する。
-        /// p-2 = FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFD
+        /// 定時間性を確保するため、ビットの値に関わらず常に乗算を行い、ct_selectで結果を選択する。
         pub fn inv(&self) -> Self {
-            // p - 2 をビット列として扱い、square-and-multiply
             // p - 2 = FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFD
             let p_minus_2: [u64; 4] = [
                 0xFFFFFFFFFFFFFFFD,
@@ -220,12 +219,16 @@ pub mod p256 {
             let mut result = Self::ONE;
             let mut base = *self;
 
+            // 固定回数 (4リム * 64ビット = 256回) のループ
             for i in 0..4 {
                 let mut word = p_minus_2[i];
                 for _ in 0..64 {
-                    if word & 1 == 1 {
-                        result = result.mul(&base);
-                    }
+                    let bit = (word & 1) as u8;
+                    let multiplied = result.mul(&base);
+                    
+                    // result = (bit == 1) ? multiplied : result
+                    result = Self::ct_select(&result, &multiplied, bit);
+                    
                     base = base.square();
                     word >>= 1;
                 }

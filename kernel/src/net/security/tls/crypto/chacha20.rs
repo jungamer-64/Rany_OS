@@ -2,6 +2,30 @@
 
 use alloc::vec::Vec;
 
+/// Security: Constant-time 16-byte tag comparison.
+/// Uses read_volatile and #[inline(never)] to prevent compiler optimizations
+/// that could introduce timing side-channels.
+/// Security: Constant-time 16-byte tag comparison to prevent timing side-channels.
+/// Always iterates through 16 bytes and uses bitwise logic for equality check.
+#[inline(never)]
+fn ct_eq_tag(a: &[u8], b: &[u8]) -> bool {
+    if a.len() < 16 || b.len() < 16 {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..16 {
+        // Accumulate differences without branching
+        diff |= unsafe { core::ptr::read_volatile(a.as_ptr().add(i)) }
+              ^ unsafe { core::ptr::read_volatile(b.as_ptr().add(i)) };
+    }
+    
+    // Constant-time check if diff == 0.
+    let diff_u32 = diff as u32;
+    let is_zero = ((diff_u32.wrapping_sub(1) >> 31) & 1) as u8;
+    
+    unsafe { core::ptr::read_volatile(&is_zero) == 1 }
+}
+
 /// ChaCha20 quarter round operation (RFC 8439 Section 2.1)
 #[inline]
 fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
@@ -385,13 +409,9 @@ pub fn chacha20_poly1305_decrypt(
     let mac_input = poly1305_aead_construct(aad, ciphertext);
     let expected_tag = poly1305_mac(&poly_key, &mac_input);
 
-    // Constant-time tag comparison
-    let mut diff = 0u8;
-    for i in 0..16 {
-        diff |= tag[i] ^ expected_tag[i];
-    }
-
-    if diff != 0 {
+    // Security: Constant-time tag comparison using read_volatile to prevent
+    // compiler optimizations that could introduce timing side-channels.
+    if !ct_eq_tag(tag, &expected_tag) {
         return None; // Authentication failed
     }
 

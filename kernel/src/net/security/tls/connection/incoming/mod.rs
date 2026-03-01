@@ -266,12 +266,44 @@ impl TlsConnection {
 
         self.negotiated_version = Some(actual_version);
 
+        // Security: TLSダウングレード攻撃防止 (RFC 8446 Section 4.1.3)
+        // TLS 1.3対応サーバーがTLS 1.2以下にネゴシエーションした場合、
+        // ServerHello.randomの末尾8バイトにセンチネル値が含まれるか検証する。
+        Self::check_downgrade_sentinel(&self.server_random, actual_version)?;
+
         if actual_version == TlsVersion::TLS_1_3 {
             self.handle_tls13_hello(cipher, server_key_share)?;
         } else {
             self.handle_tls12_hello(session_id_len, &server_session_id)?;
         }
 
+        Ok(())
+    }
+
+    /// RFC 8446 Section 4.1.3: TLSダウングレードセンチネル検出
+    ///
+    /// TLS 1.3対応サーバーが低いバージョンにネゴシエーションした場合、
+    /// server_randomの末尾8バイトに特定のセンチネル値を設定する。
+    /// クライアントはこれを検出し、ダウングレード攻撃を防止する。
+    fn check_downgrade_sentinel(
+        server_random: &[u8; 32],
+        negotiated_version: TlsVersion,
+    ) -> TlsResult<()> {
+        // "DOWNGRD\x01" - TLS 1.2へのダウングレード
+        const DOWNGRD_12: [u8; 8] = [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x01];
+        // "DOWNGRD\x00" - TLS 1.1以下へのダウングレード
+        const DOWNGRD_11: [u8; 8] = [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x00];
+
+        let sentinel = &server_random[24..32];
+
+        if negotiated_version <= TlsVersion::TLS_1_2 && sentinel == &DOWNGRD_12 {
+            log::warn!("[TLS] Downgrade attack detected: server signaled TLS 1.2 downgrade sentinel");
+            return Err(TlsError::HandshakeFailure);
+        }
+        if negotiated_version <= TlsVersion(0x0302) && sentinel == &DOWNGRD_11 {
+            log::warn!("[TLS] Downgrade attack detected: server signaled TLS 1.1 downgrade sentinel");
+            return Err(TlsError::HandshakeFailure);
+        }
         Ok(())
     }
 
@@ -517,7 +549,7 @@ impl TlsConnection {
                 });
             }
             _ => {
-                if !self.config.skip_verify {
+                if !self.config.should_skip_verify() {
                     return Err(TlsError::CertificateError);
                 }
             }
@@ -568,7 +600,7 @@ impl TlsConnection {
             return Err(TlsError::CertificateError);
         }
 
-        if !self.config.skip_verify {
+        if !self.config.should_skip_verify() {
             // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
             let ca_ders: Vec<&[u8]> = self.config.ca_certs.iter().map(|c| c.der.as_slice()).collect();
             if let Some(spki) = crate::net::security::x509::validate_certificate_chain(

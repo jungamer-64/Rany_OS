@@ -321,7 +321,12 @@ pub struct DnsClient {
     next_id: AtomicU16,
     /// 統計情報
     stats: DnsStats,
+    /// 保留中クエリのトランザクションIDセット (Security: RFC 5452 - キャッシュポイズニング防止)
+    pending_ids: PoisonLock<BTreeMap<u16, u64>>,
 }
+
+/// DNS応答あたりの最大回答数 (DoS防止)
+const DNS_MAX_ANSWER_COUNT: usize = 256;
 
 /// DNS retry configuration
 pub const DNS_MAX_RETRIES: u8 = 3;

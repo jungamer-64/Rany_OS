@@ -217,28 +217,30 @@ pub fn scalar_inv_mod_n(a: &[u8; 32]) -> [u8; 32] {
     scalar_pow_mod_n(a, &exp)
 }
 
-/// P-256群位数 n 上での冪乗: base^exp mod n
+/// P-256群位数 n 上での冪乗: base^exp mod n (Constant-time implementation)
 pub(crate) fn scalar_pow_mod_n(base: &[u8; 32], exp: &[u8; 32]) -> [u8; 32] {
     let mut result = [0u8; 32];
-    result[31] = 1; // 1
+    result[31] = 1; // result = 1
 
     let base_copy = *base;
 
-    // MSBからの二進法冪乗
-    let mut started = false;
-    for byte_idx in 0..32 {
-        for bit_idx in (0..8).rev() {
-            if started {
-                result = scalar_mul_mod_n(&result, &result);
-            }
-            if (exp[byte_idx] >> bit_idx) & 1 == 1 {
-                if started {
-                    result = scalar_mul_mod_n(&result, &base_copy);
-                } else {
-                    result = base_copy;
-                    started = true;
-                }
-            }
+    // 固定回数 (256回) のループで定時間性を確保
+    for i in (0..256).rev() {
+        // result = result^2 mod n
+        result = scalar_mul_mod_n(&result, &result);
+
+        // bit = exp[i]
+        let byte_idx = 31 - (i / 8);
+        let bit_idx = i % 8;
+        let bit = (exp[byte_idx] >> bit_idx) & 1;
+
+        // temp = result * base mod n
+        let multiplied = scalar_mul_mod_n(&result, &base_copy);
+
+        // if bit == 1 { result = multiplied } (定時間選択)
+        let mask = 0u8.wrapping_sub(bit as u8);
+        for j in 0..32 {
+            result[j] ^= (result[j] ^ multiplied[j]) & mask;
         }
     }
     result

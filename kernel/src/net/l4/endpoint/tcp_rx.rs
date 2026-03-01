@@ -81,11 +81,52 @@ fn send_challenge_ack(tcb: &TcpControlBlockEntry) {
     send_tcp_segment(tcb.local, tcb.remote, ack);
 }
 
+/// TCPチェックサム検証（IPv4疑似ヘッダ込み）
+fn verify_tcp_checksum(segment: &[u8], src_ip: [u8; 4], dst_ip: [u8; 4]) -> bool {
+    if segment.len() < 20 {
+        return false;
+    }
+
+    let mut sum: u32 = 0;
+
+    // 疑似ヘッダ
+    sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
+    sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
+    sum += u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32;
+    sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
+    sum += 6u32; // Protocol (TCP)
+    sum += segment.len() as u32;
+
+    // TCPセグメント本体
+    let mut i = 0;
+    while i + 1 < segment.len() {
+        sum += u16::from_be_bytes([segment[i], segment[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < segment.len() {
+        sum += (segment[i] as u32) << 8;
+    }
+
+    // 1の補数
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    (sum as u16) == 0xFFFF
+}
+
 /// TCPセグメント受信処理
 /// プロトコルスタック（ipv4.rs）から呼ばれる
 pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     if segment.len() < 20 {
         return; // 最小ヘッダサイズ未満
+    }
+
+    // Security: チェックサム検証 (RFC 793)
+    // 偽造・破損パケットの早期排除
+    if !verify_tcp_checksum(segment, src_ip, dst_ip) {
+        log::warn!("[TCP] Checksum verification failed, dropping segment");
+        return;
     }
 
     // TCPヘッダ解析
@@ -129,7 +170,7 @@ fn handle_syn_sent_segment(tcb: TcpControlBlockEntry, flags: u8, seq_num: u32, a
     if is_syn && is_ack {
         handle_syn_ack_received(tcb, seq_num, ack_num, segment, data_offset);
     } else if is_rst {
-        handle_rst_received(tcb);
+        handle_rst_received(tcb, seq_num);
     }
 }
 
@@ -181,7 +222,7 @@ fn handle_established_segment(
     if is_fin {
         handle_fin_received(tcb, seq_num);
     } else if is_rst {
-        handle_rst_received(tcb);
+        handle_rst_received(tcb, seq_num);
     } else {
         if is_urg && urgent_ptr > 0 {
             handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
@@ -451,25 +492,44 @@ fn process_tcp_new_connection(
     );
 }
 
-/// RST受信処理
-fn handle_rst_received(tcb: TcpControlBlockEntry) {
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
-        entry.state = TcpConnectionState::Closed;
-    });
+/// RST受信処理 (RFC 5961準拠)
+///
+/// RFC 5961: RSTパケットのシーケンス番号がrcv_nxtと完全一致する場合のみ受理する。
+/// ウィンドウ内だが不一致の場合はChallenge ACKを送信する。
+/// ウィンドウ外の場合は黙って破棄する。
+fn handle_rst_received(tcb: TcpControlBlockEntry, seq_num: u32) {
+    if seq_num == tcb.rcv_nxt {
+        // RFC 5961: 完全一致 → 接続をリセット
+        tcb_table().update(tcb.local, tcb.remote, |entry| {
+            entry.state = TcpConnectionState::Closed;
+        });
 
-    // ソケットにエラー通知
-    if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.last_error = Some(SocketError::ConnectionRefused);
-        if let Some(waker) = inner.connect_waker.take() {
-            waker.wake();
+        // ソケットにエラー通知
+        if let Some(socket) = get_socket_by_fd(tcb.fd) {
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.last_error = Some(SocketError::ConnectionRefused);
+            if let Some(waker) = inner.connect_waker.take() {
+                waker.wake();
+            }
         }
-    }
 
-    // リソースクリーンアップ
-    retransmit_queue_remove(tcb.local, tcb.remote);
-    ooo_queue::remove_ooo_queue(tcb.local, tcb.remote);
-    tcb_table().remove(tcb.local, tcb.remote);
+        // リソースクリーンアップ
+        retransmit_queue_remove(tcb.local, tcb.remote);
+        ooo_queue::remove_ooo_queue(tcb.local, tcb.remote);
+        tcb_table().remove(tcb.local, tcb.remote);
+    } else {
+        // RFC 5961: ウィンドウ内ならChallenge ACKを送信
+        let rcv_wnd = tcb.effective_recv_window();
+        let diff = seq_num.wrapping_sub(tcb.rcv_nxt);
+        if diff < rcv_wnd {
+            log::warn!(
+                "[TCP] RST with in-window but non-exact seq_num ({} != {}), sending Challenge ACK",
+                seq_num, tcb.rcv_nxt
+            );
+            send_challenge_ack(&tcb);
+        }
+        // ウィンドウ外のRSTは黙って破棄（RFC 5961）
+    }
 }
 
 /// ACK受信処理（データ確認応答 + 輻輳制御）

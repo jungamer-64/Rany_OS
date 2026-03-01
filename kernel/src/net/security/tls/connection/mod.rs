@@ -180,7 +180,12 @@ pub struct TlsConnection {
 impl TlsConnection {
     /// 新しいTLS接続を作成
     pub fn new(config: TlsConfig) -> Self {
-        // クライアントランダムを生成（簡易）
+        // RNGのセキュリティ状態をチェック
+        if !has_secure_random() {
+            log::warn!("[TLS][SECURITY] Hardware RNG (RDRAND) unavailable — TLS session keys are generated with a WEAK fallback RNG. Connection security is severely degraded!");
+        }
+
+        // クライアントランダムを生成
         let client_random = generate_random();
 
         Self {

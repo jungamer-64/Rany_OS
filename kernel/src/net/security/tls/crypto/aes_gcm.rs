@@ -5,17 +5,27 @@ use alloc::vec::Vec;
 use core::ptr;
 use super::aes_core::{AesRoundKeySchedule, aes_expand_key_schedule, aes_encrypt_block_with_schedule, aes_ctr_with_schedule};
 
-/// constant‑time comparison for 16‑byte tags.  The `read_volatile` prevents LLVM
-/// from optimizing the loop into a branch/early return.
+/// Constant-time 16-byte tag comparison to prevent timing side-channels.
+/// The comparison always iterates through all 16 bytes and uses bitwise
+/// logic to check for equality.
 #[inline(never)]
 fn ct_eq_16(a: &[u8; 16], b: &[u8; 16]) -> bool {
     let mut diff: u8 = 0;
     for i in 0..16 {
+        // Security: XOR all bytes to accumulate differences without branching.
         diff |= a[i] ^ b[i];
     }
-    // separate the volatile read to make parsing unambiguous
-    let v = unsafe { ptr::read_volatile(&diff) };
-    v == 0
+    
+    // Security: Constant-time check if diff == 0.
+    // If diff is 0, (diff-1) will have the high bit set (underflow).
+    // If diff is > 0, (diff-1) will NOT have the high bit set.
+    // We use u32 to ensure we have enough bits for the shift.
+    let diff_u32 = diff as u32;
+    let is_zero = ((diff_u32.wrapping_sub(1) >> 31) & 1) as u8;
+    
+    // The volatile read helps prevent the compiler from optimizing away the
+    // constant-time property of the arithmetic above.
+    unsafe { ptr::read_volatile(&is_zero) == 1 }
 }
 
 /// Precomputed AES‑GCM key material.  Creates the key schedule and H = AES(K,0)

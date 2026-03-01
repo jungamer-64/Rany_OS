@@ -53,7 +53,7 @@ impl TlsConnection {
         let ecdhe_params_end = 4 + pubkey_len;
 
         // 署名検証 (skip_verify でなければ)
-        if !self.config.skip_verify {
+        if !self.config.should_skip_verify() {
             self.verify_ske_signature(data, ecdhe_params_end)?;
         }
 

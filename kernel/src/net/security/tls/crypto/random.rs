@@ -133,14 +133,44 @@ pub(crate) fn generate_random() -> [u8; 32] {
             if let Some(val) = rdrand64() {
                 chunk.copy_from_slice(&val.to_ne_bytes());
             } else {
-                // RDRAND failed after retries — fall through to LCG
-                return generate_random_fallback();
+                // RDRAND failed after retries
+                #[cfg(not(debug_assertions))]
+                {
+                    panic!("[CRITICAL SECURITY] RDRAND hardware RNG failed after retries. System cannot proceed safely.");
+                }
+                #[cfg(debug_assertions)]
+                {
+                    log::warn!("[SECURITY] RDRAND failed after retries, falling back to weak RNG (DEBUG ONLY)");
+                    return generate_random_fallback();
+                }
             }
         }
         return result;
     }
 
-    generate_random_fallback()
+    #[cfg(not(debug_assertions))]
+    {
+        panic!("[CRITICAL SECURITY] RDRAND hardware RNG is not available on this CPU. TLS/Crypto cannot be used safely in production without a secure entropy source.");
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        log::warn!("********************************************************************************");
+        log::warn!("[SECURITY WARNING] RDRAND not available. Using INSECURE LCG fallback!");
+        log::warn!("[SECURITY WARNING] This build is for DEVELOPMENT/DEBUG only.");
+        log::warn!("[SECURITY WARNING] TLS communication and keys are NOT PROTECTED.");
+        log::warn!("********************************************************************************");
+        generate_random_fallback()
+    }
+}
+
+/// Check whether hardware-backed cryptographic random number generation is available.
+///
+/// Returns `true` if RDRAND is supported and functional.
+/// When this returns `false`, `generate_random()` will fall back to a weak LCG
+/// that is NOT cryptographically secure.
+pub(crate) fn has_secure_random() -> bool {
+    has_rdrand()
 }
 
 /// Fallback LCG-based random generation (development/boot only)

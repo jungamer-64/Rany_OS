@@ -43,6 +43,11 @@ impl UdpProcessor {
         &self.sockets
     }
 
+    /// Check if a socket exists on the given port
+    pub fn has_socket(&self, port: u16) -> bool {
+        self.sockets.find(port).is_some()
+    }
+
     /// Process an incoming UDP packet
     pub fn process(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) -> UdpResult {
         use core::sync::atomic::Ordering;

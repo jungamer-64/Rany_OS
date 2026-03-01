@@ -927,6 +927,70 @@ impl NetworkStack {
             data[dst_total_offset + 3],
         );
 
+        // Security (RFC 1191 / RFC 5927): Verify that the ICMP payload corresponds
+        // to an active connection (ports/protocol match).
+        // This prevents off-path attackers from poisoning the PMTU cache.
+        
+        // Extract Protocol from inner IP header (byte 9)
+        const IP_PROTOCOL_OFFSET: usize = 9;
+        let protocol_offset = ORIGINAL_IP_OFFSET + IP_PROTOCOL_OFFSET;
+        if data.len() < protocol_offset + 1 {
+            return;
+        }
+        let protocol = data[protocol_offset];
+
+        // Calculate inner IP header length
+        // First byte of inner IP header contains Version + IHL
+        let ihl = data[ORIGINAL_IP_OFFSET] & 0x0F;
+        let ip_header_len = (ihl as usize) * 4;
+        let transport_offset = ORIGINAL_IP_OFFSET + ip_header_len;
+
+        // Check if we have enough data for transport ports (at least 4 bytes)
+        if data.len() < transport_offset + 4 {
+            return;
+        }
+
+        let src_port = u16::from_be_bytes([data[transport_offset], data[transport_offset + 1]]);
+        let dst_port = u16::from_be_bytes([data[transport_offset + 2], data[transport_offset + 3]]);
+
+        // Check against active sockets
+        // Note: 'original_src' is US, 'original_dst' is THEM.
+        // So for local lookup, we use 'original_src' as local IP.
+        match protocol {
+            6 => { // TCP
+                use crate::net::l4::tcp::Ipv4Addr;
+                let local_ip = Ipv4Addr::new(
+                    original_src.as_bytes()[0],
+                    original_src.as_bytes()[1],
+                    original_src.as_bytes()[2],
+                    original_src.as_bytes()[3],
+                );
+                let remote_ip = Ipv4Addr::new(
+                    original_dst.as_bytes()[0],
+                    original_dst.as_bytes()[1],
+                    original_dst.as_bytes()[2],
+                    original_dst.as_bytes()[3],
+                );
+                let local_addr = TcpSocketAddr::new(local_ip, src_port);
+                let remote_addr = TcpSocketAddr::new(remote_ip, dst_port);
+
+                if !self.tcp.has_connection_or_listener(local_addr, remote_addr) {
+                    // No matching TCP connection, ignore ICMP error
+                    return;
+                }
+            }
+            17 => { // UDP
+                // Check if we have a socket bound to the source port
+                if !self.udp.has_socket(src_port) {
+                    return;
+                }
+            }
+            _ => {
+                // Ignore errors for other protocols to be safe
+                return;
+            }
+        }
+
         // Update the PMTU cache
         self.ipv4.update_pmtu(original_dst, mtu, current_time);
     }
