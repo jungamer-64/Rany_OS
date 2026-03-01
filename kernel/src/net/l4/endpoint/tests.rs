@@ -131,16 +131,82 @@ pub mod tests {
         if let Some(conn) = inner.accept_queue.pop_front() {
             let new_socket = Socket::new_with_fd(SocketType::Tcp, conn.fd);
             {
-                let mut new_inner = new_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
+                new_inner.tcp_nodelay = inner.tcp_nodelay; // 設定を引き継ぐ
                 let _ = new_inner.transition_to(SocketState::Connected);
             }
             return Some((new_socket, conn.remote_addr));
-        }
+            }
 
-        None
-    }
+            None
+            }
+
+            #[cfg_attr(test, test_case)]
+            pub fn test_tcp_nodelay_inheritance() {
+            let listen_socket = Socket::new(SocketType::Tcp);
+            listen_socket.set_nodelay(true).unwrap();
+
+            // Listening状態に
+            {
+            let mut inner = listen_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(SocketAddr::new([0, 0, 0, 0], 8080));
+            let _ = inner.transition_to(SocketState::Bound);
+            let _ = inner.transition_to(SocketState::Listening);
+            }
+
+            // 接続を追加
+            let accepted_fd = SocketFd::from_raw(500);
+            let local = SocketAddr::new([192, 168, 1, 1], 8080);
+            let remote = SocketAddr::new([10, 0, 0, 1], 50000);
+            let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
+            let conn = AcceptedConnection::new(accepted_fd, local, remote, tcb);
+
+            {
+            let mut inner = listen_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.accept_queue.push_back(conn);
+            }
+
+            // Accept
+            let (new_socket, _) = socket_accept_internal(&listen_socket).unwrap();
+
+            // 設定が引き継がれているか確認
+            let inner = new_socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            assert!(inner.tcp_nodelay);
+            }
+
+            #[cfg_attr(test, test_case)]
+            pub fn test_tcp_nodelay_tcb_update() {
+            crate::net::l4::endpoint::manager::init_socket_manager();
+            let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
+
+            let sock = crate::net::l4::endpoint::create_tcp_socket();
+            let fd = sock.fd();
+            let local = SocketAddr::new([127, 0, 0, 1], 10000);
+            let remote = SocketAddr::new([127, 0, 0, 1], 10001);
+
+            // 接続済み状態のTCBを作成
+            let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
+            tcb.state = crate::net::l4::endpoint::tcb::TcpConnectionState::Established;
+            tcb.set_nodelay(false); // 初期値: 偽
+            crate::net::l4::endpoint::tcb::tcb_table().insert(tcb);
+
+            // ソケット側のアドレス情報を設定（handlerがTCB検索に使用）
+            if let Some(s) = sock.socket() {
+            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+            }
+
+            // イベントを処理
+            let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::SetNoDelay { fd, nodelay: true });
+            assert!(matches!(res, crate::net::l4::endpoint::handler::EventHandleResult::Success));
+
+            // TCBに反映されているか確認
+            let updated_tcb = crate::net::l4::endpoint::tcb::tcb_table().get(local, remote).unwrap();
+            assert!(updated_tcb.is_nodelay_enabled());
+            }
 
     #[cfg_attr(test, test_case)]
     pub fn test_accept_backlog_limit() {
