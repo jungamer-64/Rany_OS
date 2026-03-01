@@ -509,6 +509,7 @@ pub fn run_all_integration_tests() -> (usize, usize) {
     // Run each test suite
     let suites = [
         test_pci(),
+        test_iommu(),
         test_memory(),
         test_tasks(),
         test_ipc(),

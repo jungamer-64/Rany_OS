@@ -418,21 +418,6 @@ impl VirtQueue {
     pub fn is_empty(&self) -> bool {
         self.pending_count() == 0
     }
-
-    /// ディスクリプタテーブルの物理アドレス
-    pub fn desc_table_phys(&self) -> u64 {
-        self.desc_table.as_ptr() as u64
-    }
-
-    /// Availリングの物理アドレス
-    pub fn avail_ring_phys(&self) -> u64 {
-        self.avail_ring.as_ptr() as u64
-    }
-
-    /// Usedリングの物理アドレス
-    pub fn used_ring_phys(&self) -> u64 {
-        self.used_ring.as_ptr() as u64
-    }
 }
 
 // ============================================================================

@@ -127,14 +127,15 @@ pub mod p384 {
                     .wrapping_sub(P[i] as u128)
                     .wrapping_sub(borrow as u128);
                 sub[i] = diff as u64;
-                borrow = if diff >> 127 != 0 { 1 } else { 0 };
+                borrow = (diff >> 127) as u64;
             }
-            let use_sub = carry > 0 || borrow == 0;
-            if use_sub {
-                Self { limbs: sub }
-            } else {
-                Self { limbs: result }
-            }
+            
+            // carry > 0 OR borrow == 0
+            let use_sub = (carry as u8) | (1 - borrow as u8);
+            
+            let res_fe = Self { limbs: result };
+            let sub_fe = Self { limbs: sub };
+            Self::ct_select(&res_fe, &sub_fe, use_sub)
         }
 
         /// フィールド減算 (mod p)
@@ -147,20 +148,21 @@ pub mod p384 {
                     .wrapping_sub(other.limbs[i] as u128)
                     .wrapping_sub(borrow as u128);
                 result[i] = diff as u64;
-                borrow = if diff >> 127 != 0 { 1 } else { 0 };
+                borrow = (diff >> 127) as u64;
             }
 
             // アンダーフローした場合はpを加算
-            if borrow != 0 {
-                let mut carry: u64 = 0;
-                for i in 0..6 {
-                    let sum = (result[i] as u128) + (P[i] as u128) + (carry as u128);
-                    result[i] = sum as u64;
-                    carry = (sum >> 64) as u64;
-                }
+            let mut added = [0u64; 6];
+            let mut carry: u64 = 0;
+            for i in 0..6 {
+                let sum = (result[i] as u128) + (P[i] as u128) + (carry as u128);
+                added[i] = sum as u64;
+                carry = (sum >> 127) as u64;
             }
 
-            Self { limbs: result }
+            let res_fe = Self { limbs: result };
+            let added_fe = Self { limbs: added };
+            Self::ct_select(&res_fe, &added_fe, borrow as u8)
         }
 
         /// フィールド乗算 (mod p)
@@ -206,12 +208,14 @@ pub mod p384 {
             let mut result = Self::ONE;
             let mut base = *self;
 
+            // 固定回数 (6リム * 64ビット = 384回) のループ
             for i in 0..6 {
                 let mut word = p_minus_2[i];
                 for _ in 0..64 {
-                    if word & 1 == 1 {
-                        result = result.mul(&base);
-                    }
+                    let bit = (word & 1) as u8;
+                    let multiplied = result.mul(&base);
+                    
+                    result = Self::ct_select(&result, &multiplied, bit);
                     base = base.square();
                     word >>= 1;
                 }
@@ -637,28 +641,30 @@ pub mod p384 {
         scalar_pow_mod_n_384(a, &exp)
     }
 
-    /// P-384群位数 n 上での冪乗: base^exp mod n
+    /// P-384群位数 n 上での冪乗: base^exp mod n (Constant-time implementation)
     pub(super) fn scalar_pow_mod_n_384(base: &[u8; 48], exp: &[u8; 48]) -> [u8; 48] {
         let mut result = [0u8; 48];
-        result[47] = 1; // 1
+        result[47] = 1; // result = 1
 
         let base_copy = *base;
 
-        // MSBからの二進法冪乗
-        let mut started = false;
-        for byte_idx in 0..48 {
-            for bit_idx in (0..8).rev() {
-                if started {
-                    result = scalar_mul_mod_n_384(&result, &result);
-                }
-                if (exp[byte_idx] >> bit_idx) & 1 == 1 {
-                    if started {
-                        result = scalar_mul_mod_n_384(&result, &base_copy);
-                    } else {
-                        result = base_copy;
-                        started = true;
-                    }
-                }
+        // 固定回数 (384回) のループで定時間性を確保
+        for i in (0..384).rev() {
+            // result = result^2 mod n
+            result = scalar_mul_mod_n_384(&result, &result);
+
+            // bit = exp[i]
+            let byte_idx = 47 - (i / 8);
+            let bit_idx = i % 8;
+            let bit = (exp[byte_idx] >> bit_idx) & 1;
+
+            // temp = result * base mod n
+            let multiplied = scalar_mul_mod_n_384(&result, &base_copy);
+
+            // if bit == 1 { result = multiplied } (定時間選択)
+            let mask = 0u8.wrapping_sub(bit as u8);
+            for j in 0..48 {
+                result[j] ^= (result[j] ^ multiplied[j]) & mask;
             }
         }
         result

@@ -299,8 +299,8 @@ impl PrpList {
         Ok(())
     }
 
-    /// リストの物理アドレスを取得
-    pub fn phys_addr(&self) -> u64 {
+    /// リストの仮想アドレスを取得（テスト用）
+    pub fn virt_addr(&self) -> u64 {
         self.entries.as_ptr() as u64
     }
 

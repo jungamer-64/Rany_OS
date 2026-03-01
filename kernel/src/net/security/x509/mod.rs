@@ -1016,7 +1016,9 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
         
         // Security: Prevent wildcard matches on top-level domains (e.g. *.com)
         // or broad public suffixes (e.g. *.co.jp).
-        let suffix_str = unsafe { core::str::from_utf8_unchecked(&suffix[1..]) };
+        let Ok(suffix_str) = core::str::from_utf8(&suffix[1..]) else {
+            return false;
+        };
         let mut labels = suffix_str.split('.');
         
         // Check labels count
@@ -1025,19 +1027,30 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
             return false; // Rejects *.com
         }
         
-        // Security: Reject common public suffixes if there are only 2 labels.
-        // This is a partial list of common multi-part TLDs.
+        // Security: Reject common public suffixes.
+        // This list includes common multi-label TLDs and public suffixes.
         if labels_count == 2 {
             let s0 = labels.next().unwrap_or("");
             let s1 = labels.next().unwrap_or("");
             let is_public = match s0 {
-                "co" | "com" | "net" | "org" | "or" | "ac" | "gov" | "edu" | "ad" => {
+                "co" | "com" | "net" | "org" | "or" | "ac" | "gov" | "edu" | "ad" | "biz" | "info" | "name" => {
                     // Check if the second part is a 2-letter ccTLD or common gTLD
-                    s1.len() == 2 || s1 == "jp" || s1 == "uk" || s1 == "au"
+                    s1.len() == 2 || s1 == "jp" || s1 == "uk" || s1 == "au" || s1 == "cn" || s1 == "de" || s1 == "fr" || s1 == "ru" || s1 == "kr" || s1 == "br" || s1 == "in" || s1 == "ca"
+                }
+                "amazonaws" | "github" | "githubusercontent" | "cloudfront" | "herokuapp" | "azurewebsites" | "appspot" => {
+                    // Specific public suffixes with 2 labels (e.g. amazonaws.com)
+                    true
                 }
                 _ => false,
             };
             if is_public {
+                return false;
+            }
+        } else if labels_count == 3 {
+            // Check for 3-label public suffixes like compute.amazonaws.com
+            if suffix_str.ends_with(".compute.amazonaws.com") || 
+               suffix_str.ends_with(".s3.amazonaws.com") ||
+               suffix_str.ends_with(".github.io") {
                 return false;
             }
         }
