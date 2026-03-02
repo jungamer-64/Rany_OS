@@ -11,6 +11,3 @@
 pub mod client;
 pub mod parser;
 pub mod types;
-
-pub use client::HttpClient;
-pub use types::{HttpRequest, HttpResponse, HttpMethod, HttpVersion, HttpHeader};

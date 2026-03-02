@@ -106,20 +106,17 @@ impl TcpControlBlock {
     /// Enqueue an out-of-order segment
     pub fn enqueue_ooo_payload(&mut self, mut seq: u32, mut packet: PacketRef) -> bool {
         let rcv_nxt = self.seq.rcv_nxt;
-        let mut data = packet.data();
 
         // 1. Acknowledge parts: skip data before rcv_nxt
         let diff = rcv_nxt.wrapping_sub(seq);
         if (diff as i32) > 0 {
             let skip = diff as usize;
-            if skip >= data.len() {
+            if skip >= packet.len() {
                 return false; // Entirely old
             }
             // Trim the packet using PacketRef's built-in advance mechanism
             packet.advance(skip);
             seq = rcv_nxt;
-            // Update data view after trimming
-            data = packet.data();
         }
 
         // Limit per-connection OOO segments

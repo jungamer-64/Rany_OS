@@ -175,7 +175,7 @@ const REDIRECT_CACHE_SIZE: usize = 32;
 const REDIRECT_CACHE_TTL: u64 = 600_000;
 
 #[derive(Debug)]
-pub(crate) struct RedirectCache {
+pub struct RedirectCache {
     map: BTreeMap<Ipv4Address, RedirectCacheEntry>,
     current_time: u64,
 }
@@ -287,7 +287,7 @@ pub(crate) struct PendingIpv6Packet {
 }
 
 /// NDP解決待ちキュー
-pub(crate) struct NdpPendingQueue {
+pub struct NdpPendingQueue {
     packets: VecDeque<PendingIpv6Packet>,
 }
 

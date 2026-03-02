@@ -35,13 +35,10 @@ pub mod window_scale;
 
 // Re-exports: types
 pub use types::{
-    EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
-    seq_before, seq_leq, seq_after, seq_geq,
-    conn_key_hash,
+    EndpointAddr, EndpointError, EndpointFd,
 };
 
 // Re-exports: event
-pub use event::NetworkEvent;
 
 // Re-exports: inner
 
