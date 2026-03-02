@@ -237,21 +237,48 @@ impl TcpProcessor {
             if let Ok(mut tcb) = tcb_lock.lock() {
                 match tcb.check_zero_window_probe(current_time) {
                     Some(true) => {
-                        // Send zero-window probe: ACK with seq = snd_una - 1
-                        // This forces the peer to respond with its current window size
+                        // Send zero-window probe: 1 byte of new data at seq = snd_nxt (RFC 1122)
                         if let Some(remote) = tcb.remote_addr() {
-                            let flags = TcpHeader::FLAG_ACK;
-                            let opts = tcb.build_options(flags);
-                            results.push(TcpProcessResult::SendPacket {
-                                local: tcb.local_addr(),
-                                remote,
-                                seq: tcb.snd_una().wrapping_sub(1),
-                                ack: tcb.rcv_nxt(),
-                                flags,
-                                window: tcb.rcv_wnd(),
-                                payload: Vec::new(),
-                                options: opts,
-                            });
+                            // Dequeue the first packet from send buffer to extract 1 byte
+                            if let Some(packet) = tcb.dequeue_send_packet() {
+                                let data = packet.data();
+                                if data.is_empty() {
+                                    // This shouldn't happen as send_buffer_bytes > 0
+                                    tcb.requeue_send_packet_front(packet);
+                                    continue;
+                                }
+
+                                let probe_byte = data[0];
+                                let seq = tcb.snd_nxt();
+
+                                // RFC 1122: ZWP should be 1 byte of new data.
+                                // We treat it as a normal data segment for retransmission purposes.
+                                let flags = TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK;
+                                let opts = tcb.build_options(flags);
+                                let payload = vec![probe_byte];
+
+                                // Advance sequence number and queue for retransmission
+                                tcb.queue_unacked(seq, payload.clone(), current_time, flags);
+                                tcb.advance_snd_nxt(1);
+
+                                // Put the rest of the packet back to the front of the send buffer
+                                let mut remaining_packet = packet;
+                                remaining_packet.advance(1);
+                                if remaining_packet.len() > 0 {
+                                    tcb.requeue_send_packet_front(remaining_packet);
+                                }
+
+                                results.push(TcpProcessResult::SendPacket {
+                                    local: tcb.local_addr(),
+                                    remote,
+                                    seq,
+                                    ack: tcb.rcv_nxt(),
+                                    flags,
+                                    window: tcb.rcv_wnd(),
+                                    payload,
+                                    options: opts,
+                                });
+                            }
                         }
                     }
                     Some(false) => {

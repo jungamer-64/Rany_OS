@@ -1231,6 +1231,40 @@ impl TcpProcessor {
             return Self::make_ack_result(tcb);
         }
 
+        // --- PARTIAL OVERLAP HANDLING ---
+        // If the segment starts before rcv_nxt but contains new data after it,
+        // we trim the old part so it can be processed as in-order.
+        let mut seq_num = seq_num;
+        let mut payload = payload;
+        let mut payload_len = payload_len;
+        let mut packet_opt = packet_opt;
+
+        let diff = rcv_nxt.wrapping_sub(seq_num) as i32;
+        if diff > 0 {
+            let skip = diff as usize;
+            if skip >= payload_len {
+                // All payload is old. Only FIN (if any) might be new.
+                if fin && skip == payload_len {
+                    // FIN starts at rcv_nxt
+                    seq_num = rcv_nxt;
+                    payload_len = 0;
+                    // Note: payload and packet_opt become irrelevant here
+                } else {
+                    // Entirely old, even including FIN
+                    return Self::make_ack_result(tcb);
+                }
+            } else {
+                // Trim prefix
+                payload = &payload[skip..];
+                payload_len -= skip;
+                seq_num = rcv_nxt;
+                if let Some(mut pkt) = packet_opt {
+                    pkt.advance(skip);
+                    packet_opt = Some(pkt);
+                }
+            }
+        }
+
         if seq_num == rcv_nxt {
             // In-order data
             if payload_len > 0 {

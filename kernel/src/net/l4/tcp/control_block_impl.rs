@@ -115,19 +115,11 @@ impl TcpControlBlock {
             if skip >= data.len() {
                 return false; // Entirely old
             }
-            // Trim the packet
-            data = &data[skip..];
+            // Trim the packet using PacketRef's built-in advance mechanism
+            packet.advance(skip);
             seq = rcv_nxt;
-            // Note: In a true zero-copy stack, we should adjust the PacketRef offset.
-            // For now, we'll create a new PacketRef if we had to trim, but since
-            // PacketRef is just a wrapper, we might need a way to slice it.
-            // If PacketRef doesn't support slicing, we might have to copy (bad)
-            // or just discard partially overlapping ones for now (safer but less efficient).
-
-            // Let's see if PacketRef can be sliced. 
-            // If not, we'll just discard partially old segments to avoid complexity
-            // and corruption, until PacketRef supports sub-ranges.
-            return false; // For now, reject partially old to be safe.
+            // Update data view after trimming
+            data = packet.data();
         }
 
         // Limit per-connection OOO segments
@@ -1069,8 +1061,8 @@ impl TcpControlBlock {
             return None;
         }
         let effective_wnd = self.get_effective_snd_wnd();
-        if effective_wnd > 0 {
-            // Window opened — reset probe state
+        if effective_wnd > 0 || self.tx.send_buffer_bytes == 0 {
+            // Window opened or no data to send — reset probe state
             if self.timers.zwp_probes_sent > 0 {
                 self.timers.zwp_probes_sent = 0;
             }
