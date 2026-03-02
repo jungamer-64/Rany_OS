@@ -108,17 +108,16 @@ impl Drop for AmdCommandState {
 
         // Deallocate frames
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
-        unsafe {
-            // Command buffer frames
-            for i in 0..self.frame_count {
-                let addr = self.buffer.phys_base + (i as u64 * 4096);
-                let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
-                crate::mm::phys::frame_allocator::dealloc_frame(frame);
-            }
-            // Sync page frame
-            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(self.sync_phys));
+        
+        // Command buffer frames
+        for i in 0..self.frame_count {
+            let addr = self.buffer.phys_base + (i as u64 * 4096);
+            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
             crate::mm::phys::frame_allocator::dealloc_frame(frame);
         }
+        // Sync page frame
+        let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(self.sync_phys));
+        crate::mm::phys::frame_allocator::dealloc_frame(frame);
     }
 }
 

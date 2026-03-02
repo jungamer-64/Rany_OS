@@ -356,36 +356,6 @@ impl ShellServices for ExoKernel {
     }
 
     fn list_directory(&self, path: &str) -> Result<alloc::vec::Vec<KapiDirEntry>, &'static str> {
-        if let Some(result) = crate::system_info::list_directory(path) {
-            return result.map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|e| {
-                        let file_type = match e.file_type {
-                            crate::fs::FileType::Directory => {
-                                kernel_api::shell::FileType::Directory
-                            }
-                            crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
-                            crate::fs::FileType::CharDevice => {
-                                kernel_api::shell::FileType::CharDevice
-                            }
-                            crate::fs::FileType::BlockDevice => {
-                                kernel_api::shell::FileType::BlockDevice
-                            }
-                            crate::fs::FileType::Socket => kernel_api::shell::FileType::Socket,
-                            crate::fs::FileType::Fifo => kernel_api::shell::FileType::Fifo,
-                            _ => kernel_api::shell::FileType::File,
-                        };
-                        KapiDirEntry {
-                            name: e.name,
-                            file_type,
-                            size: 0,
-                            ino: e.ino,
-                        }
-                    })
-                    .collect()
-            });
-        }
         match crate::fs::list_directory(path, "/") {
             Ok(entries) => {
                 let result = entries
@@ -421,9 +391,6 @@ impl ShellServices for ExoKernel {
     }
 
     fn read_file(&self, path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
-        if let Some(result) = crate::system_info::read_file(path) {
-            return result;
-        }
         crate::fs::read_file_content(path, "/").map_err(|_| "Failed to read file")
     }
 
@@ -431,50 +398,18 @@ impl ShellServices for ExoKernel {
         &self,
         path: &str,
     ) -> Result<alloc::sync::Arc<alloc::vec::Vec<u8>>, &'static str> {
-        // Use async_memfs's Bytes type internally for zero-copy semantics
         use crate::fs::async_memfs::Bytes;
 
-        if let Some(result) = crate::system_info::read_file(path) {
-            let content = result?;
-            let bytes = Bytes::from(content);
-            return Ok(bytes.into_inner());
-        }
-
-        // Read content
         let content = crate::fs::read_file_content(path, "/").map_err(|_| "Failed to read file")?;
-
-        // Wrap in Bytes and extract Arc
         let bytes = Bytes::from(content);
         Ok(bytes.into_inner())
     }
 
     fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str> {
-        if crate::system_info::is_sysfs_path(path) {
-            return Err("sysfs is read-only");
-        }
         crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
     }
 
     fn stat_file(&self, path: &str) -> Result<kernel_api::shell::FileAttributes, &'static str> {
-        if let Some(result) = crate::system_info::stat_file(path) {
-            return result.map(|attr| {
-                let file_type = match attr.file_type {
-                    crate::fs::FileType::Directory => kernel_api::shell::FileType::Directory,
-                    crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
-                    crate::fs::FileType::CharDevice => kernel_api::shell::FileType::CharDevice,
-                    crate::fs::FileType::BlockDevice => kernel_api::shell::FileType::BlockDevice,
-                    crate::fs::FileType::Socket => kernel_api::shell::FileType::Socket,
-                    crate::fs::FileType::Fifo => kernel_api::shell::FileType::Fifo,
-                    _ => kernel_api::shell::FileType::File,
-                };
-                kernel_api::shell::FileAttributes {
-                    size: attr.size,
-                    ino: attr.ino,
-                    nlink: attr.nlink as u64,
-                    file_type,
-                }
-            });
-        }
         match crate::fs::stat_file(path, "/") {
             Ok(attr) => {
                 let file_type = match attr.file_type {
@@ -498,23 +433,14 @@ impl ShellServices for ExoKernel {
     }
 
     fn make_directory(&self, path: &str) -> Result<(), &'static str> {
-        if crate::system_info::is_sysfs_path(path) {
-            return Err("sysfs is read-only");
-        }
         crate::fs::make_directory(path, "/").map_err(|_| "Failed to create directory")
     }
 
     fn remove_file(&self, path: &str) -> Result<(), &'static str> {
-        if crate::system_info::is_sysfs_path(path) {
-            return Err("sysfs is read-only");
-        }
         crate::fs::remove_file(path, "/").map_err(|_| "Failed to remove file")
     }
 
     fn remove_directory(&self, path: &str) -> Result<(), &'static str> {
-        if crate::system_info::is_sysfs_path(path) {
-            return Err("sysfs is read-only");
-        }
         crate::fs::remove_directory(path, "/").map_err(|_| "Failed to remove directory")
     }
 }

@@ -52,7 +52,7 @@ impl IommuDomain {
         debug_assert_eq!(PT_ENTRIES % DOMAIN_SHARD_COUNT, 0);
         debug_assert!(PML4_ENTRIES_PER_SHARD > 0);
         let mut shards = Vec::with_capacity(DOMAIN_SHARD_COUNT);
-        for i in 0..DOMAIN_SHARD_COUNT {
+        for _i in 0..DOMAIN_SHARD_COUNT {
             shards.push(PoisonLock::new(DomainShard::new()));
         }
 

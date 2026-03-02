@@ -466,7 +466,7 @@ impl VirtioNetDevice {
         self.mut_transport().set_queue_size(queue_size);
 
         // Standardized layout calculation
-        let (desc_size, avail_size, used_offset, vring_total_size) = VirtQueue::calculate_layout(queue_size);
+        let (desc_size, _avail_size, used_offset, vring_total_size) = VirtQueue::calculate_layout(queue_size);
         
         // Add space for network headers if this is a TX queue
         let header_align = core::mem::align_of::<VirtioNetHeader>();

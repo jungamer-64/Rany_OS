@@ -4,13 +4,17 @@
 //!
 //! # システム情報プロバイダー
 //!
-//! ドメイン情報やシステムステータスを `/sys/` 仮想パス経由でシェルに提供する。
-//! 旧 `filesystems/kernel_fs/sysfs.rs` からの移行先。
+//! カーネル各サブシステムの情報を集約し、2つのAPIを提供する。
 //!
-//! ## 設計
-//! - `/sys/cell/*` → `domain_system::get_domain_snapshot()` を利用
-//! - `/sys/system/*` → カーネル内部API（`memory`、`time`、`smp`等）を利用
-//! - ファイルシステム抽象化に依存せず、`DirEntry`/`FileAttr` のみ出力型として使用
+//! ## 構造化データAPI（ExoShellネームスペース: `SysNamespace` が使用）
+//! 生データアクセス関数群。`SysNamespace` がこれらを `ExoValue` に変換する。
+//!
+//! ## ファイルパス互換API（gui_services / procfs が使用）
+//! `/sys/cell/*`、`/sys/system/*` パス経由のテキスト出力。
+//!
+//! ## 設計原則
+//! - `ExoValue` への依存を持たない（shellモジュール非依存）
+//! - 上位層（SysNamespace）がExoValueラッピングを担当
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -23,8 +27,95 @@ mod cpuinfo_gen;
 use cpuinfo_gen::*;
 
 // ============================================================================
-// Constants
+// Primary API: Raw data accessors (SysNamespace が ExoValue に変換する)
 // ============================================================================
+
+/// OS名
+pub fn os_name() -> &'static str {
+    "RanyOS"
+}
+
+/// アーキテクチャ名
+pub fn arch_name() -> &'static str {
+    "x86_64"
+}
+
+/// カーネルバージョン
+pub fn kernel_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// カーネル名
+pub fn kernel_name() -> &'static str {
+    "ExoRust"
+}
+
+/// 合計メモリ (KB)
+pub fn memory_total_kb() -> u64 {
+    crate::memory::total_memory_kb()
+}
+
+/// 空きメモリ (KB)
+pub fn memory_free_kb() -> u64 {
+    crate::memory::free_memory_kb()
+}
+
+/// アップタイム (tick単位、1tick = 1ms)
+pub fn uptime_ticks() -> u64 {
+    crate::time::current_tick()
+}
+
+/// CPU数
+pub fn cpu_count() -> usize {
+    crate::smp::cpu_count() as usize
+}
+
+/// CPUベンダー文字列
+pub fn cpu_vendor() -> &'static str {
+    get_cpu_vendor()
+}
+
+/// CPUモデル名
+pub fn cpu_model() -> &'static str {
+    get_cpu_model_name()
+}
+
+/// タイマー割り込み回数
+pub fn timer_ticks() -> u64 {
+    crate::interrupts::get_timer_ticks()
+}
+
+/// コンテキストスイッチ回数
+pub fn context_switch_count() -> u64 {
+    crate::task::context::CONTEXT_SWITCH_COUNT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// ブート時刻 (秒)
+pub fn boot_time_secs() -> u64 {
+    crate::time::now().saturating_sub(crate::time::current_tick() / 1000)
+}
+
+/// ドメインスナップショット一覧
+pub fn domain_snapshots() -> Vec<crate::domain_system::DomainSnapshot> {
+    let mut snaps = list_domain_snapshots();
+    snaps.sort_by_key(|s| s.id.as_u64());
+    snaps
+}
+
+/// 指定ドメインのスナップショット
+pub fn domain_snapshot(id: u64) -> Option<crate::domain_system::DomainSnapshot> {
+    get_domain_snapshot(DomainId::new(id))
+}
+
+/// ドメイン状態を文字列に変換
+pub fn state_str(state: DomainState) -> &'static str {
+    state_to_str(state)
+}
+
+// ============================================================================
+// File-path compatibility layer: Constants & Utilities
+// ============================================================================
+// gui_services / procfs が使用する `/sys/` パスベースAPIの支援構造
 
 const CELL_FIELDS: [&str; 15] = [
     "name",
@@ -60,10 +151,6 @@ const SYSTEM_DIRS: [&str; 2] = ["kernel", "net"];
 const SYSTEM_KERNEL_FILES: [&str; 3] = ["hostname", "ostype", "version"];
 const SYSTEM_NET_FILES: [&str; 4] = ["dev", "tcp", "udp", "arp"];
 
-// ============================================================================
-// Path utilities
-// ============================================================================
-
 fn split_path(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
@@ -80,20 +167,15 @@ fn is_system_path(comps: &[&str]) -> bool {
     comps.len() >= 2 && comps[0] == "sys" && comps[1] == "system"
 }
 
-/// `/sys/` パスかどうかを判定する
+/// `/sys/` パスかどうかを判定する（互換API）
 pub fn is_sysfs_path(path: &str) -> bool {
     let comps = split_path(path);
     is_sys_path(&comps)
 }
 
 // ============================================================================
-// Domain helpers
+// Internal helpers
 // ============================================================================
-
-fn parse_domain_id(comp: &str) -> Result<DomainId, &'static str> {
-    let id = comp.parse::<u64>().map_err(|_| "Invalid domain id")?;
-    Ok(DomainId::new(id))
-}
 
 fn state_to_str(state: DomainState) -> &'static str {
     match state {
@@ -103,6 +185,11 @@ fn state_to_str(state: DomainState) -> &'static str {
         DomainState::Stopped => "stopped",
         DomainState::Terminated => "terminated",
     }
+}
+
+fn parse_domain_id(comp: &str) -> Result<DomainId, &'static str> {
+    let id = comp.parse::<u64>().map_err(|_| "Invalid domain id")?;
+    Ok(DomainId::new(id))
 }
 
 fn format_u64_list(ids: &[u64]) -> String {
@@ -166,7 +253,7 @@ fn field_value(snapshot: &crate::domain_system::DomainSnapshot, field: &str) -> 
 }
 
 // ============================================================================
-// System info helpers
+// File-path text formatters (compatibility layer - derives from ExoValue data)
 // ============================================================================
 
 fn system_file_value(field: &str) -> Option<String> {
@@ -191,9 +278,7 @@ fn system_file_value(field: &str) -> Option<String> {
         "cpuinfo" => Some(generate_cpuinfo()),
         "stat" => Some(generate_stat()),
         "loadavg" => Some(String::from("0.00 0.00 0.00 1/1 1\n")),
-        "filesystems" => Some(String::from(
-            "nodev\ttmpfs\n",
-        )),
+        "filesystems" => Some(String::from("nodev\ttmpfs\n")),
         "mounts" => Some(String::from("")),
         "cmdline" => Some(String::from("console=ttyS0\n")),
         _ => None,

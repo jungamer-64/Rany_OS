@@ -90,7 +90,7 @@ impl VirtioNetDevice {
     }
 
     /// PacketRef ZeroCopy RX完了: IOMMUアンマップ + ブリッジ転送 + 再ポスト
-    pub(super) fn complete_rx_packetref(&self, rx_queue: &NetVirtQueue, desc_idx: u16, len: u32, inflight: RxPacketInflight) {
+    pub(super) fn complete_rx_packetref(&self, rx_queue: &NetVirtQueue, _desc_idx: u16, len: u32, inflight: RxPacketInflight) {
         // Unmap IOMMU mapping if it was active
         if let (Some(iova), Some(device_id)) = (inflight.iommu_iova, &self.iommu_device_id) {
             let _ = crate::io::iommu::api::unmap_for_device(device_id, iova, inflight.iommu_map_len);

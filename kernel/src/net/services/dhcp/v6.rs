@@ -100,7 +100,7 @@ impl DhcpV6Client {
 
             // 応答待機
             match task::with_timeout(socket.recv(), 1000).await {
-                TimeoutResult::Completed(Some((src, _ttl, packet))) => {
+                TimeoutResult::Completed(Some((_src, _ttl, packet))) => {
                     // src.ip は UdpAddr 内では Ipv4Address なので、src_ipv6 を取得する必要があるが、
                     // 現状の UdpAddr 実装を確認する必要がある。
                     // とりあえず handle_packet を呼び出し、内部で適切な処理を行う。

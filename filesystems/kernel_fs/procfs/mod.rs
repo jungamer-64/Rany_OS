@@ -149,12 +149,12 @@ pub enum ProcError {
     InvalidArgument,
 }
 
-fn read_sysfs_text(path: &str) -> Result<String, ProcError> {
-    match crate::system_info::read_file(path) {
-        Some(Ok(bytes)) => String::from_utf8(bytes).map_err(|_| ProcError::NotReadable),
-        Some(Err(_)) => Err(ProcError::NotFound),
-        None => Err(ProcError::NotFound),
-    }
+fn read_sysinfo_str(f: fn() -> alloc::string::String) -> Result<String, ProcError> {
+    Ok(f())
+}
+
+fn read_sysinfo_static(val: &'static str) -> Result<String, ProcError> {
+    Ok(alloc::format!("{}\n", val))
 }
 
 /// procfs ファイルシステム

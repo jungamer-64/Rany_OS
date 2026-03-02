@@ -920,7 +920,7 @@ pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
             record_bridge_if_tx(if_id);
             true
         }
-        Err(e) => {
+        Err(_e) => {
             // log the failure reason and interface
             log::info!("[NET BRIDGE] Interface transmit error if_id={}", if_id.0);
             counters::global().record_error();
