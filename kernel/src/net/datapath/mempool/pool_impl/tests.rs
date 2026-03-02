@@ -1,4 +1,5 @@
 use super::*;
+use alloc::vec;
 
 #[test_case]
 fn test_packet_pool_alloc_and_free_smoke() {

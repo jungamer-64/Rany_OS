@@ -1341,7 +1341,11 @@ pub fn init_bridge() -> Result<(), &'static str> {
                 // Spawn background TX worker to process enqueued transmit requests.
                 // Use the main Executor's global queue so the task is polled by the
                 // primary executor loop (task::Executor::run).
+                log::info!("[NET BRIDGE] Spawning tx_worker_task via Executor::spawn_global");
                 crate::task::Executor::spawn_global(crate::task::Task::new(tx_worker_task()));
+                log::info!("[NET BRIDGE] tx_worker_task spawned successfully");
+            } else {
+                log::error!("[NET BRIDGE] Stack is None after init - tx_worker NOT spawned!");
             }
         }
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),
