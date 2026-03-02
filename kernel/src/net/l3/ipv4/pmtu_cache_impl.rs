@@ -586,14 +586,14 @@ pub struct Ipv4Stats {
 
 /// Result of IPv4 packet processing
 pub enum Ipv4ProcessResult<'a> {
-    /// ICMP packet with source address, destination address, and TTL
-    Icmp(&'a [u8], Ipv4Address, Ipv4Address, u8),
-    /// IGMP packet with source address and TTL
-    Igmp(&'a [u8], Ipv4Address, u8),
-    /// TCP packet
-    Tcp(&'a [u8], Ipv4Address, Ipv4Address),
-    /// UDP packet
-    Udp(&'a [u8], Ipv4Address, Ipv4Address),
+    /// ICMP packet with source address, destination address, TTL, and original packet data
+    Icmp(&'a [u8], Ipv4Address, Ipv4Address, u8, &'a [u8]),
+    /// IGMP packet with source address, TTL, and original packet data
+    Igmp(&'a [u8], Ipv4Address, u8, &'a [u8]),
+    /// TCP packet with source address, destination address, and original packet data
+    Tcp(&'a [u8], Ipv4Address, Ipv4Address, &'a [u8]),
+    /// UDP packet with source address, destination address, and original packet data
+    Udp(&'a [u8], Ipv4Address, Ipv4Address, &'a [u8]),
     /// Reassembled packet (owned data from fragment reassembly)
     Reassembled(Vec<u8>),
     /// Fragment received, reassembly in progress
@@ -733,10 +733,10 @@ impl Ipv4Processor {
         let payload = packet.payload();
 
         match packet.protocol() {
-            IpProtocol::Icmp => Ipv4ProcessResult::Icmp(payload, src, dst, packet.ttl()),
-            IpProtocol::Igmp => Ipv4ProcessResult::Igmp(payload, src, packet.ttl()),
-            IpProtocol::Tcp => Ipv4ProcessResult::Tcp(payload, src, dst),
-            IpProtocol::Udp => Ipv4ProcessResult::Udp(payload, src, dst),
+            IpProtocol::Icmp => Ipv4ProcessResult::Icmp(payload, src, dst, packet.ttl(), data),
+            IpProtocol::Igmp => Ipv4ProcessResult::Igmp(payload, src, packet.ttl(), data),
+            IpProtocol::Tcp => Ipv4ProcessResult::Tcp(payload, src, dst, data),
+            IpProtocol::Udp => Ipv4ProcessResult::Udp(payload, src, dst, data),
             _ => Ipv4ProcessResult::Dropped,
         }
     }

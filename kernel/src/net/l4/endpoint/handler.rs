@@ -237,16 +237,16 @@ impl NetworkEventHandler {
         let result = stack.ipv4.process_with_time(data, current_time);
 
         match result {
-            crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl) => {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
                 stack.process_icmp_data(payload, src_ip, dst_ip, ttl, current_time);
             }
-            crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl) => {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 stack.process_igmp_data(payload, src_ip, ttl);
             }
-            crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip) => {
-                self.handle_udp_ingress_with_stack(src_ip.octets(), dst_ip.octets(), payload, stack);
+            crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, orig) => {
+                self.handle_udp_ingress_with_stack(src_ip.octets(), dst_ip.octets(), payload, stack, orig, current_time);
             }
-            crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip) => {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip, _orig) => {
                 super::tcp_rx::process_tcp_segment(src_ip.octets(), dst_ip.octets(), payload);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Reassembled(reassembled_data) => {
@@ -289,9 +289,11 @@ impl NetworkEventHandler {
     fn handle_udp_ingress_with_stack(
         &self, 
         src_ip: [u8; 4], 
-        _dst_ip: [u8; 4], 
+        dst_ip: [u8; 4], 
         payload: &[u8],
-        _stack: &mut crate::net::runtime::stack::NetworkStack
+        stack: &mut crate::net::runtime::stack::NetworkStack,
+        original_packet: &[u8],
+        current_time: u64,
     ) -> EventHandleResult {
         if payload.len() < 8 {
             return EventHandleResult::Success;
@@ -303,9 +305,25 @@ impl NetworkEventHandler {
 
         let remote = EndpointAddr::new(src_ip, src_port);
 
+        let mut found = false;
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read() {
             if let Some(socket) = mgr.find_by_port(EndpointType::Udp, dst_port) {
                 socket.push_packet(remote, data.to_vec());
+                found = true;
+            }
+        }
+
+        if !found {
+            // RFC 1122: Send ICMP Port Unreachable
+            use crate::net::l3::ipv4::Ipv4Address;
+            use crate::net::l3::icmp::DestUnreachCode;
+            
+            let src_v4 = Ipv4Address::from(src_ip);
+            let dst_v4 = Ipv4Address::from(dst_ip);
+            
+            // Only send if it wasn't broadcast/multicast (RFC 1122)
+            if !dst_v4.is_broadcast() && !dst_v4.is_multicast() {
+                stack.send_icmp_error(src_v4, DestUnreachCode::PortUnreachable, original_packet, current_time);
             }
         }
 

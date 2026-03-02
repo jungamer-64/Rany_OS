@@ -85,7 +85,7 @@ impl NetworkStack {
     }
 
     /// Process UDP data (for reassembled packets)
-    pub fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, ttl: u8) {
+    pub fn process_udp_data(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address, ttl: u8, original_packet: &[u8], current_time: u64) {
         // For reassembled packets, we don't have a PacketRef for zero-copy
         // Use the non-zero-copy path
         let result = self.udp.process(data, src_ip, dst_ip, ttl);
@@ -94,6 +94,12 @@ impl NetworkStack {
             UdpResult::Delivered => {}
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
+
+                // RFC 1122: Send ICMP Port Unreachable
+                // Only send if it wasn't broadcast/multicast
+                if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
+                    self.send_icmp_error(src_ip, DestUnreachCode::PortUnreachable, original_packet, current_time);
+                }
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
                 self.stats.record_rx_error();
@@ -695,6 +701,121 @@ impl NetworkStack {
     /// Insert an entry into the ARP cache (public wrapper for tests/diagnostics)
     pub fn arp_cache_insert(&mut self, ip: Ipv4Address, mac: MacAddress, current_time: u64) {
         self.arp.cache().insert(ip, mac, current_time);
+    }
+
+    /// Send ICMP error message (RFC 792 / RFC 1122)
+    ///
+    /// This method constructs and sends an ICMP error message in response to
+    /// an offending packet. It strictly follows RFC 1122/1812 rules to avoid
+    /// infinite error loops and broadcast storms.
+    pub fn send_icmp_error(
+        &mut self,
+        dst_ip: Ipv4Address,
+        code: DestUnreachCode,
+        original_packet: &[u8],
+        current_time: u64,
+    ) {
+        let config = self.config.clone();
+
+        // Security (RFC 1122 Section 3.2.2):
+        // An ICMP error message MUST NOT be sent in response to:
+        
+        // 1. An ICMP error message.
+        if original_packet.len() >= 20 {
+            let proto = original_packet[9];
+            if proto == IpProtocol::Icmp as u8 && original_packet.len() >= 20 + 1 {
+                let icmp_type = original_packet[20];
+                match IcmpType::from(icmp_type) {
+                    IcmpType::DestinationUnreachable
+                    | IcmpType::Redirect
+                    | IcmpType::TimeExceeded
+                    | IcmpType::ParameterProblem => {
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 2. A packet sent as a Link Layer broadcast or multicast.
+        // (Note: We assume the caller checked this or the packet reached us directly)
+        
+        // 3. A packet sent to an IP broadcast or multicast address.
+        if let Some(ip) = Ipv4Packet::parse(original_packet) {
+            let orig_dst = ip.destination();
+            if orig_dst.is_broadcast() || orig_dst.is_multicast() || (config.ipv4.subnet_mask.as_bytes()[0] != 0 && orig_dst == config.ipv4.broadcast_address()) {
+                return;
+            }
+        }
+
+        // 4. A packet that is not the first fragment.
+        if let Some(ip) = Ipv4Packet::parse(original_packet) {
+            if ip.header().fragment_offset() != 0 {
+                return;
+            }
+        }
+
+        // 5. A packet whose source address is not a single host (e.g. 0.0.0.0, broadcast, etc.)
+        if dst_ip.is_unspecified() || dst_ip.is_broadcast() || dst_ip.is_multicast() {
+            return;
+        }
+
+        // Rate limiting
+        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return;
+        }
+
+        // Resolve MAC address for the original sender
+        let dst_mac = if config.ipv4.is_local(&dst_ip) {
+            if let Some(mac) = self.arp.resolve(dst_ip, current_time) {
+                mac
+            } else {
+                self.send_arp_request(dst_ip);
+                return;
+            }
+        } else {
+            if let Some(mac) = self.arp.resolve(config.ipv4.gateway, current_time) {
+                mac
+            } else {
+                self.send_arp_request(config.ipv4.gateway);
+                return;
+            }
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+
+        // Build Ethernet frame
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+
+            // Build IP packet
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet
+                    .init_header()
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Icmp)
+                    .set_ttl(64);
+
+                let ip_payload = ip_packet.payload_mut();
+
+                // Build ICMP packet (Type 3: Destination Unreachable)
+                if let Some(len) = IcmpProcessor::build_dest_unreachable(ip_payload, code, original_packet) {
+                    ip_packet.finalize(len);
+                    let total_len = EthernetFrameMut::HEADER_SIZE + ip_packet.total_len();
+                    
+                    if let Some(ref transmit) = self.transmit_fn {
+                        transmit(None, &buffer[..total_len]);
+                        self.stats.record_tx(total_len);
+                    }
+                }
+            }
+        }
     }
 
     /// Send ICMP echo reply

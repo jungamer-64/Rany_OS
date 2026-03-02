@@ -30,6 +30,7 @@
 ## 1. SAS（単一アドレス空間）— 10/10 ✅
 
 ### 設計要件
+
 - 全エンティティが単一の64ビット仮想アドレス空間を共有
 - TLBフラッシュの排除
 - 1GB Huge Pageによるリニアマッピング
@@ -45,6 +46,7 @@
 | 高位半アドレス空間 | ✅ | カーネル直接マッピング: `0xFFFF_8000_0000_0000` |
 
 ### 該当ファイル
+
 - [kernel/src/sas/](kernel/src/sas/) — SAS管理モジュール
 - [kernel/src/mm/virt/](kernel/src/mm/virt/) — 仮想メモリ管理
 - [kernel/src/kernel_content.rs](kernel/src/kernel_content.rs) — ガードページ設定
@@ -54,6 +56,7 @@
 ## 2. SPL（単一特権レベル）— 10/10 ✅
 
 ### 設計要件
+
 - 全コードをRing 0で実行
 - システムコール（SYSCALL/SYSRET）の排除
 - KAPI（Kernel API）による直接関数呼び出し
@@ -68,6 +71,7 @@
 | 命名規則（syscall→kapi） | ✅ | `KernelServices`トレイト経由 |
 
 ### 该当ファイル
+
 - [interfaces/kernel_api/src/kapi.rs](interfaces/kernel_api/src/kapi.rs) — 「Traditional syscalls do not exist」と明記
 - [interfaces/kernel_api/src/services.rs](interfaces/kernel_api/src/services.rs) — `KernelServices`トレイト
 - [kernel/src/service_impl.rs](kernel/src/service_impl.rs) — 「No syscall overhead - just vtable dispatch」
@@ -77,6 +81,7 @@
 ## 3. Async-First 並行性モデル — 10/10 ✅
 
 ### 設計要件
+
 - Per-CPU Executor
 - Fuel-based Execution（スターベーション防止）
 - 2段階Wake方式（ISRデッドロック回避）
@@ -98,11 +103,13 @@
 | async fn使用 | ✅ | 129箇所のasync fn定義 |
 
 ### 定量メトリクス
+
 - **async fn定義数**: 129箇所
 - **NUMA参照**: 1,020行（非テスト）
 - **構造化ログ**: 1,441行
 
 ### 該当ファイル
+
 - [kernel/src/task/per_core_executor.rs](kernel/src/task/per_core_executor.rs) — Per-Core Executor
 - [kernel/src/task/fuel.rs](kernel/src/task/fuel.rs) — 燃料ベース実行
 - [kernel/src/task/interrupt_waker.rs](kernel/src/task/interrupt_waker.rs) — 2段階Wake
@@ -114,6 +121,7 @@
 ## 4. Exchange Heap / RRef — 10/10 ✅
 
 ### 設計要件
+
 - ドメイン間データ共有はExchange Heap経由
 - `RRef<T>`による所有権追跡
 - ドメインクラッシュ時のリソース回収
@@ -131,9 +139,11 @@
 | NETゼロコピー連携 | ✅ | `into_rref()` / `return_rref()`メソッド |
 
 ### 定量メトリクス
+
 - **Exchange Heap参照**: 51箇所
 
 ### 該当ファイル
+
 - [kernel/src/mm/cache/exchange_heap.rs](kernel/src/mm/cache/exchange_heap.rs)
 - [kernel/src/ipc/rref.rs](kernel/src/ipc/rref.rs) — `TypeIdHash`トレイト含む
 
@@ -142,6 +152,7 @@
 ## 5. Domain/Cell フォールトアイソレーション — 10/10 ✅
 
 ### 設計要件
+
 - ドメインのライフサイクル管理
 - パニックのドメイン境界捕捉
 - PoisonLock<T>の使用
@@ -161,6 +172,7 @@
 | panic!最小化 | ⚠️ | 80箇所（テスト・パニックハンドラ除く）— 改善余地 |
 
 ### 該当ファイル
+
 - [kernel/src/domain/](kernel/src/domain/) — ドメイン管理
 - [kernel/src/sync/poison_lock.rs](kernel/src/sync/poison_lock.rs)
 - [kernel/src/domain_system.rs](kernel/src/domain_system.rs)
@@ -170,6 +182,7 @@
 ## 6. IOMMU / DMA — 10/10 ✅
 
 ### 設計要件
+
 - IOMMU必須有効化（Intel VT-d / AMD-Vi）
 - `alloc_dma_buffer()` Framework API経由
 - DMA転送中の所有権移動
@@ -188,10 +201,12 @@
 | Pin保証 | ✅ | DMAバッファはメモリ固定 |
 
 ### IOMMUサブシステム規模
+
 - **115以上のファイル** — `io/iommu/` ディレクトリ
 - ドメイン管理、ページング、ランタイムグループ、セキュリティを包含
 
 ### 該当ファイル
+
 - [kernel/src/io/iommu/](kernel/src/io/iommu/) — IOMMUコアシステム
 - [kernel/src/security/dma.rs](kernel/src/security/dma.rs) — DMA保護レジストリ
 
@@ -200,6 +215,7 @@
 ## 7. ネットワーク ゼロコピーI/O — 10/10 ✅
 
 ### 設計要件
+
 - ゼロコピーパケットパス（NIC→App）
 - 適応的ポーリング（割り込み↔ビジーポーリング）
 - Per-Core Mempool
@@ -219,6 +235,7 @@
 | endpoint命名 | ✅ | `net/l4/endpoint/` ディレクトリ使用 |
 
 ### ネットワークスタック構造
+
 ```
 net/
 ├── api/             # shell/diag
@@ -238,6 +255,7 @@ net/
 ## 8. セキュリティ — 10/10 ✅
 
 ### 設計要件
+
 - コンパイラ署名検証（Proof-Carrying Code）
 - MPK（Memory Protection Keys）
 - Retpoline（投機的実行対策）
@@ -259,6 +277,7 @@ net/
 | DmaBuffer Capability | ✅ | `static_capability.rs` — ライフタイム付きDMAバッファ |
 
 ### 該当ファイル
+
 - [kernel/src/security/mpk.rs](kernel/src/security/mpk.rs) — MPK管理
 - [kernel/src/security/capability.rs](kernel/src/security/capability.rs) — 動的Capability
 - [kernel/src/security/static_capability.rs](kernel/src/security/static_capability.rs) — 静的Capability
@@ -270,6 +289,7 @@ net/
 ## 9. ライブアップデート / Epoch-based Reclamation — 10/10 ✅
 
 ### 設計要件
+
 - Epoch-based Reclamation（RCU類似）
 - StateTransferトレイト
 - GOTシンボル切り替え
@@ -291,6 +311,7 @@ net/
 | StatelessCell | ✅ | StateTransfer未実装セル用ダミー |
 
 ### 5ステッププロトコル
+
 1. ✅ 新セルをメモリにロード (`load_cell`)
 2. ✅ グローバルエポックインクリメント (`GLOBAL_EPOCH.fetch_add`)
 3. ✅ GOTシンボル切り替え（アトミックスワップ）
@@ -298,6 +319,7 @@ net/
 5. ✅ 検証猶予期間後にコミット or ロールバック
 
 ### 該当ファイル
+
 - [kernel/src/epoch/mod.rs](kernel/src/epoch/mod.rs) — Epoch管理
 - [kernel/src/loader/live_update.rs](kernel/src/loader/live_update.rs) — LiveUpdateManager
 
@@ -306,6 +328,7 @@ net/
 ## 10. unsafe コード封じ込め — 7/10 ⚠️
 
 ### 設計要件
+
 - unsafeコードはFramework層に限定
 - SAFETYコメントによる文書化
 - TCB（Trusted Computing Base）の最小化
@@ -314,6 +337,7 @@ net/
 ### 定量分析
 
 #### コードベース全体
+
 | メトリクス | 値 |
 |-----------|-----|
 | 総Rustファイル数 | 734 |
@@ -366,6 +390,7 @@ net/
 ## 11. POSIX互換性排除 — 7/10 ⚠️
 
 ### 設計要件
+
 - POSIXソケットAPI（`socket`, `bind`, `listen`等）の排除
 - `endpoint`命名への統一
 - `fork`/`exec`の不採用
@@ -405,6 +430,7 @@ kernel/src/net/services/ntp/        — socket変数名
 ## 12. デバッグとトレーシング — 9/10 ✅
 
 ### 設計要件
+
 - 構造化ログ（CPU ID、ドメインID、タイムスタンプ）
 - GDBリモートデバッグ
 - ウォッチドッグタイマー
@@ -423,6 +449,7 @@ kernel/src/net/services/ntp/        — socket変数名
 | パニックハンドラ | ✅ | `panic_handler.rs` — スタックガード検出含む |
 
 ### 該当ファイル
+
 - [kernel/src/watchdog/mod.rs](kernel/src/watchdog/mod.rs)
 - [kernel/src/profiler/](kernel/src/profiler/)
 - [kernel/src/debug/](kernel/src/debug/)
@@ -433,6 +460,7 @@ kernel/src/net/services/ntp/        — socket変数名
 ## ABI/FFI 準拠 — 補足
 
 ### 設計要件
+
 - TypeIdHashによるABI互換性検証
 - `#[repr(C)]`のドメイン境界型への適用
 - ジェネリクス型のハッシュ計算
@@ -484,16 +512,19 @@ kernel/src/net/services/ntp/        — socket変数名
 ## 改善ロードマップ（推奨）
 
 ### Phase 1（短期・高優先度）
+
 1. **SAFETYコメント追加**: 全unsafeブロックに`// SAFETY:`コメントを付与（現在176/1,747 = 10.1%）
 2. **`std::sync::Mutex`排除**: `async_swapout`モジュールをPoisonLockに移行
 
 ### Phase 2（中期・中優先度）
+
 3. **socket命名のリファクタリング**: `UdpSocket` → `UdpEndpoint`等の統一（39箇所）
-4. **NVMeドライバunsafe削減**: Framework抽象化レイヤーの強化
+2. **NVMeドライバunsafe削減**: Framework抽象化レイヤーの強化
 
 ### Phase 3（長期・低優先度）
+
 5. **panic!の更なる削減**: 残存80箇所のResult化
-6. **ドライバunsafe封じ込め強化**: レジスタアクセスの型安全ラッパー拡充
+2. **ドライバunsafe封じ込め強化**: レジスタアクセスの型安全ラッパー拡充
 
 ---
 
@@ -690,6 +721,7 @@ Application/Service層 (11.2%):
 ## 付録D: SAFETYコメントカバレッジ改善ガイド
 
 ### 現状
+
 - **unsafe ブロック数**: 約1,747箇所
 - **SAFETY: コメント数**: 196箇所
 - **カバレッジ**: 11.2%
@@ -697,6 +729,7 @@ Application/Service層 (11.2%):
 ### 優先度別の改善対象
 
 #### 最高優先度（外部インターフェース・セキュリティ）
+
 | ディレクトリ | unsafe数 | SAFETY% | アクション |
 |-------------|---------|---------|-----------|
 | `security/` | 61 | 低 | MPK WRPKRU操作の全unsafeにSAFETYコメント追加 |
@@ -704,12 +737,14 @@ Application/Service層 (11.2%):
 | `ipc/` | 32 | 低 | RRef所有権移動の安全性根拠を文書化 |
 
 #### 高優先度（メモリ管理・I/O）
+
 | ディレクトリ | unsafe数 | SAFETY% | アクション |
 |-------------|---------|---------|-----------|
 | `mm/` | 542 | 低 | ページテーブル操作、フレーム割り当ての安全性根拠 |
 | `io/` | 608 | 低 | IOMMU・VirtIOデバイス操作の安全性根拠 |
 
 #### 中優先度
+
 | ディレクトリ | unsafe数 | SAFETY% | アクション |
 |-------------|---------|---------|-----------|
 | `graphics/` | 219 | 中 | 一部文書化済み。残りのフレームバッファ操作を追加 |
@@ -751,7 +786,55 @@ unsafe { ... }
 | 適応的ポーリング | AdaptivePolling | `net/datapath/adaptive_polling/` | ✅ |
 | ゼロコピー | ZeroCopyBuffer | `net/datapath/zero_copy/` | ✅ |
 | Mempool | Mempool | `net/datapath/mempool/` | ✅ |
-| エンドポイント | endpoint (部分的にSocket残存) | `net/l4/endpoint/` | ⚠️ |
+| エンドポイント | Endpoint | `net/l4/endpoint/` | ✅ |
+
+---
+
+## 付録F: 修正実施ログ（2026-03-02 実施）
+
+### F.1 Socket→Endpoint POSIX命名排除（完了）
+
+**影響範囲**: 41ファイル、2ファイルリネーム
+
+| 変更カテゴリ | 詳細 |
+|------------|------|
+| 型名リネーム | `Socket`→`Endpoint`, `OwnedSocket`→`OwnedEndpoint`, `SocketAddr`→`EndpointAddr`, `SocketError`→`EndpointError`, `SocketFd`→`EndpointFd`, `SocketType`→`EndpointType`, `SocketManager`→`EndpointManager` |
+| ファイルリネーム | `socket.rs`→`endpoint_core.rs`, `socket_table_impl.rs`→`endpoint_table_impl.rs` |
+| メソッドリネーム | `create_tcp_socket`→`create_tcp_endpoint`, `create_udp_socket`→`create_udp_endpoint`, `create_raw_socket`→`create_raw_endpoint`, `init_socket_manager`→`init_endpoint_manager` |
+| フィールドリネーム | `socket:`→`endpoint:`, `sockets:`→`endpoints:`, `.socket()`→`.endpoint()`, `.sockets()`→`.endpoints()` |
+| 外部参照修正 | `demo/echo_server.rs`, `ahci_and_init.rs`, `kernel_services.rs` |
+
+### F.2 std::sync::Mutex確認（対応不要）
+
+`std::sync::Mutex`の使用箇所は全て`#[cfg(all(test, feature = "std"))]`ゲート内のテスト専用コード。
+本番カーネルコードでは使用されておらず、移行不要と判定。
+
+### F.3 Driver unwrap()修正（完了）
+
+| ファイル | 修正内容 |
+|---------|---------|
+| `drivers/ahci/src/port.rs` | 5箇所の`.unwrap()`を`.ok_or(AhciError::InternalError)?`に置換 |
+| `drivers/acpi/src/parser.rs` | `.unwrap()`を明示的な`.expect()`メッセージに変更 |
+
+### F.4 SAFETYコメント追加（完了）
+
+| ファイル | 箇所 | 内容 |
+|---------|------|------|
+| `kernel/src/ipc/rref.rs` | `as_ref_checked`, `as_mut_checked` | Exchange Heapポインタの有効性と所有権保証の説明 |
+| `kernel/src/driver_registry.rs` | `kapi_free_dma` | DMAバッファハンドルの有効性保証 |
+| `kernel/src/driver_registry.rs` | `kapi_heap_alloc`, `kapi_heap_dealloc` | Layout検証とアロケータ委譲の安全性説明 |
+| `kernel/src/mm/virt/higher_half/manager.rs` | `set_cr3` | PML4物理アドレスの有効性とSPL保証 |
+
+### F.5 ビルド検証
+
+- **ビルド**: ✅ 成功（`cargo build -p rany_kernel`）
+- **Codacy CLI分析**: ✅ 全修正ファイルクリア（0 issues）
+  - `endpoint_core.rs` ✅
+  - `futures/mod.rs` ✅
+  - `udp/mod.rs` ✅
+  - `driver_registry.rs` ✅
+  - `ipc/rref.rs` ✅
+  - `drivers/ahci/src/port.rs` ✅
 
 ---
 
@@ -761,3 +844,4 @@ unsafe { ... }
 |-----------|------|---------|
 | 1.0 | 2026-03-02 | 初版: 12分野の設計準拠度監査 |
 | 1.1 | 2026-03-02 | 付録A-E追加: チェックリスト詳細検証、POSIX命名マップ、W^X検証、SAFETYガイド、用語対応表 |
+| 1.2 | 2026-03-02 | 付録F追加: 修正実施ログ（Socket→Endpoint完了、unwrap修正、SAFETYコメント追加） |
